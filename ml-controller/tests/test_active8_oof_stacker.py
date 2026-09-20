@@ -147,7 +147,7 @@ def test_both_inner_tuning_passes_purge_labels_at_and_after_validation_start(mon
     x, y, dates, markets, known = _inner_panel()
     calls = []
 
-    def fit(features, target, regularization, *, active_models=None):
+    def fit(features, target, regularization, *, active_models=None, model_order):
         calls.append((target.copy(), active_models))
         weights = np.zeros(16)
         weights[:2] = 1.0
@@ -207,10 +207,10 @@ def test_chronological_stacker_passes_actual_label_maturity(monkeypatch):
     original = stacker._fit_selected_ridge
     calls = []
 
-    def capture(x, y, dates, markets, *, label_known_dates):
+    def capture(x, y, dates, markets, *, label_known_dates, model_order):
         calls.append(label_known_dates.copy())
         assert np.all(label_known_dates == "2026-01-16")
-        return original(x, y, dates, markets, label_known_dates=label_known_dates)
+        return original(x, y, dates, markets, label_known_dates=label_known_dates, model_order=model_order)
 
     monkeypatch.setattr(stacker, "_fit_selected_ridge", capture)
     _, evidence = stacker.build_chronological_oof_stack(_rows())

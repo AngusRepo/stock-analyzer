@@ -1,0 +1,32 @@
+{
+  "scope": "local_source_engineering_closure",
+  "completed": true,
+  "controller_regression": {
+    "total": 1233,
+    "initial_pass": 1205,
+    "fixture_repaired_rerun_pass": 28
+  },
+  "additional_focused_tests": {
+    "history_contract": 57,
+    "native_l4_lifecycle": 26,
+    "snapshot_memory_and_l4": 21,
+    "worker_final_contract": 12
+  },
+  "frontend_build": "passed",
+  "worker_typecheck": "passed",
+  "real_native_ab_frame_and_exact_retry": "passed; original risk limits preserved; no whole-session NAV credit",
+  "gpu_full_job_validation": "A and B completed; research code-inventory identity, not formal release candidate",
+  "formal_candidate_registration": "pending Git-pinned formal OOF/full-fit",
+  "l3_nav_gate": "preserved, not passed or waived",
+  "evidence": {
+    "controller-release-tests.log": "48880b868a57c9d91f3b2a5dc2f56b12645a3f48cb20fa2647f7777b5cc5ec70",
+    "controller-native-rerun.log": "651662bcd5fef5685c0898cc637fa04901fa4d8cfcd760a300869fb9cc832f95",
+    "native-lifecycle-final.log": "9ec84230841dc613716abe2d5eef3c5a0da97eff3df4cebca2574146d471be1a",
+    "final-history-policy.log": "79afeff83a0769e1e23d461eddc0e89ef014fcd80634596a18e5c5793b02a64d",
+    "memory-regression.log": "f4fcc4620e8d8d7d636c70e4f572e2f3f79c59bf681956fc6d33383ab60d8949",
+    "worker-final-typecheck.log": "3fc6b62425edabc51d07e1b089334c0539e4beeebe3f5bee15ca5332d3e00e3b",
+    "worker-final-contract.log": "bc7830c59347fc4afddf5641cbaa52960f2d2476af53c63b3d7618cd9a48398e",
+    "frontend-final-build.log": "96656b28e32abb09ff1646a6544dd8ba41b57df44a030813690b7863e615bbbd",
+    "final-native-chain.log": "150d405e2d819a6ca30e1af88aa92e938a89e6ab3965b69b1f31d85eccfeb95d"
+  }
+}

@@ -38,6 +38,11 @@ def configure_training_reproducibility(seed: int | str | None = 42) -> dict[str,
     try:
         import torch
 
+        # Reused GPU containers must not inherit a previous model's precision.
+        precision = os.environ.get("TORCH_FLOAT32_MATMUL_PRECISION", "highest").strip() or "highest"
+        if precision not in {"highest", "high", "medium"}:
+            raise ValueError("invalid_torch_float32_matmul_precision")
+        torch.set_float32_matmul_precision(precision)
         torch.manual_seed(resolved_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(resolved_seed)
@@ -47,6 +52,7 @@ def configure_training_reproducibility(seed: int | str | None = 42) -> dict[str,
             torch.backends.cudnn.benchmark = False
         receipt.update({
             "torch_available": True,
+            "torch_float32_matmul_precision": torch.get_float32_matmul_precision(),
             "torch_deterministic_algorithms": True,
             "torch_deterministic_warn_only": True,
             "cudnn_deterministic": bool(getattr(torch.backends.cudnn, "deterministic", False)),

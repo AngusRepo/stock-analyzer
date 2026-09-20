@@ -56,3 +56,16 @@ def test_empty_bundle_cannot_report_migration_ready(monkeypatch):
         lambda: {'status': 'production', 'production_effect': True, 'base_artifacts': {}})
     result = asyncio.run(model_pool.artifact_registry_champion_pointers())
     assert result['migration_ready'] is False and result['ready_count'] == 0
+
+
+def test_pointer_projection_uses_complete_published_timeXer_roster(monkeypatch):
+    from services.alpha_model_roster import TIMEXER_MODELS
+    monkeypatch.setattr(model_pool, 'list_champion_pointers', lambda **kw: [])
+    monkeypatch.setattr(model_pool, 'list_artifact_registry', lambda **kw: [])
+    monkeypatch.setattr(model_pool, 'load_active8_ensemble_serving_bundle', lambda: {
+        'status':'production', 'production_effect':True, 'base_artifacts':{},
+        'model_order':list(TIMEXER_MODELS)})
+    result = asyncio.run(model_pool.artifact_registry_champion_pointers())
+    assert list(result['models']) == list(TIMEXER_MODELS)
+    assert result['model_count'] == 8 and 'DLinear' not in result['models']
+    assert result['migration_ready'] is False

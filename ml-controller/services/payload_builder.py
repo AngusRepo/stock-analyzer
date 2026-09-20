@@ -673,6 +673,7 @@ def _bulk_load_chips(
     limit: int = 200,
     *,
     as_of_date: str,
+    lookback_years: int = 1,
 ) -> dict[str, list[dict]]:
     """Load Market-domain chip rows with FinLab canonical data preferred.
 
@@ -683,6 +684,8 @@ def _bulk_load_chips(
     """
     if not symbols:
         return {}
+    lookback_years = max(1, int(lookback_years))
+    date_modifier = f"-{lookback_years} years"
     grouped_by_date: dict[str, dict[str, dict]] = {s: {} for s in symbols}
 
     rows: list[dict] = []
@@ -693,9 +696,9 @@ def _bulk_load_chips(
             f"       margin_balance, short_balance "
             f"FROM chip_data "
             f"WHERE symbol IN ({placeholders}) "
-            f"AND date >= date(?,'-1 year') AND date <= date(?) "
+            f"AND date >= date(?, ?) AND date <= date(?) "
             f"ORDER BY symbol ASC, date ASC",
-            [*chunk, as_of_date, as_of_date],
+            [*chunk, as_of_date, date_modifier, as_of_date],
             timeout=60.0,
         ))
     for r in rows:
@@ -720,9 +723,9 @@ def _bulk_load_chips(
                 f"       margin_balance, short_balance, source, as_of_date "
                 f"FROM canonical_chip_daily "
                 f"WHERE stock_id IN ({placeholders}) "
-                f"AND date >= date(?,'-1 year') AND date <= date(?) AND date(as_of_date) <= date(?) "
+                f"AND date >= date(?, ?) AND date <= date(?) AND date(as_of_date) <= date(?) "
                 f"ORDER BY stock_id ASC, date ASC",
-                [*chunk, as_of_date, as_of_date, as_of_date],
+                [*chunk, as_of_date, date_modifier, as_of_date, as_of_date],
                 timeout=60.0,
             ))
         for r in canonical_rows:
@@ -753,9 +756,9 @@ def _bulk_load_chips(
                 f"       broker_count, concentration, source, as_of_date "
                 f"FROM canonical_broker_flow_daily "
                 f"WHERE stock_id IN ({placeholders}) "
-                f"AND date >= date(?,'-1 year') AND date <= date(?) AND date(as_of_date) <= date(?) "
+                f"AND date >= date(?, ?) AND date <= date(?) AND date(as_of_date) <= date(?) "
                 f"ORDER BY stock_id ASC, date ASC",
-                [*chunk, as_of_date, as_of_date, as_of_date],
+                [*chunk, as_of_date, date_modifier, as_of_date, as_of_date],
                 timeout=60.0,
             ))
         for r in broker_rows:

@@ -14,9 +14,9 @@ from typing import Iterable
 import numpy as np
 
 TREE_MODELS = ["LightGBM", "XGBoost", "ExtraTrees"]
-SEQUENCE_GROUPS = {"dlinear", "patchtst"}
+SEQUENCE_GROUPS = {"dlinear", "timexer", "patchtst"}
 OOS_ARTIFACT_GROUPS = {"tree"}
-SEQUENCE_MODEL_BY_GROUP = {"dlinear": "DLinear", "patchtst": "PatchTST"}
+SEQUENCE_MODEL_BY_GROUP = {"dlinear": "DLinear", "timexer": "TimeXer", "patchtst": "PatchTST"}
 
 
 def _safe_slug(value: str) -> str:

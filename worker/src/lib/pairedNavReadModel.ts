@@ -1,3 +1,4 @@
+import { strategyAbTag, type StrategyAbTag } from './strategyAbContract'
 /** Accounting evidence only. Never translates an allocation seal into NAV credit. */
 export interface PairedNavReadModel {
   status: 'awaiting_allocation_context' | 'awaiting_execution_pairs' | 'observing' | 'valuation_incomplete' | 'terminal_zero_nav' | 'historical_comparisons' | 'unavailable'
@@ -6,7 +7,7 @@ export interface PairedNavReadModel {
   pairs: Array<{ pair_id: string; sessions: number; latest_session: string | null; accounted_sessions: number;
     unverified_sessions: number; undefined_return_sessions: number; zero_nav_sessions: number;
     latest_accounting_session: string; candidate_checksum: string; baseline_checksum: string;
-    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement' | 'strategy_bundle_replacement'; baseline_kind: string; metadata_sessions: number };
+    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement' | 'strategy_bundle_replacement'; baseline_kind: string; metadata_sessions: number; strategy_ab?: StrategyAbTag };
     lifecycle?: { reason: 'comparison_changed'; transition_signal_date: string; final_session_date: string;
       successor_pair_id: string; changed_fields: string[] } }>
   promotion_allowed: false
@@ -60,6 +61,7 @@ export async function readPairedNav(db: D1Database, requestedDate: string): Prom
         MIN(json_extract(payload_json,'$.comparison.owner')) AS comparison_owner,
         MIN(json_extract(payload_json,'$.comparison.kind')) AS comparison_kind,
         MIN(json_extract(payload_json,'$.comparison.baseline_kind')) AS comparison_baseline_kind,
+        MIN(json_extract(payload_json,'$.comparison.strategy_ab')) AS strategy_ab_tag,
         SUM(CASE WHEN json_type(payload_json,'$.comparison') IS NULL THEN 0
           WHEN json_extract(payload_json,'$.comparison.schema_version')='paired-nav-comparison-v1'
             AND json_extract(payload_json,'$.comparison.candidate_checksum')=json_extract(payload_json,'$.pair_identity.candidate_checksum')
@@ -108,7 +110,7 @@ export async function readPairedNav(db: D1Database, requestedDate: string): Prom
           accounted_sessions: number; unverified_sessions: number; undefined_return_sessions: number;
           zero_nav_sessions: number; latest_accounting_session: string;
           comparison_sessions: number; comparison_versions: number; invalid_comparisons: number;
-          comparison_owner: string; comparison_kind: NonNullable<PairedNavReadModel['pairs'][number]['comparison']>['kind']; comparison_baseline_kind: string;
+          comparison_owner: string; comparison_kind: NonNullable<PairedNavReadModel['pairs'][number]['comparison']>['kind']; comparison_baseline_kind: string; strategy_ab_tag: string | null;
           candidate_checksum: string; baseline_checksum: string; candidate_versions: number; baseline_versions: number;
           configuration_versions: number; execution_versions: number; invalid_rows: number }>(),
       db.prepare(`SELECT pair_id,payload_json,payload_checksum FROM paired_nav_lifecycle_closures_v1
@@ -157,10 +159,11 @@ export async function readPairedNav(db: D1Database, requestedDate: string): Prom
       allocation_context_dates: contexts.dates, latest_allocation_context_date: contexts.latest,
       pairs: rows.map(({ candidate_versions: _candidate, baseline_versions: _baseline,
         comparison_sessions, comparison_versions: _versions, invalid_comparisons: _comparisonInvalid,
-        comparison_owner, comparison_kind, comparison_baseline_kind,
+        comparison_owner, comparison_kind, comparison_baseline_kind, strategy_ab_tag,
         configuration_versions: _configuration, execution_versions: _execution, invalid_rows: _invalid, ...row }) => ({ ...row,
           ...(comparison_sessions > 0 ? { comparison: { owner: comparison_owner,
-            kind: comparison_kind, baseline_kind: comparison_baseline_kind, metadata_sessions: comparison_sessions } } : {}),
+            kind: comparison_kind, baseline_kind: comparison_baseline_kind, metadata_sessions: comparison_sessions,
+            ...(strategy_ab_tag ? { strategy_ab: strategyAbTag(strategy_ab_tag) } : {}) } } : {}),
           ...(lifecycle.has(row.pair_id) ? { lifecycle: lifecycle.get(row.pair_id) } : {}) })),
       // This endpoint reports accounting health, not a promotion verdict.
       blockers: rows.length ? (incomplete ? ['paired_nav_valuation_interval_unverified'] : [])

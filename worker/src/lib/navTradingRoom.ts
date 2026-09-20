@@ -1,3 +1,4 @@
+import { strategyAbTag } from './strategyAbContract'
 import type { NavAccountView, NavComparisonDetail, NavFillView } from './navTradingRoomContract'
 
 type Row = { pair_id: string; session_date: string; snapshot_id: string; previous_checksum: string | null;
@@ -84,7 +85,8 @@ function accountView(account: any, marks?: Record<string, unknown>): NavAccountV
   })
   const nav = numeric(account.nav)
   const value = positions.every(p => p.market_value !== null) ? positions.reduce((sum, p) => sum + p.market_value!, 0) : null
-  return { cash: numeric(account.cash), nav, daily_return: numeric(account.daily_return), drawdown: numeric(account.drawdown),
+  return { rebate_receivable: numeric(account.commission_rebate?.estimated_receivable),
+    estimated_nav_including_rebate: numeric(account.estimated_nav_including_rebate), cash: numeric(account.cash), nav, daily_return: numeric(account.daily_return), drawdown: numeric(account.drawdown),
     costs: numeric(account.costs), fill_count: numeric(account.fill_count), positions,
     stock_utilization: nav !== null && nav > 0 && value !== null ? value / nav : null,
     rights_count: Array.isArray(account.corporate_receivables) ? account.corporate_receivables.length : 0 }
@@ -104,7 +106,7 @@ export async function readNavComparison(db: D1Database, pairId: string, asOf: st
     if (!result.success || !Array.isArray(result.results)) throw Error('journal_query_failed')
     if (!result.results.length) return empty
     const rows = result.results.reverse(), bodies: any[] = []
-    let identity: string | undefined
+    let identity: string | undefined, abIdentity: string | undefined
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i], body = JSON.parse(row.payload_json)
       if (await hash(row.payload_json) !== row.payload_checksum || row.pair_id !== pairId || body.pair_id !== pairId
@@ -115,6 +117,24 @@ export async function readNavComparison(db: D1Database, pairId: string, asOf: st
       const currentIdentity = JSON.stringify(body.pair_identity)
       if (identity && identity !== currentIdentity) throw Error('journal_comparison_changed')
       identity = currentIdentity
+      const tag = strategyAbTag(body.comparison?.strategy_ab)
+      const ab = JSON.stringify([tag, body.initial_account_nav, body.initial_session_date])
+      if (abIdentity !== undefined && abIdentity !== ab) throw Error('strategy_ab_journal_identity_changed')
+      abIdentity = ab
+      if (tag) {
+        if (numeric(body.initial_account_nav) === null || body.initial_account_nav <= 0
+          || !/^\d{4}-\d{2}-\d{2}$/.test(body.initial_session_date ?? '')
+          || body.initial_session_date > body.session_date) throw Error('strategy_ab_initial_basis_invalid')
+        for (const arm of ['candidate', 'baseline']) {
+          const account = body.arms?.[arm], rebate = account?.commission_rebate
+          if (!rebate || rebate.cash_credit !== 0 || rebate.confirmed_received !== 0
+            || numeric(rebate.estimated_receivable) === null || rebate.estimated_receivable < 0
+            || Object.entries(tag.fee_terms).some(([key, value]) => rebate.fee_terms?.[key] !== value)
+            || (numeric(account.nav) !== null && (numeric(account.estimated_nav_including_rebate) === null
+              || Math.abs(account.estimated_nav_including_rebate - account.nav - rebate.estimated_receivable) > 1e-6)))
+            throw Error('strategy_ab_rebate_account_invalid')
+        }
+      }
       accountView(body.arms?.candidate); accountView(body.arms?.baseline)
       bodies.push(body)
     }
@@ -123,8 +143,13 @@ export async function readNavComparison(db: D1Database, pairId: string, asOf: st
     try { receipt = await readReceipt(db, latestRow, latestBody); receiptStatus = receipt ? 'verified' : 'missing' }
     catch { receiptStatus = 'invalid' }
     const displayed = rows.length === 91 ? bodies.slice(1) : bodies
+    const tag = strategyAbTag(latestBody.comparison?.strategy_ab)
+    const initialNav = numeric(latestBody.initial_account_nav)
     return { ...empty, status: 'available', history_truncated: rows.length === 91,
+      ...(tag ? { strategy_ab: tag, initial_nav: initialNav, initial_session_date: latestBody.initial_session_date, baseline_checksum: latestBody.pair_identity.baseline_checksum } : {}),
       history: displayed.map(b => ({ date: b.session_date, candidate_nav: numeric(b.arms.candidate.nav), baseline_nav: numeric(b.arms.baseline.nav),
+        candidate_estimated_nav_including_rebate: numeric(b.arms.candidate.estimated_nav_including_rebate),
+        candidate_rebate_receivable: numeric(b.arms.candidate.commission_rebate?.estimated_receivable),
         candidate_return: numeric(b.arms.candidate.daily_return), baseline_return: numeric(b.arms.baseline.daily_return), net_return_delta: numeric(b.net_return_delta) })),
       latest: { date: latestRow.session_date, candidate: accountView(latestBody.arms.candidate, receipt?.marks),
         baseline: accountView(latestBody.arms.baseline, receipt?.marks), receipt_status: receiptStatus,

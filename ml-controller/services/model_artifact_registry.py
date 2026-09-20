@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 from services.ensemble_qualification import assess_ensemble_qualifications
 
+from services.alpha_model_roster import model_order, is_complete_roster
 from services.active8_release_training_contract import (
     ACTIVE8_MODEL_NAMES,
     validate_model_training_config_attestation,
@@ -84,14 +85,18 @@ PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
     "TabM": "pt",
     "GNN": "pt",
     "DLinear": "pt",
+    "TimeXer": "pt",
     "PatchTST": "zip",
     "iTransformer": "zip",
     "TimesFM": "json",
 }
 PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
 ACTIVE8_ARTIFACT_MODEL_NAMES = PRODUCTION_ARTIFACT_MODEL_NAMES - {"TimesFM"}
-SEQUENCE_ARTIFACT_MODEL_NAMES = frozenset({"DLinear", "PatchTST", "iTransformer"})
-ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
+SEQUENCE_ARTIFACT_MODEL_NAMES = frozenset({"DLinear", "TimeXer", "PatchTST", "iTransformer"})
+ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v4"
+SUPPORTED_ACTIVE8_FAMILY_FEATURE_CONTRACTS = {
+    "active8-family-feature-contract-v3", ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
+}
 ACTIVE8_TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"})
 PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
@@ -587,7 +592,8 @@ def _artifact_record_from_registration(
         and release_completion_stage.get("models_completed") == len(ACTIVE8_MODEL_NAMES)
         and release_completion_stage.get("models_required") == len(ACTIVE8_MODEL_NAMES)
         and str(release_completion_stage.get("contract_checksum") or "").lower() == release_contract_checksum
-        and set(_nested_dict(release_completion_stage.get("receipts"))) == set(ACTIVE8_MODEL_NAMES)
+        and is_complete_roster(_nested_dict(release_completion_stage.get("receipts")))
+        and set(_nested_dict(release_completion_stage.get("receipts"))) == set(release_contract_stage.get("models") or [])
     )
     owns_root_lifecycle = owns_release_lifecycle
     if owns_root_lifecycle:
@@ -1238,7 +1244,7 @@ def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
         and validation_design.get("chronological") is True
         and int(_as_float(validation_design.get("purge_horizon_sessions")) or 0) >= 5
         and release_contract.get("status") == "verified"
-        and set(release_contract.get("models") or []) == set(ACTIVE8_MODEL_NAMES)
+        and is_complete_roster(release_contract.get("models") or [])
         and int(_as_float(release_contract_validation.get("minimum_outer_folds")) or 0) >= 5
         and release_contract_validation.get("refit_each_fold") is True
         and release_contract_validation.get("promotion_requires_immutable_oof") is True
@@ -1800,13 +1806,33 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         )
 
     feature_contract = _nested_dict(metadata.get("family_feature_contract"))
-    if contract_required and str(feature_contract.get("schema_version") or "") != ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION:
+    feature_schema = str(feature_contract.get("schema_version") or "")
+    current_profile = _nested_dict(metadata.get("model_training_config_attestation")).get("model_profile_schema_version") in {"active8-release-model-profiles-v3", "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"}
+    if contract_required and (feature_schema not in SUPPORTED_ACTIVE8_FAMILY_FEATURE_CONTRACTS
+                              or (current_profile and feature_schema != ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION)):
         add(
             "feature_contract_family_schema_missing",
             "Artifact lacks the active-8 family-specific feature schema",
-            "Retrain this model under active8-family-feature-contract-v3; do not infer parity from a column count.",
+            "Regenerate a family-specific feature contract matching the trained model profile; do not infer parity from a column count.",
         )
 
+    if contract_required and model_name == "TabM" and feature_schema == ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION:
+        if (feature_contract.get("input_semantics") != "full_governed_tabular_universe"
+                or _nested_dict(metadata.get("feature_policy")).get("selection_required") is not False):
+            add("tabm_full_feature_contract_mismatch", "TabM full-feature input is not attested",
+                "Regenerate the full governed-feature metadata from the actual training inputs.")
+        if (metadata.get("artifact_schema") != "torch_tabm_ranker_v2"
+                or metadata.get("output_contract") != "tabm-member-smoothl1-mean-sigmoid-v2"):
+            add("tabm_member_output_contract_missing", "TabM member-loss/output semantics are missing",
+                "Train a versioned member-loss artifact; do not relabel legacy weights.")
+
+    if contract_required and model_name == "TimeXer":
+        from services.timexer_contract import metadata_contract
+        try:
+            metadata_contract(metadata)
+        except ValueError:
+            add("timexer_artifact_contract_invalid", "TimeXer variant or official runtime is unverified",
+                "Register the checksum-bound price/exo137 metadata produced by the actual trainer.")
     if contract_required and model_name in SEQUENCE_ARTIFACT_MODEL_NAMES:
         if _positive_int(metadata.get("seq_len")) is None or _positive_int(metadata.get("pred_len")) is None:
             add(
@@ -3283,6 +3309,7 @@ def load_active8_ensemble_serving_bundle(*, include_observability: bool = False)
             "validation": payload.get("validation") or {},
         }} if include_observability else {}),
         "selected_models": list(selected_models),
+        "model_order": list(model_order(payload["observation_artifacts"], complete=True)),
         "base_artifacts": dict(base_artifacts),
         "blockers": [],
         **({'adoption_basis': 'committed_paired_nav',
@@ -3347,7 +3374,6 @@ def run_active8_ensemble_bundle_promotion_controller(
 ) -> dict[str, Any]:
     """Atomically switch the validated selected subset and its learned ensemble owner."""
     require_existing_commit = recovery_only or (confirm and evaluation_business_date is None)
-    expected_models = set(ACTIVE8_MODEL_NAMES)
     exact_identity = ensemble_artifact_id is not None or ensemble_payload_checksum is not None
     if exact_identity and (not ensemble_artifact_id or not ensemble_payload_checksum):
         return {"status": "blocked", "decision": "active8_ensemble_exact_identity_required",
@@ -3385,6 +3411,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         if isinstance(ensemble_payload.get("observation_artifacts"), dict)
         else {}
     )
+    expected_models = set(model_order(expected_observation, complete=True))
     base_rows = [
         row for row in registry_rows
         if str(row.get("candidate_type") or "") == "oof_full_fit_release"

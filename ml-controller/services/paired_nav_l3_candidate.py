@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import date, datetime, timezone
 import json
 
+from services.alpha_model_roster import model_order, validate_order, SUPPORTED_MODELS, is_complete_roster
 from services.active_model_policy import ACTIVE_ALPHA_MODELS, CORE_CROSS_SECTIONAL_ALPHA_MODELS
 from services.active8_score_semantics import (
     MODEL_SCORE_LINEAGE_SCHEMA_VERSION, MODEL_SCORE_SEMANTIC_VERSION,
@@ -45,7 +46,7 @@ def load_candidate_ensembles(*, manifest, signal_date, decision_cutoff, query):
     base = {}
     for row in rows:
         name = row.get('model')
-        if (name not in ACTIVE_ALPHA_MODELS or name in base
+        if (name not in SUPPORTED_MODELS or name in base
                 or row.get('production_effect') is not False or row.get('vote_weight') != 0
                 or row.get('status') != 'challenger' or row.get('effective_status') != 'challenger'):
             raise ValueError('paired_nav_l3_base_selection_invalid')
@@ -53,7 +54,7 @@ def load_candidate_ensembles(*, manifest, signal_date, decision_cutoff, query):
     result = {'schema_version': 'paired-nav-l3-candidate-selection-v1',
         'signal_date': signal_date, 'decision_cutoff': decision_cutoff,
         'base_artifacts': base, 'candidates': [], 'production_effect': False}
-    if set(base) != set(ACTIVE_ALPHA_MODELS):
+    if not is_complete_roster(base):
         return {**result, 'status': 'awaiting_complete_base_candidate_bundle'}
     cutoff = _timestamp(decision_cutoff)
     if cutoff.astimezone(timezone.utc).date() > date.fromisoformat(signal_date):
@@ -84,6 +85,7 @@ def load_candidate_ensembles(*, manifest, signal_date, decision_cutoff, query):
 def infer_candidate_predictions(*, predictions, candidate, signal_date):
     """Use only the candidate's normalized daily scores and exact artifact IDs."""
     artifact = candidate['artifact']
+    order = validate_order(artifact['model_order'])
     _validate_payload_identity(candidate['registry'], artifact)
     if date.fromisoformat(artifact['knowledge_cutoff_date']) > date.fromisoformat(signal_date):
         raise ValueError('paired_nav_l3_future_training_cutoff')
@@ -108,7 +110,7 @@ def infer_candidate_predictions(*, predictions, candidate, signal_date):
                 or lineage.get('blockers') or lineage.get('production_effect') is not False
                 or lineage.get('vote_weight') != 0 or not lineage.get('market_segment')
                 or not (set(CORE_CROSS_SECTIONAL_ALPHA_MODELS) & set(artifact['selected_models'])).issubset(scores)
-                or not set(scores).issubset(ACTIVE_ALPHA_MODELS)
+                or not set(scores).issubset(order)
                 or set(scores) != set(lineage.get('available_models') or [])):
             raise ValueError('paired_nav_l3_candidate_scores_incomplete')
         for name, expected in artifact['observation_artifacts'].items():
@@ -128,7 +130,7 @@ def infer_candidate_predictions(*, predictions, candidate, signal_date):
         # Do not retain incumbent-derived features, votes or action authority.
         for key in ('ensemble_v2', 'ensemble_v2_error', 'formal_layer3_contract', 'core_family_evidence',
                     'core_family_vote', 'l4_alpha_ev', 'alpha_allocation', 'active8_action_authority',
-                    'models', 'gnn', 'dlinear', 'patchtst', 'itransformer'):
+                    'models', 'gnn', 'dlinear', 'timexer', 'patchtst', 'itransformer'):
             pred.pop(key, None)
         pred['rank_scores'] = deepcopy(scores)
         pred['raw_model_scores'] = deepcopy(original.get('challenger_raw_model_scores') or {})
@@ -137,7 +139,7 @@ def infer_candidate_predictions(*, predictions, candidate, signal_date):
             coverage_policy='validated-bundle-selected-core-sequence-missingness-v1',
             ensemble_payload_checksum=artifact['payload_checksum'],
             selected_models=list(artifact['selected_models']))
-        formal = build_formal_model_input_contract(pred, selected_models=artifact['selected_models'])
+        formal = build_formal_model_input_contract(pred, selected_models=artifact['selected_models'], order=order)
         if formal['complete'] is not True:
             raise ValueError('paired_nav_l3_candidate_model_contract_incomplete')
         pred['ensemble_v2'] = _evaluate_validated_ensemble(pred, artifact, formal)

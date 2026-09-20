@@ -16,6 +16,7 @@ import numpy as np
 
 from services.ensemble_qualification import qualify_directional_signal
 
+from services.alpha_model_roster import model_order, validate_order, stacker_features
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
     CORE_CROSS_SECTIONAL_ALPHA_MODELS,
@@ -60,26 +61,29 @@ def _finite_rank(value: object) -> float | None:
     return max(0.0, min(1.0, rank))
 
 
-def _formal_model_scores(pred: dict) -> dict[str, float]:
+def _formal_model_scores(pred: dict, *, order=None) -> dict[str, float]:
     raw = pred.get("rank_scores") if isinstance(pred.get("rank_scores"), dict) else {}
+    order = validate_order(order) if order is not None else model_order(raw)
     return {
         model: score
-        for model in ACTIVE_ALPHA_MODELS
+        for model in order
         if (score := _finite_rank(raw.get(model))) is not None
     }
 
 
-def build_formal_model_input_contract(pred: dict | None, *, selected_models: list[str] | None = None) -> dict[str, Any]:
+def build_formal_model_input_contract(pred: dict | None, *, selected_models: list[str] | None = None, order=None) -> dict[str, Any]:
     prediction = pred if isinstance(pred, dict) else {}
-    scores = _formal_model_scores(prediction)
+    declared = order if order is not None else (prediction.get("ensemble_v2") or {}).get("model_order") or (prediction.get("model_score_lineage") or {}).get("model_order")
+    order = validate_order(declared) if declared is not None else model_order(prediction.get("rank_scores") or {})
+    scores = _formal_model_scores(prediction, order=order)
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
     if selected_models is None and lineage.get('coverage_policy') == 'validated-bundle-selected-core-sequence-missingness-v1' and lineage.get('ensemble_payload_checksum'):
         selected_models = lineage.get('selected_models')
-    bundle_selected = isinstance(selected_models, list) and bool(selected_models) and set(selected_models).issubset(set(ACTIVE_ALPHA_MODELS))
+    bundle_selected = isinstance(selected_models, list) and bool(selected_models) and set(selected_models).issubset(set(order))
     required = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if not bundle_selected or name in selected_models]
     minimum_core_models = len(required) if bundle_selected else MIN_REQUIRED_CROSS_SECTIONAL_MODELS
     missing_core = [name for name in required if name not in scores]
-    missing_optional = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in scores]
+    missing_optional = [name for name in order[5:] if name not in scores]
     lineage_blockers: list[str] = []
     if lineage.get("schema_version") != MODEL_SCORE_LINEAGE_SCHEMA_VERSION:
         lineage_blockers.append("score_lineage_schema_mismatch")
@@ -93,16 +97,16 @@ def build_formal_model_input_contract(pred: dict | None, *, selected_models: lis
         lineage_blockers.append("required_cross_sectional_model_count_below_minimum")
     return {
         "schema_version": "formal-layer3-active8-input-contract-v4",
-        "active_models": list(ACTIVE_ALPHA_MODELS),
+        "active_models": list(order),
         "required_models": required,
         "minimum_required_cross_sectional_models": minimum_core_models,
-        "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
-        "available_models": [name for name in ACTIVE_ALPHA_MODELS if name in scores],
-        "missing_models": [name for name in ACTIVE_ALPHA_MODELS if name not in scores],
+        "optional_sequence_models": list(order[5:]),
+        "available_models": [name for name in order if name in scores],
+        "missing_models": [name for name in order if name not in scores],
         "missing_core_models": missing_core,
         "missing_optional_models": missing_optional,
-        "model_availability": {name: name in scores for name in ACTIVE_ALPHA_MODELS},
-        "full_active8_coverage": len(scores) == len(ACTIVE_ALPHA_MODELS),
+        "model_availability": {name: name in scores for name in order},
+        "full_active8_coverage": len(scores) == len(order),
         "complete": not missing_core and not lineage_blockers,
         "coverage_policy": "validated-bundle-selected-core-sequence-missingness-v1" if bundle_selected else "core5-required-sequence-missingness-learned-v1",
         "finite_scores_required": True,
@@ -129,6 +133,11 @@ def _isotonic_predict(xs: list[float], ys: list[float], value: float) -> float:
 def validate_active8_ensemble_candidate(payload: dict[str, Any]) -> None:
     """Executable immutable model + truthful diagnostics, never serving approval."""
     from services.active8_ensemble_artifact import OFFLINE_DIAGNOSTIC_GATES
+    try:
+        order = validate_order(payload.get("model_order") or [])
+    except ValueError as exc:
+        raise RuntimeError("active8_ensemble_artifact_contract_invalid") from exc
+    names = stacker_features(order)
     unsigned = {key: value for key, value in payload.items() if key != "payload_checksum"}
     checksum = hashlib.sha256(_canonical_json(unsigned).encode("utf-8")).hexdigest()
     fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else {}
@@ -139,15 +148,15 @@ def validate_active8_ensemble_candidate(payload: dict[str, Any]) -> None:
         or payload.get("ensemble_semantic_version") != ENSEMBLE_V2_SEMANTIC_VERSION
         or payload.get("calibration_schema_version") != CALIBRATION_SCHEMA_VERSION
         or checksum != str(payload.get("payload_checksum") or "")
-        or list(payload.get("model_order") or []) != list(ACTIVE_ALPHA_MODELS)
-        or list(payload.get("feature_names") or []) != list(FEATURE_NAMES)
+        or list(payload.get("model_order") or []) != list(order)
+        or list(payload.get("feature_names") or []) != list(names)
         or fit.get("method") != "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation"
         or fit.get("rank_coefficient_constraint") != "nonnegative"
         or int(fit.get("outer_folds") or 0) < 5
-        or len(fit.get("coefficients") or []) != len(FEATURE_NAMES)
+        or len(fit.get("coefficients") or []) != len(names)
         or any(
             float(value) < -1e-12
-            for value in (fit.get("coefficients") or [])[: len(ACTIVE_ALPHA_MODELS)]
+            for value in (fit.get("coefficients") or [])[: len(order)]
         )
         or validation.get("decision") not in {"PASS", "FAIL"}
         or not isinstance(validation.get("failed_gates"), list)
@@ -187,9 +196,9 @@ def validate_active8_ensemble_candidate(payload: dict[str, Any]) -> None:
         not isinstance(selected, list)
         or not selected
         or len(selected) != len(set(selected))
-        or not set(selected).issubset(set(ACTIVE_ALPHA_MODELS))
+        or not set(selected).issubset(set(order))
         or not isinstance(excluded, list)
-        or set(excluded) != set(ACTIVE_ALPHA_MODELS) - set(selected)
+        or set(excluded) != set(order) - set(selected)
     ):
         raise RuntimeError("active8_ensemble_selected_model_set_invalid")
     observation = (
@@ -197,16 +206,16 @@ def validate_active8_ensemble_candidate(payload: dict[str, Any]) -> None:
         if isinstance(payload.get("observation_artifacts"), dict)
         else {}
     )
-    if set(observation) != set(ACTIVE_ALPHA_MODELS):
+    if set(observation) != set(order):
         raise RuntimeError("active8_ensemble_observation_set_invalid")
     base = payload.get("base_artifacts") if isinstance(payload.get("base_artifacts"), dict) else {}
     if set(base) != set(selected):
         raise RuntimeError("active8_ensemble_base_set_invalid")
     for model in excluded:
-        index = list(ACTIVE_ALPHA_MODELS).index(model)
+        index = list(order).index(model)
         if (
             abs(coefficient[index]) > 1e-12
-            or abs(coefficient[index + len(ACTIVE_ALPHA_MODELS)]) > 1e-12
+            or abs(coefficient[index + len(order)]) > 1e-12
         ):
             raise RuntimeError(f"active8_ensemble_excluded_model_has_weight:{model}")
 
@@ -256,7 +265,7 @@ def attach_ensemble_v2(
     pred.pop('ensemble_v2', None)
     pred.pop('ensemble_v2_error', None)
     validate_active8_ensemble_artifact(artifact, pool_models, nav_authority=nav_authority)
-    formal = build_formal_model_input_contract(pred, selected_models=artifact['selected_models'])
+    formal = build_formal_model_input_contract(pred, selected_models=artifact['selected_models'], order=artifact['model_order'])
     pred["formal_layer3_contract"] = formal
     if not formal["complete"]:
         pred["ensemble_v2_error"] = "formal_layer3_contract_incomplete"
@@ -269,10 +278,11 @@ def attach_ensemble_v2(
 
 def _evaluate_validated_ensemble(pred: dict, artifact: dict, formal: dict) -> dict:
     """Pure shared arithmetic; callers own artifact/input validation and scope."""
-    scores = {name:value for name,value in _formal_model_scores(pred).items()
+    order = validate_order(artifact.get("model_order", ACTIVE_ALPHA_MODELS))
+    scores = {name:value for name,value in _formal_model_scores(pred, order=order).items()
               if name in artifact["selected_models"]}
-    values = [scores.get(name, 0.5) for name in ACTIVE_ALPHA_MODELS]
-    available = [1.0 if name in scores else 0.0 for name in ACTIVE_ALPHA_MODELS]
+    values = [scores.get(name, 0.5) for name in order]
+    available = [1.0 if name in scores else 0.0 for name in order]
     vector = np.asarray([*values, *available], dtype=float)
     fit = artifact["fit"]
     expected_return = float(fit["intercept"] + np.dot(vector, fit["coefficients"]))
@@ -302,8 +312,8 @@ def _evaluate_validated_ensemble(pred: dict, artifact: dict, formal: dict) -> di
     )
     coefficient = [float(value) for value in fit["coefficients"]]
     influence = {
-        model: abs(coefficient[index]) + abs(coefficient[index + len(ACTIVE_ALPHA_MODELS)])
-        for index, model in enumerate(ACTIVE_ALPHA_MODELS)
+        model: abs(coefficient[index]) + abs(coefficient[index + len(order)])
+        for index, model in enumerate(order)
     }
     total_influence = sum(influence.values())
     weights = {
@@ -316,6 +326,7 @@ def _evaluate_validated_ensemble(pred: dict, artifact: dict, formal: dict) -> di
     ]
     confidence = probability if signal in {"BUY", "STRONG_BUY"} else 1.0 - probability if signal in {"SELL", "STRONG_SELL"} else max(probability, 1.0 - probability)
     return {
+        "model_order": list(order),
         "schema_version": ENSEMBLE_V2_SCHEMA_VERSION,
         "semantic_version": ENSEMBLE_V2_SEMANTIC_VERSION,
         "artifact_id": ensemble_artifact_id(artifact),
@@ -346,7 +357,7 @@ def _evaluate_validated_ensemble(pred: dict, artifact: dict, formal: dict) -> di
         "interval_90": {"lower": lower90, "upper": upper90},
         "interval_95": {"lower": lower95, "upper": upper95},
         "contributing_models": contributing,
-        "model_availability": {name: name in scores for name in ACTIVE_ALPHA_MODELS},
+        "model_availability": {name: name in scores for name in order},
         "weights": {name: round(value, 8) for name, value in weights.items()},
         "weight_semantic": "learned_absolute_coefficient_influence_diagnostic_only",
         "weight_total": round(sum(weights.values()), 8),

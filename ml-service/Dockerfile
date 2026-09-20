@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 # Prefer binary wheels to keep Cloud Run source builds deterministic.
 RUN pip install --upgrade pip && \
+    pip install "numpy==1.26.4" "Cython==0.29.37" setuptools wheel && \
+    pip install --no-build-isolation "scikit-learn-extra==0.3.0" && \
     pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 COPY app/ ./app/

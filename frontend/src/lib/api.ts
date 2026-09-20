@@ -1897,6 +1897,7 @@ export type Active8ServingBundleReadModel = {
   training_run_id?: string | null
   promoted_at?: string | null
   selected_models: string[]
+  model_order?: string[]
   adoption_basis?: 'committed_paired_nav'
   nav_decision_checksum?: string
   qualifications?: EnsembleQualifications

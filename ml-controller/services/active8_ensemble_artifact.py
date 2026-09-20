@@ -30,6 +30,7 @@ from services.active8_oof_stacker import (
     build_chronological_oof_stack,
 )
 
+from services.alpha_model_roster import model_order, stacker_features
 from services.ensemble_qualification import QUALIFICATION_SCHEMA, assess_ensemble_qualifications
 
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
@@ -194,13 +195,13 @@ def _directional_validation_evidence(rows, predictions, q_buy, q_strong):
     return output
 
 
-def _same_window_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _same_window_diagnostics(rows: list[dict[str, Any]], *, order=ACTIVE8_MODELS) -> dict[str, Any]:
     model_metrics: dict[str, Any] = {}
-    for model_index, model_name in enumerate(ACTIVE8_MODELS):
+    for model_index, model_name in enumerate(order):
         eligible = [
             (row, float(row["stacker_features"][model_index]))
             for row in rows
-            if float(row["stacker_features"][model_index + len(ACTIVE8_MODELS)]) > 0.5
+            if float(row["stacker_features"][model_index + len(order)]) > 0.5
         ]
         model_rows = [item[0] for item in eligible]
         scores = [item[1] for item in eligible]
@@ -217,8 +218,8 @@ def _same_window_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         features = row["stacker_features"]
         available = [
             float(features[index])
-            for index in range(len(ACTIVE8_MODELS))
-            if float(features[index + len(ACTIVE8_MODELS)]) > 0.5
+            for index in range(len(order))
+            if float(features[index + len(order)]) > 0.5
         ]
         equal_weight_scores.append(float(np.mean(available)) if available else 0.5)
     baseline = _daily_metric_summary(_daily_ic_values(rows, equal_weight_scores))
@@ -237,10 +238,12 @@ def _same_window_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _base_identity(base_artifacts: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
-    if set(base_artifacts) != set(ACTIVE8_MODELS):
-        raise ValueError("active8_ensemble_base_artifact_set_incomplete")
+    try:
+        order = model_order(base_artifacts, complete=True)
+    except ValueError as exc:
+        raise ValueError("active8_ensemble_base_artifact_set_incomplete") from exc
     normalized: dict[str, Any] = {}
-    for model_name in ACTIVE8_MODELS:
+    for model_name in order:
         row = base_artifacts[model_name]
         identity = {
             "artifact_id": str(row.get("artifact_id") or "").strip(),
@@ -270,11 +273,15 @@ def build_active8_ensemble_artifact(
 ) -> dict[str, Any]:
     if len(source_manifest_checksum) != 64 or len(knowledge_cutoff_date) != 10 or not cohort_id:
         raise ValueError("active8_ensemble_lineage_identity_invalid")
+    order = model_order(base_artifacts, complete=True)
+    if model_order(row.get("model_name") for row in prediction_rows) != order:
+        raise ValueError("active8_oof_and_artifact_roster_mismatch")
+    feature_names = stacker_features(order)
     stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows)
     resolved = [
         row for row in stack_rows
         if str(row.get("label_known_date") or "")[:10] <= knowledge_cutoff_date
-        and len(row.get("stacker_features") or []) == len(STACKER_FEATURE_NAMES)
+        and len(row.get("stacker_features") or []) == len(feature_names)
     ]
     dates = sorted({row["prediction_date"] for row in resolved})
     folds = sorted({row["fold_id"] for row in resolved})
@@ -329,7 +336,7 @@ def build_active8_ensemble_artifact(
     )
     rank_ic = _daily_metric_summary(_daily_ic_values(validation_rows, val_prediction.tolist()))
     spread = _daily_metric_summary(_daily_spread_values(validation_rows))
-    same_window = _same_window_diagnostics(validation_rows)
+    same_window = _same_window_diagnostics(validation_rows, order=order)
     buy_mask = val_prediction - q_buy > 0.0
     sell_mask = val_prediction + q_buy < 0.0
     directional = np.concatenate([val_target[buy_mask], -val_target[sell_mask] - 2 * .0018])
@@ -388,7 +395,7 @@ def build_active8_ensemble_artifact(
     fit_dates = np.asarray([row["prediction_date"] for row in resolved], dtype=object)
     fit_markets = np.asarray([row["market_segment"] for row in resolved], dtype=object)
     coefficients, intercept, regularization, selected_models = _fit_selected_ridge(
-        x, y, fit_dates, fit_markets,
+        x, y, fit_dates, fit_markets, model_order=order,
         label_known_dates=np.asarray(
             [row["label_known_date"] for row in resolved], dtype=object
         ),
@@ -437,11 +444,11 @@ def build_active8_ensemble_artifact(
         "base_artifact_set_checksum": base_checksum,
         "selected_models": list(selected_models),
         "excluded_models": [
-            model_name for model_name in ACTIVE8_MODELS
+            model_name for model_name in order
             if model_name not in selected_models
         ],
-        "feature_names": list(STACKER_FEATURE_NAMES),
-        "model_order": list(ACTIVE8_MODELS),
+        "feature_names": list(feature_names),
+        "model_order": list(order),
         "fit": {
             "inner_tuning_policy": INNER_TUNING_POLICY,
             "method": "nonnegative_rank_ridge_full_fit_after_heldout_chronological_oof_validation",

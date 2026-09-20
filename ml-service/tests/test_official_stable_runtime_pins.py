@@ -11,17 +11,16 @@ def test_active8_and_timesfm_sidecar_runtime_dependencies_are_tightly_pinned_to_
     )
 
     expected_pins = [
-        "scikit-learn==1.9.0",
+        "scikit-learn==1.9.1",
         "networkx==3.6.1",
         "scikit-learn-extra==0.3.0",
-        # XGBoost 3.2.0 is intentionally accepted for runtime bug/perf fixes
-        # even though the local 2026-06-11 replay showed slightly weaker IC.
-        "xgboost==3.2.0",
+        # Stable Active-8 runtime reviewed 2026-09-20; profitability is a separate gate.
+        "xgboost==3.4.1",
         "shap==0.49.1",
-        "lightgbm==4.6.0",
-        "torch==2.12.0",
-        "torch-geometric==2.8.0",
-        "neuralforecast==3.1.9",
+        "lightgbm==4.7.0",
+        "torch==2.14.0",
+        "torch-geometric==2.8.0.post1",
+        "neuralforecast==3.2.2",
         "tabm==0.0.3",
         "timesfm[torch]==2.0.1",
         "optuna==4.9.0",
@@ -59,6 +58,6 @@ def test_cloud_run_image_uses_python_runtime_compatible_with_stable_pins():
         .read_text(encoding="utf-8", errors="ignore")
     )
 
-    assert "FROM python:3.11-slim" in dockerfile
-    assert "FROM python:3.12-slim" not in dockerfile
+    assert "FROM python:3.12-slim" in dockerfile
+    assert "FROM python:3.11-slim" not in dockerfile
     assert "FROM python:3.10-slim" not in dockerfile

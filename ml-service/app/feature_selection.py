@@ -1866,6 +1866,32 @@ def _run_k_sweep_stage(
         return result
 
 
+def selection_date_partitions(sorted_dates, embargo_days):
+    """Preserve the established split when valid; reserve both gaps otherwise."""
+    n = len(sorted_dates)
+    train_end, val_end = int(n * .7), int(n * .8)
+    val_start = min(train_end + embargo_days, val_end)
+    test_start = min(val_end + embargo_days, n)
+    mode = "legacy_70_10_20_with_embargo"
+    if val_start >= val_end or test_start >= n:
+        usable = n - 2 * embargo_days
+        if usable < 10:
+            raise ValueError("feature_selection_insufficient_dates_after_embargo")
+        train_end = int(usable * .7)
+        val_start = train_end + embargo_days
+        val_end = val_start + max(1, int(usable * .1))
+        test_start = val_end + embargo_days
+        mode = "reserve_embargo_then_70_10_20"
+    parts = [set(str(d) for d in sorted_dates[a:b])
+             for a, b in [(0, train_end), (val_start, val_end), (test_start, n)]]
+    if not all(parts):
+        raise ValueError("feature_selection_empty_date_partition")
+    return (*parts, {"partition_mode": mode,
+                     "train_dates": len(parts[0]), "val_dates": len(parts[1]), "test_dates": len(parts[2]),
+                     "train_validation_gap": val_start - train_end,
+                     "validation_test_gap": test_start - val_end})
+
+
 def resolve_feature_selection_embargo_days(
     n_dates: int,
     *,
@@ -2100,14 +2126,9 @@ def run_feature_selection_pipeline(
         max_days=20,
     )
 
-    cut70_idx = int(n_dates * 0.7)
-    cut80_idx = int(n_dates * 0.8)
-    emb1_end = min(cut70_idx + embargo_days, cut80_idx)  # embargo after train
-    emb2_end = min(cut80_idx + embargo_days, n_dates)     # embargo after val
-
-    train_dates = set(str(d) for d in sorted_dates[:cut70_idx])
-    val_dates = set(str(d) for d in sorted_dates[emb1_end:cut80_idx])
-    test_dates = set(str(d) for d in sorted_dates[emb2_end:])
+    train_dates, val_dates, test_dates, partition_evidence = selection_date_partitions(
+        sorted_dates, embargo_days)
+    split_evidence.update(partition_evidence)
 
     train_mask = np.array([str(d) in train_dates for d in dates])
     val_mask = np.array([str(d) in val_dates for d in dates])

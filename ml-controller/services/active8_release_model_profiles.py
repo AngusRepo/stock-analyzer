@@ -9,8 +9,12 @@ from typing import Any
 
 
 LEGACY_MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v1"
-MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v2"
-SUPPORTED_MODEL_PROFILE_SCHEMAS = {LEGACY_MODEL_PROFILE_SCHEMA_VERSION, MODEL_PROFILE_SCHEMA_VERSION}
+FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v2"
+MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v3"
+TIMEXER_PRICE_PROFILE_SCHEMA = "active8-release-model-profiles-v4-timexer-price"
+TIMEXER_EXO_PROFILE_SCHEMA = "active8-release-model-profiles-v4-timexer-exo137"
+SUPPORTED_MODEL_PROFILE_SCHEMAS = {LEGACY_MODEL_PROFILE_SCHEMA_VERSION, FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION,
+    MODEL_PROFILE_SCHEMA_VERSION, TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
 TARGET_SEMANTIC = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SCORE_SEMANTIC = "same-market-same-date-average-tie-percentile-rank-v2"
 
@@ -268,6 +272,48 @@ for _model in ("PatchTST", "iTransformer"):
         ACTIVE8_RELEASE_MODEL_PROFILES[_model][_section]["max_series"] = 0
 
 
+_FULL_POOL_MODEL_PROFILES = copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
+ACTIVE8_RELEASE_MODEL_PROFILES["LightGBM"]["required_effective_config"]["estimator_params"]["subsample_freq"] = 1
+ACTIVE8_RELEASE_MODEL_PROFILES["TabM"]["required_effective_config"]["output_contract"] = "tabm-member-smoothl1-mean-sigmoid-v2"
+for _model in ("PatchTST", "iTransformer"):
+    ACTIVE8_RELEASE_MODEL_PROFILES[_model]["required_effective_config"]["runtime_package"] = "neuralforecast==3.2.2"
+
+
+for _model, _architecture in {
+    "PatchTST": {"hidden_size": 128, "encoder_layers": 3, "n_heads": 16,
+                 "linear_hidden_size": 256, "dropout": 0.2},
+    "iTransformer": {"hidden_size": 512, "n_heads": 8, "e_layers": 2,
+                     "d_ff": 2048, "dropout": 0.1, "use_norm": True},
+}.items():
+    ACTIVE8_RELEASE_MODEL_PROFILES[_model]["payload_config"].update(_architecture)
+    ACTIVE8_RELEASE_MODEL_PROFILES[_model]["required_effective_config"]["training_options"].update(_architecture)
+
+
+def _timexer_profiles(exogenous: bool) -> dict:
+    profiles = copy.deepcopy(ACTIVE8_RELEASE_MODEL_PROFILES)
+    profiles.pop("DLinear")
+    for name in ("LightGBM", "XGBoost", "ExtraTrees"):
+        profiles[name]["payload_config"].update(
+            skip_feature_pool=True, feature_release_mode="accepted_ab_full137")
+        profiles[name]["required_effective_config"].update(
+            feature_count=137, feature_release_mode="accepted_ab_full137")
+    settings = {"official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+        "seq_len": 168, "patch_len": 24, "pred_len": 5, "d_model": 512, "d_ff": 512,
+        "e_layers": 3, "n_heads": 8, "dropout": .1, "use_norm": True,
+        "epochs": 10, "learning_rate": .0001, "batch_size": 64, "seed": 42,
+        "max_exogenous_staleness_sessions": 1}
+    required = {"settings": settings, "exogenous": exogenous, "device": "cuda",
+        "target_semantic_version": TARGET_SEMANTIC, "torch_float32_matmul_precision": "high",
+        "checkpoint_selection": "purged_inner_epoch_then_full_train_refit"}
+    profiles["TimeXer"] = {
+        "runtime": {"executor": "modal_l4", "configuration_selection": "purged_inner_epoch_only",
+            "official_commit": settings["official_commit"], "replacement_for": "DLinear"},
+        "payload_config": {"settings": copy.deepcopy(settings), "exogenous": exogenous, "device": "cuda"},
+        "required_effective_config": required,
+    }
+    return profiles
+
+
 def _canonical(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in value.items()}
@@ -286,19 +332,26 @@ def checksum(value: dict[str, Any]) -> str:
 LOCAL_EXECUTION_PROFILE = "local-cpu-directml-v1"
 
 
-def model_profile(model_name: str, *, execution_profile: str | None = None) -> dict[str, Any]:
+def model_profile(model_name: str, *, execution_profile: str | None = None,
+                  schema_version: str = MODEL_PROFILE_SCHEMA_VERSION) -> dict[str, Any]:
     model = str(model_name or "").strip()
-    if model not in ACTIVE8_RELEASE_MODEL_PROFILES:
+    profiles = model_profiles(execution_profile=execution_profile, schema_version=schema_version)
+    if model not in profiles:
         raise ValueError(f"release_model_profile_missing:{model}")
-    return model_profiles(execution_profile=execution_profile)[model]
+    return profiles[model]
 
 
 def model_profiles(*, execution_profile: str | None = None,
                    schema_version: str = MODEL_PROFILE_SCHEMA_VERSION) -> dict[str, dict[str, Any]]:
     if schema_version not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
         raise ValueError("release_model_profile_schema_invalid")
-    profiles = copy.deepcopy(_LEGACY_MODEL_PROFILES if schema_version == LEGACY_MODEL_PROFILE_SCHEMA_VERSION
-                             else ACTIVE8_RELEASE_MODEL_PROFILES)
+    profiles = copy.deepcopy({
+        LEGACY_MODEL_PROFILE_SCHEMA_VERSION: _LEGACY_MODEL_PROFILES,
+        FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION: _FULL_POOL_MODEL_PROFILES,
+        MODEL_PROFILE_SCHEMA_VERSION: ACTIVE8_RELEASE_MODEL_PROFILES,
+        TIMEXER_PRICE_PROFILE_SCHEMA: _timexer_profiles(False),
+        TIMEXER_EXO_PROFILE_SCHEMA: _timexer_profiles(True),
+    }[schema_version])
     if execution_profile is None:
         return profiles
     if execution_profile != LOCAL_EXECUTION_PROFILE:
@@ -314,8 +367,10 @@ def model_profiles(*, execution_profile: str | None = None,
     return profiles
 
 
-def release_model_payload(model_name: str, *, execution_profile: str | None = None) -> dict[str, Any]:
-    return copy.deepcopy(model_profile(model_name, execution_profile=execution_profile)["payload_config"])
+def release_model_payload(model_name: str, *, execution_profile: str | None = None,
+                          schema_version: str = MODEL_PROFILE_SCHEMA_VERSION) -> dict[str, Any]:
+    return copy.deepcopy(model_profile(model_name, execution_profile=execution_profile,
+                                      schema_version=schema_version)["payload_config"])
 
 
 def require_nested_subset(actual: Any, required: Any, *, path: str = "effective_config") -> None:

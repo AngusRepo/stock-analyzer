@@ -1,3 +1,4 @@
+import { predictionModelOrder } from './alphaModelRoster'
 export interface ScreenerFunnelRow {
   symbol: string
   stage: string
@@ -793,7 +794,8 @@ function buildLayer3FormalMlSummary(layer3: ScreenerFunnelStep | null): Record<s
   const contributingModels = arrayOfStrings(evidence.contributing_models)
   const activeFamilies = arrayOfStrings(evidence.active_families)
   const l2ModelSet = new Set<string>(L2_TIMESFM_MODELS)
-  const l3ModelSet = new Set<string>(L3_FORMAL_MODELS)
+  const formalModels = predictionModelOrder(evidence)
+  const l3ModelSet = new Set<string>(formalModels)
   const l2ContributingModels = contributingModels.filter((model) => l2ModelSet.has(model))
   const l3ContributingModels = contributingModels.filter((model) => l3ModelSet.has(model))
   return {
@@ -801,8 +803,8 @@ function buildLayer3FormalMlSummary(layer3: ScreenerFunnelStep | null): Record<s
     source: 'screener_funnel_items',
     owner: 'ml_controller',
     model_scope: 'l3_8ml_direct_alpha_formal',
-    expected_models: [...L3_FORMAL_MODELS],
-    expected_model_count: L3_FORMAL_MODELS.length,
+    expected_models: formalModels,
+    expected_model_count: formalModels.length,
     decision_policy: 'eight_ml_formal_family_evidence_not_topk',
     retention_report_schema: 'strategy_family_retention_report_v1',
     retention_input_layer: 'layer2_timesfm_enrichment',

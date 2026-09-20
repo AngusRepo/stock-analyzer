@@ -603,7 +603,8 @@ async def retrain_followup_release_rebuild(req: RetrainFollowupReleaseRebuildReq
             "dry_run": False,
         }
         if release_completion_rebuild.get("status") == "complete":
-            expected_models = set(ACTIVE8_MODEL_NAMES)
+            from services.alpha_model_roster import model_order
+            expected_models = set(model_order([row.get("model_name") for row in artifact_records],complete=True))
             actual_models = {str(row.get("model_name") or "") for row in artifact_records}
             if actual_models != expected_models or len(artifact_records) != len(expected_models):
                 raise HTTPException(

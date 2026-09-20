@@ -1,3 +1,4 @@
+import { publishedAlphaModelOrder } from '../alphaModelRoster'
 /**
  * p2Accuracy.ts - Layer 2: model accuracy evidence.
  *
@@ -10,19 +11,10 @@
 import type { TradingConfig } from '../tradingConfig'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 
-const ACTIVE_8_MODELS = [
-  'LightGBM',
-  'XGBoost',
-  'ExtraTrees',
-  'TabM',
-  'GNN',
-  'DLinear',
-  'PatchTST',
-  'iTransformer',
-]
 
 async function readActive8ModelAccuracy30d(db: D1Database): Promise<{ accuracy: number; samples: number } | null> {
-  const placeholders = ACTIVE_8_MODELS.map(() => '?').join(', ')
+  const activeModels = await publishedAlphaModelOrder(db)
+  const placeholders = activeModels.map(() => '?').join(', ')
   const row = await db.prepare(`
     SELECT CAST(SUM(correct_count) AS REAL) / NULLIF(SUM(total_count), 0) AS accuracy,
            SUM(total_count) AS samples
@@ -30,7 +22,7 @@ async function readActive8ModelAccuracy30d(db: D1Database): Promise<{ accuracy: 
      WHERE period='30d'
        AND total_count >= 3
        AND model_name IN (${placeholders})
-  `).bind(...ACTIVE_8_MODELS).first<{ accuracy: number | null; samples: number | null }>()
+  `).bind(...activeModels).first<{ accuracy: number | null; samples: number | null }>()
   const accuracy = Number(row?.accuracy)
   const samples = Number(row?.samples)
   if (!Number.isFinite(accuracy) || !Number.isFinite(samples) || samples <= 0) return null

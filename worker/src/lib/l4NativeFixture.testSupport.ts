@@ -11,7 +11,7 @@ export function l4NativeFixture() {
   for(const domain of domains) {
     const sql=sqls[domain]=new DatabaseSync(':memory:')
     const dir=new URL(`../../domain-migrations/${domain}/`,import.meta.url)
-    for(const file of fs.readdirSync(dir).filter(f=>f.startsWith('0001_') || f==='0002_runtime_owned_tables.sql' || domain==='ops' && f==='0005_ops_artifact_compute_cost_runtime.sql' || domain==='market' && f==='0004_legacy_schema_alignment.sql' || domain==='paper' && ['0004_corporate_action_accounting.sql','0005_l4_distribution.sql'].includes(f)).sort()) sql.exec(fs.readFileSync(new URL(file,dir),'utf8'))
+    for(const file of fs.readdirSync(dir).filter(f=>f.startsWith('0001_') || f==='0002_runtime_owned_tables.sql' || domain==='ops' && f==='0005_ops_artifact_compute_cost_runtime.sql' || domain==='market' && f==='0004_legacy_schema_alignment.sql' || domain==='paper' && ['0004_corporate_action_accounting.sql','0005_l4_distribution.sql','0006_p5_rearm.sql'].includes(f)).sort()) sql.exec(fs.readFileSync(new URL(file,dir),'utf8'))
     const statement=(query:string,args:any[]=[]):any=>({bind:(...values:any[])=>statement(query,values),
       first:async()=>sql.prepare(frozenSql(query)).get(...args) ?? null,all:async()=>({success:true,results:sql.prepare(frozenSql(query)).all(...args)}),
       run:async()=>{const result=sql.prepare(frozenSql(query)).run(...args);return {success:true,meta:{changes:Number(result.changes)}}}})

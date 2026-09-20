@@ -20,7 +20,7 @@ import math
 from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Iterator, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -126,6 +126,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     train_model_groups: list[str] = Field(default_factory=lambda: ["tree", "dlinear", "patchtst"])
     artifact_lifecycle_targets: list[str] = Field(default_factory=list)
     artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
+    model_profile_schema_version: str = "active8-release-model-profiles-v3"
     artifact_lifecycle_only: bool = False
     register_challengers: bool = False
     promotion_eligible_models: list[str] = Field(default_factory=list)
@@ -507,9 +508,12 @@ def _verify_prebuilt_feature_pool(
     expected_cohort_id: str,
     expected_source_manifest_checksum: str,
     expected_target_semantic_version: str,
+    model_profile_schema_version: str = "active8-release-model-profiles-v3",
 ) -> dict[str, object]:
     import hashlib
 
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+    full137 = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
     normalized_path = str(path or "").strip()
     raw = bucket.blob(normalized_path).download_as_bytes()
     feature_pool = json.loads(raw.decode("utf-8").lstrip("\ufeff"))
@@ -521,7 +525,7 @@ def _verify_prebuilt_feature_pool(
         "cohort_id": expected_cohort_id,
         "source_manifest_checksum": expected_source_manifest_checksum,
         "target_semantic_version": expected_target_semantic_version,
-        "selection_method": "outer_fold_majority_vote",
+        "selection_method": "predeclared_full137" if full137 else "outer_fold_majority_vote",
     }
     for key, value in required.items():
         if feature_pool.get(key) != value:
@@ -537,6 +541,9 @@ def _verify_prebuilt_feature_pool(
     if min_votes <= int(feature_pool.get("fold_count") or 0) // 2:
         raise ValueError("prebuilt_feature_pool_majority_threshold_invalid")
     selected = sorted({str(name) for name in (feature_pool.get("tree_active") or []) if str(name)})
+    if full137 and (len(selected) != 137 or min_votes != feature_pool["fold_count"] or
+                    any(feature_pool.get("feature_votes", {}).get(name) != min_votes for name in selected)):
+        raise ValueError("prebuilt_full137_evidence_invalid")
     if len(selected) < 10 or selected != list(feature_pool.get("tree_active") or []):
         raise ValueError("prebuilt_feature_pool_selection_invalid")
     return {
@@ -606,7 +613,7 @@ def _snapshot_component_uris(snapshot: dict) -> dict[str, str]:
     return out
 
 
-def _read_gcs_parquet_rows(gcs_uri: str) -> list[dict]:
+def _read_gcs_parquet_rows(gcs_uri: str) -> Iterator[dict]:
     import polars as pl
     from google.cloud import storage
 
@@ -614,11 +621,13 @@ def _read_gcs_parquet_rows(gcs_uri: str) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="stockvision-retrain-snapshot-") as tmp:
         local_path = Path(tmp) / Path(blob_name).name
         storage.Client().bucket(bucket_name).blob(blob_name).download_to_filename(str(local_path))
-        return pl.read_parquet(local_path).to_dicts()
+        # Keep one columnar component resident; never expand a whole snapshot
+        # into Python dictionaries before the consumer projects its columns.
+        yield from pl.read_parquet(local_path).iter_rows(named=True)
 
 
 def _group_rows_by_key(
-    rows: list[dict],
+    rows: Iterable[dict],
     *,
     key: str,
     allowed: set,
@@ -626,18 +635,21 @@ def _group_rows_by_key(
     mapper,
 ) -> dict:
     grouped = {item: [] for item in allowed}
-    for row in sorted(rows, key=lambda r: (str(r.get(key)), str(r.get("date") or ""))):
+    for row in rows:
         value = row.get(key)
         if value not in grouped:
             continue
         grouped[value].append(mapper(row))
     for value in grouped:
+        # Stable per-stock ordering preserves duplicate-date semantics while
+        # avoiding a second global list of unprojected source dictionaries.
+        grouped[value].sort(key=lambda row: str(row.get("date") or ""))
         if len(grouped[value]) > limit:
             grouped[value] = grouped[value][-limit:]
     return grouped
 
 
-def _snapshot_sentiment_map(rows: list[dict], stock_ids: list[int], limit: int = 45) -> dict[int, list[dict]]:
+def _snapshot_sentiment_map(rows: Iterable[dict], stock_ids: list[int], limit: int = 45) -> dict[int, list[dict]]:
     return _group_rows_by_key(
         rows,
         key="stock_id",
@@ -649,10 +661,10 @@ def _snapshot_sentiment_map(rows: list[dict], stock_ids: list[int], limit: int =
 
 def _snapshot_per_stock_ts_map(
     *,
-    monthly_revenue_rows: list[dict] | None,
-    canonical_fundamental_rows: list[dict] | None,
-    margin_rows: list[dict] | None,
-    shareholding_rows: list[dict] | None,
+    monthly_revenue_rows: Iterable[dict] | None,
+    canonical_fundamental_rows: Iterable[dict] | None,
+    margin_rows: Iterable[dict] | None,
+    shareholding_rows: Iterable[dict] | None,
     stock_ids: list[int],
     symbol_to_id: dict[str, int] | None = None,
 ) -> dict[int, dict[str, dict]]:
@@ -939,7 +951,7 @@ def _load_training_maps_from_snapshot(
         chips_rows,
         key="symbol",
         allowed=symbol_set,
-        limit=252,
+        limit=prices_lookback,
         mapper=lambda r: {
             "date": r.get("date"),
             "foreign_net": r.get("foreign_net"),
@@ -964,7 +976,7 @@ def _load_training_maps_from_snapshot(
             target = by_symbol_date.setdefault(symbol, {}).setdefault(day, {"date": day})
             for source, destination in (("net_shares", "broker_net_shares"), ("estimated_amount", "broker_estimated_amount"), ("concentration", "broker_concentration"), ("broker_count", "broker_count")):
                 target[destination] = row.get(source)
-        chips_map = {symbol: sorted(rows.values(), key=lambda row: row["date"])[-252:] for symbol, rows in by_symbol_date.items()}
+        chips_map = {symbol: sorted(rows.values(), key=lambda row: row["date"])[-prices_lookback:] for symbol, rows in by_symbol_date.items()}
     sentiment_map = _snapshot_sentiment_map(sentiment_rows, stock_ids) if sentiment_rows else {}
     per_stock_ts_map = _snapshot_per_stock_ts_map(
         monthly_revenue_rows=monthly_revenue_rows,
@@ -1173,12 +1185,14 @@ async def _dispatch_prebuilt_oof_full_fit(
             expected_cohort_id=str(req.prebuilt_prep_source_cohort_id),
             expected_source_manifest_checksum=str(req.prebuilt_prep_source_manifest_checksum),
             expected_target_semantic_version=str(req.prebuilt_prep_target_semantic_version),
+            model_profile_schema_version=req.model_profile_schema_version,
         )
 
     training_policy = TrainingPolicy.from_env()
     release_groups, release_targets = normalize_release_execution_scope(
         req.train_model_groups,
         req.artifact_lifecycle_targets,
+        model_profile_schema_version=req.model_profile_schema_version,
     )
     req.train_model_groups = release_groups
     req.artifact_lifecycle_targets = release_targets
@@ -1231,6 +1245,7 @@ async def _dispatch_prebuilt_oof_full_fit(
                 business_date=run_date,
             ),
             producer_source_sha=_runtime_source_sha(),
+            model_profile_schema_version=req.model_profile_schema_version,
         ),
         "timesfm_l175_feature_release": {"requested": False},
         "followup_webhook_url": followup_webhook_url,
@@ -1439,7 +1454,7 @@ async def trigger_universal_retrain(
     training_policy = TrainingPolicy.from_env()
     vix = getattr(market_env, "us_vix", 18) or 18
     twii_bias = getattr(market_env, "twii_bias", 0) or 0
-    regime, prices_lookback = training_policy.resolve_regime(vix=float(vix), twii_bias=float(twii_bias))
+    regime, prices_lookback = training_policy.resolve_history(vix=float(vix), twii_bias=float(twii_bias), model_profile_schema_version=req.model_profile_schema_version)
     logger.info(f"[retrain/universal] Regime={regime} (VIX={vix:.1f}, bias={twii_bias:.3f}) -> prices_lookback={prices_lookback}d")
 
     # Native retrain is research/drift only. Formal releases enter through the immutable OOF full-fit dispatcher.
@@ -1511,7 +1526,7 @@ async def trigger_universal_retrain(
         if not dataset_snapshot_info:
             prices_map.update(_bulk_load_prices(chunk_ids, limit=prices_lookback, as_of_date=run_date))
             indicators_map.update(_bulk_load_indicators(chunk_ids, limit=prices_lookback, as_of_date=run_date))
-            chips_map.update(_bulk_load_chips(chunk_syms, limit=252, as_of_date=run_date))
+            chips_map.update(_bulk_load_chips(chunk_syms, limit=prices_lookback, as_of_date=run_date, lookback_years=max(1, math.ceil(prices_lookback / 200))))
         if "sentiment" not in snapshot_components:
             sentiment_map.update(_bulk_load_sentiment(chunk_ids, limit=45, as_of_date=run_date))
     source = "gcs_snapshot" if dataset_snapshot_info else "d1"

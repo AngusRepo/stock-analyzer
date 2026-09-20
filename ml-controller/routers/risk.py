@@ -51,6 +51,7 @@ class MarketData(BaseModel):
 
 class AccuracyData(BaseModel):
     global_30d: float = 0.6
+    alpha_model_order: list[str] | None = None
     active_9_quality_30d: float | None = None
     active_9_samples_30d: int | None = None
     active_9_model_count_30d: int | None = None
@@ -106,6 +107,7 @@ def post_risk_assess(req: RiskAssessRequest):
         current_version=req.current_version,
         L2_formula=req.adaptive_config.L2_formula,
         baseline_buy_signal_score=req.adaptive_config.baseline_buy_signal_score,
+        alpha_model_order=req.accuracy.alpha_model_order,
         active_9_quality_30d=req.accuracy.active_9_quality_30d,
         active_9_samples_30d=req.accuracy.active_9_samples_30d,
         active_9_model_count_30d=req.accuracy.active_9_model_count_30d,

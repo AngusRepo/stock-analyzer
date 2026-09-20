@@ -3579,3 +3579,23 @@ def _retired_test_update_live_gate_uses_same_monthly_primary_shadow_owner(monkey
     assert result["updated"] == 1
     assert result["updates"][0]["artifact_id"] == "PatchTST:vMonthly:monthly_release"
     assert executed[0][-1] == "PatchTST:vMonthly:monthly_release"
+
+
+def test_v4_tabm_registry_requires_true_full_feature_and_member_semantics():
+    from app.training_policy import build_model_feature_policy_metadata
+    meta = {**build_model_feature_policy_metadata("TabM", ["feature"]),
+            "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            "artifact_schema": "torch_tabm_ranker_v2",
+            "output_contract": "tabm-member-smoothl1-mean-sigmoid-v2"}
+    row = {"model_name": "TabM", "source_run_date": "2026-09-20", "artifact_path": "model.pt",
+           "offline_evidence_json": json.dumps({"registration": {"metadata": meta}})}
+    codes = {x["code"] for x in registry.artifact_promotion_blockers(row)}
+    assert "feature_contract_family_schema_missing" not in codes
+    assert "tabm_full_feature_contract_mismatch" not in codes
+    assert "tabm_member_output_contract_missing" not in codes
+    meta["output_contract"] = "tabm-mean-logit-smoothl1-v1"
+    meta["feature_policy"]["selection_required"] = True
+    row["offline_evidence_json"] = json.dumps({"registration": {"metadata": meta}})
+    codes = {x["code"] for x in registry.artifact_promotion_blockers(row)}
+    assert "tabm_member_output_contract_missing" in codes
+    assert "tabm_full_feature_contract_mismatch" in codes

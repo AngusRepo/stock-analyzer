@@ -2,7 +2,7 @@ import { ensembleQualificationPresentation, modelPoolHealth, modelMembership, me
 import { useMemo, useState, type ReactNode } from 'react'
 import EnsembleAuthority from './EnsembleAuthority'
 import {
-  MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS,
+  formalModelSlots,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
   MODEL_POOL_RETIRED_MODEL_IDS,
   MODEL_UPGRADE_CANDIDATES,
@@ -40,10 +40,9 @@ type ModelPoolNewFlowWorkbenchProps = {
 }
 
 const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
-const ACTIVE_ALPHA_MODELS = new Set<string>(MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS)
-const PRODUCTION_SLOT_MODELS = new Set<string>(MODEL_POOL_PRODUCTION_SLOT_IDS)
+const PRODUCTION_SLOT_MODELS = new Set<string>([...MODEL_POOL_PRODUCTION_SLOT_IDS, 'TimeXer'])
 const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
-const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer'])
+const SEQUENCE_MODELS = new Set(['DLinear', 'TimeXer', 'PatchTST', 'iTransformer'])
 const L2_SIDECAR_MODELS = new Set(['TimesFM'])
 const GRAPH_MODELS = new Set(['GNN'])
 const TABULAR_NEURAL_MODELS = new Set(['TabM'])
@@ -96,6 +95,11 @@ const MODEL_DATASET_REQUIREMENTS: Record<string, { window: string; shape: string
     window: '252+ lookback',
     shape: 'market graph snapshot',
     note: 'Correlation edges should be stable enough before graph inference.',
+  },
+  TimeXer: {
+    window: '168 sessions / 5-session forecast',
+    shape: 'A: price; B: price + exo137',
+    note: 'Official patch and exogenous attention architecture; immutable variant and GPU inference contract.',
   },
   DLinear: {
     window: '512/1024 sequence',
@@ -1418,15 +1422,16 @@ export default function ModelPoolNewFlowWorkbench({
   finalComparePending = false,
   onDryRunFinalCompare,
 }: ModelPoolNewFlowWorkbenchProps) {
+  const formalSlots = useMemo(() => new Set(formalModelSlots(pointers?.active8_bundle?.model_order)), [pointers?.active8_bundle?.model_order])
   const liveModels = useMemo(
-    () => models.filter(([name]) => ACTIVE_ALPHA_MODELS.has(name) && !RETIRED_MODELS.has(name)),
-    [models],
+    () => models.filter(([name]) => formalSlots.has(name) && !RETIRED_MODELS.has(name)),
+    [models, formalSlots],
   )
   const byName = useMemo(() => new Map(liveModels), [liveModels])
   const serving = useMemo(() => liveModels.filter(([, model]) => isServing(model)), [liveModels])
   const activeSlots = useMemo(
-    () => MODEL_UPGRADE_CANDIDATES.filter((candidate) => PRODUCTION_SLOT_MODELS.has(candidate.id)),
-    [],
+    () => MODEL_UPGRADE_CANDIDATES.filter((candidate) => formalSlots.has(candidate.id)),
+    [formalSlots],
   )
   const familyCounts = useMemo(() => {
     return serving.reduce<Record<string, number>>((acc, [name, model]) => {

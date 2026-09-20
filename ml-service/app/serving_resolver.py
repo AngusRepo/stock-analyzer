@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from app.alpha_model_roster import model_order, SUPPORTED_MODELS
 import math
 import os
 import threading
@@ -25,7 +26,7 @@ DIRECT_ALPHA_MODELS = (
     "PatchTST",
     "iTransformer",
 )
-SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
+SEQUENCE_ALPHA_MODELS = ("DLinear", "TimeXer", "PatchTST", "iTransformer")
 FORMAL_FEATURE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
 FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
@@ -92,6 +93,7 @@ ARTIFACT_EXTENSIONS = {
     "TabM": "pt",
     "GNN": "pt",
     "DLinear": "pt",
+    "TimeXer": "pt",
     "PatchTST": "zip",
     "iTransformer": "zip",
     "TimesFM": "json",
@@ -294,8 +296,12 @@ def build_pool_from_frozen_manifest(
         if model_name in by_model:
             duplicates.append(model_name)
         by_model[model_name] = row
-    missing = sorted(set(DIRECT_ALPHA_MODELS) - set(by_model))
-    unexpected = sorted(set(by_model) - set(DIRECT_ALPHA_MODELS))
+    try:
+        order = model_order(by_model, complete=True)
+    except ValueError as exc:
+        raise ServingPoolResolutionError("frozen_serving_manifest_model_set_invalid") from exc
+    missing = sorted(set(order) - set(by_model))
+    unexpected = sorted(set(by_model) - set(order))
     if missing or unexpected or duplicates:
         raise ServingPoolResolutionError(
             "frozen_serving_manifest_model_set_invalid:"
@@ -315,7 +321,7 @@ def build_pool_from_frozen_manifest(
         "active8_action_authority": {},
         "serving_coverage": serving_manifest_coverage(manifest),
     }
-    for model_name in DIRECT_ALPHA_MODELS:
+    for model_name in order:
         row = by_model[model_name]
         status = str(row.get("status") or "").strip()
         if status not in {"active", "degraded"}:
@@ -484,7 +490,7 @@ def build_pool_from_frozen_manifest(
             allowed_fields=FROZEN_ACTIVE8_SHADOW_FIELDS,
         )
         model_name = str(candidate.get("model") or "").strip()
-        if model_name not in DIRECT_ALPHA_MODELS or model_name in active8_shadow_names:
+        if model_name not in SUPPORTED_MODELS or model_name in active8_shadow_names:
             raise ServingPoolResolutionError(
                 "frozen_serving_manifest_active8_shadow_model_set_invalid"
             )
@@ -774,7 +780,15 @@ def _sequence_artifact_contract(
         or not artifact_id
     ):
         return None
+    extra = {}
+    if model_name == "TimeXer":
+        from app.timexer_contract import metadata_contract
+        try:
+            extra['timexer'] = metadata_contract(metadata)
+        except ValueError:
+            return None
     return {
+        **extra,
         "schema_version": SEQUENCE_CONTRACT_SCHEMA_VERSION,
         "source": "model_artifact_registry",
         "model": model_name,
@@ -823,7 +837,7 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str, 
     actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
     if expected_ext and actual_ext != expected_ext:
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
-    if model_name in DIRECT_ALPHA_MODELS:
+    if model_name in SUPPORTED_MODELS:
         if str(artifact.get("candidate_type") or "") != "oof_full_fit_release":
             return "artifact_candidate_type_not_canonical_oof_release"
         metadata = _artifact_metadata(artifact)
@@ -1126,9 +1140,12 @@ def _query_rows(sql: str, params: list[Any] | None = None) -> list[dict[str, Any
 
 def load_d1_champion_pool(
     *,
-    required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
+    required_models: tuple[str, ...] | None = None,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
+    if required_models is None:
+        from app.alpha_model_roster import published_model_order
+        required_models = published_model_order(_query_rows)
     model_names = tuple(dict.fromkeys((*required_models, *sidecar_models)))
     if not model_names:
         return build_pool_from_champion_pointers(

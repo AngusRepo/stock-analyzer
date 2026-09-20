@@ -1,3 +1,4 @@
+import { LEGACY_ALPHA_MODELS, publishedAlphaModelOrder, validateAlphaModelOrder } from './alphaModelRoster'
 import type { Bindings } from '../types'
 import { getAdaptiveParams, setAdaptiveParams, type AdaptiveParams } from './adaptiveConfig'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -10,11 +11,6 @@ const CANARY_STREAK = 2
 const ACTIVE_STREAK = 4
 const MIN_WINDOWS = 8
 const MAX_EVIDENCE_AGE_DAYS = 14
-const ACTIVE_MODELS = new Set([
-  'LightGBM', 'XGBoost', 'ExtraTrees', 'TabM',
-  'GNN', 'DLinear', 'PatchTST', 'iTransformer',
-])
-
 export type AdaptiveMetaPolicyPhase = 'inactive' | 'observing' | 'canary' | 'active' | 'rolled_back'
 
 export interface AdaptiveMetaPolicyControllerState {
@@ -86,7 +82,7 @@ function normalizeState(value: unknown, runDate: string): AdaptiveMetaPolicyCont
   }
 }
 
-function candidateChecks(evidence: Record<string, any>, runDate: string): {
+function candidateChecks(evidence: Record<string, any>, runDate: string, activeModels: readonly string[]): {
   candidate: Record<string, any> | null
   method: string | null
   candidateId: string | null
@@ -124,7 +120,7 @@ function candidateChecks(evidence: Record<string, any>, runDate: string): {
     if (entries.length < 4) failed.push('model_multiplier_coverage_insufficient')
     for (const [model, value] of entries) {
       const multiplier = finite(value)
-      if (!ACTIVE_MODELS.has(model) || multiplier == null || multiplier < 1 - MAX_CAP || multiplier > 1 + MAX_CAP) {
+      if (!activeModels.includes(model) || multiplier == null || multiplier < 1 - MAX_CAP || multiplier > 1 + MAX_CAP) {
         failed.push('model_multiplier_invalid')
         break
       }
@@ -171,9 +167,10 @@ export function planAdaptiveMetaPolicyTransition(
   evidence: Record<string, any>,
   priorValue: unknown,
   runDate: string,
+  activeModels: readonly string[] = LEGACY_ALPHA_MODELS,
 ): AdaptiveMetaPolicyTransition {
   const prior = normalizeState(priorValue, runDate)
-  const check = candidateChecks(evidence, runDate)
+  const check = candidateChecks(evidence, runDate, validateAlphaModelOrder(activeModels))
   const now = new Date().toISOString()
   if (check.failed.length > 0 || !check.candidate || !check.method || !check.candidateId) {
     const ownsServingPolicy = prior.serving_policy?.source === CONTROLLER_VERSION
@@ -275,7 +272,8 @@ export async function reconcileAdaptiveMetaPolicy(
   runDate: string,
 ): Promise<AdaptiveMetaPolicyTransition> {
   const prior = await env.KV.get(STATE_KEY, 'json')
-  const transition = planAdaptiveMetaPolicyTransition(evidence, prior, runDate)
+  const activeModels = await publishedAlphaModelOrder(databaseForDataDomain(env, 'learning'))
+  const transition = planAdaptiveMetaPolicyTransition(evidence, prior, runDate, activeModels)
   const current = await getAdaptiveParams(env.KV)
   const previousPolicy = current.model_allocator && typeof current.model_allocator === 'object'
     ? current.model_allocator

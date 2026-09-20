@@ -1,3 +1,4 @@
+import { validateAlphaModelOrder, LEGACY_ALPHA_MODELS } from './alphaModelRoster'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import { readMarketRegimeState } from './marketRegimeState'
 
@@ -302,7 +303,11 @@ export function normalizeAdaptiveParams(
     regime_at_compute: optionalNumber(raw.regime_at_compute),
     regime_overrides: normalizeRegimeOverrides(raw.regime_overrides),
     provenance: normalizeProvenance(raw.provenance, { computed_at: computedAt }, options),
-    meta_layer: ADAPTIVE_META_LAYER_GOVERNANCE,
+    meta_layer: {
+      ...ADAPTIVE_META_LAYER_GOVERNANCE,
+      alpha_vote_models: validateAlphaModelOrder((raw.meta_layer as any)?.alpha_vote_models ?? LEGACY_ALPHA_MODELS),
+      formal_layer3_slots: validateAlphaModelOrder((raw.meta_layer as any)?.alpha_vote_models ?? LEGACY_ALPHA_MODELS),
+    },
     version: Math.max(0, Math.round(finiteNumber(raw.version, DEFAULT_ADAPTIVE_PARAMS.version))),
   }
 
@@ -358,7 +363,7 @@ export function resolveAdaptiveParamsForRegime(
       ...(normalized.screener ?? {}),
       ...(override.screener ?? {}),
     },
-    meta_layer: ADAPTIVE_META_LAYER_GOVERNANCE,
+    meta_layer: normalized.meta_layer,
     provenance: { ...normalized.provenance, regime: normalizedRegime },
   }
 }

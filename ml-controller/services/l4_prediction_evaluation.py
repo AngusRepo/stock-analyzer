@@ -30,9 +30,13 @@ def binary_metrics(probability,target):
         'logloss':float(-np.mean(y*np.log(q)+(1-y)*np.log1p(-q))), 'auc':auc}
 
 
-def evaluate_predictions(rows, outputs):
+def evaluate_predictions(rows, outputs, *, model=None):
     if not rows or len(rows)!=len(outputs):
         raise ValueError('l4_evaluation_pool_mismatch')
+    correction_model = (model or {}).get('residual_mlp')
+    if correction_model is not None:
+        from services.l4_residual_mlp import validate
+        validate(correction_model, anchor_model={key:model[key] for key in ('recipe','heads')})
     groups=defaultdict(list);seen=set()
     for i,(row,output) in enumerate(zip(rows,outputs,strict=True)):
         key=(row['date'],row['symbol'])
@@ -46,8 +50,17 @@ def evaluate_predictions(rows, outputs):
         if output['gain']<0 or output['loss']<0:
             raise ValueError('l4_evaluation_magnitude_invalid')
         implied=(1-output['p_loss'])*output['gain']-output['p_loss']*output['loss']
-        if abs(implied-output['expected_return_gross'])>1e-12:
-            raise ValueError('l4_evaluation_distribution_mean_incoherent')
+        if correction_model is None:
+            if abs(implied-output['expected_return_gross'])>1e-12 or 'calibration_model' in output:
+                raise ValueError('l4_evaluation_distribution_mean_incoherent')
+        else:
+            if (output.get('calibration_model') != correction_model['schema_version']
+                    or output.get('calibration_checksum') != correction_model['payload_checksum']
+                    or abs(finite(output.get('three_head_expected_return_gross'),'three_head_mean')-implied)>1e-12):
+                raise ValueError('l4_evaluation_residual_anchor_mismatch')
+            corrected=float(np.float32(np.float32(implied)+np.float32(finite(output.get('residual_ev_correction'),'residual_correction'))))
+            if abs(corrected-output['expected_return_gross'])>1e-12:
+                raise ValueError('l4_evaluation_residual_mean_incoherent')
     daily=[]
     for day,indices in sorted(groups.items()):
         rr=[rows[i] for i in indices];pp=[outputs[i] for i in indices]
@@ -61,9 +74,11 @@ def evaluate_predictions(rows, outputs):
             'gain_conditional_mse':float(np.mean((gain[y>=0]-y[y>=0])**2)) if np.any(y>=0) else None,
             'loss_conditional_mse':float(np.mean((loss[y<0]+y[y<0])**2)) if np.any(y<0) else None,
             'l3_mean_unique':len(set(native)),'l3_probability_unique':len({r['l3_baseline']['probability_positive_net_return'] for r in rr})}
+        if correction_model is not None:
+            d['three_head']=mean_error(np.asarray([p['three_head_expected_return_gross'] for p in pp]),y)
         daily.append(d)
     aggregate={}
-    for name in ('l3','l4','zero'):
+    for name in (('l3','l4','zero','three_head') if correction_model is not None else ('l3','l4','zero')):
         aggregate[name]={key:float(np.mean([d[name][key] for d in daily]))
                          for key in ('mse','date_mean_error_squared','within_date_error_variance')}
         defined=[d[name]['rank_ic'] for d in daily if d[name]['rank_ic'] is not None]

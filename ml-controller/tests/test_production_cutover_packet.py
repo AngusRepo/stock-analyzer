@@ -327,7 +327,7 @@ def test_production_cutover_packet_blocks_when_local_gate_is_not_done(tmp_path):
     _seed_ready_evidence(tmp_path, {
         "local_closure": "done",
         "local_prod_ready": "blocked",
-        "failed_checks": [{"id": "runtime_pin:xgboost==3.2.0"}],
+        "failed_checks": [{"id": "runtime_pin:xgboost==3.4.1"}],
         "promotion_allowed": False,
         "production_mutation_allowed": False,
     })

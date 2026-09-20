@@ -69,9 +69,11 @@ def full_cash_state(config):
         for path in ('core/0001_core_baseline.sql',
                      'market/0001_market_baseline.sql', 'market/0002_runtime_owned_tables.sql',
                      'market/0004_legacy_schema_alignment.sql',
-                     'learning/0001_learning_baseline.sql', 'learning/0031_s12_profit_continuation_serving_owner.sql',
+                     'learning/0001_learning_baseline.sql', 'learning/0006_data_domain_control_revision_fence.sql',
+                     'learning/0027_active8_ensemble_serving_owner.sql',
+                     'learning/0031_s12_profit_continuation_serving_owner.sql',
                      'paper/0002_runtime_owned_tables.sql',
-                     'paper/0003_paper_kelly_calibration.sql',
+                     'paper/0003_paper_kelly_calibration.sql', 'paper/0006_p5_rearm.sql',
                      'ops/0001_ops_baseline.sql', 'ops/0002_runtime_owned_tables.sql',
                      'ops/0005_ops_artifact_compute_cost_runtime.sql',
                      'execution/0001_execution_baseline.sql', 'execution/0002_runtime_owned_tables.sql'):

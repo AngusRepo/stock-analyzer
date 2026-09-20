@@ -83,9 +83,9 @@ def _price_bytes():
     return buffer.getvalue()
 
 
-def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-24") -> dict:
+def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-24", start_date: str | None = None) -> dict:
     checksum = "a" * 64
-    start_date = (
+    start_date = start_date or (
         datetime.strptime(business_date, "%Y-%m-%d")
         - timedelta(days=lifecycle.ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS)
     ).date().isoformat()
@@ -245,3 +245,29 @@ def test_daily_prep_builds_feature_and_adjusted_receipts(monkeypatch):
     assert result["signal_date_max"] == "2026-07-17"
     assert result["sequence_manifest_checksum"] == sequence_manifest["manifest_checksum"]
     assert result["receipt_path"] in bucket.store
+
+
+
+def test_timexer_prep_rejects_short_snapshot_before_any_compute(monkeypatch):
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA
+    monkeypatch.setattr(lifecycle,'latest_dataset_snapshot',lambda **kw:_snapshot(start_date='2025-01-01'))
+    with pytest.raises(lifecycle.Active8PrepDependencyPending) as exc:
+        asyncio.run(lifecycle.ensure_active8_daily_prep(end_date='2026-07-25',dry_run=True,query_fn=_market_query,model_profile_schema_version=TIMEXER_PRICE_PROFILE_SCHEMA))
+    assert exc.value.reason=='compute_snapshot_history_insufficient'
+    assert exc.value.evidence['required_lookback_days']==1280
+
+
+def test_timexer_prep_namespaces_expanded_history_and_forwards_profile(monkeypatch):
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA
+    bucket=_Bucket();_seal_sequence(bucket)
+    monkeypatch.setattr(lifecycle,'latest_dataset_snapshot',lambda **kw:_snapshot(start_date='2022-01-01'))
+    monkeypatch.setattr(walk_forward_retrain,'_get_bucket',lambda:bucket)
+    dry=asyncio.run(lifecycle.ensure_active8_daily_prep(end_date='2026-07-25',dry_run=True,query_fn=_market_query,model_profile_schema_version=TIMEXER_PRICE_PROFILE_SCHEMA))
+    assert dry['source_gcs_prefix'].endswith('-expanded1280')
+    async def capture(req,**kw):
+        assert req.model_profile_schema_version==TIMEXER_PRICE_PROFILE_SCHEMA
+        assert req.prep_only is True
+        raise RuntimeError('captured-profile-before-compute')
+    monkeypatch.setattr(retrain_trigger,'trigger_universal_retrain',capture)
+    with pytest.raises(RuntimeError,match='captured-profile-before-compute'):
+        asyncio.run(lifecycle.ensure_active8_daily_prep(end_date='2026-07-25',query_fn=_market_query,model_profile_schema_version=TIMEXER_PRICE_PROFILE_SCHEMA))

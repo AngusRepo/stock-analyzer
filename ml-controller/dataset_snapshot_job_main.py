@@ -25,14 +25,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("dataset_snapshot_job")
-CANONICAL_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
+CANONICAL_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 1280
 
 
 def _snapshot_export_start_date(run_date: str) -> str:
     try:
-        lookback_days = int(os.environ.get("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "504") or "504")
+        lookback_days = int(os.environ.get("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "1280") or "1280")
     except ValueError:
-        lookback_days = 504
+        lookback_days = 1280
     # This job publishes the canonical compute snapshot consumed by Active-8
     # purged OOF. A shorter validation window must use a different artifact
     # kind and must never supersede the production compute snapshot.

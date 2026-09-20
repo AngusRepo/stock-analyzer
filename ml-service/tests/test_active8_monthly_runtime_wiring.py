@@ -114,18 +114,25 @@ def test_patchtst_has_one_monthly_training_owner_and_one_artifact_receipt():
     assert "PatchTST" not in RELEASE_ARTIFACT_LIFECYCLE_TARGETS
 
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
-    assert '(("DLinear", "dlinear"), ("PatchTST", "patchtst"))' in source
+    assert '(("DLinear", "dlinear"), ("TimeXer", "timexer"), ("PatchTST", "patchtst"))' in source
     assert 'artifact_registrations[model_name]' in source
 
 
 def test_modal_orchestrator_wires_profiles_into_monthly_and_outer_oof_paths():
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 
-    assert '.env({"PYTHONHASHSEED": "42", "CUBLAS_WORKSPACE_CONFIG": ":4096:8"' in source
-    assert 'base_train_payload.update(release_model_payload("LightGBM"))' in source
-    assert '**(release_model_payload("DLinear") if is_release_train else {})' in source
-    assert '**(release_model_payload("PatchTST") if is_release_train else {})' in source
-    assert '**(release_model_payload(model_name) if is_release_train else {})' in source
-    assert 'model_payload = {**train_payload, **active8_model_payload(model_name)}' in source
+    import ast
+    env_calls = [node for node in ast.walk(ast.parse(source))
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                 and node.func.attr == "env" and node.args and isinstance(node.args[0], ast.Dict)]
+    env_literals = [{key.value: value.value for key, value in zip(node.args[0].keys, node.args[0].values)
+                     if isinstance(key, ast.Constant) and isinstance(value, ast.Constant)} for node in env_calls]
+    assert any(env.get("PYTHONHASHSEED") == "42" and env.get("CUBLAS_WORKSPACE_CONFIG") == ":4096:8"
+               for env in env_literals)
+    assert 'base_train_payload.update(_release_model_payload("LightGBM"))' in source
+    assert '**(_release_model_payload("DLinear") if is_release_train else {})' in source
+    assert '**(_release_model_payload("PatchTST") if is_release_train else {})' in source
+    assert '**(_release_model_payload(model_name) if is_release_train else {})' in source
+    assert 'model_payload = {**train_payload, **active8_model_payload(model_name, schema_version=profile_schema)}' in source
     assert 'validate_release_artifact_receipts(' in source
     assert '"active8_release_completion_incomplete"' in source

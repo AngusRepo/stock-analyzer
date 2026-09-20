@@ -163,8 +163,8 @@ def test_walk_forward_train_payload_declares_five_day_label_horizon():
 def test_modal_walk_forward_orchestrator_no_longer_defaults_tree_only():
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 
-    assert "from app.model_serving_contract import ALPHA_PREDICTION_MODELS" in source
-    assert "active8_models = list(ALPHA_PREDICTION_MODELS)" in source
+    assert "from app.alpha_model_roster import model_order" in source
+    assert "active8_models = list(model_order(model_profiles(schema_version=profile_schema),complete=True))" in source
     assert "family_tasks" in source
     assert "oof_fold_ready" in source
     assert "payload.get(\"models\") or active8_models" in source
@@ -621,6 +621,7 @@ def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeyp
     plan = {
         "status": "ready",
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
@@ -687,6 +688,7 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
     plan = {
         "status": "ready",
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
@@ -784,6 +786,7 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
         "run_id": "universal-oof-owner",
         "attempt": 3,
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "artifact_states": {"DLinear": "offline_strong_pass"},
         "missing_models": [],
@@ -823,6 +826,7 @@ def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch)
     plan = {
         "status": "ready",
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
@@ -864,6 +868,7 @@ def test_dispatch_reuses_terminal_ensemble_validation_block_and_repairs_projecti
         "knowledge_cutoff_date": "2026-07-17",
         "run_id": "universal-oof-owner",
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "artifact_states": {"DLinear": "offline_strong_pass"},
         "missing_models": [],
@@ -901,6 +906,7 @@ def test_dispatch_reuses_terminal_ensemble_validation_block_and_repairs_projecti
     plan = {
         "status": "ready",
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},
@@ -967,6 +973,7 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
         "run_id": "universal-oof-owner",
         "attempt": 3,
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "artifact_states": {"DLinear": "offline_strong_pass"},
         "missing_models": [],
@@ -1013,6 +1020,7 @@ def test_dispatch_recovers_retry_limit_pollution_from_terminal_evidence(monkeypa
     plan = {
         "status": "ready",
         "release_models": ["DLinear"],
+        "model_profile_schema_version":"active8-release-model-profiles-v3",
         "promotion_eligible_models": ["DLinear"],
         "tree_models": [],
         "feature_consensus": {},

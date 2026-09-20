@@ -334,3 +334,39 @@ def test_actual_itransformer_weights_accept_variable_count_and_permutation():
     assert output.shape == (1, 2, 5)
     assert subset.shape == (1, 2, 3)
     torch.testing.assert_close(permuted, output[:, :, permutation], rtol=1e-5, atol=1e-6)
+
+
+def test_oof_short_history_bounds_signal_dates_without_shortening_context():
+    calendar = [f"d{i:03d}" for i in range(40)]
+    records = [{"symbol": "S", "dates": calendar, "close": list(range(1, 41))}]
+    common = dict(records=records, calendar=calendar, train_end=calendar[-1],
+                  seq_len=8, pred_len=2, max_series=0, training_history_mode="full_pit_history")
+    full_rows, _, full = _build_fixed_oof_panel(**common)
+    early_rows, _, early = _build_fixed_oof_panel(**common, train_start="a")
+    short_rows, _, short = _build_fixed_oof_panel(**common, train_start=calendar[25])
+    assert full_rows == early_rows
+    assert full["unique_training_windows"] == early["unique_training_windows"] == 31
+    assert short["unique_training_windows"] == 13
+    assert short["first_training_signal_date"] == calendar[25]
+    assert short["last_complete_training_signal_date"] == calendar[37]
+    assert short["calendar_start"] == calendar[18]
+    assert [r["y"] for r in short_rows[:8]] == list(range(19, 27))
+    # No out-of-range label or context can enter the cut panel.
+    for offset in range(short["unique_training_windows"]):
+        assert 25 <= 18 + offset + 7 <= 37
+        assert 18 + offset + 9 <= 39
+
+
+def test_oof_inference_uses_actual_serving_observations_not_forward_fill():
+    calendar = [f"d{i:03d}" for i in range(12)]
+    record = {"symbol": "S", "dates": [calendar[i] for i in [0, 1, 3, 5, 6, 7, 8, 9, 10, 11]],
+              "close": [100. + i for i in [0, 1, 3, 5, 6, 7, 8, 9, 10, 11]],
+              "open": [100. + i for i in [0, 1, 3, 5, 6, 7, 8, 9, 10, 11]]}
+    rows, labels = _dense_oof_eval_panel([record], calendar=calendar,
+                                      signal_date=calendar[5], seq_len=4, pred_len=2)
+    assert [r["y"] for r in rows] == [100., 101., 103., 105.]
+    assert labels[0]["outcome_date"] == calendar[7]
+    assert _dense_oof_eval_panel([record], calendar=calendar,
+        signal_date=calendar[3], seq_len=4, pred_len=2) == ([], [])
+    assert _dense_oof_eval_panel([record], calendar=calendar,
+        signal_date=calendar[4], seq_len=4, pred_len=2) == ([], [])

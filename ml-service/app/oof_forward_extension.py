@@ -158,8 +158,9 @@ def _align_features(
     metadata: dict[str, Any] | None,
 ) -> np.ndarray:
     training_features = [str(value) for value in ((metadata or {}).get("feature_names") or [])]
+    dtype = np.result_type(np.asarray(matrix).dtype, np.float32)
     if not training_features or training_features == serving_features:
-        return np.asarray(matrix, dtype=np.float32)
+        return np.asarray(matrix, dtype=dtype)
     medians = dict((metadata or {}).get("feature_medians") or {})
     serving_index = {name: idx for idx, name in enumerate(serving_features)}
     missing_without_default = [
@@ -171,10 +172,10 @@ def _align_features(
             "forward_extension_feature_contract_missing:"
             + ",".join(missing_without_default[:10])
         )
-    aligned = np.empty((len(matrix), len(training_features)), dtype=np.float32)
+    aligned = np.empty((len(matrix), len(training_features)), dtype=dtype)
     for idx, name in enumerate(training_features):
         if name in serving_index:
-            aligned[:, idx] = np.asarray(matrix[:, serving_index[name]], dtype=np.float32)
+            aligned[:, idx] = np.asarray(matrix[:, serving_index[name]], dtype=dtype)
         else:
             aligned[:, idx] = float(medians[name])
     return aligned
@@ -262,6 +263,8 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
 
     base = _verify_base_manifest(bucket, base_path)
     prep = _verify_prep_manifest(bucket, prep_prefix)
+    from .alpha_model_roster import model_order
+    required_models = model_order(base.get("model_set") or (*CORE_MODELS, *OPTIONAL_MODELS), complete=True)
     latest = max(base["windows"], key=lambda row: int(row.get("window_id") or 0))
     source_fold = f"w{int(latest.get('window_id') or 0)}"
     train_end = str((latest.get("train_range") or [None, None])[1])[:10]
@@ -404,6 +407,43 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
                 "training_cutoff": train_end,
             }
 
+    if "TimeXer" in required_models:
+        from .timexer_forward import predict_forward
+        source_result = dict(latest.get("TimeXer_result") or {})
+        source = dict(source_result.get("metadata") or {})
+        scores_by_model["TimeXer"] = predict_forward(bucket=bucket, prep=prep, sequence=sequence,
+            rows=rows, source=source, train_end=train_end)
+        source_artifacts["TimeXer"] = {"version": source["version"], "path": source["artifact_path"],
+            "metadata_path": source["metadata_path"], "checksum": source["checksum"], "training_cutoff": train_end}
+        from .neuralforecast_sequence_runtime import load_neuralforecast_artifact, neuralforecast_batch_predict
+        for model_name in ("PatchTST", "iTransformer"):
+            result = dict(latest.get(model_name+"_result") or {})
+            metadata = dict(result.get("metadata") or {})
+            saved = dict(result.get("saved") or {})
+            version = result.get("version") or metadata.get("version")
+            identity = {"model": model_name, "version": version, "artifact_id": "frozen:"+str(version)+":"+model_name,
+                "artifact_path": result.get("artifact_path") or metadata.get("artifact_path") or saved.get("weights_path"),
+                "metadata_path": result.get("metadata_path") or metadata.get("metadata_path") or saved.get("metadata_path"),
+                "checksum": metadata.get("checksum") or saved.get("checksum")}
+            _, loaded = load_neuralforecast_artifact(model_name, version, artifact_identity=identity)
+            if loaded is None:
+                raise ValueError("forward_extension_sequence_artifact_missing:"+model_name)
+            _validate_training_cutoff(loaded, train_end, model_name)
+            scores = np.full(len(rows["dates"]), np.nan)
+            for day in sorted(set(rows["dates"].astype(str))):
+                indices = np.flatnonzero(rows["dates"].astype(str) == day)
+                series_list = [{"symbol": str(rows["symbols"][i]),
+                    "prices": _prices_until(sequence.get(str(rows["symbols"][i])), day)} for i in indices]
+                predictions = neuralforecast_batch_predict(model_name=model_name, series_list=series_list,
+                    horizon_used=5, version=version, artifact_identity=identity)
+                values = {str(row.get("symbol")): row.get("forecast_pct") for row in predictions}
+                for i in indices:
+                    value = values.get(str(rows["symbols"][i]))
+                    if value is not None:
+                        scores[i] = float(value)
+            scores_by_model[model_name] = scores
+            source_artifacts[model_name] = {**identity, "path": identity["artifact_path"], "training_cutoff": train_end}
+
     artifacts: dict[str, dict[str, Any]] = {}
     for model_name, raw_scores in scores_by_model.items():
         finite = np.isfinite(raw_scores)
@@ -436,8 +476,8 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         )
         artifacts[model_name] = artifact
 
-    missing_models = [name for name in (*CORE_MODELS, *OPTIONAL_MODELS) if name not in artifacts]
-    if any(name in missing_models for name in CORE_MODELS):
+    missing_models = [name for name in required_models if name not in artifacts]
+    if ("TimeXer" in required_models and missing_models) or any(name in missing_models for name in CORE_MODELS):
         raise ValueError("forward_extension_core_model_missing_after_inference")
     manifest = {
         "schema_version": SCHEMA_VERSION,
@@ -445,6 +485,8 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         "generation_mode": GENERATION_MODE,
         "extension_id": extension_id,
         "base_cohort_id": base["cohort_id"],
+        "model_set": list(required_models),
+        "model_profile_schema_version": base.get("model_profile_schema_version"),
         "base_manifest_path": base_path,
         "base_manifest_checksum": base["manifest_checksum"],
         "source_fold": source_fold,

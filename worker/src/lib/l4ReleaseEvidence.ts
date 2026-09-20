@@ -1,4 +1,16 @@
 export const L4_FEATURE_SCHEMA = 'full-l3-30-all-available-signals-v3'
+export const L4_TIMEXER_FEATURE_SCHEMA = 'full-l3-30-timexer-signals-v4'
+
+/** v4 replaces the DLinear coordinate in place; sorting again changes model inputs. */
+export function validL4FeatureSchema(artifact: any): boolean {
+  if (artifact?.feature_schema === L4_FEATURE_SCHEMA) return true
+  if (artifact?.feature_schema !== L4_TIMEXER_FEATURE_SCHEMA) return false
+  const names = ['LightGBM','XGBoost','ExtraTrees','TabM','GNN','DLinear','PatchTST','iTransformer']
+    .flatMap(model => ['raw','rank','available'].map(suffix => `${model}_${suffix}`))
+    .concat(['ml_edge_norm','ensemble_directional_margin','l3_rank_mean','l3_rank_sd','l3_rank_range','l3_available_fraction'])
+    .sort().map(name => name.replace('DLinear_', 'TimeXer_'))
+  return JSON.stringify(artifact?.model?.recipe?.names) === JSON.stringify(names)
+}
 export const L4_ACCEPTANCE_CHECKS = [
   'native_feature_parity','purged_labels','same_pool','same_calendar','same_costs',
   'same_risk_constraints','legal_share_accounting','partial_fills','unfilled_exposure_reserved',
@@ -18,7 +30,7 @@ export function l4ReleaseEvidenceError(artifact: any): string | null {
       || receipt.schema_version!=='l4-paper-acceptance-v1') return 'l4_release_evidence_missing'
   if (receipt.checks?.native_l3_baseline_preserved!==true || receipt.checks?.incremental_comparison_contract!==true)
     return 'l4_release_design_repair_evidence_missing'
-  if (artifact.feature_schema!==L4_FEATURE_SCHEMA || receipt.feature_schema!==L4_FEATURE_SCHEMA)
+  if (!validL4FeatureSchema(artifact) || receipt.feature_schema!==artifact.feature_schema)
     return 'l4_release_feature_schema_mismatch'
   if (L4_ACCEPTANCE_CHECKS.some(key=>receipt.checks?.[key]!==true))
     return 'l4_release_engineering_evidence_incomplete'

@@ -80,13 +80,15 @@ def walk_forward_model_coverage(models: Optional[list[str]] = None) -> dict[str,
     """
 
     requested = _normalize_requested_models(models)
-    native = [model for model in requested if model in WALK_FORWARD_NATIVE_RETRAIN_MODELS]
+    from services.alpha_model_roster import model_order
+    selected = model_order(requested)
+    native = [model for model in requested if model in selected]
     artifact_required = [model for model in requested if model in WALK_FORWARD_ARTIFACT_LIFECYCLE_MODELS]
-    unsupported = [model for model in requested if model not in MODELS_ALL]
+    unsupported = [model for model in requested if model not in selected]
     return {
         "schema_version": "walk-forward-active8-coverage-v1",
         "requested_models": requested,
-        "active8_models": list(MODELS_ALL),
+        "active8_models": list(selected),
         "native_retrain_models": native,
         "artifact_lifecycle_required_models": artifact_required,
         "unsupported_models": unsupported,

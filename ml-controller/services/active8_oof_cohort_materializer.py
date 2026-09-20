@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from services.alpha_model_roster import model_order, validate_order, SUPPORTED_MODELS
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.active8_oof_stacker import (
     ACTIVE8_MODELS,
@@ -539,8 +540,10 @@ def load_verified_oof_manifest(
         raise ValueError("active8_oof_manifest_generation_mode_invalid")
     if manifest.get("status") != "ready":
         raise ValueError("active8_oof_manifest_not_ready")
-    if list(manifest.get("model_set") or []) != list(ACTIVE8_MODELS):
-        raise ValueError("active8_oof_manifest_model_set_invalid")
+    try:
+        validate_order(manifest.get("model_set") or [])
+    except ValueError as exc:
+        raise ValueError("active8_oof_manifest_model_set_invalid") from exc
     if manifest.get("manifest_checksum") != _manifest_checksum(manifest):
         raise ValueError("active8_oof_manifest_checksum_mismatch")
     if manifest.get("schema_version") in {
@@ -728,7 +731,7 @@ def load_oof_prediction_rows(
             "test_end": str((window.get("test_range") or [None, None])[1]),
         }
         metrics = window.get("model_metrics") or {}
-        for model_name in ACTIVE8_MODELS:
+        for model_name in validate_order(manifest.get("model_set", ACTIVE8_MODELS)):
             model = metrics.get(model_name) or {}
             if model.get("status") != "ready" or not model.get("oof_artifact"):
                 raise ValueError(f"active8_oof_fold_model_missing:{fold_id}:{model_name}")
@@ -844,7 +847,7 @@ def load_oof_forward_prediction_rows(
     }
     rows: list[dict[str, Any]] = []
     for model_name, artifact in sorted(dict(manifest.get("model_artifacts") or {}).items()):
-        if model_name not in ACTIVE8_MODELS:
+        if model_name not in SUPPORTED_MODELS:
             raise ValueError(f"active8_oof_forward_unknown_model:{model_name}")
         rows.extend(_load_prediction_artifact(
             bucket=bucket,
@@ -898,7 +901,7 @@ def build_oof_fold_artifact_rows(
             raise ValueError(f"active8_oof_fold_source_manifest_checksum_invalid:{fold_id}")
         train_range = list(window.get("train_range") or [None, None])
         test_range = list(window.get("test_range") or [None, None])
-        for model_name in ACTIVE8_MODELS:
+        for model_name in validate_order(manifest.get("model_set", ACTIVE8_MODELS)):
             model = (window.get("model_metrics") or {}).get(model_name) or {}
             count = counts[(fold_id, model_name)]
             output.append({
@@ -1050,7 +1053,7 @@ def build_oof_snapshot_rows(
             rejected_by_date[stacked["prediction_date"]][str(exc)] += 1
             continue
         versions = dict(stacked["artifact_versions"])
-        contributors = [name for name in ACTIVE8_MODELS if name in versions]
+        contributors = [name for name in model_order(versions) if name in versions]
         signature = build_model_set_signature(versions, contributors)
         if signature is None:
             rejected["model_set_signature_invalid"] += 1
@@ -2342,8 +2345,8 @@ def persist_oof_cohort(
             raise ValueError("active8_oof_cohort_id_collision")
 
     model_signature = build_model_set_signature(
-        {name: f"cohort:{cohort_id}" for name in ACTIVE8_MODELS},
-        list(ACTIVE8_MODELS),
+        {name: f"cohort:{cohort_id}" for name in validate_order(manifest["model_set"])},
+        list(validate_order(manifest["model_set"])),
     )
     parent = manifest.get("parent_manifest") or {}
     if not existing:

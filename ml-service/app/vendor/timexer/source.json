@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/thuml/TimeXer",
+  "commit": "76011909357972bd55a27adba2e1be994d81b327",
+  "files": {
+    "models/TimeXer.py": {
+      "upstream_sha256": "b334d7869544d0a5de7a35501d0342d7bd0be4ebda06ccc045855a42819728c0",
+      "packaged_sha256": "56e1dfc57c8a1829618cfa5390edcaca1d573c1b8dcd9d3b0f3a79252f1491de"
+    },
+    "layers/Embed.py": {
+      "upstream_sha256": "17e7c3577324c41a0da427a199c955b782fde905aabb1f7cbc3c4e15ebd4ae35",
+      "packaged_sha256": "17e7c3577324c41a0da427a199c955b782fde905aabb1f7cbc3c4e15ebd4ae35"
+    },
+    "layers/SelfAttention_Family.py": {
+      "upstream_sha256": "6f6592aed0753e342fc04c01db70528c2eb191eeb067cd5fd4c8d348fddcb794",
+      "packaged_sha256": "43b67e606874adbe11c272b1ebe09b59c9fcd2d380cd4fb7964988eef40cd519"
+    },
+    "utils/masking.py": {
+      "upstream_sha256": "5976ac3dc84915d0d294c1761573bc18434751f29ec421bcca5a9b280de46bae",
+      "packaged_sha256": "5976ac3dc84915d0d294c1761573bc18434751f29ec421bcca5a9b280de46bae"
+    }
+  },
+  "modifications": [
+    "package-relative imports",
+    "lazy import for unused ReformerLayer; TimeXer numerical path unchanged"
+  ]
+}

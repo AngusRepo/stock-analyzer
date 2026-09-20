@@ -128,3 +128,31 @@ def test_old_engineering_acceptance_cannot_be_reused_after_design_repair(field):
     candidate=bundle();receipt=deepcopy(candidate['release']['validation_receipt']);del receipt['checks'][field]
     with pytest.raises(ValueError,match='acceptance_evidence_incomplete'):
         prepare_paper_release(candidate,receipt,signal_date='2026-09-11')
+
+
+
+def test_scalar_mlp_evaluation_separates_head_mean_and_corrected_ev():
+    from app.l4_mlp_training import AnchoredResidualMLP
+    from services.l4_residual_mlp import SCHEMA, OUTPUTS
+    net=AnchoredResidualMLP(inputs=34)
+    state={k:v.detach().tolist() for k,v in net.state_dict().items()}
+    state['output.bias']=[.125]
+    anchor=constant_model()
+    correction={'schema_version':SCHEMA,'inputs':34,'width':128,'blocks':3,'output':'scalar_ev_correction',
+        'anchor_model_checksum':digest(anchor),'training_label_known_max':'2026-08-01','residual_scale':.1,
+        'recipe':{'native':anchor['recipe'],'head_names':OUTPUTS,'mean':[0.]*4,'scale':[1.]*4},'state':state}
+    correction['payload_checksum']=digest(correction)
+    model={**anchor,'residual_mlp':correction}
+    rows=[{'date':'2026-08-20','symbol':str(i),'features':features(),'gross_return':y,'l3_baseline':baseline(y/2)} for i,y in enumerate([-.03,.01,.05])]
+    outputs=predict(rows,model)
+    report=evaluate_predictions(rows,outputs,model=model)
+    assert 'three_head' in report['metrics']
+    assert report['metrics']['l4']['mse'] != report['metrics']['three_head']['mse']
+    with pytest.raises(ValueError,match='incoherent'):
+        evaluate_predictions(rows,outputs)
+    bad=deepcopy(outputs);bad[0]['expected_return_gross']+=.01
+    with pytest.raises(ValueError,match='residual_mean_incoherent'):
+        evaluate_predictions(rows,bad,model=model)
+    bad=deepcopy(outputs);bad[0]['calibration_checksum']='wrong'
+    with pytest.raises(ValueError,match='residual_anchor_mismatch'):
+        evaluate_predictions(rows,bad,model=model)

@@ -6,6 +6,7 @@ services/adaptive.py — 自適應參數計算引擎
 T+1 生效原則：今天算的參數明天才用，斷開 feedback loop。
 """
 from __future__ import annotations
+from services.alpha_model_roster import LEGACY_MODELS, validate_order
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -57,11 +58,12 @@ def build_ml_confidence_hook(
     rows_30d: list[dict],
     accuracy_30d: float,
     *,
+    alpha_model_order: list[str] | None = None,
     active_9_quality_30d: float | None = None,
     active_9_samples_30d: int | None = None,
     active_9_model_count_30d: int | None = None,
 ) -> dict:
-    active = set(ALPHA_VOTE_MODELS)
+    active = set(validate_order(alpha_model_order if alpha_model_order is not None else LEGACY_MODELS))
     total_samples = 0
     weighted_accuracy = 0.0
     active_models_seen: set[str] = set()
@@ -105,7 +107,7 @@ def build_ml_confidence_hook(
         "model_quality_30d": round(quality, 4),
         "sample_count_30d": int(sample_count),
         "active_model_count_30d": int(model_count),
-        "active_models": ALPHA_VOTE_MODELS,
+        "active_models": list(validate_order(alpha_model_order if alpha_model_order is not None else LEGACY_MODELS)),
         "ignored_non_active_models": sorted(ignored_models),
         "effect": "threshold_components.model_quality_penalty",
     }
@@ -226,6 +228,7 @@ def compute_pf_quality_mults(
     rows_30d: list[dict],
     rows_90d: list[dict],
     L2_formula: dict | None = None,
+    alpha_model_order: list[str] | None = None,
 ) -> dict[str, float]:
     """
     Phase A: 從 L2_formula 讀 30d/90d weights + clip range
@@ -239,7 +242,7 @@ def compute_pf_quality_mults(
     lo  = float(L2.get("pf_quality_clip_lo", 0.3))
     hi  = float(L2.get("pf_quality_clip_hi", 1.8))
 
-    active = set(ALPHA_VOTE_MODELS)
+    active = set(validate_order(alpha_model_order if alpha_model_order is not None else LEGACY_MODELS))
     pf_90_map: dict[str, float] = {}
     for r in rows_90d:
         name = str(r.get("model_name") or "").strip()
@@ -466,6 +469,7 @@ def compute_adaptive_params(
     current_version: int = 0,
     L2_formula: dict | None = None,
     baseline_buy_signal_score: float | None = None,
+    alpha_model_order: list[str] | None = None,
     active_9_quality_30d: float | None = None,
     active_9_samples_30d: int | None = None,
     active_9_model_count_30d: int | None = None,
@@ -491,6 +495,7 @@ def compute_adaptive_params(
     ml_confidence_hook = build_ml_confidence_hook(
         rows_30d,
         accuracy_30d,
+        alpha_model_order=alpha_model_order,
         active_9_quality_30d=active_9_quality_30d,
         active_9_samples_30d=active_9_samples_30d,
         active_9_model_count_30d=active_9_model_count_30d,
@@ -511,7 +516,7 @@ def compute_adaptive_params(
         model_quality=model_quality_30d,
     )
     conf_delta      = threshold_components["effective_delta"]
-    pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2)
+    pf_quality_mult = compute_pf_quality_mults(rows_30d, rows_90d, L2, alpha_model_order=alpha_model_order)
     sl_tp_add       = compute_sltp_override(risk_level, L2)
     bandit          = compute_bandit_protection(losses_5d, total_5d, L2)
     bandit_context = dict(bandit.get("bandit_context") or {})
@@ -569,7 +574,7 @@ def compute_adaptive_params(
             "regime_source": regime_source,
         },
         "meta_layer": {
-            "alpha_vote_models": ALPHA_VOTE_MODELS,
+            "alpha_vote_models": ml_confidence_hook["active_models"],
             "state_space_overlays": STATE_SPACE_OVERLAYS,
             "meta_optimizers": META_OPTIMIZERS,
             "adaptive_components": {

@@ -168,12 +168,19 @@ async def ensure_active8_daily_prep(
     *,
     end_date: str | None,
     dry_run: bool = False,
+    feature_only: bool = False,
+    model_profile_schema_version: str = "active8-release-model-profiles-v3",
     query_fn: Callable[..., list[dict[str, Any]]] = client_proxy_for_domain(D1DataDomain.MARKET).query,
 ) -> dict[str, Any]:
     from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
     from services import modal_client
     from services.walk_forward_retrain import _get_bucket
 
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, SUPPORTED_MODEL_PROFILE_SCHEMAS
+    if model_profile_schema_version not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
+        raise ValueError('active8_prep_profile_unknown')
+    expanded = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    required_history = 1280 if expanded else ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS
     cutoff = end_date or (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
     expected_business_date, market_session_evidence = _latest_market_session(
         cutoff,
@@ -211,7 +218,7 @@ async def ensure_active8_daily_prep(
     snapshot_start_date = str(_snapshot_metadata(snapshot).get("start_date") or "")[:10]
     minimum_start_date = (
         datetime.strptime(business_date, "%Y-%m-%d")
-        - timedelta(days=ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS)
+        - timedelta(days=required_history)
     ).date().isoformat()
     if not snapshot_start_date or snapshot_start_date > minimum_start_date:
         raise Active8PrepDependencyPending(
@@ -221,7 +228,7 @@ async def ensure_active8_daily_prep(
                 "snapshot_id": snapshot.get("snapshot_id"),
                 "snapshot_start_date": snapshot_start_date or None,
                 "minimum_start_date": minimum_start_date,
-                "required_lookback_days": ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS,
+                "required_lookback_days": required_history,
             },
         )
 
@@ -235,19 +242,21 @@ async def ensure_active8_daily_prep(
         expected_dates=market_session_evidence["market_session_dates"], dry_run=dry_run,
     )
     snapshot_checksum = _normalize_sha256(snapshot.get("checksum"))
-    sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
-    sequence_date_max = str((sequence_manifest.get("summary") or {}).get("date_max") or "")[:10]
-    if sequence_date_max < business_date:
-        raise Active8PrepDependencyPending(
-            "immutable_sequence_behind_compute_snapshot",
-            {
-                "business_date": business_date,
-                "sequence_date_max": sequence_date_max,
-                "sequence_gcs_prefix": sequence_prefix,
-            },
-        )
+    sequence_prefix, sequence_checksum, sequence_date_max = "", "", ""
+    if not feature_only:
+        sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
+        sequence_date_max = str((sequence_manifest.get("summary") or {}).get("date_max") or "")[:10]
+        if sequence_date_max < business_date:
+            raise Active8PrepDependencyPending(
+                "immutable_sequence_behind_compute_snapshot",
+                {
+                    "business_date": business_date,
+                    "sequence_date_max": sequence_date_max,
+                    "sequence_gcs_prefix": sequence_prefix,
+                },
+            )
 
-    sequence_checksum = str(sequence_manifest["manifest_checksum"])
+        sequence_checksum = str(sequence_manifest["manifest_checksum"])
     producer_source_sha = _runtime_source_sha()
     source_prefix = (
         f"{FEATURE_PREP_PREFIX}/{business_date}-{snapshot_checksum[:12]}-"
@@ -257,6 +266,9 @@ async def ensure_active8_daily_prep(
         f"{ADJUSTED_PREP_PREFIX}/{business_date}-"
         f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}-{producer_source_sha[:12]}"
     )
+    if expanded:
+        source_prefix += '-expanded1280'
+        adjusted_prefix += '-expanded1280'
     plan = {
         "cutoff": cutoff,
         "business_date": business_date,
@@ -266,7 +278,7 @@ async def ensure_active8_daily_prep(
         "snapshot_id": snapshot.get("snapshot_id"),
         "snapshot_checksum": snapshot_checksum,
         "snapshot_start_date": snapshot_start_date,
-        "snapshot_required_lookback_days": ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS,
+        "snapshot_required_lookback_days": required_history,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "producer_source_sha": producer_source_sha,
@@ -285,6 +297,7 @@ async def ensure_active8_daily_prep(
             run_date=business_date,
             require_exact_dataset_snapshot=True,
             prep_only=True,
+            model_profile_schema_version=model_profile_schema_version,
             prep_output_gcs_prefix=source_prefix,
             train_model_groups=[],
         ),
@@ -300,6 +313,15 @@ async def ensure_active8_daily_prep(
         raise RuntimeError(
             f"immutable feature prep failed: {prep_result.get('error') or prep_status or 'unknown'}"
         )
+
+    if feature_only:
+        # Inference needs observable features, including the latest unlabeled
+        # dates. It must not wait for outcomes, OOF, or dispatch a model fit.
+        return {"schema_version": "timexer-feature-source-v1", "status": "ready",
+                "signal_date": business_date, "source_gcs_prefix": source_prefix,
+                "source_receipt_checksum": prep_result["receipt_checksum"],
+                "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+                "training_dispatched": False}
 
     adjusted = await modal_client.rebuild_canonical_adjusted_prep({
         "source_gcs_prefix": source_prefix,

@@ -352,25 +352,25 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write(
         tmp_path / "ml-service/requirements.txt",
         "\n".join([
-            "scikit-learn==1.9.0",
+            "scikit-learn==1.9.1",
             "networkx==3.6.1",
             "scikit-learn-extra==0.3.0",
-            "xgboost==3.2.0",
-            "lightgbm==4.6.0",
-            "torch==2.12.0",
-            "torch-geometric==2.8.0",
-            "neuralforecast==3.1.9",
+            "xgboost==3.4.1",
+            "lightgbm==4.7.0",
+            "torch==2.14.0",
+            "torch-geometric==2.8.0.post1",
+            "neuralforecast==3.2.2",
             "tabm==0.0.3",
             "timesfm[torch]==2.0.1",
             "optuna==4.9.0",
         ]),
     )
-    _write(tmp_path / "ml-service/Dockerfile", "FROM python:3.11-slim\n")
+    _write(tmp_path / "ml-service/Dockerfile", "FROM python:3.12-slim\n")
     _write(
         tmp_path / "ml-controller/requirements.txt",
         "\n".join([
             "optuna==4.9.0",
-            "scikit-learn==1.9.0",
+            "scikit-learn==1.9.1",
             "networkx==3.6.1",
         ]),
     )

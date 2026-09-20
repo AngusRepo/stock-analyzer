@@ -1,3 +1,4 @@
+import { publishedAlphaModelOrder } from './alphaModelRoster'
 import type { Bindings } from '../types'
 import { ACTIVE_8_ML_TEACHERS } from './multiStrategyPleRouter'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -22,6 +23,7 @@ export interface RuntimeTeacherEvidenceTelemetry {
   missing_symbol_count: number
   label_count: number
   teacher_model_count: number
+  teacher_models?: string[]
   error?: string
 }
 
@@ -125,10 +127,13 @@ export async function loadRuntimeTeacherEvidence(
   const symbolById = new Map([...identities.values()].map((row) => [row.id, row.symbol]))
   let rowCount = 0
   try {
+    const activeModels = await publishedAlphaModelOrder(databaseForDataDomain(env, 'learning'))
+    telemetry.teacher_models = [...activeModels]
+    telemetry.teacher_model_count = activeModels.length
     for (let offset = 0; offset < requestedSymbols.length; offset += D1_IN_CHUNK_SIZE) {
       const chunk = requestedSymbols.slice(offset, offset + D1_IN_CHUNK_SIZE)
       const symbolPlaceholders = chunk.map(() => '?').join(',')
-      const modelPlaceholders = ACTIVE_8_ML_TEACHERS.map(() => '?').join(',')
+      const modelPlaceholders = activeModels.map(() => '?').join(',')
       const verifiedClause = verifiedOnly ? 'AND p.verified_at IS NOT NULL' : ''
       const ids = chunk.map((symbol) => identities.get(symbol)?.id).filter((id): id is number => id != null)
       if (!ids.length) continue
@@ -155,7 +160,7 @@ export async function loadRuntimeTeacherEvidence(
                   p.id DESC
       `).bind(
         ...ids,
-        ...ACTIVE_8_ML_TEACHERS,
+        ...activeModels,
         runDate,
         runDate,
         `-${lookbackDays} days`,
@@ -165,7 +170,7 @@ export async function loadRuntimeTeacherEvidence(
       for (const row of rows) {
         const symbol = normalizeSymbol(symbolById.get(Number(row.stock_id)))
         const modelName = cleanText(row.model_name)
-        if (!symbol || !ACTIVE_8_ML_TEACHERS.includes(modelName as typeof ACTIVE_8_ML_TEACHERS[number])) continue
+        if (!symbol || !activeModels.includes(modelName)) continue
         labels[symbol] ??= {}
         if (labels[symbol][modelName] != null) continue
         const score = rowTeacherScore(row)

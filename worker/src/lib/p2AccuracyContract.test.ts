@@ -24,7 +24,7 @@ class FakeStmt {
 
 class FakeDB {
   constructor(private row: any, private error?: Error) {}
-  prepare() { return new FakeStmt(this.row, this.error) }
+  prepare(sql: string) { return new FakeStmt(sql.includes('active8_ensemble_pointer_v1') ? null : this.row, this.error) }
 }
 
 class FakeKV {

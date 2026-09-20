@@ -7,6 +7,7 @@ import math
 import numpy as np
 
 from services.l4_distribution import MODELS, OWNER, SCHEMA, digest, finite, features, predict, validate_bundle
+from services.alpha_model_roster import model_order, validate_order
 from services.l4_portfolio import allocate
 from services.l4_l3_baseline import native_baseline, attach_baseline
 from services.similarity_evidence import ledoit_wolf_covariance
@@ -26,24 +27,26 @@ def native_features(row, prediction, identity=None):
             raise ValueError("l4_distribution_native_ensemble_semantic_mismatch")
     from services.recommendation_service import _per_model_signal_payload
     from services.l4_alpha_ev_producer import _feature_value
+    declared = prediction.get("ensemble_v2", {}).get("model_order")
+    order = validate_order(declared) if declared else model_order(prediction.get("rank_scores") or {})
     result = {}
     optional = (prediction.get('l3_model_eligibility') or {}).get('sequence_models') or {}
     lineage = prediction.get('model_score_lineage') or {}
     selected = lineage.get('selected_models')
-    selection_attested = (isinstance(selected,list) and bool(selected) and set(selected)<=set(MODELS)
+    selection_attested = (isinstance(selected,list) and bool(selected) and set(selected)<=set(order)
         and lineage.get('coverage_policy')=='validated-bundle-selected-core-sequence-missingness-v1'
         and lineage.get('ensemble_payload_checksum')==prediction.get('ensemble_v2',{}).get('artifact_checksum')
         and lineage.get('complete') is True)
-    for model in MODELS:
+    for model in order:
         payload = _per_model_signal_payload(prediction, model)
         raw, rank = payload.get('raw_score'), payload.get('rank_score')
         available = raw is not None and rank is not None
         if not available:
             missing = optional.get(model) or {}
             excluded_by_l3 = selection_attested and model not in selected
-            optional_history_missing = (model in MODELS[5:] and missing.get('eligible') is False
+            optional_history_missing = (model in order[5:] and missing.get('eligible') is False
                 and missing.get('reason') == 'active8_sequence_history_contract_unmet_optional_masked')
-            optional_rank_missing = (selection_attested and model in MODELS[5:]
+            optional_rank_missing = (selection_attested and model in order[5:]
                 and model in lineage.get('optional_missing_models',[]))
             if not (excluded_by_l3 or optional_history_missing or optional_rank_missing):
                 raise ValueError('l4_distribution_native_model_missing:' + model)

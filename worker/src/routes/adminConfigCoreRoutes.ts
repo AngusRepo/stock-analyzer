@@ -711,6 +711,29 @@ adminConfigCoreRoutes.post('/api/admin/config/repair-critical-defaults', async (
   }
 })
 
+adminConfigCoreRoutes.post('/api/admin/risk-config/p5-rearm', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+  const body = await c.req.json<any>().catch(() => ({}))
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'invalid_request_body' }, 400)
+  const accountId = body.account_id ?? 1
+  if (!Number.isSafeInteger(accountId) || accountId < 1) return c.json({ error: 'invalid_account_id' }, 400)
+  const dryRun = body.dry_run !== false
+  if (!dryRun && c.req.header('X-Confirm-P5-Rearm') !== 'true') {
+    return c.json({ error: 'X-Confirm-P5-Rearm=true required', production_effect: false }, 400)
+  }
+  try {
+    const { previewP5Recovery, applyP5Recovery } = await import('../lib/p5Recovery')
+    const db = databaseForDataDomain(c.env, 'paper')
+    if (dryRun) return c.json({ mode: 'dry_run', production_effect: false, ...await previewP5Recovery(db, accountId) })
+    const result = await applyP5Recovery(db, accountId, body)
+    return c.json({ mode: result.written ? 'persisted' : 'no_op', production_effect: result.written, ...result })
+  } catch (error: any) {
+    // A transport failure after INSERT may be ambiguous; retry the identical request_id/body.
+    return c.json({ error: 'p5_recovery_failed', detail: error?.message ?? String(error) }, 409)
+  }
+})
+
 adminConfigCoreRoutes.get('/api/admin/risk-config', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError

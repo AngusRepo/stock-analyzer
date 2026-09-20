@@ -1,3 +1,18 @@
+# Current task — predeployment local closure, no partial — 2026-09-19
+
+Verdict: **NOT COMPLETE / new-strategy predeployment blocked**. Evidence: audits/predeploy-local-closure-20260919/REPORT.md and candidate-readiness.json. Never call component passes complete strategy closure.
+
+1. Memory, code and release boundaries — complete; L3 NAV gate retained.
+2. Killed-job reconciliation, exact continuation identity, SDK v2 state and existing callback/CAS recovery — locally verified; no production mutation.
+3. Full 636-stock transport dispatch/state resume/Modal hydration under Windows 4 GiB committed-memory limit — passed. Newly reproduced state-reader OOM fixed. This is NOT a new-model L0→Paper chain pass; NAV/atomic slates absent from this real fixture.
+4. Data/model acceptance inventory — complete and BLOCKING: nine v2 consumer contracts fixed to v3; actual five feature models remain v2; fresh governed v3 OOF/full-fit/L4 and earned L3 NAV admission still absent. Historical source completeness is false; no fake data or relabelled artifacts.
+5. Related Python/Worker/private-Paper regressions, Worker typechecks, frontend build and diff check — passed. Detailed batches in REPORT.md; no waived acceptance checks.
+6. Remaining overall work — immutable source with real availability provenance, corrected-data governed selector+OOF+eight-model full-fit, matched L4, real full-chain test and L3 NAV admission. Do not deploy mismatched old models with v3 features.
+
+No commit/push/deploy/retrain, production state mutation or orders in this local verification turn.
+
+---
+
 # Current task — monthly automation root-cause closure — 2026-09-06
 
 Authorization: local repairs/tests only. No commit, push, deploy, remote ticket repair, training, cadence change or serving-pointer mutation.
@@ -141,3 +156,81 @@ Repair the production-source stock-selection stack so L4/L4+ evidence cadence an
 | React skill catalog pointed to a missing `.codex/skills` path | 1 | Located the actual installation under `.agents/skills` and read it completely. |
 | Combined skill/status reads exceeded output or returned no output when one command exited 1 | 1 | Re-ran bounded commands separately and paged truncated security references to EOF. |
 | Initial plan patch tried to add tracked `progress.md` | 1 | Preserved the historical file and changed the plan patch to append a dated section. |
+
+
+## 2026-09-19 resumed predeployment closure — in progress
+The prior engineering-only handoff did not satisfy full local closure. Continue within existing authorization.
+1. [completed] Actual immutable technical/broker/shareholding recovery, PIT availability repair, full native prep: 623268 mature rows / 137 features / 1988 universe.
+2. [completed] Fresh six-window governed feature selection and all eight native OOF models: 915426 verified predictions. Individual promotion passes ExtraTrees/TabM; retain other results without cherry-picking.
+3. [completed] Native selector maturity filtering and exact six-window input equivalence; 29 tests. Matched-I/O loading peak memory 2.11 -> 1.27 GiB with both ~2.3 seconds.
+4. [completed] Actual ml-service producer / controller profile-v2 compatibility defect repaired; 81 tests, early preflight for all eight profiles. Local commits 8443fe0f / 6ce02414 / a7867609, no push/deploy.
+5. [completed] Approved Modal full-fit source a7867609: all eight native artifacts verified. Local collector fixed ordering and post-upload GNN timing comparison without retraining. Final active GPU containers=0.
+6. [completed within stated frozen-input scope] Native L3/L4 materialization, all636 inference/allocation, actual Worker morning frame and exact replay. Real account SafetyMode; pending0. No full-session or live L0-L2 claim.
+7. [blocked by measured efficacy and absent NAV qualification] FINAL_REPORT.md / FINAL_ACCEPTANCE.json record new L3 IC -0.023736, spread -1.0994pp, L4 MSE worse than L3 and zero. Overall no-partial release closure remains FALSE. Validation execution complete; no question or training pending. Historical morning frame has NAV credit0.
+No production mutation, forced positive EV, relaxed risk/NAV gate, or replacement of actual strategy evidence with transport fixtures.
+
+
+## 2026-09-19 P5 explicit recovery and eight-model preference clarification — locally completed
+- User approved incident-repair-validated explicit P5 recovery; implemented append-only account receipt, dry-run/apply admin route, stale-boundary guard and idempotency. Historical PnL and all other risks retained. Not deployed or applied to production.
+- Native bootstrap preserves account-scoped recovery records/triggers and rejects missing schema; focused tests and Worker typechecks pass.
+- All eight saved outputs show negative long-momentum/turnover associations, with very different strengths; sequence models do not directly ingest turnover. Six exact native train counts checked; w4/w5 factor-return relationship differs from validation.
+- L4 can learn counter-ranking via unconstrained heads; existing eight-day holdout demonstrates IC improvement but worse MSE. This is not a new MSE hard release gate and does not establish significant profitability.
+- This supersedes any implication in step 7 above that L4 MSE alone is a newly authorized hard publication gate. L3 NAV qualification remains required; full strategy release closure is still not claimed.
+- Evidence: audits/predeploy-local-closure-20260919/P5_RECOVERY_AND_MODEL_PREFERENCE.md.
+
+
+## 2026-09-20 Active8 core closure (authorized local implementation)
+- [complete] Recover full137/FS experiment and ResidualMLP identity; correct prior audit omissions.
+- [complete] Verify published stable versions and align every training/serving pin.
+- [complete] Version TabM member-loss/output contract; retain old-artifact semantics; make feature policy truthful and LightGBM bagging explicit.
+- [complete] Verify all eight native model architectures/settings and installed-package compatibility, targeted tests plus full-capacity forward/gradient probes.
+- [complete] Report completed code work and any actual runtime/artifact release blockers separately; preserve L3 NAV requirement.
+
+Evidence: audits/l3-core-closure-20260920/CLOSURE.md; final 199 tests passed, all runtime dependencies installed and checked. Core/local CPU closure only; no market OOF/full-fit, remote GPU/image validation, deployment or NAV promotion claimed. User memory confirmed: full137 beats frozen old FS for matched LightGBM; prior audit corrected. ResidualMLP canonical Learning D1 has zero artifacts and zero 90-day predictions.
+
+
+## 2026-09-20 Three-head plus residual MLP follow-up — research complete; no production release
+User authorized continuing comparison. Six arms: original active8 / TimeXer price replacing DLinear / TimeXer exo137 replacing DLinear, each three-head vs three-head-anchored residual MLP. Reuse verified upstream models/data. Strict purged rolling three-head OOF; same complete residual architecture (34 inputs: 30 native L3 plus four three-head outputs, 128 width, 3 blocks, 30 epochs max); inner chronological epoch selection and full refit. Insufficient-history dates explicitly retain three-head, never pretend MLP trained. Report full-period policy and fresh-account common active-period comparisons, same signed sparse/OPB, route, costs, risks. No deployment, no shutdown.
+1. [completed] Implement causal stacking and targeted leakage/artifact tests: four passed; actual model reload difference zero.
+2. [completed] All three upstream variants fitted and full formal routes verified; MLP active 9/2, baseline max error below 1e-12, artifact reload exact.
+3. [completed] Six policies in two periods; 12 ledgers verified, plus three post-hoc constant-bias controls. All warmup NAV paths exactly equal own baseline; all baseline source/code hashes checked.
+4. [completed] Evidence-qualified report, plot, CLOSURE.json and wiki handoff. Active-period sample limited to eight signal dates. Keep computer on; no production promotion.
+
+
+## 2026-09-20 Final production-choice adjudication — comparison complete; release not granted
+User requests all necessary comparisons and an explicit main version with numerical selection/rejection reasons. No deployment requested; L3 NAV gate retained; shutdown cancelled.
+1. [completed] Freeze actual production model pointers, historical recommendation/forecast/execution evidence; distinguish actual prod from retrained research controls.
+2. [completed] Run frozen candidate comparisons across predeclared start dates and execution costs; no parameter tuning to win.
+3. [completed] Compare recovered actual production signals/policy where source coverage permits; never synthesize unavailable historical decisions.
+4. [completed] Verify all ledgers and provenance, choose main architecture, document retained/rejected candidates and any release blockers.
+
+Evidence: audits/native-model-comparison-20260920/prod-adjudication/FINAL_DECISION.md and CLOSURE.json. Thirty verified frozen-policy scenarios (24 new, six verified reuses), fresh actual production pointers and 13,345 recommendations, 35 flat paper snapshots, 3,096 common recorded forecast rows across nine dates. Main architecture: price TimeXer replacing DLinear + three-head; exogenous TimeXer + three-head + MLP retained challenger. Research native-eight + three-head + MLP retained control. Weekly start mean/min returns A 17.4891%/16.3761%, B 17.0306%/12.6156%, C 17.1311%/12.8350%. Pairwise uncertainty crosses zero; not universal superiority. Research comparison complete, production release/NAV not granted; no deployment or shutdown.
+
+## 2026-09-20 User scope clarification — eight L3 models retained
+Source review confirms 34-input, single-output EV residual MLP; it consumes full L3 signals plus all three-head outputs. Prior A selection is scoped to tested EV-only MLP, not every MLP design. Fixed-three-head slot comparisons favor replacing DLinear; other slot replacements plus MLP and joint-head residual MLP are not measured. Preserve the two interacting experimental axes and never present price TimeXer shorthand as a one-model L3. Evidence: audits/native-model-comparison-20260920/prod-adjudication/SCOPE_CLARIFICATION.md. No retraining/deployment in this clarification.
+
+## 2026-09-20 Joint conditional-head residual MLP — research comparison complete
+User asks to test correcting loss probability and both conditional magnitudes. Keep eight-model upstreams (native / TimeXer price replaces DLinear / TimeXer exo137 replaces DLinear), frozen formal data and causal three-head OOF. Same 34 inputs, width128, three residual blocks, zero-initialized three-output layer; logit probability residual, nonnegative additive magnitude residuals. Equal BCE / training-RMS-normalized conditional gain and loss MSE; no direct EV correction. Inner purged joint-head validation selects epoch, outer returns never select settings. New four contract/conditional gradient tests plus existing four causality tests pass. Fit three joint models, run six full/active accounts, verify all18 baseline/new ledgers and head calibration. No external GPU, deploy or shutdown.
+
+Joint-head completion: three full-capacity models selected epoch2 by inner joint-head loss, 6 new accounts plus12 verified references; all18 cash/share/NAV conservation and exact pre-activation baseline paths pass. Full returns native10.6300%, price1.2329%, exo6.4330%; active10.8827%,2.2215%,1.3406%, all below same-upstream EV-residual MLP. Conditional magnitude errors improve but probability Brier worsens; actual loss rate61.5871% vs predictions37.55-40.56%. EV identity exact0; routed positiveEV98.43-99.41%. Posthoc head attribution shows probability-only or magnitude-only swaps also worsen EV MSE, not tested portfolio strategies. No new hard gate or production promotion. Evidence: audits/native-model-comparison-20260920/joint-head-comparison/REPORT.md, DECISION.md, CLOSURE.json.
+
+
+## 2026-09-20 Accepted primary / challenger comparison page — in progress
+- User accepts A (eight models with price TimeXer replacing DLinear + three-head), requests page comparison with B (exo137 TimeXer + three-head EV residual MLP).
+- [complete] Recover verified 20 ledgers / 10 matched start-cost scenarios; export hash-checked research evidence without altering original accounts.
+- [in progress] Add research comparison to existing NAV tab, keep snapshot source/date and prospective paired NAV distinct; show original costs, rebates, cash, returns, drawdown, symbols and trades.
+- [pending clarification] User confirms monthly day10 and minimum fee not discounted. Automatic review rejected interpreting this as post-discount minimum20; asked a concrete original40 -> net10 vs net20 question. Do not wire unconfirmed formula.
+- [pending] Verify calculation, existing navigation tests, frontend build and browser desktop/mobile; durable wiki handoff. No training, promotion, commit/push/deploy or shutdown.
+
+Local page verification: six focused tests and frontend build pass; desktop1440x1080 / mobile390x844 browser checks pass with real frozen research evidence, mocked local auth/empty prospective NAV. New page displays10 scenarios, charts, separate commission/tax/slippage, symbols and complete fills. Pending minimum-fee clarification blocks only rebate-adjusted figures; unconfirmed formula removed. No deployment or daily A/B producer activation. Handoff: audits/native-model-comparison-20260920/candidate-comparison-page/HANDOFF.md; wiki draft recorded with MOC links.
+
+
+## 2026-09-20 Monthly rebate clarification — local comparison page complete
+Wei confirms original40 -> final20; final fee=max20 or25% of gross. Implemented estimated rebate accrual, adjusted NAV/returns/drawdown, monthly next-month10 schedule, original/adjusted curve switch and daily cash/NAV table. Original cash unchanged; no actual receipt invented, reinvestment not replayed. Twenty accounts and ten scenarios reconciled; nine tests, frontend build, desktop/mobile browser pass. Full adjusted A17.0323%/B21.4391%; active A19.5016%/B15.5825%; six-start average A17.8241%/B17.9192% reverses former mean ranking. Preserve accepted A and visible B; no statistical dominance claimed. Fee blocker resolved. Read-only research page complete locally, not deployed or live daily A/B. Evidence: audits/native-model-comparison-20260920/candidate-comparison-page/CLOSURE.md.
+
+
+## 2026-09-21 Accepted A/B production release — in progress
+Wei authorizes local closure then commit/push/deploy all session changes. A is exact eight models with price TimeXer replacing DLinear and three-head L4; B is exo137 TimeXer replacing DLinear with three-head + scalar EV residual MLP. Daily paired accounts must remain independent. L3 NAV gate remains mandatory; no shutdown.
+Runtime, training, source-quality, native account, fee and frontend integration completed locally; final full-session regression and formal candidate publication remain. Detailed evidence and remaining steps: audits/strategy-ab-release-20260920/PLAN.md. No current release commit/deployment yet.
+
+Local source closure complete: 1,233 controller regression cases passed after private fixture migration repair; focused new data/lifecycle tests, final Worker type checks/frontend build, real frozen A/B native frames and exact retries pass. Release execution and formal Git-pinned A/B registration remain. See audits/strategy-ab-release-20260920/LOCAL_CLOSURE.md.

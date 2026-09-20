@@ -36,6 +36,7 @@ class WalkForwardRequest(BaseModel):
     train_window_days: int = 60
     test_window_days: int = 30
     models: list[str] | None = None
+    model_profile_schema_version: str = "active8-release-model-profiles-v3"
     confirm: bool = False
     concurrent_windows: int = 2
     batch_count: int = 5
@@ -177,6 +178,9 @@ def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
     from services.walk_forward_retrain import _get_bucket
     from services.active8_oof_cohort_materializer import load_verified_oof_manifest
 
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+    expanding = req.model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    history_start = req.start_date
     prefix = req.prep_gcs_prefix.strip().rstrip("/")
     if prefix and prefix != "universal":
         bucket = _get_bucket()
@@ -187,19 +191,33 @@ def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
             bucket=bucket, prep_gcs_prefix=prefix,
             expected_producer_source_sha=req.expected_producer_source_sha,
         )
+        if expanding:
+            if not dates:
+                raise HTTPException(status_code=400, detail="expanding history calendar empty")
+            history_start = dates[0]
+            evidence = {**evidence, "history_policy": "expanding_verified_source", "history_start": history_start}
         dates = [day for day in dates if req.start_date <= day <= req.end_date]
     else:
+        if expanding:
+            raise HTTPException(status_code=400, detail="expanding history requires immutable prep calendar")
         if req.resume_manifest_path:
             raise HTTPException(status_code=400, detail="resume requires immutable prep calendar")
         dates, evidence = _load_trading_calendar(req.start_date, req.end_date)
         bucket = None
+    def new_windows():
+        result = walk_forward_windows(dates, req.train_window_days, req.test_window_days)
+        if expanding:
+            for window in result:
+                window.train_start = history_start
+        return result
+
     if not req.resume_manifest_path:
-        return dates, evidence, walk_forward_windows(
-            dates, req.train_window_days, req.test_window_days,
-        )
+        return dates, evidence, new_windows()
     parent, _ = load_verified_oof_manifest(
         req.resume_manifest_path, bucket=bucket, require_formal_lineage=True,
     )
+    if parent.get("model_profile_schema_version", "active8-release-model-profiles-v3") != req.model_profile_schema_version:
+        raise HTTPException(status_code=400, detail="resume model profile mismatch")
     if (str(parent.get("start_date") or "") < req.start_date
         or int(parent.get("train_window_days") or 0) != req.train_window_days
         or int(parent.get("test_window_days") or 0) != req.test_window_days):
@@ -207,12 +225,12 @@ def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
     if req.start_date < str(parent.get("start_date") or ""):
         # The existing bootstrap path may prepend folds. Its exact split
         # reuse remains checked by _load_resume_plan before any training.
-        return dates, evidence, walk_forward_windows(dates, req.train_window_days, req.test_window_days)
+        return dates, evidence, new_windows()
     windows = []
     for row in parent.get("windows") or []:
         key = _window_split_key(row)
         wid = int(row["window_id"])
-        if (wid != len(windows) or not (req.start_date <= key[0] <= key[1] < key[2] <= key[3] <= req.end_date)
+        if (wid != len(windows) or not (history_start <= key[0] <= key[1] < key[2] <= key[3] <= req.end_date)
             or (windows and key[2] <= windows[-1].test_end)):
             raise HTTPException(status_code=400, detail="resume parent fold order invalid")
         windows.append(WalkForwardWindow(wid, *key))
@@ -224,7 +242,7 @@ def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
         train = [day for day in dates if day < test[0]][-req.train_window_days:]
         if len(train) != req.train_window_days:
             raise HTTPException(status_code=400, detail="resume immutable training sessions missing")
-        windows.append(WalkForwardWindow(len(windows), train[0], train[-1], test[0], test[-1]))
+        windows.append(WalkForwardWindow(len(windows), history_start if expanding else train[0], train[-1], test[0], test[-1]))
     return dates, {**evidence, "parent_fold_policy": "preserve_verified_parent_append_mature_sessions_v1",
         "parent_manifest_checksum": parent["manifest_checksum"]}, windows
 
@@ -244,7 +262,12 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
                 f"need >= {req.train_window_days + req.test_window_days}"
             ),
         )
-    models = req.models or MODELS_ALL
+    from services.active8_release_model_profiles import model_profiles
+    from services.alpha_model_roster import model_order
+    selected_order = model_order(model_profiles(schema_version=req.model_profile_schema_version),complete=True)
+    models = req.models or list(selected_order)
+    if set(models)-set(selected_order):
+        raise HTTPException(status_code=422,detail="walk_forward_roster_profile_mismatch")
     coverage = walk_forward_model_coverage(models)
     resume_plan = _load_resume_plan(
         req.resume_manifest_path,
@@ -331,7 +354,12 @@ async def walk_forward_run(req: WalkForwardRequest):
         }
         for w in windows
     ]
-    models = req.models or MODELS_ALL
+    from services.active8_release_model_profiles import model_profiles
+    from services.alpha_model_roster import model_order
+    selected_order = model_order(model_profiles(schema_version=req.model_profile_schema_version),complete=True)
+    models = req.models or list(selected_order)
+    if set(models)-set(selected_order):
+        raise HTTPException(status_code=422,detail="walk_forward_roster_profile_mismatch")
     cohort_id = req.cohort_id or (
         f"active8-oof-{req.start_date}-{req.end_date}-"
         f"tr{req.train_window_days}-te{req.test_window_days}"
@@ -351,6 +379,8 @@ async def walk_forward_run(req: WalkForwardRequest):
             "market_env": market_env,
             "batch_count": req.batch_count,
             "models": models,
+            "model_profile_schema_version":req.model_profile_schema_version,
+            "knowledge_cutoff_date":req.knowledge_cutoff_date,
             "concurrent_windows": req.concurrent_windows,
             "start_date": req.start_date,
             "end_date": req.end_date,
@@ -459,6 +489,8 @@ _ACTIVE8_FULL_FIT_MODELS = _ACTIVE8_TREE_MODELS | _ACTIVE8_LIFECYCLE_MODELS | {"
 def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, Any]:
     """Build a deterministic majority-vote tree feature set from outer OOF folds."""
 
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+    full137 = manifest.get("model_profile_schema_version") in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
     aggregate = manifest.get("aggregate") if isinstance(manifest.get("aggregate"), dict) else {}
     expected_folds = int(aggregate.get("oof_ready_folds") or 0)
     fold_features: list[tuple[str, list[str]]] = []
@@ -472,6 +504,8 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
             else {}
         )
         active = sorted({str(name) for name in ((feature_pool or {}).get("tree_active") or []) if str(name)})
+        if full137 and (len(active) != 137 or (window.get("fs_result") or {}).get("selection_method") != "predeclared_full137"):
+            return {"status": "blocked", "reason": "predeclared_full137_fold_evidence_invalid"}
         if active:
             fold_features.append((f"w{int(window.get('window_id') or 0)}", active))
 
@@ -482,7 +516,9 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
             "expected_folds": expected_folds,
             "observed_folds": len(fold_features),
         }
-    min_votes = len(fold_features) // 2 + 1
+    if full137 and any(features != fold_features[0][1] for _, features in fold_features):
+        return {"status": "blocked", "reason": "predeclared_full137_inventory_changed"}
+    min_votes = len(fold_features) if full137 else len(fold_features) // 2 + 1
     votes: dict[str, int] = {}
     for _, features in fold_features:
         for feature in features:
@@ -503,7 +539,7 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
         "cohort_id": str(manifest.get("cohort_id") or ""),
         "source_manifest_checksum": str(manifest.get("manifest_checksum") or ""),
         "target_semantic_version": str(manifest.get("target_semantic_version") or ""),
-        "selection_method": "outer_fold_majority_vote",
+        "selection_method": "predeclared_full137" if full137 else "outer_fold_majority_vote",
         "fold_count": len(fold_features),
         "min_votes": min_votes,
         "fold_ids": [fold_id for fold_id, _ in fold_features],
@@ -555,15 +591,21 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         if isinstance(aggregate.get("per_model_promotion_evidence"), dict)
         else {}
     )
-    release_models = sorted(_ACTIVE8_FULL_FIT_MODELS)
+    from services.alpha_model_roster import model_order
+    from services.active8_release_model_profiles import MODEL_PROFILE_SCHEMA_VERSION, model_profiles
+    profile_schema = manifest.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
+    expected_models = set(model_order(model_profiles(schema_version=profile_schema),complete=True))
+    if manifest.get("model_set") and set(manifest["model_set"]) != expected_models:
+        raise ValueError("oof_full_fit_roster_profile_mismatch")
+    release_models = sorted(expected_models)
     requested_promotion_models = sorted([
         str(name) for name in (aggregate.get("full_fit_eligible_models") or [])
     ])
-    unknown = sorted(set(requested_promotion_models) - _ACTIVE8_FULL_FIT_MODELS)
+    unknown = sorted(set(requested_promotion_models) - expected_models)
     promotion_eligible_models = sorted([
         name
         for name in requested_promotion_models
-        if name in _ACTIVE8_FULL_FIT_MODELS
+        if name in expected_models
         and isinstance(evidence_by_model.get(name), dict)
         and evidence_by_model[name].get("decision") == "PASS"
     ])
@@ -603,7 +645,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         promotion_evidence[name] = evidence
 
     tree_models = sorted(_ACTIVE8_TREE_MODELS)
-    train_groups = ["tree", "dlinear", "patchtst"]
+    train_groups = ["tree", "timexer" if "TimeXer" in expected_models else "dlinear", "patchtst"]
     lifecycle_targets = sorted(_ACTIVE8_LIFECYCLE_MODELS - {"PatchTST"})
     feature_consensus = build_oof_full_fit_feature_consensus(manifest)
     feature_lineage_ready = feature_consensus.get("status") == "ready"
@@ -665,6 +707,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         "sequence_manifest": sequence,
         "prep_manifest": prep,
         "release_models": release_models,
+        "model_profile_schema_version":profile_schema,
         "promotion_eligible_models": promotion_eligible_models,
         "tree_models": tree_models,
         "train_model_groups": train_groups,
@@ -1693,6 +1736,7 @@ async def dispatch_oof_full_fit_training(
         candidate_type="oof_full_fit_release",
         drift_target_models=plan["release_models"],
         train_model_groups=plan["train_model_groups"],
+        model_profile_schema_version=plan["model_profile_schema_version"],
         artifact_lifecycle_targets=plan["artifact_lifecycle_targets"],
         artifact_lifecycle_contracts=lifecycle_contracts,
         artifact_lifecycle_only=not plan["train_model_groups"],
@@ -2702,6 +2746,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
 
 class OofLifecycleRequest(BaseModel):
     cadence: str = "daily"
+    model_profile_schema_version: str = "active8-release-model-profiles-v3"
     end_date: str | None = None
     dry_run: bool = False
     promote: bool = True
@@ -3045,7 +3090,7 @@ _OOF_TARGET_SEMANTIC_VERSION = (
 _OOF_PREP_SCHEMAS = {"active8-canonical-adjusted-prep-v3"}
 
 
-def _latest_canonical_prep_prefix(bucket: object) -> str | None:
+def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = False) -> str | None:
     candidates: list[tuple[str, str, str]] = []
     for blob in bucket.list_blobs(prefix="universal/canonical_adjusted"):
         if not str(blob.name).endswith("/prep/manifest.json"):
@@ -3063,6 +3108,7 @@ def _latest_canonical_prep_prefix(bucket: object) -> str | None:
             and manifest.get("producer_source_sha") == _runtime_source_sha()
             and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
             and str(manifest.get("signal_date_max") or "")[:10]
+            and (not expanded_history or str(manifest.get("output_gcs_prefix") or "").endswith("-expanded1280"))
         ):
             candidates.append((
                 str(manifest["signal_date_max"])[:10],
@@ -3322,7 +3368,7 @@ def _oof_forward_parent_contract(
     }
 
 
-def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
+def _latest_ready_oof_manifest(bucket: object, *, model_profile_schema_version: str | None = None) -> tuple[str, dict] | None:
     import json
 
     ready: list[tuple[str, dict]] = []
@@ -3332,6 +3378,8 @@ def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
         try:
             manifest = json.loads(blob.download_as_text())
         except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never promoted.
+            continue
+        if model_profile_schema_version is not None and manifest.get("model_profile_schema_version", "active8-release-model-profiles-v3") != model_profile_schema_version:
             continue
         producer_source_sha = str(
             (manifest.get("prep_manifest") or {}).get("producer_source_sha") or ""
@@ -3514,6 +3562,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             status_code=400,
             detail="OOF lifecycle scheduler ticket identity must be complete",
         )
+    from services.active8_release_model_profiles import model_profiles, MODEL_PROFILE_SCHEMA_VERSION
+    model_profiles(schema_version=req.model_profile_schema_version)  # Validate before dispatch.
     new_distribution = load_merged_trading_config_with_contract().config.get('l4Distribution') is not None
     bucket = _get_bucket()
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
@@ -3525,7 +3575,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             )
         except Exception:  # noqa: BLE001 - durable job owns full error reporting.
             completed = None
-        if completed is not None and not new_distribution:
+        if completed is not None and not new_distribution and req.model_profile_schema_version == MODEL_PROFILE_SCHEMA_VERSION:
             return completed
         from datetime import datetime, timedelta, timezone
         from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
@@ -3535,6 +3585,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         run_id = f"{callback_task}:{run_date}:resolve-after-prep"
         env_overrides = {
             "OOF_MATERIALIZE_CADENCE": cadence,
+            "OOF_MATERIALIZE_MODEL_PROFILE_SCHEMA": req.model_profile_schema_version,
             "OOF_MATERIALIZE_END_DATE": run_date,
             "OOF_MATERIALIZE_PROMOTE": "1" if req.promote else "0",
             "OOF_MATERIALIZE_DISPATCH_FULL_FIT": "1" if req.dispatch_full_fit else "0",
@@ -3592,14 +3643,23 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                         "promotion_attempted": False}
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         parent = (exact_path, exact_manifest)
+        # An exact continuation keeps its immutable cohort's recipe.
+        req.model_profile_schema_version = exact_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION)
     else:
-        parent = _latest_ready_oof_manifest(bucket)
+        parent = (_latest_ready_oof_manifest(bucket) if req.model_profile_schema_version == MODEL_PROFILE_SCHEMA_VERSION
+                  else _latest_ready_oof_manifest(bucket, model_profile_schema_version=req.model_profile_schema_version))
     parent_manifest = parent[1] if parent is not None else {}
+    cohort_version = OOF_COHORT_ID_VERSION
+    if req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
+        cohort_version += "-" + req.model_profile_schema_version.removeprefix("active8-release-model-profiles-")
+
     # Parent owns reusable fold lineage; the calendar and every new fold must
     # use the latest independently verified immutable prep.
     # Pin model lineage, not the daily maturity watermark, during release polling.
     pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
     prep_gcs_prefix = "" if pinned_prep else (_latest_canonical_prep_prefix(bucket) or "")
+    if not pinned_prep and req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
+        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket, expanded_history=True) or ""
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
     if not prep_gcs_prefix or prep_gcs_prefix == "universal":
@@ -3626,7 +3686,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     selected: tuple[str, dict] | None = None
     daily_forward_extension: dict[str, Any] | None = None
     daily_forward_extension_plan: dict[str, Any] | None = None
-    daily_batch_ready = False
+    daily_batch_ready = bool(cadence == "daily" and req.dispatch_full_fit and parent is None and req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION)
     if cadence == "daily" and req.dispatch_full_fit and parent and not req.continuation_only:
         physical_dates, coverage = _oof_manifest_observed_core_dates(bucket, parent_manifest)
         calendar_evidence["parent_physical_coverage"] = coverage
@@ -3691,6 +3751,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             parent_start = str(parent_manifest.get("start_date") or "")[:10]
             compatible_parent = (
                 parent_start in mature_dates
+                and parent_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION) == req.model_profile_schema_version
                 and int(parent_manifest.get("train_window_days") or 0) == 60
                 and int(parent_manifest.get("test_window_days") or 0) == 10
                 and parent_manifest.get("target_semantic_version")
@@ -3738,7 +3799,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 manifest_path = str(parent_path)
             else:
                 cohort_id = (
-                    f"active8-oof-{OOF_COHORT_ID_VERSION}-{start_date}-{signal_end_date}-"
+                    f"active8-oof-{cohort_version}-{start_date}-{signal_end_date}-"
                     f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
                 )
                 manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
@@ -3753,7 +3814,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             start_date = cohort_dates[0]
             signal_end_date = cohort_dates[-1]
             cohort_id = (
-                f"active8-oof-{OOF_COHORT_ID_VERSION}-{start_date}-{signal_end_date}-"
+                f"active8-oof-{cohort_version}-{start_date}-{signal_end_date}-"
                 f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
             )
             manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
@@ -3838,6 +3899,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "promotion_attempted": False,
                 }
             plan = WalkForwardRequest(
+                model_profile_schema_version=req.model_profile_schema_version,
                 start_date=start_date,
                 end_date=signal_end_date,
                 train_window_days=OOF_TRAIN_SESSIONS,
@@ -3917,7 +3979,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 f"expected={req.expected_cohort_id} selected={cohort_id}"
             ),
         )
-    if new_distribution:
+    from services.l4_oof_lifecycle import uses_native_l4
+    if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base
         return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,
             as_of=knowledge_cutoff_date,cadence=cadence,dry_run=req.dry_run,

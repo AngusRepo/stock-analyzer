@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from services.ev_lineage_contract import OOF_ENSEMBLE_SEMANTIC_VERSION
+from services.alpha_model_roster import model_order, validate_order, stacker_features
 
 ACTIVE8_MODELS = (
     "LightGBM",
@@ -67,16 +68,18 @@ def _fit_ridge(
     regularization: float,
     *,
     active_models: tuple[str, ...] | None = None,
+    model_order: tuple[str, ...] = ACTIVE8_MODELS,
 ) -> tuple[np.ndarray, float]:
     """Fit convex ridge while forbidding sign inversion of model-rank alpha."""
 
     from scipy.optimize import lsq_linear
 
-    selected = tuple(ACTIVE8_MODELS if active_models is None else active_models)
-    selected_indices = [ACTIVE8_MODELS.index(name) for name in selected]
+    model_order = validate_order(model_order)
+    selected = tuple(model_order if active_models is None else active_models)
+    selected_indices = [model_order.index(name) for name in selected]
     feature_indices = [
         *selected_indices,
-        *[index + len(ACTIVE8_MODELS) for index in selected_indices],
+        *[index + len(model_order) for index in selected_indices],
     ]
     if not feature_indices:
         return np.zeros(x.shape[1], dtype=float), float(np.mean(y))
@@ -153,6 +156,7 @@ def _select_regularization(
     *,
     label_known_dates: np.ndarray,
     active_models: tuple[str, ...] | None = None,
+    model_order: tuple[str, ...] = ACTIVE8_MODELS,
 ) -> float:
     # Never substitute prediction dates for label maturity: that would silently
     # restore overlapping targets across the inner validation boundary.
@@ -184,6 +188,7 @@ def _select_regularization(
             y[train_idx],
             regularization,
             active_models=active_models,
+            model_order=model_order,
         )
         prediction = x[validation_idx] @ weights + intercept
         ic, _ = _equal_date_market_ic(
@@ -204,16 +209,17 @@ def _fit_selected_ridge(
     markets: np.ndarray,
     *,
     label_known_dates: np.ndarray,
+    model_order: tuple[str, ...] = ACTIVE8_MODELS,
 ) -> tuple[np.ndarray, float, float, tuple[str, ...]]:
     """Use the convex nonnegative-ridge active set; no hand-ranked model quota."""
 
     regularization = _select_regularization(
-        x, y, dates, markets, label_known_dates=label_known_dates
+        x, y, dates, markets, label_known_dates=label_known_dates, model_order=model_order
     )
-    weights, intercept = _fit_ridge(x, y, regularization)
+    weights, intercept = _fit_ridge(x, y, regularization, model_order=model_order)
     selected_models = tuple(
         model_name
-        for index, model_name in enumerate(ACTIVE8_MODELS)
+        for index, model_name in enumerate(model_order)
         if float(weights[index]) > MODEL_WEIGHT_ZERO_TOLERANCE
     )
     if not selected_models:
@@ -223,7 +229,7 @@ def _fit_selected_ridge(
             regularization,
             selected_models,
         )
-    if len(selected_models) != len(ACTIVE8_MODELS):
+    if len(selected_models) != len(model_order):
         regularization = _select_regularization(
             x,
             y,
@@ -231,12 +237,14 @@ def _fit_selected_ridge(
             markets,
             label_known_dates=label_known_dates,
             active_models=selected_models,
+            model_order=model_order,
         )
         weights, intercept = _fit_ridge(
             x,
             y,
             regularization,
             active_models=selected_models,
+            model_order=model_order,
         )
     return weights, intercept, regularization, selected_models
 
@@ -255,12 +263,12 @@ def _rank_by_date_market(rows: list[dict[str, Any]]) -> None:
             rows[idx]["ensemble_rank"] = float(rank / (len(indices) - 1))
 
 
-def _rerank_models_on_available_universe(rows: list[dict[str, Any]]) -> None:
+def _rerank_models_on_available_universe(rows: list[dict[str, Any]], *, model_order=ACTIVE8_MODELS) -> None:
     groups: dict[tuple[str, str], list[int]] = defaultdict(list)
     for idx, row in enumerate(rows):
         groups[(row["prediction_date"], row["market_segment"])].append(idx)
     for indices in groups.values():
-        for model_idx, model_name in enumerate(ACTIVE8_MODELS):
+        for model_idx, model_name in enumerate(model_order):
             available = [idx for idx in indices if row_model_available(rows[idx], model_name)]
             if len(available) == 1:
                 rows[available[0]]["x"][model_idx] = 0.5
@@ -282,12 +290,14 @@ def build_chronological_oof_stack(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Stack PIT model ranks with explicit availability and resolved prior folds."""
 
+    order = model_order(row.get("model_name") for row in prediction_rows)
+    feature_names = stacker_features(order)
     grouped: dict[tuple[str, str, str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     fold_ranges: dict[str, tuple[str, str]] = {}
     duplicate_rows = 0
     for row in prediction_rows:
         model = str(row.get("model_name") or "")
-        if model not in ACTIVE8_MODELS:
+        if model not in order:
             continue
         key = (
             str(row.get("fold_id") or ""),
@@ -313,8 +323,8 @@ def build_chronological_oof_stack(
     missing_by_model: dict[str, int] = defaultdict(int)
     max_target_lineage_drift = 0.0
     for (fold_id, prediction_date, symbol, market), models in grouped.items():
-        available_models = [name for name in ACTIVE8_MODELS if name in models]
-        missing_models = [name for name in ACTIVE8_MODELS if name not in models]
+        available_models = [name for name in order if name in models]
+        missing_models = [name for name in order if name not in models]
         if missing_models:
             incomplete += 1
             for model_name in missing_models:
@@ -343,7 +353,7 @@ def build_chronological_oof_stack(
         }
         if any(not version for version in artifact_versions.values()):
             raise ValueError("active8_oof_artifact_version_missing")
-        availability = {name: name in models for name in ACTIVE8_MODELS}
+        availability = {name: name in models for name in order}
         candidates.append({
             "fold_id": fold_id,
             "prediction_date": prediction_date,
@@ -352,8 +362,8 @@ def build_chronological_oof_stack(
             "label_known_date": label_known_date,
             "target_return": float(np.mean(target_values)),
             "x": np.concatenate([
-                np.full(len(ACTIVE8_MODELS), 0.5, dtype=float),
-                np.asarray([1.0 if availability[name] else 0.0 for name in ACTIVE8_MODELS]),
+                np.full(len(order), 0.5, dtype=float),
+                np.asarray([1.0 if availability[name] else 0.0 for name in order]),
             ]),
             "raw_by_model": {
                 name: float(models[name].get("raw_score", models[name]["rank_score"]))
@@ -365,7 +375,7 @@ def build_chronological_oof_stack(
 
     if duplicate_rows:
         raise ValueError(f"active8_oof_duplicate_model_rows:{duplicate_rows}")
-    _rerank_models_on_available_universe(candidates)
+    _rerank_models_on_available_universe(candidates, model_order=order)
     fold_order = sorted(fold_ranges, key=lambda fold: (fold_ranges[fold][0], fold))
     output: list[dict[str, Any]] = []
     fold_evidence: list[dict[str, Any]] = []
@@ -393,6 +403,7 @@ def build_chronological_oof_stack(
                 )
                 weights, intercept, regularization, selected_models = _fit_selected_ridge(
                     x_train, y_train, dates_train, markets_train,
+                    model_order=order,
                     label_known_dates=np.asarray(
                         [row["label_known_date"] for row in prior], dtype=object
                     ),
@@ -404,10 +415,10 @@ def build_chronological_oof_stack(
                 )
             else:
                 regularization = None
-                selected_models = tuple(ACTIVE8_MODELS)
+                selected_models = tuple(order)
                 weights = np.concatenate([
-                    np.full(len(ACTIVE8_MODELS), 1.0 / len(ACTIVE8_MODELS), dtype=float),
-                    np.zeros(len(ACTIVE8_MODELS), dtype=float),
+                    np.full(len(order), 1.0 / len(order), dtype=float),
+                    np.zeros(len(order), dtype=float),
                 ])
                 intercept = 0.0
                 source = "warmup_equal_weight_baseline"
@@ -428,7 +439,7 @@ def build_chronological_oof_stack(
                 "regularization": regularization,
                 "selected_models": list(selected_models),
                 "intercept": intercept,
-                "weights": dict(zip(STACKER_FEATURE_NAMES, weights.tolist())),
+                "weights": dict(zip(feature_names, weights.tolist())),
                 "source": source,
             })
         _rank_by_date_market(fold_rows)
@@ -449,6 +460,7 @@ def build_chronological_oof_stack(
         "schema_version": "active8-oof-stacker-evidence-v1",
         "inner_tuning_policy": INNER_TUNING_POLICY,
         "stacker_semantic_version": STACKER_SEMANTIC_VERSION,
+        "model_order": list(order),
         "input_rows": len(prediction_rows),
         "complete_candidate_rows": sum(
             1 for row in candidates if all(row["model_availability"].values())

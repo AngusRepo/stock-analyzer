@@ -675,7 +675,8 @@ async def artifact_registry_champion_pointers(model_name: str | None = None, lim
         # Current production slots are exactly Active-8. Legacy pointer names remain
         # available below as rollback/audit lineage, but must not expand the
         # serving readiness surface or its model_count.
-        model_names = sorted(set(ACTIVE8_MODEL_NAMES))
+        from services.alpha_model_roster import LEGACY_MODELS, validate_order
+        model_names = validate_order(bundle.get("model_order", LEGACY_MODELS))
         models = {}
         for name in model_names:
             pointer = pointer_by_model.get(name) or {}

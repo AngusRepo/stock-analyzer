@@ -118,7 +118,9 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
     while time.monotonic() < deadline:
         result = milp(objective * 10000., integrality=integrality, bounds=bounds,
                       constraints=LinearConstraint(matrix, lhs, rhs),
-                      options={'time_limit': max(.01, deadline-time.monotonic()), 'mip_rel_gap': 1e-10})
+                      options={'time_limit': max(.01, deadline-time.monotonic()), 'mip_rel_gap': 1e-10,
+                               # HiGHS defaults to 1e-6, looser than our 1e-8 certificate.
+                               'mip_feasibility_tolerance': max(1e-10, tolerance*.1)})
         rounds += 1
         bound = getattr(result, 'mip_dual_bound', None)
         if bound is not None and math.isfinite(bound):

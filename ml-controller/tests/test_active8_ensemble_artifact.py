@@ -71,13 +71,13 @@ def test_artifact_is_deterministic_learned_and_binds_all_eight_models(monkeypatc
     original = artifact._fit_selected_ridge
     fit_calls = []
 
-    def capture(x, y, dates, markets, *, label_known_dates):
+    def capture(x, y, dates, markets, *, label_known_dates, model_order):
         expected = np.asarray([
             (date.fromisoformat(day) + timedelta(days=6)).isoformat() for day in dates
         ])
         np.testing.assert_array_equal(label_known_dates, expected)
         fit_calls.append(len(dates))
-        return original(x, y, dates, markets, label_known_dates=label_known_dates)
+        return original(x, y, dates, markets, label_known_dates=label_known_dates, model_order=model_order)
 
     monkeypatch.setattr(artifact, "_fit_selected_ridge", capture)
     first = _build(_rows())

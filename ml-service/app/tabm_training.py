@@ -31,6 +31,8 @@ from .training_policy import (
 from .training_reproducibility import configure_training_reproducibility
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
+from .tabm_output_contract import MEMBER_CONTRACT, member_loss, member_rank_prediction
+
 MODEL_NAME = "TabM"
 DEFAULT_BATCH_COUNT = 5
 DEFAULT_EPOCHS = 16
@@ -147,8 +149,7 @@ def _predict_tabm_batches(model: Any, x: np.ndarray, *, batch_size: int, device)
     with torch.no_grad():
         for start in range(0, len(x), max(1, batch_size)):
             xb = torch.tensor(x[start:start + batch_size], dtype=torch.float32, device=device)
-            pred_raw = _reduce_tabm_output(_tabm_forward(model, xb))
-            pred = torch.sigmoid(pred_raw).detach().cpu().numpy().reshape(-1)
+            pred = member_rank_prediction(_tabm_forward(model, xb)).detach().cpu().numpy().reshape(-1)
             outputs.append(pred)
     return np.concatenate(outputs, axis=0) if outputs else np.array([], dtype=np.float32)
 
@@ -324,7 +325,6 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
     x, medians, scales = _robust_standardize(x_raw[train_fit_idx], x_raw, clip_value=standardization_clip)
 
     import torch
-    import torch.nn.functional as F
 
     if research_device is not None and (
         generation_mode not in {"purged_oof", "local_full_fit"}
@@ -353,8 +353,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
                 xb = xb.to(device)
                 yb = yb.to(device)
                 optimizer.zero_grad(set_to_none=True)
-                pred = torch.sigmoid(_reduce_tabm_output(_tabm_forward(model, xb)))
-                loss = F.smooth_l1_loss(pred, yb)
+                loss = member_loss(_tabm_forward(model, xb), yb)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
                 optimizer.step()
@@ -405,6 +404,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         "device": str(device),
         "seed": seed,
         "reproducibility": reproducibility,
+        "output_contract": MEMBER_CONTRACT,
     }
     training_config_attestation = build_model_training_config_attestation(
         MODEL_NAME,
@@ -421,8 +421,9 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         "n_features": int(x.shape[1]),
     }
     metadata = attach_prep_lineage_aliases({
-        "schema_version": "tabm_formal_artifact_v1",
-        "artifact_schema": "torch_tabm_ranker_v1",
+        "schema_version": "tabm_formal_artifact_v2",
+        "artifact_schema": "torch_tabm_ranker_v2",
+        "output_contract": MEMBER_CONTRACT,
         "version": version,
         "model_name": MODEL_NAME,
         "model_type": "tabular_neural_tabm",
@@ -466,7 +467,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         **build_model_feature_policy_metadata(
             MODEL_NAME,
             dataset.feature_names,
-            selection_evidence={"selection_method": "production_artifact"},
+            selection_evidence={"selection_method": "governed_full_feature_contract"},
             feature_release_mode=payload.get("feature_release_mode") or payload.get("candidate_type"),
         ),
         **({"model_training_config_attestation": training_config_attestation} if training_config_attestation else {}),

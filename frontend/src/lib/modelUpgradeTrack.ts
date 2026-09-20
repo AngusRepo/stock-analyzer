@@ -38,6 +38,15 @@ export const MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS = [
   'iTransformer',
 ] as const
 
+// Only the published ensemble owns the replacement slot. Research artifacts do not.
+export function formalModelSlots(order?: readonly string[]): string[] {
+  if (!order) return [...MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS]
+  const legacy = [...MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS] as string[]
+  const timeXer = legacy.map(name => name === 'DLinear' ? 'TimeXer' : name)
+  if (![legacy, timeXer].some(expected => expected.length === order.length && expected.every((name, i) => name === order[i]))) return []
+  return [...order]
+}
+
 export const MODEL_POOL_FORMAL_L3_SLOT_IDS = MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS
 
 export const MODEL_POOL_L2_FEATURE_SIDECAR_IDS = [
@@ -135,6 +144,13 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     roleEn: 'L3 lightweight sequence baseline.',
     requiredEvidence: CORE_ARTIFACT_EVIDENCE,
     canVote: true,
+  },
+  {
+    id: 'TimeXer', stage: 'production_slot_member', family: 'sequence_family',
+    layer: 'L3 core family', titleZh: 'TimeXer L3 replacement slot',
+    roleZh: 'A 使用價格序列取代 DLinear；B 使用 exo137，兩者各維持八組。正式狀態依已發布 ensemble。',
+    roleEn: 'Official TimeXer replaces DLinear within the published eight-model roster.',
+    requiredEvidence: CORE_ARTIFACT_EVIDENCE, canVote: true,
   },
   {
     id: 'PatchTST',

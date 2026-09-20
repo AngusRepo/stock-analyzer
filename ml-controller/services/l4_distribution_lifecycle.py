@@ -1,6 +1,6 @@
 """Candidate refresh and evidence-bound Paper release; no automatic promotion."""
 from copy import deepcopy
-from services.l4_distribution import FEATURE_SCHEMA, digest, fit_candidate, predict, validate_bundle
+from services.l4_distribution import FEATURE_SCHEMA, digest, fit_candidate, predict, validate_bundle, feature_schema, feature_order
 
 ACCEPTANCE_CHECKS = ('native_feature_parity','purged_labels','same_pool','same_calendar','same_costs',
     'same_risk_constraints','legal_share_accounting','partial_fills','unfilled_exposure_reserved',
@@ -14,7 +14,7 @@ def validate_acceptance(receipt,bundle):
     if (receipt.get('schema_version')!='l4-paper-acceptance-v1'
             or receipt.get('model_checksum')!=bundle['model_checksum']
             or receipt.get('l3_identity_checksum')!=digest(bundle['l3_identity'])
-            or receipt.get('feature_schema')!=FEATURE_SCHEMA
+            or receipt.get('feature_schema')!=bundle.get('feature_schema')
             or not all(receipt.get('checks',{}).get(key) is True for key in ACCEPTANCE_CHECKS)
             or len(receipt.get('source_evidence_checksum',''))!=64):
         raise ValueError('l4_distribution_acceptance_evidence_incomplete')
@@ -77,7 +77,7 @@ def refresh_candidate(rows,*,dataset_receipt,l3_identity,as_of,cadence):
         raise ValueError('l4_distribution_refresh_cadence_invalid')
     if (dataset_receipt.get('schema_version')!='l4-native-oof-dataset-v1'
             or dataset_receipt.get('rows_checksum')!=digest(rows)
-            or dataset_receipt.get('feature_schema')!=FEATURE_SCHEMA
+            or not rows or dataset_receipt.get('feature_schema')!=feature_schema(feature_order(rows[0]['features']))
             or dataset_receipt.get('parent_l3_identity')!=l3_identity):
         raise ValueError('l4_distribution_training_dataset_unverified')
     from services.l4_l3_baseline import validate_baseline

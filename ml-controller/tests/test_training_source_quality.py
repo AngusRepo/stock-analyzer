@@ -61,3 +61,40 @@ def test_shareholding_availability_rolls_utc_to_taipei_and_orders_observations()
     got=rt._snapshot_per_stock_ts_map(monthly_revenue_rows=[],canonical_fundamental_rows=[],margin_rows=[],
         shareholding_rows=rows,stock_ids=[1])
     assert got[1]=={'2026-08-09':{'retail_pct':30}}
+
+
+
+def test_streamed_grouping_preserves_interleaved_dates_duplicates_and_tail():
+    rows = [
+        {"stock_id": 2, "date": "2026-03-01", "value": 20},
+        {"stock_id": 1, "date": "2026-03-02", "value": 12},
+        {"stock_id": 1, "date": "2026-03-01", "value": 10},
+        {"stock_id": 9, "date": "2026-03-03", "value": 99},
+        {"stock_id": 1, "date": "2026-03-02", "value": 13},
+    ]
+    got = rt._group_rows_by_key(iter(rows), key="stock_id", allowed={1, 2, 3}, limit=2,
+                               mapper=lambda r: {"date": r["date"], "value": r["value"]})
+    assert got[1] == [{"date": "2026-03-02", "value": 12}, {"date": "2026-03-02", "value": 13}]
+    assert got[2] == [{"date": "2026-03-01", "value": 20}]
+    assert got[3] == []
+
+
+def test_parquet_reader_defers_download_and_releases_temporary_file(monkeypatch):
+    import polars as pl
+    from pathlib import Path
+    from google.cloud import storage
+    paths = []
+    class Blob:
+        def download_to_filename(self, filename):
+            paths.append(Path(filename))
+            pl.DataFrame({"stock_id": [1, 2], "date": ["2026-01-01"] * 2}).write_parquet(filename)
+    class Client:
+        def bucket(self, name): return self
+        def blob(self, name): return Blob()
+    monkeypatch.setattr(storage, "Client", Client)
+    rows = rt._read_gcs_parquet_rows("gs://test/prices.parquet")
+    assert paths == []
+    assert next(rows)["stock_id"] == 1
+    assert paths[0].exists()
+    assert list(rows) == [{"stock_id": 2, "date": "2026-01-01"}]
+    assert not paths[0].exists()

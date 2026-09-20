@@ -7,6 +7,7 @@ import json
 import math
 from typing import Any, Iterable
 
+from .alpha_model_roster import model_order, validate_order
 from .active8_release_model_profiles import (
     ACTIVE8_RELEASE_MODEL_PROFILES,
     MODEL_PROFILE_SCHEMA_VERSION,
@@ -51,10 +52,18 @@ _MODEL_SPECS: dict[str, dict[str, str]] = {
     "ExtraTrees": {"family": "tree", "feature_schema": "formal137_selected_tabular_v1", "trainer": "universal_tree"},
     "TabM": {"family": "tabular_neural", "feature_schema": "formal137_selected_tabular_v1", "trainer": "tabm_artifact"},
     "GNN": {"family": "graph", "feature_schema": "graph_node_features_from_governed_tabular_universe", "trainer": "graphsage_artifact"},
+    "TimeXer": {"family": "learned_sequence", "feature_schema": "timexer_causal_price_or_exo137_v1", "trainer": "official_timexer"},
     "DLinear": {"family": "sequence", "feature_schema": "close_univariate_decomposition_v1", "trainer": "dlinear_sequence"},
     "PatchTST": {"family": "learned_sequence", "feature_schema": "close_channel_independent_v1", "trainer": "neuralforecast_patchtst"},
     "iTransformer": {"family": "learned_sequence", "feature_schema": "close_cross_stock_panel_v1", "trainer": "neuralforecast_itransformer"},
 }
+
+
+def _model_spec(name: str, schema: str) -> dict[str, str]:
+    spec = dict(_MODEL_SPECS[name])
+    if schema in {"active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"} and name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM"}:
+        spec["feature_schema"] = "formal137_full_tabular_v1"
+    return spec
 
 
 def _json_safe(value: Any) -> Any:
@@ -83,18 +92,22 @@ def _checksum(payload: dict[str, Any]) -> str:
 def normalize_release_execution_scope(
     train_groups: Iterable[str] | None,
     artifact_targets: Iterable[str] | None,
+    *, model_profile_schema_version: str = MODEL_PROFILE_SCHEMA_VERSION,
 ) -> tuple[list[str], list[str]]:
     """Return the one canonical execution scope; callers cannot silently omit a model."""
 
     requested_groups = {str(value).strip() for value in (train_groups or ()) if str(value).strip()}
     requested_targets = {str(value).strip() for value in (artifact_targets or ()) if str(value).strip()}
-    unknown_groups = requested_groups - set(RELEASE_TRAIN_GROUPS)
+    order = model_order(model_profiles(schema_version=model_profile_schema_version), complete=True)
+    groups = ("tree", "timexer", "patchtst") if "TimeXer" in order else RELEASE_TRAIN_GROUPS
+    # A caller cannot explicitly request the displaced DLinear trainer.
+    unknown_groups = requested_groups - set(groups)
     unknown_targets = requested_targets - set(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
     if unknown_groups:
         raise ValueError(f"release_training_group_not_allowed:{','.join(sorted(unknown_groups))}")
     if unknown_targets:
         raise ValueError(f"release_artifact_target_not_allowed:{','.join(sorted(unknown_targets))}")
-    return list(RELEASE_TRAIN_GROUPS), list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
+    return list(groups), list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
 
 
 def build_release_training_contract(
@@ -140,6 +153,9 @@ def build_release_training_contract(
             or not input_lineage["source_cohort_id"]
         ):
             raise ValueError("release_training_input_lineage_missing_or_invalid")
+    profiles = model_profiles(execution_profile=execution_profile, schema_version=model_profile_schema_version)
+    order = model_order(profiles, complete=True)
+    groups = ("tree", "timexer", "patchtst") if "TimeXer" in order else RELEASE_TRAIN_GROUPS
     contract: dict[str, Any] = {
         "schema_version": RELEASE_CONTRACT_SCHEMA_VERSION,
         "run_date": business_date,
@@ -149,13 +165,13 @@ def build_release_training_contract(
         "dataset_snapshot_checksum": snapshot_checksum,
         "input_lineage": input_lineage,
         "producer_source_sha": source_sha,
-        "models": list(ACTIVE8_MODEL_NAMES),
-        "train_groups": list(RELEASE_TRAIN_GROUPS),
+        "models": list(order),
+        "train_groups": list(groups),
         "artifact_lifecycle_targets": list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS),
         "target_semantic_version": TARGET_SEMANTIC,
         "score_semantic": SCORE_SEMANTIC,
         "model_profile_schema_version": model_profile_schema_version,
-        "model_profiles": model_profiles(execution_profile=execution_profile, schema_version=model_profile_schema_version),
+        "model_profiles": profiles,
         "validation": dict(RELEASE_VALIDATION_CONTRACT),
         "configuration_selection": {
             "release_mode": "single_predeclared_config",
@@ -164,7 +180,7 @@ def build_release_training_contract(
             "research_selection_requires_model_specific_pbo": True,
             "cohort_pbo_must_not_be_used_as_per_model_pbo": True,
         },
-        "model_specs": _MODEL_SPECS,
+        "model_specs": {name: _model_spec(name, model_profile_schema_version) for name in order},
     }
     if execution_profile is not None:
         contract["execution_profile"] = execution_profile
@@ -180,9 +196,14 @@ def validate_release_training_contract(contract: dict[str, Any]) -> dict[str, An
         raise ValueError("release_training_contract_schema_mismatch")
     if str(contract.get("contract_checksum") or "") != _checksum(unsigned):
         raise ValueError("release_training_contract_checksum_mismatch")
-    if tuple(contract.get("models") or ()) != ACTIVE8_MODEL_NAMES:
+    profiles = model_profiles(execution_profile=contract.get("execution_profile"), schema_version=contract.get("model_profile_schema_version"))
+    order = model_order(profiles, complete=True)
+    if contract.get("model_specs") != {name: _model_spec(name, contract.get("model_profile_schema_version")) for name in order}:
+        raise ValueError("release_training_contract_model_specs_mismatch")
+    if tuple(contract.get("models") or ()) != order:
         raise ValueError("release_training_contract_model_set_mismatch")
-    if tuple(contract.get("train_groups") or ()) != RELEASE_TRAIN_GROUPS:
+    groups = ("tree", "timexer", "patchtst") if "TimeXer" in order else RELEASE_TRAIN_GROUPS
+    if tuple(contract.get("train_groups") or ()) != groups:
         raise ValueError("release_training_contract_group_set_mismatch")
     if tuple(contract.get("artifact_lifecycle_targets") or ()) != RELEASE_ARTIFACT_LIFECYCLE_TARGETS:
         raise ValueError("release_training_contract_target_set_mismatch")
@@ -221,7 +242,7 @@ def build_model_training_config_attestation(
 ) -> dict[str, Any]:
     verified = validate_release_training_contract(contract)
     model = str(model_name or "").strip()
-    if model not in ACTIVE8_MODEL_NAMES:
+    if model not in verified["models"]:
         raise ValueError(f"release_training_model_not_allowed:{model}")
     config = _json_safe(dict(effective_config or {}))
     if not config:
@@ -234,7 +255,7 @@ def build_model_training_config_attestation(
         "schema_version": MODEL_CONFIG_ATTESTATION_SCHEMA_VERSION,
         "release_contract_checksum": verified["contract_checksum"],
         "model_name": model,
-        "model_spec": _MODEL_SPECS[model],
+        "model_spec": verified["model_specs"][model],
         "model_profile_schema_version": verified["model_profile_schema_version"],
         "model_profile": profile,
         "model_profile_checksum": profile_checksum(profile),
@@ -274,7 +295,7 @@ def validate_model_training_config_attestation(
         raise ValueError("model_training_config_attestation_selection_mode_invalid")
     if int(attestation.get("selection_trials") or 0) != 1:
         raise ValueError("model_training_config_attestation_trial_count_invalid")
-    if attestation.get("model_spec") != _MODEL_SPECS[str(expected_model_name)]:
+    if attestation.get("model_spec") != _model_spec(str(expected_model_name), attestation.get("model_profile_schema_version")):
         raise ValueError("model_training_config_attestation_model_spec_mismatch")
     profile = dict(attestation.get("model_profile") or {})
     if attestation.get("model_profile_schema_version") not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
@@ -324,10 +345,11 @@ def validate_release_artifact_receipts(
     """Require one checksum-bound candidate artifact receipt for every Active-8 model."""
 
     verified = validate_release_training_contract(contract)
-    if tuple(receipts.keys()) != ACTIVE8_MODEL_NAMES:
+    order = validate_order(verified["models"])
+    if tuple(receipts.keys()) != order:
         raise ValueError("release_artifact_receipt_model_set_mismatch")
     normalized: dict[str, dict[str, Any]] = {}
-    for model in ACTIVE8_MODEL_NAMES:
+    for model in order:
         receipt = dict(receipts.get(model) or {})
         missing = [
             key
@@ -374,7 +396,7 @@ def validate_release_artifact_receipts(
     return {
         "status": "complete",
         "models_completed": len(normalized),
-        "models_required": len(ACTIVE8_MODEL_NAMES),
+        "models_required": len(order),
         "contract_checksum": verified["contract_checksum"],
         "receipts": normalized,
     }
@@ -395,17 +417,19 @@ def reconcile_release_artifact_receipts_from_immutable_metadata(
     expected_checksum = str(stage.get("checksum") or "").lower()
     if len(expected_checksum) != 64 or any(char not in "0123456789abcdef" for char in expected_checksum):
         raise ValueError("monthly_completion_reconciliation_contract_checksum_invalid")
-    if set(raw_receipts) != set(ACTIVE8_MODEL_NAMES):
-        raise ValueError("monthly_completion_reconciliation_model_set_mismatch")
+    try:
+        order = model_order(raw_receipts, complete=True)
+    except ValueError as exc:
+        raise ValueError("monthly_completion_reconciliation_model_set_mismatch") from exc
 
     receipts = {
         model: normalize_release_raw_artifact_receipt(raw_receipts.get(model))
-        for model in ACTIVE8_MODEL_NAMES
+        for model in order
     }
     producer_source_shas: set[str] = set()
     execution_profiles: set[str | None] = set()
     profile_schemas: set[str] = set()
-    for model in ACTIVE8_MODEL_NAMES:
+    for model in order:
         metadata = dict(receipts[model].get("metadata") or {})
         attestation = validate_model_training_config_attestation(
             metadata.get("model_training_config_attestation"),

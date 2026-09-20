@@ -15,9 +15,10 @@ export async function checkP5Losses(
       `SELECT price, shares, commission, tax, note
          FROM paper_orders
         WHERE account_id=? AND side='sell'
+          AND id > COALESCE((SELECT MAX(cutoff_sell_id) FROM paper_p5_rearms_v1 WHERE account_id=?),0)
         ORDER BY id DESC
         LIMIT 5`,
-    ).bind(paperAccountId()).all<any>()
+    ).bind(paperAccountId(), paperAccountId()).all<any>()
 
     if (!recentSells || recentSells.length < 3) return null
 

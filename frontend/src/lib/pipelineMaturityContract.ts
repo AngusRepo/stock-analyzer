@@ -1,3 +1,4 @@
+import type { StrategyAbTag } from '../../../worker/src/lib/strategyAbContract'
 export type ActiveMlEnsembleVersion = {
   status: 'serving' | 'blocked' | 'missing' | 'error'
   artifact_id: string | null; cohort_id: string | null; validation_end_date: string | null
@@ -220,7 +221,7 @@ export type PairedNavShadowReadModel = {
   pairs: Array<{ pair_id: string; sessions: number; latest_session: string | null; accounted_sessions: number;
     unverified_sessions: number; undefined_return_sessions?: number; zero_nav_sessions?: number;
     latest_accounting_session: string; candidate_checksum: string; baseline_checksum: string;
-    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement' | 'strategy_bundle_replacement'; baseline_kind: string; metadata_sessions: number };
+    comparison?: { owner: string; kind: 'incumbent_replacement' | 'incremental_layer' | 'route_policy_contrast' | 'allocator_policy_contrast' | 'atomic_strategy_replacement' | 'strategy_bundle_replacement'; baseline_kind: string; metadata_sessions: number; strategy_ab?: StrategyAbTag };
     lifecycle?: { reason: 'comparison_changed'; transition_signal_date: string; final_session_date: string;
       successor_pair_id: string; changed_fields: string[] } }>
   promotion_allowed: false

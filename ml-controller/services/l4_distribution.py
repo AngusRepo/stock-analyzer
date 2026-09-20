@@ -13,6 +13,7 @@ import math
 from typing import Any
 
 import numpy as np
+from services.alpha_model_roster import model_order, LEGACY_MODELS
 
 SCHEMA = "l4-distribution-v1"
 FEATURE_SCHEMA = "full-l3-30-all-available-signals-v3"
@@ -21,10 +22,38 @@ OWNER = "l4_distribution"
 MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
           "DLinear", "PatchTST", "iTransformer")
 HEADS = ("p_loss", "gain", "loss")
-FEATURE_NAMES = sorted([f"{model}_{suffix}" for model in MODELS
-                        for suffix in ("raw", "rank", "available")] +
-                       ["ml_edge_norm", "ensemble_directional_margin", "l3_rank_mean",
-                        "l3_rank_sd", "l3_rank_range", "l3_available_fraction"])
+TIMEXER_FEATURE_SCHEMA = "full-l3-30-timexer-signals-v4"
+
+
+def feature_names(order):
+    # The replacement changes identity, not the physical input coordinate. This
+    # also preserves seeded MLP initialization against the accepted research.
+    from services.alpha_model_roster import validate_order
+    order = validate_order(order)
+    names = sorted([f"{model}_{suffix}" for model in LEGACY_MODELS
+                    for suffix in ("raw", "rank", "available")] +
+                   ["ml_edge_norm", "ensemble_directional_margin", "l3_rank_mean",
+                    "l3_rank_sd", "l3_rank_range", "l3_available_fraction"])
+    return [name.replace("DLinear_", "TimeXer_") for name in names] if "TimeXer" in order else names
+
+
+FEATURE_NAMES = feature_names(MODELS)
+
+
+def feature_order(source):
+    return model_order(name.removesuffix("_available") for name in source
+                       if name.endswith("_available"))
+
+
+def feature_schema(order):
+    return FEATURE_SCHEMA if tuple(order) == LEGACY_MODELS else TIMEXER_FEATURE_SCHEMA
+
+
+def recipe_order(recipe):
+    order = feature_order(recipe.get("names") or [])
+    if recipe.get("names") != feature_names(order):
+        raise ValueError("l4_distribution_feature_order_mismatch")
+    return order
 
 
 def digest(value: Any) -> str:
@@ -43,9 +72,10 @@ def finite(value: Any, field: str) -> float:
 
 def features(source: dict) -> dict[str, float | None]:
     """Missing optional models have an explicit mask, never invented forecasts."""
+    order = feature_order(source)
     result: dict[str, float | None] = {}
     ranks = []
-    for model in MODELS:
+    for model in order:
         available = source.get(f"{model}_available")
         if available not in (0, 1) or available is None:
             raise ValueError(f"l4_distribution_mask_missing:{model}")
@@ -67,7 +97,7 @@ def features(source: dict) -> dict[str, float | None]:
     result.update(ml_edge_norm=finite(source.get("ml_edge_norm"), "ml_edge_norm"),
                   ensemble_directional_margin=finite(source.get("ensemble_directional_margin"), "margin"),
                   l3_rank_mean=float(np.mean(ranks)), l3_rank_sd=float(np.std(ranks)),
-                  l3_rank_range=float(np.ptp(ranks)), l3_available_fraction=len(ranks) / len(MODELS))
+                  l3_rank_range=float(np.ptp(ranks)), l3_available_fraction=len(ranks) / len(order))
     return result
 
 
@@ -78,8 +108,14 @@ def date_weights(rows: list[dict]) -> np.ndarray:
 
 
 def design(rows: list[dict], recipe: dict | None = None) -> tuple[np.ndarray, dict]:
+    if not rows:
+        raise ValueError("l4_distribution_empty_design")
+    order = recipe_order(recipe) if recipe is not None else feature_order(rows[0]["features"])
+    if any(feature_order(row["features"]) != order for row in rows):
+        raise ValueError("l4_distribution_input_roster_mismatch")
+    names = feature_names(order)
     extracted = [features(row["features"]) for row in rows]
-    raw = np.array([[row[name] for name in FEATURE_NAMES] for row in extracted], float)
+    raw = np.array([[row[name] for name in names] for row in extracted], float)
     if recipe is None:
         weights = date_weights(rows)[:, None]
         observed = np.isfinite(raw)
@@ -87,10 +123,10 @@ def design(rows: list[dict], recipe: dict | None = None) -> tuple[np.ndarray, di
         denominator = (weights * observed).sum(0)
         mean = (weights * safe).sum(0) / np.maximum(denominator, 1e-15)
         variance = (weights * np.where(observed, (safe - mean) ** 2, 0)).sum(0) / np.maximum(denominator, 1e-15)
-        recipe = {"names": FEATURE_NAMES, "mean": mean.tolist(),
+        recipe = {"names": names, "mean": mean.tolist(),
                   "scale": np.maximum(np.sqrt(variance), .001).tolist(),
                   "observed_weight": denominator.tolist()}
-    if recipe["names"] != FEATURE_NAMES:
+    if recipe["names"] != names:
         raise ValueError("l4_distribution_feature_order_mismatch")
     mean, scale = np.asarray(recipe["mean"], float), np.asarray(recipe["scale"], float)
     if (mean.shape != (30,) or scale.shape != (30,) or not np.isfinite(mean).all()
@@ -117,14 +153,20 @@ def predict(rows: list[dict], model: dict) -> list[dict]:
         raise ValueError("l4_distribution_head_identity_mismatch")
     predictions = {name: predict_head(matrix, model["heads"][name]) for name in HEADS}
     gross = (1 - predictions["p_loss"]) * predictions["gain"] - predictions["p_loss"] * predictions["loss"]
-    return [{**{name: float(values[i]) for name, values in predictions.items()},
+    output = [{**{name: float(values[i]) for name, values in predictions.items()},
              "expected_return_gross": float(gross[i]), "output_is_net_of_costs": False,
              "horizon_sessions": 5, "l4plus_status": "disabled"} for i in range(len(rows))]
+    if model.get("residual_mlp") is not None:
+        from services.l4_residual_mlp import apply
+        return apply(rows, output, model["residual_mlp"],
+                     anchor_model={key:model[key] for key in ("recipe", "heads")})
+    return output
 
 
 def validate_bundle(bundle: dict, *, l3_identity: dict, signal_date: str,
                     require_paper_release: bool = True) -> None:
-    if (bundle.get("schema_version") != SCHEMA or bundle.get("feature_schema") != FEATURE_SCHEMA
+    order = recipe_order(bundle.get("model", {}).get("recipe", {}))
+    if (bundle.get("schema_version") != SCHEMA or bundle.get("feature_schema") != feature_schema(order)
             or bundle.get("label_schema") != LABEL_SCHEMA or bundle.get("horizon_sessions") != 5):
         raise ValueError("l4_distribution_contract_mismatch")
     if not l3_identity or bundle.get("l3_identity") != l3_identity:
@@ -136,10 +178,15 @@ def validate_bundle(bundle: dict, *, l3_identity: dict, signal_date: str,
         raise ValueError("l4_distribution_model_checksum_mismatch")
     if bundle.get("l4plus", {}).get("enabled") is True:
         raise ValueError("l4_distribution_unvalidated_calibrator")
+    if bundle['model'].get('residual_mlp') is not None:
+        from services.l4_residual_mlp import validate
+        mlp = bundle['model']['residual_mlp']
+        validate(mlp, anchor_model={key:bundle['model'][key] for key in ('recipe','heads')}, signal_date=signal_date)
+        if mlp['training_label_known_max'] > bundle['training_label_known_max']:
+            raise ValueError('l4_distribution_training_cutoff_omits_mlp')
     # A numeric recipe alone is never enough: inspect all heads before activation.
     recipe = bundle['model']['recipe']
-    if recipe.get('names') != FEATURE_NAMES:
-        raise ValueError('l4_distribution_feature_order_mismatch')
+    recipe_order(recipe)
     for name in HEADS:
         head = bundle['model']['heads'][name]
         if head.get('head') != name:
@@ -219,13 +266,14 @@ def fit_candidate(rows: list[dict], *, l3_identity: dict, as_of: str,
     """
     if not rows or not validation_dates or not l3_identity:
         raise ValueError("l4_distribution_training_contract_missing")
+    schema = feature_schema(feature_order(rows[0]["features"]))
     keys = set()
     for row in rows:
         key = (row["date"], row["symbol"])
         if key in keys:
             raise ValueError("l4_distribution_duplicate_training_row")
         keys.add(key)
-        if (row.get("feature_schema") != FEATURE_SCHEMA or row.get("prediction_kind") != "oof" or row.get("l3_identity") != l3_identity
+        if (row.get("feature_schema") != schema or row.get("prediction_kind") != "oof" or row.get("l3_identity") != l3_identity
                 or not row["l3_training_label_known_max"] < row["date"] < row["label_known_date"] < as_of):
             raise ValueError("l4_distribution_training_time_or_lineage_invalid")
         for key_date in (row["date"], row["label_known_date"], row["l3_training_label_known_max"], as_of):
@@ -260,7 +308,7 @@ def fit_candidate(rows: list[dict], *, l3_identity: dict, as_of: str,
         heads[name] = fit_head(matrix, target, weights, selected["lambda"], name)
         validation[name] = {"trials": trials, "lambda": selected["lambda"]}
     model = {"recipe": recipe, "heads": heads}
-    return {"schema_version": SCHEMA, "feature_schema": FEATURE_SCHEMA, "label_schema": LABEL_SCHEMA,
+    return {"schema_version": SCHEMA, "feature_schema": schema, "label_schema": LABEL_SCHEMA,
             "horizon_sessions": 5, "l3_identity": l3_identity, "model": model, "model_checksum": digest(model),
             "training_label_known_max": max(row["label_known_date"] for row in rows),
             "training_rows_checksum": digest(rows), "validation": validation,

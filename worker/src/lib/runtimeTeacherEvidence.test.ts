@@ -7,6 +7,7 @@ function assert(condition: unknown, message: string): void {
 function fakeDb(input: { rows?: Array<Record<string, unknown>>; error?: Error }): D1Database {
   return {
     prepare(sql: string) {
+      if (sql.includes('active8_ensemble_pointer_v1')) return { first: async () => null }
       return {
         bind(...args: unknown[]) {
           return {

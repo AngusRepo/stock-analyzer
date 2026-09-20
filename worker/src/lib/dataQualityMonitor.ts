@@ -1,3 +1,4 @@
+import { publishedAlphaModelOrder } from './alphaModelRoster'
 import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { twNow, twToday } from './dateUtils'
@@ -1374,7 +1375,8 @@ async function loadBoardLaneStats(
 
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
   const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
-  const expectedModelPlaceholders = EXPECTED_V2_MODELS.map(() => '?').join(',')
+  const expectedModels = await publishedAlphaModelOrder(databaseForDataDomain(env, 'learning'))
+  const expectedModelPlaceholders = expectedModels.map(() => '?').join(',')
   const coreDb = databaseForDataDomain(env, 'core')
   const marketDb = databaseForDataDomain(env, 'market')
   const learningDb = databaseForDataDomain(env, 'learning')
@@ -1532,7 +1534,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
          AND date(prediction_date) >= date('now', '-7 days')
        GROUP BY model_name
        ORDER BY model_name`,
-    ).bind(...EXPECTED_V2_MODELS).all<ModelIcEvidenceRow>(),
+    ).bind(...expectedModels).all<ModelIcEvidenceRow>(),
     coreDb.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
     firstCount(
       learningDb,
@@ -1942,7 +1944,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
         },
       ],
     }),
-    buildPredictionCoverageCheck(predictionGroups.results ?? []),
+    buildPredictionCoverageCheck(predictionGroups.results ?? [], expectedModels),
     buildRecommendationMlOwnerCheck({
       total: Number(recommendationStats.total ?? 0),
       scoreV2Count: Number(recommendationStats.score_v2_count ?? 0),
@@ -2048,7 +2050,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       emergingRecommendations: Number(boardLaneStats.emerging_recommendations ?? 0),
       pendingBuyEmergingLike: Number(boardLaneStats.pending_buy_emerging_like ?? 0),
     }),
-    buildModelIcEvidenceCheck(modelIcEvidence.results ?? []),
+    buildModelIcEvidenceCheck(modelIcEvidence.results ?? [], expectedModels),
     buildSchemaCheck((schemaRows.results ?? []).map((row) => row.name)),
     buildDatasetSnapshotManifestCheck({
       targetDate,

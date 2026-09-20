@@ -122,8 +122,11 @@ void (async () => {
       approvalRequiredForNextLevel: true,
       evaluated_at: '2026-06-22T08:00:00.000Z',
     },
+    shadow: { shadow_id: 'ga-shadow-fixture' },
+    shadow_maturity: { schema_version: 'ga-shadow-promotion-policy-v1', production_effect: false, ga_candidate_id: 'ga-fixture', shadow_id: 'ga-shadow-fixture', l2_pass: true, l3_pass: true, l4_pass: false },
     history: [{ best_score: 1.1 }, { best_score: 1.2 }],
     best: {
+      candidate: { id: 'ga-fixture' },
       score: 1.25,
       metrics: { pbo: 0.2, mdd_95th: 0.16, sharpe: 1.1, trade_count: 120 },
       gate: { passed: true, decision: 'PASS', failed_gates: [] },

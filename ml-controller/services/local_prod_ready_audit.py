@@ -58,14 +58,14 @@ REQUIRED_SCHEDULER_JOBS = (
 )
 
 REQUIRED_RUNTIME_PINS = (
-    "scikit-learn==1.9.0",
+    "scikit-learn==1.9.1",
     "networkx==3.6.1",
     "scikit-learn-extra==0.3.0",
-    "xgboost==3.2.0",
-    "lightgbm==4.6.0",
-    "torch==2.12.0",
-    "torch-geometric==2.8.0",
-    "neuralforecast==3.1.9",
+    "xgboost==3.4.1",
+    "lightgbm==4.7.0",
+    "torch==2.14.0",
+    "torch-geometric==2.8.0.post1",
+    "neuralforecast==3.2.2",
     "tabm==0.0.3",
     "timesfm[torch]==2.0.1",
     "optuna==4.9.0",
@@ -73,7 +73,7 @@ REQUIRED_RUNTIME_PINS = (
 
 REQUIRED_CONTROLLER_RUNTIME_PINS = (
     "optuna==4.9.0",
-    "scikit-learn==1.9.0",
+    "scikit-learn==1.9.1",
     "networkx==3.6.1",
 )
 
@@ -257,9 +257,9 @@ def _runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
         for pin in REQUIRED_RUNTIME_PINS
     ]
     checks.append(_check(
-        "FROM python:3.11-slim" in ml_service_dockerfile and "FROM python:3.12-slim" not in ml_service_dockerfile,
-        "runtime_image:ml_service_python311_sklearn_extra_wheel",
-        "ml-service runtime is Python 3.11 so official sklearn-extra KMedoids/PAM resolves from a manylinux wheel",
+        "FROM python:3.12-slim" in ml_service_dockerfile and "FROM python:3.11-slim" not in ml_service_dockerfile,
+        "runtime_image:ml_service_python312_stable_active8",
+        "ml-service runtime is Python 3.12 as required by the reviewed stable XGBoost release",
     ))
     checks.extend([
         _check(

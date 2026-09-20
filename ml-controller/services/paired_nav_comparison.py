@@ -86,6 +86,11 @@ def resolve_allocation_comparison(*, query, allocation, parent=None):
         kind, baseline_kind = 'incremental_layer', 'exact_frozen_l4_candidate'
     else:
         raise ValueError('paired_nav_comparison_owner_unsupported')
-    return {'schema_version': 'paired-nav-comparison-v1', 'owner': owner, 'kind': kind,
+    extra = {}
+    tag = (plan['configuration'].get('strategy_bundle') or {}).get('strategy_ab')
+    if tag is not None:
+        from services.strategy_ab import validate_tag
+        extra['strategy_ab'] = validate_tag(tag)
+    return {**extra, 'schema_version': 'paired-nav-comparison-v1', 'owner': owner, 'kind': kind,
             'baseline_kind': baseline_kind, 'candidate_checksum': plan['candidate_checksum'],
             'baseline_checksum': plan['baseline_checksum']}

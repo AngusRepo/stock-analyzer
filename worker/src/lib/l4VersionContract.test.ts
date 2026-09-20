@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { L4_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS } from './l4ReleaseEvidence'
+import { L4_FEATURE_SCHEMA, L4_TIMEXER_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS } from './l4ReleaseEvidence'
 import { buildChampionTradingConfig, validateTradingConfig } from './tradingConfig'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
 
@@ -32,4 +32,28 @@ test('v3 configuration and serving state agree; v2 or incomplete evidence cannot
   assert.ok(validateTradingConfig(f.config).includes('l4_release_engineering_evidence_incomplete'))
   assert.equal((await refreshExpectedReturnServingState(env,'2026-09-14')).expected_return_owner,null)
   assert.equal(writes.length,3)
+})
+
+
+test('TimeXer v4 keeps exact input coordinates and matching Paper evidence', async () => {
+  const f=fixture(), a:any=f.artifact
+  a.feature_schema=L4_TIMEXER_FEATURE_SCHEMA
+  f.receipt.feature_schema=L4_TIMEXER_FEATURE_SCHEMA
+  const names=['LightGBM','XGBoost','ExtraTrees','TabM','GNN','DLinear','PatchTST','iTransformer']
+    .flatMap(model=>['raw','rank','available'].map(suffix=>`${model}_${suffix}`))
+    .concat(['ml_edge_norm','ensemble_directional_margin','l3_rank_mean','l3_rank_sd','l3_rank_range','l3_available_fraction'])
+    .sort().map(name=>name.replace('DLinear_','TimeXer_'))
+  a.model={recipe:{names}}
+  const env:any={KV:{get:async()=>f.config,put:async()=>{}},DB:{prepare:()=>({first:async()=>f.identity})}}
+  assert.deepEqual(validateTradingConfig(f.config),[])
+  assert.equal((await refreshExpectedReturnServingState(env,'2026-09-14')).expected_return_owner,'l4_distribution')
+  f.receipt.feature_schema=L4_FEATURE_SCHEMA
+  assert.ok(validateTradingConfig(f.config).includes('l4_release_feature_schema_mismatch'))
+  f.receipt.feature_schema=L4_TIMEXER_FEATURE_SCHEMA
+  a.model.recipe.names=[...names].sort()
+  assert.ok(validateTradingConfig(f.config).length>0)
+  assert.equal((await refreshExpectedReturnServingState(env,'2026-09-14')).expected_return_owner,null)
+  a.model.recipe.names=names
+  delete a.release
+  assert.ok(validateTradingConfig(f.config).length>0)
 })

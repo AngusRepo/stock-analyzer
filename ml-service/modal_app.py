@@ -97,10 +97,12 @@ def _retrain_followup_token() -> str:
         _controller_callback_token(),
     ])
 
-# Modal image built with the v1.x API.
-image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
+# Shared dependency image allows isolated research to add packages before mounts.
+dependency_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("gcc", "g++", "libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
+    .pip_install("numpy==1.26.4", "Cython==0.29.37", "setuptools", "wheel")
+    .pip_install("scikit-learn-extra==0.3.0", extra_options="--no-build-isolation")
     .pip_install_from_requirements(str(_LOCAL_REQ))
     .env({
         "PYTHONHASHSEED": "42",
@@ -108,6 +110,9 @@ image = (
         "TORCH_FLOAT32_MATMUL_PRECISION": "high",
         **_RELEASE_PROVENANCE_ENV,
     })
+)
+image = (
+    dependency_image
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
@@ -601,8 +606,8 @@ def retrain_orchestrator(payload: dict) -> dict:
         verified_release_contract = validate_release_training_contract(release_training_contract)
         if str(verified_release_contract.get("run_date") or "") != str(run_date or ""):
             raise RuntimeError("release_training_contract_run_date_mismatch")
-        payload["train_model_groups"] = list(RELEASE_TRAIN_GROUPS)
-        artifact_lifecycle_targets = list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
+        payload["train_model_groups"] = list(verified_release_contract["train_groups"])
+        artifact_lifecycle_targets = list(verified_release_contract["artifact_lifecycle_targets"])
         payload["artifact_lifecycle_targets"] = artifact_lifecycle_targets
         result["stages"]["release_training_contract"] = {
             "status": "verified",
@@ -611,6 +616,10 @@ def retrain_orchestrator(payload: dict) -> dict:
             "configuration_selection": verified_release_contract["configuration_selection"],
             "validation": verified_release_contract["validation"],
         }
+    def _release_model_payload(model_name):
+        return release_model_payload(model_name,
+            schema_version=verified_release_contract["model_profile_schema_version"])
+
     artifact_lifecycle_contracts = payload.get("artifact_lifecycle_contracts") or {}
     if artifact_lifecycle_targets:
         result["stages"]["artifact_lifecycle"] = {
@@ -689,7 +698,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         candidate_version=candidate_version,
     )
     if is_release_train:
-        base_train_payload.update(release_model_payload("LightGBM"))
+        base_train_payload.update(_release_model_payload("LightGBM"))
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -713,10 +722,17 @@ def retrain_orchestrator(payload: dict) -> dict:
             "models": models_for_training_group("tree"),
             "note": training_group_feature_policy("tree").note,
         },
+        "timexer": {
+            "spawn": lambda p: train_timexer_universal.spawn(p),
+            "payload": lambda: {**payload, **_release_model_payload("TimeXer"),
+                "run_date":run_date, "version":candidate_version},
+            "mergeable":False, "models":["TimeXer"],
+            "note":"Official TimeXer using immutable PIT feature and adjusted-price histories.",
+        },
         "dlinear": {
             "spawn": lambda p: train_dlinear_universal.spawn(p),
             "payload": lambda: {
-                **(release_model_payload("DLinear") if is_release_train else {}),
+                **(_release_model_payload("DLinear") if is_release_train else {}),
                 "candidate_type": payload.get("candidate_type"),
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
@@ -735,7 +751,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         "patchtst": {
             "spawn": lambda p: train_patchtst_universal.spawn(p),
             "payload": lambda: {
-                **(release_model_payload("PatchTST") if is_release_train else {}),
+                **(_release_model_payload("PatchTST") if is_release_train else {}),
                 "candidate_type": payload.get("candidate_type"),
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
@@ -797,7 +813,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "gcs_io": tree_result.get("gcs_io"),
                 "child_errors": tree_result.get("child_errors") or [],
             }
-        for group in ("dlinear", "patchtst"):
+        for group in ("dlinear", "timexer", "patchtst"):
             if handles.get(group) is not None:
                 aux_train[group] = handles[group].get()
                 partial_results[group] = aux_train[group]
@@ -832,7 +848,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         )
 
         artifact_registrations = dict(tree_result.get("artifact_registrations") or {})
-        for model_name, group_name in (("DLinear", "dlinear"), ("PatchTST", "patchtst")):
+        for model_name, group_name in (("DLinear", "dlinear"), ("TimeXer", "timexer"), ("PatchTST", "patchtst")):
             aux_result = aux_train.get(group_name) or {}
             aux_saved = aux_result.get("saved") or {}
             aux_metadata = aux_saved.get("metadata") or aux_result.get("metadata") or {}
@@ -893,7 +909,7 @@ def retrain_orchestrator(payload: dict) -> dict:
 
             def _base_artifact_payload(model_name: str) -> dict:
                 return {
-                    **(release_model_payload(model_name) if is_release_train else {}),
+                    **(_release_model_payload(model_name) if is_release_train else {}),
                     "gcs_prefix": gcs_prefix,
                     "batch_count": batch_count,
                     "output_model_version": candidate_version,
@@ -1905,6 +1921,23 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             return _skip("GNN retired by model_pool")
         return predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool)
 
+    def _timexer_predict(**kwargs):
+        # The validated research recipe is CUDA/high precision. Keep the
+        # expensive GPU allocation separate from CPU feature/graph stages.
+        result = timexer_universal_predict.remote({**kwargs,
+            "feature_source": payload.get("timexer_feature_source"),
+            "signal_date": payload["run_date"]})
+        return result["results"]
+
+    def _timexer() -> dict:
+        series = _sequence_input("TimeXer")
+        if not _is_active("TimeXer") or not series:
+            return _sequence_skip("TimeXer")
+        results = _timexer_predict(series_list=series, horizon_used=5,
+            version=active_versions["TimeXer"], artifact_identity=_artifact_identity("TimeXer"))
+        return {"results":results, "n_input":len(series),
+                "n_success":sum(row.get("available") is True for row in results)}
+
     def _dlinear() -> dict:
         series = _sequence_input("DLinear")
         if not _is_active("DLinear") or not series:
@@ -1950,6 +1983,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             candidate_identities=active8_shadow_identities,
             predictors={
                 "DLinear": dlinear_batch_predict,
+                "TimeXer": _timexer_predict,
                 "PatchTST": patchtst_batch_predict,
                 "iTransformer": itransformer_batch_predict,
             },
@@ -1959,6 +1993,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         "predict_batch_v2": (_feature, True),
         "gnn_graphsage_universal_predict": (_gnn, _is_active("GNN")),
         "dlinear_universal_predict": (_dlinear, _is_active("DLinear")),
+        "timexer_universal_predict": (_timexer, _is_active("TimeXer")),
         "patchtst_universal_predict": (_patchtst, _is_active("PatchTST")),
         "itransformer_universal_predict": (_itransformer, _is_active("iTransformer")),
         "active8_sequence_shadow_predict": (_active8_sequence_shadows, False),
@@ -2076,6 +2111,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     runtime_output_keys = {
         "GNN": "gnn_graphsage_universal_predict",
         "DLinear": "dlinear_universal_predict",
+        "TimeXer": "timexer_universal_predict",
         "PatchTST": "patchtst_universal_predict",
         "iTransformer": "itransformer_universal_predict",
     }
@@ -2130,6 +2166,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         "predict_batch_v2_raw": outputs.get("predict_batch_v2") or {},
         "gnn_graphsage_raw": outputs.get("gnn_graphsage_universal_predict") or {"results": []},
         "dlinear_raw": outputs.get("dlinear_universal_predict") or {"results": []},
+        "timexer_raw": outputs.get("timexer_universal_predict") or {"results": []},
         "patchtst_raw": outputs.get("patchtst_universal_predict") or {"results": []},
         "itransformer_raw": outputs.get("itransformer_universal_predict") or {"results": []},
         "active8_sequence_shadow_raw": outputs.get("active8_sequence_shadow_predict")
@@ -2490,6 +2527,7 @@ def train_wf_tree_window(payload: dict) -> dict:
             batch_count=payload.get("batch_count", 5),
             models_filter=["XGBoost", "ExtraTrees", "LightGBM"],
             skip_feature_pool=payload.get("skip_feature_pool", False),
+            feature_release_mode=payload.get("feature_release_mode"),
             train_start=payload["train_start"],
             train_end=payload["train_end"],
             test_start=payload["test_start"],
@@ -2791,13 +2829,16 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     import time
     import json
     import asyncio
-    from app.model_serving_contract import ALPHA_PREDICTION_MODELS
+    from services.active8_release_model_profiles import MODEL_PROFILE_SCHEMA_VERSION, model_profiles
+    from app.alpha_model_roster import model_order
 
     t0 = time.time()
     windows = payload["windows"]
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
-    active8_models = list(ALPHA_PREDICTION_MODELS)
+    profile_schema = payload.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
+    active8_models = list(model_order(model_profiles(schema_version=profile_schema),complete=True))
+    full137 = "TimeXer" in active8_models
     native_retrain_models = list(active8_models)
     raw_models = payload.get("models") or active8_models
     models = []
@@ -3048,7 +3089,13 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "max_rounds": fs_max_rounds,
                 "force_refresh": fs_force_refresh,
             }
-            fs_result = await feature_selection_per_window.remote.aio(fs_payload)
+            if full137:
+                from app.features import FEATURE_COLS
+                fs_result = {"selection_method": "predeclared_full137", "feature_pool": {
+                    "tree_active": sorted(FEATURE_COLS), "active": sorted(FEATURE_COLS)},
+                    "model_profile_schema_version": profile_schema}
+            else:
+                fs_result = await feature_selection_per_window.remote.aio(fs_payload)
             result["fs_result"] = fs_result
             fs_ok = not bool(fs_result.get("error"))
             if fs_ok:
@@ -3086,7 +3133,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "test_start": window["test_start"],
             "test_end": window["test_end"],
             "batch_count": batch_count,
-            "skip_feature_pool": False,
+            "skip_feature_pool": full137,
+            "feature_release_mode": "accepted_ab_full137" if full137 else None,
             "generation_mode": generation_mode,
             "cohort_id": cohort_id,
             "fold_id": f"w{wid}",
@@ -3121,13 +3169,17 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             ("TabM", train_tabm_universal),
             ("GNN", train_gnn_graphsage_universal),
             ("DLinear", train_dlinear_universal),
+            ("TimeXer", train_timexer_universal),
             ("PatchTST", train_patchtst_universal),
             ("iTransformer", train_itransformer_universal),
         )
         from services.active8_release_model_profiles import release_model_payload as active8_model_payload
         for model_name, fn in family_tasks:
             if model_name in requested:
-                model_payload = {**train_payload, **active8_model_payload(model_name)}
+                model_payload = {**train_payload, **active8_model_payload(model_name, schema_version=profile_schema)}
+                if model_name == "TimeXer":
+                    model_payload.update(run_date=payload.get("knowledge_cutoff_date") or prep_manifest["source_business_date"],dataset_snapshot={
+                        "manifest_path":prep_manifest_path,"manifest_checksum":prep_manifest_checksum})
                 tasks.append((model_name, fn.remote.aio(model_payload)))
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
@@ -3399,6 +3451,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
             "score_semantic_version": "same-market-same-date-average-tie-percentile-rank-v2",
             "model_set": models,
+            "model_profile_schema_version":profile_schema,
             "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
             "prep_manifest": prep_manifest_evidence,
             "sequence_gcs_prefix": str(
@@ -3535,9 +3588,13 @@ def rebuild_canonical_adjusted_prep(payload: dict) -> dict:
 def build_frozen_oof_forward_extension(payload: dict) -> dict:
     """Run immutable forward inference only; no training or promotion."""
     _setup_env()
-    from app.oof_forward_extension import build_frozen_forward_extension
+    from app.oof_forward_extension import build_frozen_forward_extension, _verify_base_manifest
 
     try:
+        from app.model_store import _get_bucket
+        manifest = _verify_base_manifest(_get_bucket(), payload["base_manifest_path"])
+        if "TimeXer" in (manifest.get("model_set") or []):
+            return build_frozen_oof_forward_extension_gpu.remote(payload)
         return build_frozen_forward_extension(payload or {})
     except Exception as exc:
         import traceback
@@ -3546,6 +3603,13 @@ def build_frozen_oof_forward_extension(payload: dict) -> dict:
             "trace": traceback.format_exc()[:4000],
             "type": "frozen_oof_forward_extension",
         }
+
+@app.function(gpu="L4", cpu=4, memory=8192, timeout=3600, max_containers=1)
+def build_frozen_oof_forward_extension_gpu(payload: dict) -> dict:
+    _setup_env()
+    from app.oof_forward_extension import build_frozen_forward_extension
+    return build_frozen_forward_extension(payload)
+
 
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
 @app.function(
@@ -4460,3 +4524,29 @@ def fastapi_app():
     _setup_env()
     from app.main import app as fastapi_application
     return fastapi_application
+
+
+@app.function(gpu="L4", cpu=2, memory=8192, timeout=900, max_containers=1, scaledown_window=60)
+def timexer_universal_predict(payload: dict) -> dict:
+    """Immutable official TimeXer inference; no fit or publication side effects."""
+    _setup_env()
+    from app.timexer_inference import batch_predict
+    results = batch_predict(**payload)
+    return {"results":results, "n_input":len(payload["series_list"]),
+            "n_success":sum(row.get("available") is True for row in results)}
+
+
+@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=2, scaledown_window=60)
+def train_timexer_universal(payload: dict) -> dict:
+    """Official TimeXer OOF/full-fit; candidate files never confer serving authority."""
+    _setup_env()
+    from app.timexer_job import run
+    return run(payload)
+
+
+@app.function(cpu=8,memory=4096,timeout=3600,max_containers=1,scaledown_window=60)
+def train_l4_mlp_candidate(payload: dict) -> dict:
+    """Purged B candidate fitting on CPU; model/data SHA identities are mandatory."""
+    _setup_env()
+    from app.l4_mlp_job import run
+    return run(payload)

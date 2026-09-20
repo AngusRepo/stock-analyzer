@@ -244,7 +244,7 @@ def test_unselected_information_cannot_bypass_no_selected_model_evidence(monkeyp
     monkeypatch.setattr(ensemble_v2,'validate_active8_ensemble_artifact',lambda *args,**kwargs:None)
     predictions={s:_prediction(v) for s,v in [('A',.2),('B',.5),('C',.8)]}
     for pred in predictions.values():pred.pop('dlinear')
-    normalize_active8_cross_sectional_scores(predictions,artifact_versions={n:n+'-v1' for n in ACTIVE_ALPHA_MODELS},artifact_target_semantics={n:MODEL_TARGET_SEMANTIC_VERSION for n in ACTIVE_ALPHA_MODELS},run_date='2026-09-01',active8_ensemble={'selected_models':['DLinear'],'payload_checksum':'a'*64})
+    normalize_active8_cross_sectional_scores(predictions,artifact_versions={n:n+'-v1' for n in ACTIVE_ALPHA_MODELS},artifact_target_semantics={n:MODEL_TARGET_SEMANTIC_VERSION for n in ACTIVE_ALPHA_MODELS},run_date='2026-09-01',active8_ensemble={'model_order':list(ACTIVE_ALPHA_MODELS),'selected_models':['DLinear'],'payload_checksum':'a'*64})
     for pred in predictions.values():
         assert pred['rank_scores']['ExtraTrees'] is not None
         assert not pred['model_score_lineage']['complete']

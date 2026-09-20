@@ -1259,6 +1259,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             objective="regression",
             num_leaves=63,
             subsample=0.8,
+            subsample_freq=1,
             colsample_bytree=0.8,
             min_child_samples=20,
             random_state=42,
@@ -1333,6 +1334,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         objective="regression",
                         num_leaves=63,
                         subsample=0.8,
+                        subsample_freq=1,
                         colsample_bytree=0.8,
                         min_child_samples=20,
                         random_state=42,
@@ -1638,6 +1640,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     challenger_registrations: dict[str, dict] = {}
     artifact_registrations: dict[str, dict] = {}
+    artifact_save_failures: list[str] = []
     for model_name, model_obj in trained_models.items():
         try:
             model_selection_evidence = {
@@ -1684,6 +1687,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         else {"estimator_type": type(model_obj).__name__}
                     ),
                     "feature_names": feature_names,
+                    "feature_count": len(feature_names),
+                    "feature_release_mode": req.feature_release_mode,
                     "validation_split": validation_split_metadata,
                     "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
                     "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",
@@ -1756,7 +1761,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             )
             print(f"[TrainUniversal] Saved {model_name} to GCS (prefix={req.gcs_prefix or 'universal'})")
         except Exception as exc:
+            results.setdefault(model_name, {})["saved"] = False
+            artifact_save_failures.append(model_name)
             print(f"[TrainUniversal] Failed to save {model_name}: {exc}")
+
+    if artifact_save_failures:
+        # An OOF score or weights object alone is not a usable model artifact.
+        # Do not publish a success callback when its metadata/contract failed.
+        raise RuntimeError("universal_model_artifact_save_failed:" + ",".join(sorted(artifact_save_failures)))
 
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")

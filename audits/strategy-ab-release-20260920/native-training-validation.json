@@ -1,0 +1,38 @@
+[
+  {
+    "status": "native_full_job_validated",
+    "role": "A",
+    "job_checksum": "44bd1bdff1d6564b3edf58dfcef7175d77b5354b01ea7d2fab5025ce9f3282f2",
+    "source_identity_kind": "sha1-of-code-inventory-not-git-commit",
+    "release_eligible": false,
+    "production_effect": false,
+    "variant": "price",
+    "train_rows": 268570,
+    "selected_epochs": 3,
+    "training_label_known_max": "2026-09-18",
+    "elapsed_s": 994.956,
+    "artifact_checksum": "d68c3786dc86a6e8d1ff859f5e906b8a1be5758516cda08d68f23f997f91b44a",
+    "metadata_contract_verified": true,
+    "attestation_verified": true,
+    "artifact_readback_verified": true,
+    "full_fit_only": true
+  },
+  {
+    "status": "native_full_job_validated",
+    "role": "B",
+    "job_checksum": "04a159e9d18377996d0ed7e0bec442f0e4dfac7ecfe5aa5e8bcd4f4c609a8520",
+    "source_identity_kind": "sha1-of-code-inventory-not-git-commit",
+    "release_eligible": false,
+    "production_effect": false,
+    "variant": "exo137",
+    "train_rows": 268570,
+    "selected_epochs": 4,
+    "training_label_known_max": "2026-09-18",
+    "elapsed_s": 1579.012,
+    "artifact_checksum": "8e8e43773e5f05fe4ab90c08966b490ca5be4b10b872f7178e954298657c8d8b",
+    "metadata_contract_verified": true,
+    "attestation_verified": true,
+    "artifact_readback_verified": true,
+    "full_fit_only": true
+  }
+]

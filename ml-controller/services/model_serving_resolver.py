@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from services.alpha_model_roster import model_order, SUPPORTED_MODELS
 import os
 import re
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ DIRECT_ALPHA_MODELS = (
     "PatchTST",
     "iTransformer",
 )
-SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
+SEQUENCE_ALPHA_MODELS = ("DLinear", "TimeXer", "PatchTST", "iTransformer")
 FORMAL_FEATURE_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN")
 FORMAL_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FORMAL_GNN_GRAPH_SEMANTIC_VERSION = "gnn-same-date-feature-cosine-sector-v2"
@@ -64,6 +65,7 @@ ARTIFACT_EXTENSIONS = {
     "TabM": "pt",
     "GNN": "pt",
     "DLinear": "pt",
+    "TimeXer": "pt",
     "PatchTST": "zip",
     "iTransformer": "zip",
     "TimesFM": "json",
@@ -139,7 +141,15 @@ def _sequence_artifact_contract(
         or not artifact_id
     ):
         return None
+    extra = {}
+    if model_name == "TimeXer":
+        from services.timexer_contract import metadata_contract
+        try:
+            extra['timexer'] = metadata_contract(metadata)
+        except ValueError:
+            return None
     return {
+        **extra,
         "schema_version": SEQUENCE_CONTRACT_SCHEMA_VERSION,
         "source": "model_artifact_registry",
         "model": model_name,
@@ -224,7 +234,7 @@ def _artifact_structure_block_reason(artifact, *, model_name, artifact_role):
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
     if _artifact_checksum(artifact) is None:
         return "artifact_checksum_missing_or_invalid"
-    if model_name in DIRECT_ALPHA_MODELS:
+    if model_name in SUPPORTED_MODELS:
         if str(artifact.get("candidate_type") or "") != "oof_full_fit_release":
             return "artifact_candidate_type_not_canonical_oof_release"
         metadata = _artifact_metadata(artifact)
@@ -447,11 +457,15 @@ def build_pool_from_champion_pointers(
 
 def load_d1_champion_pool(
     *,
-    required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
+    required_models: tuple[str, ...] | None = None,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
     from services.model_artifact_registry import list_artifacts_by_ids, list_champion_pointers
 
+    if required_models is None:
+        from services.alpha_model_roster import published_model_order
+        from services.model_artifact_registry import d1_client
+        required_models = published_model_order(d1_client.query)
     pointers = list_champion_pointers()
     requested_models = set((*required_models, *sidecar_models))
     artifact_ids = list(dict.fromkeys(
@@ -481,7 +495,7 @@ def load_d1_champion_pool(
 
 def resolve_serving_pool(
     *,
-    required_models: tuple[str, ...] = DIRECT_ALPHA_MODELS,
+    required_models: tuple[str, ...] | None = None,
     sidecar_models: tuple[str, ...] = L2_SIDECARS,
 ) -> dict[str, Any]:
     if not _d1_env_configured():

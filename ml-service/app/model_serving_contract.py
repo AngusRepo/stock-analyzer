@@ -30,6 +30,7 @@ MANAGED_MODELS = {
     "TabM": ("tabular_neural", "tabular", "pt"),
     "GNN": ("cross_stock_graphsage", "graph", "pt"),
     "DLinear": ("time_series_learnable", "time_series", "pt"),
+    "TimeXer": ("time_series_official_timexer", "time_series", "pt"),
     "PatchTST": ("time_series_neuralforecast_patchtst", "time_series", "zip"),
     "iTransformer": ("time_series_neuralforecast_itransformer", "time_series", "zip"),
 }

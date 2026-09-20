@@ -1,3 +1,4 @@
+import { publishedAlphaModelOrder } from './alphaModelRoster'
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
@@ -463,6 +464,7 @@ export async function runActive8OofLifecycle(
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',
     jsonBody: {
+      model_profile_schema_version: 'active8-release-model-profiles-v4-timexer-price',
       cadence,
       end_date: runDate,
       dry_run: false,
@@ -1629,7 +1631,7 @@ export async function runWeeklyAlphaQuality(env: Bindings) {
 
 const ACTIVE_WEEKLY_DRIFT_MODEL_NAMES = new Set([
   'LightGBM', 'XGBoost', 'ExtraTrees', 'TabM',
-  'GNN', 'DLinear', 'PatchTST', 'iTransformer',
+  'GNN', 'DLinear', 'TimeXer', 'PatchTST', 'iTransformer',
 ])
 
 const MODEL_GROUP_BY_NAME: Readonly<Record<string, 'tree' | 'dlinear' | 'patchtst'>> = {
@@ -1653,6 +1655,7 @@ const DRIFT_FAMILY_BY_NAME: Readonly<Record<string, string>> = {
   TabM: 'tabular_neural',
   GNN: 'graph',
   DLinear: 'sequence',
+  TimeXer: 'learned_sequence',
   PatchTST: 'learned_sequence',
   iTransformer: 'learned_sequence',
 }
@@ -1718,6 +1721,11 @@ export async function runWeeklyDriftRetrain(
   requireController(env)
   const driftTargetModels = [...new Set(options.driftTargetModels)]
     .filter((name) => ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name))
+  const publishedModels = await publishedAlphaModelOrder(databaseForDataDomain(env, 'learning'))
+  if (publishedModels.includes('TimeXer')) {
+    // Refresh the immutable eight-model OOF/full-fit cohort; TimeXer has no ad-hoc weekly fit.
+    return runActive8OofLifecycle(env, options.runDate ?? twToday(), 'weekly')
+  }
   const trainModelGroups = [...new Set(driftTargetModels.map((name) => MODEL_GROUP_BY_NAME[name]).filter(Boolean))]
   const artifactLifecycleTargets = driftTargetModels.filter((name) => Boolean(FORMAL_ARTIFACT_LIFECYCLE_BY_NAME[name]))
   if (trainModelGroups.length === 0 && artifactLifecycleTargets.length === 0) {

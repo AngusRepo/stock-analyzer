@@ -4,6 +4,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
+from services.alpha_model_roster import model_order, validate_order, SUPPORTED_MODELS
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
     CORE_CROSS_SECTIONAL_ALPHA_MODELS,
@@ -20,6 +21,7 @@ MIN_REQUIRED_CROSS_SECTIONAL_MODELS = 3
 
 _SEQUENCE_SOURCE_KEYS = {
     "DLinear": "dlinear",
+    "TimeXer": "timexer",
     "PatchTST": "patchtst",
     "iTransformer": "itransformer",
 }
@@ -90,18 +92,22 @@ def normalize_active8_cross_sectional_scores(
     function only creates the rank used by the ensemble and records enough
     lineage to reproduce that transform.
     """
+    order = (validate_order(active8_ensemble["model_order"]) if active8_ensemble is not None
+             else model_order(artifact_versions))
+    if model_order(artifact_versions) != order:
+        raise ValueError("active8_score_artifact_roster_mismatch")
     normalized_versions = {
         model_name: str(artifact_versions.get(model_name) or "").strip()
-        for model_name in ACTIVE_ALPHA_MODELS
+        for model_name in order
         if is_known_artifact_version(artifact_versions.get(model_name))
     }
     normalized_target_semantics = {
         model_name: str(artifact_target_semantics.get(model_name) or "").strip()
-        for model_name in ACTIVE_ALPHA_MODELS
+        for model_name in order
     }
     eligible_models = [
         model_name
-        for model_name in ACTIVE_ALPHA_MODELS
+        for model_name in order
         if model_name in normalized_versions
         and normalized_target_semantics.get(model_name) == MODEL_TARGET_SEMANTIC_VERSION
     ]
@@ -121,7 +127,7 @@ def normalize_active8_cross_sectional_scores(
         # Preserve every verified available model score for full-signal L4.
         minimum_core_models = len(required_core_models)
     ineligible_artifact_models = [
-        model_name for model_name in ACTIVE_ALPHA_MODELS if model_name not in eligible_models
+        model_name for model_name in order if model_name not in eligible_models
     ]
 
     raw_by_group: dict[tuple[str, str], list[tuple[str, float]]] = defaultdict(list)
@@ -153,10 +159,10 @@ def normalize_active8_cross_sectional_scores(
         ranks = ranks_by_symbol.get(symbol, {})
         prediction["raw_model_scores"] = dict(raw_by_symbol.get(symbol, {}))
         prediction["rank_scores"] = dict(ranks)
-        available_models = [name for name in ACTIVE_ALPHA_MODELS if name in ranks]
-        missing_scores = [name for name in ACTIVE_ALPHA_MODELS if name not in ranks]
+        available_models = [name for name in order if name in ranks]
+        missing_scores = [name for name in order if name not in ranks]
         missing_core_scores = [name for name in required_core_models if name not in ranks]
-        optional_missing_models = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in ranks]
+        optional_missing_models = [name for name in order[5:] if name not in ranks]
         missing_versions = [name for name in available_models if name not in normalized_versions]
         row_blockers = [f"rank_missing:{name}" for name in missing_core_scores]
         if selected_models and not any(name in ranks for name in selected_models):
@@ -177,6 +183,7 @@ def normalize_active8_cross_sectional_scores(
         if not row_blockers:
             complete += 1
         prediction["model_score_lineage"] = {
+            "model_order": list(order),
             "schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
             "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
             "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
@@ -186,7 +193,7 @@ def normalize_active8_cross_sectional_scores(
             "minimum_cross_section": min_cross_section,
             "cross_section_sizes": {
                 name: group_sizes.get((segment, name), 0) if segment else 0
-                for name in ACTIVE_ALPHA_MODELS
+                for name in order
             },
             "artifact_versions": {
                 name: normalized_versions[name]
@@ -200,14 +207,14 @@ def normalize_active8_cross_sectional_scores(
             "available_models": available_models,
             "model_availability": {
                 name: name in available_models
-                for name in ACTIVE_ALPHA_MODELS
+                for name in order
             },
             "required_core_models": list(required_core_models),
             "minimum_required_cross_sectional_models": minimum_core_models,
             "selected_models": selected_models,
             "ensemble_payload_checksum": active8_ensemble.get("payload_checksum") if active8_ensemble else None,
             "ineligible_artifact_models": list(ineligible_artifact_models),
-            "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
+            "optional_sequence_models": list(order[5:]),
             "optional_missing_models": optional_missing_models,
             "full_active8_coverage": not missing_scores,
             "coverage_policy": "validated-bundle-selected-core-sequence-missingness-v1" if selected_models else "verified-core3-min-sequence-missingness-aware-oof-parity-v1",
@@ -242,7 +249,7 @@ def normalize_active8_challenger_scores(
         checksum = str(row.get("checksum") or "").strip().lower()
         digest = checksum.removeprefix("sha256:")
         valid = (
-            model_name in ACTIVE_ALPHA_MODELS
+            model_name in SUPPORTED_MODELS
             and str(row.get("status") or "") == "challenger"
             and str(row.get("effective_status") or "") == "challenger"
             and row.get("production_effect") is False

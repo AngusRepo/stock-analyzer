@@ -61,5 +61,12 @@ class TrainingPolicy:
             return "bull", self.bull_lookback_days
         return "sideways", self.sideways_lookback_days
 
+    def resolve_history(self, *, vix: float, twii_bias: float, model_profile_schema_version: str) -> tuple[str, int]:
+        regime, lookback = self.resolve_regime(vix=vix, twii_bias=twii_bias)
+        from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+        if model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}:
+            return regime, 1280
+        return regime, lookback
+
     def to_dict(self) -> dict:
         return asdict(self)

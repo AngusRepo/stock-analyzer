@@ -1,3 +1,4 @@
+import { predictionModelOrder } from './alphaModelRoster'
 export interface MlVoteSummary {
   bullish: number
   bearish: number
@@ -182,8 +183,10 @@ export const TIMESFM_SIDECAR_MODEL_NAMES = [
   'TimesFM',
 ] as const
 
+// Retrieval allowlist spans both published roster generations; voting uses exact packet identity.
 export const ALPHA_PREDICTION_MODEL_NAMES = [
   ...DIRECT_ALPHA_VOTE_MODEL_NAMES,
+  'TimeXer',
   ...TIMESFM_SIDECAR_MODEL_NAMES,
 ] as const
 
@@ -205,6 +208,7 @@ function normalizeModelName(raw: unknown): string {
     gnn: 'GNN',
     graphnn: 'GNN',
     dlinear: 'DLinear',
+    timexer: 'TimeXer',
     patchtst: 'PatchTST',
     itransformer: 'iTransformer',
     timesfm: 'TimesFM',
@@ -363,24 +367,26 @@ export function buildMlVoteSummary(
   policy?: MlVoteThresholdPolicy,
 ): MlVoteSummary | null {
   const data = parsePredictionForecastData(forecastData)
+  const trackedModels = predictionModelOrder(data)
+  const isTrackedModel = (name: unknown) => trackedModels.includes(normalizeModelName(name))
   const thresholds = resolveVoteThresholds(data, policy)
   const cleanRowsByModel = new Map<string, PerModelPredictionRow>()
   for (const row of perModelRows) {
     const name = String(row.model_name ?? '')
-    if (!isTrackedAlphaModelName(name)) continue
+    if (!isTrackedModel(name)) continue
     if (!cleanRowsByModel.has(name)) cleanRowsByModel.set(name, row)
   }
   const cleanRows = [...cleanRowsByModel.values()]
   if (!data && cleanRows.length === 0) return null
 
   const models = Array.isArray(data?.models)
-    ? data.models.filter((model: any) => isTrackedAlphaModelName(model?.name ?? model?.model_name ?? model))
+    ? data.models.filter((model: any) => isTrackedModel(model?.name ?? model?.model_name ?? model))
     : []
   const weights = data?.ensemble_v2?.weights && typeof data.ensemble_v2.weights === 'object'
     ? data.ensemble_v2.weights as Record<string, unknown>
     : {}
-  const trackedWeightKeys = Object.keys(weights).filter(isTrackedAlphaModelName)
-  const total = Math.max(TRACKED_MODEL_NAMES.length, trackedWeightKeys.length, models.length, cleanRows.length)
+  const trackedWeightKeys = Object.keys(weights).filter(isTrackedModel)
+  const total = Math.max(trackedModels.length, trackedWeightKeys.length, models.length, cleanRows.length)
   if (total <= 0) return null
 
   let bullish = 0
@@ -410,7 +416,7 @@ export function buildMlVoteSummary(
 
   const forecastPct = normalizeForecastPct(data?.ensemble_v2?.forecast_pct ?? data?.forecast_pct ?? null)
   const activeWeightCount = trackedWeightKeys.filter((name) => Number(weights[name] ?? 0) > 0).length
-  const zeroWeightModels = TRACKED_MODEL_NAMES.filter((name) => Object.prototype.hasOwnProperty.call(weights, name) && Number(weights[name] ?? 0) <= 0)
+  const zeroWeightModels = trackedModels.filter((name) => Object.prototype.hasOwnProperty.call(weights, name) && Number(weights[name] ?? 0) <= 0)
 
   return {
     bullish,
@@ -422,7 +428,7 @@ export function buildMlVoteSummary(
     forecastPct,
     activeWeightCount,
     zeroWeightModels,
-    contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models.filter(isTrackedAlphaModelName) : [],
+    contributingModels: Array.isArray(data?.ensemble_v2?.contributing_models) ? data.ensemble_v2.contributing_models.filter(isTrackedModel) : [],
     allocatorLearningLedger: data?.ensemble_v2?.allocator_learning_ledger && typeof data.ensemble_v2.allocator_learning_ledger === 'object'
       ? data.ensemble_v2.allocator_learning_ledger as Record<string, unknown>
       : null,
@@ -472,6 +478,8 @@ export function resolveMlVoteSummary(
 
 export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary | null {
   const data = parsePredictionForecastData(forecastData)
+  const trackedModels = predictionModelOrder(data)
+  const isTrackedModel = (name: unknown) => trackedModels.includes(normalizeModelName(name))
   if (!data) return null
 
   const ev2 = data.ensemble_v2 && typeof data.ensemble_v2 === 'object'
@@ -487,17 +495,17 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
     ? data.dispersion_diagnostics as Record<string, any>
     : {}
 
-  const trackedWeightKeys = Object.keys(weights).filter(isTrackedAlphaModelName)
+  const trackedWeightKeys = Object.keys(weights).filter(isTrackedModel)
   const zeroWeightModels = Array.isArray(dispersion.zero_weight_models)
-    ? dispersion.zero_weight_models.filter(isTrackedAlphaModelName)
-    : TRACKED_MODEL_NAMES.filter((name) => Object.prototype.hasOwnProperty.call(weights, name) && Number(weights[name] ?? 0) <= 0)
+    ? dispersion.zero_weight_models.filter(isTrackedModel)
+    : trackedModels.filter((name) => Object.prototype.hasOwnProperty.call(weights, name) && Number(weights[name] ?? 0) <= 0)
   const contributingModels = Array.isArray(ev2.contributing_models)
-    ? ev2.contributing_models.filter(isTrackedAlphaModelName)
+    ? ev2.contributing_models.filter(isTrackedModel)
     : []
   const validationBlockedModels = Object.entries(diagnostics)
     .filter(([, detail]) => String((detail as any)?.validation_status ?? '').toUpperCase() === 'FAIL')
     .map(([name]) => name)
-    .filter(isTrackedAlphaModelName)
+    .filter(isTrackedModel)
   const scoreSignalThresholds = ev2.score_signal_thresholds && typeof ev2.score_signal_thresholds === 'object'
     ? ev2.score_signal_thresholds
     : ev2.rank_signal_thresholds && typeof ev2.rank_signal_thresholds === 'object'
@@ -505,7 +513,7 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
       : null
 
   return {
-    totalAlphaModels: TRACKED_MODEL_NAMES.length,
+    totalAlphaModels: trackedModels.length,
     activeWeightCount: trackedWeightKeys.filter((name) => Number(weights[name] ?? 0) > 0).length,
     zeroWeightModels,
     contributingModels,

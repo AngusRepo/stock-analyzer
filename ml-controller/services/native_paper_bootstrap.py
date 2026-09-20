@@ -37,7 +37,7 @@ def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str],
                 if ownership.get(item['tbl_name']) == domain:
                     auxiliary.append(item)
         for required in ('paper_accounts', 'paper_positions', 'paper_orders', 'paper_settlements',
-                         'paper_daily_snapshots', 'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
+                         'paper_daily_snapshots', 'paper_p5_rearms_v1', 'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
                          'stocks', 'daily_recommendations'):
             if required not in schema:
                 raise ValueError('native_bootstrap_required_schema_missing:' + required)

@@ -609,6 +609,16 @@ def materialize_pair(*, snapshot_id: str, session_date: str, execution: dict[str
     # retain their original schema. The chain reader resolves old parents too.
     if comparison is not None and (not existing or 'comparison' in json.loads(existing[0]['payload_json'])):
         result['comparison'] = comparison
+        if comparison.get('strategy_ab') is not None:
+            from services.strategy_ab import accrue
+            result['initial_account_nav'] = (previous_packet['initial_account_nav'] if previous_rows else initial['nav'])
+            result['initial_session_date'] = (previous_packet['initial_session_date'] if previous_rows else session_date)
+            for arm in ('baseline','candidate'):
+                rebate = accrue(previous[arm],execution['arms'][arm]['fills'],session_date=session_date)
+                result['arms'][arm]['commission_rebate'] = rebate
+                nav = result['arms'][arm]['nav']
+                result['arms'][arm]['estimated_nav_including_rebate'] = (
+                    nav+rebate['estimated_receivable'] if nav is not None else None)
     result_checksum = digest(result)
     if existing:
         if existing[0]['payload_checksum'] != result_checksum or existing[0]['payload_json'] != encode(result):

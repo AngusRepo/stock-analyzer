@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
 import PairedNavShadow from '@/components/PairedNavShadow'
+import StrategyCandidateComparison from '@/components/StrategyCandidateComparison'
+import StrategyAbLive from '@/components/StrategyAbLive'
 import { comparisonTitle, navNumber, navPercent, navSign } from '@/lib/navTradingRoom'
 import { navTradingRoomApi } from '@/lib/navTradingRoomApi'
 import type { NavAccountView, NavComparisonDetail, NavFillView } from '@/lib/navTradingRoom'
@@ -74,6 +76,9 @@ export default function NavTradingRoom() {
   const data = query.data
   const selected = data?.pairs.find(pair => pair.pair_id === selection) ?? data?.pairs.find(pair => !pair.lifecycle) ?? data?.pairs[0]
   return <section aria-label="NAV 候選比較" className="min-w-0 space-y-3">
+    <StrategyAbLive data={data} date={date}/>
+    <StrategyCandidateComparison/>
+    <h2 className="pt-5 text-lg font-semibold text-slate-100">每日配對 NAV 帳本</h2>
     <div className={panel}><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">NAV 候選比較</h2><span className="rounded border border-sky-400/30 px-2 py-1 text-xs text-sky-200">隔離模擬 · 唯讀</span></div>
       <p className="mt-2 text-sm leading-6 text-slate-300">看候選機制與凍結基準如何配置資金、買賣及承擔虧損。這些不是現行 Paper 帳戶，不會因查看或切換比較而下單、改權重或晉級。</p>
       <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">

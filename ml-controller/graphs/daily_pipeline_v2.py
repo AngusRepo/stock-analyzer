@@ -120,8 +120,10 @@ PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
-ACTIVE_ALPHA_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
-MODEL_POOL_REQUIRED_MODEL_SET = set(ACTIVE_ALPHA_MODELS)
+from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS
+
+ACTIVE_ALPHA_MODEL_SET = set(SUPPORTED_MODELS)
+MODEL_POOL_REQUIRED_MODEL_SET = set(SUPPORTED_MODELS)
 TIMESFM_L2_SIDECAR_MODEL_SET = set(TIMESFM_L2_SIDECAR_MODELS)
 RETIRED_ALPHA_MODEL_SET = set(RETIRED_ALPHA_MODELS)
 MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
@@ -355,6 +357,7 @@ def _sequence_contract_subset(
 
 
 SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
+SUPPORTED_SEQUENCE_MODELS = ("DLinear", "TimeXer", "PatchTST", "iTransformer")
 
 
 def _sequence_model_contracts(
@@ -366,7 +369,7 @@ def _sequence_model_contracts(
     models = (pool or {}).get("models")
     models = models if isinstance(models, dict) else {}
     contracts: dict[str, dict[str, Any]] = {}
-    for model_name in SEQUENCE_ALPHA_MODELS:
+    for model_name in SUPPORTED_SEQUENCE_MODELS:
         status = str(model_status.get(model_name) or "retired").strip()
         if status not in {"active", "degraded"}:
             continue
@@ -396,6 +399,7 @@ def _sequence_model_contracts(
                 f"{model_name} active serving artifact missing valid version-bound sequence contract"
             )
         contracts[model_name] = {
+            **({"timexer": contract["timexer"]} if model_name == "TimeXer" else {}),
             "seq_len": seq_len,
             "pred_len": pred_len,
             "version": version,
@@ -936,10 +940,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     from copy import deepcopy
     merge_outputs = deepcopy({key: modal_prediction_bundle.get(key) for key in (
         "predict_batch_v2_results", "gnn_graphsage_raw", "dlinear_raw",
-        "patchtst_raw", "itransformer_raw", "active8_sequence_shadow_raw")})
+        "timexer_raw", "patchtst_raw", "itransformer_raw", "active8_sequence_shadow_raw")})
     results = merge_outputs.get("predict_batch_v2_results") or []
     gnn_raw = merge_outputs.get("gnn_graphsage_raw") or {"results": []}
     dlinear_raw = merge_outputs.get("dlinear_raw") or {"results": []}
+    timexer_raw = merge_outputs.get("timexer_raw") or {"results": []}
     patchtst_raw = merge_outputs.get("patchtst_raw") or {"results": []}
     itransformer_raw = merge_outputs.get("itransformer_raw") or {"results": []}
     active8_sequence_shadow_raw = (
@@ -952,6 +957,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         ("predict_batch_v2", results),
         ("gnn_graphsage_universal_predict", gnn_raw),
         ("dlinear_universal_predict", dlinear_raw),
+        ("timexer_universal_predict", timexer_raw),
         ("patchtst_universal_predict", patchtst_raw),
         ("itransformer_universal_predict", itransformer_raw),
     ):
@@ -1005,6 +1011,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
 
 
     def _active_required_model(model_name: str, series: list[dict]) -> bool:
+        if model_name not in model_order(model_status):
+            return False
         return _is_loaded_serving_model(model_status, model_name, "ml_predict_result_required") and bool(series)
 
     gnn_map: dict[str, dict] = {}
@@ -1128,6 +1136,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             logger.warning(f"[Pipeline V2] {name} batch returned error: {raw}")
         return out
 
+    timexer_map = _drain_ts_result(timexer_raw, "TimeXer",
+        sequence_series_by_model.get("TimeXer") or [])
     itransformer_map = _drain_ts_result(
         itransformer_raw,
         "iTransformer",
@@ -1139,6 +1149,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         return {"predictions": {}}
 
     def _attach_alt_sources(row: dict, sym: str) -> None:
+        if sym in timexer_map:
+            row["timexer"] = timexer_map[sym]
         if sym in dlinear_map:
             row["dlinear"] = dlinear_map[sym]
         if sym in patchtst_map:
@@ -1230,7 +1242,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     )
     for model_name, candidate_output in candidate_outputs.items():
         if (
-            model_name not in SEQUENCE_ALPHA_MODELS
+            model_name not in SUPPORTED_SEQUENCE_MODELS
             or model_name not in active8_shadow_candidate_rows
             or not isinstance(candidate_output, dict)
             or candidate_output.get("status") != "complete"
@@ -1279,7 +1291,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 or (((serving_pool.get("models") or {}).get(model_name) or {}).get("last_artifact_evidence") or {}).get("target_semantic_version")
                 or ""
             )
-            for model_name in ACTIVE_ALPHA_MODELS
+            for model_name in model_order(pool_models)
         },
         run_date=rank_run_date,
         active8_ensemble=active8_ensemble,
@@ -1734,7 +1746,6 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
         from services.model_serving_resolver import resolve_serving_pool
 
         pool = resolve_serving_pool(
-            required_models=tuple(ACTIVE_ALPHA_MODELS),
             sidecar_models=tuple(TIMESFM_L2_SIDECAR_MODELS),
         )
         _require_model_pool_required_contract(pool, "model_pool_versions")
@@ -1791,7 +1802,7 @@ def _require_model_pool_required_contract(pool: dict, stage: str) -> None:
         raise RuntimeError(f"model_pool_contract:{stage}:models must be an object")
     missing = [
         name
-        for name in ACTIVE_ALPHA_MODELS
+        for name in model_order(models)
         if not isinstance(models.get(name), dict)
     ]
     sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
@@ -1806,7 +1817,7 @@ def _require_model_pool_required_contract(pool: dict, stage: str) -> None:
         )
     invalid = [
         f"{name}={models[name].get('status')}"
-        for name in ACTIVE_ALPHA_MODELS
+        for name in model_order(models)
         if str(models[name].get("status") or "").strip() not in MODEL_POOL_ALLOWED_STATUSES
     ]
     invalid.extend(
@@ -2040,7 +2051,6 @@ def _load_active8_serving_pool() -> tuple[dict[str, str], dict[str, Any]]:
         from services.model_serving_resolver import resolve_serving_pool
 
         pool = resolve_serving_pool(
-            required_models=tuple(ACTIVE_ALPHA_MODELS),
             sidecar_models=tuple(TIMESFM_L2_SIDECAR_MODELS),
         )
         _require_model_pool_required_contract(pool, "load_active8_serving_pool")
@@ -3332,7 +3342,7 @@ def _pipeline_modal_active8_shadow_projection(
                     + (graph_semantic or "<missing>")
                 )
             sequence_contract = None
-            if model_name in SEQUENCE_ALPHA_MODELS:
+            if model_name in SUPPORTED_SEQUENCE_MODELS:
                 try:
                     seq_len = int(metadata.get("seq_len"))
                     pred_len = int(metadata.get("pred_len"))
@@ -3407,8 +3417,9 @@ def _pipeline_modal_active8_observation_models(
         for row in projected_candidates
         if isinstance(row, dict) and str(row.get("model") or "").strip()
     }
-    missing = sorted(ACTIVE_ALPHA_MODEL_SET - set(by_model))
-    unexpected = sorted(set(by_model) - ACTIVE_ALPHA_MODEL_SET)
+    order = model_order(by_model)
+    missing = sorted(set(order) - set(by_model))
+    unexpected = sorted(set(by_model) - set(order))
     if missing or unexpected or len(by_model) != len(projected_candidates):
         raise RuntimeError(
             "pipeline_modal_observation_bundle:model_set_invalid:"
@@ -3428,7 +3439,7 @@ def _pipeline_modal_active8_observation_models(
         raise RuntimeError("pipeline_modal_observation_bundle:cohort_identity_mismatch")
 
     models: list[dict[str, Any]] = []
-    for model_name in ACTIVE_ALPHA_MODELS:
+    for model_name in order:
         candidate = by_model[model_name]
         gate = str(candidate.get("offline_gate_decision") or "").strip()
         if gate not in ACTIVE8_OBSERVATION_ALLOWED_GATES:
@@ -3554,14 +3565,15 @@ def _pipeline_modal_formal_slot_projection(
 
 def _pipeline_modal_registry_identity_rows(serving_pool: dict[str, Any]) -> list[dict[str, Any]]:
     pool_models = serving_pool.get("models") if isinstance(serving_pool.get("models"), dict) else {}
+    order = model_order(pool_models, complete=True)
     artifact_ids = [
         str((pool_models.get(model_name) or {}).get("serving_artifact_id") or "").strip()
-        for model_name in ACTIVE_ALPHA_MODELS
+        for model_name in order
     ]
     if any(not artifact_id for artifact_id in artifact_ids):
         missing = [
             model_name
-            for model_name, artifact_id in zip(ACTIVE_ALPHA_MODELS, artifact_ids)
+            for model_name, artifact_id in zip(order, artifact_ids)
             if not artifact_id
         ]
         raise RuntimeError(
@@ -3737,7 +3749,7 @@ def _active8_observation_candidates_from_manifest(
             "status": "challenger",
             "effective_status": "challenger",
         }
-    if set(candidates) != ACTIVE_ALPHA_MODEL_SET:
+    if not is_complete_roster(candidates):
         raise RuntimeError(
             "active8_observation_bundle:model_set_invalid:"
             f"missing={sorted(ACTIVE_ALPHA_MODEL_SET - set(candidates))}"
@@ -3751,9 +3763,9 @@ def _stage_active8_observation_outputs(
     candidate_rows: dict[str, dict[str, Any]],
 ) -> None:
     """Mirror one inference pass into candidate evidence without a second model run."""
-    if set(candidate_rows) != ACTIVE_ALPHA_MODEL_SET:
+    if not is_complete_roster(candidate_rows):
         raise RuntimeError("active8_observation_bundle:stage_model_set_invalid")
-    feature_models = ACTIVE_ALPHA_MODEL_SET - set(SEQUENCE_ALPHA_MODELS)
+    feature_models = set(candidate_rows) - set(SUPPORTED_SEQUENCE_MODELS)
     for symbol, prediction in predictions.items():
         if not isinstance(prediction, dict) or prediction.get("error"):
             continue
@@ -3770,6 +3782,7 @@ def _stage_active8_observation_outputs(
         challenger_signals: dict[str, dict[str, Any]] = {}
         for model_name, source_key in (
             ("DLinear", "dlinear"),
+            ("TimeXer", "timexer"),
             ("PatchTST", "patchtst"),
             ("iTransformer", "itransformer"),
         ):
@@ -3780,7 +3793,7 @@ def _stage_active8_observation_outputs(
         prediction["active8_observation_bundle"] = {
             "schema_version": "active8-immutable-observation-bundle-v1",
             "selection_role": ACTIVE8_ACTION_MODE_EVIDENCE_ONLY,
-            "models": list(ACTIVE_ALPHA_MODELS),
+            "models": list(model_order(candidate_rows, complete=True)),
             "production_effect": False,
             "vote_weight": 0.0,
         }
@@ -3843,7 +3856,7 @@ def _build_pipeline_modal_serving_manifest(
     validate_active8_ensemble_artifact(active8_ensemble, pool_models, nav_authority=nav_authority)
     selected_models = set(active8_ensemble["selected_models"])
     models: list[dict[str, Any]] = []
-    for model_name in ACTIVE_ALPHA_MODELS:
+    for model_name in validate_order(active8_ensemble["model_order"]):
         entry = pool_models.get(model_name)
         if not isinstance(entry, dict):
             raise RuntimeError(
@@ -4098,7 +4111,7 @@ def _pipeline_modal_runtime_pool_from_manifest(
             entry["seq_len"] = schema["sequence_contract"].get("seq_len")
             entry["pred_len"] = schema["sequence_contract"].get("pred_len")
         runtime_models[model_name] = entry
-    if set(runtime_models) != ACTIVE_ALPHA_MODEL_SET:
+    if not is_complete_roster(runtime_models):
         raise RuntimeError("pipeline_modal_runtime_pool:model_set_invalid")
     runtime_pool["models"] = runtime_models
     return runtime_pool
@@ -4215,7 +4228,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         if isinstance(row, dict) and str(row.get("model") or "").strip()
     }
     active8_shadow_sequence_contracts: dict[str, dict[str, Any]] = {}
-    for model_name in SEQUENCE_ALPHA_MODELS:
+    for model_name in SUPPORTED_SEQUENCE_MODELS:
         row = active8_shadow_rows.get(model_name)
         if not isinstance(row, dict):
             continue
@@ -4272,6 +4285,13 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
             # Serving still computes; NAV setup later carries this explicit
             # failure into closure instead of substituting the newest bundle.
             state['paired_nav_l3_dispatch'] = shadow_failure('l3_candidate_dispatch', exc)
+    timexer_feature_source = state.get("timexer_feature_source")
+    needs_timexer = ("TimeXer" in sequence_contracts or "TimeXer" in active8_shadow_sequence_contracts
+        or any("TimeXer" in item.get("sequence_contracts", {}) for item in (nav_requests or [])))
+    if needs_timexer and timexer_feature_source is None:
+        from services.active8_prep_lifecycle import ensure_active8_daily_prep
+        timexer_feature_source = await ensure_active8_daily_prep(end_date=state["run_date"], feature_only=True, model_profile_schema_version="active8-release-model-profiles-v4-timexer-price")
+        state["timexer_feature_source"] = timexer_feature_source
     recovery_lineage = state.get("snapshot_recovery_lineage") if isinstance(state.get("snapshot_recovery_lineage"), dict) else {}
     sequence_input_contract_core = {
         "schema_version": "pipeline-modal-sequence-input-contract-v2",
@@ -4319,6 +4339,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "predict_batch_v2_contract": predict_contract,
         "predict_batch_v2_chunk_size": int(predict_contract.get("chunk_size") or len(payloads) or 1),
         "sequence_series": sequence_series,
+        "timexer_feature_source": timexer_feature_source,
         "sequence_model_series_by_model": sequence_series_by_model,
         "sequence_model_contracts": _json_safe(sequence_contracts),
         "active8_shadow_sequence_series_by_model": active8_shadow_sequence_series_by_model,

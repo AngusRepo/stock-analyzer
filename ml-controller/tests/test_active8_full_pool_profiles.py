@@ -2,12 +2,12 @@ from copy import deepcopy
 import pytest
 from services.active8_release_model_profiles import (
     model_profiles, validate_profiles, MODEL_PROFILE_SCHEMA_VERSION,
-    LEGACY_MODEL_PROFILE_SCHEMA_VERSION)
+    LEGACY_MODEL_PROFILE_SCHEMA_VERSION, FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION)
 
 
 def test_new_profiles_remove_caps_without_changing_model_capacity():
     legacy = model_profiles(schema_version=LEGACY_MODEL_PROFILE_SCHEMA_VERSION)
-    current = model_profiles()
+    current = model_profiles(schema_version=FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION)
     for name in ("PatchTST", "iTransformer"):
         assert current[name]["payload_config"]["max_series"] == 0
         assert legacy[name]["payload_config"]["max_series"] == 1024
@@ -18,10 +18,10 @@ def test_new_profiles_remove_caps_without_changing_model_capacity():
     assert validate_profiles(legacy, schema_version=LEGACY_MODEL_PROFILE_SCHEMA_VERSION) == legacy
     with pytest.raises(ValueError, match="mismatch"):
         validate_profiles(legacy, schema_version=MODEL_PROFILE_SCHEMA_VERSION)
-    assert validate_profiles(current) == current
+    assert validate_profiles(current, schema_version=FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION) == current
 
 
-@pytest.mark.parametrize("schema", [LEGACY_MODEL_PROFILE_SCHEMA_VERSION, MODEL_PROFILE_SCHEMA_VERSION])
+@pytest.mark.parametrize("schema", [LEGACY_MODEL_PROFILE_SCHEMA_VERSION, FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION, MODEL_PROFILE_SCHEMA_VERSION])
 def test_monthly_reconciliation_preserves_the_attested_profile_version(schema):
     from services.active8_release_training_contract import (
         ACTIVE8_MODEL_NAMES, build_release_training_contract,
@@ -43,7 +43,7 @@ def test_monthly_reconciliation_preserves_the_attested_profile_version(schema):
     assert result["models_completed"] == 8
 
 
-@pytest.mark.parametrize("schema", [LEGACY_MODEL_PROFILE_SCHEMA_VERSION, MODEL_PROFILE_SCHEMA_VERSION])
+@pytest.mark.parametrize("schema", [LEGACY_MODEL_PROFILE_SCHEMA_VERSION, FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION, MODEL_PROFILE_SCHEMA_VERSION])
 @pytest.mark.parametrize("model", list(model_profiles()))
 def test_native_service_producer_attestation_roundtrips_controller(schema, model, monkeypatch):
     from app.training_policy import build_model_training_config_attestation as produce

@@ -26,8 +26,10 @@ SIMILARITY_PAIRS = (
 REQUIREMENTS = SERVICE_DIR / "requirements.txt"
 
 image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .apt_install("libgomp1", "ocl-icd-libopencl1")
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("gcc", "g++", "libgomp1", "ocl-icd-libopencl1")
+    .pip_install("numpy==1.26.4", "Cython==0.29.37", "setuptools", "wheel")
+    .pip_install("scikit-learn-extra==0.3.0", extra_options="--no-build-isolation")
     .pip_install_from_requirements(str(REQUIREMENTS))
     .add_local_dir(str(TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(APP_DIR), remote_path="/root/app")

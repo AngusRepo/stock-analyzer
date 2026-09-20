@@ -366,7 +366,7 @@ class ModelFeaturePolicy:
         return asdict(self)
 
 
-ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
+ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v4"
 TIMESFM_L175_RELEASE_COHORT = (
     "LightGBM",
     "XGBoost",
@@ -387,24 +387,33 @@ def active8_family_feature_contract(
     release = str(feature_release_mode or "").strip()
     if model in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
         timesfm_release = release == "timesfm_l175_l2_feature_release"
+        full137 = release == "accepted_ab_full137"
         return {
             "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
             "model": model,
             "family_schema": (
                 "formal137_plus_timesfm_l175_v1"
                 if timesfm_release
-                else "formal137_selected_tabular_v1"
+                else ("formal137_full_tabular_v1" if full137 or model in {"TabM", "GNN"} else "formal137_selected_tabular_v1")
             ),
             "input_semantics": (
                 "graph_node_features_from_governed_tabular_universe"
                 if model == "GNN"
-                else "selected_subset_from_governed_tabular_universe"
+                else ("full_governed_tabular_universe" if full137 or model == "TabM" else "selected_subset_from_governed_tabular_universe")
             ),
             "release_id": release or "formal137_baseline",
             "release_cohort": list(TIMESFM_L175_RELEASE_COHORT) if timesfm_release else [model],
             "atomic_cohort_required": timesfm_release,
             "timesfm_l175_sidecar_required": timesfm_release,
         }
+    if model == "TimeXer":
+        if release not in ("timexer_price", "timexer_exo137"):
+            raise ValueError("timexer_feature_variant_required")
+        return {"schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
+            "model": model, "family_schema": "timexer_causal_price_or_exo137_v1",
+            "input_semantics": "independent_close_series" if release == "timexer_price" else "point_in_time_137_exogenous_and_close_series",
+            "release_id": release, "release_cohort": [model],
+            "atomic_cohort_required": False, "timesfm_l175_sidecar_required": False}
     sequence_schema = {
         "DLinear": "close_univariate_decomposition_v1",
         "PatchTST": "close_channel_independent_v1",
@@ -448,6 +457,11 @@ TRAINING_GROUP_FEATURE_POLICIES: dict[str, TrainingGroupFeaturePolicy] = {
         mergeable_oos=True,
         note="Tree models use selected tabular features from feature_pool.tree_active.",
     ),
+    "timexer": TrainingGroupFeaturePolicy(
+        group="timexer", models=("TimeXer",),
+        feature_source="sequence_records_and_point_in_time_feature_history",
+        skip_feature_pool=True, mergeable_oos=False,
+        note="Pinned variant controls channels; no tabular feature selection or future filling."),
     "dlinear": TrainingGroupFeaturePolicy(
         group="dlinear",
         models=("DLinear",),
@@ -500,14 +514,14 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
     "TabM": ModelFeaturePolicy(
         model="TabM",
         family="tabular_neural",
-        feature_policy_type="selected_tabular_artifact_required",
-        feature_source="feature_pool.tree_active",
+        feature_policy_type="full_tabular_artifact_required",
+        feature_source="canonical_prep.governed_feature_universe",
         selection_owner="artifact_registration_preflight",
-        selection_required=True,
+        selection_required=False,
         uses_missingness_mask=True,
         requires_schema_parity=True,
         mergeable_oos=True,
-        allowed_selection_methods=_TABULAR_SELECTION_METHODS + ("production_artifact",),
+        allowed_selection_methods=("governed_full_feature_contract", "production_artifact"),
         note="TabM is a formal L3 production slot; serving is artifact-backed and fails closed when schema parity or lifecycle evidence is missing.",
     ),
     "GNN": ModelFeaturePolicy(
@@ -523,6 +537,13 @@ MODEL_FEATURE_POLICIES: dict[str, ModelFeaturePolicy] = {
         allowed_selection_methods=("graph_spec", "production_artifact", "positive_ic"),
         note="GNN is a formal L3 production slot; serving is graph-artifact-backed and fails closed when graph evidence or lifecycle evidence is missing.",
     ),
+    "TimeXer": ModelFeaturePolicy(
+        model="TimeXer", family="sequence_transformer", feature_policy_type="timexer_pinned_variant",
+        feature_source="sequence_records_and_point_in_time_feature_history",
+        selection_owner="timexer_training", selection_required=False,
+        uses_missingness_mask=False, requires_schema_parity=True, mergeable_oos=False,
+        allowed_selection_methods=("sequence_window_contract", "purged_inner_epoch_selection"),
+        note="Price or full 137 exogenous channels are declared in the immutable model profile."),
     "DLinear": ModelFeaturePolicy(
         model="DLinear",
         family="sequence",
@@ -651,7 +672,8 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
         and str(group or "").strip().lower() == "tree"
     )
     payload["models_filter"] = list(policy.models)
-    payload["skip_feature_pool"] = True if timesfm_l175_feature_release else policy.skip_feature_pool
+    full137 = base_payload.get("feature_release_mode") == "accepted_ab_full137"
+    payload["skip_feature_pool"] = True if timesfm_l175_feature_release or full137 else policy.skip_feature_pool
     feature_policy = policy.to_dict()
     if timesfm_l175_feature_release:
         feature_policy = {
@@ -661,6 +683,10 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
             "selection_required": False,
             "note": "TimesFM L2 feature release retrains tree artifacts on full formal137 + timesfm_l175 sidecar columns.",
         }
+    if full137:
+        feature_policy.update(feature_policy_type="formal137_full_tabular",
+            feature_source="prep.full_formal137", selection_required=False,
+            note="Predeclared full137 input for the accepted A/B profiles; no feature selection.")
     payload["feature_policy"] = feature_policy
     return payload
 
@@ -702,8 +728,16 @@ def build_model_feature_policy_metadata(
     feature_release_mode: str | None = None,
 ) -> dict[str, Any]:
     policy = feature_policy_for_model(model_name)
+    metadata = policy.to_dict()
+    if feature_release_mode == "accepted_ab_full137":
+        from .features import FEATURE_COLS
+        if len(feature_names) != 137 or set(feature_names) != set(FEATURE_COLS):
+            raise ValueError("accepted_ab_full137_feature_inventory_mismatch")
+        metadata.update(feature_policy_type="formal137_full_tabular",
+            feature_source="prep.full_formal137", selection_required=False,
+            note="Predeclared full137 input; no feature selection.")
     return {
-        "feature_policy": policy.to_dict(),
+        "feature_policy": metadata,
         "feature_policy_schema_version": "model-feature-policy-v2",
         "family_feature_contract": active8_family_feature_contract(
             model_name,
@@ -751,7 +785,8 @@ def validate_release_training_dataset_binding(
     if str(contract.get("contract_checksum") or "") != _contract_payload_checksum(unsigned_contract):
         raise ValueError("release_training_contract_checksum_mismatch")
     if contract.get("model_profile_schema_version") not in (
-        "active8-release-model-profiles-v1", "active8-release-model-profiles-v2"
+        "active8-release-model-profiles-v1", "active8-release-model-profiles-v2", "active8-release-model-profiles-v3",
+        "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"
     ):
         raise ValueError("release_training_contract_profile_schema_mismatch")
     snapshot = dict(dataset_snapshot or {})

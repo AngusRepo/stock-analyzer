@@ -25,6 +25,9 @@ def validate_strategy_bundle(bundle, *, candidate_identity=None, signal_date):
             or bundle.get('production_effect') is not False
             or bundle.get('bundle_checksum') != digest({k:v for k,v in bundle.items() if k!='bundle_checksum'})):
         raise ValueError('paired_nav_strategy_bundle_corrupt')
+    if 'strategy_ab' in bundle:
+        from services.strategy_ab import validate_tag
+        validate_tag(bundle['strategy_ab'])
     baseline, target = bundle['baseline_trading_config'], bundle['candidate_trading_config']
     if (not baseline or _without_ev(baseline) != _without_ev(target)
             or any(k in target for k in ('l4AlphaEv','allocatorEvFusion'))

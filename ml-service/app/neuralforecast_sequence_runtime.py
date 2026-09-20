@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version as package_version
+
 import hashlib
 import io
 import json
@@ -81,8 +83,12 @@ NF_MODEL_DEFAULTS: dict[str, dict[str, Any]] = {
         "patch_len": 16,
         "stride": 8,
         "revin": True,
+        "hidden_size": 128, "encoder_layers": 3, "n_heads": 16,
+        "linear_hidden_size": 256, "dropout": 0.2,
     },
     "iTransformer": {
+        "hidden_size": 512, "n_heads": 8, "e_layers": 2, "d_ff": 2048,
+        "dropout": 0.1, "use_norm": True,
         "learning_rate": 1e-3,
         "windows_batch_size": 32,
         "inference_windows_batch_size": 32,
@@ -101,11 +107,15 @@ def _resolve_nf_training_options(payload: dict[str, Any], model_name: str) -> di
         ("step_size", int),
         ("patch_len", int),
         ("stride", int),
+        ("hidden_size", int), ("encoder_layers", int), ("n_heads", int),
+        ("linear_hidden_size", int), ("e_layers", int), ("d_ff", int), ("dropout", float),
     ):
         if payload.get(key) is not None:
             defaults[key] = caster(payload[key])
     if payload.get("scaler_type") is not None:
         defaults["scaler_type"] = str(payload["scaler_type"])
+    if payload.get("use_norm") is not None:
+        defaults["use_norm"] = bool(payload["use_norm"])
     if payload.get("revin") is not None:
         defaults["revin"] = bool(payload["revin"])
     history_mode = str(payload.get("oof_training_history_mode") or "minimum_single_window").strip()
@@ -386,8 +396,17 @@ def _build_fixed_oof_panel(
     pred_len: int,
     max_series: int,
     training_history_mode: str = "minimum_single_window",
+    train_start: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     available_train_dates = [date for date in calendar if date <= train_end]
+    # train_start bounds the signal date (last input), not the context start.
+    # Keep seq_len - 1 earlier sessions so short-history arms retain the same
+    # architecture and full input context while excluding earlier fit windows.
+    if train_start:
+        first_signal = bisect_right(available_train_dates, str(train_start))
+        if first_signal and available_train_dates[first_signal - 1] == str(train_start):
+            first_signal -= 1
+        available_train_dates = available_train_dates[max(0, first_signal - seq_len + 1):]
     train_dates = (
         available_train_dates
         if training_history_mode == "full_pit_history"
@@ -419,6 +438,9 @@ def _build_fixed_oof_panel(
     if training_history_mode == "full_pit_history" and unique_training_windows <= len(selected):
         raise ValueError("oof_sequence_full_history_did_not_create_multiple_windows")
     return train_rows, selected_records, {
+        "requested_signal_start": train_start,
+        "first_training_signal_date": train_dates[seq_len - 1],
+        "last_complete_training_signal_date": train_dates[-pred_len - 1],
         "calendar_start": train_dates[0],
         "calendar_end": train_dates[-1],
         "calendar_rows": len(train_dates),
@@ -449,9 +471,16 @@ def _dense_oof_eval_panel(
     labels: list[dict[str, Any]] = []
     for record in records:
         symbol = str(record.get("symbol") or "").strip()
-        values, _observed_ratio = _aligned_close_values(record, context_dates)
-        if len(values) != seq_len:
+        # Serving consumes the last seq_len dated observations, not synthetic
+        # calendar forward-fills. Use that same input and eligibility here.
+        source_dates = [str(value) for value in (record.get("dates") or [])]
+        source_close = _coerce_close(record)
+        end = bisect_right(source_dates, signal_date)
+        if len(source_dates) != len(source_close) or end < seq_len:
             continue
+        if source_dates[end - 1] != signal_date:
+            continue
+        values = source_close[end - seq_len:end]
         for idx, value in enumerate(values):
             context_rows.append({"unique_id": symbol, "ds": idx, "y": float(value)})
         source_dates = [str(value) for value in (record.get("dates") or [])]
@@ -531,6 +560,7 @@ def _train_dense_purged_oof(
         pred_len=pred_len,
         max_series=max_series,
         training_history_mode=str(training_options["oof_training_history_mode"]),
+        train_start=str(payload.get("train_start") or "") or None,
     )
     if len(panel_records) < 10:
         raise ValueError(f"oof_sequence_panel_requires_10_series:{len(panel_records)}")
@@ -840,12 +870,17 @@ def _make_nf_model(
     configure_training_reproducibility(seed)
     _configure_neuralforecast_runtime()
     from neuralforecast.models import PatchTST, iTransformer
+    from neuralforecast.losses.pytorch import MAE
 
-    training_options = training_options or _resolve_nf_training_options({}, model_name)
+    training_options = {**_resolve_nf_training_options({}, model_name), **(training_options or {})}
     val_check_steps = max(1, min(int(max_steps), 10))
     common = {
         "h": pred_len,
         "input_size": seq_len,
+        "loss": MAE(),
+        "hidden_size": int(training_options["hidden_size"]),
+        "n_heads": int(training_options["n_heads"]),
+        "dropout": float(training_options["dropout"]),
         "max_steps": max_steps,
         "val_check_steps": val_check_steps,
         "batch_size": batch_size,
@@ -864,13 +899,16 @@ def _make_nf_model(
     }
     if model_name == "PatchTST":
         return PatchTST(
+            encoder_layers=int(training_options["encoder_layers"]),
+            linear_hidden_size=int(training_options["linear_hidden_size"]),
             patch_len=int(training_options["patch_len"]),
             stride=int(training_options["stride"]),
             revin=bool(training_options["revin"]),
             **common,
         )
     if model_name == "iTransformer":
-        return iTransformer(n_series=max(1, n_series), **common)
+        return iTransformer(n_series=max(1, n_series), e_layers=int(training_options["e_layers"]),
+                            d_ff=int(training_options["d_ff"]), use_norm=bool(training_options["use_norm"]), **common)
     raise ValueError(f"unsupported NeuralForecast model: {model_name}")
 
 
@@ -1498,7 +1536,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             "seed": seed,
             "max_series": max_series,
             "validation_folds": validation_folds,
-            "runtime_package": "neuralforecast==3.1.9",
+            "runtime_package": "neuralforecast==" + package_version("neuralforecast"),
             "runtime_device": runtime_device,
             "reproducibility": reproducibility,
             "training_options": training_options,

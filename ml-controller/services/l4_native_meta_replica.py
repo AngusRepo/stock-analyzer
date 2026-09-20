@@ -6,12 +6,17 @@ prerequisite for generating nested OOF training features. Replicas cannot be
 registered as L3 releases. No parent validation metrics enter the replica.
 """
 from copy import deepcopy
+from services.alpha_model_roster import model_order, stacker_features
 import numpy as np
 from services.active8_oof_stacker import build_chronological_oof_stack,STACKER_FEATURE_NAMES
 from services.active8_ensemble_artifact import _fit_isotonic,finite_sample_quantile,payload_checksum
 
 
 def replica_builder(predictions,parent):
+    order = model_order(row["model_name"] for row in predictions)
+    if parent.get("observation_artifacts") and model_order(parent["observation_artifacts"], complete=True) != order:
+        raise ValueError("native_meta_parent_roster_mismatch")
+    names = stacker_features(order)
     stacked,evidence=build_chronological_oof_stack(predictions)
     states={s['prediction_date']:s for f in evidence['folds'] for s in f['date_states']}
     def build(prior,*,knowledge_cutoff_date,**_):
@@ -25,9 +30,9 @@ def replica_builder(predictions,parent):
         predicted=np.asarray([r['ensemble_raw'] for r in honest]);target=np.asarray([r['target_return'] for r in honest])
         xs,ys=_fit_isotonic(predicted,target)
         payload={k:deepcopy(parent[k]) for k in ('signal_policy','cohort_id','base_artifact_set_checksum')}
-        payload.update(schema_version='l4-native-meta-research-replica-v1',scope='nested_oof_features_only',
+        payload.update(model_order=list(order),schema_version='l4-native-meta-research-replica-v1',scope='nested_oof_features_only',
             serving_eligible=False,selected_models=state['selected_models'],knowledge_cutoff_date=knowledge_cutoff_date,
-            fit={'intercept':state['intercept'],'coefficients':[state['weights'][n] for n in STACKER_FEATURE_NAMES],
+            fit={'intercept':state['intercept'],'coefficients':[state['weights'][n] for n in names],
                  'regularization':state['regularization']},
             calibration={'probability_x_thresholds':xs,'probability_y_thresholds':ys,
                 'absolute_residual_quantiles':{str(c):finite_sample_quantile(np.abs(target-predicted),c) for c in (.9,.95)}},

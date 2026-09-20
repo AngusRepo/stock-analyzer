@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import type { Bindings } from '../types'
@@ -64,6 +65,7 @@ test('exception restores formal context, nesting is forbidden, native closed-ses
 test('actual P5 losing trades halt cannot be overwritten by defaults and selects only injected account', async () => {
   const sqlite = new DatabaseSync(':memory:')
   sqlite.exec('CREATE TABLE paper_orders(id INTEGER PRIMARY KEY,account_id INTEGER,side TEXT,price REAL,shares REAL,commission REAL,tax REAL,note TEXT)')
+  sqlite.exec(readFileSync(new URL('../../domain-migrations/paper/0006_p5_rearm.sql', import.meta.url), 'utf8'))
   for (let i = 0; i < 3; i++) sqlite.prepare('INSERT INTO paper_orders(account_id,side,price,shares,commission,tax,note) VALUES(2,\'sell\',90,100,20,27,?)')
     .run(JSON.stringify({ entry_price: 100 }))
   const db = { prepare(sql: string) { return { bind(...args: any[]) { return { async all() { return { results: sqlite.prepare(sql).all(...args) } } } } } } } as D1Database

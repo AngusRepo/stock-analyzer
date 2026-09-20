@@ -1,4 +1,4 @@
-import { L4_FEATURE_SCHEMA, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { hydrateExpectedReturnConfigFromPointers } from './expectedReturnServingRegistry'
@@ -301,7 +301,7 @@ async function readNewL4ServingState(env: ExpectedReturnServingEnv, config: Reco
   const pointer=await databaseForDataDomain(env,'learning').prepare('SELECT artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum FROM active8_ensemble_pointer_v1 WHERE singleton_id=1')
     .first<Record<string,string>>()
   const ready=config.l4Distribution?.scope==='paper' && artifact?.schema_version==='l4-distribution-v1'
-    && artifact?.feature_schema===L4_FEATURE_SCHEMA && artifact?.release?.decision==='PASS'
+    && validL4FeatureSchema(artifact) && artifact?.release?.decision==='PASS'
     && artifact?.release?.scope==='paper' && artifact?.release?.model_checksum===artifact?.model_checksum
     && /^[a-f0-9]{64}$/.test(artifact?.release?.validation_receipt_checksum ?? '')
     && l4ReleaseEvidenceError(artifact)===null

@@ -15,6 +15,8 @@ import numpy as np
 
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
 
+from .tabm_output_contract import MEMBER_CONTRACT, member_rank_prediction, validate_output_contract
+
 MODEL_NAME = "TabM"
 
 _ARTIFACT_CACHE: dict[tuple[str, ...], "TabMArtifact"] = {}
@@ -181,6 +183,12 @@ def load_tabm_artifact(pool: dict | None = None) -> TabMArtifact:
     if not isinstance(state_dict, dict):
         raise RuntimeError("TabM artifact missing state_dict")
 
+    contract = validate_output_contract(metadata)
+    embedded_metadata = payload.get("metadata") or {}
+    if contract == MEMBER_CONTRACT and validate_output_contract(embedded_metadata) != contract:
+        raise RuntimeError("TabM embedded/registry output contract mismatch")
+    if embedded_metadata.get("output_contract") and validate_output_contract(embedded_metadata) != contract:
+        raise RuntimeError("TabM embedded/registry output contract mismatch")
     model = _build_tabm_ranker(architecture, metadata)
     model.load_state_dict(state_dict)
     model.eval()
@@ -260,7 +268,10 @@ def predict_tabm_scores(artifact: TabMArtifact, *, features: np.ndarray) -> np.n
 
     x = torch.tensor(_standardize_features(features, artifact.metadata), dtype=torch.float32)
     with torch.no_grad():
-        raw_scores = _reduce_tabm_output(_tabm_forward(artifact.model, x))
+        output = _tabm_forward(artifact.model, x)
+        if validate_output_contract(artifact.metadata) == MEMBER_CONTRACT:
+            return member_rank_prediction(output).detach().cpu().numpy().astype(np.float32)
+        raw_scores = _reduce_tabm_output(output)
 
     transform = str((artifact.metadata or {}).get("output_transform") or "auto").lower()
     if transform == "sigmoid" or (

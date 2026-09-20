@@ -308,6 +308,7 @@ def test_native_serializer_and_full_session_feed_original_nav_without_source_mut
     for domain in ('core', 'paper', 'market', 'learning', 'ops', 'execution'):
         source.executescript((root / 'worker/domain-schemas' / (domain + '.sql')).read_text(encoding='utf-8'))
     source.executescript((root / 'worker/domain-migrations/paper/0004_corporate_action_accounting.sql').read_text(encoding='utf-8'))
+    source.executescript((root / 'worker/domain-migrations/paper/0006_p5_rearm.sql').read_text(encoding='utf-8'))
     source.execute('INSERT INTO paper_accounts(id,cash,initial_cash) VALUES(1,100000,100000)')
     source.execute("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','TSMC','TWSE')")
     source.execute("INSERT INTO daily_recommendations(date,stock_id,symbol,name,rank,score,reason) VALUES('2026-09-07',1,'2330','TSMC',1,50,'seed')")

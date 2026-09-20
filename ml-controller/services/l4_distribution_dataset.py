@@ -5,7 +5,8 @@ only labels known before its prediction fold. Rank != calibrated probability.
 """
 from collections import defaultdict,Counter
 from datetime import date, timedelta
-from services.l4_distribution import FEATURE_SCHEMA, MODELS, digest, finite
+from services.l4_distribution import FEATURE_SCHEMA, MODELS, digest, finite, feature_schema
+from services.alpha_model_roster import model_order
 
 NET_LABEL_SCHEMA = 'next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4'
 
@@ -19,18 +20,22 @@ def validate_sequence_oof_lineage(predictions):
     Generic historical readers remain available for audits. Only immutable
     artifact metadata, verified by the OOF loader, can attest the new recipe.
     """
+    order = model_order(row["model_name"] for row in predictions)
     counts = Counter()
     for row in predictions:
         name = row['model_name']
-        if name not in MODELS[5:]:
+        if name not in order[5:]:
             continue
         if row.get('raw_score_semantic_version') != SEQUENCE_RAW_SCORE_SEMANTIC:
             raise ValueError('l4_sequence_oof_score_semantic_unverified:' + name)
         if (name == 'DLinear' and row.get('checkpoint_selection')
                 != 'fixed_final_epoch_outer_test_monitor_only'):
             raise ValueError('l4_sequence_oof_checkpoint_unverified:DLinear')
+        if (name == 'TimeXer' and row.get('checkpoint_selection')
+                != 'purged_inner_epoch_then_full_train_refit'):
+            raise ValueError('l4_sequence_oof_checkpoint_unverified:TimeXer')
         counts[name] += 1
-    if any(not counts[name] for name in MODELS[5:]):
+    if any(not counts[name] for name in order[5:]):
         raise ValueError('l4_sequence_oof_model_evidence_missing')
     return {'raw_score_semantic_version': SEQUENCE_RAW_SCORE_SEMANTIC,
             'dlinear_checkpoint_selection': 'fixed_final_epoch_outer_test_monitor_only',
@@ -48,6 +53,10 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
             or parent_l3.get('cohort_id') != manifest.get('cohort_id')
             or len(manifest.get('manifest_checksum','')) != 64):
         raise ValueError('l4_dataset_verified_native_manifest_required')
+    order = model_order(parent_l3["observation_artifacts"], complete=True)
+    if model_order(row["model_name"] for row in predictions) != order:
+        raise ValueError("l4_dataset_parent_roster_mismatch")
+    schema = feature_schema(order)
     groups, folds = defaultdict(dict), {}
     for row in predictions:
         if row.get('cohort_id')!=manifest['cohort_id'] or row.get('target_semantic_version')!=NET_LABEL_SCHEMA:
@@ -61,7 +70,7 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
             continue
         key=(row['fold_id'],day,row['symbol'])
         model=row['model_name']
-        if model not in MODELS or model in groups[key]:
+        if model not in order or model in groups[key]:
             raise ValueError('l4_dataset_model_duplicate_or_unknown')
         groups[key][model]=row
         if row['fold_id'] in folds and folds[row['fold_id']]!=row['test_start']:
@@ -97,14 +106,14 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
         # rows were never eligible native L3 recommendations, not L4 rejects.
         eligible=[]
         for key,models in sorted(by_day[start]):
-            if any(name not in models for name in MODELS[:5]):
+            if any(name not in models for name in order[:5]):
                 rejected['source_l3_core_coverage_missing']+=1
                 continue
             eligible.append((key,models))
         from services.active8_score_semantics import _percentile_by_average_rank
         ranks={}
         segments={next(iter(models.values()))['market_segment'] for _,models in eligible}
-        for name in MODELS:
+        for name in order:
             for segment in segments:
                 values=[(key[2],finite(models[name]['raw_score'],'raw_score')) for key,models in eligible
                     if name in models and models[name]['market_segment']==segment]
@@ -112,7 +121,7 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
         for (row_fold,day,symbol), all_models in eligible:
             models={name:r for name,r in all_models.items() if name in selected
                 and symbol in ranks[(r['market_segment'],name)]}
-            if any(name not in models for name in selected if name in MODELS[:5]):
+            if any(name not in models for name in selected if name in order[:5]):
                 rejected['source_l3_selected_core_rank_missing']+=1
                 continue
             if not models:
@@ -125,10 +134,10 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
             prediction={'rank_scores':{name:ranks[(r['market_segment'],name)][symbol] for name,r in models.items()},
                 'model_score_lineage':{'coverage_policy':'validated-bundle-selected-core-sequence-missingness-v1',
                                      'selected_models':selected,'ensemble_payload_checksum':replica['payload_checksum'],
-                                     'complete':True,'optional_missing_models':[n for n in MODELS[5:] if n not in models],'raw_scores':{name:r['raw_score'] for name,r in models.items()},
+                                     'complete':True,'optional_missing_models':[n for n in order[5:] if n not in models],'raw_scores':{name:r['raw_score'] for name,r in models.items()},
                                      'artifact_versions':{name:r['artifact_version'] for name,r in models.items()}},
                 'l3_model_eligibility':{'sequence_models':{name:{'eligible':False,
-                    'reason':'active8_sequence_history_contract_unmet_optional_masked'} for name in MODELS if name not in models}}}
+                    'reason':'active8_sequence_history_contract_unmet_optional_masked'} for name in order if name not in models}}}
             prediction['ensemble_v2']=_evaluate_validated_ensemble(prediction,replica,{'complete':True})
             edge=_rescale_score(calculate_ml_score(prediction['ensemble_v2'],prediction),30,25)
             # Ensemble weighting is not an information filter for downstream L4.
@@ -142,7 +151,7 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
                     'raw_scores':{name:r['raw_score'] for name,r in full_models.items()},
                     'artifact_versions':{name:r['artifact_version'] for name,r in full_models.items()}}}
             feature=native_features({'score_components':{'components':{'mlEdge':edge}}},l4_prediction)
-            output.append({'date':day,'symbol':symbol,'features':feature,'feature_schema':FEATURE_SCHEMA,
+            output.append({'date':day,'symbol':symbol,'features':feature,'feature_schema':schema,
                 'prediction_kind':'oof','l3_identity':parent_identity,
                 'l3_baseline':native_baseline(prediction),
                 'l3_training_label_known_max':max(replicas[start]['label_known_max'],max(r['train_end'] for r in full_models.values())),
@@ -153,7 +162,7 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
                 'source':{'manifest_checksum':manifest['manifest_checksum'],'fold_id':fold,
                           'meta_replica_checksum':replica['payload_checksum'],
                           'base_artifacts':{name:{'version':r['artifact_version'],'checksum':r['artifact_checksum']} for name,r in full_models.items()}}})
-    receipt={'schema_version':'l4-native-oof-dataset-v1','feature_schema':FEATURE_SCHEMA,
+    receipt={'schema_version':'l4-native-oof-dataset-v1','feature_schema':schema,
         'parent_l3_identity':parent_identity,'source_manifest_checksum':manifest['manifest_checksum'],
         'source_label_semantic':NET_LABEL_SCHEMA,'gross_conversion_cost':.0018,
         'replicas':replicas,'excluded_warmup_folds':excluded,'rows':len(output),'rows_checksum':digest(output),

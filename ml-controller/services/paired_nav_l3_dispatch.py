@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
 
+from services.alpha_model_roster import model_order
 from services.active_model_policy import ACTIVE_ALPHA_MODELS
 from services.active8_score_semantics import normalize_active8_challenger_scores
 from services.paired_nav_journal import digest, _timestamp, read_snapshot
@@ -113,14 +114,16 @@ def prepare_candidate_requests(*, signal_date, decision_cutoff, sequence_series,
                 or artifact['knowledge_cutoff_date'] > signal_date):
             raise ValueError('paired_nav_l3_dispatch_candidate_time_invalid')
         base = artifact['observation_artifacts']
-        if set(base) != set(ACTIVE_ALPHA_MODELS):
-            raise ValueError('paired_nav_l3_dispatch_base_set_invalid')
+        try:
+            order = model_order(base, complete=True)
+        except ValueError as exc:
+            raise ValueError('paired_nav_l3_dispatch_base_set_invalid') from exc
         key = digest(base)
         candidates.append({'registry': deepcopy(row), 'artifact': artifact, 'bundle_key': key,
             'registered_pairs': packet.get('registered_pairs') or []})
         if key in bundles:
             continue
-        ids = [base[name]['artifact_id'] for name in ACTIVE_ALPHA_MODELS]
+        ids = [base[name]['artifact_id'] for name in order]
         rows = query('SELECT * FROM model_artifact_registry WHERE artifact_id IN ('
                      + ','.join('?' for _ in ids) + ')', ids)
         by_model = {row['model_name']: row for row in rows}
@@ -137,7 +140,7 @@ def prepare_candidate_requests(*, signal_date, decision_cutoff, sequence_series,
         if suppressed or len(projected) != len(ids):
             raise ValueError('paired_nav_l3_dispatch_base_contract_invalid')
         contracts = {r['model']: {**r['schema']['sequence_contract'], 'artifact_path': r['artifact_path']}
-            for r in projected if r['model'] in {'DLinear', 'PatchTST', 'iTransformer'}}
+            for r in projected if r['model'] in set(order[5:])}
         usable, _ = subsets(sequence_series, contracts=contracts)
         bundles[key] = {'bundle_key': key, 'candidates': projected,
             'sequence_series_by_model': usable, 'sequence_contracts': contracts}

@@ -3,11 +3,18 @@ import json
 from services.l4_distribution import digest
 
 
+def uses_native_l4(manifest):
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+    return manifest.get('model_profile_schema_version') in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA)
+
+
 def persist_base_index(*,manifest,predictions,client,dry_run):
     from services.active8_oof_cohort_materializer import build_oof_fold_artifact_rows
     from services.ev_lineage_contract import build_model_set_signature
     from services.l4_distribution_dataset import NET_LABEL_SCHEMA
-    from services.l4_distribution import MODELS
+    from services.l4_distribution import MODELS as LEGACY_MODELS
+    from services.alpha_model_roster import validate_order
+    MODELS = validate_order(manifest.get("model_set") or LEGACY_MODELS)
     cohort=manifest['cohort_id']
     folds=build_oof_fold_artifact_rows(manifest,predictions)
     if len(folds)!=len(manifest['windows'])*len(MODELS):
@@ -63,7 +70,9 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
         if dispatch_full_fit and not target:
             refresh={'status':'awaiting_l3_candidate','promoted':False,'reason':'full_fit_has_no_usable_ensemble_candidate'}
         else:
-            refresh=execute(as_of=as_of,cadence=cadence,target_l3_artifact_id=target)
+            from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
+            options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') == TIMEXER_EXO_PROFILE_SCHEMA else {}
+            refresh=execute(as_of=as_of,cadence=cadence,target_l3_artifact_id=target,**options)
     result={'status':'dry_run' if dry_run else 'pending' if full_fit.get('retry_required') else 'materialized',
         'dependency_retry_required':bool(full_fit.get('retry_required')),'calendar':calendar or {},
         'cadence':cadence,'knowledge_cutoff_date':as_of,'materialization_owner':'native_l3_new_l4',

@@ -1,0 +1,30 @@
+{
+  "mode": "before",
+  "stocks": 2789,
+  "source_component_rows": {
+    "stocks": 2789,
+    "prices": 898601,
+    "indicators": 197875,
+    "chips": 1544948,
+    "broker_flows": 105852,
+    "market_risk": 127,
+    "sentiment": 648,
+    "monthly_revenue": 57738,
+    "canonical_fundamentals": 155573,
+    "margin_data": 360582,
+    "shareholding": 2625,
+    "signals": 11702
+  },
+  "map_rows": [
+    898601,
+    197874,
+    658166,
+    648,
+    500376
+  ],
+  "maps_sha256": "6997746952d3d2c19e24afc7830b455aebe5625419a1030d9357d8ed073b2e8e",
+  "elapsed_s": 7.031,
+  "peak_rss_mib": 2863.61,
+  "transport": "local hardlink; network latency excluded",
+  "production_effect": false
+}

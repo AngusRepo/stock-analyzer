@@ -302,7 +302,8 @@ def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None) -> np.n
         pred_name_to_idx = {name: idx for idx, name in enumerate(ctx.feature_names)}
         defaults = np.array(
             [safe_float(training_medians.get(name), 0.0) for name in training_features],
-            dtype=np.float32,
+            # Preserve tree input precision across feature-subset alignment.
+            dtype=np.result_type(ctx.x_latest.dtype, np.float32),
         ).reshape(1, -1)
         aligned = defaults.copy()
         for idx, fname in enumerate(training_features):
@@ -596,7 +597,7 @@ def _apply_active8_shadow_feature_predictions(
 ) -> None:
     """Run selected registry candidates with zero production effect."""
     for model_name in _active8_shadow_candidate_names(pool):
-        if model_name in {"DLinear", "PatchTST", "iTransformer"}:
+        if model_name in {"DLinear", "TimeXer", "PatchTST", "iTransformer"}:
             continue
         try:
             entry = _active8_shadow_candidate_entry(model_name, pool)

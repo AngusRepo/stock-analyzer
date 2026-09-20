@@ -11,6 +11,7 @@ function makeFakeDb(rows: any[] = []) {
   const state: { sql?: string; binds?: unknown[] } = {}
   const db = {
     prepare(sql: string) {
+      if (sql.includes('active8_ensemble_pointer_v1')) return { first: async () => null }
       state.sql = sql
       return {
         bind(...binds: unknown[]) {

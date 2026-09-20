@@ -1,3 +1,4 @@
+import { publishedAlphaModelOrder } from './alphaModelRoster'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
@@ -40,17 +41,6 @@ export interface AdaptiveMetaPolicyReplayOptions {
   timeoutMs?: number
 }
 
-const ACTIVE_MODELS = [
-  'LightGBM',
-  'XGBoost',
-  'ExtraTrees',
-  'TabM',
-  'GNN',
-  'DLinear',
-  'PatchTST',
-  'iTransformer',
-] as const
-
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number {
   const n = Number.parseInt(String(value ?? ''), 10)
   if (!Number.isFinite(n)) return fallback
@@ -70,13 +60,14 @@ export async function listAdaptiveMetaPolicyReplayRows(
   options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit'> = {},
 ): Promise<AdaptiveMetaPolicyReplayRow[]> {
   const limit = boundedInt(options.limit, 20000, 1, 50000)
-  const placeholders = ACTIVE_MODELS.map(() => '?').join(', ')
+  const activeModels = await publishedAlphaModelOrder(db)
+  const placeholders = activeModels.map(() => '?').join(', ')
   const clauses = [
     `p.model_name IN (${placeholders})`,
     'p.verified_at IS NOT NULL',
     'p.actual_return_pct IS NOT NULL',
   ]
-  const binds: unknown[] = [...ACTIVE_MODELS]
+  const binds: unknown[] = [...activeModels]
   if (options.startDate) {
     clauses.push('date(p.prediction_date) >= date(?)')
     binds.push(options.startDate)
@@ -212,13 +203,14 @@ export async function listAdaptiveMetaPolicyReplayRowsAcrossDomains(
   options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit'> = {},
 ): Promise<AdaptiveMetaPolicyReplayRow[]> {
   const limit = boundedInt(options.limit, 20000, 1, 50000)
-  const placeholders = ACTIVE_MODELS.map(() => '?').join(', ')
+  const activeModels = await publishedAlphaModelOrder(learningDb)
+  const placeholders = activeModels.map(() => '?').join(', ')
   const clauses = [
     `p.model_name IN (${placeholders})`,
     'p.verified_at IS NOT NULL',
     'p.actual_return_pct IS NOT NULL',
   ]
-  const binds: unknown[] = [...ACTIVE_MODELS]
+  const binds: unknown[] = [...activeModels]
   if (options.startDate) {
     clauses.push('date(p.prediction_date) >= date(?)')
     binds.push(options.startDate)
@@ -351,6 +343,7 @@ export async function runAdaptiveMetaPolicyReplay(
   const endDate = options.endDate ?? todayTw()
   const learningDb = databaseForDataDomain(env, 'learning')
   const coreDb = databaseForDataDomain(env, 'core')
+  const activeModels = await publishedAlphaModelOrder(learningDb)
   const rowOptions = { startDate, endDate, limit: options.limit ?? 20000 }
   const rows = learningDb === coreDb
     ? await listAdaptiveMetaPolicyReplayRows(learningDb, rowOptions)
@@ -407,7 +400,7 @@ export async function runAdaptiveMetaPolicyReplay(
       actual_date_start: actualSourceDates[0] ?? null,
       actual_date_end: actualSourceDates.at(-1) ?? null,
       source_rows: rows.length,
-      active_models: [...ACTIVE_MODELS],
+      active_models: [...activeModels],
     },
   }
   const persist = options.persist === true

@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from services.active_model_policy import ACTIVE_ALPHA_MODELS
+from services.alpha_model_roster import SUPPORTED_MODELS, model_order
 
 
 SCORE_FEATURE_VERSION = "score_v2"
@@ -18,7 +19,7 @@ RECONSTRUCTION_VERSION = "ev-point-in-time-lineage-reconstruction-v1"
 CHAMPION_HISTORY_SOURCE = "model_champion_history"
 ROW_MODEL_VERSION_SOURCE = "predictions.model_signal"
 ARTIFACT_REGISTRY_SOURCE = "model_artifact_registry"
-ACTIVE_ALPHA_MODEL_SET = frozenset(ACTIVE_ALPHA_MODELS)
+ACTIVE_ALPHA_MODEL_SET = SUPPORTED_MODELS
 TAIPEI_UTC_OFFSET = timedelta(hours=8)
 MAX_SAME_RUN_VERSION_EVIDENCE_AGE = timedelta(hours=12)
 CANONICAL_SCORE_WEIGHTS = {
@@ -137,6 +138,8 @@ def ensemble_lineage_blockers(payload: dict[str, Any]) -> list[str]:
         for name in contributors
         if name not in ACTIVE_ALPHA_MODEL_SET
     )
+    if "DLinear" in contributors and "TimeXer" in contributors:
+        blockers.append("alpha_roster_mixed_replacement_slot")
     missing_versions = [name for name in contributors if not is_known_artifact_version(versions.get(name))]
     blockers.extend(f"artifact_version_missing:{name}" for name in missing_versions)
     expected_signature = build_model_set_signature(versions, contributors)

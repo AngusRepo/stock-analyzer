@@ -1,4 +1,4 @@
-import { L4_FEATURE_SCHEMA, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { paperExecutionNow, paperExecutionDate, privateL4ResearchAllowed } from './paperExecutionScope'
 /**
  * tradingConfig.ts — 統一交易參數管理
@@ -1625,7 +1625,7 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     const a=policy.artifact as any
     const isolatedCandidate = privateResearch && policy.scope==='private_research'
     if ((!isolatedCandidate && policy.scope!=='paper') || a?.schema_version!=='l4-distribution-v1'
-      || a?.feature_schema!==L4_FEATURE_SCHEMA
+      || !validL4FeatureSchema(a)
       || !/^[a-f0-9]{64}$/.test(a?.model_checksum ?? '')
       || (!isolatedCandidate && (a?.release?.scope!=='paper' || a?.release?.decision!=='PASS'
         || a?.release?.model_checksum!==a?.model_checksum

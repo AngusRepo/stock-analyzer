@@ -494,7 +494,7 @@ def test_model_feature_policy_contract_covers_active8_and_timesfm_sidecar():
 
     assert expected.issubset(set(MODEL_FEATURE_POLICIES))
     assert feature_policy_for_model("LightGBM").feature_source == "feature_pool.tree_active"
-    assert feature_policy_for_model("TabM").feature_policy_type == "selected_tabular_artifact_required"
+    assert feature_policy_for_model("TabM").feature_policy_type == "full_tabular_artifact_required"
     assert feature_policy_for_model("GNN").feature_policy_type == "graph_artifact_required"
     assert feature_policy_for_model("DLinear").feature_source == "sequence_records.close_only"
     assert feature_policy_for_model("PatchTST").feature_source == "sequence_records.close_only"
@@ -521,7 +521,7 @@ def test_model_feature_policy_metadata_records_feature_count_and_evidence():
     )
 
     assert meta["feature_policy_schema_version"] == "model-feature-policy-v2"
-    assert meta["family_feature_contract"]["family_schema"] == "formal137_selected_tabular_v1"
+    assert meta["family_feature_contract"]["family_schema"] == "formal137_full_tabular_v1"
     assert meta["feature_count"] == 3
     assert meta["feature_policy"]["model"] == "TabM"
     assert meta["feature_policy"]["requires_schema_parity"] is True

@@ -7,6 +7,7 @@ No callback, fit, publication or serving-pointer operation exists here.
 from copy import deepcopy
 import hashlib
 import json
+from app.alpha_model_roster import model_order
 
 
 def checksum(value):
@@ -38,7 +39,11 @@ def run_candidate_bundles(parent, *, compute):
         base = {r['model']: {k: r[k] for k in ('artifact_id', 'version', 'checksum', 'candidate_type')}
                 for r in rows}
         key = checksum(base)
-        if set(base) != set(ACTIVE_ALPHA_MODELS) or request['bundle_key'] != key or key in seen:
+        try:
+            order = model_order(base, complete=True)
+        except ValueError as exc:
+            raise ValueError('paired_nav_l3_request_identity_invalid') from exc
+        if request['bundle_key'] != key or key in seen:
             raise ValueError('paired_nav_l3_request_identity_invalid')
         seen.add(key)
         child = deepcopy(parent)
@@ -58,7 +63,7 @@ def run_candidate_bundles(parent, *, compute):
         child['active8_shadow_artifact_identities'] = active8_shadow_candidate_identities(manifest)
         contracts = request['sequence_contracts']
         series = request['sequence_series_by_model']
-        sequence_names = {'DLinear', 'PatchTST', 'iTransformer'}
+        sequence_names = set(order[5:])
         if set(contracts) != sequence_names or set(series) != sequence_names:
             raise ValueError('paired_nav_l3_sequence_set_invalid')
         row_map = {r['model']: r for r in rows}

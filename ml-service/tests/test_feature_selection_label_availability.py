@@ -76,8 +76,10 @@ def test_window_entry_uses_native_evidence_cache_even_if_old_pool_exists(monkeyp
 
 
 def test_native_pipeline_reports_maturity_filter_before_signal_gate(monkeypatch):
-    dates = [f"2026-06-{day:02d}" for day in range(1, 21)]
-    known = [f"2026-06-{day + 5:02d}" for day in range(1, 21)]
+    from datetime import date, timedelta
+    # Enough mature dates for both real embargo gaps; this test targets label filtering.
+    dates = [(date(2026, 5, 1) + timedelta(days=day)).isoformat() for day in range(51)]
+    known = [(date(2026, 5, 1) + timedelta(days=day + 5)).isoformat() for day in range(51)]
     batch = Batch(dates, known)
     batch.name = "canonical/prep/batch_0.npz"
     batch.generation = "1"
@@ -96,5 +98,5 @@ def test_native_pipeline_reports_maturity_filter_before_signal_gate(monkeypatch)
     monkeypatch.setattr(fs, "signal_sanity_gate", lambda *args, **kwargs: {"passed": False, "p_value": 1.0})
     result = fs.run_feature_selection_pipeline(train_end_date="2026-06-20", prep_gcs_prefix="canonical")
     assert result["error"] == "signal_gate_failed"
-    assert result["split"]["input_availability"]["retained_rows"] == 15
+    assert result["split"]["input_availability"]["retained_rows"] == 46
     assert result["split"]["input_availability"]["unavailable_label_rows"] == 5

@@ -11,7 +11,7 @@ def fixture():
     db = sqlite3.connect(':memory:')
     db.row_factory = sqlite3.Row
     for path in ('core/0001_core_baseline.sql', 'paper/0001_paper_baseline.sql',
-                 'paper/0004_corporate_action_accounting.sql', 'market/0001_market_baseline.sql'):
+                 'paper/0004_corporate_action_accounting.sql', 'paper/0006_p5_rearm.sql', 'market/0001_market_baseline.sql'):
         db.executescript((ROOT / 'worker/domain-migrations' / path).read_text(encoding='utf-8'))
     db.execute("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','TSMC','TWSE')")
     db.execute('INSERT INTO paper_accounts(id,cash,initial_cash) VALUES(1,100000,100000),(2,777,777)')
@@ -60,6 +60,38 @@ def test_bootstrap_changed_sources_cannot_publish(native_runner):
         owners = native_runtime_manifest(native_runner)['tables']
         with pytest.raises(ValueError, match='source_changed_during_capture'):
             capture_native_bootstrap(domain_queries={domain: changing for domain in set(owners.values())},
+                ownership=owners, account_id=1, signal_date='2026-09-07', frozen_kv={})
+    finally:
+        db.close()
+
+
+def test_bootstrap_preserves_only_account_rearm_receipt_and_append_only_guards(native_runner):
+    db, query = fixture()
+    try:
+        for account_id in (1, 2):
+            db.execute("INSERT INTO paper_p5_rearms_v1(request_id,account_id,cutoff_sell_id,last_order_id,previous_rearm_id,incident_ref,repair_version,validation_ref,validation_sha256,approved_by) VALUES(?,?,93,93,0,'incident','repair','validation',?,'operator')", (str(account_id), account_id, 'a' * 64))
+        owners = native_runtime_manifest(native_runner)['tables']
+        state = capture_native_bootstrap(domain_queries={domain: query for domain in set(owners.values())},
+            ownership=owners, account_id=1, signal_date='2026-09-07', frozen_kv={})
+        restored = sqlite3.connect(':memory:')
+        try:
+            restored.executescript(state['state_sql'])
+            assert restored.execute('SELECT account_id,cutoff_sell_id FROM paper_p5_rearms_v1').fetchall() == [(1,93)]
+            with pytest.raises(sqlite3.IntegrityError, match='append_only'):
+                restored.execute('DELETE FROM paper_p5_rearms_v1')
+        finally:
+            restored.close()
+    finally:
+        db.close()
+
+
+def test_bootstrap_missing_rearm_schema_is_incomplete(native_runner):
+    db, query = fixture()
+    try:
+        db.execute('DROP TABLE paper_p5_rearms_v1')
+        owners = native_runtime_manifest(native_runner)['tables']
+        with pytest.raises(ValueError, match='required_schema_missing:paper_p5_rearms_v1'):
+            capture_native_bootstrap(domain_queries={domain: query for domain in set(owners.values())},
                 ownership=owners, account_id=1, signal_date='2026-09-07', frozen_kv={})
     finally:
         db.close()

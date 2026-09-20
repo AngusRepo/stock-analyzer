@@ -227,7 +227,9 @@ async def _execute_oof_lifecycle(
         }
     else:
         try:
-            prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False)
+            profile = os.environ.get("OOF_MATERIALIZE_MODEL_PROFILE_SCHEMA", "active8-release-model-profiles-v3")
+            prep_options = {} if profile == "active8-release-model-profiles-v3" else {"model_profile_schema_version":profile}
+            prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False, **prep_options)
         except Active8PrepDependencyPending as exc:
             return {
                 "status": "pending",
@@ -236,6 +238,7 @@ async def _execute_oof_lifecycle(
                 "prep_lifecycle": exc.evidence,
             }
     result = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        model_profile_schema_version=os.environ.get("OOF_MATERIALIZE_MODEL_PROFILE_SCHEMA", "active8-release-model-profiles-v3"),
         cadence=cadence,
         end_date=end_date,
         dry_run=False,

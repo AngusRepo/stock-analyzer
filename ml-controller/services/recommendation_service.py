@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from numbers import Integral, Real
 from typing import Any, Callable, Optional
 
+from services.alpha_model_roster import model_order
 from services import d1_client
 from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services._predictions_schema import (
@@ -2157,12 +2158,13 @@ _CORE_FAMILY_MODEL_GROUPS: dict[str, tuple[str, ...]] = {
     "tree": ("XGBoost", "ExtraTrees", "LightGBM"),
     "tabular_neural": ("TabM",),
     "graph": ("GNN",),
-    "learned_sequence": ("DLinear", "PatchTST", "iTransformer"),
+    "learned_sequence": ("DLinear", "TimeXer", "PatchTST", "iTransformer"),
 }
 _DIRECT_ALPHA_BLOCKED_MODELS = {"TimesFM"}
 
 _SEQUENCE_MODEL_SOURCE_KEYS: dict[str, str] = {
     "DLinear": "dlinear",
+        "TimeXer": "timexer",
     "PatchTST": "patchtst",
     "iTransformer": "itransformer",
 }
@@ -2397,8 +2399,8 @@ def apply_core_family_evidence(
         missing_optional_models = list(formal_contract.get("missing_optional_models") or [])
         ensemble_available = isinstance((pred or {}).get("ensemble_v2"), dict) and bool((pred or {}).get("ensemble_v2"))
         formal_contract_passed = bool(formal_contract["complete"] and ensemble_available)
-        evidence["active_model_contract"] = list(ACTIVE_ALPHA_MODELS)
-        evidence["available_active_models"] = sorted(set(ACTIVE_ALPHA_MODELS) & available_models)
+        evidence["active_model_contract"] = formal_contract["active_models"]
+        evidence["available_active_models"] = sorted(set(formal_contract["active_models"]) & available_models)
         evidence["missing_active_models"] = missing_active_models
         evidence["missing_core_models"] = missing_core_models
         evidence["missing_optional_models"] = missing_optional_models
@@ -4678,7 +4680,7 @@ def write_predictions_to_d1(
         if observation_only or any(name.endswith("::challenger") for name in per_model_scores):
             expected_observation_models = {
                 f"{model_name}::challenger"
-                for model_name in ACTIVE_ALPHA_MODELS
+                for model_name in model_order((data.get("ensemble_v2") or {}).get("model_order") or data.get("challenger_rank_scores") or {})
             }
             missing = sorted(expected_observation_models - set(per_model_scores))
             unexpected = sorted({name for name in per_model_scores if name.endswith("::challenger")}
@@ -5011,7 +5013,7 @@ def write_layer3_formal_gate_audit(
 _PER_MODEL_TRACKED = (
     "XGBoost", "ExtraTrees", "LightGBM",
     "TabM", "GNN",
-    "DLinear", "PatchTST", "iTransformer",
+    "DLinear", "TimeXer", "PatchTST", "iTransformer",
 )
 
 _PER_MODEL_TRACKED_SET = set(_PER_MODEL_TRACKED)
@@ -5028,7 +5030,8 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
     Returns formal active/family slots that have a usable score in the dict.
     """
     out: dict[str, float] = {}
-    for name in ACTIVE_ALPHA_MODELS:
+    from services.alpha_model_roster import model_order
+    for name in model_order(pred.get("rank_scores") or {}):
         score = _model_rank_score(pred, name)
         if score is not None:
             out[name] = score
@@ -5049,6 +5052,7 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
     base_model_name = str(model_name).replace("::challenger", "")
     source_key = {
         "DLinear": "dlinear",
+        "TimeXer": "timexer",
         "PatchTST": "patchtst",
         "iTransformer": "itransformer",
     }.get(base_model_name)

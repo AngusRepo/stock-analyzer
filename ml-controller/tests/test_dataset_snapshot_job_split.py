@@ -24,7 +24,7 @@ import pipeline_job_main  # noqa: E402
 def test_canonical_snapshot_job_never_publishes_short_validation_window(monkeypatch):
     monkeypatch.setenv("STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS", "30")
 
-    assert dataset_snapshot_job_main._snapshot_export_start_date("2026-08-21") == "2025-04-04"
+    assert dataset_snapshot_job_main._snapshot_export_start_date("2026-08-21") == '2023-02-18'
 
 
 def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):

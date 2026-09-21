@@ -367,6 +367,9 @@ def normalize_active8_challenger_scores(
             "production_effect": False,
             "vote_weight": 0.0,
             "available_models": available,
+            # Preserve learned sequence missingness through candidate L3 -> L4.
+            "optional_missing_models": [name for name in _SEQUENCE_SOURCE_KEYS
+                                        if name in candidates and name not in ranks],
             "candidate_artifact_versions": {
                 name: str(candidates[name].get("version") or "")
                 for name in candidates

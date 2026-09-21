@@ -249,3 +249,23 @@ def test_unselected_information_cannot_bypass_no_selected_model_evidence(monkeyp
         assert pred['rank_scores']['ExtraTrees'] is not None
         assert not pred['model_score_lineage']['complete']
         assert 'selected_model_evidence_missing' in pred['model_score_lineage']['blockers']
+
+
+def test_challenger_sequence_gaps_keep_explicit_mask_without_inventing_scores():
+    from services.active8_score_semantics import normalize_active8_challenger_scores
+    predictions = {s: {'stock_meta': {'market': 'TWSE'},
+        'challenger_rank_scores': {'XGBoost': value},
+        'challenger_model_signals': {'TimeXer': {'forecast_pct': value}}}
+        for s, value in [('A', .1), ('B', .2), ('C', .3), ('D', .4)]}
+    predictions['D']['challenger_model_signals'] = {}
+    normalize_active8_challenger_scores(predictions,
+        candidate_rows={name: _challenger_candidate(name) for name in ('XGBoost', 'TimeXer')},
+        run_date='2026-09-21')
+    for symbol in ('A', 'B', 'C'):
+        assert predictions[symbol]['challenger_model_score_lineage']['optional_missing_models'] == []
+    missing = predictions['D']
+    assert missing['challenger_model_score_lineage']['optional_missing_models'] == ['TimeXer']
+    assert 'TimeXer' not in missing['challenger_rank_scores']
+    assert 'TimeXer' not in missing['challenger_raw_model_scores']
+    assert missing['challenger_model_score_lineage']['complete'] is True
+    assert missing['challenger_rank_scores']['XGBoost'] == 1.

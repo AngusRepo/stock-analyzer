@@ -5,8 +5,17 @@ returns NAV. Different allocations still require actual paired execution.
 """
 from copy import deepcopy
 import math
+import re
 
 from services.paired_nav_journal import digest, read_snapshot, _timestamp
+
+
+def _screener_timestamp(value):
+    # screener_runs.created_at is SQLite CURRENT_TIMESTAMP: UTC without suffix.
+    # Interpret only that exact database format; other naive inputs stay invalid.
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+        value = value.replace(' ', 'T') + '+00:00'
+    return _timestamp(value)
 
 
 def frozen_route_source(saved):
@@ -33,7 +42,7 @@ def frozen_route_source(saved):
                 or not source.get('screener_run_id') or not source.get('decision_universe_frozen_at')
                 or source.get('screener_run_id') != row.get('screener_run_id')
                 or source.get('decision_universe_frozen_at') != row.get('decision_universe_frozen_at')
-                or _timestamp(source['decision_universe_frozen_at']) > _timestamp(manifest['frozen_at'])):
+                or _screener_timestamp(source['decision_universe_frozen_at']) > _timestamp(manifest['frozen_at'])):
             raise ValueError('paired_nav_route_source_lineage_missing_or_future')
         variants = [source[k] for k in ('l1_contrast', 'seed_contrast') if source.get(k) is not None]
         if not variants or len({digest(v) for v in variants}) != 1:

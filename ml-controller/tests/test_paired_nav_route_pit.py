@@ -265,3 +265,22 @@ def test_real_pipeline_registers_all_other_lanes_before_route_audit_and_retries_
         assert not db.query('SELECT * FROM active8_ensemble_pointer_v1', [])
     finally:
         source.close()
+
+
+def test_route_sqlite_screener_clock_is_utc_and_still_rejects_future(prepared):
+    def sqlite_clock(rows):
+        for row in rows:
+            value = row['decision_universe_frozen_at'].replace('T', ' ').replace('Z', '').replace('+00:00', '')
+            row['decision_universe_frozen_at'] = value
+            row['l15_route_source']['decision_universe_frozen_at'] = value
+    db, receipt = with_routes(prepared, mutate=sqlite_clock)
+    saved = read_snapshot(db.query, receipt['snapshot_id'])
+    from services.paired_nav_route_effect import frozen_route_source, _screener_timestamp
+    assert frozen_route_source(saved)['status'] == 'pit_route_source_verified'
+    assert _screener_timestamp('2026-09-07 01:02:03') == _screener_timestamp('2026-09-07T09:02:03+08:00')
+    with pytest.raises(ValueError, match='timezone_required'):
+        _screener_timestamp('2026-09-07T01:02:03')
+    for row in saved['payload']['content']['recommendation_context']['inputs']['screener_recs']:
+        row['decision_universe_frozen_at'] = row['l15_route_source']['decision_universe_frozen_at'] = '2099-01-01 00:00:00'
+    with pytest.raises(ValueError, match='lineage_missing_or_future'):
+        frozen_route_source(saved)

@@ -354,6 +354,31 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/screener-funnel', asyn
   return c.json({ ok: true, manifest })
 })
 
+// Transfer one verified-manifest object; full Atomic replay belongs to Node.
+adminControlRoutes.post('/api/internal/evidence-artifacts/atomic-source/read', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  const input = await c.req.json().catch(() => null)
+  const key = input?.r2_key
+  if (!input || Object.keys(input).join(',') !== 'r2_key' || typeof key !== 'string'
+    || !/^evidence\/class=canonical_model_evidence\/domain=screener_funnel(?:_chunk)?\//.test(key))
+    return c.json({ error: 'atomic_artifact_key_invalid' }, 400)
+  const row = await databaseForDataDomain(c.env, 'ops').prepare(`
+    SELECT byte_size FROM run_artifacts WHERE r2_key=?
+      AND domain IN ('screener_funnel','screener_funnel_chunk')
+      AND retention_class='canonical_model_evidence' AND status='ready'
+      AND checksum_verified_at IS NOT NULL AND payload_deleted_at IS NULL
+    LIMIT 1`).bind(key).first<{ byte_size: number }>()
+  if (!row) return c.json({ error: 'atomic_artifact_manifest_missing' }, 404)
+  if (!Number.isSafeInteger(row.byte_size) || row.byte_size < 1 || row.byte_size > 8 * 1024 * 1024)
+    return c.json({ error: 'atomic_artifact_requires_bounded_chunk' }, 413)
+  const object = await c.env.ARTIFACTS?.get(key)
+  if (!object) return c.json({ error: 'atomic_artifact_object_missing' }, 404)
+  if (object.size !== row.byte_size) return c.json({ error: 'atomic_artifact_size_mismatch' }, 409)
+  // The existing canonical reader validates every checksum and lineage in Node.
+  return new Response(object.body, { headers: { 'Content-Type': 'application/json' } })
+})
+
 adminControlRoutes.post('/api/internal/evidence-artifacts/s12-research/read', async (c) => {
   const authError = requireServiceToken(c)
   if (authError) return authError

@@ -246,7 +246,7 @@ def test_actual_daily_atomic_pairs_keep_complete_population_and_own_native_seeds
         # Original registration owner, not today's admission list, supplies
         # continuation requests. Reads retain every open actual definition.
         from services.paired_nav_atomic_continuation import registered_atomic_continuations
-        from services import paired_nav_atomic_inputs as daily, worker_config_client
+        from services import paired_nav_atomic_inputs as daily, atomic_population_runtime
         assert registered_atomic_continuations(signal_date='2026-09-06', query=db.query)==[]
         pins = registered_atomic_continuations(signal_date='2026-09-07', query=db.query)
         assert len(pins)==ready
@@ -256,15 +256,14 @@ def test_actual_daily_atomic_pairs_keep_complete_population_and_own_native_seeds
         requests=[]
         response={'continuations':pins,'replacements':[
             {'definition_checksum':p['definitionChecksum'],'replacement':p['replacement']} for p in pins]}
-        async def worker(path, **kw):
-            requests.append((path,kw))
+        def reader(request):
+            requests.append(request)
             return deepcopy(response)
-        monkeypatch.setattr(worker_config_client,'worker_fetch',worker)
+        monkeypatch.setattr(atomic_population_runtime,'read_population',reader)
         read_kwargs=dict(signal_date='2026-09-07',producer_run_id='next-canonical-run',query=db.query)
         assert asyncio.run(daily.read_daily_population(**read_kwargs))==response
-        assert requests[0][0]==daily.PATH
-        assert requests[0][1]['json_body']['continuations']==pins
-        assert requests[0][1]['json_body']['producerRunId']=='next-canonical-run'
+        assert requests[0]['continuations']==pins
+        assert requests[0]['producerRunId']=='next-canonical-run'
         response['replacements'].pop()
         with pytest.raises(ValueError,match='registered_definition_missing'):
             asyncio.run(daily.read_daily_population(**read_kwargs))

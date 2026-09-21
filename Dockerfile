@@ -38,6 +38,7 @@ RUN cd /app/worker && npx tsc -p tsconfig.json --noEmit false --rootDir src --ou
 # Seal the exact native execution dependency graph into one fingerprintable
 # artifact. It has only a private stdio host, never production REST bindings.
 RUN cd /app/worker && npx esbuild src/node-runner/nativePaperJobMain.ts --bundle --platform=node --format=cjs --outfile=/app/worker-dist/native-paper.cjs
+RUN cd /app/worker && npx esbuild src/node-runner/atomicPopulationJobMain.ts --bundle --platform=node --format=cjs --outfile=/app/worker-dist/atomic-population.cjs
 # Preserve the source-root depth used by runtime JSON imports and fail the
 # image build before deployment if either Cloud Run Node dependency graph is
 # incomplete. Requiring library modules is side-effect free; runner entrypoints

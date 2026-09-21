@@ -16,12 +16,12 @@ PATH = '/api/internal/evidence-artifacts/atomic-population'
 async def read_daily_population(*, signal_date, producer_run_id, query):
     import asyncio
     from services.paired_nav_atomic_continuation import registered_atomic_continuations
-    from services.worker_config_client import worker_fetch
+    from services.atomic_population_runtime import read_population
     # The read cutoff proves canonical publication preceded THIS observation.
     # The native execution owner still enforces the real next-session boundary.
     cutoff = datetime.now(timezone.utc).isoformat()
     continuations = await asyncio.to_thread(registered_atomic_continuations, signal_date=signal_date, query=query)
-    population = await worker_fetch(PATH, method='POST', timeout=120.0, json_body={
+    population = await asyncio.to_thread(read_population, {
         'signalDate': signal_date, 'producerRunId': producer_run_id, 'decisionDeadline': cutoff,
         **({'continuations': continuations} if continuations else {})})
     if population.get('continuations', []) != continuations:

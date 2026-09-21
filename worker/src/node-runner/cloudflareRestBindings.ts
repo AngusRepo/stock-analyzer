@@ -385,6 +385,28 @@ export class RestEvidenceArtifactReader implements EvidenceArtifactReader {
   }
 }
 
+/** Bounded raw transport for the canonical Atomic reader; no replay in Worker. */
+export class RestAtomicArtifactReader implements EvidenceArtifactReader {
+  constructor(private readonly config: EvidenceArtifactWriterConfig) {}
+
+  static fromEnv(): RestAtomicArtifactReader {
+    return new RestAtomicArtifactReader({ workerUrl: requiredWorkerUrl('STOCKVISION_WORKER_URL'),
+      serviceToken: requiredEnv('STOCKVISION_AUTH_TOKEN'), maxRetries: optionalIntEnv('ARTIFACT_READER_MAX_RETRIES', 3) })
+  }
+
+  async read(key: string): Promise<string | null> {
+    if (!/^evidence\/class=canonical_model_evidence\/domain=screener_funnel(?:_chunk)?\//.test(key))
+      throw new Error('atomic_artifact_key_invalid')
+    const response = await fetchWithRetry(`${this.config.workerUrl}/api/internal/evidence-artifacts/atomic-source/read`, {
+      method: 'POST', headers: { Authorization: `Bearer ${this.config.serviceToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ r2_key: key }),
+    }, this.config.maxRetries)
+    if (response.status === 404) return null
+    if (!response.ok) throw new Error(`atomic_artifact_read_http_${response.status}`)
+    return response.text()
+  }
+}
+
 class RestD1PreparedStatement implements D1PreparedStatement {
   constructor(
     private readonly db: RestD1Database,

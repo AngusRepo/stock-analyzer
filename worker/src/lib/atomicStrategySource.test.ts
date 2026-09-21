@@ -213,6 +213,15 @@ test('actual REST writer -> local D1/R2 canonical source -> full-universe Atomic
         body: JSON.stringify(populationRequest) }, env)
       assert.equal(populationResponse.status, 200)
       const population = await populationResponse.json() as any
+      const transported = await replayCanonicalAtomicPopulation({ ...env, ARTIFACTS: { get: async (key: string) => {
+        const response = await adminControlRoutes.request('https://local.test/api/internal/evidence-artifacts/atomic-source/read', {
+          method: 'POST', headers: { Authorization: 'Bearer isolated-test-token', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ r2_key: key }),
+        }, env)
+        assert.equal(response.status, 200)
+        return { text: async () => response.text() }
+      } } as any }, populationRequest)
+      assert.deepEqual(JSON.parse(JSON.stringify(transported)), population, 'Node bounded reads preserve the exact full population and all source checks')
       assert.equal(population.schema_version, 'atomic-canonical-population-v1')
       assert.equal(population.source_checksum, result.source_checksum)
       assert.deepEqual(population.baseline, result.core_seed_replay)

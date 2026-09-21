@@ -56,18 +56,17 @@ def _setup(monkeypatch):
     raw = _frozen_loaders(monkeypatch)
     formal = builder.build_ml_universe(raw[:2], [])
     reads = []
-    async def worker(path, **kwargs):
-        assert path == atomic.PATH and kwargs['method'] == 'POST'
-        assert kwargs['json_body']['producerRunId'] == 'pinned-screener'
-        reads.append(('worker', kwargs))
+    def reader(request):
+        assert request['producerRunId'] == 'pinned-screener'
+        reads.append(('node', request))
         # Match the requested read cutoff, not a historical PIT claim.
-        return {**_population(), 'decision_deadline': kwargs['json_body']['decisionDeadline']}
+        return {**_population(), 'decision_deadline': request['decisionDeadline']}
     def identities(sql, params):
         assert sql.startswith('SELECT id,symbol FROM stocks WHERE symbol IN (')
         reads.append(('identities', params))
         return [{'id': r['id'], 'symbol': r['symbol']} for r in raw if r['symbol'] in params]
-    from services import worker_config_client
-    monkeypatch.setattr(worker_config_client, 'worker_fetch', worker)
+    from services import atomic_population_runtime
+    monkeypatch.setattr(atomic_population_runtime, 'read_population', reader)
     monkeypatch.setattr(builder.CORE_D1_CLIENT, 'query', identities)
     return graph, {'run_date': '2026-09-06', 'screener_run_id': 'pinned-screener',
                    'active_stocks': formal, 'market_env': {}}, reads
@@ -81,7 +80,7 @@ def test_actual_daily_capture_and_own_slate_builder_keep_formal_and_retry_inputs
     assert captured['paired_nav_atomic_inputs']['status'] == 'pre_l2_inputs_captured'
     assert captured['paired_nav_atomic_inputs']['population']['source_input_status'] == 'incomplete'
     assert [r['symbol'] for r in captured['payload_source_observations']['stocks']] == ['1000', '1001', '1002']
-    assert [r[0] for r in reads] == ['worker', 'identities']
+    assert [r[0] for r in reads] == ['node', 'identities']
     state.update(captured)
     output = asyncio.run(graph.node_build_payloads(state))
     candidate = output['paired_nav_atomic_pre_l2']['slates']['c' * 64]
@@ -280,7 +279,7 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     monkeypatch.setattr(graph, '_spawn_pipeline_prediction_bundle_from_artifact', spawn)
     result = asyncio.run(graph.run_pipeline_v2_until_modal_prediction_spawn('2026-09-06', 'local-atomic-entry'))
     assert result['status'] == 'deferred', result
-    assert len(received) == 1 and [r[0] for r in reads] == ['worker', 'identities']
+    assert len(received) == 1 and [r[0] for r in reads] == ['node', 'identities']
     restored = received[0]
     assert len(restored['paired_nav_atomic_inputs']['population']['replacements']) == 2
     assert restored['paired_nav_atomic_pre_l2']['slates']['c' * 64][0]['stock_meta']['sector_peer_return_1d'] == .2

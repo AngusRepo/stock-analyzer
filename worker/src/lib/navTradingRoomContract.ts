@@ -27,6 +27,7 @@ export interface NavComparisonDetail {
   baseline_checksum?: string
   history_truncated: boolean
   history: Array<{ date: string; candidate_nav: number | null; baseline_nav: number | null;
+    baseline_estimated_nav_including_rebate?: number | null; baseline_rebate_receivable?: number | null;
     candidate_estimated_nav_including_rebate?: number | null; candidate_rebate_receivable?: number | null;
     candidate_return: number | null; baseline_return: number | null; net_return_delta: number | null }>
   latest: null | { date: string; candidate: NavAccountView; baseline: NavAccountView;

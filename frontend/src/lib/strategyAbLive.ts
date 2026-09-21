@@ -27,3 +27,31 @@ export function alignStrategyAb(a: NavComparisonDetail, b: NavComparisonDetail) 
       A: row.candidate_estimated_nav_including_rebate! / a.initial_nav! - 1,
       B: b.history[i].candidate_estimated_nav_including_rebate! / b.initial_nav! - 1 })) }
 }
+
+
+/** One native paired account: A is the verified baseline, B the challenger. */
+export function alignPaperPrimary(detail: NavComparisonDetail) {
+  const fail = (reason: string) => ({ aligned: false as const, reason, history: [], start: '', end: '' })
+  const primary = detail.strategy_ab?.baseline_primary
+  if (detail.status !== 'available' || detail.blockers.length || detail.latest?.receipt_status !== 'verified')
+    return fail('配對帳本與成交收據尚未通過驗證')
+  if (detail.strategy_ab?.role !== 'B' || primary?.role !== 'A'
+    || primary.recipe !== 'price_timexer_three_head' || primary.l3_checksum !== detail.baseline_checksum)
+    return fail('A 主策略基準身份未對齊')
+  if (!detail.initial_nav || !Number.isFinite(detail.initial_nav) || detail.initial_nav <= 0
+    || !detail.initial_session_date || !detail.history.length
+    || detail.history[detail.history.length - 1]?.date !== detail.latest.date)
+    return fail('起始資金或帳務日期尚未完整')
+  if (['baseline', 'candidate'].some(arm => {
+    const account = detail.latest![arm as 'baseline' | 'candidate']
+    return account.nav == null || !Number.isFinite(account.nav)
+      || account.estimated_nav_including_rebate == null || !Number.isFinite(account.estimated_nav_including_rebate)
+  }) || detail.history.some(row => row.baseline_estimated_nav_including_rebate == null
+    || !Number.isFinite(row.baseline_estimated_nav_including_rebate)
+    || row.candidate_estimated_nav_including_rebate == null || !Number.isFinite(row.candidate_estimated_nav_including_rebate)))
+    return fail('A/B 淨值或應收退費資料未完整')
+  return { aligned: true as const, reason: '', start: detail.initial_session_date, end: detail.latest.date,
+    history: detail.history.map(row => ({ date: row.date,
+      A: row.baseline_estimated_nav_including_rebate! / detail.initial_nav! - 1,
+      B: row.candidate_estimated_nav_including_rebate! / detail.initial_nav! - 1 })) }
+}

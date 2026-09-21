@@ -302,7 +302,7 @@ class PrivatePaperStore:
 
 
 def native_execution_identity(runner: Path | None = None) -> str:
-    entry = runner or Path('/app/worker-dist/native-paper.cjs')
+    entry = runner or Path(os.environ.get('NATIVE_PAPER_RUNNER', '/app/worker-dist/native-paper.cjs'))
     if not entry.is_file():
         raise ValueError('native_paper_runtime_missing')
     return 'native-paper-v1:' + digest({
@@ -329,7 +329,7 @@ def native_execution_identity(runner: Path | None = None) -> str:
 
 
 def native_runtime_manifest(runner: Path | None = None) -> dict:
-    entry = runner or Path('/app/worker-dist/native-paper.cjs')
+    entry = runner or Path(os.environ.get('NATIVE_PAPER_RUNNER', '/app/worker-dist/native-paper.cjs'))
     node = shutil.which('node')
     if not node or not entry.is_file():
         raise ValueError('native_paper_runtime_missing')
@@ -354,7 +354,7 @@ def run_native_paper_frames(*, state_sql: str, state_checksum: str, frame_inputs
     Export occurs only after every requested frame succeeds. Consumers must still
     attest the full exchange session and BOTH arms before publishing a receipt.
     """
-    entry = runner or Path('/app/worker-dist/native-paper.cjs')
+    entry = runner or Path(os.environ.get('NATIVE_PAPER_RUNNER', '/app/worker-dist/native-paper.cjs'))
     node = node_binary or shutil.which('node')
     if not node or not entry.is_file():
         raise ValueError('native_paper_runtime_missing')

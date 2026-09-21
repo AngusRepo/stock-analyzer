@@ -486,3 +486,24 @@ def test_two_actual_market_days_keep_ledger_through_daily_adaptive_change(monkey
         assert source.total_changes == source_changes
     finally:
         source.close()
+
+
+def test_worker_clock_lead_is_waited_out_without_relaxing_freeze(monkeypatch):
+    from datetime import timedelta
+    from services import paired_nav_execution_environment as module, paired_native_runtime, native_paper_sandbox
+    import time
+    start=stamp('2026-09-07'); current=[start]; waited=[]
+    context=environment_packet()['source_context']
+    context['observed_at']=(start+timedelta(seconds=.2)).isoformat()
+    monkeypatch.setattr(paired_native_runtime,'read_worker_context',lambda:context)
+    monkeypatch.setattr(native_paper_sandbox,'native_runtime_manifest',lambda runner: {'execution_owner_version':'actual-test-runtime'})
+    def wait(seconds):
+        waited.append(seconds);current[0]+=timedelta(seconds=seconds)
+    monkeypatch.setattr(time,'sleep',wait)
+    packet=module.capture_execution_environment(clock=lambda:current[0])
+    assert .2<=waited[0]<.21 and packet['source_context']==context
+    module.execution_policy(packet,frozen_at=current[0].isoformat())
+    context['observed_at']=(current[0]+timedelta(seconds=6)).isoformat()
+    with pytest.raises(ValueError,match='after_freeze'):
+        module.capture_execution_environment(clock=lambda:current[0])
+    assert len(waited)==1

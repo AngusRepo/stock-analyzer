@@ -29,6 +29,15 @@ def validate_strategy_bundle(bundle, *, candidate_identity=None, signal_date):
         from services.strategy_ab import validate_tag
         validate_tag(bundle['strategy_ab'])
     baseline, target = bundle['baseline_trading_config'], bundle['candidate_trading_config']
+    primary=(bundle.get('strategy_ab') or {}).get('baseline_primary')
+    if primary is not None:
+        baseline_l4=(baseline.get('l4Distribution') or {}).get('artifact') or {}
+        if (primary['l3_checksum']!=bundle['baseline_l3_identity']['payload_checksum']
+                or baseline_l4.get('l3_identity')!=bundle['baseline_l3_identity']
+                or (baseline_l4.get('model') or {}).get('residual_mlp')):
+            raise ValueError('strategy_ab_primary_baseline_pairing_mismatch')
+        validate_bundle(baseline_l4,l3_identity=bundle['baseline_l3_identity'],signal_date=signal_date)
+
     if (not baseline or _without_ev(baseline) != _without_ev(target)
             or any(k in target for k in ('l4AlphaEv','allocatorEvFusion'))
             or not target.get('l4Distribution')

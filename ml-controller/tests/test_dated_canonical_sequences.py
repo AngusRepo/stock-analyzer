@@ -190,7 +190,7 @@ def _l2_dispatch_state(monkeypatch, mode='ready'):
     monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 6)
     monkeypatch.setattr(graph, '_timesfm_l175_release_policy', lambda: {})
     monkeypatch.setattr(graph, '_load_model_pool_versions', lambda: ({}, {'TimesFM': 'fixture-v1'}, {}, True))
-    monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {}))
+    monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {'l2_feature_sidecars': {'TimesFM': {'checksum': 'a'*64}}}))
     monkeypatch.setattr(graph, '_timesfm_sync_gate', lambda **kw: (mode != 'blocked', {'sequence_contract_points': 2}))
     calls = []
     async def predict(rows, **kw):

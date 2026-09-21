@@ -99,6 +99,13 @@ def capture_execution_environment(*, context_reader=None, runner=None, clock=Non
     clock = clock or (lambda: datetime.now(timezone.utc))
     context = (context_reader or read_worker_context)()
     runtime = native_runtime_manifest(runner)
+    # The authenticated Worker reader accepts at most five seconds of clock
+    # skew. Wait out that bounded lead; never backdate a source or weaken the
+    # strict observed-before-freeze invariant below.
+    lead = (_timestamp(context['observed_at']) - clock()).total_seconds()
+    if context_reader is None and 0 < lead <= 5:
+        import time
+        time.sleep(lead + .001)
     packet = {'schema_version': 'paired-nav-execution-environment-v1',
         'execution_owner_version': runtime['execution_owner_version'], 'account_id': 1,
         'kv_read_policy': deepcopy(KV_READ_POLICY), 'source_context': deepcopy(context)}

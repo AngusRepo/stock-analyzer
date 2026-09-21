@@ -20,6 +20,7 @@ import logging
 import math
 import operator
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, TypedDict
@@ -1579,11 +1580,16 @@ async def _node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
             sequence_series,
             min_points=sequence_contract_points,
         )
+        evidence_entry = ((serving_pool.get('l2_feature_sidecars') or {}).get('TimesFM') or {})
+        expected_checksum = evidence_entry.get('checksum')
+        if not isinstance(expected_checksum, str) or not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', expected_checksum):
+            raise ValueError('timesfm_evidence_checksum_unverified')
         started = time.time()
         raw = await modal_client.timesfm_batch_predict(
             timesfm_sequence_series,
             version=_require_loaded_serving_version(active_versions, "TimesFM", "l2_timesfm_enrich"),
             sequence_contract_points=sequence_contract_points,
+            expected_checksum=expected_checksum,
         )
         elapsed = round(time.time() - started, 3)
         result_rows = raw.get("results") if isinstance(raw, dict) else raw
@@ -1638,8 +1644,10 @@ async def _node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
 
         active_count = sum(1 for sidecar in sidecars.values() if sidecar.get("l2_feature_input_active"))
         summary = {
-            "status": "ready",
+            "status": "ready" if sidecars else "unavailable",
             "layer": "L2",
+            "evidence_generation_active": bool(sidecars),
+            "direct_alpha_blocked": True,
             "sidecar_count": len(sidecars),
             "l2_feature_input_active_count": active_count,
             "l2_feature_input_blocked_count": len(sidecars) - active_count,
@@ -3644,7 +3652,7 @@ def _load_active8_ensemble_snapshot(serving_pool: dict[str, Any]) -> dict[str, A
     receipt = row.get('promotion_evidence_json') or '{}'
     receipt = json.loads(receipt) if isinstance(receipt, str) else receipt
     nav_authority = None
-    if 'nav_validation' in receipt:
+    if 'nav_validation' in receipt or 'paper_admission' in receipt:
         from services.active8_nav_adoption import load_committed_nav_serving_grant
         from services.active8_nav_inference import capture_frozen_nav_inference, restore_frozen_nav_inference
         grant = load_committed_nav_serving_grant(query=LEARNING_D1_CLIENT.query)
@@ -3691,6 +3699,21 @@ def _active8_evidence_only_from_manifest(manifest: Any) -> bool:
     if authority.get("schema_version") != ACTIVE8_ACTION_AUTHORITY_SCHEMA:
         raise RuntimeError("active8_action_authority_schema_invalid")
     mode = str(authority.get("mode") or "")
+    paper_receipt = 'paper_admission' in ((manifest.get('active8_nav_inference') or {}).get('publication_receipt') or {})
+    if paper_receipt != (mode == 'paper_ensemble'):
+        raise RuntimeError('active8_action_authority_paper_scope_mismatch')
+    if mode == 'paper_ensemble':
+        if (authority.get('execution_scope') != 'paper' or authority.get('buy_authorized') is not False
+                or authority.get('live_buy_authorized') is not False
+                or authority.get('paper_buy_authorized') is not True
+                or authority.get('production_effect') is not True):
+            raise RuntimeError('active8_action_authority_paper_invalid')
+        context = manifest.get('active8_nav_inference') or {}
+        from services.active8_paper_admission import validate_publication_receipt
+        admission = validate_publication_receipt(context.get('publication_receipt') or {}, manifest['active8_ensemble'])
+        if authority.get('admission_checksum') != admission['admission_checksum']:
+            raise RuntimeError('active8_action_authority_paper_receipt_mismatch')
+        return False
     if mode == ACTIVE8_ACTION_MODE_PRODUCTION:
         if authority.get("buy_authorized") is not True or authority.get("production_effect") is not True:
             raise RuntimeError("active8_action_authority_production_invalid")
@@ -3824,6 +3847,14 @@ def _build_pipeline_modal_serving_manifest(
         )
 
     action_authority = _active8_action_authority(active8_ensemble)
+    publication = ((serving_pool.get('active8_nav_inference') or {}).get('publication_receipt') or {})
+    if 'paper_admission' in publication:
+        from services.active8_paper_admission import validate_publication_receipt
+        admission = validate_publication_receipt(publication, active8_ensemble)
+        action_authority.update(mode='paper_ensemble', execution_scope='paper', buy_authorized=False,
+            paper_buy_authorized=True, live_buy_authorized=False, efficacy_status='unproven',
+            admission_checksum=admission['admission_checksum'], reason='operator_approved_paper_experiment')
+
     active8_shadow = _pipeline_modal_active8_shadow_projection(
         active8_shadow_selection,
     )

@@ -83,7 +83,7 @@ def read_original_committed_review(nav, *, query):
     return review, protocol, reservation
 
 
-def load_committed_nav_publication(*, query, now=None):
+def load_committed_publication(*, query, now=None, allow_paper=False):
     """Verify an existing adoption, without re-evaluating or spending its review.
 
     Later observations/lifecycle events cannot rewrite a historical verdict.
@@ -103,7 +103,7 @@ def load_committed_nav_publication(*, query, now=None):
     receipt = json.loads(pointer.get('promotion_evidence_json') or '{}')
     if not isinstance(receipt, dict):
         raise RuntimeError('active8_nav_serving_receipt_invalid')
-    if 'nav_validation' not in receipt:
+    if 'nav_validation' not in receipt and not (allow_paper and 'paper_admission' in receipt):
         return None  # Existing legacy incumbent; no NAV authority inferred.
     rows = query('SELECT * FROM active8_ensemble_artifacts_v1 WHERE artifact_id=?', [pointer['artifact_id']])
     if len(rows) != 1:
@@ -130,37 +130,49 @@ def load_committed_nav_publication(*, query, now=None):
         blocker = _artifact_structure_block_reason(by_model[name], model_name=name, artifact_role='direct_alpha')
         if blocker:
             raise RuntimeError(f'active8_nav_serving_structure_invalid:{name}:{blocker}')
-    nav = receipt['nav_validation']
-    body = {key: value for key, value in nav.items() if key not in ('decision_checksum', 'decision_payload_json')}
-    if (nav.get('decision') != 'PASS' or nav.get('owner') != 'ensemble'
-            or nav.get('candidate_artifact_id') != row['artifact_id']
-            or nav.get('candidate_checksum') != row['payload_checksum']
-            or nav.get('as_of_date') != receipt.get('evaluation_business_date')
-            or digest(body) != nav.get('decision_checksum')
-            or json.loads(nav.get('decision_payload_json') or '{}') != body):
-        raise RuntimeError('active8_nav_serving_decision_invalid')
-    review, protocol, reservation = read_original_committed_review(nav, query=query)
-    recorded = review['body']
-    # Only D1's native CURRENT_TIMESTAMP is allowed to omit an offset. Keep
-    # strict timezone requirements for all external NAV evidence timestamps.
-    raw_promoted = pointer['promoted_at']
-    promoted = (datetime.strptime(raw_promoted, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-        if isinstance(raw_promoted, str) and len(raw_promoted) == 19 and raw_promoted[10] == ' '
-        else _timestamp(raw_promoted))
-    saved = read_snapshot(query, nav['allocation_snapshot_id'])
-    plan = saved['payload']['content']
-    configuration = receipt['nav_configuration']
-    if (clock.tzinfo is None or promoted > clock
-            or nav['as_of_date'] > promoted.astimezone(timezone(timedelta(hours=8))).date().isoformat()
-            or any(_timestamp(item['header']['created_at']) > promoted for item in (review, protocol, reservation))
-            or recorded['as_of_date'] > nav['as_of_date']
-            or saved['manifest']['payload_checksum'] != nav['allocation_payload_checksum']
-            or _timestamp(saved['manifest']['frozen_at']) > promoted
-            or plan['owner'] != 'ensemble' or plan['candidate_artifact_id'] != row['artifact_id']
-            or plan['candidate_checksum'] != row['payload_checksum']
-            or plan['baseline_checksum'] != nav['baseline_checksum']
-            or configuration != plan['configuration'] or digest(configuration) != nav['configuration_checksum']):
-        raise RuntimeError('active8_nav_serving_source_or_time_invalid')
+    if 'paper_admission' in receipt:
+        from services.active8_paper_admission import validate_publication_receipt
+        admission = validate_publication_receipt(receipt, payload, now=clock)
+        raw_promoted = pointer['promoted_at']
+        promoted = (datetime.strptime(raw_promoted, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            if isinstance(raw_promoted, str) and len(raw_promoted) == 19 and raw_promoted[10] == ' '
+            else _timestamp(raw_promoted))
+        if promoted > clock or _timestamp(admission['approved_at']) > promoted:
+            raise RuntimeError('active8_paper_publication_time_invalid')
+        records = []
+    else:
+        nav = receipt['nav_validation']
+        body = {key: value for key, value in nav.items() if key not in ('decision_checksum', 'decision_payload_json')}
+        if (nav.get('decision') != 'PASS' or nav.get('owner') != 'ensemble'
+                or nav.get('candidate_artifact_id') != row['artifact_id']
+                or nav.get('candidate_checksum') != row['payload_checksum']
+                or nav.get('as_of_date') != receipt.get('evaluation_business_date')
+                or digest(body) != nav.get('decision_checksum')
+                or json.loads(nav.get('decision_payload_json') or '{}') != body):
+            raise RuntimeError('active8_nav_serving_decision_invalid')
+        review, protocol, reservation = read_original_committed_review(nav, query=query)
+        recorded = review['body']
+        # Only D1's native CURRENT_TIMESTAMP is allowed to omit an offset. Keep
+        # strict timezone requirements for all external NAV evidence timestamps.
+        raw_promoted = pointer['promoted_at']
+        promoted = (datetime.strptime(raw_promoted, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+            if isinstance(raw_promoted, str) and len(raw_promoted) == 19 and raw_promoted[10] == ' '
+            else _timestamp(raw_promoted))
+        saved = read_snapshot(query, nav['allocation_snapshot_id'])
+        plan = saved['payload']['content']
+        configuration = receipt['nav_configuration']
+        if (clock.tzinfo is None or promoted > clock
+                or nav['as_of_date'] > promoted.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+                or any(_timestamp(item['header']['created_at']) > promoted for item in (review, protocol, reservation))
+                or recorded['as_of_date'] > nav['as_of_date']
+                or saved['manifest']['payload_checksum'] != nav['allocation_payload_checksum']
+                or _timestamp(saved['manifest']['frozen_at']) > promoted
+                or plan['owner'] != 'ensemble' or plan['candidate_artifact_id'] != row['artifact_id']
+                or plan['candidate_checksum'] != row['payload_checksum']
+                or plan['baseline_checksum'] != nav['baseline_checksum']
+                or configuration != plan['configuration'] or digest(configuration) != nav['configuration_checksum']):
+            raise RuntimeError('active8_nav_serving_source_or_time_invalid')
+        records = [review, protocol, reservation]
     # Reject a mixed read if an adoption/recovery changed while anchors loaded.
     repeated = prepare_bundle_transaction(query=query, by_model=by_model,
         supplied_pointers=model_pointers, ensemble_row=row, selected_models=sorted(payload['selected_models']))
@@ -175,8 +187,13 @@ def load_committed_nav_publication(*, query, now=None):
     return _CommittedPublication(row['payload_json'], json.dumps(receipt, sort_keys=True, allow_nan=False),
         json.dumps({name: _base_source(by_model[name]) for name in execution},
                    sort_keys=True, allow_nan=False),
-        json.dumps([review, protocol, reservation], sort_keys=True, allow_nan=False),
+        json.dumps(records, sort_keys=True, allow_nan=False),
         clock.isoformat(), promoted.isoformat(), _PUBLICATION_SEAL)
+
+
+def load_committed_nav_publication(*, query, now=None):
+    """NAV-only historical proof. Paper admission never grants NAV PASS."""
+    return load_committed_publication(query=query, now=now, allow_paper=False)
 
 
 def load_committed_nav_serving_grant(*, query, now=None):
@@ -187,10 +204,21 @@ def load_committed_nav_serving_grant(*, query, now=None):
     Risk, source versions and every other trading knob remain checked.
     """
     clock = now or datetime.now(timezone.utc)
-    publication = load_committed_nav_publication(query=query, now=clock)
+    publication = load_committed_publication(query=query, now=clock, allow_paper=True)
     if publication is None:
         return None
-    configuration = json.loads(publication.receipt_json)['nav_configuration']
+    receipt = json.loads(publication.receipt_json)
+    if 'paper_admission' in receipt:
+        from services.active8_paper_admission import verify_active_approval
+        admission = receipt['paper_admission']
+        verify_active_approval(admission)
+        current = verify_current_configuration(admission['configuration'])
+        if (load_committed_publication(query=query, now=clock, allow_paper=True) != publication
+                or digest(current_execution_configuration()) != digest(current)):
+            raise RuntimeError('active8_paper_serving_source_changed')
+        verify_active_approval(admission)
+        return _ServingGrant(**{**vars(publication), 'seal': _SERVING_SEAL})
+    configuration = receipt['nav_configuration']
     from services.paired_nav_strategy_bundle import publication_configuration
     configuration=publication_configuration(configuration,
         signal_date=json.loads(publication.receipt_json)['nav_validation']['as_of_date'])

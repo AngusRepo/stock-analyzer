@@ -48,3 +48,6 @@ uiux_gemini_package_*.zip
 # Ad-hoc Chinese-named D1 exports that occasionally leak to repo root
 上市櫃分類.json
 概念股分類.json
+
+# Generated local native runtime; original TypeScript remains the release source.
+/audits/paper-admission-20260921/native-paper.cjs

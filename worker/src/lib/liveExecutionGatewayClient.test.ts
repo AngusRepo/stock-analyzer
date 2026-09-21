@@ -95,11 +95,25 @@ async function main(): Promise<void> {
   })
   assert.equal(guardDisabled.reason, 'live_execution_submit_guard_disabled')
 
+  for (const admission of [{ scope: 'paper', approved: true }, {}]) {
+    const blocked = await submitSignedLiveExecutionPacket({
+      LIVE_EXECUTION_CLIENT_ENABLED: '1', LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
+      KV: { get: async () => admission } as any,
+    }, packet, async () => { throw new Error('Paper must never call broker') })
+    assert.equal(blocked.reason, 'paper_strategy_cannot_submit_live')
+  }
+  for (const KV of [undefined, { get: async () => { throw new Error('unavailable') } }]) {
+    const blocked = await submitSignedLiveExecutionPacket({
+      LIVE_EXECUTION_CLIENT_ENABLED: '1', LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1', KV: KV as any,
+    }, packet, async () => { throw new Error('Unknown scope must never call broker') })
+    assert.equal(blocked.reason, 'live_execution_strategy_scope_unverified')
+  }
   let capturedHeaders = new Headers()
   let capturedBody: any = null
   const submitted = await submitSignedLiveExecutionPacket({
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
     LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
+    KV: { get: async () => null } as any,
     EXECUTION_GATEWAY_URL: 'https://gateway.invalid/',
     EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
@@ -122,6 +136,7 @@ async function main(): Promise<void> {
   const reconciled = await submitOrReconcileSignedLiveExecutionPacket({
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
     LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
+    KV: { get: async () => null } as any,
     EXECUTION_GATEWAY_URL: 'https://gateway.invalid',
     EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',

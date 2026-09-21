@@ -752,6 +752,7 @@ async def timesfm_batch_predict(
     horizon_used: int = 5,
     version: str = "v1",
     sequence_contract_points: int | None = None,
+    expected_checksum: str | None = None,
 ) -> dict:
     """Config-backed TimesFM forecast for a batch of stocks."""
     payload = {
@@ -761,6 +762,8 @@ async def timesfm_batch_predict(
     }
     if sequence_contract_points is not None:
         payload["sequence_contract_points"] = int(sequence_contract_points)
+    if expected_checksum is not None:
+        payload['expected_checksum'] = expected_checksum
     return await _modal_timesfm_universal_predict(payload)
 
 

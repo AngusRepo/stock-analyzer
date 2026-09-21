@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import logging
 from typing import Any
 
@@ -28,7 +30,24 @@ def _get_bucket():
     return bucket
 
 
-def load_config_from_gcs(version: str = "v1") -> dict | None:
+def load_config_from_gcs(version: str = "v1", *, expected_checksum: str | None = None) -> dict | None:
+    if expected_checksum is not None:
+        checksum=expected_checksum.removeprefix('sha256:')
+        if not re.fullmatch('[a-f0-9]{64}',checksum):
+            raise ValueError('timesfm_expected_checksum_invalid')
+        key=version+':'+checksum
+        if key in _CONFIG_CACHE:
+            return _CONFIG_CACHE[key]
+        raw=_get_bucket().blob(f'{GCS_CONFIG_PREFIX}/{version}.json').download_as_bytes()
+        if hashlib.sha256(raw).hexdigest()!=checksum:
+            raise ValueError('timesfm_config_checksum_mismatch')
+        config=json.loads(raw)
+        if (not isinstance(config,dict) or config.get('version')!=version
+                or config.get('serving_contract',{}).get('input')!='sequence_records.close_only'):
+            raise ValueError('timesfm_verified_config_contract_invalid')
+        _CONFIG_CACHE[key]=config
+        return config
+
     if version in _CONFIG_CACHE:
         return _CONFIG_CACHE[version]
     try:
@@ -161,8 +180,9 @@ def timesfm_batch_predict(
     horizon_used: int = DEFAULT_PRED_LEN,
     version: str = "v1",
     sequence_contract_points: int | None = None,
+    expected_checksum: str | None = None,
 ) -> list[dict]:
-    config = load_config_from_gcs(version)
+    config = load_config_from_gcs(version, expected_checksum=expected_checksum) if expected_checksum else load_config_from_gcs(version)
     if not config:
         return [
             {"symbol": row.get("symbol", "?"), "error": f"TimesFM config not in GCS at {GCS_CONFIG_PREFIX}/{version}.json"}

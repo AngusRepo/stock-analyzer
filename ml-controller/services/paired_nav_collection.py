@@ -31,7 +31,10 @@ def baseline_model_identity(manifest: dict[str, Any]) -> dict[str, Any]:
         from services.ensemble_v2 import ensemble_artifact_id
         ensemble = {**ensemble, 'artifact_id': ensemble_artifact_id(ensemble)}
     fields = ('artifact_id', 'cohort_id', 'payload_checksum', 'base_artifact_set_checksum')
-    if (authority.get('buy_authorized') is not True or authority.get('production_effect') is not True
+    paper = (authority.get('mode') == 'paper_ensemble' and authority.get('execution_scope') == 'paper'
+        and authority.get('buy_authorized') is False and authority.get('live_buy_authorized') is False
+        and authority.get('paper_buy_authorized') is True)
+    if ((authority.get('buy_authorized') is not True and not paper) or authority.get('production_effect') is not True
             or any(not isinstance(ensemble.get(key), str) or not ensemble[key] for key in fields)
             or any(authority.get(key) != ensemble.get(key) for key in fields[:3])):
         raise ValueError('paired_nav_formal_baseline_identity_missing_or_mismatched')

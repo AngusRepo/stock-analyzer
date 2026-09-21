@@ -71,7 +71,16 @@ export async function readActiveMlEnsembleVersion(db: D1Database, env?: Bindings
   if (valid && row) {
     try {
       const receipt = JSON.parse(row.promotion_evidence_json ?? '{}')
-      if (receipt && Object.hasOwn(receipt, 'nav_validation')) {
+      if (receipt && Object.hasOwn(receipt, 'paper_admission')) {
+        const approval = await env?.KV.get('ml:active8:paper_admission:v1', 'json') as Record<string, any> | null
+        const stable = (value: any): any => Array.isArray(value) ? value.map(stable)
+          : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value
+        valid = approval?.approved === true && approval.scope === 'paper'
+          && approval.efficacy_status === 'unproven'
+          && approval.strategy_bundle?.candidate_l3_identity?.artifact_id === row.artifact_id
+          && approval.strategy_bundle?.candidate_l3_identity?.payload_checksum === row.payload_checksum
+          && JSON.stringify(stable(approval)) === JSON.stringify(stable(receipt.paper_admission))
+      } else if (receipt && Object.hasOwn(receipt, 'nav_validation')) {
         await verifyNavFormalBaseline(db, row, env)
       } else valid = row.validation_decision === 'PASS'
     } catch { valid = false }

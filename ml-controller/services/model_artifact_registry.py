@@ -3371,11 +3371,14 @@ def run_active8_ensemble_bundle_promotion_controller(
     ensemble_artifact_id: str | None = None,
     ensemble_payload_checksum: str | None = None,
     evaluation_business_date: str | None = None,
+    paper_admission: dict[str, Any] | None = None,
     recovery_only: bool = False,
     confirm: bool = False,
     reason: str = "active8_ensemble_atomic_bundle",
 ) -> dict[str, Any]:
     """Atomically switch the validated selected subset and its learned ensemble owner."""
+    if paper_admission is not None and (evaluation_business_date is None or recovery_only):
+        raise ValueError("active8_paper_explicit_date_and_new_admission_required")
     require_existing_commit = recovery_only or (confirm and evaluation_business_date is None)
     exact_identity = ensemble_artifact_id is not None or ensemble_payload_checksum is not None
     if exact_identity and (not ensemble_artifact_id or not ensemble_payload_checksum):
@@ -3466,7 +3469,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         )
     ]
     from services.active8_bundle_transaction import prepare_bundle_transaction
-    transaction, nav_adoption = None, None
+    transaction, nav_adoption, paper_adoption = None, None, None
     if not blockers and (evaluation_business_date is not None or require_existing_commit):
         transaction = prepare_bundle_transaction(query=d1_client.query, by_model=by_model,
             supplied_pointers=d1_pointers, ensemble_row=ensemble_row, selected_models=release_models)
@@ -3495,7 +3498,11 @@ def run_active8_ensemble_bundle_promotion_controller(
             "training_run_id": training_run_id, "blockers": blockers,
         }
     if transaction is not None:
-        if not transaction['recovered_existing_commit']:
+        if not transaction['recovered_existing_commit'] and paper_admission is not None:
+            from services.active8_paper_admission import prepare_paper_adoption
+            paper_adoption = prepare_paper_adoption(ensemble_row=ensemble_row, admission=paper_admission,
+                business_date=evaluation_business_date, query=d1_client.query)
+        elif not transaction['recovered_existing_commit']:
             from services.active8_nav_adoption import prepare_nav_adoption
             nav_adoption = prepare_nav_adoption(ensemble_row=ensemble_row, business_date=evaluation_business_date,
                 query=d1_client.query)
@@ -3520,6 +3527,7 @@ def run_active8_ensemble_bundle_promotion_controller(
             "observation_models": sorted(expected_models),
             "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
             **({'nav_validation': nav_adoption['nav_validation']} if nav_adoption else {}),
+            **({'paper_admission': paper_adoption['admission'], 'efficacy_status': 'unproven'} if paper_adoption else {}),
         }
 
     if transaction is None:
@@ -3564,6 +3572,8 @@ def run_active8_ensemble_bundle_promotion_controller(
         "validation": ensemble_payload.get("validation"),
         "reason": reason,
     }
+    if paper_adoption:
+        evidence.update(paper_admission=paper_adoption['admission'], evaluation_business_date=evaluation_business_date)
     if nav_adoption:
         evidence.update(nav_validation=nav_adoption['nav_validation'], nav_configuration=nav_adoption['configuration'],
                         evaluation_business_date=evaluation_business_date)
@@ -3626,6 +3636,11 @@ def run_active8_ensemble_bundle_promotion_controller(
     if nav_adoption:
         from services.active8_nav_adoption import verify_current_configuration
         verify_current_configuration(nav_adoption['configuration'])
+    if paper_adoption:
+        from services.active8_nav_adoption import verify_current_configuration
+        from services.active8_paper_admission import verify_active_approval
+        verify_active_approval(paper_adoption['admission'])
+        verify_current_configuration(paper_adoption['configuration'])
     batch_result = d1_client.atomic_batch_execute([*transaction['guards'], *statements], timeout=60.0)
     placeholders = ",".join("?" for _ in release_models)
     base_readback = d1_client.query(
@@ -3687,9 +3702,12 @@ def run_active8_ensemble_bundle_promotion_controller(
         )
     if nav_adoption:
         verify_current_configuration(nav_adoption['configuration'])
+    if paper_adoption:
+        verify_active_approval(paper_adoption['admission'])
+        verify_current_configuration(paper_adoption['configuration'])
     return {
         "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
-        "promotion_scope": "paired_nav", "qualifications": assess_ensemble_qualifications(ensemble_payload),
+        "promotion_scope": "paper_experiment" if paper_adoption else "paired_nav", "qualifications": assess_ensemble_qualifications(ensemble_payload),
         "training_run_id": training_run_id, "release_models": release_models,
         "observation_models": sorted(expected_models),
         "artifacts": [by_model[name] for name in release_models],
@@ -3697,4 +3715,6 @@ def run_active8_ensemble_bundle_promotion_controller(
         "readback_verified": True,
         "confirmed_at": promoted_at, "serving_reader": "model_champion_pointers+active8_ensemble_pointer_v1",
         **({'nav_validation': nav_adoption['nav_validation'], 'serving_activation_verified': False} if nav_adoption else {}),
+        **({'paper_admission': paper_adoption['admission'], 'efficacy_status': 'unproven',
+            'serving_activation_verified': False} if paper_adoption else {}),
     }

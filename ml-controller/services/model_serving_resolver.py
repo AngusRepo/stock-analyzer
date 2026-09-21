@@ -210,16 +210,18 @@ def _artifact_block_reason(
     if state not in SERVING_OK_STATES and not (
             nav_owned and state in {'offline_strong_pass','offline_passed','offline_passed_weak','offline_failed'}):
         return f"artifact_state_{state or 'missing'}"
+    from services.timesfm_evidence_contract import verified_evidence
+    diagnostic = artifact_role == 'l2_feature_sidecar' and verified_evidence(artifact, _artifact_metadata(artifact))
     offline_decision = str(artifact.get("offline_gate_decision") or "").strip().upper()
     allowed_offline_decisions = (
         L2_SIDECAR_OK_OFFLINE_DECISIONS
         if artifact_role == "l2_feature_sidecar"
         else SERVING_OK_OFFLINE_DECISIONS
     )
-    if not nav_owned and offline_decision and offline_decision not in allowed_offline_decisions:
+    if not nav_owned and not diagnostic and offline_decision and offline_decision not in allowed_offline_decisions:
         return f"offline_gate_{offline_decision.lower()}"
     live_status = str(artifact.get("live_gate_status") or "").strip().lower()
-    if not nav_owned and live_status in SERVING_BAD_LIVE_STATUSES:
+    if not nav_owned and not diagnostic and live_status in SERVING_BAD_LIVE_STATUSES:
         return f"live_gate_{live_status}"
     return _artifact_structure_block_reason(artifact, model_name=model_name, artifact_role=artifact_role)
 
@@ -257,8 +259,13 @@ def _artifact_structure_block_reason(artifact, *, model_name, artifact_role):
                     f"artifact_gnn_graph_semantic_{graph_semantic or 'missing'}_"
                     f"expected_{FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
                 )
-    if artifact_role == "l2_feature_sidecar" and str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release":
-        return "artifact_candidate_type_not_timesfm_feature_release"
+    if artifact_role == "l2_feature_sidecar":
+        from services.timesfm_evidence_contract import verified_evidence
+        if (str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release"
+                and not verified_evidence(artifact, _artifact_metadata(artifact))):
+            return "artifact_candidate_type_not_timesfm_feature_release"
+    if model_name == 'TimesFM' and artifact_role != 'l2_feature_sidecar':
+        return 'timesfm_direct_alpha_forbidden'
     if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
         return "artifact_sequence_contract_missing_or_invalid"
     return None
@@ -442,7 +449,7 @@ def build_pool_from_champion_pointers(
         }
         if artifact:
             if nav_grant is not None and artifact_role == 'direct_alpha' and nav_grant.authorizes(model_name, artifact):
-                entry['efficacy_owner'] = 'committed_paired_nav'
+                entry['efficacy_owner'] = ('paper_experiment_unproven' if 'paper_admission' in json.loads(nav_grant.receipt_json) else 'committed_paired_nav')
             artifact_metadata = _artifact_metadata(artifact)
             entry["gcs_path"] = str(artifact.get("artifact_path") or "")
             entry["metadata_path"] = str(artifact.get("metadata_path") or "")
@@ -468,6 +475,8 @@ def build_pool_from_champion_pointers(
         entry = build_entry(model_name, artifact_role="l2_feature_sidecar")
         entry["role"] = "l2_feature_sidecar"
         entry["direct_prediction"] = False
+        entry['evidence_generation_eligible'] = entry['serving_eligible']
+        entry['trained_feature_adoption'] = 'requires_separate_registry_retrain_release'
         pool["l2_feature_sidecars"][model_name] = entry
     return pool
 
@@ -494,7 +503,7 @@ def load_d1_champion_pool(
     ))
     artifacts = list_artifacts_by_ids(artifact_ids, max_ids=len(requested_models))
     nav_grant = None
-    if any('nav_validation' in _json_obj(pointer.get('promotion_evidence_json')) for pointer in pointers
+    if any({'nav_validation','paper_admission'} & _json_obj(pointer.get('promotion_evidence_json')).keys() for pointer in pointers
            if pointer.get('model_name') in required_models):
         from services.model_artifact_registry import d1_client
         from services.active8_nav_adoption import load_committed_nav_serving_grant

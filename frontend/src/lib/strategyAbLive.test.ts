@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { alignStrategyAb } from './strategyAbLive'
+import { alignStrategyAb, alignPaperPrimary } from './strategyAbLive'
 import type { NavComparisonDetail } from './navTradingRoom'
 
 function pair(role: 'A' | 'B'): NavComparisonDetail {
@@ -35,3 +35,19 @@ for (const fault of ['start', 'capital', 'missing-day', 'experiment', 'receipt',
     assert.equal(alignStrategyAb(a, b).aligned, false)
   })
 }
+
+
+test('A Paper baseline uses the two arms of one verified B account', () => {
+  const detail = pair('B')
+  detail.baseline_checksum = 'c'.repeat(64)
+  detail.strategy_ab!.baseline_primary = { role: 'A', recipe: 'price_timexer_three_head',
+    bundle_checksum: 'd'.repeat(64), l3_checksum: detail.baseline_checksum }
+  detail.latest!.baseline = { nav: 102000, estimated_nav_including_rebate: 102050 } as never
+  detail.history.forEach(row => { row.baseline_estimated_nav_including_rebate = 102050 })
+  const result = alignPaperPrimary(detail)
+  assert.equal(result.aligned, true)
+  assert.ok(Math.abs(result.history[0].A - .0205) < 1e-12)
+  assert.ok(Math.abs(result.history[0].B - .0102) < 1e-12)
+  detail.strategy_ab!.baseline_primary.l3_checksum = 'f'.repeat(64)
+  assert.equal(alignPaperPrimary(detail).aligned, false)
+})

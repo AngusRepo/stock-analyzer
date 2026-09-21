@@ -157,3 +157,24 @@ def test_timesfm_20_artifact_rejects_25_only_runtime(monkeypatch):
     assert "2.5 torch runtime" in message
     assert "google/timesfm-2.0-500m-pytorch" in message
     assert "matching TimesFM 2.5 config artifact" in message
+
+
+def test_verified_timesfm_config_checks_bytes_before_runtime_and_keys_cache_by_hash(monkeypatch):
+    import hashlib
+    import pytest
+    timesfm_universal._CONFIG_CACHE.clear()
+    config=timesfm_universal.build_timesfm25_config(version='verified')
+    raw=json.dumps(config).encode()
+    class Blob:
+        def download_as_bytes(self):return raw
+    class Bucket:
+        def blob(self,path):
+            assert path=='universal/timesfm/verified.json'
+            return Blob()
+    monkeypatch.setattr(timesfm_universal,'_get_bucket',lambda:Bucket())
+    checksum=hashlib.sha256(raw).hexdigest()
+    assert timesfm_universal.load_config_from_gcs('verified',expected_checksum=checksum)==config
+    with pytest.raises(ValueError,match='checksum_mismatch'):
+        timesfm_universal.load_config_from_gcs('verified',expected_checksum='b'*64)
+    with pytest.raises(ValueError,match='checksum_invalid'):
+        timesfm_universal.load_config_from_gcs('verified',expected_checksum='')

@@ -32,3 +32,18 @@ test('missing and failed queries remain distinct', () => {
   assert.equal(result.evaluation_query_status, 'error')
   assert.equal(result.different_artifacts, null)
 })
+
+
+test('Paper serving display requires the exact still-active operator admission', async () => {
+  const { readActiveMlEnsembleVersion } = await import('./pipelineCandidateVersions')
+  const admission = { scope: 'paper', approved: true, efficacy_status: 'unproven',
+    strategy_bundle: { candidate_l3_identity: { artifact_id: 'A', payload_checksum: 'a'.repeat(64) } } }
+  const row = { valid_serving: 1, artifact_id: 'A', payload_checksum: 'a'.repeat(64),
+    promotion_evidence_json: JSON.stringify({ paper_admission: admission }), validation_decision: 'PASS' }
+  const db = { prepare: () => ({ first: async () => row }) } as any
+  for (const active of [null, { ...admission, approved: false }, { ...admission, scope: 'live' }]) {
+    const env = { KV: { get: async () => active } } as any
+    assert.equal((await readActiveMlEnsembleVersion(db, env)).status, 'blocked')
+  }
+  assert.equal((await readActiveMlEnsembleVersion(db, { KV: { get: async () => admission } } as any)).status, 'serving')
+})

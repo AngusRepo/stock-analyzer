@@ -648,11 +648,23 @@ def build_pool_from_frozen_manifest(
     if authority.get("schema_version") != ACTIVE8_ACTION_AUTHORITY_SCHEMA:
         raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_schema_invalid")
     mode = str(authority.get("mode") or "")
+    paper_receipt = 'paper_admission' in ((manifest.get('active8_nav_inference') or {}).get('publication_receipt') or {})
+    if paper_receipt != (mode == 'paper_ensemble'):
+        raise ServingPoolResolutionError('frozen_serving_manifest_paper_scope_mismatch')
     active8_ensemble = manifest.get("active8_ensemble")
-    if mode == ACTIVE8_ACTION_MODE_PRODUCTION:
+    if mode in (ACTIVE8_ACTION_MODE_PRODUCTION, 'paper_ensemble'):
         if source_of_truth != "model_champion_pointers+active8_action_authority_v1":
             raise ServingPoolResolutionError("frozen_serving_manifest_production_source_invalid")
-        if authority.get("buy_authorized") is not True or authority.get("production_effect") is not True:
+        if mode == 'paper_ensemble':
+            from services.active8_paper_admission import validate_publication_receipt
+            context = manifest.get('active8_nav_inference') or {}
+            admission = validate_publication_receipt(context.get('publication_receipt') or {}, active8_ensemble)
+            if (authority.get('buy_authorized') is not False or authority.get('live_buy_authorized') is not False
+                    or authority.get('paper_buy_authorized') is not True or authority.get('execution_scope') != 'paper'
+                    or authority.get('production_effect') is not True
+                    or authority.get('admission_checksum') != admission['admission_checksum']):
+                raise ServingPoolResolutionError('frozen_serving_manifest_paper_scope_invalid')
+        elif authority.get("buy_authorized") is not True or authority.get("production_effect") is not True:
             raise ServingPoolResolutionError("frozen_serving_manifest_active8_action_authority_production_invalid")
         if not isinstance(active8_ensemble, dict):
             raise ServingPoolResolutionError("frozen_serving_manifest_active8_ensemble_missing")
@@ -818,11 +830,13 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str, 
     state = str(artifact.get("state") or "").strip()
     if state not in SERVING_OK_STATES:
         return f"artifact_state_{state or 'missing'}"
+    from services.timesfm_evidence_contract import verified_evidence
+    diagnostic = artifact_role == 'l2_feature_sidecar' and verified_evidence(artifact, _artifact_metadata(artifact))
     offline_decision = str(artifact.get("offline_gate_decision") or "").strip().upper()
-    if offline_decision and offline_decision not in SERVING_OK_OFFLINE_DECISIONS:
+    if not diagnostic and offline_decision and offline_decision not in SERVING_OK_OFFLINE_DECISIONS:
         return f"offline_gate_{offline_decision.lower()}"
     live_status = str(artifact.get("live_gate_status") or "").strip().lower()
-    if live_status in SERVING_BAD_LIVE_STATUSES:
+    if not diagnostic and live_status in SERVING_BAD_LIVE_STATUSES:
         return f"live_gate_{live_status}"
     artifact_path = str(artifact.get("artifact_path") or "").strip()
     if not artifact_path:
@@ -859,8 +873,13 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str, 
                     f"artifact_gnn_graph_semantic_{graph_semantic or 'missing'}_"
                     f"expected_{FORMAL_GNN_GRAPH_SEMANTIC_VERSION}"
                 )
-    if artifact_role == "l2_feature_sidecar" and str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release":
-        return "artifact_candidate_type_not_timesfm_feature_release"
+    if artifact_role == "l2_feature_sidecar":
+        from services.timesfm_evidence_contract import verified_evidence
+        if (str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release"
+                and not verified_evidence(artifact, _artifact_metadata(artifact))):
+            return "artifact_candidate_type_not_timesfm_feature_release"
+    if model_name == 'TimesFM' and artifact_role != 'l2_feature_sidecar':
+        return 'timesfm_direct_alpha_forbidden'
     if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
         return "artifact_sequence_contract_missing_or_invalid"
     return None

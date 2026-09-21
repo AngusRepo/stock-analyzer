@@ -122,6 +122,8 @@ export async function readNavComparison(db: D1Database, pairId: string, asOf: st
       if (abIdentity !== undefined && abIdentity !== ab) throw Error('strategy_ab_journal_identity_changed')
       abIdentity = ab
       if (tag) {
+        if (tag.baseline_primary && tag.baseline_primary.l3_checksum !== body.pair_identity.baseline_checksum)
+          throw Error('strategy_ab_primary_baseline_checksum_mismatch')
         if (numeric(body.initial_account_nav) === null || body.initial_account_nav <= 0
           || !/^\d{4}-\d{2}-\d{2}$/.test(body.initial_session_date ?? '')
           || body.initial_session_date > body.session_date) throw Error('strategy_ab_initial_basis_invalid')
@@ -148,6 +150,8 @@ export async function readNavComparison(db: D1Database, pairId: string, asOf: st
     return { ...empty, status: 'available', history_truncated: rows.length === 91,
       ...(tag ? { strategy_ab: tag, initial_nav: initialNav, initial_session_date: latestBody.initial_session_date, baseline_checksum: latestBody.pair_identity.baseline_checksum } : {}),
       history: displayed.map(b => ({ date: b.session_date, candidate_nav: numeric(b.arms.candidate.nav), baseline_nav: numeric(b.arms.baseline.nav),
+        baseline_estimated_nav_including_rebate: numeric(b.arms.baseline.estimated_nav_including_rebate),
+        baseline_rebate_receivable: numeric(b.arms.baseline.commission_rebate?.estimated_receivable),
         candidate_estimated_nav_including_rebate: numeric(b.arms.candidate.estimated_nav_including_rebate),
         candidate_rebate_receivable: numeric(b.arms.candidate.commission_rebate?.estimated_receivable),
         candidate_return: numeric(b.arms.candidate.daily_return), baseline_return: numeric(b.arms.baseline.daily_return), net_return_delta: numeric(b.net_return_delta) })),

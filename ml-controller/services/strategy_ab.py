@@ -19,6 +19,13 @@ def validate_tag(tag):
             or not re.fullmatch('[a-f0-9]{64}',str(tag.get('experiment_id','')))
             or tag.get('fee_terms') != FEE_TERMS):
         raise ValueError('strategy_ab_identity_invalid')
+    primary=tag.get('baseline_primary')
+    if primary is not None:
+        if (tag['role']!='B' or not isinstance(primary,dict) or primary.get('role')!='A'
+                or primary.get('recipe')!=RECIPES['A']
+                or any(not re.fullmatch('[a-f0-9]{64}',str(primary.get(k,'')))
+                    for k in ('bundle_checksum','l3_checksum'))):
+            raise ValueError('strategy_ab_primary_baseline_invalid')
     return tag
 
 
@@ -105,3 +112,25 @@ def bind_pair(primary, challenger, *, ensembles, timexer_metadata):
     return {role:bind(bundle,role=role,experiment_id=identifier,
                      ensemble=ensembles[role],timexer_metadata=timexer_metadata[role])
             for role,bundle in (('A',primary),('B',challenger))}
+
+
+def bind_paper_primary_baseline(primary, challenger, *, signal_date):
+    """Start a new B-vs-A paired account; never transfer old dates or NAV credit."""
+    from services.paired_nav_strategy_bundle import validate_strategy_bundle
+    for bundle, role in ((primary,'A'),(challenger,'B')):
+        validate_strategy_bundle(bundle,signal_date=signal_date)
+        if validate_tag(bundle.get('strategy_ab'))['role']!=role:
+            raise ValueError('strategy_ab_rebase_roles_invalid')
+    if primary['strategy_ab']['experiment_id']!=challenger['strategy_ab']['experiment_id']:
+        raise ValueError('strategy_ab_rebase_original_pair_mismatch')
+    result=deepcopy(challenger)
+    result['baseline_l3_identity']=deepcopy(primary['candidate_l3_identity'])
+    result['baseline_trading_config']=deepcopy(primary['candidate_trading_config'])
+    result['declared_signal_date']=signal_date
+    result['strategy_ab']['baseline_primary']={'role':'A','recipe':RECIPES['A'],
+        'bundle_checksum':primary['bundle_checksum'],
+        'l3_checksum':primary['candidate_l3_identity']['payload_checksum']}
+    result['strategy_ab']['experiment_id']=digest({'primary':primary['bundle_checksum'],
+        'challenger':challenger['bundle_checksum'],'start_date':signal_date,'mode':'paper_primary_baseline'})
+    result['bundle_checksum']=digest({k:v for k,v in result.items() if k!='bundle_checksum'})
+    return validate_strategy_bundle(result,signal_date=signal_date)

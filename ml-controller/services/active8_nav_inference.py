@@ -31,6 +31,10 @@ def execution_artifacts(artifact, publication_receipt):
     L3-only publications retain their selected-model authority. This helper
     does not verify/grant NAV approval; callers must verify the original receipt.
     """
+    if 'paper_admission' in publication_receipt:
+        from services.active8_paper_admission import validate_publication_receipt
+        validate_publication_receipt(publication_receipt, artifact)
+        return artifact['observation_artifacts']
     configuration = publication_receipt.get('nav_configuration') or {}
     if configuration.get('strategy_bundle') is None:
         return artifact['base_artifacts']
@@ -85,6 +89,16 @@ def restore_frozen_nav_inference(context, *, artifact, pool_models):
         raise ValueError('active8_nav_frozen_context_invalid')
     validate_active8_ensemble_candidate(artifact)
     receipt = context['publication_receipt']
+    if 'paper_admission' in receipt:
+        from services.active8_paper_admission import validate_publication_receipt
+        validate_publication_receipt(receipt, artifact, now=_timestamp(context['captured_at']))
+        if context['review_records'] != []:
+            raise ValueError('active8_paper_must_not_claim_nav_review')
+        grant = _InferenceGrant(artifact['payload_checksum'], json.dumps(execution_artifacts(artifact, receipt), sort_keys=True),
+            context['context_checksum'], _INFERENCE_SEAL)
+        if not permits_inference(grant, artifact=artifact, pool_models=pool_models):
+            raise ValueError('active8_paper_frozen_model_identity_mismatch')
+        return grant
     nav = receipt['nav_validation']
     decision = {k: v for k, v in nav.items() if k not in ('decision_checksum', 'decision_payload_json')}
     if (receipt.get('schema_version') != 'active8-ensemble-atomic-promotion-evidence-v1'

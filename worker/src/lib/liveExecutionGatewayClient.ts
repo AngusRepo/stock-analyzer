@@ -58,6 +58,7 @@ export interface ExecutionShadowPacket {
 }
 
 export interface LiveExecutionClientEnv {
+  KV?: Pick<KVNamespace, 'get'>
   EXECUTION_GATEWAY_URL?: string
   EXECUTION_GATEWAY_SERVICE_TOKEN?: string
   LIVE_EXECUTION_HMAC_SECRET?: string
@@ -309,6 +310,19 @@ export async function submitSignedLiveExecutionPacket(
   }
   if (!truthy(env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED)) {
     return { status: 'blocked', reason: 'live_execution_submit_guard_disabled', live_submit_enabled: false }
+  }
+  // A Paper strategy never acquires live submit authority. Enforce this at
+  // the final broker boundary, even if live environment flags change later.
+  if (!env.KV) {
+    return { status: 'blocked', reason: 'live_execution_strategy_scope_unverified', live_submit_enabled: false }
+  }
+  try {
+    const admission = await env.KV.get('ml:active8:paper_admission:v1', 'json')
+    if (admission !== null) {
+      return { status: 'blocked', reason: 'paper_strategy_cannot_submit_live', live_submit_enabled: false }
+    }
+  } catch {
+    return { status: 'blocked', reason: 'live_execution_strategy_scope_unverified', live_submit_enabled: false }
   }
   const gatewayUrl = env.EXECUTION_GATEWAY_URL?.trim().replace(/\/$/, '')
   const serviceToken = env.EXECUTION_GATEWAY_SERVICE_TOKEN?.trim()

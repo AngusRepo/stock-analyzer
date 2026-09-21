@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from google.api_core.exceptions import PreconditionFailed
+from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 
 if TYPE_CHECKING:
@@ -64,6 +64,8 @@ def _require_same_continuation_claim(
             raise ValueError(
                 f"pipeline_modal_continuation_receipt_conflict:{field}"
             )
+    if (existing.get("prediction_source_run_id") or existing.get("run_id")) != incoming.get("prediction_source_run_id", incoming.get("run_id")):
+        raise ValueError("pipeline_modal_continuation_receipt_conflict:prediction_source_run_id")
     return existing
 
 
@@ -86,15 +88,43 @@ def load_verified_modal_prediction_bundle(
     return bundle
 
 
+def failed_continuation_payload(*, run_id: str, run_date: str, jobs_client,
+                                storage_client=None) -> dict[str, Any] | None:
+    """Read-only recovery preflight. Never treat dispatcher success as failure."""
+    client = storage_client or storage.Client()
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket_name:
+        raise ValueError("pipeline_modal_resume_bucket_missing")
+    blob = client.bucket(bucket_name).blob(_continuation_receipt_path(run_id=run_id, run_date=run_date))
+    try:
+        receipt = json.loads(blob.download_as_text())
+    except NotFound:
+        return None
+    if receipt.get("run_id") != run_id or receipt.get("run_date") != run_date:
+        raise ValueError("pipeline_modal_resume_receipt_identity_mismatch")
+    if receipt.get("status") != "dispatched" or not receipt.get("execution_name"):
+        return None
+    observed = jobs_client.pipeline_execution_status(run_date=run_date, run_id=run_id,
+                                                    execution_name=receipt["execution_name"])
+    if (observed.get("state") != "failed" or not observed.get("completed_at")
+            or observed.get("execution_name") != receipt["execution_name"]):
+        return None
+    return {key: receipt[key] for key in ("run_id", "run_date", "state_gcs_uri", "result_gcs_uri", "result_checksum")} | {
+        "schema_version": "pipeline-modal-prediction-callback-v2",
+        "run_id": receipt.get("prediction_source_run_id") or run_id}
+
+
 def dispatch_modal_prediction_continuation(
     payload: dict[str, Any],
     *,
     jobs_client: "CloudRunJobsClient",
     storage_client: Any | None = None,
+    resumed_run_id: str = "",
 ) -> dict[str, Any]:
     if payload.get("schema_version") != "pipeline-modal-prediction-callback-v2":
         raise ValueError("pipeline_modal_handoff_schema_invalid")
-    run_id = str(payload.get("run_id") or "").strip()
+    prediction_source_run_id = str(payload.get("run_id") or "").strip()
+    run_id = resumed_run_id or prediction_source_run_id
     run_date = str(payload.get("run_date") or "")[:10]
     state_gcs_uri = str(payload.get("state_gcs_uri") or "").strip()
     result_gcs_uri = str(payload.get("result_gcs_uri") or "").strip()
@@ -112,7 +142,7 @@ def dispatch_modal_prediction_continuation(
         storage_client=client,
     )
     expected_lineage = {
-        "run_id": run_id,
+        "run_id": prediction_source_run_id,
         "run_date": run_date,
         "state_gcs_uri": state_gcs_uri,
     }
@@ -133,6 +163,7 @@ def dispatch_modal_prediction_continuation(
         "state_gcs_uri": state_gcs_uri,
         "result_gcs_uri": result_gcs_uri,
         "result_checksum": result_checksum,
+        "prediction_source_run_id": prediction_source_run_id,
         "attempt": 1,
         "updated_at": now.isoformat(),
     }
@@ -176,6 +207,7 @@ def dispatch_modal_prediction_continuation(
                 "PIPELINE_MODAL_RESULT_GCS_URI": result_gcs_uri,
                 "PIPELINE_MODAL_RESULT_CHECKSUM": result_checksum,
                 "PIPELINE_MODAL_ELAPSED_S": str(payload.get("elapsed_s") or ""),
+                "PIPELINE_MODAL_SOURCE_RUN_ID": prediction_source_run_id,
             },
             reject_if_running=False,
         )

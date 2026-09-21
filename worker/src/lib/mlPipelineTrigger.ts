@@ -145,11 +145,30 @@ export async function runMLAndRiskV2(
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
+    // A completed Modal bundle is reusable only after the exact continuation
+    // is verified failed. A new downstream attempt retains explicit source lineage.
+    const failedRun = await opsDb.prepare(`
+      SELECT canonical_run_id FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='pipeline_execution' AND status='error'
+    `).bind(twDate).first<{ canonical_run_id: string }>()
+    let resumeRunId: string | null = null
+    if (failedRun?.canonical_run_id) {
+      const preflight = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/resume?date=${twDate}&run_id=${encodeURIComponent(failedRun.canonical_run_id)}`, {
+        headers, signal: AbortSignal.timeout(30_000),
+      })
+      if (!preflight.ok) throw new Error(`pipeline_resume_preflight_failed:${preflight.status}`)
+      const recovery = await preflight.json() as { resumable?: boolean; run_id?: string; run_date?: string }
+      if (recovery.resumable === true && recovery.run_id === failedRun.canonical_run_id && recovery.run_date === twDate) {
+        resumeRunId = failedRun.canonical_run_id
+        headers['X-Pipeline-Resume-From'] = resumeRunId
+      }
+    }
     dispatchAttemptId = `pipeline-dispatch:${twDate}:${crypto.randomUUID()}`
     headers['X-Pipeline-Run-Id'] = dispatchAttemptId
     const reservation = await reservePipelineExecutionDispatch(opsDb, {
       businessDate: twDate,
       attemptId: dispatchAttemptId,
+      expectedFailedRunId: resumeRunId ?? undefined,
     })
     if (!reservation) {
       const current = await databaseForDataDomain(env, 'ops').prepare(`

@@ -346,3 +346,30 @@ def test_timexer_runtime_closure_cannot_be_omitted_or_failed(rows):
     bundle['timexer_raw']={'results':rows}
     with pytest.raises(RuntimeError,match='timexer_closure_failed'):
         pipeline._validate_pipeline_modal_feature_bundle_before_writes(state,bundle)
+
+
+
+def test_reused_bundle_retains_source_lineage_and_new_capture_identity(monkeypatch):
+    state = _state()
+    seen = []
+    monkeypatch.setattr(pipeline, "_read_pipeline_async_state_artifact", lambda uri: state)
+    async def nodes(state, steps):
+        seen.append(state["producer_run_id"])
+    monkeypatch.setattr(pipeline, "_run_pipeline_nodes", nodes)
+    monkeypatch.setattr(pipeline, "_pipeline_terminal_result", lambda state, **kw: state)
+    result = asyncio.run(pipeline.run_pipeline_v2_from_modal_prediction_callback({
+        "run_id": "new-downstream", "prediction_source_run_id": RUN_ID, "run_date": RUN_DATE,
+        "state_gcs_uri": STATE_URI, "result": _bundle(), "result_checksum": "a" * 64,
+        "result_gcs_uri": "gs://stockvision-models/original-result.json"}))
+    assert seen == [RUN_ID, "new-downstream"]
+    assert result["modal_prediction_bundle"]["run_id"] == RUN_ID
+    assert result["metrics"]["prediction_bundle_reuse"]["source_run_id"] == RUN_ID
+
+
+def test_reused_bundle_rejects_wrong_source_before_any_node(monkeypatch):
+    monkeypatch.setattr(pipeline, "_read_pipeline_async_state_artifact", lambda uri: _state())
+    monkeypatch.setattr(pipeline, "_run_pipeline_nodes", lambda *a: pytest.fail("node ran"))
+    with pytest.raises(ValueError, match="lineage mismatch"):
+        asyncio.run(pipeline.run_pipeline_v2_from_modal_prediction_callback({
+            "run_id": "new-downstream", "prediction_source_run_id": "wrong-original", "run_date": RUN_DATE,
+            "state_gcs_uri": STATE_URI, "result": _bundle()}))

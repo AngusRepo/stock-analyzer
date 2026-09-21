@@ -5220,7 +5220,7 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
         "state_gcs_uri": state_gcs_uri,
     }
     callback_lineage = {
-        "run_id": str(callback_payload.get("run_id") or "").strip(),
+        "run_id": str(callback_payload.get("prediction_source_run_id") or callback_payload.get("run_id") or "").strip(),
         "run_date": str(callback_payload.get("run_date") or "")[:10],
         "state_gcs_uri": state_gcs_uri,
     }
@@ -5239,6 +5239,18 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
         state["modal_prediction_state_gcs_uri"] = state_gcs_uri
         state["modal_prediction_bundle"] = result
         await _run_pipeline_nodes(state, [node_l3_formal_predict])
+        downstream_run_id = str(callback_payload.get("run_id") or "").strip()
+        if not downstream_run_id:
+            raise ValueError("pipeline continuation run identity missing")
+        if downstream_run_id != expected_lineage["run_id"]:
+            # Preserve the immutable prediction source; new downstream captures
+            # use their own attempt identity and actual capture timestamps.
+            state["metrics"]["prediction_bundle_reuse"] = {
+                "source_run_id": expected_lineage["run_id"], "downstream_run_id": downstream_run_id,
+                "state_gcs_uri": state_gcs_uri, "result_gcs_uri": callback_payload.get("result_gcs_uri"),
+                "result_checksum": callback_payload.get("result_checksum"),
+            }
+            state["producer_run_id"] = downstream_run_id
         recovery_lineage = state.get("snapshot_recovery_lineage")
         if isinstance(recovery_lineage, dict):
             if recovery_lineage.get("eligible_for_native_learning") is not False:

@@ -46,6 +46,7 @@ WORKER_AUTH = (
     else os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
 )
 MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
+MAX_D1_OVERLOAD_RETRIES = 8
 
 
 def _env_truthy(name: str) -> bool:
@@ -122,6 +123,28 @@ def _is_retryable_d1_response(status_code: int, text: str) -> bool:
     return "d1 db is overloaded" in lowered or "requests queued for too long" in lowered
 
 
+def _retry_d1_response(resp, attempt: int, error_text: str) -> bool:
+    """Give a congested D1 queue time to drain; other errors keep their budget."""
+    overloaded = resp.status_code == 429 or any(term in error_text.lower() for term in
+        ("d1 db is overloaded", "requests queued for too long"))
+    limit = MAX_D1_OVERLOAD_RETRIES if overloaded else MAX_D1_RETRIES
+    if attempt >= limit or not _is_retryable_d1_response(resp.status_code, error_text):
+        return False
+    if overloaded:
+        delay = min(2.0 * 2 ** attempt, 30.0) + random.uniform(0.0, 1.0)
+        try:
+            retry_after = float(getattr(resp, "headers", {}).get("Retry-After", "0"))
+            if 0 <= retry_after <= 120:
+                delay = max(delay, retry_after)
+        except (TypeError, ValueError):
+            pass
+        logger.warning("[d1_client] D1 overloaded retry=%s delay_s=%.2f", attempt + 1, delay)
+        time.sleep(delay)
+    else:
+        _sleep_before_retry(attempt)
+    return True
+
+
 def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> dict:
     """Internal: POST to D1 /query endpoint, return parsed JSON."""
     resolved_database_id = (database_id or CF_D1_DB_ID).strip()
@@ -137,23 +160,21 @@ def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> 
         "Content-Type": "application/json",
     }
     last_error: RuntimeError | None = None
-    max_attempts = max(1, MAX_D1_RETRIES + 1)
+    max_attempts = max(1, MAX_D1_RETRIES + 1, MAX_D1_OVERLOAD_RETRIES + 1)
 
     for attempt in range(max_attempts):
         try:
             resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
         except httpx.RequestError as e:
             last_error = RuntimeError(f"D1 request failed: network error: {e}")
-            if attempt < max_attempts - 1:
+            if attempt < MAX_D1_RETRIES:
                 _sleep_before_retry(attempt)
                 continue
             raise last_error from e
 
         if resp.status_code != 200:
             last_error = RuntimeError(f"D1 request failed: HTTP {resp.status_code}: {resp.text[:300]}")
-            if _is_retryable_d1_response(resp.status_code, resp.text) and attempt < max_attempts - 1:
-                logger.warning("[d1_client] retryable D1 response attempt=%s status=%s", attempt + 1, resp.status_code)
-                _sleep_before_retry(attempt)
+            if _retry_d1_response(resp, attempt, resp.text):
                 continue
             raise last_error
 
@@ -161,9 +182,7 @@ def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> 
         if not data.get("success"):
             error_text = str(data.get("errors", data))
             last_error = RuntimeError(f"D1 request unsuccessful: {data.get('errors', data)}")
-            if _is_retryable_d1_response(resp.status_code, error_text) and attempt < max_attempts - 1:
-                logger.warning("[d1_client] retryable D1 payload error attempt=%s", attempt + 1)
-                _sleep_before_retry(attempt)
+            if _retry_d1_response(resp, attempt, error_text):
                 continue
             raise last_error
         return data
@@ -190,23 +209,21 @@ def _post_raw(body: dict, timeout: float = 60.0, database_id: str | None = None)
         "Content-Type": "application/json",
     }
     last_error: RuntimeError | None = None
-    max_attempts = max(1, MAX_D1_RETRIES + 1)
+    max_attempts = max(1, MAX_D1_RETRIES + 1, MAX_D1_OVERLOAD_RETRIES + 1)
 
     for attempt in range(max_attempts):
         try:
             resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
         except httpx.RequestError as e:
             last_error = RuntimeError(f"D1 raw request failed: network error: {e}")
-            if attempt < max_attempts - 1:
+            if attempt < MAX_D1_RETRIES:
                 _sleep_before_retry(attempt)
                 continue
             raise last_error from e
 
         if resp.status_code != 200:
             last_error = RuntimeError(f"D1 raw request failed: HTTP {resp.status_code}: {resp.text[:300]}")
-            if _is_retryable_d1_response(resp.status_code, resp.text) and attempt < max_attempts - 1:
-                logger.warning("[d1_client] retryable D1 raw response attempt=%s status=%s", attempt + 1, resp.status_code)
-                _sleep_before_retry(attempt)
+            if _retry_d1_response(resp, attempt, resp.text):
                 continue
             raise last_error
 
@@ -214,9 +231,7 @@ def _post_raw(body: dict, timeout: float = 60.0, database_id: str | None = None)
         if not data.get("success"):
             error_text = str(data.get("errors", data))
             last_error = RuntimeError(f"D1 raw request unsuccessful: {data.get('errors', data)}")
-            if _is_retryable_d1_response(resp.status_code, error_text) and attempt < max_attempts - 1:
-                logger.warning("[d1_client] retryable D1 raw payload error attempt=%s", attempt + 1)
-                _sleep_before_retry(attempt)
+            if _retry_d1_response(resp, attempt, error_text):
                 continue
             raise last_error
         return data

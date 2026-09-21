@@ -46,7 +46,7 @@ export const PIPELINE_EXECUTION_RESERVATION_SECONDS = PIPELINE_EXECUTION_CALLBAC
 
 export async function reservePipelineExecutionDispatch(
   db: D1Database,
-  input: { businessDate: string; attemptId: string; leaseSeconds?: number },
+  input: { businessDate: string; attemptId: string; leaseSeconds?: number; expectedFailedRunId?: string },
 ): Promise<PipelineStageRow | null> {
   const attemptId = input.attemptId.trim()
   if (!attemptId) throw new Error(`pipeline_execution_reservation_identity_missing:${input.businessDate}`)
@@ -67,6 +67,7 @@ export async function reservePipelineExecutionDispatch(
       queued_at=CURRENT_TIMESTAMP, started_at=CURRENT_TIMESTAMP, completed_at=NULL,
       last_error=NULL, updated_at=CURRENT_TIMESTAMP
     WHERE pipeline_stage_runs.status='error'
+      AND (? IS NULL OR pipeline_stage_runs.canonical_run_id=?)
     RETURNING business_date, stage, canonical_run_id, status, cursor_key,
               processed_count, expected_count, persisted_count, attempt_count,
               lease_owner, lease_expires_at
@@ -75,6 +76,8 @@ export async function reservePipelineExecutionDispatch(
     attemptId,
     attemptId,
     leaseModifier(input.leaseSeconds ?? PIPELINE_EXECUTION_RESERVATION_SECONDS),
+    input.expectedFailedRunId ?? null,
+    input.expectedFailedRunId ?? null,
   ).first<PipelineStageRow>()
 }
 

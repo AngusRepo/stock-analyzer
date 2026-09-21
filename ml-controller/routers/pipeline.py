@@ -351,6 +351,14 @@ async def reconcile_pipeline_execution(
     return {**snapshot, "failure_callback_sent": callback is not None}
 
 
+@router.get("/v2/resume")
+async def pipeline_resume_preflight(request: Request, date: str = Query(...), run_id: str = Query(..., max_length=180)):
+    _check_service_token(request)
+    from services.pipeline_modal_handoff import failed_continuation_payload
+    payload = await asyncio.to_thread(failed_continuation_payload, run_id=run_id, run_date=date, jobs_client=_jobs_client)
+    return {"resumable": payload is not None, "run_id": run_id, "run_date": date}
+
+
 @router.post("/v2/run")
 async def trigger_pipeline_v2(
     request: Request,
@@ -366,6 +374,7 @@ async def trigger_pipeline_v2(
     Worker subrequest timeout (~100-150 s) is far larger than the Jobs API
     round-trip, so no timeout concerns on the trigger side.
     """
+    _check_service_token(request)
     requested_run_id = request.headers.get("X-Pipeline-Run-Id", "").strip()
     if requested_run_id and (
         len(requested_run_id) > 180
@@ -376,6 +385,18 @@ async def trigger_pipeline_v2(
     env_overrides = {"PIPELINE_PARENT_RUN_ID": run_id}
     if date:
         env_overrides["PIPELINE_RUN_DATE"] = date
+
+    resume_from = request.headers.get("X-Pipeline-Resume-From", "").strip()
+    if resume_from:
+        from services.pipeline_modal_handoff import failed_continuation_payload, dispatch_modal_prediction_continuation
+        payload = await asyncio.to_thread(failed_continuation_payload, run_id=resume_from, run_date=date, jobs_client=_jobs_client)
+        if payload is None:
+            raise HTTPException(status_code=409, detail="pipeline_modal_resume_execution_not_failed")
+        dispatch = await asyncio.to_thread(dispatch_modal_prediction_continuation, payload,
+                                          jobs_client=_jobs_client, resumed_run_id=run_id)
+        return JSONResponse(status_code=202, content={"status": "resumed", "run_id": run_id,
+            "execution_name": dispatch["execution_name"], "execution_id": dispatch["execution_id"],
+            "reused_verified_predictions": True})
 
     try:
         execution = _jobs_client.run_job(env_overrides=env_overrides)

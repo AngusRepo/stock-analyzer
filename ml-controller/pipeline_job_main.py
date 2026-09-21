@@ -249,6 +249,7 @@ async def _run() -> int:
                 "run_date": run_date,
                 "run_id": run_id,
                 "state_gcs_uri": state_gcs_uri,
+                "prediction_source_run_id": os.environ.get("PIPELINE_MODAL_SOURCE_RUN_ID", "") or run_id,
                 "elapsed_s": os.environ.get("PIPELINE_MODAL_ELAPSED_S", ""),
                 "result_gcs_uri": result_gcs_uri,
                 "result_checksum": result_checksum,

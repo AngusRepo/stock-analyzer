@@ -228,3 +228,35 @@ def test_dispatch_rejects_cross_run_bundle_lineage(monkeypatch):
         )
 
     assert jobs.calls == []
+
+
+@pytest.mark.parametrize("state", ["running", "succeeded", "unknown", "failed"])
+def test_resume_preflight_requires_exact_failed_continuation(monkeypatch, state):
+    from services.pipeline_modal_handoff import failed_continuation_payload
+    storage, jobs = StorageClient(), JobsClient()
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
+    original = _dispatch_fixture(storage=storage, jobs=jobs, state_gcs_uri="gs://stockvision-models/state.json", marker="A")
+    jobs.pipeline_execution_status = lambda **kw: {"state": state, "completed_at": "2026-07-17T14:00:00Z",
+        "execution_name": original["execution_name"]}
+    payload = failed_continuation_payload(run_id="pipeline-v2-parent", run_date="2026-07-17", jobs_client=jobs, storage_client=storage)
+    assert (payload is not None) == (state == "failed")
+    assert len(jobs.calls) == 1
+    if payload:
+        replay = dispatch_modal_prediction_continuation(payload, jobs_client=jobs, storage_client=storage, resumed_run_id="new-downstream-run")
+        assert replay["run_id"] == "new-downstream-run"
+        assert replay["prediction_source_run_id"] == "pipeline-v2-parent"
+        assert replay["receipt_path"] != original["receipt_path"]
+        env = jobs.calls[-1]["env_overrides"]
+        assert env["PIPELINE_PARENT_RUN_ID"] == "new-downstream-run"
+        assert env["PIPELINE_MODAL_SOURCE_RUN_ID"] == "pipeline-v2-parent"
+        assert env["PIPELINE_MODAL_RESULT_CHECKSUM"] == original["result_checksum"]
+
+
+def test_resume_preflight_rejects_newer_execution(monkeypatch):
+    from services.pipeline_modal_handoff import failed_continuation_payload
+    storage, jobs = StorageClient(), JobsClient()
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
+    _dispatch_fixture(storage=storage, jobs=jobs, state_gcs_uri="gs://stockvision-models/state.json", marker="A")
+    jobs.pipeline_execution_status = lambda **kw: {"state": "failed", "completed_at": "2026-07-17T14:00:00Z", "execution_name": "other-newer-execution"}
+    assert failed_continuation_payload(run_id="pipeline-v2-parent", run_date="2026-07-17", jobs_client=jobs, storage_client=storage) is None
+    assert len(jobs.calls) == 1

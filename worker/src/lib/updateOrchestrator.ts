@@ -1,3 +1,4 @@
+import { brokerAsOfReadiness } from './finLabBrokerReadiness'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -474,6 +475,7 @@ async function checkEveningChainSourceReadiness(
   const checks: ReadinessCheck[] = []
 
   checks.push(...await finLabCanonicalDailyReadinessChecks(databaseForDataDomain(env, 'market'), targetDate))
+  checks.push(...await brokerAsOfReadiness(databaseForDataDomain(env, 'market'), databaseForDataDomain(env, 'ops'), targetDate))
   checks.push(await tradingRestrictionsDailyReadinessCheck(env, targetDate))
 
   try {
@@ -529,20 +531,6 @@ async function checkEveningChainSourceReadiness(
       "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_taifex_futures_large_trader'",
       [targetDate],
       1,
-    ),
-    countReadinessRows(
-      databaseForDataDomain(env, 'market'),
-      'canonical_broker_flow_daily:listed_otc',
-      "SELECT COUNT(*) AS count FROM canonical_broker_flow_daily WHERE date = ? AND source = 'finlab.broker_transactions' AND market_segment = 'LISTED_OTC'",
-      [targetDate],
-      1000,
-    ),
-    countReadinessRows(
-      databaseForDataDomain(env, 'market'),
-      'canonical_broker_rank_daily:listed_otc',
-      "SELECT COUNT(*) AS count FROM canonical_broker_rank_daily WHERE date = ? AND source = 'finlab.broker_transactions' AND market_segment = 'LISTED_OTC'",
-      [targetDate],
-      1000,
     ),
     sourceKeyCanonicalParityReadiness(
       databaseForDataDomain(env, 'ops'),
@@ -2688,6 +2676,31 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   )
   if ((finlabLog?.status !== 'triggered' && !retriablePartialFailure) || !finlabLog.timestamp) {
     return `skipped: no pending FinLab trigger for ${twDate}`
+  }
+
+  if (retriablePartialFailure) {
+    const updateLog = await readSchedulerRunLog(env, 'update', twDate)
+    if (updateLog?.status === 'success' || updateLog?.status === 'running' || updateLog?.status === 'triggered') {
+      return `skipped: FinLab as-of handoff already progressing market update for ${twDate}`
+    }
+    const readiness = await checkEveningChainSourceReadiness(env, twDate)
+    if (!hasFinLabRefreshableMissing(readiness)) {
+      const retryKey = `finlab:post-canonical-watchdog:${twDate}:${finlabLog.run_id}`
+      if (await env.KV.get(retryKey)) return `skipped: FinLab as-of handoff already claimed for ${twDate}`
+      await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
+      try {
+        const continuation = await continueAfterFinLabBackfill(env, twDate, false, finlabLog.run_id)
+        const summary = `FinLab partial refresh reconciled with verified as-of source readiness; ${continuation}`
+        await logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'running', summary, details: readinessDetails(readiness), duration_ms: 0,
+          run_id: finlabLog.run_id, run_date: twDate, supersedePrevious: true,
+        })
+        return `status=triggered ${summary}`
+      } catch (error) {
+        await env.KV.delete(retryKey)
+        throw error
+      }
+    }
   }
 
   const triggeredAt = Date.parse(finlabLog.timestamp)

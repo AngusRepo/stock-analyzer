@@ -3,7 +3,7 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
-import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
+import { resolveFinLabDispatchFence, finLabCallbackSummary } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
@@ -845,7 +845,7 @@ async function handleSchedulerCallback(c: any) {
       activeRunId: current?.run_id,
       activeSummary: current?.summary,
       incomingRunId: callbackRunId,
-      incomingAttempt: body.dispatch_attempt ?? body.metadata?.dispatch_attempt,
+      incomingAttempt: body.dispatch_attempt ?? body.result?.dispatch_attempt ?? body.metadata?.dispatch_attempt,
     })
     if (fence.ignored) {
       return c.json({
@@ -858,6 +858,7 @@ async function handleSchedulerCallback(c: any) {
         active_dispatch_attempt: fence.activeAttempt,
       })
     }
+    body.summary = finLabCallbackSummary(String(body.summary ?? ''), fence.incomingAttempt, current?.summary)
   }
 
   if (body.task === 'screener' && ['success', 'error', 'skipped'].includes(String(body.status))) {

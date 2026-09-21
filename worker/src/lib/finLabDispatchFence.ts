@@ -35,3 +35,10 @@ export function resolveFinLabDispatchFence(params: {
     activeAttempt,
   }
 }
+
+/** Preserve dispatch identity when a callback replaces the scheduler head. */
+export function finLabCallbackSummary(summary: string, attempt: unknown, activeSummary?: string | null): string {
+  const call = String(activeSummary ?? '').match(/(?:^|\s)function_call_id=([^\s;]+)/)?.[1]
+  const clean = summary.replace(/(?:^|\s)(?:dispatch_attempt|function_call_id)=[^\s;]+/g, '').trim()
+  return `${clean} dispatch_attempt=${boundedAttempt(attempt)}${call ? ` function_call_id=${call}` : ''}`
+}

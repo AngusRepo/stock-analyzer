@@ -930,3 +930,17 @@ def test_materialize_canonical_plan_marks_all_blocked_without_throwing():
     assert result["statement_count"] == 0
     assert result["materialized_datasets"] == []
     assert result["blocked_datasets"] == ["canonical_institutional_amount_daily"]
+
+def test_broker_raw_observation_distinguishes_provider_delay_from_normalized_empty():
+    tool = _load_tool_module()
+    raw = pd.DataFrame({"date": ["2026-09-18"], "stock_id": ["2330"],
+                        "broker": ["A"], "buy": [1000], "sell": [500]})
+    observation = tool.broker_source_observation(raw, "2026-09-21")
+    assert observation["required_columns_valid"] is True
+    assert observation["raw_rows"] == observation["valid_date_rows"] == 1
+    assert observation["raw_max_date"] == "2026-09-18"
+    assert observation["target_rows"] == 0
+    assert tool.normalize_broker_transactions_daily(raw, "2026-09-21").empty
+    assert not tool.broker_source_observation(raw.drop(columns=["buy"]), "2026-09-21")["required_columns_valid"]
+    raw.loc[0, "date"] = "invalid"
+    assert tool.broker_source_observation(raw, "2026-09-21")["valid_date_rows"] == 0

@@ -1700,6 +1700,21 @@ def build_broker_rank_daily(
     return ranked[columns]
 
 
+def broker_source_observation(frame: pd.DataFrame, target_date: str) -> dict[str, Any]:
+    """Retain pre-filter availability; an empty target slice is not a schema pass."""
+    date_col = _first_existing_column(frame, ("date", "日期", "trade_date"))
+    required = [date_col,
+        _first_existing_column(frame, ("stock_id", "symbol", "股票代號", "證券代號")),
+        _first_existing_column(frame, ("buy_shares", "buy_volume", "buy_qty", "buy", "買進股數", "買進張數")),
+        _first_existing_column(frame, ("sell_shares", "sell_volume", "sell_qty", "sell", "賣出股數", "賣出張數"))]
+    dates = pd.to_datetime(frame[date_col], errors="coerce") if date_col else pd.Series(dtype="datetime64[ns]")
+    return {"schema_version": "finlab-broker-source-observation-v1", "raw_rows": len(frame),
+        "required_columns_valid": all(required), "valid_date_rows": int(dates.notna().sum()),
+        "raw_min_date": str(dates.min().date()) if dates.notna().any() else None,
+        "raw_max_date": str(dates.max().date()) if dates.notna().any() else None,
+        "target_date": target_date, "target_rows": int((dates == pd.Timestamp(target_date)).sum())}
+
+
 def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.DataFrame:
     """Normalize FinLab broker_transactions into daily symbol broker-flow evidence."""
     if frame.empty:
@@ -2159,6 +2174,7 @@ def materialize_specs(
                 if status == "quota_blocked":
                     raise
                 frame = pd.DataFrame()
+            source_observation = broker_source_observation(frame, target_date)
             grouped = normalize_broker_transactions_daily(frame, start)
             rank_rows = grouped.attrs.get("broker_rank_daily")
             grouped = filter_rows_date_range(
@@ -2217,7 +2233,8 @@ def materialize_specs(
                     run_dir=run_dir,
                     gcs_bucket=gcs_bucket,
                     gcs_prefix=gcs_prefix,
-                    metadata={"kind": spec.kind, "rank_path": str(rank_path), "rank_shape": list(rank_rows.shape)},
+                    metadata={"kind": spec.kind, "rank_path": str(rank_path), "rank_shape": list(rank_rows.shape),
+                              "source_observation": source_observation},
                 ))
         elif spec.kind == "rotc_broker_aggregate":
             api_key_name = "rotc_broker_transactions"

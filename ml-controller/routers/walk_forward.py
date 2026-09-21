@@ -2763,6 +2763,15 @@ OOF_TRAIN_SESSIONS = 60
 OOF_TEST_SESSIONS = 10
 OOF_PROMOTION_MIN_FOLDS = 5
 OOF_LABEL_PURGE_SESSIONS = 5
+
+
+def _oof_training_min_folds(profile: str) -> int:
+    # Both accepted TimeXer arms share enough history for nested L3/head/MLP OOF.
+    # Five folds leave 30 native L4 dates, 19 anchor dates and zero MLP OOF dates.
+    # Seven leave 50 native L4 dates, preserving all three purge boundaries.
+    # This is training support, NOT a change to the five-fold offline/NAV gate.
+    from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
+    return 7 if profile in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA) else OOF_PROMOTION_MIN_FOLDS
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
@@ -3309,7 +3318,13 @@ def _oof_forward_parent_contract(
         return {"ready": False, "reasons": reasons, "latest_window_id": None}
     latest = max(windows, key=lambda row: int(row.get("window_id") or 0))
     window_id = int(latest.get("window_id") or 0)
-    expected_version = f"{str(manifest.get('cohort_id') or '')}-w{window_id}"
+    try:
+        from services.oof_forward_source_identity import verified_forward_source_version
+        expected_version = verified_forward_source_version(bucket, manifest, latest)
+    except Exception as exc:
+        return {'ready': False, 'reasons': [*reasons, 'reused_forward_source_invalid:' + str(exc)],
+                'latest_window_id': window_id}
+
     metrics = latest.get("model_metrics") if isinstance(latest.get("model_metrics"), dict) else {}
 
     def require_object(path: object, reason: str) -> None:
@@ -3496,6 +3511,9 @@ def _pre_dispatch_completed_oof_lifecycle(
     if parent is None:
         return None
     parent_path, manifest = parent
+    if (not req.continuation_only and len(manifest.get("windows") or [])
+            < _oof_training_min_folds(req.model_profile_schema_version)):
+        return None
     pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
     prep_gcs_prefix = (
         "" if pinned_prep else (_latest_canonical_prep_prefix(bucket) or "")
@@ -3680,12 +3698,15 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if len(dates) < OOF_LIFECYCLE_MIN_SESSIONS:
+    training_min_folds = (OOF_PROMOTION_MIN_FOLDS if req.continuation_only
+        else _oof_training_min_folds(req.model_profile_schema_version))
+    training_min_sessions = OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * training_min_folds
+    if len(dates) < training_min_sessions:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"OOF lifecycle requires {OOF_LIFECYCLE_MIN_SESSIONS} mature immutable-prep sessions "
-                f"for {OOF_PROMOTION_MIN_FOLDS} purged folds, found {len(dates)}"
+                f"OOF lifecycle requires {training_min_sessions} mature immutable-prep sessions "
+                f"for {training_min_folds} training folds, found {len(dates)}"
             ),
         )
     knowledge_cutoff_date = str(calendar_evidence["cutoff"])
@@ -3697,7 +3718,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     if cadence == "daily" and req.dispatch_full_fit and parent and not req.continuation_only:
         physical_dates, coverage = _oof_manifest_observed_core_dates(bucket, parent_manifest)
         calendar_evidence["parent_physical_coverage"] = coverage
-        daily_batch_ready = _daily_cohort_batch_ready(parent_manifest, dates, physical_dates)
+        daily_batch_ready = (len(parent_manifest.get("windows") or []) < training_min_folds
+            or _daily_cohort_batch_ready(parent_manifest, dates, physical_dates))
     if cadence == "daily" and not daily_batch_ready:
         selected = parent
         if selected is None:
@@ -3781,10 +3803,10 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             parent_end = parent_physical_dates[-1] if parent_physical_dates else ""
             calendar_evidence["parent_physical_coverage"] = parent_physical_coverage
             new_mature_dates = [date for date in mature_dates if date > parent_end]
-            if parent_fold_count < OOF_PROMOTION_MIN_FOLDS:
+            if parent_fold_count < training_min_folds:
                 parent_start_index = mature_dates.index(parent_start)
                 prepend_sessions = OOF_TEST_SESSIONS * (
-                    OOF_PROMOTION_MIN_FOLDS - parent_fold_count
+                    training_min_folds - parent_fold_count
                 )
                 cohort_start_index = parent_start_index - prepend_sessions
                 if cohort_start_index < 0:
@@ -3817,7 +3839,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     or ""
                 )
         else:
-            cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]
+            cohort_dates = mature_dates[-training_min_sessions:]
             start_date = cohort_dates[0]
             signal_end_date = cohort_dates[-1]
             cohort_id = (

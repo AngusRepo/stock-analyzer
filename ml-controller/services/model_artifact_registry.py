@@ -569,6 +569,9 @@ def _artifact_record_from_registration(
 ) -> dict[str, Any]:
     if not isinstance(raw_registration, dict):
         raw_registration = {"status": "unknown", "raw": raw_registration}
+    if model_name == "TimeXer" and raw_registration.get("checksum"):
+        from services.timexer_contract import canonical_checksum
+        raw_registration = {**raw_registration, "checksum": canonical_checksum(raw_registration["checksum"])}
     evidence = _model_training_evidence(payload_dict, model_name)
     enriched_registration = {**evidence, **raw_registration}
     child_training_run_id = str(raw_registration.get("training_run_id") or "").strip()
@@ -3477,7 +3480,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         # activation. Current inference still checks structure independently.
         if transaction is not None and transaction['recovered_existing_commit']:
             continue
-        if evaluation_business_date is not None and by_model[model_name].get('state') not in {'offline_failed', 'offline_passed', 'production'}:
+        if evaluation_business_date is not None and by_model[model_name].get('state') not in {'offline_failed', 'offline_passed', 'offline_strong_pass', 'production'}:
             blockers.append(f'{model_name}:nav_candidate_lifecycle_not_adoptable')
         # Use the SAME structural reader as inference, for both legacy offline
         # diagnostics and NAV adoption. Do not reintroduce an offline efficacy
@@ -3504,7 +3507,7 @@ def run_active8_ensemble_bundle_promotion_controller(
                     'artifact_id': ensemble_row['artifact_id'], 'artifact_checksum': ensemble_row['payload_checksum'],
                     'nav_validation': nav_adoption['nav_validation'], 'comparison': nav_adoption['comparison']}
             if nav_adoption['decision'] != 'PASS':
-                return {'status': 'hold', 'decision': nav_adoption['nav_validation']['reason'], 'can_promote': False,
+                return {'status': 'hold', 'decision': nav_adoption.get('reason', nav_adoption['nav_validation']['reason']), 'can_promote': False,
                     'training_run_id': training_run_id, 'ensemble_artifact_id': ensemble_row['artifact_id'],
                     'nav_validation': nav_adoption['nav_validation']}
             transaction['guards'].extend(nav_adoption['guards'])

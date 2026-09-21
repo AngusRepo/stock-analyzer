@@ -22,6 +22,13 @@ from routers import optuna
 import oof_materialize_job_main as job
 
 
+@pytest.fixture(autouse=True)
+def frozen_trading_config(monkeypatch):
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
+        lambda: types.SimpleNamespace(config={}))
+
+
 def test_optional_run_client_stub_preserves_installed_storage_namespace():
     from google.cloud import storage
     assert callable(storage.Client)
@@ -318,3 +325,25 @@ def test_unproven_terminal_receipt_must_retry(gate):
     assert not wf._candidate_forward_is_complete({
         "status": "prospective_candidates_exhausted", "promotion_ready": False,
         "terminal_rejections": [{"artifact_id": "l4", "gate": gate}]})
+
+
+@pytest.mark.parametrize('variant', ['price', 'exo137'])
+@pytest.mark.parametrize('cadence', ['daily', 'weekly'])
+def test_timexer_nested_history_prepends_two_folds_without_replacing_parent(monkeypatch, lifecycle, variant, cadence):
+    days,parent,_,_,_=lifecycle
+    profile='active8-release-model-profiles-v4-timexer-'+variant
+    parent.update(start_date=days[30], model_profile_schema_version=profile)
+    monkeypatch.setattr(wf, '_latest_ready_oof_manifest', lambda *a, **k: ('parent/manifest.json', parent))
+    monkeypatch.setattr(wf, '_latest_canonical_prep_prefix', lambda *a, **k: 'immutable/prep')
+    monkeypatch.setattr(wf, '_oof_lifecycle_calendar', lambda *a, **k: (days[:140], {'cutoff':days[144]}))
+    plan=AsyncMock(side_effect=lambda req: req.model_dump())
+    monkeypatch.setattr(wf, 'walk_forward_dry_run', plan)
+    result=asyncio.run(wf.run_walk_forward_oof_lifecycle(wf.OofLifecycleRequest(
+        cadence=cadence,end_date=days[144],dry_run=True,dispatch_full_fit=True,model_profile_schema_version=profile)))
+    assert result['status']=='dry_run'
+    request=plan.call_args.args[0]
+    assert request.start_date==days[10] and request.end_date==days[139]
+    assert request.resume_manifest_path=='parent/manifest.json'
+    assert wf.OOF_PROMOTION_MIN_FOLDS==5
+    from services.backtest_engine import walk_forward_windows
+    assert len(walk_forward_windows(days[10:140],60,10))==7

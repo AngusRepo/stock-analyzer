@@ -92,10 +92,14 @@ def test_real_parent_wrapper_publishes_once_for_all_versions(monkeypatch):
     import modal_app
     parent = parent_request()
     calls, publications, callbacks = [], [], []
+    import time
+    clock = iter((100., 1900.))
+    monkeypatch.setattr(time, 'monotonic', lambda: next(clock))
     def compute(request):
         calls.append(deepcopy(request))
         return {**returned({**request, 'active8_shadow_artifact_identities':
-            resolver.active8_shadow_candidate_identities(request['serving_manifest'])}), 'elapsed_s': 0.01}
+            resolver.active8_shadow_candidate_identities(request['serving_manifest'])}), 'elapsed_s': 600.,
+            'capacity_contract': {'status': 'healthy', 'bundle_elapsed_sec': 600., 'bundle_timeout_sec': 3600, 'timeout_headroom_ratio': 6.}}
     monkeypatch.setattr(modal_app, '_compute_pipeline_prediction_bundle', compute)
     monkeypatch.setattr(modal_app, '_persist_pipeline_prediction_bundle',
         lambda request, bundle: publications.append(deepcopy(bundle)) or {'status': 'fixture'})
@@ -106,6 +110,9 @@ def test_real_parent_wrapper_publishes_once_for_all_versions(monkeypatch):
     assert result['paired_nav_l3_inference']['status'] == 'complete'
     assert result['serving_manifest_digest'] == parent['serving_manifest_digest']
     assert len(result['paired_nav_l3_inference']['bundles']) == 2
+    assert result['elapsed_s'] == 1800.
+    assert result['capacity_contract'] == {'status': 'watch', 'bundle_elapsed_sec': 1800., 'bundle_timeout_sec': 3600, 'timeout_headroom_ratio': 2.}
+    assert publications[0]['capacity_contract'] == callbacks[0]['capacity_contract'] == result['capacity_contract']
 
 
 def test_bad_nav_request_does_not_erase_formal_result_or_claim_nav_complete(monkeypatch):
@@ -122,3 +129,21 @@ def test_bad_nav_request_does_not_erase_formal_result_or_claim_nav_complete(monk
     assert result['formal_output'] == {'2330': 'fixture'}
     assert result['paired_nav_l3_inference']['status'] == 'failed'
     assert len(publications) == 1
+
+
+
+def test_unrelated_slate_history_is_never_copied_and_market_inputs_remain_isolated():
+    class NeverCopy:
+        def __deepcopy__(self, memo):
+            raise AssertionError('unrelated candidate history must not be copied')
+    parent = parent_request()
+    parent['paired_nav_atomic_slates'] = NeverCopy()
+    calls = []
+    def compute(child):
+        assert child['payloads'][0]['prices'] == [1,2,3]
+        child['payloads'][0]['prices'].append(99)
+        calls.append(child['serving_manifest_digest'])
+        return returned(child)
+    result = run_candidate_bundles(parent, compute=compute)
+    assert result['status'] == 'complete' and len(calls) == 2
+    assert parent['payloads'][0]['prices'] == [1,2,3]

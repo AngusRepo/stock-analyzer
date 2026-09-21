@@ -24,13 +24,35 @@ class _InferenceGrant:
     seal: object
 
 
+
+def execution_artifacts(artifact, publication_receipt):
+    """A reviewed whole L3/L4 policy consumes all original L3 observations.
+
+    L3-only publications retain their selected-model authority. This helper
+    does not verify/grant NAV approval; callers must verify the original receipt.
+    """
+    configuration = publication_receipt.get('nav_configuration') or {}
+    if configuration.get('strategy_bundle') is None:
+        return artifact['base_artifacts']
+    from services.paired_nav_strategy_bundle import validate_comparison_configuration
+    from services.ensemble_v2 import ensemble_artifact_id
+    bundle = validate_comparison_configuration(configuration,
+        signal_date=publication_receipt['nav_validation']['as_of_date'])
+    identity = {'schema_version':'paired-nav-formal-ml-baseline-v1',
+        'artifact_id':ensemble_artifact_id(artifact),
+        **{k:artifact[k] for k in ('cohort_id','payload_checksum','base_artifact_set_checksum')}}
+    if bundle['candidate_l3_identity'] != identity:
+        raise ValueError('active8_nav_whole_strategy_observation_identity_mismatch')
+    return artifact['observation_artifacts']
+
+
 def permits_inference(grant, *, artifact, pool_models):
     if not isinstance(grant, _InferenceGrant) or grant.seal is not _INFERENCE_SEAL:
         return False
     if artifact.get('payload_checksum') != grant.artifact_checksum:
         return False
     base = json.loads(grant.base_json)
-    if base != artifact.get('base_artifacts'):
+    if base not in (artifact.get('base_artifacts'), artifact.get('observation_artifacts')):
         return False
     return all(isinstance(pool_models.get(name), dict)
         and pool_models[name].get('serving_eligible') is True
@@ -109,7 +131,7 @@ def restore_frozen_nav_inference(context, *, artifact, pool_models):
             or body['family']['review_alpha'] != nav['review_alpha']
             or reservation['body']['review_alpha'] != nav['review_alpha']):
         raise ValueError('active8_nav_frozen_review_mismatch')
-    grant = _InferenceGrant(artifact['payload_checksum'], json.dumps(artifact['base_artifacts'], sort_keys=True),
+    grant = _InferenceGrant(artifact['payload_checksum'], json.dumps(execution_artifacts(artifact, receipt), sort_keys=True),
         context['context_checksum'], _INFERENCE_SEAL)
     if not permits_inference(grant, artifact=artifact, pool_models=pool_models):
         raise ValueError('active8_nav_frozen_model_identity_mismatch')

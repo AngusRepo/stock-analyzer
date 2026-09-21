@@ -246,13 +246,22 @@ class ModelPoolContractError(RuntimeError):
     """Raised when model_pool.json is incomplete for v2 serving."""
 
 
+def _pool_model_order(pool_models: dict) -> tuple[str, ...]:
+    from .alpha_model_roster import model_order, SUPPORTED_MODELS
+    try:
+        return model_order(set(pool_models) & SUPPORTED_MODELS)
+    except ValueError as exc:
+        raise ModelPoolContractError("model_pool replacement slot invalid: " + str(exc)) from exc
+
+
 def _require_model_pool_contract(pool: Any, *, stage: str = "predict_v2") -> tuple[dict, dict]:
     if not isinstance(pool, dict) or not isinstance(pool.get("models"), dict):
         raise ModelPoolContractError(f"{stage}: model_pool.json unavailable")
     pool_models = pool.get("models") or {}
+    order = _pool_model_order(pool_models)
     missing = [
         name
-        for name in _MODEL_NAMES_V2
+        for name in order
         if not isinstance(pool_models.get(name), dict)
     ]
     if missing:
@@ -271,7 +280,7 @@ def _require_model_pool_contract(pool: Any, *, stage: str = "predict_v2") -> tup
         )
     invalid = [
         f"{name}={pool_models[name].get('status')}"
-        for name in _MODEL_NAMES_V2
+        for name in order
         if str(pool_models[name].get("status") or "").strip() not in _MODEL_POOL_ALLOWED_STATUSES
     ]
     invalid.extend(
@@ -301,8 +310,10 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     Controller adds GNN and sequence results, performs same-date tie-safe
     normalization, then applies the immutable learned ensemble artifact.
     """
-    if len(req.prices) < 60:
-        raise ValueError("至少需要 60 筆價格資料")
+    # Feature availability is validated by the shared batch feature contract.
+    # This evidence serializer must not impose a legacy per-stock lookback.
+    if not req.prices:
+        raise ValueError("active8_current_price_missing")
     runtime_options = getattr(req, "runtime_options", {}) or {}
     precomputed = runtime_options.get(_BATCH_FEATURE_RANK_SCORES_KEY)
     if not isinstance(precomputed, dict):

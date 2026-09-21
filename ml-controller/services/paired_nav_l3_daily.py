@@ -99,14 +99,19 @@ def refresh_registered_l3_nav_decisions(*, business_date, query, now=None, adopt
             stage = 'decision'
             nav = read_nav_candidate_decision(owner=OWNER, candidate_checksum=checksum,
                 candidate_artifact_id=artifact_id, business_date=business_date, query=query, now=clock)
+            from services.strategy_ab import reviewed_publication_policy
+            policy = (reviewed_publication_policy(nav, query=query, now=clock)
+                      if nav['decision'] == 'PASS' else 'awaiting_nav_review')
             decisions.append({'owner': OWNER, 'candidate_artifact_id': artifact_id, 'candidate_checksum': checksum,
                 'registry_state': row['state'], 'decision': nav['decision'], 'reason': nav['reason'],
+                'publication_policy': policy,
                 'nav_decision_checksum': nav['decision_checksum'],
                 'evaluable_date_count': nav.get('evaluable_date_count', 0),
                 'offline_diagnostic_decision': payload['validation']['decision']})
             if adoption_candidates is not None and row['state'] in {'candidate', 'production'}:
                 adoption_candidates.append({'owner': OWNER, 'registry_state': row['state'], 'payload': {
                     'artifact_id': artifact_id, 'artifact_checksum': checksum, 'artifact': payload,
+                    'publication_policy': policy,
                     'training_run_id': row['training_run_id'], 'source_run_date': row['knowledge_cutoff_date'],
                     'prospective_validation': {'decision': nav['decision'], 'nav_validation': nav},
                     'evaluation_business_date': business_date, 'cadence': 'daily_candidate_nav'}})

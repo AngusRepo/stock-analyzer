@@ -3,6 +3,7 @@ import { settlePaperT2 } from './paperSettlementTasks'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
+import { pollIntradayStopLoss } from './paperExitTasks'
 import { persistPendingBuyActiveState } from './pendingBuyStore'
 import { getTradingConfig } from './tradingConfig'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
@@ -167,6 +168,24 @@ test('native full chain executes positive L4 target through real entry owner',as
     assert.equal(learned.plan.opb.fabricated_prior_samples,0)
     assert.equal(learned.plan.opb.arm_statistics.base.reward_mean,reward.reward)
     assert.ok(f.artifacts.size>0)
+    // A corrupt L4 target cannot suppress the original holding-risk exit owner.
+    // This explicit synthetic stop acts on the position created by the real entry/ledger above.
+    f.sqls.paper.prepare("UPDATE l4_portfolio_plans_v1 SET payload_json='{}' WHERE plan_id=?").run(reduced.plan.plan_id)
+    const heldLifecycle=JSON.parse(String(f.sqls.paper.prepare("SELECT trade_lifecycle_json FROM paper_positions WHERE account_id=1 AND symbol='2330'").get()?.trade_lifecycle_json))
+    heldLifecycle.entry.stopLoss=21
+    heldLifecycle.entry.s12.structureStop=21
+    heldLifecycle.entry.s12.exitPlan.trailingInitial=21
+    f.sqls.paper.prepare("UPDATE paper_positions SET trade_lifecycle_json=?,highest_since_entry=24 WHERE account_id=1 AND symbol='2330'").run(JSON.stringify(heldLifecycle))
+    f.ports.nowMs=Date.parse('2026-09-17T01:45:00Z')
+    await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+    assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
+    const hardExit=f.sqls.paper.prepare("SELECT shares,source,note FROM paper_orders WHERE side='sell' ORDER BY id DESC LIMIT 1").get()
+    assert.equal(hardExit?.shares,1500)
+    assert.equal(hardExit?.source,'intraday_exit')
+    assert.match(String(hardExit?.note),/stop|停損/i)
+    const exitCount=f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n
+    await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+    assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,exitCount)
     // A private candidate never receives or caches formal release authority.
     assert.equal(f.cfg.l4Distribution.artifact.release,undefined)
     await assert.rejects(getTradingConfig(f.env.KV),/validated Paper release/)

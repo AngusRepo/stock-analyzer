@@ -78,7 +78,8 @@ def load_checkpoint(raw: bytes, *, expected_checksum: str, expected_variant: str
     import torch
     if expected_variant not in {"price", "exo137"}:
         raise ValueError("timexer_unknown_variant")
-    if hashlib.sha256(raw).hexdigest() != expected_checksum:
+    from .timexer_contract import canonical_checksum
+    if canonical_checksum(hashlib.sha256(raw).hexdigest()) != canonical_checksum(expected_checksum):
         raise ValueError("timexer_artifact_checksum_mismatch")
     checkpoint = torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
     if set(checkpoint) - {"state_dict", "settings", "exogenous", "stockvision"}:

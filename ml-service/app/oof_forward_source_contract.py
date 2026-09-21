@@ -21,12 +21,21 @@ def assess_fold_forward_sources(
     *,
     cohort_id: str,
     bucket: Any | None = None,
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fail closed unless the fold owns all exact core inference artifacts."""
 
     reasons: list[str] = []
     window_id = int(window.get("window_id") or 0)
-    expected_version = f"{cohort_id}-w{window_id}"
+    from .oof_forward_source_identity import verified_forward_source_version
+    try:
+        if window.get('source_cohort_id') and (bucket is None or not manifest):
+            raise ValueError('oof_forward_reused_manifest_required')
+        expected_version = verified_forward_source_version(bucket, manifest or {'cohort_id':cohort_id}, window)
+    except Exception as exc:
+        return {'schema_version':'active8-oof-forward-source-contract-v1', 'ready':False,
+                'reasons':['reused_forward_source_invalid:' + str(exc)], 'window_id':window_id}
+
     metrics = window.get("model_metrics") if isinstance(window.get("model_metrics"), dict) else {}
 
     def require_object(path: object, reason: str) -> None:

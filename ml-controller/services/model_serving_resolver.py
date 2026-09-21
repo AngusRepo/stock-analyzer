@@ -205,10 +205,11 @@ def _artifact_block_reason(
     if not artifact:
         return "missing_registry_artifact"
     state = str(artifact.get("state") or "").strip()
-    if state not in SERVING_OK_STATES:
-        return f"artifact_state_{state or 'missing'}"
     from services.active8_nav_adoption import is_serving_grant
     nav_owned = is_serving_grant(nav_grant) and nav_grant.authorizes(model_name, artifact)
+    if state not in SERVING_OK_STATES and not (
+            nav_owned and state in {'offline_strong_pass','offline_passed','offline_passed_weak','offline_failed'}):
+        return f"artifact_state_{state or 'missing'}"
     offline_decision = str(artifact.get("offline_gate_decision") or "").strip().upper()
     allowed_offline_decisions = (
         L2_SIDECAR_OK_OFFLINE_DECISIONS
@@ -394,6 +395,12 @@ def build_pool_from_champion_pointers(
     pointer_by_model = {str(row.get("model_name")): row for row in pointers if row.get("model_name")}
     artifacts_by_id = {str(row.get("artifact_id")): row for row in artifacts if row.get("artifact_id")}
 
+    nav_payload = json.loads(nav_grant.payload_json) if nav_grant is not None else {}
+    nav_execution = {}
+    if nav_grant is not None:
+        from services.active8_nav_inference import execution_artifacts
+        nav_execution = execution_artifacts(nav_payload, json.loads(nav_grant.receipt_json))
+
     def build_entry(model_name: str, *, artifact_role: str) -> dict[str, Any]:
         pointer = pointer_by_model.get(model_name)
         version = str((pointer or {}).get("champion_version") or "").strip()
@@ -405,6 +412,15 @@ def build_pool_from_champion_pointers(
             artifacts_by_id=artifacts_by_id,
         ) if pointer and version else None
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
+        observation_owned = model_name in nav_execution and model_name not in nav_payload['selected_models']
+        if observation_owned:
+            expected = nav_execution[model_name]
+            artifact_id, version = expected['artifact_id'], expected['version']
+            artifact = _artifact_for_exact_pointer(model_name=model_name, version=version,
+                artifact_id=artifact_id, artifacts_by_id=artifacts_by_id)
+            pointer = None  # Never carry IC/history from another champion version.
+            block_reason = None if nav_grant.authorizes(model_name, artifact) else 'active8_nav_serving_snapshot_mismatch'
+
         if nav_grant is not None and model_name in json.loads(nav_grant.payload_json)['selected_models']:
             if (not nav_grant.authorizes(model_name, artifact)
                     or _json_obj((pointer or {}).get('promotion_evidence_json')) != json.loads(nav_grant.receipt_json)):
@@ -420,7 +436,7 @@ def build_pool_from_champion_pointers(
             "model_slot_status": "active",
             "status": "degraded" if block_reason else "active",
             "serving_eligible": not bool(block_reason),
-            "serving_owner": "model_champion_pointers",
+            "serving_owner": "committed_whole_strategy_observation" if observation_owned else "model_champion_pointers",
             "serving_artifact_id": artifact_id,
             "serving_block_reason": block_reason,
         }
@@ -485,6 +501,13 @@ def load_d1_champion_pool(
         nav_grant = load_committed_nav_serving_grant(query=d1_client.query)
         if nav_grant is None:
             raise RuntimeError('active8_nav_serving_bundle_missing_for_model_pointer')
+        from services.active8_nav_inference import execution_artifacts
+        execution = execution_artifacts(json.loads(nav_grant.payload_json), json.loads(nav_grant.receipt_json))
+        missing = [identity['artifact_id'] for identity in execution.values()
+                   if identity['artifact_id'] not in {row['artifact_id'] for row in artifacts}]
+        if missing:
+            artifacts.extend(list_artifacts_by_ids(missing, max_ids=len(missing)))
+
     return build_pool_from_champion_pointers(
         pointers=pointers,
         artifacts=artifacts,

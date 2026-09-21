@@ -60,13 +60,15 @@ def test_controller_and_modal_use_identical_contract_and_real_fixture():
         assert module.sequence_rank_ic_semantic(metadata(name),name)==RANK_IC_SEMANTIC_VERSION
     data=fixture();names=tuple(row["model_name"] for row in data["artifacts"])
     pool=resolver.build_pool_from_champion_pointers(**data,required_models=names,sidecar_models=())
-    assert all(row["serving_eligible"] for row in pool["models"].values())
+    assert all(pool["models"][name]["serving_eligible"] for name in ("DLinear", "PatchTST", "iTransformer"))
+    assert all(not pool["models"][name]["serving_eligible"] for name in ("TabM", "GNN"))
     import sys
     sys.path.insert(0, str(ROOT / 'ml-service'))
     from app import serving_resolver as modal_resolver
     original = copy.deepcopy(data)
     modal_pool = modal_resolver.build_pool_from_champion_pointers(**data, required_models=names, sidecar_models=())
-    assert all(row['serving_eligible'] for row in modal_pool['models'].values())
+    assert all(modal_pool['models'][name]['serving_eligible'] for name in ('DLinear', 'PatchTST', 'iTransformer'))
+    assert all(not modal_pool['models'][name]['serving_eligible'] for name in ('TabM', 'GNN'))
     assert data == original
     for name in ('DLinear', 'PatchTST', 'iTransformer'):
         assert modal_pool['models'][name]['sequence_contract'] == pool['models'][name]['sequence_contract']
@@ -81,7 +83,7 @@ def test_pointer_readiness_cannot_claim_unloadable_bundle_member(monkeypatch):
     monkeypatch.setattr(model_pool,"list_artifact_registry",lambda **kwargs:rows)
     monkeypatch.setattr(model_pool,"load_active8_ensemble_serving_bundle",lambda:bundle)
     result=asyncio.run(model_pool.artifact_registry_champion_pointers())
-    assert result["ready_count"]==4
+    assert result["ready_count"]==2  # Old TabM/GNN feature-v2 fixtures also remain blocked.
     assert result["models"]["DLinear"]["readiness"]=="serving_contract_blocked"
     assert result["models"]["DLinear"]["serving_block_reason"]=="artifact_sequence_contract_missing_or_invalid"
     assert result["migration_ready"] is False

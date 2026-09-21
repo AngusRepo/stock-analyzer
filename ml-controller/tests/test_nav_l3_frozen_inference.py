@@ -122,8 +122,13 @@ def test_original_dispatch_modal_compute_and_controller_merge_use_same_nav_recei
     async def no_cost_write(*a, **k):
         return None
     monkeypatch.setattr(cost_tracker, 'record_compute_profile_event', no_cost_write)
+    from services import kv_client
+    def frozen_declarations(key, *, default=None, strict=False):
+        assert key == 'l4:nav_candidate_bundles:v1' and strict
+        return None  # This fixture publishes an L3-only NAV strategy.
+    monkeypatch.setattr(kv_client, 'get_json', frozen_declarations)
     request = asyncio.run(graph._build_pipeline_modal_prediction_payload(state, state_gcs_uri='gs://isolated/state.json'))
-    assert state['paired_nav_l3_dispatch']['status'] != 'failed', state['paired_nav_l3_dispatch']
+    assert state['paired_nav_l3_dispatch']['status'] != 'failed', json.dumps(state['paired_nav_l3_dispatch'],sort_keys=True)
     # Use the original request serializer and original generation/hash-fenced
     # hydration, replacing only the storage transport. Raw NAV requests may not
     # enter the external Modal function as caller-supplied authority packets.

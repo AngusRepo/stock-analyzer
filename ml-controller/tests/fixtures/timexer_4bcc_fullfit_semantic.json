@@ -1,0 +1,157 @@
+{
+  "schema_version": "stockvision-official-timexer-v1-metadata",
+  "seq_len": 168,
+  "pred_len": 5,
+  "raw_score_semantic_version": "forecast-t5-over-signal-close-gross-v1",
+  "timexer": {
+    "architecture": {
+      "d_ff": 512,
+      "d_model": 512,
+      "dropout": 0.1,
+      "e_layers": 3,
+      "n_heads": 8,
+      "patch_len": 24,
+      "pred_len": 5,
+      "seq_len": 168,
+      "use_norm": true
+    },
+    "feature_history_schema": "formal137-pit-asof-source-quality-v3",
+    "inference_device": "cuda",
+    "matmul_precision": "high",
+    "max_exogenous_staleness_sessions": 1,
+    "official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+    "variant": "price"
+  },
+  "model_training_config_attestation": {
+    "attestation_checksum": "a831236f2cd4936840434423c577b65d113f9c2fad34d9b17b8c0fee5f1ad8fd",
+    "configuration_selection_mode": "single_predeclared_config",
+    "dataset_snapshot_checksum": "72dab1a4766333952481158ffc3abbff4c35194eac27ffe9f64689b1259ac7ec",
+    "dataset_snapshot_id": "oof_full_fit:active8-oof-v9-source-repair-20260921-v4-timexer-price-2026-04-08-2026-09-11-tr60-te10:769a84da3611f7bedc36227c1c43754b8fada8f58656c98b0bbdbefddafa7715",
+    "dataset_snapshot_schema_version": "active8-oof-full-fit-prep-lineage-v2",
+    "effective_config": {
+      "checkpoint_selection": "purged_inner_epoch_then_full_train_refit",
+      "device": "cuda",
+      "exogenous": false,
+      "settings": {
+        "batch_size": 64,
+        "d_ff": 512,
+        "d_model": 512,
+        "dropout": 0.1,
+        "e_layers": 3,
+        "epochs": 10,
+        "learning_rate": 0.0001,
+        "max_exogenous_staleness_sessions": 1,
+        "n_heads": 8,
+        "official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+        "patch_len": 24,
+        "pred_len": 5,
+        "seed": 42,
+        "seq_len": 168,
+        "use_norm": true
+      },
+      "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+      "torch_float32_matmul_precision": "high"
+    },
+    "effective_config_checksum": "82e6b28d086922e27918990e9ef27e64cf3e75b1e58117cbcd707cdb85877a76",
+    "input_lineage": {
+      "feature_pool_checksum": "a9122e9d2cabf811aec8f3338a176fac6e8d4239e5ceb901bdbce3f233746478",
+      "prep_manifest_checksum": "b76f0d943d094a1d4b464e790c6cc38189c85680305e7f841240258523dc2866",
+      "prep_producer_source_sha": "4bcc8d1f7742b73265ba0e7021f5bfc4c022fc24",
+      "sequence_manifest_checksum": "2ac3146fff06f85e3ef227c352a0a89c851f16adc2dd4cd38928a92fd80d7fe0",
+      "source_cohort_id": "active8-oof-v9-source-repair-20260921-v4-timexer-price-2026-04-08-2026-09-11-tr60-te10",
+      "source_manifest_checksum": "769a84da3611f7bedc36227c1c43754b8fada8f58656c98b0bbdbefddafa7715"
+    },
+    "model_name": "TimeXer",
+    "model_profile": {
+      "payload_config": {
+        "device": "cuda",
+        "exogenous": false,
+        "settings": {
+          "batch_size": 64,
+          "d_ff": 512,
+          "d_model": 512,
+          "dropout": 0.1,
+          "e_layers": 3,
+          "epochs": 10,
+          "learning_rate": 0.0001,
+          "max_exogenous_staleness_sessions": 1,
+          "n_heads": 8,
+          "official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+          "patch_len": 24,
+          "pred_len": 5,
+          "seed": 42,
+          "seq_len": 168,
+          "use_norm": true
+        }
+      },
+      "required_effective_config": {
+        "checkpoint_selection": "purged_inner_epoch_then_full_train_refit",
+        "device": "cuda",
+        "exogenous": false,
+        "settings": {
+          "batch_size": 64,
+          "d_ff": 512,
+          "d_model": 512,
+          "dropout": 0.1,
+          "e_layers": 3,
+          "epochs": 10,
+          "learning_rate": 0.0001,
+          "max_exogenous_staleness_sessions": 1,
+          "n_heads": 8,
+          "official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+          "patch_len": 24,
+          "pred_len": 5,
+          "seed": 42,
+          "seq_len": 168,
+          "use_norm": true
+        },
+        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "torch_float32_matmul_precision": "high"
+      },
+      "runtime": {
+        "configuration_selection": "purged_inner_epoch_only",
+        "executor": "modal_l4",
+        "official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+        "replacement_for": "DLinear"
+      }
+    },
+    "model_profile_checksum": "f6656b95cc7843ab6911c491be88ddb23a1b75b11b803288e54c6c80c596d1e6",
+    "model_profile_schema_version": "active8-release-model-profiles-v4-timexer-price",
+    "model_spec": {
+      "family": "learned_sequence",
+      "feature_schema": "timexer_causal_price_or_exo137_v1",
+      "trainer": "official_timexer"
+    },
+    "pbo_applicability": "not_applicable_without_model_configuration_selection",
+    "producer_source_sha": "4bcc8d1f7742b73265ba0e7021f5bfc4c022fc24",
+    "release_contract_checksum": "ad72f09cc5c9a3dac8549e0e494fa68ddc3d5b083d3161646d78e10fe1f83fda",
+    "run_date": "2026-09-21",
+    "schema_version": "model-training-config-attestation-v2",
+    "selection_trials": 1
+  },
+  "producer_source_sha": "4bcc8d1f7742b73265ba0e7021f5bfc4c022fc24",
+  "full_fit_only": true,
+  "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+  "settings": {
+    "batch_size": 64,
+    "d_ff": 512,
+    "d_model": 512,
+    "dropout": 0.1,
+    "e_layers": 3,
+    "epochs": 10,
+    "learning_rate": 0.0001,
+    "max_exogenous_staleness_sessions": 1,
+    "n_heads": 8,
+    "official_commit": "76011909357972bd55a27adba2e1be994d81b327",
+    "patch_len": 24,
+    "pred_len": 5,
+    "seed": 42,
+    "seq_len": 168,
+    "use_norm": true
+  },
+  "exogenous": false,
+  "device": "cuda",
+  "checkpoint_selection": "purged_inner_epoch_then_full_train_refit",
+  "source_manifest_checksum": "b76f0d943d094a1d4b464e790c6cc38189c85680305e7f841240258523dc2866",
+  "version": "v20260921013221"
+}

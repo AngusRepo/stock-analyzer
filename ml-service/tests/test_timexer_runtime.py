@@ -63,3 +63,27 @@ def test_bad_feature_order_and_nonfinite_observed_values_fail_explicitly():
     matrix[-1, 0] = np.nan
     with pytest.raises(ValueError, match='nonfinite'):
         causal_input((dates, prices), (dates, matrix), dates, dates[-1], settings=settings, exogenous=True)
+
+
+@pytest.mark.parametrize("prefix",["","sha256:"])
+def test_checkpoint_digest_is_checked_before_deserialization(monkeypatch,prefix):
+    import hashlib
+    import torch
+    from app import timexer_runtime as runtime
+    raw=b"checksum-bound-test-checkpoint"
+    settings={**ARCHITECTURE,"official_commit":OFFICIAL_COMMIT}
+    calls=[]
+    class Model:
+        def load_state_dict(self,value,strict):assert strict and value=={}
+        def to(self,device):assert device=="cpu"
+        def eval(self):pass
+    def decode(*args,**kwargs):
+        calls.append("decode")
+        return {"settings":settings,"state_dict":{},"exogenous":False}
+    monkeypatch.setattr(torch,"load",decode)
+    monkeypatch.setattr(runtime,"official_model",lambda *args:Model())
+    runtime.load_checkpoint(raw,expected_checksum=prefix+hashlib.sha256(raw).hexdigest(),expected_variant="price")
+    assert calls==["decode"]
+    with pytest.raises(ValueError,match="artifact_checksum_mismatch"):
+        runtime.load_checkpoint(raw+b"tampered",expected_checksum=prefix+hashlib.sha256(raw).hexdigest(),expected_variant="price")
+    assert calls==["decode"]

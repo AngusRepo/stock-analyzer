@@ -200,3 +200,56 @@ def test_original_api_carries_nav_date_without_claiming_serving_activation(ready
     result = asyncio.run(model_pool.artifact_registry_active8_bundle_promotion_controller(request))
     assert result['readback_verified'] and result['nav_validation'] == nav
     assert result['serving_activation_verified'] is False
+
+
+@pytest.mark.parametrize('state', ['offline_passed', 'offline_strong_pass'])
+def test_original_nav_publisher_accepts_actual_passed_registry_states(ready, state):
+    client,candidate,*_=ready
+    artifact=json.loads(candidate['payload_json'])
+    for base in artifact['observation_artifacts'].values():
+        client.conn.execute('UPDATE model_artifact_registry SET state=?,offline_gate_decision=? WHERE artifact_id=?',
+            [state,'PASS',base['artifact_id']])
+    client.conn.commit()
+    result=publish(ready)
+    assert result['can_promote'] is True and result['readback_verified'] is True,result
+    grant=authority.load_committed_nav_serving_grant(query=client.query)
+    assert grant is not None
+    assert json.loads(grant.payload_json)['validation']['decision']=='FAIL'
+
+
+
+def test_direct_original_publisher_respects_comparison_only_without_spending_review(ready, monkeypatch):
+    from services import strategy_ab
+    client, _, nav, configuration, _ = ready
+    def restricted(config, *, signal_date):
+        assert config == configuration
+        return 'comparison_only'
+    monkeypatch.setattr(strategy_ab, 'publication_policy', restricted)
+    pointers = client.query('SELECT * FROM active8_ensemble_pointer_v1')
+    reviews = client.query('SELECT * FROM paired_nav_review_records_v1 ORDER BY record_id')
+    result = publish(ready)
+    assert result['status'] == 'hold' and result['decision'] == 'strategy_ab_comparison_only'
+    assert result['can_promote'] is False and result['nav_validation'] == nav
+    assert client.batches == 0 and client.query('SELECT * FROM active8_ensemble_pointer_v1') == pointers
+    assert client.query('SELECT * FROM paired_nav_review_records_v1 ORDER BY record_id') == reviews
+
+
+def test_original_daily_nav_result_uses_reviewed_allocation_role(ready, monkeypatch):
+    from services import strategy_ab
+    from services.paired_nav_l3_daily import refresh_registered_l3_nav_decisions
+    client, candidate, nav, configuration, _ = ready
+    original = strategy_ab.publication_policy
+    calls = []
+    def restricted(config, *, signal_date):
+        assert original(config, signal_date=signal_date) == 'nav_eligible'
+        calls.append(config)
+        return 'comparison_only'
+    monkeypatch.setattr(strategy_ab, 'publication_policy', restricted)
+    candidates = []
+    result = refresh_registered_l3_nav_decisions(business_date=SESSIONS[-1], query=client.query,
+        now=stamp(SESSIONS[-1]), adoption_candidates=candidates)
+    assert result['failure_count'] == 0, result
+    item = next(x for x in candidates if x['payload']['artifact_id'] == candidate['artifact_id'])
+    assert item['payload']['publication_policy'] == 'comparison_only'
+    assert item['payload']['prospective_validation']['nav_validation'] == nav
+    assert configuration in calls and client.batches == 0

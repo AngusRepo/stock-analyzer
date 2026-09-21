@@ -22,9 +22,33 @@ def validate_tag(tag):
     return tag
 
 
+def publication_policy(configuration, *, signal_date):
+    """A may seek the original NAV gate; B remains a measured challenger."""
+    from services.paired_nav_strategy_bundle import validate_comparison_configuration
+    bundle = validate_comparison_configuration(configuration, signal_date=signal_date)
+    tag = bundle.get('strategy_ab') if bundle else None
+    return 'comparison_only' if tag and validate_tag(tag)['role'] == 'B' else 'nav_eligible'
+
+
+def reviewed_publication_policy(nav, *, query, now):
+    """Read role only from the exact allocation reviewed by the NAV authority."""
+    from services.paired_nav_journal import read_snapshot, _timestamp
+    saved = read_snapshot(query, nav['allocation_snapshot_id'])
+    plan = saved['payload']['content']
+    if (saved['manifest']['payload_checksum'] != nav['allocation_payload_checksum']
+            or digest(plan['configuration']) != nav['configuration_checksum']
+            or plan['owner'] != 'ensemble'
+            or plan['candidate_artifact_id'] != nav['candidate_artifact_id']
+            or plan['candidate_checksum'] != nav['candidate_checksum']
+            or plan['baseline_checksum'] != nav['baseline_checksum']
+            or _timestamp(saved['manifest']['frozen_at']) > now):
+        raise ValueError('strategy_ab_reviewed_allocation_mismatch')
+    return publication_policy(plan['configuration'], signal_date=saved['manifest']['signal_date'])
+
+
 def bind(bundle, *, role, experiment_id, ensemble, timexer_metadata):
     from services.alpha_model_roster import TIMEXER_MODELS, validate_order
-    from services.timexer_contract import metadata_contract
+    from services.timexer_contract import metadata_contract, canonical_checksum
     from services.paired_nav_strategy_bundle import validate_strategy_bundle
     if role not in RECIPES or validate_order(ensemble['model_order']) != TIMEXER_MODELS:
         raise ValueError('strategy_ab_exact_eight_required')
@@ -32,7 +56,7 @@ def bind(bundle, *, role, experiment_id, ensemble, timexer_metadata):
         raise ValueError('strategy_ab_l3_identity_mismatch')
     config = metadata_contract(timexer_metadata)
     expected = ensemble['observation_artifacts']['TimeXer']
-    if (expected['checksum'] != timexer_metadata.get('checksum')
+    if (canonical_checksum(expected['checksum']) != canonical_checksum(timexer_metadata.get('checksum'))
             or expected['version'] != timexer_metadata.get('version')
             or config['variant'] != ('price' if role == 'A' else 'exo137')):
         raise ValueError('strategy_ab_timexer_variant_or_identity_mismatch')

@@ -11,7 +11,7 @@ import json
 import time
 import numpy as np
 
-from .timexer_contract import metadata_contract, SCORE_SEMANTIC
+from .timexer_contract import metadata_contract, SCORE_SEMANTIC, canonical_checksum
 from .timexer_runtime import load_checkpoint, predict_asof
 
 
@@ -66,7 +66,8 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
     bucket = bucket if bucket is not None else _get_bucket()
     metadata = json.loads(bucket.blob(identity['metadata_path']).download_as_bytes())
     config = metadata_contract(metadata)
-    if any(metadata.get(k) != identity[k] for k in ('version','artifact_path','checksum')):
+    if (any(metadata.get(k) != identity[k] for k in ('version','artifact_path'))
+            or canonical_checksum(metadata.get('checksum')) != canonical_checksum(identity['checksum'])):
         raise ValueError('timexer_metadata_identity_mismatch')
     receipt = feature_receipt(bucket, feature_source, signal_date)
     torch.set_float32_matmul_precision('high')

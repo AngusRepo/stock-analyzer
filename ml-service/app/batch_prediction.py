@@ -721,7 +721,7 @@ def _summarize_result_errors(results: list[dict | None], *, limit: int = 5) -> d
 
 
 def _model_pool_status(pool: dict | None) -> dict[str, str]:
-    from .prediction_runtime import _MODEL_NAMES_V2, _require_model_pool_contract
+    from .prediction_runtime import _pool_model_order, _require_model_pool_contract
 
     pool_models, formal_slots = _require_model_pool_contract(pool, stage="batch_model_pool_status")
 
@@ -747,7 +747,7 @@ def _model_pool_status(pool: dict | None) -> dict[str, str]:
             return "retired"
         raise ModelPoolUnavailable(f"model_pool status missing for {name}")
 
-    return {name: resolve(name) for name in _MODEL_NAMES_V2}
+    return {name: resolve(name) for name in _pool_model_order(pool_models)}
 
 
 def _require_model_status(model_status: dict[str, str], model_name: str) -> str:

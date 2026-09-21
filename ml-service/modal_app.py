@@ -688,7 +688,16 @@ def retrain_orchestrator(payload: dict) -> dict:
     }
     if any(g in requested_train_groups for g in ("dlinear", "patchtst")):
         print(f"[Orchestrator] sequence series validation: {sequence_report}")
+    from app.training_call_journal import release_journal
+    journal = release_journal(payload, scope="orchestrator", bucket_name=_get_gcs_bucket_name())
     candidate_version = payload.get("candidate_version") or datetime.now(timezone.utc).strftime("v%Y%m%d%H%M%S")
+    if journal is not None:
+        candidate_version = journal.pin_version(payload, candidate_version)
+
+    def _lifecycle_call(model_name, function, train_payload):
+        if journal is not None:
+            return journal.call("lifecycle/" + model_name, function.spawn, train_payload)
+        return function.remote(train_payload)
     base_train_payload = training_policy.to_base_train_payload(
         {
             **payload,
@@ -699,6 +708,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     )
     if is_release_train:
         base_train_payload.update(_release_model_payload("LightGBM"))
+        base_train_payload["run_id"] = run_id
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -791,7 +801,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 }
                 print(f"[Orchestrator] {group} skipped: missing sequence records artifact")
                 continue
-            handles[group] = spec["spawn"](group_payload)
+            handles[group] = (journal.spawn("group/" + group, spec["spawn"], group_payload)
+                              if journal is not None else spec["spawn"](group_payload))
             coverage[group] = {
                 "status": "running",
                 "models": spec["models"],
@@ -1058,10 +1069,10 @@ def retrain_orchestrator(payload: dict) -> dict:
                 try:
                     if target == "GNN":
                         train_payload = _base_artifact_payload(target)
-                        lifecycle_results[target] = train_gnn_graphsage_universal.remote(train_payload)
+                        lifecycle_results[target] = _lifecycle_call(target, train_gnn_graphsage_universal, train_payload)
                     elif target == "TabM":
                         train_payload = _base_artifact_payload(target)
-                        lifecycle_results[target] = train_tabm_universal.remote(train_payload)
+                        lifecycle_results[target] = _lifecycle_call(target, train_tabm_universal, train_payload)
                     elif target == "PatchTST":
                         if not sequence_records:
                             raise RuntimeError("missing_sequence_records_artifact")
@@ -1073,7 +1084,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                             "sequence_gcs_prefix": sequence_gcs_prefix,
                             "sequence_batch_count": sequence_batch_count,
                         }
-                        lifecycle_results[target] = train_patchtst_universal.remote(train_payload)
+                        lifecycle_results[target] = _lifecycle_call(target, train_patchtst_universal, train_payload)
                     elif target == "iTransformer":
                         if not sequence_records:
                             raise RuntimeError("missing_sequence_records_artifact")
@@ -1085,7 +1096,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                             "sequence_gcs_prefix": sequence_gcs_prefix,
                             "sequence_batch_count": sequence_batch_count,
                         }
-                        lifecycle_results[target] = train_itransformer_universal.remote(train_payload)
+                        lifecycle_results[target] = _lifecycle_call(target, train_itransformer_universal, train_payload)
                     elif target == "TimesFM":
                         lifecycle_results[target] = _validate_timesfm_config()
                     else:
@@ -1199,7 +1210,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "elapsed_s": round(time.time() - shap_t0, 1),
                 }
             elif shap_mode == "inline":
-                shap_result = shap_feature_audit.remote({"shap_samples": 10000})
+                shap_result = (journal.call("shap", shap_feature_audit.spawn, {"shap_samples": 10000})
+                               if journal is not None else shap_feature_audit.remote({"shap_samples": 10000}))
                 result["stages"]["shap"] = {
                     "status": "ok",
                     "mode": "inline",
@@ -1207,7 +1219,10 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "keep_count": shap_result.get("keep_count"),
                 }
             else:
-                shap_feature_audit.spawn({"shap_samples": 10000})
+                if journal is not None:
+                    journal.spawn("shap", shap_feature_audit.spawn, {"shap_samples": 10000})
+                else:
+                    shap_feature_audit.spawn({"shap_samples": 10000})
                 result["stages"]["shap"] = {
                     "status": "deferred",
                     "mode": "spawn",
@@ -1224,14 +1239,14 @@ def retrain_orchestrator(payload: dict) -> dict:
     if is_release_train:
         try:
             from services.active8_release_training_contract import (
-                ACTIVE8_MODEL_NAMES,
                 normalize_release_raw_artifact_receipt,
                 validate_release_artifact_receipts,
+                validate_release_training_contract,
             )
             registrations = dict(((result.get("stages") or {}).get("train") or {}).get("artifact_registrations") or {})
             lifecycle = dict(((result.get("stages") or {}).get("artifact_lifecycle") or {}).get("results") or {})
             receipts = {}
-            for model_name in ACTIVE8_MODEL_NAMES:
+            for model_name in validate_release_training_contract(release_training_contract)["models"]:
                 receipts[model_name] = normalize_release_raw_artifact_receipt(
                     registrations.get(model_name) or lifecycle.get(model_name)
                 )
@@ -2214,6 +2229,8 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
         if isinstance(capacity, dict):
             elapsed = bundle['elapsed_s']
             capacity['status'] = 'healthy' if elapsed <= 900 else ('watch' if elapsed <= 1800 else 'breached')
+            capacity['bundle_elapsed_sec'] = elapsed
+            capacity['timeout_headroom_ratio'] = round(capacity['bundle_timeout_sec'] / elapsed, 3) if elapsed > 0 else None
     bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
     bundle["callback_status"] = _post_pipeline_prediction_callback(payload, bundle, bundle['elapsed_s'])
     return bundle
@@ -2438,8 +2455,11 @@ def train_tree_models_split_parent(payload: dict) -> dict:
             "[TrainTreeSplitParent] spawning children="
             f"{list(child_payloads.keys())} version={payload.get('output_model_version')}"
         )
+        from app.training_call_journal import release_journal
+        journal = release_journal(payload, scope="tree_children", bucket_name=_get_gcs_bucket_name())
         handles = {
-            model_name: train_tree_model.spawn(child_payload)
+            model_name: (journal.spawn(model_name, train_tree_model.spawn, child_payload)
+                         if journal is not None else train_tree_model.spawn(child_payload))
             for model_name, child_payload in child_payloads.items()
         }
         child_results = {
@@ -2479,8 +2499,11 @@ def train_tree_models(payload: dict) -> dict:
     try:
         if _tree_model_split_enabled(payload):
             child_payloads = build_tree_model_child_payloads(payload)
+            from app.training_call_journal import release_journal
+            journal = release_journal(payload, scope="tree_children", bucket_name=_get_gcs_bucket_name())
             handles = {
-                model_name: train_tree_model.spawn(child_payload)
+                model_name: (journal.spawn(model_name, train_tree_model.spawn, child_payload)
+                             if journal is not None else train_tree_model.spawn(child_payload))
                 for model_name, child_payload in child_payloads.items()
             }
             child_results = {

@@ -42,7 +42,12 @@ def select_daily_adoption_requests(candidates):
         if len(production) > 1:
             raise ValueError('nav_adoption_multiple_production_candidates')
         owner_states = eligible_states | ({'candidate'} if owner in {L3_OWNER, ROUTE_OWNER, ATOMIC_OWNER} else set())
+        waiting.extend({'owner': owner, 'artifact_id': item['payload']['artifact_id'],
+                        'reason': 'strategy_ab_comparison_only'}
+                       for item in items if item['registry_state'] != 'production'
+                       and item['payload'].get('publication_policy') == 'comparison_only')
         ready = sorted((item for item in items if item['registry_state'] in owner_states
+            and item['payload'].get('publication_policy') != 'comparison_only'
             and item['payload']['prospective_validation']['decision'] == 'PASS'),
             key=lambda item: (item['payload']['source_run_date'], item['payload']['artifact_id']))
         selected = ready[0] if ready else production[0] if production else None

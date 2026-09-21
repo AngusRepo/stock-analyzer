@@ -333,3 +333,16 @@ def test_callback_rejects_missing_serving_rank_but_not_excluded_rank() -> None:
     bundle["predict_batch_v2_results"][0]["rank_scores"].pop("TabM")
     with pytest.raises(RuntimeError, match="missing_active_feature_ranks"):
         pipeline._validate_pipeline_modal_feature_bundle_before_writes(_state(), bundle)
+
+
+@pytest.mark.parametrize('rows',[[],[{'symbol':'2330','error':'bad checkpoint'}]])
+def test_timexer_runtime_closure_cannot_be_omitted_or_failed(rows):
+    state=_state();bundle=_bundle()
+    state['pipeline_modal_serving_context']['model_status']['TimeXer']='active'
+    state['pipeline_modal_sequence_input_contract']['by_model']['TimeXer']={'symbols':['2330','2317'],'sequence_contract':{'seq_len':168}}
+    contract=state['pipeline_modal_sequence_input_contract']
+    contract['digest']=pipeline._pipeline_modal_canonical_digest({k:v for k,v in contract.items() if k!='digest'})
+    bundle['sequence_input_contract']=copy.deepcopy(contract)
+    bundle['timexer_raw']={'results':rows}
+    with pytest.raises(RuntimeError,match='timexer_closure_failed'):
+        pipeline._validate_pipeline_modal_feature_bundle_before_writes(state,bundle)

@@ -3844,8 +3844,8 @@ def _build_pipeline_modal_serving_manifest(
         }
         return manifest, _pipeline_modal_canonical_digest(manifest)
 
-    # Only the validated nonzero-weight base set owns serving authority.
-    # Other slots retain frozen audit identity, never their legacy vote.
+    # L3 weights govern aggregation. A reviewed whole L3/L4 strategy also
+    # requires its exact zero-weight observations as L4 inputs.
     from services.ensemble_v2 import validate_active8_ensemble_artifact
     nav_context = serving_pool.get('active8_nav_inference')
     nav_authority = None
@@ -3855,6 +3855,7 @@ def _build_pipeline_modal_serving_manifest(
             nav_context, artifact=active8_ensemble, pool_models=pool_models)
     validate_active8_ensemble_artifact(active8_ensemble, pool_models, nav_authority=nav_authority)
     selected_models = set(active8_ensemble["selected_models"])
+    execution_models = set(json.loads(nav_authority.base_json)) if nav_authority is not None else selected_models
     models: list[dict[str, Any]] = []
     for model_name in validate_order(active8_ensemble["model_order"]):
         entry = pool_models.get(model_name)
@@ -3869,12 +3870,12 @@ def _build_pipeline_modal_serving_manifest(
             )
         serving_block_reason = str(entry.get("serving_block_reason") or "").strip()
         serving_eligible = entry.get("serving_eligible") is not False and not serving_block_reason
-        if model_name in selected_models and not serving_eligible:
+        if model_name in execution_models and not serving_eligible:
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:active8_base_not_serving:"
                 f"{model_name}:{serving_block_reason or 'serving_eligible_false'}"
             )
-        if model_name not in selected_models:
+        if model_name not in execution_models:
             serving_eligible = False
             serving_block_reason = "active8_ensemble_zero_weight_excluded"
         effective_status = status if serving_eligible else "challenger"
@@ -4716,6 +4717,7 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         )
     runtime_model_bundle_keys = {
         "GNN": "gnn_graphsage_raw",
+        "TimeXer": "timexer_raw",
         "DLinear": "dlinear_raw",
         "PatchTST": "patchtst_raw",
         "iTransformer": "itransformer_raw",

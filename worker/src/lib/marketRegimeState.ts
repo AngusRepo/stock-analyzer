@@ -167,7 +167,7 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function readMarketRegimeStateHistory(
+export async function readMarketRegimeStateHistory(
   db: D1Database,
   runDate: string,
 ): Promise<MarketRegimeState | null> {

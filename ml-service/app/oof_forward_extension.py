@@ -69,6 +69,7 @@ def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
         latest,
         cohort_id=str(manifest.get("cohort_id") or ""),
         bucket=bucket,
+        manifest=manifest,
     )
     if not source_contract["ready"]:
         raise ValueError("forward_extension_base_source_contract_invalid:" + ",".join(source_contract["reasons"][:10]))

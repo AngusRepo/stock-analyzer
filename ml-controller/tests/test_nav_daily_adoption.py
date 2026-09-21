@@ -371,3 +371,19 @@ def test_adoption_failure_reaches_actual_job_callback_and_retry_exhaustion(isola
     nav = callbacks[-1]['metadata']['paired_nav_maturity']
     assert nav['adoption']['status'] == 'incomplete'
     assert 'payload' not in str(nav)
+
+
+
+def test_challenger_cannot_win_automatic_adoption_by_earlier_date_or_identifier():
+    from services.paired_nav_daily_adoption import select_daily_adoption_requests
+    challenger = entry(owner='ensemble', state='candidate', day='2026-08-24', token='a')
+    primary = entry(owner='ensemble', state='candidate', day='2026-08-25', token='b')
+    challenger['payload']['publication_policy'] = 'comparison_only'
+    primary['payload']['publication_policy'] = 'nav_eligible'
+    original = deepcopy(challenger)
+    requested, waiting = select_daily_adoption_requests([challenger,primary])
+    assert requested['ensemble'] == primary['payload']
+    assert waiting == [{'owner':'ensemble', 'artifact_id':challenger['payload']['artifact_id'],
+                        'reason':'strategy_ab_comparison_only'}]
+    assert challenger == original and challenger['payload']['prospective_validation']['decision'] == 'PASS'
+    assert select_daily_adoption_requests([challenger])[0] == {}

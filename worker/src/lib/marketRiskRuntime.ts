@@ -1,6 +1,6 @@
 import type { RiskConfig } from './riskConfig'
 import type { MarketRegimeState } from './marketRegimeState'
-import { readMarketRegimeState } from './marketRegimeState'
+import { readMarketRegimeStateForDate, readMarketRegimeStateHistory } from './marketRegimeState'
 import type { MarketRegimeFactorPacket } from './marketRegimeFactorPacket'
 import { loadMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
 
@@ -221,7 +221,7 @@ export async function resolveCanonicalMarketRisk(
     })
   }
   try {
-    const [{ results: marketRiskRows }, factorPacket, breadth, regimeState] = await Promise.all([
+    const [{ results: marketRiskRows }, factorPacket, breadth] = await Promise.all([
       databases.core.prepare(
         'SELECT date, twii_close, risk_score, risk_level FROM market_risk ORDER BY date DESC LIMIT 2',
       ).all<MarketRiskRow>(),
@@ -229,8 +229,15 @@ export async function resolveCanonicalMarketRisk(
       databases.market.prepare(
         'SELECT date, advance_ratio, bull_alignment_pct FROM market_breadth ORDER BY date DESC LIMIT 1',
       ).first<MarketBreadthRow>().catch(() => null),
-      readMarketRegimeState(kv).catch(() => null),
     ])
+    // The latest market session survives weekends; the short-lived KV pointer may not.
+    // Read the exact dated, checksum-verified history without writing or selecting another date.
+    const rawDate = marketRiskRows?.[0]?.date
+    const riskDate = typeof rawDate === 'string' ? rawDate : null
+    const regimeState = riskDate
+      ? await readMarketRegimeStateHistory(databases.market, riskDate)
+        ?? await readMarketRegimeStateForDate(kv, riskDate)
+      : null
     return buildCanonicalMarketRiskContext({
       marketRiskRows: marketRiskRows ?? [],
       factorPacket,

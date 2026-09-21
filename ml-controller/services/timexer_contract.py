@@ -20,3 +20,12 @@ def metadata_contract(metadata):
             or metadata.get('seq_len') != 168 or metadata.get('pred_len') != 5):
         raise ValueError('timexer_artifact_contract_invalid')
     return dict(config)
+
+
+def canonical_checksum(value):
+    """Use registry SHA256 syntax while retaining immutable legacy sidecars."""
+    import re
+    digest = str(value or "").strip().lower().removeprefix("sha256:")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("timexer_checksum_invalid")
+    return "sha256:" + digest

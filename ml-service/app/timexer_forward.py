@@ -8,14 +8,15 @@ import numpy as np
 
 def predict_forward(*, bucket, prep, sequence, rows, source, train_end):
     import torch
-    from .timexer_contract import metadata_contract
+    from .timexer_contract import metadata_contract, canonical_checksum
     from .timexer_inference import feature_receipt
     from .timexer_runtime import load_checkpoint, predict_asof
     if not torch.cuda.is_available():
         raise ValueError("timexer_verified_cuda_runtime_required")
     metadata = json.loads(bucket.blob(source["metadata_path"]).download_as_bytes())
     config = metadata_contract(metadata)
-    if any(metadata.get(k) != source.get(k) for k in ("version", "checksum", "artifact_path")):
+    if (any(metadata.get(k) != source.get(k) for k in ("version", "artifact_path"))
+            or canonical_checksum(metadata.get("checksum")) != canonical_checksum(source.get("checksum"))):
         raise ValueError("timexer_forward_identity_mismatch")
     if metadata.get("train_range", [None, None])[1] != train_end or metadata.get("training_label_known_max", "9999") > train_end:
         raise ValueError("timexer_forward_training_cutoff_mismatch")

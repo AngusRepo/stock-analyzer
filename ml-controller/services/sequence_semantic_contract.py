@@ -13,6 +13,7 @@ from typing import Any
 
 RANK_IC_SEMANTIC_VERSION = "same-date-average-rank-tie-neutral-spearman-v2"
 TARGET_SEMANTIC_VERSION = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+REVIEWED_TIMEXER_PRODUCERS = frozenset({"4bcc8d1f7742b73265ba0e7021f5bfc4c022fc24"})
 REVIEWED_NF_PRODUCERS = frozenset({"200ed626624970b1eaf880279e7ad262c2be6fde"})
 
 
@@ -24,7 +25,7 @@ def sequence_rank_ic_semantic(metadata: dict[str, Any], model_name: str) -> str 
     ) if value is not None and str(value).strip()]
     if declared:
         return RANK_IC_SEMANTIC_VERSION if set(declared) == {RANK_IC_SEMANTIC_VERSION} else None
-    if model_name not in {"PatchTST", "iTransformer"}:
+    if model_name not in {"PatchTST", "iTransformer", "TimeXer"}:
         return None
     attestation = metadata.get("model_training_config_attestation")
     if not isinstance(attestation, dict):
@@ -35,6 +36,34 @@ def sequence_rank_ic_semantic(metadata: dict[str, Any], model_name: str) -> str 
     design = evidence.get("validation_design") or {}
     if not isinstance(config, dict) or not isinstance(design, dict):
         return None
+    if model_name == "TimeXer":
+        # Reviewed producer uses date_market_rank_ic_evidence for OOF but
+        # omitted the metric tag in full-fit sidecars. Preserve those objects.
+        from .timexer_contract import metadata_contract
+        try:
+            contract = metadata_contract(metadata)
+        except ValueError:
+            return None
+        lineage = attestation.get("input_lineage") or {}
+        valid = (
+            attestation.get("schema_version") == "model-training-config-attestation-v2"
+            and attestation.get("model_name") == model_name
+            and attestation.get("attestation_checksum") == digest
+            and attestation.get("producer_source_sha") in REVIEWED_TIMEXER_PRODUCERS
+            and metadata.get("producer_source_sha") == attestation.get("producer_source_sha")
+            and metadata.get("full_fit_only") is True
+            and attestation.get("dataset_snapshot_schema_version") == "active8-oof-full-fit-prep-lineage-v2"
+            and metadata.get("target_semantic_version") == config.get("target_semantic_version") == TARGET_SEMANTIC_VERSION
+            and config.get("settings") == metadata.get("settings")
+            and config.get("exogenous") == metadata.get("exogenous") == (contract['variant'] == 'exo137')
+            and config.get("device") == metadata.get("device") == "cuda"
+            and config.get("checkpoint_selection") == metadata.get("checkpoint_selection") == "purged_inner_epoch_then_full_train_refit"
+            and metadata.get("source_manifest_checksum") == lineage.get("prep_manifest_checksum")
+            and isinstance(lineage.get("source_manifest_checksum"), str)
+            and len(lineage["source_manifest_checksum"]) == 64
+            and attestation.get("dataset_snapshot_id") == "oof_full_fit:" + str(lineage.get("source_cohort_id")) + ":" + lineage["source_manifest_checksum"]
+        )
+        return RANK_IC_SEMANTIC_VERSION if valid else None
     if (
         attestation.get("schema_version") != "model-training-config-attestation-v2"
         or attestation.get("model_name") != model_name

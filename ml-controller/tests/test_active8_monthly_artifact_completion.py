@@ -19,21 +19,22 @@ from services.active8_release_training_contract import (  # noqa: E402
 )
 
 
-def _contract() -> dict:
+def _contract(profile_schema=None) -> dict:
     return build_release_training_contract(
         run_date="2026-08-25",
         dataset_snapshot={"business_date": "2026-08-25", "snapshot_id": "snapshot:2026-08-25"},
         producer_source_sha="0123456789abcdef0123456789abcdef01234567",
+        **({"model_profile_schema_version": profile_schema} if profile_schema else {}),
     )
 
 
 def _receipts(contract: dict) -> dict[str, dict]:
     receipts = {}
-    for model in ACTIVE8_MODEL_NAMES:
+    for model in contract["models"]:
         attestation = build_model_training_config_attestation(
             contract=contract,
             model_name=model,
-            effective_config=model_profile(model)["required_effective_config"],
+            effective_config=model_profile(model, schema_version=contract["model_profile_schema_version"])["required_effective_config"],
         )
         receipts[model] = {
             "version": "vMonthly",
@@ -129,3 +130,41 @@ def test_monthly_completion_fails_closed_on_missing_or_wrong_profile_artifact():
     tampered["PatchTST"]["metadata"]["model_training_config_attestation"] = tampered_attestation
     with pytest.raises(ValueError, match="attestation_checksum_mismatch"):
         validate_release_artifact_receipts(contract=contract, receipts=tampered)
+
+
+@pytest.mark.parametrize("profile_schema", [
+    "active8-release-model-profiles-v3",
+    "active8-release-model-profiles-v4-timexer-price",
+    "active8-release-model-profiles-v4-timexer-exo137",
+])
+def test_modal_completion_uses_actual_release_roster(profile_schema):
+    """Execute the production finalization block without launching Modal."""
+    import ast
+    contract = _contract(profile_schema)
+    receipts = _receipts(contract)
+    root = Path(__file__).resolve().parents[2]
+    source = ast.parse((root / "ml-service/modal_app.py").read_text(encoding="utf-8"))
+    blocks = [node for node in ast.walk(source)
+              if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+              and node.test.id == "is_release_train"
+              and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                      and call.func.id == "validate_release_artifact_receipts"
+                      for call in ast.walk(node))]
+    assert len(blocks) == 1
+    code = compile(ast.Module(body=blocks, type_ignores=[]), "modal-release-completion", "exec")
+    result = {"stages": {"train": {"status": "ok", "artifact_registrations": {
+        name: receipt for name, receipt in receipts.items() if name not in {"GNN", "TabM", "iTransformer"}
+    }}, "artifact_lifecycle": {"results": {
+        name: receipt for name, receipt in receipts.items() if name in {"GNN", "TabM", "iTransformer"}
+    }}}}
+    scope = {"is_release_train": True, "release_training_contract": contract, "result": result}
+    exec(code, scope)
+    completion = result["stages"]["release_model_completion"]
+    assert completion["status"] == "complete"
+    assert completion["models_completed"] == 8
+    assert tuple(completion["receipts"]) == tuple(contract["models"])
+    model = "TimeXer" if "TimeXer" in receipts else "DLinear"
+    result["stages"]["train"]["artifact_registrations"].pop(model)
+    exec(code, scope)
+    assert result["stages"]["release_model_completion"]["status"] == "error"
+    assert result["stages"]["train"]["error"] == "active8_release_completion_incomplete"

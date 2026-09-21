@@ -130,7 +130,9 @@ def run(payload, *, bucket=None):
     attestation = build_model_training_config_attestation('TimeXer',payload,effective)
     variant = 'exo137' if job['exogenous'] else 'price'
     from .features import FEATURE_COLS
+    from .sequence_semantic_contract import RANK_IC_SEMANTIC_VERSION
     metadata = {**report, 'schema_version':SCHEMA+'-metadata', 'model_name':'TimeXer',
+        'rank_ic_semantic_version':RANK_IC_SEMANTIC_VERSION,
         'version':version,'model_pool_version':version, 'seq_len':168,'pred_len':5,
         'target_semantic_version':SEQUENCE_RETURN_SEMANTIC_VERSION,
         'raw_score_semantic_version':SCORE_SEMANTIC,

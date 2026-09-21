@@ -1,0 +1,125 @@
+{
+  "scope": "held_out_prediction_diagnostics_not_realized_portfolio_returns",
+  "financial_superiority_proven": false,
+  "roles": {
+    "A": {
+      "dates": [
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-07",
+        "2026-09-08",
+        "2026-09-09",
+        "2026-09-10",
+        "2026-09-11"
+      ],
+      "rows": 19162,
+      "daily_counts": {
+        "2026-08-31": 1920,
+        "2026-09-01": 1915,
+        "2026-09-02": 1918,
+        "2026-09-03": 1911,
+        "2026-09-04": 1919,
+        "2026-09-07": 1924,
+        "2026-09-08": 1917,
+        "2026-09-09": 1915,
+        "2026-09-10": 1913,
+        "2026-09-11": 1910
+      },
+      "weighting": "equal_date_then_equal_security",
+      "metrics": {
+        "l3": {
+          "daily_rank_ic": 0.06613981121876732,
+          "date_mean_error_squared": 0.00026774857105386386,
+          "mse": 0.0028930571884440096,
+          "rank_ic_defined_dates": 10,
+          "rank_ic_undefined_dates": 0,
+          "within_date_error_variance": 0.002625308617390146
+        },
+        "l4": {
+          "daily_rank_ic": -0.09779406245506016,
+          "date_mean_error_squared": 0.00020831745122219526,
+          "mse": 0.0028080214741517994,
+          "rank_ic_defined_dates": 10,
+          "rank_ic_undefined_dates": 0,
+          "within_date_error_variance": 0.002599704022929604
+        },
+        "zero": {
+          "daily_rank_ic": null,
+          "date_mean_error_squared": 0.00028270344196078755,
+          "mse": 0.0028304122322595922,
+          "rank_ic_defined_dates": 0,
+          "rank_ic_undefined_dates": 10,
+          "within_date_error_variance": 0.0025477087902988044
+        }
+      },
+      "model_checksum": "c14026a71989205a781c29593c41220dd364e3fb177f57913c8bc5178172964f"
+    },
+    "B": {
+      "dates": [
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-07",
+        "2026-09-08",
+        "2026-09-09",
+        "2026-09-10",
+        "2026-09-11"
+      ],
+      "rows": 19162,
+      "daily_counts": {
+        "2026-08-31": 1920,
+        "2026-09-01": 1915,
+        "2026-09-02": 1918,
+        "2026-09-03": 1911,
+        "2026-09-04": 1919,
+        "2026-09-07": 1924,
+        "2026-09-08": 1917,
+        "2026-09-09": 1915,
+        "2026-09-10": 1913,
+        "2026-09-11": 1910
+      },
+      "weighting": "equal_date_then_equal_security",
+      "metrics": {
+        "l3": {
+          "daily_rank_ic": 0.10410115886238085,
+          "date_mean_error_squared": 0.0002677565874487692,
+          "mse": 0.0028872917605683095,
+          "rank_ic_defined_dates": 10,
+          "rank_ic_undefined_dates": 0,
+          "within_date_error_variance": 0.0026195351731195396
+        },
+        "l4": {
+          "daily_rank_ic": 0.10279426063116873,
+          "date_mean_error_squared": 0.00031831801211654783,
+          "mse": 0.003001420879154083,
+          "rank_ic_defined_dates": 10,
+          "rank_ic_undefined_dates": 0,
+          "within_date_error_variance": 0.002683102867037535
+        },
+        "three_head": {
+          "daily_rank_ic": -0.08444458816680185,
+          "date_mean_error_squared": 0.00023335413466957228,
+          "mse": 0.0028231130212681916,
+          "rank_ic_defined_dates": 10,
+          "rank_ic_undefined_dates": 0,
+          "within_date_error_variance": 0.0025897588865986193
+        },
+        "zero": {
+          "daily_rank_ic": null,
+          "date_mean_error_squared": 0.0002827034419522551,
+          "mse": 0.0028304122323478823,
+          "rank_ic_defined_dates": 0,
+          "rank_ic_undefined_dates": 10,
+          "within_date_error_variance": 0.0025477087903956275
+        }
+      },
+      "model_checksum": "348d2b4e6eba51b30c93a9994d61ecc72e4fc64d75cf6ed61917b50e110762da"
+    }
+  },
+  "same_dates_rows_and_weighting": true
+}

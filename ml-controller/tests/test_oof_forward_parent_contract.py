@@ -130,3 +130,68 @@ def test_oof_parent_contract_rejects_legacy_tie_unsafe_score_semantic():
     result = _oof_forward_parent_contract(_Bucket(paths), manifest)
     assert result["ready"] is False
     assert "score_semantic_mismatch" in result["reasons"]
+
+
+
+def _seal(value):
+    value['manifest_checksum'] = hashlib.sha256(json.dumps(
+        {k:v for k,v in value.items() if k != 'manifest_checksum'}, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _reused():
+    from copy import deepcopy
+    original, paths = _manifest()
+    child = deepcopy(original)
+    child['cohort_id'] = 'extended-cohort'
+    window = child['windows'][0]
+    window.update(window_id=6, source_cohort_id=original['cohort_id'], source_fold_id='w4',
+                  source_manifest_checksum=original['manifest_checksum'], reused_from_parent=True)
+    _seal(child)
+    class Bucket(_Bucket):
+        def blob(self, path):
+            if path == f"walk_forward/oof_cohorts/{original['cohort_id']}/manifest.json":
+                from types import SimpleNamespace
+                return SimpleNamespace(download_as_text=lambda:json.dumps(original))
+            return super().blob(path)
+    return child, original, Bucket(paths)
+
+
+def test_reused_latest_fold_keeps_exact_original_model_versions():
+    child, original, bucket = _reused()
+    result = _oof_forward_parent_contract(bucket, child)
+    assert result['ready'], result
+    assert result['expected_version'] == original['cohort_id'] + '-w4'
+    assert result['latest_window_id'] == 6
+
+
+import pytest
+
+@pytest.mark.parametrize('fault', ['parent_checksum','source_checksum','fold','model','prediction','profile','path'])
+def test_reused_fold_cannot_relabel_or_borrow_unverified_model_sources(fault):
+    child, original, bucket = _reused()
+    w = child['windows'][0]
+    if fault == 'parent_checksum': original['cohort_id'] = 'different'
+    elif fault == 'source_checksum': w['source_manifest_checksum'] = '0'*64
+    elif fault == 'fold': w['source_fold_id'] = 'w3'
+    elif fault == 'model': w['tree_result']['artifact_registrations']['LightGBM']['version'] = 'extended-cohort-w6'
+    elif fault == 'prediction': w['model_metrics']['TabM']['artifact_checksum'] = 'f'*64
+    elif fault == 'profile': child['model_profile_schema_version'] = 'different-recipe'
+    else: w['source_cohort_id'] = '../other-cohort'
+    _seal(child)
+    result = _oof_forward_parent_contract(bucket, child)
+    assert result['ready'] is False
+    assert any('reused_forward_source_invalid' in r for r in result['reasons'])
+
+
+
+def test_modal_frozen_forward_uses_same_verified_reused_source_as_controller():
+    from pathlib import Path
+    from app.oof_forward_source_contract import assess_fold_forward_sources
+    root=Path(__file__).resolve().parents[2]
+    assert (root/'ml-controller/services/oof_forward_source_identity.py').read_bytes() == (root/'ml-service/app/oof_forward_source_identity.py').read_bytes()
+    child, original, bucket = _reused()
+    result=assess_fold_forward_sources(child['windows'][0],cohort_id=child['cohort_id'],bucket=bucket,manifest=child)
+    assert result['ready'] and result['expected_version']==original['cohort_id']+'-w4'
+    child['windows'][0]['source_manifest_checksum']='0'*64
+    result=assess_fold_forward_sources(child['windows'][0],cohort_id=child['cohort_id'],bucket=bucket,manifest=child)
+    assert result['ready'] is False

@@ -46,13 +46,10 @@ def run_candidate_bundles(parent, *, compute):
         if request['bundle_key'] != key or key in seen:
             raise ValueError('paired_nav_l3_request_identity_invalid')
         seen.add(key)
-        child = deepcopy(parent)
-        child.pop('paired_nav_l3_requests', None)
-        child.pop('paired_nav_atomic_slates', None)
-        # This is not an external flag to suppress a real callback: compute has
-        # no publication capability and the parent remains the single publisher.
-        for field in ('callback_url', 'callback_token'):
-            child.pop(field, None)
+        # Do not copy other candidates' histories only to discard them. Each
+        # child still owns a full isolated copy of its actual market inputs.
+        child = deepcopy({k: v for k, v in parent.items() if k not in {
+            'paired_nav_l3_requests', 'paired_nav_atomic_slates', 'callback_url', 'callback_token'}})
         manifest = child['serving_manifest']
         manifest['active8_shadow_candidates'] = deepcopy(rows)
         manifest['active8_shadow_suppressions'] = []
@@ -108,5 +105,8 @@ def run_candidate_bundles(parent, *, compute):
         except Exception as exc:
             # Never copy incumbent forecasts into a failed candidate's record.
             result['bundles'][key] = {'status': 'failed', 'error_type': type(exc).__name__}
+        finally:
+            # Release the previous full history before constructing the next.
+            del child
     result['status'] = 'failed' if any(r['status'] == 'failed' for r in result['bundles'].values()) else 'complete'
     return result

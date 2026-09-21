@@ -1,0 +1,422 @@
+{
+  "status": "complete",
+  "scope": "predeployment_engineering_closure_actual_registered_AB",
+  "at": "2026-09-21T09:08:13.120123+00:00",
+  "source_base": "4bcc8d1f7742b73265ba0e7021f5bfc4c022fc24",
+  "source_files": [
+    {
+      "path": "frontend/src/components/StrategyAbLive.tsx",
+      "sha256": "d59ba46a5977e6e48136f5cb1d476b2df1a91d01b47d8e9ca76511a10a572914",
+      "bytes": 5307
+    },
+    {
+      "path": "ml-controller/graphs/daily_pipeline_v2.py",
+      "sha256": "3c3e4ee9b4a1e27046d7b812c9bd156fbeb7f65c5c2a48c2979a141438a3a2b1",
+      "bytes": 248066
+    },
+    {
+      "path": "ml-controller/routers/walk_forward.py",
+      "sha256": "5ee06d1a8830382f626c40f2c5f1b3358034704c62095a26e8f13c88f754471b",
+      "bytes": 210738
+    },
+    {
+      "path": "ml-controller/services/active8_nav_adoption.py",
+      "sha256": "c5908af25f620551d0dd15e1197fe3216a8d4f41ea2d704b4ae39a298957901b",
+      "bytes": 23968
+    },
+    {
+      "path": "ml-controller/services/active8_nav_inference.py",
+      "sha256": "b75d71690a120070ecf2aafbbc671ac62dbd68f1e6334b75f66f2bad31a4c942",
+      "bytes": 8376
+    },
+    {
+      "path": "ml-controller/services/l4_oof_lifecycle.py",
+      "sha256": "b55c1e0dc7f9fc8be5154103c84bfae8e8a1e8ca9715148807e16a07b4957282",
+      "bytes": 8051
+    },
+    {
+      "path": "ml-controller/services/model_artifact_registry.py",
+      "sha256": "6fcc0355e94e4a6b3d4d398b278addfb164c741ca2433e38aa12d2cf4b015437",
+      "bytes": 167985
+    },
+    {
+      "path": "ml-controller/services/model_serving_resolver.py",
+      "sha256": "5316c3dddd93368adfed5f6bfbbcb09a22e54b621cf4347a55ee60dd7ae9a9d2",
+      "bytes": 22110
+    },
+    {
+      "path": "ml-controller/services/oof_forward_source_identity.py",
+      "sha256": "63584b09c943f0cd11ce2297741fd1766a63c70514ce407d0cc04e30a6d0ece8",
+      "bytes": 2039
+    },
+    {
+      "path": "ml-controller/services/paired_nav_daily_adoption.py",
+      "sha256": "cca3492f2b516b7144814c25bb1ae3b4c427cdbd51dae8a3e398538db882dabd",
+      "bytes": 46420
+    },
+    {
+      "path": "ml-controller/services/paired_nav_l3_daily.py",
+      "sha256": "e8f8ed58b8ce208021aeade383907a2a88b360c3906f7ca79c9ded6a0d2268de",
+      "bytes": 8605
+    },
+    {
+      "path": "ml-controller/services/sequence_semantic_contract.py",
+      "sha256": "0ddc3e36730caf1f7e955e14e9d558c2375c78a1a95a2978153622e8a440a8eb",
+      "bytes": 4917
+    },
+    {
+      "path": "ml-controller/services/strategy_ab.py",
+      "sha256": "731ef45ba64184dcaeb75862d52cc9c0a68e551f3656c4745115a5026d625905",
+      "bytes": 6198
+    },
+    {
+      "path": "ml-controller/services/timexer_contract.py",
+      "sha256": "02e13db640315d43a51c7ea075d9f841c1b26c808000efcf3ccc0363cb4c112f",
+      "bytes": 1568
+    },
+    {
+      "path": "ml-controller/tests/fixtures/timexer_4bcc_fullfit_semantic.json",
+      "sha256": "8e37d2b0fcf4dac8614335b9c6c00b7c117bf499b85d593dbfb3743c4702973d",
+      "bytes": 6052
+    },
+    {
+      "path": "ml-controller/tests/test_active8_monthly_artifact_completion.py",
+      "sha256": "5858cb8444fc8f608bd6871897e3af5ce6a4fb56c536ed2626c9fa6a5a6aa9b0",
+      "bytes": 7126
+    },
+    {
+      "path": "ml-controller/tests/test_artifact_data_ready_lifecycle.py",
+      "sha256": "d8b0370870d49177f62edc9d3aea072fc52a276d418d2bb22f9dff4cf86e26f7",
+      "bytes": 19024
+    },
+    {
+      "path": "ml-controller/tests/test_nav_daily_adoption.py",
+      "sha256": "a0a571dae3c34ef7fb9e9ae6b5fcd4962af9386c5f53f6f7c9245709cf4ecf21",
+      "bytes": 22637
+    },
+    {
+      "path": "ml-controller/tests/test_nav_l3_adoption.py",
+      "sha256": "223d431b801e4a6b1ffe2bcae29bd1fd334fdc28d621370e511d879f646f0dd2",
+      "bytes": 15477
+    },
+    {
+      "path": "ml-controller/tests/test_nav_l3_frozen_inference.py",
+      "sha256": "12a2729c2654da72bf3befff30430535fb3ea3ab851b3a98cc8f3045140884f7",
+      "bytes": 12813
+    },
+    {
+      "path": "ml-controller/tests/test_nav_whole_strategy_observations.py",
+      "sha256": "580aaa0d6e51ac20c2db0ce34c25b69599f56a1b4fc40a22c37410dbd72b6c32",
+      "bytes": 8119
+    },
+    {
+      "path": "ml-controller/tests/test_oof_forward_parent_contract.py",
+      "sha256": "4c69d81a9f0bc64b9539f08e81969f99b8cb4862a77fcd6b8eb8ad706c3751ac",
+      "bytes": 7909
+    },
+    {
+      "path": "ml-controller/tests/test_pipeline_modal_prediction_callback_fail_closed.py",
+      "sha256": "c7197bb2bcd3335cbada92e9045d738c80602a033bbb861d7eea890d3ead56b5",
+      "bytes": 13047
+    },
+    {
+      "path": "ml-controller/tests/test_sequence_serving_producer_contract.py",
+      "sha256": "904806ba891cf3b0d22a1508d8fbc9f4a27cc031ab901cf9ff175e70b67bd178",
+      "bytes": 5363
+    },
+    {
+      "path": "ml-controller/tests/test_strategy_ab.py",
+      "sha256": "46749c1e0f0fe700c8467df2bd4bf542dc3618b9d33e91c5c30c6703ff29e1cb",
+      "bytes": 4199
+    },
+    {
+      "path": "ml-controller/tests/test_timexer_checksum_boundary.py",
+      "sha256": "16b74f2b5bdf267b5c85dcb38a04ae5a58a6ad416862227054a84fafc0c42290",
+      "bytes": 3005
+    },
+    {
+      "path": "ml-controller/tests/test_timexer_sequence_semantic.py",
+      "sha256": "09ef695048830131934229988c8678ede1a7fa5e12d448b90ec13127f539da06",
+      "bytes": 1930
+    },
+    {
+      "path": "ml-service/app/batch_prediction.py",
+      "sha256": "550acc034c288e9df817d9c3ce2e4590561736d64adfd78f2b32fbc43850c65d",
+      "bytes": 50789
+    },
+    {
+      "path": "ml-service/app/oof_forward_extension.py",
+      "sha256": "6d7b42a8a5ff134711a670448e9907bc4dd69746bfe0555deb080909725440d8",
+      "bytes": 25915
+    },
+    {
+      "path": "ml-service/app/oof_forward_source_contract.py",
+      "sha256": "65b37cb910d10692d005a777f642ae0801f865dbcdbd36e2c75cdb12097e479b",
+      "bytes": 4533
+    },
+    {
+      "path": "ml-service/app/oof_forward_source_identity.py",
+      "sha256": "63584b09c943f0cd11ce2297741fd1766a63c70514ce407d0cc04e30a6d0ece8",
+      "bytes": 2039
+    },
+    {
+      "path": "ml-service/app/paired_nav_inference.py",
+      "sha256": "8af923e9ce942b3b0b91ea180b5f2c74a85668bbe00912bd9824de949a0c4a19",
+      "bytes": 6321
+    },
+    {
+      "path": "ml-service/app/prediction_runtime.py",
+      "sha256": "0ced3f1c2b6824130a3d23f5dae99c8317a986099289dbcec802d5ab818c738c",
+      "bytes": 13923
+    },
+    {
+      "path": "ml-service/app/sequence_semantic_contract.py",
+      "sha256": "0ddc3e36730caf1f7e955e14e9d558c2375c78a1a95a2978153622e8a440a8eb",
+      "bytes": 4917
+    },
+    {
+      "path": "ml-service/app/timexer_contract.py",
+      "sha256": "02e13db640315d43a51c7ea075d9f841c1b26c808000efcf3ccc0363cb4c112f",
+      "bytes": 1568
+    },
+    {
+      "path": "ml-service/app/timexer_forward.py",
+      "sha256": "cce8fd0f77e1323caac66c522ae19eccaf6a0cc211fb8965d9b9e39ab6a09313",
+      "bytes": 3605
+    },
+    {
+      "path": "ml-service/app/timexer_inference.py",
+      "sha256": "cff32259deae383120dec9e1ad5f8127e7f140cffe462b037bc5400fe0c8ef2a",
+      "bytes": 6472
+    },
+    {
+      "path": "ml-service/app/timexer_job.py",
+      "sha256": "74e1771a2ce870d4079650413192b09b0127a63ba27a7936a51209cb3ab6185d",
+      "bytes": 13534
+    },
+    {
+      "path": "ml-service/app/timexer_runtime.py",
+      "sha256": "1c4cc0643cf0211da1fdc1f58bd11746ff3685fddaeb438f2344b38ab2b279a9",
+      "bytes": 7148
+    },
+    {
+      "path": "ml-service/app/training_call_journal.py",
+      "sha256": "983e5b8dbb7c927343f4bd1cd4ae8bc4a6906c7ad5498f55d25c2ab1a7e2ef77",
+      "bytes": 5591
+    },
+    {
+      "path": "ml-service/modal_app.py",
+      "sha256": "5717afccd3d60a1824f54e42be7aef702621dd6b8c975d1f7d43c3bb428319c1",
+      "bytes": 201500
+    },
+    {
+      "path": "ml-service/tests/test_paired_nav_inference.py",
+      "sha256": "c446c2c5a57476cddbf7cc98876830cf7ca9cd60b6cc2dc74d685c0e53e752de",
+      "bytes": 8306
+    },
+    {
+      "path": "ml-service/tests/test_timexer_batch_pool.py",
+      "sha256": "029bcd80fc22132c73664f479a8095373be66859766a7100a83e7f2fb36499b9",
+      "bytes": 2602
+    },
+    {
+      "path": "ml-service/tests/test_timexer_identity_boundary.py",
+      "sha256": "787fd993686920e0cbf2171bec10fd998f5362e502bcd720eca6ca8f3f1b9cb5",
+      "bytes": 2428
+    },
+    {
+      "path": "ml-service/tests/test_timexer_runtime.py",
+      "sha256": "5cd00fef17425ada7c65334d4ada3939217a63fb8f2e3bda3375526df5678112",
+      "bytes": 4533
+    },
+    {
+      "path": "ml-service/tests/test_training_call_journal.py",
+      "sha256": "7db6952d70748101cd5c67dd399d3ce5da841826a2744d8a7694f185cde4ff6a",
+      "bytes": 7256
+    },
+    {
+      "path": "worker/src/lib/l4NativeFixture.testSupport.ts",
+      "sha256": "49766564cece5345f3bcc18bd2b75d1bdbe9c5316352cbf356b6afcc511c73f8",
+      "bytes": 3088
+    },
+    {
+      "path": "worker/src/lib/l4NativeFullChain.test.ts",
+      "sha256": "7548da4c373ab2d8601d08efe77f2269030e8c078ece191516de649b8de39fe1",
+      "bytes": 17144
+    },
+    {
+      "path": "worker/src/lib/marketRegimeState.ts",
+      "sha256": "d72f5cfc5b067b98b9203de014a272ef5cf8707f752b7e6b3bfb024f1bf0abfb",
+      "bytes": 16275
+    },
+    {
+      "path": "worker/src/lib/marketRiskDatedRegime.test.ts",
+      "sha256": "96fbe979f3aba6942c25bd554352931a02217056433a37491731806b92027b2f",
+      "bytes": 2726
+    },
+    {
+      "path": "worker/src/lib/marketRiskRuntime.ts",
+      "sha256": "3dfb903d6ab3181c555a2e34ca71240cac65ac2d296177706495fdfa01132903",
+      "bytes": 10699
+    }
+  ],
+  "tests": [
+    {
+      "path": "boundary-controller-tests.xml",
+      "sha256": "772b1954072013d8128d7871286352f2efed9052f5acfb58a3a87b023d4eed27",
+      "passed": 1263,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "boundary-service-tests.xml",
+      "sha256": "d5ba911284e71e139f276a93e86a871fb4bb5c77b49635138c1d8fdf51f8c126",
+      "passed": 152,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "native-mechanism-closure-tests.xml",
+      "sha256": "49cfbf17c835fd59d43c4ad4fc467a95429476e66c7053d5345ece54b0d7c48d",
+      "passed": 56,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "ab-publication-authority-tests.xml",
+      "sha256": "c37a2304b0af5bc0be14966347e1655bf559c3b5a9f440a2fe3d5fb0348733ad",
+      "passed": 88,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "actual-weak-observation-tests.xml",
+      "sha256": "996e9104dc01df970f365031a343abb941de4f55224bf1a0f4ff383f7d916ecb",
+      "passed": 37,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "reused-fold-continuation-tests.xml",
+      "sha256": "4ffaf702d27150969025aaf72835154425000697f90e81990ac86ed3cd9a9432",
+      "passed": 46,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "final-forward-and-copy-tests.xml",
+      "sha256": "c4209f262ca0b22d79bae836a88ae2f4a35d8b5d864260c24e73d8a39158294b",
+      "passed": 18,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "final-paired-capacity-tests.xml",
+      "sha256": "d2add7ba574a60ae6dad088a475c2fcb0eadc1c529e32d155dea928c5509f08d",
+      "passed": 40,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "nested-history-lifecycle-tests.xml",
+      "sha256": "7734ebc9928f3e1a7fe0bdfbb595170134962d5f6113ab04d84347ea6f8317ad",
+      "passed": 98,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "training-cost-recovery-tests.xml",
+      "sha256": "fdcf2ad0d7c35dcbe4273e5022a006757dd180008cb4c3b501198e4abd59982f",
+      "passed": 36,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "path": "training-cost-controller-regression.xml",
+      "sha256": "ad3100b74f456bce5f01a784c49d0b5d83efc15dd65666a0973692398278d1ce",
+      "passed": 40,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "worker_tests": {
+    "path": "native-worker-closure-tests.json",
+    "sha256": "f86e35254f30aa3c646b517658f799ac64b560c3a1d27abb99c6e0472c1f5945"
+  },
+  "actual_candidates": {
+    "A": {
+      "model_checksum": "c14026a71989205a781c29593c41220dd364e3fb177f57913c8bc5178172964f",
+      "bundle_checksum": "011b72185ea1cc20a70dcad0a9e7f5004f78fc74a2fe2f553f266ac13318830d",
+      "acceptance": {
+        "path": "nested-A-acceptance.json",
+        "sha256": "c669192485afd9e1084bc338f3b90decfb3bf136bc000c53840a57c5c850face"
+      },
+      "native_chain": {
+        "path": "nested-native-chain-A/receipt.json",
+        "sha256": "51cc71ee8391cdf886af4caf1de98091632818756e2113920e4a628371825c14"
+      },
+      "native_frame": {
+        "path": "nested-native-chain-A/native-pending-receipt.json",
+        "sha256": "6677a2d6522fa138e174528ee063919857d3e1e34c989be7c36031b36e36d05b"
+      },
+      "l3_payload_checksum": "4a1dabc439c12d7c74832a35434d3bdfa92761a93c419a22476f389cfc537cef",
+      "positive_ev_count": 64,
+      "pool": 657,
+      "nav_credit": 0
+    },
+    "B": {
+      "model_checksum": "348d2b4e6eba51b30c93a9994d61ecc72e4fc64d75cf6ed61917b50e110762da",
+      "bundle_checksum": "c5debe546f0da295ca3c74f52ecfeb0f40f4627dcd8e96779c1393042b853630",
+      "acceptance": {
+        "path": "nested-B-acceptance.json",
+        "sha256": "b58b01bba8534db1111e34346533dba279eff436fb254107dec437b818d23d97"
+      },
+      "native_chain": {
+        "path": "nested-native-chain-B/receipt.json",
+        "sha256": "07206a5bad3b1530099b20b0520c43675e35a6af92552755ad0c34c5106f20aa"
+      },
+      "native_frame": {
+        "path": "nested-native-chain-B/native-pending-receipt.json",
+        "sha256": "d8c174765d738250f8bc1852821837830886d4c7396d2b4376e175bdbf875f82"
+      },
+      "l3_payload_checksum": "cb979805883b8b2f21ccbaed343201771edc8cd290839064ebd67113d24528a5",
+      "positive_ev_count": 562,
+      "pool": 657,
+      "nav_credit": 0
+    }
+  },
+  "matched_diagnostics": {
+    "path": "nested-AB-matched-diagnostics.json",
+    "sha256": "ee8b91b3011cc7493723279bed89eb5388ed4e9040110c048f62f3779633b234"
+  },
+  "declaration": {
+    "path": "nested-AB-declaration.json",
+    "sha256": "7db1f512620c1e3871c4f7f0e1d0e12e34fe81441dc7d224c039e27fce443600"
+  },
+  "cost_recovery": {
+    "path": "nested-B-control-recovery.json",
+    "sha256": "67b0ac45813fc76a78b69055105c72159cf9b25b0fce63728b541854c68a22f4"
+  },
+  "l3_nav_gate_waived": false,
+  "financial_superiority_proven": false,
+  "deployed": false,
+  "serving_activation_granted": false,
+  "prospective_NAV_maturity_complete": false,
+  "remaining_production_steps": [
+    "commit_push",
+    "coherent_deployment_and_readback",
+    "approved_append_only_p5_rearm",
+    "AB_declaration_and_dashboard_readback"
+  ],
+  "limitations": [
+    "Private real-input engineering execution is not prospective NAV or realized return.",
+    "Real-account P5 halt correctly produces cash; positive fill and hard-exit cases are native synthetic tests.",
+    "Existing original L3 NAV gate remains necessary before A can replace the serving strategy; B is comparison-only.",
+    "No claim of zero error or profitable performance; adverse A ranking diagnostics are preserved."
+  ],
+  "post_inference_format_only_parity": {
+    "path": "nested-format-parity.json",
+    "sha256": "04711581338ebd2fc1e59b1507605b6be51c9f81e397a854207ae5b1daea0a42",
+    "model_or_behavior_changed": false
+  }
+}

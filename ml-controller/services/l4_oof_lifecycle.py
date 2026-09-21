@@ -56,6 +56,7 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
     if manifest['cohort_id']!=cohort_id:raise ValueError('l4_native_base_manifest_mismatch')
     predictions=load_oof_prediction_rows(manifest,bucket=bucket)
     index=persist_base_index(manifest=manifest,predictions=predictions,client=client,dry_run=dry_run)
+    del predictions  # The index is complete; L3/L4 own their subsequent data loads.
     full_fit={'status':'not_requested','retry_required':False}
     if dispatch_full_fit and not dry_run:
         full_fit=await dispatch_oof_full_fit_training(manifest=manifest,knowledge_cutoff_date=as_of,

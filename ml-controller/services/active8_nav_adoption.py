@@ -39,7 +39,8 @@ class _ServingGrant(_CommittedPublication):
     def authorizes(self, model_name, artifact):
         if self.seal is not _SERVING_SEAL or not artifact:
             return False
-        expected = json.loads(self.payload_json)['base_artifacts'].get(model_name)
+        from services.active8_nav_inference import execution_artifacts
+        expected = execution_artifacts(json.loads(self.payload_json), json.loads(self.receipt_json)).get(model_name)
         return bool(expected and all(artifact.get(key) == expected.get(key)
                     for key in ('artifact_id', 'version', 'checksum'))
                     and _base_source(artifact) == json.loads(self.base_source_json).get(model_name))
@@ -165,8 +166,14 @@ def load_committed_nav_publication(*, query, now=None):
         supplied_pointers=model_pointers, ensemble_row=row, selected_models=sorted(payload['selected_models']))
     if repeated != transaction or query('SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id=1', []) != pointers:
         raise RuntimeError('active8_nav_serving_source_changed')
+    from services.active8_nav_inference import execution_artifacts
+    execution = execution_artifacts(payload, receipt)
+    for name in execution:
+        blocker = _artifact_structure_block_reason(by_model[name], model_name=name, artifact_role='direct_alpha')
+        if blocker or by_model[name]['state'] not in {'production','offline_strong_pass','offline_passed','offline_passed_weak','offline_failed'}:
+            raise RuntimeError(f'active8_nav_serving_structure_invalid:{name}:{blocker or by_model[name]["state"]}')
     return _CommittedPublication(row['payload_json'], json.dumps(receipt, sort_keys=True, allow_nan=False),
-        json.dumps({name: _base_source(by_model[name]) for name in payload['selected_models']},
+        json.dumps({name: _base_source(by_model[name]) for name in execution},
                    sort_keys=True, allow_nan=False),
         json.dumps([review, protocol, reservation], sort_keys=True, allow_nan=False),
         clock.isoformat(), promoted.isoformat(), _PUBLICATION_SEAL)
@@ -267,6 +274,10 @@ def prepare_nav_adoption(*, ensemble_row, business_date, query, now=None):
             or plan['baseline_checksum'] != nav['baseline_checksum']
             or _timestamp(saved['manifest']['frozen_at']) > clock):
         raise RuntimeError('active8_nav_original_allocation_mismatch')
+    from services.strategy_ab import publication_policy
+    if publication_policy(configuration, signal_date=saved['manifest']['signal_date']) == 'comparison_only':
+        return {'decision': 'HOLD', 'reason': 'strategy_ab_comparison_only',
+                'nav_validation': nav, 'guards': [], 'can_promote': False}
     current = current_execution_configuration()
     required = {'trading_config', 'risk_config', 'allocator_source_identity',
                 'l3_inference_source_identity', 'native_execution_policy'}

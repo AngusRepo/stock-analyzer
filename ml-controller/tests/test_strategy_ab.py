@@ -47,3 +47,24 @@ def test_timeXer_release_profiles_complete_exact_eight_artifact_receipts(schema)
     receipts['DLinear'] = receipts['TimeXer']
     with pytest.raises(ValueError,match='model_set_mismatch'):
         validate_release_artifact_receipts(contract=contract,receipts=receipts)
+
+
+@pytest.mark.parametrize('role,expected', [('A','nav_eligible'),('B','comparison_only')])
+def test_reviewed_role_controls_publication_without_rewriting_comparison(role, expected):
+    from test_paired_nav_strategy_bundle import fixture_bundle, reseal, DAY
+    from services.strategy_ab import publication_policy
+    bundle, config, _ = fixture_bundle()
+    bundle['strategy_ab'] = {'schema_version':SCHEMA, 'role':role, 'recipe':RECIPES[role],
+        'experiment_id':'a'*64, 'fee_terms':deepcopy(FEE_TERMS)}
+    reseal(bundle)
+    before = deepcopy(config)
+    assert publication_policy(config, signal_date=DAY) == expected
+    assert config == before
+    bundle['strategy_ab']['role'] = 'A' if role == 'B' else 'B'
+    with pytest.raises(ValueError):
+        publication_policy(config, signal_date=DAY)
+
+
+def test_old_untagged_comparisons_keep_original_nav_authority():
+    from services.strategy_ab import publication_policy
+    assert publication_policy({'trading_config':{}}, signal_date='2026-09-21') == 'nav_eligible'

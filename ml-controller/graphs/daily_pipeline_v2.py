@@ -2466,6 +2466,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     from services.paired_nav_recommendation_path import run_and_capture_recommendation_path
     from services.paired_nav_l3_candidate import load_candidate_ensembles
     from services.paired_nav_l3_dispatch import capture_candidate_selection
+    from services.pipeline_modal_handoff import prediction_source_state
     recommendation_result, recommendation_context = run_and_capture_recommendation_path(
         inputs={
             "screener_recs": screener_recs, "predictions": state["predictions"],
@@ -2485,7 +2486,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         filter_rows=filter_and_score_recommendations,
         enrich_l2=apply_l2_timesfm_evidence, enrich_core=apply_core_family_evidence,
         candidate_reader=lambda: (
-            capture_candidate_selection(state=state, predictions=state['predictions'])
+            capture_candidate_selection(state=prediction_source_state(state), predictions=state['predictions'])
             if 'paired_nav_l3_dispatch' in state else load_candidate_ensembles(
                 manifest=_pipeline_frozen_serving_manifest(state), signal_date=state['run_date'],
                 decision_cutoff=decision_cutoff, query=LEARNING_D1_CLIENT.query)),

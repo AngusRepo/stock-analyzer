@@ -88,6 +88,19 @@ def load_verified_modal_prediction_bundle(
     return bundle
 
 
+def prediction_source_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Give L3 evidence validators the verified inference identity, not retry ID."""
+    reuse = (state.get("metrics") or {}).get("prediction_bundle_reuse")
+    if reuse is None:
+        return state
+    source = reuse.get("source_run_id") if isinstance(reuse, dict) else None
+    if (not source or reuse.get("downstream_run_id") != state.get("producer_run_id")
+            or source != (state.get("modal_prediction_bundle") or {}).get("run_id")
+            or reuse.get("state_gcs_uri") != state.get("modal_prediction_state_gcs_uri")):
+        raise ValueError("pipeline_prediction_reuse_lineage_invalid")
+    return {**state, "producer_run_id": source}
+
+
 def failed_continuation_payload(*, run_id: str, run_date: str, jobs_client,
                                 storage_client=None) -> dict[str, Any] | None:
     """Read-only recovery preflight. Never treat dispatcher success as failure."""

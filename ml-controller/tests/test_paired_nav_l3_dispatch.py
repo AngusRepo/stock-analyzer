@@ -339,3 +339,27 @@ def test_complete_nav_bundle_preserves_failed_individual_diagnostics_but_require
             assert row['production_effect'] is False and row['vote_weight'] == 0
             if row['model'] in failed:
                 assert row['offline_gate_decision'] == 'FAIL' and row['registry_state'] == 'offline_failed'
+
+
+
+def test_retry_uses_original_inference_identity_for_real_candidate_capture(prepared):
+    from services.pipeline_modal_handoff import prediction_source_state
+    _, _, _, inputs, _ = prepared
+    state = setup_dispatch(prepared)
+    attach_outputs(state, inputs)
+    original = state["producer_run_id"]
+    state["modal_prediction_bundle"]["run_id"] = original
+    baseline = dispatch.capture_candidate_selection(state=state, predictions=inputs["predictions"])
+    state["producer_run_id"] = "downstream-retry"
+    state["modal_prediction_state_gcs_uri"] = "gs://fixture/original-state"
+    state["metrics"] = {"prediction_bundle_reuse": {"source_run_id": original,
+        "downstream_run_id": "downstream-retry", "state_gcs_uri": "gs://fixture/original-state"}}
+    with pytest.raises(ValueError, match="paired_nav_l3_dispatch_result_identity_mismatch"):
+        dispatch.capture_candidate_selection(state=state, predictions=inputs["predictions"])
+    restored = dispatch.capture_candidate_selection(state=prediction_source_state(state), predictions=inputs["predictions"])
+    assert restored == baseline
+    assert state["producer_run_id"] == "downstream-retry"
+    # A wrong source remains a hard failure; never relabel the inference bundle.
+    state["metrics"]["prediction_bundle_reuse"]["source_run_id"] = "wrong-source"
+    with pytest.raises(ValueError, match="pipeline_prediction_reuse_lineage_invalid"):
+        prediction_source_state(state)

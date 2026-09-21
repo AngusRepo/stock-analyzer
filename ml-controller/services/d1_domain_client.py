@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -143,13 +144,28 @@ class DomainD1Client:
         normalized = ' '.join(sql.split()).lower()
         if (self.domain == D1DataDomain.LEARNING and isinstance(params, list) and len(params) == 1
                 and normalized == 'select part_no,payload_text from paired_nav_frozen_parts_v1 where snapshot_id=? order by part_no'):
+            from services.immutable_snapshot_cache import SNAPSHOT_PARTS_CACHE
+            # Re-read the small authoritative manifest on EVERY lookup. An
+            # unsealed/changed snapshot never borrows a cached completed seal.
+            manifests = self.query('SELECT payload_checksum,part_count FROM paired_nav_frozen_manifests_v1 '
+                'WHERE snapshot_id=?', params, timeout=timeout)
+            cache_key = None
+            if len(manifests) == 1:
+                checksum, count = manifests[0].get('payload_checksum'), manifests[0].get('part_count')
+                if (isinstance(checksum, str) and re.fullmatch(r'[0-9a-f]{64}', checksum)
+                        and type(count) is int and count > 0):
+                    cache_key = (self.database_id, params[0], checksum, count)
+                    cached = SNAPSHOT_PARTS_CACHE.get(cache_key)
+                    if cached is not None:
+                        logging.getLogger(__name__).info("[paired_nav] verified immutable parts cache hit snapshot=%s parts=%s", params[0], count)
+                        return cached
             rows, cursor = [], -1
             while True:
                 page = self.query('SELECT part_no,payload_text FROM paired_nav_frozen_parts_v1 '
                     'WHERE snapshot_id=? AND part_no>? ORDER BY part_no LIMIT 50',
                     [params[0], cursor], timeout=timeout)
                 if not page:
-                    return rows
+                    break
                 indexes = [row.get('part_no') for row in page]
                 if (any(type(index) is not int or index <= cursor for index in indexes)
                         or indexes != sorted(set(indexes))):
@@ -157,7 +173,12 @@ class DomainD1Client:
                 rows.extend(page)
                 cursor = indexes[-1]
                 if len(page) < 50:
-                    return rows
+                    break
+            # Only a full remote read after a committed manifest can enter the
+            # cache. The journal still verifies its ordinary checksum/readback.
+            if cache_key is not None:
+                SNAPSHOT_PARTS_CACHE.put(cache_key, rows)
+            return rows
         if allocator_contract_guard_enabled() and d1_client._is_mutating_sql(sql):
             return []
         body: dict[str, Any] = {"sql": sql}

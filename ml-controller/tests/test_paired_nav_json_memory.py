@@ -22,10 +22,12 @@ def test_journal_transport_pages_all_rows_without_changing_order(monkeypatch):
     calls=[]
     def post(body,**kwargs):
         calls.append(body)
+        if 'frozen_manifests' in body['sql']:
+            return {'result':[{'results':[]}]}
         assert 'LIMIT 50' in body['sql']
         cursor=body['params'][1]
         return {'result':[{'results':[r for r in source if r['part_no']>cursor][:50]}]}
     monkeypatch.setattr(d1_client,'_post',post)
     got=module.DomainD1Client(module.D1DataDomain.LEARNING).query('SELECT part_no,payload_text FROM paired_nav_frozen_parts_v1 WHERE snapshot_id=? ORDER BY part_no',['s'])
-    assert got==source and len(calls)==3
-    assert [body['params'][1] for body in calls]==[-1,49,99]
+    assert got==source and len(calls)==4
+    assert [body['params'][1] for body in calls[1:]]==[-1,49,99]

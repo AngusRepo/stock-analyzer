@@ -1,7 +1,7 @@
 {
   "status": "complete",
   "scope": "predeployment_engineering_closure_actual_registered_AB",
-  "at": "2026-09-21T09:08:13.120123+00:00",
+  "at": "2026-09-21T09:37:30.675209+00:00",
   "source_base": "4bcc8d1f7742b73265ba0e7021f5bfc4c022fc24",
   "source_files": [
     {
@@ -235,6 +235,11 @@
       "bytes": 7256
     },
     {
+      "path": "worker/src/lib/active8OofSchedulerClosureContract.test.ts",
+      "sha256": "57ce1cb351771fb0e2365d71fe42ec01a8a9b318aea800535a946de29655e128",
+      "bytes": 19513
+    },
+    {
       "path": "worker/src/lib/l4NativeFixture.testSupport.ts",
       "sha256": "49766564cece5345f3bcc18bd2b75d1bdbe9c5316352cbf356b6afcc511c73f8",
       "bytes": 3088
@@ -418,5 +423,16 @@
     "path": "nested-format-parity.json",
     "sha256": "04711581338ebd2fc1e59b1507605b6be51c9f81e397a854207ae5b1daea0a42",
     "model_or_behavior_changed": false
+  },
+  "full_p9_gate": {
+    "passed": true,
+    "log": "nested-p9-local.log",
+    "sha256": "9edfd74b9185c9ea7c03ea3e5f870a1824642113e1d25f6e19f6d47e20be915c",
+    "worker_test_files": 539,
+    "controller_passed": 192,
+    "frontend_build": true,
+    "secret_scan": true,
+    "bug_hunter": "skipped_as_in_CI",
+    "additional_change": "Stale source-string contract updated for profile-sized mature OOF history; no algorithm or model change."
   }
 }

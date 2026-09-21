@@ -96,7 +96,12 @@ assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'con
 assert(walkForward.includes('"OOF_MATERIALIZE_SCHEDULER_TICKET_ID"'), 'controller dispatch must bind the exact scheduler ticket into the durable job')
 assert(walkForward.includes('"OOF_MATERIALIZE_SCHEDULER_RUN_ID"'), 'controller dispatch must bind the immutable scheduler run into the durable job')
 assert(walkForward.includes('label_known_dates') && walkForward.includes('known <= cutoff'), 'OOF cohort generation must use row-level immutable label-known dates')
-assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]'), 'weekly/monthly OOF must use the deterministic mature-session cohort')
+assert(
+  walkForward.includes('cohort_dates = mature_dates[-training_min_sessions:]') &&
+    walkForward.includes('training_min_sessions = OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * training_min_folds') &&
+    walkForward.includes('_oof_training_min_folds(req.model_profile_schema_version)'),
+  'weekly/monthly OOF must deterministically use mature sessions sized for the pinned model profile',
+)
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(

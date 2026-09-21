@@ -34,6 +34,8 @@ Billing reported through approximately 15:00 Taipei: September workspace usage U
 
 ## Validation and release boundary
 
-The closure receipt binds all 51 source/test file hashes, actual candidate/account evidence, paired declaration and passed test reports. Baseline regression: 1,263 controller and 152 ML-service cases. Focused follow-ups cover native execution, publication authority, weak observations, reused OOF, memory/capacity and cost recovery; 13 native Worker test files also passed. Counts across these suites overlap and must not be summed as unique tests. The release working tree matches the tested source and passes `git diff --check`; Worker type checking and frontend build passed.
+The closure receipt binds all 52 source/test file hashes, actual candidate/account evidence, paired declaration and passed test reports. Baseline regression: 1,263 controller and 152 ML-service cases. Focused follow-ups cover native execution, publication authority, weak observations, reused OOF, memory/capacity and cost recovery; 13 native Worker test files also passed. Counts across these suites overlap and must not be summed as unique tests. The release working tree matches the tested source and passes `git diff --check`; Worker type checking and frontend build passed.
 
 This document records predeployment engineering closure. Deployment, exact production readback, the approved append-only Paper P5 rearm and A/B declaration are separate recorded operations. Original orders are retained. No real trading, shutdown, fabricated NAV maturity or automatic B promotion is authorized by this receipt.
+
+Full P9 was rerun after CI exposed a stale hardcoded OOF source-string assertion: all 539 included Worker test files, 192 Controller tests, frontend build, diff hygiene and P12 secret scan passed. The assertion now verifies profile-sized mature history; no model/data/algorithm changed and no training was repeated.

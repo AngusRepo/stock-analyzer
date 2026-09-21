@@ -97,6 +97,22 @@ class CloudRunJobsClient:
         return lookup_execution(self._get_executions_client(), parent=self._parent,
                                 run_date=run_date, run_id=run_id, execution_name=execution_name)
 
+    def execution_state(self, execution: JobExecution) -> str:
+        """Observe one dispatched job; dispatch acceptance is not completion."""
+        if not execution.execution_name.startswith(self._parent + "/executions/"):
+            raise ValueError("cloud_run_execution_job_mismatch")
+        observed = self._get_executions_client().get_execution(
+            request=run_v2.GetExecutionRequest(name=execution.execution_name), timeout=30,
+        )
+        for condition in observed.conditions:
+            if condition.type_ != "Completed":
+                continue
+            if condition.state == run_v2.Condition.State.CONDITION_SUCCEEDED:
+                return "succeeded"
+            if condition.state == run_v2.Condition.State.CONDITION_FAILED:
+                return "failed"
+        return "running"
+
     def get_active_execution(self) -> JobExecution | None:
         """Return the newest in-flight execution for this Job, if any."""
         if not self._parent:

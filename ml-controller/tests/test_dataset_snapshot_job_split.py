@@ -153,3 +153,33 @@ def test_deploy_provisions_detached_dataset_snapshot_job():
     dataset_snapshot_sync = deploy.split("sync_dataset_snapshot_job()", 1)[1].split("run_preflight()", 1)[0]
     assert '"roles/run.jobsExecutorWithOverrides"' in dataset_snapshot_sync
     assert '"roles/run.viewer"' not in dataset_snapshot_sync
+
+
+def test_input_only_job_cannot_emit_oof_callback_or_export_predictions(monkeypatch):
+    requests = []
+    monkeypatch.setenv("DATASET_SNAPSHOT_INPUT_ONLY", "1")
+    monkeypatch.setenv("DATASET_SNAPSHOT_RUN_DATE", "2026-09-21")
+    monkeypatch.setenv("DATASET_SNAPSHOT_INCLUDE_SIGNALS", "1")
+    monkeypatch.setattr(dataset_snapshot_job_main, "export_backtest_dataset_snapshot",
+                        lambda request: requests.append(request) or {"snapshot": {"snapshot_id": "input"}})
+    monkeypatch.setattr(dataset_snapshot_job_main, "export_daily_research_snapshots",
+                        lambda _: (_ for _ in ()).throw(AssertionError("research export ran")))
+    async def forbidden_callback(_):
+        raise AssertionError("input snapshot triggered Worker/OOF")
+    monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", forbidden_callback)
+    assert asyncio.run(dataset_snapshot_job_main._run()) == 0
+    assert len(requests) == 1
+    assert requests[0].include_signals is False
+    assert requests[0].start_date == "2023-03-21"
+
+
+def test_input_snapshot_failure_is_terminal_without_false_callback(monkeypatch):
+    monkeypatch.setenv("DATASET_SNAPSHOT_INPUT_ONLY", "1")
+    monkeypatch.setenv("DATASET_SNAPSHOT_RUN_DATE", "2026-09-21")
+    def failed_export(_):
+        raise RuntimeError("source unavailable")
+    async def forbidden_callback(_):
+        raise AssertionError("input snapshot triggered Worker/OOF")
+    monkeypatch.setattr(dataset_snapshot_job_main, "export_backtest_dataset_snapshot", failed_export)
+    monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", forbidden_callback)
+    assert asyncio.run(dataset_snapshot_job_main._run()) == 1

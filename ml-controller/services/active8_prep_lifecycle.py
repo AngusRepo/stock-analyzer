@@ -191,6 +191,20 @@ async def ensure_active8_daily_prep(
         as_of_business_date=cutoff,
         access_tier="compute",
     )
+    # TimeXer needs current observable inputs before prediction. The research
+    # export after pipeline completion cannot satisfy this prerequisite.
+    if feature_only and not dry_run and not (snapshot or {}).get("manifest_errors"):
+        observed_date = str((snapshot or {}).get("business_date") or "")[:10]
+        observed_start = str(_snapshot_metadata(snapshot or {}).get("start_date") or "")[:10]
+        minimum_start = (datetime.strptime(expected_business_date, "%Y-%m-%d")
+                         - timedelta(days=required_history)).date().isoformat()
+        if (not snapshot or observed_date < expected_business_date
+                or (observed_date == expected_business_date
+                    and (not observed_start or observed_start > minimum_start))):
+            from services.active8_snapshot_refresh import produce_inference_snapshot
+            snapshot = await produce_inference_snapshot(
+                business_date=expected_business_date, required_history=required_history,
+            )
     if not snapshot or snapshot.get("manifest_errors"):
         raise Active8PrepDependencyPending(
             "exact_compute_snapshot_missing",

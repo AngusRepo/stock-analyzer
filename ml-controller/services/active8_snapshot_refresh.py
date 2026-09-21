@@ -57,3 +57,55 @@ async def ensure_snapshot_price_dates(snapshot: dict, *, bucket: Any, expected_d
     if remaining:
         raise Active8PrepDependencyPending('compute_snapshot_source_refresh_incomplete', {**evidence, 'remaining_dates': remaining})
     return refreshed
+
+
+async def produce_inference_snapshot(*, business_date: str, required_history: int) -> dict:
+    """Prepare observable inputs before inference in the existing isolated CPU job.
+
+    This is not the post-pipeline research export: no prediction labels/signals,
+    Worker success callback, or OOF continuation may be emitted by this input job.
+    """
+    import logging
+    import os
+    import time
+    from services.active8_prep_lifecycle import Active8PrepDependencyPending
+    from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
+    from services.dataset_snapshots import latest_dataset_snapshot
+
+    job_name = os.environ.get("DATASET_SNAPSHOT_JOB_NAME", "").strip()
+    if not job_name:
+        raise Active8PrepDependencyPending("inference_snapshot_job_not_configured", {})
+    client = CloudRunJobsClient(job_name=job_name)
+    try:
+        execution = await asyncio.to_thread(client.run_job, env_overrides={
+            "DATASET_SNAPSHOT_RUN_DATE": business_date,
+            "DATASET_SNAPSHOT_PRODUCER_RUN_ID": f"inference-input:{business_date}:{uuid.uuid4().hex}",
+            "DATASET_SNAPSHOT_INPUT_ONLY": "1",
+            "STOCKVISION_RESEARCH_SNAPSHOT_LOOKBACK_DAYS": str(required_history),
+        }, reject_if_running=True)
+    except JobAlreadyRunningError as exc:
+        # Join the existing producer, then validate its dated manifest below.
+        # Never launch a duplicate heavy export merely because a retry arrived.
+        execution = exc.execution
+    logging.getLogger(__name__).info(
+        "Inference snapshot dependency date=%s execution=%s", business_date, execution.execution_id,
+    )
+    deadline = time.monotonic() + 3600
+    while time.monotonic() < deadline:
+        state = await asyncio.to_thread(client.execution_state, execution)
+        if state == "failed":
+            raise Active8PrepDependencyPending("inference_snapshot_job_failed", {
+                "business_date": business_date, "execution_id": execution.execution_id,
+            })
+        if state == "succeeded":
+            snapshot = latest_dataset_snapshot(kind="backtest_dataset", access_tier="compute",
+                                               business_date=business_date)
+            if snapshot and not snapshot.get("manifest_errors"):
+                return snapshot  # Caller still verifies date, history, checksum and actual price dates.
+            raise Active8PrepDependencyPending("inference_snapshot_manifest_missing", {
+                "business_date": business_date, "execution_id": execution.execution_id,
+            })
+        await asyncio.sleep(30)
+    raise Active8PrepDependencyPending("inference_snapshot_job_pending", {
+        "business_date": business_date, "execution_id": execution.execution_id,
+    })

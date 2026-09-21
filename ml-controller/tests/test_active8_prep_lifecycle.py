@@ -271,3 +271,48 @@ def test_timexer_prep_namespaces_expanded_history_and_forwards_profile(monkeypat
     monkeypatch.setattr(retrain_trigger,'trigger_universal_retrain',capture)
     with pytest.raises(RuntimeError,match='captured-profile-before-compute'):
         asyncio.run(lifecycle.ensure_active8_daily_prep(end_date='2026-07-25',query_fn=_market_query,model_profile_schema_version=TIMEXER_PRICE_PROFILE_SCHEMA))
+
+
+@pytest.mark.parametrize('feature_only,dry_run,should_produce', [(True,False,True),(True,True,False),(False,False,False)])
+def test_only_inference_prepares_its_missing_current_input_snapshot(monkeypatch, feature_only, dry_run, should_produce):
+    from services import active8_snapshot_refresh
+    produced = []
+    monkeypatch.setattr(lifecycle, 'latest_dataset_snapshot', lambda **_: _snapshot(business_date='2026-07-23'))
+    async def produce(**kw):
+        produced.append(kw)
+        # An invalid returned receipt must still be rejected, never accepted on dispatch alone.
+        return {'manifest_errors': ['invalid exported receipt']}
+    monkeypatch.setattr(active8_snapshot_refresh, 'produce_inference_snapshot', produce)
+    with pytest.raises(lifecycle.Active8PrepDependencyPending,
+                       match='exact_compute_snapshot_missing' if should_produce else 'compute_snapshot_behind_market_session'):
+        asyncio.run(lifecycle.ensure_active8_daily_prep(end_date='2026-07-25', feature_only=feature_only,
+                                                       dry_run=dry_run, query_fn=_market_query))
+    assert bool(produced) is should_produce
+    if produced:
+        assert produced[0]['business_date'] == '2026-07-24'
+
+
+@pytest.mark.parametrize('behind', [True, False])
+def test_inference_rechecks_produced_snapshot_before_prep_without_training(monkeypatch, behind):
+    from services import active8_snapshot_refresh
+    bucket = _Bucket()
+    fresh = _snapshot(start_date='2023-01-01')
+    monkeypatch.setattr(lifecycle, 'latest_dataset_snapshot', lambda **_: _snapshot(business_date='2026-07-23') if behind else fresh)
+    monkeypatch.setattr(walk_forward_retrain, '_get_bucket', lambda: bucket)
+    produced = []
+    async def produce(**kw):
+        produced.append(kw)
+        return fresh
+    async def prep(req, request):
+        assert req.prep_only and req.train_model_groups == []
+        assert req.require_exact_dataset_snapshot is True
+        assert req.run_date == '2026-07-24'
+        return {'status': 'ready', 'receipt_checksum': 'b' * 64}
+    monkeypatch.setattr(active8_snapshot_refresh, 'produce_inference_snapshot', produce)
+    monkeypatch.setattr(retrain_trigger, 'trigger_universal_retrain', prep)
+    result = asyncio.run(lifecycle.ensure_active8_daily_prep(end_date='2026-07-25', feature_only=True,
+                         model_profile_schema_version='active8-release-model-profiles-v4-timexer-price', query_fn=_market_query))
+    assert result['signal_date'] == '2026-07-24'
+    assert result['training_dispatched'] is False
+    assert result['source_gcs_prefix'].endswith('expanded1280')
+    assert len(produced) == int(behind)

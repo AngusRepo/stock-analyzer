@@ -18,6 +18,7 @@ from routers.pipeline import _callback_worker
 from services.dataset_snapshot_exporter import (
     DatasetSnapshotExportRequest,
     export_daily_research_snapshots,
+    export_backtest_dataset_snapshot,
 )
 
 logging.basicConfig(
@@ -81,6 +82,7 @@ async def _run() -> int:
         run_date or "missing",
     )
 
+    input_only = _truthy_env("DATASET_SNAPSHOT_INPUT_ONLY", "0")
     started = time.time()
     status = "error"
     summary = ""
@@ -94,10 +96,14 @@ async def _run() -> int:
             start_date=_snapshot_export_start_date(run_date),
             end_date=run_date,
             producer_run_id=run_id,
-            include_signals=_truthy_env("DATASET_SNAPSHOT_INCLUDE_SIGNALS", "1"),
+            include_signals=False if input_only else _truthy_env("DATASET_SNAPSHOT_INCLUDE_SIGNALS", "1"),
             chunk_days=_chunk_days(),
         )
-        combined = await asyncio.to_thread(export_daily_research_snapshots, request)
+        if input_only:
+            exported = await asyncio.to_thread(export_backtest_dataset_snapshot, request)
+            combined = {"snapshots": {"backtest_dataset": exported}}
+        else:
+            combined = await asyncio.to_thread(export_daily_research_snapshots, request)
         status = "success"
         summary = _format_snapshot_summary(run_id, combined)
     except Exception as e:  # noqa: BLE001
@@ -116,7 +122,10 @@ async def _run() -> int:
         payload["run_date"] = run_date
     if error:
         payload["error"] = error
-    await _callback_worker(payload)
+    if not input_only:
+        await _callback_worker(payload)
+    else:
+        logger.info("[DatasetSnapshotJob] Input-only completion: %s", summary)
 
     logger.info(
         "[DatasetSnapshotJob] Finished status=%s elapsed_ms=%d",

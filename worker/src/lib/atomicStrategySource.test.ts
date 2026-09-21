@@ -233,7 +233,8 @@ test('actual REST writer -> local D1/R2 canonical source -> full-universe Atomic
         'original OPS scoring is not reconstructed from calibrated Core seedScore=53')
       assert.equal(population.replacements[0].recommendation_seed.status, 'replayed')
       assert.deepEqual(population.replacements[0].recommendation_seed.final_seed.map((r: any) => r.symbol), ['1001'])
-      assert.deepEqual(population.replacements[0].recommendation_seed.coarse_queue, result.candidate.coarseQueue)
+      assert.equal('coarse_queue' in population.replacements[0].recommendation_seed, false)
+      assert.deepEqual(population.replacements[0].recommendation_seed.final_seed, [{ symbol: '1001' }])
       const mergeItem = population.replacements[0].recommendation_seed.merge_items[0]
       assert.equal(mergeItem.symbol, '1001')
       assert.equal(mergeItem.stage, 'l1_candidate_seed_after_overlay')

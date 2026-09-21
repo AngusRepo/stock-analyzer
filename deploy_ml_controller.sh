@@ -1367,6 +1367,7 @@ if ! gcloud run jobs update "$JOB" \
     --region="$REGION" \
     --image="$NEW_IMAGE" \
     --task-timeout="$PIPELINE_JOB_TIMEOUT" \
+    --memory="${PIPELINE_JOB_MEMORY:-16Gi}" \
     --service-account="$JOB_RUNTIME_SERVICE_ACCOUNT" \
     --update-labels="$PROVENANCE_LABELS" \
     --update-secrets="$RUN_SECRET_BINDINGS" \

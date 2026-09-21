@@ -181,7 +181,7 @@ def pipeline_shadow_errors(collection):
         errors.append('paired_nav:atomic_collection:' + str(atomic_collection.get('reason') or atomic_collection.get('status')))
     atomic = collection.get('atomic_daily')
     if atomic is not None and (not isinstance(atomic, dict) or atomic.get('status') not in {
-            'no_structural_candidates', 'native_execution_pairs_registered'}):
+            'no_structural_candidates', 'native_execution_pairs_registered', 'awaiting_paired_l3_l4_release'}):
         reason = atomic.get('reason') if isinstance(atomic, dict) else 'invalid_summary'
         errors.append(f"paired_nav:atomic_daily:{reason or 'setup_not_completed'}")
     if collection.get('owner_failures'):

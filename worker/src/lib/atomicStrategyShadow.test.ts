@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildAtomicStrategyShadow, enumerateAtomicShadowReplacements, buildLayer1WithAtomicSource, replayAtomicStrategySource, buildAtomicPolicyContext } from './atomicStrategyShadow'
+import { createAtomicPopulationReplayer, canonicalPostOverlaySeed, buildAtomicStrategyShadow, enumerateAtomicShadowReplacements, buildLayer1WithAtomicSource, replayAtomicStrategySource, buildAtomicPolicyContext } from './atomicStrategyShadow'
 import { buildLayer1StrategyBreadthPlan, type StrategyCandidatePoolCandidate } from './strategyCandidatePool'
 import { DEFAULT_STRATEGY_SPECS, type StrategySpec } from './strategySpec'
 import { resolveRuntimeStrategyWeights } from './strategyProductionPolicyStore'
@@ -205,6 +205,12 @@ test('formal source capture equals the original kernel and freezes inputs before
     artifactCreatedAt: '2026-09-09T12:01:00Z', decisionDeadline: '2026-09-09T23:15:00Z' }
   const replay = await replayAtomicStrategySource(captured.source, input.replacement, identity)
   assert.deepEqual(replay.added_symbols, ['candidate-only'])
+  const populationReplay = await createAtomicPopulationReplayer(captured.source, identity)
+  assert.deepEqual(await populationReplay(originalInput.replacement), replay)
+  const outside = structuredClone(captured.source)
+  const isolatedReplay = await createAtomicPopulationReplayer(outside, identity)
+  outside.inputs.universe[0].symbol = 'changed-after-validation'
+  assert.deepEqual(await isolatedReplay(originalInput.replacement), replay)
   captured.plan.breadthPool[0].symbol = 'later-mutation'
   input.universe[0].symbol = 'outside-mutation'
   assert.deepEqual(await replayAtomicStrategySource(captured.source, originalInput.replacement, identity), replay)
@@ -302,4 +308,17 @@ test('explicit empty source can replay, missing and duplicated source universe c
   for (const universe of [undefined, [...input.universe, input.universe[0]], [stock(' ', 1, 1)]]) {
     await assert.rejects(buildLayer1WithAtomicSource({ ...captured.source.inputs, universe: universe as any }))
   }
+})
+
+
+test('canonical source serialization cannot reorder missing-signal diagnostic meaning', () => {
+  const seed = [{symbol:'A',score:42,strategy_watch_points:['strategy_spec_unavailable:revenue:missing_signal:factorSignals.yoy|missing_signal:factorSignals.mom']}]
+  const replay = structuredClone(seed)
+  replay[0].strategy_watch_points[0]='strategy_spec_unavailable:revenue:missing_signal:factorSignals.mom|missing_signal:factorSignals.yoy'
+  assert.deepEqual(canonicalPostOverlaySeed(replay),canonicalPostOverlaySeed(seed))
+  replay[0].score=41
+  assert.notDeepEqual(canonicalPostOverlaySeed(replay),canonicalPostOverlaySeed(seed))
+  replay[0].score=42;replay[0].strategy_watch_points[0]+='|missing_signal:extra'
+  assert.notDeepEqual(canonicalPostOverlaySeed(replay),canonicalPostOverlaySeed(seed))
+  assert.equal(seed[0].strategy_watch_points[0].endsWith('missing_signal:factorSignals.mom'),true)
 })

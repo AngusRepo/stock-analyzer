@@ -13,7 +13,7 @@ def read_population(request):
     # Do not retain both a giant stdout string and its parsed population.
     with tempfile.TemporaryFile(mode='w+b') as output:
         result = subprocess.run([os.environ.get('NODE_BIN', 'node'), '--max-old-space-size=2048', str(runner)],
-            input=json.dumps(request).encode('utf-8'), stdout=output, stderr=subprocess.PIPE, timeout=900, check=False)
+            input=json.dumps(request).encode('utf-8'), stdout=output, stderr=subprocess.PIPE, timeout=1800, check=False)
         if result.returncode:
             detail = result.stderr.decode('utf-8', errors='replace')[-1000:]
             raise RuntimeError('atomic_population_node_failed:' + detail)

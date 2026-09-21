@@ -4,7 +4,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { sha256Text } from './datasetSnapshots'
 import { screenerCoreSeedUpsertBindings } from './screenerCoreSeedMaterializer'
 import { buildScreenerL1MergeItem } from './screenerPostOverlaySeed'
-import { replayAtomicStrategySource, replayFrozenCoreSeeds, validateAtomicStrategySource, buildAtomicPolicyContext,
+import { createAtomicPopulationReplayer, replayAtomicStrategySource, replayFrozenCoreSeeds, validateAtomicStrategySource, buildAtomicPolicyContext,
   type AtomicStrategySource, type AtomicShadowReplacement } from './atomicStrategyShadow'
 
 type SourceRow = {
@@ -216,7 +216,7 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
   const continuations = input.continuations ?? []
   if (!validAtomicContinuations(continuations)) throw new Error('atomic_source_continuations_invalid')
   const { source, identity, funnel_items, ...artifact } = await readCanonicalSource(env, input, true)
-  await validateAtomicStrategySource(source, identity)
+  const replaySource = await createAtomicPopulationReplayer(source, identity)
   const baseline = await replayFrozenCoreSeeds(source.post_overlay)
   const replacements = []
   // Same role pair can have distinct immutable policies. Retain old registered
@@ -226,7 +226,7 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
   ]
   const completed = new Set<string>()
   for (const { replacement, definitionChecksum } of jobs) {
-    const replay = await replayAtomicStrategySource(source, replacement, identity, definitionChecksum)
+    const replay = await replaySource(replacement, definitionChecksum)
     if (completed.has(replay.replacement_definition_checksum)) continue
     completed.add(replay.replacement_definition_checksum)
     const post = replay.post_overlay_replay
@@ -236,7 +236,10 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
       core_upsert_bindings: replay.candidate_core_replay.status === 'materialized'
         ? replay.candidate_core_replay.rows.map(row => screenerCoreSeedUpsertBindings(source.signal_date, row)) : null,
       recommendation_seed: post.status === 'baseline_matched_candidate_replayed' && post.candidate.status === 'replayed'
-        ? { status: 'replayed' as const, final_seed: post.candidate.finalSeed, coarse_queue: replay.candidate.coarseQueue,
+        ? { status: 'replayed' as const, transport_projection: 'ordered-symbols-and-full-merge-items-v1' as const,
+          // Consumers need exact symbol order plus complete merge evidence. The
+          // immutable source retains raw route inputs; do not duplicate them per pair.
+          final_seed: post.candidate.finalSeed.map(({ symbol }) => ({ symbol })),
           merge_items: post.candidate.finalSeed.map((row, index) => buildScreenerL1MergeItem(row,
             replay.candidate.coarseQueue.find(route => route.symbol === row.symbol), index + 1)) }
         : { status: 'unavailable' as const, reason: 'requires_candidate_post_route_replay' } })

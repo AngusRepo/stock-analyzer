@@ -13,6 +13,25 @@ from services.payload_builder import build_ml_universe
 PATH = '/api/internal/evidence-artifacts/atomic-population'
 
 
+def distribution_atomic_wait(state):
+    """Mirror collect_atomic_allocations' existing new-L4 boundary before work.
+
+    An unsupported legacy comparison is WAIT, never a native registration or
+    maturity credit. Bind it to this run and exact serving policy; ordinary
+    missing/failed Atomic setup remains a terminal error.
+    """
+    policy = (state.get('trading_config') or {}).get('l4Distribution')
+    if policy is None:
+        return None
+    if not isinstance(policy, dict) or not isinstance(policy.get('artifact'), dict) or not policy['artifact']:
+        raise ValueError('paired_nav_atomic_distribution_policy_invalid')
+    return {'status': 'awaiting_paired_l3_l4_release',
+        'reason': 'legacy_atomic_native_execution_requires_distribution_comparison',
+        'signal_date': state['run_date'], 'producer_run_id': state['screener_run_id'],
+        'distribution_policy_checksum': digest(policy), 'production_effect': False,
+        'promotion_allowed': False, 'nav_maturity_credit': 0}
+
+
 async def read_daily_population(*, signal_date, producer_run_id, query):
     import asyncio
     from services.paired_nav_atomic_continuation import registered_atomic_continuations
@@ -168,6 +187,10 @@ def daily_setup_status(state):
     if isinstance(saved, dict) and saved.get('status') == 'failed':
         return deepcopy(saved)
     try:
+        if isinstance(saved, dict) and saved.get('status') == 'awaiting_paired_l3_l4_release':
+            if saved != distribution_atomic_wait(state):
+                raise ValueError('paired_nav_atomic_distribution_wait_changed')
+            return deepcopy(saved)
         packet = validate_daily_inputs(saved, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
                                        formal_stocks=state['active_stocks'])
         count = len(packet['population']['replacements'])

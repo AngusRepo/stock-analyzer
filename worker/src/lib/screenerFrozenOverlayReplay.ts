@@ -30,7 +30,9 @@ export function replayFrozenPostRoute(input: {
   plan: { breadthPool: StrategyCandidatePoolCandidate[]; coarseQueue: StrategyCandidatePoolCandidate[] };
   specs: StrategySpec[];
 }) {
-  const { packet, plan, specs } = structuredClone(input)
+  // Observations/specifications are read-only. Only candidates are mutated;
+  // cloning the entire observation archive per slate multiplies memory/work.
+  const { packet, plan, specs } = input
   const eligible = new Set(plan.breadthPool.map(row => row.symbol))
   // Explicitly sealed zero-admission slate has no post-route effect to replay.
   // An unrelated extra-symbol source failure must not turn that into missing.

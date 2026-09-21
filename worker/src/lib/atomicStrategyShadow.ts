@@ -265,10 +265,39 @@ export async function validateAtomicStrategySource(source: AtomicStrategySource,
   if (await checksum(baseline) !== source.baseline_checksum) throw new Error('atomic_shadow_source_replay_mismatch')
 }
 
+/** Missing-signal diagnostics are sets derived from threshold object keys.
+ * Canonical JSON sorts those keys; preserve all other seed values and ordering. */
+export function canonicalPostOverlaySeed(value: unknown): unknown {
+  if (!Array.isArray(value)) return value
+  return value.map(row => {
+    if (!row || typeof row !== 'object' || !Array.isArray(row.strategy_watch_points)) return row
+    return { ...row, strategy_watch_points: row.strategy_watch_points.map((point: unknown) => {
+      if (typeof point !== 'string') return point
+      const match = /^(strategy_spec_unavailable:[^:]+:)(missing_signal:[A-Za-z0-9_.]+(?:\|missing_signal:[A-Za-z0-9_.]+)*)$/.exec(point)
+      return match ? match[1] + match[2].split('|').sort().join('|') : point
+    }) }
+  })
+}
+
 export async function replayAtomicStrategySource(source: AtomicStrategySource, replacement: AtomicShadowReplacement,
   identity: { signalDate: string; producerRunId: string; artifactCreatedAt: string; decisionDeadline: string },
   continuationDefinitionChecksum?: string) {
   await validateAtomicStrategySource(source, identity)
+  return replayValidatedAtomicStrategySource(source, replacement, continuationDefinitionChecksum, true)
+}
+
+/** One private immutable source per full-population replay; no repeated 50MB
+ * source hashing/cloning for every structural replacement. */
+export async function createAtomicPopulationReplayer(source: AtomicStrategySource,
+  identity: { signalDate: string; producerRunId: string; artifactCreatedAt: string; decisionDeadline: string }) {
+  const frozen = structuredClone(source)
+  await validateAtomicStrategySource(frozen, identity)
+  return (replacement: AtomicShadowReplacement, continuationDefinitionChecksum?: string) =>
+    replayValidatedAtomicStrategySource(frozen, replacement, continuationDefinitionChecksum, false)
+}
+
+async function replayValidatedAtomicStrategySource(source: AtomicStrategySource, replacement: AtomicShadowReplacement,
+  continuationDefinitionChecksum: string | undefined, includePostOverlay: boolean) {
   const source_checksum = source.source_checksum
   const result = await buildAtomicStrategyShadow({ ...source.inputs,
     expectedUniverseSymbols: source.expected_universe_symbols, replacement, continuationDefinitionChecksum })
@@ -284,7 +313,7 @@ export async function replayAtomicStrategySource(source: AtomicStrategySource, r
     const baseline = replayFrozenPostRoute({ packet: source.post_overlay, universe: source.inputs.universe,
       plan: result.baseline, specs: result.baseline_policy.specs })
     if (baseline.status === 'replayed') {
-      if (sortedJson(baseline.finalSeed) !== sortedJson(source.post_overlay.finalSeed)
+      if (sortedJson(canonicalPostOverlaySeed(baseline.finalSeed)) !== sortedJson(canonicalPostOverlaySeed(source.post_overlay.finalSeed))
         || sortedJson([...baseline.safetyExcludedSymbols].sort()) !== sortedJson([...source.post_overlay.safetyExcludedSymbols].sort())) {
         throw new Error('atomic_shadow_post_overlay_replay_mismatch')
       }
@@ -302,7 +331,7 @@ export async function replayAtomicStrategySource(source: AtomicStrategySource, r
     : { status: 'unavailable' as const, reason: 'candidate_core_requires_baseline_and_post_route_replay' }
   return { ...result, source_checksum, core_seed_replay: coreSeedReplay, candidate_core_replay: candidateCoreReplay,
     post_overlay_replay: postOverlayReplay,
-    ...(source.post_overlay ? { post_overlay: structuredClone(source.post_overlay) } : {}) }
+    ...(includePostOverlay && source.post_overlay ? { post_overlay: structuredClone(source.post_overlay) } : {}) }
 }
 
 export async function buildAtomicStrategyShadow<T extends StrategyCandidatePoolCandidate>(input: {

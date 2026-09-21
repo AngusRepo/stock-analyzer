@@ -137,6 +137,27 @@ class DomainD1Client:
     ) -> list[dict]:
         if self._uses_mining_gateway():
             return d1_client.query(sql, params, timeout=timeout)
+        # Immutable NAV parts can total hundreds of MB for the complete pool.
+        # Bound each transport response; retain every row and the original order.
+        # Match only this exact internal read, never rewrite arbitrary SQL.
+        normalized = ' '.join(sql.split()).lower()
+        if (self.domain == D1DataDomain.LEARNING and isinstance(params, list) and len(params) == 1
+                and normalized == 'select part_no,payload_text from paired_nav_frozen_parts_v1 where snapshot_id=? order by part_no'):
+            rows, cursor = [], -1
+            while True:
+                page = self.query('SELECT part_no,payload_text FROM paired_nav_frozen_parts_v1 '
+                    'WHERE snapshot_id=? AND part_no>? ORDER BY part_no LIMIT 50',
+                    [params[0], cursor], timeout=timeout)
+                if not page:
+                    return rows
+                indexes = [row.get('part_no') for row in page]
+                if (any(type(index) is not int or index <= cursor for index in indexes)
+                        or indexes != sorted(set(indexes))):
+                    raise RuntimeError('paired_nav_parts_page_invalid')
+                rows.extend(page)
+                cursor = indexes[-1]
+                if len(page) < 50:
+                    return rows
         if allocator_contract_guard_enabled() and d1_client._is_mutating_sql(sql):
             return []
         body: dict[str, Any] = {"sql": sql}

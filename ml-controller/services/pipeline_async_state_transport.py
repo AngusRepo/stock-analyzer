@@ -78,4 +78,20 @@ def decode_pipeline_state_envelope(raw: bytes) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise ValueError("pipeline_async_state_missing")
     validate_pipeline_payload_identity(state)
+    # Producers share these read-only contexts; JSON wire transport loses that
+    # identity and otherwise retains hundreds of identical copies after restore.
+    for row in state['payloads']:
+        for key in ('market_env', 'trading_config', 'adaptive_params',
+                    'lifecycle_weights', 'barrier_params'):
+            common = state.get(key)
+            if isinstance(common, dict) and row.get(key) == common:
+                row[key] = common
+        # Individual revenue/margin overrides keep their own outer mapping.
+        # Only identical nested market-wide structures regain producer sharing.
+        market = row.get('market_env')
+        common_market = state.get('market_env') or {}
+        if isinstance(market, dict):
+            for key, common in common_market.items():
+                if isinstance(common, (dict, list)) and market.get(key) == common:
+                    market[key] = common
     return payload

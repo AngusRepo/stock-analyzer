@@ -668,6 +668,14 @@ function walkKeys(value: unknown, prefix = ''): string[] {
 }
 
 export function validateStrategySpec(spec: StrategySpec): StrategySpecValidation {
+  const cached = routingSpecCache?.get(spec)
+  if (cached) return cached
+  const result = validateStrategySpecUncached(spec)
+  routingSpecCache?.set(spec, result)
+  return result
+}
+
+function validateStrategySpecUncached(spec: StrategySpec): StrategySpecValidation {
   const errors: string[] = []
   if (![STRATEGY_SPEC_VERSION, STRATEGY_SPEC_SEMANTIC_VERSION].includes(spec.version)) errors.push('version_mismatch')
   if (spec.owner !== 'strategy') errors.push('owner_must_be_strategy')
@@ -775,10 +783,25 @@ function scoreV2StorageRow(candidate: StrategyCandidateInput): ScoreV2StorageRow
   return { score_components: candidate.score_v2 }
 }
 
+// A routing pass reads the same frozen raw signals for every strategy. Scope
+// reuse to this synchronous call only: later overlays/days must derive anew.
+let routingRawCache: Map<unknown, Map<string, StrategyRawSignals>> | undefined
+let routingSpecCache: Map<StrategySpec, StrategySpecValidation> | undefined
+export function withStrategyRawSignalCache<T>(read: () => T): T {
+  const previous = routingRawCache, previousSpecs = routingSpecCache
+  routingRawCache = new Map()
+  routingSpecCache = new Map()
+  try { return read() } finally { routingRawCache = previous; routingSpecCache = previousSpecs }
+}
+
 export function deriveStrategyRawSignals(
   candidate: StrategyCandidateInput,
   options: StrategySpecEvaluationOptions = {},
 ): StrategyRawSignals {
+  const mode = options.evidenceMode ?? ''
+  const cacheKey = candidate.raw_signals
+  const cached = routingRawCache?.get(cacheKey)?.get(mode)
+  if (cached) return cached
   const raw = parseRecord(candidate.raw_signals)
   if (!raw) return {}
   const rawTechnicalIndicators = parseRecord(raw.technicalIndicators)
@@ -879,11 +902,13 @@ export function deriveStrategyRawSignals(
     pb: base.pb ?? null,
     dividendYield: base.dividendYield ?? null,
   }
-  return {
-    ...base,
-    technicalIndicators,
-    factorSignals,
+  const result = { ...base, technicalIndicators, factorSignals }
+  if (routingRawCache) {
+    const modes = routingRawCache.get(cacheKey) ?? new Map<string, StrategyRawSignals>()
+    modes.set(mode, result)
+    routingRawCache.set(cacheKey, modes)
   }
+  return result
 }
 
 export function deriveStrategyThresholdScores(candidate: StrategyCandidateInput): StrategyThresholdScores {

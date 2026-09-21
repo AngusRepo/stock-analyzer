@@ -1,4 +1,5 @@
 import {
+  withStrategyRawSignalCache,
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
@@ -1420,6 +1421,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     policy?: StrategyCandidatePoolPolicy
   },
 ): Layer1StrategyBreadthPlan<T> {
+  return withStrategyRawSignalCache(() => {
   const targetSize = Math.max(1, Math.round(options.targetSize))
   const coarseMlQueueSize = Math.max(1, Math.min(Math.round(options.coarseMlQueueSize), targetSize))
   const basePolicy = options.policy ?? DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY
@@ -1577,6 +1579,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       fresh_share: routerPlan.telemetry.fresh_share,
     },
   }
+  })
 }
 
 interface Layer15SoftCapacityDecision {

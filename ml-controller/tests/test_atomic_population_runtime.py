@@ -13,7 +13,7 @@ def test_node_host_uses_original_request_and_bounded_file_output(tmp_path, monke
         assert command[-1] == str(runner)
         assert '--max-old-space-size=2048' in command
         assert json.loads(kwargs['input']) == request
-        assert kwargs['timeout'] == 900 and kwargs['stdout'] != runtime.subprocess.PIPE
+        assert kwargs['timeout'] == 1800 and kwargs['stdout'] != runtime.subprocess.PIPE
         kwargs['stdout'].write(b'{"schema_version":"atomic-canonical-population-v1","replacements":[]}')
         return SimpleNamespace(returncode=0, stderr=b'')
     monkeypatch.setattr(runtime.subprocess, 'run', run)

@@ -21,6 +21,21 @@ async function main() {
     ARTIFACTS: { async get(key: string) { const body = await reader.read(key)
       return body == null ? null : { text: async () => body } } } } as unknown as Bindings
   const result = await replayCanonicalAtomicPopulation(env, input)
-  process.stdout.write(JSON.stringify(result))
+  // Bound stdout buffering and V8's maximum single-string length. The wire
+  // value remains exactly JSON.stringify(result), including every replacement.
+  async function write(text: string) {
+    if (!process.stdout.write(text)) await new Promise<void>(resolve => process.stdout.once('drain', resolve))
+  }
+  await write('{')
+  for (const [index, key] of Object.keys(result).entries()) {
+    await write((index ? ',' : '') + JSON.stringify(key) + ':')
+    const value = (result as unknown as Record<string, unknown>)[key]
+    if (Array.isArray(value)) {
+      await write('[')
+      for (const [i, row] of value.entries()) await write((i ? ',' : '') + JSON.stringify(row))
+      await write(']')
+    } else await write(JSON.stringify(value))
+  }
+  await write('}')
 }
 main().catch(error => { process.stderr.write(String(error?.message ?? error)); process.exitCode = 1 })

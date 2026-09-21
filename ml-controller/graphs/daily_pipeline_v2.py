@@ -784,11 +784,16 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
 
 
 async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
-    from services.paired_nav_atomic_inputs import read_daily_population, prepare_daily_inputs, validate_daily_inputs
+    from services.paired_nav_atomic_inputs import read_daily_population, prepare_daily_inputs, validate_daily_inputs, distribution_atomic_wait
     from services.payload_builder import CORE_D1_CLIENT, capture_payload_sources
     from services.paired_nav_collection import shadow_failure
     try:
         saved = state.get('paired_nav_atomic_inputs')
+        waiting = distribution_atomic_wait(state)
+        if waiting is not None:
+            if saved is not None and saved != waiting:
+                raise ValueError('paired_nav_atomic_distribution_wait_changed')
+            return {'paired_nav_atomic_inputs': waiting}
         if isinstance(saved, dict) and saved.get('status') == 'pre_l2_inputs_captured':
             validate_daily_inputs(saved, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
                                   formal_stocks=state['active_stocks'])
@@ -2417,7 +2422,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     from services.recommendation_source_context import capture_recommendation_sources
     from services.paired_nav_collection import shadow_failure
     atomic_prepared, atomic_recommendation, candidate_recs = None, None, {}
-    if state.get('paired_nav_atomic_inputs'):
+    if state.get('paired_nav_atomic_inputs') and state['paired_nav_atomic_inputs'].get('status') != 'awaiting_paired_l3_l4_release':
         try:
             from services.paired_nav_atomic_recommendation import prepare_atomic_recommendations
             atomic_prepared = prepare_atomic_recommendations(state)
@@ -4422,7 +4427,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "callback_token": _pipeline_modal_prediction_callback_token(),
         "snapshot_recovery_lineage": _json_safe(recovery_lineage) if recovery_lineage else None,
     }
-    if 'paired_nav_atomic_inputs' in state:
+    if 'paired_nav_atomic_inputs' in state and state['paired_nav_atomic_inputs'].get('status') != 'awaiting_paired_l3_l4_release':
         from services.paired_nav_atomic_dispatch import prepare_atomic_request
         from services.paired_nav_collection import shadow_failure
         try:

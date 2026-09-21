@@ -290,3 +290,28 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     monkeypatch.setattr(atomic, 'read_daily_population', lambda **kw: pytest.fail('recapture restored source'))
     assert asyncio.run(graph.node_capture_atomic_inputs(restored)) == {}
     assert restored == before
+
+
+def test_distribution_wait_mirrors_existing_collector_without_running_legacy_population(monkeypatch):
+    graph, state, reads = _setup(monkeypatch)
+    state['trading_config'] = {'l4Distribution': {'artifact': {'schema_version': 'test-bound-artifact'}}}
+    monkeypatch.setattr(atomic, 'read_daily_population', lambda **kw: pytest.fail('unsupported legacy inference must not run'))
+    state.update(asyncio.run(graph.node_capture_atomic_inputs(state)))
+    wait = atomic.daily_setup_status(state)
+    assert wait['status'] == 'awaiting_paired_l3_l4_release'
+    assert wait['nav_maturity_credit'] == 0 and wait['production_effect'] is False
+    assert wait['promotion_allowed'] is False
+    assert reads == []
+    assert 'population' not in wait and 'registrations' not in wait
+    from services.paired_nav_pipeline import pipeline_shadow_errors
+    closed = {'snapshot_id': 'verified-formal-parent', 'status': 'awaiting_paired_l3_l4_release', 'atomic_daily': wait}
+    assert pipeline_shadow_errors(closed) == []
+    altered = deepcopy(state)
+    altered['trading_config']['l4Distribution']['artifact']['changed'] = True
+    assert atomic.daily_setup_status(altered)['status'] == 'failed'
+    assert pipeline_shadow_errors({**closed, 'atomic_daily': atomic.daily_setup_status(altered)})
+    del altered['trading_config']['l4Distribution']
+    assert atomic.daily_setup_status(altered)['status'] == 'failed'
+    state['paired_nav_atomic_inputs'] = {'status': 'failed', 'reason': 'source_missing'}
+    assert atomic.daily_setup_status(state)['status'] == 'failed'
+    assert asyncio.run(graph.node_capture_atomic_inputs(state))['paired_nav_atomic_inputs']['status'] == 'failed'

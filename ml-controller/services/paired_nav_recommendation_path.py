@@ -20,7 +20,7 @@ def recommendation_source_identity() -> dict[str, str]:
         'paired_nav_recommendation_path.py', 'paired_nav_l3_candidate.py', 'paired_nav_l3_dispatch.py',
         'paired_nav_strategy_bundle.py', 'recommendation_service.py',
         'active8_paper_admission.py', 'active8_nav_adoption.py', 'active8_nav_inference.py',
-        'model_serving_resolver.py', 'timesfm_evidence_contract.py', 'timesfm_l175_sidecar.py',
+        'model_serving_resolver.py', 'worker_config_client.py', 'timesfm_evidence_contract.py', 'timesfm_l175_sidecar.py',
         'ensemble_v2.py', 'alpha_framework.py', 'l4_alpha_ev_producer.py',
         'allocator_ev_fusion.py', 'expected_return_numeric.py', 'persona_service.py',
         'pipeline_persona_context.py', 'paired_nav_atomic_personas.py',

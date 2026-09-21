@@ -67,7 +67,7 @@ def load_active_trading_config(timeout: float = 10.0, *, allow_offline: bool = F
         import httpx
 
         response = httpx.get(
-            f"{worker_url()}/api/admin/config",
+            f"{worker_url()}/api/admin/config?fresh=1",
             headers=worker_auth_headers(),
             timeout=timeout,
         )
@@ -79,6 +79,17 @@ def load_active_trading_config(timeout: float = 10.0, *, allow_offline: bool = F
         data = response.json()
         if not isinstance(data, dict):
             raise WorkerConfigClientError(response.status_code, "Worker config response was not a JSON object")
+        if data.get('l4Distribution') is not None:
+            # Worker JSON.stringify erases Python numeric representation (0.0 -> 0).
+            # Keep the exact checksum-bearing artifact from KV only after matching
+            # the authoritative Worker projection, including boolean/string types.
+            from services import kv_client
+            from services.opb_nav_control import _same_json
+            raw = kv_client.get_json('trading:config', default=None, strict=True)
+            original = raw.get('l4Distribution') if isinstance(raw, dict) else None
+            if not isinstance(original, dict) or not _same_json(data['l4Distribution'], original):
+                raise WorkerConfigClientError(409, 'Worker/KV L4 configuration mismatch')
+            data['l4Distribution'] = original
         return data
     except Exception as exc:  # pragma: no cover - defensive network fallback
         if allow_offline:

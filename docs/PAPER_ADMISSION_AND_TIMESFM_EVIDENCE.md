@@ -47,3 +47,7 @@ Controller 傳遞凍結 checksum，Modal 核對實際 bytes，cache 以版本與
 跨 Worker 時鐘實測領先本機 0.205 秒；在既有讀取允許的 5 秒範圍內等本機追上，不放寬 observed-before-freeze。
 本機可明確設定 `NATIVE_PAPER_RUNNER` 使用同 Dockerfile 打包的 Worker；manifest 持續雜湊實際執行器與原生程式。
 完整 P9 與相同 source SHA 部署讀回完成後，才依批准 receipt 切換。營運 receipt 另存 audit，勿把本文件當成功上線證據。
+
+## 正式切換發現的 JSON 傳輸缺口
+
+Worker 的 300 秒設定快取先造成讀回延遲；canonical config 改用既有 fresh=1。後續發現 Worker JSON.stringify 將 Python 0.0／1.0 序列化為 0／1：正式 A 有 558 處型別變化，數值相同但模型 checksum 不同。Controller 在取得 Worker 標準化設定後，只對 l4Distribution 讀回原始 KV；先以既有嚴格 JSON 數值語義比對（布林、字串、缺欄與真正數值變更均拒絕），再保留原始 checksum-bearing policy。沒有重新計算或放寬 artifact hash。未啟用 L4 時不增加 KV 讀取。正式讀回模型 hash 一致，50 項相關測試通過。

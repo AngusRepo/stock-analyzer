@@ -704,6 +704,18 @@ class PipelineStateV2(TypedDict, total=False):
 # Nodes
 # ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 
+def _screener_universe_cutoff_utc(value: Any) -> str:
+    """D1 screener_funnel_runs.created_at is UTC, including SQLite's naive format."""
+    raw = str(value or "").strip()
+    if not raw:
+        return raw
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        # Only this known D1 source gets UTC assigned; NAV timestamp parsing stays strict.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 async def node_load_inputs(state: PipelineStateV2) -> dict:
     """
     Load active_stocks + existing screener_recs from D1.
@@ -741,8 +753,8 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
         "screener_recs": screener_recs,
         "pipeline_screener_seed_context": seed_context,
         "screener_run_id": str(screener_recs[0].get("screener_run_id") or ""),
-        "decision_universe_frozen_at": str(
-            screener_recs[0].get("decision_universe_frozen_at") or ""
+        "decision_universe_frozen_at": _screener_universe_cutoff_utc(
+            screener_recs[0].get("decision_universe_frozen_at")
         ),
     }
 
@@ -3383,7 +3395,7 @@ def _pipeline_modal_active8_shadow_projection(
                 "live_gate_status": str(row.get("live_gate_status") or "").strip(),
                 "source_run_date": str(row.get("source_run_date") or "").strip(),
                 "training_run_id": str(row.get("training_run_id") or "").strip(),
-                "selection_slot": str(row.get("_selection_slot") or "").strip(),
+                "selection_slot": str(row.get("_selection_slot") or "paired_nav_candidate_observation").strip(),
                 "production_effect": False,
                 "vote_weight": 0.0,
                 "schema": {

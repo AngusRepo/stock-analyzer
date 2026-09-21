@@ -10,6 +10,7 @@ from typing import Any, Literal
 import numpy as np
 
 from .model_serving_contract import ALPHA_PREDICTION_MODELS
+from .alpha_model_roster import validate_order, stacker_features
 from .ensemble_qualification import qualify_directional_signal
 
 ARTIFACT_SCHEMA_VERSION = "active8-oof-ensemble-serving-artifact-v1"
@@ -85,9 +86,12 @@ def validate_active8_ensemble_artifact(
     expected_checksum = str(payload.get("payload_checksum") or "")
     if len(expected_checksum) != 64 or expected_checksum != _payload_checksum(payload):
         raise Active8EnsembleContractError("active8_ensemble_payload_checksum_invalid")
-    if list(payload.get("model_order") or []) != list(ALPHA_PREDICTION_MODELS):
-        raise Active8EnsembleContractError("active8_ensemble_model_order_invalid")
-    if list(payload.get("feature_names") or []) != list(FEATURE_NAMES):
+    try:
+        order = validate_order(payload.get("model_order") or [])
+    except ValueError as exc:
+        raise Active8EnsembleContractError("active8_ensemble_model_order_invalid") from exc
+    feature_names = stacker_features(order)
+    if list(payload.get("feature_names") or []) != list(feature_names):
         raise Active8EnsembleContractError("active8_ensemble_feature_contract_invalid")
 
     fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else {}
@@ -97,9 +101,9 @@ def validate_active8_ensemble_artifact(
         or fit.get("rank_coefficient_constraint") != "nonnegative"
         or int(fit.get("outer_folds") or 0) < 5
         or not isinstance(coefficients, list)
-        or len(coefficients) != len(FEATURE_NAMES)
+        or len(coefficients) != len(feature_names)
         or not all(np.isfinite(float(value)) for value in coefficients)
-        or any(float(value) < -1e-12 for value in coefficients[: len(ALPHA_PREDICTION_MODELS)])
+        or any(float(value) < -1e-12 for value in coefficients[: len(order)])
         or not np.isfinite(float(fit.get("intercept")))
     ):
         raise Active8EnsembleContractError("active8_ensemble_fit_contract_invalid")
@@ -145,9 +149,9 @@ def validate_active8_ensemble_artifact(
         not isinstance(selected, list)
         or not selected
         or len(selected) != len(set(selected))
-        or not set(selected).issubset(set(ALPHA_PREDICTION_MODELS))
+        or not set(selected).issubset(set(order))
         or not isinstance(excluded, list)
-        or set(excluded) != set(ALPHA_PREDICTION_MODELS) - set(selected)
+        or set(excluded) != set(order) - set(selected)
     ):
         raise Active8EnsembleContractError("active8_ensemble_selected_model_set_invalid")
     observation = (
@@ -155,16 +159,16 @@ def validate_active8_ensemble_artifact(
         if isinstance(payload.get("observation_artifacts"), dict)
         else {}
     )
-    if set(observation) != set(ALPHA_PREDICTION_MODELS):
+    if set(observation) != set(order):
         raise Active8EnsembleContractError("active8_ensemble_observation_artifact_set_invalid")
     base = payload.get("base_artifacts") if isinstance(payload.get("base_artifacts"), dict) else {}
     if set(base) != set(selected):
         raise Active8EnsembleContractError("active8_ensemble_base_artifact_set_invalid")
     for model_name in excluded:
-        index = list(ALPHA_PREDICTION_MODELS).index(model_name)
+        index = list(order).index(model_name)
         if (
             abs(float(coefficients[index])) > 1e-12
-            or abs(float(coefficients[index + len(ALPHA_PREDICTION_MODELS)])) > 1e-12
+            or abs(float(coefficients[index + len(order)])) > 1e-12
         ):
             raise Active8EnsembleContractError(
                 f"active8_ensemble_excluded_model_has_weight:{model_name}"
@@ -199,26 +203,27 @@ def score_active8_ensemble(
     nav_authority=None,
 ) -> Active8EnsembleResult:
     validate_active8_ensemble_artifact(artifact, pool_models=pool_models, nav_authority=nav_authority)
+    order = validate_order(artifact["model_order"])
     finite_scores = {}
-    for name in ALPHA_PREDICTION_MODELS:
+    for name in order:
         try:
             value = float(rank_scores[name])
         except (KeyError, TypeError, ValueError):
             continue
         if np.isfinite(value):
             finite_scores[name] = value
-    missing_core = [name for name in CORE_MODELS if name in artifact['selected_models'] and name not in finite_scores]
+    missing_core = [name for name in order[:5] if name in artifact['selected_models'] and name not in finite_scores]
     if missing_core:
         raise Active8EnsembleContractError(
             "active8_ensemble_core_score_missing:" + ",".join(missing_core)
         )
     vector: list[float] = []
     availability: dict[str, bool] = {}
-    for model_name in ALPHA_PREDICTION_MODELS:
+    for model_name in order:
         available = model_name in finite_scores
         availability[model_name] = available
         vector.append(float(np.clip(finite_scores.get(model_name, 0.5), 0.0, 1.0)))
-    vector.extend(1.0 if availability[name] else 0.0 for name in ALPHA_PREDICTION_MODELS)
+    vector.extend(1.0 if availability[name] else 0.0 for name in order)
     fit = artifact["fit"]
     expected_return = float(fit["intercept"] + np.dot(vector, fit["coefficients"]))
     policy = artifact["signal_policy"]
@@ -273,7 +278,7 @@ def score_active8_ensemble(
             "rank_score": round(float(rank_scores.get(name, 0.5)), 6),
             "available": availability[name],
             "direction": "up" if float(rank_scores.get(name, 0.5)) > 0.5 else "down",
-        } for name in ALPHA_PREDICTION_MODELS],
+        } for name in order],
         entry_price=round(current_price, 4),
         stop_loss=None,
         target1=None,

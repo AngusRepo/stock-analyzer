@@ -527,9 +527,20 @@ def build_pool_from_frozen_manifest(
             raise ServingPoolResolutionError(
                 f"frozen_serving_manifest_active8_shadow_candidate_type_invalid:{model_name}"
             )
-        if str(candidate.get("offline_gate_decision") or "") not in {
-            "PASS", "STRONG_PASS",
-        }:
+        # Controller's base-observation cohort admits WEAK_PASS for evidence
+        # only. The zero-vote/no-production checks above remain mandatory.
+        observation_weak_pass = (
+            candidate.get("selection_slot") == "oof_full_fit_base_observation"
+            and candidate.get("offline_gate_decision") == "WEAK_PASS"
+        )
+        # A pinned candidate experiment may measure an underperforming model.
+        # Its efficacy gate is evidence, never a grant to the formal ensemble.
+        paired_observation = (
+            candidate.get("selection_slot") == "paired_nav_candidate_observation"
+            and candidate.get("offline_gate_decision") in {"WEAK_PASS", "FAIL"}
+        )
+        if (str(candidate.get("offline_gate_decision") or "") not in {"PASS", "STRONG_PASS"}
+                and not observation_weak_pass and not paired_observation):
             raise ServingPoolResolutionError(
                 f"frozen_serving_manifest_active8_shadow_offline_gate_invalid:{model_name}"
             )

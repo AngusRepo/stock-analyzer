@@ -762,3 +762,42 @@ def test_frozen_manifest_rejects_active8_shadow_policy_tamper(field, value, mark
             manifest,
             expected_digest=serving_resolver.serving_manifest_digest(manifest),
         )
+
+
+@pytest.mark.parametrize('gate,slot,allowed', [
+    ('WEAK_PASS', 'oof_full_fit_base_observation', True),
+    ('FAIL', 'oof_full_fit_base_observation', False),
+    ('WEAK_PASS', 'monthly_release_candidate', False),
+    ('WEAK_PASS', 'paired_nav_candidate_observation', True),
+    ('FAIL', 'paired_nav_candidate_observation', True),
+    ('UNKNOWN', 'paired_nav_candidate_observation', False),
+])
+def test_base_observation_gate_matches_controller_without_promotion(gate, slot, allowed):
+    manifest = _manifest()
+    candidate = _patchtst_shadow_candidate()
+    candidate.update(offline_gate_decision=gate, selection_slot=slot)
+    manifest['active8_shadow_candidates'] = [candidate]
+    def resolve():
+        return serving_resolver.build_pool_from_frozen_manifest(
+            manifest, expected_digest=serving_resolver.serving_manifest_digest(manifest))
+    if not allowed:
+        with pytest.raises(serving_resolver.ServingPoolResolutionError, match='offline_gate_invalid'):
+            resolve()
+    else:
+        resolved = resolve()['active8_shadow_candidates']['PatchTST']
+        assert resolved['serving_eligible'] is False
+        assert resolved['production_effect'] is False
+        assert resolved['vote_weight'] == 0.0
+
+
+@pytest.mark.parametrize('field,value', [('vote_weight',0.1),('production_effect',True)])
+@pytest.mark.parametrize('gate,slot', [('WEAK_PASS','oof_full_fit_base_observation'),('FAIL','paired_nav_candidate_observation')])
+def test_weak_pass_observation_cannot_acquire_action_authority(field, value, gate, slot):
+    manifest = _manifest()
+    candidate = _patchtst_shadow_candidate()
+    candidate.update(offline_gate_decision=gate, selection_slot=slot)
+    candidate[field] = value
+    manifest['active8_shadow_candidates'] = [candidate]
+    with pytest.raises(serving_resolver.ServingPoolResolutionError):
+        serving_resolver.build_pool_from_frozen_manifest(
+            manifest, expected_digest=serving_resolver.serving_manifest_digest(manifest))

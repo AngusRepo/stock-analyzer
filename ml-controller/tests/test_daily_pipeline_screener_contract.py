@@ -367,3 +367,15 @@ def test_daily_pipeline_fails_closed_on_degraded_trading_config_contract():
     )
     with pytest.raises(RuntimeError, match="trading_config_contract_degraded:recommend"):
         _require_trading_config_contract(degraded, "recommend")
+
+
+@pytest.mark.parametrize('raw', ['2026-09-21 15:23:28','2026-09-21T15:23:28Z','2026-09-21T23:23:28+08:00'])
+def test_d1_screener_time_preserves_instant_at_strict_nav_boundary(raw):
+    from graphs.daily_pipeline_v2 import _screener_universe_cutoff_utc
+    from services.paired_nav_l3_dispatch import freeze_candidate_selection_context
+    from datetime import datetime,timezone
+    cutoff = _screener_universe_cutoff_utc(raw)
+    assert cutoff == '2026-09-21T15:23:28+00:00'
+    context = freeze_candidate_selection_context(signal_date='2026-09-21', universe_frozen_at=cutoff,
+               declarations={}, now=datetime(2026,9,21,16,tzinfo=timezone.utc))
+    assert context['universe_frozen_at'] == cutoff

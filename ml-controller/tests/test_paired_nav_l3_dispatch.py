@@ -44,6 +44,7 @@ def setup_dispatch(prepared):
         sequence_series=series, query=db.query, project=graph._pipeline_modal_active8_shadow_projection,
         subsets=graph._sequence_model_subsets)
     assert len(selection['requests']) == 2
+    assert all(c['selection_slot'] == 'paired_nav_candidate_observation' for r in selection['requests'] for c in r['candidates'])
     state = {'run_date': DAY, 'producer_run_id': 'dispatch-test', 'paired_nav_l3_dispatch': selection,
         'pipeline_modal_serving_context': {'serving_manifest': manifest, 'expected_source_sha': 'a' * 40}}
     return state

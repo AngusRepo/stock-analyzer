@@ -186,3 +186,43 @@ def test_core_model_missing_fails_but_trained_sequence_missingness_is_explicit()
             pool_models=_pool_models(),
             current_price=100.0,
         )
+
+
+
+def _timexer_artifact_and_pool():
+    from app.alpha_model_roster import TIMEXER_MODELS, stacker_features
+    artifact, pool = _artifact(), _pool_models()
+    artifact['model_order'] = list(TIMEXER_MODELS)
+    artifact['feature_names'] = list(stacker_features(TIMEXER_MODELS))
+    identity = {**artifact['observation_artifacts'].pop('DLinear'), 'artifact_id': 'TimeXer:v-new:oof_full_fit_release'}
+    artifact['observation_artifacts']['TimeXer'] = identity
+    pool['TimeXer'] = {**pool.pop('DLinear'), 'serving_artifact_id': identity['artifact_id']}
+    artifact['selected_models'] = ['TimeXer']
+    artifact['excluded_models'] = [name for name in TIMEXER_MODELS if name != 'TimeXer']
+    artifact['base_artifacts'] = {'TimeXer': identity}
+    artifact['fit']['coefficients'] = [0.0] * 16
+    artifact['fit']['coefficients'][5] = 0.10
+    artifact['payload_checksum'] = _payload_checksum(artifact)
+    return artifact, pool
+
+
+def test_timexer_slot_is_scored_without_dlinear_alias_or_global_roster_mutation():
+    artifact, pool = _timexer_artifact_and_pool()
+    for timexer, dlinear in [(0.9,0.0),(0.1,1.0)]:
+        result = score_active8_ensemble(rank_scores={'TimeXer':timexer,'DLinear':dlinear},
+                   artifact=artifact,pool_models=pool,current_price=100.0)
+        assert result.forecast_pct == pytest.approx(-0.05 + .1 * timexer)
+        assert set(result.evidence['availability']) == set(artifact['model_order'])
+        assert 'DLinear' not in [m['name'] for m in result.models]
+    validate_active8_ensemble_artifact(_artifact(),pool_models=_pool_models())
+
+
+@pytest.mark.parametrize('tamper', ['order','mixed','feature'])
+def test_timexer_roster_and_feature_order_remain_strict(tamper):
+    artifact,pool = _timexer_artifact_and_pool()
+    if tamper == 'order': artifact['model_order'][0:2] = reversed(artifact['model_order'][0:2])
+    elif tamper == 'mixed': artifact['model_order'].append('DLinear')
+    else: artifact['feature_names'][5] = 'DLinear.rank'
+    artifact['payload_checksum'] = _payload_checksum(artifact)
+    with pytest.raises(Active8EnsembleContractError,match='model_order_invalid|feature_contract_invalid'):
+        validate_active8_ensemble_artifact(artifact,pool_models=pool)

@@ -152,7 +152,9 @@ def test_deploy_provisions_detached_dataset_snapshot_job():
     assert 'gcloud run jobs add-iam-policy-binding "$DATASET_SNAPSHOT_JOB_NAME"' in deploy
     dataset_snapshot_sync = deploy.split("sync_dataset_snapshot_job()", 1)[1].split("run_preflight()", 1)[0]
     assert '"roles/run.jobsExecutorWithOverrides"' in dataset_snapshot_sync
-    assert '"roles/run.viewer"' not in dataset_snapshot_sync
+    assert '"roles/run.viewer"' in dataset_snapshot_sync
+    assert '--task-timeout="$PIPELINE_JOB_TIMEOUT"' in deploy
+    assert 'PIPELINE_JOB_TIMEOUT="${PIPELINE_JOB_TIMEOUT:-6600s}"' in deploy
 
 
 def test_input_only_job_cannot_emit_oof_callback_or_export_predictions(monkeypatch):

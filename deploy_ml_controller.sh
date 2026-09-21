@@ -47,6 +47,8 @@ OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-10800s}"
 BACKTEST_RESEARCH_JOB_TIMEOUT="${BACKTEST_RESEARCH_JOB_TIMEOUT:-3600s}"
 OOF_MATERIALIZE_JOB_TIMEOUT="${OOF_MATERIALIZE_JOB_TIMEOUT:-3600s}"
 DATASET_SNAPSHOT_JOB_TIMEOUT="${DATASET_SNAPSHOT_JOB_TIMEOUT:-3600s}"
+# Includes the input snapshot prerequisite; remains below the 7200s Worker lease.
+PIPELINE_JOB_TIMEOUT="${PIPELINE_JOB_TIMEOUT:-6600s}"
 SCREENER_JOB_TIMEOUT="${SCREENER_JOB_TIMEOUT:-7200s}"
 S12_STRUCTURE_JOB_TIMEOUT="${S12_STRUCTURE_JOB_TIMEOUT:-21600s}"
 STRATEGY_MINING_JOB_TIMEOUT="${STRATEGY_MINING_JOB_TIMEOUT:-28800s}"
@@ -1122,8 +1124,10 @@ sync_dataset_snapshot_job() {
   fi
   local snapshot_dispatch_account="${VERIFY_JOB_SERVICE_ACCOUNT:-${JOB_RUNTIME_SERVICE_ACCOUNT}}"
   local snapshot_dispatch_member="serviceAccount:${snapshot_dispatch_account}"
+  # Inference must observe completion of its input job before consuming the manifest.
   for role in \
-    "roles/run.jobsExecutorWithOverrides"; do
+    "roles/run.jobsExecutorWithOverrides" \
+    "roles/run.viewer"; do
     gcloud run jobs add-iam-policy-binding "$DATASET_SNAPSHOT_JOB_NAME" \
       --region="$REGION" \
       --member="$snapshot_dispatch_member" \
@@ -1362,6 +1366,7 @@ echo "=== Step 3/4: Update Job $JOB image to match Service ==="
 if ! gcloud run jobs update "$JOB" \
     --region="$REGION" \
     --image="$NEW_IMAGE" \
+    --task-timeout="$PIPELINE_JOB_TIMEOUT" \
     --service-account="$JOB_RUNTIME_SERVICE_ACCOUNT" \
     --update-labels="$PROVENANCE_LABELS" \
     --update-secrets="$RUN_SECRET_BINDINGS" \

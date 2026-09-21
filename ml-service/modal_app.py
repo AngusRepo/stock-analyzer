@@ -45,6 +45,7 @@ def _resolve_local_repo_root() -> Path:
 
 _LOCAL_REPO_ROOT   = _resolve_local_repo_root()
 _LOCAL_TOOLS_DIR   = _LOCAL_REPO_ROOT / "tools"
+_LOCAL_SCHEMAS_DIR = _LOCAL_REPO_ROOT / "schemas"
 _LOCAL_DATA_FEATURE_REGISTRY_DIR = _LOCAL_REPO_ROOT / "data" / "feature_registry"
 _LOCAL_FINLAB_SOURCE_CONTRACT = _LOCAL_REPO_ROOT / "data" / "finlab_source_contract.json"
 _LOCAL_STRATEGY_MINING_JOB = next(
@@ -116,6 +117,7 @@ image = (
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
+    .add_local_dir(str(_LOCAL_SCHEMAS_DIR), remote_path="/root/schemas")
     .add_local_dir(str(_LOCAL_DATA_FEATURE_REGISTRY_DIR), remote_path="/root/data/feature_registry")
     .add_local_file(str(_LOCAL_FINLAB_SOURCE_CONTRACT), remote_path="/root/data/finlab_source_contract.json")
     .add_local_file(str(_LOCAL_STRATEGY_MINING_JOB), remote_path="/root/strategy_mining_job_main.py")

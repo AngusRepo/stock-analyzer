@@ -165,11 +165,24 @@ export async function writeEvidenceArtifact(
     `chunk=${digest}.json`,
   ].join('/')
 
-  await (env.ARTIFACTS as any).put(r2Key, body, {
-    httpMetadata: { contentType: 'application/json; charset=utf-8' },
-    customMetadata: { checksum, schema_version: input.schemaVersion },
-  })
-  const readback = await (env.ARTIFACTS as any).get(r2Key)
+  const immutable = input.retentionClass === 'ten_year_cold_archive'
+  let readback = immutable ? await (env.ARTIFACTS as any).get(r2Key) : null
+  if (!readback) {
+    try {
+      await (env.ARTIFACTS as any).put(r2Key, body, {
+        httpMetadata: { contentType: 'application/json; charset=utf-8' },
+        customMetadata: { checksum, schema_version: input.schemaVersion },
+        ...(immutable ? { onlyIf: { etagDoesNotMatch: '*' } } : {}),
+      })
+    } catch (error) {
+      // A concurrent identical cold write can lose the create race under a bucket
+      // lock. Accept it only when the complete stored bytes verify below.
+      if (!immutable) throw error
+      readback = await (env.ARTIFACTS as any).get(r2Key)
+      if (!readback) throw error
+    }
+    readback ??= await (env.ARTIFACTS as any).get(r2Key)
+  }
   if (!readback) throw new Error(`artifact_r2_readback_missing:${r2Key}`)
   const readbackBody = await readback.text()
   const readbackChecksum = await sha256Text(readbackBody)

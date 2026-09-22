@@ -345,7 +345,7 @@ async def _bulk_load_ensemble_signals_by_stock(
         rows = await _d1_query(
             client,
             f"""
-            SELECT stock_id, prediction_date, generated_at, trade_signal, signal_raw, direction_accuracy,
+            SELECT id, stock_id, prediction_date, generated_at, trade_signal, signal_raw, direction_accuracy,
                    entry_price, stop_loss, target1, target2, forecast_data
             FROM predictions
             WHERE stock_id IN ({placeholders})
@@ -360,6 +360,22 @@ async def _bulk_load_ensemble_signals_by_stock(
         query_count += 1
         for row in rows:
             grouped[int(row["stock_id"])].append(row)
+    # Cold history preserves the declared 730-day window after online retention.
+    # Do one cold pass for the complete stock pool, not one object scan per chunk.
+    import asyncio
+    from datetime import timedelta
+    from services.retention_history import archived_predictions
+    hot_ids = [row['id'] for values in grouped.values() for row in values]
+    start_date = (datetime.now(timezone.utc).date() - timedelta(days=730)).isoformat()
+    cold = await asyncio.to_thread(lambda: list(archived_predictions(
+        start_date, '9999-12-31', model_name='ensemble', stock_ids=stock_ids, hot_ids=hot_ids)))
+    columns = ('stock_id','prediction_date','generated_at','trade_signal','signal_raw','direction_accuracy',
+               'entry_price','stop_loss','target1','target2','forecast_data')
+    for row in cold:
+        grouped[int(row['stock_id'])].append(row)
+    for stock_id, values in grouped.items():
+        ordered = sorted(values, key=lambda row: (row['prediction_date'], row['generated_at'], row['id']))
+        grouped[stock_id] = [{key: row.get(key) for key in columns} for row in ordered]
     return grouped, query_count
 
 def _parse_formal_signals(raw_signals: list[dict]) -> tuple[list[dict], dict[str, int]]:

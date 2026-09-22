@@ -604,7 +604,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     if req.include_signals:
         signals, signal_queries = _query_date_range(
             """
-            SELECT stock_id, generated_at, prediction_date, trade_signal,
+            SELECT id, stock_id, generated_at, prediction_date, trade_signal,
                    direction_accuracy, entry_price, stop_loss, target1, target2,
                    forecast_data
             FROM predictions
@@ -618,8 +618,18 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             chunk_days,
             query_client=LEARNING_D1_CLIENT,
         )
+        from services.retention_history import archived_predictions
+        columns = ["stock_id", "generated_at", "prediction_date", "trade_signal",
+                   "direction_accuracy", "entry_price", "stop_loss", "target1", "target2", "forecast_data"]
+        hot_ids = signals.get_column("id").to_list() if "id" in signals.columns else []
+        cold = [{key: row.get(key) for key in ["id", *columns]} for row in archived_predictions(
+            req.start_date, req.end_date, model_name="ensemble", hot_ids=hot_ids)]
+        if cold:
+            frames = [frame for frame in (signals, _frame(cold)) if not frame.is_empty()]
+            signals = pl.concat(frames, how="diagonal_relaxed")
         if signals.is_empty():
             raise RuntimeError("dataset_export_no_ensemble_signals")
+        signals = signals.sort(["stock_id", "generated_at", "id"]).select(columns)
         components["signals"] = signals
 
     return _write_compute_snapshot(

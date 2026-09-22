@@ -1,5 +1,6 @@
 import { inspectDataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 import { tablesForDataDomainShadowBackfill } from './dataDomainRegistry'
+import { retentionR2PolicyConfig } from './retentionArchiveOnly'
 
 export const LEARNING_HOT_RETENTION_DAYS = 120 as const
 export const LEARNING_COLD_RETENTION_DAYS = 3650 as const
@@ -11,14 +12,31 @@ type DatasetSpec = {
   dateColumn: string
 }
 
-const LEARNING_DATASETS: readonly DatasetSpec[] = [
-  { table: 'strategy_decision_log', dateColumn: 'date' },
-  { table: 'strategy_label_matrix_v4', dateColumn: 'signal_date' },
-  { table: 'canonical_selection_labels_v4', dateColumn: 'signal_date' },
-  { table: 'price_horizon_labels_v1', dateColumn: 'price_date' },
-  { table: 'price_horizon_labels_v2', dateColumn: 'price_date' },
-  { table: 'canonical_selection_outcomes_v1', dateColumn: 'signal_date' },
-] as const
+const LEARNING_DATASETS: readonly DatasetSpec[] =
+  (retentionR2PolicyConfig('learning_lineage_v1')?.sources ?? [])
+    .filter(source => source.deleteTable && source.deleteKeyColumn)
+    .map(source => ({ table: source.datasetId, dateColumn: source.dateExpression.split('.')[1] }))
+
+export function learningRetentionBlockers(input: {
+  policyReady: boolean; navReady: boolean; asOfDate: string;
+  datasets: ReadonlyArray<{ dataset_id: string; candidate_rows: number }>;
+  receipts: ReadonlyArray<{ dataset_id: string; status: string; backlog_remaining: number; updated_at: string }>;
+}) {
+  const blockers: string[] = []
+  if (!input.policyReady) blockers.push('learning_retention_policy_not_ready')
+  if (!input.navReady) blockers.push('nav_cold_storage_not_closed')
+  const since = isoDateDaysBefore(input.asOfDate, 2)
+  const byDataset = new Map(input.receipts.map(row => [row.dataset_id, row]))
+  for (const dataset of input.datasets) {
+    const row = byDataset.get(`hot-drain:${dataset.dataset_id}`)
+    const date = String(row?.updated_at ?? '').slice(0, 10)
+    if (!row || row.status !== 'cycle_complete' || Number(row.backlog_remaining) !== 0
+      || date < since || date > input.asOfDate)
+      blockers.push(`retention_executor_not_current:${dataset.dataset_id}`)
+    if (dataset.candidate_rows > 0) blockers.push(`retention_backlog:${dataset.dataset_id}`)
+  }
+  return blockers
+}
 
 function isoDateDaysBefore(asOfDate: string, days: number): string {
   const timestamp = Date.parse(`${asOfDate}T00:00:00Z`)
@@ -68,7 +86,7 @@ export async function inspectNavColdStorageReadiness(db: D1Database) {
     snapshots: numeric(snapshots?.total_snapshots), cold_snapshots: numeric(snapshots?.cold_snapshots),
     cold_payload_bytes: numeric(snapshots?.cold_payload_bytes), snapshots_pending_archive: pending,
     legacy_hot_parts: numeric(parts?.hot_parts), orphan_parts: numeric(parts?.orphan_parts),
-    automatic_delete: false, orphan_policy: 'recover_matching_input_no_blind_delete' }
+    automatic_delete: false, orphan_policy: 'verified_forensic_backup_and_writer_fence_no_nav_credit' }
 }
 
 export async function inspectLearningTenYearRetentionReadiness(
@@ -77,7 +95,7 @@ export async function inspectLearningTenYearRetentionReadiness(
   asOfDate: string,
 ) {
   const hotCutoffDate = isoDateDaysBefore(asOfDate, LEARNING_HOT_RETENTION_DAYS)
-  const [datasets, policy, runTotals, navCold] = await Promise.all([
+  const [datasets, policy, runTotals, navCold, executorReceipts] = await Promise.all([
     Promise.all(LEARNING_DATASETS.map((dataset) => inspectDataset(learningDb, dataset, hotCutoffDate))),
     opsDb.prepare(
       `SELECT policy_id, hot_retention_days, cold_retention_days, archive_store, action,
@@ -94,6 +112,11 @@ export async function inspectLearningTenYearRetentionReadiness(
         WHERE policy_id='learning_lineage_v1'`,
     ).first<Record<string, unknown>>(),
     inspectNavColdStorageReadiness(learningDb),
+    opsDb.prepare(`SELECT dataset_id,status,backlog_remaining,updated_at
+      FROM data_retention_cursors WHERE policy_id='learning_lineage_v1'
+      AND dataset_id LIKE 'hot-drain:%'`).all<{
+        dataset_id: string; status: string; backlog_remaining: number; updated_at: string
+      }>(),
   ])
   const policyReady = numeric(policy?.hot_retention_days) === LEARNING_HOT_RETENTION_DAYS
     && numeric(policy?.cold_retention_days) === LEARNING_COLD_RETENTION_DAYS
@@ -101,8 +124,10 @@ export async function inspectLearningTenYearRetentionReadiness(
     && policy?.action === 'archive_delete'
     && numeric(policy?.hard_reference_protected) === 1
     && policy?.status === 'active'
+  const blockers = learningRetentionBlockers({ policyReady, navReady: navCold.ready,
+    asOfDate, datasets, receipts: executorReceipts.results ?? [] })
   return {
-    schema_version: 'learning-ten-year-retention-readiness-v1' as const,
+    schema_version: 'learning-ten-year-retention-readiness-v2' as const,
     mode: 'read_only_audit' as const,
     as_of_date: asOfDate,
     hot_days: LEARNING_HOT_RETENTION_DAYS,
@@ -110,7 +135,9 @@ export async function inspectLearningTenYearRetentionReadiness(
     hot_cutoff_date: hotCutoffDate,
     policy_ready: policyReady,
     nav_cold_storage: navCold,
-    complete: policyReady && navCold.ready,
+    complete: blockers.length === 0,
+    blockers,
+    executor_receipts: executorReceipts.results ?? [],
     policy: policy ?? null,
     candidate_rows: datasets.reduce((sum, dataset) => sum + dataset.candidate_rows, 0),
     datasets,
@@ -124,7 +151,7 @@ export async function inspectLearningTenYearRetentionReadiness(
     automatic_delete: false,
     delete_executor_available: true,
     delete_executor: 'retention-hot-window-drain-v1',
-    next_action: 'approve_exact_production_scope_after_daily_dry_run_is_clean',
+    next_action: blockers.length ? 'close_reader_restore_executor_and_backlog_evidence' : 'continue_daily_capacity_and_retention_verification',
   }
 }
 

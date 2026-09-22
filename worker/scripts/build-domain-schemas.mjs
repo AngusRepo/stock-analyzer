@@ -7,7 +7,8 @@ const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'res
 // NAV tables/triggers have an immutable additive migration owner. Rebuilding a
 // schema from the older production snapshot must not remove these safeguards.
 const immutableSchemaExtensions = {
-  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql'],
+  ops: ['0014_retention_history_lookup.sql'],
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql'],
 }
 const extensions = Object.fromEntries(Object.entries(immutableSchemaExtensions).map(([domain, files]) => [domain,
   files.map(file => fs.readFileSync(path.join(root, 'domain-migrations', domain, file), 'utf8')).join('\n')]))
@@ -41,29 +42,38 @@ function stripComments(input) {
 }
 
 function stripRuntimeTriggers(input) {
-  // Writer/revision triggers are installed by the cutover control plane after
-  // both source and target bindings exist; they are not immutable shard schema.
-  return input.replace(/CREATE TRIGGER[\s\S]*?\nEND;/gi, '')
+  // Trigger bodies can contain CASE ... END and multiple statements on one line.
+  // Immutable extensions below are authoritative, not the source snapshot copy.
+  return sqlStatements(input).filter(statement => !/^\s*(?:CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER|DROP\s+TRIGGER)\b/i.test(statement)).join(';\n')
 }
 
 function sqlStatements(input) {
   const output = []
-  let current = ''
-  let quoted = false
+  let current = '', quote = null, word = '', triggerDepth = 0
+  const finishWord = () => {
+    if (/^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b/i.test(current)) {
+      if (/^(BEGIN|CASE)$/i.test(word)) triggerDepth++
+      if (/^END$/i.test(word)) triggerDepth--
+    }
+    word = ''
+  }
   for (let index = 0; index < input.length; index++) {
     const char = input[index]
-    if (char === "'") {
-      if (quoted && input[index + 1] === "'") {
-        current += "''"
-        index += 1
-        continue
+    if (quote) {
+      current += char
+      if (char === quote) {
+        if (input[index + 1] === quote) { current += input[++index]; continue }
+        quote = null
       }
-      quoted = !quoted
-    }
-    if (char === ';' && !quoted) {
-      output.push(current)
-      current = ''
       continue
+    }
+    if (char === "'" || char === '"' || char === '`' || char === '[') {
+      finishWord(); quote = char === '[' ? ']' : char; current += char; continue
+    }
+    if (/[A-Za-z_]/.test(char)) word += char
+    else finishWord()
+    if (char === ';' && triggerDepth === 0) {
+      output.push(current); current = ''; continue
     }
     current += char
   }

@@ -54,3 +54,5 @@ uiux_gemini_package_*.zip
 
 # Generated recovery backups and runtime receipts; excluded from release inputs.
 /audits/nav-storage-recovery-20260922/
+
+/audits/ab-capacity-closure-20260922/

@@ -241,6 +241,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'paired_nav_cold_objects_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_cold_views_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_hot_releases_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_orphan_archives_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_frozen_parts_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_frozen_manifests_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_daily_journal_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },

@@ -11,17 +11,18 @@ fs.mkdirSync(path.join(root, 'scripts'), { recursive: true })
 fs.mkdirSync(path.join(root, 'src/lib'), { recursive: true })
 fs.copyFileSync('scripts/build-domain-schemas.mjs', path.join(root, 'scripts/build-domain-schemas.mjs'))
 fs.copyFileSync('src/lib/dataDomainRegistry.ts', path.join(root, 'src/lib/dataDomainRegistry.ts'))
-const oldHead = fs.readFileSync('domain-migrations/learning/0001_learning_baseline.sql', 'utf8')
-  .match(/CREATE TABLE IF NOT EXISTS strategy_route_calibration_head_v1 \([\s\S]*?\n\);/)![0]
-fs.writeFileSync(path.join(root, 'schema.sql'), '-- minimal generator fixture\n' + oldHead)
+fs.copyFileSync('schema.sql', path.join(root, 'schema.sql'))
 for (const domain of ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research']) {
   fs.mkdirSync(path.join(root, 'domain-migrations', domain), { recursive: true })
   fs.writeFileSync(path.join(root, 'domain-migrations', domain, `0001_${domain}_baseline.sql`), '-- fixture baseline\n')
 }
-const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql']
+fs.copyFileSync('domain-migrations/ops/0014_retention_history_lookup.sql', path.join(root, 'domain-migrations/ops/0014_retention_history_lookup.sql'))
+const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql']
 fs.copyFileSync('domain-migrations/learning/0046_route_nav_diagnostic_floor.sql',
   path.join(root, 'domain-migrations/learning/0046_route_nav_diagnostic_floor.sql'))
 for (const name of names) fs.copyFileSync(`domain-migrations/learning/${name}`, path.join(root, 'domain-migrations/learning', name))
+// Exercise the real one-line trigger bodies and CASE expressions in primary input.
+fs.appendFileSync(path.join(root, 'schema.sql'), '\n' + fs.readFileSync('domain-migrations/learning/0048_paired_nav_cold_storage.sql', 'utf8'))
 const run = () => {
   const result = spawnSync(process.execPath, ['scripts/build-domain-schemas.mjs'], { cwd: root, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr || result.stdout)
@@ -34,6 +35,7 @@ for (const name of names) {
   assert.equal(fs.readFileSync(path.join(root, 'domain-migrations/learning', name), 'utf8'), original)
 }
 assert.ok(schema.includes('paired_nav_cold_objects_v1_no_replace'))
+assert.ok(schema.includes('paired_nav_orphan_retired_no_manifest'))
 assert.ok(schema.includes('paired_nav_parts_retired_no_insert'))
 assert.ok(schema.includes('paired_nav_lifecycle_no_replace_v1'))
 assert.ok(schema.includes('paired_nav_journal_no_replace_v1'))

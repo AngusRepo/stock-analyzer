@@ -181,14 +181,18 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
     already-resolved predictions.
     """
     rows = LEARNING_D1_CLIENT.query(
-        "SELECT generated_at, direction_correct "
+        "SELECT id, generated_at, direction_correct "
         "FROM predictions "
         "WHERE generated_at BETWEEN ? AND ? "
         "  AND direction_correct IN (0, 1) "
         "ORDER BY generated_at ASC",
         [start_date, end_date],
     )
-    return rows
+    from services.retention_history import archived_predictions
+    cold = [row for row in archived_predictions(start_date, end_date, date_column='generated_at',
+                hot_ids=[row['id'] for row in rows]) if row.get('direction_correct') in (0, 1)]
+    return [{'generated_at': row['generated_at'], 'direction_correct': row['direction_correct']}
+            for row in sorted([*rows, *cold], key=lambda row: (row['generated_at'], row['id']))]
 
 
 def compute_rolling_accuracy_30d(

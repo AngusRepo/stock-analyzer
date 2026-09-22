@@ -2,8 +2,8 @@ import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sha256Text } from './datasetSnapshots'
+import { buildExactRetentionDelete, buildBoundedRetentionSelect, RETENTION_CHUNK_MAX_BYTES } from './retentionExactRows'
 import {
-  buildRetentionArchiveOnlyQuery,
   retentionR2PolicyConfig,
   retentionSourceDatabase,
   type RetentionArchiveOnlyPolicyId,
@@ -116,11 +116,21 @@ async function loadCandidates(
   source: RetentionArchiveSource,
   cutoffDate: string,
   limit: number,
-): Promise<Record<string, unknown>[]> {
-  const result = await db.prepare(buildRetentionArchiveOnlyQuery(source, null))
-    .bind(cutoffDate, limit)
-    .all<Record<string, unknown>>()
-  return result.results ?? []
+): Promise<{ rows: Record<string, unknown>[]; hasMore: boolean }> {
+  const info = await db.prepare('SELECT name FROM pragma_table_info(?)')
+    .bind(source.deleteTable).all<{ name: string }>()
+  const sql = buildBoundedRetentionSelect(source, (info.results ?? []).map(row => row.name))
+  const result = await db.prepare(sql).bind(cutoffDate, limit, RETENTION_CHUNK_MAX_BYTES).all<Record<string, unknown>>()
+  const rows = result.results ?? []
+  const last = rows.at(-1)
+  const dateColumn = source.dateExpression.split('.')[1]
+  if (!dateColumn || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(dateColumn)) throw new Error('retention_source_date_invalid')
+  const after = last ? `AND (${source.dateExpression}>? OR (${source.dateExpression}=? AND ${source.keyExpression}>?))` : ''
+  const binds = last ? [cutoffDate, last[dateColumn], last[dateColumn], last.__cursor_key] : [cutoffDate]
+  const next = await db.prepare(`SELECT 1 FROM ${source.fromSql} WHERE (${source.eligibilitySql})
+    AND ${source.dateExpression}<? ${after} LIMIT 1`).bind(...binds).first()
+  if (!rows.length && next) throw new Error(`retention_row_requires_large_object_path:${source.datasetId}`)
+  return { rows, hasMore: next != null }
 }
 
 function recheckQuery(source: RetentionArchiveSource, keyCount: number): string {
@@ -136,7 +146,7 @@ function recheckQuery(source: RetentionArchiveSource, keyCount: number): string 
    WHERE __archive_date IS NOT NULL
      AND __archive_date < ?
      AND __cursor_key IN (${placeholders})
-   ORDER BY __archive_date ASC, __cursor_key ASC
+   ORDER BY ${source.dateExpression.split('.')[1]} ASC, __cursor_key ASC
   `
 }
 
@@ -177,13 +187,9 @@ async function deleteVerifiedRows(
   }
   await assertRowsUnchanged(db, source, cutoffDate, rows)
   const keys = rows.map((row) => row.__cursor_key)
-  const result = await db.prepare(`
-    DELETE FROM ${source.deleteTable}
-     WHERE ${source.deleteKeyColumn} IN (SELECT value FROM json_each(?))
-       AND substr(${source.dateExpression}, 1, 10) < ?
-       AND (${source.eligibilitySql})
-    RETURNING ${source.deleteKeyColumn} AS deleted_key
-  `).bind(JSON.stringify(keys), cutoffDate).all<{ deleted_key: unknown }>()
+  const exact = buildExactRetentionDelete(source, rows)
+  const result = await db.prepare(exact.sql)
+    .bind(exact.rowsJson, cutoffDate).all<{ deleted_key: unknown }>()
   const deletedKeys = (result.results ?? []).map((row) => String(row.deleted_key)).sort()
   const expectedKeys = keys.map((key) => String(key)).sort()
   if (
@@ -227,7 +233,7 @@ async function runPolicy(
   for (const source of drainSources) {
     const sourceDb = retentionSourceDatabase(env, source.sourceDomain)
     try {
-      const rows = await loadCandidates(sourceDb, source, cutoffDate, limit)
+      const { rows, hasMore } = await loadCandidates(sourceDb, source, cutoffDate, limit)
       scannedRows += rows.length
       if (dryRun) {
         datasets.push({
@@ -240,7 +246,7 @@ async function runPolicy(
           archived_bytes: 0,
           artifact_id: null,
           checksum: null,
-          backlog_remaining: rows.length >= limit,
+          backlog_remaining: hasMore,
           status: 'dry_run',
         })
         continue
@@ -280,6 +286,11 @@ async function runPolicy(
 
       const first = rows[0]
       const last = rows[rows.length - 1]
+      const schema = await sourceDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
+        .bind(source.deleteTable).first<{ sql: string }>()
+      if (!schema?.sql) throw new Error(`retention_restore_schema_missing:${source.datasetId}`)
+      if (new TextEncoder().encode(JSON.stringify({ rows, source_schema_sql: schema.sql })).length > 7 * 1024 * 1024)
+        throw new Error(`retention_archive_envelope_too_large:${source.datasetId}`)
       const artifact = await writeEvidenceArtifact(env, {
         domain: `retention_${policyId}_${source.datasetId}`,
         businessDate,
@@ -296,6 +307,7 @@ async function runPolicy(
           cutoff_date: cutoffDate,
           hot_retention_days: Number(policy.hot_retention_days),
           cold_retention_days: Number(policy.cold_retention_days),
+          source_schema_sql: schema.sql,
           row_checksum: await sha256Text(JSON.stringify(rows)),
           coverage_start: first.__archive_date,
           coverage_end: last.__archive_date,
@@ -306,13 +318,16 @@ async function runPolicy(
           dataset_id: source.datasetId,
           source_domain: source.sourceDomain,
           archive_before_delete: true,
+          restore_schema_version: 'sqlite-exact-rows-v1',
+          coverage_start: first.__archive_date,
+          coverage_end: last.__archive_date,
           exact_row_key_recheck: true,
           delete_executor: true,
           dry_run: false,
         },
       })
       const deleted = await deleteVerifiedRows(sourceDb, source, cutoffDate, rows)
-      const backlogRemaining = rows.length >= limit
+      const backlogRemaining = hasMore
       archivedRows += rows.length
       deletedRows += deleted
       archivedBytes += Number(artifact.byte_size)

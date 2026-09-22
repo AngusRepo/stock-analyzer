@@ -379,6 +379,36 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/atomic-source/read', a
   return new Response(object.body, { headers: { 'Content-Type': 'application/json' } })
 })
 
+// Read exact, bounded retention objects by a registered manifest identity only.
+adminControlRoutes.post('/api/internal/evidence-artifacts/retention/read', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  const input = await c.req.json().catch(() => null)
+  if (!input || Object.keys(input).join(',') !== 'artifact_id'
+    || typeof input.artifact_id !== 'string' || input.artifact_id.length > 400)
+    return c.json({ error: 'retention_artifact_identity_invalid' }, 400)
+  const row = await databaseForDataDomain(c.env, 'ops').prepare(`
+    SELECT artifact_id, r2_key, checksum, byte_size FROM run_artifacts
+     WHERE artifact_id=? AND schema_version='d1-retention-hot-window-drain-v1'
+       AND retention_class='ten_year_cold_archive' AND status='ready'
+       AND checksum_verified_at IS NOT NULL AND payload_deleted_at IS NULL
+    LIMIT 1`).bind(input.artifact_id).first<{
+      artifact_id: string; r2_key: string; checksum: string; byte_size: number
+    }>()
+  if (!row) return c.json({ error: 'retention_artifact_manifest_missing' }, 404)
+  if (!Number.isSafeInteger(row.byte_size) || row.byte_size < 1 || row.byte_size > 8 * 1024 * 1024)
+    return c.json({ error: 'retention_artifact_requires_bounded_chunk' }, 413)
+  const object = await c.env.ARTIFACTS?.get(row.r2_key)
+  if (!object) return c.json({ error: 'retention_artifact_object_missing' }, 404)
+  if (object.size !== row.byte_size) return c.json({ error: 'retention_artifact_size_mismatch' }, 409)
+  const text = await object.text()
+  const { sha256Text } = await import('../lib/datasetSnapshots')
+  if (await sha256Text(text) !== row.checksum)
+    return c.json({ error: 'retention_artifact_checksum_mismatch' }, 409)
+  return new Response(text, { headers: { 'Content-Type': 'application/json; charset=utf-8',
+    'X-Artifact-Checksum': row.checksum, 'Cache-Control': 'private, no-store' } })
+})
+
 adminControlRoutes.post('/api/internal/evidence-artifacts/s12-research/read', async (c) => {
   const authError = requireServiceToken(c)
   if (authError) return authError

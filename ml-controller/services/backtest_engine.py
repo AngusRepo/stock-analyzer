@@ -1102,9 +1102,10 @@ class MLPredictionsCache:
         Cross-references stocks.id → symbol so the dict is keyed by symbol
         (matching Candidate.symbol). Returns empty cache if no D1 rows.
         """
-        from services.domain_stock_read_models import load_learning_rows_with_symbol
+        from services.domain_stock_read_models import load_learning_rows_with_symbol, load_core_stock_identities
+        from services.retention_history import archived_predictions
         rows = load_learning_rows_with_symbol(
-            """SELECT stock_id, prediction_date AS d, direction_accuracy AS conf
+            """SELECT id, stock_id, generated_at, prediction_date AS d, direction_accuracy AS conf
                  FROM predictions
                 WHERE model_name='ensemble'
                   AND prediction_date >= ?
@@ -1112,8 +1113,15 @@ class MLPredictionsCache:
                   AND direction_accuracy IS NOT NULL""",
             [start_date, end_date],
         )
+        identities = load_core_stock_identities()
+        for row in archived_predictions(start_date, end_date, model_name='ensemble', hot_ids=[r['id'] for r in rows]):
+            stock_id = int(row['stock_id'])
+            if stock_id in identities and row.get('direction_accuracy') is not None:
+                rows.append({'id': row['id'], 'generated_at': row.get('generated_at'),
+                             'symbol': identities[stock_id]['symbol'], 'd': row['prediction_date'],
+                             'conf': row['direction_accuracy']})
         out: dict[tuple[str, str], float] = {}
-        for r in rows:
+        for r in sorted(rows, key=lambda r: (str(r.get("generated_at") or ""), int(r["id"]))):
             try:
                 out[(r["symbol"], r["d"])] = float(r["conf"])
             except (TypeError, ValueError):

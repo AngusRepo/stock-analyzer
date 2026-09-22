@@ -1,3 +1,17 @@
+# Current task — A no-cap / B actual selections / ten-year storage closure — 2026-09-22
+
+1. Same sealed 9/21 A inputs — COMPLETE: exact 672-pool replay max weight error 5.43e-14; max_positions=None still same five targets, weights, 68% exposure / 32% cash. Evidence audits/ab-capacity-closure-20260922/a-cap-comparison.json.
+2. B actual isolated output recovered: 6141 25%, 6218 18%, 6538 25%, cash32%, no overlap with A. Current frozen candidate model/ensemble checksums match old actual proof; model contains residual_mlp and exo137 TimeXer. Old account checksum differs (metadata/anchors not yet fully compared). This is late isolated allocation, not executable prospective buys. 9/22 canonical/prices not ingested at15:14TW; no current returns asserted. Evidence ab-symbol-comparison.json and ab-prices.json.
+3. IN PROGRESS: seven routing cutovers complete; ten-year blockers are actual executor/reader coverage, incomplete NAV prefixes and capacity. Local package now passes Python74 + compute exporter group12, Worker25 and both TS checks. Real production25-row local delete/archive/restore preserves every value; D1 unchanged. Byte-bounded indexed scan works on actual38-column production predictions. Added forensic Learning0049, Ops0014, locked-object-safe R2 retry and four cold prediction consumers. Other historical readers, reconciliation and recurring drain remain unclosed.
+   User additionally approved exact two orphan backups to gs://stockvision-models/paired-nav-cold/v1 after initial auto-review rejection. Both completed with hold + full checksum readback, zero D1 deletion and zero NAV credit. Wei has now explicitly approved this storage commit/push/deploy, Learning0049/Ops0014, exact orphan release after verification and R2 cold-prefix3650-day lock. Release pending. Native Wrangler confirms no R2 bucket locks; lifecycle expiration prefixes do not overlap cold evidence. Detailed evidence/report: audits/ab-capacity-closure-20260922/REPORT.md.
+4. Verify steady-state capacity, catch-up throughput, failure recovery and historical consumers; no blanket age-only deletion — pending.
+5. Complete authorized production rollout/recovery with current source protection; request only any genuinely additional Hard Safety authorization after concrete reviewed result — pending.
+6. Final evidence and wiki draft; closure status must reflect real runtime checks, no false green — pending.
+
+Authorization: local computation/inference and safe storage work. Existing release authorization covers storage rollout; evaluate exact scope before any additional deployment or deletion. No retrain, real trades, serving-model or live position-cap changes.
+
+---
+
 # Current task — predeployment local closure, no partial — 2026-09-19
 
 Verdict: **NOT COMPLETE / new-strategy predeployment blocked**. Evidence: audits/predeploy-local-closure-20260919/REPORT.md and candidate-readiness.json. Never call component passes complete strategy closure.

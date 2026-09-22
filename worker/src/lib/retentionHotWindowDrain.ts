@@ -1,3 +1,4 @@
+import { reconcileRetentionReleases } from './retentionReleaseReconciliation'
 import { releaseArchivedRows } from './retentionSourceRelease'
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
@@ -6,6 +7,7 @@ import { sha256Text } from './datasetSnapshots'
 import { buildBoundedRetentionSelect, RETENTION_CHUNK_MAX_BYTES } from './retentionExactRows'
 import {
   retentionR2PolicyConfig,
+  retentionSourceAtCutoff,
   retentionSourceDatabase,
   type RetentionArchiveOnlyPolicyId,
   type RetentionArchiveSource,
@@ -214,10 +216,14 @@ async function runPolicy(
   const drainSources = config.sources.filter(
     (source) => source.deleteTable && source.deleteKeyColumn,
   )
-  for (const source of drainSources) {
+  for (const configured of drainSources) {
+    const source = retentionSourceAtCutoff(configured, cutoffDate)
     const sourceDb = retentionSourceDatabase(env, source.sourceDomain)
     try {
-      const { rows, hasMore } = await loadCandidates(sourceDb, source, cutoffDate, limit)
+      const reconciliation = dryRun ? null : await reconcileRetentionReleases(env, sourceDb, source, policyId)
+      const candidates = await loadCandidates(sourceDb, source, cutoffDate, limit)
+      const rows = candidates.rows
+      const hasMore = candidates.hasMore || Boolean(reconciliation?.backlog_remaining)
       scannedRows += rows.length
       if (dryRun) {
         datasets.push({
@@ -246,7 +252,7 @@ async function runPolicy(
           archived_bytes: 0,
           artifact_id: null,
           checksum: null,
-          backlog_remaining: false,
+          backlog_remaining: hasMore,
           status: 'skipped',
         })
         await checkpointRetentionItem(opsDb, {
@@ -255,8 +261,8 @@ async function runPolicy(
           datasetId: `hot-drain:${source.datasetId}`,
           status: 'skipped',
           deletedRows: 0,
-          backlogRemaining: false,
-          cycleComplete: true,
+          backlogRemaining: hasMore,
+          cycleComplete: !hasMore,
           evidence: {
             schema_version: 'd1-retention-hot-window-drain-v1',
             delete_executor: true,

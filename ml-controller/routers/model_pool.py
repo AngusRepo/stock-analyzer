@@ -12,9 +12,13 @@ from starlette.concurrency import run_in_threadpool
 from services.d1_client import read_connection_scope
 
 
-async def _read_in_threadpool(reader):
+async def _read_in_threadpool(reader, *, verify_sources=False):
     def bounded_read():
         with read_connection_scope():
+            if verify_sources:
+                from services.verified_read_observation import verified_read_observation
+                with verified_read_observation():
+                    return reader()
             return reader()
     return await run_in_threadpool(bounded_read)
 
@@ -809,4 +813,4 @@ async def lineage():
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"D1 champion lineage read failed: {e}")
 
-    return await _read_in_threadpool(read_snapshot)
+    return await _read_in_threadpool(read_snapshot, verify_sources=True)

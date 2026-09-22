@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -184,9 +185,20 @@ class DomainD1Client:
         body: dict[str, Any] = {"sql": sql}
         if params:
             body["params"] = params
-        data = d1_client._post(body, timeout=timeout, database_id=self.database_id)
-        results = data.get("result") or []
-        return (results[0].get("results") or []) if results else []
+        from services.verified_read_observation import observed_read, observation_active
+        if not observation_active():
+            data = d1_client._post(body, timeout=timeout, database_id=self.database_id)
+            results = data.get("result") or []
+            return (results[0].get("results") or []) if results else []
+        from copy import deepcopy
+        request = deepcopy(body)
+        database_id = self.database_id
+        def fetch():
+            data = d1_client._post(request, timeout=timeout, database_id=database_id)
+            results = data.get("result") or []
+            return (results[0].get("results") or []) if results else []
+        return observed_read((database_id, json.dumps(request, sort_keys=True, allow_nan=False)),
+                             sql, fetch)
 
     def execute(
         self,

@@ -81,3 +81,45 @@ def test_backtest_dataset_does_not_shorten_history_to_hot_window(monkeypatch,met
  result=getattr(b.BacktestDataset,method)(*args)
  assert len(calls)==1 and calls[0][0]==table
  assert result['symbol'].to_list()==['2330'] and result['date'].to_list()==['2025-01-01']
+
+
+def test_archive_overlap_filtered_in_sql_and_uses_coverage_index():
+ from pathlib import Path
+ raw,m=archive();queries=[]
+ db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+ db.executescript('CREATE TABLE run_artifacts(artifact_id TEXT,domain TEXT,schema_version TEXT,checksum TEXT,row_count INTEGER,metadata_json TEXT,retention_class TEXT,status TEXT,payload_deleted_at TEXT); CREATE TABLE data_retention_run_items(completed_at TEXT,status TEXT,deleted_rows INTEGER,evidence_json TEXT)')
+ db.executescript((Path(__file__).resolve().parents[2]/'worker/domain-migrations/ops/0015_retention_source_release.sql').read_text(encoding='utf-8-sig'))
+ db.executescript((Path(__file__).resolve().parents[2]/'worker/domain-migrations/ops/0016_retention_history_coverage.sql').read_text(encoding='utf-8-sig'))
+ for i in range(201):
+  item=dict(m,artifact_id=f'{i:04}',metadata_json=json.dumps({'coverage_start':'2030-01-01','coverage_end':'2030-01-02'}))
+  if i==100:item=dict(m,artifact_id=f'{i:04}',metadata_json=json.dumps({'coverage_start':'2025-01-01','coverage_end':'2025-01-02'}))
+  db.execute('INSERT INTO run_artifacts VALUES(?,?,?,?,?,?,?,?,NULL)',[item[k] for k in ['artifact_id','domain','schema_version','checksum','row_count','metadata_json']]+['ten_year_cold_archive','ready'])
+  db.execute('INSERT INTO data_retention_run_items VALUES(?,?,?,?)',('2026-01-01','success',m['row_count'],json.dumps({'artifact_id':item['artifact_id']})))
+ def ops(sql,params):
+  queries.append((sql,params))
+  return [dict(r) for r in db.execute(sql,params)]
+ rows=list(archived_market_projection('stock_prices','SELECT * FROM stock_prices WHERE date BETWEEN ? AND ?',['2025-01-01','2025-01-02'],'2025-01-01','2025-01-02',query_hot=lambda *a:[],query_ops=ops,download=lambda *a:raw))
+ assert len(rows)==2 and len(queries)==1
+ plan=' '.join(r['detail'] for r in db.execute('EXPLAIN QUERY PLAN '+queries[0][0],queries[0][1]))
+ assert 'idx_artifact_retention_coverage' in plan
+ db.close()
+
+
+def test_disk_duplicate_index_rejects_conflicts_and_cleans_on_close(monkeypatch,tmp_path):
+ from services import retention_history_keys as h
+ from contextlib import contextmanager
+ from tempfile import TemporaryDirectory
+ locations=[]
+ @contextmanager
+ def temporary(**kwargs):
+  with TemporaryDirectory(dir=tmp_path,**kwargs) as directory:
+   locations.append(Path(directory))
+   yield directory
+ from pathlib import Path
+ monkeypatch.setattr(h,'TemporaryDirectory',temporary)
+ with h.history_keys() as remember:
+  for i in range(20000):assert remember((i,'2025-01-01'),b'a')
+  assert not remember((1,'2025-01-01'),b'a')
+  with pytest.raises(RuntimeError,match='revision_conflict'):remember((1,'2025-01-01'),b'b')
+  assert (locations[0]/'keys.sqlite').is_file()
+ assert not locations[0].exists()

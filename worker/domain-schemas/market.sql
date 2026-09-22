@@ -986,3 +986,9 @@ CREATE TRIGGER IF NOT EXISTS market_retention_releases_v1_immutable_delete
 CREATE TRIGGER IF NOT EXISTS market_retention_releases_v1_immutable_replace
  BEFORE INSERT ON market_retention_releases_v1 WHEN EXISTS(SELECT 1 FROM market_retention_releases_v1 WHERE artifact_id=NEW.artifact_id)
  BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+
+CREATE INDEX IF NOT EXISTS idx_fundamental_retention_anchor
+ON canonical_fundamental_features(stock_id,source,available_date);
+
+CREATE INDEX IF NOT EXISTS idx_market_retention_release_lookup
+ON market_retention_releases_v1(dataset_id,released_at,artifact_id);

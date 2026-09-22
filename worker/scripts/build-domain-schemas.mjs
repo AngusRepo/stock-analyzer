@@ -7,11 +7,11 @@ const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'res
 // NAV tables/triggers have an immutable additive migration owner. Rebuilding a
 // schema from the older production snapshot must not remove these safeguards.
 const immutableSchemaExtensions = {
-  ops: ['0014_retention_history_lookup.sql', '0015_retention_source_release.sql'],
-  market: ['0008_retention_source_release.sql'],
-  execution: ['0003_retention_source_release.sql'],
-  research: ['0005_retention_source_release.sql'],
-  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql', '0050_retention_source_release.sql'],
+  ops: ['0014_retention_history_lookup.sql', '0015_retention_source_release.sql', '0016_retention_history_coverage.sql', '0017_ten_year_archive_windows.sql'],
+  market: ['0008_retention_source_release.sql', '0009_retention_anchor_index.sql'],
+  execution: ['0003_retention_source_release.sql', '0004_retention_reference_indexes.sql'],
+  research: ['0005_retention_source_release.sql', '0006_retention_release_lookup.sql'],
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql', '0050_retention_source_release.sql', '0051_retention_release_lookup.sql'],
 }
 const extensions = Object.fromEntries(Object.entries(immutableSchemaExtensions).map(([domain, files]) => [domain,
   files.map(file => fs.readFileSync(path.join(root, 'domain-migrations', domain, file), 'utf8')).join('\n')]))

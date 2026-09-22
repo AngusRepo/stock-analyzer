@@ -48,12 +48,20 @@ function contextPointer(input: {
 }
 
 function evidencePointer(input: {
+  originalEvidence: string
   decisionId: string
   artifactId: string
   r2Key: string
   checksum: string
 }): string {
   return JSON.stringify({
+    // Preserve the hot fields consumed by PIT readiness and diagnostics. The full
+    // original remains in the checksum-verified artifact. Never synthesize proof.
+    ...Object.fromEntries(Object.entries(parseJsonObject(input.originalEvidence) ?? {})
+      .filter(([key]) => [
+        'pit_reconstruction', 'feature_ref_diagnostics', 'evaluability',
+        'signal_dsl_diagnostics', 'base_gate_diagnostics', 'rejection_diagnostics',
+      ].includes(key))),
     schema_version: 'strategy-evidence-pointer-v1',
     decision_id: input.decisionId,
     artifact_id: input.artifactId,
@@ -92,6 +100,8 @@ export async function runLegacyStrategyEvidenceMigration(
       SELECT date, symbol
         FROM strategy_decision_log
        WHERE context_id IS NULL
+         AND CASE WHEN json_valid(context_json) THEN COALESCE(json_extract(context_json, '$.schema_version'), '') ELSE '' END
+             NOT IN ('strategy-context-historical-matrix-projection-v1', 'strategy-context-pointer-v1')
          AND (date > ? OR (date = ? AND symbol > ?))
        GROUP BY date, symbol
        ORDER BY date ASC, symbol ASC
@@ -103,6 +113,8 @@ export async function runLegacyStrategyEvidenceMigration(
       FROM strategy_decision_log d
       JOIN candidate_contexts c ON c.date=d.date AND c.symbol=d.symbol
      WHERE d.context_id IS NULL
+       AND CASE WHEN json_valid(d.context_json) THEN COALESCE(json_extract(d.context_json, '$.schema_version'), '') ELSE '' END
+           NOT IN ('strategy-context-historical-matrix-projection-v1', 'strategy-context-pointer-v1')
      ORDER BY d.date ASC, d.symbol ASC, d.strategy_id ASC, d.decision_id ASC
   `).bind(cursorDate, cursorDate, cursorSymbol, symbolLimit).all<LegacyStrategyDecisionRow>()
   const rows = results ?? []
@@ -140,8 +152,6 @@ export async function runLegacyStrategyEvidenceMigration(
         context_hash: contextHash,
         context_json: row.context_json,
       })
-      originalBlobBytes += new TextEncoder().encode(row.context_json).length
-      originalBlobBytes += new TextEncoder().encode(row.evidence_json).length
     }
     const first = dateRows[0]
     const last = dateRows[dateRows.length - 1]
@@ -149,7 +159,7 @@ export async function runLegacyStrategyEvidenceMigration(
       domain: 'legacy_strategy_decision_evidence',
       businessDate: date,
       producerRunId: `legacy-strategy:${date}:${first.decision_id}:${last.decision_id}`,
-      retentionClass: 'canonical_model_evidence',
+      retentionClass: 'ten_year_cold_archive',
       schemaVersion: 'legacy-strategy-decision-evidence-v2',
       payload: {
         contexts: [...contexts.values()],
@@ -179,11 +189,56 @@ export async function runLegacyStrategyEvidenceMigration(
     artifacts += 1
 
     const contextIdByKey = new Map<string, string>()
+    for (const context of contexts.values()) {
+      const digest = context.context_hash.replace(/^sha256:/, '').slice(0, 16)
+      contextIdByKey.set(`${context.symbol}:${context.context_hash}`, `strategy-context:${context.date}:${context.symbol}:${digest}`)
+    }
+    const usedContexts = new Set<string>()
+    const updateStatements: D1PreparedStatement[] = []
+    for (const row of dateRows) {
+      const contextHash = await sha256Text(row.context_json)
+      const contextId = contextIdByKey.get(`${row.symbol}:${contextHash}`)
+      if (!contextId) throw new Error(`legacy_strategy_context_id_missing:${row.decision_id}`)
+      const compactContext = contextPointer({
+        contextId,
+        artifactId: artifact.artifact_id,
+        r2Key: artifact.r2_key,
+        checksum: artifact.checksum,
+      })
+      const compactEvidence = evidencePointer({
+        originalEvidence: row.evidence_json,
+        decisionId: row.decision_id,
+        artifactId: artifact.artifact_id,
+        r2Key: artifact.r2_key,
+        checksum: artifact.checksum,
+      })
+      const compactBytes = new TextEncoder().encode(compactContext + compactEvidence).length
+      const originalBytes = new TextEncoder().encode(row.context_json + row.evidence_json).length
+      if (compactBytes >= originalBytes) continue
+      originalBlobBytes += originalBytes
+      compactBlobBytes += compactBytes
+      usedContexts.add(contextId)
+      updateStatements.push(learningDb.prepare(`
+        UPDATE strategy_decision_log
+           SET context_json=?, evidence_json=?, context_id=?, evidence_artifact_id=?
+         WHERE decision_id=?
+           AND context_id IS NULL
+           AND context_json=? AND evidence_json=?
+      `).bind(
+        compactContext,
+        compactEvidence,
+        contextId,
+        artifact.artifact_id,
+        row.decision_id,
+        row.context_json,
+        row.evidence_json,
+      ))
+    }
     const contextStatements: D1PreparedStatement[] = []
     for (const context of contexts.values()) {
       const digest = context.context_hash.replace(/^sha256:/, '').slice(0, 16)
       const contextId = `strategy-context:${context.date}:${context.symbol}:${digest}`
-      contextIdByKey.set(`${context.symbol}:${context.context_hash}`, contextId)
+      if (!usedContexts.has(contextId)) continue
       const parsed = parseJsonObject(context.context_json)
       const candidate = parseJsonObject(JSON.stringify(parsed?.candidate ?? null))
       const rawSignals = parseJsonObject(JSON.stringify(candidate?.raw_signals ?? null)) ?? {}
@@ -211,48 +266,23 @@ export async function runLegacyStrategyEvidenceMigration(
       await learningDb.batch(contextStatements.slice(offset, offset + 50))
     }
 
-    await retainArtifactHardReference(opsDb, {
+    if (updateStatements.length) await retainArtifactHardReference(opsDb, {
       artifactId: artifact.artifact_id,
       ownerType: 'strategy_decision_evidence_batch',
       ownerId: artifact.artifact_id,
     })
 
-    const updateStatements: D1PreparedStatement[] = []
-    for (const row of dateRows) {
-      const contextHash = await sha256Text(row.context_json)
-      const contextId = contextIdByKey.get(`${row.symbol}:${contextHash}`)
-      if (!contextId) throw new Error(`legacy_strategy_context_id_missing:${row.decision_id}`)
-      const compactContext = contextPointer({
-        contextId,
-        artifactId: artifact.artifact_id,
-        r2Key: artifact.r2_key,
-        checksum: artifact.checksum,
-      })
-      const compactEvidence = evidencePointer({
-        decisionId: row.decision_id,
-        artifactId: artifact.artifact_id,
-        r2Key: artifact.r2_key,
-        checksum: artifact.checksum,
-      })
-      compactBlobBytes += new TextEncoder().encode(compactContext).length
-      compactBlobBytes += new TextEncoder().encode(compactEvidence).length
-      updateStatements.push(learningDb.prepare(`
-        UPDATE strategy_decision_log
-           SET context_json=?, evidence_json=?, context_id=?, evidence_artifact_id=?
-         WHERE decision_id=?
-           AND (context_id IS NULL OR evidence_artifact_id IS NULL)
-      `).bind(
-        compactContext,
-        compactEvidence,
-        contextId,
-        artifact.artifact_id,
-        row.decision_id,
-      ))
-    }
     for (let offset = 0; offset < updateStatements.length; offset += 50) {
-      await learningDb.batch(updateStatements.slice(offset, offset + 50))
+      const batch = updateStatements.slice(offset, offset + 50)
+      const updated = await learningDb.batch(batch)
+      const changed = updated.reduce((total, result) => total + Number(result.meta?.changes ?? 0), 0)
+      if (changed !== batch.length) {
+        // Leave the cursor unchanged so concurrent source edits are re-read.
+        // Already compacted rows are skipped on retry, without losing evidence.
+        throw new Error(`legacy_strategy_source_changed:${changed}/${batch.length}`)
+      }
     }
-    migratedDecisions += dateRows.length
+    migratedDecisions += updateStatements.length
   }
 
   const lastRow = rows[rows.length - 1]

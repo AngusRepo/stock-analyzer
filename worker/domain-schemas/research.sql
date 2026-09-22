@@ -484,3 +484,7 @@ CREATE TRIGGER IF NOT EXISTS research_retention_releases_v1_immutable_delete
 CREATE TRIGGER IF NOT EXISTS research_retention_releases_v1_immutable_replace
  BEFORE INSERT ON research_retention_releases_v1 WHEN EXISTS(SELECT 1 FROM research_retention_releases_v1 WHERE artifact_id=NEW.artifact_id)
  BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+
+
+CREATE INDEX IF NOT EXISTS idx_research_retention_release_lookup
+ON research_retention_releases_v1(dataset_id,released_at,artifact_id);

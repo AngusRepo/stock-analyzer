@@ -924,31 +924,6 @@ INSERT OR IGNORE INTO data_retention_policies VALUES
   ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
-INSERT OR IGNORE INTO data_retention_policies VALUES
-  ('audit_json_r2_v1', 'ops', 'strategy_decision_log,screener_funnel_items,paper_execution_events', 90, 2555, 'r2', 'archive_scrub', 1, 1, 'active', 'Preserve scalar learning/execution rows; move large verified JSON to R2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('legacy_hot_r2_v1', 'ops', 'obsolete_screener,superseded_pending,null_date_predictions,intraday_manifests,state_space_shadow,staging_orphans', 30, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Only obsolete or superseded cohorts may be deleted after checksum-verified archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('canonical_market_hot_v1', 'market', 'canonical_market_and_fundamental_pit', 504, 3650, 'r2', 'archive_delete', 1, 1, 'active', '504-day hot PIT window; active artifact hard references block retirement', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('learning_lineage_v1', 'learning', 'predictions,labels,replay,snapshots,oof', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot; active/champion hard references block archive deletion; retain ten-year verified cold lineage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
-INSERT OR IGNORE INTO data_retention_policies VALUES
-  ('market_sessions_hot_v1', 'market', 'market_trading_sessions', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Observed exchange sessions remain hot for point-in-time joins and retain a ten-year cold copy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('price_horizon_learning_v1', 'learning', 'price_horizon_labels_v1,price_horizon_projection_status', 730, NULL, 'r2', 'retain', 1, 1, 'active', 'Executable five-session labels remain protected while referenced by active or champion artifacts', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('price_horizon_rejections_v1', 'learning', 'price_horizon_label_rejections_v1', 90, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Missing price evidence is retained hot for repair and cold for lineage audit', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('price_horizon_ops_v1', 'ops', 'price_horizon_projection_runs', 504, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Projection run summaries remain available for lifecycle and SLA audits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
-INSERT INTO data_domain_cutovers(domain, status, source_binding, target_binding)
-VALUES
-  ('core', 'legacy', 'DB', 'CORE_DB'),
-  ('market', 'legacy', 'DB', 'MARKET_DB'),
-  ('learning', 'legacy', 'DB', 'LEARNING_DB'),
-  ('ops', 'legacy', 'DB', 'OPS_DB'),
-  ('execution', 'legacy', 'DB', 'EXECUTION_DB'),
-  ('paper', 'legacy', 'DB', 'PAPER_DB'),
-  ('research', 'legacy', 'DB', 'RESEARCH_DB')
-ON CONFLICT(domain) DO NOTHING;
-
 -- Bound cold-history lookup cost by artifact identity instead of scanning all run items.
 CREATE INDEX IF NOT EXISTS idx_retention_item_artifact_release
 ON data_retention_run_items (
@@ -973,3 +948,24 @@ CREATE TRIGGER IF NOT EXISTS ops_retention_releases_v1_immutable_delete
 CREATE TRIGGER IF NOT EXISTS ops_retention_releases_v1_immutable_replace
  BEFORE INSERT ON ops_retention_releases_v1 WHEN EXISTS(SELECT 1 FROM ops_retention_releases_v1 WHERE artifact_id=NEW.artifact_id)
  BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+
+-- Filter cold market history by overlapping source dates before transferring manifests.
+-- Unknown legacy coverage remains visible and must be verified by the reader.
+CREATE INDEX IF NOT EXISTS idx_artifact_retention_coverage
+ON run_artifacts(domain,schema_version,
+ COALESCE(CASE WHEN json_valid(metadata_json) THEN json_extract(metadata_json,'$.coverage_end') END,'9999-12-31'),
+ COALESCE(CASE WHEN json_valid(metadata_json) THEN json_extract(metadata_json,'$.coverage_start') END,'0000-01-01'),
+ artifact_id)
+WHERE retention_class='ten_year_cold_archive' AND status='ready' AND payload_deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ops_retention_release_lookup
+ON ops_retention_releases_v1(dataset_id,released_at,artifact_id);
+
+-- These data are part of the ten-year archive contract; shorter debug classes
+-- must not expire their only verified historical copies.
+UPDATE data_retention_policies
+SET cold_retention_days=3650, version=version+1, updated_at=CURRENT_TIMESTAMP
+WHERE policy_id IN ('canonical_market_hot_v1','execution_ledger_v1','learning_lineage_v1',
+ 'legacy_hot_r2_v1','market_sessions_hot_v1','oof_lineage_cold_archive_v2',
+ 'price_horizon_ops_v1','price_horizon_rejections_v1','research_runs_v1')
+ AND (cold_retention_days IS NULL OR cold_retention_days<3650);

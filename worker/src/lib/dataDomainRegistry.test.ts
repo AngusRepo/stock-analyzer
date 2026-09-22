@@ -69,7 +69,7 @@ assert.deepEqual(
   [...migrationTransientTables].sort(),
   'every migration-created table must be explicitly owned or explicitly transient',
 )
-assert.equal(productionTableNames.length, 244, 'production schema table count changed; ownership review is required')
+assert.equal(productionTableNames.length, 245, 'production schema table count changed; ownership review is required')
 assert.equal(dataDomainForTable('pit_factor_shadow_daily_v1'), 'learning', 'PIT factor shadow has one Learning owner')
 assert.equal(dataDomainForTable('pit_residual_funnel_enrichment_runs_v1'), 'ops', 'PIT residual funnel receipts have one Ops owner')
 assert.equal(dataDomainForTable('canonical_revenue_observations_v2'), 'market', 'append-only revenue revisions require one Market owner')
@@ -79,7 +79,7 @@ const tableNames = [...new Set([
     .filter((table) => !migrationTransientTables.has(table) && !domainMigrationTransientTables.has(table)),
 ])]
 assertSingleDomainOwnership(tableNames)
-for (const table of ['paired_nav_cold_objects_v1', 'paired_nav_cold_views_v1', 'paired_nav_hot_releases_v1', 'paired_nav_frozen_parts_v1', 'paired_nav_frozen_manifests_v1', 'paired_nav_daily_journal_v1',
+for (const table of ['paired_nav_orphan_archives_v1', 'paired_nav_cold_objects_v1', 'paired_nav_cold_views_v1', 'paired_nav_hot_releases_v1', 'paired_nav_frozen_parts_v1', 'paired_nav_frozen_manifests_v1', 'paired_nav_daily_journal_v1',
   'paired_nav_lifecycle_closures_v1', 'paired_nav_nominations_v1', 'paired_nav_assessment_reservations_v1',
   'paired_nav_review_records_v1', 'paired_nav_review_parts_v1']) {
   assert.deepEqual(tableOwnershipMetadata(table), { table, domain: 'learning', disposition: 'full_scalar',

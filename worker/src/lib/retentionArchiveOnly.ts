@@ -1,3 +1,4 @@
+import { recentMarketRows, fundamentalAnchorEligibility, EXECUTION_EVENT_ELIGIBILITY, EXECUTION_LEG_ELIGIBILITY, EXECUTION_INTENT_ELIGIBILITY } from './retentionSourceProtection'
 import type { Bindings } from '../types'
 import type { RetentionClass } from './evidenceArtifactContract'
 import { writeEvidenceArtifact } from './artifactLifecycle'
@@ -89,20 +90,21 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
     store: 'r2',
     retentionClass: 'ten_year_cold_archive',
     sources: [
-      tableSource('market', 'stock_prices', 'date'),
-      tableSource('market', 'technical_indicators', 'date'),
-      tableSource('market', 'chip_data', 'date'),
-      tableSource('market', 'margin_data', 'date'),
-      tableSource('market', 'canonical_fundamental_features', 'available_date'),
+      tableSource('market', 'stock_prices', 'date', recentMarketRows('stock_prices', 'stock_id')),
+      tableSource('market', 'technical_indicators', 'date', recentMarketRows('technical_indicators', 'stock_id')),
+      tableSource('market', 'chip_data', 'date', recentMarketRows('chip_data', 'symbol')),
+      tableSource('market', 'margin_data', 'date', recentMarketRows('margin_data', 'stock_id')),
+      tableSource('market', 'canonical_fundamental_features', 'available_date', fundamentalAnchorEligibility('0000-01-01')),
     ],
   },
   execution_ledger_v1: {
     store: 'r2',
     retentionClass: 'ten_year_cold_archive',
     sources: [
-      tableSource('execution', 'broker_execution_intents', 'trade_date'),
-      tableSource('execution', 'broker_execution_legs', 'created_at'),
-      tableSource('execution', 'broker_execution_events', 'event_time'),
+      // Child-first order preserves D1 foreign keys; unresolved executions stay hot.
+      tableSource('execution', 'broker_execution_events', 'event_time', EXECUTION_EVENT_ELIGIBILITY),
+      tableSource('execution', 'broker_execution_legs', 'created_at', EXECUTION_LEG_ELIGIBILITY),
+      tableSource('execution', 'broker_execution_intents', 'trade_date', EXECUTION_INTENT_ELIGIBILITY),
     ],
   },
   learning_lineage_v1: {
@@ -124,7 +126,7 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   },
   legacy_hot_r2_v1: {
     store: 'r2',
-    retentionClass: 'superseded_run',
+    retentionClass: 'ten_year_cold_archive',
     sources: [
       {
         datasetId: 'obsolete_screener_items',
@@ -192,17 +194,17 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   },
   price_horizon_ops_v1: {
     store: 'r2',
-    retentionClass: 'canonical_model_evidence',
+    retentionClass: 'ten_year_cold_archive',
     sources: [tableSource('ops', 'price_horizon_projection_runs', 'outcome_as_of_date')],
   },
   price_horizon_rejections_v1: {
     store: 'r2',
-    retentionClass: 'superseded_run',
+    retentionClass: 'ten_year_cold_archive',
     sources: [tableSource('learning', 'price_horizon_label_rejections_v1', 'price_date')],
   },
   research_runs_v1: {
     store: 'r2',
-    retentionClass: 'canonical_model_evidence',
+    retentionClass: 'ten_year_cold_archive',
     sources: [
       tableSource('research', 'backtest_results', 'run_date'),
       tableSource('research', 'monte_carlo_results', 'run_date'),
@@ -221,6 +223,12 @@ export function retentionArchiveOnlyPolicyConfig(policyId: RetentionArchiveOnlyP
 export function retentionR2PolicyConfig(policyId: RetentionArchiveOnlyPolicyId): R2PolicyConfig | null {
   const config = POLICY_CONFIGS[policyId]
   return config.store === 'r2' ? config : null
+}
+
+
+export function retentionSourceAtCutoff(source: RetentionArchiveSource, cutoffDate: string): RetentionArchiveSource {
+  if (source.datasetId !== 'canonical_fundamental_features') return source
+  return { ...source, eligibilitySql: fundamentalAnchorEligibility(cutoffDate) }
 }
 
 
@@ -363,7 +371,8 @@ async function runR2Policy(
   const errors: string[] = []
   await beginRetentionRun(opsDb, { runId, policyId, businessDate })
 
-  for (const source of config.sources) {
+  for (const configured of config.sources) {
+    const source = retentionSourceAtCutoff(configured, cutoffDate)
     const cursor = await loadRetentionCursor(opsDb, policyId, source.datasetId)
     try {
       const rows = await loadRows(sourceDatabase(env, source.sourceDomain), source, cutoffDate, limit, cursor)

@@ -1,10 +1,13 @@
-# Current task — ten-year closure / A-B evidence / lab freshness / pool 502 — 2026-09-22
+# Current task — lineage / lawful history recovery / ten-year closure — 2026-09-22
 
-1. Diagnose production model-pool 502 and strategy maturity frontier; repair root causes, verify actual call paths — in progress.
-2. Verify paired A/B entry, marks, maturity and promotion statistics; report actual first eligible return and decision evidence — pending.
-3. Complete historical cold-reader and reference protection, source-release reconciliation, bounded recurring archive/drain and capacity proof — pending.
-4. Run proportional regressions and concrete release review; existing storage authorization applies only within its approved scope; no training/model/orders changes — pending.
-5. Verify production outcome where authorized, preserve factual closure and write durable wiki evidence — pending.
+1. Historical owner recovery COMPLETE for signal9/15–18: 83,512 decisions; 9/21 already21,008 decisions. No selector rerun, no model eligibility change, no NAV credit. Five-day9/15 labels still await canonical FinLab session9/22; raw stock_prices MAX(date) alone is not authoritative maturity.
+2. Lineage LOCAL VERIFIED: request-scoped deduplication plus a fresh complete source reread; ordinary inference remains unmodified. Same production source response equal for8/8models;33.78→18.50s,30→20D1 queries,48.40→20.88MB. Single paired measurement, not an SLO. Source/drift/threadpool tests pass.
+3. Ten-year LOCAL VERIFIED repairs: skip already compact matrix projections, retain PIT proof, CAS original JSON; protect last500market observations and180pre-window fundamental rows per source; child-first execution archive only for resolved state; source-release→Ops reconciliation with checksum readback/idempotent retry; indexed coverage-filtered cold reads and bounded dedup memory; archive classes/policies retain3650days. No general production deletion enabled.
+4. Tests: Python storage/readers/UI54 passed; native storage equivalence4 passed and actual old/new native settlement/equity outputs equal. Worker43 targeted tests passed after correcting stale244-table assertion for already-deployed orphan archive table; source and test TS checks pass. Some checks overlap. Current code NOT committed/deployed.
+5. Production9/22 ordinary Paper NAV966,998.13 unchanged from9/21. Paired A/B NAV0; three allocation_context manifests, no allocation_pair/execution_pair. Cannot retrospectively create prospective9/22NAV. Evening root21:00TW is configured; future paired registration still must be verified.
+6. STILL WORKING: remaining long-history readers and live reference protection per dataset, pure-storage OOF executor, sustainable recurring catch-up/steady-state capacity and actual production rollout. Do not claim full ten-year closure from this subset. Wei approved this lineage/readers/reference/reconciliation release on 2026-09-22; commit/deploy and formal verification in progress. Prior3721f6c3 release already completed.
+
+Evidence: audits/closure-continuation-20260922/ and docs/runbooks/2026-09-22-storage-pool-lab-followup.md.
 
 Previous storage release 046097ee is deployed and clean: orphan recovery complete, R2 lock verified. Nine archive-policy executors and capacity runway remain blockers. Never infer overall closure from NAV-only success.
 

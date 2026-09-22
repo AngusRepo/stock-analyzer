@@ -12,7 +12,7 @@ from services.paired_nav_collection import run_and_capture_allocation, replay_fr
 
 class DB:
     def __init__(self, *, legacy_assessments=True):
-        self.conn = sqlite3.connect(':memory:')
+        self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         migration = Path(__file__).parents[2] / 'worker/domain-migrations/learning/0040_paired_nav_shadow_journal.sql'
         self.conn.executescript(migration.read_text(encoding='utf-8'))

@@ -99,3 +99,23 @@ def test_compute_snapshot_export_keeps_archived_signals(monkeypatch):
  assert signals['prediction_date'].to_list()==['2025-01-01','2025-01-02']
  assert signals['forecast_data'][0]=='{"retained":true}'
  assert 'id' not in signals.columns
+
+
+def test_source_proof_survives_lost_ops_acknowledgement():
+ raw,m=fixture();m['release_verified_at']=None
+ def hot(sql,params):
+  if 'sqlite_master' in sql:return [{'name':'learning_retention_releases_v1'}]
+  if 'FROM learning_retention_releases_v1' in sql:return [{'checksum':m['checksum'],'dataset_id':'predictions','row_count':m['row_count']}]
+  return []
+ rows=list(archived_predictions('2025-01-01','2025-01-02',query_ops=lambda *a:[m],query_hot=hot,download=lambda m:raw))
+ assert len(rows)==2
+
+
+def test_wrong_source_proof_fails_closed():
+ raw,m=fixture();m['release_verified_at']=None
+ def hot(sql,params):
+  if 'sqlite_master' in sql:return [{'name':'learning_retention_releases_v1'}]
+  if 'FROM learning_retention_releases_v1' in sql:return [{'checksum':'wrong','dataset_id':'predictions','row_count':2}]
+  return []
+ with pytest.raises(RuntimeError,match='release_receipt_incomplete'):
+  list(archived_predictions('2025-01-01','2025-01-02',query_ops=lambda *a:[m],query_hot=hot,download=lambda m:raw))

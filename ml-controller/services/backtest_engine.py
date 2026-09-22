@@ -644,6 +644,14 @@ class BacktestDataset:
                 break
             chunk_start = _date_add(chunk_end, 1)
 
+        from services.retention_market_history import archived_market_projection
+        cold = list(archived_market_projection('stock_prices', sql, [start_date, end_date],
+            start_date, end_date, query_hot=MARKET_D1_CLIENT.query))
+        if cold:
+            cold_frame = pl.DataFrame(cold, infer_schema_length=None)
+            cold_frame = cold_frame.join(pl.DataFrame({"stock_id": list(symbol_map), "symbol": list(symbol_map.values())}), on="stock_id", how="inner")
+            chunks.append(cold_frame)
+
         if not chunks:
             return _empty_flat_df()
 
@@ -684,6 +692,14 @@ class BacktestDataset:
             if chunk_end == end_date:
                 break
             chunk_start = _date_add(chunk_end, 1)
+
+        from services.retention_market_history import archived_market_projection
+        cold = list(archived_market_projection('technical_indicators', sql, [start_date, end_date],
+            start_date, end_date, query_hot=MARKET_D1_CLIENT.query))
+        if cold:
+            cold_frame = pl.DataFrame(cold, infer_schema_length=None)
+            cold_frame = cold_frame.join(pl.DataFrame({"stock_id": list(symbol_map), "symbol": list(symbol_map.values())}), on="stock_id", how="inner")
+            chunks.append(cold_frame)
 
         if not chunks:
             return _empty_flat_df()
@@ -762,6 +778,13 @@ class BacktestDataset:
             if chunk_end == end_date:
                 break
             chunk_start = _date_add(chunk_end, 1)
+
+        from services.retention_market_history import archived_market_projection
+        cold = list(archived_market_projection('chip_data', sql, [start_date, end_date],
+            start_date, end_date, query_hot=MARKET_D1_CLIENT.query))
+        if cold:
+            cold_frame = pl.DataFrame(cold, infer_schema_length=None)
+            chunks.append(cold_frame)
 
         if not chunks:
             return _empty_flat_df()

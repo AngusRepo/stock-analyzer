@@ -256,7 +256,7 @@ dashboardReadRoutes.get('/api/model-pool/status', async (c) => {
   if (authError) return authError
 
   try {
-    return c.json(await controllerJson<any>(c.env, '/model_pool/status', { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, '/model_pool/status', { timeoutMs: 60_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
   }
@@ -267,7 +267,7 @@ dashboardReadRoutes.get('/api/model-pool/lineage', async (c) => {
   if (authError) return authError
 
   try {
-    return c.json(await controllerJson<any>(c.env, '/model_pool/lineage', { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, '/model_pool/lineage', { timeoutMs: 60_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {}, events: [] }, 502)
   }
@@ -285,7 +285,7 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry', async (c) => {
   const qs = params.toString()
 
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry${qs ? `?${qs}` : ''}`, { timeoutMs: 60_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), artifacts: [] }, 502)
   }
@@ -303,7 +303,7 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/selection', async (c)
   const qs = params.toString()
 
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/selection${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/selection${qs ? `?${qs}` : ''}`, { timeoutMs: 60_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
   }
@@ -321,7 +321,7 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/promotion_queue', asy
   const qs = params.toString()
 
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/promotion_queue${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/promotion_queue${qs ? `?${qs}` : ''}`, { timeoutMs: 60_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), queue: [] }, 502)
   }
@@ -347,7 +347,7 @@ dashboardReadRoutes.get('/api/model-pool/overview', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
   try {
-    return c.json(await controllerJson<any>(c.env, '/model_pool/overview', { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, '/model_pool/overview', { timeoutMs: 60_000 }))
   } catch {
     return c.json({ status: 'unavailable', error: 'Model pool overview unavailable' }, 502)
   }
@@ -365,7 +365,7 @@ dashboardReadRoutes.get('/api/model-pool/artifact_registry/champion_pointers', a
   const qs = params.toString()
 
   try {
-    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/champion_pointers${qs ? `?${qs}` : ''}`, { timeoutMs: 30_000 }))
+    return c.json(await controllerJson<any>(c.env, `/model_pool/artifact_registry/champion_pointers${qs ? `?${qs}` : ''}`, { timeoutMs: 60_000 }))
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e), models: {} }, 502)
   }

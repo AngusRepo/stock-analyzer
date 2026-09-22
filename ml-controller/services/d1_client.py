@@ -15,6 +15,8 @@ import logging
 import random
 import time
 from typing import Any, Optional
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from services.allocator_contract_guard import allocator_contract_guard_enabled
 
@@ -22,6 +24,22 @@ try:
     import httpx
 except ModuleNotFoundError:  # allow pure domain tests to import services without HTTP deps
     httpx = None
+
+_READ_HTTP = ContextVar('d1_read_http', default=None)
+
+
+@contextmanager
+def read_connection_scope():
+    if httpx is None:
+        yield
+        return
+    with httpx.Client() as client:
+        token = _READ_HTTP.set(client)
+        try:
+            yield
+        finally:
+            _READ_HTTP.reset(token)
+
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +182,7 @@ def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> 
 
     for attempt in range(max_attempts):
         try:
-            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+            resp = (_READ_HTTP.get() or httpx).post(url, headers=headers, json=body, timeout=timeout)
         except httpx.RequestError as e:
             last_error = RuntimeError(f"D1 request failed: network error: {e}")
             if attempt < MAX_D1_RETRIES:

@@ -314,7 +314,7 @@ def native_execution_identity(runner: Path | None = None) -> str:
                            'paired_native_models.py', 'paired_native_rescore_carry.py', 'paired_nav_strategy_bundle.py',
                            'native_paper_read_capabilities.py', 'paired_nav_journal.py', 'paired_nav_cold.py', 'paired_nav_schema.py',
                            'paired_nav_chain.py',
-                           'paired_nav_execution_environment.py', 'adaptive.py',
+                           'paired_nav_execution_environment.py', 'native_execution_equivalence.py', 'adaptive.py',
                            'native_paper_debate.py', 'debate_execution_scope.py', 'debate_service.py',
                            'llm_debate_client.py', 'finlab_corporate_actions.py',
                            'mops_corporate_terms.py', 'native_paper_time.py', 'paper_corporate_source.py',

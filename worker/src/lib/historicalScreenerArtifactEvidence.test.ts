@@ -78,6 +78,15 @@ async function main() {
   )
   assert.equal(checksumMismatch, null)
 
+  for (const labeler of ['strategy-labeler-v3-regime-veto-counterfactual-v1', 'unknown-future-labeler']) {
+    const body = manifest.replace('strategy-labeler-v1', labeler)
+    const env = envWithChecksum(`sha256:${createHash('sha256').update(body).digest('hex')}`)
+    env.ARTIFACTS.get = async () => ({text: async () => body})
+    const result = await loadHistoricalScreenerArtifactEvidence(env, signalDate, producerRunId)
+    if (labeler.startsWith('unknown')) assert.equal(result, null)
+    else assert.equal(result?.source_labeler_version, labeler)
+  }
+
   console.log('historical screener artifact evidence tests passed')
 }
 

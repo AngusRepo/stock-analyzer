@@ -1,3 +1,15 @@
+# Current task — ten-year closure / A-B evidence / lab freshness / pool 502 — 2026-09-22
+
+1. Diagnose production model-pool 502 and strategy maturity frontier; repair root causes, verify actual call paths — in progress.
+2. Verify paired A/B entry, marks, maturity and promotion statistics; report actual first eligible return and decision evidence — pending.
+3. Complete historical cold-reader and reference protection, source-release reconciliation, bounded recurring archive/drain and capacity proof — pending.
+4. Run proportional regressions and concrete release review; existing storage authorization applies only within its approved scope; no training/model/orders changes — pending.
+5. Verify production outcome where authorized, preserve factual closure and write durable wiki evidence — pending.
+
+Previous storage release 046097ee is deployed and clean: orphan recovery complete, R2 lock verified. Nine archive-policy executors and capacity runway remain blockers. Never infer overall closure from NAV-only success.
+
+---
+
 # Current task — A no-cap / B actual selections / ten-year storage closure — 2026-09-22
 
 1. Same sealed 9/21 A inputs — COMPLETE: exact 672-pool replay max weight error 5.43e-14; max_positions=None still same five targets, weights, 68% exposure / 32% cash. Evidence audits/ab-capacity-closure-20260922/a-cap-comparison.json.

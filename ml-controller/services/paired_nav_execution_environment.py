@@ -76,8 +76,9 @@ def execution_policy(environment, *, frozen_at=None):
     for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
         if str(source['variables'].get(flag, '')).lower() in {'1', 'true', 'yes', 'enabled', 'on'}:
             raise ValueError('native_registration_live_submission_enabled')
+    from services.native_execution_equivalence import policy_execution_owner
     return deepcopy({'schema_version': 'paired-nav-execution-policy-v1',
-        'execution_owner_version': environment['execution_owner_version'],
+        'execution_owner_version': policy_execution_owner(environment['execution_owner_version']),
         'account_id': environment['account_id'], 'kv_read_policy': environment['kv_read_policy'],
         'variables': source['variables'],
         # Do not reset comparisons for harmless JSON formatting/key-order changes.

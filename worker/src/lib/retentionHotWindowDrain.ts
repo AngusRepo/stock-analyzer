@@ -1,8 +1,9 @@
+import { releaseArchivedRows } from './retentionSourceRelease'
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sha256Text } from './datasetSnapshots'
-import { buildExactRetentionDelete, buildBoundedRetentionSelect, RETENTION_CHUNK_MAX_BYTES } from './retentionExactRows'
+import { buildBoundedRetentionSelect, RETENTION_CHUNK_MAX_BYTES } from './retentionExactRows'
 import {
   retentionR2PolicyConfig,
   retentionSourceDatabase,
@@ -181,27 +182,10 @@ async function deleteVerifiedRows(
   source: RetentionArchiveSource,
   cutoffDate: string,
   rows: Record<string, unknown>[],
+  artifact: { artifact_id: string; checksum: string },
 ): Promise<number> {
-  if (!source.deleteTable || !source.deleteKeyColumn) {
-    throw new Error(`retention_hot_drain_delete_contract_missing:${source.datasetId}`)
-  }
   await assertRowsUnchanged(db, source, cutoffDate, rows)
-  const keys = rows.map((row) => row.__cursor_key)
-  const exact = buildExactRetentionDelete(source, rows)
-  const result = await db.prepare(exact.sql)
-    .bind(exact.rowsJson, cutoffDate).all<{ deleted_key: unknown }>()
-  const deletedKeys = (result.results ?? []).map((row) => String(row.deleted_key)).sort()
-  const expectedKeys = keys.map((key) => String(key)).sort()
-  if (
-    deletedKeys.length !== expectedKeys.length
-    || deletedKeys.some((key, index) => key !== expectedKeys[index])
-  ) {
-    throw new Error(
-      `retention_hot_drain_delete_mismatch:${source.datasetId}:`
-      + `expected=${expectedKeys.length} actual=${deletedKeys.length}`,
-    )
-  }
-  return deletedKeys.length
+  return releaseArchivedRows(db, source, cutoffDate, rows, artifact)
 }
 
 async function runPolicy(
@@ -326,7 +310,7 @@ async function runPolicy(
           dry_run: false,
         },
       })
-      const deleted = await deleteVerifiedRows(sourceDb, source, cutoffDate, rows)
+      const deleted = await deleteVerifiedRows(sourceDb, source, cutoffDate, rows, artifact)
       const backlogRemaining = hasMore
       archivedRows += rows.length
       deletedRows += deleted

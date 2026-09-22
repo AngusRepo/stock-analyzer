@@ -7,11 +7,15 @@ const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'res
 // NAV tables/triggers have an immutable additive migration owner. Rebuilding a
 // schema from the older production snapshot must not remove these safeguards.
 const immutableSchemaExtensions = {
-  ops: ['0014_retention_history_lookup.sql'],
-  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql'],
+  ops: ['0014_retention_history_lookup.sql', '0015_retention_source_release.sql'],
+  market: ['0008_retention_source_release.sql'],
+  execution: ['0003_retention_source_release.sql'],
+  research: ['0005_retention_source_release.sql'],
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql', '0050_retention_source_release.sql'],
 }
 const extensions = Object.fromEntries(Object.entries(immutableSchemaExtensions).map(([domain, files]) => [domain,
   files.map(file => fs.readFileSync(path.join(root, 'domain-migrations', domain, file), 'utf8')).join('\n')]))
+const extensionIndexes = new Set(Object.values(extensions).flatMap(sql => [...sql.matchAll(/CREATE(?: UNIQUE)? INDEX(?: IF NOT EXISTS)?\s+([A-Za-z0-9_]+)/g)].map(match => match[1])))
 const extensionTables = new Set(Object.values(extensions).flatMap(sql =>
   [...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/g)].map(match => match[1])))
 const permanentLegacyControlTable = (table) => (
@@ -138,7 +142,7 @@ function addStatement(raw, source, strict) {
     if (strict) throw new Error(`unclassified ${source} statement: ${statement.slice(0, 120)}`)
     return
   }
-  if (extensionTables.has(identity.table)) return
+  if (extensionTables.has(identity.table) || (identity.kind === 'index' && extensionIndexes.has(identity.name))) return
   const domain = owner.get(identity.table) ?? (identity.table.startsWith('paper_') ? 'paper' : null)
   if (!domain) {
     if (permanentLegacyControlTable(identity.table)) return
@@ -170,7 +174,24 @@ fs.mkdirSync(schemaOutput, { recursive: true })
 fs.mkdirSync(migrationOutput, { recursive: true })
 
 for (const domain of domains) {
-  const statements = grouped[domain].join('\n\n')
+  // Keep the exact legacy migration-generation/check path below unchanged.
+  // The consolidated snapshot also preserves already-reviewed additive DDL
+  // which is newer than schema.sql/bootstrap; extensions replace their owners.
+  const existingPath = path.join(schemaOutput, `${domain}.sql`)
+  const consolidated = new Map()
+  if (fs.existsSync(existingPath)) {
+    for (const raw of sqlStatements(stripRuntimeTriggers(stripComments(fs.readFileSync(existingPath, 'utf8'))))) {
+      const statement = raw.trim(), identity = statementIdentity(statement)
+      if (identity && !extensionTables.has(identity.table) && !(identity.kind === 'index' && extensionIndexes.has(identity.name)))
+        consolidated.set(identity.kind === 'insert' ? statement : `${identity.kind}:${identity.name}`, statement + ';')
+    }
+  }
+  for (const statement of grouped[domain]) {
+    const identity = statementIdentity(statement)
+    const key = identity?.kind === 'insert' ? statement.replace(/;$/, '').trim() : `${identity?.kind}:${identity?.name}`
+    if (identity && !consolidated.has(key)) consolidated.set(key, statement)
+  }
+  const statements = [...consolidated.values()].join('\n\n')
   const body = (statements ? statements + '\n' : '') + (extensions[domain] ? '\n' + extensions[domain].trimEnd() + '\n' : '')
   const schema = (`-- Generated from schema.sql plus production snapshot fallback; do not edit by hand.\n${body}`)
     .replace(/[ \t]+$/gm, '')

@@ -1,25 +1,4 @@
 -- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
--- Atomic NAV original-registry adoption (Learning migration 0047).
-CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 (
-  artifact_checksum TEXT PRIMARY KEY,
-  artifact_id TEXT NOT NULL UNIQUE,
-  decision_checksum TEXT NOT NULL,
-  policy_checksum TEXT NOT NULL,
-  knowledge_cutoff_date TEXT NOT NULL,
-  receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
-  receipt_checksum TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_update_v1
-BEFORE UPDATE ON strategy_atomic_nav_adoptions_v1
-BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
-CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_delete_v1
-BEFORE DELETE ON strategy_atomic_nav_adoptions_v1
-BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
-CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_replace_v1
-BEFORE INSERT ON strategy_atomic_nav_adoptions_v1
-WHEN EXISTS(SELECT 1 FROM strategy_atomic_nav_adoptions_v1 WHERE artifact_checksum=NEW.artifact_checksum)
-BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
 CREATE TABLE IF NOT EXISTS predictions (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   stock_id           INTEGER NOT NULL,
@@ -463,6 +442,7 @@ CREATE TABLE IF NOT EXISTS active8_ensemble_artifacts_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_active8_ensemble_artifacts_state
   ON active8_ensemble_artifacts_v1(state, updated_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_active8_ensemble_artifacts_run
   ON active8_ensemble_artifacts_v1(training_run_id, knowledge_cutoff_date DESC);
 
@@ -484,6 +464,7 @@ CREATE TABLE IF NOT EXISTS active8_ensemble_validation_attempts_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_active8_ensemble_validation_attempts_cohort
   ON active8_ensemble_validation_attempts_v1(cohort_id, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_active8_ensemble_validation_attempts_run
   ON active8_ensemble_validation_attempts_v1(training_run_id, knowledge_cutoff_date DESC);
 
@@ -1047,6 +1028,7 @@ CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_date
 
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_evaluable
   ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, strategy_hit);
+
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_regime_veto
   ON strategy_label_matrix_v4(signal_date, strategy_id, pre_regime_setup_hit, regime_eligible);
 
@@ -1083,10 +1065,6 @@ CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_runs_v4_date
 
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_runs_v4_payload
   ON strategy_label_matrix_runs_v4(producer_run_id, status, payload_checksum);
-
--- Durable, fenced staging for selection-reference + strategy-matrix replacement.
--- Canonical rows remain readable until a fully validated attempt is promoted by
--- one atomic D1 batch.
 
 CREATE TABLE IF NOT EXISTS selection_evidence_staging_runs_v1 (
   producer_run_id TEXT PRIMARY KEY,
@@ -1293,7 +1271,6 @@ CREATE TABLE IF NOT EXISTS strategy_policy_state (
   updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Explicit operator dispositions only. A missing source is never a successful evidence day.
 CREATE TABLE IF NOT EXISTS strategy_evidence_gap_dispositions_v1 (
   signal_date TEXT PRIMARY KEY,
   status TEXT NOT NULL CHECK(status IN ('excluded_missing_source','revoked')),
@@ -1330,6 +1307,7 @@ CREATE TABLE IF NOT EXISTS strategy_evidence_rebuild_runs_v5 (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_evidence_rebuild_v5_status
   ON strategy_evidence_rebuild_runs_v5(status, signal_date);
+
 CREATE INDEX IF NOT EXISTS idx_strategy_evidence_rebuild_v5_producer
   ON strategy_evidence_rebuild_runs_v5(signal_date, producer_run_id, status);
 
@@ -2057,8 +2035,6 @@ CREATE INDEX IF NOT EXISTS idx_s12_formal_ev_decisions_symbol
 
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_evaluability ON strategy_decision_log(date DESC, strategy_id, evaluable, matched);
 
--- Append-only, versioned L1.5 route evidence. Historical PIT replay is
--- materialized here without mutating immutable v1/v2 selection references.
 CREATE TABLE IF NOT EXISTS strategy_route_versioned_evidence_v1 (
   route_version TEXT NOT NULL,
   signal_date TEXT NOT NULL,
@@ -2217,9 +2193,6 @@ CREATE TABLE IF NOT EXISTS s12_exit_policy_promotion_events_v1 (
 CREATE INDEX IF NOT EXISTS idx_s12_exit_policy_events_created
   ON s12_exit_policy_promotion_events_v1(created_at DESC, event_id DESC);
 
--- Frozen GA challenger versus the production configuration captured at enrollment.
--- This lane is prospective, read-only with respect to trading, and Learning D1-owned.
-
 CREATE TABLE IF NOT EXISTS ga_optimizer_shadow_candidates_v1 (
   shadow_id TEXT PRIMARY KEY,
   candidate_registry_id TEXT NOT NULL,
@@ -2299,6 +2272,57 @@ CREATE TABLE IF NOT EXISTS ga_optimizer_shadow_runs_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_ga_optimizer_shadow_runs_date_v1
   ON ga_optimizer_shadow_runs_v1(business_date DESC, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_evidence_metric_snapshot_runs_v2 (
+ snapshot_run_id TEXT PRIMARY KEY,
+ outcome_as_of_date TEXT NOT NULL,
+ definition_version TEXT NOT NULL,
+ source_mode TEXT NOT NULL CHECK(source_mode IN ('authority_bridge','learning_target')),
+ publication_scope TEXT NOT NULL,
+ materialization_source TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status='ready'),
+ profile_count INTEGER NOT NULL,
+ observation_count INTEGER NOT NULL,
+ metric_row_count INTEGER NOT NULL,
+ ready_row_count INTEGER NOT NULL,
+ payload_checksum TEXT NOT NULL CHECK(length(payload_checksum)=64),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(outcome_as_of_date,definition_version,source_mode,publication_scope)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_evidence_metric_snapshot_rows_v2 (
+ snapshot_run_id TEXT NOT NULL REFERENCES strategy_evidence_metric_snapshot_runs_v2(snapshot_run_id),
+ row_index INTEGER NOT NULL,
+ row_json TEXT NOT NULL CHECK(json_valid(row_json)),
+ PRIMARY KEY(snapshot_run_id,row_index)
+);
+
+CREATE TABLE IF NOT EXISTS pit_factor_shadow_daily_v1 (
+  signal_date              TEXT NOT NULL,
+  symbol                   TEXT NOT NULL,
+  industry                 TEXT NOT NULL,
+  taxonomy_snapshot_date   TEXT NOT NULL,
+  taxonomy_checksum        TEXT NOT NULL,
+  residual_momentum_rank   REAL NOT NULL CHECK(residual_momentum_rank BETWEEN 0 AND 1),
+  breadth_rank             REAL CHECK(breadth_rank IS NULL OR breadth_rank BETWEEN 0 AND 1),
+  flow_diffusion_rank      REAL CHECK(flow_diffusion_rank IS NULL OR flow_diffusion_rank BETWEEN 0 AND 1),
+  research_base_score      REAL NOT NULL,
+  research_shadow_score    REAL NOT NULL,
+  residual_weight          REAL NOT NULL DEFAULT 0.10 CHECK(residual_weight = 0.10),
+  primary_horizon_sessions INTEGER NOT NULL DEFAULT 10 CHECK(primary_horizon_sessions = 10),
+  decision_effect          TEXT NOT NULL DEFAULT 'none' CHECK(decision_effect = 'none'),
+  factor_contract_version  TEXT NOT NULL,
+  diagnostics_json         TEXT NOT NULL DEFAULT '{}',
+  created_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(signal_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pit_factor_shadow_daily_v1_score
+  ON pit_factor_shadow_daily_v1(signal_date DESC, research_shadow_score DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pit_factor_shadow_daily_v1_industry
+  ON pit_factor_shadow_daily_v1(signal_date DESC, industry, residual_momentum_rank DESC);
 
 -- Separate from EV prediction-date maturity. No serving pointer or order ownership.
 -- Payloads are chunked to stay below D1's per-value limit. A published manifest
@@ -2409,29 +2433,29 @@ BEGIN
     ;
   SELECT RAISE(ABORT,'paired_nav_immutable_lifecycle');
 END;
--- Existing v1 receipts and values remain untouched. New runs publish immutable revisions.
-CREATE TABLE IF NOT EXISTS strategy_evidence_metric_snapshot_runs_v2 (
- snapshot_run_id TEXT PRIMARY KEY,
- outcome_as_of_date TEXT NOT NULL,
- definition_version TEXT NOT NULL,
- source_mode TEXT NOT NULL CHECK(source_mode IN ('authority_bridge','learning_target')),
- publication_scope TEXT NOT NULL,
- materialization_source TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status='ready'),
- profile_count INTEGER NOT NULL,
- observation_count INTEGER NOT NULL,
- metric_row_count INTEGER NOT NULL,
- ready_row_count INTEGER NOT NULL,
- payload_checksum TEXT NOT NULL CHECK(length(payload_checksum)=64),
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
- UNIQUE(outcome_as_of_date,definition_version,source_mode,publication_scope)
+
+-- Publication receipts for the ORIGINAL strategy registry and weight owner.
+-- No model artifacts, new evaluator, or fabricated legacy Edge/V7 statistics.
+CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 (
+  artifact_checksum TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL UNIQUE,
+  decision_checksum TEXT NOT NULL,
+  policy_checksum TEXT NOT NULL,
+  knowledge_cutoff_date TEXT NOT NULL,
+  receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json)),
+  receipt_checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-CREATE TABLE IF NOT EXISTS strategy_evidence_metric_snapshot_rows_v2 (
- snapshot_run_id TEXT NOT NULL REFERENCES strategy_evidence_metric_snapshot_runs_v2(snapshot_run_id),
- row_index INTEGER NOT NULL,
- row_json TEXT NOT NULL CHECK(json_valid(row_json)),
- PRIMARY KEY(snapshot_run_id,row_index)
-);
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_update_v1
+BEFORE UPDATE ON strategy_atomic_nav_adoptions_v1
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_delete_v1
+BEFORE DELETE ON strategy_atomic_nav_adoptions_v1
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
+CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_no_replace_v1
+BEFORE INSERT ON strategy_atomic_nav_adoptions_v1
+WHEN EXISTS(SELECT 1 FROM strategy_atomic_nav_adoptions_v1 WHERE artifact_checksum=NEW.artifact_checksum)
+BEGIN SELECT RAISE(ABORT,'strategy_atomic_nav_immutable_receipt'); END;
 
 -- Cold payloads are verified and held for at least 3650 days; original manifests stay immutable.
 CREATE TABLE IF NOT EXISTS paired_nav_cold_objects_v1 (
@@ -2526,3 +2550,19 @@ WHEN NOT EXISTS(SELECT 1 FROM paired_nav_hot_releases_v1 r JOIN paired_nav_cold_
  WHERE a.snapshot_id=OLD.snapshot_id AND OLD.part_no>=0 AND OLD.part_no<a.fragment_count
  AND NOT EXISTS(SELECT 1 FROM paired_nav_frozen_manifests_v1 m WHERE m.snapshot_id=a.snapshot_id))
 BEGIN SELECT RAISE(ABORT,'paired_nav_immutable_part'); END;
+
+-- A receipt is inserted in the SAME source D1 transaction as exact row deletion.
+CREATE TABLE IF NOT EXISTS learning_retention_releases_v1 (
+ artifact_id TEXT PRIMARY KEY,
+ checksum TEXT NOT NULL,
+ dataset_id TEXT NOT NULL,
+ row_count INTEGER NOT NULL CHECK(row_count > 0 AND row_count <= 250),
+ released_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER IF NOT EXISTS learning_retention_releases_v1_immutable_update
+ BEFORE UPDATE ON learning_retention_releases_v1 BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS learning_retention_releases_v1_immutable_delete
+ BEFORE DELETE ON learning_retention_releases_v1 BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS learning_retention_releases_v1_immutable_replace
+ BEFORE INSERT ON learning_retention_releases_v1 WHEN EXISTS(SELECT 1 FROM learning_retention_releases_v1 WHERE artifact_id=NEW.artifact_id)
+ BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;

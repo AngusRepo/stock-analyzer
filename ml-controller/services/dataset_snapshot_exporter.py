@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -59,6 +60,12 @@ def _query_date_range(
         query_count += 1
         if rows:
             frames.append(_frame(rows))
+    from services.retention_market_history import TABLES, archived_market_projection
+    match = re.search(r'\bFROM\s+([a-z_]+)\b', sql, re.I)
+    if match and match.group(1) in TABLES:
+        cold = list(archived_market_projection(match.group(1), sql, [start_date, end_date],
+            start_date, end_date, query_hot=query_client.query))
+        if cold:frames.append(_frame(cold))
     if not frames:
         return pl.DataFrame(), query_count
     return pl.concat(frames, how="diagonal_relaxed"), query_count
@@ -367,8 +374,8 @@ def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
 
 
 def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
-    return _frame(MARKET_D1_CLIENT.query(
-        """
+    from services.retention_market_history import archived_market_projection
+    sql = """
         SELECT stock_id, period, available_date, eps, roe, pe, pb,
                dividend_yield, revenue_growth_yoy, source
         FROM canonical_fundamental_features
@@ -376,10 +383,12 @@ def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
           AND as_of_date <= ?
           AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
         ORDER BY stock_id, available_date, period
-        """,
-        [end_date, end_date],
-        timeout=120.0,
-    ))
+        """
+    rows = MARKET_D1_CLIENT.query(sql, [end_date, end_date], timeout=120.0)
+    rows.extend(archived_market_projection('canonical_fundamental_features', sql, [end_date, end_date],
+        '0001-01-01', end_date, query_hot=MARKET_D1_CLIENT.query))
+    rows.sort(key=lambda r: (str(r['stock_id']), r['available_date'], r['period']))
+    return _frame(rows)
 
 
 def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:

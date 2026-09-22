@@ -17,6 +17,10 @@ for (const domain of ['core', 'market', 'learning', 'ops', 'execution', 'paper',
   fs.writeFileSync(path.join(root, 'domain-migrations', domain, `0001_${domain}_baseline.sql`), '-- fixture baseline\n')
 }
 fs.copyFileSync('domain-migrations/ops/0014_retention_history_lookup.sql', path.join(root, 'domain-migrations/ops/0014_retention_history_lookup.sql'))
+for (const [domain, name] of Object.entries({market:'0008',learning:'0050',execution:'0003',ops:'0015',research:'0005'})) {
+  const file = `${name}_retention_source_release.sql`
+  fs.copyFileSync(`domain-migrations/${domain}/${file}`, path.join(root, 'domain-migrations', domain, file))
+}
 const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql']
 fs.copyFileSync('domain-migrations/learning/0046_route_nav_diagnostic_floor.sql',
   path.join(root, 'domain-migrations/learning/0046_route_nav_diagnostic_floor.sql'))

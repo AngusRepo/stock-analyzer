@@ -30,7 +30,7 @@ const deleteFunction = implementation.slice(
   implementation.indexOf('async function runPolicy'),
 )
 assert(deleteFunction.indexOf('await assertRowsUnchanged') >= 0)
-assert(deleteFunction.indexOf('buildExactRetentionDelete') > deleteFunction.indexOf('await assertRowsUnchanged'))
+assert(deleteFunction.indexOf('releaseArchivedRows') > deleteFunction.indexOf('await assertRowsUnchanged'))
 assert.match(implementation, /retentionClass: 'ten_year_cold_archive'/)
 assert.match(implementation, /row_checksum/)
 assert.match(implementation, /checksum_verified_at/)

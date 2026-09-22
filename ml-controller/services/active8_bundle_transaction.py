@@ -37,6 +37,37 @@ def _snapshot_guards(table, where, params, rows):
     return guards
 
 
+def _read_source_set(query, reads, columns=None):
+    """Two complete observations, each from one SQL snapshot instead of five HTTP reads.
+
+    Every column is preserved, including unknown added columns and NULLs. The
+    second observation remains fresh; this is no cache or weaker CAS guard.
+    """
+    if columns is None:
+        schema = query("SELECT t.value AS table_name,p.name AS column_name "
+            "FROM json_each(?) t JOIN pragma_table_info(t.value) p ORDER BY t.value,p.cid",
+            [json.dumps([table for table, _, _ in reads])])
+        columns = {table: [] for table, _, _ in reads}
+        for row in schema:
+            name = row['column_name']
+            if row['table_name'] not in columns or not re.fullmatch(r'[a-z][a-z0-9_]*', name):
+                raise RuntimeError('active8_bundle_source_schema_invalid')
+            columns[row['table_name']].append(name)
+        if any(not names for names in columns.values()):
+            raise RuntimeError('active8_bundle_source_schema_missing')
+    selects, bindings = [], []
+    for table, where, params in reads:
+        # Scalar json_quote concatenation avoids D1's 32-argument function cap.
+        fields = ["'\"" + name + "\":' || json_quote(\"" + name + "\")" for name in columns[table]]
+        packed = "'{' || " + " || ',' || ".join(fields) + " || '}'"
+        selects.append(f"SELECT '{table}' AS source_table,{packed} AS source_row FROM {table} WHERE {where}")
+        bindings.extend(params)
+    result = {table: [] for table, _, _ in reads}
+    for row in query(' UNION ALL '.join(selects), bindings):
+        result[row['source_table']].append(json.loads(row['source_row']))
+    return [result[table] for table, _, _ in reads], columns
+
+
 def prepare_bundle_transaction(*, query, by_model, supplied_pointers, ensemble_row, selected_models):
     """Re-read source state, return transaction guards or a verified old commit."""
     model_names = sorted(by_model)
@@ -50,8 +81,8 @@ def prepare_bundle_transaction(*, query, by_model, supplied_pointers, ensemble_r
         ('model_champion_history', 'retired_at IS NULL AND model_name IN (' +
          ','.join('?' for _ in selected_models) + ')', selected_models),
     ]
-    snapshots = [(table, where, params, query(f'SELECT * FROM {table} WHERE {where}', params))
-                 for table, where, params in reads]
+    observations, source_columns = _read_source_set(query, reads)
+    snapshots = [(table, where, params, rows) for (table, where, params), rows in zip(reads, observations)]
     base_rows, pointers, ensembles, ensemble_pointers, histories = [item[3] for item in snapshots]
     live_base = {row['model_name']: row for row in base_rows}
     live_pointers = {row['model_name']: row for row in pointers}
@@ -106,8 +137,10 @@ def prepare_bundle_transaction(*, query, by_model, supplied_pointers, ensemble_r
         # recovery receipt. No D1/KV writes are used for recovery.
         def ordered(rows):
             return sorted(json.dumps(row, sort_keys=True, allow_nan=False) for row in rows)
-        if any(ordered(query(f'SELECT * FROM {table} WHERE {where}', params)) != ordered(rows)
-               for table, where, params, rows in snapshots):
+        repeated, repeated_columns = _read_source_set(query, reads)
+        if repeated_columns != source_columns:
+            raise RuntimeError('active8_bundle_recovery_source_changed')
+        if any(ordered(observed) != ordered(rows) for observed, (_, _, _, rows) in zip(repeated, snapshots)):
             raise RuntimeError('active8_bundle_recovery_source_changed')
         return {'guards': [], 'recovered_existing_commit': True, 'confirmed_at': pointer['promoted_at'],
                 'promotion_evidence': receipt}

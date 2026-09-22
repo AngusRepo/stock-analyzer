@@ -114,6 +114,13 @@ def _query_native_pit_component_domain_split(
                 """,
                 dates,
             )
+            from services.retention_history import archived_predictions
+            prediction_rows.extend(row for row in archived_predictions(
+                min(dates), max(dates), model_name='ensemble',
+                hot_ids=[row['id'] for row in prediction_rows], query_hot=LEARNING_D1_CLIENT.query)
+                if str(row.get('prediction_date') or '')[:10] in set(dates))
+            prediction_rows.sort(key=lambda row: (
+                str(row.get('generated_at') or ''), int(row.get('id') or 0)), reverse=True)
             for prediction in prediction_rows:
                 key = (
                     str(prediction.get("stock_id") or ""),

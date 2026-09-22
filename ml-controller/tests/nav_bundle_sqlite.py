@@ -14,7 +14,7 @@ def ensure_prediction_schema(conn):
 
 class SQLiteBundle:
     def __init__(self):
-        self.conn = sqlite3.connect(':memory:')
+        self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         schema = (Path(__file__).parents[2] / 'worker/domain-schemas/learning.sql').read_text(encoding='utf-8')
         for table in ('model_artifact_registry', 'model_champion_pointers', 'model_champion_history',

@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { STRATEGY_FORMAL_LABELER_VERSION, STRATEGY_FORMAL_LABELER_LEGACY_VERSION } from './strategySpec'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   verifyStrategyRouteRecoveryPacket,
@@ -7,12 +8,15 @@ import {
 
 export const HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER = 'strategy-labeler-v1' as const
 
+const SOURCE_LABELERS = [HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER,
+  STRATEGY_FORMAL_LABELER_LEGACY_VERSION, STRATEGY_FORMAL_LABELER_VERSION] as const
+
 export type HistoricalScreenerArtifactEvidence = {
   artifact_id: string
   artifact_checksum: string
   producer_run_id: string
   canonical_at: string
-  source_labeler_version: typeof HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER
+  source_labeler_version: typeof SOURCE_LABELERS[number]
   candidate_count: number
   strategy_count: number
   expected_cell_count: number
@@ -172,7 +176,7 @@ export async function loadHistoricalScreenerArtifactEvidence(
     || manifest?.business_date !== signalDate
     || manifest?.payload?.storage_mode !== 'chunked_r2_manifest_v1'
     || manifest?.payload?.logical_schema_version !== 'screener-funnel-evidence-v3'
-    || sourceLabeler !== HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER
+    || !SOURCE_LABELERS.some(version => version === sourceLabeler)
     || candidateCount == null
     || strategyCount == null
     || expectedCellCount !== candidateCount * strategyCount
@@ -184,7 +188,7 @@ export async function loadHistoricalScreenerArtifactEvidence(
     artifact_checksum: row.checksum,
     producer_run_id: producerRunId,
     canonical_at: row.canonical_at,
-    source_labeler_version: HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER,
+    source_labeler_version: sourceLabeler as typeof SOURCE_LABELERS[number],
     candidate_count: candidateCount,
     strategy_count: strategyCount,
     expected_cell_count: expectedCellCount,

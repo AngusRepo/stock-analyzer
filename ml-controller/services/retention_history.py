@@ -54,7 +54,9 @@ def archived_predictions(start_date, end_date, *, date_column='prediction_date',
             for row in relevant:
                 if row['id'] in present:continue  # Updated/recovered online data remains authoritative.
                 if not manifest.get('release_verified_at'):
-                    raise RuntimeError('retention_prediction_release_receipt_incomplete:'+manifest['artifact_id'])
+                    if not source_release_verified(hot, manifest, 'learning', 'predictions'):
+                        raise RuntimeError('retention_prediction_release_receipt_incomplete:'+manifest['artifact_id'])
+                    manifest['release_verified_at'] = 'source_transaction'
                 clean={k:v for k,v in row.items() if k not in {'__cursor_key','__archive_date'}}
                 key=row['id']
                 encoded=hashlib.sha256(json.dumps(clean,ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).digest()
@@ -64,3 +66,15 @@ def archived_predictions(start_date, end_date, *, date_column='prediction_date',
                 seen[key]=encoded
                 yield clean
         if len(manifests)<100:return
+
+
+def source_release_verified(query, manifest, domain, dataset):
+    if domain not in {'learning', 'market', 'execution', 'ops', 'research'}:
+        raise ValueError('retention_source_release_domain_invalid')
+    table=domain+'_retention_releases_v1'
+    # Migration absence cannot be interpreted as proof. Legacy archives still
+    # require their existing successful OPS receipt.
+    present=query("SELECT name FROM sqlite_master WHERE type='table' AND name=?",[table])
+    if not present:return False
+    rows=query(f'SELECT checksum,dataset_id,row_count FROM {table} WHERE artifact_id=?',[manifest['artifact_id']])
+    return len(rows)==1 and rows[0]=={'checksum':manifest['checksum'],'dataset_id':dataset,'row_count':manifest['row_count']}

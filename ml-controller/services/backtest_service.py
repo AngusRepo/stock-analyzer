@@ -328,6 +328,18 @@ async def _bulk_load_prices_by_stock(
         query_count += 1
         for row in rows:
             grouped[int(row["stock_id"])].append(row)
+    if stock_ids:
+        import asyncio
+        from services.retention_market_history import archived_market_projection
+        # Scan archives once for the full universe; keep original hot row precedence.
+        sql = """SELECT stock_id,date,open,high,low,close,volume FROM stock_prices
+                 WHERE stock_id IN (SELECT value FROM json_each(?))"""
+        cold = await asyncio.to_thread(lambda: list(archived_market_projection(
+            'stock_prices', sql, [json.dumps(stock_ids)], '0001-01-01', '9999-12-31')))
+        for row in cold:
+            grouped[int(row['stock_id'])].append(row)
+        for values in grouped.values():
+            values.sort(key=lambda row: row['date'])
     return grouped, query_count
 
 

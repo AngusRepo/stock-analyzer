@@ -368,12 +368,10 @@ CREATE TABLE IF NOT EXISTS storage_capacity_daily (
 );
 
 INSERT OR IGNORE INTO data_retention_policies VALUES
-  ('audit_json_r2_v1', 'ops', 'strategy_decision_log,screener_funnel_items,paper_execution_events', 90, 2555, 'r2', 'archive_scrub', 1, 1, 'active', 'Preserve scalar learning/execution rows; move large verified JSON to R2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('legacy_hot_r2_v1', 'ops', 'obsolete_screener,superseded_pending,null_date_predictions,intraday_manifests,state_space_shadow,staging_orphans', 30, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Only obsolete or superseded cohorts may be deleted after checksum-verified archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('canonical_market_hot_v1', 'market', 'canonical_market_and_fundamental_pit', 504, 3650, 'r2', 'archive_delete', 1, 1, 'active', '504-day hot PIT window; active artifact hard references block retirement', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('learning_lineage_v1', 'learning', 'predictions,labels,replay,snapshots,oof', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot; active/champion hard references block archive deletion; retain ten-year verified cold lineage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+  ('market_sessions_hot_v1', 'market', 'market_trading_sessions', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Observed exchange sessions remain hot for point-in-time joins and retain a ten-year cold copy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_learning_v1', 'learning', 'price_horizon_labels_v1,price_horizon_projection_status', 730, NULL, 'r2', 'retain', 1, 1, 'active', 'Executable five-session labels remain protected while referenced by active or champion artifacts', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_rejections_v1', 'learning', 'price_horizon_label_rejections_v1', 90, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Missing price evidence is retained hot for repair and cold for lineage audit', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_ops_v1', 'ops', 'price_horizon_projection_runs', 504, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Projection run summaries remain available for lifecycle and SLA audits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
 CREATE TABLE IF NOT EXISTS price_horizon_projection_status (
   signal_date TEXT PRIMARY KEY,
@@ -408,12 +406,6 @@ CREATE TABLE IF NOT EXISTS price_horizon_projection_runs (
   started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT
 );
-
-INSERT OR IGNORE INTO data_retention_policies VALUES
-  ('market_sessions_hot_v1', 'market', 'market_trading_sessions', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Observed exchange sessions remain hot for point-in-time joins and retain a ten-year cold copy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('price_horizon_learning_v1', 'learning', 'price_horizon_labels_v1,price_horizon_projection_status', 730, NULL, 'r2', 'retain', 1, 1, 'active', 'Executable five-session labels remain protected while referenced by active or champion artifacts', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('price_horizon_rejections_v1', 'learning', 'price_horizon_label_rejections_v1', 90, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Missing price evidence is retained hot for repair and cold for lineage audit', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('price_horizon_ops_v1', 'ops', 'price_horizon_projection_runs', 504, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Projection run summaries remain available for lifecycle and SLA audits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
 CREATE TABLE IF NOT EXISTS data_domain_backfill_cursors (
   domain TEXT NOT NULL,
@@ -924,6 +916,39 @@ CREATE INDEX IF NOT EXISTS idx_s12_structure_batch_runs_date_status
 CREATE INDEX IF NOT EXISTS idx_s12_structure_batch_shards_status
   ON s12_structure_batch_shards(status, updated_at, run_id, shard_index);
 
+INSERT OR IGNORE INTO data_retention_policies VALUES
+  ('audit_json_r2_v1', 'ops', 'strategy_decision_log,screener_funnel_items,paper_execution_events', 90, 2555, 'r2', 'archive_scrub', 1, 1, 'active', 'Preserve scalar learning/execution rows; move large verified JSON to R2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('legacy_hot_r2_v1', 'ops', 'obsolete_screener,superseded_pending,null_date_predictions,intraday_manifests,state_space_shadow,staging_orphans', 30, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Only obsolete or superseded cohorts may be deleted after checksum-verified archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('canonical_market_hot_v1', 'market', 'canonical_market_and_fundamental_pit', 504, 3650, 'r2', 'archive_delete', 1, 1, 'active', '504-day hot PIT window; active artifact hard references block retirement', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('learning_lineage_v1', 'learning', 'predictions,labels,replay,snapshots,oof', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot; active/champion hard references block archive deletion; retain ten-year verified cold lineage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT OR IGNORE INTO data_retention_policies VALUES
+  ('audit_json_r2_v1', 'ops', 'strategy_decision_log,screener_funnel_items,paper_execution_events', 90, 2555, 'r2', 'archive_scrub', 1, 1, 'active', 'Preserve scalar learning/execution rows; move large verified JSON to R2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('legacy_hot_r2_v1', 'ops', 'obsolete_screener,superseded_pending,null_date_predictions,intraday_manifests,state_space_shadow,staging_orphans', 30, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Only obsolete or superseded cohorts may be deleted after checksum-verified archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('canonical_market_hot_v1', 'market', 'canonical_market_and_fundamental_pit', 504, 3650, 'r2', 'archive_delete', 1, 1, 'active', '504-day hot PIT window; active artifact hard references block retirement', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('learning_lineage_v1', 'learning', 'predictions,labels,replay,snapshots,oof', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot; active/champion hard references block archive deletion; retain ten-year verified cold lineage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT OR IGNORE INTO data_retention_policies VALUES
+  ('market_sessions_hot_v1', 'market', 'market_trading_sessions', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Observed exchange sessions remain hot for point-in-time joins and retain a ten-year cold copy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_learning_v1', 'learning', 'price_horizon_labels_v1,price_horizon_projection_status', 730, NULL, 'r2', 'retain', 1, 1, 'active', 'Executable five-session labels remain protected while referenced by active or champion artifacts', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_rejections_v1', 'learning', 'price_horizon_label_rejections_v1', 90, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Missing price evidence is retained hot for repair and cold for lineage audit', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_ops_v1', 'ops', 'price_horizon_projection_runs', 504, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Projection run summaries remain available for lifecycle and SLA audits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+INSERT INTO data_domain_cutovers(domain, status, source_binding, target_binding)
+VALUES
+  ('core', 'legacy', 'DB', 'CORE_DB'),
+  ('market', 'legacy', 'DB', 'MARKET_DB'),
+  ('learning', 'legacy', 'DB', 'LEARNING_DB'),
+  ('ops', 'legacy', 'DB', 'OPS_DB'),
+  ('execution', 'legacy', 'DB', 'EXECUTION_DB'),
+  ('paper', 'legacy', 'DB', 'PAPER_DB'),
+  ('research', 'legacy', 'DB', 'RESEARCH_DB')
+ON CONFLICT(domain) DO NOTHING;
+
 -- Bound cold-history lookup cost by artifact identity instead of scanning all run items.
 CREATE INDEX IF NOT EXISTS idx_retention_item_artifact_release
 ON data_retention_run_items (
@@ -932,3 +957,19 @@ ON data_retention_run_items (
 );
 CREATE INDEX IF NOT EXISTS idx_artifact_retention_history
 ON run_artifacts(domain,schema_version,artifact_id);
+
+-- A receipt is inserted in the SAME source D1 transaction as exact row deletion.
+CREATE TABLE IF NOT EXISTS ops_retention_releases_v1 (
+ artifact_id TEXT PRIMARY KEY,
+ checksum TEXT NOT NULL,
+ dataset_id TEXT NOT NULL,
+ row_count INTEGER NOT NULL CHECK(row_count > 0 AND row_count <= 250),
+ released_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER IF NOT EXISTS ops_retention_releases_v1_immutable_update
+ BEFORE UPDATE ON ops_retention_releases_v1 BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS ops_retention_releases_v1_immutable_delete
+ BEFORE DELETE ON ops_retention_releases_v1 BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS ops_retention_releases_v1_immutable_replace
+ BEFORE INSERT ON ops_retention_releases_v1 WHEN EXISTS(SELECT 1 FROM ops_retention_releases_v1 WHERE artifact_id=NEW.artifact_id)
+ BEGIN SELECT RAISE(ABORT,'retention_release_immutable'); END;

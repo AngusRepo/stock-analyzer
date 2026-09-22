@@ -18,7 +18,12 @@ def stamp(value):
 
 
 @pytest.fixture
-def source():
+def source(monkeypatch):
+    from services import paper_corporate_source
+    from services.native_paper_source_capture import ImmutableNativeObjects
+    from test_native_paper_source_capture import Bucket
+    objects = ImmutableNativeObjects(Bucket())
+    monkeypatch.setattr(paper_corporate_source, "production_objects", lambda: objects)
     db = DB(legacy_assessments=False)
     day = '2026-09-21'
     context = {'inputs': {'alpha_policy': {'l4Distribution': {}}},
@@ -51,6 +56,8 @@ def test_original_first_phase_boundary_and_zero_authority(source, time, missed):
     assert db.query('SELECT * FROM paired_nav_frozen_manifests_v1', []) == before
     if missed:
         assert window.valid_missed_window(result)
+        assert pipeline_shadow_errors(result) == ['paired_nav:invalid_missed_execution_window']
+        result = window.persist_missed_setup_window(result)
         assert pipeline_shadow_errors(result) == []
         assert result['nav_maturity_credit'] == 0
         assert result['promotion_allowed'] is False and result['can_write_order'] is False
@@ -145,3 +152,29 @@ def test_production_preflight_calendar_error_does_not_close_chain(source, monkey
     assert result['status'] == 'failed'
     assert result['reason'] == 'paired_native_official_calendar_missing'
     assert pipeline_shadow_errors(result)
+
+
+def test_immutable_missed_receipt_retry_retains_first_actual_check(source):
+    db, collection, _, read = source
+    first = window.persist_missed_setup_window(window.missed_setup_window(collection,
+        query=db.query, kv_read=read, now=stamp('2026-09-22T08:00:00+08:00')))
+    again = window.persist_missed_setup_window(window.missed_setup_window(collection,
+        query=db.query, kv_read=read, now=stamp('2026-09-22T08:10:00+08:00')))
+    assert first == again and window.valid_missed_window_receipt(again)
+    changed = deepcopy(first)
+    changed['execution_window']['checked_at'] = '2026-09-22T08:20:00+08:00'
+    changed['execution_window']['checksum'] = digest({k:v for k,v in changed['execution_window'].items() if k != 'checksum'})
+    assert not window.valid_missed_window_receipt(changed)
+
+
+def test_failed_persistence_cannot_close_chain(source, monkeypatch):
+    from services import paper_corporate_source
+    db, collection, _, read = source
+    original = window.missed_setup_window
+    monkeypatch.setattr(window, 'missed_setup_window', partial(original,
+        kv_read=read, now=stamp('2026-09-22T08:00:00+08:00')))
+    monkeypatch.setattr(paper_corporate_source, 'production_objects',
+        lambda: (_ for _ in ()).throw(RuntimeError('storage unavailable')))
+    result = complete_pipeline_shadow(collection, query=db.query, writer=db.writer,
+        enforce_execution_window=True)
+    assert result['status'] == 'failed' and pipeline_shadow_errors(result)

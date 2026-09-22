@@ -88,3 +88,45 @@ def valid_missed_window(collection):
                 and checked >= _timestamp(first))
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def persist_missed_setup_window(collection, *, objects=None):
+    """Use the existing private immutable store; first observation wins retries."""
+    if not valid_missed_window(collection):
+        raise ValueError('paired_nav_invalid_missed_execution_window')
+    if objects is None:
+        from services.paper_corporate_source import production_objects
+        objects = production_objects()
+    window = collection['execution_window']
+    identity = {'kind': 'paired-nav-missed-setup-window-v1',
+        'snapshot_id': collection['snapshot_id'], 'first_phase_at': window['first_phase_at']}
+    delivery_id = digest(identity)
+    key = objects.lookup_delivery(delivery_id)
+    if key is None:
+        key = objects.put({'identity': identity, 'collection': collection})
+        key = objects.publish_delivery(delivery_id, key)
+    saved = objects.get(key)
+    original = saved.get('collection') or {}
+    if (saved.get('identity') != identity or not valid_missed_window(original)
+            or original['execution_window']['allocation_context_checksum'] != window['allocation_context_checksum']
+            or _timestamp(original['execution_window']['checked_at']) > _timestamp(window['checked_at'])):
+        raise ValueError('paired_nav_missed_window_receipt_mismatch')
+    return {**original, 'execution_window_receipt': {
+        'delivery_id': delivery_id, 'object_key': key, 'payload_checksum': digest(saved),
+        'readback_verified': True}}
+
+
+def valid_missed_window_receipt(collection):
+    from services.native_paper_source_capture import ImmutableNativeObjects
+    if not valid_missed_window(collection):
+        return False
+    receipt = collection.get('execution_window_receipt') or {}
+    window = collection['execution_window']
+    identity = {'kind': 'paired-nav-missed-setup-window-v1',
+        'snapshot_id': collection['snapshot_id'], 'first_phase_at': window['first_phase_at']}
+    original = {k:v for k,v in collection.items() if k not in {'execution_window_receipt','atomic_daily'}}
+    checksum = digest({'identity': identity, 'collection': original})
+    return (receipt.get('readback_verified') is True
+        and receipt.get('delivery_id') == digest(identity)
+        and receipt.get('payload_checksum') == checksum
+        and receipt.get('object_key') == ImmutableNativeObjects.PREFIX + checksum + '.json')

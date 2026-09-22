@@ -31,10 +31,10 @@ def complete_pipeline_shadow(collection, *, query, writer, enforce_execution_win
     """Independent Atomic setup cannot be starved by another candidate lane."""
     if enforce_execution_window and isinstance(collection, dict) and collection.get('snapshot_id'):
         try:
-            from services.paired_nav_execution_window import missed_setup_window
+            from services.paired_nav_execution_window import missed_setup_window, persist_missed_setup_window
             missed = missed_setup_window(collection, query=query)
             if missed is not None:
-                return missed
+                return persist_missed_setup_window(missed)
         except Exception as exc:
             return {**collection, **shadow_failure('execution_window_check', exc)}
     atomic = None
@@ -198,8 +198,8 @@ def pipeline_shadow_errors(collection):
     if collection.get('status') == 'failed':
         return [*errors, f"paired_nav:{collection.get('stage', 'unknown')}:{collection.get('reason', 'failed')}"]
     if collection.get('status') == 'missed_execution_window':
-        from services.paired_nav_execution_window import valid_missed_window
-        return errors if valid_missed_window(collection) else [*errors, 'paired_nav:invalid_missed_execution_window']
+        from services.paired_nav_execution_window import valid_missed_window_receipt
+        return errors if valid_missed_window_receipt(collection) else [*errors, 'paired_nav:invalid_missed_execution_window']
     if not collection.get('snapshot_id') or collection.get('status') not in {
             'native_execution_pairs_registered', 'awaiting_frozen_l4_candidate', 'awaiting_paired_l3_l4_release',
             'historical_not_prospective', 'not_applicable_no_formal_ml_ensemble'}:

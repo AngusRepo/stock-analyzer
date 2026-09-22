@@ -545,6 +545,36 @@ export async function closeStrategyLearningPostVerifyStage(
   db: D1Database,
   input: Pick<StrategyLearningLeaseIdentity, 'businessDate' | 'canonicalRunId'>,
 ): Promise<boolean> {
+  // Evidence-only recovery closes execution bookkeeping, never policy promotion.
+  // It must belong to the current successful pipeline and a physical evening root.
+  const policyClosureFence = `(
+              (strategy_learning.production_authority_intent=1
+                AND strategy_learning.policy_closure_status='materialized')
+              OR (
+                strategy_learning.production_authority_intent=0
+                AND strategy_learning.policy_closure_status='evidence_only'
+                AND strategy_learning.completed_at IS NOT NULL
+                AND strategy_learning.policy_closure_completed_at IS NOT NULL
+                AND strategy_learning.expected_candidates>0
+                AND strategy_learning.processed_candidates=strategy_learning.expected_candidates
+                AND strategy_learning.expected_decision_rows>0
+                AND strategy_learning.persisted_decision_rows=strategy_learning.expected_decision_rows
+                AND EXISTS (
+                  SELECT 1 FROM pipeline_stage_runs execution
+                   WHERE execution.business_date=pipeline_stage_runs.business_date
+                     AND execution.stage='pipeline_execution'
+                     AND execution.canonical_run_id=pipeline_stage_runs.canonical_run_id
+                     AND execution.status='success'
+                )
+                AND EXISTS (
+                  SELECT 1 FROM scheduler_execution_tickets_v1 root
+                   WHERE root.business_date=pipeline_stage_runs.business_date
+                     AND root.scheduler_job_id='evening-chain'
+                     AND root.ticket_kind='physical_root'
+                )
+              )
+            )`
+
   const alreadyClosed = await db.prepare(`
     SELECT 1 AS closed
       FROM pipeline_stage_runs
@@ -556,8 +586,7 @@ export async function closeStrategyLearningPostVerifyStage(
           WHERE strategy_learning.business_date=pipeline_stage_runs.business_date
             AND strategy_learning.canonical_run_id=pipeline_stage_runs.canonical_run_id
             AND strategy_learning.status='success'
-            AND strategy_learning.production_authority_intent=1
-            AND strategy_learning.policy_closure_status='materialized'
+            AND ${policyClosureFence}
        )
      LIMIT 1
   `).bind(input.businessDate, input.canonicalRunId).first<{ closed: number }>()
@@ -576,8 +605,7 @@ export async function closeStrategyLearningPostVerifyStage(
           WHERE strategy_learning.business_date=pipeline_stage_runs.business_date
             AND strategy_learning.canonical_run_id=pipeline_stage_runs.canonical_run_id
             AND strategy_learning.status='success'
-            AND strategy_learning.production_authority_intent=1
-            AND strategy_learning.policy_closure_status='materialized'
+            AND ${policyClosureFence}
        )
     RETURNING 1 AS closed
   `).bind(input.businessDate, input.canonicalRunId).first<{ closed: number }>()

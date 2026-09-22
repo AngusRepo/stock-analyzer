@@ -67,7 +67,6 @@ class FakeFinalizedLeaseD1 {
   }
 
   first(sql: string, values: unknown[]): { authorized?: number; closed?: number } | null {
-    if (sql.includes('FROM scheduler_execution_tickets_v1')) return null
     if (sql.includes('UPDATE strategy_learning_runs') && sql.includes('RETURNING 1 AS')) {
       const alias = sql.match(/RETURNING 1 AS (\w+)/)?.[1]
       const changed = this.run(sql, values)
@@ -80,6 +79,7 @@ class FakeFinalizedLeaseD1 {
         ? { closed: 1 }
         : null
     }
+    if (sql.includes('FROM scheduler_execution_tickets_v1')) return null
     if (!sql.includes('SELECT 1 AS authorized') || !sql.includes('FROM pipeline_stage_runs')) {
       throw new Error(`unsupported first SQL: ${sql}`)
     }

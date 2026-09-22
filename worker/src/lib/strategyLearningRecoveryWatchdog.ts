@@ -98,7 +98,15 @@ async function loadRecoveryRun(
        AND (
          (status='queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
          OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP))
-         OR (status='success' AND business_date=?)
+         OR (status='success' AND (
+           business_date=? OR EXISTS (
+             SELECT 1 FROM pipeline_stage_runs post_verify
+              WHERE post_verify.business_date=strategy_learning_runs.business_date
+                AND post_verify.stage='post_verify_chain'
+                AND post_verify.canonical_run_id=strategy_learning_runs.canonical_run_id
+                AND post_verify.status='waiting' AND post_verify.lease_owner IS NULL
+           )
+         ))
        )
      ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,
               business_date DESC
@@ -162,6 +170,19 @@ export async function runStrategyLearningRecoveryWatchdog(
       throw new Error(summary)
     }
     if (decision.reason === 'run_success') {
+      const { closeStrategyLearningPostVerifyStage } = await import('./strategyLearningRunState')
+      const stageClosed = await closeStrategyLearningPostVerifyStage(opsDb, {
+        businessDate: row.business_date, canonicalRunId: row.canonical_run_id,
+      })
+      if (stageClosed) {
+        await logSchedulerResult(env.KV, 'post-verify-chain', {
+          status: 'success', duration_ms: 0,
+          summary: `durable learning recovery complete policy_closure=${row.policy_closure_status}`,
+          run_id: row.canonical_run_id, run_date: row.business_date,
+          run_scope: Number(row.production_authority_intent ?? 0) === 1 ? 'live_canonical' : 'historical_replay',
+          strict: true,
+        }, env)
+      }
       const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
       const closure = await closeEveningChainRootIfComplete(opsDb, {
         businessDate: row.business_date,

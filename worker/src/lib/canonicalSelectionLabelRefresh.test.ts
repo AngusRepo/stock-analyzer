@@ -1,20 +1,23 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { listCanonicalReferences, CANONICAL_SELECTION_ADJUSTMENT_SOURCE } from './canonicalSelectionLabels'
-import { deleteRejectedMultiHorizonLabels } from './priceHorizonProjection'
+import { deleteRejectedMultiHorizonLabels, deleteResolvedMultiHorizonRejections } from './priceHorizonProjection'
 import { SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS } from './selectionReferenceEvidence'
 
 async function main() {
   const sql = new DatabaseSync(':memory:')
+  let batchCalls = 0
+  let statementCount = 0
+  let maxBindings = 0
   const db = {
     prepare(query: string) {
       const statement = sql.prepare(query)
-      return { bind(...params: any[]) { return {
+      return { bind(...params: any[]) { maxBindings = Math.max(maxBindings,params.length); return {
         async all() { return { results: statement.all(...params) } },
         async run() { return statement.run(...params) },
       } } }
     },
-    async batch(statements: any[]) { return Promise.all(statements.map(s => s.run())) },
+    async batch(statements: any[]) { batchCalls++; statementCount += statements.length; return Promise.all(statements.map(s => s.run())) },
   } as unknown as D1Database
   sql.exec(`
     CREATE TABLE selection_reference_snapshots_v1(signal_date TEXT,symbol TEXT,producer_run_id TEXT,
@@ -51,6 +54,21 @@ async function main() {
     exitDate:'2026-08-21',reason:'exit_price_row_missing'}])
   assert.deepEqual(sql.prepare('SELECT stock_id,horizon_days FROM price_horizon_labels_v2 ORDER BY stock_id').all()
     .map(r=>[r.stock_id,r.horizon_days]),[[1,10],[981,5]],'retire only the rejected exact horizon identity')
+  sql.exec('CREATE TABLE price_horizon_label_rejections_v2(stock_id INTEGER,price_date TEXT,horizon_days INTEGER)')
+  const insert=sql.prepare('INSERT INTO price_horizon_label_rejections_v2 VALUES (?,?,?)')
+  for(let id=1;id<=811;id++) for(const day of ['2026-09-08','2026-09-09']) for(const horizon of [3,5,10])
+    insert.run(id,day,horizon)
+  const resolved=Array.from({length:809},(_,i)=>i+1)
+  batchCalls=0; statementCount=0; maxBindings=0
+  await deleteResolvedMultiHorizonRejections(db,5,'2026-09-08',resolved)
+  assert.equal(batchCalls,1,'800-stock cleanup needs one D1 batch, not 41')
+  assert.equal(statementCount,9)
+  assert.ok(maxBindings<=100)
+  assert.equal(sql.prepare("SELECT COUNT(*) n FROM price_horizon_label_rejections_v2 WHERE price_date='2026-09-08' AND horizon_days=5").get()!.n,2)
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM price_horizon_label_rejections_v2').get()!.n,811*6-809,
+    'retain other dates, horizons, and unresolved symbols')
+  await deleteResolvedMultiHorizonRejections(db,5,'2026-09-08',[])
+  assert.equal(batchCalls,1,'empty cleanup does not issue SQL')
   sql.close()
   console.log('canonicalSelectionLabelRefresh: PASS')
 }

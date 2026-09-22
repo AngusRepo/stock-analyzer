@@ -798,6 +798,17 @@ async function upsertMultiHorizonRejections(
   await executeStatementBatches(db, statements)
 }
 
+export async function deleteResolvedMultiHorizonRejections(
+  db: D1Database, horizonDays: number, signalDate: string, stockIds: number[],
+): Promise<void> {
+  // Same exact identities; <=92 binds instead of one remote statement per stock.
+  const statements = chunks(stockIds, 90).map(ids => db.prepare(`
+    DELETE FROM price_horizon_label_rejections_v2
+     WHERE price_date=? AND horizon_days=? AND stock_id IN (${ids.map(() => '?').join(',')})
+  `).bind(signalDate, horizonDays, ...ids))
+  await executeStatementBatches(db, statements)
+}
+
 export async function deleteRejectedMultiHorizonLabels(
   db: D1Database, horizonDays: number, rows: PriceHorizonRejection[],
 ): Promise<void> {
@@ -893,11 +904,8 @@ export async function materializeStrategyMultiHorizonPriceLabels(
       // A newly invalid exit/entry must retire the formerly valid label, as v1
       // already does. Never leave a label and terminal rejection for one key.
       await deleteRejectedMultiHorizonLabels(targetLearningDb, horizonDays, observations.rejections)
-      const resolved = observations.labels.map((row) => targetLearningDb.prepare(`
-        DELETE FROM price_horizon_label_rejections_v2
-         WHERE stock_id=? AND price_date=? AND horizon_days=?
-      `).bind(row.stockId, row.priceDate, horizonDays))
-      await executeStatementBatches(targetLearningDb, resolved)
+      await deleteResolvedMultiHorizonRejections(targetLearningDb, horizonDays, horizon.signal_date,
+        observations.labels.map(row => row.stockId))
       await targetOpsDb.prepare(`
         INSERT INTO price_horizon_projection_status_v2 (
           signal_date, horizon_days, entry_date, exit_date, candidate_count,

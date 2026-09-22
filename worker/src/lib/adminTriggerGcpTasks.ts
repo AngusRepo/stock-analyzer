@@ -27,7 +27,7 @@ export function buildAdminGcpTriggerTaskMap(
   deps: TriggerDeps,
   schedulerContext: SchedulerCallbackContext = {},
 ): Record<string, TaskHandler> {
-  const requestedRunDate = () => c.req.query('date') || undefined
+  const requestedRunDate = () => c.req.query('date') || schedulerContext.businessDate || undefined
 
   return {
     'obsidian-daily': async () => runObsidianDaily(c.env, twToday()),

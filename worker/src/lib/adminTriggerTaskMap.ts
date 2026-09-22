@@ -4,6 +4,7 @@ import { buildAdminWorkerDomainTaskMap } from './adminTriggerWorkerDomainTasks'
 export type TaskHandler = () => Promise<any>
 
 export interface SchedulerCallbackContext {
+  businessDate?: string
   schedulerTicketId?: string
   schedulerRunId?: string
 }

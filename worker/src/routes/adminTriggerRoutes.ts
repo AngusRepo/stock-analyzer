@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
+import { resolveActive8DailyBusinessDate } from '../lib/active8DailyBusinessDate'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 import type { SchedulerCallbackContext, TaskHandler } from '../lib/adminTriggerTaskMap'
@@ -135,7 +136,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       : 'admin'
     const rateLimit = maintenanceBackfill ? 500 : 100
     const rlKey = `ratelimit:${rateLimitNamespace}:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
-    const requestedRunDate = c.req.query('date') || undefined
+    let requestedRunDate = c.req.query('date') || undefined
     const schedulerContext: SchedulerCallbackContext = {}
     const taskMap = deps.buildTaskMap(c, schedulerContext)
     const fn = taskMap[task]
@@ -144,6 +145,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const ticketDb = databaseForDataDomain(c.env, 'ops')
     let ticketAdmission: SchedulerTicketAdmission
     try {
+      requestedRunDate = await resolveActive8DailyBusinessDate(c.env, task, requestedRunDate)
+      schedulerContext.businessDate = requestedRunDate
       ticketAdmission = await admitSchedulerExecutionTicket(ticketDb, {
         identity: schedulerDeliveryIdentity(c.req.raw.headers),
         task,

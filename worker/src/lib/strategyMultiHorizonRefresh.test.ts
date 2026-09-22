@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
-import { materializeStrategyMultiHorizonOutcomes, listReferences } from './strategyMultiHorizonOutcomes'
+import { materializeStrategyMultiHorizonOutcomes, listReferences, retireRejectedOutcomes } from './strategyMultiHorizonOutcomes'
 import { STRATEGY_MULTI_HORIZON_PROJECTION_VERSION as version } from './priceHorizonProjection'
 import { SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS as contracts } from './selectionReferenceEvidence'
 
 async function main() {
   const sql = new DatabaseSync(':memory:')
-  const db = { prepare(query: string) { return { bind(...params: any[]) { return {
+  let statementCount=0, batchCalls=0, maxBindings=0
+  const db = { prepare(query: string) { return { bind(...params: any[]) { maxBindings=Math.max(maxBindings,params.length); return {
     async all() { return { results: sql.prepare(query).all(...params) } },
     async run() { return { meta: { changes: Number(sql.prepare(query).run(...params).changes) } } },
-  } } } }, async batch(statements: any[]) { return Promise.all(statements.map(s => s.run())) } } as unknown as D1Database
+  } } } }, async batch(statements: any[]) { batchCalls++; statementCount+=statements.length; return Promise.all(statements.map(s => s.run())) } } as unknown as D1Database
   sql.exec(`CREATE TABLE canonical_run_heads(logical_run_key TEXT,run_id TEXT);
     CREATE TABLE selection_reference_snapshots_v1(signal_date TEXT,symbol TEXT,producer_run_id TEXT,stock_id INTEGER,
       market_segment TEXT,sector TEXT,feature_contract_version TEXT,hard_gate_passed INTEGER);
@@ -50,6 +51,34 @@ async function main() {
   for(const producer of ['a-replay','head']) sql.prepare('INSERT INTO selection_reference_snapshots_v1 VALUES (?,?,?,?,?,?,?,1)')
     .run('2026-08-13','9999',producer,1000,'listed','sector',contracts[1])
   assert.equal((await listReferences(db,new Set(['head']),'2026-08-13','2026-08-13')).length,500)
+  // A full missing-outcome cohort must retain exact producer, date, horizon,
+  // label version, and known rejection guards across grouped SQL boundaries.
+  const template=sql.prepare("SELECT * FROM canonical_selection_outcomes_v1 WHERE symbol='1' AND horizon_days=5").get()!
+  const columns=Object.keys(template)
+  const put=sql.prepare(`INSERT INTO canonical_selection_outcomes_v1 (${columns.join(',')}) VALUES (${columns.map(()=>'?').join(',')})`)
+  const references=[]
+  for(let i=100;i<1301;i++) {
+    const row={...template,symbol:String(i)}
+    put.run(...columns.map(k=>row[k]))
+    put.run(...columns.map(k=>k==='producer_run_id'?'other':row[k]))
+    references.push({signal_date:'2026-08-13',symbol:String(i),producer_run_id:'head',stock_id:i,
+      market_segment:'listed',sector:'sector',feature_contract_version:contracts[1]})
+    if(i%4!==3) sql.prepare('INSERT INTO price_horizon_label_rejections_v2 VALUES (?,?,?,?,?)')
+      .run(i,'2026-08-13',5,i%4===1?'2026-09-07':'2026-08-27',version)
+    if(i%4===2) sql.prepare('INSERT INTO price_horizon_labels_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(i,'2026-08-13',5,'2026-08-14',10,1,'2026-08-27',11,1,'2026-08-27',version)
+  }
+  statementCount=0; batchCalls=0; maxBindings=0
+  assert.equal(await retireRejectedOutcomes(db,references,5,'2026-09-06'),301)
+  assert.equal(statementCount,201)
+  assert.equal(batchCalls,3)
+  assert.ok(maxBindings<=100)
+  for(const row of references) {
+    assert.equal(sql.prepare('SELECT COUNT(*) n FROM canonical_selection_outcomes_v1 WHERE symbol=? AND producer_run_id=? AND horizon_days=5')
+      .get(row.symbol,'head')!.n,Number(row.stock_id%4!==0))
+    assert.equal(sql.prepare('SELECT COUNT(*) n FROM canonical_selection_outcomes_v1 WHERE symbol=? AND producer_run_id=? AND horizon_days=5')
+      .get(row.symbol,'other')!.n,1)
+  }
   sql.close()
   console.log('strategyMultiHorizonRefresh: PASS')
 }

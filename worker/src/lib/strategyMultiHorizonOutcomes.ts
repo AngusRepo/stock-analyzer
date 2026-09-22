@@ -273,18 +273,21 @@ export async function retireRejectedOutcomes(
 ): Promise<number> {
   // Missing/pending inputs are not terminal. Retire only an exact canonical
   // identity whose price projector explicitly rejected an already-known exit.
-  const statements = references.map(row => db.prepare(`
-    DELETE FROM canonical_selection_outcomes_v1
-     WHERE signal_date=? AND symbol=? AND producer_run_id=? AND horizon_days=? AND label_schema_version=?
+  // Six exact identity predicates use 84 binds (D1 limit 100). Grouping
+  // preserves the rejection/known-date/no-valid-label guards for every row.
+  const statements = chunks(references, 6).map(group => {
+    const predicate = `(signal_date=? AND symbol=? AND producer_run_id=? AND horizon_days=? AND label_schema_version=?
        AND EXISTS (SELECT 1 FROM price_horizon_label_rejections_v2 r
          WHERE r.stock_id=? AND r.price_date=? AND r.horizon_days=? AND r.projection_version=?
            AND r.exit_date IS NOT NULL AND r.exit_date<=?)
        AND NOT EXISTS (SELECT 1 FROM price_horizon_labels_v2 p
-         WHERE p.stock_id=? AND p.price_date=? AND p.horizon_days=? AND p.projection_version=?)
-  `).bind(row.signal_date, row.symbol, row.producer_run_id, horizonDays,
-    STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION, row.stock_id, row.signal_date, horizonDays,
-    STRATEGY_MULTI_HORIZON_PROJECTION_VERSION, asOfDate, row.stock_id, row.signal_date, horizonDays,
-    STRATEGY_MULTI_HORIZON_PROJECTION_VERSION))
+         WHERE p.stock_id=? AND p.price_date=? AND p.horizon_days=? AND p.projection_version=?))`
+    return db.prepare(`DELETE FROM canonical_selection_outcomes_v1 WHERE ${group.map(() => predicate).join(' OR ')}`)
+      .bind(...group.flatMap(row => [row.signal_date, row.symbol, row.producer_run_id, horizonDays,
+        STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION, row.stock_id, row.signal_date, horizonDays,
+        STRATEGY_MULTI_HORIZON_PROJECTION_VERSION, asOfDate, row.stock_id, row.signal_date, horizonDays,
+        STRATEGY_MULTI_HORIZON_PROJECTION_VERSION]))
+  })
   let retired = 0
   for (const group of chunks(statements, OUTCOME_BATCH_STATEMENTS)) {
     const results = await db.batch(group)

@@ -2721,7 +2721,7 @@ async def node_paired_nav_setup(state: PipelineStateV2) -> dict:
     from services.paired_nav_pipeline import complete_pipeline_shadow
     collection = await asyncio.to_thread(complete_pipeline_shadow,
         state.get('paired_nav_collection'), query=LEARNING_D1_CLIENT.query,
-        writer=LEARNING_D1_CLIENT.batch_execute)
+        writer=LEARNING_D1_CLIENT.batch_execute, enforce_execution_window=True)
     if 'paired_nav_atomic_inputs' in state:
         from services.paired_nav_atomic_inputs import daily_setup_status
         collection = {**collection, 'atomic_daily': daily_setup_status({**state, 'paired_nav_collection': collection})}

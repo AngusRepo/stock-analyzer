@@ -104,3 +104,40 @@ def daily_plan_closure(config,as_of,paper):
     return {'schema_version':'l4-daily-plan-closure-v1','signal_date':as_of,'plan_id':plan['plan_id'],
         'model_checksum':plan['model_checksum'],'legacy_oof_maturity_requested':False,
         'training_dispatched':False,'promoted':False}
+
+
+def verified_paper_closure_with_incomplete_comparison(nav, closure, clients):
+    """Keep failed historical research visible; certify only the current Paper plan.
+
+    No accounting gap, current source failure, promotion, or live order is waived.
+    """
+    failures = (nav.get('family_reviews') or {}).get('failures') or []
+    if (nav.get('status') != 'failed' or nav.get('journal_chain_verified') is not True
+            or nav.get('accounting_status') not in {'awaiting_execution_pairs', 'up_to_date', 'materialized'}
+            or nav.get('error_type') or not failures):
+        return False
+    for failure in failures:
+        counts = failure.get('counts') or {}
+        if (failure.get('reason') != 'nav_daily_population_unresolved' or not counts
+                or set(counts) - {'unmaterialized_selections', 'unresolved_selection_sources'}
+                or any(type(n) is not int or n <= 0 for n in counts.values())):
+            return False
+    if any(not isinstance(nav.get(key), dict) or nav[key].get('failures') != [] for key in ('candidate_decisions',
+            'opb_candidate_decisions', 'l3_candidate_decisions', 'atomic_candidate_decisions', 'route_candidate_decisions')):
+        return False
+    paper = clients('paper')
+    rows = paper.query('SELECT allocation_snapshot_id,payload_json FROM l4_portfolio_plans_v1 WHERE plan_id=? AND activated=1', [closure['plan_id']])
+    if len(rows) != 1:
+        return False
+    plan = json.loads(rows[0]['payload_json'])
+    if (plan.get('plan_id') != closure['plan_id'] or plan.get('execution_scope') != 'paper' or plan.get('signal_date') != closure['signal_date']
+            or plan.get('model_checksum') != closure['model_checksum']):
+        return False
+    manifests = clients('learning').query('SELECT signal_date,source_run_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=? AND snapshot_kind=?',
+        [rows[0]['allocation_snapshot_id'], 'allocation_context'])
+    if len(manifests) != 1 or manifests[0]['signal_date'] != closure['signal_date']:
+        return False
+    stages = clients('ops').query('SELECT canonical_run_id,status FROM pipeline_stage_runs WHERE business_date=? AND stage=?',
+        [closure['signal_date'], 'pipeline_execution'])
+    return (len(stages) == 1 and stages[0]['status'] == 'success'
+        and stages[0]['canonical_run_id'] == manifests[0]['source_run_id'])

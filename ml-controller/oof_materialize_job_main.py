@@ -79,13 +79,15 @@ async def _execute_lifecycle(
     else:
         nav['adoption'] = {'status': 'blocked_by_nav_failure' if nav_failed else 'disabled_by_request'}
     if new_distribution:
-        from services.l4_oof_lifecycle import daily_plan_closure
+        from services.l4_oof_lifecycle import daily_plan_closure, verified_paper_closure_with_incomplete_comparison
         from services.d1_domain_client import client_proxy_for_domain
-        if nav_failed:
-            return {'status':'pending','dependency_retry_required':True,'nav_retry_required':True,'paired_nav_maturity':nav}
         closure=daily_plan_closure(config,nav['as_of_date'],client_proxy_for_domain('paper'))
+        if nav_failed and not verified_paper_closure_with_incomplete_comparison(nav,closure,client_proxy_for_domain):
+            return {'status':'pending','dependency_retry_required':True,'nav_retry_required':True,'paired_nav_maturity':nav}
         return {'status':'native_l4_daily_accounted','native_l4_daily_closure':closure,
-                'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False}
+                'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False,
+                'comparison_review_status':'incomplete_no_promotion' if nav_failed else 'current',
+                'completion_scope':'verified_formal_paper_plan' if nav_failed else 'plan_and_nav'}
     # A failed NAV handoff must not authorize a challenger pointer transition.
     # Existing serving/trading is untouched; prep and shadow work still proceed.
     # Daily adoption has a single owner before OOF. Its diagnostics may continue,
@@ -423,6 +425,9 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
         f"reason={summary_reason}",
         f"full_fit={str((result.get('full_fit_dispatch') or (result.get('receipt') or {}).get('full_fit_dispatch') or {}).get('status') or 'none')}",
     ]
+    if result.get('comparison_review_status'):
+        parts.extend(['comparison_review=' + result['comparison_review_status'],
+            'completion_scope=' + result['completion_scope']])
     adoption = (result.get('paired_nav_maturity') or {}).get('adoption')
     if isinstance(adoption, dict):
         committed = dict((adoption.get('closure') or {}).get('promoted_by_owner') or {})

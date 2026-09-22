@@ -3090,11 +3090,14 @@ export async function processUpdateBatch(
       // Validate ownership before creating external work. Settlement after
       // dispatch is too late, and pending/spawned results do not settle here.
       const owner = await databaseForDataDomain(env, 'ops').prepare(`
-        SELECT ticket_id FROM scheduler_execution_tickets_v1
+        SELECT ticket_id, status FROM scheduler_execution_tickets_v1
          WHERE ticket_id=? AND run_id=? AND business_date=? AND task=?
          LIMIT 1
-      `).bind(schedulerTicketId, schedulerRunId, runDate, `active8-oof-${cadence}`).first()
+      `).bind(schedulerTicketId, schedulerRunId, runDate, `active8-oof-${cadence}`).first<{ ticket_id: string; status: string }>()
       if (!owner) throw new Error('active8_oof_continuation_scheduler_identity_mismatch')
+      // Delayed collision retries may arrive after this exact job callback finished.
+      // A completed ticket must never dispatch the same durable work again.
+      if (owner.status === 'success') return
     }
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
     const summary = await runActive8OofLifecycle(env, runDate, cadence, {

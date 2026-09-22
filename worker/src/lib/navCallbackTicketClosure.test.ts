@@ -278,3 +278,20 @@ test('healthy long compute callback queues a delayed exact continuation without 
   assert.equal(queued[0].options.delaySeconds, 1800)
   assert.notEqual((await f.row(f.root.ticket_id)).status, 'success')
 }))
+
+
+test('delayed continuation cannot redispatch an already successful exact child', async () => fixture(async f => {
+  await f.terminalChild('success')
+  const before = await f.row(f.child.ticket_id)
+  const previousFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => { calls++; return Response.json({ status: 'spawned' }) }
+  f.env.ML_CONTROLLER_URL = 'https://isolated-controller.test'
+  try {
+    await processUpdateBatch({ type: 'active8_oof_continuation', cursor: 0,
+      triggerTime: f.day, oofCadence: 'daily', oofContinuationAttempt: 4,
+      schedulerTicketId: f.child.ticket_id, schedulerRunId: f.child.run_id }, f.env, {} as any)
+    assert.equal(calls, 0, 'the original successful callback already completed this ticket')
+    assert.deepEqual(await f.row(f.child.ticket_id), before)
+  } finally { globalThis.fetch = previousFetch }
+}))

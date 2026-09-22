@@ -47,13 +47,37 @@ async function inspectDataset(db: D1Database, dataset: DatasetSpec, cutoffDate: 
   }
 }
 
+export async function inspectNavColdStorageReadiness(db: D1Database) {
+  const exists = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+    .bind('paired_nav_cold_objects_v1').first<Record<string, unknown>>()
+  if (!exists) return { ready: false, migration_ready: false, reason: 'paired_nav_cold_migration_0048_missing' }
+  const snapshots = await db.prepare(`SELECT COUNT(*) total_snapshots,
+    SUM(CASE WHEN c.snapshot_id IS NOT NULL AND c.payload_checksum=m.payload_checksum THEN 1 ELSE 0 END) cold_snapshots,
+    COALESCE(SUM(c.payload_bytes),0) cold_payload_bytes
+    FROM paired_nav_frozen_manifests_v1 m LEFT JOIN paired_nav_cold_objects_v1 c ON c.snapshot_id=m.snapshot_id`)
+    .first<Record<string, unknown>>()
+  // Index/count only: never scan gigabytes of payload_text for routine telemetry.
+  const parts = await db.prepare(`SELECT COUNT(*) hot_parts,
+    SUM(CASE WHEN m.snapshot_id IS NULL THEN 1 ELSE 0 END) orphan_parts
+    FROM paired_nav_frozen_parts_v1 p LEFT JOIN paired_nav_frozen_manifests_v1 m ON m.snapshot_id=p.snapshot_id`)
+    .first<Record<string, unknown>>()
+  const pending = numeric(snapshots?.total_snapshots) - numeric(snapshots?.cold_snapshots)
+  return { ready: pending === 0 && numeric(parts?.hot_parts) === 0, migration_ready: true,
+    store: 'gcs', storage_policy: 'cold_at_write', minimum_cold_days: 3650,
+    immutable_hold: 'release_requires_governance_after_retention',
+    snapshots: numeric(snapshots?.total_snapshots), cold_snapshots: numeric(snapshots?.cold_snapshots),
+    cold_payload_bytes: numeric(snapshots?.cold_payload_bytes), snapshots_pending_archive: pending,
+    legacy_hot_parts: numeric(parts?.hot_parts), orphan_parts: numeric(parts?.orphan_parts),
+    automatic_delete: false, orphan_policy: 'recover_matching_input_no_blind_delete' }
+}
+
 export async function inspectLearningTenYearRetentionReadiness(
   learningDb: D1Database,
   opsDb: D1Database,
   asOfDate: string,
 ) {
   const hotCutoffDate = isoDateDaysBefore(asOfDate, LEARNING_HOT_RETENTION_DAYS)
-  const [datasets, policy, runTotals] = await Promise.all([
+  const [datasets, policy, runTotals, navCold] = await Promise.all([
     Promise.all(LEARNING_DATASETS.map((dataset) => inspectDataset(learningDb, dataset, hotCutoffDate))),
     opsDb.prepare(
       `SELECT policy_id, hot_retention_days, cold_retention_days, archive_store, action,
@@ -69,6 +93,7 @@ export async function inspectLearningTenYearRetentionReadiness(
          FROM data_retention_runs
         WHERE policy_id='learning_lineage_v1'`,
     ).first<Record<string, unknown>>(),
+    inspectNavColdStorageReadiness(learningDb),
   ])
   const policyReady = numeric(policy?.hot_retention_days) === LEARNING_HOT_RETENTION_DAYS
     && numeric(policy?.cold_retention_days) === LEARNING_COLD_RETENTION_DAYS
@@ -84,6 +109,8 @@ export async function inspectLearningTenYearRetentionReadiness(
     cold_days: LEARNING_COLD_RETENTION_DAYS,
     hot_cutoff_date: hotCutoffDate,
     policy_ready: policyReady,
+    nav_cold_storage: navCold,
+    complete: policyReady && navCold.ready,
     policy: policy ?? null,
     candidate_rows: datasets.reduce((sum, dataset) => sum + dataset.candidate_rows, 0),
     datasets,

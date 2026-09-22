@@ -1,3 +1,4 @@
+import { readPairedNavSnapshotRaw } from './pairedNavSnapshotRead'
 import { strategyAbTag } from './strategyAbContract'
 import type { NavAccountView, NavComparisonDetail, NavFillView } from './navTradingRoomContract'
 
@@ -56,11 +57,7 @@ async function readReceipt(db: D1Database, row: Row, journal: any): Promise<any 
   if (response.results.length !== 1) throw Error('receipt_ambiguous')
   const manifest = response.results[0]
   if (!Number.isInteger(manifest.part_count) || manifest.part_count < 1 || manifest.part_count > 512) throw Error('receipt_parts_invalid')
-  const parts = await db.prepare(`SELECT part_no,payload_text FROM paired_nav_frozen_parts_v1 WHERE snapshot_id=? ORDER BY part_no LIMIT 513`)
-    .bind(manifest.snapshot_id).all<{ part_no: number; payload_text: string }>()
-  if (!parts.success || parts.results?.length !== manifest.part_count || parts.results.some((p, i) => p.part_no !== i)) throw Error('receipt_parts_invalid')
-  const raw = parts.results.map(p => p.payload_text).join('')
-  if (await hash(raw) !== manifest.payload_checksum) throw Error('receipt_checksum_invalid')
+  const raw = await readPairedNavSnapshotRaw(db, manifest)
   const body = JSON.parse(raw), content = body.content
   if (body.signal_date !== row.session_date || body.snapshot_kind !== 'execution_receipt'
     || body.source_run_id !== manifest.source_run_id || content?.snapshot_id !== row.snapshot_id

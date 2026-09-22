@@ -1069,7 +1069,10 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     })),
     growthForecasts: capacityForecasts,
   })
+  const { inspectNavColdStorageReadiness } = await import('../lib/learningTenYearRetentionReadiness')
+  const navColdStorage = await inspectNavColdStorageReadiness(databaseForDataDomain(c.env, 'learning'))
   const tenYearClosure = buildDataDomainTenYearClosure({
+    navColdStorage,
     activeDomains,
     strictRequested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',
     domains: closureReport.domains,

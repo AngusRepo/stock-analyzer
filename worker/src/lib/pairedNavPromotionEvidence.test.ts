@@ -31,6 +31,7 @@ function database(data: any): D1Database {
   return { prepare(sql: string) {
     let params: any[] = []
     const rows = () => {
+      if (sql.includes('sqlite_master')) return []
       const table = /FROM\s+(\w+)/.exec(sql)?.[1]
       if (table === 'active8_ensemble_pointer_v1') {
         const { schema_version, ...formal } = fixtureConfig().formal_baseline_identity

@@ -16,7 +16,7 @@ IDENTITY = ('artifact_id', 'cohort_id', 'payload_checksum', 'base_artifact_set_c
 TABLES = frozenset({'active8_ensemble_pointer_v1', 'active8_ensemble_artifacts_v1',
     'model_artifact_registry', 'model_champion_pointers', 'model_champion_history',
     'paired_nav_review_records_v1', 'paired_nav_review_parts_v1',
-    'paired_nav_frozen_manifests_v1', 'paired_nav_frozen_parts_v1'})
+    'paired_nav_frozen_manifests_v1', 'paired_nav_frozen_parts_v1', 'paired_nav_cold_objects_v1'})
 
 
 def _row_set(rows):

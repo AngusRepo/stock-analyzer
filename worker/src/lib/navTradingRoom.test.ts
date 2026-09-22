@@ -5,7 +5,7 @@ import { readNavComparison } from './navTradingRoom'
 
 const fixture = JSON.parse(readFileSync(new URL('../../test-fixtures/strategy-ab-native-journal.json', import.meta.url), 'utf8'))
 function database(data: any): D1Database {
-  return { prepare: (sql: string) => ({ bind: (...params: any[]) => ({ all: async () => {
+  return { prepare: (sql: string) => ({ bind: (...params: any[]) => ({ first: async () => null, all: async () => {
     let results: any[]
     if (sql.includes('paired_nav_daily_journal_v1')) results = data.paired_nav_daily_journal_v1.filter((r: any) => r.pair_id === params[0] && r.session_date <= params[1]).sort((a: any,b: any) => b.session_date.localeCompare(a.session_date))
     else if (sql.includes('paired_nav_frozen_manifests_v1')) results = data.paired_nav_frozen_manifests_v1.filter((r: any) => r.snapshot_kind === 'execution_receipt' && r.parent_snapshot_id === params[0] && r.signal_date === params[1])

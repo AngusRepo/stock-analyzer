@@ -7,7 +7,7 @@ const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'res
 // NAV tables/triggers have an immutable additive migration owner. Rebuilding a
 // schema from the older production snapshot must not remove these safeguards.
 const immutableSchemaExtensions = {
-  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql'],
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql'],
 }
 const extensions = Object.fromEntries(Object.entries(immutableSchemaExtensions).map(([domain, files]) => [domain,
   files.map(file => fs.readFileSync(path.join(root, 'domain-migrations', domain, file), 'utf8')).join('\n')]))

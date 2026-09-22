@@ -1,3 +1,4 @@
+import { readPairedNavSnapshotRaw } from './pairedNavSnapshotRead'
 /** Verify the original Controller review; this module does not refit statistics.
  * Policy has ONE shared source. Hash original Python bytes (not JS reserialization
  * of floats / large random seeds). Caller PASS alone cannot authorize promotion.
@@ -232,11 +233,7 @@ async function verifyOriginalNavPromotionEvidence(db: D1Database, input: {
     || !Number.isFinite(Date.parse(manifest.frozen_at)) || Date.parse(manifest.frozen_at) > now.getTime()
     || manifest.payload_checksum !== nav.allocation_payload_checksum
     || !Number.isInteger(manifest.part_count) || manifest.part_count < 1) fail('allocation_manifest_mismatch')
-  const parts = (await db.prepare('SELECT part_no,payload_text FROM paired_nav_frozen_parts_v1 WHERE snapshot_id=? ORDER BY part_no')
-    .bind(nav.allocation_snapshot_id).all<RecordValue>()).results ?? []
-  if (parts.length !== manifest.part_count || parts.some((p, i) => p.part_no !== i)) fail('allocation_parts_missing')
-  const raw = parts.map(p => p.payload_text).join('')
-  if (await hash(raw) !== manifest.payload_checksum) fail('allocation_checksum_mismatch')
+  const raw = await readPairedNavSnapshotRaw(db, manifest, true)
   const allocation = JSON.parse(raw)
   const plan = allocation.content
   if (allocation.signal_date !== manifest.signal_date || allocation.snapshot_kind !== manifest.snapshot_kind
@@ -252,7 +249,7 @@ async function verifyOriginalNavPromotionEvidence(db: D1Database, input: {
   verified.set(proof, JSON.stringify(canonical(gate)))
   comparisonContexts.set(proof, { configuration: plan.configuration, baseline_checksum: plan.baseline_checksum,
     original_comparison: nav.comparison, journal_frontier: frontier,
-    // Verified original bytes above bind this reference. Exposing metadata does
+    // The verified full bytes or immutable cold projection bind this reference. Exposing metadata does
     // not rewrite a frozen allocation, hypothesis, review or maturity date.
     route_source: owner === 'l15_route' ? { signalDate: manifest.signal_date,
       producerRunId: plan.route_effect?.screener_run_id, decisionDeadline: manifest.frozen_at } : null })

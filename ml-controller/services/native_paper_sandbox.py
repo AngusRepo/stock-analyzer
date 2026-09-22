@@ -312,7 +312,7 @@ def native_execution_identity(runner: Path | None = None) -> str:
             for name in ('native_paper_source_capture.py', 'native_paper_bootstrap.py', 'native_paper_state.py',
                            'paired_native_session.py', 'paired_native_collector.py', 'paired_native_registration.py',
                            'paired_native_models.py', 'paired_native_rescore_carry.py', 'paired_nav_strategy_bundle.py',
-                           'native_paper_read_capabilities.py', 'paired_nav_journal.py', 'paired_nav_schema.py',
+                           'native_paper_read_capabilities.py', 'paired_nav_journal.py', 'paired_nav_cold.py', 'paired_nav_schema.py',
                            'paired_nav_chain.py',
                            'paired_nav_execution_environment.py', 'adaptive.py',
                            'native_paper_debate.py', 'debate_execution_scope.py', 'debate_service.py',

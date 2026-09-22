@@ -51,3 +51,6 @@ uiux_gemini_package_*.zip
 
 # Generated local native runtime; original TypeScript remains the release source.
 /audits/paper-admission-20260921/native-paper.cjs
+
+# Generated recovery backups and runtime receipts; excluded from release inputs.
+/audits/nav-storage-recovery-20260922/

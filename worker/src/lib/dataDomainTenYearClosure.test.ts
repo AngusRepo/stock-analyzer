@@ -52,6 +52,7 @@ const completeDomain = (domain: DataDomain): DataDomainCutoverReadiness => ({
 })
 
 const complete = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -63,6 +64,7 @@ assert.equal(complete.claim_allowed, true)
 assert.equal(complete.completed_domains, 7)
 
 const postCutoverParityDrift = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   unresolvedRouteTables: noUnresolvedRoutes,
@@ -81,6 +83,7 @@ assert.equal(postCutoverParityDrift.complete, true)
 assert.equal(postCutoverParityDrift.completed_domains, 7)
 
 const finalizedContractFailure = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   unresolvedRouteTables: noUnresolvedRoutes,
@@ -98,6 +101,7 @@ assert.equal(finalizedContractFailure.complete, false)
 assert.equal(finalizedContractFailure.completed_domains, 6)
 
 const learningOnly = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: ['learning'],
   strictRequested: true,
   unresolvedRouteTables: noUnresolvedRoutes,
@@ -113,6 +117,7 @@ assert.equal(learningOnly.legacy_role, 'mixed_runtime_source_do_not_delete')
 assert(learningOnly.blockers.includes('seven_domain_cutover_incomplete'))
 
 const deferredRoute = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -127,6 +132,7 @@ assert.deepEqual(
 )
 
 const missingCapacity = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -136,6 +142,7 @@ assert.equal(missingCapacity.complete, false)
 assert(missingCapacity.blockers.includes('ten_year_capacity_receipt_missing'))
 
 const frozenLegacy = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -147,6 +154,7 @@ assert.deepEqual(frozenLegacy.capacity_classification.accepted_frozen_rollback_d
 assert.deepEqual(frozenLegacy.capacity_classification.blocking_critical_domains, [])
 
 const activeCritical = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -157,6 +165,7 @@ assert.equal(activeCritical.complete, false)
 assert(activeCritical.blockers.includes('d1_capacity_critical'))
 
 const missingExecutors = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -171,6 +180,7 @@ assert.equal(missingExecutors.complete, false)
 assert(missingExecutors.blockers.includes('retention_archive_executors_incomplete'))
 
 const pendingForecast = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -189,6 +199,7 @@ assert.equal(pendingForecast.complete, false)
 assert(pendingForecast.blockers.includes('ten_year_capacity_stable_baseline_pending'))
 
 const shortRunway = buildDataDomainTenYearClosure({
+  navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
   domains: DATA_DOMAINS.map(completeDomain),
@@ -205,3 +216,12 @@ assert.equal(shortRunway.complete, false)
 assert(shortRunway.blockers.includes('ten_year_capacity_warning_runway_insufficient'))
 
 console.log('data domain ten-year closure tests passed')
+
+for (const navColdStorage of [undefined, { ready: false, orphan_parts: 22100 }]) {
+  const unresolved = buildDataDomainTenYearClosure({ activeDomains: DATA_DOMAINS,
+    strictRequested: true, domains: DATA_DOMAINS.map(completeDomain),
+    unresolvedRouteTables: noUnresolvedRoutes, capacity: closedCapacity, navColdStorage })
+  assert.equal(unresolved.complete, false)
+  assert.equal(unresolved.claim_allowed, false)
+  assert(unresolved.blockers.some(b => b.startsWith('nav_cold_storage_')))
+}

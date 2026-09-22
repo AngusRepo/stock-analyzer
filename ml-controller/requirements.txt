@@ -30,3 +30,5 @@ google-cloud-storage>=2.14.0
 # 2026-04-16: pipeline/v2 moved from asyncio.create_task in Service (idle-killed
 # after 15 min) to a dedicated Cloud Run Job.
 google-cloud-run>=0.10.0
+
+ijson==3.4.0

@@ -18,7 +18,7 @@ for (const domain of ['core', 'market', 'learning', 'ops', 'execution', 'paper',
   fs.mkdirSync(path.join(root, 'domain-migrations', domain), { recursive: true })
   fs.writeFileSync(path.join(root, 'domain-migrations', domain, `0001_${domain}_baseline.sql`), '-- fixture baseline\n')
 }
-const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql']
+const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql']
 fs.copyFileSync('domain-migrations/learning/0046_route_nav_diagnostic_floor.sql',
   path.join(root, 'domain-migrations/learning/0046_route_nav_diagnostic_floor.sql'))
 for (const name of names) fs.copyFileSync(`domain-migrations/learning/${name}`, path.join(root, 'domain-migrations/learning', name))
@@ -33,10 +33,12 @@ for (const name of names) {
   assert.ok(schema.includes(original.trimEnd()))
   assert.equal(fs.readFileSync(path.join(root, 'domain-migrations/learning', name), 'utf8'), original)
 }
+assert.ok(schema.includes('paired_nav_cold_objects_v1_no_replace'))
+assert.ok(schema.includes('paired_nav_parts_retired_no_insert'))
 assert.ok(schema.includes('paired_nav_lifecycle_no_replace_v1'))
 assert.ok(schema.includes('paired_nav_journal_no_replace_v1'))
 assert.ok(schema.includes('strategy_atomic_nav_adoptions_no_replace_v1'))
-const atomicSql = (text: string) => text.match(/CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 \([\s\S]*?\n\);|CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_[\s\S]*?END;/g)
+const atomicSql = (text: string) => text.replace(/\r\n/g, '\n').match(/CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 \([\s\S]*?\n\);|CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_[\s\S]*?END;/g)
 const atomicMigration = fs.readFileSync('domain-migrations/learning/0047_atomic_nav_adoption.sql', 'utf8')
 for (const file of ['schema.sql', 'domain-schemas/learning.sql'])
   assert.deepEqual(atomicSql(fs.readFileSync(file, 'utf8')), atomicSql(atomicMigration), file)

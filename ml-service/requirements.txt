@@ -61,3 +61,5 @@ optuna==4.9.0
 pymoo==0.6.1.6
 # 2.0 Feature Selection: Target Permutation elbow detection
 kneed>=0.8.0
+
+ijson==3.4.0

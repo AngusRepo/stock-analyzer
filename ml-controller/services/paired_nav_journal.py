@@ -67,10 +67,13 @@ def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
     if len(rows) != 1:
         raise RuntimeError('paired_nav_manifest_missing')
     manifest = rows[0]
-    raw = _parts(query, snapshot_id, manifest['part_count'])
-    if hashlib.sha256(raw.encode('utf-8')).hexdigest() != manifest['payload_checksum']:
-        raise RuntimeError('paired_nav_snapshot_checksum_mismatch')
-    payload = json.loads(raw)
+    from services.paired_nav_cold import load
+    payload = load(query, manifest)
+    if payload is None:
+        raw = _parts(query, snapshot_id, manifest['part_count'])
+        if hashlib.sha256(raw.encode('utf-8')).hexdigest() != manifest['payload_checksum']:
+            raise RuntimeError('paired_nav_snapshot_checksum_mismatch')
+        payload = json.loads(raw)
     if (payload['signal_date'] != manifest['signal_date']
             or payload['source_run_id'] != manifest['source_run_id']
             or payload['snapshot_kind'] != manifest['snapshot_kind']):
@@ -98,46 +101,82 @@ def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,
         raise ValueError('paired_nav_future_signal_date')
     payload = {'schema_version': SCHEMA, 'snapshot_kind': snapshot_kind,
                'signal_date': signal_date, 'source_run_id': source_run_id, 'content': content}
-    raw = encode(payload)
-    checksum = hashlib.sha256(raw.encode('utf-8')).hexdigest()
-    snapshot_id = digest([snapshot_kind, signal_date, source_run_id])
-    old = query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
-    if old:
+    from contextlib import ExitStack
+    from services.paired_nav_cold import production_store, packed, _canonical, seal, available, legacy_pieces
+    store = production_store()
+    with ExitStack() as stack:
+        if store is not None:
+            if not available(query):
+                raise RuntimeError('paired_nav_cold_migration_0048_missing')
+            bundle = stack.enter_context(packed(_canonical(payload)))
+            checksum = bundle[1]
+            raw = None
+        else:
+            raw = encode(payload)
+            checksum = hashlib.sha256(raw.encode('utf-8')).hexdigest()
+        snapshot_id = digest([snapshot_kind, signal_date, source_run_id])
+        old = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
+        if old:
+            manifest = old[0]
+            if manifest['payload_checksum'] != checksum:
+                raise RuntimeError('paired_nav_immutable_input_conflict')
+            if any(manifest[k] != payload[k] for k in ('signal_date', 'source_run_id', 'snapshot_kind')):
+                raise RuntimeError('paired_nav_manifest_identity_mismatch')
+            from services.paired_nav_cold import load
+            # The caller already owns the full input. Verify bytes without
+            # allocating another complete Python copy on an idempotent retry.
+            if load(query, manifest, store, materialize=False) is None:
+                read_snapshot(query, snapshot_id)
+            return manifest
+        from services.paired_nav_schema import validate_paired_nav_schema
+        validate_paired_nav_schema(query)
+        prospective = day == taipei.date() or (taipei.hour < 9 and day == taipei.date() - timedelta(days=1))
+        if snapshot_kind == 'execution_pair' and content.get('allocation_snapshot_id'):
+            parent = read_snapshot(query, content['allocation_snapshot_id'])
+            parent_manifest = parent['manifest']
+            first_phase = _timestamp(content['schedule'][0]['observed_at'])
+            if (parent_manifest['snapshot_kind'] != 'allocation_pair'
+                    or parent_manifest['signal_date'] != signal_date
+                    or _timestamp(parent_manifest['frozen_at']) > stamp):
+                raise ValueError('paired_nav_execution_parent_invalid')
+            # Weekends/holidays do not invalidate an already-frozen Friday signal.
+            # This does NOT rescue historical predictions: the actual allocation
+            # parent must itself be prospective, and execution must not have begun.
+            prospective = parent_manifest['prospective'] == 1 and stamp < first_phase
+        if store is not None:
+            # An interrupted legacy writer may have left immutable prefix parts.
+            # Recover only if the new full input matches every surviving byte.
+            if query('SELECT part_no FROM paired_nav_frozen_parts_v1 WHERE snapshot_id=? LIMIT 1', [snapshot_id]):
+                import gzip
+                with gzip.open(bundle[0], 'rt', encoding='utf-8', newline='') as source:
+                    for piece in legacy_pieces(query, snapshot_id):
+                        if source.read(len(piece)) != piece:
+                            raise RuntimeError('paired_nav_orphan_input_conflict')
+            receipt = seal(query=query, writer=writer, snapshot_id=snapshot_id, payload=payload,
+                store=store, stamp=stamp, packed_payload=bundle)
+            count = receipt['original_part_count']
+            _write(writer, [('INSERT OR IGNORE INTO paired_nav_frozen_manifests_v1(snapshot_id,signal_date,source_run_id,frozen_at,payload_checksum,part_count,prospective,snapshot_kind,parent_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?)',
+                [snapshot_id, signal_date, source_run_id, stamp.isoformat(), checksum, count, int(prospective), snapshot_kind,
+                 content.get('snapshot_id') if snapshot_kind == 'execution_receipt' else None])])
+            manifests = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
+            if len(manifests) != 1 or manifests[0]['payload_checksum'] != checksum:
+                raise RuntimeError('paired_nav_manifest_readback_conflict')
+            return manifests[0]
+        # <= 80 KB even for four-byte Unicode; bounded well below D1's value limit.
+        chunks = [raw[start:start + 20000] for start in range(0, len(raw), 20000)]
+        for start in range(0, len(chunks), 10):
+            statements = [('INSERT OR IGNORE INTO paired_nav_frozen_parts_v1(snapshot_id,part_no,payload_text) VALUES(?,?,?)',
+                           [snapshot_id, index, chunks[index]]) for index in range(start, min(start + 10, len(chunks)))]
+            _write(writer, statements)
+        if _parts(query, snapshot_id, len(chunks)) != raw:
+            raise RuntimeError('paired_nav_parts_readback_conflict')
+        _write(writer, [('INSERT OR IGNORE INTO paired_nav_frozen_manifests_v1(snapshot_id,signal_date,source_run_id,frozen_at,payload_checksum,part_count,prospective,snapshot_kind,parent_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?)',
+                        [snapshot_id, signal_date, source_run_id, stamp.isoformat(), checksum, len(chunks), int(prospective), snapshot_kind,
+                         content.get('snapshot_id') if snapshot_kind == 'execution_receipt' else None])])
         saved = read_snapshot(query, snapshot_id)
         if saved['manifest']['payload_checksum'] != checksum:
-            raise RuntimeError('paired_nav_immutable_input_conflict')
+            raise RuntimeError('paired_nav_manifest_readback_conflict')
         return saved['manifest']
-    from services.paired_nav_schema import validate_paired_nav_schema
-    validate_paired_nav_schema(query)
-    prospective = day == taipei.date() or (taipei.hour < 9 and day == taipei.date() - timedelta(days=1))
-    if snapshot_kind == 'execution_pair' and content.get('allocation_snapshot_id'):
-        parent = read_snapshot(query, content['allocation_snapshot_id'])
-        parent_manifest = parent['manifest']
-        first_phase = _timestamp(content['schedule'][0]['observed_at'])
-        if (parent_manifest['snapshot_kind'] != 'allocation_pair'
-                or parent_manifest['signal_date'] != signal_date
-                or _timestamp(parent_manifest['frozen_at']) > stamp):
-            raise ValueError('paired_nav_execution_parent_invalid')
-        # Weekends/holidays do not invalidate an already-frozen Friday signal.
-        # This does NOT rescue historical predictions: the actual allocation
-        # parent must itself be prospective, and execution must not have begun.
-        prospective = parent_manifest['prospective'] == 1 and stamp < first_phase
-    # <= 80 KB even for four-byte Unicode; bounded well below D1's value limit.
-    chunks = [raw[start:start + 20000] for start in range(0, len(raw), 20000)]
-    for start in range(0, len(chunks), 10):
-        statements = [('INSERT OR IGNORE INTO paired_nav_frozen_parts_v1(snapshot_id,part_no,payload_text) VALUES(?,?,?)',
-                       [snapshot_id, index, chunks[index]]) for index in range(start, min(start + 10, len(chunks)))]
-        _write(writer, statements)
-    if _parts(query, snapshot_id, len(chunks)) != raw:
-        raise RuntimeError('paired_nav_parts_readback_conflict')
-    _write(writer, [('INSERT OR IGNORE INTO paired_nav_frozen_manifests_v1(snapshot_id,signal_date,source_run_id,frozen_at,payload_checksum,part_count,prospective,snapshot_kind,parent_snapshot_id) VALUES(?,?,?,?,?,?,?,?,?)',
-                    [snapshot_id, signal_date, source_run_id, stamp.isoformat(), checksum, len(chunks), int(prospective), snapshot_kind,
-                     content.get('snapshot_id') if snapshot_kind == 'execution_receipt' else None])])
-    saved = read_snapshot(query, snapshot_id)
-    if saved['manifest']['payload_checksum'] != checksum:
-        raise RuntimeError('paired_nav_manifest_readback_conflict')
-    return saved['manifest']
-
 
 def account_value(account: dict[str, Any], marks: dict[str, Any]) -> float:
     total = number(account.get('cash'), 'cash', minimum=0)

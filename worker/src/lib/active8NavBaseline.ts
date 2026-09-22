@@ -9,7 +9,7 @@ type Anchor = { sql: string; params: any[]; rows: Row[] }
 const tables = new Set(['active8_ensemble_pointer_v1', 'active8_ensemble_artifacts_v1',
   'model_artifact_registry', 'model_champion_pointers', 'model_champion_history',
   'paired_nav_review_records_v1', 'paired_nav_review_parts_v1',
-  'paired_nav_frozen_manifests_v1', 'paired_nav_frozen_parts_v1'])
+  'paired_nav_frozen_manifests_v1', 'paired_nav_frozen_parts_v1', 'paired_nav_cold_objects_v1'])
 const canonical = (v: any): any => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object'
   ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v
 const same = (a: any, b: any) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b))
@@ -48,7 +48,12 @@ export async function readCommittedNavBaseline(db: D1Database, env: Bindings | u
     || !Array.isArray(response.anchors) || !response.anchors.length || response.anchors.length > 64) fail()
   const anchors = response.anchors as Anchor[]
   // The authenticated original reader must have read every authority family.
-  const required = new Set(tables)
+  const required = new Set([...tables].filter(t => !['paired_nav_frozen_parts_v1', 'paired_nav_cold_objects_v1'].includes(t)))
+  const manifests = anchors.filter(a => a.sql.startsWith('SELECT * FROM paired_nav_frozen_manifests_v1')).flatMap(a => a.rows)
+  for (const manifest of manifests) {
+    if (!anchors.some(a => /^SELECT (?:\*|part_no,payload_text) FROM (?:paired_nav_frozen_parts_v1|paired_nav_cold_objects_v1) WHERE snapshot_id=\?/.test(a.sql)
+      && a.params[0] === manifest.snapshot_id && a.rows.length > 0)) fail()
+  }
   const conditions: string[] = [], params: any[] = []
   for (const anchor of anchors) {
     validateAnchor(anchor)

@@ -1,3 +1,4 @@
+import { readPairedNavSnapshotRaw } from './pairedNavSnapshotRead'
 /** OPB NAV-authorized D1 adoption. No offline efficacy veto or fabricated flags.
  * Reuses original model registry/pointer/history and the shared NAV verifier.
  * Publication is NOT yet the separate live allocator control activation.
@@ -337,12 +338,7 @@ export async function readOpbNavControlExecution(db: D1Database, receipt: OpbNav
     if (!rows.length) break
     for (const manifest of rows) {
       if (!Number.isInteger(manifest.part_count) || manifest.part_count < 1) fail('control_parts_invalid')
-      const parts = (await db.prepare('SELECT part_no,payload_text FROM paired_nav_frozen_parts_v1 WHERE snapshot_id=? ORDER BY part_no')
-        .bind(manifest.snapshot_id).all<RecordValue>()).results ?? []
-      if (parts.length !== manifest.part_count || parts.some((part, i) => part.part_no !== i || typeof part.payload_text !== 'string'))
-        fail('control_parts_missing')
-      const raw = parts.map(part => part.payload_text).join('')
-      if (await hash(raw) !== manifest.payload_checksum) fail('control_snapshot_checksum_mismatch')
+      const raw = await readPairedNavSnapshotRaw(db, manifest, true)
       const payload = JSON.parse(raw), parent = payload.content
       const frozenAt = timestamp(manifest.frozen_at)
       if (!parent || payload.schema_version !== 'paired-nav-journal-v1'

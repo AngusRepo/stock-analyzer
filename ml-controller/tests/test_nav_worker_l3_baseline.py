@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import json
+import pytest
 from datetime import datetime
 
 from test_nav_l3_adoption import ready, publish
@@ -11,11 +12,29 @@ from test_paired_nav_l3_candidate import prepared
 from test_paired_nav_candidate_collection import environment
 
 
-def test_worker_accepts_original_nav_commit_without_forging_offline_pass(ready, tmp_path):
+@pytest.mark.parametrize('cold_storage', [False, True])
+def test_worker_accepts_original_nav_commit_without_forging_offline_pass(ready, tmp_path, monkeypatch, cold_storage):
     client, candidate, *_ = ready
     assert publish(ready)['readback_verified']
     assert client.query('SELECT validation_decision FROM active8_ensemble_artifacts_v1 WHERE artifact_id=?',
                         [candidate['artifact_id']])[0]['validation_decision'] == 'FAIL'
+    if cold_storage:
+        from services import paired_nav_cold as cold
+        from test_paired_nav_cold import Objects
+        store = Objects()
+        monkeypatch.setattr(cold, 'production_store', lambda: store)
+        migration = Path(__file__).parents[2] / 'worker/domain-migrations/learning/0048_paired_nav_cold_storage.sql'
+        client.conn.executescript(migration.read_text(encoding='utf-8'))
+        def archive_writer(statements):
+            with client.conn:
+                for sql, params in statements:
+                    client.conn.execute(sql, params)
+            return {'success_count': len(statements), 'error_count': 0}
+        for manifest in client.query('SELECT * FROM paired_nav_frozen_manifests_v1', []):
+            cold.migrate_snapshot(query=client.query, writer=archive_writer, snapshot_id=manifest['snapshot_id'], store=store)
+            cold.release_hot_copy(query=client.query, writer=archive_writer, snapshot_id=manifest['snapshot_id'],
+                expected_checksum=manifest['payload_checksum'], approval_id='isolated-fixture', store=store)
+        assert not client.query('SELECT * FROM paired_nav_frozen_parts_v1', [])
     target = tmp_path / 'original-l3-nav.sqlite'
     with sqlite3.connect(target) as saved:
         client.conn.backup(saved)

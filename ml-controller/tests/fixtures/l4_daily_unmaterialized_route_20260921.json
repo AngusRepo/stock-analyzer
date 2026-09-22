@@ -1,0 +1,163 @@
+{
+  "status": "failed",
+  "open_pair_sessions": 0,
+  "journal_chain_verified": true,
+  "journal_chain_checksum": "07b2c70ee8697c5d7c5cd6116af5c508aa56d2600679190e55267744cd36037c",
+  "bounded_pair_sessions": 0,
+  "assessment_role": "accounting_evidence_only",
+  "paired_nav_evidence": {
+    "schema": "paired-nav-verified-evidence-v1",
+    "as_of_date": "2026-09-21",
+    "chain_checksum": "07b2c70ee8697c5d7c5cd6116af5c508aa56d2600679190e55267744cd36037c",
+    "endpoint": "candidate_minus_declared_baseline_costed_daily_nav_return",
+    "pairs": [],
+    "candidate_population": {
+      "declared_selection_count": 5,
+      "families": [],
+      "hypothesis_count": 0,
+      "hypothesis_count_scope": "materialized_contrasts_not_unpublished_selections",
+      "pair_count": 0,
+      "pairs": [],
+      "population_checksum": "341a466697157c3fe921f7b3bcc03284f38fe298e68c74ac7f3d070c382b1f11",
+      "promotion_allowed": false,
+      "schema": "paired-nav-candidate-population-v1",
+      "scope": "all_frozen_owner_contrasts_across_training_cohorts",
+      "selection_materialization_complete": false,
+      "statistical_budget_status": "not_assigned",
+      "unmaterialized_selections": [
+        {
+          "allocation_context_snapshot_id": "07966acba0d17fea7e09c6cdc6683a741bd575d62ec04e79effcdd43adc35154",
+          "candidate_checksum": "cb979805883b8b2f21ccbaed343201771edc8cd290839064ebd67113d24528a5",
+          "owner": "ensemble"
+        },
+        {
+          "allocation_context_snapshot_id": "07966acba0d17fea7e09c6cdc6683a741bd575d62ec04e79effcdd43adc35154",
+          "candidate_checksum": "d2cb0e1d0510ef4dbba67e7719dfc25ad511549d8374bc883839b8efe27b397b",
+          "owner": "l15_route"
+        },
+        {
+          "allocation_context_snapshot_id": "c4554619ddc0b1f6a4ec1ca2fdee57fd97723a1b096edaa327a33913268368bc",
+          "candidate_checksum": "d2cb0e1d0510ef4dbba67e7719dfc25ad511549d8374bc883839b8efe27b397b",
+          "owner": "l15_route"
+        },
+        {
+          "allocation_context_snapshot_id": "c9ca34041befae3d88c221493e6cfc8ed67d512ddf9948115a99d023b4d8e6fc",
+          "candidate_checksum": "cb979805883b8b2f21ccbaed343201771edc8cd290839064ebd67113d24528a5",
+          "owner": "ensemble"
+        },
+        {
+          "allocation_context_snapshot_id": "c9ca34041befae3d88c221493e6cfc8ed67d512ddf9948115a99d023b4d8e6fc",
+          "candidate_checksum": "d2cb0e1d0510ef4dbba67e7719dfc25ad511549d8374bc883839b8efe27b397b",
+          "owner": "l15_route"
+        }
+      ],
+      "unresolved_journal_pair_ids": [],
+      "unresolved_legacy_allocation_snapshot_ids": [],
+      "unresolved_legacy_execution_snapshot_ids": [],
+      "unresolved_selection_sources": [
+        {
+          "allocation_context_snapshot_id": "c4554619ddc0b1f6a4ec1ca2fdee57fd97723a1b096edaa327a33913268368bc",
+          "owner": "ensemble",
+          "reason": "paired_nav_l3_dispatch_result_identity_mismatch",
+          "source_checksum": "c6108b0288aef90cd3571712bcd154dd07917d14530478e7b0c01f78dc7a323f",
+          "stage": "l3_candidate_selection",
+          "status": "failed"
+        }
+      ]
+    },
+    "inference_status": "not_evaluated",
+    "promotion_allowed": false
+  },
+  "accounted_pair_sessions": 0,
+  "unverified_pair_sessions": 0,
+  "latest_accounting_session": null,
+  "processed_pair_sessions": 0,
+  "recorded_pair_sessions": 0,
+  "pair_count": 0,
+  "latest_nav_session": null,
+  "allocation_context_dates": 1,
+  "latest_allocation_context_date": "2026-09-21",
+  "promotion_allowed": false,
+  "ev_prediction_dates_added": 0,
+  "family_reviews": {
+    "schema": "paired-nav-daily-reviews-v1",
+    "as_of_date": "2026-09-21",
+    "policy": {
+      "revision": "paired-nav-daily-review-policy-v1",
+      "minimum_sessions": 10,
+      "final_sessions": 30,
+      "family_alpha": 0.05,
+      "block_length": 3,
+      "resamples": 19999,
+      "family_scope": "owner_and_first_frozen_hypothesis_introduction_date"
+    },
+    "policy_checksum": "36c08a3f4321dc3ec7d7d37b3e1cfb93435ddfb65df3ce74f5f9c234b59e6135",
+    "status": "partial_daily_nav_reviews",
+    "source_population_checksum": "341a466697157c3fe921f7b3bcc03284f38fe298e68c74ac7f3d070c382b1f11",
+    "families": [],
+    "runs": [],
+    "waiting_checkpoints": [],
+    "failures": [
+      {
+        "reason": "nav_daily_population_unresolved",
+        "counts": {
+          "unmaterialized_selections": 5,
+          "unresolved_selection_sources": 1
+        }
+      }
+    ],
+    "promotion_allowed": false,
+    "policy_provenance": "code_owned_not_historically_predeclared"
+  },
+  "candidate_decisions": {
+    "status": "retired_or_requires_paired_l3_l4_release",
+    "failures": [],
+    "promotion_allowed": false,
+    "legacy_evidence_retained": true
+  },
+  "opb_candidate_decisions": {
+    "status": "retired_or_requires_paired_l3_l4_release",
+    "failures": [],
+    "promotion_allowed": false,
+    "legacy_evidence_retained": true
+  },
+  "l3_candidate_decisions": {
+    "status": "retired_or_requires_paired_l3_l4_release",
+    "failures": [],
+    "promotion_allowed": false,
+    "legacy_evidence_retained": true
+  },
+  "atomic_candidate_decisions": {
+    "status": "retired_or_requires_paired_l3_l4_release",
+    "failures": [],
+    "promotion_allowed": false,
+    "legacy_evidence_retained": true
+  },
+  "route_candidate_decisions": {
+    "schema_version": "paired-nav-daily-candidates-v1",
+    "owner": "l15_route",
+    "as_of_date": "2026-09-21",
+    "status": "partial_nav_candidate_decisions",
+    "inventory_checksum": "ea5246995f41ba411de54c053a2bea33948b425ae2b1db418fe1601fe8069f10",
+    "candidate_count": 1,
+    "evaluated_count": 0,
+    "failure_count": 1,
+    "decisions": [],
+    "decisions_checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "failures": [
+      {
+        "owner": "l15_route",
+        "candidate_artifact_id": "l15_route:strategy-semantic-continuous-affinity-v5:d2cb0e1d0510ef4dbba67e7719dfc25ad511549d8374bc883839b8efe27b397b",
+        "candidate_checksum": "d2cb0e1d0510ef4dbba67e7719dfc25ad511549d8374bc883839b8efe27b397b",
+        "stage": "original_source",
+        "reason": "nav_policy_original_allocation_missing",
+        "error_type": "ValueError"
+      }
+    ],
+    "registry_state_unchanged": true,
+    "promotion_allowed": false
+  },
+  "accounting_status": "awaiting_execution_pairs",
+  "as_of_date": "2026-09-21",
+  "reason": "paired_nav_daily_closure_incomplete"
+}

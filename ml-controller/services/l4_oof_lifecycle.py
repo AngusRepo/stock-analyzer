@@ -123,8 +123,29 @@ def verified_paper_closure_with_incomplete_comparison(nav, closure, clients):
                 or any(type(n) is not int or n <= 0 for n in counts.values())):
             return False
     if any(not isinstance(nav.get(key), dict) or nav[key].get('failures') != [] for key in ('candidate_decisions',
-            'opb_candidate_decisions', 'l3_candidate_decisions', 'atomic_candidate_decisions', 'route_candidate_decisions')):
+            'opb_candidate_decisions', 'l3_candidate_decisions', 'atomic_candidate_decisions')):
         return False
+    route = nav.get('route_candidate_decisions')
+    if not isinstance(route, dict) or not isinstance(route.get('failures'), list):
+        return False
+    evidence = nav.get('paired_nav_evidence') or {}
+    population = evidence.get('candidate_population') or {}
+    for failure in route['failures']:
+        checksum = failure.get('candidate_checksum')
+        # Missing allocation is the same unobserved comparison, not a route
+        # evaluation error. Match the original, fully verified population.
+        if (failure.get('owner') != 'l15_route' or failure.get('stage') != 'original_source'
+                or failure.get('reason') != 'nav_policy_original_allocation_missing'
+                or failure.get('error_type') != 'ValueError' or not checksum
+                or evidence.get('schema') != 'paired-nav-verified-evidence-v1'
+                or evidence.get('as_of_date') != nav.get('as_of_date')
+                or not population.get('population_checksum')
+                or population['population_checksum'] != nav['family_reviews'].get('source_population_checksum')
+                or not any(item.get('owner') == 'l15_route' and item.get('candidate_checksum') == checksum
+                    for item in population.get('unmaterialized_selections', []))
+                or any(item.get('owner') == 'l15_route' and item.get('candidate_checksum') == checksum
+                    for item in population.get('pairs', []))):
+            return False
     paper = clients('paper')
     rows = paper.query('SELECT allocation_snapshot_id,payload_json FROM l4_portfolio_plans_v1 WHERE plan_id=? AND activated=1', [closure['plan_id']])
     if len(rows) != 1:

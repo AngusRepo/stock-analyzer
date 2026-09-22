@@ -66,3 +66,34 @@ def test_daily_branch_keeps_nav_failed_and_discloses_scope(source,monkeypatch):
     summary=job._summary('run',result,mode='oof_lifecycle')
     assert 'comparison_review=incomplete_no_promotion' in summary
     assert 'completion_scope=verified_formal_paper_plan' in summary
+
+
+@pytest.fixture
+def actual_nav():
+    # Captured from the original daily owner with full checksum-verified formal
+    # snapshots and a read-only writer; no returns, orders or maturity invented.
+    from pathlib import Path
+    return json.loads((Path(__file__).parent/'fixtures/l4_daily_unmaterialized_route_20260921.json').read_text(encoding='utf-8'))
+
+
+def test_actual_formal_route_absence_is_same_incomplete_comparison(source,actual_nav):
+    _,closure,_,clients=source
+    before=deepcopy(actual_nav)
+    assert check(actual_nav,closure,clients)
+    assert actual_nav==before
+    assert actual_nav['route_candidate_decisions']['failure_count']==1
+    assert actual_nav['status']=='failed'
+
+
+@pytest.mark.parametrize('kind',['identity','owner','stage','reason','error_type','missing_population','population_changed','materialized_pair','wrong_date'])
+def test_route_exception_cannot_waive_different_or_unverified_failures(source,actual_nav,kind):
+    _,closure,_,clients=source
+    route=actual_nav['route_candidate_decisions']['failures'][0]
+    population=actual_nav['paired_nav_evidence']['candidate_population']
+    if kind=='identity':route['candidate_checksum']='unrelated'
+    elif kind in {'owner','stage','reason','error_type'}:route[kind]='wrong'
+    elif kind=='missing_population':population['unmaterialized_selections']=[]
+    elif kind=='population_changed':population['population_checksum']='other'
+    elif kind=='wrong_date':actual_nav['paired_nav_evidence']['as_of_date']='2026-09-20'
+    elif kind=='materialized_pair':population['pairs']=[{'owner':route['owner'],'candidate_checksum':route['candidate_checksum']}]
+    assert not check(actual_nav,closure,clients)

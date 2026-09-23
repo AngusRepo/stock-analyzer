@@ -21,10 +21,10 @@ assert(manifest.jobs.some(job => job.id === 'active8-oof-daily' && job.task === 
 const retryEnabled = manifest.jobs.filter((job) => Number(job.retryConfig?.retryCount ?? 0) > 0)
 assert.deepEqual(
   retryEnabled.map((job) => job.id).sort(),
-  ['external-evidence', 'weekly-cleanup', 'weekly-s12-smcvwap-calibration'],
+  ['external-evidence', 'retention-archive-only', 'weekly-cleanup', 'weekly-s12-smcvwap-calibration'],
 )
 for (const job of retryEnabled) {
-  assert.equal(job.attemptDeadline, '60s')
+  assert.equal(job.attemptDeadline, job.id === 'retention-archive-only' ? '300s' : '60s')
   assert.equal(job.retryConfig?.retryCount, 2)
   assert.equal(job.retryConfig?.maxRetryDuration, '900s')
 }
@@ -40,6 +40,8 @@ const admissionIndex = route.indexOf('admitSchedulerExecutionTicket(ticketDb')
 const policyIndex = route.indexOf('shouldRunScheduledTask({ task')
 const executionIndex = route.indexOf('const result = await fn()')
 assert(admissionIndex > 0 && admissionIndex < policyIndex && policyIndex < executionIndex)
+assert.match(fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8'),
+  /taskName === 'retention-archive-only' && isMaintenanceLeaseBusy\(result\)[\s\S]*throw new Error\(result.reason\)/)
 assert.match(route, /schedulerDeliveryIdentity\(c\.req\.raw\.headers\)/)
 assert.match(route, /databaseForDataDomain\(c\.env, 'ops'\)/)
 assert.match(route, /schedulerTicketId,/)

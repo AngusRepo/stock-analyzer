@@ -84,7 +84,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'external-evidence', name: 'External Evidence', schedule: 'Weekdays 23:15', cron: '15 15 * * 1-5', group: 'daily' },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'artifact-reconcile', name: 'Artifact Reconcile', schedule: 'Daily 02:05', cron: '5 18 * * *', group: 'daily' },
-  { id: 'retention-archive-only', name: 'Retention Archive Only', schedule: 'Daily 02:30', cron: '30 18 * * *', group: 'daily' },
+  { id: 'retention-archive-only', name: 'Retention Archive Only', schedule: '02:37–06:52 every 15 min', cron: '37,52 18-22 * * *', group: 'daily' },
   { id: 'retention-hot-window-drain', name: 'Retention Hot Window Drain Preflight', schedule: 'Daily 02:35', cron: '35 18 * * *', group: 'daily' },
   { id: 'data-domain-shadow-backfill-next', name: 'Multi-D1 Sequential Backfill', schedule: 'Daily 00:30', cron: '30 16 * * *', group: 'daily' },
   { id: 'data-domain-shadow-backfill', name: 'Multi-D1 Backfill Workers', schedule: 'Paused ops/execution/paper watchdogs', cron: '', group: 'daily' },

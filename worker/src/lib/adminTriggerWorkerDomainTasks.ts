@@ -6,7 +6,7 @@ import { twToday } from './dateUtils'
 import { runMorningWarmup } from './localMaintenance'
 import { runCadenceReadiness } from './cadenceReadiness'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
-import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
+import { isMaintenanceLeaseBusy, runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
 import {
   resolveEveningChainClosureDurationMs,
   resolveEveningChainRunAuthority,
@@ -1630,14 +1630,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
   for (const taskName of D1_HEAVY_MAINTENANCE_TASKS) {
     const handler = tasks[taskName]
     if (!handler) continue
-    tasks[taskName] = async () => summarizeMaintenanceLeaseResult(
-      await runWithMaintenanceLease(c.env.DB, {
+    tasks[taskName] = async () => {
+      const result = await runWithMaintenanceLease(c.env.DB, {
         taskName,
         leaseGroup: 'd1_heavy_maintenance',
         leaseSeconds: 300,
         run: handler,
-      }),
-    )
+      })
+      // This job is the only daily cold-archive writer. A busy lease must
+      // retry, not close its scheduler ticket as a successful no-op.
+      if (taskName === 'retention-archive-only' && isMaintenanceLeaseBusy(result)) {
+        throw new Error(result.reason)
+      }
+      return summarizeMaintenanceLeaseResult(result)
+    }
   }
   return tasks
 }

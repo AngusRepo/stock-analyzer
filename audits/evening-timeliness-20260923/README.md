@@ -27,3 +27,17 @@
 Local raw: runtime.json, cloud-job-milestones.json, snapshot-failures.json, live-scheduler.json (auth headers removed), formal-cold-readback.json.
 Tracked compact: retention-query-proof.json, native-execution-parity.json.
 Ten-year remains incomplete: 10 Learning dataset readers, current verified reclaim executor/backlog closure and sustained capacity equilibrium remain required. General deletion stays disabled. Future nightly completion must be established from runtime, not declared from tests.
+
+## Formal post-release checks
+- Worker version d3237629-32f1-4f69-957c-12d2f775d1d5, source 9a02bf17, deployed successfully.
+- Three Scheduler changes read back ENABLED with exact schedules; authentication, deadlines, retry configurations and time zone preserved.
+- Archive-only production probe: 300 rows / 297,077 bytes, deleted=0, 33.781 s.
+- Readiness audit: 3.844 s; NAV 4/4 cold manifests (2,625,004,391 bytes), no legacy/orphan D1 parts.
+- Actual >120-day hot backlog: predictions 14,751; dataset_snapshots 208; price_horizon_labels_v1 807; v2 1,541; total 17,307. This is eligibility/backlog, not permission to delete.
+- Read-only formal TimeXer input preflight passed: latest complete session 2026-09-22, history starts 2023-03-22, required 1,280 calendar days; 7.5 s, compute dispatch prohibited by the probe.
+- Global/evening pause absent; official TWSE calendar cache available (loaded 2026-09-21), next-session 2026-09-24 is not a configured holiday. D1 market_trading_sessions has no future rows; official KV calendar is the designed future source.
+- Capacity: Learning 6.604 GB, Market 4.567 GB; historical growth estimates to 10 GB about 122 / 105 days without further retention. These are estimates, not guarantees or ten-year closure.
+
+- Final ML release verified: source 9a02bf17e0ec43c21d4840af1d84b3d1c28eb4cb, revision ml-controller-sv-9a02bf17e0ec-20260923042217, 100% traffic, image sha256:f6714bf09bb114265f5d90a6941b2057afc7f7879d80f922ece6ad2f29f3fae3. All configured Jobs and both Modal App code deployments match source/tree/branch/scheduler; deployment exit 0. No GPU job started.
+- Same-thread heartbeat 9-23-evening-chain is active for this evening only, hourly 21:10–07:10 TW; notify only actionable changes/completion. Native comparison deadline remains 07:15; no late evidence backdating.
+- Closure boundary: pre-evening repair release/verification complete. Actual 9/23 nightly completion pending future runtime. Ten-year general cold-reader/reclaim/capacity closure remains open.

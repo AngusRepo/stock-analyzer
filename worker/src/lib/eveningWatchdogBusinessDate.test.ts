@@ -11,7 +11,7 @@ import { TASK_POLICIES } from './schedulerPolicy'
 
 for (const [name, clock, root, expected] of [
   ['weekday midnight','2026-09-22T16:20:00Z',{run_id:'root-22'},'2026-09-22'],
-  ['Friday into Saturday','2026-09-25T17:20:00Z',{run_id:'root-friday'},'2026-09-25'],
+  ['Friday into Saturday','2026-09-18T17:20:00Z',{run_id:'root-friday'},'2026-09-18'],
   ['morning cutoff','2026-09-23T00:00:00Z',{run_id:'root-22'},undefined],
   ['no root','2026-09-22T16:20:00Z',null,undefined],
   ['mismatched receipt','2026-09-22T16:20:00Z',{run_id:'other',run_date:'2026-09-21'},undefined],
@@ -45,7 +45,7 @@ test('midnight recovery keeps expired-session fence and does not stop on Saturda
 
 for(const sample of [
  {clock:'2026-09-22T16:20:00Z',date:'2026-09-22',next:'2026-09-23'},
- {clock:'2026-09-25T17:20:00Z',date:'2026-09-25',next:'2026-09-28'},
+ {clock:'2026-09-18T17:20:00Z',date:'2026-09-18',next:'2026-09-21'},
 ])test(`HTTP watchdog receipt and handler stay on original root: ${sample.clock}`,async()=>{
  const sql=new DatabaseSync(':memory:')
  sql.exec(readFileSync('domain-migrations/ops/0011_scheduler_execution_tickets.sql','utf8'))

@@ -1,0 +1,20 @@
+{
+  "health": "ok",
+  "provenance": {
+    "schema": "v1",
+    "sourceSha": "9a02bf17e0ec43c21d4840af1d84b3d1c28eb4cb",
+    "sourceTreeSha": "bb589e8b9618effede569381af840c294d14fb60",
+    "sourceBranch": "codex/lineage-storage-release-20260922",
+    "schedulerManifestSha256": "2c9039ff020f532f71531c24b7163a0aa70e3880f13eef4c0f86e8a3d8b6e087"
+  },
+  "traffic": [
+    {
+      "revision": "ml-controller-sv-9a02bf17e0ec-20260923042217",
+      "percent": 100
+    }
+  ],
+  "worker_version": "d3237629-32f1-4f69-957c-12d2f775d1d5",
+  "image": "sha256:f6714bf09bb114265f5d90a6941b2057afc7f7879d80f922ece6ad2f29f3fae3",
+  "modal_release_verified_by_deploy": true,
+  "training_triggered": false
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "screener-v2-watchdog",
+    "schedule": "*/10 13-22 * * 1-5",
+    "state": "ENABLED",
+    "target": "https://stockvision-worker.angus-solo-dev.workers.dev/api/admin/trigger/screener-v2-watchdog?sync=1",
+    "preserved": [
+      "auth",
+      "retry",
+      "deadline",
+      "timeZone"
+    ]
+  },
+  {
+    "id": "indicator-queue-watchdog",
+    "schedule": "*/5 13-22 * * 1-5",
+    "state": "ENABLED",
+    "target": "https://stockvision-worker.angus-solo-dev.workers.dev/api/admin/trigger/indicator-queue-watchdog?sync=1",
+    "preserved": [
+      "auth",
+      "retry",
+      "deadline",
+      "timeZone"
+    ]
+  },
+  {
+    "id": "retention-archive-only",
+    "schedule": "7,22,37,52 18-22 * * *",
+    "state": "ENABLED",
+    "target": "https://stockvision-worker.angus-solo-dev.workers.dev/api/admin/trigger/retention-archive-only?sync=1&limit_per_dataset=100",
+    "preserved": [
+      "auth",
+      "retry",
+      "deadline",
+      "timeZone"
+    ]
+  }
+]

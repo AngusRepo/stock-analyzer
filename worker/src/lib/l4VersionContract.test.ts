@@ -3,7 +3,7 @@ import test from 'node:test'
 import { L4_FEATURE_SCHEMA, L4_TIMEXER_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS } from './l4ReleaseEvidence'
 import { buildChampionTradingConfig, validateTradingConfig } from './tradingConfig'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
-import { runDailyAllocatorEvReadiness } from './updateOrchestrator'
+import { officialTradingRestrictionsRefreshComplete, runDailyAllocatorEvReadiness } from './updateOrchestrator'
 
 function fixture() {
   const config=buildChampionTradingConfig(null)
@@ -84,4 +84,14 @@ test('new L4 allocation readiness follows serving release, not retired EV OOF ta
   const invalid=await runDailyAllocatorEvReadiness(env,date,{runId:'l4-invalid'})
   assert.equal(invalid.state,'fatal')
   assert.equal(JSON.parse(store.get('scheduler:run:allocator-ev-readiness:'+date)!).status,'error')
+})
+
+
+test('official restriction readiness accepts a completed historical refresh after midnight', () => {
+  const checkedAt='2026-09-23T16:27:28Z'
+  const receipt={status:'success',trade_date:'2026-09-23',checked_at:checkedAt}
+  assert.equal(officialTradingRestrictionsRefreshComplete(receipt,checkedAt,'2026-09-23'),true)
+  assert.equal(officialTradingRestrictionsRefreshComplete(receipt,checkedAt,'2026-09-24'),false)
+  assert.equal(officialTradingRestrictionsRefreshComplete(receipt,'2026-09-23T16:28:00Z','2026-09-23'),false)
+  assert.equal(officialTradingRestrictionsRefreshComplete({...receipt,status:'error'},checkedAt,'2026-09-23'),false)
 })

@@ -370,10 +370,15 @@ async function sourceKeyCanonicalParityReadiness(
   }
 }
 
-function taipeiDateFromIso(value: string | null | undefined): string | null {
-  const ms = Date.parse(String(value ?? ''))
-  if (!Number.isFinite(ms)) return null
-  return new Date(ms + 8 * 3600_000).toISOString().slice(0, 10)
+export function officialTradingRestrictionsRefreshComplete(
+  refresh: { status?: string; trade_date?: string; checked_at?: string } | null,
+  checkedAt: string | null,
+  targetDate: string,
+): boolean {
+  return refresh?.status === 'success'
+    && refresh.trade_date === targetDate
+    && Boolean(checkedAt)
+    && refresh.checked_at === checkedAt
 }
 
 async function tradingRestrictionsDailyReadinessCheck(
@@ -427,10 +432,7 @@ async function tradingRestrictionsDailyReadinessCheck(
         summary: `${key} finlab=${quality?.freshness_status ?? 'ok'} materialized=${quality?.latest_materialization ?? 'n/a'}`,
       }
     }
-    const checkedDate = taipeiDateFromIso(checkedAt)
-    const refreshComplete = officialRefresh?.status === 'success'
-      && officialRefresh.trade_date === targetDate
-      && checkedDate === targetDate
+    const refreshComplete = officialTradingRestrictionsRefreshComplete(officialRefresh, checkedAt, targetDate)
     if (refreshComplete) {
       return {
         key,

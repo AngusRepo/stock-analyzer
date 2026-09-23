@@ -1,8 +1,13 @@
 """Post-serving NAV setup; failure is critical for closure, not for incumbent output."""
+import logging
+import traceback
 from copy import deepcopy
+from pathlib import Path
 
 from services.paired_nav_collection import shadow_failure
 from services.paired_nav_journal import read_snapshot, reuse_frozen_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 def _verify_registrations(candidates, native, *, signal_date, query):
@@ -94,6 +99,14 @@ def _register_owner_groups(candidates, *, signal_date, query, writer):
                 signal_date=signal_date, query=query, writer=writer))
         except Exception as exc:
             failure = shadow_failure(stage, exc)
+            if failure['reason'] == 'paired_nav_source_or_capture_failed':
+                # Provider errors can contain credentials. Log only a safe
+                # exception class and traceback site for production diagnosis.
+                frames = traceback.extract_tb(exc.__traceback__)
+                site = frames[-1] if frames else None
+                logger.warning('paired_nav_registration_failure owner=%s stage=%s type=%s site=%s:%s',
+                    owner, stage, type(exc).__name__, Path(site.filename).name if site else 'unknown',
+                    site.lineno if site else 0)
             grouped = failures.setdefault(owner, {**failure, 'candidate_failures': []})
             grouped['candidate_failures'].append({**failure, 'pair_id': plan['pair_id'],
                 'allocation_snapshot_id': plan['snapshot_id']})

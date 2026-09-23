@@ -181,6 +181,33 @@ def test_allocation_proof_excludes_unbounded_policy_but_retains_full_cold_payloa
     assert read_snapshot(db.query, manifest['snapshot_id'])['payload']['content'] == content
 
 
+def test_large_strategy_bundle_uses_compact_proof_without_changing_cold_policy(env):
+    db, _ = env
+    bundle = {'schema_version': 'paired-nav-strategy-bundle-v1',
+        'baseline_l3_identity': {'artifact_id': 'baseline'},
+        'candidate_l3_identity': {'artifact_id': 'candidate'},
+        'bundle_checksum': 'b' * 64,
+        'strategy_ab': {'role': 'B', 'baseline_primary': {'role': 'A'}},
+        'baseline_trading_config': {'policy': 'x' * 100000},
+        'candidate_trading_config': {'l4Distribution': {'runtime': 'y' * 2500000}}}
+    configuration = {'strategy_bundle': bundle, 'trading_config': {'cap': .5}}
+    content = {'owner': 'ensemble', 'configuration': configuration,
+        'configuration_checksum': digest(configuration), 'pair_id': 'large-strategy',
+        'baseline': {'output': [{'symbol': '2485', 'allocation_weight': .25}]},
+        'candidate': {'output': [{'symbol': '6538', 'allocation_weight': .17}]}}
+    manifest = freeze(db, content, kind='allocation_pair')
+    raw = ''.join(row['payload_text'] for row in db.query(
+        'SELECT payload_text FROM paired_nav_cold_views_v1 WHERE snapshot_id=? ORDER BY part_no',
+        [manifest['snapshot_id']]))
+    proof = json.loads(raw)['content']
+    assert len(raw.encode('utf-8')) < cold.VIEW_LIMIT
+    assert proof['configuration']['strategy_bundle'] == {
+        k: bundle[k] for k in ('schema_version', 'baseline_l3_identity',
+                               'candidate_l3_identity', 'bundle_checksum', 'strategy_ab')}
+    assert proof['configuration_checksum'] == digest(configuration)
+    assert read_snapshot(db.query, manifest['snapshot_id'])['payload']['content'] == content
+
+
 def test_large_serialization_does_not_allocate_second_full_json():
     content = {'history': [{'symbol': str(i), 'values': list(range(100))} for i in range(10000)]}
     tracemalloc.start()

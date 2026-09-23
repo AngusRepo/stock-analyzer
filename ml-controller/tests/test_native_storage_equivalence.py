@@ -44,11 +44,13 @@ def test_only_certified_owner_changes_are_equivalent():
         runtime={'execution_owner_version': new['execution_owner_version']}, account_id=1,
         variables=previous['source_context']['variables'], kv_read_policy=previous['kv_read_policy'],
         source_context=previous['source_context'])
-    assert set(c['runtime_components'][-3]['pipeline']) == set(c['runtime_components'][-1]['pipeline'])
+    assert set(c['runtime_components'][-4]['pipeline']) == set(c['runtime_components'][-1]['pipeline'])
+    assert {name for name in c['runtime_components'][-4]['pipeline']
+            if c['runtime_components'][-4]['pipeline'][name] != c['runtime_components'][-3]['pipeline'][name]} == {'paired_nav_journal.py'}
     assert {name for name in c['runtime_components'][-3]['pipeline']
-            if c['runtime_components'][-3]['pipeline'][name] != c['runtime_components'][-2]['pipeline'][name]} == {'paired_nav_journal.py'}
+            if c['runtime_components'][-3]['pipeline'][name] != c['runtime_components'][-2]['pipeline'][name]} == {'paired_nav_cold.py', 'paired_nav_execution_environment.py', 'paired_native_registration.py'}
     assert {name for name in c['runtime_components'][-2]['pipeline']
-            if c['runtime_components'][-2]['pipeline'][name] != c['runtime_components'][-1]['pipeline'][name]} == {'paired_nav_cold.py', 'paired_nav_execution_environment.py', 'paired_native_registration.py'}
+            if c['runtime_components'][-2]['pipeline'][name] != c['runtime_components'][-1]['pipeline'][name]} == {'paired_nav_cold.py'}
     new['source_context']['variables']['SOME_EXECUTION_SETTING']='changed'
     assert execution_policy(prior)!=execution_policy(new)
     assert new['execution_owner_version']!=prior['execution_owner_version']  # raw evidence stays exact

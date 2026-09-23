@@ -95,7 +95,7 @@ def seal_context(db):
 
 
 @pytest.mark.parametrize('second_fault', ['registration', 'readback'])
-def test_sibling_failures_preserve_each_member_and_never_close_unverified_successor(monkeypatch, second_fault):
+def test_sibling_failures_preserve_each_member_and_never_close_unverified_successor(monkeypatch, caplog, second_fault):
     """Consumer-boundary fault injection; actual native registration has separate integration coverage."""
     from services.paired_nav_pipeline import _register_owner_groups
     from services import paired_native_runtime as native, paired_nav_lifecycle as lifecycle
@@ -144,6 +144,9 @@ def test_sibling_failures_preserve_each_member_and_never_close_unverified_succes
     assert members[0]['reason']==('paired_nav_source_or_capture_failed' if second_fault=='registration'
                                  else 'paired_nav_native_registration_coverage_missing')
     assert 'secret' not in str(failures)
+    assert 'secret' not in caplog.text
+    if second_fault == 'registration':
+        assert 'paired_nav_registration_failure owner=l4_alpha_ev stage=native_registration type=RuntimeError' in caplog.text
     assert collection==original
     before = db.query("SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind='execution_pair' ORDER BY snapshot_id",[])
     fail[0]=False

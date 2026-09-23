@@ -1179,6 +1179,17 @@ export async function listStrategySpecsForLearning(
       END, strategy_id ASC
   `).all<StrategySpecRegistryRow>()
   const registryRows = results ?? []
+  const staleTechnicalAdmissionRows = registryRows.filter((row) =>
+    row.status !== 'retired'
+    && row.version === 'strategy-spec-v1'
+    && /^stock_tech_s(01|02|04|06|11)_/.test(row.strategy_id)
+    && (parseJson(row.thresholds_json, {}) as StrategySpec['thresholds']).dsl?.all
+      ?.some((condition) => /^technicalIndicators\.stockTechS(01|02|04|06|11)Admission$/.test(condition.signal))
+  )
+  if (staleTechnicalAdmissionRows.length) {
+    throw new Error('stock_technical_hard_signal_migration_required:' +
+      staleTechnicalAdmissionRows.map((row) => row.strategy_id).join(','))
+  }
   const approvedRuntimeIds = new Set(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status !== 'retired').map((spec) => spec.id))
   const staleGeneratedRows = registryRows.filter((row) =>
     row.status !== 'retired'

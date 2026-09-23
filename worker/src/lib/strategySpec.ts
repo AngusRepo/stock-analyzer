@@ -3,6 +3,7 @@ import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export const STRATEGY_SPEC_VERSION = 'strategy-spec-v1'
 export const STRATEGY_SPEC_SEMANTIC_VERSION = 'strategy-spec-v2'
+export const STRATEGY_SPEC_HARD_SIGNAL_VERSION = 'strategy-spec-v1-hard-signal'
 export const STRATEGY_FEATURE_SEMANTIC_VERSION = 'strategy-feature-semantic-v2'
 export const STRATEGY_SEMANTIC_V2_ALPHA_IDS = new Set([
   'alpha223_0009',
@@ -677,7 +678,7 @@ export function validateStrategySpec(spec: StrategySpec): StrategySpecValidation
 
 function validateStrategySpecUncached(spec: StrategySpec): StrategySpecValidation {
   const errors: string[] = []
-  if (![STRATEGY_SPEC_VERSION, STRATEGY_SPEC_SEMANTIC_VERSION].includes(spec.version)) errors.push('version_mismatch')
+  if (![STRATEGY_SPEC_VERSION, STRATEGY_SPEC_SEMANTIC_VERSION, STRATEGY_SPEC_HARD_SIGNAL_VERSION].includes(spec.version)) errors.push('version_mismatch')
   if (spec.owner !== 'strategy') errors.push('owner_must_be_strategy')
   if (!cleanText(spec.id)) errors.push('id_missing')
   if (!cleanText(spec.name)) errors.push('name_missing')
@@ -690,6 +691,16 @@ function validateStrategySpecUncached(spec: StrategySpec): StrategySpecValidatio
   for (const keyPath of walkKeys(spec)) {
     const leaf = keyPath.split('.').pop() ?? keyPath
     if (FORBIDDEN_SPEC_KEYS.includes(leaf)) errors.push(`forbidden_key:${keyPath}`)
+  }
+  if (spec.version === STRATEGY_SPEC_HARD_SIGNAL_VERSION) {
+    const suffix = /^stock_tech_s(01|02|04|06|11)_/.exec(spec.id)?.[1]
+    const conditions = spec.thresholds.dsl?.all
+    if (!suffix || conditions?.length !== 1
+      || conditions[0].signal !== `technicalIndicators.stockTechS${suffix}Signal`
+      || conditions[0].op !== '==' || conditions[0].value !== 1
+      || spec.thresholds.dsl?.any?.length || spec.thresholds.dsl?.not?.length) {
+      errors.push('hard_signal_contract_invalid')
+    }
   }
   if (spec.version === STRATEGY_SPEC_SEMANTIC_VERSION) {
     const featureRefs = spec.thresholds.featureRefs

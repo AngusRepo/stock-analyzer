@@ -1,6 +1,7 @@
 import {
   reconcileCandidateStrategyPoolAttribution,
 } from './screenerStrategyConsumer'
+import { materializePostOverlayStrategySeed } from './screenerPostOverlaySeed'
 import { STRATEGY_SPEC_VERSION, type StrategySpec } from './strategySpec'
 
 function assert(condition: unknown, message: string): void {
@@ -26,11 +27,11 @@ const s02Spec: StrategySpec = {
   id: 'stock_tech_s02_52w_dual_momentum_v1',
   name: 'S2 52w dual momentum',
   variantId: 's02_52w_dual_momentum_v1',
-  thesis: 'S2 technical admission must own final attribution when materialized.',
+  thesis: 'S2 complete technical signal must own final attribution when materialized.',
   thresholds: {
     minPrice: 10,
     dsl: {
-      all: [{ signal: 'technicalIndicators.stockTechS02Admission', op: '==', value: 1 }],
+      all: [{ signal: 'technicalIndicators.stockTechS02Signal', op: '==', value: 1 }],
     },
   },
 }
@@ -40,11 +41,11 @@ const s04Spec: StrategySpec = {
   id: 'stock_tech_s04_ma_deduct_turn_breakout_v1',
   name: 'S4 MA deduct turn breakout',
   variantId: 's04_ma_deduct_turn_breakout_v1',
-  thesis: 'S4 technical admission must own final attribution when materialized.',
+  thesis: 'S4 complete technical signal must own final attribution when materialized.',
   thresholds: {
     minPrice: 10,
     dsl: {
-      all: [{ signal: 'technicalIndicators.stockTechS04Admission', op: '==', value: 1 }],
+      all: [{ signal: 'technicalIndicators.stockTechS04Signal', op: '==', value: 1 }],
     },
   },
 }
@@ -58,8 +59,10 @@ const s04Spec: StrategySpec = {
       close: 88,
       technicalIndicators: {
         stockTechS02Admission: 1,
+        stockTechS02Signal: 1,
         stockTechS02Score: 0.9496,
         stockTechS04Admission: 1,
+        stockTechS04Signal: 1,
         stockTechS04Score: 0.7791,
       },
     },
@@ -72,11 +75,11 @@ const s04Spec: StrategySpec = {
 
   assert(
     candidate.strategy_pool_ids?.includes('stock_tech_s02_52w_dual_momentum_v1'),
-    'S02 admission must be reconciled into production strategy_pool_ids',
+    'S02 complete signal must be reconciled into production strategy_pool_ids',
   )
   assert(
     candidate.strategy_pool_ids?.includes('stock_tech_s04_ma_deduct_turn_breakout_v1'),
-    'S04 admission must be reconciled into production strategy_pool_ids',
+    'S04 complete signal must be reconciled into production strategy_pool_ids',
   )
   assert(
     candidate.strategy_variant_ids?.includes('s02_52w_dual_momentum_v1') &&
@@ -103,6 +106,7 @@ const s04Spec: StrategySpec = {
       close: 88,
       technicalIndicators: {
         stockTechS02Admission: 1,
+        stockTechS02Signal: 1,
       },
     },
     strategy_pool_ids: [],
@@ -117,4 +121,46 @@ const s04Spec: StrategySpec = {
     candidate.research_strategy_ids?.includes('active_bull_only_test_v1'),
     'out-of-regime strict evidence should stay visible outside production strategy_pool_ids',
   )
+}
+
+{
+  const stale = reconcileCandidateStrategyPoolAttribution({
+    symbol: '9998',
+    current_price: 88,
+    raw_signals: {
+      close: 88,
+      technicalIndicators: {
+        stockTechS02Admission: 1,
+        stockTechS02Signal: 0,
+        stockTechS02Score: 0.99,
+      },
+    },
+    strategy_pool_ids: [s02Spec.id],
+    strategy_family_ids: [s02Spec.familyId!],
+    strategy_variant_ids: [s02Spec.variantId!],
+    strategy_tags: [`strategy:${s02Spec.id}`, `strategy_family:${s02Spec.familyId}`],
+    strategy_matches: [{
+      specId: s02Spec.id, alphaBucket: s02Spec.alphaBucket,
+      status: 'active', label: s02Spec.name, reason: 'stale_admission',
+    }],
+  }, [s02Spec], { regime: 'volatile' })
+  assert(!stale.strategy_pool_ids?.includes(s02Spec.id), 'stale technical hit must not survive reconciliation')
+  assert(!stale.strategy_matches?.some((match) => match.specId === s02Spec.id), 'stale match must be removed')
+  assert(!stale.strategy_tags?.includes(`strategy:${s02Spec.id}`), 'stale tag must be removed')
+  assert(!stale.strategy_family_ids?.includes(s02Spec.familyId!), 'stale family must be removed')
+  assert(!stale.strategy_variant_ids?.includes(s02Spec.variantId!), 'stale variant must be removed')
+
+  const routed = [{
+    symbol: '9998', strategy_pool_decision: 'ml_queue',
+    strategy_pool_ids: [s02Spec.id],
+  }]
+  let postOverlayError: unknown
+  try { materializePostOverlayStrategySeed(routed as any, [{
+    symbol: '9998', current_price: 88,
+    raw_signals: { close: 88, technicalIndicators: {
+      stockTechS02Admission: 1, stockTechS02Signal: 0, stockTechS02Score: 0.99,
+    } },
+  }] as any, [s02Spec], { regime: 'volatile' })
+  } catch (error) { postOverlayError = error }
+  assert(postOverlayError instanceof Error && /l1_post_overlay_strategy_hit_lost:9998/.test(postOverlayError.message), 'post-overlay seed must reject stale L1 ownership')
 }

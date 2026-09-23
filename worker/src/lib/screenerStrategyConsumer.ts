@@ -102,28 +102,49 @@ export function reconcileCandidateStrategyPoolAttribution<T extends StrategyPool
       spec && (!isProductionStrategyOwner(spec) || !specSupportsRegime(spec, options.regime)),
     ))
 
+  const productionIds = new Set(productionMatches.map((spec) => spec.id))
+  const assessedIds = new Set(assessment.matches.map((match) => match.specId))
+  const knownFamilies = new Set<string>(normalizedSpecs.map((spec) => String(spec.familyId ?? '')).filter(Boolean))
+  const productionFamilies = new Set<string>(productionMatches.map((spec) => String(spec.familyId ?? '')).filter(Boolean))
+  const knownVariants = new Set(normalizedSpecs.map((spec) => spec.variantId).filter(Boolean))
+  const productionVariants = new Set(productionMatches.map((spec) => spec.variantId))
+  const inheritedPoolIds = (candidate.strategy_pool_ids ?? [])
+    .filter((id) => !specsById.has(id) || productionIds.has(id))
+  const inheritedMatches = (candidate.strategy_matches ?? [])
+    .filter((match) => !specsById.has(match.specId) || assessedIds.has(match.specId))
+  const inheritedTags = (candidate.strategy_tags ?? []).filter((tag) => {
+    if (tag.startsWith('strategy:')) {
+      const id = tag.slice('strategy:'.length)
+      return !specsById.has(id) || productionIds.has(id)
+    }
+    if (tag.startsWith('strategy_family:')) {
+      const id = tag.slice('strategy_family:'.length)
+      return !knownFamilies.has(id) || productionFamilies.has(id)
+    }
+    return true
+  })
   const addedProductionIds = productionMatches
     .map((spec) => spec.id)
-    .filter((id) => !(candidate.strategy_pool_ids ?? []).includes(id))
+    .filter((id) => !inheritedPoolIds.includes(id))
 
   return {
     ...candidate,
     strategy_matches: uniqueStrings([
-      ...((candidate.strategy_matches ?? []).map((match) => match.specId)),
+      ...inheritedMatches.map((match) => match.specId),
       ...assessment.matches.map((match) => match.specId),
     ]).map((specId) =>
-      [...(candidate.strategy_matches ?? []), ...assessment.matches].find((match) => match.specId === specId)!,
+      [...assessment.matches, ...inheritedMatches].find((match) => match.specId === specId)!,
     ),
     strategy_pool_ids: uniqueStrings([
-      ...(candidate.strategy_pool_ids ?? []),
+      ...inheritedPoolIds,
       ...productionMatches.map((spec) => spec.id),
     ]),
     strategy_family_ids: uniqueStrings([
-      ...(candidate.strategy_family_ids ?? []),
+      ...(candidate.strategy_family_ids ?? []).filter((id) => !knownFamilies.has(id) || productionFamilies.has(id)),
       ...productionMatches.map((spec) => spec.familyId),
     ]),
     strategy_variant_ids: uniqueStrings([
-      ...(candidate.strategy_variant_ids ?? []),
+      ...(candidate.strategy_variant_ids ?? []).filter((id) => !knownVariants.has(id) || productionVariants.has(id)),
       ...productionMatches.map((spec) => spec.variantId),
     ]),
     strategy_owner_types: uniqueStrings([
@@ -135,7 +156,7 @@ export function reconcileCandidateStrategyPoolAttribution<T extends StrategyPool
       ...researchMatches.map((spec) => spec.id),
     ]),
     strategy_tags: uniqueStrings([
-      ...(candidate.strategy_tags ?? []),
+      ...inheritedTags,
       ...assessment.tags,
       ...productionMatches.map((spec) => `strategy:${spec.id}`),
       ...productionMatches.map((spec) => `strategy_family:${spec.familyId}`),

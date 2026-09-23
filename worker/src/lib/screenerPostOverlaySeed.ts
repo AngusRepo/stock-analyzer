@@ -4,7 +4,7 @@
  */
 import { reconcileCandidatesStrategyPoolAttribution } from './screenerStrategyConsumer'
 import type { StrategyCandidatePoolCandidate } from './strategyCandidatePool'
-import type { StrategySpec, StrategySpecEvaluationOptions } from './strategySpec'
+import { normalizeStrategySpecGovernance, type StrategySpec, type StrategySpecEvaluationOptions } from './strategySpec'
 import type { SymbolExternalEvidenceRiskOverlay } from './newsThemeRiskOverlay'
 
 /** Fields consumed by the existing Controller OPS/Core merge. The formal
@@ -38,7 +38,7 @@ export function materializePostOverlayStrategySeed<T extends StrategyCandidatePo
     && candidate.strategy_pool_fallback_source !== 'raw_signal_top_up'
     && (candidate.strategy_pool_ids ?? []).length > 0
     && updatedBySymbol.has(String(candidate.symbol || '').trim()))
-  return reconcileCandidatesStrategyPoolAttribution(admitted.map(entry => {
+  const reconciled = reconcileCandidatesStrategyPoolAttribution(admitted.map(entry => {
     const updated = updatedBySymbol.get(String(entry.symbol || '').trim())!
     return {
       ...updated,
@@ -58,6 +58,18 @@ export function materializePostOverlayStrategySeed<T extends StrategyCandidatePo
       ])],
     }
   }), specs, options)
+  const productionIds = new Set(specs.map(normalizeStrategySpecGovernance)
+    .filter((spec) => spec.status === 'active'
+      && spec.ownerType === 'strategy'
+      && spec.promotionStatus === 'production')
+    .map((spec) => spec.id))
+  const lost = reconciled.filter((candidate) =>
+    !(candidate.strategy_pool_ids ?? []).some((id) => productionIds.has(id)))
+  if (lost.length) {
+    throw new Error('l1_post_overlay_strategy_hit_lost:' +
+      lost.map((candidate) => candidate.symbol).join(','))
+  }
+  return reconciled
 }
 
 export function dedupeScreenerCandidatesBySymbol<T extends { symbol?: unknown }>(candidates: T[]): T[] {

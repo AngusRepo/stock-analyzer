@@ -38,11 +38,11 @@ async function main() {
     thresholds_json: JSON.stringify({
       minPrice: 10,
       minForeignTrustNet5d: 0,
-      dsl: { all: [{ signal: 'technicalIndicators.stockTechS01Admission', op: '==', value: 1 }] },
+      dsl: { all: [{ signal: 'technicalIndicators.stockTechS01Signal', op: '==', value: 1 }] },
     }),
   })
   assert.deepEqual(runtimeOnlyCard.feature_ids, [
-    'runtime_signal:technicalIndicators.stockTechS01Admission',
+    'runtime_signal:technicalIndicators.stockTechS01Signal',
     'threshold:minForeignTrustNet5d',
   ])
 

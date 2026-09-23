@@ -39,7 +39,7 @@ export interface StockTechnicalMarketRegime {
 }
 
 export interface StockTechnicalStrategyMaterializationTelemetry {
-  method: 'stock_technical_strategy12_daily_materialization_v2'
+  method: 'stock_technical_strategy12_daily_materialization_v3'
   universeCount: number
   materializedCount: number
   scoreCoverage: Record<string, number>
@@ -52,13 +52,6 @@ export interface StockTechnicalStrategyMaterializationTelemetry {
 }
 
 type StockTechnicalStrategySuffix = '01' | '02' | '03' | '04' | '05' | '06' | '07' | '08' | '09' | '10' | '11'
-
-interface StockTechnicalAdmissionConfig<T extends StockTechnicalMaterializationCandidate> {
-  suffix: StockTechnicalStrategySuffix
-  floorScore: number
-  targetDailyMatches: number
-  broadGate: (candidate: T) => boolean
-}
 
 function finiteNumber(value: unknown): number | null {
   if (value == null || value === '') return null
@@ -633,48 +626,26 @@ function setAdmission(
   if (admission) telemetry.admissionCoverage[admissionKey] = (telemetry.admissionCoverage[admissionKey] ?? 0) + 1
 }
 
-function assignAdaptiveAdmissions<T extends StockTechnicalMaterializationCandidate>(
+function assignSignalAdmissions<T extends StockTechnicalMaterializationCandidate>(
   candidates: T[],
   telemetry: StockTechnicalStrategyMaterializationTelemetry,
-  configs: Array<StockTechnicalAdmissionConfig<T>>,
 ): void {
-  for (const config of configs) {
-    const scoreKey = `stockTechS${config.suffix}Score`
-    const signalKey = `stockTechS${config.suffix}Signal`
-    const ranked = candidates
-      .map((candidate) => ({
-        candidate,
-        score: indicator(candidate, scoreKey),
-      }))
-      .filter((row): row is { candidate: T; score: number } =>
-        row.score != null &&
-        row.score >= config.floorScore &&
-        config.broadGate(row.candidate),
-      )
-      .sort((a, b) => b.score - a.score)
-    const cutoffIndex = Math.min(config.targetDailyMatches, ranked.length) - 1
-    const adaptiveCutoff = cutoffIndex >= 0 ? ranked[cutoffIndex].score : Infinity
-
+  for (const suffix of ['01', '02', '04', '06', '11'] satisfies StockTechnicalStrategySuffix[]) {
     for (const candidate of candidates) {
       const raw = candidate.raw_signals
       if (!raw) continue
-      const scoreValue = indicator(candidate, scoreKey)
-      const hardSignal = indicator(candidate, signalKey) === 1
-      const scoreAdmission = scoreValue != null &&
-        scoreValue >= config.floorScore &&
-        scoreValue >= adaptiveCutoff &&
-        config.broadGate(candidate)
-      setAdmission(raw, config.suffix, hardSignal || scoreAdmission, telemetry)
+      // Legacy readers still consume Admission. Keep it as an exact alias of
+      // the complete strategy signal; rank/score is diagnostic evidence only.
+      setAdmission(raw, suffix, indicator(candidate, `stockTechS${suffix}Signal`) === 1, telemetry)
     }
   }
 }
-
 export function materializeStockTechnicalStrategyScores<T extends StockTechnicalMaterializationCandidate>(
   candidates: T[],
   options: { marketRegime?: StockTechnicalMarketRegime | null } = {},
 ): StockTechnicalStrategyMaterializationTelemetry {
   const telemetry: StockTechnicalStrategyMaterializationTelemetry = {
-    method: 'stock_technical_strategy12_daily_materialization_v2',
+    method: 'stock_technical_strategy12_daily_materialization_v3',
     universeCount: candidates.length,
     materializedCount: 0,
     scoreCoverage: {},
@@ -1001,75 +972,7 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
     telemetry.materializedCount += 1
   }
 
-  assignAdaptiveAdmissions(candidates, telemetry, [
-    {
-      suffix: '01',
-      floorScore: 0.80,
-      targetDailyMatches: 10,
-      broadGate: (candidate) => {
-        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
-        return indicator(candidate, 'stockTechEligible') === 1 &&
-          indicator(candidate, 'stockTechMarketMkt2') === 1 &&
-          closeValue != null &&
-          closeValue > (indicator(candidate, 'stockTechMa50') ?? Infinity) &&
-          (indicator(candidate, 'stockTechMa50') ?? -Infinity) > (indicator(candidate, 'stockTechMa200') ?? Infinity)
-      },
-    },
-    {
-      suffix: '02',
-      floorScore: 0.78,
-      targetDailyMatches: 10,
-      broadGate: (candidate) => {
-        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
-        return indicator(candidate, 'stockTechEligible') === 1 &&
-          indicator(candidate, 'stockTechMarketMkt1') === 1 &&
-          closeValue != null &&
-          closeValue > (indicator(candidate, 'stockTechMa200') ?? Infinity) &&
-          (indicator(candidate, 'stockTechMom12_1') ?? -Infinity) > 0
-      },
-    },
-    {
-      suffix: '04',
-      floorScore: 0.76,
-      targetDailyMatches: 10,
-      broadGate: (candidate) => {
-        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
-        return indicator(candidate, 'stockTechEligible') === 1 &&
-          indicator(candidate, 'stockTechMarketMkt1') === 1 &&
-          closeValue != null &&
-          closeValue > (indicator(candidate, 'stockTechMa60') ?? Infinity) &&
-          (indicator(candidate, 'stockTechReturn60') ?? -Infinity) > 0 &&
-          (indicator(candidate, 'stockTechDeduct20Raw') ?? -Infinity) > 0
-      },
-    },
-    {
-      suffix: '06',
-      floorScore: 0.76,
-      targetDailyMatches: 10,
-      broadGate: (candidate) => {
-        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
-        return indicator(candidate, 'stockTechEligible') === 1 &&
-          indicator(candidate, 'stockTechMarketMkt2') === 1 &&
-          (indicator(candidate, 'stockTechPrevClose') ?? -Infinity) > (indicator(candidate, 'stockTechPrevMa20') ?? Infinity) &&
-          (indicator(candidate, 'stockTechPrevMa20') ?? -Infinity) > (indicator(candidate, 'stockTechPrevMa50') ?? Infinity) &&
-          closeValue != null &&
-          closeValue > (indicator(candidate, 'stockTechPrevHigh') ?? Infinity)
-      },
-    },
-    {
-      suffix: '11',
-      floorScore: 0.80,
-      targetDailyMatches: 10,
-      broadGate: (candidate) => {
-        const closeValue = indicator(candidate, 'stockTechLatestClose') ?? finiteNumber(candidate.raw_signals?.close)
-        return indicator(candidate, 'stockTechEligible') === 1 &&
-          indicator(candidate, 'stockTechMarketMkt2') === 1 &&
-          (indicator(candidate, 'stockTechGapPct') ?? -Infinity) >= 0 &&
-          closeValue != null &&
-          closeValue > (indicator(candidate, 'stockTechLatestOpen') ?? Infinity)
-      },
-    },
-  ])
+  assignSignalAdmissions(candidates, telemetry)
 
   return telemetry
 }

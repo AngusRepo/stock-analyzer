@@ -38,7 +38,7 @@ const baseSpec: StrategySpec = {
   thresholds: {
     minPrice: 10,
     dsl: {
-      all: [{ signal: 'technicalIndicators.stockTechS01Admission', op: '==', value: 1 }],
+      all: [{ signal: 'technicalIndicators.stockTechS01Signal', op: '==', value: 1 }],
     },
   },
   candidatePolicy: { poolQuota: 10, costBudget: 12, maxMlShare: 0 },
@@ -160,7 +160,7 @@ const baseSpec: StrategySpec = {
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS01Signal, 1)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS01Admission, 1)
   assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Signal, 0)
-  assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Admission, 1)
+  assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Admission, 0)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS02Signal, 1)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS08RiskFilterSignal, 1)
   assert(winner.raw_signals.technicalIndicators.stockTechS08RiskFilterScore! > 0.9)
@@ -170,10 +170,12 @@ const baseSpec: StrategySpec = {
   assert(winner.raw_signals.technicalIndicators.stockTechS01Score <= 1)
   assert.equal(mid.raw_signals.technicalIndicators.stockTechS01Signal, 0)
 
+  const nearMissAssessment = assessCandidateAgainstStrategySpecs(nearMiss, [baseSpec])
+  assert.equal(nearMissAssessment.matches.length, 0, 'high score without complete signal must not enter L1')
   const assessment = assessCandidateAgainstStrategySpecs(winner, [baseSpec])
   assert(
     assessment.matches.some((match) => match.specId === 'stock_tech_s01_55d_trend_volume_breakout_v1'),
-    'stock technical StrategySpec should match on materialized adaptive admission, not a fixed score>=1 or hard signal-only gate',
+    'stock technical StrategySpec should match only on the complete materialized signal',
   )
 }
 
@@ -211,7 +213,7 @@ const baseSpec: StrategySpec = {
     },
   })
 
-  assert.equal(telemetry.method, 'stock_technical_strategy12_daily_materialization_v2')
+  assert.equal(telemetry.method, 'stock_technical_strategy12_daily_materialization_v3')
   for (const suffix of suffixes) {
     const scoreKey = `stockTechS${suffix}Score`
     const signalKey = `stockTechS${suffix}Signal`

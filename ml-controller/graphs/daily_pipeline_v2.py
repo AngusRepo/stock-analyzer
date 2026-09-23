@@ -29,6 +29,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.types import RetryPolicy
 
 from services import kv_client
+from services.pipeline_canonical_window import assert_canonical_window_open
 from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services.ensemble_v2 import attach_ensemble_v2, build_formal_model_input_contract
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
@@ -2107,6 +2108,7 @@ def _attach_ensemble_v2(
 
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """Same calculator for formal/candidate slates; persist only formal rows."""
+    _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_compute_personas")
     from services.pipeline_persona_context import capture_persona_context, compute_payload_personas
     from services.paired_nav_collection import shadow_failure
@@ -2154,6 +2156,7 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
 
     Runs sync work in a thread to avoid blocking the event loop (d1_client is sync).
     """
+    _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_compute_sector_flow")
     run_date = state["run_date"]
     last_error: Exception | None = None
@@ -2179,6 +2182,7 @@ async def node_compute_pit_residual_shadow(state: PipelineStateV2) -> dict:
     This node is deliberately non-fatal and has no current-session score,
     candidate-set, debate, sizing, or order authority.
     """
+    _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_compute_pit_residual_shadow")
     try:
         summary = await asyncio.to_thread(run_pit_residual_shadow, state["run_date"])
@@ -2718,6 +2722,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
 async def node_paired_nav_setup(state: PipelineStateV2) -> dict:
     """After formal D1 writes, before terminal closure; never an advisory error."""
+    _assert_pipeline_canonical_window(state)
     from services.paired_nav_pipeline import complete_pipeline_shadow
     collection = await asyncio.to_thread(complete_pipeline_shadow,
         state.get('paired_nav_collection'), query=LEARNING_D1_CLIENT.query,
@@ -2794,6 +2799,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     Predictions and recommendation projections use separate checked writes.
     NAV execution is reported only after exact prediction readback.
     """
+    _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_write_d1")
     run_date = state["run_date"]
 
@@ -3028,6 +3034,7 @@ def _snapshot_export_start_date(run_date: str) -> str:
 
 async def node_export_dataset_snapshot(state: PipelineStateV2) -> dict:
     """Export the post-recommendation research snapshot after serving D1 is written."""
+    _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_export_dataset_snapshot")
     metrics = dict(state.get("metrics") or {})
     run_date = state["run_date"]
@@ -4964,6 +4971,17 @@ def _pipeline_terminal_result(state: PipelineStateV2, *, run_date: str, elapsed:
     return result
 
 
+def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
+    recovery = state.get("snapshot_recovery_lineage")
+    if isinstance(recovery, dict) and (
+        recovery.get("schema_version") == "pipeline-snapshot-recovery-lineage-v1"
+        and recovery.get("recovery_scope") == "serving_contract_only"
+        and recovery.get("eligible_for_native_learning") is False
+    ):
+        return
+    assert_canonical_window_open(state["run_date"])
+
+
 async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
     for node in nodes:
         _merge_pipeline_state_update(state, await node(state))
@@ -5131,6 +5149,7 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         state["pipeline_payload_identity"] = build_pipeline_payload_identity(state.get("payloads") or [])
         await _attach_pipeline_modal_serving_context(state)
         modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
+        assert_canonical_window_open(run_date)
         state_gcs_uri = _write_pipeline_async_state_artifact(state)
         modal_payload["state_gcs_uri"] = state_gcs_uri
 
@@ -5236,6 +5255,7 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
 
     t0 = asyncio.get_event_loop().time()
     try:
+        _assert_pipeline_canonical_window(state)
         _validate_pipeline_modal_feature_bundle_before_writes(state, result)
         state["modal_prediction_state_gcs_uri"] = state_gcs_uri
         state["modal_prediction_bundle"] = result

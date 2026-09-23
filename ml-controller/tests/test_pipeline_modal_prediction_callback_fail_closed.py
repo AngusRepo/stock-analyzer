@@ -185,6 +185,7 @@ def _callback(bundle: dict) -> dict:
 
 
 def test_callback_fails_before_compute_recommend_or_write_on_feature_row_error(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "assert_canonical_window_open", lambda _date: None)
     state = _state()
     bundle = _bundle()
     bundle["predict_batch_v2_results"][1] = {
@@ -215,6 +216,7 @@ def test_callback_fails_before_compute_recommend_or_write_on_feature_row_error(m
 
 
 def test_invalid_bundle_schema_cannot_fallback_to_sync_modal(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "assert_canonical_window_open", lambda _date: None)
     state = _state()
     downstream_calls: list[list[str]] = []
 
@@ -350,6 +352,7 @@ def test_timexer_runtime_closure_cannot_be_omitted_or_failed(rows):
 
 
 def test_reused_bundle_retains_source_lineage_and_new_capture_identity(monkeypatch):
+    monkeypatch.setattr(pipeline, "assert_canonical_window_open", lambda _date: None)
     state = _state()
     seen = []
     monkeypatch.setattr(pipeline, "_read_pipeline_async_state_artifact", lambda uri: state)

@@ -10,7 +10,7 @@ import tracemalloc
 import pytest
 
 from services import paired_nav_cold as cold
-from services.paired_nav_journal import freeze_snapshot, read_snapshot, encode, digest
+from services.paired_nav_journal import freeze_snapshot, read_snapshot, reuse_frozen_snapshot, encode, digest
 from test_paired_nav_journal import DB, NOW
 
 
@@ -54,6 +54,28 @@ def test_cold_write_roundtrip_no_hot_payload_and_idempotent_clock(env):
     assert len(objects.data) == 1
     with pytest.raises(RuntimeError, match='immutable'):
         freeze(db, {'changed': True})
+
+
+def test_large_parent_is_parsed_once_per_shadow_scope(env, monkeypatch):
+    db, objects = env
+    parent = freeze(db, {'history': list(range(1000))}, run='parent')
+    other = freeze(db, {'value': 2}, run='other')
+    downloads = []
+    original_download = objects.download
+
+    def counted_download(key, path):
+        downloads.append(key)
+        original_download(key, path)
+
+    monkeypatch.setattr(objects, 'download', counted_download)
+    with reuse_frozen_snapshot(parent['snapshot_id']):
+        first = read_snapshot(db.query, parent['snapshot_id'])
+        assert read_snapshot(db.query, parent['snapshot_id']) is first
+        read_snapshot(db.query, other['snapshot_id'])
+        read_snapshot(db.query, other['snapshot_id'])
+    assert len(downloads) == 3
+    assert read_snapshot(db.query, parent['snapshot_id']) is not first
+    assert len(downloads) == 4
 
 
 def test_corrupt_or_missing_cold_never_falls_back_to_hot(env):

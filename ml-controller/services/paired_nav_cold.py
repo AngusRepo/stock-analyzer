@@ -177,7 +177,13 @@ def view_for(payload):
         content = payload['content']
         view = {k: content[k] for k in ('owner', 'candidate_checksum',
             'candidate_artifact_id', 'baseline_checksum', 'configuration_checksum', 'pair_id',
-            'configuration', 'route_effect') if k in content}
+            'route_effect') if k in content}
+        if 'configuration' in content:
+            # The full allocator policy is bound by configuration_checksum and
+            # retained in the immutable cold object. Worker proof consumers need
+            # the other configuration fields, not this unbounded model payload.
+            view['configuration'] = {k: v for k, v in content['configuration'].items()
+                if k != 'allocator_policies'}
         tag = ((content.get('configuration') or {}).get('strategy_bundle') or {}).get('strategy_ab') or {}
         if tag.get('role') == 'B' and (tag.get('baseline_primary') or {}).get('role') == 'A':
             view['allocation_preview'] = {role: [

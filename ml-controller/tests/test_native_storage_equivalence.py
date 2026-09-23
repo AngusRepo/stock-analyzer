@@ -31,8 +31,24 @@ def test_source_mutation_retains_new_identity(native_runner,monkeypatch):
 def test_only_certified_owner_changes_are_equivalent():
     c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
     prior=environment_packet('native-paper-v1:'+digest(c['policy_components']))
+    previous=deepcopy(prior);previous['execution_owner_version']='native-paper-v1:'+digest(c['runtime_components'][-2])
     new=deepcopy(prior);new['execution_owner_version']='native-paper-v1:'+digest(c['runtime_components'][-1])
-    assert execution_policy(prior)==execution_policy(new)
+    assert execution_policy(prior)==execution_policy(previous)==execution_policy(new)
+    from services.paired_nav_execution_environment import validate_registered_environment
+    frozen = execution_policy(previous)
+    frozen['execution_owner_version'] = previous['execution_owner_version']
+    parent = {'manifest': {'frozen_at': previous['source_context']['observed_at']},
+              'payload': {'content': {'native_execution_environment': previous}}}
+    validate_registered_environment(parent=parent,
+        allocation={'configuration': {'native_execution_policy': frozen}},
+        runtime={'execution_owner_version': new['execution_owner_version']}, account_id=1,
+        variables=previous['source_context']['variables'], kv_read_policy=previous['kv_read_policy'],
+        source_context=previous['source_context'])
+    assert set(c['runtime_components'][-3]['pipeline']) == set(c['runtime_components'][-1]['pipeline'])
+    assert {name for name in c['runtime_components'][-3]['pipeline']
+            if c['runtime_components'][-3]['pipeline'][name] != c['runtime_components'][-2]['pipeline'][name]} == {'paired_nav_journal.py'}
+    assert {name for name in c['runtime_components'][-2]['pipeline']
+            if c['runtime_components'][-2]['pipeline'][name] != c['runtime_components'][-1]['pipeline'][name]} == {'paired_nav_cold.py', 'paired_nav_execution_environment.py', 'paired_native_registration.py'}
     new['source_context']['variables']['SOME_EXECUTION_SETTING']='changed'
     assert execution_policy(prior)!=execution_policy(new)
     assert new['execution_owner_version']!=prior['execution_owner_version']  # raw evidence stays exact

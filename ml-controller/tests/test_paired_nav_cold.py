@@ -162,6 +162,25 @@ def test_views_preserve_required_fields_and_receipt_number_spelling(env):
     assert '5.0' in raw and hashlib.sha256(raw.encode()).hexdigest() == receipt['payload_checksum']
 
 
+def test_allocation_proof_excludes_unbounded_policy_but_retains_full_cold_payload(env):
+    db, _ = env
+    policy = {'model_payload': 'x' * (3 * 1024 * 1024)}
+    configuration = {'allocator_policies': policy, 'trading_config': {'cap': .5},
+                     'formal_baseline_identity': {'artifact_id': 'baseline'}}
+    content = {'owner': 'ensemble', 'configuration': configuration,
+               'configuration_checksum': digest(configuration), 'pair_id': 'large-policy'}
+    manifest = freeze(db, content, kind='allocation_pair')
+    raw = ''.join(row['payload_text'] for row in db.query(
+        'SELECT payload_text FROM paired_nav_cold_views_v1 WHERE snapshot_id=? ORDER BY part_no',
+        [manifest['snapshot_id']]))
+    view = json.loads(raw)['content']
+    assert len(raw.encode('utf-8')) < cold.VIEW_LIMIT
+    assert view['configuration'] == {k: v for k, v in configuration.items()
+                                     if k != 'allocator_policies'}
+    assert view['configuration_checksum'] == digest(configuration)
+    assert read_snapshot(db.query, manifest['snapshot_id'])['payload']['content'] == content
+
+
 def test_large_serialization_does_not_allocate_second_full_json():
     content = {'history': [{'symbol': str(i), 'values': list(range(100))} for i in range(10000)]}
     tracemalloc.start()

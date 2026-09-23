@@ -151,7 +151,18 @@ def validate_registered_environment(*, parent, allocation, runtime, account_id,
     observed = execution_policy({'schema_version': 'paired-nav-execution-environment-v1',
         'execution_owner_version': runtime['execution_owner_version'], 'account_id': account_id,
         'kv_read_policy': kv_read_policy, 'source_context': source_context})
-    if (actual != expected['native_execution_policy'] or observed != actual
+    from services.native_execution_equivalence import policy_execution_owner
+
+    def certified_owner(policy):
+        if not isinstance(policy, dict) or not isinstance(policy.get('execution_owner_version'), str):
+            return policy
+        return {**policy, 'execution_owner_version': policy_execution_owner(policy['execution_owner_version'])}
+
+    # A projection frozen before its storage-only build was certified retains
+    # the original raw owner. Normalize only exact certified identities here;
+    # every other frozen field and the source observation must still match.
+    if (certified_owner(actual) != expected['native_execution_policy']
+            or observed != certified_owner(actual)
             or source_context != parent['payload']['content']['native_execution_environment']['source_context']
             or variables != source_context['variables']):
         raise ValueError('paired_native_execution_environment_changed_after_freeze')

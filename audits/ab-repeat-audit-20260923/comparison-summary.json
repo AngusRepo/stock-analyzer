@@ -1,0 +1,203 @@
+{
+  "A": {
+    "2026-09-21": {
+      "pool": 672,
+      "plan_id": "9949a560926d29b5692580e01d049c97be17289317bf7a144fb870b2f89077e1",
+      "picks": {
+        "2485": 0.25,
+        "2855": 0.031023844896157143,
+        "3576": 0.25,
+        "4534": 0.05250184321926935,
+        "4763": 0.09647431188457356
+      },
+      "proof": {
+        "absolute_objective_gap": 3.395524764571861e-09,
+        "evaluated_candidate_count": 672,
+        "global_utility_upper_bound": 0.00356692694453768,
+        "objective_utility": 0.0035669235490129155,
+        "preselection": false,
+        "rounds": 12,
+        "tolerance": 1e-08,
+        "within_tolerance": true
+      },
+      "opb": {
+        "samples": 0,
+        "arm_id": "base",
+        "status": "cold_start_base"
+      },
+      "account": {
+        "signal_date": "2026-09-21",
+        "holdings": [],
+        "locked_symbols": [],
+        "risk_limits": {
+          "buys_halted": false,
+          "exposure_cap": 0.68,
+          "max_positions": 5,
+          "min_trade_value": 30000,
+          "name_cap": 0.25
+        }
+      },
+      "repeated": {
+        "2485": {
+          "EV": 0.010997650186998761,
+          "l3_net": 0.00835252
+        },
+        "3576": {
+          "EV": 0.006036467121827385,
+          "l3_net": 0.00640479
+        }
+      }
+    },
+    "2026-09-22": {
+      "pool": 679,
+      "plan_id": "8a7a6a99d5d624ca0ff2a658d7fb350dbea85dfa943d24d236a5ef0d75522acc",
+      "picks": {
+        "2485": 0.25,
+        "3576": 0.25,
+        "3691": 0.13,
+        "6443": 0.050000000000000044
+      },
+      "proof": {
+        "absolute_objective_gap": 0.0,
+        "evaluated_candidate_count": 679,
+        "global_utility_upper_bound": 0.003839552860158478,
+        "objective_utility": 0.003839552860158478,
+        "preselection": false,
+        "rounds": 2,
+        "tolerance": 1e-08,
+        "within_tolerance": true
+      },
+      "opb": {
+        "samples": 0,
+        "arm_id": "base",
+        "status": "cold_start_base"
+      },
+      "account": {
+        "signal_date": "2026-09-22",
+        "holdings": [],
+        "locked_symbols": [],
+        "risk_limits": {
+          "buys_halted": false,
+          "exposure_cap": 0.68,
+          "max_positions": 5,
+          "min_trade_value": 30000,
+          "name_cap": 0.25
+        }
+      },
+      "repeated": {
+        "2485": {
+          "EV": 0.01042636044021902,
+          "l3_net": 0.00905727
+        },
+        "3576": {
+          "EV": 0.007691401558334986,
+          "l3_net": 0.0100171
+        }
+      }
+    }
+  },
+  "common": {
+    "symbols": 640,
+    "same_full_prediction_count": 0,
+    "same_l4_feature_checksum_count": 0,
+    "checksum_symbols": 640
+  },
+  "models": {
+    "TimeXer": {
+      "comparable": 577,
+      "changed": 577,
+      "2485": [
+        0.04463015956703664,
+        0.039452441799710414
+      ],
+      "3576": [
+        0.048628611788225085,
+        0.059612771655493724
+      ]
+    },
+    "ExtraTrees": {
+      "comparable": 640,
+      "changed": 640,
+      "2485": [
+        0.489852,
+        0.496325
+      ],
+      "3576": [
+        0.470071,
+        0.48716
+      ]
+    },
+    "GNN": {
+      "comparable": 640,
+      "changed": 615,
+      "2485": [
+        0.48735010623931885,
+        0.49494224786758423
+      ],
+      "3576": [
+        0.4938645362854004,
+        0.5195083022117615
+      ]
+    },
+    "LightGBM": {
+      "comparable": 640,
+      "changed": 640,
+      "2485": [
+        0.411053,
+        0.436372
+      ],
+      "3576": [
+        0.412593,
+        0.475471
+      ]
+    },
+    "PatchTST": {
+      "comparable": 569,
+      "changed": 567,
+      "2485": [
+        0.1035,
+        0.0912
+      ],
+      "3576": [
+        0.068,
+        0.0721
+      ]
+    },
+    "TabM": {
+      "comparable": 640,
+      "changed": 640,
+      "2485": [
+        0.446904,
+        0.483809
+      ],
+      "3576": [
+        0.469456,
+        0.523103
+      ]
+    },
+    "XGBoost": {
+      "comparable": 640,
+      "changed": 640,
+      "2485": [
+        0.400551,
+        0.448875
+      ],
+      "3576": [
+        0.425707,
+        0.439376
+      ]
+    },
+    "iTransformer": {
+      "comparable": 569,
+      "changed": 567,
+      "2485": [
+        0.2357,
+        0.2724
+      ],
+      "3576": [
+        0.0967,
+        0.1073
+      ]
+    }
+  }
+}

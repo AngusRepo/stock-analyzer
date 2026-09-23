@@ -45,7 +45,9 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
     scope: 'daily_allocation', generated_at: new Date().toISOString(), production_effect: false, nav_maturity_credit: 0,
     A: unavailable('當日 A 配置尚未產生'), B: unavailable('當日 B 配置尚未產生；不代表 B 選擇持有現金') }
   const paper = paperDomainDatabase(env), learning = databaseForDataDomain(env, 'learning')
-  const plan = await paper.prepare("SELECT plan_id,payload_json FROM l4_portfolio_plans_v1 WHERE account_id=1 AND signal_date=? AND json_extract(payload_json,'$.parent_plan_id') IS NULL ORDER BY rowid DESC LIMIT 1")
+  // parent_plan_id is the prior active plan, including valid cross-day plans.
+  // It is lineage, not a marker that today's allocation is provisional.
+  const plan = await paper.prepare("SELECT plan_id,payload_json FROM l4_portfolio_plans_v1 WHERE account_id=1 AND signal_date=? ORDER BY rowid DESC LIMIT 1")
     .bind(date).first<{ plan_id: string; payload_json: string }>()
   if (plan) {
     const body = JSON.parse(plan.payload_json)

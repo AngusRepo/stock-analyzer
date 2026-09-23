@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
 import { allocationView, validateResearchRecommendations, readStrategyAbRecommendations } from './strategyAbRecommendations'
 import type { StrategyAbRecommendations } from './strategyAbRecommendationContract'
 
@@ -41,6 +42,29 @@ async function testReadback() {
   const missing = await readStrategyAbRecommendations(env, packet.date)
   assert.equal(missing.B.status, 'unavailable')
   assert.equal(missing.B.cash_weight, null)
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec('CREATE TABLE l4_portfolio_plans_v1 (account_id INTEGER, signal_date TEXT, plan_id TEXT, payload_json TEXT); CREATE TABLE paired_nav_frozen_manifests_v1 (signal_date TEXT, snapshot_kind TEXT, frozen_at TEXT)')
+    const insert = db.prepare('INSERT INTO l4_portfolio_plans_v1 VALUES(1,?,?,?)')
+    for (const [date, id, parent, symbol] of [
+      ['2026-09-21', 'day1', null, '2485'],
+      ['2026-09-22', 'day2', 'day1', '3576'],
+      ['2026-09-22', 'day2-revised', 'day2', '3691'],
+    ]) insert.run(date, id, JSON.stringify({ signal_date: date, plan_id: id, parent_plan_id: parent, weights: { [symbol!]: .25 } }))
+    const live = { DB: { prepare(sql: string) { return { bind(...args: any[]) { return {
+      async first() { return db.prepare(sql).get(...args) ?? null },
+      async all() { return { results: db.prepare(sql).all(...args) } },
+    } } } } }, KV: { async get() { return null } } } as any
+    const day1 = await readStrategyAbRecommendations(live, '2026-09-21')
+    const day2 = await readStrategyAbRecommendations(live, '2026-09-22')
+    assert.equal(day1.A.source_id, 'day1')
+    assert.equal(day2.A.source_id, 'day2-revised')
+    assert.deepEqual(day2.A.picks, [{ symbol: '3691', weight: .25 }])
+    assert.equal(day2.B.status, 'unavailable')
+    const absent = await readStrategyAbRecommendations(live, '2026-09-23')
+    assert.equal(absent.A.status, 'unavailable')
+    assert.equal(absent.B.status, 'unavailable')
+  } finally { db.close() }
   console.log('strategyAbRecommendations tests passed')
 }
 void testReadback().catch(error => { console.error(error); process.exitCode = 1 })

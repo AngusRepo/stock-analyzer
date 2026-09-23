@@ -210,13 +210,16 @@ def _load_market_symbol_price_rows(
     )
 
 
-def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, float], dict]:
+def load_market_env(
+    run_date: str, *, include_pipeline_context: bool = True
+) -> tuple[MarketEnv, dict, dict, dict[str, float], dict]:
     """
     Load shared market data + adaptive_params + barrier_params + lifecycle_weights + trading_config.
 
     Returns:
         (market_env, adaptive_params, barrier_params, lifecycle_weights, trading_config)
 
+    HMM callers can omit pipeline-only configuration and model serving context.
     Maps to worker/src/index.ts:1013-1075.
     """
     # ?? 1. Latest market_risk row ???????????????????????????????????????????
@@ -503,25 +506,31 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     latest_breadth = breadth_rows[0] if breadth_rows else {}
 
     # ?? 6. Adaptive params from KV ??????????????????????????????????????????
-    adaptive_params = load_effective_adaptive_params(run_date=run_date)
+    if include_pipeline_context:
+        adaptive_params = load_effective_adaptive_params(run_date=run_date)
 
-    # ?? 7. Trading config ??barrier_params ??????????????????????????????????
-    from services.trading_config_loader import load_merged_trading_config_with_contract
-    cfg_result = load_merged_trading_config_with_contract()
-    trading_cfg = cfg_result.config
-    if cfg_result.contract.degraded:
-        logger.warning("[payload_builder] trading:config degraded: %s", cfg_result.contract.to_dict())
-    barrier_cfg = trading_cfg.get("barrier", {})
-    barrier_params = {
-        "upper_mult": barrier_cfg.get("upperMult"),
-        "lower_mult": barrier_cfg.get("lowerMult"),
-        "upper_pct_cap": barrier_cfg.get("upperPctCap"),
-        "lower_pct_cap": barrier_cfg.get("lowerPctCap"),
-        "max_days": barrier_cfg.get("maxDays"),
-    }
+        # ?? 7. Trading config ??barrier_params ??????????????????????????????????
+        from services.trading_config_loader import load_merged_trading_config_with_contract
+        cfg_result = load_merged_trading_config_with_contract()
+        trading_cfg = cfg_result.config
+        if cfg_result.contract.degraded:
+            logger.warning("[payload_builder] trading:config degraded: %s", cfg_result.contract.to_dict())
+        barrier_cfg = trading_cfg.get("barrier", {})
+        barrier_params = {
+            "upper_mult": barrier_cfg.get("upperMult"),
+            "lower_mult": barrier_cfg.get("lowerMult"),
+            "upper_pct_cap": barrier_cfg.get("upperPctCap"),
+            "lower_pct_cap": barrier_cfg.get("lowerPctCap"),
+            "max_days": barrier_cfg.get("maxDays"),
+        }
 
-    # 8. Champion eligibility from the exact D1 serving registry.
-    lifecycle_weights = _load_lifecycle_weights_from_registry()
+        # 8. Champion eligibility from the exact D1 serving registry.
+        lifecycle_weights = _load_lifecycle_weights_from_registry()
+    else:
+        adaptive_params = {}
+        barrier_params = {}
+        lifecycle_weights = {}
+        trading_cfg = {}
 
     # ?? Build MarketEnv ?????????????????????????????????????????????????????
     market_env = MarketEnv(

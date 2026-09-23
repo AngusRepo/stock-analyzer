@@ -29,20 +29,65 @@ def read_committed_nav_baseline(*, formal, query, now=None):
     import re
     clock = now or datetime.now(timezone.utc)
     reads = {}
+    source_sets = []
     def capture(sql, params):
         rows = query(sql, params)
-        match = re.match(r'SELECT\s+(.+?)\s+FROM\s+(\w+)\s*(.*)', sql, re.I | re.S)
-        if match and match[2] in TABLES:
+        match = re.fullmatch(r'SELECT (\*|part_no,payload_text) FROM ([a-z0-9_]+)(.*)', sql)
+        predicate = (re.fullmatch(r'(?: WHERE (?:singleton_id=1|(?:artifact_id|record_id|snapshot_id)=\?|'
+                                  r'(?:retired_at IS NULL AND )?(?:artifact_id|model_name) IN \(\?(?:,\?)*\)))?'
+                                  r'(?: ORDER BY part_no)?', match[3]) if match else None)
+        if match and match[2] in TABLES and predicate:
             # Export exact original query results, including empty populations.
             # The Worker validates a closed SELECT grammar before execution.
             key = (sql, tuple(params))
             if key in reads and _row_set(reads[key]['rows']) != _row_set(rows):
                 raise RuntimeError('active8_nav_baseline_source_changed')
             reads[key] = {'sql': sql, 'params': list(params), 'rows': deepcopy(rows)}
+        elif sql.startswith("SELECT 'model_artifact_registry' AS source_table,") and ' UNION ALL ' in sql:
+            # Preserve the original five-table snapshot, but do not export its SQL to D1.
+            source_sets.append(deepcopy(rows))
+        elif any(f' FROM {table}' in sql for table in TABLES):
+            raise RuntimeError('active8_nav_baseline_query_unsupported')
         return rows
     grant = load_committed_nav_publication(query=capture, now=clock)
     if grant is None:
         raise RuntimeError('active8_nav_baseline_committed_grant_missing')
+    payload = json.loads(grant.payload_json)
+    names = sorted(payload['observation_artifacts'])
+    selected = sorted(payload['selected_models'])
+    def slots(count):
+        return ','.join('?' for _ in range(count))
+    source_queries = [
+        ('model_artifact_registry', f'SELECT * FROM model_artifact_registry WHERE artifact_id IN ({slots(len(names))})',
+         [payload['observation_artifacts'][name]['artifact_id'] for name in names]),
+        ('model_champion_pointers', f'SELECT * FROM model_champion_pointers WHERE model_name IN ({slots(len(names))})', names),
+        ('active8_ensemble_artifacts_v1', 'SELECT * FROM active8_ensemble_artifacts_v1 WHERE artifact_id=?',
+         [formal['artifact_id']]),
+        ('active8_ensemble_pointer_v1', 'SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id=1', []),
+        ('model_champion_history',
+         f'SELECT * FROM model_champion_history WHERE retired_at IS NULL AND model_name IN ({slots(len(selected))})',
+         selected),
+    ]
+    if not source_sets or not names or not selected:
+        raise RuntimeError('active8_nav_baseline_source_set_missing')
+    for source_set in source_sets:
+        grouped = {table: [] for table, _, _ in source_queries}
+        for source in source_set:
+            if (not isinstance(source, dict) or set(source) != {'source_table', 'source_row'}
+                    or source['source_table'] not in grouped):
+                raise RuntimeError('active8_nav_baseline_source_set_invalid')
+            row = json.loads(source['source_row'])
+            if not isinstance(row, dict):
+                raise RuntimeError('active8_nav_baseline_source_set_invalid')
+            grouped[source['source_table']].append(row)
+        for table, sql, params in source_queries:
+            key = (sql, tuple(params))
+            rows = grouped[table]
+            if key in reads:
+                if _row_set(reads[key]['rows']) != _row_set(rows):
+                    raise RuntimeError('active8_nav_baseline_source_changed')
+            else:
+                reads[key] = {'sql': sql, 'params': list(params), 'rows': rows}
     pointer = capture('SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id=1', [])
     if len(pointer) != 1 or any(pointer[0].get(key) != formal.get(key) for key in IDENTITY):
         raise RuntimeError('active8_nav_baseline_identity_changed')

@@ -229,7 +229,9 @@ def _fetch_market_env_via_payload_builder(run_date: str | None = None) -> dict:
     Saves re-implementing the query here.
     """
     effective_date = run_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    market_env, _, _, _, _ = load_market_env(effective_date)
+    market_env, _, _, _, _ = load_market_env(
+        effective_date, include_pipeline_context=False
+    )
     env_dict = asdict(market_env)
     env_dict["requested_run_date"] = effective_date
     _enrich_market_env_with_finlab_macro_context(env_dict, effective_date)

@@ -1,5 +1,5 @@
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
-import { brokerAsOfReadiness } from './finLabBrokerReadiness'
+import { brokerDailyReadiness } from './finLabBrokerReadiness'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -476,7 +476,7 @@ async function checkEveningChainSourceReadiness(
   const checks: ReadinessCheck[] = []
 
   checks.push(...await finLabCanonicalDailyReadinessChecks(databaseForDataDomain(env, 'market'), targetDate))
-  checks.push(...await brokerAsOfReadiness(databaseForDataDomain(env, 'market'), databaseForDataDomain(env, 'ops'), targetDate))
+  checks.push(...await brokerDailyReadiness(databaseForDataDomain(env, 'market'), targetDate))
   checks.push(await tradingRestrictionsDailyReadinessCheck(env, targetDate))
 
   try {
@@ -1764,9 +1764,10 @@ async function deferFinalizeContinuation(
     })
     throw new Error(`indicator finalizer continuation exhausted: ${reason}`)
   }
+  const pendingStage = reason.includes('/regime/compute') ? 'HMM regime' : 'indicator finalizer'
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
-    summary: `indicator finalizer deferred for ${triggerTime}; run_id=${runId}; continuation_attempt=${continuationAttempt}; reason=${reason}`,
+    summary: `${pendingStage} deferred for ${triggerTime}; run_id=${runId}; continuation_attempt=${continuationAttempt}; reason=${reason}`,
     duration_ms: 0, run_id: runId, run_date: triggerTime,
   })
   await env.UPDATE_QUEUE.send({
@@ -2685,31 +2686,6 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   )
   if ((finlabLog?.status !== 'triggered' && !retriablePartialFailure) || !finlabLog.timestamp) {
     return `skipped: no pending FinLab trigger for ${twDate}`
-  }
-
-  if (retriablePartialFailure) {
-    const updateLog = await readSchedulerRunLog(env, 'update', twDate)
-    if (updateLog?.status === 'success' || updateLog?.status === 'running' || updateLog?.status === 'triggered') {
-      return `skipped: FinLab as-of handoff already progressing market update for ${twDate}`
-    }
-    const readiness = await checkEveningChainSourceReadiness(env, twDate)
-    if (!hasFinLabRefreshableMissing(readiness)) {
-      const retryKey = `finlab:post-canonical-watchdog:${twDate}:${finlabLog.run_id}`
-      if (await env.KV.get(retryKey)) return `skipped: FinLab as-of handoff already claimed for ${twDate}`
-      await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
-      try {
-        const continuation = await continueAfterFinLabBackfill(env, twDate, false, finlabLog.run_id)
-        const summary = `FinLab partial refresh reconciled with verified as-of source readiness; ${continuation}`
-        await logSchedulerResult(env.KV, 'evening-chain', {
-          status: 'running', summary, details: readinessDetails(readiness), duration_ms: 0,
-          run_id: finlabLog.run_id, run_date: twDate, supersedePrevious: true,
-        })
-        return `status=triggered ${summary}`
-      } catch (error) {
-        await env.KV.delete(retryKey)
-        throw error
-      }
-    }
   }
 
   const triggeredAt = Date.parse(finlabLog.timestamp)

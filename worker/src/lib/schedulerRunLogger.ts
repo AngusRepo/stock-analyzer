@@ -114,7 +114,7 @@ const TASK_NAMES: Record<string, string> = {
   'alpha-quality': 'Alpha Quality',
   'weekly-optuna': 'Weekly Optuna',
   'allocator-ev-feature-snapshot-backfill': 'Allocator EV Feature Snapshot Backfill',
-  'allocator-ev-readiness': 'Allocator EV Readiness',
+  'allocator-ev-readiness': 'Allocation Readiness',
   'opb-arm-prior-refresh': 'OPB Arm Prior Refresh',
   'l4-alpha-ev-refresh': 'L4 Alpha EV Refresh',
   'allocator-ev-fusion-refresh': 'Allocator EV Fusion Refresh',

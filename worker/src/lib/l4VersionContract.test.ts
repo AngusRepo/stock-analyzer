@@ -3,6 +3,7 @@ import test from 'node:test'
 import { L4_FEATURE_SCHEMA, L4_TIMEXER_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS } from './l4ReleaseEvidence'
 import { buildChampionTradingConfig, validateTradingConfig } from './tradingConfig'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
+import { officialTradingRestrictionsRefreshComplete, runDailyAllocatorEvReadiness } from './updateOrchestrator'
 
 function fixture() {
   const config=buildChampionTradingConfig(null)
@@ -56,4 +57,41 @@ test('TimeXer v4 keeps exact input coordinates and matching Paper evidence', asy
   a.model.recipe.names=names
   delete a.release
   assert.ok(validateTradingConfig(f.config).length>0)
+})
+
+
+
+test('new L4 allocation readiness follows serving release, not retired EV OOF tables', async () => {
+  const f=fixture()
+  const store=new Map<string,string>()
+  const env:any={
+    KV:{
+      get:async(key:string,kind?:string)=>{
+        if (key==='trading:config') return f.config
+        const value=store.get(key) ?? null
+        return value!==null && kind==='json' ? JSON.parse(value) : value
+      },
+      put:async(key:string,value:string)=>{store.set(key,value)},
+    },
+    DB:{prepare:()=>({first:async()=>f.identity})},
+  }
+  const date='2026-09-23'
+  const ready=await runDailyAllocatorEvReadiness(env,date,{runId:'l4-ready'})
+  assert.equal(ready.state,'ready')
+  assert.match(ready.summary,/legacy_ev_oof=retired_incompatible/)
+  assert.equal(JSON.parse(store.get('scheduler:run:allocator-ev-readiness:'+date)!).status,'success')
+  f.artifact.release.decision='FAIL'
+  const invalid=await runDailyAllocatorEvReadiness(env,date,{runId:'l4-invalid'})
+  assert.equal(invalid.state,'fatal')
+  assert.equal(JSON.parse(store.get('scheduler:run:allocator-ev-readiness:'+date)!).status,'error')
+})
+
+
+test('official restriction readiness accepts a completed historical refresh after midnight', () => {
+  const checkedAt='2026-09-23T16:27:28Z'
+  const receipt={status:'success',trade_date:'2026-09-23',checked_at:checkedAt}
+  assert.equal(officialTradingRestrictionsRefreshComplete(receipt,checkedAt,'2026-09-23'),true)
+  assert.equal(officialTradingRestrictionsRefreshComplete(receipt,checkedAt,'2026-09-24'),false)
+  assert.equal(officialTradingRestrictionsRefreshComplete(receipt,'2026-09-23T16:28:00Z','2026-09-23'),false)
+  assert.equal(officialTradingRestrictionsRefreshComplete({...receipt,status:'error'},checkedAt,'2026-09-23'),false)
 })

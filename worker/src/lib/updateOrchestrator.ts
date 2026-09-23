@@ -370,10 +370,15 @@ async function sourceKeyCanonicalParityReadiness(
   }
 }
 
-function taipeiDateFromIso(value: string | null | undefined): string | null {
-  const ms = Date.parse(String(value ?? ''))
-  if (!Number.isFinite(ms)) return null
-  return new Date(ms + 8 * 3600_000).toISOString().slice(0, 10)
+export function officialTradingRestrictionsRefreshComplete(
+  refresh: { status?: string; trade_date?: string; checked_at?: string } | null,
+  checkedAt: string | null,
+  targetDate: string,
+): boolean {
+  return refresh?.status === 'success'
+    && refresh.trade_date === targetDate
+    && Boolean(checkedAt)
+    && refresh.checked_at === checkedAt
 }
 
 async function tradingRestrictionsDailyReadinessCheck(
@@ -427,10 +432,7 @@ async function tradingRestrictionsDailyReadinessCheck(
         summary: `${key} finlab=${quality?.freshness_status ?? 'ok'} materialized=${quality?.latest_materialization ?? 'n/a'}`,
       }
     }
-    const checkedDate = taipeiDateFromIso(checkedAt)
-    const refreshComplete = officialRefresh?.status === 'success'
-      && officialRefresh.trade_date === targetDate
-      && checkedDate === targetDate
+    const refreshComplete = officialTradingRestrictionsRefreshComplete(officialRefresh, checkedAt, targetDate)
     if (refreshComplete) {
       return {
         key,
@@ -2190,8 +2192,36 @@ export async function runDailyAllocatorEvReadiness(
   const schedulerRunId = options.runId ?? `allocator-ev-readiness:${triggerTime}:${started}`
   const parts: string[] = []
   const knowledgeCutoffDate = options.knowledgeCutoffDate ?? triggerTime
-  const health = await inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)
   const servingState = await refreshExpectedReturnServingState(env, knowledgeCutoffDate)
+  if (servingState.source_of_truth === 'l4_release+paired_l3_pointer') {
+    const ready = servingState.state === 'production_primary'
+      && servingState.expected_return_owner === 'l4_distribution'
+      && servingState.action_gate === 'expected_return_owner'
+      && servingState.hard_alerts.length === 0
+    const state = ready ? 'ready' : 'fatal'
+    const summary = [
+      'L4 allocation readiness before pipeline for ' + triggerTime,
+      'knowledge_cutoff_date=' + knowledgeCutoffDate,
+      'expected_return_serving_state=' + servingState.state,
+      'expected_return_owner=' + (servingState.expected_return_owner ?? 'none'),
+      'legacy_ev_oof=retired_incompatible',
+      'action_ready=' + (ready ? '1' : '0'),
+      'readiness_state=' + state,
+      ...(servingState.hard_alerts.length ? ['hard_alerts=' + servingState.hard_alerts.join(',')] : []),
+    ].join(' | ')
+    await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
+      status: ready ? 'success' : 'error',
+      strict: true,
+      summary,
+      duration_ms: Date.now() - started,
+      error: ready ? undefined : servingState.hard_alerts.join(',') || 'new_l4_release_or_l3_identity_invalid',
+      run_id: schedulerRunId,
+      attempt_id: options.attemptId,
+      run_date: triggerTime,
+    })
+    return { ok: ready, state, summary }
+  }
+  const health = await inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)
   parts.push(`knowledge_cutoff_date=${knowledgeCutoffDate}`)
   const priorOwner = servingState.expected_return_owner
   parts.push(`expected_return_serving_state=${servingState.state}`)

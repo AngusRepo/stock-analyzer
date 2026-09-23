@@ -16,15 +16,19 @@ const LEARNING_DATASETS: readonly DatasetSpec[] =
   (retentionR2PolicyConfig('learning_lineage_v1')?.sources ?? [])
     .filter(source => source.deleteTable && source.deleteKeyColumn)
     .map(source => ({ table: source.datasetId, dateColumn: source.dateExpression.split('.')[1] }))
+const LEARNING_COLD_READER_PENDING = (retentionR2PolicyConfig('learning_lineage_v1')?.sources ?? [])
+  .filter(source => !source.deleteTable).map(source => source.datasetId)
 
 export function learningRetentionBlockers(input: {
   policyReady: boolean; navReady: boolean; asOfDate: string;
   datasets: ReadonlyArray<{ dataset_id: string; candidate_rows: number }>;
   receipts: ReadonlyArray<{ dataset_id: string; status: string; backlog_remaining: number; updated_at: string }>;
+  readerBlockedDatasets?: readonly string[];
 }) {
   const blockers: string[] = []
   if (!input.policyReady) blockers.push('learning_retention_policy_not_ready')
   if (!input.navReady) blockers.push('nav_cold_storage_not_closed')
+  for (const dataset of input.readerBlockedDatasets ?? []) blockers.push(`cold_reader_not_verified:${dataset}`)
   const since = isoDateDaysBefore(input.asOfDate, 2)
   const byDataset = new Map(input.receipts.map(row => [row.dataset_id, row]))
   for (const dataset of input.datasets) {
@@ -125,7 +129,8 @@ export async function inspectLearningTenYearRetentionReadiness(
     && numeric(policy?.hard_reference_protected) === 1
     && policy?.status === 'active'
   const blockers = learningRetentionBlockers({ policyReady, navReady: navCold.ready,
-    asOfDate, datasets, receipts: executorReceipts.results ?? [] })
+    asOfDate, datasets, receipts: executorReceipts.results ?? [],
+    readerBlockedDatasets: LEARNING_COLD_READER_PENDING })
   return {
     schema_version: 'learning-ten-year-retention-readiness-v2' as const,
     mode: 'read_only_audit' as const,
@@ -137,6 +142,7 @@ export async function inspectLearningTenYearRetentionReadiness(
     nav_cold_storage: navCold,
     complete: blockers.length === 0,
     blockers,
+    cold_reader_pending_datasets: LEARNING_COLD_READER_PENDING,
     executor_receipts: executorReceipts.results ?? [],
     policy: policy ?? null,
     candidate_rows: datasets.reduce((sum, dataset) => sum + dataset.candidate_rows, 0),

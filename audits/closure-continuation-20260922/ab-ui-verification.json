@@ -1,0 +1,7 @@
+{
+  "mode": "isolated_component_with_production_readback_fixture",
+  "rows_verified": 9,
+  "mobile_overflow": false,
+  "missing_data_state_verified": true,
+  "page_errors": []
+}

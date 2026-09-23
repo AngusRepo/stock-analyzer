@@ -10,3 +10,11 @@
 - Verification: strategyAbRecommendations (including missing/corrupt cold data), indicatorFinalizeLease, indicatorQueueRecovery (including live lease with exhausted retry budget), strategyRewardMatureCompatibility, strategyFormalLabelerConsumerContract, strategySelectionEdgeV4Contract, eveningChainContract; Worker TypeScript;13 paired_nav_cold tests; frontend build.
 - Ten-year storage remains incomplete: Learning historical readers and safe deletion eligibility are still unresolved. No general deletion enabled by this release.
 - 9/22 original pipeline remains failed/late; a retrospective result cannot convert it into a successful prospective run.
+
+## Published/readback verification
+- Worker f9a4b352: version43e19f78-fa3f-4a2c-8ef5-ff2df1f551fd. Pages provenance f9a4b352 and deployment112a3bd4.
+- Research archive POST200 and GET200; returned packet exactly equals the accepted local comparison. API latency0.328seconds for this read, not an SLA.
+- Isolated React component verified with the real production-readback fixture:9 stock codes/weights, desktop and390px mobile, no overflow, B unavailable remains unavailable. The service token is not a Google primary-admin browser session; authenticated production UI end-to-end was not verified or bypassed.
+- A/B execution-separation frontend contract, chart wiring,6 candidate comparison tests and13 native storage/sandbox tests passed. Native settlement and equity cases preserve all state/checksum/receipt fields.
+- Two inherited source-string tests already fail against baseline6240714e: botDashboardStrategyPortfolioHealthContract expects absent strategy_portfolio_intelligence_health text; botDashboardPendingBuyPolicyContract expects absent 'L4 selected rows can enter pending buys.' text. Those baseline failures were not introduced or suppressed by this change.
+- The native equivalence certificate is committed as a367795b; final ML-stack deployment verification follows in runtime receipt.

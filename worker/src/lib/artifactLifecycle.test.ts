@@ -251,6 +251,7 @@ function readyDomainDb(baseline: string, tables: string[]): MockDb {
 
 const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', [
   'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events', 'risk_audit_log',
+  'execution_retention_releases_v1',
 ])
 const paperDomainTables = [
   'debate_memory', 'decision_logs', 'exit_shadow_log', 'paper_accounts', 'paper_orders',

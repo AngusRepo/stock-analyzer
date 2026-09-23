@@ -24,6 +24,7 @@ export function l4NativeFixture() {
   const artifacts=new Map<string,string>()
   env.ARTIFACTS={put:async(key:string,body:string)=>{artifacts.set(key,body)},get:async(key:string)=>artifacts.has(key)?{text:async()=>artifacts.get(key)}:null}
   for(const domain of domains)env[domain.toUpperCase()+'_DB']=dbs[domain]
+  sqls.ops.exec("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status) VALUES('2026-09-11','pipeline_execution','fixture-2026-09-11','success'),('2026-09-14','pipeline_execution','fixture-2026-09-14','success')")
   sqls.paper.exec("INSERT INTO paper_accounts(id,cash,initial_cash) VALUES(1,1000000,1000000)")
   const ports:any={environment:env,accountId:1,nowMs:Date.parse('2026-09-14T00:00:00Z'),databases:dbs,
     fetchFrozen:async()=>{throw new Error('unexpected_network_in_account_capture')},transaction:async(fn:()=>Promise<any>)=>fn()}

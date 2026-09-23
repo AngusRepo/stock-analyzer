@@ -645,6 +645,21 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV))
     const sourceRecoDate = prevDay
+    // A recommendation is actionable only after its own canonical evening pipeline succeeds.
+    // The async callback may otherwise write recommendations after that pipeline has failed.
+    const sourceStage = await withD1Retry('source_pipeline_execution', () =>
+      databaseForDataDomain(env, 'ops').prepare(`
+        SELECT status FROM pipeline_stage_runs
+         WHERE business_date=? AND stage='pipeline_execution'
+      `).bind(sourceRecoDate).first<{ status: string }>())
+    if (sourceStage?.status !== 'success') {
+      await persistPendingBuys(env, pendingDate, [], {
+        status: 'halted',
+        reason: `source_pipeline_execution_${sourceStage?.status ?? 'missing'}`,
+        prev_day: sourceRecoDate,
+      })
+      return
+    }
     const kellyArtifact = cfg.l4Distribution ? null : await loadPromotedPaperKellyCalibrationBefore(
       databaseForDataDomain(env, 'paper'),
       pendingDate,

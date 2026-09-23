@@ -49,6 +49,12 @@ test('native morning admits L3 HOLD with a positive L4 target and canonical exec
     assert.equal(snapshot.pendingBuys[0].ml_entry_price,100)
     assert.ok(snapshot.pendingBuys[0].watch_points.includes('l4_execution_reference:canonical_signal_close'))
     assert.equal(snapshot.pendingBuys[0].debate_verdict,'PENDING')
+    f.sqls.ops.exec("UPDATE pipeline_stage_runs SET status='error' WHERE business_date='2026-09-11' AND stage='pipeline_execution'")
+    await withPaperExecutionScope(f.ports,()=>setupMorningPendingBuys(f.env))
+    const invalidSource=(await withPaperExecutionScope(f.ports,()=>loadPendingBuySnapshot(f.env,'2026-09-14',{allowFallbackRecent:false}))).result
+    assert.equal(invalidSource.pendingBuys.length,0)
+    assert.equal(invalidSource.meta?.status,'halted')
+    assert.equal(invalidSource.meta?.error_message,'source_pipeline_execution_error')
     // A private candidate never receives or caches formal release authority.
     assert.equal(f.cfg.l4Distribution.artifact.release,undefined)
     await assert.rejects(getTradingConfig(f.env.KV),/validated Paper release/)

@@ -482,6 +482,15 @@ class OofRetentionArchiveRequest(BaseModel):
     delete_chunk_size: int = 5000
 
 
+class OofStorageArchiveRequest(BaseModel):
+    table: Literal['active8_oof_predictions', 'allocator_ev_oof_snapshots', 'l4_oof_predictions']
+    cohort_id: str = Field(min_length=1, max_length=500)
+    cutoff_date: str
+    after_rowid: int = Field(default=0, ge=0)
+    limit: int = Field(default=250, ge=1, le=250)
+    confirm: bool = False
+
+
 _ACTIVE8_TREE_MODELS = {"LightGBM", "XGBoost", "ExtraTrees"}
 _ACTIVE8_LIFECYCLE_MODELS = {"GNN", "TabM", "PatchTST", "iTransformer"}
 _ACTIVE8_FULL_FIT_MODELS = _ACTIVE8_TREE_MODELS | _ACTIVE8_LIFECYCLE_MODELS | {"DLinear"}
@@ -4214,6 +4223,29 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         "dependency_retry_required": dependency_retry_required,
         **result,
     }
+
+@router.post('/walk_forward/oof/retention/storage-archive')
+def archive_walk_forward_oof_storage(req: OofStorageArchiveRequest):
+    """Storage-only backup, independent of training-eligibility retirement."""
+    from datetime import date
+    from services.oof_storage_archive import TABLES, HeldOofObjects, archive_storage_step
+    from services.walk_forward_retrain import _get_bucket
+    try:
+        date.fromisoformat(req.cutoff_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail='oof_storage_cutoff_invalid') from exc
+    if not req.confirm:
+        rows = LEARNING_D1_CLIENT.query(f'SELECT COUNT(*) rows FROM {req.table} WHERE cohort_id=? AND {TABLES[req.table]}<? AND rowid>?',
+            [req.cohort_id, req.cutoff_date, req.after_rowid])
+        return {'status': 'dry_run', 'candidates': rows[0]['rows'], 'deleted_rows': 0,
+                'eligibility_changed': False, 'storage_only': True}
+    bucket = _get_bucket()
+    if bucket is None:
+        raise HTTPException(status_code=503, detail='oof_storage_unavailable')
+    return archive_storage_step(query=LEARNING_D1_CLIENT.query, ops=OPS_D1_CLIENT,
+        store=HeldOofObjects(bucket), table=req.table, cohort_id=req.cohort_id,
+        cutoff_date=req.cutoff_date, after_rowid=req.after_rowid, limit=req.limit)
+
 
 @router.post("/walk_forward/oof/retention/archive")
 async def archive_walk_forward_oof(req: OofRetentionArchiveRequest):

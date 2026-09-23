@@ -26,6 +26,7 @@ import {
   type ModelArtifactSelectionResponse,
   type ModelChampionPointersResponse,
   type ModelPoolLineage,
+  type ModelPoolWorkbenchResponse,
   type ModelPoolLineageModel,
   type ModelPoolStateOverlay,
   type ModelUpgradeResearchStatusRow,
@@ -390,9 +391,9 @@ function PromotionQueuePanelV2({
 }
 
 export default function ModelPoolPage() {
-  const { data, error, isLoading, isFetching, refetch } = useQuery<ModelPoolLineage>({
-    queryKey: ['model-pool', 'lineage'],
-    queryFn: modelPoolApi.lineage,
+  const { data: workbench, error, isLoading, isFetching, refetch } = useQuery<ModelPoolWorkbenchResponse>({
+    queryKey: ['model-pool', 'workbench'],
+    queryFn: modelPoolApi.workbench,
     retry: false,
     staleTime: 60_000,
     refetchOnMount: 'always',
@@ -404,34 +405,11 @@ export default function ModelPoolPage() {
     staleTime: 60_000,
     refetchOnMount: 'always',
   })
-  const artifactSelection = useQuery({
-    queryKey: ['model-pool', 'artifact-selection'],
-    queryFn: () => modelPoolApi.artifactSelection(200),
-    retry: false,
-    staleTime: 60_000,
-    refetchOnMount: 'always',
-  })
-  const artifactPromotionQueue = useQuery({
-    queryKey: ['model-pool', 'artifact-promotion-queue'],
-    queryFn: () => modelPoolApi.artifactPromotionQueue(200),
-    retry: false,
-    staleTime: 60_000,
-    refetchOnMount: 'always',
-  })
-  const championPointers = useQuery<ModelChampionPointersResponse>({
-    queryKey: ['model-pool', 'champion-pointers'],
-    queryFn: () => modelPoolApi.championPointers(200),
-    retry: false,
-    staleTime: 60_000,
-    refetchOnMount: 'always',
-  })
-  const overview = useQuery({
-    queryKey: ['model-pool', 'overview'],
-    queryFn: modelPoolApi.overview,
-    retry: false,
-    staleTime: 60_000,
-    refetchOnMount: 'always',
-  })
+  const data = workbench?.lineage
+  const artifactSelection = { data: workbench?.selection, error, isFetching }
+  const artifactPromotionQueue = { data: workbench?.promotion_queue, error, isFetching }
+  const championPointers = { data: workbench?.champion_pointers, error, isFetching }
+  const overview = { data: workbench?.overview ?? undefined, error, isFetching }
   const snapshotHasError = Boolean(error || modelUpgradeStatus.error || artifactSelection.error || artifactPromotionQueue.error || championPointers.error)
   const [modelPoolSnapshot, setModelPoolSnapshot] = useState<ModelPoolWorkbenchSnapshot | null>(null)
   const modelPoolFetching = (
@@ -449,15 +427,8 @@ export default function ModelPoolPage() {
     championPointers.data,
   )
   const refreshModelPoolSnapshot = useCallback(async () => {
-    await Promise.allSettled([
-      refetch(),
-      modelUpgradeStatus.refetch(),
-      artifactSelection.refetch(),
-      artifactPromotionQueue.refetch(),
-      championPointers.refetch(),
-      overview.refetch(),
-    ])
-  }, [artifactPromotionQueue, artifactSelection, championPointers, modelUpgradeStatus, overview, refetch])
+    await Promise.allSettled([refetch(), modelUpgradeStatus.refetch()])
+  }, [modelUpgradeStatus, refetch])
 
   useEffect(() => {
     if (!modelPoolHydrated || modelPoolFetching || snapshotHasError) return

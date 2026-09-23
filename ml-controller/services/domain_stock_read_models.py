@@ -42,12 +42,14 @@ def load_market_price_rows_with_identity(
     if not selected:
         raise ValueError("market_price_fields_missing")
     identities = load_core_stock_identities(tradable_only=True)
-    rows = MARKET_D1_CLIENT.query(
-        f"SELECT stock_id, {', '.join(selected)} FROM stock_prices "
-        "WHERE date BETWEEN ? AND ? ORDER BY stock_id, date",
-        [start_date, end_date],
-        timeout=60.0,
-    )
+    from services.retention_market_history import archived_market_projection
+    from itertools import chain
+    read_fields = list(dict.fromkeys([*selected, "date"]))
+    sql = (f"SELECT stock_id, {', '.join(read_fields)} FROM stock_prices "
+           "WHERE date BETWEEN ? AND ? ORDER BY stock_id, date")
+    hot_rows = MARKET_D1_CLIENT.query(sql, [start_date, end_date], timeout=60.0)
+    rows = chain(hot_rows, archived_market_projection('stock_prices', sql, [start_date, end_date],
+                 start_date, end_date, query_hot=MARKET_D1_CLIENT.query))
     out: list[dict[str, Any]] = []
     for row in rows:
         stock_id = row.get("stock_id")
@@ -60,6 +62,10 @@ def load_market_price_rows_with_identity(
             "sector": identity.get("sector"),
             "market": identity.get("market"),
         })
+    out.sort(key=lambda row: (int(row['stock_id']), row['date']))
+    if 'date' not in selected:
+        for row in out:
+            row.pop('date')
     return out
 
 
@@ -68,8 +74,14 @@ def load_learning_rows_with_symbol(
     params: list[Any] | None = None,
     *,
     timeout: float = 60.0,
+    include_cold_predictions: bool = False,
 ) -> list[dict[str, Any]]:
-    rows = LEARNING_D1_CLIENT.query(sql, params, timeout=timeout)
+    if include_cold_predictions:
+        from services.retention_prediction_projection import read_latest_prediction_projection
+        rows = read_latest_prediction_projection(sql, params,
+            query_hot=lambda statement, bindings: LEARNING_D1_CLIENT.query(statement, bindings, timeout=timeout))
+    else:
+        rows = LEARNING_D1_CLIENT.query(sql, params, timeout=timeout)
     identities = load_core_stock_identities()
     return [
         {**row, "symbol": identities[int(row["stock_id"])]["symbol"]}

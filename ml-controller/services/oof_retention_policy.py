@@ -217,7 +217,12 @@ def classify_oof_retention(
     }
 
 
-def build_oof_retention_plan(query_fn) -> list[dict[str, Any]]:
+def build_oof_retention_plan(query_fn, *, reference_query_fn=None) -> list[dict[str, Any]]:
+    # Model registry is Learning-owned; active references are Ops-owned.
+    import json
+    if reference_query_fn is None:
+        from services.d1_domain_client import client_proxy_for_domain
+        reference_query_fn = client_proxy_for_domain("ops").query
     rows = query_fn(
         """
         SELECT
@@ -229,13 +234,6 @@ def build_oof_retention_plan(query_fn) -> list[dict[str, Any]]:
           (SELECT COUNT(*) FROM active8_oof_predictions p WHERE p.cohort_id = c.cohort_id) d1_prediction_rows,
           (SELECT COUNT(*) FROM allocator_ev_oof_snapshots s WHERE s.cohort_id = c.cohort_id) d1_snapshot_rows,
           (SELECT COUNT(*) FROM l4_oof_predictions l WHERE l.cohort_id = c.cohort_id) d1_l4_rows,
-          (
-            SELECT COUNT(*)
-            FROM model_artifact_registry mar
-            JOIN artifact_hard_references ref
-              ON ref.artifact_id = mar.artifact_id AND ref.active = 1
-            WHERE mar.training_run_id = 'active8_oof:' || c.cohort_id
-          ) hard_reference_count,
           rl.archive_verified_at,
           rl.archive_checksum
         FROM active8_oof_cohorts c
@@ -248,8 +246,28 @@ def build_oof_retention_plan(query_fn) -> list[dict[str, Any]]:
         """,
         [],
     )
+    reference_counts = {}
+    for offset in range(0, len(rows), 100):
+        cohorts = [row["cohort_id"] for row in rows[offset:offset + 100]]
+        artifacts = query_fn(
+            "SELECT artifact_id,substr(training_run_id,13) cohort_id FROM model_artifact_registry "
+            "WHERE training_run_id IN (SELECT 'active8_oof:' || value FROM json_each(?))",
+            [json.dumps(cohorts)],
+        )
+        for chunk_offset in range(0, len(artifacts), 500):
+            chunk = artifacts[chunk_offset:chunk_offset + 500]
+            refs = reference_query_fn(
+                "SELECT artifact_id,COUNT(*) n FROM artifact_hard_references WHERE active=1 "
+                "AND artifact_id IN (SELECT value FROM json_each(?)) GROUP BY artifact_id",
+                [json.dumps([item["artifact_id"] for item in chunk])],
+            ) if chunk else []
+            by_id = {item["artifact_id"]: int(item["n"]) for item in refs}
+            for artifact in chunk:
+                cohort = artifact["cohort_id"]
+                reference_counts[cohort] = reference_counts.get(cohort, 0) + by_id.get(artifact["artifact_id"], 0)
     plan: list[dict[str, Any]] = []
     for row in rows:
+        row = {**row, "hard_reference_count": reference_counts.get(row["cohort_id"], 0)}
         decision = classify_oof_retention(
             legal_dates=int(row.get("legal_dates") or 0),
             illegal_dates=int(row.get("illegal_dates") or 0),

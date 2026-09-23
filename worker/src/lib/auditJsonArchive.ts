@@ -334,27 +334,37 @@ function retentionCursorPredicate(
 }
 
 async function loadCandidateRows(
-  db: D1Database,
-  target: AuditJsonTargetConfig,
-  cutoffDate: string,
-  limit: number,
-  minBlobBytes: number,
-  cursor: RetentionCursor | null,
-): Promise<Record<string, unknown>[]> {
+  db: D1Database, target: AuditJsonTargetConfig, cutoffDate: string,
+  limit: number, minBlobBytes: number, cursor: RetentionCursor | null,
+): Promise<{ rows: Record<string, unknown>[]; hasMore: boolean }> {
   const keyset = retentionCursorPredicate(target, cursor)
+  // Budget UTF-8 JSON bytes in SQLite BEFORE transporting full payloads.
+  const rowBytes = target.selectedColumns.map(column =>
+    `(length(CAST(json_quote(${column}) AS BLOB))+${column.length + 4})`).join('+') + '+64'
   const { results } = await db.prepare(`
-    SELECT ${target.selectedColumns.join(', ')},
-           (${blobLengthExpr(target)}) AS __blob_bytes
-      FROM ${target.table}
-     WHERE ${target.dateColumn} IS NOT NULL
-       AND ${target.dateColumn} < ?
-       AND (${retentionEligibilityWhere(target)})
-       AND (${archiveableWhere(target)})
-       ${keyset.sql}
-     ORDER BY ${target.dateColumn} ASC, ${target.keyColumn} ASC
-     LIMIT ?
+    WITH candidates AS MATERIALIZED (
+      SELECT ${target.keyColumn} row_key, ${target.dateColumn} row_date, (${rowBytes}) row_bytes
+        FROM ${target.table}
+       WHERE ${target.dateColumn} IS NOT NULL AND ${target.dateColumn}<?
+         AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)}) ${keyset.sql}
+       ORDER BY ${target.dateColumn},${target.keyColumn} LIMIT ?
+    ), budgeted AS MATERIALIZED (
+      SELECT *,SUM(row_bytes) OVER (ORDER BY row_date,row_key) total_bytes FROM candidates
+    ) SELECT ${target.selectedColumns.map(column => `${target.table}.${column}`).join(',')},
+        (${blobLengthExpr(target)}) __blob_bytes
+      FROM ${target.table} JOIN budgeted b ON b.row_key=${target.table}.${target.keyColumn}
+      WHERE b.total_bytes<=1048576 ORDER BY ${target.table}.${target.dateColumn},${target.table}.${target.keyColumn}
   `).bind(cutoffDate, ...archiveableBinds(target, minBlobBytes), ...keyset.binds, limit).all<Record<string, unknown>>()
-  return results ?? []
+  const rows = results ?? []
+  const last = rows.at(-1)
+  const nextCursor = last ? { ...cursor, cursor_date: String(last[target.dateColumn]), cursor_key: String(last[target.keyColumn]) } as RetentionCursor : cursor
+  const tail = retentionCursorPredicate(target, nextCursor)
+  const more = await db.prepare(`SELECT 1 pending FROM ${target.table}
+    WHERE ${target.dateColumn} IS NOT NULL AND ${target.dateColumn}<?
+      AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)}) ${tail.sql} LIMIT 1`)
+    .bind(cutoffDate, ...archiveableBinds(target, minBlobBytes), ...tail.binds).first()
+  if (!rows.length && more) throw new Error(`audit_json_row_requires_large_object_path:${target.id}`)
+  return { rows, hasMore: more != null }
 }
 
 export function auditJsonRowsPerUpdateStatement(blobColumnCount: number): number {
@@ -363,37 +373,45 @@ export function auditJsonRowsPerUpdateStatement(blobColumnCount: number): number
   return Math.max(1, Math.floor(100 / ((2 * blobColumnCount) + 1)))
 }
 
-async function scrubArchivedRows(
-  db: D1Database,
-  target: AuditJsonTargetConfig,
-  rows: Record<string, unknown>[],
+export function buildAuditJsonCompareAndSwap(
+  target: AuditJsonTargetConfig, rows: Record<string, unknown>[],
   pointerFor: (row: Record<string, unknown>, blobColumn: string) => string,
+) {
+  const keyMatch = `json_extract(b.value,'$.original.${target.keyColumn}') IS ${target.table}.${target.keyColumn}`
+  const same = target.selectedColumns.map(column =>
+    `json_extract(b.value,'$.original.${column}') IS ${target.table}.${column}`).join(' AND ')
+  const assignments = target.blobColumns.map(column =>
+    `${column}=(SELECT json_extract(b.value,'$.pointers.${column}') FROM backed_up b WHERE ${keyMatch})`).join(',')
+  return {
+    sql: `WITH backed_up AS MATERIALIZED (SELECT value FROM json_each(?))
+      UPDATE ${target.table} SET ${assignments}
+      WHERE ${target.dateColumn}<? AND (${retentionEligibilityWhere(target)})
+        AND EXISTS (SELECT 1 FROM backed_up b WHERE ${keyMatch} AND ${same})`,
+    rowsJson: JSON.stringify(rows.map(row => ({
+      original: Object.fromEntries(target.selectedColumns.map(column => [column, row[column] ?? null])),
+      pointers: Object.fromEntries(target.blobColumns.map(column => [column, pointerFor(row, column)])),
+    }))),
+  }
+}
+
+async function scrubArchivedRows(
+  db: D1Database, target: AuditJsonTargetConfig, rows: Record<string, unknown>[],
+  cutoffDate: string, pointerFor: (row: Record<string, unknown>, blobColumn: string) => string,
 ): Promise<number> {
   if (!rows.length) return 0
-  const rowsPerStatement = auditJsonRowsPerUpdateStatement(target.blobColumns.length)
   const statements: D1PreparedStatement[] = []
-  for (let i = 0; i < rows.length; i += rowsPerStatement) {
-    const chunk = rows.slice(i, i + rowsPerStatement)
-    const setClause = target.blobColumns.map((column) => {
-      const cases = chunk.map(() => 'WHEN ? THEN ?').join(' ')
-      return `${column} = CASE ${target.keyColumn} ${cases} ELSE ${column} END`
-    }).join(', ')
-    const binds = target.blobColumns.flatMap((column) => (
-      chunk.flatMap((row) => [rowKey(row, target), pointerFor(row, column)])
-    ))
-    const keys = chunk.map((row) => rowKey(row, target))
-    statements.push(
-      db.prepare(`
-        UPDATE ${target.table}
-           SET ${setClause}
-         WHERE ${target.keyColumn} IN (${keys.map(() => '?').join(', ')})
-      `).bind(...binds, ...keys),
-    )
+  const perStatement = auditJsonRowsPerUpdateStatement(target.blobColumns.length)
+  for (let i = 0; i < rows.length; i += perStatement) {
+    const exact = buildAuditJsonCompareAndSwap(target, rows.slice(i, i + perStatement), pointerFor)
+    statements.push(db.prepare(exact.sql).bind(exact.rowsJson, cutoffDate))
   }
+  let changed = 0
   for (let i = 0; i < statements.length; i += 50) {
-    await db.batch(statements.slice(i, i + 50))
+    const results = await db.batch(statements.slice(i, i + 50))
+    changed += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
   }
-  return rows.length
+  if (changed !== rows.length) throw new Error('audit_json_source_changed_before_scrub')
+  return changed
 }
 
 export async function buildAuditJsonRetentionPlan(
@@ -533,12 +551,14 @@ export async function runAuditJsonArchiveRetention(
     const cursor = dryRun
       ? null
       : await loadRetentionCursor(opsDb, AUDIT_JSON_RETENTION_POLICY_ID, target.id)
-    let rows = await loadCandidateRows(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
+    let candidates = await loadCandidateRows(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
+    let rows = candidates.rows
     // Keyset cursors are only a scan accelerator. Rows can become eligible after
     // the cursor passed them (for example after evidence migration or parity
     // protection is lifted), so a tail miss must re-check the head once.
     if (!dryRun && rows.length === 0 && cursor?.backlog_remaining && cursor.cursor_date) {
-      rows = await loadCandidateRows(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, null)
+      candidates = await loadCandidateRows(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, null)
+      rows = candidates.rows
     }
     const archivedBlobBytes = rows.reduce((sum, row) => sum + rowBlobBytes(row, target), 0)
     if (dryRun || rows.length === 0) {
@@ -555,7 +575,7 @@ export async function runAuditJsonArchiveRetention(
         status: dryRun ? 'dry_run' : 'skipped',
         cursor_date: cursor?.cursor_date ?? null,
         cursor_key: cursor?.cursor_key ?? null,
-        backlog_remaining: dryRun ? rows.length >= limitPerTable : false,
+        backlog_remaining: candidates.hasMore,
       })
       if (!dryRun) {
         await checkpointRetentionItem(opsDb, {
@@ -574,7 +594,7 @@ export async function runAuditJsonArchiveRetention(
 
     try {
       const chunkId = cleanRunPart(`${rows[0]?.[target.keyColumn] ?? 'start'}-${rows[rows.length - 1]?.[target.keyColumn] ?? 'end'}`)
-      const r2Key = [
+      const r2KeyPrefix = [
         'archives',
         AUDIT_JSON_ARCHIVE_KIND,
         `target=${target.id}`,
@@ -605,11 +625,26 @@ export async function runAuditJsonArchiveRetention(
       }
       const body = JSON.stringify(payload)
       const checksum = await sha256Text(body)
-      const snapshotId = `${AUDIT_JSON_ARCHIVE_KIND}:${target.id}:${businessDate}:${runId}:${chunkId}`
+      const r2Key = r2KeyPrefix.replace(/\.json$/, `-${checksum}.json`)
+      const snapshotId = `${AUDIT_JSON_ARCHIVE_KIND}:${target.id}:${businessDate}:${runId}:${chunkId}:${checksum}`
 
-      await (env.ARTIFACTS as any).put(r2Key, body, {
-        httpMetadata: { contentType: 'application/json; charset=utf-8' },
-      })
+      let readback = await env.ARTIFACTS!.get(r2Key)
+      if (!readback) {
+        try {
+          await env.ARTIFACTS!.put(r2Key, body, {
+            httpMetadata: { contentType: 'application/json; charset=utf-8' },
+            customMetadata: { checksum, minimum_retention_days: '3650' },
+            onlyIf: { etagDoesNotMatch: '*' },
+          })
+        } catch (error) {
+          readback = await env.ARTIFACTS!.get(r2Key)
+          if (!readback) throw error
+        }
+        readback ??= await env.ARTIFACTS!.get(r2Key)
+      }
+      if (!readback) throw new Error('audit_json_archive_readback_missing')
+      if (await sha256Text(await readback.text()) !== checksum)
+        throw new Error('audit_json_archive_checksum_mismatch')
 
       const manifest: DatasetSnapshotManifest = {
         snapshot_id: snapshotId,
@@ -638,11 +673,14 @@ export async function runAuditJsonArchiveRetention(
           coverage_end: rows[rows.length - 1]?.[target.dateColumn] ?? null,
           archived_blob_bytes: archivedBlobBytes,
           retention_action: 'scrub_json_columns_to_r2_pointer',
+          minimum_cold_days: 3650,
+          retain_until: new Date(Date.parse(archivedAt) + 3650 * 86400_000).toISOString(),
+          readback_verified_at: new Date().toISOString(),
         }),
       }
       await upsertDatasetSnapshotManifest(env, manifest)
 
-      const scrubbed = await scrubArchivedRows(targetDb, target, rows, (row, blobColumn) => buildPointer({
+      const scrubbed = await scrubArchivedRows(targetDb, target, rows, cutoffDate, (row, blobColumn) => buildPointer({
         table: target.table,
         keyColumn: target.keyColumn,
         keyValue: rowKey(row, target),
@@ -655,7 +693,7 @@ export async function runAuditJsonArchiveRetention(
       }))
 
       const lastRow = rows[rows.length - 1]
-      const backlogRemaining = rows.length >= limitPerTable
+      const backlogRemaining = candidates.hasMore
       result.tables.push({
         target: target.id,
         table: target.table,

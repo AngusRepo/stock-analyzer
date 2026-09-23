@@ -82,6 +82,10 @@ class FakeR2 {
   async put(key: string, body: string, options: unknown) {
     this.puts.push({ key, body, options })
   }
+  async get(key: string) {
+    const object = this.puts.find(item => item.key === key)
+    return object ? { text: async () => object.body } : null
+  }
 }
 
 async function main() {
@@ -136,9 +140,9 @@ async function main() {
   assert.equal(auditJsonRowsPerUpdateStatement(1), 33)
   assert.equal(auditJsonRowsPerUpdateStatement(2), 20)
   assert(db.batchParams.every((params) => params.length <= 100))
-  const pointerValue = db.batchParams.flat().find((value) => String(value).includes('"archived_to_r2":true'))
-  assert(pointerValue)
-  const pointer = JSON.parse(String(pointerValue))
+  const casRows = db.batchParams.flat().find(value => typeof value === 'string' && value.startsWith('[{"original":'))
+  assert(casRows)
+  const pointer = JSON.parse(JSON.parse(String(casRows))[0].pointers.evidence)
   assert.equal(pointer.archived_to_r2, true)
   assert.equal(pointer.archive_kind, 'd1_audit_json_archive')
   assert.equal(pointer.table, 'screener_funnel_items')

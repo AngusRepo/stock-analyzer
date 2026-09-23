@@ -94,7 +94,7 @@ def test_archive_overlap_filtered_in_sql_and_uses_coverage_index():
   item=dict(m,artifact_id=f'{i:04}',metadata_json=json.dumps({'coverage_start':'2030-01-01','coverage_end':'2030-01-02'}))
   if i==100:item=dict(m,artifact_id=f'{i:04}',metadata_json=json.dumps({'coverage_start':'2025-01-01','coverage_end':'2025-01-02'}))
   db.execute('INSERT INTO run_artifacts VALUES(?,?,?,?,?,?,?,?,NULL)',[item[k] for k in ['artifact_id','domain','schema_version','checksum','row_count','metadata_json']]+['ten_year_cold_archive','ready'])
-  db.execute('INSERT INTO data_retention_run_items VALUES(?,?,?,?)',('2026-01-01','success',m['row_count'],json.dumps({'artifact_id':item['artifact_id']})))
+  db.execute('INSERT INTO data_retention_run_items VALUES(?,?,?,?)',('2026-01-01','success',m['row_count'],json.dumps({'artifact_id':item['artifact_id'],'checksum':item['checksum']})))
  def ops(sql,params):
   queries.append((sql,params))
   return [dict(r) for r in db.execute(sql,params)]
@@ -123,3 +123,44 @@ def test_disk_duplicate_index_rejects_conflicts_and_cleans_on_close(monkeypatch,
   with pytest.raises(RuntimeError,match='revision_conflict'):remember((1,'2025-01-01'),b'b')
   assert (locations[0]/'keys.sqlite').is_file()
  assert not locations[0].exists()
+
+
+def legacy_archive():
+ raw,m=archive()
+ body=json.loads(raw);body['payload'].pop('source_schema_sql')
+ raw=json.dumps(body).encode();m['checksum']=hashlib.sha256(raw).hexdigest()
+ return raw,m
+
+
+def test_legacy_market_uses_verified_current_schema_and_exact_original_values():
+ raw,m=legacy_archive()
+ def hot(sql,params):
+  if "SELECT sql FROM sqlite_master" in sql:
+   return [{'sql':'CREATE TABLE stock_prices(id INTEGER PRIMARY KEY,stock_id INTEGER,date TEXT,close REAL)'}]
+  return []
+ assert read(raw,m,hot)==[dict(stock_id=1,date='2025-01-01',close=101.),dict(stock_id=2,date='2025-01-01',close=102.)]
+
+
+@pytest.mark.parametrize('ddl,error',[
+ ('CREATE TABLE stock_prices(id INTEGER,stock_id INTEGER,date TEXT,close REAL,new_column TEXT DEFAULT "invented")','columns_mismatch'),
+ ('CREATE TABLE stock_prices(id INTEGER,stock_id INTEGER,date TEXT,close TEXT)','readback_mismatch'),
+ ('CREATE TABLE wrong(id INTEGER)','schema_invalid'),
+ (None,'schema_missing'),
+])
+def test_legacy_schema_cannot_invent_columns_or_change_values(ddl,error):
+ raw,m=legacy_archive()
+ def hot(sql,params):
+  return [{'sql':ddl}] if "SELECT sql FROM sqlite_master" in sql and ddl else []
+ with pytest.raises(ValueError,match=error):read(raw,m,hot)
+
+
+def test_legacy_hot_precedence_and_unrelated_dates_need_no_restore_ddl():
+ raw,m=legacy_archive();m['release_verified_at']=None
+ def hot(sql,params):
+  assert 'JOIN json_each' in sql
+  return [dict(stock_id=i,date='2025-01-01') for i in (1,2)]
+ assert read(raw,m,hot)==[]
+ assert list(archived_market_projection('stock_prices','SELECT * FROM stock_prices',[],
+  '2026-01-01','2026-01-02',query_hot=lambda *a:pytest.fail('unrelated data queried'),
+  query_ops=lambda *a:[m],download=lambda *a:raw))==[]
+ with pytest.raises(RuntimeError,match='release_receipt'):read(raw,m)

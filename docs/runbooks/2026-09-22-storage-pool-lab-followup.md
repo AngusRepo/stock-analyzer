@@ -107,3 +107,62 @@ Raw evidence: audits/closure-continuation-20260922/lineage-comparison.json,
 historical-recovery-start.json,historical-recovery-next.json,maturity-calendar.json,
 current-nav-pipeline.json,evening-readiness.json,cold-dedup-benchmark.json,
 release-native-parity.json.
+
+
+## Release 175bbec7 verified; subsequent package local only
+
+The explicitly approved 31-file package fast-forwarded origin/main from3721f6c3 to175bbec70d746a453a3d4988571ea70eb18606ac. Worker60521655-c663-4125-9f20-1abce4cea7ac; Controller ml-controller-sv-175bbec70d74-20260922122616; related Jobs and both existing Modal Apps use the same source. Six approved migrations applied and indexes read back. No retrain/GPU jobs were launched by this release, and no general deletion was enabled.
+
+Formal first UI reads still hit502: Controller eventually returned lineage82.72s / overview65.16s. Warm sequential reads15.77s /0.88s succeeded. Five simultaneous page reads all returned200 but lineage took58.83s on the SAME Cloud Run instance. Cold start alone does not explain this. Current follow-up consolidates the page's five builders into a single source-verified observation and reuses its HTTP connection. Same-machine, same-formal-source comparison:69,100,054→49,945,740 D1 response bytes;28→24queries;24.063→22.578seconds. Exact outputs equal except observation timestamps. This is one paired local measurement, not proof of a formal latency SLO.
+
+Additional local reader repairs cover Worker price/indicator/chip/margin/fundamental history, Python research prediction projections and sector/price joins. Cold reads require checksum, source identity, original schema, release proof and hot precedence. They do not silently truncate dates or invent missing data.
+
+OOF pure-storage backup now has a separate authenticated synchronous Controller owner and atomic OPS receipt/readback. Lost acknowledgement retries keep a content-addressed receipt; hot rows and training eligibility remain unchanged. No production OOF transfer, deletion, automatic dispatch or comprehensive cold-consumer closure is claimed.
+
+A newly traced active audit-JSON writer lacked stored-byte readback and original-value comparison before replacing D1 JSON. Local repair adds immutable content-addressed object keys, complete SHA readback, a batch compare-and-swap on original selected fields plus current eligibility, and actual changed-row counts. SQLite limits each transfer to1MiB before materializing payloads and queries the real remaining tail; oversized single rows fail visibly. Ops0018 aligns this remaining seven-year policy with3650days. The R2 prefix archives/d1_audit_json_archive/ still needs its own3650day retention lock; the existing evidence/class=ten_year_cold_archive/ lock does not cover it.
+
+Verification:69Python tests;23Worker checks/tests;source+test TypeScript;frontend production build from the same UI edits passed. Actual old/new native sandbox settlement and equity cases remain identical, native-paper-v1:c1d998628f4ae844faf49172c1ff8fb650b5a3e3f504420167664b82615f1915. No new native economic equivalence exception was needed.
+
+After canonical FinLab9/22source appeared (2370positive closes), the existing owners generated802canonical5d price labels,802multi-horizon labels,802canonical selection labels, and requested the existing metric owner. Readback showed it reused26strategy profiles/130metric rows from an immutable prior daily receipt (coverage ends8/28); it did not recompute those metrics. A new canonical nightly scope remains necessary. The authoritative metrics are v2 immutable snapshots, not the old v1metrics table. A subsequent full-history reward-owner dry run and publication consumed51730source rows, persisted23reward aggregates,193daily reward rows and71heads; stale rows retired0, stale daily rewards cleared0. A start_date=9/15 scoped aggregate rebuild was deliberately not used because reward IDs aggregate their full history.
+
+General ten-year closure remains OPEN: several cross-table historical readers and live-reference consumers remain hot-only; general drain must stay disabled. In particular, full strategy reward source joins still rely on matrix/reference/canonical-label tables, so those cannot be deleted at120days yet. Sustainable recurring catch-up, all-policy owner coverage, the OOF cold readers, and measured post-cutover capacity runway remain outstanding. A daily100-row chunk alone is not a sustainable drain. Do not classify a backup endpoint or successful migration as full ten-year closure.
+
+Raw evidence: audits/closure-continuation-20260922/{compare_pool_reads.json,workbench-parity-detail.json,rebuild_mature_0915.json,refresh_reward_owner.json,verify_recovery_readback.json,release-native-parity.json}. These local audit files are excluded from source release.
+
+
+## 2026-09-23 input snapshot failure — legacy archive compatibility
+
+Formal 9/22 chain completed its screener and failed before daily Modal inference:
+`dataset-snapshot-export` raised `retention_archive_restore_schema_missing`;
+`pipeline-v2` ended with `inference_snapshot_job_failed` at9/23 00:28TW.
+The deployed history reader required source_schema_sql from every v1 archive,
+but five valid8/23 archives predate that field. All403rows are absent from hot
+Market D1:100prices,3indicators,100chips,100margin,100fundamentals. Each original
+R2 object checksum matches its manifest and successful legacy OPS release receipt.
+This is a reader compatibility regression, not missing/corrupt source data.
+
+Local repair separates original-schema restore requirements from history reads.
+Exact restore remains strict. A legacy history projection uses the trusted current
+source DDL only with an EXACT archived column-set match and lossless inserted-value
+readback; no defaults, coercion or historical values are manufactured. Existing
+caller SQL and hot natural-key precedence remain intact. Legacy receipt checks now
+bind artifact_id+checksum+deleted_row_count. Both Python and Worker readers accept
+that proof; mismatched/unproved cold rows still fail visibly.
+
+Verified against all five ORIGINAL formal objects:403/403 values identical.
+Same1280-calendar-day requested price query:905,269rows,43hot chunks,36.551seconds;
+actual available prices2024-12-31 through2026-09-22. Requested start2023-03-22 does
+not mean source price observations exist for every earlier day. Complete input
+export passed (formal10day chunks,11components,3,385,347rows,local Parquet only):
+all Parquet values round-trip exactly in272.606seconds. No GCS/D1write or GPU.
+Native settlement/equity parity passes with zero execution-component changes.
+Focused regression:41Python +6Worker tests, bothWorker TypeScript checks pass.
+
+The follow-up package is now35files (original29 plus6legacy compatibility files),
+still uncommitted/undeployed. General retention deletion remains disabled. R2 lock
+readback confirms3650days for evidence/class=ten_year_cold_archive/ only; audit JSON
+prefix lock remains pending. No new GPU/retrain or retroactive A/B NAV credits.
+
+Raw evidence: audits/closure-continuation-20260922/{inference-failure-0923.json,
+legacy-market-presence-0923.json,legacy-reader-verification-0923.json,
+snapshot-prices-verification-0923.json,complete-input-snapshot-0923.json,followup-release-files.json}.

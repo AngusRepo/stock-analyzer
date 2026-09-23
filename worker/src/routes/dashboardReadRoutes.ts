@@ -262,6 +262,16 @@ dashboardReadRoutes.get('/api/model-pool/status', async (c) => {
   }
 })
 
+dashboardReadRoutes.get('/api/model-pool/workbench', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+  try {
+    return c.json(await controllerJson<any>(c.env, '/model_pool/workbench', { timeoutMs: 60_000 }))
+  } catch (e: any) {
+    return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
+  }
+})
+
 dashboardReadRoutes.get('/api/model-pool/lineage', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

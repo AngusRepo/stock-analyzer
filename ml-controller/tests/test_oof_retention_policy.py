@@ -137,3 +137,39 @@ def test_oof_date_eligibility_does_not_mark_oof_illegal_for_l4_warmup():
     assert by_scope["l4"]["eligibility_status"] == "illegal"
     assert by_scope["l4"]["reason_code"] == "l4_cross_section_incomplete"
     assert by_scope["fusion"]["eligibility_status"] == "illegal"
+
+
+def test_retention_plan_bridges_learning_and_ops_without_cross_database_join():
+    import sqlite3
+    from services.oof_retention_policy import build_oof_retention_plan
+    learning, ops = sqlite3.connect(':memory:'), sqlite3.connect(':memory:')
+    for db in (learning, ops): db.row_factory = sqlite3.Row
+    learning.executescript("""
+      CREATE TABLE active8_oof_cohorts(cohort_id TEXT,status TEXT);
+      CREATE TABLE active8_oof_date_eligibility(cohort_id TEXT,evidence_scope TEXT,eligibility_status TEXT);
+      CREATE TABLE active8_oof_predictions(cohort_id TEXT);
+      CREATE TABLE allocator_ev_oof_snapshots(cohort_id TEXT);
+      CREATE TABLE l4_oof_predictions(cohort_id TEXT);
+      CREATE TABLE active8_oof_retention_ledger(cohort_id TEXT,archive_verified_at TEXT,archive_checksum TEXT);
+      CREATE TABLE model_artifact_registry(artifact_id TEXT,training_run_id TEXT);
+      INSERT INTO active8_oof_cohorts VALUES('one','superseded'),('two','superseded');
+      INSERT INTO active8_oof_date_eligibility VALUES('one','active8_oof','illegal'),('two','active8_oof','illegal');
+      INSERT INTO model_artifact_registry VALUES('a','active8_oof:one'),('b','active8_oof:two');
+    """)
+    ops.executescript("""CREATE TABLE artifact_hard_references(artifact_id TEXT,active INTEGER);
+      INSERT INTO artifact_hard_references VALUES('a',1),('a',1),('b',0);""")
+    q = lambda sql, args: [dict(row) for row in learning.execute(sql,args)]
+    r = lambda sql, args: [dict(row) for row in ops.execute(sql,args)]
+    try:
+        before = (learning.total_changes, ops.total_changes)
+        result = build_oof_retention_plan(q,reference_query_fn=r)
+        assert result[0]['hard_reference_count'] == 2
+        assert result[0]['blocker_reason'] == 'active_artifact_hard_reference'
+        assert result[1]['hard_reference_count'] == 0
+        assert result[1]['retention_action'] == 'archive_required'
+        assert before == (learning.total_changes, ops.total_changes)
+        import pytest
+        with pytest.raises(RuntimeError,match='ops_unavailable'):
+            build_oof_retention_plan(q,reference_query_fn=lambda *_: (_ for _ in ()).throw(RuntimeError('ops_unavailable')))
+    finally:
+        learning.close(); ops.close()

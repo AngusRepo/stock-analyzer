@@ -286,5 +286,5 @@ def load_markov_switching_overlay_rows(limit: int = 1000) -> list[dict[str, Any]
              )
            ORDER BY generated_at DESC
            LIMIT ?""",
-        [safe_limit],
+        [safe_limit], include_cold_predictions=True,
     )

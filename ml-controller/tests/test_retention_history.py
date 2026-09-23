@@ -41,7 +41,7 @@ def test_backtest_rolling_accuracy_reads_original_cold_period(monkeypatch):
  monkeypatch.setattr(backtest_state.LEARNING_D1_CLIENT,'query',lambda *a:[])
  monkeypatch.setattr(retention_history.OPS,'query',lambda *a:[m])
  monkeypatch.setattr(retention_history.LEARNING,'query',lambda *a:[])
- monkeypatch.setattr(retention_history,'download_archive',lambda manifest:raw)
+ monkeypatch.setattr(retention_history,'download_archive',lambda manifest,**kwargs:raw)
  rows=backtest_state.load_verified_predictions('2025-01-01','2025-01-02')
  assert rows==[{'generated_at':'2025-01-01T00:00:00','direction_correct':1}]*2
  assert backtest_state.compute_rolling_accuracy_30d(rows,'2025-01-02',min_samples=1)==1.0
@@ -119,3 +119,11 @@ def test_wrong_source_proof_fails_closed():
   return []
  with pytest.raises(RuntimeError,match='release_receipt_incomplete'):
   list(archived_predictions('2025-01-01','2025-01-02',query_ops=lambda *a:[m],query_hot=hot,download=lambda m:raw))
+
+
+def test_legacy_prediction_rows_need_no_sql_restore_but_still_need_release_proof():
+ raw,m=fixture();body=json.loads(raw);body['payload'].pop('source_schema_sql')
+ raw=json.dumps(body).encode();m['checksum']=hashlib.sha256(raw).hexdigest()
+ assert [r['id'] for r in read(raw,m)]==[1,2]
+ m['release_verified_at']=None
+ with pytest.raises(RuntimeError,match='release_receipt_incomplete'):read(raw,m)

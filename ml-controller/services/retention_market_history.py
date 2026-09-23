@@ -5,7 +5,8 @@ import sqlite3
 from contextlib import closing
 from services.retention_history_keys import history_keys
 from services.d1_domain_client import client_proxy_for_domain
-from services.retention_archive import verify_archive, download_archive
+from services.retention_archive import (verify_archive, download_archive,
+    create_history_projection_table, insert_history_projection_row)
 from services.retention_history import source_release_verified
 
 TABLES = {
@@ -27,7 +28,7 @@ def archived_market_projection(table, sql, params, start_date, end_date, *, quer
         raise ValueError('retention_market_projection_contract_invalid')
     hot=query_hot or client_proxy_for_domain('market').query
     ops=query_ops or client_proxy_for_domain('ops').query
-    fetch=download or download_archive
+    fetch=download or (lambda m: download_archive(m, require_restore_schema=False))
     date_column, keys=TABLES[table];cursor=''
     domain='retention_canonical_market_hot_v1_'+table
     with history_keys() as remember:
@@ -35,7 +36,8 @@ def archived_market_projection(table, sql, params, start_date, end_date, *, quer
             manifests=ops("""SELECT a.artifact_id,a.domain,a.schema_version,a.checksum,a.row_count,a.metadata_json,
               (SELECT MAX(i.completed_at) FROM data_retention_run_items i WHERE i.status='success'
                AND i.deleted_rows=a.row_count AND CASE WHEN json_valid(i.evidence_json)
-               THEN json_extract(i.evidence_json,'$.artifact_id') END=a.artifact_id) release_verified_at
+               THEN json_extract(i.evidence_json,'$.artifact_id') END=a.artifact_id
+               AND CASE WHEN json_valid(i.evidence_json) THEN json_extract(i.evidence_json,'$.checksum') END=a.checksum) release_verified_at
               FROM run_artifacts a WHERE a.domain=? AND a.schema_version='d1-retention-hot-window-drain-v1'
               AND a.retention_class='ten_year_cold_archive' AND a.status='ready'
               AND a.payload_deleted_at IS NULL AND a.artifact_id>?
@@ -46,7 +48,7 @@ def archived_market_projection(table, sql, params, start_date, end_date, *, quer
             for manifest in manifests:
                 cursor=manifest['artifact_id'];meta=json.loads(manifest.get('metadata_json') or '{}')
                 if (meta.get('coverage_start') or '')>end_date or (meta.get('coverage_end') or '9999')<start_date:continue
-                payload=verify_archive(fetch(manifest),manifest)
+                payload=verify_archive(fetch(manifest),manifest,require_restore_schema=False)
                 if payload['dataset_id']!=table or payload['source_domain']!='market':
                     raise ValueError('retention_market_source_mismatch')
                 rows=[r for r in payload['rows'] if start_date<=str(r.get(date_column) or '')<=end_date]
@@ -61,13 +63,13 @@ def archived_market_projection(table, sql, params, start_date, end_date, *, quer
                 if not manifest.get('release_verified_at') and not source_release_verified(hot,manifest,'market',table):
                     raise RuntimeError('retention_market_release_receipt_incomplete:'+cursor)
                 with closing(sqlite3.connect(':memory:')) as db:
-                    db.row_factory=sqlite3.Row;db.execute(payload['source_schema_sql'])
+                    db.row_factory=sqlite3.Row
+                    create_history_projection_table(db,payload,hot)
                     for r in missing:
                         clean={k:v for k,v in r.items() if k not in {'__cursor_key','__archive_date'}}
                         key=tuple(clean[k] for k in keys)
                         h=hashlib.sha256(json.dumps(clean,sort_keys=True,ensure_ascii=False).encode()).digest()
                         if not remember(key,h):continue
-                        columns=list(clean)
-                        db.execute(f'INSERT INTO "{table}" ('+','.join('"'+c+'"' for c in columns)+') VALUES ('+','.join('?' for _ in columns)+')',list(clean.values()))
+                        insert_history_projection_row(db,table,clean)
                     for row in db.execute(sql,params):yield dict(row)
             if len(manifests)<100:return

@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { mergeArchivedMarketHistory } from '../lib/retentionMarketReader'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { loadPrimaryFinLabIndustries } from '../lib/finlabTaxonomy'
 
@@ -242,8 +243,8 @@ stocks.get('/:id/prices', async (c) => {
 
   const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM stock_prices WHERE stock_id=? AND date>=? ORDER BY date'
-  ).bind(id, since).all()
-  return c.json(results)
+  ).bind(id, since).all<Record<string, unknown>>()
+  return c.json(await mergeArchivedMarketHistory(c.env, 'stock_prices', id, since, results ?? []))
 })
 
 // ─── GET /api/stocks/:id/indicators?days=365 ─────────────────────────────────
@@ -255,7 +256,9 @@ stocks.get('/:id/indicators', async (c) => {
 
   let { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
-  ).bind(id, since).all()
+  ).bind(id, since).all<Record<string, unknown>>()
+
+  results = await mergeArchivedMarketHistory(c.env, 'technical_indicators', id, since, results ?? [])
 
   // On-demand: 若無指標資料，自動計算（支援興櫃等非 active 股票）
   if (!results?.length) {
@@ -263,7 +266,7 @@ stocks.get('/:id/indicators', async (c) => {
       await computeAndStoreIndicators(databaseForDataDomain(c.env, 'market'), id)
       const retry = await databaseForDataDomain(c.env, 'market').prepare(
         'SELECT * FROM technical_indicators WHERE stock_id=? AND date>=? ORDER BY date'
-      ).bind(id, since).all()
+      ).bind(id, since).all<Record<string, unknown>>()
       results = retry.results
     } catch (e) {
       console.warn(`[Indicators] On-demand compute failed for stock_id=${id}:`, e)
@@ -367,8 +370,8 @@ stocks.get('/:id/chips', async (c) => {
 
   const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM chip_data WHERE symbol=? AND date>=? ORDER BY date'
-  ).bind(stock.symbol, since).all()
-  return c.json(results)
+  ).bind(stock.symbol, since).all<Record<string, unknown>>()
+  return c.json(await mergeArchivedMarketHistory(c.env, 'chip_data', stock.symbol, since, results ?? []))
 })
 
 // ─── GET /api/stocks/:id/news?days=30 ────────────────────────────────────────
@@ -380,7 +383,7 @@ stocks.get('/:id/news', async (c) => {
 
   const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT * FROM news WHERE stock_id=? AND published_at>=? ORDER BY published_at DESC LIMIT 50'
-  ).bind(id, since).all()
+  ).bind(id, since).all<Record<string, unknown>>()
   return c.json(results)
 })
 
@@ -512,8 +515,11 @@ stocks.get('/:id/margin', async (c) => {
 
   const { results } = await databaseForDataDomain(c.env, 'market').prepare(
     'SELECT date, margin_buy, margin_sell, margin_balance, short_buy, short_sell, short_balance, margin_usage_pct, short_ratio FROM margin_data WHERE stock_id=? ORDER BY date DESC LIMIT ?'
-  ).bind(id, days).all()
-  return c.json(results ?? [])
+  ).bind(id, days).all<Record<string, unknown>>()
+  const since = results.length >= days ? String(results.at(-1)?.date) : '0000-01-01'
+  const merged = await mergeArchivedMarketHistory(c.env, 'margin_data', id, since, results ?? [])
+  const fields = ['date', 'margin_buy', 'margin_sell', 'margin_balance', 'short_buy', 'short_sell', 'short_balance', 'margin_usage_pct', 'short_ratio']
+  return c.json(merged.reverse().slice(0, days).map(row => Object.fromEntries(fields.map(key => [key, row[key]]))))
 })
 
 // ─── GET /api/stocks/:id/ai-summary ─ 個股 AI 摘要（推薦+tags+籌碼+profile）──

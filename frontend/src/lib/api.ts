@@ -1984,7 +1984,17 @@ export type ModelPoolOverview = {
   }
 }
 
+export type ModelPoolWorkbenchResponse = {
+  status: string
+  lineage: ModelPoolLineage
+  selection: ModelArtifactSelectionResponse
+  promotion_queue: ModelArtifactPromotionQueueResponse
+  champion_pointers: ModelChampionPointersResponse
+  overview: ModelPoolOverview | null
+}
+
 export const modelPoolApi = {
+  workbench: () => get<ModelPoolWorkbenchResponse>('/model-pool/workbench'),
   overview: () => get<ModelPoolOverview>('/model-pool/overview'),
   status: () => get<any>('/model-pool/status'),
   lineage: () => get<ModelPoolLineage>('/model-pool/lineage'),

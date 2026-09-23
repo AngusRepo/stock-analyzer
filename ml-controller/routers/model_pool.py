@@ -347,41 +347,43 @@ async def artifact_registry(
     return await _read_in_threadpool(read_snapshot)
 
 
+def _artifact_registry_selection_snapshot(model_name: str | None = None, limit: int = 200):
+    """Read-only release-train candidate selection.
+
+    This does not promote or shadow anything. It explains which registered
+    monthly/weekly artifacts are eligible for the next gate.
+    """
+    try:
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        pointers = list_champion_pointers(model_name=model_name)
+        return build_candidate_selection(rows, champion_pointers=pointers)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
+
+
 @router.get("/artifact_registry/selection")
 async def artifact_registry_selection(model_name: str | None = None, limit: int = 200):
-    def read_snapshot():
-        """Read-only release-train candidate selection.
+    return await _read_in_threadpool(lambda: _artifact_registry_selection_snapshot(model_name=model_name, limit=limit))
 
-        This does not promote or shadow anything. It explains which registered
-        monthly/weekly artifacts are eligible for the next gate.
-        """
-        try:
-            rows = list_artifact_registry(model_name=model_name, limit=limit)
-            pointers = list_champion_pointers(model_name=model_name)
-            return build_candidate_selection(rows, champion_pointers=pointers)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
 
-    return await _read_in_threadpool(read_snapshot)
+def _artifact_registry_promotion_queue_snapshot(model_name: str | None = None, limit: int = 200):
+    """Read-only promotion queue owned by D1 registry and exact champion pointers."""
+    try:
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        pointers = list_champion_pointers(model_name=model_name)
+        champion_versions = {
+            str(pointer.get("model_name") or ""): str(pointer.get("champion_version") or "")
+            for pointer in pointers
+            if pointer.get("model_name") and pointer.get("champion_version")
+        }
+        return build_promotion_queue(rows, champion_versions=champion_versions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
 
 
 @router.get("/artifact_registry/promotion_queue")
 async def artifact_registry_promotion_queue(model_name: str | None = None, limit: int = 200):
-    def read_snapshot():
-        """Read-only promotion queue owned by D1 registry and exact champion pointers."""
-        try:
-            rows = list_artifact_registry(model_name=model_name, limit=limit)
-            pointers = list_champion_pointers(model_name=model_name)
-            champion_versions = {
-                str(pointer.get("model_name") or ""): str(pointer.get("champion_version") or "")
-                for pointer in pointers
-                if pointer.get("model_name") and pointer.get("champion_version")
-            }
-            return build_promotion_queue(rows, champion_versions=champion_versions)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
-
-    return await _read_in_threadpool(read_snapshot)
+    return await _read_in_threadpool(lambda: _artifact_registry_promotion_queue_snapshot(model_name=model_name, limit=limit))
 
 @router.post("/artifact_registry/promotion_controller")
 async def artifact_registry_promotion_controller(req: PromotionControllerRequest):
@@ -654,163 +656,191 @@ def model_pool_overview():
     from google.cloud import storage
     from services.model_pool_overview import load_model_pool_overview
 
-    bundle = load_active8_ensemble_serving_bundle(include_observability=True)
-    return load_model_pool_overview(bundle, storage.Client().bucket(_bucket_name()))
+    # FastAPI runs this sync route in its thread pool. Reuse HTTP connections
+    # within the read, exactly like lineage; never cache serving authority.
+    with read_connection_scope():
+        bundle = load_active8_ensemble_serving_bundle(include_observability=True)
+        return load_model_pool_overview(bundle, storage.Client().bucket(_bucket_name()))
+
+
+def _artifact_registry_champion_pointers_snapshot(model_name: str | None = None, limit: int = 200):
+    """Return the V5 serving bundle plus legacy pointers as audit lineage."""
+    try:
+        pointers = list_champion_pointers(model_name=model_name)
+        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        artifacts_by_id = {
+            str(row.get("artifact_id") or ""): row
+            for row in rows
+            if row.get("artifact_id")
+        }
+        bundle = load_active8_ensemble_serving_bundle()
+        base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
+        from services.model_serving_resolver import build_pool_from_champion_pointers, _json_obj
+        from services.model_artifact_registry import list_artifacts_by_ids
+        missing_ids = [str(item.get("artifact_id") or "") for item in base_artifacts.values()
+                       if isinstance(item, dict) and item.get("artifact_id") not in artifacts_by_id]
+        if missing_ids:
+            rows = [*rows, *list_artifacts_by_ids(missing_ids)]
+            artifacts_by_id.update({str(row['artifact_id']): row for row in rows if row.get('artifact_id')})
+        runtime_pointers = pointers if model_name is None else list_champion_pointers()
+        nav_grant = None
+        if any('nav_validation' in _json_obj(pointer.get('promotion_evidence_json'))
+               for pointer in runtime_pointers if pointer.get('model_name') in base_artifacts):
+            from services import model_artifact_registry as artifact_registry
+            from services.active8_nav_adoption import load_committed_nav_serving_grant
+            nav_grant = load_committed_nav_serving_grant(query=artifact_registry.d1_client.query)
+            if nav_grant is None:
+                raise RuntimeError('active8_nav_serving_bundle_missing_for_readiness')
+        runtime_pool = build_pool_from_champion_pointers(
+            pointers=runtime_pointers, artifacts=rows, required_models=tuple(base_artifacts), sidecar_models=(),
+            nav_grant=nav_grant,
+        )
+        bundle_status = str(bundle.get("status") or "")
+        bundle_blockers = [str(item) for item in bundle.get("blockers") or []]
+        pointer_by_model = {
+            str(pointer.get("model_name") or ""): pointer
+            for pointer in pointers
+            if pointer.get("model_name")
+        }
+        # Current production slots are exactly Active-8. Legacy pointer names remain
+        # available below as rollback/audit lineage, but must not expand the
+        # serving readiness surface or its model_count.
+        from services.alpha_model_roster import LEGACY_MODELS, validate_order
+        model_names = validate_order(bundle.get("model_order", LEGACY_MODELS))
+        models = {}
+        for name in model_names:
+            pointer = pointer_by_model.get(name) or {}
+            serving = base_artifacts.get(name) if isinstance(base_artifacts.get(name), dict) else {}
+            is_member = bundle.get("production_effect") is True and bool(serving)
+            runtime = runtime_pool["models"].get(name) or {}
+            runtime_identity_matches = (
+                runtime.get("serving_artifact_id") == serving.get("artifact_id")
+                and runtime.get("version") == serving.get("version")
+                and runtime.get("checksum") == serving.get("checksum")
+            )
+            is_serving = is_member and runtime_identity_matches and runtime.get("serving_eligible") is True
+            block_reason = (runtime.get("serving_block_reason") or "bundle_pointer_identity_mismatch") if is_member and not is_serving else None
+            models[name] = {
+                "serving_version": serving.get("version") if is_member else None,
+                "serving_artifact_id": serving.get("artifact_id") if is_member else None,
+                "serving_checksum": serving.get("checksum") if is_member else None,
+                "d1_pointer_version": pointer.get("champion_version"),
+                "d1_pointer_artifact_id": pointer.get("champion_artifact_id"),
+                "serving_block_reason": block_reason,
+                "artifact_link_status": "v5_bundle_bound" if is_member else "legacy_audit_only",
+                "readiness": (
+                    "v5_serving"
+                    if is_serving
+                    else "serving_contract_blocked" if is_member
+                    else "validation_failed"
+                    if bundle_status == "validation_failed"
+                    else "evidence_only_no_action"
+                ),
+                "next_action": (
+                    "V5 bundle is the production serving owner."
+                    if is_serving
+                    else "Resolve runtime serving contract: " + str(block_reason) if is_member
+                    else "Latest V5 bundle failed held-out quality gates: " + ", ".join(bundle_blockers)
+                    if bundle_status == "validation_failed"
+                    else "Wait for a validated V5 bundle; the legacy champion pointer is rollback/audit lineage only."
+                ),
+            }
+        return {
+            "status": "ok",
+            "source_of_truth": "active8_ensemble_pointer_v1/model_artifact_registry",
+            "target_source_of_truth": "active8_ensemble_pointer_v1",
+            "production_reader": "active8_ensemble_pointer_v1",
+            "migration_ready": bundle.get("production_effect") is True and bool(base_artifacts) and all(models[name]["readiness"] == "v5_serving" for name in base_artifacts),
+            "ready_count": sum(1 for row in models.values() if row["readiness"] == "v5_serving"),
+            "model_count": len(models),
+            "count": len(pointers),
+            "models": models,
+            "active8_bundle": bundle,
+            "pointers": [
+                {
+                    **pointer,
+                    "artifact": artifacts_by_id.get(str(pointer.get("champion_artifact_id") or "")),
+                    "authority": "legacy_rollback_audit_only",
+                }
+                for pointer in pointers
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry champion pointers failed: {e}")
 
 
 @router.get("/artifact_registry/champion_pointers")
 async def artifact_registry_champion_pointers(model_name: str | None = None, limit: int = 200):
-    def read_snapshot():
-        """Return the V5 serving bundle plus legacy pointers as audit lineage."""
-        try:
-            pointers = list_champion_pointers(model_name=model_name)
-            rows = list_artifact_registry(model_name=model_name, limit=limit)
-            artifacts_by_id = {
-                str(row.get("artifact_id") or ""): row
-                for row in rows
-                if row.get("artifact_id")
-            }
-            bundle = load_active8_ensemble_serving_bundle()
-            base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
-            from services.model_serving_resolver import build_pool_from_champion_pointers, _json_obj
-            from services.model_artifact_registry import list_artifacts_by_ids
-            missing_ids = [str(item.get("artifact_id") or "") for item in base_artifacts.values()
-                           if isinstance(item, dict) and item.get("artifact_id") not in artifacts_by_id]
-            if missing_ids:
-                rows = [*rows, *list_artifacts_by_ids(missing_ids)]
-                artifacts_by_id.update({str(row['artifact_id']): row for row in rows if row.get('artifact_id')})
-            runtime_pointers = pointers if model_name is None else list_champion_pointers()
-            nav_grant = None
-            if any('nav_validation' in _json_obj(pointer.get('promotion_evidence_json'))
-                   for pointer in runtime_pointers if pointer.get('model_name') in base_artifacts):
-                from services import model_artifact_registry as artifact_registry
-                from services.active8_nav_adoption import load_committed_nav_serving_grant
-                nav_grant = load_committed_nav_serving_grant(query=artifact_registry.d1_client.query)
-                if nav_grant is None:
-                    raise RuntimeError('active8_nav_serving_bundle_missing_for_readiness')
-            runtime_pool = build_pool_from_champion_pointers(
-                pointers=runtime_pointers, artifacts=rows, required_models=tuple(base_artifacts), sidecar_models=(),
-                nav_grant=nav_grant,
-            )
-            bundle_status = str(bundle.get("status") or "")
-            bundle_blockers = [str(item) for item in bundle.get("blockers") or []]
-            pointer_by_model = {
-                str(pointer.get("model_name") or ""): pointer
-                for pointer in pointers
-                if pointer.get("model_name")
-            }
-            # Current production slots are exactly Active-8. Legacy pointer names remain
-            # available below as rollback/audit lineage, but must not expand the
-            # serving readiness surface or its model_count.
-            from services.alpha_model_roster import LEGACY_MODELS, validate_order
-            model_names = validate_order(bundle.get("model_order", LEGACY_MODELS))
-            models = {}
-            for name in model_names:
-                pointer = pointer_by_model.get(name) or {}
-                serving = base_artifacts.get(name) if isinstance(base_artifacts.get(name), dict) else {}
-                is_member = bundle.get("production_effect") is True and bool(serving)
-                runtime = runtime_pool["models"].get(name) or {}
-                runtime_identity_matches = (
-                    runtime.get("serving_artifact_id") == serving.get("artifact_id")
-                    and runtime.get("version") == serving.get("version")
-                    and runtime.get("checksum") == serving.get("checksum")
-                )
-                is_serving = is_member and runtime_identity_matches and runtime.get("serving_eligible") is True
-                block_reason = (runtime.get("serving_block_reason") or "bundle_pointer_identity_mismatch") if is_member and not is_serving else None
-                models[name] = {
-                    "serving_version": serving.get("version") if is_member else None,
-                    "serving_artifact_id": serving.get("artifact_id") if is_member else None,
-                    "serving_checksum": serving.get("checksum") if is_member else None,
-                    "d1_pointer_version": pointer.get("champion_version"),
-                    "d1_pointer_artifact_id": pointer.get("champion_artifact_id"),
-                    "serving_block_reason": block_reason,
-                    "artifact_link_status": "v5_bundle_bound" if is_member else "legacy_audit_only",
-                    "readiness": (
-                        "v5_serving"
-                        if is_serving
-                        else "serving_contract_blocked" if is_member
-                        else "validation_failed"
-                        if bundle_status == "validation_failed"
-                        else "evidence_only_no_action"
-                    ),
-                    "next_action": (
-                        "V5 bundle is the production serving owner."
-                        if is_serving
-                        else "Resolve runtime serving contract: " + str(block_reason) if is_member
-                        else "Latest V5 bundle failed held-out quality gates: " + ", ".join(bundle_blockers)
-                        if bundle_status == "validation_failed"
-                        else "Wait for a validated V5 bundle; the legacy champion pointer is rollback/audit lineage only."
-                    ),
-                }
-            return {
-                "status": "ok",
-                "source_of_truth": "active8_ensemble_pointer_v1/model_artifact_registry",
-                "target_source_of_truth": "active8_ensemble_pointer_v1",
-                "production_reader": "active8_ensemble_pointer_v1",
-                "migration_ready": bundle.get("production_effect") is True and bool(base_artifacts) and all(models[name]["readiness"] == "v5_serving" for name in base_artifacts),
-                "ready_count": sum(1 for row in models.values() if row["readiness"] == "v5_serving"),
-                "model_count": len(models),
-                "count": len(pointers),
-                "models": models,
-                "active8_bundle": bundle,
-                "pointers": [
-                    {
-                        **pointer,
-                        "artifact": artifacts_by_id.get(str(pointer.get("champion_artifact_id") or "")),
-                        "authority": "legacy_rollback_audit_only",
-                    }
-                    for pointer in pointers
-                ],
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"artifact_registry champion pointers failed: {e}")
+    return await _read_in_threadpool(lambda: _artifact_registry_champion_pointers_snapshot(model_name=model_name, limit=limit))
 
-    return await _read_in_threadpool(read_snapshot)
+def _lineage_snapshot():
+    """Return the exact D1 champion serving lineage."""
+    try:
+        pool = load_d1_champion_pool()
+        models = {
+            name: {
+                "status": entry.get("status"),
+                "model_slot_status": entry.get("model_slot_status"),
+                "serving_eligible": entry.get("serving_eligible"),
+                "version": entry.get("version"),
+                "gcs_path": entry.get("gcs_path"),
+                "metadata_path": entry.get("metadata_path"),
+                "serving_owner": entry.get("serving_owner"),
+                "serving_artifact_id": entry.get("serving_artifact_id"),
+                "serving_block_reason": entry.get("serving_block_reason"),
+                "target_semantic_version": entry.get("target_semantic_version"),
+                "offline_gate_decision": entry.get("offline_gate_decision"),
+                "live_gate_status": entry.get("live_gate_status"),
+                "serving_ic_prior": entry.get("serving_ic_prior"),
+                "serving_ic_source": entry.get("serving_ic_source"),
+                "rolling_ic": entry.get("rolling_ic"),
+                "weekly_ic": entry.get("weekly_ic") or [],
+                "ic_4w_avg": entry.get("ic_4w_avg"),
+                "last_ic_status": entry.get("last_ic_status"),
+                "last_ic_root_cause": entry.get("last_ic_root_cause"),
+                "last_ic_sample_count": entry.get("last_ic_sample_count") or 0,
+            }
+            for name, entry in (pool.get("models") or {}).items()
+        }
+        return {
+            "status": "ok",
+            "schema_version": pool.get("schema_version"),
+            "last_updated": pool.get("last_updated"),
+            "source_of_truth": "model_champion_pointers/model_artifact_registry",
+            "production_reader": "model_champion_pointers/model_artifact_registry",
+            "models": models,
+            "l2_feature_sidecars": pool.get("l2_feature_sidecars") or {},
+            "research_benchmarks": build_research_benchmark_manifest(
+                datetime.now(timezone.utc).date().isoformat()
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"D1 champion lineage read failed: {e}")
+
 
 @router.get("/lineage")
 async def lineage():
-    def read_snapshot():
-        """Return the exact D1 champion serving lineage."""
-        try:
-            pool = load_d1_champion_pool()
-            models = {
-                name: {
-                    "status": entry.get("status"),
-                    "model_slot_status": entry.get("model_slot_status"),
-                    "serving_eligible": entry.get("serving_eligible"),
-                    "version": entry.get("version"),
-                    "gcs_path": entry.get("gcs_path"),
-                    "metadata_path": entry.get("metadata_path"),
-                    "serving_owner": entry.get("serving_owner"),
-                    "serving_artifact_id": entry.get("serving_artifact_id"),
-                    "serving_block_reason": entry.get("serving_block_reason"),
-                    "target_semantic_version": entry.get("target_semantic_version"),
-                    "offline_gate_decision": entry.get("offline_gate_decision"),
-                    "live_gate_status": entry.get("live_gate_status"),
-                    "serving_ic_prior": entry.get("serving_ic_prior"),
-                    "serving_ic_source": entry.get("serving_ic_source"),
-                    "rolling_ic": entry.get("rolling_ic"),
-                    "weekly_ic": entry.get("weekly_ic") or [],
-                    "ic_4w_avg": entry.get("ic_4w_avg"),
-                    "last_ic_status": entry.get("last_ic_status"),
-                    "last_ic_root_cause": entry.get("last_ic_root_cause"),
-                    "last_ic_sample_count": entry.get("last_ic_sample_count") or 0,
-                }
-                for name, entry in (pool.get("models") or {}).items()
-            }
-            return {
-                "status": "ok",
-                "schema_version": pool.get("schema_version"),
-                "last_updated": pool.get("last_updated"),
-                "source_of_truth": "model_champion_pointers/model_artifact_registry",
-                "production_reader": "model_champion_pointers/model_artifact_registry",
-                "models": models,
-                "l2_feature_sidecars": pool.get("l2_feature_sidecars") or {},
-                "research_benchmarks": build_research_benchmark_manifest(
-                    datetime.now(timezone.utc).date().isoformat()
-                ),
-            }
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"D1 champion lineage read failed: {e}")
+    return await _read_in_threadpool(lambda: _lineage_snapshot(), verify_sources=True)
 
-    return await _read_in_threadpool(read_snapshot, verify_sources=True)
+
+def _model_pool_workbench_snapshot():
+    # Same public builders, one observation. Independent HTTP requests otherwise
+    # load the same registry/pointers repeatedly and compete inside one instance.
+    result = {
+        'status': 'ok',
+        'lineage': _lineage_snapshot(),
+        'selection': _artifact_registry_selection_snapshot(),
+        'promotion_queue': _artifact_registry_promotion_queue_snapshot(),
+        'champion_pointers': _artifact_registry_champion_pointers_snapshot(),
+    }
+    try:
+        result['overview'] = model_pool_overview()
+    except Exception as exc:
+        logger.warning('model_pool_optional_overview_unavailable error_type=%s', type(exc).__name__)
+        result['overview'] = None
+    return result
+
+
+@router.get('/workbench')
+async def workbench():
+    return await _read_in_threadpool(_model_pool_workbench_snapshot, verify_sources=True)

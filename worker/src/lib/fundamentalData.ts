@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { mergeArchivedMarketHistory } from './retentionMarketReader'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
 export type FundamentalRowsOptions = {
@@ -205,7 +206,7 @@ export async function loadStockFinancialRows(
     marketDb.prepare(
       'SELECT * FROM financials WHERE stock_id=? ORDER BY period DESC LIMIT ?',
     ).bind(stockId, limit).all<any>(),
-    buildCanonicalQuery(marketDb, symbol, asOfDate).all<any>().catch(() => ({ results: [] as any[] })),
+    buildCanonicalQuery(marketDb, symbol, asOfDate).all<any>(),
     loadStockMonthlyRevenueRows(env, stockId, { months: 1, asOf: asOfDate }).then((rows) => rows[0] ?? null),
     marketDb.prepare(
       "SELECT period, eps FROM financials WHERE stock_id=? AND eps IS NOT NULL AND period LIKE '%Q%' ORDER BY period DESC LIMIT 4",
@@ -216,7 +217,13 @@ export async function loadStockFinancialRows(
   ])
 
   const financialRows = financialResult.results ?? []
-  const canonicalRows = canonicalResult.results ?? []
+  const hotCanonical = canonicalResult.results ?? []
+  const oldestNeeded = hotCanonical.length >= 180 ? String(hotCanonical.at(-1).available_date) : '0000-01-01'
+  const canonicalRows = (await mergeArchivedMarketHistory(env, 'canonical_fundamental_features', symbol,
+    oldestNeeded, hotCanonical, asOfDate ?? '9999-12-31', row => !asOfDate || String(row.as_of_date) <= asOfDate))
+    .sort((a, b) => String(b.available_date).localeCompare(String(a.available_date))
+      || String(b.period).localeCompare(String(a.period)) || String(b.as_of_date).localeCompare(String(a.as_of_date)))
+    .slice(0, 180)
   const canonicalPe = firstFinite(canonicalRows, 'pe', { skipZero: true })
   const canonicalPb = firstFinite(canonicalRows, 'pb', { skipZero: true })
   const canonicalDividendYield = normalizePercentUnit(firstFinite(canonicalRows, 'dividend_yield'), 30)

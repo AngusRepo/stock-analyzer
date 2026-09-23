@@ -121,7 +121,8 @@ def _optional_positive_float(value: Any) -> float | None:
 def load_alpha_outcome_rows(limit: int = 1000) -> list[dict]:
     """Load verified prediction outcomes that contain alpha allocation context."""
     safe_limit = max(1, min(int(limit or 1000), 5000))
-    return LEARNING_D1_CLIENT.query(
+    from services.retention_prediction_projection import read_latest_prediction_projection
+    return read_latest_prediction_projection(
         """SELECT generated_at, forecast_data, actual_return_pct, trade_pnl_pct,
                   trade_pnl_r, direction_correct
            FROM predictions
@@ -134,7 +135,7 @@ def load_alpha_outcome_rows(limit: int = 1000) -> list[dict]:
              )
            ORDER BY generated_at DESC
            LIMIT ?""",
-        [safe_limit],
+        [safe_limit], query_hot=LEARNING_D1_CLIENT.query,
     )
 
 

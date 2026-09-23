@@ -1,3 +1,16 @@
+# Current continuation — 2026-09-22 after175bbec7 release
+
+1. COMPLETE: approved31files pushed fast-forward to main175bbec7; Worker/Controller/Jobs/bothModal program deployments and six migrations verified. No general deletion or GPU execution.
+2. COMPLETE: legal9/15–18decision recovery83512rows. FinLab9/22source now authoritative;9/15has802mature labels. Full-history reward owner51730source rows→23aggregates/193dailyrows/71heads, no stale removals. Final page readback evidence below.
+3. LOCAL VERIFIED, NOT RELEASED: one-source model-pool workbench; historical market/fundamental/research readers; pure-storage OOF owner+atomic receipt; active auditJSON immutable/readback/CAS and1MiB transport bound;Ops0018policy3650.69Python+23Worker+bothTS+frontend build passed;native economic behavior unchanged.
+4. NEEDS additional release scope: frontend, new follow-up source files,Ops0018,R2auditJSONprefix3650lock. Prior main approval covered exact31files already released, not these new changes. Prepare exact file manifest before request.
+5. STILL OPEN: general hot/cold reader and hard-reference closure (notably strategy reward multi-table joins), sustainable recurring catch-up, OOF cold consumers, full retention owners and post-cutover capacity runway. Do not enable blanket deletion or claim ten-year closure.
+6. A/BNAV remains0pairedrows as of last formal read;9/22rawsource is not a prospective A/Bexecution pair. Tonight canonical chain still running; never retroactively credit NAV.
+
+Evidence and explanation: docs/runbooks/2026-09-22-storage-pool-lab-followup.md, audits/closure-continuation-20260922/.
+
+---
+
 # Current task — lineage / lawful history recovery / ten-year closure — 2026-09-22
 
 1. Historical owner recovery COMPLETE for signal9/15–18: 83,512 decisions; 9/21 already21,008 decisions. No selector rerun, no model eligibility change, no NAV credit. Five-day9/15 labels still await canonical FinLab session9/22; raw stock_prices MAX(date) alone is not authoritative maturity.
@@ -263,3 +276,11 @@ Wei authorizes local closure then commit/push/deploy all session changes. A is e
 Runtime, training, source-quality, native account, fee and frontend integration completed locally; final full-session regression and formal candidate publication remain. Detailed evidence and remaining steps: audits/strategy-ab-release-20260920/PLAN.md. No current release commit/deployment yet.
 
 Local source closure complete: 1,233 controller regression cases passed after private fixture migration repair; focused new data/lifecycle tests, final Worker type checks/frontend build, real frozen A/B native frames and exact retries pass. Release execution and formal Git-pinned A/B registration remain. See audits/strategy-ab-release-20260920/LOCAL_CLOSURE.md.
+
+
+## 2026-09-23 resumed storage/lineage incident
+- [complete/local] Diagnose9/22input-snapshot failure: reader required original DDL absent from five valid8/23archives,403cold-onlyrows. All formal bytes/checksums/legacy release receipts verified.
+- [complete/local] Legacy projection compatibility + exact-column/value checks; retain strict original-schema restores. Python41/Worker6/TypeScript pass. Same-source price export905269rows succeeds.
+- [complete/local] Complete11component input-only export with exact local Parquet roundtrip in272.606seconds; no GCS/D1write or GPU. Native execution parity and identity unchanged.
+- [pending explicit release approval]35file follow-up package, supersedes29file manifest; not committed/pushed/deployed. Prior approved175bbec7release is complete.
+- [open]Ten-year general reader coverage, live-reference protection, sustainable automated catch-up and measured capacity runway. General deletion not enabled. Paired NAV still no valid execution pair; missed7:15registration is not backdated.

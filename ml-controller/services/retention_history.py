@@ -15,7 +15,7 @@ def archived_predictions(start_date, end_date, *, date_column='prediction_date',
                          stock_ids=None, hot_ids=(), query_ops=None, query_hot=None, download=None):
     if date_column not in {'prediction_date','generated_at'}:
         raise ValueError('retention_prediction_date_column_invalid')
-    ops=query_ops or OPS.query;hot=query_hot or LEARNING.query;fetch=download or download_archive
+    ops=query_ops or OPS.query;hot=query_hot or LEARNING.query;fetch=download or (lambda m: download_archive(m, require_restore_schema=False))
     known=set(hot_ids);last=''
     wanted_stocks=None if stock_ids is None else set(stock_ids)
     coverage = 'coverage' if date_column == 'prediction_date' else 'generated_coverage'
@@ -25,7 +25,8 @@ def archived_predictions(start_date, end_date, *, date_column='prediction_date',
                a.metadata_json,a.created_at,
                (SELECT MAX(i.completed_at) FROM data_retention_run_items i
                  WHERE i.status='success' AND i.deleted_rows=a.row_count
-                   AND CASE WHEN json_valid(i.evidence_json) THEN json_extract(i.evidence_json,'$.artifact_id') END=a.artifact_id) release_verified_at
+                   AND CASE WHEN json_valid(i.evidence_json) THEN json_extract(i.evidence_json,'$.artifact_id') END=a.artifact_id
+                   AND CASE WHEN json_valid(i.evidence_json) THEN json_extract(i.evidence_json,'$.checksum') END=a.checksum) release_verified_at
                FROM run_artifacts a
                WHERE a.domain='retention_learning_lineage_v1_predictions'
                  AND a.schema_version='d1-retention-hot-window-drain-v1'
@@ -40,7 +41,7 @@ def archived_predictions(start_date, end_date, *, date_column='prediction_date',
                 metadata=json.loads(manifest.get('metadata_json') or '{}')
                 if date_column=='prediction_date' and metadata.get('coverage_start') and metadata.get('coverage_end'):
                     if metadata['coverage_start']>end_date[:10] or metadata['coverage_end']<start_date[:10]:continue
-                payload=verify_archive(fetch(manifest),manifest)
+                payload=verify_archive(fetch(manifest),manifest,require_restore_schema=False)
                 if payload['dataset_id']!='predictions' or payload['source_domain']!='learning':
                     raise ValueError('retention_prediction_source_mismatch')
                 relevant=[]

@@ -51,3 +51,12 @@ def test_multiple_chunks_and_no_partial_on_conflicting_primary_key(tmp_path):
     with pytest.raises(sqlite3.IntegrityError):restore_archives([(raw,manifest),(raw,manifest)],tmp_path/'duplicate.sqlite')
     with sqlite3.connect(tmp_path/'duplicate.sqlite') as db:
         assert db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]==0
+
+
+def test_legacy_read_validation_does_not_weaken_exact_restore_contract(tmp_path):
+ raw,m=archive(source_schema_sql='')
+ assert len(verify_archive(raw,m,require_restore_schema=False)['rows'])==2
+ with pytest.raises(ValueError,match='schema_missing'):restore_archives([(raw,m)],tmp_path/'legacy.sqlite')
+ with pytest.raises(ValueError,match='checksum'):verify_archive(raw+b' ',m,require_restore_schema=False)
+ raw,m=archive(source_schema_sql='CREATE TABLE wrong(id INTEGER)')
+ with pytest.raises(ValueError,match='schema_missing'):verify_archive(raw,m,require_restore_schema=False)

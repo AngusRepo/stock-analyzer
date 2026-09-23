@@ -309,6 +309,8 @@ async function runPolicy(
           source_domain: source.sourceDomain,
           archive_before_delete: true,
           restore_schema_version: 'sqlite-exact-rows-v1',
+          ...(source.sourceDomain === 'market' && ['stock_prices', 'technical_indicators', 'chip_data', 'margin_data', 'canonical_fundamental_features'].includes(source.datasetId)
+            ? { stock_keys: [...new Set(rows.map(row => row[source.datasetId === 'chip_data' ? 'symbol' : 'stock_id']))] } : {}),
           coverage_start: first.__archive_date,
           coverage_end: last.__archive_date,
           exact_row_key_recheck: true,

@@ -18,7 +18,7 @@ def _ident(value: str) -> str:
         raise ValueError("retention_archive_identifier_invalid")
     return '"' + value + '"'
 
-def verify_archive(raw: bytes, manifest: dict) -> dict:
+def verify_archive(raw: bytes, manifest: dict, *, require_restore_schema: bool = True) -> dict:
     expected = str(manifest.get("checksum") or "").removeprefix("sha256:")
     if len(expected) != 64 or hashlib.sha256(raw).hexdigest() != expected:
         raise ValueError("retention_archive_checksum_mismatch")
@@ -40,7 +40,7 @@ def verify_archive(raw: bytes, manifest: dict) -> dict:
         raise ValueError("retention_archive_row_count_mismatch")
     ddl = str(payload.get("source_schema_sql") or "")
     pattern = r'^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`\[]?' + re.escape(table) + r'["`\]]?\s*\('
-    if not re.match(pattern, ddl.strip(), re.I):
+    if (ddl or require_restore_schema) and not re.match(pattern, ddl.strip(), re.I):
         raise ValueError("retention_archive_restore_schema_missing")
     keys = set()
     columns = None
@@ -105,7 +105,7 @@ def restore_archives(archives, output: Path) -> dict:
         db.close()
 
 
-def download_archive(manifest: dict, *, post=None) -> bytes:
+def download_archive(manifest: dict, *, post=None, require_restore_schema: bool = True) -> bytes:
     """Fetch through the existing service-authenticated Worker, then verify locally."""
     import httpx
     from services.worker_config_client import worker_auth_headers, worker_url
@@ -115,5 +115,43 @@ def download_archive(manifest: dict, *, post=None) -> bytes:
     if response.status_code != 200:
         raise RuntimeError(f"retention_archive_read_http_{response.status_code}")
     raw = response.content
-    verify_archive(raw, manifest)
+    verify_archive(raw, manifest, require_restore_schema=require_restore_schema)
     return raw
+
+
+def create_history_projection_table(db, payload, query_source):
+    """Legacy read compatibility, never a claim of exact original-schema restore.
+
+    The trusted current source schema is usable only when every archived column
+    matches it. Callers must verify release proof before using any missing row.
+    Value round trips are checked separately before running the caller's SQL.
+    """
+    table = payload['dataset_id']
+    ddl = payload.get('source_schema_sql')
+    legacy = not ddl
+    if legacy:
+        schemas = query_source("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table])
+        if len(schemas) != 1 or not schemas[0].get('sql'):
+            raise ValueError('retention_history_legacy_schema_missing')
+        ddl = schemas[0]['sql']
+    pattern = r'^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`\[]?' + re.escape(table) + r'["`\]]?\s*\('
+    if not re.match(pattern, ddl.strip(), re.I):
+        raise ValueError('retention_history_schema_invalid')
+    db.execute(ddl)
+    if legacy:
+        actual = {row[1] for row in db.execute(f'PRAGMA table_xinfo({_ident(table)})')}
+        archived = set(payload['rows'][0]) - {'__cursor_key', '__archive_date'}
+        if actual != archived:
+            raise ValueError('retention_history_legacy_columns_mismatch')
+
+
+def insert_history_projection_row(db, table, row):
+    """Reject lossy affinity conversion rather than manufacture historical values."""
+    columns = list(row)
+    projection = ','.join(_ident(c) for c in columns)
+    inserted = db.execute(f'INSERT INTO {_ident(table)} ({projection}) VALUES ('
+                          + ','.join('?' for _ in columns) + ')', list(row.values()))
+    restored = db.execute(f'SELECT {projection} FROM {_ident(table)} WHERE rowid=?',
+                          [inserted.lastrowid]).fetchone()
+    if restored is None or tuple(restored) != tuple(row.values()):
+        raise ValueError('retention_history_projection_readback_mismatch')

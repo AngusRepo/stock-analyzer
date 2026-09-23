@@ -10,12 +10,13 @@ export const LEGACY_LEARNING_TABLE_MANIFEST = tablesForDataDomainShadowBackfill(
 type DatasetSpec = {
   table: string
   dateColumn: string
+  reclaimEnabled: boolean
 }
 
 const LEARNING_DATASETS: readonly DatasetSpec[] =
   (retentionR2PolicyConfig('learning_lineage_v1')?.sources ?? [])
-    .filter(source => source.deleteTable && source.deleteKeyColumn)
-    .map(source => ({ table: source.datasetId, dateColumn: source.dateExpression.split('.')[1] }))
+    .map(source => ({ table: source.datasetId, dateColumn: source.dateExpression.split('.')[1],
+      reclaimEnabled: Boolean(source.deleteTable && source.deleteKeyColumn) }))
 const LEARNING_COLD_READER_PENDING = (retentionR2PolicyConfig('learning_lineage_v1')?.sources ?? [])
   .filter(source => !source.deleteTable).map(source => source.datasetId)
 
@@ -34,8 +35,9 @@ export function learningRetentionBlockers(input: {
   for (const dataset of input.datasets) {
     const row = byDataset.get(`hot-drain:${dataset.dataset_id}`)
     const date = String(row?.updated_at ?? '').slice(0, 10)
-    if (!row || row.status !== 'cycle_complete' || Number(row.backlog_remaining) !== 0
-      || date < since || date > input.asOfDate)
+    if (!(input.readerBlockedDatasets ?? []).includes(dataset.dataset_id)
+      && (!row || row.status !== 'cycle_complete' || Number(row.backlog_remaining) !== 0
+        || date < since || date > input.asOfDate))
       blockers.push(`retention_executor_not_current:${dataset.dataset_id}`)
     if (dataset.candidate_rows > 0) blockers.push(`retention_backlog:${dataset.dataset_id}`)
   }
@@ -62,6 +64,7 @@ async function inspectDataset(db: D1Database, dataset: DatasetSpec, cutoffDate: 
   return {
     dataset_id: dataset.table,
     date_column: dataset.dateColumn,
+    reclaim_enabled: dataset.reclaimEnabled,
     cutoff_date: cutoffDate,
     candidate_rows: numeric(row?.candidate_rows),
     oldest_candidate_date: row?.oldest_date == null ? null : String(row.oldest_date),
@@ -100,7 +103,12 @@ export async function inspectLearningTenYearRetentionReadiness(
 ) {
   const hotCutoffDate = isoDateDaysBefore(asOfDate, LEARNING_HOT_RETENTION_DAYS)
   const [datasets, policy, runTotals, navCold, executorReceipts] = await Promise.all([
-    Promise.all(LEARNING_DATASETS.map((dataset) => inspectDataset(learningDb, dataset, hotCutoffDate))),
+    (async () => {
+      // One indexed count at a time avoids a maintenance burst against Learning.
+      const rows = []
+      for (const dataset of LEARNING_DATASETS) rows.push(await inspectDataset(learningDb, dataset, hotCutoffDate))
+      return rows
+    })(),
     opsDb.prepare(
       `SELECT policy_id, hot_retention_days, cold_retention_days, archive_store, action,
               hard_reference_protected, version, status

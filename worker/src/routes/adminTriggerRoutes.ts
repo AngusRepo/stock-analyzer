@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
+import { resolveEveningWatchdogBusinessDate } from '../lib/eveningWatchdogBusinessDate'
 import { resolveActive8DailyBusinessDate } from '../lib/active8DailyBusinessDate'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
@@ -145,6 +146,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const ticketDb = databaseForDataDomain(c.env, 'ops')
     let ticketAdmission: SchedulerTicketAdmission
     try {
+      requestedRunDate = await resolveEveningWatchdogBusinessDate(c.env, task, requestedRunDate)
       requestedRunDate = await resolveActive8DailyBusinessDate(c.env, task, requestedRunDate)
       schedulerContext.businessDate = requestedRunDate
       ticketAdmission = await admitSchedulerExecutionTicket(ticketDb, {

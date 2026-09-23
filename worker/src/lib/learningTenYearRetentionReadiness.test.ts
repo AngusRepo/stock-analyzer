@@ -23,3 +23,8 @@ test('unverified Learning cold readers cannot delete strategy reward sources or 
  }
  assert.deepEqual(sources.filter(source=>source.deleteTable).map(source=>source.datasetId),['predictions'])
 })
+
+test('reader-blocked backlog remains visible without claiming an enabled delete executor',()=>{
+ const result=learningRetentionBlockers({...base,datasets:[...base.datasets,{dataset_id:'strategy_decision_log',candidate_rows:421}],readerBlockedDatasets:['strategy_decision_log']})
+ assert.deepEqual(result,['cold_reader_not_verified:strategy_decision_log','retention_backlog:strategy_decision_log'])
+})

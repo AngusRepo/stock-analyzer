@@ -9,6 +9,8 @@ export const HISTORICAL_CANONICAL_LINEAGE_WRITER_TASKS = new Set([
   'pipeline',
   'recommendation',
   'post-screener-pipeline',
+  'screener-v2-watchdog',
+  'indicator-queue-watchdog',
 ])
 
 export interface HistoricalLearningLineageDecision {

@@ -34,7 +34,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'screener-v2-watchdog': { kind: 'maintenance', holidayGated: false, description: 'recover canonical prior-session screener and post-verify stages across midnight' },
   'strategy-learning-watchdog': { kind: 'maintenance', holidayGated: false, description: 'recover canonical post-verify strategy-learning queued or expired-running evidence runs across midnight' },
   'finlab-backfill-watchdog': { kind: 'trading_day', holidayGated: true, description: 'reclaim orphaned FinLab Modal pending dispatches' },
-  'indicator-queue-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover stale or dead-lettered indicator shards and orphaned finalizers' },
+  'indicator-queue-watchdog': { kind: 'maintenance', holidayGated: false, description: 'recover the canonical evening indicator run across midnight with lineage fencing' },
   'allocator-ev-lifecycle-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete allocator EV lineage, snapshot, verify, and replay stages' },
   'active8-oof-daily': { kind: 'maintenance', holidayGated: false, description: 'post-midnight continuation that materializes the prior session ready purged OOF cohort' },
   'dataset-snapshot-export': { kind: 'maintenance', holidayGated: false, description: 'detached immutable research snapshot callback and durable Active-8 evidence handoff' },

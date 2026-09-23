@@ -1,0 +1,30 @@
+{
+  "identity": "native-paper-v1:affbaa94ef057bbebde2b0b3b7ca25d1d1a043f1b2c2934e994ddd10fe478408",
+  "component_changes": [],
+  "cases": [
+    {
+      "case": "settlement",
+      "equal": {
+        "state_sql": true,
+        "state_checksum": true,
+        "frames": true,
+        "session_complete": true,
+        "nav_maturity_credit": true,
+        "production_effect": true
+      },
+      "state_checksum": "494820e08c90e896cae841d4b18919dccd75ccc524fc8d76fa8c4300b444603b"
+    },
+    {
+      "case": "equity",
+      "equal": {
+        "state_sql": true,
+        "state_checksum": true,
+        "frames": true,
+        "session_complete": true,
+        "nav_maturity_credit": true,
+        "production_effect": true
+      },
+      "state_checksum": "cdaf02ef852c7f624df0d23c88056d27cc1a4593531206366ce6890beec75363"
+    }
+  ]
+}

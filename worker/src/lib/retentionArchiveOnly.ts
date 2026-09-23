@@ -263,12 +263,16 @@ export function buildRetentionArchiveOnlyQuery(
   cursor: { cursor_date: string | null; cursor_key: string | null } | null,
 ): string {
   const cursorPredicate = cursor?.cursor_date && cursor.cursor_key != null
-    ? 'AND (__archive_date > ? OR (__archive_date = ? AND __cursor_key > ?))'
+    ? 'AND (__archive_date, __cursor_key) > (?, ?)'
     : ''
+  // predictions.prediction_date is a canonical YYYY-MM-DD business date.
+  // Wrapping it in substr prevents its existing date index from bounding each page.
+  const archiveDate = source.datasetId === 'predictions' && source.dateExpression === 'predictions.prediction_date'
+    ? source.dateExpression : `substr(${source.dateExpression}, 1, 10)`
   return `
     SELECT * FROM (
       SELECT ${source.keyExpression} AS __cursor_key,
-             substr(${source.dateExpression}, 1, 10) AS __archive_date,
+             ${archiveDate} AS __archive_date,
              ${source.selectSql}
         FROM ${source.fromSql}
        WHERE (${source.eligibilitySql})
@@ -294,7 +298,7 @@ async function loadRows(
   cursor: { cursor_date: string | null; cursor_key: string | null } | null,
 ): Promise<Record<string, unknown>[]> {
   const cursorBinds = cursor?.cursor_date && cursor.cursor_key != null
-    ? [cursor.cursor_date, cursor.cursor_date, cursor.cursor_key]
+    ? [cursor.cursor_date, cursor.cursor_key]
     : []
   const maxAttempts = 4
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -451,6 +455,7 @@ async function runR2Policy(
       backlogRemaining = true
       await checkpointRetentionItem(opsDb, {
         runId, policyId, datasetId: source.datasetId, status: 'error', deletedRows: 0,
+        cursorDate: cursor?.cursor_date ?? null, cursorKey: cursor?.cursor_key ?? null,
         backlogRemaining: true, error: message,
         evidence: { archive_only: true, archive_store: 'r2', deleted_rows: 0 },
       })

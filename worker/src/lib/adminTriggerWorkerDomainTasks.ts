@@ -1,4 +1,4 @@
-import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
+import type { SchedulerCallbackContext, TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 import { DATA_DOMAINS, databaseForDataDomain, databaseForTable, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
@@ -330,8 +330,10 @@ async function enqueueStrategyLearningMaterialization(c: any, runDate?: string):
   ].join('; ')
 }
 
-export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
-  const requestedRunDate = () => c.req.query('date') || undefined
+export function buildAdminWorkerDomainTaskMap(
+  c: any, deps: TriggerDeps, schedulerContext: SchedulerCallbackContext = {},
+): Record<string, TaskHandler> {
+  const requestedRunDate = () => c.req.query('date') || schedulerContext.businessDate || undefined
 
   const tasks: Record<string, TaskHandler> = {
     'market-close-refresh': () => deps.runMarketCloseRefresh(!!c.req.query('force'), requestedRunDate()),

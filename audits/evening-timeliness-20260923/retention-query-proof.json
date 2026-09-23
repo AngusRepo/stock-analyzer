@@ -1,0 +1,42 @@
+{
+  "old_formal_plan": [
+    {
+      "id": 6,
+      "parent": 0,
+      "notused": 216,
+      "detail": "SCAN predictions"
+    },
+    {
+      "id": 84,
+      "parent": 0,
+      "notused": 0,
+      "detail": "USE TEMP B-TREE FOR ORDER BY"
+    }
+  ],
+  "new_formal_plan": [
+    {
+      "id": 7,
+      "parent": 0,
+      "notused": 163,
+      "detail": "SEARCH predictions USING INDEX idx_pred_date_model_stock (prediction_date>? AND prediction_date<?)"
+    },
+    {
+      "id": 101,
+      "parent": 0,
+      "notused": 0,
+      "detail": "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+    }
+  ],
+  "new_formal_read": {
+    "rows": 100,
+    "seconds": 0.406
+  },
+  "old_local": {
+    "ms": 37.36580000258982,
+    "rows": 100
+  },
+  "new_local": {
+    "ms": 0.5234000273048878,
+    "rows": 100
+  }
+}

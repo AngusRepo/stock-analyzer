@@ -55,7 +55,7 @@ export function buildAdminTriggerTaskMap(
   schedulerContext: SchedulerCallbackContext = {},
 ): Record<string, TaskHandler> {
   return {
-    ...buildAdminWorkerDomainTaskMap(c, deps),
+    ...buildAdminWorkerDomainTaskMap(c, deps, schedulerContext),
     ...buildAdminGcpTriggerTaskMap(c, deps, schedulerContext),
   }
 }

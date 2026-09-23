@@ -38,7 +38,7 @@ const cursorQuery = buildRetentionArchiveOnlyQuery(source, {
   cursor_date: '2024-01-01',
   cursor_key: '123',
 })
-assert.match(cursorQuery, /__archive_date > \? OR \(__archive_date = \? AND __cursor_key > \?\)/)
+assert.match(cursorQuery, /\(__archive_date, __cursor_key\) > \(\?, \?\)/)
 
 const implementation = fs.readFileSync('src/lib/retentionArchiveOnly.ts', 'utf8')
 assert.doesNotMatch(implementation, /\bDELETE\s+FROM\b/i)

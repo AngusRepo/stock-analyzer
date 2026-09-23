@@ -357,7 +357,8 @@ def test_reused_bundle_retains_source_lineage_and_new_capture_identity(monkeypat
     seen = []
     monkeypatch.setattr(pipeline, "_read_pipeline_async_state_artifact", lambda uri: state)
     async def nodes(state, steps):
-        seen.append((state["producer_run_id"], "modal_prediction_bundle" in state))
+        seen.append((state["producer_run_id"], tuple(step.__name__ for step in steps),
+                     "modal_prediction_bundle" in state))
     monkeypatch.setattr(pipeline, "_run_pipeline_nodes", nodes)
     monkeypatch.setattr(pipeline, "_pipeline_terminal_result", lambda state, **kw: state)
     payload = {
@@ -365,7 +366,13 @@ def test_reused_bundle_retains_source_lineage_and_new_capture_identity(monkeypat
         "state_gcs_uri": STATE_URI, "result": _bundle(), "result_checksum": "a" * 64,
         "result_gcs_uri": "gs://stockvision-models/original-result.json"}
     result = asyncio.run(pipeline.run_pipeline_v2_from_modal_prediction_callback(payload))
-    assert seen == [(RUN_ID, True), ("new-downstream", False)]
+    assert seen == [
+        (RUN_ID, ("node_l3_formal_predict",), True),
+        ("new-downstream", ("node_compute_personas", "node_recommend"), True),
+        ("new-downstream", ("node_llm_reasons", "node_write_d1", "node_paired_nav_setup",
+                            "node_compute_sector_flow", "node_compute_pit_residual_shadow",
+                            "node_export_dataset_snapshot"), False),
+    ]
     assert "modal_prediction_bundle" not in result
     assert "result" not in payload
     assert result["metrics"]["prediction_bundle_reuse"]["source_run_id"] == RUN_ID

@@ -25,11 +25,16 @@ def validate_carry_context(previous: dict, *, allocation: dict, runtime: dict,
     engine flags and frozen execution policies may not change under the same pair.
     Reject before publishing a new session; never reset its accumulated journal.
     """
+    from services.native_execution_equivalence import policy_execution_owner
+
     expected = {key: allocation[key] for key in ('pair_id', 'candidate_checksum', 'baseline_checksum')}
     expected.update(account_id=account_id, execution_owner_version=runtime['execution_owner_version'],
                     variables=variables)
     for key, value in expected.items():
-        if previous.get(key) != value:
+        observed = previous.get(key)
+        if key == 'execution_owner_version' and isinstance(observed, str):
+            observed, value = policy_execution_owner(observed), policy_execution_owner(value)
+        if observed != value:
             raise ValueError('paired_native_carry_context_changed:' + key)
     config = {**allocation['configuration'], 'fees': allocation['configuration']['trading_config']['fees']}
     if previous.get('configuration_checksum') != digest(config):
@@ -151,7 +156,9 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
         validate_carry_context(previous_registration, allocation=allocation, runtime=runtime,
             account_id=account_id, variables=variables, kv_read_policy=kv_read_policy,
             source_context=source_context)
-        if previous_registration['execution_owner_version'] != runtime['execution_owner_version']:
+        from services.native_execution_equivalence import policy_execution_owner
+        if (policy_execution_owner(previous_registration['execution_owner_version'])
+                != policy_execution_owner(runtime['execution_owner_version'])):
             raise ValueError('paired_native_carry_execution_owner_changed')
         starts = previous['states']
         previous_date = signal_date

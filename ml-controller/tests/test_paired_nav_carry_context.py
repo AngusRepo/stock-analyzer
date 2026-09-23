@@ -43,6 +43,21 @@ def test_no_silent_cross_day_experiment_change(field):
         validate_carry_context(previous, **kwargs)
 
 
+def test_certified_storage_only_owner_change_preserves_carry():
+    import json
+    from pathlib import Path
+
+    certificate = json.loads(Path(__file__).parents[1].joinpath(
+        'services/native_execution_equivalence.json').read_text())
+    previous, kwargs = fixture()
+    previous['execution_owner_version'] = 'native-paper-v1:' + digest(certificate['runtime_components'][-2])
+    kwargs['runtime']['execution_owner_version'] = 'native-paper-v1:' + digest(certificate['runtime_components'][-1])
+    validate_carry_context(previous, **kwargs)
+    kwargs['runtime']['execution_owner_version'] = 'native-paper-v1:' + 'f' * 64
+    with pytest.raises(ValueError, match='carry_context_changed:execution_owner_version'):
+        validate_carry_context(previous, **kwargs)
+
+
 def test_new_capture_clock_and_equivalent_json_do_not_reset_nav():
     previous, kwargs = fixture()
     kwargs['source_context']['observed_at'] = '2026-09-09T00:00:00Z'

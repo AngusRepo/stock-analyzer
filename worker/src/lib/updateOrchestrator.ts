@@ -1720,15 +1720,14 @@ async function finalizeUpdateChain(
   shardCount: number,
   continuationAttempt = 1,
 ): Promise<void> {
-  const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
-  if (!readiness.ok) {
-    await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
-    return
-  }
-
   const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
   if (await env.KV.get(finalKey)) {
     console.log(`[Queue] Finalize continuation already closed for ${triggerTime} ${runId}`)
+    return
+  }
+  const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
+  if (!readiness.ok) {
+    await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
     return
   }
   try {

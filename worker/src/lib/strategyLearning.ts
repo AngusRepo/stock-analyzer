@@ -2390,18 +2390,10 @@ export async function listStrategyRewardSourceRows(
          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
            AND mr.labeler_version=m.labeler_version
       )`,
-      `(
-        m.signal_date > ?
-        OR (m.signal_date = ? AND m.strategy_id > ?)
-        OR (m.signal_date = ? AND m.strategy_id = ? AND m.symbol > ?)
-        OR (m.signal_date = ? AND m.strategy_id = ? AND m.symbol = ? AND m.strategy_version > ?)
-      )`,
+      '(m.signal_date, m.strategy_id, m.symbol, m.strategy_version) > (?, ?, ?, ?)',
     ]
     const binds: unknown[] = [
       ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS, ...STRATEGY_FORMAL_LABELER_VERSIONS,
-      cursorDate,
-      cursorDate, cursorStrategyId,
-      cursorDate, cursorStrategyId, cursorSymbol,
       cursorDate, cursorStrategyId, cursorSymbol, cursorStrategyVersion,
     ]
     if (options.canonicalRunIds) {

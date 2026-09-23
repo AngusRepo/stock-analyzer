@@ -1,3 +1,4 @@
+import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { brokerAsOfReadiness } from './finLabBrokerReadiness'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
 import type { Bindings, UpdateQueueMsg } from '../types'
@@ -1738,8 +1739,10 @@ async function finalizeUpdateChain(
       }
       return
     }
-    await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired', leaseOwner)
-    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+    await withIndicatorFinalizeLease(env, triggerTime, runId, leaseOwner, async () => {
+      await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired', leaseOwner)
+      await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+    })
   } catch (error) {
     await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, error instanceof Error ? error.message : String(error))
   }
@@ -1833,13 +1836,17 @@ async function runFinalizeContinuation(
 ): Promise<void> {
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   console.log('[Queue] All shards done. Running alert check and event-driven pipeline...')
-  await logSchedulerResult(env.KV, 'indicator-queue', {
-    status: 'success',
-    summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}; source=${source}`,
-    duration_ms: 0,
-    run_id: runId,
-    run_date: triggerTime,
-  })
+  // A finalizer retry must not turn the indicator completion time into its retry time.
+  const indicatorReceipt = await env.KV.get(`scheduler:run:indicator-queue:${triggerTime}`, 'json') as { status?: string; run_id?: string } | null
+  if (indicatorReceipt?.status !== 'success' || indicatorReceipt.run_id !== runId) {
+    await logSchedulerResult(env.KV, 'indicator-queue', {
+      status: 'success',
+      summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}; source=${source}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    })
+  }
   try {
     const { recordD1HotWindowDatasetManifests } = await import('./datasetSnapshots')
     const manifests = await recordD1HotWindowDatasetManifests(env, triggerTime, runId)
@@ -2121,46 +2128,48 @@ async function repairFinalizeContinuationIfNeeded(
     return false
   }
 
-  if (await hasPipelineEvidence(env, triggerTime)) {
-    console.log(`[Queue] Finalize continuation already reached pipeline for ${triggerTime} ${runId}`)
-    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-    return true
-  }
+  return withIndicatorFinalizeLease(env, triggerTime, runId, leaseOwner, async () => {
+    if (await hasPipelineEvidence(env, triggerTime)) {
+      console.log(`[Queue] Finalize continuation already reached pipeline for ${triggerTime} ${runId}`)
+      await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+      return true
+    }
 
-  if (await hasSuccessfulScreenerRun(databaseForDataDomain(env, 'ops'), triggerTime)) {
-    await logSchedulerResult(env.KV, 'indicator-queue', {
-      status: 'success',
-      summary: `indicator queue finalizer repaired from existing lock for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    })
+    if (await hasSuccessfulScreenerRun(databaseForDataDomain(env, 'ops'), triggerTime)) {
+      await logSchedulerResult(env.KV, 'indicator-queue', {
+        status: 'success',
+        summary: `indicator queue finalizer repaired from existing lock for ${triggerTime}; run_id=${runId}; shards=${shardCount}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'running',
+        summary: `event-driven chain repaired orphaned post-screener continuation for ${triggerTime}; run_id=${runId}`,
+        duration_ms: 0,
+        run_date: triggerTime,
+      })
+      await enqueuePostScreenerPipelineContinuation(env, {
+        triggerTime,
+        runId,
+        shardCount,
+        source: 'expired-finalizer-repair',
+        summary: `event-driven chain repaired orphaned post-screener continuation for ${triggerTime}; run_id=${runId}`,
+      })
+      await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+      return true
+    }
+
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
-      summary: `event-driven chain repaired orphaned post-screener continuation for ${triggerTime}; run_id=${runId}`,
+      summary: `event-driven chain repairing expired finalizer lease before screener for ${triggerTime}; run_id=${runId}`,
       duration_ms: 0,
       run_date: triggerTime,
-    })
-    await enqueuePostScreenerPipelineContinuation(env, {
-      triggerTime,
-      runId,
-      shardCount,
-      source: 'expired-finalizer-repair',
-      summary: `event-driven chain repaired orphaned post-screener continuation for ${triggerTime}; run_id=${runId}`,
-    })
-    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-    return true
-  }
-
-  await logSchedulerResult(env.KV, 'evening-chain', {
-    status: 'running',
-    summary: `event-driven chain repairing expired finalizer lease before screener for ${triggerTime}; run_id=${runId}`,
-    duration_ms: 0,
-    run_date: triggerTime,
   })
   await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'expired-lease-repair', leaseOwner)
   await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
   return true
+  })
 }
 
 export async function runDailyAllocatorEvReadiness(

@@ -175,9 +175,16 @@ def view_for(payload):
         return None  # Python execution consumes the full cold object.
     if kind == 'allocation_pair':
         content = payload['content']
-        return {**payload, 'content': {k: content[k] for k in ('owner', 'candidate_checksum',
+        view = {k: content[k] for k in ('owner', 'candidate_checksum',
             'candidate_artifact_id', 'baseline_checksum', 'configuration_checksum', 'pair_id',
-            'configuration', 'route_effect') if k in content}}
+            'configuration', 'route_effect') if k in content}
+        tag = ((content.get('configuration') or {}).get('strategy_bundle') or {}).get('strategy_ab') or {}
+        if tag.get('role') == 'B' and (tag.get('baseline_primary') or {}).get('role') == 'A':
+            view['allocation_preview'] = {role: [
+                {key: row[key] for key in ('symbol', 'allocation_weight')}
+                for row in (content[arm]['output'])]
+                for role, arm in (('A', 'baseline'), ('B', 'candidate'))}
+        return {**payload, 'content': view}
     if kind != 'allocation_context':
         return payload  # Allocation plans and fill receipts preserve original bytes.
     content = payload['content']

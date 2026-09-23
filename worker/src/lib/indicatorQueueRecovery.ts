@@ -1,3 +1,4 @@
+import { indicatorFinalizeLeaseActive } from './indicatorFinalizeLease'
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { twToday } from './dateUtils'
 import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
@@ -132,6 +133,12 @@ export async function runIndicatorQueueRecoveryWatchdog(
   const ageMs = Number.isFinite(timestampMs) ? Date.now() - timestampMs : Number.POSITIVE_INFINITY
   if (ageMs < INDICATOR_QUEUE_STALE_MS) {
     return `skipped: indicator queue heartbeat fresh for ${triggerTime}; run_id=${runId}; age_ms=${Math.max(0, ageMs)}`
+  }
+
+  // A long-running finalizer is not a lost queue delivery. Do not spend the
+  // finite recovery budget or enqueue duplicate work while its D1 lease is live.
+  if (await indicatorFinalizeLeaseActive(env, triggerTime, runId)) {
+    return `skipped: indicator finalizer lease active for ${triggerTime}; run_id=${runId}`
   }
 
   const leaseKey = `${prefix}:watchdog-lease`

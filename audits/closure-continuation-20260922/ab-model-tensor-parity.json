@@ -1,0 +1,330 @@
+{
+  "TabM": {
+    "tensor_count": 14,
+    "tensor_bytes_identical": true,
+    "serialization_metadata_identical": false,
+    "container_members": true,
+    "pickle_differences": [
+      {
+        "A": [
+          "BINUNICODE",
+          "v20260921060117"
+        ],
+        "B": [
+          "BINUNICODE",
+          "v20260921071259"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "2026-09-21T06:40:13.389710+00:00"
+        ],
+        "B": [
+          "BINUNICODE",
+          "2026-09-21T08:46:01.132135+00:00"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "144a0993269def84d99cc389412d33a61092709a0d6c49d9d2b49de658d97707"
+        ],
+        "B": [
+          "BINUNICODE",
+          "c7a39a7598ec87ecd256fcae486ead1aa475afa53f77a80254c7027d885acd32"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "active8-release-model-profiles-v4-timexer-price"
+        ],
+        "B": [
+          "BINUNICODE",
+          "active8-release-model-profiles-v4-timexer-exo137"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "runtime"
+        ],
+        "B": [
+          "BINUNICODE",
+          "payload_config"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "executor"
+        ],
+        "B": [
+          "BINUNICODE",
+          "batch_size"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "modal_l4"
+        ],
+        "B": [
+          "BININT2",
+          "1024"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "783"
+        ],
+        "B": [
+          "BINUNICODE",
+          "epochs"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "configuration_selection"
+        ],
+        "B": [
+          "LONG_BINPUT",
+          "783"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "784"
+        ],
+        "B": [
+          "BININT1",
+          "16"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "none"
+        ],
+        "B": [
+          "BINUNICODE",
+          "lr"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "785"
+        ],
+        "B": [
+          "LONG_BINPUT",
+          "784"
+        ]
+      },
+      {
+        "A": [
+          "SETITEMS",
+          "None"
+        ],
+        "B": [
+          "BINFLOAT",
+          "0.002"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "payload_config"
+        ],
+        "B": [
+          "BINUNICODE",
+          "seed"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "786"
+        ],
+        "B": [
+          "LONG_BINPUT",
+          "785"
+        ]
+      }
+    ]
+  },
+  "GNN": {
+    "tensor_count": 8,
+    "tensor_bytes_identical": true,
+    "serialization_metadata_identical": false,
+    "container_members": true,
+    "pickle_differences": [
+      {
+        "A": [
+          "BINUNICODE",
+          "v20260921060117"
+        ],
+        "B": [
+          "BINUNICODE",
+          "v20260921071259"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "2026-09-21T06:26:36.741821+00:00"
+        ],
+        "B": [
+          "BINUNICODE",
+          "2026-09-21T08:31:05.335701+00:00"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "144a0993269def84d99cc389412d33a61092709a0d6c49d9d2b49de658d97707"
+        ],
+        "B": [
+          "BINUNICODE",
+          "c7a39a7598ec87ecd256fcae486ead1aa475afa53f77a80254c7027d885acd32"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "active8-release-model-profiles-v4-timexer-price"
+        ],
+        "B": [
+          "BINUNICODE",
+          "active8-release-model-profiles-v4-timexer-exo137"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "runtime"
+        ],
+        "B": [
+          "BINUNICODE",
+          "payload_config"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "executor"
+        ],
+        "B": [
+          "BINUNICODE",
+          "dropout"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "modal_l4"
+        ],
+        "B": [
+          "BINFLOAT",
+          "0.12"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "806"
+        ],
+        "B": [
+          "BINUNICODE",
+          "edge_threshold"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "configuration_selection"
+        ],
+        "B": [
+          "LONG_BINPUT",
+          "806"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "807"
+        ],
+        "B": [
+          "BINFLOAT",
+          "0.25"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "none"
+        ],
+        "B": [
+          "BINUNICODE",
+          "edge_top_k"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "808"
+        ],
+        "B": [
+          "LONG_BINPUT",
+          "807"
+        ]
+      },
+      {
+        "A": [
+          "SETITEMS",
+          "None"
+        ],
+        "B": [
+          "BININT1",
+          "8"
+        ]
+      },
+      {
+        "A": [
+          "BINUNICODE",
+          "payload_config"
+        ],
+        "B": [
+          "BINUNICODE",
+          "epochs"
+        ]
+      },
+      {
+        "A": [
+          "LONG_BINPUT",
+          "809"
+        ],
+        "B": [
+          "LONG_BINPUT",
+          "808"
+        ]
+      }
+    ]
+  },
+  "PatchTST": {
+    "tensor_count": 74,
+    "tensor_bytes_identical": true,
+    "serialization_metadata_identical": true,
+    "container_members": true
+  },
+  "iTransformer": {
+    "tensor_count": 38,
+    "tensor_bytes_identical": true,
+    "serialization_metadata_identical": true,
+    "container_members": true
+  }
+}

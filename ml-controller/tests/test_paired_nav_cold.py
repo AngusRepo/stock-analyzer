@@ -236,3 +236,19 @@ def test_release_resumes_after_committed_delete_with_lost_response(env, monkeypa
     result = cold.release_hot_copy(**args, writer=db.writer)
     assert result['deleted_parts'] == remaining
     assert cold.load(db.query, manifest, objects, materialize=False) is True
+
+
+def test_ab_allocation_preview_preserves_weights_without_large_inputs(env):
+    db, _ = env
+    content = {'configuration': {'strategy_bundle': {'strategy_ab': {
+        'role': 'B', 'baseline_primary': {'role': 'A'}}}},
+        'baseline': {'output': [{'symbol': '2485', 'allocation_weight': .25, 'history': list(range(10000))}]},
+        'candidate': {'output': [{'symbol': '6538', 'allocation_weight': .17, 'history': list(range(10000))}]}}
+    manifest = freeze(db, content, kind='allocation_pair')
+    raw = ''.join(row['payload_text'] for row in db.query(
+        'SELECT * FROM paired_nav_cold_views_v1 WHERE snapshot_id=? ORDER BY part_no', [manifest['snapshot_id']]))
+    preview = json.loads(raw)['content']['allocation_preview']
+    assert preview == {'A': [{'symbol': '2485', 'allocation_weight': .25}],
+                       'B': [{'symbol': '6538', 'allocation_weight': .17}]}
+    assert len(raw) < 2000
+    assert read_snapshot(db.query, manifest['snapshot_id'])['payload']['content'] == content

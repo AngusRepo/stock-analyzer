@@ -1,0 +1,40 @@
+{
+  "old": {
+    "median_ms": 23.46549998037517,
+    "explain": [
+      [
+        5,
+        0,
+        215,
+        "SCAN m USING INDEX idx_strategy_label_matrix_v4_evaluable"
+      ],
+      [
+        53,
+        0,
+        0,
+        "USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY"
+      ]
+    ]
+  },
+  "new": {
+    "median_ms": 0.8734000148251653,
+    "explain": [
+      [
+        5,
+        0,
+        205,
+        "SEARCH m USING INDEX idx_strategy_label_matrix_v4_evaluable ((signal_date,strategy_id)>(?,?))"
+      ],
+      [
+        57,
+        0,
+        0,
+        "USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY"
+      ]
+    ]
+  },
+  "rows_identical": true,
+  "rows": 1000,
+  "fixture_rows": 230000,
+  "note": "Local SQLite fixture using production index; not production latency."
+}

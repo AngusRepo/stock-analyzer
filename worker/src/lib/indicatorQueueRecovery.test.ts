@@ -34,12 +34,13 @@ class FakeKv {
   }
 }
 
-function fakeEnv(kv: FakeKv) {
+function fakeEnv(kv: FakeKv, activeLease = false) {
   const sent: any[] = []
   const batches: any[][] = []
   return {
     env: {
       KV: kv,
+      DB: { prepare() { return { bind() { return { async first() { return activeLease ? { expires_at: new Date(Date.now() + 60_000).toISOString() } : null } } } } } },
       UPDATE_QUEUE: {
         async send(body: any) {
           sent.push(body)
@@ -154,6 +155,18 @@ const staleReceipt = {
   await recordIndicatorQueueBatchProgress(env, message, 84, true)
   assert.equal(await kv.get(`${prefix}:cursor:0`), '84')
   assert.equal(await kv.get(`${prefix}:failure:0`), null)
+}
+
+{
+  const kv = new FakeKv()
+  kv.values.set(`scheduler:run:indicator-queue:${date}`, JSON.stringify(staleReceipt))
+  kv.values.set(`${prefix}:watchdog-recoveries`, '6')
+  for (let shard = 0; shard < 4; shard++) kv.values.set(`${prefix}:done:${shard}`, '1')
+  const { env, sent, batches } = fakeEnv(kv, true)
+  const summary = await runIndicatorQueueRecoveryWatchdog(env, date)
+  assert.match(summary, /lease.*active|active.*lease/i)
+  assert.equal(sent.length + batches.length, 0)
+  assert.equal(await kv.get(`${prefix}:watchdog-recoveries`), '6')
 }
 
 console.log('indicatorQueueRecovery tests passed')

@@ -1,0 +1,63 @@
+{
+  "schema_version": "strategy-ab-recommendations-v1",
+  "date": "2026-09-22",
+  "scope": "retrospective_research",
+  "generated_at": "2026-09-23T03:25:21.451592+00:00",
+  "production_effect": false,
+  "nav_maturity_credit": 0,
+  "source_checksums": {
+    "allocation_context": "b982c5adcb56a82e3d17b63918c2540a67e60a98c66b8f0ff9958b23c57c928a",
+    "A_model": "4a1dabc439c12d7c74832a35434d3bdfa92761a93c419a22476f389cfc537cef",
+    "B_model": "cb979805883b8b2f21ccbaed343201771edc8cd290839064ebd67113d24528a5"
+  },
+  "A": {
+    "status": "available",
+    "picks": [
+      {
+        "symbol": "2485",
+        "weight": 0.25
+      },
+      {
+        "symbol": "3576",
+        "weight": 0.25
+      },
+      {
+        "symbol": "3691",
+        "weight": 0.13
+      },
+      {
+        "symbol": "6443",
+        "weight": 0.050000000000000044
+      }
+    ],
+    "cash_weight": 0.31999999999999995,
+    "source_id": "f19fac870fc25b33db07775956c1e874c915ae71599d05d23232e930fbb431b3"
+  },
+  "B": {
+    "status": "available",
+    "picks": [
+      {
+        "symbol": "6538",
+        "weight": 0.1728680042776773
+      },
+      {
+        "symbol": "6141",
+        "weight": 0.17193162124983963
+      },
+      {
+        "symbol": "6168",
+        "weight": 0.16269733498495634
+      },
+      {
+        "symbol": "3189",
+        "weight": 0.14147919459135636
+      },
+      {
+        "symbol": "6213",
+        "weight": 0.031023844896170397
+      }
+    ],
+    "cash_weight": 0.31999999999999995,
+    "source_id": "f19fac870fc25b33db07775956c1e874c915ae71599d05d23232e930fbb431b3"
+  }
+}

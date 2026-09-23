@@ -27,6 +27,38 @@ dashboardReadRoutes.get('/api/dashboard/v4/nav/comparisons', async c => {
   return c.json(await readPairedNav(databaseForDataDomain(c.env, 'learning'), date))
 })
 
+dashboardReadRoutes.get('/api/dashboard/v4/strategy-ab/recommendations', async c => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  c.header('Cache-Control', 'no-store, max-age=0')
+  const date = navReadDate(c.req.query('date'))
+  if (!date) return c.json({ error: 'invalid_date' }, 400)
+  const { readStrategyAbRecommendations } = await import('../lib/strategyAbRecommendations')
+  return c.json(await readStrategyAbRecommendations(c.env, date))
+})
+
+dashboardReadRoutes.post('/api/admin/strategy-ab/research-recommendations', async c => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+  const raw = await c.req.text()
+  if (new TextEncoder().encode(raw).length > 64 * 1024) return c.json({ error: 'packet_too_large' }, 413)
+  const { validateResearchRecommendations } = await import('../lib/strategyAbRecommendations')
+  let packet
+  try { packet = validateResearchRecommendations(JSON.parse(raw)) }
+  catch { return c.json({ error: 'invalid_strategy_ab_research_packet' }, 400) }
+  if (!navReadDate(packet.date)) return c.json({ error: 'invalid_date' }, 400)
+  const { writeEvidenceArtifact } = await import('../lib/artifactLifecycle')
+  const artifact = await writeEvidenceArtifact(c.env, {
+    domain: 'strategy-ab-recommendations', businessDate: packet.date,
+    producerRunId: `research-ab:${packet.date}:${packet.source_checksums!.allocation_context}`,
+    retentionClass: 'ten_year_cold_archive', schemaVersion: packet.schema_version,
+    payload: { ...packet }, rowCount: packet.A.picks.length + packet.B.picks.length,
+    metadata: { production_effect: false, nav_maturity_credit: 0, scope: packet.scope },
+  })
+  await c.env.KV.put(`strategy-ab:recommendations:${packet.date}`, JSON.stringify({ r2_key: artifact.r2_key, checksum: artifact.checksum }))
+  return c.json({ status: 'archived', artifact_id: artifact.artifact_id, production_effect: false, nav_maturity_credit: 0 })
+})
+
 dashboardReadRoutes.get('/api/dashboard/v4/nav/comparisons/:pairId', async c => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

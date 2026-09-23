@@ -5279,6 +5279,14 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
             for prediction in (state.get("predictions") or {}).values():
                 if isinstance(prediction, dict):
                     prediction["pipeline_recovery_lineage"] = _json_safe(recovery_lineage)
+        # Formal L3 has consumed the immutable Modal bundle. Keep its GCS URI and
+        # checksum for audit, but release the expanded raw result before later nodes.
+        state.pop("modal_prediction_bundle", None)
+        callback_payload.pop("result", None)
+        callback_payload.pop("modal_prediction_bundle", None)
+        result = None
+        import gc
+        gc.collect()
         await _run_pipeline_nodes(state, [
             node_compute_personas,
             node_recommend,

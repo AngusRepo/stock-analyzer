@@ -244,7 +244,7 @@ async def _run() -> int:
                 result_gcs_uri=result_gcs_uri,
                 expected_checksum=result_checksum,
             )
-            result = await run_pipeline_v2_from_modal_prediction_callback({
+            callback_payload = {
                 "schema_version": "pipeline-modal-prediction-callback-v2",
                 "run_date": run_date,
                 "run_id": run_id,
@@ -254,7 +254,9 @@ async def _run() -> int:
                 "result_gcs_uri": result_gcs_uri,
                 "result_checksum": result_checksum,
                 "result": bundle,
-            })
+            }
+            del bundle
+            result = await run_pipeline_v2_from_modal_prediction_callback(callback_payload)
         elif _truthy_env("PIPELINE_MODAL_PREDICTION_CALLBACK_ENABLED"):
             result = await run_pipeline_v2_until_modal_prediction_spawn(
                 run_date=run_date,

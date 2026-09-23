@@ -337,3 +337,12 @@ assert(
     postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
   'post-verify chain must refresh rolling IC before adaptive params',
 )
+
+const finalizerBody = updateOrchestrator.slice(
+  updateOrchestrator.indexOf('async function finalizeUpdateChain('),
+  updateOrchestrator.indexOf('async function deferFinalizeContinuation('),
+)
+assert(
+  finalizerBody.indexOf('if (await env.KV.get(finalKey))') < finalizerBody.indexOf('checkEveningChainSourceReadiness'),
+  'a completed finalizer must ignore delayed retries before source checks can change root status',
+)

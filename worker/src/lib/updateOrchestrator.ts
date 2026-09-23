@@ -1838,6 +1838,10 @@ async function runFinalizeContinuation(
   leaseOwner: string,
 ): Promise<void> {
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
+  if (await hasPipelineEvidence(env, triggerTime)) {
+    console.log('[Queue] Finalizer already reached pipeline; preserving completed stages for ' + triggerTime + ' ' + runId)
+    return
+  }
   console.log('[Queue] All shards done. Running alert check and event-driven pipeline...')
   // A finalizer retry must not turn the indicator completion time into its retry time.
   const indicatorReceipt = await env.KV.get(`scheduler:run:indicator-queue:${triggerTime}`, 'json') as { status?: string; run_id?: string } | null

@@ -162,7 +162,8 @@ if (!source) {
       assert.equal(result.success, false, JSON.stringify(result))
       assert.equal(result.status, 'incomplete')
       assert.equal(result.control_activation_verified, false)
-      assert.match(result.reason, /^opb_nav_control_/)
+      if (mutation === 'hash') assert.equal(result.reason, 'paired_nav_view_checksum_mismatch')
+      else assert.match(result.reason, /^opb_nav_control_/)
     })
   }
   test.after(() => fs.writeFileSync(source + '.responses.json', JSON.stringify(responses)))

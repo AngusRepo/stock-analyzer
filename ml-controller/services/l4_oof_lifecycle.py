@@ -92,15 +92,21 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
     return result
 
 
+class L4DailyPlanPending(ValueError):
+    """The original signal-date Paper plan has not been activated yet."""
+
+
 def daily_plan_closure(config,as_of,paper):
     from services.l4_distribution import validate_bundle
     rows=paper.query('SELECT p.payload_json FROM l4_portfolio_head_v1 h JOIN l4_portfolio_plans_v1 p ON h.plan_id=p.plan_id WHERE h.account_id=1 AND p.activated=1',[])
-    if len(rows)!=1:raise ValueError('l4_daily_plan_missing')
+    if len(rows)!=1:raise L4DailyPlanPending('l4_daily_plan_missing')
     plan=json.loads(rows[0]['payload_json'])
+    if plan['signal_date']!=as_of:
+        raise L4DailyPlanPending('l4_daily_plan_pending_for_signal_date')
     bundle=config['l4Distribution']['artifact']
     validate_bundle(bundle,l3_identity=plan['l3_identity'],signal_date=as_of)
-    if plan['signal_date']!=as_of or plan['model_checksum']!=bundle['model_checksum']:
-        raise ValueError('l4_daily_plan_expired_or_model_changed')
+    if plan['model_checksum']!=bundle['model_checksum']:
+        raise ValueError('l4_daily_plan_model_changed')
     return {'schema_version':'l4-daily-plan-closure-v1','signal_date':as_of,'plan_id':plan['plan_id'],
         'model_checksum':plan['model_checksum'],'legacy_oof_maturity_requested':False,
         'training_dispatched':False,'promoted':False}

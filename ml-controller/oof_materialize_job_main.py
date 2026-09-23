@@ -79,9 +79,14 @@ async def _execute_lifecycle(
     else:
         nav['adoption'] = {'status': 'blocked_by_nav_failure' if nav_failed else 'disabled_by_request'}
     if new_distribution:
-        from services.l4_oof_lifecycle import daily_plan_closure, verified_paper_closure_with_incomplete_comparison
+        from services.l4_oof_lifecycle import L4DailyPlanPending, daily_plan_closure, verified_paper_closure_with_incomplete_comparison
         from services.d1_domain_client import client_proxy_for_domain
-        closure=daily_plan_closure(config,nav['as_of_date'],client_proxy_for_domain('paper'))
+        try:
+            closure=daily_plan_closure(config,nav['as_of_date'],client_proxy_for_domain('paper'))
+        except L4DailyPlanPending as exc:
+            return {'status':'pending','dependency_retry_required':True,
+                    'reason':str(exc),'nav_retry_required':nav_failed,
+                    'paired_nav_maturity':nav,'promoted':False}
         if nav_failed and not verified_paper_closure_with_incomplete_comparison(nav,closure,client_proxy_for_domain):
             return {'status':'pending','dependency_retry_required':True,'nav_retry_required':True,'paired_nav_maturity':nav}
         return {'status':'native_l4_daily_accounted','native_l4_daily_closure':closure,

@@ -97,3 +97,41 @@ def test_route_exception_cannot_waive_different_or_unverified_failures(source,ac
     elif kind=='wrong_date':actual_nav['paired_nav_evidence']['as_of_date']='2026-09-20'
     elif kind=='materialized_pair':population['pairs']=[{'owner':route['owner'],'candidate_checksum':route['candidate_checksum']}]
     assert not check(actual_nav,closure,clients)
+
+
+
+def test_daily_plan_date_waits_but_model_change_fails(monkeypatch):
+    from services import l4_oof_lifecycle,l4_distribution
+    monkeypatch.setattr(l4_distribution, 'validate_bundle', lambda *args, **kwargs: None)
+    plan={'plan_id':'plan','signal_date':'2026-09-21','model_checksum':'model',
+          'l3_identity':{'artifact_id':'synthetic'}}
+    paper=SimpleNamespace(query=lambda *args:[{'payload_json':json.dumps(plan)}])
+    config={'l4Distribution':{'artifact':{'model_checksum':'model'}}}
+    with pytest.raises(l4_oof_lifecycle.L4DailyPlanPending, match='pending_for_signal_date'):
+        l4_oof_lifecycle.daily_plan_closure(config,'2026-09-22',paper)
+    plan['signal_date']='2026-09-22'
+    assert l4_oof_lifecycle.daily_plan_closure(config,'2026-09-22',paper)['plan_id']=='plan'
+    plan['model_checksum']='changed'
+    with pytest.raises(ValueError, match='l4_daily_plan_model_changed'):
+        l4_oof_lifecycle.daily_plan_closure(config,'2026-09-22',paper)
+
+
+def test_daily_plan_pending_retries_without_promotion(source,monkeypatch):
+    import oof_materialize_job_main as job
+    from services import l4_oof_lifecycle,trading_config_loader,d1_domain_client
+    nav,_,_,clients=source
+    nav={**nav,'status':'success','as_of_date':'2026-09-22'}
+    monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',
+                        lambda:SimpleNamespace(config={'l4Distribution':{}}))
+    monkeypatch.setattr(job,'_execute_daily_nav',lambda **kwargs:deepcopy(nav))
+    def pending(*args):
+        raise l4_oof_lifecycle.L4DailyPlanPending('l4_daily_plan_pending_for_signal_date')
+    monkeypatch.setattr(l4_oof_lifecycle,'daily_plan_closure',pending)
+    monkeypatch.setattr(d1_domain_client,'client_proxy_for_domain',clients)
+    result=asyncio.run(job._execute_lifecycle(
+        cadence='daily',end_date='2026-09-22',promote=False,dispatch_full_fit=False,
+        expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
+    assert result['status']=='pending'
+    assert result['dependency_retry_required'] is True
+    assert result['reason']=='l4_daily_plan_pending_for_signal_date'
+    assert result['promoted'] is False

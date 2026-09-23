@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
@@ -17,6 +19,17 @@ from typing import Any, Callable
 Query = Callable[[str, list[Any]], list[dict[str, Any]]]
 Writer = Callable[..., dict[str, Any]]
 SCHEMA = 'paired-nav-journal-v1'
+_read_scope: ContextVar[dict[str, Any] | None] = ContextVar('paired_nav_read_scope', default=None)
+
+
+@contextmanager
+def reuse_frozen_snapshot(snapshot_id: str | None):
+    """Reuse one verified immutable parent within a single NAV setup call."""
+    token = _read_scope.set({'snapshot_id': snapshot_id, 'saved': None})
+    try:
+        yield
+    finally:
+        _read_scope.reset(token)
 
 
 def encode(value: Any) -> str:
@@ -63,6 +76,9 @@ def _parts(query: Query, snapshot_id: str, count: int) -> str:
 
 
 def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
+    scope = _read_scope.get()
+    if scope is not None and scope['snapshot_id'] == snapshot_id and scope['saved'] is not None:
+        return scope['saved']
     rows = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
     if len(rows) != 1:
         raise RuntimeError('paired_nav_manifest_missing')
@@ -78,7 +94,10 @@ def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
             or payload['source_run_id'] != manifest['source_run_id']
             or payload['snapshot_kind'] != manifest['snapshot_kind']):
         raise RuntimeError('paired_nav_manifest_identity_mismatch')
-    return {'manifest': manifest, 'payload': payload}
+    saved = {'manifest': manifest, 'payload': payload}
+    if scope is not None and scope['snapshot_id'] == snapshot_id:
+        scope['saved'] = saved
+    return saved
 
 
 def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,

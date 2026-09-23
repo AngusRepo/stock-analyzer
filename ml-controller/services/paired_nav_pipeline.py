@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from services.paired_nav_collection import shadow_failure
-from services.paired_nav_journal import read_snapshot
+from services.paired_nav_journal import read_snapshot, reuse_frozen_snapshot
 
 
 def _verify_registrations(candidates, native, *, signal_date, query):
@@ -28,6 +28,14 @@ def _verify_registrations(candidates, native, *, signal_date, query):
 
 
 def complete_pipeline_shadow(collection, *, query, writer, enforce_execution_window=False):
+    """Complete post-serving NAV without reloading the large frozen parent."""
+    snapshot_id = collection.get('snapshot_id') if isinstance(collection, dict) else None
+    with reuse_frozen_snapshot(snapshot_id):
+        return _complete_pipeline_shadow(collection, query=query, writer=writer,
+            enforce_execution_window=enforce_execution_window)
+
+
+def _complete_pipeline_shadow(collection, *, query, writer, enforce_execution_window=False):
     """Independent Atomic setup cannot be starved by another candidate lane."""
     if enforce_execution_window and isinstance(collection, dict) and collection.get('snapshot_id'):
         try:

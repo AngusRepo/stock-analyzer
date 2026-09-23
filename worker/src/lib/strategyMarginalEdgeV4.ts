@@ -2,7 +2,7 @@ import { StrategyOutcomeStream } from './strategyOutcomeStream'
 import {
   STRATEGY_FORMAL_LABELER_VERSIONS,
 } from './strategySpec'
-import { atomicNavOwnsRegistry, legacyAtomicPromotionGuard } from './strategyAtomicNavReceipt'
+import { navOwnsStrategyReplacement, legacyAtomicPromotionGuard } from './strategyAtomicNavReceipt'
 
 export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6 = 'strategy-marginal-edge-v6'
 export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION = 'strategy-marginal-edge-v7'
@@ -1196,7 +1196,7 @@ export async function refreshStrategyMarginalEdgeV4(
   const finalOwnerKeys = new Set(replacement.finalWeights.keys())
 
   const runId = `strategy-marginal-edge-v7-${asOfDate}-${fingerprint}-planning-v2`
-  const navOwnsRegistry = await atomicNavOwnsRegistry(db)
+  const navOwnsRegistry = await navOwnsStrategyReplacement(db)
   if (!navOwnsRegistry && previousHead?.run_id === runId) {
     const existing = await db.prepare('SELECT status FROM strategy_marginal_edge_runs_v4 WHERE run_id=?')
       .bind(runId).first<{ status?: string }>()

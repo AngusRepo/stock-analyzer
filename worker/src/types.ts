@@ -329,6 +329,7 @@ export interface UpdateQueueMsg {
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'
     | 'strategy_learning_materialize'
+    | 'strategy_decision_prefill'
     | 'meta_learning_shadow_closure'
     | 's12_replay_backfill_chunk'
     | 'ga_optimizer_shadow_closure'

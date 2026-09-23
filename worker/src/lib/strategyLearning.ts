@@ -3923,8 +3923,8 @@ async function loadStrategyReplacementGateSummary(
   candidateStrategyApplicability: ReadonlyMap<string, string | null>,
 ): Promise<StrategyReplacementGateSummary> {
   try {
-    const { atomicNavOwnsRegistry } = await import('./strategyAtomicNavReceipt')
-    const replacementOwner = await atomicNavOwnsRegistry(db) ? 'original_paired_daily_nav' : 'legacy_atomic_v7'
+    const { navOwnsStrategyReplacement } = await import('./strategyAtomicNavReceipt')
+    const replacementOwner = await navOwnsStrategyReplacement(db) ? 'original_paired_daily_nav' : 'legacy_atomic_v7'
     const run = await db.prepare(`
       SELECT run_id,
              as_of_date,
@@ -5534,7 +5534,7 @@ export async function finalizeStrategyLearningEvidenceV5(
   const routeCalibration = await runStrategyLearningFinalizerStage(
     'route_calibration',
     () => refreshStrategyRouteCalibration(db, date, {
-      allowPromotion: options.allowPromotion === true,
+      allowPromotion: false,
       canonicalRunIds,
     }),
     options,

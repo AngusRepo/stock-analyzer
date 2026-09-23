@@ -1,5 +1,6 @@
 import { SELECTION_ROUTE_SEMANTIC_VERSION } from './evidenceContracts'
 import { ROUTE_NAV_ARTIFACT_VERSION, readRouteNavReceipt } from './strategyRouteNavReceipt'
+import { navOwnsStrategyReplacement } from './strategyAtomicNavReceipt'
 
 export const STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION = 'strategy-route-calibration-v2'
 export const STRATEGY_ROUTE_CHALLENGER_VERSION = SELECTION_ROUTE_SEMANTIC_VERSION
@@ -428,9 +429,12 @@ export async function refreshStrategyRouteCalibration(
     },
   }
   const runId = `${STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION}-${asOfDate}-${await fingerprint(rows)}`
+  const navGovernance = await navOwnsStrategyReplacement(db)
   const navHead = await db.prepare('SELECT artifact_version FROM strategy_route_calibration_head_v1 WHERE singleton_id=1')
     .first<{ artifact_version: string }>()
-  const promoted = navHead?.artifact_version !== ROUTE_NAV_ARTIFACT_VERSION
+  // Legacy LCB calibration remains diagnostic. Only original paired NAV may
+  // publish the route head during Paper trading.
+  const promoted = !navGovernance && navHead?.artifact_version !== ROUTE_NAV_ARTIFACT_VERSION
     && result.status === 'pass' && currentCoverageReady && options.allowPromotion === true && result.routeFloor != null
   const status: 'pass' | 'fail' | 'pending_maturity' | 'promoted' = promoted ? 'promoted' : result.status
   const statements = [db.prepare(`

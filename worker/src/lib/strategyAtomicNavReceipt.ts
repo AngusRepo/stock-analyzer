@@ -13,20 +13,27 @@ export function atomicNavCanonical(value: any): string {
 }
 export const atomicNavDigest = (value: any) => sha256StrategyProductionPolicyPayload(atomicNavCanonical(value))
 
-/** An immutable adoption transfers replacement authority, not diagnostic work.
- * Missing migration/invalid receipt is an error, never permission for legacy.
+/** Paper NAV owns replacement governance before a candidate earns a NAV PASS.
+ * Adoption receipts prove historical publications, never the governance switch.
  */
-export async function atomicNavOwnsRegistry(db: D1Database): Promise<boolean> {
-  const row = await db.prepare('SELECT * FROM strategy_atomic_nav_adoptions_v1 LIMIT 1')
+export async function navOwnsStrategyReplacement(db: D1Database): Promise<boolean> {
+  const authority = await db.prepare('SELECT owner FROM strategy_replacement_authority_v1 WHERE singleton_id=1')
+    .first<{ owner: string }>()
+  if (authority?.owner !== 'original_paired_daily_nav') {
+    throw new Error('strategy_replacement_nav_authority_missing')
+  }
+  const adoption = await db.prepare('SELECT * FROM strategy_atomic_nav_adoptions_v1 LIMIT 1')
     .first<Record<string, any>>()
-  if (!row) return false
-  await readAtomicNavReceipt(row)
+  if (adoption) await readAtomicNavReceipt(adoption)
   return true
 }
 
 export function legacyAtomicPromotionGuard(db: D1Database): D1PreparedStatement {
-  return db.prepare(`SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM strategy_atomic_nav_adoptions_v1)
-    THEN 1 ELSE json('strategy_atomic_nav_owns_registry') END`)
+  return db.prepare(`SELECT CASE WHEN NOT EXISTS(
+    SELECT 1 FROM strategy_replacement_authority_v1
+     WHERE singleton_id=1 AND owner='original_paired_daily_nav')
+    THEN json('strategy_replacement_nav_authority_missing')
+    ELSE json('strategy_replacement_nav_owns_registry') END`)
 }
 
 export async function readAtomicNavReceipt(row: Record<string, any>) {

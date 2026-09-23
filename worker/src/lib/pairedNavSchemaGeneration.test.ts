@@ -16,15 +16,25 @@ for (const domain of ['core', 'market', 'learning', 'ops', 'execution', 'paper',
   fs.mkdirSync(path.join(root, 'domain-migrations', domain), { recursive: true })
   fs.writeFileSync(path.join(root, 'domain-migrations', domain, `0001_${domain}_baseline.sql`), '-- fixture baseline\n')
 }
-fs.copyFileSync('domain-migrations/ops/0014_retention_history_lookup.sql', path.join(root, 'domain-migrations/ops/0014_retention_history_lookup.sql'))
-for (const [domain, name] of Object.entries({market:'0008',learning:'0050',execution:'0003',ops:'0015',research:'0005'})) {
-  const file = `${name}_retention_source_release.sql`
-  fs.copyFileSync(`domain-migrations/${domain}/${file}`, path.join(root, 'domain-migrations', domain, file))
+const extensions = {
+  ops: ['0014_retention_history_lookup.sql', '0015_retention_source_release.sql',
+    '0016_retention_history_coverage.sql', '0017_ten_year_archive_windows.sql'],
+  market: ['0008_retention_source_release.sql', '0009_retention_anchor_index.sql'],
+  execution: ['0003_retention_source_release.sql', '0004_retention_reference_indexes.sql'],
+  research: ['0005_retention_source_release.sql', '0006_retention_release_lookup.sql'],
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql',
+    '0046_route_nav_diagnostic_floor.sql', '0047_atomic_nav_adoption.sql',
+    '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql',
+    '0050_retention_source_release.sql', '0051_retention_release_lookup.sql',
+    '0052_strategy_paper_nav_authority.sql'],
 }
-const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql']
-fs.copyFileSync('domain-migrations/learning/0046_route_nav_diagnostic_floor.sql',
-  path.join(root, 'domain-migrations/learning/0046_route_nav_diagnostic_floor.sql'))
-for (const name of names) fs.copyFileSync(`domain-migrations/learning/${name}`, path.join(root, 'domain-migrations/learning', name))
+for (const [domain, files] of Object.entries(extensions)) {
+  for (const name of files) fs.copyFileSync(`domain-migrations/${domain}/${name}`,
+    path.join(root, 'domain-migrations', domain, name))
+}
+const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql',
+  '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql',
+  '0049_paired_nav_orphan_archive.sql', '0052_strategy_paper_nav_authority.sql']
 // Exercise the real one-line trigger bodies and CASE expressions in primary input.
 fs.appendFileSync(path.join(root, 'schema.sql'), '\n' + fs.readFileSync('domain-migrations/learning/0048_paired_nav_cold_storage.sql', 'utf8'))
 const run = () => {
@@ -44,6 +54,11 @@ assert.ok(schema.includes('paired_nav_parts_retired_no_insert'))
 assert.ok(schema.includes('paired_nav_lifecycle_no_replace_v1'))
 assert.ok(schema.includes('paired_nav_journal_no_replace_v1'))
 assert.ok(schema.includes('strategy_atomic_nav_adoptions_no_replace_v1'))
+assert.ok(schema.includes('strategy_replacement_authority_no_update_v1'))
+assert.ok(schema.includes('strategy_route_nav_only_head_insert_v1'))
+assert.ok(schema.includes('strategy_route_nav_only_head_update_v1'))
+assert.ok(schema.includes('strategy_marginal_edge_nav_only_head_insert_v1'))
+assert.ok(schema.includes('strategy_marginal_edge_nav_only_head_update_v1'))
 const atomicSql = (text: string) => text.replace(/\r\n/g, '\n').match(/CREATE TABLE IF NOT EXISTS strategy_atomic_nav_adoptions_v1 \([\s\S]*?\n\);|CREATE TRIGGER IF NOT EXISTS strategy_atomic_nav_adoptions_[\s\S]*?END;/g)
 const atomicMigration = fs.readFileSync('domain-migrations/learning/0047_atomic_nav_adoption.sql', 'utf8')
 for (const file of ['schema.sql', 'domain-schemas/learning.sql'])

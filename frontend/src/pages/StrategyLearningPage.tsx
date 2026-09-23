@@ -171,14 +171,14 @@ const CANDIDATE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
   {
     key: 'prefilter_failed',
     label: 'Atomic 前置門檻未過',
-    description: 'Candidate 已完成可比性檢查，但尚未通過 Atomic V7 proposal 前置門檻。',
+    description: '歷史 V7 proposal 前置檢查未通過；NAV owner 下僅供診斷。',
     className: 'border-rose-400/20 bg-rose-400/[0.04]',
     countClassName: 'border-rose-400/25 bg-rose-400/[0.08] text-rose-200',
   },
   {
     key: 'atomic_not_applicable',
     label: '非選股替換 Owner',
-    description: 'S12 execution calibration 或 observe-only owner 不參與 Candidate → Active Atomic V7 替換。',
+    description: 'S12 execution calibration 或 observe-only owner 不參與 Candidate → Active 選股替換。',
     className: 'border-slate-600/40 bg-slate-800/[0.2]',
     countClassName: 'border-slate-600 bg-slate-800/60 text-slate-300',
   },
@@ -272,7 +272,7 @@ function strategyHealthLabel(bucket: StrategyHealthBucket): string {
     formal_policy_pending: '當日正式政策未配置',
     evidence_repair: '資料管線待修',
     accumulating: '證據累積中',
-    atomic_not_applicable: 'Atomic V7 不適用',
+    atomic_not_applicable: '不屬於選股替換範圍',
     prefilter_failed: 'Atomic 前置門檻未過',
     promotion_pending: '查看正式替換評估',
   }[bucket]
@@ -491,13 +491,13 @@ function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; 
       role: isActiveIncumbent ? 'Active 權重輸入 · 非門檻' : '僅供診斷 · 非門檻',
     },
     { label: '日期 Alpha 均值 LCB90', description: '平均 Alpha 的單側 90% 下界，不代表每天或每筆交易都不會虧損；升級依實際替換 owner 的原始證據。', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
-    { label: '日期投組 Alpha 曲線 MDD', description: '成熟日期相對基準扣成本 Alpha 複利曲線的回撤；不是單一股票一天的漲跌幅。Atomic V7 只比較相對惡化。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
+    { label: '日期投組 Alpha 曲線 MDD', description: '成熟日期相對基準扣成本 Alpha 複利曲線的回撤；不是單一股票一天的漲跌幅，目前僅供診斷。', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), role: '僅供診斷 · 非門檻' },
   ]
   return (
     <div className="mt-3 border-t border-slate-800 pt-3 text-[11px]">
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="font-semibold text-slate-300">{isActiveIncumbent ? 'Active：成熟度與權重監控' : isNavOwner ? 'Candidate → Active：原始配對 NAV' : 'Candidate evidence → Active：Atomic V7'}</span>
-        <span className="text-slate-500">門檻路由比較（原 Shadow A；非 lifecycle stage）</span>
+        <span className="text-slate-500">路由樣本外診斷（原 Shadow A；無發布權）</span>
       </div>
       <p className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-400/[0.05] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/80">{isActiveIncumbent ? 'Active 不再用共用勝率或 MDD hard gate 判定績效降溫；正式 policy 由每個策略自己的 primary-horizon OOS promoted calibration 管理：連續兩個不同 knowledge cutoff 負分才降溫，連續兩個正分才恢復。資料與風控 readiness 仍採 fail-closed；Threshold route comparison 只校準送評路由，不接管策略 lifecycle。' : isNavOwner ? '正式替換由原始配對 NAV 負責；Alpha、命中率與舊 V7 統計保留診斷，不構成另一套 NAV 否決門檻。' : '共用 hard gate 只管 Candidate 的資料可比性與成熟度。平均 Alpha、match rate、hit rate、MDD、LCB90 保留為診斷；正式升級只由 Atomic V7 相對替換管理。'}</p>
       {isNavOwner && !isActiveIncumbent ? <p className="my-2 text-xs leading-5 text-cyan-200">正式替換由原始配對 NAV 負責；下列 Alpha 與命中樣本只作診斷，不換算成 NAV 成熟日。請由指標按鈕查看每一組原始比較。</p> : null}
@@ -506,7 +506,7 @@ function StrategyGateDetails({ row, gate, onOpenAtomicV7 }: { row: LearningRow; 
         <div className="mt-1 grid gap-x-4 md:grid-cols-2">{hardGates.map((item) => <GateMetric key={item.label} {...item} />)}</div>
       </section> : null}
       {!isActiveIncumbent || isNavOwner ? (
-        <section className="mt-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.06] p-3" aria-label="Atomic V7 相對替換指標">
+        <section className="mt-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.06] p-3" aria-label={isNavOwner ? '原始配對 NAV 替換指標' : 'Atomic V7 相對替換指標'}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -724,7 +724,7 @@ function CandidateAtomicV7Dialog({
         </DialogHeader>
         <div className="min-h-0 space-y-4 overflow-y-auto pb-5">
         <StrategyNavEvidence data={navQuery.data} loading={navQuery.isFetching} error={navQuery.error} onRetry={() => { void navQuery.refetch() }} />
-        <details open={replacementOwner === 'legacy_atomic_v7'} className="space-y-3">
+        {replacementOwner === 'legacy_atomic_v7' ? <details open className="space-y-3">
         <summary className="mx-5 cursor-pointer text-sm text-slate-300">{replacementOwner === 'legacy_atomic_v7' ? '目前 Legacy V7 門檻' : '舊 V7 診斷（不作 NAV 晉級門檻）'}</summary>
         {policy ? <p className="mx-5 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 font-mono text-[10px] text-slate-500">policy {policy.policy_version} · run {run?.run_id ?? '尚無'} · as-of {run?.as_of_date ?? '尚無'}</p> : <p className="mx-5 text-xs text-slate-500">Replacement policy evidence is unavailable.</p>}
         <nav className="grid gap-2 px-5 md:grid-cols-3" aria-label="Atomic V7 phases">
@@ -1037,7 +1037,7 @@ function CandidateAtomicV7Dialog({
       ) : null}
         </div>
         </div>
-        </details>
+        </details> : null}
         </div>
       </DialogContent>
     </Dialog>
@@ -1421,7 +1421,7 @@ function StrategyHealthBoard({
                             <span className="sv-num">{gate?.missing_evidence.length ?? 0} gaps</span>
                           </span>
                           {lane.key === 'candidate' ? (
-                            <span className="mt-2 block text-[10px] text-slate-600">選取後於下方工作區查看證據與 Atomic V7。</span>
+                            <span className="mt-2 block text-[10px] text-slate-600">選取後於下方工作區查看原始 NAV 與策略證據。</span>
                           ) : group.key === 'performance_cooldown' ? (
                             <span className="mt-2 block rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-2 py-1.5 text-[10px] leading-4 text-amber-100">
                               <span className="font-semibold">正式 policy 降溫原因：</span>{' '}
@@ -1654,6 +1654,9 @@ export default function StrategyLearningPage() {
   const profileById = useMemo(() => new Map(profiles.map((profile) => [`${profile.strategy_id}:${profile.strategy_version}`, profile])), [profiles])
   const previewPolicy = learning?.policy_state_preview ?? null
   const previewPolicyWeights = previewPolicy?.strategy_weights ?? EMPTY_STRATEGY_WEIGHTS
+  const routeSplit = strategyLanes?.threshold_route_shadow.gate_results?._metadata as {
+    train_dates?: string[]; purge_dates?: string[]; oos_dates?: string[]
+  } | undefined
   const formalPolicy = strategyLanes?.formal.production_effect === true
     ? strategyLanes.formal.formal_policy_lineage ?? null
     : null
@@ -1776,7 +1779,7 @@ export default function StrategyLearningPage() {
             <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">正式參與選股的策略 / 持續評估</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length} <span className="text-sm text-slate-600">/ {visibleRows.length}</span></div><div className="mt-1 text-xs text-slate-500">待買權重 0% 仍持續學習、選股與累積證據；此處以 formal contribution 為準</div></div>
               <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">目前可讓推薦進待買</div><div className="mt-2 font-mono text-2xl text-emerald-100">{formalPolicy ? executionEligibleCount : '-'}</div><div className="mt-1 text-xs text-slate-500">Allocation gate 與 formal contribution &gt; 0 必須同時成立；formal lineage 未取得時不判定</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Canonical lifecycle</div><div className="mt-2 font-mono text-xl text-slate-100">Candidate → Active</div><div className="mt-1 text-xs text-slate-500">沒有 Shadow strategy stage；升級由 Atomic V7 同日配對替換決定</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Canonical lifecycle</div><div className="mt-2 font-mono text-xl text-slate-100">Candidate → Active</div><div className="mt-1 text-xs text-slate-500">沒有 Shadow strategy stage；正式升級由原始配對 NAV 審查決定</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">待買政策 Preview（診斷）</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-slate-100"><ShieldCheck className="h-4 w-4" /> {statusLabel(previewPolicy?.status ?? 'unavailable')}</div><div className="mt-1 text-xs text-slate-500">{previewPolicy?.evidence.production_effect ? 'API source 標記 production-effect' : '零 production-effect 比較'}；此欄仍是 read-time preview，不代表封存 formal policy</div></div>
             </section>
 
@@ -1795,8 +1798,8 @@ export default function StrategyLearningPage() {
                 <p className="mt-2 text-xs leading-5 text-slate-400">正式 firewall 負責最後待買資格與相對權重；multi-horizon evidence 是其中的正式輸入。正式封存版本 {strategyLanes?.formal.version ?? '資料尚未具備'}；正式證據截止 {strategyLanes?.formal.as_of_date ?? '資料尚未具備'}。Adaptive base {strategyLanes?.formal.base_policy_version ?? '資料尚未具備'} 截止 {strategyLanes?.formal.base_policy_as_of_date ?? '資料尚未具備'}，兩者日期不必相同。</p>
               </article>
               <article className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.06] p-4">
-                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-cyan-100">Threshold route comparison（原 Shadow A）</h2><Badge variant="outline" className={statusClass(strategyLanes?.threshold_route_shadow.status ?? 'not_ready')}>evidence mode；不是 stage</Badge></div>
-                <p className="mt-2 text-xs leading-5 text-slate-400">此 lane 的 <span className="font-mono text-cyan-100">{strategyLanes?.threshold_route_shadow.mature_dates ?? 0} / {strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11}</span> 日期只代表市場層級路由估計器成熟度。成熟並 promotion 後可控制哪些股票送入策略比較，但不決定單一 Active 是否降溫，也不能自行把 Candidate 升級；前者仍看每策略 reward evidence 與 formal firewall，後者只走 Atomic V7。</p>
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-cyan-100">路由樣本外診斷（原 Shadow A）</h2><Badge variant="outline">僅供診斷 · {strategyLanes?.threshold_route_shadow.status ?? 'not_ready'}</Badge></div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">成熟日期 {strategyLanes?.threshold_route_shadow.mature_dates ?? 0}；訓練 {routeSplit?.train_dates?.length ?? '待取得'}、purge {routeSplit?.purge_dates?.length ?? '待取得'}、樣本外 {routeSplit?.oos_dates?.length ?? '待取得'}。{strategyLanes?.threshold_route_shadow.required_mature_dates ?? 11} 是舊校準的總日期下限，不代表有同樣多個 OOS 日期。LCB90 與連續權重報酬只作診斷；路由正式發布須由原始配對 NAV 通過，策略替換也由原始配對 NAV 決定。</p>
               </article>
               <article className="rounded-2xl border border-violet-400/25 bg-violet-400/[0.06] p-4">
                 <div className="flex items-center justify-between gap-2"><h2 className="font-semibold text-violet-100">正式：Multi-horizon evidence（原 Shadow B）</h2><Badge variant="outline" className="border-violet-400/30 bg-violet-400/10 text-violet-200">{strategyLanes?.multi_horizon_formal.production_effect ? '正式 evidence owner' : strategyLanes?.multi_horizon_formal.production_integration_ready ? '已就緒，待正式 policy closure' : '結果資料已齊，指標建置中'}</Badge></div>

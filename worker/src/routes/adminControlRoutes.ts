@@ -1225,6 +1225,30 @@ async function handleSchedulerCallback(c: any) {
         source: 'screener-v2-callback',
         summary: `event-driven chain accepted screener-v2 callback for ${callbackRunDate}; screener_run_id=${callbackRunId ?? 'n/a'}; chain_run_id=${continuationRunId}`,
       })
+      // The screener matrix is already sealed here. Preserve its decision evidence
+      // even if the later ML pipeline fails; this grants no learning/promotion authority.
+      if (callbackRunId) {
+        try {
+          await c.env.UPDATE_QUEUE.send({
+            type: 'strategy_decision_prefill',
+            cursor: 0,
+            cursorKey: '',
+            triggerTime: callbackRunDate,
+            runId: callbackRunId,
+          })
+        } catch (cause) {
+          const error = cause instanceof Error ? cause.message : String(cause)
+          console.error(`strategy decision prefill enqueue failed date=${callbackRunDate} screener_run_id=${callbackRunId}: ${error}`)
+          await logSchedulerResult(c.env.KV, 'strategy-decision-prefill', {
+            status: 'error',
+            summary: `prefill enqueue failed for canonical screener ${callbackRunId}`,
+            error,
+            duration_ms: 0,
+            run_id: callbackRunId,
+            run_date: callbackRunDate,
+          }).catch(() => {})
+        }
+      }
       const watchdog = await c.env.KV.get(
         `scheduler:run:screener-v2-watchdog:${callbackRunDate}`,
         'json',

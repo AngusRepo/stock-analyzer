@@ -2,7 +2,7 @@
 import type { Bindings } from '../types'
 import { controllerJson } from './controllerClient'
 import { databaseForDataDomain } from './dataDomainRegistry'
-import { atomicNavCanonical, atomicNavDigest, atomicNavOwnsRegistry, readAtomicNavPublication } from './strategyAtomicNavReceipt'
+import { atomicNavCanonical, atomicNavDigest, navOwnsStrategyReplacement, readAtomicNavPublication } from './strategyAtomicNavReceipt'
 import { sha256Text } from './datasetSnapshots'
 import transport from '../../../ml-controller/services/paired_nav_transport_policy.json'
 import policy from '../../../ml-controller/services/paired_nav_review_policy.json'
@@ -16,7 +16,7 @@ export async function readStrategyNavEvidence(env: Bindings, input: {
   const [response, navOwner] = await Promise.all([
     controllerJson<any>(env, '/nav/strategy-evidence', { method: 'POST', jsonBody: input,
       timeoutMs: transport.controller_read_timeout_seconds * 1000 }),
-    atomicNavOwnsRegistry(db),
+    navOwnsStrategyReplacement(db),
   ])
   if (response?.schema_version !== 'strategy-nav-evidence-v1'
     || response.strategy_id !== input.strategy_id || response.strategy_version !== input.strategy_version
@@ -72,7 +72,7 @@ export async function readStrategyNavEvidence(env: Bindings, input: {
       knowledge_cutoff_date: published.receipt.knowledge_cutoff_date,
       decision_checksum: row!.decision_checksum, historical_publication_verified: true } : null }
   }))
-  if (await atomicNavOwnsRegistry(db) !== navOwner) throw new Error('strategy_nav_owner_changed_during_read')
+  if (await navOwnsStrategyReplacement(db) !== navOwner) throw new Error('strategy_nav_owner_changed_during_read')
   return { ...response, entries,
     current_replacement_owner: navOwner ? 'original_paired_daily_nav' : 'legacy_atomic_v7' }
 }

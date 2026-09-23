@@ -3663,6 +3663,88 @@ export async function processUpdateBatch(
     return
   }
 
+  if (msg.type === 'strategy_decision_prefill') {
+    const date = msg.triggerTime
+    const producerRunId = String(msg.runId ?? '')
+    const cursor = String(msg.cursorKey ?? '')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !producerRunId) {
+      throw new Error('strategy_decision_prefill_identity_invalid')
+    }
+    const opsDb = databaseForDataDomain(env, 'ops')
+    const learningDb = databaseForDataDomain(env, 'learning')
+    const screener = await opsDb.prepare(`
+      SELECT status, cursor_key FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='screener_v2'
+    `).bind(date).first<{ status: string; cursor_key: string | null }>()
+    if (screener?.status !== 'success' || screener.cursor_key !== producerRunId) {
+      throw new Error(`strategy_decision_prefill_screener_lineage_invalid:${date}:${producerRunId}`)
+    }
+    const source = await learningDb.prepare(`
+      SELECT reference_candidate_count, strategy_count, expected_cell_count
+        FROM strategy_label_matrix_runs_v4
+       WHERE signal_date=? AND producer_run_id=? AND status='ready'
+    `).bind(date, producerRunId).first<{
+      reference_candidate_count: number; strategy_count: number; expected_cell_count: number
+    }>()
+    if (!source || Number(source.reference_candidate_count) <= 0
+      || Number(source.expected_cell_count) !== Number(source.reference_candidate_count) * Number(source.strategy_count)) {
+      throw new Error(`strategy_decision_prefill_matrix_unready:${date}:${producerRunId}`)
+    }
+    const {
+      materializeStrategyDecisionLogChunk,
+      assertCanonicalStrategyDecisionGridParity,
+    } = await import('./strategyLearning')
+    const existing = await learningDb.prepare(`
+      SELECT COUNT(*) AS row_count
+        FROM strategy_decision_log d
+       WHERE d.date=? AND EXISTS (
+         SELECT 1 FROM selection_reference_snapshots_v1 r
+          WHERE r.signal_date=d.date AND r.symbol=d.symbol
+            AND r.producer_run_id=? AND r.hard_gate_passed=1
+       )
+    `).bind(date, producerRunId).first<{ row_count: number }>()
+    if (Number(existing?.row_count ?? 0) === Number(source.expected_cell_count)) {
+      await assertCanonicalStrategyDecisionGridParity(learningDb, {
+        date, canonicalProducerRunId: producerRunId,
+      })
+      return
+    }
+    const chunk = await materializeStrategyDecisionLogChunk(learningDb, {
+      date,
+      afterSymbol: cursor,
+      limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
+      candidateReferenceDb: learningDb,
+      canonicalProducerRunId: producerRunId,
+      artifactEnv: env,
+      producerRunId: `strategy-decision-prefill:${producerRunId}:after=${encodeURIComponent(cursor || 'start')}`,
+      dryRun: false,
+    })
+    if (chunk.has_more) {
+      if (!chunk.next_cursor_symbol || chunk.next_cursor_symbol === cursor) {
+        throw new Error(`strategy_decision_prefill_keyset_stalled:${date}:${cursor}`)
+      }
+      await env.UPDATE_QUEUE.send({
+        type: 'strategy_decision_prefill',
+        cursor: 0,
+        cursorKey: chunk.next_cursor_symbol,
+        triggerTime: date,
+        runId: producerRunId,
+      })
+      return
+    }
+    await assertCanonicalStrategyDecisionGridParity(learningDb, {
+      date, canonicalProducerRunId: producerRunId,
+    })
+    await logSchedulerResult(env.KV, 'strategy-decision-prefill', {
+      status: 'success',
+      summary: `canonical screener decisions persisted independently of downstream pipeline; expected_rows=${source.expected_cell_count}`,
+      duration_ms: 0,
+      run_id: producerRunId,
+      run_date: date,
+    })
+    return
+  }
+
   if (msg.type === 'strategy_learning_materialize') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `strategy-learning-${triggerTime}`

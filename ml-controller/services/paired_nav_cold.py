@@ -184,6 +184,16 @@ def view_for(payload):
             # the other configuration fields, not this unbounded model payload.
             view['configuration'] = {k: v for k, v in content['configuration'].items()
                 if k != 'allocator_policies'}
+            bundle = view['configuration'].get('strategy_bundle')
+            if isinstance(bundle, dict):
+                # Full candidate trading policies can exceed D1's 2 MiB read
+                # bound. The held cold object and configuration_checksum bind
+                # their exact bytes; Worker proofs need only these compact tags.
+                proof_fields = ('schema_version', 'comparison_unit', 'declared_signal_date',
+                    'baseline_l3_identity', 'candidate_l3_identity', 'bundle_checksum',
+                    'source_evidence_checksum', 'production_effect', 'strategy_ab')
+                view['configuration']['strategy_bundle'] = {
+                    k: bundle[k] for k in proof_fields if k in bundle}
         tag = ((content.get('configuration') or {}).get('strategy_bundle') or {}).get('strategy_ab') or {}
         if tag.get('role') == 'B' and (tag.get('baseline_primary') or {}).get('role') == 'A':
             view['allocation_preview'] = {role: [

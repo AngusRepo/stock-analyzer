@@ -549,8 +549,8 @@ function CandidateAtomicV7Dialog({
   const navQuery = useQuery({ queryKey: ['strategy-nav-evidence', row?.id, row?.version, date],
     queryFn: () => strategyLabApi.navEvidence(row!.id, row!.version, date!),
     enabled: open && row != null && date != null, retry: false })
-  const replacementOwner = navQuery.isError || navQuery.isFetching ? 'unavailable'
-    : navQuery.data?.current_replacement_owner ?? replacementGate?.replacement_owner ?? 'unavailable'
+  const replacementOwner = navQuery.data?.current_replacement_owner
+    ?? replacementGate?.replacement_owner ?? 'unavailable'
   const [phase, setPhase] = useState<'prefilter' | 'pair' | 'cutover'>('prefilter')
   useEffect(() => {
     if (open) setPhase('prefilter')

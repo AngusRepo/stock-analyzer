@@ -732,6 +732,7 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
   type Body = {
     date?: string
     limit?: number
+    after_symbol?: string
     dry_run?: boolean
   }
   const body = await c.req.json<Body>().catch(() => ({} as Body))
@@ -742,7 +743,7 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
       hint: 'Run dry_run first. This persists Candidate/Active strategy evidence only; it never changes production decisions.',
     }, 400)
   }
-  const { materializeStrategyDecisionLog, seedDefaultStrategySpecRegistry } = await import('../lib/strategyLearning')
+  const { materializeStrategyDecisionLogChunk, seedDefaultStrategySpecRegistry } = await import('../lib/strategyLearning')
   const learningDb = databaseForDataDomain(c.env, 'learning')
   const opsDb = databaseForDataDomain(c.env, 'ops')
   const date = body.date ?? c.req.query('date') ?? twToday()
@@ -753,8 +754,9 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
     return c.json({ error: `canonical_strategy_matrix_run_missing:${date}` }, 409)
   }
   if (!dryRun) await seedDefaultStrategySpecRegistry(learningDb)
-  const report = await materializeStrategyDecisionLog(learningDb, {
+  const report = await materializeStrategyDecisionLogChunk(learningDb, {
     date,
+    afterSymbol: body.after_symbol,
     limit: body.limit,
     dryRun,
     candidateDb: opsDb,

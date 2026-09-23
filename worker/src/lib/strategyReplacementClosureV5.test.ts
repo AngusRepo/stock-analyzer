@@ -99,10 +99,10 @@ assert(historicalRebuild.includes("referenceLabeler === 'strategy-decision-log-p
 assert(historicalArtifact.includes("p.canonical_at IS NOT NULL")
   && historicalArtifact.includes("a.payload_deleted_at IS NULL")
   && historicalArtifact.includes("await sha256(body) !== row.checksum")
-  && historicalArtifact.includes("sourceLabeler !== HISTORICAL_SCREENER_ARTIFACT_SOURCE_LABELER")
+  && historicalArtifact.includes('!SOURCE_LABELERS.some(version => version === sourceLabeler)')
   && historicalArtifact.includes('expectedCellCount !== candidateCount * strategyCount')
   && historicalArtifact.includes('coverageRatio !== 1'),
-  'artifact recovery must verify past canonical status, retained payload, checksum, v1 labeler, and exact matrix coverage')
+  'artifact recovery must verify past canonical status, retained payload, checksum, known labeler, and exact matrix coverage')
 assert(historicalRebuild.includes('includeRetired: true')
   && historicalRebuild.includes('historicalStatusByKey')
   && historicalRebuild.includes('status: historicalStatusByKey.get'),

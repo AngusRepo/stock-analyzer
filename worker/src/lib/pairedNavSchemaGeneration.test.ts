@@ -17,7 +17,7 @@ for (const domain of ['core', 'market', 'learning', 'ops', 'execution', 'paper',
   fs.writeFileSync(path.join(root, 'domain-migrations', domain, `0001_${domain}_baseline.sql`), '-- fixture baseline\n')
 }
 const extensions = {
-  ops: ['0014_retention_history_lookup.sql', '0015_retention_source_release.sql',
+  ops: ['0019_workers_ai_debate_budget.sql', '0014_retention_history_lookup.sql', '0015_retention_source_release.sql',
     '0016_retention_history_coverage.sql', '0017_ten_year_archive_windows.sql'],
   market: ['0008_retention_source_release.sql', '0009_retention_anchor_index.sql'],
   execution: ['0003_retention_source_release.sql', '0004_retention_reference_indexes.sql'],
@@ -42,6 +42,8 @@ const run = () => {
   assert.equal(result.status, 0, result.stderr || result.stdout)
 }
 run()
+const opsSchema = fs.readFileSync(path.join(root, 'domain-schemas/ops.sql'), 'utf8')
+assert.ok(opsSchema.includes('CREATE TABLE IF NOT EXISTS workers_ai_debate_budget_v1'))
 const schema = fs.readFileSync(path.join(root, 'domain-schemas/learning.sql'), 'utf8')
 for (const name of names) {
   const original = fs.readFileSync(`domain-migrations/learning/${name}`, 'utf8')
@@ -67,4 +69,5 @@ assert.ok(schema.includes("CHECK(route_floor IS NOT NULL OR artifact_version='st
 assert.ok(!schema.includes('route_floor REAL NOT NULL'))
 run()
 assert.equal(fs.readFileSync(path.join(root, 'domain-schemas/learning.sql'), 'utf8'), schema)
+assert.equal(fs.readFileSync(path.join(root, 'domain-schemas/ops.sql'), 'utf8'), opsSchema)
 console.log('paired NAV schema generation: immutable extensions survive repeat build in isolated fixture', fixture)

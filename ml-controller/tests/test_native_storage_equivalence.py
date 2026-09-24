@@ -16,8 +16,9 @@ from test_paired_nav_execution_environment import environment_packet
 def test_exact_running_native_build_is_certified(native_runner):
     certificate=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
     actual=native_execution_identity(native_runner)
-    assert actual in {'native-paper-v1:'+digest(p) for p in certificate['runtime_components']}
-    assert policy_execution_owner(actual)=='native-paper-v1:'+digest(certificate['policy_components'])
+    group = certificate['additional_groups'][-1]
+    assert actual in {'native-paper-v1:'+digest(p) for p in group['runtime_components']}
+    assert policy_execution_owner(actual)=='native-paper-v1:'+digest(group['policy_components'])
     assert policy_execution_owner('native-paper-v1:'+'f'*64)=='native-paper-v1:'+'f'*64
 
 
@@ -75,3 +76,29 @@ def test_model_pool_read_does_not_block_event_loop(monkeypatch):
         finally:release.set()
         assert (await pending)['status']=='ok'
     asyncio.run(scenario())
+
+
+def test_bootstrap_successor_preserves_current_policy_and_frozen_environment():
+    c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
+    group=c['additional_groups'][-1]
+    prior,new=group['runtime_components']
+    assert group['policy_components']==prior
+    assert all(prior[k]==new[k] for k in ['bundle','private_host','rescore'])
+    assert {k for k in prior['pipeline'] if prior['pipeline'][k]!=new['pipeline'][k]}=={'native_paper_bootstrap.py','native_execution_equivalence.py'}
+    previous=environment_packet('native-paper-v1:'+digest(prior))
+    successor=deepcopy(previous)
+    successor['execution_owner_version']='native-paper-v1:'+digest(new)
+    assert execution_policy(previous)==execution_policy(successor)
+    assert execution_policy(successor)['execution_owner_version']!='native-paper-v1:'+digest(c['policy_components'])
+    from services.paired_nav_execution_environment import validate_registered_environment
+    validate_registered_environment(
+        parent={'manifest':{'frozen_at':previous['source_context']['observed_at']},
+                'payload':{'content':{'native_execution_environment':previous}}},
+        allocation={'configuration':{'native_execution_policy':execution_policy(previous)}},
+        runtime={'execution_owner_version':successor['execution_owner_version']},account_id=1,
+        variables=previous['source_context']['variables'],kv_read_policy=previous['kv_read_policy'],
+        source_context=previous['source_context'])
+    unknown=deepcopy(new)
+    unknown['pipeline']['debate_service.py']='0'*64
+    identity='native-paper-v1:'+digest(unknown)
+    assert policy_execution_owner(identity)==identity

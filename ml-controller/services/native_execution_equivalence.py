@@ -16,6 +16,17 @@ def policy_execution_owner(runtime_identity):
             or not isinstance(certificate.get('policy_components'), dict)
             or not isinstance(certificate.get('runtime_components'), list)):
         raise ValueError('native_storage_equivalence_certificate_invalid')
-    policy = 'native-paper-v1:' + digest(certificate['policy_components'])
-    permitted = {'native-paper-v1:' + digest(parts) for parts in certificate['runtime_components']}
-    return policy if runtime_identity in permitted else runtime_identity
+    # Later debate policies have their own approved identity. Storage-only
+    # successors must retain that identity, never inherit the older policy.
+    groups = [certificate, *certificate.get('additional_groups', [])]
+    owners = {}
+    for group in groups:
+        if not isinstance(group.get('policy_components'), dict) or not isinstance(group.get('runtime_components'), list):
+            raise ValueError('native_storage_equivalence_certificate_invalid')
+        policy = 'native-paper-v1:' + digest(group['policy_components'])
+        for parts in group['runtime_components']:
+            identity = 'native-paper-v1:' + digest(parts)
+            if identity in owners and owners[identity] != policy:
+                raise ValueError('native_storage_equivalence_certificate_ambiguous')
+            owners[identity] = policy
+    return owners.get(runtime_identity, runtime_identity)

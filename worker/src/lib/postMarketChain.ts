@@ -776,18 +776,26 @@ export async function runPostVerifyCallbackChain(
       maxProcessDates: 3,
     })
     stageMs.multi_horizon_labels = Date.now() - stageStartedAt
-    stageStartedAt = Date.now()
-    const outcomes = await materializeStrategyMultiHorizonOutcomes(env, {
-      asOfDate: outcomeAsOfDate,
-      endDate: ctx.runDate,
-    })
-    stageMs.multi_horizon_outcomes = Date.now() - stageStartedAt
-    return `${canonical.summary} | ${multiHorizon.summary} | ${outcomes.summary} | stage_ms=${JSON.stringify(stageMs)}`
+    return `${canonical.summary} | ${multiHorizon.summary} | stage_ms=${JSON.stringify(stageMs)}`
   }, { timeoutMs: 240_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
     throw new Error(`post_verify_chain_failed:price-horizon-projection:${projectionTask.summary}`)
+  }
+
+  const outcomesTask = await logChainedTask(env, ctx, 'strategy-multi-horizon-outcomes', async () => {
+    const startedAt = Date.now()
+    const outcomes = await materializeStrategyMultiHorizonOutcomes(env, {
+      asOfDate: outcomeAsOfDate,
+      endDate: ctx.runDate,
+    })
+    return `${outcomes.summary} | stage_ms=${JSON.stringify({ multi_horizon_outcomes: Date.now() - startedAt })}`
+  }, { timeoutMs: 240_000 })
+  results.push(outcomesTask)
+  if (outcomesTask.status === 'error') {
+    await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
+    throw new Error(`post_verify_chain_failed:strategy-multi-horizon-outcomes:${outcomesTask.summary}`)
   }
 
   const currentEvidenceTask = await logChainedTask(env, ctx, 'strategy-evidence-current', async () => {

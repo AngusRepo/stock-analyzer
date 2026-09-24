@@ -13,7 +13,8 @@ assert(
     postMarketChain.includes('timeoutMs: 240_000') &&
     postMarketChain.includes('stageMs.canonical_labels') &&
     postMarketChain.includes('stageMs.multi_horizon_labels') &&
-    postMarketChain.includes('stageMs.multi_horizon_outcomes') &&
+    postMarketChain.includes("'strategy-multi-horizon-outcomes'") &&
+    postMarketChain.includes('post_verify_chain_failed:strategy-multi-horizon-outcomes:') &&
     postMarketChain.includes("'strategy-evidence-current'") &&
     postMarketChain.includes('stageMs.strategy_evidence_metrics') &&
     postMarketChain.includes('stageMs.strategy_evidence_owner_calibration') &&
@@ -24,12 +25,12 @@ assert(
 )
 assert(
   strategyOutcomes.includes('const DEFAULT_OUTCOME_LOOKBACK_DAYS = 120') &&
-    strategyOutcomes.includes('const OUTCOME_ROWS_PER_STATEMENT = 5') &&
-    strategyOutcomes.includes('const OUTCOME_BATCH_STATEMENTS = 100') &&
+    strategyOutcomes.includes('const OUTCOME_ROWS_PER_STATEMENT = 100') &&
+    strategyOutcomes.includes('const OUTCOME_BATCH_STATEMENTS = 20') &&
     strategyOutcomes.includes('chunks(rows, OUTCOME_ROWS_PER_STATEMENT)') &&
-    strategyOutcomes.includes('group.flatMap((row) => [') &&
+    strategyOutcomes.includes('FROM json_each(?) WHERE 1') &&
     strategyOutcomes.includes('return rows.length'),
-  'the bounded outcome refresh must use <=95-bind multi-row UPSERTs instead of one D1 statement per row',
+  'the bounded outcome refresh must use JSON batches with one D1 binding per 100 rows',
 )
 
 console.log('post-verify projection performance contract tests passed')

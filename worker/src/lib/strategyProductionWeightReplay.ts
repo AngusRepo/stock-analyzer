@@ -158,6 +158,7 @@ export async function replayStrategyWeightSource(source: StrategyProductionWeigh
       throw new Error('strategy_weight_source_candidate_profile_missing')
     input.evidenceFusion = await sealStrategyEvidenceOwnerSnapshot({
       knowledgeCutoffDate: input.knowledgeCutoffDate, outcomeAsOfDate: input.evidenceFusion.outcome_as_of_date,
+      publicationCutoffAt: input.evidenceFusion.publication_cutoff_at,
       calibrationRunId: input.evidenceFusion.calibration_run_id,
       calibrationArtifactChecksum: input.evidenceFusion.calibration_artifact_checksum,
       weightEffect: input.evidenceFusion.weight_effect,

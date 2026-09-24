@@ -26,6 +26,7 @@ async function originalWeightSource(strategies: StrategySpec[]) {
   } as unknown as StrategyLearningSummary
   summary.promotion_gate = evaluateStrategyPromotionGate(summary)
   const evidenceFusion = await buildStrategyEvidenceOwnerSnapshot({ strategies, knowledgeCutoffDate: day,
+    publicationCutoffAt: day + 'T11:00:00Z',
     rows: listStrategyEvidenceProfiles(strategies).flatMap(profile => profile.required_metrics.map(metric => ({
       strategy_id: profile.strategy_id, strategy_version: profile.strategy_version,
       primary_horizon_days: profile.primary_horizon_days, metric_name: metric, metric_value: .01,

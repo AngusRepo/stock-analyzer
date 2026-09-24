@@ -1,3 +1,4 @@
+import { METRIC_ROWS_BEFORE_CUTOFF_SQL } from './strategyMetricSnapshots'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
@@ -23,7 +24,7 @@ assert(chain.includes('maxDates: 1'))
 assert(chain.includes('critical: false, timeoutMs: 180_000'))
 assert(calibration.includes('METRIC_ROWS_BEFORE_CUTOFF_SQL'))
 assert(snapshots.includes("source_mode='authority_bridge'"))
-assert(snapshots.includes("datetime(snapshot_created_at) < datetime(?,'-8 hours')"))
+assert(METRIC_ROWS_BEFORE_CUTOFF_SQL.includes("datetime(snapshot_created_at) < datetime(?,'-8 hours')"))
 assert(calibration.includes('knowledge_cutoff_date=excluded.knowledge_cutoff_date'))
 assert(calibration.includes('strategy_evidence_owner_calibration_head_v1.knowledge_cutoff_date <= excluded.knowledge_cutoff_date'))
 assert(snapshots.includes('WHERE outcome_as_of_date < ?'))

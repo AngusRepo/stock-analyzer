@@ -1188,7 +1188,7 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  type Body = { date?: string; closure_date?: string; dry_run?: boolean }
+  type Body = { date?: string; closure_date?: string; dry_run?: boolean; publication_evidence?: boolean }
   const body = await c.req.json<Body>().catch(() => ({} as Body))
   const date = body.date ?? c.req.query('date') ?? twToday()
   const requestedClosureDate = body.closure_date ?? c.req.query('closure_date')
@@ -1275,7 +1275,12 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     .filter((gate) => gate.allocation_eligible === true)
     .map((gate) => gate.strategy_id)
     .sort()
-  const evidenceOwnerSnapshot = await loadStrategyEvidenceOwnerSnapshotBefore(learningDb, specsResult.specs, date)
+  const { strategyPolicyPublicationCutoff } = await import('../lib/strategyMetricSnapshots')
+  if (body.publication_evidence === true && date > twToday()) {
+    return c.json({ error: 'publication_evidence_future_date_forbidden' }, 400)
+  }
+  const publicationCutoffAt = body.publication_evidence === true ? strategyPolicyPublicationCutoff(date) : undefined
+  const evidenceOwnerSnapshot = await loadStrategyEvidenceOwnerSnapshotBefore(learningDb, specsResult.specs, date, publicationCutoffAt)
   if (dryRun) {
     return c.json({
       success: true,
@@ -1300,7 +1305,7 @@ adminWriteRoutes.post('/api/admin/strategy/production-policy/recover', async (c)
     strategies: specsResult.specs,
     gates: policy.promotion_gate,
     adaptiveState: policy.policy_state,
-  })
+  }, { publicationCutoffAt })
   return c.json({
     success: true,
     mode: 'persisted',

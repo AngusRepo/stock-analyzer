@@ -989,7 +989,7 @@ sync_oof_materialize_job() {
         --args=-m \
         --args=oof_materialize_job_main \
         --cpu="${OOF_MATERIALIZE_JOB_CPU:-4}" \
-        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-16Gi}" \
+        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-8Gi}" \
         --task-timeout="$OOF_MATERIALIZE_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
@@ -1008,7 +1008,7 @@ sync_oof_materialize_job() {
         --args=-m \
         --args=oof_materialize_job_main \
         --cpu="${OOF_MATERIALIZE_JOB_CPU:-4}" \
-        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-16Gi}" \
+        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-8Gi}" \
         --task-timeout="$OOF_MATERIALIZE_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \

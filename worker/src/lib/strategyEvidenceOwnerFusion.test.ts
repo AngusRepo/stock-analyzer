@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { buildStrategyEvidenceOwnerSnapshot, strategyEvidenceOwnerLineageMatches } from './strategyEvidenceOwnerFusion'
+import { buildStrategyEvidenceOwnerSnapshot, sealStrategyEvidenceOwnerSnapshot, strategyEvidenceOwnerLineageMatches } from './strategyEvidenceOwnerFusion'
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
 
 async function main(): Promise<void> {
@@ -102,6 +102,14 @@ const missing = await buildStrategyEvidenceOwnerSnapshot({
 assert.equal(missing.integration_ready, false)
 assert.equal(missing.profiles[0]?.integration_status, 'missing')
 
+const published = await buildStrategyEvidenceOwnerSnapshot({ strategies: [active], rows: profileRows,
+  knowledgeCutoffDate: '2026-08-17', publicationCutoffAt: '2026-08-17T11:00:00Z' })
+assert.equal(published.integration_ready, true)
+assert.notEqual(published.checksum, snapshot.checksum, 'publication clock is part of frozen evidence identity')
+assert.equal((await sealStrategyEvidenceOwnerSnapshot({knowledgeCutoffDate: published.knowledge_cutoff_date,
+  outcomeAsOfDate: published.outcome_as_of_date, publicationCutoffAt: published.publication_cutoff_at,
+  calibrationRunId: published.calibration_run_id, calibrationArtifactChecksum: published.calibration_artifact_checksum,
+  weightEffect: published.weight_effect, profiles: published.profiles})).checksum, published.checksum)
 console.log('strategy evidence owner fusion tests passed')
 }
 

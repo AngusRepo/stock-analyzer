@@ -10,7 +10,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-from services.paired_nav_journal import digest, read_snapshot, _timestamp
+from services.paired_nav_journal import digest, read_snapshot, reuse_frozen_snapshot, _timestamp
 from services.paired_native_registration import register_allocation_pair
 
 
@@ -241,26 +241,30 @@ def register_candidate_execution_plans(*, collection: dict, query, writer, objec
         legacy_context = None
         for plan in pending:
             allocation = read_snapshot(query, plan['snapshot_id'])['payload']['content']
-            parent = read_snapshot(query, allocation['allocation_context_snapshot_id'])
-            parent_content = parent['payload']['content']
-            if 'native_execution_environment' in parent_content:
-                from services.paired_nav_execution_environment import configuration_environment
-                configuration_environment(parent)
-                environment = parent_content['native_execution_environment']
-                context = environment['source_context']
-            else:
-                if legacy_context is None:
-                    legacy_context = (context_reader or read_worker_context)()
-                context = legacy_context
-            variables = context['variables']
-            # The frozen context is the sole source for new registrations.
-            # Legacy plans retain their original path; never rewrite their seal.
-            for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
-                if str(variables.get(flag, '')).lower() in {'1', 'true', 'yes', 'enabled', 'on'}:
-                    raise ValueError('native_registration_live_submission_enabled')
-            registered.append(register_allocation_pair(snapshot_id=plan['snapshot_id'], query=query, writer=writer,
-                domain_queries=domain_queries, kv_read=kv_read, objects=objects, account_id=1,
-                variables=variables, kv_read_policy=KV_READ_POLICY, runner=runner, now=clock(), source_context=context))
+            # Both environment validation and registration consume this exact
+            # immutable parent. Keep only this plan's verified payload alive.
+            with reuse_frozen_snapshot(allocation['allocation_context_snapshot_id']):
+                parent = read_snapshot(query, allocation['allocation_context_snapshot_id'])
+                parent_content = parent['payload']['content']
+                if 'native_execution_environment' in parent_content:
+                    from services.paired_nav_execution_environment import configuration_environment
+                    configuration_environment(parent)
+                    environment = parent_content['native_execution_environment']
+                    context = environment['source_context']
+                else:
+                    if legacy_context is None:
+                        legacy_context = (context_reader or read_worker_context)()
+                    context = legacy_context
+                variables = context['variables']
+                # The frozen context is the sole source for new registrations.
+                # Legacy plans retain their original path; never rewrite their seal.
+                for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
+                    if str(variables.get(flag, '')).lower() in {'1', 'true', 'yes', 'enabled', 'on'}:
+                        raise ValueError('native_registration_live_submission_enabled')
+                registered.append(register_allocation_pair(snapshot_id=plan['snapshot_id'], query=query, writer=writer,
+                    domain_queries=domain_queries, kv_read=kv_read, objects=objects, account_id=1,
+                    variables=variables, kv_read_policy=KV_READ_POLICY, runner=runner, now=clock(), source_context=context))
+            del parent, parent_content
     # A resumed batch may discover existing registrations before pending ones.
     # Keep the original plan order on both paths so receipts are retry-stable.
     registered.sort(key=lambda item: registration_order[item['snapshot_id']])

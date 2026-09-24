@@ -80,7 +80,7 @@ def test_model_pool_read_does_not_block_event_loop(monkeypatch):
 
 def test_bootstrap_successor_preserves_current_policy_and_frozen_environment():
     c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
-    group=c['additional_groups'][-1]
+    group=c['additional_groups'][0]
     prior,new=group['runtime_components'][0],group['runtime_components'][-1]
     assert group['policy_components']==prior
     previous=group['runtime_components'][-2]
@@ -104,3 +104,17 @@ def test_bootstrap_successor_preserves_current_policy_and_frozen_environment():
     unknown['pipeline']['debate_service.py']='0'*64
     identity='native-paper-v1:'+digest(unknown)
     assert policy_execution_owner(identity)==identity
+
+
+
+def test_parent_reuse_successor_changes_only_reader_scope():
+    c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
+    group=c['additional_groups'][-1]
+    prior,new=group['runtime_components']
+    assert {name for name in prior['pipeline'] if prior['pipeline'][name]!=new['pipeline'][name]}=={'paired_native_runtime.py'}
+    assert all(prior[k]==new[k] for k in ['bundle','private_host','rescore'])
+    assert policy_execution_owner('native-paper-v1:'+digest(prior))==policy_execution_owner('native-paper-v1:'+digest(new))
+    unknown=deepcopy(new)
+    unknown['pipeline']['paired_native_session.py']='0'*64
+    raw='native-paper-v1:'+digest(unknown)
+    assert policy_execution_owner(raw)==raw

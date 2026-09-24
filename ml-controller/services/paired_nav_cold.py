@@ -9,6 +9,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
+import time
 import os
 import tempfile
 from contextlib import contextmanager
@@ -103,25 +105,44 @@ def verified_file(store, key, checksum, byte_count):
         yield path
 
 
-def parse_file(path):
+def parse_file(path, *, prefixes=None):
+    """Decode once, sharing keys and converting numbers before retaining them.
+
+    ijson's root builder otherwise retains Decimal objects and a new copy of
+    every repeated key across all history rows until the entire object exists.
+    Optional prefixes are explicit inventory projections of verified raw bytes.
+    """
     import ijson
+    from decimal import Decimal
+    keys = {}
+    builder = ijson.ObjectBuilder()
+    selected, depth = None, 0
+    result = {}
+    def assign(prefix, value):
+        parent = result
+        parts = prefix.split('.')
+        for part in parts[:-1]:
+            parent = parent.setdefault(part, {})
+        parent[parts[-1]] = value
     with gzip.open(path, 'rb') as source:
-        # JSON floats match the original json.loads contract, not Decimal.
-        iterator = ijson.items(source, '', use_float=False)
-        value = next(iterator)
-        if next(iterator, None) is not None:
-            raise RuntimeError('paired_nav_cold_multiple_payloads')
-        from decimal import Decimal
-        pending = [value]
-        while pending:
-            container = pending.pop()
-            entries = container.items() if isinstance(container, dict) else enumerate(container) if isinstance(container, list) else ()
-            for key, child in entries:
-                if isinstance(child, Decimal):
-                    container[key] = float(child)
-                elif isinstance(child, (dict, list)):
-                    pending.append(child)
-        return value
+        events = ijson.parse(source, use_float=False) if prefixes is not None else (
+            ('', event, value) for event, value in ijson.basic_parse(source, use_float=False))
+        for prefix, event, value in events:
+            if prefixes is not None and selected is None:
+                if prefix not in prefixes or event in ('map_key', 'end_map', 'end_array'):
+                    continue
+                selected, builder, depth = prefix, ijson.ObjectBuilder(), 0
+            if event == 'map_key':
+                value = keys.setdefault(value, value)
+            elif isinstance(value, Decimal):
+                value = float(value)
+            builder.event(event, value)
+            if prefixes is not None:
+                depth += int(event in ('start_map', 'start_array')) - int(event in ('end_map', 'end_array'))
+                if depth == 0:
+                    assign(selected, builder.value)
+                    selected = None
+    return result if prefixes is not None else builder.value
 
 
 
@@ -225,7 +246,7 @@ def _row(query, snapshot_id):
     return rows[0] if len(rows) == 1 else None
 
 
-def load(query, manifest, store=None, *, materialize=True):
+def load(query, manifest, store=None, *, materialize=True, prefixes=None):
     if not available(query):
         return None
     row = _row(query, manifest['snapshot_id'])
@@ -236,8 +257,12 @@ def load(query, manifest, store=None, *, materialize=True):
     store = store or production_store()
     if store is None:
         raise RuntimeError('paired_nav_cold_store_unavailable')
+    started = time.monotonic()
     with verified_file(store, row['object_key'], row['payload_checksum'], row['payload_bytes']) as path:
-        return parse_file(path) if materialize else True
+        result = parse_file(path, prefixes=prefixes) if materialize else True
+    logging.getLogger(__name__).info('[NavColdRead] snapshot=%s bytes=%s projection=%s seconds=%.2f',
+        manifest['snapshot_id'], row['payload_bytes'], 'inventory' if prefixes else 'full', time.monotonic() - started)
+    return result
 
 
 def seal(*, query, writer, snapshot_id, payload, store, stamp, packed_payload=None):

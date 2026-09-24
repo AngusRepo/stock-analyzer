@@ -154,3 +154,25 @@ def test_empty_is_no_evidence_not_zero_effect_or_mature():
     data = read_verified_nav_evidence(now=NOW, business_date='2026-09-10', query=DB().query)
     assert data.pairs == () and data.summary()['pairs'] == []
     assert data.summary()['inference_status'] == 'not_evaluated'
+
+
+def test_nightly_scope_reuses_verified_census_without_leaking_mutations(monkeypatch):
+    from services import paired_nav_evidence as module
+    db = populated(2)
+    original = module._read_verified_nav_evidence
+    calls = []
+    def counted(**kwargs):
+        calls.append(kwargs['business_date'])
+        return original(**kwargs)
+    monkeypatch.setattr(module, '_read_verified_nav_evidence', counted)
+    query = db.query
+    with module.reuse_verified_nav_evidence():
+        first = module.read_verified_nav_evidence(now=NOW, business_date='2026-09-10', query=query)
+        expected = dict(first.coverage)
+        first.coverage['sessions'] = -999
+        second = module.read_verified_nav_evidence(now=NOW, business_date='2026-09-10', query=query)
+        assert second.coverage == expected
+        assert calls == ['2026-09-10']
+    third = module.read_verified_nav_evidence(now=NOW, business_date='2026-09-10', query=query)
+    assert third == second
+    assert calls == ['2026-09-10', '2026-09-10']

@@ -114,6 +114,16 @@ async def _execute_lifecycle(
 
 
 def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False) -> dict[str, Any]:
+    from services.paired_nav_evidence import reuse_verified_nav_evidence
+    started = time.monotonic()
+    with reuse_verified_nav_evidence():
+        result = _execute_daily_nav_scoped(end_date=end_date, now=now,
+            retire_legacy_owners=retire_legacy_owners)
+    logger.info('[DailyNav] finished seconds=%.2f status=%s', time.monotonic() - started, result.get('status'))
+    return result
+
+
+def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False) -> dict[str, Any]:
     from datetime import date, datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)

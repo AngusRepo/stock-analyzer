@@ -674,7 +674,8 @@ def _artifact_registry_champion_pointers_snapshot(model_name: str | None = None,
             if row.get("artifact_id")
         }
         bundle = load_active8_ensemble_serving_bundle()
-        base_artifacts = bundle.get("base_artifacts") if isinstance(bundle.get("base_artifacts"), dict) else {}
+        serving_artifacts = bundle.get("serving_artifacts", bundle.get("base_artifacts"))
+        base_artifacts = serving_artifacts if isinstance(serving_artifacts, dict) else {}
         from services.model_serving_resolver import build_pool_from_champion_pointers, _json_obj
         from services.model_artifact_registry import list_artifacts_by_ids
         missing_ids = [str(item.get("artifact_id") or "") for item in base_artifacts.values()
@@ -684,7 +685,7 @@ def _artifact_registry_champion_pointers_snapshot(model_name: str | None = None,
             artifacts_by_id.update({str(row['artifact_id']): row for row in rows if row.get('artifact_id')})
         runtime_pointers = pointers if model_name is None else list_champion_pointers()
         nav_grant = None
-        if any('nav_validation' in _json_obj(pointer.get('promotion_evidence_json'))
+        if any({'nav_validation', 'paper_admission'} & _json_obj(pointer.get('promotion_evidence_json')).keys()
                for pointer in runtime_pointers if pointer.get('model_name') in base_artifacts):
             from services import model_artifact_registry as artifact_registry
             from services.active8_nav_adoption import load_committed_nav_serving_grant

@@ -111,7 +111,7 @@ class FakeD1 {
     if (normalized.includes('FROM canonical_run_heads') && normalized.includes('substr(logical_run_key')) {
       return [{ signal_date: '2026-07-22', run_id: 'screener-2026-07-22' }]
     }
-    if (normalized.includes('FROM selection_reference_snapshots_v1 r') && normalized.includes('horizon_rows')) {
+    if (normalized.includes('WITH target_heads(signal_date, producer_run_id)') && normalized.includes('JOIN selection_reference_snapshots_v1 r') && normalized.includes('horizon_rows')) {
       const unavailableRows = this.overrides.unavailableRows ?? 0
       const labelRows = this.overrides.matureBacklog ? 99 - unavailableRows : 100 - unavailableRows
       return [{

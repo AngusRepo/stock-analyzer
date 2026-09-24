@@ -197,8 +197,10 @@ class DomainD1Client:
             data = d1_client._post(request, timeout=timeout, database_id=database_id)
             results = data.get("result") or []
             return (results[0].get("results") or []) if results else []
+        def batch_fetch(requests):
+            return d1_client.read_raw_batch(requests, database_id=database_id, timeout=timeout)
         return observed_read((database_id, json.dumps(request, sort_keys=True, allow_nan=False)),
-                             sql, fetch)
+                             sql, fetch, batch=((database_id, timeout), request, batch_fetch))
 
     def execute(
         self,

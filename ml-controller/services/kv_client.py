@@ -43,7 +43,7 @@ def _check_env():
         )
 
 
-def get(key: str, timeout: float = 30.0, *, strict: bool = False) -> Optional[str]:
+def _get_remote(key: str, timeout: float = 30.0, *, strict: bool = False) -> Optional[str]:
     """
     Read raw string from KV. Returns None if key not found.
     """
@@ -71,6 +71,12 @@ def get(key: str, timeout: float = 30.0, *, strict: bool = False) -> Optional[st
         logger.warning(f"[KV] Get HTTP {resp.status_code} for {key}: {resp.text[:200]}")
         return None
     return resp.text
+
+
+def get(key: str, timeout: float = 30.0, *, strict: bool = False) -> Optional[str]:
+    from services.verified_read_observation import observed_value
+    return observed_value(('kv', CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, key, strict),
+                          lambda: _get_remote(key, timeout=timeout, strict=strict))
 
 
 def get_json(key: str, default: Any = None, timeout: float = 30.0, *, strict: bool = False) -> Any:

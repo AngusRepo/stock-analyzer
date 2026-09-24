@@ -149,7 +149,7 @@ async function loadCoverageRows(
       WITH target_heads(signal_date, producer_run_id) AS (
         VALUES ${targetRows}
       ),
-      formal_runs AS (
+      formal_runs AS MATERIALIZED (
         SELECT mr.producer_run_id, mr.signal_date, mr.expected_cell_count,
                mr.persisted_cell_count, mr.labeler_version, mr.reference_contract_version
           FROM strategy_label_matrix_runs_v4 mr
@@ -208,8 +208,8 @@ async function loadCoverageRows(
              COALESCE(MAX(mr.expected_cell_count), 0) expected_matrix_rows,
              COALESCE(MAX(mr.persisted_cell_count), 0) persisted_matrix_rows,
              SUM(CASE WHEN x.symbol IS NOT NULL THEN 1 ELSE 0 END) label_unavailable_rows
-        FROM selection_reference_snapshots_v1 r
-        JOIN target_heads t
+        FROM target_heads t
+        CROSS JOIN selection_reference_snapshots_v1 r
           ON t.signal_date=r.signal_date
          AND t.producer_run_id=r.producer_run_id
         JOIN formal_runs mr

@@ -396,7 +396,9 @@ async def run_buy_debate(
 
         for r in range(1, max_rounds + 1):
             is_initial = r == 1
-            max_tokens = 512 if is_initial else 256
+            # The live Chinese rebuttal exhausted 256 tokens before EOS.
+            # Keep room for a complete answer; truncated turns still fail closed.
+            max_tokens = 512
 
             # ── Zealot turn ────────────────────────────────────────────────
             if is_initial:

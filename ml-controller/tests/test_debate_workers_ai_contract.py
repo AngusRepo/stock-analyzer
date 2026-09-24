@@ -236,3 +236,33 @@ def test_invalid_judge_is_retried_without_repeating_successful_debaters(monkeypa
         assert second.terminal_status == 'completed' and second.verdict == 'REJECT'
     asyncio.run(scenario())
     assert calls == ['bull', 'bear', 'bull', 'bear', 'judge', 'judge']
+
+
+def test_chinese_rebuttal_completes_without_accepting_truncation(monkeypatch):
+    monkeypatch.setenv('CF_ACCOUNT_ID', 'f' * 32)
+    monkeypatch.setenv('CF_API_TOKEN', 'fixture')
+    requests = []
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        judge = payload['model'] == llm.JUDGE_MODEL
+        # A representative 338-token Chinese answer exceeded the old R2 cap.
+        needed = 18 if judge else 338
+        complete = payload['max_tokens'] >= needed
+        return httpx.Response(200, json={'choices': [{'message': {'content':
+            'VERDICT: REJECT CONVICTION: 30\nInsufficient evidence.' if judge else '資料不足，需核實風險。'},
+            'finish_reason': 'stop' if complete else 'length'}],
+            'usage': {'prompt_tokens': 1248, 'completion_tokens': min(needed, payload['max_tokens'])}})
+    async def audit(**kwargs): pass
+    async def sink(*args): pass
+    async def infer(system, user, **kwargs):
+        kwargs.pop('assignment_date')
+        return await llm.call_llm(system, user, cost_sink=sink, **kwargs)
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            with private_debate_execution(DebateExecutionPorts(2, infer, audit)):
+                return await debate.run_buy_debate('SMOKE', 'fixture', 'BUY', .65, 'Evidence',
+                    client=client, _session_date='2026-09-24')
+    result = asyncio.run(scenario())
+    assert result.terminal_status == 'completed' and result.rounds == 5
+    assert len(requests) == 5

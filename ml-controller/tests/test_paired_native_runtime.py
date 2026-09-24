@@ -39,8 +39,17 @@ def test_daily_plan_reaches_real_native_registration_with_frozen_worker_policies
         args = dict(collection={'plans': [{'snapshot_id': seal['snapshot_id'], 'pair_id': allocation['pair_id'], 'owner': 'l4_alpha_ev'}]},
             query=db.query, writer=db.writer, objects=objects, domain_queries={d: source_query for d in set(owners.values())},
             kv_read=calendar, context_reader=context_reader, runner=native_runner, clock=lambda: NOW)
+        parent_reads = []
+        def counted_query(sql, params):
+            if sql.startswith('SELECT * FROM paired_nav_frozen_manifests_v1') and params == [allocation['allocation_context_snapshot_id']]:
+                parent_reads.append(params[0])
+            return db.query(sql, params)
+        args['query'] = counted_query
         before = source.total_changes
         result = register_candidate_execution_plans(**args)
+        assert len(parent_reads) == 1, 'registration must reuse its verified parent'
+        from services.paired_nav_journal import _read_scope
+        assert _read_scope.get() is None, 'large parent must not leak across registrations'
         assert source.total_changes == before
         packet = read_snapshot(db.query, result['registrations'][0]['snapshot_id'])['payload']['content']
         assert packet['source_context'] == context and packet['model_predictions'] == {}

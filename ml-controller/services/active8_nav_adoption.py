@@ -209,14 +209,16 @@ def load_committed_nav_serving_grant(*, query, now=None):
         return None
     receipt = json.loads(publication.receipt_json)
     if 'paper_admission' in receipt:
-        from services.active8_paper_admission import verify_active_approval
+        from services.active8_paper_admission import verify_active_approval, verify_serving_configuration
         admission = receipt['paper_admission']
-        verify_active_approval(admission)
-        current = verify_current_configuration(admission['configuration'])
+        approval = verify_active_approval(admission, now=clock)
+        current = verify_serving_configuration(admission, approval,
+            model_names=json.loads(publication.payload_json)['observation_artifacts'])
         if (load_committed_publication(query=query, now=clock, allow_paper=True) != publication
                 or digest(current_execution_configuration()) != digest(current)):
             raise RuntimeError('active8_paper_serving_source_changed')
-        verify_active_approval(admission)
+        if verify_active_approval(admission, now=clock) != approval:
+            raise RuntimeError('active8_paper_serving_approval_changed')
         return _ServingGrant(**{**vars(publication), 'seal': _SERVING_SEAL})
     configuration = receipt['nav_configuration']
     from services.paired_nav_strategy_bundle import publication_configuration

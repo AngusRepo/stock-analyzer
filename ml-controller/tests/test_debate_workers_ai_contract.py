@@ -246,8 +246,8 @@ def test_chinese_rebuttal_completes_without_accepting_truncation(monkeypatch):
         payload = json.loads(request.content)
         requests.append(payload)
         judge = payload['model'] == llm.JUDGE_MODEL
-        # A representative 338-token Chinese answer exceeded the old R2 cap.
-        needed = 18 if judge else 338
+        # Live Mistral R1 exhausted 512; Chinese R2 exceeded the old 256 cap.
+        needed = 18 if judge else (700 if len(requests) <= 2 else 338)
         complete = payload['max_tokens'] >= needed
         return httpx.Response(200, json={'choices': [{'message': {'content':
             'VERDICT: REJECT CONVICTION: 30\nInsufficient evidence.' if judge else '資料不足，需核實風險。'},

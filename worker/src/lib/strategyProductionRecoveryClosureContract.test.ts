@@ -14,9 +14,13 @@ assert.match(
 )
 assert.match(
   recovery,
-  /loadStrategyEvidenceOwnerSnapshotBefore\(learningDb, specsResult\.specs, date\)/,
+  /loadStrategyEvidenceOwnerSnapshotBefore\(learningDb, specsResult\.specs, date, publicationCutoffAt\)/,
   'Shadow B owner readiness must be exposed before persistence',
 )
+assert.match(recovery, /body\.publication_evidence === true \? strategyPolicyPublicationCutoff\(date\) : undefined/,
+  'historical cutoff remains the default; publication clock is server-owned and opt-in')
+assert.match(recovery, /if \(!evidenceOwnerSnapshot\.integration_ready\)[\s\S]*?return c\.json[\s\S]*?409[\s\S]*?refreshStrategyProductionContributionPolicy/,
+  'missing evidence must still block publication')
 assert.doesNotMatch(recovery, /allowPromotion|submitOrder|LIVE_EXECUTION/,
   'recovery must not promote strategies or submit orders')
 console.log('strategy production recovery closure contract tests passed')

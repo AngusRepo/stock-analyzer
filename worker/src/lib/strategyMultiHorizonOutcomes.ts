@@ -11,6 +11,7 @@ export const STRATEGY_MULTI_HORIZON_ROUNDTRIP_COST_BPS = 18
 const DEFAULT_OUTCOME_LOOKBACK_DAYS = 120
 const OUTCOME_ROWS_PER_STATEMENT = 100
 const OUTCOME_BATCH_STATEMENTS = 20
+const OUTCOME_RETIRE_BATCH_STATEMENTS = 100
 
 type ReferenceRow = {
   signal_date: string
@@ -288,7 +289,7 @@ export async function retireRejectedOutcomes(
         STRATEGY_MULTI_HORIZON_PROJECTION_VERSION]))
   })
   let retired = 0
-  for (const group of chunks(statements, OUTCOME_BATCH_STATEMENTS)) {
+  for (const group of chunks(statements, OUTCOME_RETIRE_BATCH_STATEMENTS)) {
     const results = await db.batch(group)
     retired += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
   }

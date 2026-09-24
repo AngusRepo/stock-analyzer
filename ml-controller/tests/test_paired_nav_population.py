@@ -204,3 +204,23 @@ def test_partial_ev_publication_keeps_selected_but_unpublished_candidates(enviro
     assert complete['selection_materialization_complete'] is True
     assert complete['unmaterialized_selections'] == []
     assert complete['pair_count'] == complete['hypothesis_count'] == 4
+
+
+def test_cold_inventory_and_pinned_census_match_full_hot_evidence(environment, monkeypatch):
+    from pathlib import Path
+    from services import paired_nav_cold as cold
+    from test_paired_nav_cold import Objects
+    from services.paired_nav_population import read_candidate_population
+    db, _, context, _ = environment
+    collect(environment, context)
+    before = population(db)
+    db.conn.executescript((Path(__file__).parents[2] / 'worker/domain-migrations/learning/0048_paired_nav_cold_storage.sql').read_text())
+    objects = Objects()
+    monkeypatch.setattr(cold, 'production_store', lambda: objects)
+    rows = db.query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1', [])
+    for row in rows:
+        cold.migrate_snapshot(query=db.query, writer=db.writer, snapshot_id=row['snapshot_id'], store=objects)
+    assert population(db) == before
+    keys = sorted(row['snapshot_id'] for row in rows)
+    pinned = read_candidate_population(business_date='2026-09-08', query=db.query, series=(), _snapshot_ids=keys)
+    assert pinned == before

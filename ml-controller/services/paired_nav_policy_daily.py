@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from services.paired_nav_candidate_decision import read_nav_candidate_decision, NavCandidateDecisionReadScope
 from services.paired_nav_comparison import resolve_allocation_comparison
-from services.paired_nav_journal import digest, _timestamp
+from services.paired_nav_journal import digest, _timestamp, read_inventory_snapshot
 from services.paired_nav_population import _manifest_rows
 
 
@@ -50,7 +50,7 @@ def frozen_policy_inventory(*, owner, business_date, query, now):
     if owner not in OWNERS:
         raise ValueError('nav_policy_owner_invalid')
     items = {}
-    for saved in _manifest_rows(query, business_date, 'allocation_context', 50):
+    for saved in _manifest_rows(query, business_date, 'allocation_context', 50, reader=read_inventory_snapshot):
         for checksum, definition in _definitions(owner, saved).items():
             manifest = saved['manifest']
             if _timestamp(manifest['frozen_at']) > now:

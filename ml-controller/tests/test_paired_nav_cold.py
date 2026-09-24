@@ -320,3 +320,40 @@ def test_ab_allocation_preview_preserves_weights_without_large_inputs(env):
                        'B': [{'symbol': '6538', 'allocation_weight': .17}]}
     assert len(raw) < 2000
     assert read_snapshot(db.query, manifest['snapshot_id'])['payload']['content'] == content
+
+
+def test_inventory_projection_verifies_full_object_and_excludes_history(env):
+    from services.paired_nav_journal import read_inventory_snapshot
+    db, objects = env
+    content = {'upstream_allocation_context_snapshot_id': 'parent',
+        'recommendation_context': {'inputs': {'screener_recs': [{'symbol': '2330', 'value': 1.23}],
+            'payloads': {'history': list(range(10000))}},
+            'l3_candidate_selection': {'status': 'failed', 'reason': 'preserved'}},
+        'inputs': {'return_history': list(range(10000))}}
+    manifest = freeze(db, content)
+    projected = read_inventory_snapshot(db.query, manifest['snapshot_id'])
+    assert projected['read_projection'] == 'selection_inventory_v1'
+    assert projected['manifest'] == manifest
+    context = projected['payload']['content']
+    assert 'inputs' not in context
+    assert context['recommendation_context']['inputs'] == {'screener_recs': [{'symbol': '2330', 'value': 1.23}]}
+    assert context['recommendation_context']['l3_candidate_selection'] == content['recommendation_context']['l3_candidate_selection']
+    assert read_snapshot(db.query, manifest['snapshot_id'])['payload']['content'] == content
+    # Even corruption in omitted history must invalidate the projection.
+    key = next(iter(objects.data))
+    raw = gzip.decompress(objects.data[key]).replace(b'9999', b'9998')
+    objects.data[key] = gzip.compress(raw)
+    with pytest.raises(RuntimeError, match='checksum_mismatch'):
+        read_inventory_snapshot(db.query, manifest['snapshot_id'])
+
+
+def test_stream_decode_matches_json_numbers_and_shared_keys(tmp_path):
+    payload = {'rows': [{'repeated_key': 0.1234567890123456, 'integer': 10**40,
+        'array': [None, False, -0.0, 1e-250, 1e250]} for _ in range(4)]}
+    path = tmp_path / 'payload.gz'
+    path.write_bytes(gzip.compress(encode(payload).encode()))
+    result = cold.parse_file(path)
+    assert encode(result) == encode(payload)
+    assert type(result) is dict and type(result['rows'][0]) is dict
+    first_key = next(iter(result['rows'][0]))
+    assert next(iter(result['rows'][1])) is first_key

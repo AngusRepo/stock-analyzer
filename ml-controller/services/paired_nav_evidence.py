@@ -5,6 +5,8 @@ Only the complete audit returns evidence; a valid early page is not a receipt.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -95,7 +97,44 @@ class VerifiedNavEvidence:
             'inference_status': 'not_evaluated', 'promotion_allowed': False}
 
 
+
+_read_cache = ContextVar('verified_nav_evidence_cache', default=None)
+
+
+@contextmanager
+def reuse_verified_nav_evidence():
+    """One nightly closure's already verified census, never across jobs.
+
+    The daily owner writes execution journals before its first read; subsequent
+    phases only write review records. The same clock/query/census may therefore
+    reuse evidence without re-decoding every immutable historical context.
+    """
+    token = _read_cache.set({})
+    try:
+        yield
+    finally:
+        _read_cache.reset(token)
+
+
 def read_verified_nav_evidence(*, business_date: str, query: Query, page_size: int = 50,
+        observe_prefix=None, now=None, _population_snapshot_ids=None,
+        _population_observed_at=None) -> VerifiedNavEvidence:
+    cache = _read_cache.get()
+    # Unpinned wall-clock calls and callbacks must retain fresh reads/side effects.
+    key = (query, business_date, page_size, now,
+        tuple(_population_snapshot_ids) if _population_snapshot_ids is not None else None,
+        _population_observed_at)
+    if cache is not None and now is not None and observe_prefix is None and key in cache:
+        return deepcopy(cache[key])
+    result = _read_verified_nav_evidence(business_date=business_date, query=query,
+        page_size=page_size, observe_prefix=observe_prefix, now=now,
+        _population_snapshot_ids=_population_snapshot_ids,
+        _population_observed_at=_population_observed_at)
+    if cache is not None and now is not None and observe_prefix is None:
+        cache[key] = deepcopy(result)
+    return result
+
+def _read_verified_nav_evidence(*, business_date: str, query: Query, page_size: int = 50,
         observe_prefix: Callable[[dict[str, Any]], None] | None = None,
         now: datetime | None = None, _population_snapshot_ids=None,
         _population_observed_at=None) -> VerifiedNavEvidence:

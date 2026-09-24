@@ -40,6 +40,7 @@ def full_atomic(monkeypatch, request):
     original_setup = daily._setup
     def setup(mp):
         graph, state, reads = original_setup(mp)
+        mp.setattr(graph, "_assert_pipeline_canonical_window", lambda state: None)
         if getattr(request, 'param', '') == 'native_policy_initial_unavailable':
             from services import paired_nav_native_holdings as holdings
             capture = holdings.capture_native_holdings

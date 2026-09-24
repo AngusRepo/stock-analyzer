@@ -8,11 +8,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import re
 
-from services.paired_nav_journal import digest, read_snapshot, _timestamp
+from services.paired_nav_journal import digest, read_snapshot, read_inventory_snapshot, _timestamp
 from services.paired_nav_comparison import resolve_allocation_comparison, resolve_comparison
 
 
-def _manifest_rows(query, business_date, kind, page_size):
+def _manifest_rows(query, business_date, kind, page_size, *, reader=read_snapshot):
     cursor, count = '', 0
     while True:
         rows = query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 '
@@ -22,7 +22,7 @@ def _manifest_rows(query, business_date, kind, page_size):
             break
         for row in rows:
             count += 1
-            yield read_snapshot(query, row['snapshot_id'])
+            yield reader(query, row['snapshot_id'])
         cursor = rows[-1]['snapshot_id']
     actual = query('SELECT COUNT(*) AS n FROM paired_nav_frozen_manifests_v1 '
         'WHERE snapshot_kind=? AND prospective=1 AND signal_date<=?', [kind, business_date])
@@ -57,14 +57,18 @@ Use the immutable execution packet's close; do not invent another calendar.
             raise ValueError('paired_nav_population_census_invalid')
         pinned = {kind: [] for kind in kinds}
         for key in _snapshot_ids:
-            saved = read_snapshot(query, key)
-            manifest = saved['manifest']
+            rows = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [key])
+            if len(rows) != 1:
+                raise RuntimeError('paired_nav_manifest_missing')
+            manifest = rows[0]
             if (manifest['snapshot_kind'] not in pinned or manifest['prospective'] != 1
                     or manifest['signal_date'] > business_date):
                 raise ValueError('paired_nav_population_census_scope_invalid')
-            pinned[manifest['snapshot_kind']].append(saved)
+            pinned[manifest['snapshot_kind']].append(key)
     def manifests(kind):
-        rows = pinned[kind] if pinned is not None else _manifest_rows(query, business_date, kind, page_size)
+        reader = read_inventory_snapshot if kind == 'allocation_context' else read_snapshot
+        rows = (reader(query, key) for key in pinned[kind]) if pinned is not None else _manifest_rows(
+            query, business_date, kind, page_size, reader=reader)
         for saved in rows:
             captured.append(saved['manifest']['snapshot_id'])
             yield saved
@@ -107,7 +111,9 @@ Use the immutable execution packet's close; do not invent another calendar.
             expected.update((m['snapshot_id'], 'opb_arm_prior', row['checksum']) for row in selection['registry_rows'])
             for row in selection['registry_rows']:
                 try:
-                    wait = opb_dependency_wait(row, saved)
+                    # Dependency compatibility needs the full configuration, not a census.
+                    wait = opb_dependency_wait(row, read_snapshot(query, m['snapshot_id'])
+                        if saved.get('read_projection') else saved)
                 except Exception:
                     continue  # Still an expected, UNMATERIALIZED candidate, never a valid wait.
                 if wait is not None:
@@ -184,6 +190,7 @@ Use the immutable execution packet's close; do not invent another calendar.
             else:
                 info[field].add(value)
         plans.add(m['snapshot_id'])
+        del parent, context  # Do not hold a full history while decoding the next parent.
     for saved in manifests('execution_pair'):
         m, packet = saved['manifest'], saved['payload']['content']
         if _timestamp(m['frozen_at']) > clock:

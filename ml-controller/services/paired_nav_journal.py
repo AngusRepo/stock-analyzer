@@ -100,6 +100,36 @@ def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
     return saved
 
 
+
+_INVENTORY_PREFIXES = frozenset({'schema_version', 'signal_date', 'snapshot_kind', 'source_run_id'} | {
+    'content.' + field for field in ('upstream_allocation_context_snapshot_id',
+        'ev_candidate_selection', 'opb_candidate_selection', 'atomic_recommendation_inputs')
+} | {'content.recommendation_context.l3_candidate_selection',
+     'content.recommendation_context.inputs.screener_recs'})
+
+
+def read_inventory_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
+    """Verified selection/route census; never an allocator/execution input.
+
+    Validate the complete cold checksum before projecting. Hot legacy snapshots
+    retain their full reader. Callers needing replay/configuration use read_snapshot.
+    """
+    rows = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
+    if len(rows) != 1:
+        raise RuntimeError('paired_nav_manifest_missing')
+    manifest = rows[0]
+    if manifest['snapshot_kind'] != 'allocation_context':
+        return read_snapshot(query, snapshot_id)
+    from services.paired_nav_cold import load
+    payload = load(query, manifest, prefixes=_INVENTORY_PREFIXES)
+    if payload is None:
+        return read_snapshot(query, snapshot_id)
+    if any(payload.get(key) != manifest[key] for key in ('signal_date', 'source_run_id', 'snapshot_kind')):
+        raise RuntimeError('paired_nav_manifest_identity_mismatch')
+    payload.setdefault('content', {})
+    payload.setdefault('content', {})
+    return {'manifest': manifest, 'payload': payload, 'read_projection': 'selection_inventory_v1'}
+
 def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,
                     content: dict[str, Any], query: Query, writer: Writer,
                     now: datetime | None = None) -> dict[str, Any]:

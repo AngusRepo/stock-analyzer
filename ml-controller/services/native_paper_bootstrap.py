@@ -18,14 +18,18 @@ IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*$')
 
 
 def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str], account_id: int,
-                             signal_date: str, frozen_kv: dict[str, str], max_rows: int = 100000) -> dict:
+                             signal_date: str, frozen_kv: dict[str, str], max_rows: int = 100000,
+                             max_copy_bytes: int = 128 * 1024 * 1024) -> dict:
     if type(account_id) is not int or account_id <= 0:
         raise ValueError('native_bootstrap_account_invalid')
     date.fromisoformat(signal_date)
+    if type(max_rows) is not int or max_rows <= 0 or type(max_copy_bytes) is not int or max_copy_bytes <= 0:
+        raise ValueError('native_bootstrap_copy_budget_invalid')
     if any(not IDENTIFIER.fullmatch(table) for table in ownership):
         raise ValueError('native_bootstrap_table_identifier_invalid')
     def collect():
         schema, rows, auxiliary = {}, {}, []
+        copied_bytes = 0
         for domain in sorted(set(ownership.values())):
             query = domain_queries[domain]
             # No row data from unrelated user/chat/research tables is copied.
@@ -66,11 +70,32 @@ def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str],
                 rows[table] = []
                 continue
             copied = []
+            cursor = None
+            event_history = table == 'paper_execution_events'
+            if event_history and (primary != ['id'] or 'account_id' not in names):
+                raise ValueError('native_bootstrap_event_key_invalid')
             while True:
-                page = query('SELECT * FROM ' + table + where + ' ORDER BY ' + ','.join(primary) + ' LIMIT ? OFFSET ?',
-                             [*args, 1000, len(copied)])
+                if event_history:
+                    # Preserve the complete account audit history. A row-count
+                    # ceiling grows stale even for small records; bound bytes
+                    # instead. The account/created index would sort all account
+                    # rows on every page; the INTEGER PRIMARY KEY advances once.
+                    after = ' AND id>?' if cursor is not None else ''
+                    page = query('SELECT * FROM ' + table + ' NOT INDEXED' + where + after + ' ORDER BY id LIMIT ?',
+                                 [*args, *([cursor] if cursor is not None else []), 1000])
+                    for row in page:
+                        current = row.get('id')
+                        if type(current) is not int or (cursor is not None and current <= cursor):
+                            raise ValueError('native_bootstrap_event_cursor_invalid')
+                        cursor = current
+                else:
+                    page = query('SELECT * FROM ' + table + where + ' ORDER BY ' + ','.join(primary) + ' LIMIT ? OFFSET ?',
+                                 [*args, 1000, len(copied)])
+                copied_bytes += len(encode(page).encode('utf-8'))
+                if copied_bytes > max_copy_bytes:
+                    raise ValueError('native_bootstrap_copy_bytes_exceeded:' + table)
                 copied.extend(page)
-                if len(copied) > max_rows:
+                if not event_history and len(copied) > max_rows:
                     raise ValueError('native_bootstrap_copy_bound_exceeded:' + table)
                 if len(page) < 1000:
                     break

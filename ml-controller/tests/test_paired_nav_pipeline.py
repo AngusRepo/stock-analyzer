@@ -15,6 +15,14 @@ from test_paired_nav_candidate_collection import environment
 from test_native_paper_sandbox import native_runner
 
 
+@pytest.fixture(autouse=True)
+def open_fixture_canonical_window(monkeypatch):
+    # Synthetic September fixtures must not call the live Worker as time moves.
+    # The historical-write boundary has its own positive/negative contract tests.
+    import graphs.daily_pipeline_v2 as graph
+    monkeypatch.setattr(graph, 'assert_canonical_window_open', lambda day: None)
+
+
 def allocation_args(db):
     return dict(recommendations=[{'symbol': '2330', 'signal': 'HOLD'}],
         ranking_config={'enabled': True}, ensemble_v2_cfg={}, regime_label='bull',

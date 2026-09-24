@@ -266,6 +266,28 @@ def _post_raw(body: dict, timeout: float = 60.0, database_id: str | None = None)
     raise last_error or RuntimeError("D1 raw request failed: exhausted retries")
 
 
+def read_raw_batch(requests: list[dict], *, database_id: str, timeout: float = 60.0) -> list[list[dict]]:
+    """One complete UI source recheck; malformed/partial results fail closed."""
+    if not requests:
+        return []
+    data = _post_raw({'batch': requests}, timeout=timeout, database_id=database_id)
+    results = data.get('result')
+    if not isinstance(results, list) or len(results) != len(requests):
+        raise RuntimeError('d1_read_batch_incomplete')
+    output = []
+    for item in results:
+        packet = item.get('results')
+        if item.get('success') is not True or not isinstance(packet, dict):
+            raise RuntimeError('d1_read_batch_failed')
+        columns, rows = packet.get('columns'), packet.get('rows')
+        if (not isinstance(columns, list) or not all(isinstance(c, str) for c in columns)
+                or len(set(columns)) != len(columns) or not isinstance(rows, list)
+                or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)):
+            raise RuntimeError('d1_read_batch_shape_invalid')
+        output.append([dict(zip(columns, row)) for row in rows])
+    return output
+
+
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
     if allocator_contract_guard_enabled() and _is_mutating_sql(sql):
         logger.warning("[AllocatorContractGuard] D1 mutation passed to query() was no-op: %s", _first_sql_token(sql))

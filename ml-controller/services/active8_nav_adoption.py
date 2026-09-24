@@ -254,6 +254,11 @@ def load_committed_nav_serving_grant(*, query, now=None):
 
 
 def current_execution_configuration():
+    from services.verified_read_observation import observed_value
+    return observed_value(('execution_configuration',), _read_execution_configuration)
+
+
+def _read_execution_configuration():
     from services.worker_config_client import load_active_trading_config
     from services import kv_client
     from services.paired_nav_collection import allocator_source_identity

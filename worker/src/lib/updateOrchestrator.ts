@@ -1,3 +1,4 @@
+import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { brokerDailyReadiness } from './finLabBrokerReadiness'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
@@ -1627,19 +1628,9 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
 
   console.log('[Cron] Kicking off queue update for full TW market indicator universe...')
   try {
-    const runId = `${triggerTime}-${Date.now().toString(36)}`
-    await env.UPDATE_QUEUE.sendBatch(
-      Array.from({ length: UPDATE_SHARD_COUNT }, (_, shardIndex) => ({
-        body: {
-          type: 'update_batch' as const,
-          cursor: 0,
-          triggerTime,
-          runId,
-          shardIndex,
-          shardCount: UPDATE_SHARD_COUNT,
-        },
-      })),
-    )
+    const { claimIndicatorQueueDispatch } = await import('./indicatorQueueDispatch')
+    const runId = await claimIndicatorQueueDispatch(env, triggerTime, force)
+    if (!runId) return
     await env.KV.put(
       `cron:indicator-queue:${triggerTime}:${runId}:meta`,
       JSON.stringify({ trigger_time: triggerTime, run_id: runId, shard_count: UPDATE_SHARD_COUNT, started_at: new Date().toISOString() }),
@@ -1652,9 +1643,21 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
       run_id: runId,
       run_date: triggerTime,
     })
+    await env.UPDATE_QUEUE.sendBatch(
+      Array.from({ length: UPDATE_SHARD_COUNT }, (_, shardIndex) => ({
+        body: {
+          type: 'update_batch' as const,
+          cursor: 0,
+          triggerTime,
+          runId,
+          shardIndex,
+          shardCount: UPDATE_SHARD_COUNT,
+        },
+      })),
+    )
     await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
   } catch (e) {
-    console.warn('[Cron] Queue update send failed, NOT writing lock:', e)
+    console.warn('[Cron] Queue dispatch failed; preserve its receipt for same-run watchdog recovery:', e)
     throw e
   }
 }
@@ -1725,6 +1728,7 @@ async function finalizeUpdateChain(
     console.log(`[Queue] Finalize continuation already closed for ${triggerTime} ${runId}`)
     return
   }
+  if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
   const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
   if (!readiness.ok) {
     await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
@@ -1757,6 +1761,7 @@ async function deferFinalizeContinuation(
   continuationAttempt: number,
   reason: string,
 ): Promise<void> {
+  if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
   if (continuationAttempt >= FINALIZE_CONTINUATION_MAX_ATTEMPTS) {
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'error',
@@ -1837,6 +1842,7 @@ async function runFinalizeContinuation(
   leaseOwner: string,
 ): Promise<void> {
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
+  if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
   if (await hasPipelineEvidence(env, triggerTime)) {
     console.log('[Queue] Finalizer already reached pipeline; preserving completed stages for ' + triggerTime + ' ' + runId)
     return
@@ -4340,7 +4346,6 @@ export async function processUpdateBatch(
       ? Number(msg.continuationAttempt)
       : 1
     const donePrefix = `cron:indicator-queue:${triggerTime}:${runId}:done:`
-    await new Promise((resolve) => setTimeout(resolve, FINALIZE_RECHECK_DELAY_MS))
     const done = await env.KV.list({ prefix: donePrefix })
     const doneCount = new Set(done.keys.map((k) => k.name)).size
 
@@ -4366,7 +4371,7 @@ export async function processUpdateBatch(
         shardCount,
         attempt: attempt + 1,
         continuationAttempt,
-      })
+      }, { delaySeconds: Math.ceil(FINALIZE_RECHECK_DELAY_MS / 1000) })
       return
     }
 

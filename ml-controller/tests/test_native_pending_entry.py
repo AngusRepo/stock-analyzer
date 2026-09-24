@@ -18,7 +18,10 @@ def entry_state():
     config['risk']['system']['killSwitch'] = False
     with sqlite3.connect(':memory:') as db:
         db.executescript(full_cash_state(config))
+        db.executescript((ROOT / 'worker/domain-migrations/market/0005_market_regime_state_history.sql').read_text(encoding='utf8'))
         db.executescript("""
+          INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status)
+            VALUES('2026-09-04','pipeline_execution','synthetic-fixture-pipeline','success');
           INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','fixture','TWSE');
           INSERT INTO model_accuracy(stock_id,model_name,period,total_count,correct_count,accuracy)
             VALUES(1,'LightGBM','30d',100,70,.7);
@@ -50,16 +53,16 @@ class EntrySources:
         self.trading = native_config()['trading']
         from services.native_paper_debate import NativeCapturedDebate
         from services.native_paper_source_capture import NativeSourceCapture, ImmutableNativeObjects
-        from services.llm_debate_client import GEMINI_MODEL_DEFAULT
+        from services.llm_debate_client import DEBATE_MODEL_POLICY
         from test_native_paper_source_capture import Bucket
         self.llm_calls = []
         def provider(request):
             self.llm_calls.append(request)
-            return {'text': 'VERDICT: APPROVE | CONVICTION: 85\nSynthetic evidence.', 'source': 'gemini_api', 'usage': []}
+            return {'text': 'VERDICT: APPROVE | CONVICTION: 85\nSynthetic evidence.', 'source': 'cloudflare_workers_ai:' + request['model'], 'usage': []}
         capture = NativeSourceCapture(objects=ImmutableNativeObjects(Bucket()), clock=lambda: self.observed,
                                       domain_queries={}, inference_reads={'native_debate_llm': provider})
         self.debate = NativeCapturedDebate(source_capture=capture, max_rounds=3,
-                                          session_date='2026-09-07', model_name=GEMINI_MODEL_DEFAULT)
+                                          session_date='2026-09-07', model_name=DEBATE_MODEL_POLICY)
 
     def read(self, operation, request, frame):
         assert operation == 'frozen_fetch'
@@ -270,7 +273,7 @@ def test_original_s12_ready_entry_executes_in_private_account(native_runner, who
         events = db.execute('SELECT event_type,status,reason,detail_json FROM paper_execution_events').fetchall()
         orders = db.execute('SELECT side,shares,price,commission FROM paper_orders WHERE account_id=2').fetchall()
         assert orders, repr({'events': events[:5], 'routes': sorted(set(source.routes)),
-            'pending_runs': db.execute('SELECT trade_date,status,debate_status,meta_json FROM pending_buy_runs ORDER BY id DESC LIMIT 2').fetchall(),
+            'pending_runs': db.execute('SELECT trade_date,status,debate_status,error_message FROM pending_buy_runs ORDER BY id DESC LIMIT 2').fetchall(),
             'llm_calls': len(source.llm_calls),
             'early_frames': result['frames'][:3]})
         assert sum(o[0] == 'buy' for o in orders) == 1 and orders[0][0] == 'buy' and orders[0][1] > 0

@@ -4,14 +4,13 @@ debate_service.py — Multi-round Bull/Bear debate for Paper Trading
 Python port of worker/src/lib/debateTrader.ts runBuyDebate.
 Preserves:
   - 3-agent pattern: Zealot (bull) → Reaper (bear) → Fulcrum (judge)
-  - Multi-round debate loop (1..max_rounds, default 2) with rebuttal
+  - Exactly two rounds with reproducibly randomized, swapped model roles
   - Prompt injection detection (DANGER_PATTERNS)
   - Verdict parsing (APPROVE | DOWNGRADE | REJECT) + conviction 0-100
   - KV cache for 24h dedup
   - Stock profile + US/TAIFEX context injection
 
-Removed from TS version:
-  - Local Tunnel + Workers AI layers (Worker-only bindings)
+Inference: Cloudflare Workers AI REST; Mistral/GPT-OSS swap, Llama judges.
 
 See: worker/src/lib/debateTrader.ts (authoritative source; any prompt tweak
      must update both files until TS version is retired).
@@ -27,7 +26,7 @@ from typing import Any, Optional
 
 import httpx
 
-from services.llm_debate_client import call_llm
+from services.llm_debate_client import call_llm, DEBATE_MODEL_POLICY, model_for_role, provider_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -106,24 +105,8 @@ _CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 
 
 async def _read_max_rounds(client: httpx.AsyncClient) -> int:
-    """Read ml:config.debate_max_rounds from KV (bounded 1..3, default 2)."""
-    if not (_CF_API_TOKEN and _CF_ACCOUNT_ID and _CF_KV_NS_ID):
-        return 2
-    try:
-        url = (
-            f"https://api.cloudflare.com/client/v4/accounts/{_CF_ACCOUNT_ID}"
-            f"/storage/kv/namespaces/{_CF_KV_NS_ID}/values/ml:config.debate_max_rounds"
-        )
-        resp = await client.get(url, headers={"Authorization": f"Bearer {_CF_API_TOKEN}"}, timeout=5.0)
-        if resp.status_code == 200:
-            try:
-                n = int(resp.text.strip())
-                return max(1, min(3, n))
-            except ValueError:
-                return 2
-        return 2
-    except Exception:
-        return 2
+    """Balanced policy requires exactly two rounds, regardless of legacy KV."""
+    return 2
 
 
 async def _kv_read(client: httpx.AsyncClient, key: str) -> Optional[str]:
@@ -162,6 +145,36 @@ async def _kv_write(client: httpx.AsyncClient, key: str, value: str, ttl_seconds
         return False
 
 
+async def _formal_turn_cached(system, user, *, role, client, assignment_date, **kwargs):
+    """Reuse successful turns if a later turn fails; never cache a failure.
+
+    Native A/B replay already owns its immutable per-turn journal and does not
+    enter this formal KV path.
+    """
+    import hashlib
+    import json
+    day = assignment_date
+    identity = json.dumps({'policy': DEBATE_MODEL_POLICY, 'role': role, 'system': system,
+        'user': user, **kwargs}, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    key = f'paper:debate-turn:{day}:' + hashlib.sha256(identity.encode()).hexdigest()
+    def usable(text):
+        return (isinstance(text, str) and bool(text.strip())
+            and (role != 'judge' or (_parse_verdict(text) is not None and _parse_conviction(text) is not None)))
+    raw = await _kv_read(client, key)
+    if raw:
+        try:
+            saved = json.loads(raw)
+            if (saved.get('source') == 'cloudflare_workers_ai:' + kwargs['model']
+                    and usable(saved.get('text'))):
+                return saved['text'], saved['source']
+        except (ValueError, AttributeError):
+            pass
+    text, source = await call_llm(system, user, role=role, client=client, **kwargs)
+    if usable(text):
+        await _kv_write(client, key, json.dumps({'text': text, 'source': source}), ttl_seconds=86400)
+    return text, source
+
+
 # ── Data shapes ───────────────────────────────────────────────────────────────
 
 @dataclass
@@ -176,7 +189,7 @@ class DebateResult:
     verdict: str             # APPROVE | DOWNGRADE | REJECT
     rounds: int              # total rounds counter (2*debate_rounds + 1 for Fulcrum)
     summary: str             # <=500 chars, goes into paper_orders.note
-    llm_source: str          # gemini_api | unknown/cached local degradation
+    llm_source: str          # Cloudflare model identity | unknown before inference
     conviction_score: int    # 0-100
     terminal_status: str      # completed | retryable_error
     retryable: bool
@@ -268,6 +281,7 @@ def _build_agent_turns(
     reaper_cases: list[str],
     fulcrum_response: str,
     llm_source: str,
+    role_sources: dict | None = None,
 ) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = [{
         "agent": "theme",
@@ -282,7 +296,7 @@ def _build_agent_turns(
             "round": idx,
             "stance": "support",
             "summary": _compact_turn_text(text),
-            "source": llm_source,
+            "source": (role_sources or {}).get("bull", [llm_source] * len(zealot_cases))[idx - 1],
         })
     for idx, text in enumerate(reaper_cases, start=1):
         turns.append({
@@ -290,14 +304,14 @@ def _build_agent_turns(
             "round": idx,
             "stance": "challenge",
             "summary": _compact_turn_text(text),
-            "source": llm_source,
+            "source": (role_sources or {}).get("bear", [llm_source] * len(reaper_cases))[idx - 1],
         })
         turns.append({
             "agent": "risk",
             "round": idx,
             "stance": "risk_check",
             "summary": _compact_turn_text(text, 260),
-            "source": llm_source,
+            "source": (role_sources or {}).get("bear", [llm_source] * len(reaper_cases))[idx - 1],
         })
     if fulcrum_response:
         turns.append({
@@ -305,7 +319,7 @@ def _build_agent_turns(
             "round": len(zealot_cases) + len(reaper_cases) + 1,
             "stance": "verdict",
             "summary": _compact_turn_text(re.sub(r"VERDICT:.*\n?", "", fulcrum_response, flags=re.IGNORECASE)),
-            "source": llm_source,
+            "source": (role_sources or {}).get("judge", llm_source),
         })
     return turns
 
@@ -323,6 +337,8 @@ async def run_buy_debate(
     taifex_context: Optional[str] = None,
     breeze2_context: Optional[dict[str, Any]] = None,
     client: Optional[httpx.AsyncClient] = None,
+    _max_rounds: Optional[int] = None,
+    _session_date: Optional[str] = None,
 ) -> DebateResult:
     close_client = False
     if client is None:
@@ -334,7 +350,7 @@ async def run_buy_debate(
     from .debate_execution_scope import current_debate_execution
     private_execution = current_debate_execution()
     ab_model = private_execution.model_assignment if private_execution else assign_model(symbol)
-    infer = private_execution.infer if private_execution else call_llm
+    infer = private_execution.infer if private_execution else _formal_turn_cached
 
     try:
         # ── Compose mlContext (matches TS ordering) ────────────────────────
@@ -367,12 +383,15 @@ async def run_buy_debate(
         ml_context = "\n".join(ml_context_parts)
 
         # ── Read config ────────────────────────────────────────────────────
-        max_rounds = private_execution.max_rounds if private_execution else await _read_max_rounds(client)
+        from datetime import datetime, timezone, timedelta
+        session_date = _session_date or datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+        max_rounds = 2
         logger.info(f"[Debate] {symbol} max_rounds={max_rounds}")
 
         zealot_cases: list[str] = []
         reaper_cases: list[str] = []
         llm_source = "unknown"
+        role_sources = {"bull": [], "bear": []}
         rounds_completed = 0
 
         for r in range(1, max_rounds + 1):
@@ -387,6 +406,9 @@ async def run_buy_debate(
                 zealot_system = _ZEALOT_SYS_BASE + f"\n\n你的任務：讀對方（Reaper）剛才的空方論點，針對其每個挑戰回擊反駁。最多 180 字。"
                 prev_reaper = reaper_cases[-1] if reaper_cases else ""
                 zealot_prompt = "\n".join([
+                    "本輪交換立場；請依新的指定立場重新評估，勿維護上一輪自己的立場。",
+                    "=== 第一輪多空完整論點 ===",
+                    zealot_cases[0], reaper_cases[0],
                     "=== 原始 BUY context ===",
                     ml_context,
                     "",
@@ -398,17 +420,20 @@ async def run_buy_debate(
             try:
                 text, source = await infer(
                     zealot_system, zealot_prompt, temperature=0.5,
-                    max_tokens=max_tokens, client=client, ab_force=ab_model,
+                    max_tokens=max_tokens, client=client, ab_force=ab_model, assignment_date=session_date, role="bull",
+                    model=model_for_role("bull", symbol=symbol, session_date=session_date, round_no=r),
                 )
                 zealot_cases.append(text)
+                role_sources["bull"].append(source)
                 llm_source = source
                 logger.info(f"[Debate] {symbol} Zealot R{r} done via {source}")
             except Exception as e:
                 logger.warning(f"[Debate] {symbol} Zealot R{r} failed: {e}")
-                if is_initial:
-                    zealot_cases.append(ml_context)
-                else:
-                    break
+                return DebateResult(verdict="REJECT", rounds=len(zealot_cases) + len(reaper_cases),
+                    summary=f"[DEBATE_FAIL_CLOSED:bull_unavailable] {e}"[:500], llm_source=llm_source,
+                    conviction_score=0, terminal_status="retryable_error", retryable=True,
+                    error_code=provider_error_code(e, "bull_unavailable"),
+                    agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source, role_sources))
 
             # ── Reaper turn ────────────────────────────────────────────────
             if is_initial:
@@ -418,6 +443,9 @@ async def run_buy_debate(
                 reaper_system = _REAPER_SYS_BASE + "\n\n你的任務：讀對方（Zealot）剛才的反駁，再挑出新的弱點或未被回應的風險。最多 180 字。"
                 prev_zealot = zealot_cases[-1] if zealot_cases else ""
                 reaper_prompt = "\n".join([
+                    "本輪交換立場；請依新的指定立場重新評估，勿維護上一輪自己的立場。",
+                    "=== 第一輪多空完整論點 ===",
+                    zealot_cases[0], reaper_cases[0],
                     "=== 原始 BUY context ===",
                     ml_context,
                     "",
@@ -429,26 +457,26 @@ async def run_buy_debate(
             try:
                 text, source = await infer(
                     reaper_system, reaper_prompt, temperature=0.7,
-                    max_tokens=max_tokens, client=client, ab_force=ab_model,
+                    max_tokens=max_tokens, client=client, ab_force=ab_model, assignment_date=session_date, role="bear",
+                    model=model_for_role("bear", symbol=symbol, session_date=session_date, round_no=r),
                 )
                 reaper_cases.append(text)
+                role_sources["bear"].append(source)
                 llm_source = source
                 logger.info(f"[Debate] {symbol} Reaper R{r} done via {source}")
             except Exception as e:
                 logger.warning(f"[Debate] {symbol} Reaper R{r} failed: {e}")
-                if is_initial:
-                    return DebateResult(
-                        verdict="REJECT",
-                        rounds=1,
-                        summary=f"[DEBATE_FAIL_CLOSED:reaper_unavailable] {e}"[:500],
-                        llm_source=llm_source,
-                        conviction_score=0,
-                        terminal_status="retryable_error",
-                        retryable=True,
-                        error_code="reaper_unavailable",
-                        agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
-                    )
-                break
+                return DebateResult(
+                    verdict="REJECT",
+                    rounds=len(zealot_cases) + len(reaper_cases),
+                    summary=f"[DEBATE_FAIL_CLOSED:reaper_unavailable] {e}"[:500],
+                    llm_source=llm_source,
+                    conviction_score=0,
+                    terminal_status="retryable_error",
+                    retryable=True,
+                    error_code=provider_error_code(e, "reaper_unavailable"),
+                    agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source, role_sources),
+                )
 
             rounds_completed = r
 
@@ -457,6 +485,8 @@ async def run_buy_debate(
 
         # ── Fulcrum judge ───────────────────────────────────────────────────
         fulcrum_user_prompt = "\n".join([
+            "=== 原始資料；論點不等同已驗證事實 ===", ml_context,
+            "以下為兩個模型交換立場的兩輪論點，並非四份獨立證據。",
             "=== ZEALOT CASE (極度看多) ===",
             zealot_case,
             "",
@@ -470,9 +500,10 @@ async def run_buy_debate(
         try:
             fulcrum_response, source = await infer(
                 _FULCRUM_SYS_PROMPT, fulcrum_user_prompt,
-                temperature=0.2, max_tokens=256, client=client, ab_force=ab_model,
+                temperature=0.2, max_tokens=512, client=client, ab_force=ab_model, assignment_date=session_date, role="judge", model=model_for_role("judge"),
             )
             llm_source = source
+            role_sources["judge"] = source
             logger.info(f"[Debate] Fulcrum done for {symbol} via {source} (totalRounds={total_rounds})")
         except Exception as e:
             logger.warning(f"[Debate] Fulcrum round failed for {symbol}: {e}")
@@ -484,8 +515,8 @@ async def run_buy_debate(
                 conviction_score=0,
                 terminal_status="retryable_error",
                 retryable=True,
-                error_code="fulcrum_unavailable",
-                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source),
+                error_code=provider_error_code(e, "fulcrum_unavailable"),
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, "", llm_source, role_sources),
             )
 
         # Injection detection on Reaper + Fulcrum (Zealot is LLM-rewrite, trust)
@@ -501,7 +532,7 @@ async def run_buy_debate(
                 terminal_status="completed",
                 retryable=False,
                 error_code="prompt_injection_blocked",
-                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source, role_sources),
             )
 
         verdict = _parse_verdict(fulcrum_response)
@@ -516,7 +547,7 @@ async def run_buy_debate(
                 terminal_status="retryable_error",
                 retryable=True,
                 error_code="verdict_unparseable",
-                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
+                agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source, role_sources),
             )
 
         if injection["action"] == "downgrade" and verdict == "APPROVE":
@@ -540,7 +571,7 @@ async def run_buy_debate(
             conviction_score=conviction,
             terminal_status="completed",
             retryable=False,
-            agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source),
+            agent_turns=_build_agent_turns(ml_context, zealot_cases, reaper_cases, fulcrum_response, llm_source, role_sources),
         )
         # #44 fire-and-forget A/B log (only when ab_model assigned)
         if ab_model:
@@ -589,7 +620,7 @@ async def run_buy_debate_cached(
         return await run_buy_debate(symbol=symbol, stock_name=stock_name, signal=signal,
             confidence=confidence, reasoning=reasoning, us_context=us_context,
             stock_profile=stock_profile, taifex_context=taifex_context,
-            breeze2_context=breeze2_context, client=client)
+            breeze2_context=breeze2_context, client=client, _session_date=cache_key_date)
 
     close_client = False
     if client is None:
@@ -600,7 +631,14 @@ async def run_buy_debate_cached(
         cache_date = cache_key_date or (
             datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
         )
-        cache_key = f"paper:debate:{symbol}:{cache_date}"
+        import hashlib
+        max_rounds = await _read_max_rounds(client)
+        identity = _json.dumps({"policy": DEBATE_MODEL_POLICY, "symbol": symbol,
+            "name": stock_name, "signal": signal, "confidence": confidence, "reasoning": reasoning,
+            "us": us_context, "taifex": taifex_context, "profile": vars(stock_profile) if stock_profile else None,
+            "breeze2": breeze2_context, "rounds": max_rounds},
+            sort_keys=True, ensure_ascii=False, allow_nan=False)
+        cache_key = f"paper:debate:{DEBATE_MODEL_POLICY}:{symbol}:{cache_date}:" + hashlib.sha256(identity.encode()).hexdigest()
         cached = await _kv_read(client, cache_key)
         if cached:
             try:
@@ -630,7 +668,7 @@ async def run_buy_debate_cached(
             signal=signal, confidence=confidence, reasoning=reasoning,
             us_context=us_context, stock_profile=stock_profile,
             taifex_context=taifex_context, breeze2_context=breeze2_context,
-            client=client,
+            client=client, _max_rounds=max_rounds, _session_date=cache_date,
         )
 
         # Cache only genuine completed verdicts; retryable failures must remain retryable.
@@ -667,7 +705,7 @@ async def run_buy_debate_batch(
 
     candidates: list of dicts with keys {symbol, stock_name, signal, confidence,
                 reasoning, us_context, stock_profile, taifex_context}
-    concurrent: asyncio.Semaphore bound (Modal Gemini rate: ~60/min so 5 is safe)
+    concurrent: asyncio.Semaphore bound for the shared Cloudflare account.
 
     Returns list of dicts: {symbol, verdict, rounds, summary, llm_source,
                             conviction_score, error?}

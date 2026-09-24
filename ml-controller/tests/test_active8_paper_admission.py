@@ -129,3 +129,24 @@ def test_unqualified_paper_request_cannot_publish(approved,fault):
     with pytest.raises((RuntimeError,ValueError)):
         publish(approved)
     assert client.batches==0
+
+
+def test_model_pool_reads_verified_paper_members_without_forging_nav(approved):
+    (client, row, *_), approval = approved
+    publish(approved)
+    pointers_before = client.query('SELECT * FROM active8_ensemble_pointer_v1')
+    bundle = registry.load_active8_ensemble_serving_bundle()
+    assert bundle['status'] == 'production'
+    assert bundle['adoption_basis'] == 'paper_experiment_unproven'
+    assert bundle['paper_buy_authorized'] is True and bundle['live_buy_authorized'] is False
+    assert 'nav_decision_checksum' not in bundle
+    assert bundle['base_artifacts'] == json.loads(row['payload_json'])['base_artifacts']
+    assert len(bundle['serving_artifacts']) == 8
+    from routers import model_pool
+    result = model_pool._artifact_registry_champion_pointers_snapshot()
+    assert result['ready_count'] == result['model_count'] == 8
+    assert client.query('SELECT * FROM active8_ensemble_pointer_v1') == pointers_before
+    approval['approved'] = False
+    blocked = registry.load_active8_ensemble_serving_bundle()
+    assert blocked['production_effect'] is False
+    assert blocked['status'] == 'invalid_bundle'

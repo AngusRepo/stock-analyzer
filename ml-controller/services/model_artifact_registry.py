@@ -3255,7 +3255,7 @@ def load_active8_ensemble_serving_bundle(*, include_observability: bool = False)
     try:
         receipt = row.get('promotion_evidence_json') or '{}'
         receipt = json.loads(receipt) if isinstance(receipt, str) else receipt
-        if 'nav_validation' in receipt:
+        if {'nav_validation', 'paper_admission'} & receipt.keys():
             from services.active8_nav_adoption import load_committed_nav_serving_grant
             nav_grant = load_committed_nav_serving_grant(query=d1_client.query)
             if nav_grant is None:
@@ -3315,8 +3315,12 @@ def load_active8_ensemble_serving_bundle(*, include_observability: bool = False)
         "model_order": list(model_order(payload["observation_artifacts"], complete=True)),
         "base_artifacts": dict(base_artifacts),
         "blockers": [],
-        **({'adoption_basis': 'committed_paired_nav',
-            'nav_decision_checksum': json.loads(nav_grant.receipt_json)['nav_validation']['decision_checksum']}
+        **({'adoption_basis': 'paper_experiment_unproven',
+            'serving_artifacts': dict(payload['observation_artifacts']),
+            'paper_buy_authorized': True, 'live_buy_authorized': False}
+           if nav_grant is not None and 'paper_admission' in receipt else
+           {'adoption_basis': 'committed_paired_nav',
+            'nav_decision_checksum': receipt['nav_validation']['decision_checksum']}
            if nav_grant is not None else {}),
     }
 

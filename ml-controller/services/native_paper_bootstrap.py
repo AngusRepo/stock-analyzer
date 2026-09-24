@@ -19,7 +19,7 @@ IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*$')
 
 def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str], account_id: int,
                              signal_date: str, frozen_kv: dict[str, str], max_rows: int = 100000,
-                             max_copy_bytes: int = 128 * 1024 * 1024) -> dict:
+                             max_copy_bytes: int = 512 * 1024 * 1024) -> dict:
     if type(account_id) is not int or account_id <= 0:
         raise ValueError('native_bootstrap_account_invalid')
     date.fromisoformat(signal_date)

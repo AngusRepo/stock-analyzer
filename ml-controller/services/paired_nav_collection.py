@@ -16,9 +16,7 @@ from services.paired_nav_journal import Query, Writer, digest, encode, freeze_sn
 def shadow_failure(stage: str, exc: Exception) -> dict[str, Any]:
     # Provider exceptions can contain credentials/URLs. Only publish our codes.
     reason = str(exc)
-    safe_budget_error = re.fullmatch(
-        r'native_bootstrap_copy_(?:bound|bytes)_exceeded:[A-Za-z_][A-Za-z_0-9]*', reason)
-    if not safe_budget_error and not re.fullmatch(r'(?:paired_nav_|native_|paired_native_)[a-z0-9_]+', reason):
+    if not re.fullmatch(r'(?:paired_nav_|native_|paired_native_)[a-z0-9_]+', reason):
         reason = 'paired_nav_source_or_capture_failed'
     return {'status': 'failed', 'stage': stage, 'reason': reason,
             'error_type': type(exc).__name__, 'production_effect': False,

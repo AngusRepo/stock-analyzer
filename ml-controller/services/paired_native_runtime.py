@@ -14,6 +14,19 @@ from services.paired_nav_journal import digest, read_snapshot, reuse_frozen_snap
 from services.paired_native_registration import register_allocation_pair
 
 
+
+def _register_with_visible_budget(**kwargs):
+    try:
+        return register_allocation_pair(**kwargs)
+    except ValueError as exc:
+        reason = str(exc)
+        if re.fullmatch(r'native_bootstrap_copy_(?:bound|bytes)_exceeded:[a-z_][a-z_0-9]*', reason):
+            # The existing shadow failure filter accepts owned word-only codes.
+            # Preserve the failed table without changing allocator authority.
+            raise ValueError(reason.replace(':', '_table_', 1)) from exc
+        raise
+
+
 def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_read,
                          controller_token='', broker_token='', corporate_reader=None,
                          transport=None, clock=None, shadow_hmac_secret=''):
@@ -261,7 +274,7 @@ def register_candidate_execution_plans(*, collection: dict, query, writer, objec
                 for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
                     if str(variables.get(flag, '')).lower() in {'1', 'true', 'yes', 'enabled', 'on'}:
                         raise ValueError('native_registration_live_submission_enabled')
-                registered.append(register_allocation_pair(snapshot_id=plan['snapshot_id'], query=query, writer=writer,
+                registered.append(_register_with_visible_budget(snapshot_id=plan['snapshot_id'], query=query, writer=writer,
                     domain_queries=domain_queries, kv_read=kv_read, objects=objects, account_id=1,
                     variables=variables, kv_read_policy=KV_READ_POLICY, runner=runner, now=clock(), source_context=context))
             del parent, parent_content

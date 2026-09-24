@@ -764,7 +764,7 @@
             "mops_corporate_terms.py": "7b1cc8c47955fe3726459b462a0decf67fd542589ad7755a54af13b8121cccda",
             "native_paper_time.py": "b00fd2fbc8dea1a1043be5fad03a9831be79b761516f725d337bee09a03d8586",
             "paper_corporate_source.py": "aded095f27095b74af0c081eacb21a4b6b0765b457c6ca9584e6129a4aee79a7",
-            "paired_native_runtime.py": "18a39fa5d62f8f798e2efc8f8ce9a263fac4fd5623981c9cb9dba78c434c9063",
+            "paired_native_runtime.py": "860a58067a376204cb51960ce67a6d34fff13a2ec7b57b879e6cb24b77dbbd72",
             "paired_native_sources.py": "b01b3ccb1bab3396e1e9b23ca48016218de363667bbef7c8c0cd167f784637dd",
             "etf_corporate_source.py": "1cf1a3495931b7b88235d76553357529eb80cc9a84a7bc9b87051a5dccbc7d82",
             "capital_corporate_source.py": "16428efd6f8889e2168f39ca954a91e41a382f909d80466b79d8e2210649f222",
@@ -785,7 +785,7 @@
       "source_before": "68431addd4db95fdf8ae3930c9c9b157d16985d9",
       "proof": {
         "scope": "identical_execution_economics_and_evidence_bytes",
-        "change": "reuse one already checksum-verified immutable parent within a single native registration; release before next plan",
+        "change": "reuse one already checksum-verified immutable parent within a single native registration; release before next plan; normalize only owned bootstrap budget failures at the registration boundary",
         "tests": [
           "test_daily_plan_reaches_real_native_registration_with_frozen_worker_policies",
           "test_large_parent_is_parsed_once_per_shadow_scope"

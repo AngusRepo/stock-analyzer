@@ -9,8 +9,8 @@ import { SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS } from './selec
 export const STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION = 'canonical-strategy-selection-outcome-v1'
 export const STRATEGY_MULTI_HORIZON_ROUNDTRIP_COST_BPS = 18
 const DEFAULT_OUTCOME_LOOKBACK_DAYS = 120
-const OUTCOME_ROWS_PER_STATEMENT = 5
-const OUTCOME_BATCH_STATEMENTS = 100
+const OUTCOME_ROWS_PER_STATEMENT = 100
+const OUTCOME_BATCH_STATEMENTS = 20
 
 type ReferenceRow = {
   signal_date: string
@@ -225,12 +225,10 @@ export async function persistOutcomes(
   costBps: number,
 ): Promise<number> {
   if (!rows.length) return 0
-  // D1 accepts at most 100 bound parameters per prepared statement. Five
-  // outcome rows use 95 bindings and reduce the fixed 120-day refresh from one
-  // statement per row to one statement per five rows without changing identity.
+  // Bind each group as one JSON value. D1's 100-parameter limit previously
+  // forced five rows per statement, making the 120-day refresh timeout-prone.
   const statements = chunks(rows, OUTCOME_ROWS_PER_STATEMENT).map((group) => {
-    const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
-    const params = group.flatMap((row) => [
+    const payload = group.map((row) => [
       row.reference.signal_date, row.reference.symbol, row.reference.producer_run_id,
       row.horizonDays, STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION,
       row.reference.market_segment, row.reference.sector, row.entryDate, row.exitDate,
@@ -239,6 +237,7 @@ export async function persistOutcomes(
       row.crossSectionRank, 'price_horizon_labels_v2:finlab_primary_canonical_mirror',
       row.reference.feature_contract_version,
     ])
+    const values = Array.from({ length: 19 }, (_, index) => `json_extract(value, '$[${index}]')`).join(', ')
     return learningDb.prepare(`
       INSERT INTO canonical_selection_outcomes_v1 (
         signal_date, symbol, producer_run_id, horizon_days, label_schema_version,
@@ -246,7 +245,7 @@ export async function persistOutcomes(
         gross_return, transaction_cost_bps, absolute_return_net,
         benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
         adjustment_source, reference_contract_version
-      ) VALUES ${values}
+      ) SELECT ${values} FROM json_each(?) WHERE 1
       ON CONFLICT(signal_date, symbol, producer_run_id, horizon_days, label_schema_version) DO UPDATE SET
         market_segment=excluded.market_segment, sector=excluded.sector,
         entry_date=excluded.entry_date, exit_date=excluded.exit_date,
@@ -260,7 +259,7 @@ export async function persistOutcomes(
         adjustment_source=excluded.adjustment_source,
         reference_contract_version=excluded.reference_contract_version,
         created_at=CURRENT_TIMESTAMP
-    `).bind(...params)
+    `).bind(JSON.stringify(payload))
   })
   for (let offset = 0; offset < statements.length; offset += OUTCOME_BATCH_STATEMENTS) {
     await learningDb.batch(statements.slice(offset, offset + OUTCOME_BATCH_STATEMENTS))

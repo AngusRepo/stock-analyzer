@@ -81,8 +81,10 @@ def test_model_pool_read_does_not_block_event_loop(monkeypatch):
 def test_bootstrap_successor_preserves_current_policy_and_frozen_environment():
     c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
     group=c['additional_groups'][-1]
-    prior,new=group['runtime_components']
+    prior,new=group['runtime_components'][0],group['runtime_components'][-1]
     assert group['policy_components']==prior
+    previous=group['runtime_components'][-2]
+    assert {k for k in previous['pipeline'] if previous['pipeline'][k]!=new['pipeline'][k]}=={'native_paper_bootstrap.py'}
     assert all(prior[k]==new[k] for k in ['bundle','private_host','rescore'])
     assert {k for k in prior['pipeline'] if prior['pipeline'][k]!=new['pipeline'][k]}=={'native_paper_bootstrap.py','native_execution_equivalence.py'}
     previous=environment_packet('native-paper-v1:'+digest(prior))

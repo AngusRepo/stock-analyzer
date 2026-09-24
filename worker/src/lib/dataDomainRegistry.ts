@@ -235,6 +235,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'data_source_inventory', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'finlab_materialization_manifest', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'workers_ai_debate_budget_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'finlab_materialization_receipts_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'sector_flow_pit_generations_v1', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ipo_shadow_candidates_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },

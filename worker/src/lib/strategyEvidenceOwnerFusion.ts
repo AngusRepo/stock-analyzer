@@ -1,4 +1,4 @@
-import { METRIC_ROWS_BEFORE_CUTOFF_SQL } from './strategyMetricSnapshots'
+import { METRIC_ROWS_BEFORE_CUTOFF_SQL, METRIC_ROWS_BEFORE_PUBLICATION_SQL } from './strategyMetricSnapshots'
 import { listStrategyEvidenceProfiles } from './strategyEvidenceProfile'
 import { STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION } from './strategyEvidenceMetrics'
 import type { StrategySpec } from './strategySpec'
@@ -54,6 +54,7 @@ export type StrategyEvidenceOwnerProfile = {
 export type StrategyEvidenceOwnerSnapshot = {
   version: typeof STRATEGY_EVIDENCE_OWNER_FUSION_VERSION
   knowledge_cutoff_date: string
+  publication_cutoff_at?: string
   outcome_as_of_date: string | null
   active_profile_count: number
   active_materialized_profile_count: number
@@ -84,6 +85,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   strategies: readonly StrategySpec[]
   rows: readonly StrategyEvidenceOwnerMetricRow[]
   knowledgeCutoffDate: string
+  publicationCutoffAt?: string
   calibration?: PromotedStrategyEvidenceOwnerCalibration | null
   calibrationHistory?: readonly PromotedStrategyEvidenceOwnerCalibration[]
 }): Promise<StrategyEvidenceOwnerSnapshot> {
@@ -209,6 +211,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
   }).sort((left, right) => left.strategy_id.localeCompare(right.strategy_id))
   return sealStrategyEvidenceOwnerSnapshot({
     knowledgeCutoffDate: input.knowledgeCutoffDate, outcomeAsOfDate,
+    publicationCutoffAt: input.publicationCutoffAt,
     calibrationRunId: calibrationValid ? input.calibration!.runId : null,
     calibrationArtifactChecksum: calibrationValid ? input.calibration!.artifactChecksum : null,
     weightEffect: calibrationValid ? 'immutable_oos_calibrated_bounded_bidirectional' : 'neutral_until_immutable_calibration',
@@ -220,7 +223,7 @@ export async function buildStrategyEvidenceOwnerSnapshot(input: {
  * Raw metrics/calibration stay unchanged; this does not promote calibration.
  */
 export async function sealStrategyEvidenceOwnerSnapshot(input: {
-  knowledgeCutoffDate: string; outcomeAsOfDate: string | null;
+  knowledgeCutoffDate: string; outcomeAsOfDate: string | null; publicationCutoffAt?: string;
   calibrationRunId: string | null; calibrationArtifactChecksum: string | null;
   weightEffect: StrategyEvidenceOwnerSnapshot['weight_effect']; profiles: StrategyEvidenceOwnerProfile[];
 }): Promise<StrategyEvidenceOwnerSnapshot> {
@@ -262,6 +265,7 @@ export async function sealStrategyEvidenceOwnerSnapshot(input: {
   const canonical = JSON.stringify({
     version: STRATEGY_EVIDENCE_OWNER_FUSION_VERSION,
     knowledge_cutoff_date: input.knowledgeCutoffDate,
+    ...(input.publicationCutoffAt ? { publication_cutoff_at: input.publicationCutoffAt } : {}),
     outcome_as_of_date: input.outcomeAsOfDate,
     calibration_run_id: input.calibrationRunId,
     calibration_artifact_checksum: input.calibrationArtifactChecksum,
@@ -270,6 +274,7 @@ export async function sealStrategyEvidenceOwnerSnapshot(input: {
   return {
     version: STRATEGY_EVIDENCE_OWNER_FUSION_VERSION,
     knowledge_cutoff_date: input.knowledgeCutoffDate,
+    ...(input.publicationCutoffAt ? { publication_cutoff_at: input.publicationCutoffAt } : {}),
     outcome_as_of_date: input.outcomeAsOfDate,
     active_profile_count: active.length,
     active_materialized_profile_count: activeMaterialized,
@@ -289,9 +294,17 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
   db: D1Database,
   strategies: readonly StrategySpec[],
   knowledgeCutoffDate: string,
+  publicationCutoffAt?: string,
 ): Promise<StrategyEvidenceOwnerSnapshot> {
+  if (publicationCutoffAt) {
+    const start = Date.parse(knowledgeCutoffDate + 'T00:00:00+08:00')
+    const cutoff = Date.parse(publicationCutoffAt)
+    if (!Number.isFinite(cutoff) || cutoff < start || cutoff > start + 86400000 || cutoff > Date.now())
+      throw new Error('strategy_evidence_publication_cutoff_invalid')
+  }
+  const metricSql = publicationCutoffAt ? METRIC_ROWS_BEFORE_PUBLICATION_SQL : METRIC_ROWS_BEFORE_CUTOFF_SQL
   const [rows, calibrationHistory] = await Promise.all([
-    db.prepare(`${METRIC_ROWS_BEFORE_CUTOFF_SQL}
+    db.prepare(`${metricSql}
       SELECT strategy_id, strategy_version, primary_horizon_days, metric_name,
              metric_value, metric_status, sample_count, mature_dates,
              outcome_as_of_date, definition_version
@@ -299,7 +312,7 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
        WHERE snapshot_rank=1
          AND definition_version=?
        ORDER BY outcome_as_of_date DESC, strategy_id, metric_name
-    `).bind(knowledgeCutoffDate, knowledgeCutoffDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceOwnerMetricRow>()
+    `).bind(knowledgeCutoffDate, publicationCutoffAt ?? knowledgeCutoffDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION).all<StrategyEvidenceOwnerMetricRow>()
       .catch(() => ({ results: [] as StrategyEvidenceOwnerMetricRow[] })),
     loadPromotedStrategyEvidenceOwnerCalibrationHistoryBefore(db, knowledgeCutoffDate).catch(() => []),
   ])
@@ -307,6 +320,7 @@ export async function loadStrategyEvidenceOwnerSnapshotBefore(
     strategies,
     rows: rows.results ?? [],
     knowledgeCutoffDate,
+    publicationCutoffAt,
     calibration: calibrationHistory[0] ?? null,
     calibrationHistory,
   })

@@ -95,7 +95,7 @@ async def debate_buy_batch(req: BuyDebateBatchRequest):
     once instead of running 3-5 sequential debates in Worker (which hit the
     waitUntil 30s budget).
 
-    Modal Gemini rate limit ~60/min → default concurrent=5 is safe for 5 stocks.
+    Every Workers AI attempt reserves the shared account budget before inference.
     """
     if not req.candidates:
         return {"results": [], "count": 0}

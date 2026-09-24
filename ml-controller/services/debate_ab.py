@@ -1,10 +1,4 @@
-"""
-Gemini-only debate routing + logging.
-
-The previous implementation used deterministic Gemini/Anthropic A/B assignment.
-Formal morning debate now keeps the same logging table but always assigns Gemini
-when debate logging/routing is enabled.
-"""
+"""Formal Cloudflare debate policy identity and audit logging."""
 
 from __future__ import annotations
 
@@ -15,6 +9,7 @@ import os
 from typing import Optional
 
 import httpx
+from services.llm_debate_client import DEBATE_MODEL_POLICY
 from services.d1_domain_client import D1DataDomain, database_id_for_domain
 
 logger = logging.getLogger(__name__)
@@ -31,11 +26,11 @@ def _research_d1_url() -> str:
 
 
 def assign_model(symbol: str, date: Optional[str] = None) -> Optional[str]:
-    """Return 'gemini' when routing is enabled, or None when disabled."""
+    """Return the swapped-debaters/independent-judge policy when audit logging is enabled."""
     _ = (symbol, date)
     if not _ENABLED:
         return None
-    return "gemini"
+    return DEBATE_MODEL_POLICY
 
 
 async def log_debate(

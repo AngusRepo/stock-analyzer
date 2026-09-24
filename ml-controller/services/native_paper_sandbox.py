@@ -316,7 +316,7 @@ def native_execution_identity(runner: Path | None = None) -> str:
                            'paired_nav_chain.py',
                            'paired_nav_execution_environment.py', 'native_execution_equivalence.py', 'adaptive.py',
                            'native_paper_debate.py', 'debate_execution_scope.py', 'debate_service.py',
-                           'llm_debate_client.py', 'finlab_corporate_actions.py',
+                           'llm_debate_client.py', 'workers_ai_debate_budget.py', 'finlab_corporate_actions.py',
                            'mops_corporate_terms.py', 'native_paper_time.py', 'paper_corporate_source.py',
                            'paired_native_runtime.py', 'paired_native_sources.py', 'etf_corporate_source.py',
                            'capital_corporate_source.py', 'subscription_rights.py',

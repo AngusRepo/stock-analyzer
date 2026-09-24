@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
+from services.llm_debate_client import DEBATE_MODEL_POLICY
 
 
 @dataclass(frozen=True)
@@ -10,7 +11,7 @@ class DebateExecutionPorts:
     max_rounds: int
     infer: Callable[..., Any]
     audit: Callable[..., Any]
-    model_assignment: str | None = 'gemini'
+    model_assignment: str | None = DEBATE_MODEL_POLICY
 
 
 _CURRENT: ContextVar[DebateExecutionPorts | None] = ContextVar('private_debate_execution', default=None)
@@ -26,7 +27,7 @@ def private_debate_execution(ports: DebateExecutionPorts):
         raise ValueError('native_debate_nested_scope')
     if type(ports.max_rounds) is not int or not 1 <= ports.max_rounds <= 3:
         raise ValueError('native_debate_rounds_invalid')
-    if ports.model_assignment not in (None, 'gemini'):
+    if ports.model_assignment not in (None, DEBATE_MODEL_POLICY):
         raise ValueError('native_debate_assignment_invalid')
     token = _CURRENT.set(ports)
     try:

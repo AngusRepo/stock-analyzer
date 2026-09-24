@@ -924,6 +924,19 @@ INSERT OR IGNORE INTO data_retention_policies VALUES
   ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
+-- One small row per account/UTC day; no Learning payload growth.
+-- Failed/ambiguous attempts keep their reservation; never refund speculatively.
+CREATE TABLE IF NOT EXISTS workers_ai_debate_budget_v1 (
+  account_id TEXT NOT NULL,
+  utc_day TEXT NOT NULL,
+  observed_neurons REAL NOT NULL CHECK(observed_neurons>=0),
+  reserved_neurons INTEGER NOT NULL CHECK(reserved_neurons>=0),
+  updated_at TEXT NOT NULL,
+  last_request_neurons INTEGER NOT NULL CHECK(last_request_neurons>=0),
+  last_request_admitted INTEGER NOT NULL CHECK(last_request_admitted IN (0,1)),
+  PRIMARY KEY(account_id,utc_day)
+);
+
 -- Bound cold-history lookup cost by artifact identity instead of scanning all run items.
 CREATE INDEX IF NOT EXISTS idx_retention_item_artifact_release
 ON data_retention_run_items (

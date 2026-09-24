@@ -19,8 +19,8 @@ def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_rea
                          transport=None, clock=None, shadow_hmac_secret=''):
     from services.native_paper_source_capture import NativeSourceCapture
     from services.native_paper_read_capabilities import NativeReadCapabilities
-    from services.native_paper_debate import NativeCapturedDebate, NativeGeminiRead
-    from services.llm_debate_client import GEMINI_MODEL_DEFAULT
+    from services.native_paper_debate import NativeCapturedDebate, NativeWorkersAIRead
+    from services.llm_debate_client import DEBATE_MODEL_POLICY
     from services.paired_native_sources import PairSourceKV
     from services.paired_native_models import prediction_arms, ModelScopedReader, PairedModelCapture
     from copy import copy
@@ -29,15 +29,11 @@ def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_rea
     context = packet['source_context']
     if context['variables'] != packet['variables']:
         raise ValueError('native_capture_worker_context_mismatch')
-    raw_rounds = context['frozen_kv'].get('ml:config.debate_max_rounds')
-    try:
-        rounds = max(1, min(3, int(str(raw_rounds).strip())))
-    except ValueError:
-        rounds = 2  # Identical to the original controller's missing/invalid policy.
+    rounds = 2  # Exactly two rounds, with each model taking each side.
     capture = NativeSourceCapture(objects=objects, domain_queries=domain_queries,
-        inference_reads={'native_debate_llm': NativeGeminiRead()}, clock=clock)
+        inference_reads={'native_debate_llm': NativeWorkersAIRead()}, clock=clock)
     debate = NativeCapturedDebate(source_capture=capture, max_rounds=rounds,
-        session_date=packet['session_date'], model_name=GEMINI_MODEL_DEFAULT)
+        session_date=packet['session_date'], model_name=DEBATE_MODEL_POLICY)
     variables = packet['variables']
     if str(variables.get('LIVE_EXECUTION_SHADOW_GUARD_ENABLED', '')).lower() in {'1', 'true', 'yes', 'enabled', 'on'}:
         raise ValueError('native_external_broker_guard_cannot_govern_private_account')

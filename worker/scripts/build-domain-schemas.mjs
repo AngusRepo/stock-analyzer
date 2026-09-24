@@ -7,7 +7,7 @@ const domains = ['core', 'market', 'learning', 'ops', 'execution', 'paper', 'res
 // NAV tables/triggers have an immutable additive migration owner. Rebuilding a
 // schema from the older production snapshot must not remove these safeguards.
 const immutableSchemaExtensions = {
-  ops: ['0014_retention_history_lookup.sql', '0015_retention_source_release.sql', '0016_retention_history_coverage.sql', '0017_ten_year_archive_windows.sql'],
+  ops: ['0019_workers_ai_debate_budget.sql', '0014_retention_history_lookup.sql', '0015_retention_source_release.sql', '0016_retention_history_coverage.sql', '0017_ten_year_archive_windows.sql'],
   market: ['0008_retention_source_release.sql', '0009_retention_anchor_index.sql'],
   execution: ['0003_retention_source_release.sql', '0004_retention_reference_indexes.sql'],
   research: ['0005_retention_source_release.sql', '0006_retention_release_lookup.sql'],

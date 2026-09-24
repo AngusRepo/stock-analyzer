@@ -62,6 +62,9 @@ _PRICE_PER_1K: dict[str, tuple[float, float]] = {
     "gemini-3.5-flash":               (0.0015, 0.009),
     "gemini-2.5-flash-lite":          (0.0001, 0.00040),
     "deepseek-v3":                    (0.00014, 0.00028),
+    "@cf/mistralai/mistral-small-3.1-24b-instruct": (0.000351, 0.000555),
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": (0.000293, 0.002253),
+    "@cf/openai/gpt-oss-20b": (0.000200, 0.000300),
     "gemma-27b":                      (0.00005, 0.00010),
 }
 

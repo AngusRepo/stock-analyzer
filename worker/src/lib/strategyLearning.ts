@@ -5566,12 +5566,13 @@ export async function finalizeStrategyLearningEvidenceV5(
             listStrategySpecsForLearning(db, { applyAdaptivePolicy: false }),
             import('./strategyProductionPolicyService'),
           ])
+          const { strategyPolicyPublicationCutoff } = await import('./strategyMetricSnapshots')
           return refreshStrategyProductionContributionPolicy(db, {
             knowledgeCutoffDate: date,
             strategies: specs,
             gates: policy.promotion_gate,
             adaptiveState: policy.policy_state,
-          })
+          }, { publicationCutoffAt: strategyPolicyPublicationCutoff(date) })
         },
         options,
       )

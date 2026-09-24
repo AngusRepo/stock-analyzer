@@ -149,8 +149,9 @@ export function buildStrategyProductionPolicyState(input: StrategyProductionPoli
 }
 
 export async function refreshStrategyProductionContributionPolicy(db: D1Database,
-  input: Omit<StrategyProductionPolicyInput, 'evidenceFusion'>): Promise<RefreshStrategyProductionPolicyResult> {
-  const evidenceFusion = await loadStrategyEvidenceOwnerSnapshotBefore(db, input.strategies, input.knowledgeCutoffDate)
+  input: Omit<StrategyProductionPolicyInput, 'evidenceFusion'>,
+  options: { publicationCutoffAt?: string } = {}): Promise<RefreshStrategyProductionPolicyResult> {
+  const evidenceFusion = await loadStrategyEvidenceOwnerSnapshotBefore(db, input.strategies, input.knowledgeCutoffDate, options.publicationCutoffAt)
   const captured = structuredClone({ ...input, evidenceFusion })
   const state = buildStrategyProductionPolicyState(captured)
   const { captureStrategyWeightSource } = await import('./strategyProductionWeightReplay')

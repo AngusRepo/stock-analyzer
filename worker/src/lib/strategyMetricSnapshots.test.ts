@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { publishMetricSnapshot,readMetricSnapshot,METRIC_ROWS_BEFORE_CUTOFF_SQL } from './strategyMetricSnapshots'
+import { publishMetricSnapshot,readMetricSnapshot,METRIC_ROWS_BEFORE_CUTOFF_SQL, METRIC_ROWS_BEFORE_PUBLICATION_SQL, strategyPolicyPublicationCutoff } from './strategyMetricSnapshots'
 async function main() {
  const sql=new DatabaseSync(':memory:')
  sql.exec(`CREATE TABLE strategy_evidence_metrics_v1(strategy_id TEXT,strategy_version TEXT,strategy_status TEXT,alpha_bucket TEXT,
@@ -33,6 +33,19 @@ async function main() {
  // A backfill published after the decision must not replace what was known then.
  sql.prepare('UPDATE strategy_evidence_metric_snapshot_runs_v2 SET created_at=? WHERE snapshot_run_id=?').run('2026-09-10 16:00:00',second.snapshot_run_id)
  assert.equal(get('2026-09-10')[0].metric_value,.2)
+ // Prior-day outcome materialized today is available to tonight's publication,
+ // while the historical morning decision still sees its original snapshot.
+ sql.prepare('UPDATE strategy_evidence_metric_snapshot_runs_v2 SET created_at=? WHERE snapshot_run_id=?').run('2026-09-10 00:00:00',second.snapshot_run_id)
+ const publish=(at:string)=>sql.prepare(METRIC_ROWS_BEFORE_PUBLICATION_SQL+' SELECT metric_value FROM metric_revisions WHERE snapshot_rank=1').all('2026-09-10',at)
+ assert.equal(get('2026-09-10')[0].metric_value,.2)
+ assert.equal(publish('2026-09-10T11:00:00Z')[0].metric_value,.4)
+ assert.equal(publish('2026-09-10T00:00:00Z')[0].metric_value,.2,'strict publication boundary')
+ sql.prepare('UPDATE strategy_evidence_metric_snapshot_runs_v2 SET created_at=? WHERE snapshot_run_id=?').run('2026-09-10 12:00:00',second.snapshot_run_id)
+ assert.equal(publish('2026-09-10T11:00:00Z')[0].metric_value,.2,'later publication cannot revise frozen evidence')
+ assert.equal(sql.prepare(METRIC_ROWS_BEFORE_PUBLICATION_SQL+' SELECT * FROM metric_revisions').all('2026-09-09','2026-09-09T15:00:00Z').length,0,'same-day outcomes remain excluded')
+ assert.equal(strategyPolicyPublicationCutoff('2026-09-10',new Date('2026-09-10T11:00:00Z')),'2026-09-10T11:00:00.000Z')
+ assert.equal(strategyPolicyPublicationCutoff('2026-09-10',new Date('2026-09-11T11:00:00Z')),'2026-09-10T16:00:00.000Z','late recovery stops at original Taipei midnight')
+ assert.throws(()=>strategyPolicyPublicationCutoff('2026-09-11',new Date('2026-09-10T11:00:00Z')),/date_invalid/)
  sql.prepare('UPDATE strategy_evidence_metric_snapshot_rows_v2 SET row_json=? WHERE snapshot_run_id=?').run(JSON.stringify({...row,metric_value:99}),first.snapshot_run_id)
  await assert.rejects(readMetricSnapshot(db,input.date,'v4',input.mode,input.scope),/integrity_failure/)
  console.log('run-scoped immutable snapshots and Taipei publication cutoff: PASS')

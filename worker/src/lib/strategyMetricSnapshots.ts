@@ -132,11 +132,25 @@ m.strategy_id,m.strategy_version,m.strategy_status,m.alpha_bucket,m.primary_hori
 
 // Cutoff is Taipei start-of-day. Late materialization cannot enter an earlier decision.
 // DENSE_RANK selects one complete revision per date, not one row per metric/profile.
-export const METRIC_ROWS_BEFORE_CUTOFF_SQL = `${METRIC_ROWS_CTE_SQL}, metric_revisions AS (
+const metricRowsBeforeCutoffs = (publicationExpression: string) => `${METRIC_ROWS_CTE_SQL}, metric_revisions AS (
  SELECT *, DENSE_RANK() OVER (
    PARTITION BY outcome_as_of_date,definition_version,source_mode
    ORDER BY datetime(snapshot_created_at) DESC,snapshot_run_id DESC
  ) snapshot_rank FROM metric_snapshot_rows
- WHERE outcome_as_of_date < ? AND datetime(snapshot_created_at) < datetime(?,'-8 hours')
+ WHERE outcome_as_of_date < ? AND datetime(snapshot_created_at) < ${publicationExpression}
    AND source_mode='authority_bridge'
 ) `
+
+export const METRIC_ROWS_BEFORE_CUTOFF_SQL = metricRowsBeforeCutoffs("datetime(?,'-8 hours')")
+// Policy publication can consume prior-day outcomes already published today.
+// Historical decision readers continue using the start-of-day query above.
+export const METRIC_ROWS_BEFORE_PUBLICATION_SQL = metricRowsBeforeCutoffs('datetime(?)')
+
+export function strategyPolicyPublicationCutoff(date: string, now = new Date()): string {
+  const start = Date.parse(date + 'T00:00:00+08:00')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(start)
+    || !Number.isFinite(now.getTime()) || now.getTime() < start)
+    throw new Error('strategy_policy_publication_date_invalid')
+  // Delayed recovery cannot import evidence first published on a later day.
+  return new Date(Math.min(now.getTime(), start + 86400000)).toISOString()
+}

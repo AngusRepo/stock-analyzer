@@ -792,7 +792,7 @@
         ],
         "full_payload_checksum_validation": "unchanged first read; no cross-registration cache",
         "production_evidence": "audits/runtime-latency-watchdog-20260924/nav-complete-source-result.json",
-        "complete_registration_and_private_state_checksum": "1324b7b211a903087016bbef44fb6c0402ddd10988458d466e089a0ec9740709",
+        "complete_registration_and_private_state_checksum": "cbba7b5c9e52b0916516e5fbfb579057279cee7aaf8255a8e544a81e42e1f742",
         "baseline_and_scoped_outputs_equal": true,
         "production_parent_bytes": 704894131,
         "local_verified_read_seconds": 37.578,

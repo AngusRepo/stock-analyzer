@@ -20,6 +20,10 @@ def resolve_comparison(*, query, execution):
             or any(packet.get(key) != plan.get(key) for key in
                    ('pair_id', 'owner', 'candidate_checksum', 'baseline_checksum'))):
         raise ValueError('paired_nav_comparison_execution_parent_mismatch')
+    if plan.get('execution_replacement'):
+        from services.paired_native_prestart import validate_successor_execution
+        original, _ = validate_successor_execution(execution, allocation=allocation, query=query)
+        return resolve_comparison(query=query, execution=original)
     parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
     from services.paired_nav_execution_environment import validate_registered_environment
     validate_registered_environment(parent=parent, allocation=plan,
@@ -54,6 +58,10 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
             or plan['configuration'].get('formal_baseline_identity') != context.get('formal_baseline_identity')
             or not context.get('formal_baseline_identity')):
         raise ValueError('paired_nav_comparison_allocation_parent_mismatch')
+    if plan.get('execution_replacement'):
+        from services.paired_native_prestart import validate_successor_plan
+        _, original = validate_successor_plan(plan, signal_date=am['signal_date'], frozen_at=am['frozen_at'], query=query)
+        return resolve_allocation_comparison(query=query, allocation=original, parent=parent)
     owner = plan['owner']
     if owner in {'ensemble', 'l4_alpha_ev'}:
         formal = context['formal_baseline_identity']

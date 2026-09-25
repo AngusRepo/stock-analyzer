@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:d2d75e9d4b44b0c50c9d1360bd5227cb8a50c9f681cb3622162a150e837734ea",
+  "execution_owner_version": "native-paper-v1:096c1c7734e711151d9c0f9f0bd623607f84d29358b66c651309f0fd4a7ac35b",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized commit push deploy pending exit arbitration, cumulative TP1, EOD continuation and top-up preservation on 2026-09-25.",
-  "review": "docs/releases/2026-09-25-position-exit-and-ab-cards.md",
+  "authorization": "Wei explicitly approved commit, push, deploy, exact Paper runtime approval and the two checksum-pinned prestart successors on 2026-09-25; no Modal, no retraining, no real orders.",
+  "review": "docs/releases/2026-09-25-native-prestart-successor.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

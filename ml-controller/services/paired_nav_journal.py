@@ -180,6 +180,10 @@ def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,
         from services.paired_nav_schema import validate_paired_nav_schema
         validate_paired_nav_schema(query)
         prospective = day == taipei.date() or (taipei.hour < 9 and day == taipei.date() - timedelta(days=1))
+        if snapshot_kind == 'allocation_pair' and content.get('execution_replacement'):
+            from services.paired_native_prestart import validate_successor_plan
+            validate_successor_plan(content, signal_date=signal_date, frozen_at=stamp.isoformat(), query=query)
+            prospective = True  # Original prospective inputs, owner-only change before first phase.
         if snapshot_kind == 'execution_pair' and content.get('allocation_snapshot_id'):
             parent = read_snapshot(query, content['allocation_snapshot_id'])
             parent_manifest = parent['manifest']
@@ -617,6 +621,8 @@ def materialize_pair(*, snapshot_id: str, session_date: str, execution: dict[str
     """
     saved = read_snapshot(query, snapshot_id)
     manifest, packet = saved['manifest'], saved['payload']['content']
+    from services.paired_native_prestart import assert_collectible
+    assert_collectible(saved, query=query)
     if manifest['snapshot_kind'] != 'execution_pair' or manifest['prospective'] != 1:
         raise ValueError('paired_nav_prospective_execution_pair_required')
     if session_date <= manifest['signal_date'] or packet.get('session_date') != session_date:

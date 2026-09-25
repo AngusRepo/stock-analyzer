@@ -11,7 +11,7 @@ const immutableSchemaExtensions = {
   market: ['0008_retention_source_release.sql', '0009_retention_anchor_index.sql'],
   execution: ['0003_retention_source_release.sql', '0004_retention_reference_indexes.sql'],
   research: ['0005_retention_source_release.sql', '0006_retention_release_lookup.sql'],
-  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql', '0050_retention_source_release.sql', '0051_retention_release_lookup.sql', '0052_strategy_paper_nav_authority.sql'],
+  learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql', '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql', '0050_retention_source_release.sql', '0051_retention_release_lookup.sql', '0052_strategy_paper_nav_authority.sql', '0054_native_prestart_successions.sql'],
 }
 const extensions = Object.fromEntries(Object.entries(immutableSchemaExtensions).map(([domain, files]) => [domain,
   files.map(file => fs.readFileSync(path.join(root, 'domain-migrations', domain, file), 'utf8')).join('\n')]))

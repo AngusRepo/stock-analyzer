@@ -311,6 +311,7 @@ def native_execution_identity(runner: Path | None = None) -> str:
         'pipeline': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             for name in ('native_paper_source_capture.py', 'native_paper_bootstrap.py', 'native_paper_state.py',
                            'paired_native_session.py', 'paired_native_collector.py', 'paired_native_registration.py',
+                           'paired_native_prestart.py',
                            'paired_native_models.py', 'paired_native_rescore_carry.py', 'paired_nav_strategy_bundle.py',
                            'native_paper_read_capabilities.py', 'paired_nav_journal.py', 'paired_nav_cold.py', 'paired_nav_schema.py',
                            'paired_nav_read_cache.py', 'paired_nav_comparison.py',

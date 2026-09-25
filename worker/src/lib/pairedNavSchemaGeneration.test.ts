@@ -26,7 +26,7 @@ const extensions = {
     '0046_route_nav_diagnostic_floor.sql', '0047_atomic_nav_adoption.sql',
     '0048_paired_nav_cold_storage.sql', '0049_paired_nav_orphan_archive.sql',
     '0050_retention_source_release.sql', '0051_retention_release_lookup.sql',
-    '0052_strategy_paper_nav_authority.sql'],
+    '0052_strategy_paper_nav_authority.sql', '0054_native_prestart_successions.sql'],
 }
 for (const [domain, files] of Object.entries(extensions)) {
   for (const name of files) fs.copyFileSync(`domain-migrations/${domain}/${name}`,
@@ -34,7 +34,7 @@ for (const [domain, files] of Object.entries(extensions)) {
 }
 const names = ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql',
   '0047_atomic_nav_adoption.sql', '0048_paired_nav_cold_storage.sql',
-  '0049_paired_nav_orphan_archive.sql', '0052_strategy_paper_nav_authority.sql']
+  '0049_paired_nav_orphan_archive.sql', '0052_strategy_paper_nav_authority.sql', '0054_native_prestart_successions.sql']
 // Exercise the real one-line trigger bodies and CASE expressions in primary input.
 fs.appendFileSync(path.join(root, 'schema.sql'), '\n' + fs.readFileSync('domain-migrations/learning/0048_paired_nav_cold_storage.sql', 'utf8'))
 const run = () => {
@@ -54,6 +54,7 @@ assert.ok(schema.includes('paired_nav_cold_objects_v1_no_replace'))
 assert.ok(schema.includes('paired_nav_orphan_retired_no_manifest'))
 assert.ok(schema.includes('paired_nav_parts_retired_no_insert'))
 assert.ok(schema.includes('paired_nav_lifecycle_no_replace_v1'))
+assert.ok(schema.includes('paired_native_prestart_no_replace_v1'))
 assert.ok(schema.includes('paired_nav_journal_no_replace_v1'))
 assert.ok(schema.includes('strategy_atomic_nav_adoptions_no_replace_v1'))
 assert.ok(schema.includes('strategy_replacement_authority_no_update_v1'))

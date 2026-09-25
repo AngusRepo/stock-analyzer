@@ -22,6 +22,8 @@ def frame_identity(snapshot_id: str, frame: dict) -> dict:
 def collect_frame(*, snapshot_id: str, frame_index: int, objects, query, capture_source,
                   runner: Path | None = None, now: datetime | None = None) -> dict:
     saved = read_snapshot(query, snapshot_id)
+    from services.paired_native_prestart import assert_collectible
+    assert_collectible(saved, query=query)
     packet, manifest = saved['payload']['content'], saved['manifest']
     if manifest['snapshot_kind'] != 'execution_pair' or manifest['prospective'] != 1:
         raise ValueError('paired_native_prospective_pair_required')
@@ -85,6 +87,8 @@ def collect_frame(*, snapshot_id: str, frame_index: int, objects, query, capture
 def close_collected_session(*, snapshot_id: str, objects, query, writer, source_receipt: dict,
                             runner: Path | None = None, now: datetime | None = None) -> dict:
     saved = read_snapshot(query, snapshot_id)
+    from services.paired_native_prestart import assert_collectible
+    assert_collectible(saved, query=query)
     packet = saved['payload']['content']
     schedule = packet['schedule']
     validate_schedule(schedule, packet['session_date'])

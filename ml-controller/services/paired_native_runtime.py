@@ -100,9 +100,17 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
         snapshot_id = row['snapshot_id']
         completed, receipt_id, journal = 0, None, None
         try:
-            packet = read_snapshot(query, snapshot_id)['payload']['content']
+            from services.paired_native_prestart import succession, assert_collectible
+            retired = succession(query, old_snapshot_id=snapshot_id)
+            if retired:
+                results.append({'snapshot_id': snapshot_id, 'status': 'superseded',
+                    'successor_snapshot_id': retired['new_snapshot_id'], 'nav_maturity_credit': 0})
+                continue
+            saved = read_snapshot(query, snapshot_id)
+            packet = saved['payload']['content']
             if packet['session_date'] != session_date:
                 continue
+            assert_collectible(saved, query=query)
             validate_schedule(packet['schedule'], session_date)
             # Deliveries form a contiguous prefix: collect_frame requires the
             # predecessor before publication. Binary search avoids rereading
@@ -238,6 +246,16 @@ def register_candidate_execution_plans(*, collection: dict, query, writer, objec
             old = read_snapshot(query, identity)
             if old['payload']['content']['allocation_snapshot_id'] != plan['snapshot_id']:
                 raise ValueError('native_registration_parent_changed')
+            from services.paired_native_prestart import succession
+            retired = succession(query, old_snapshot_id=identity)
+            if retired:
+                old = read_snapshot(query, retired['new_snapshot_id'])
+                registration_order[old['manifest']['snapshot_id']] = registration_order[identity]
+            from services.native_paper_sandbox import native_execution_identity
+            if old['payload']['content']['execution_owner_version'] != native_execution_identity(runner):
+                raise ValueError('native_registration_execution_owner_changed')
+            from services.paired_native_prestart import assert_collectible
+            assert_collectible(old, query=query)
             registered.append(old['manifest'])
         else:
             pending.append(plan)

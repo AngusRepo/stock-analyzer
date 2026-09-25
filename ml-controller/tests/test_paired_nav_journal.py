@@ -343,3 +343,28 @@ def test_real_formal_sparse_capture_does_not_change_weights_or_admission(db, mon
         risk_config=None, signal_date='2026-09-07', source_run_id='real-sparse', query=db.query, writer=db.writer)
     assert allocation_projection(output) == allocation_projection(expected)
     assert replay_frozen_allocation(snapshot_id=collected['snapshot_id'], query=db.query)['allocation_replay_decision'] == 'PASS'
+
+
+@pytest.mark.parametrize('value', [
+    None, True, False, 0, -0.0, 1e-200, 1e200, 2**100,
+    {'中文': '😀' * 20001, 'escaped': '\"\\\n\t', 'empty': [], 'nested': ({'z': None, 'a': 1.25},)},
+    {3: 'integer keys', 2: True},
+    [{'symbol': str(i), 'date': '2026-09-24', 'price': (i - 1000) / 3.0} for i in range(2000)],
+])
+def test_streaming_digest_matches_original_canonical_bytes(value):
+    import hashlib
+    from services.paired_nav_journal import encode
+    assert digest(value) == hashlib.sha256(encode(value).encode('utf-8')).hexdigest()
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), float('-inf')])
+def test_streaming_digest_still_rejects_nonfinite(value):
+    with pytest.raises(ValueError):
+        digest({'invalid': value})
+
+
+def test_streaming_digest_still_rejects_cycles():
+    value = []
+    value.append(value)
+    with pytest.raises(ValueError, match='Circular reference'):
+        digest(value)

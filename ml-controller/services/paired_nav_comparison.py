@@ -7,6 +7,16 @@ This reader neither rewrites old journals nor grants statistical authority.
 from services.paired_nav_journal import digest, read_snapshot, _timestamp
 
 
+class _ComparisonInputArms(dict):
+    """Validation-only view; the existing verifier's returned copy is unused.
+
+    Keep the shared L3 verifier and all its checks intact. Only this read-only
+    caller discards its output; execution/registration still receive deep copies.
+    """
+    def __deepcopy__(self, memo):
+        return None
+
+
 def resolve_comparison(*, query, execution):
     manifest, packet = execution['manifest'], execution['payload']['content']
     if not packet.get('allocation_snapshot_id'):
@@ -20,6 +30,10 @@ def resolve_comparison(*, query, execution):
             or any(packet.get(key) != plan.get(key) for key in
                    ('pair_id', 'owner', 'candidate_checksum', 'baseline_checksum'))):
         raise ValueError('paired_nav_comparison_execution_parent_mismatch')
+    if plan.get('execution_replacement'):
+        from services.paired_native_prestart import validate_successor_execution
+        _, _, comparison = validate_successor_execution(execution, allocation=allocation, query=query)
+        return comparison
     parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
     from services.paired_nav_execution_environment import validate_registered_environment
     validate_registered_environment(parent=parent, allocation=plan,
@@ -54,6 +68,10 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
             or plan['configuration'].get('formal_baseline_identity') != context.get('formal_baseline_identity')
             or not context.get('formal_baseline_identity')):
         raise ValueError('paired_nav_comparison_allocation_parent_mismatch')
+    if plan.get('execution_replacement'):
+        from services.paired_native_prestart import validate_successor_plan
+        _, _, comparison = validate_successor_plan(plan, signal_date=am['signal_date'], frozen_at=am['frozen_at'], query=query)
+        return comparison
     owner = plan['owner']
     if owner in {'ensemble', 'l4_alpha_ev'}:
         formal = context['formal_baseline_identity']
@@ -65,7 +83,10 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
             if owner!='ensemble':
                 raise ValueError('paired_nav_strategy_comparison_owner_invalid')
             from services.paired_nav_strategy_bundle import verify_strategy_inputs
-            verify_strategy_inputs(plan['configuration'],context,signal_date=am['signal_date'])
+            validation_context = dict(context)
+            if isinstance(context.get('strategy_allocation_input_arms'), dict):
+                validation_context['strategy_allocation_input_arms'] = _ComparisonInputArms(context['strategy_allocation_input_arms'])
+            verify_strategy_inputs(plan['configuration'],validation_context,signal_date=am['signal_date'])
             if plan['configuration']['strategy_bundle']['candidate_l3_identity']['payload_checksum']!=plan['candidate_checksum']:
                 raise ValueError('paired_nav_strategy_comparison_candidate_mismatch')
             kind,baseline_kind='strategy_bundle_replacement','frozen_incumbent_complete_chain'

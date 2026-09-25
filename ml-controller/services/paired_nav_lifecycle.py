@@ -70,7 +70,13 @@ def registered_pairs(*, signal_date, query):
         "WHERE m.snapshot_kind='execution_pair' ORDER BY m.source_run_id", [signal_date])
     active = []
     for row in rows:
+        from services.paired_native_prestart import succession
+        if succession(query, old_snapshot_id=row['snapshot_id']):
+            continue
         execution = read_snapshot(query, row['snapshot_id'])
+        if (execution['payload']['content'].get('prestart_predecessor_snapshot_id')
+                and not succession(query, new_snapshot_id=row['snapshot_id'])):
+            continue
         packet = execution['payload']['content']
         if closure_for_pair(packet['pair_id'], signal_date=signal_date, query=query):
             continue

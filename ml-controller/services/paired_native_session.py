@@ -122,6 +122,8 @@ def run_paired_session(*, snapshot_id: str, tapes: dict[str, Any], states: dict[
                        timeout_seconds: float = 120, state_objects=None,
                        expected_final_checksums: dict[str, str] | None = None) -> dict[str, Any]:
     saved = read_snapshot(query, snapshot_id)
+    from services.paired_native_prestart import assert_collectible
+    assert_collectible(saved, query=query)
     manifest, packet = saved['manifest'], saved['payload']['content']
     if manifest['snapshot_kind'] != 'execution_pair' or manifest['prospective'] != 1:
         raise ValueError('paired_native_prospective_pair_required')

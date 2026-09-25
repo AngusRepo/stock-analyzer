@@ -247,3 +247,25 @@ def test_successor_comparison_reads_large_original_context_once(native_runner):
         return db.query(sql, values)
     assert resolve_comparison(query=query, execution=saved)['owner'] == old['owner']
     assert len(calls) == 1
+
+
+def test_comparison_view_retains_shared_verifier_checks_without_copying_output():
+    from test_paired_nav_strategy_bundle import fixture_bundle, fixture, DAY
+    from services.paired_nav_strategy_bundle import verify_strategy_inputs
+    from services.paired_nav_comparison import _ComparisonInputArms
+    bundle, config, history = fixture_bundle()
+    rows, policy, _ = fixture()
+    policy = {**deepcopy(bundle['candidate_trading_config']['l4Distribution']), 'runtime':policy['runtime']}
+    old = {'recommendations':rows, 'alpha_policy':{'l4AlphaEv':{}}, 'return_history':history,
+        'ranking_config':{}, 'ensemble_v2_cfg':{}, 'regime_label':'x', 'regime_surface':{}}
+    new = {**deepcopy(old), 'alpha_policy':{'l4Distribution':policy}}
+    parent = {'inputs':old, 'strategy_allocation_input_arms':{'baseline':old,'candidate':new},
+        'model_prediction_arms':{'candidate':{'predictions':deepcopy(policy['runtime']['predictions'])}}}
+    ordinary = verify_strategy_inputs(config,parent,signal_date=DAY)
+    assert ordinary['candidate'] == new and ordinary['candidate'] is not new
+    validation = {**parent, 'strategy_allocation_input_arms':_ComparisonInputArms(parent['strategy_allocation_input_arms'])}
+    assert verify_strategy_inputs(config,validation,signal_date=DAY) is None
+    new['alpha_policy']['l4Distribution']['runtime']['predictions']['A']['ensemble_v2']['artifact_checksum']='d'*64
+    for context in (parent, validation):
+        with pytest.raises(ValueError, match='candidate_predictions_changed'):
+            verify_strategy_inputs(config,context,signal_date=DAY)

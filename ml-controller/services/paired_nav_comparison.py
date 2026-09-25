@@ -7,6 +7,16 @@ This reader neither rewrites old journals nor grants statistical authority.
 from services.paired_nav_journal import digest, read_snapshot, _timestamp
 
 
+class _ComparisonInputArms(dict):
+    """Validation-only view; the existing verifier's returned copy is unused.
+
+    Keep the shared L3 verifier and all its checks intact. Only this read-only
+    caller discards its output; execution/registration still receive deep copies.
+    """
+    def __deepcopy__(self, memo):
+        return None
+
+
 def resolve_comparison(*, query, execution):
     manifest, packet = execution['manifest'], execution['payload']['content']
     if not packet.get('allocation_snapshot_id'):
@@ -73,7 +83,10 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
             if owner!='ensemble':
                 raise ValueError('paired_nav_strategy_comparison_owner_invalid')
             from services.paired_nav_strategy_bundle import verify_strategy_inputs
-            verify_strategy_inputs(plan['configuration'],context,signal_date=am['signal_date'],copy_inputs=False)
+            validation_context = dict(context)
+            if isinstance(context.get('strategy_allocation_input_arms'), dict):
+                validation_context['strategy_allocation_input_arms'] = _ComparisonInputArms(context['strategy_allocation_input_arms'])
+            verify_strategy_inputs(plan['configuration'],validation_context,signal_date=am['signal_date'])
             if plan['configuration']['strategy_bundle']['candidate_l3_identity']['payload_checksum']!=plan['candidate_checksum']:
                 raise ValueError('paired_nav_strategy_comparison_candidate_mismatch')
             kind,baseline_kind='strategy_bundle_replacement','frozen_incumbent_complete_chain'

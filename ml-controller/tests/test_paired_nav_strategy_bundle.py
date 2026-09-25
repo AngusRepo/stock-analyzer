@@ -66,8 +66,7 @@ def test_changed_or_unpaired_policy_cannot_reuse_nav_contrast(fault):
     with pytest.raises(ValueError):validate_strategy_bundle(bundle,signal_date=DAY)
 
 
-@pytest.mark.parametrize('copy_inputs', [True, False])
-def test_runtime_inputs_cannot_borrow_old_predictions_or_policy(copy_inputs):
+def test_runtime_inputs_cannot_borrow_old_predictions_or_policy():
     bundle,config,history=fixture_bundle()
     rows,policy,_=fixture()
     policy={**deepcopy(bundle['candidate_trading_config']['l4Distribution']),
@@ -77,16 +76,10 @@ def test_runtime_inputs_cannot_borrow_old_predictions_or_policy(copy_inputs):
     new={**deepcopy(old),'alpha_policy':{'l4Distribution':policy}}
     parent={'inputs':old,'strategy_allocation_input_arms':{'baseline':old,'candidate':new},
         'model_prediction_arms':{'candidate':{'predictions':deepcopy(policy['runtime']['predictions'])}}}
-    if not copy_inputs:
-        class NoUnusedCopy(dict):
-            def __deepcopy__(self, memo):
-                raise AssertionError('validation must not duplicate full input history')
-        parent['strategy_allocation_input_arms'] = NoUnusedCopy(parent['strategy_allocation_input_arms'])
-    result = verify_strategy_inputs(config,parent,signal_date=DAY,copy_inputs=copy_inputs)
-    assert (result['candidate']==new) if copy_inputs else result is None
+    assert verify_strategy_inputs(config,parent,signal_date=DAY)['candidate']==new
     new['alpha_policy']['l4Distribution']['runtime']['predictions']['A']['ensemble_v2']['artifact_checksum']='d'*64
     with pytest.raises(ValueError,match='candidate_predictions_changed'):
-        verify_strategy_inputs(config,parent,signal_date=DAY,copy_inputs=copy_inputs)
+        verify_strategy_inputs(config,parent,signal_date=DAY)
 
 
 def test_legacy_immutable_comparison_remains_compatible():

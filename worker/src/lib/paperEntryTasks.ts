@@ -2631,7 +2631,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
           ON CONFLICT(account_id, symbol) DO UPDATE SET
             shares=excluded.shares, avg_cost=excluded.avg_cost, name=excluded.name,
-            trade_lifecycle_json=excluded.trade_lifecycle_json, updated_at=datetime('now')
+            trade_lifecycle_json=CASE
+              WHEN json_valid(paper_positions.trade_lifecycle_json) THEN
+                CASE WHEN json_type(paper_positions.trade_lifecycle_json, '$.position_tp1_progress')='object'
+                  THEN json_set(excluded.trade_lifecycle_json, '$.position_tp1_progress',
+                    json_extract(paper_positions.trade_lifecycle_json, '$.position_tp1_progress'))
+                  ELSE excluded.trade_lifecycle_json END
+              ELSE excluded.trade_lifecycle_json END,
+            updated_at=datetime('now')
         `).bind(
           paperAccountId(),
           pending.symbol,

@@ -40,6 +40,37 @@ export function validateResearchRecommendations(body: StrategyAbRecommendations)
   return body
 }
 
+/** Retire display candidates only after the immutable activation is verified. */
+async function retiredComparisonPairs(db: D1Database, date: string): Promise<Set<string>> {
+  const response = await db.prepare(`SELECT s.*, o.payload_checksum AS old_checksum,
+    n.payload_checksum AS new_checksum, o.source_run_id AS old_source, n.source_run_id AS new_source,
+    o.snapshot_kind AS old_kind, n.snapshot_kind AS new_kind,
+    n.signal_date AS new_signal_date, n.frozen_at AS new_frozen_at
+    FROM paired_native_prestart_successions_v1 s
+    JOIN paired_nav_frozen_manifests_v1 o ON o.snapshot_id=s.old_snapshot_id
+    LEFT JOIN paired_nav_frozen_manifests_v1 n ON n.snapshot_id=s.new_snapshot_id
+    WHERE o.signal_date=? LIMIT 65`).bind(date).all<Record<string, any>>()
+  if (response.success === false || !Array.isArray(response.results) || response.results.length > 64)
+    throw Error('strategy_ab_succession_query_invalid')
+  const retired = new Set<string>()
+  for (const row of response.results) {
+    const body = JSON.parse(row.payload_json)
+    if (await sha256Text(row.payload_json) !== `sha256:${row.payload_checksum}`
+      || body.schema_version !== 'paired-native-prestart-successor-v1'
+      || body.inherited_mature_sessions !== 0 || body.production_effect !== false
+      || ['old_snapshot_id', 'new_snapshot_id', 'old_pair_id', 'new_pair_id'].some(key => body[key] !== row[key])
+      || row.old_kind !== 'execution_pair' || row.new_kind !== 'execution_pair'
+      || row.old_source !== row.old_pair_id || row.new_source !== row.new_pair_id
+      || row.new_signal_date !== date || body.old_payload_checksum !== row.old_checksum
+      || body.new_payload_checksum !== row.new_checksum
+      || !(Date.parse(row.new_frozen_at) <= Date.parse(row.recorded_at)
+        && Date.parse(row.recorded_at) < Date.parse(body.first_phase_at)))
+      throw Error('strategy_ab_succession_identity_invalid')
+    retired.add(row.old_pair_id)
+  }
+  return retired
+}
+
 export async function readStrategyAbRecommendations(env: Bindings, date: string): Promise<StrategyAbRecommendations> {
   const result: StrategyAbRecommendations = { schema_version: 'strategy-ab-recommendations-v1', date,
     scope: 'daily_allocation', generated_at: new Date().toISOString(), production_effect: false, nav_maturity_credit: 0,
@@ -58,8 +89,10 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
   const manifests = await learning.prepare("SELECT * FROM paired_nav_frozen_manifests_v1 WHERE signal_date=? AND snapshot_kind='allocation_pair' ORDER BY frozen_at DESC LIMIT 65")
     .bind(date).all<Record<string, any>>()
   if ((manifests.results?.length ?? 0) > 64) throw Error('strategy_ab_comparison_inventory_exceeds_bound')
+  const retired = await retiredComparisonPairs(learning, date)
   const matches: Array<{ manifest: Record<string, any>; content: any }> = []
   for (const manifest of manifests.results ?? []) {
+    if (retired.has(manifest.source_run_id)) continue
     const body = JSON.parse(await readPairedNavSnapshotRaw(learning, manifest, true))
     if (body.signal_date !== date || body.snapshot_kind !== 'allocation_pair') throw Error('strategy_ab_snapshot_date_mismatch')
     const tag = strategyAbTag(body.content?.configuration?.strategy_bundle?.strategy_ab)

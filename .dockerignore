@@ -71,6 +71,7 @@ scripts/
 !ml-controller/scripts/
 ml-controller/scripts/*
 !ml-controller/scripts/repair_active8_source_and_evaluation.py
+!ml-controller/scripts/repair_native_prestart.py
 !ml-controller/scripts/l4_distribution_refresh_job.py
 !ml-service/scripts/
 !ml-service/scripts/**

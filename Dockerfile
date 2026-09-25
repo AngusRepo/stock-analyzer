@@ -48,6 +48,7 @@ RUN node -e "require('/app/worker-dist/src/lib/evidenceContracts.js'); require('
 # Application source.
 COPY ml-controller/ /app/
 RUN test -f /app/scripts/repair_active8_source_and_evaluation.py
+RUN python -c "from scripts.repair_native_prestart import run"
 RUN python -c "from scripts.l4_distribution_refresh_job import execute, training_recipe_signature; training_recipe_signature()"
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json

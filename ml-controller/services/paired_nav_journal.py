@@ -37,7 +37,13 @@ def encode(value: Any) -> str:
 
 
 def digest(value: Any) -> str:
-    return hashlib.sha256(encode(value).encode('utf-8')).hexdigest()
+    # Hash the same canonical bytes without retaining full JSON + UTF-8 copies.
+    hasher = hashlib.sha256()
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    for piece in encoder.iterencode(value):
+        for start in range(0, len(piece), 20000):
+            hasher.update(piece[start:start + 20000].encode('utf-8'))
+    return hasher.hexdigest()
 
 
 def number(value: Any, field: str, *, minimum: float | None = None) -> float:

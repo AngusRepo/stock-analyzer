@@ -60,3 +60,5 @@ Wei 於 2026-09-25 明確批准本清單的 commit／push／deploy、精確 Pape
 完整原始輸入預檢於 8 GiB 一次性 Job 成功，峰值 RSS 5431.3 MiB；另以日常 controller 的 4 GiB 規格執行比較讀取，Cloud Run 明確回報 configured memory limit was reached。父資料 858,026,591 bytes 已完成讀取，後續角色驗證仍深複製完整雙臂輸入，但比較讀取未使用回傳副本。修補讓此唯讀驗證保留全部檢查、跳過不使用的複製；接續驗證沿用同次完整驗證的比較結果，避免再下載及解析同一個大父資料。建模／執行需要副本的既有呼叫仍預設複製。部署前須重測 4 GiB 日常路徑；未移轉 maturity，未宣告 source equivalence。
 
 日常 tick 入口也改為同一 session 的進行中請求共用一次執行；controller concurrency=40 時，跨分鐘重疊請求不再於同一程序重複載入大父資料。HTTP 等待者中斷不會取消 checkpoint writer；執行完成或失敗後清除，只共用進行中的工作、不缓存永久成功。
+
+後續函式級量測另定位 `replay_allocator_return_history` 的大型 payload checksum：`digest` 建立完整 JSON 與 UTF-8 副本，RSS 單次由約 2922 MiB 衝至 3553.5 MiB。改為相同 canonical JSON 位元組的串流 SHA256；Unicode、數值、tuple、整數 key、長字串及拒絕非有限值／循環參照均有等價測試，完整原始證據仍逐份核對。第一次跳過 unused deepcopy 的 4 GiB 重測仍 OOM，不能引用先前測試宣告規格足夠。

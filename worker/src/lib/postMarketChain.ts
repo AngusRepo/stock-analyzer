@@ -844,7 +844,8 @@ export async function runPostVerifyCallbackChain(
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!), {
       critical: false,
-      timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+      // Allow the inner 60s request to finish or abort before the chain records its result.
+      timeoutMs: 65_000,
     }))
     results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
       critical: false,

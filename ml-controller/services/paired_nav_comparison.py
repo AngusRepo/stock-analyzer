@@ -31,8 +31,20 @@ def resolve_comparison(*, query, execution):
 
 def resolve_allocation_comparison(*, query, allocation, parent=None):
     """The same contrast validation, including plans with no execution yet."""
+    from services.paired_nav_read_cache import reusable_comparison, remember_comparison
+    if parent is None:
+        reused = reusable_comparison(query, allocation)
+        if reused is not None:
+            return reused
     am, plan = allocation['manifest'], allocation['payload']['content']
     parent = parent if parent is not None else read_snapshot(query, plan['allocation_context_snapshot_id'])
+    result = _resolve_allocation_comparison(query=query, allocation=allocation, parent=parent)
+    remember_comparison(query, allocation, parent, result)
+    return result
+
+
+def _resolve_allocation_comparison(*, query, allocation, parent):
+    am, plan = allocation['manifest'], allocation['payload']['content']
     pm, context = parent['manifest'], parent['payload']['content']
     if (am['snapshot_kind'] != 'allocation_pair' or am['prospective'] != 1
             or pm['snapshot_kind'] != 'allocation_context' or pm['prospective'] != 1

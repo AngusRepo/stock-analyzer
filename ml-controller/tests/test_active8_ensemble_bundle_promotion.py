@@ -256,7 +256,7 @@ def test_champion_pointer_read_model_keeps_legacy_names_out_of_active8_slots(mon
             "champion_artifact_id": "legacy:artifact",
         }],
     )
-    monkeypatch.setattr(model_pool_router, "list_artifact_registry", lambda model_name=None, limit=200: [])
+    monkeypatch.setattr(model_pool_router, "list_workbench_artifacts", lambda **kwargs: [])
     monkeypatch.setattr(
         model_pool_router,
         "load_active8_ensemble_serving_bundle",

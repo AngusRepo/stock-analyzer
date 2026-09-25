@@ -1,3 +1,16 @@
+# Evening chain performance — 2026-09-25
+
+1. COMPLETE locally: bounded verified NAV reads; fresh-manifest compact definitions/comparisons; complete SQL-readset retry receipts with original callback/admission checks retained.
+2. COMPLETE locally: workbench evidence transport reduced 39.2% with exact production selection/promotion output parity. Endpoint latency/502 acceptance awaits deployed measurement.
+3. COMPLETE locally: Obsidian completion truthfulness, concurrency bounded at 3, one vault commit, outer deadline 65s. BLOCKED externally: existing GitHub secret v3 is invalid (401); replacement token pending.
+4. COMPLETE: integer-primary-key bootstrap pagination preserves 100,007-row full-history output and private state checksum; 512MiB byte bound retained.
+5. COMPLETE sizing decision: pipeline stays 16Gi (observed sample 9.21Gi); NAV/snapshot stay 8Gi. Per-phase/cgroup telemetry added. No new Modal compute dispatched.
+6. IN PROGRESS: exact equivalence approved by Wei; current Paper approval/policy verified unchanged; 73 focused tests passed. Final regression, CI and gated deployment next.
+
+Base production: 9793001a2926b28908372028d70ab0ad2f6a2b67. Audit: audits/evening-chain-performance-20260925/. No first-pass error-free closure claim until the actual scheduled run passes.
+
+---
+
 # Current continuation — 2026-09-22 after175bbec7 release
 
 1. COMPLETE: approved31files pushed fast-forward to main175bbec7; Worker/Controller/Jobs/bothModal program deployments and six migrations verified. No general deletion or GPU execution.

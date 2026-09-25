@@ -49,9 +49,15 @@ def _definitions(owner, saved):
 def frozen_policy_inventory(*, owner, business_date, query, now):
     if owner not in OWNERS:
         raise ValueError('nav_policy_owner_invalid')
+    from services.paired_nav_read_cache import policy_definitions
+    def read_definitions(query, snapshot_id):
+        def verified():
+            saved = read_inventory_snapshot(query, snapshot_id)
+            return {'manifest': saved['manifest'], 'definitions': _definitions(owner, saved)}
+        return policy_definitions(query, snapshot_id, owner, verified)
     items = {}
-    for saved in _manifest_rows(query, business_date, 'allocation_context', 50, reader=read_inventory_snapshot):
-        for checksum, definition in _definitions(owner, saved).items():
+    for saved in _manifest_rows(query, business_date, 'allocation_context', 50, reader=read_definitions):
+        for checksum, definition in saved['definitions'].items():
             manifest = saved['manifest']
             if _timestamp(manifest['frozen_at']) > now:
                 raise ValueError('nav_policy_original_source_in_future')

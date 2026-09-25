@@ -39,6 +39,7 @@ from services.model_artifact_registry import (
     run_feature_release_promotion_controller,
     run_promotion_controller,
 )
+from services.model_pool_registry_view import list_workbench_artifacts
 from services.model_serving_resolver import load_d1_champion_pool
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
@@ -354,8 +355,8 @@ def _artifact_registry_selection_snapshot(model_name: str | None = None, limit: 
     monthly/weekly artifacts are eligible for the next gate.
     """
     try:
-        rows = list_artifact_registry(model_name=model_name, limit=limit)
         pointers = list_champion_pointers(model_name=model_name)
+        rows = list_workbench_artifacts(pointers=pointers, model_name=model_name, limit=limit)
         return build_candidate_selection(rows, champion_pointers=pointers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
@@ -369,8 +370,8 @@ async def artifact_registry_selection(model_name: str | None = None, limit: int 
 def _artifact_registry_promotion_queue_snapshot(model_name: str | None = None, limit: int = 200):
     """Read-only promotion queue owned by D1 registry and exact champion pointers."""
     try:
-        rows = list_artifact_registry(model_name=model_name, limit=limit)
         pointers = list_champion_pointers(model_name=model_name)
+        rows = list_workbench_artifacts(pointers=pointers, model_name=model_name, limit=limit)
         champion_versions = {
             str(pointer.get("model_name") or ""): str(pointer.get("champion_version") or "")
             for pointer in pointers
@@ -667,7 +668,7 @@ def _artifact_registry_champion_pointers_snapshot(model_name: str | None = None,
     """Return the V5 serving bundle plus legacy pointers as audit lineage."""
     try:
         pointers = list_champion_pointers(model_name=model_name)
-        rows = list_artifact_registry(model_name=model_name, limit=limit)
+        rows = list_workbench_artifacts(pointers=pointers, model_name=model_name, limit=limit)
         artifacts_by_id = {
             str(row.get("artifact_id") or ""): row
             for row in rows
@@ -681,7 +682,8 @@ def _artifact_registry_champion_pointers_snapshot(model_name: str | None = None,
         missing_ids = [str(item.get("artifact_id") or "") for item in base_artifacts.values()
                        if isinstance(item, dict) and item.get("artifact_id") not in artifacts_by_id]
         if missing_ids:
-            rows = [*rows, *list_artifacts_by_ids(missing_ids)]
+            rows = [*[row for row in rows if row.get("artifact_id") not in missing_ids],
+                    *list_artifacts_by_ids(missing_ids)]
             artifacts_by_id.update({str(row['artifact_id']): row for row in rows if row.get('artifact_id')})
         runtime_pointers = pointers if model_name is None else list_champion_pointers()
         nav_grant = None

@@ -116,14 +116,29 @@ async def _execute_lifecycle(
 def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False) -> dict[str, Any]:
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     started = time.monotonic()
-    with reuse_verified_nav_evidence():
-        result = _execute_daily_nav_scoped(end_date=end_date, now=now,
-            retire_legacy_owners=retire_legacy_owners)
+    from services.paired_nav_read_cache import reuse_verified_cold_reads
+    from services.runtime_phase_metrics import measured_phase
+    with measured_phase("daily_nav"), reuse_verified_cold_reads(), reuse_verified_nav_evidence():
+        if retire_legacy_owners and end_date and now is None:
+            from services.daily_nav_read_receipt import run_with_receipt, GcsReceiptStore
+            from services.d1_domain_client import D1DataDomain, client_for_domain
+            from services.walk_forward_retrain import _get_bucket
+            try:
+                receipt_store = GcsReceiptStore(_get_bucket())
+            except Exception:
+                receipt_store = None  # Optional reuse must not block the original owner.
+            result = run_with_receipt(business_date=end_date,
+                client=client_for_domain(D1DataDomain.LEARNING), store=receipt_store,
+                run=lambda client: _execute_daily_nav_scoped(end_date=end_date,
+                    retire_legacy_owners=True, _client=client))
+        else:
+            result = _execute_daily_nav_scoped(end_date=end_date, now=now,
+                retire_legacy_owners=retire_legacy_owners)
     logger.info('[DailyNav] finished seconds=%.2f status=%s', time.monotonic() - started, result.get('status'))
     return result
 
 
-def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False) -> dict[str, Any]:
+def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None) -> dict[str, Any]:
     from datetime import date, datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)
@@ -136,7 +151,7 @@ def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_o
         parsed = date.fromisoformat(business_date)
         if parsed.isoformat() != business_date or parsed > today:
             raise ValueError("paired_nav_business_date_invalid_or_future")
-        client = client_for_domain(D1DataDomain.LEARNING)
+        client = _client or client_for_domain(D1DataDomain.LEARNING)
         from services.paired_nav_daily_review import NavDailyReviewIncomplete
         review_incomplete = False
         try:

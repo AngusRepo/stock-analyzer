@@ -280,41 +280,31 @@ class ObsidianWriter:
     async def generate_daily(self, date: str = None) -> dict:
         """Generate Daily + Trade + Pipeline notes, push to GitHub, sync progress.md."""
         date = date or _today_tw()
+        if not GITHUB_TOKEN or not GITHUB_REPO_VAULT:
+            raise RuntimeError("obsidian_github_configuration_missing")
         logger.info(f"[Obsidian] Generating daily notes for {date}")
 
         async with httpx.AsyncClient() as client:
-            # ── Fetch all data from D1 ──
-            risk = (await _d1_query(client, "SELECT * FROM market_risk ORDER BY date DESC LIMIT 1", domain=D1DataDomain.CORE)) or [{}]
-            risk = risk[0] if risk else {}
-
-            recommendations = await _d1_query(client,
-                "SELECT * FROM daily_recommendations WHERE date=? ORDER BY score DESC", [date], domain=D1DataDomain.CORE)
-
-            snapshot = (await _d1_query(client,
-                "SELECT * FROM paper_daily_snapshots WHERE account_id=1 AND date=? LIMIT 1", [date], domain=D1DataDomain.PAPER)) or [{}]
-            snapshot = snapshot[0] if snapshot else {}
-
-            orders = await _d1_query(client,
-                "SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at, '+8 hours')=? ORDER BY created_at", [date], domain=D1DataDomain.PAPER)
-
-            positions = await _d1_query(client,
-                "SELECT symbol, name, shares, avg_cost, entry_price "
-                "FROM paper_positions WHERE account_id=1 AND shares>0 ORDER BY symbol", domain=D1DataDomain.PAPER)
-            positions = await hydrate_position_valuations(
-                _d1_query,
-                client,
-                positions,
-                as_of_date=date,
-                core_domain=D1DataDomain.CORE,
-                market_domain=D1DataDomain.MARKET,
+            # Independent reads overlap, with at most three D1 requests.
+            semaphore = asyncio.Semaphore(3)
+            async def read(sql, params=None, *, domain):
+                async with semaphore:
+                    return await _d1_query(client, sql, params, domain=domain)
+            risk_rows, recommendations, snapshot_rows, orders, positions, decisions = await asyncio.gather(
+                read("SELECT * FROM market_risk ORDER BY date DESC LIMIT 1", domain=D1DataDomain.CORE),
+                read("SELECT * FROM daily_recommendations WHERE date=? ORDER BY score DESC", [date], domain=D1DataDomain.CORE),
+                read("SELECT * FROM paper_daily_snapshots WHERE account_id=1 AND date=? LIMIT 1", [date], domain=D1DataDomain.PAPER),
+                read("SELECT * FROM paper_orders WHERE account_id=1 AND DATE(created_at, '+8 hours')=? ORDER BY created_at", [date], domain=D1DataDomain.PAPER),
+                read("SELECT symbol, name, shares, avg_cost, entry_price FROM paper_positions WHERE account_id=1 AND shares>0 ORDER BY symbol", domain=D1DataDomain.PAPER),
+                read("SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC", [date], domain=D1DataDomain.PAPER),
             )
-
-            decisions = await _d1_query(client,
-                "SELECT * FROM decision_logs WHERE date=? ORDER BY total_score DESC", [date], domain=D1DataDomain.PAPER)
-
-            # T2 pending buys (may not exist yet if morning hasn't run)
-            t2_buys = await _d1_query(client,
-                "SELECT * FROM paper_orders WHERE account_id=1 AND side='buy' AND DATE(created_at, '+8 hours')=? AND source='auto_ml'", [date], domain=D1DataDomain.PAPER)
+            risk = risk_rows[0] if risk_rows else {}
+            snapshot = snapshot_rows[0] if snapshot_rows else {}
+            positions = await hydrate_position_valuations(
+                _d1_query, client, positions, as_of_date=date,
+                core_domain=D1DataDomain.CORE, market_domain=D1DataDomain.MARKET,
+            )
+            t2_buys = [order for order in orders if order.get("side") == "buy" and order.get("source") == "auto_ml"]
 
             # ── Generate Daily note ──
             daily_content = _render("daily.md.j2",
@@ -375,11 +365,13 @@ class ObsidianWriter:
             )
             files.append({"path": f"Pipeline/{date}.md", "content": pipeline_content})
 
-            # ── Push to Obsidian vault ──
-            vault_ok = await _push_to_github(client, GITHUB_REPO_VAULT, files, f"auto: daily {date}")
-
-            # ── Sync progress.md ──
-            progress_ok = await self._sync_progress(client, date, risk, snapshot, recommendations, positions, orders, t2_buys)
+            # One vault commit includes the notes and Current-State; avoid
+            # two sequential Git Trees round trips to the same branch.
+            pushed = await self._sync_progress(client, date, risk, snapshot, recommendations,
+                positions, orders, t2_buys, daily_files=files)
+            vault_ok, progress_ok = pushed['vault'], pushed['progress']
+            if not vault_ok or not progress_ok:
+                raise RuntimeError("obsidian_github_sync_incomplete")
 
             return {
                 "status": "ok",
@@ -478,7 +470,8 @@ class ObsidianWriter:
         self, client: httpx.AsyncClient,
         date: str, risk: dict, snapshot: dict,
         recommendations: list, positions: list, orders: list, t2_buys: list,
-    ) -> bool:
+        *, daily_files: list | None = None,
+    ) -> dict:
         """Compress daily data into progress.md and push to main repo."""
         buy_orders = [o for o in orders if o.get("side") == "buy"]
         sell_orders = [o for o in orders if o.get("side") == "sell"]
@@ -488,7 +481,7 @@ class ObsidianWriter:
         degraded_str = "None"
         try:
             models = [
-                m for m in read_model_pool_health_rows()
+                m for m in await asyncio.to_thread(read_model_pool_health_rows)
                 if m.get("lifecycle_status") in ("degraded", "retired")
                 or ((m.get("ic_4w_avg") is not None) and m.get("ic_4w_avg") < 0)
             ]
@@ -526,15 +519,10 @@ class ObsidianWriter:
 
         files = [{"path": "progress.md", "content": progress_content}]
 
-        # Push to main repo (stockvision-cloudflare-v12)
-        main_ok = False
+        vault_files = [*(daily_files or []), {"path": "Current-State.md", "content": progress_content}]
+        targets = [(GITHUB_REPO_VAULT, vault_files, f"auto: daily {date}")]
         if GITHUB_REPO_MAIN:
-            main_ok = await _push_to_github(client, GITHUB_REPO_MAIN, files, f"auto: progress {date}")
-
-        # Also push Current-State.md to vault
-        vault_ok = False
-        if GITHUB_REPO_VAULT:
-            vault_files = [{"path": "Current-State.md", "content": progress_content}]
-            vault_ok = await _push_to_github(client, GITHUB_REPO_VAULT, vault_files, f"auto: state {date}")
-
-        return main_ok or vault_ok
+            targets.append((GITHUB_REPO_MAIN, files, f"auto: progress {date}"))
+        results = await asyncio.gather(*(
+            _push_to_github(client, repo, payload, message) for repo, payload, message in targets))
+        return {"vault": results[0], "progress": all(results)}

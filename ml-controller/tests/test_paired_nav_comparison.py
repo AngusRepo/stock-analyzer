@@ -77,3 +77,37 @@ def test_coherently_rehashed_journal_cannot_relabel_fusion_as_formal(environment
         [encode(body), digest(body), row['pair_id']])
     with pytest.raises(RuntimeError, match='chain_comparison_mismatch'):
         read_verified_nav_evidence(now=stamp('2026-09-11'), business_date='2026-09-08', query=db.query)
+
+
+def test_compact_reuse_preserves_validation_and_rejects_changed_parent(environment, monkeypatch):
+    from copy import deepcopy
+    from services import paired_nav_comparison as comparison
+    from services.paired_nav_read_cache import reuse_verified_cold_reads
+    db, *_ = environment
+    registered_old(environment)
+    allocations = [read_snapshot(db.query, r['snapshot_id']) for r in db.query(
+        "SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind='allocation_pair'", [])]
+    allocation = next(a for a in allocations if a['payload']['content']['owner'] == 'l4_alpha_ev')
+    calls = []
+    real_read = comparison.read_snapshot
+    def tracked(*args):
+        calls.append(1)
+        return real_read(*args)
+    monkeypatch.setattr(comparison, 'read_snapshot', tracked)
+    with reuse_verified_cold_reads():
+        expected = comparison.resolve_allocation_comparison(query=db.query, allocation=allocation)
+        actual = comparison.resolve_allocation_comparison(query=db.query, allocation=allocation)
+        assert actual == expected and len(calls) == 1
+        mutated = deepcopy(allocation)
+        mutated['payload']['content']['baseline_checksum'] = 'f' * 64
+        with pytest.raises(ValueError, match='incumbent_mismatch'):
+            comparison.resolve_allocation_comparison(query=db.query, allocation=mutated)
+        parent = real_read(db.query, allocation['payload']['content']['allocation_context_snapshot_id'])
+        parent['payload']['content']['formal_output'] = []
+        with pytest.raises(ValueError, match='incumbent_mismatch'):
+            comparison.resolve_allocation_comparison(query=db.query, allocation=allocation, parent=parent)
+        db.conn.execute('DROP TRIGGER paired_nav_manifest_no_update_v1')
+        db.conn.execute('UPDATE paired_nav_frozen_manifests_v1 SET frozen_at=? WHERE snapshot_id=?',
+                        ['2026-09-09T00:00:00Z', parent['manifest']['snapshot_id']])
+        with pytest.raises(RuntimeError, match='parent_changed'):
+            comparison.resolve_allocation_comparison(query=db.query, allocation=allocation)

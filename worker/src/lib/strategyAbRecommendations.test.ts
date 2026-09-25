@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
+import { readFileSync } from 'node:fs'
 import { allocationView, validateResearchRecommendations, readStrategyAbRecommendations } from './strategyAbRecommendations'
 import type { StrategyAbRecommendations } from './strategyAbRecommendationContract'
 
@@ -44,7 +45,8 @@ async function testReadback() {
   assert.equal(missing.B.cash_weight, null)
   const db = new DatabaseSync(':memory:')
   try {
-    db.exec('CREATE TABLE l4_portfolio_plans_v1 (account_id INTEGER, signal_date TEXT, plan_id TEXT, payload_json TEXT); CREATE TABLE paired_nav_frozen_manifests_v1 (signal_date TEXT, snapshot_kind TEXT, frozen_at TEXT)')
+    db.exec('CREATE TABLE l4_portfolio_plans_v1 (account_id INTEGER, signal_date TEXT, plan_id TEXT, payload_json TEXT); CREATE TABLE paired_nav_frozen_manifests_v1 (snapshot_id TEXT PRIMARY KEY, signal_date TEXT, source_run_id TEXT, snapshot_kind TEXT, frozen_at TEXT, payload_checksum TEXT, part_count INTEGER, prospective INTEGER); CREATE TABLE paired_nav_frozen_parts_v1 (snapshot_id TEXT, part_no INTEGER, payload_text TEXT)')
+    db.exec(readFileSync(new URL('../../domain-migrations/learning/0054_native_prestart_successions.sql', import.meta.url), 'utf8'))
     const insert = db.prepare('INSERT INTO l4_portfolio_plans_v1 VALUES(1,?,?,?)')
     for (const [date, id, parent, symbol] of [
       ['2026-09-21', 'day1', null, '2485'],
@@ -64,6 +66,47 @@ async function testReadback() {
     const absent = await readStrategyAbRecommendations(live, '2026-09-23')
     assert.equal(absent.A.status, 'unavailable')
     assert.equal(absent.B.status, 'unavailable')
+    const date = '2026-09-24'
+    const tag = { schema_version: 'strategy-ab-price-threehead-exo-mlp-v1', experiment_id: 'e'.repeat(64),
+      role: 'B', recipe: 'exo137_timexer_three_head_scalar_ev_mlp',
+      baseline_primary: { role: 'A', recipe: 'price_timexer_three_head', bundle_checksum: 'a'.repeat(64), l3_checksum: 'b'.repeat(64) },
+      fee_terms: { discount_factor: .25, minimum_net_commission: 20, nominal_next_month_day: 10,
+        cash_credit: 'confirmed_receipt_only', tax_and_slippage_rebated: false } }
+    async function snapshot(id: string, pair: string, kind: string, frozen: string) {
+      const raw = JSON.stringify({ signal_date: date, source_run_id: pair, snapshot_kind: kind,
+        content: { pair_id: pair, configuration: { strategy_bundle: { strategy_ab: tag } },
+          allocation_preview: { A: rows, B: [{ symbol: '3441', allocation_weight: .4 }] } } })
+      const checksum = (await sha256Text(raw)).slice(7)
+      db.prepare('INSERT INTO paired_nav_frozen_manifests_v1 VALUES(?,?,?,?,?,?,1,1)')
+        .run(id, date, pair, kind, frozen, checksum)
+      db.prepare('INSERT INTO paired_nav_frozen_parts_v1 VALUES(?,0,?)').run(id, raw)
+      return checksum
+    }
+    const oldHash = await snapshot('old-execution', 'old-pair', 'execution_pair', '2026-09-24T12:00:00Z')
+    await snapshot('old-allocation', 'old-pair', 'allocation_pair', '2026-09-24T11:00:00Z')
+    const original = await readStrategyAbRecommendations(live, date)
+    assert.equal(original.B.status, 'available')
+    const newHash = await snapshot('new-execution', 'new-pair', 'execution_pair', '2026-09-25T12:00:00Z')
+    await snapshot('new-allocation', 'new-pair', 'allocation_pair', '2026-09-25T11:00:00Z')
+    assert.equal((await readStrategyAbRecommendations(live, date)).B.status, 'unavailable', 'Uncommitted successor remains ambiguous')
+    const receipt = { schema_version: 'paired-native-prestart-successor-v1', old_snapshot_id: 'old-execution',
+      new_snapshot_id: 'new-execution', old_pair_id: 'old-pair', new_pair_id: 'new-pair',
+      old_payload_checksum: oldHash, new_payload_checksum: newHash, inherited_mature_sessions: 0,
+      production_effect: false, first_phase_at: '2026-09-29T07:15:00+08:00' }
+    const rawReceipt = JSON.stringify(receipt)
+    db.prepare('INSERT INTO paired_native_prestart_successions_v1 VALUES(?,?,?,?,?,?,?)')
+      .run('old-execution', 'new-execution', 'old-pair', 'new-pair', rawReceipt, (await sha256Text(rawReceipt)).slice(7), '2026-09-25T12:01:00Z')
+    const active = await readStrategyAbRecommendations(live, date)
+    assert.equal(active.B.status, 'available')
+    assert.equal(active.B.source_id, 'new-allocation')
+    assert.deepEqual(active.A.picks, original.A.picks)
+    assert.deepEqual(active.B.picks, original.B.picks)
+    assert.equal(active.B.cash_weight, original.B.cash_weight)
+    await snapshot('unrelated-allocation', 'other-pair', 'allocation_pair', '2026-09-25T13:00:00Z')
+    assert.equal((await readStrategyAbRecommendations(live, date)).B.status, 'unavailable', 'Unrelated experiments are not collapsed')
+    db.prepare("UPDATE paired_nav_frozen_manifests_v1 SET payload_checksum='tampered' WHERE snapshot_id='new-execution'").run()
+    await assert.rejects(() => readStrategyAbRecommendations(live, date), /succession_identity_invalid/)
+
   } finally { db.close() }
   console.log('strategyAbRecommendations tests passed')
 }

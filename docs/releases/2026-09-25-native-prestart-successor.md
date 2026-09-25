@@ -54,3 +54,9 @@ Raw evidence: repository-root `audits/nav-first-session-check-20260925/READINESS
 ## 本次授權
 
 Wei 於 2026-09-25 明確批准本清單的 commit／push／deploy、精確 Paper runtime approval 及兩筆接續修復；來源與初始資金保留，不重跑前段、不使用 Modal。
+
+## 切換前實測發現的效能缺口
+
+完整原始輸入預檢於 8 GiB 一次性 Job 成功，峰值 RSS 5431.3 MiB；另以日常 controller 的 4 GiB 規格執行比較讀取，Cloud Run 明確回報 configured memory limit was reached。父資料 858,026,591 bytes 已完成讀取，後續角色驗證仍深複製完整雙臂輸入，但比較讀取未使用回傳副本。修補讓此唯讀驗證保留全部檢查、跳過不使用的複製；接續驗證沿用同次完整驗證的比較結果，避免再下載及解析同一個大父資料。建模／執行需要副本的既有呼叫仍預設複製。部署前須重測 4 GiB 日常路徑；未移轉 maturity，未宣告 source equivalence。
+
+日常 tick 入口也改為同一 session 的進行中請求共用一次執行；controller concurrency=40 時，跨分鐘重疊請求不再於同一程序重複載入大父資料。HTTP 等待者中斷不會取消 checkpoint writer；執行完成或失敗後清除，只共用進行中的工作、不缓存永久成功。

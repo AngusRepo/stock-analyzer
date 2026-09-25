@@ -105,7 +105,7 @@ def arm_configuration(configuration, arm, *, signal_date):
     return deepcopy(bundle[arm+'_trading_config'] if bundle else configuration['trading_config'])
 
 
-def verify_strategy_inputs(configuration, parent, *, signal_date):
+def verify_strategy_inputs(configuration, parent, *, signal_date, copy_inputs=True):
     bundle=validate_comparison_configuration(configuration,signal_date=signal_date)
     if bundle is None:
         return None
@@ -136,7 +136,7 @@ def verify_strategy_inputs(configuration, parent, *, signal_date):
             or runtime.get('l3_identity')!=bundle['candidate_l3_identity']
             or runtime.get('predictions')!=parent['model_prediction_arms']['candidate']['predictions']):
         raise ValueError('paired_nav_strategy_candidate_predictions_changed')
-    return deepcopy(arms)
+    return deepcopy(arms) if copy_inputs else None
 
 
 def attach_strategy_bundles(selection, *, declarations=None, registered=()):

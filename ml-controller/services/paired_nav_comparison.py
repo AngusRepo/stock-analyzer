@@ -22,8 +22,8 @@ def resolve_comparison(*, query, execution):
         raise ValueError('paired_nav_comparison_execution_parent_mismatch')
     if plan.get('execution_replacement'):
         from services.paired_native_prestart import validate_successor_execution
-        original, _ = validate_successor_execution(execution, allocation=allocation, query=query)
-        return resolve_comparison(query=query, execution=original)
+        _, _, comparison = validate_successor_execution(execution, allocation=allocation, query=query)
+        return comparison
     parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
     from services.paired_nav_execution_environment import validate_registered_environment
     validate_registered_environment(parent=parent, allocation=plan,
@@ -60,8 +60,8 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
         raise ValueError('paired_nav_comparison_allocation_parent_mismatch')
     if plan.get('execution_replacement'):
         from services.paired_native_prestart import validate_successor_plan
-        _, original = validate_successor_plan(plan, signal_date=am['signal_date'], frozen_at=am['frozen_at'], query=query)
-        return resolve_allocation_comparison(query=query, allocation=original, parent=parent)
+        _, _, comparison = validate_successor_plan(plan, signal_date=am['signal_date'], frozen_at=am['frozen_at'], query=query)
+        return comparison
     owner = plan['owner']
     if owner in {'ensemble', 'l4_alpha_ev'}:
         formal = context['formal_baseline_identity']
@@ -73,7 +73,7 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
             if owner!='ensemble':
                 raise ValueError('paired_nav_strategy_comparison_owner_invalid')
             from services.paired_nav_strategy_bundle import verify_strategy_inputs
-            verify_strategy_inputs(plan['configuration'],context,signal_date=am['signal_date'])
+            verify_strategy_inputs(plan['configuration'],context,signal_date=am['signal_date'],copy_inputs=False)
             if plan['configuration']['strategy_bundle']['candidate_l3_identity']['payload_checksum']!=plan['candidate_checksum']:
                 raise ValueError('paired_nav_strategy_comparison_candidate_mismatch')
             kind,baseline_kind='strategy_bundle_replacement','frozen_incumbent_complete_chain'

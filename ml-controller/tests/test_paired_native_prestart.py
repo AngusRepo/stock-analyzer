@@ -234,3 +234,16 @@ def test_tick_dispatches_only_committed_successor(native_runner):
     assert {r['snapshot_id']:r['status'] for r in result['pairs']} == {
         kw['snapshot_id']:'superseded', record['new_snapshot_id']:'collecting'}
     assert captures == [record['new_snapshot_id']]
+
+
+def test_successor_comparison_reads_large_original_context_once(native_runner):
+    db, kw, old = fixture(native_runner)
+    record = repair.replace_unstarted_registration(**kw)
+    saved = read_snapshot(db.query, record['new_snapshot_id'])
+    calls = []
+    def query(sql, values):
+        if sql.startswith('SELECT * FROM paired_nav_frozen_manifests_v1') and values == [old['allocation_context_snapshot_id']]:
+            calls.append(values[0])
+        return db.query(sql, values)
+    assert resolve_comparison(query=query, execution=saved)['owner'] == old['owner']
+    assert len(calls) == 1

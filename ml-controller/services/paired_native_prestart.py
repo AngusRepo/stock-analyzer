@@ -73,14 +73,14 @@ def _source(query, snapshot_id):
     allocation = read_snapshot(query, packet['allocation_snapshot_id'])
     # Full role, frozen environment and A/B parent verification, not existence.
     from services.paired_nav_comparison import resolve_comparison
-    resolve_comparison(query=query, execution=old)
+    comparison = resolve_comparison(query=query, execution=old)
     if query('SELECT session_date FROM paired_nav_daily_journal_v1 WHERE pair_id=? LIMIT 1', [packet['pair_id']]):
         raise ValueError('paired_native_prestart_history_present')
     if query("SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind='execution_receipt' AND parent_snapshot_id=? LIMIT 1", [snapshot_id]):
         raise ValueError('paired_native_prestart_history_present')
     from services.paired_native_session import validate_schedule
     validate_schedule(packet['schedule'], packet['session_date'])
-    return old, allocation
+    return old, allocation, comparison
 
 
 def successor_plan(old, allocation, new_owner):
@@ -108,13 +108,13 @@ def validate_successor_plan(plan, *, signal_date, frozen_at, query):
     proof = plan.get('execution_replacement') or {}
     if proof.get('schema_version') != SCHEMA:
         raise ValueError('paired_native_prestart_proof_invalid')
-    old, allocation = _source(query, proof['prior_execution_snapshot_id'])
+    old, allocation, comparison = _source(query, proof['prior_execution_snapshot_id'])
     stamp = _timestamp(frozen_at); first = _timestamp(old['payload']['content']['schedule'][0]['observed_at'])
     if (old['manifest']['signal_date'] != signal_date or allocation['manifest']['prospective'] != 1
             or not _timestamp(old['manifest']['frozen_at']) <= stamp < first
             or plan != successor_plan(old, allocation, proof.get('new_execution_owner_version'))):
         raise ValueError('paired_native_prestart_plan_changed_or_late')
-    return old, allocation
+    return old, allocation, comparison
 
 
 def successor_packet(old, plan, allocation_id):
@@ -129,19 +129,19 @@ def successor_packet(old, plan, allocation_id):
 
 def validate_successor_execution(saved, *, allocation, query):
     plan = allocation['payload']['content']
-    old, original_allocation = validate_successor_plan(plan, signal_date=allocation['manifest']['signal_date'],
+    old, original_allocation, comparison = validate_successor_plan(plan, signal_date=allocation['manifest']['signal_date'],
         frozen_at=allocation['manifest']['frozen_at'], query=query)
     if (saved['payload']['content'] != successor_packet(old, plan, allocation['manifest']['snapshot_id'])
             or not _timestamp(allocation['manifest']['frozen_at']) <= _timestamp(saved['manifest']['frozen_at'])
                 < _timestamp(old['payload']['content']['schedule'][0]['observed_at'])):
         raise ValueError('paired_native_prestart_execution_changed_or_late')
-    return old, original_allocation
+    return old, original_allocation, comparison
 
 
 def inspect_unstarted_registration(*, snapshot_id, query, objects, now=None):
     """Read-only preflight; validates original evidence and both private states."""
     clock = now or datetime.now(timezone.utc)
-    old, allocation = _source(query, snapshot_id)
+    old, allocation, _ = _source(query, snapshot_id)
     packet = old['payload']['content']
     if not clock < _timestamp(packet['schedule'][0]['observed_at']):
         raise ValueError('paired_native_prestart_window_closed')

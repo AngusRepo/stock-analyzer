@@ -65,3 +65,27 @@ def test_event_cursor_regression_is_rejected(native_runner):
             capture_native_bootstrap(domain_queries={d:malformed for d in set(owners.values())},
                 ownership=owners,account_id=1,signal_date='2026-09-07',frozen_kv={})
     finally:db.close()
+
+
+def test_non_event_history_uses_complete_byte_bounded_keyset(native_runner):
+    db, query = fixture()
+    try:
+        db.execute('CREATE TABLE growing_log(id INTEGER PRIMARY KEY, account_id INTEGER, payload TEXT)')
+        db.executemany('INSERT INTO growing_log VALUES(?,1,?)', [(n, 'evidence') for n in range(-1, 100002)])
+        owners = {**native_runtime_manifest(native_runner)['tables'], 'growing_log': 'paper'}
+        sqls = []
+        def tracked(sql, args):
+            if sql.startswith('SELECT * FROM growing_log'):
+                sqls.append(sql)
+            return query(sql, args)
+        result = capture_native_bootstrap(domain_queries={d: tracked for d in set(owners.values())},
+            ownership=owners, account_id=1, signal_date='2026-09-07', frozen_kv={})
+        restored = sqlite3.connect(':memory:')
+        try:
+            restored.executescript(result['state_sql'])
+            assert restored.execute('SELECT COUNT(*) FROM growing_log').fetchone()[0] == 100003
+        finally:
+            restored.close()
+        assert all('OFFSET' not in sql for sql in sqls)
+    finally:
+        db.close()

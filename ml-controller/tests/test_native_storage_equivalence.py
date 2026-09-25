@@ -109,7 +109,7 @@ def test_bootstrap_successor_preserves_current_policy_and_frozen_environment():
 
 def test_parent_reuse_successor_changes_only_reader_scope():
     c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
-    group=c['additional_groups'][-1]
+    group=c['additional_groups'][1]
     prior,new=group['runtime_components']
     assert {name for name in prior['pipeline'] if prior['pipeline'][name]!=new['pipeline'][name]}=={'paired_native_runtime.py'}
     assert all(prior[k]==new[k] for k in ['bundle','private_host','rescore'])
@@ -117,4 +117,18 @@ def test_parent_reuse_successor_changes_only_reader_scope():
     unknown=deepcopy(new)
     unknown['pipeline']['paired_native_session.py']='0'*64
     raw='native-paper-v1:'+digest(unknown)
+    assert policy_execution_owner(raw)==raw
+
+
+def test_performance_successor_keeps_exact_policy_and_tracks_cache(native_runner, monkeypatch):
+    c=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
+    group=c['additional_groups'][-1]
+    prior,new=group['runtime_components']
+    assert new['bundle']==prior['bundle']
+    assert set(new['pipeline'])-set(prior['pipeline'])=={'paired_nav_read_cache.py','paired_nav_comparison.py'}
+    assert {name for name in prior['pipeline'] if prior['pipeline'][name]!=new['pipeline'][name]}=={'native_paper_bootstrap.py','paired_nav_cold.py'}
+    assert policy_execution_owner('native-paper-v1:'+digest(new))==policy_execution_owner('native-paper-v1:'+digest(prior))
+    original=Path.read_bytes
+    monkeypatch.setattr(Path,'read_bytes',lambda p:original(p)+(b'#changed' if p.name=='paired_nav_read_cache.py' else b''))
+    raw=native_execution_identity(native_runner)
     assert policy_execution_owner(raw)==raw

@@ -4983,8 +4983,10 @@ def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
 
 
 async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
+    from services.runtime_phase_metrics import measured_phase
     for node in nodes:
-        _merge_pipeline_state_update(state, await node(state))
+        with measured_phase(getattr(node, "__name__", type(node).__name__)):
+            _merge_pipeline_state_update(state, await node(state))
     return state
 
 

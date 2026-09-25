@@ -83,7 +83,9 @@ Use the immutable execution packet's close; do not invent another calendar.
         if _timestamp(m['frozen_at']) > clock:
             raise ValueError('paired_nav_population_snapshot_not_available')
         context_ids.add(m['snapshot_id'])
+        from services.paired_nav_read_cache import remember_policy_definitions
         if context.get('upstream_allocation_context_snapshot_id'):
+            remember_policy_definitions(query, m, 'l15_route', {})
             continue  # L3 derived parents copy the root's entire selection.
         from services.paired_nav_ev_selection import frozen_ev_selection
         ev = context.get('ev_candidate_selection')
@@ -125,8 +127,12 @@ Use the immutable execution packet's close; do not invent another calendar.
         from services.paired_nav_route_candidate import route_identity
         route = frozen_route_source(saved)
         if route['status'] == 'pit_route_source_verified':
-            expected.add((m['snapshot_id'], 'l15_route',
-                route_identity(route['challenger_version'], route['slate_builder_version'])))
+            key = route_identity(route['challenger_version'], route['slate_builder_version'])
+            expected.add((m['snapshot_id'], 'l15_route', key))
+            remember_policy_definitions(query, m, 'l15_route',
+                {key: {field: route[field] for field in ('challenger_version', 'slate_builder_version')}})
+        elif route['status'] == 'unavailable_legacy_route_inputs':
+            remember_policy_definitions(query, m, 'l15_route', {})
         selection = (context.get('recommendation_context') or {}).get('l3_candidate_selection')
         if selection is not None:
             if selection.get('status') == 'failed' and selection.get('stage') == 'l3_candidate_selection':

@@ -18,12 +18,13 @@ IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*$')
 
 
 def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str], account_id: int,
-                             signal_date: str, frozen_kv: dict[str, str], max_rows: int = 100000,
+                             signal_date: str, frozen_kv: dict[str, str], max_rows: int | None = None,
                              max_copy_bytes: int = 512 * 1024 * 1024) -> dict:
     if type(account_id) is not int or account_id <= 0:
         raise ValueError('native_bootstrap_account_invalid')
     date.fromisoformat(signal_date)
-    if type(max_rows) is not int or max_rows <= 0 or type(max_copy_bytes) is not int or max_copy_bytes <= 0:
+    if ((max_rows is not None and (type(max_rows) is not int or max_rows <= 0))
+            or type(max_copy_bytes) is not int or max_copy_bytes <= 0):
         raise ValueError('native_bootstrap_copy_budget_invalid')
     if any(not IDENTIFIER.fullmatch(table) for table in ownership):
         raise ValueError('native_bootstrap_table_identifier_invalid')
@@ -53,6 +54,8 @@ def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str],
             columns = query('PRAGMA table_info(' + table + ')', [])
             names = {column['name'] for column in columns}
             primary = [column['name'] for column in sorted(columns, key=lambda c: c['pk']) if column['pk']]
+            if any(not IDENTIFIER.fullmatch(name) for name in primary):
+                raise ValueError('native_bootstrap_column_identifier_invalid')
             if not primary:
                 raise ValueError('native_bootstrap_table_order_missing:' + table)
             if table == 'paper_accounts':
@@ -74,19 +77,22 @@ def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str],
             event_history = table == 'paper_execution_events'
             if event_history and (primary != ['id'] or 'account_id' not in names):
                 raise ValueError('native_bootstrap_event_key_invalid')
+            integer_key = (len(primary) == 1 and any(c['name'] == primary[0]
+                and str(c['type']).upper() == 'INTEGER' for c in columns))
             while True:
-                if event_history:
+                if integer_key:
                     # Preserve the complete account audit history. A row-count
                     # ceiling grows stale even for small records; bound bytes
                     # instead. The account/created index would sort all account
                     # rows on every page; the INTEGER PRIMARY KEY advances once.
-                    after = ' AND id>?' if cursor is not None else ''
-                    page = query('SELECT * FROM ' + table + ' NOT INDEXED' + where + after + ' ORDER BY id LIMIT ?',
+                    key = primary[0]
+                    after = ((' AND ' if where else ' WHERE ') + key + '>?') if cursor is not None else ''
+                    page = query('SELECT * FROM ' + table + ' NOT INDEXED' + where + after + ' ORDER BY ' + key + ' LIMIT ?',
                                  [*args, *([cursor] if cursor is not None else []), 1000])
                     for row in page:
-                        current = row.get('id')
+                        current = row.get(key)
                         if type(current) is not int or (cursor is not None and current <= cursor):
-                            raise ValueError('native_bootstrap_event_cursor_invalid')
+                            raise ValueError('native_bootstrap_event_cursor_invalid' if event_history else 'native_bootstrap_integer_cursor_invalid:' + table)
                         cursor = current
                 else:
                     page = query('SELECT * FROM ' + table + where + ' ORDER BY ' + ','.join(primary) + ' LIMIT ? OFFSET ?',
@@ -95,7 +101,7 @@ def capture_native_bootstrap(*, domain_queries: dict, ownership: dict[str, str],
                 if copied_bytes > max_copy_bytes:
                     raise ValueError('native_bootstrap_copy_bytes_exceeded:' + table)
                 copied.extend(page)
-                if not event_history and len(copied) > max_rows:
+                if not event_history and max_rows is not None and len(copied) > max_rows:
                     raise ValueError('native_bootstrap_copy_bound_exceeded:' + table)
                 if len(page) < 1000:
                     break

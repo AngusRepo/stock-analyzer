@@ -51,7 +51,7 @@ def test_missing_sequence_semantics_block_offline_diagnostic_before_write(monkey
 
 def test_empty_bundle_cannot_report_migration_ready(monkeypatch):
     monkeypatch.setattr(model_pool, 'list_champion_pointers', lambda **kwargs: [])
-    monkeypatch.setattr(model_pool, 'list_artifact_registry', lambda **kwargs: [])
+    monkeypatch.setattr(model_pool, 'list_workbench_artifacts', lambda **kwargs: [])
     monkeypatch.setattr(model_pool, 'load_active8_ensemble_serving_bundle',
         lambda: {'status': 'production', 'production_effect': True, 'base_artifacts': {}})
     result = asyncio.run(model_pool.artifact_registry_champion_pointers())
@@ -61,7 +61,7 @@ def test_empty_bundle_cannot_report_migration_ready(monkeypatch):
 def test_pointer_projection_uses_complete_published_timeXer_roster(monkeypatch):
     from services.alpha_model_roster import TIMEXER_MODELS
     monkeypatch.setattr(model_pool, 'list_champion_pointers', lambda **kw: [])
-    monkeypatch.setattr(model_pool, 'list_artifact_registry', lambda **kw: [])
+    monkeypatch.setattr(model_pool, 'list_workbench_artifacts', lambda **kw: [])
     monkeypatch.setattr(model_pool, 'load_active8_ensemble_serving_bundle', lambda: {
         'status':'production', 'production_effect':True, 'base_artifacts':{},
         'model_order':list(TIMEXER_MODELS)})

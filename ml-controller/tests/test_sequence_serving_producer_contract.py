@@ -80,7 +80,7 @@ def test_pointer_readiness_cannot_claim_unloadable_bundle_member(monkeypatch):
     bundle={"status":"production","production_effect":True,"selected_models":[row["model_name"] for row in rows],
             "base_artifacts":{row["model_name"]:{key:row[key] for key in ("artifact_id","version","checksum")} for row in rows}}
     monkeypatch.setattr(model_pool,"list_champion_pointers",lambda **kwargs:data["pointers"])
-    monkeypatch.setattr(model_pool,"list_artifact_registry",lambda **kwargs:rows)
+    monkeypatch.setattr(model_pool,"list_workbench_artifacts",lambda **kwargs:rows)
     monkeypatch.setattr(model_pool,"load_active8_ensemble_serving_bundle",lambda:bundle)
     result=asyncio.run(model_pool.artifact_registry_champion_pointers())
     assert result["ready_count"]==2  # Old TabM/GNN feature-v2 fixtures also remain blocked.

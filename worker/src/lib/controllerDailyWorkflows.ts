@@ -31,7 +31,11 @@ export async function runObsidianDaily(env: Bindings, date: string) {
   if (!res.ok) {
     throw new Error(`Controller /obsidian/daily HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
   }
-  return await res.json()
+  const result = await res.json() as any
+  if (result?.status !== 'ok' || result?.vault_pushed !== true || result?.progress_synced !== true) {
+    throw new Error('Controller /obsidian/daily did not complete GitHub sync')
+  }
+  return result
 }
 
 const REGIME_SURFACE_LABELS = ['bull_market', 'volatile', 'sideways', 'bear_market'] as const

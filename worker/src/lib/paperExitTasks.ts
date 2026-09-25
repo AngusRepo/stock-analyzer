@@ -1,3 +1,4 @@
+import { resolvePositionExit, preparePositionTakeProfit, recordPositionTakeProfitFill } from './positionExitArbiter'
 import { executePaperSellBatch } from './paperSellTransaction'
 import { assertL4PlanCurrentPolicy, readL4PortfolioPlan, l4TargetExitShares } from './l4PortfolioPlan'
 import { paperAccountId, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
@@ -1461,6 +1462,11 @@ export async function runEODExit(env: Bindings): Promise<void> {
       }
     }
 
+    const positionTakeProfit = preparePositionTakeProfit({ lifecycle: pos.trade_lifecycle_json,
+      entryDate: String(pos.entry_date), tp1Hit: Boolean(pos.tp1_hit),
+      positionShares: Number(pos.shares), decision })
+    decision = positionTakeProfit.decision
+
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
       const exitIntentKind = decision.exitIntentKind ?? 'risk_stop'
@@ -1609,7 +1615,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const remainingShares = pos.shares - sellShares
       const entryPx = pos.entry_price ?? pos.avg_cost
       const partialTrailingStop = resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
-      const partialLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
+      const tp1Fill = recordPositionTakeProfitFill(positionTakeProfit.progress, sellShares, pos.trade_lifecycle_json)
+      const partialLifecycleJson = updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, partialTrailingStop, decision.reason)
       const sellNote = buildSellOrderNote({
         reason: decision.reason,
         is_day_trade: dayTradeSell,
@@ -1880,21 +1887,34 @@ export async function pollIntradayStopLoss(
     decision = continuation.lifecycleJson == null
       ? continuation.decision
       : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
-    if (applicableL4Plan && l4CurrentNav != null && decision.action === 'hold') {
-      const reduceShares = l4TargetExitShares({ plan: applicableL4Plan, symbol: pos.symbol,
-        shares: Number(pos.shares), price: currentPrice, nav: l4CurrentNav,
-        minTradeValue: cfg.position.minPositionValue ?? 30_000 })
-      if (reduceShares > 0) decision = { action: reduceShares === pos.shares ? 'full_sell' : 'partial_sell',
-        sellShares: reduceShares, exitIntentKind: 'take_profit',
-        reason: `[L4Target] plan=${applicableL4Plan.plan_id};target=${applicableL4Plan.weights[pos.symbol]}` }
-    }
+    let riskDecision: ExitDecision | null = null
     if (intradayDeRiskSymbols.has(String(pos.symbol))) {
-      decision = {
+      riskDecision = {
         action: 'full_sell',
         exitIntentKind: 'risk_stop',
         reason: `[PortfolioRisk] ${effectivePortfolioRisk.marketRiskLevel ?? (p9Triggered ? 'p9' : 'unknown')} current=${((intradayDeRiskPlan?.currentExposure ?? 0) * 100).toFixed(1)}% target=${((intradayDeRiskPlan?.targetExposure ?? 0) * 100).toFixed(1)}% owner=${p9Triggered ? 'p9_intraday_drawdown' : 'canonical_market_risk_runtime_v1'}`,
       }
     }
+    const positionTakeProfit = intradayDeRiskSymbols.has(String(pos.symbol))
+      ? { decision, progress: null }
+      : preparePositionTakeProfit({ lifecycle: pos.trade_lifecycle_json,
+        entryDate: String(pos.entry_date), tp1Hit: Boolean(pos.tp1_hit),
+        positionShares: Number(pos.shares), decision })
+    decision = positionTakeProfit.decision
+    let l4Decision: ExitDecision | null = null
+    // Protective full exits never wait on allocator reconciliation.
+    if (!riskDecision && decision.action !== 'full_sell' && applicableL4Plan && l4CurrentNav != null) {
+      const reduceShares = l4TargetExitShares({ plan: applicableL4Plan, symbol: pos.symbol,
+        shares: Number(pos.shares), price: currentPrice, nav: l4CurrentNav,
+        minTradeValue: cfg.position.minPositionValue ?? 30_000 })
+      if (reduceShares > 0) l4Decision = { action: reduceShares === pos.shares ? 'full_sell' : 'partial_sell',
+        sellShares: reduceShares, exitIntentKind: 'take_profit',
+        reason: `[L4Target] plan=${applicableL4Plan.plan_id};target=${applicableL4Plan.weights[pos.symbol]}` }
+    }
+    const exitResolution = resolvePositionExit({
+      positionShares: Number(pos.shares), positionDecision: decision, l4Decision, riskDecision,
+    })
+    decision = exitResolution.decision
 
     if (decision.action !== 'hold') {
       const prevC = prevCloseMapSell.get(pos.symbol)
@@ -2017,11 +2037,21 @@ export async function pollIntradayStopLoss(
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax })
 
+      const tp1Fill = recordPositionTakeProfitFill(positionTakeProfit.progress, shares, pos.trade_lifecycle_json)
+      const satisfiedPositionTp1 = tp1Fill.complete
+      const filledTrailingStop = satisfiedPositionTp1
+        ? resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx : Number(pos.trailing_stop ?? 0)
+      const filledLifecycleJson = satisfiedPositionTp1
+        ? updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, filledTrailingStop, decision.reason) : tp1Fill.lifecycleJson
       const orderId = await executePaperSellBatch(env,[
         remainingExitShares === 0
           ? paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol)
-          : paperDomainDatabase(env).prepare(`UPDATE paper_positions SET shares=?, updated_at=datetime('now') WHERE account_id=? AND symbol=?`)
-            .bind(remainingExitShares, paperAccountId(), pos.symbol),
+          : paperDomainDatabase(env).prepare(`UPDATE paper_positions SET shares=?, tp1_hit=?,
+              trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
+              trade_lifecycle_json=COALESCE(?, trade_lifecycle_json), updated_at=datetime('now')
+              WHERE account_id=? AND symbol=?`)
+            .bind(remainingExitShares, satisfiedPositionTp1 ? 1 : (pos.tp1_hit ?? 0),
+              filledTrailingStop, filledTrailingStop, filledLifecycleJson, paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
@@ -2047,7 +2077,7 @@ export async function pollIntradayStopLoss(
         eventType: 'paper_order',
         status: remainingExitShares === 0 ? 'filled' : 'partial',
         reason: remainingExitShares === 0 ? 'intraday_exit' : 'intraday_exit_partial_depth',
-        detail: { shares, requested_shares: requestedExitShares, remaining_shares: remainingExitShares, exit_intent_key: exitIntentKey, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        detail: { shares, requested_shares: requestedExitShares, remaining_shares: remainingExitShares, exit_arbitration: exitResolution.evidence, exit_intent_key: exitIntentKey, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_exit',
       })
@@ -2140,8 +2170,13 @@ export async function pollIntradayStopLoss(
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
       const entryPx = pos.entry_price ?? pos.avg_cost
-      const partialTrailingStop = isL4Rebalance ? Number(pos.trailing_stop ?? 0) : resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
-      const partialLifecycleJson = isL4Rebalance ? null : updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
+      const tp1Fill = recordPositionTakeProfitFill(positionTakeProfit.progress, sellShares, pos.trade_lifecycle_json)
+      const satisfiedPositionTp1 = tp1Fill.complete
+      const applyPositionLifecycle = satisfiedPositionTp1 || (!positionTakeProfit.progress && !isL4Rebalance)
+      const partialTrailingStop = applyPositionLifecycle
+        ? resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx : Number(pos.trailing_stop ?? 0)
+      const partialLifecycleJson = applyPositionLifecycle
+        ? updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, partialTrailingStop, decision.reason) : tp1Fill.lifecycleJson
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason}`,
         is_day_trade: dayTradeSell,
@@ -2157,7 +2192,7 @@ export async function pollIntradayStopLoss(
             trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, !isL4Rebalance && tp1Complete ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, paperAccountId(), pos.symbol),
+        `).bind(remainingShares, (!isL4Rebalance && tp1Complete) || satisfiedPositionTp1 ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, paperAccountId(), pos.symbol),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
@@ -2185,7 +2220,7 @@ export async function pollIntradayStopLoss(
         eventType: 'paper_order',
         status: tp1Complete ? 'filled' : 'partial',
         reason: tp1Complete ? partialSource : `${partialSource}_partial_depth`,
-        detail: { shares: sellShares, requested_shares: requestedSellShares, exit_intent_key: exitIntentKey, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        detail: { shares: sellShares, requested_shares: requestedSellShares, exit_arbitration: exitResolution.evidence, exit_intent_key: exitIntentKey, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: partialSource,
       })

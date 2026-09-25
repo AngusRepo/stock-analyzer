@@ -3,7 +3,7 @@ import { settlePaperT2 } from './paperSettlementTasks'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
-import { pollIntradayStopLoss } from './paperExitTasks'
+import { pollIntradayStopLoss, runEODExit } from './paperExitTasks'
 import { persistPendingBuyActiveState } from './pendingBuyStore'
 import { getTradingConfig } from './tradingConfig'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
@@ -25,6 +25,8 @@ test('native full chain executes positive L4 target through real entry owner',as
   f.env.SHIOAJI_PROXY_URL='https://fixture.invalid'
   f.env.ML_CONTROLLER_URL='https://fixture.invalid'
   f.env.FINLAB_L5_MARKET_DATA_ENABLED='true'
+  let limitedExitDepth=false
+  let oddExitDepth=true
   f.ports.fetchFrozen=async(input:RequestInfo|URL,init?:RequestInit)=>{
     const url=String(input),time=new Date(f.ports.nowMs).toISOString()
     const quote={symbol:'2330',status:'ok',source_time:time,received_at:time,confirmed_at:time,
@@ -34,6 +36,9 @@ test('native full chain executes positive L4 target through real entry owner',as
       bid_volume:10,ask_volume:1,bid_volumes:[10,10,10,10,10],ask_volumes:[1,0,0,0,0]}
     const odd=url.includes('lot_type=odd_lot') || String(init?.body ?? '').includes('odd_lot')
     if(odd)Object.assign(quote,{lot_type:'odd_lot',volume_unit:'shares',bid_volume:10000,ask_volume:10000,bid_volumes:[10000,10000,10000,10000,10000],ask_volumes:[10000,10000,10000,10000,10000]})
+    if(limitedExitDepth)Object.assign(quote,odd
+      ? {bid_volume:oddExitDepth?10000:0,bid_volumes:oddExitDepth?[10000,0,0,0,0]:[0,0,0,0,0]}
+      : {bid_volume:1,bid_volumes:[1,0,0,0,0]})
     if(url.includes('orderbooks') || url.includes('snapshots') || url.includes('/quotes'))return Response.json({data:{'2330':quote}})
     if(url.includes('/orderbook/'))return Response.json({data:quote})
     if(url.includes('trend'))return Response.json({slope_5min:.002})
@@ -97,11 +102,16 @@ test('native full chain executes positive L4 target through real entry owner',as
     assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
     assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,20029)
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
+    const topupProgress={schema_version:'position-tp1-progress-v1',entry_date:'2026-09-14',target_shares:2000,filled_shares:1000}
+    f.sqls.paper.prepare("UPDATE paper_positions SET trade_lifecycle_json=json_set(trade_lifecycle_json,'$.position_tp1_progress',json(?))").run(JSON.stringify(topupProgress))
     for(let index=0;index<2;index++) {
       f.ports.nowMs+=60_000
       await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     }
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3000)
+    assert.deepEqual(JSON.parse(String(f.sqls.paper.prepare('SELECT trade_lifecycle_json FROM paper_positions').get()?.trade_lifecycle_json)).position_tp1_progress,topupProgress)
+    f.sqls.paper.exec("UPDATE paper_positions SET trade_lifecycle_json=json_remove(trade_lifecycle_json,'$.position_tp1_progress')")
+
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,3)
     assert.equal(f.sqls.paper.prepare('SELECT SUM(amount) n FROM paper_settlements').get()?.n,60087)
     f.ports.nowMs+=60_000
@@ -130,6 +140,85 @@ test('native full chain executes positive L4 target through real entry owner',as
     const reduced=allocateNative(nextAccount,.03001)
     await withPaperExecutionScope(f.ports,()=>storeL4PortfolioPlan(f.env,reduced))
     f.ports.nowMs=Date.parse('2026-09-15T01:45:00Z')
+    // A simultaneous position-policy TP1 cannot hide a larger L4 reduction.
+    // Use the real poll, sell transaction and evidence event, then restore this isolated fixture.
+    f.sqls.paper.exec('SAVEPOINT simultaneous_exit_probe')
+    try {
+      f.sqls.paper.exec("UPDATE paper_positions SET entry_price=18,tp1_price=19,tp1_hit=0,original_shares=3999,initial_stop=10,trailing_stop=10,trade_lifecycle_json=NULL")
+      f.sqls.paper.exec("UPDATE paper_orders SET note='' WHERE side='buy'")
+      await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+      assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1500)
+      const event=f.sqls.paper.prepare("SELECT detail_json FROM paper_execution_events WHERE side='sell' AND event_type='paper_order' ORDER BY id DESC LIMIT 1").get()
+      const pointer=JSON.parse(String(event?.detail_json)).evidence_pointer
+      assert.ok(pointer?.r2_key)
+      const artifact=JSON.parse(f.artifacts.get(pointer.r2_key)!)
+      const evidence=artifact.payload.detail.exit_arbitration
+      assert.equal(evidence.selected_owner,'l4_target')
+      assert.equal(evidence.requested_shares,2499)
+      assert.equal(evidence.proposals[0].requestedShares,1000)
+      assert.equal(evidence.proposals[1].requestedShares,2499)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,1)
+      assert.equal(f.sqls.paper.prepare('SELECT tp1_hit FROM paper_positions').get()?.tp1_hit,1)
+      await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+      assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1500)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,1)
+    } finally {
+      f.sqls.paper.exec('ROLLBACK TO simultaneous_exit_probe; RELEASE simultaneous_exit_probe')
+    }
+    // Resume a durable intraday partial TP1 at the EOD owner without restarting its quantity.
+    f.sqls.paper.exec('SAVEPOINT eod_progress_probe')
+    try {
+      f.sqls.paper.exec("UPDATE paper_positions SET shares=2999,entry_price=18,tp1_price=19,tp2_price=30,tp1_hit=0,original_shares=4000,initial_stop=10,trailing_stop=10")
+      f.sqls.paper.prepare('UPDATE paper_positions SET trade_lifecycle_json=?').run(JSON.stringify({
+        position_tp1_progress:{schema_version:'position-tp1-progress-v1',entry_date:'2026-09-14',target_shares:2000,filled_shares:1000},
+      }))
+      f.sqls.paper.exec("UPDATE paper_orders SET note='' WHERE side='buy'")
+      await withPaperExecutionScope(f.ports,()=>runEODExit(f.env))
+      assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1999)
+      assert.equal(f.sqls.paper.prepare('SELECT tp1_hit FROM paper_positions').get()?.tp1_hit,1)
+      await withPaperExecutionScope(f.ports,()=>runEODExit(f.env))
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,1)
+    } finally {
+      f.sqls.paper.exec('ROLLBACK TO eod_progress_probe; RELEASE eod_progress_probe')
+    }
+    const originalMinimumTrade=f.cfg.position.minPositionValue
+    f.sqls.paper.exec('SAVEPOINT multifill_exit_probe')
+    try {
+      limitedExitDepth=true
+      oddExitDepth=false
+      f.sqls.paper.exec("UPDATE paper_positions SET entry_price=18,tp1_price=19,tp1_hit=0,original_shares=4000,initial_stop=10,trailing_stop=10,trade_lifecycle_json=NULL")
+      f.sqls.paper.exec("UPDATE paper_orders SET note='' WHERE side='buy'")
+      f.sqls.paper.exec("CREATE TRIGGER fail_progress_receivable BEFORE INSERT ON paper_settlements WHEN NEW.side='sell' BEGIN SELECT RAISE(ABORT,'progress_rollback_probe'); END")
+      await assert.rejects(withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env)),/progress_rollback_probe/)
+      assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3999)
+      assert.equal(f.sqls.paper.prepare('SELECT trade_lifecycle_json FROM paper_positions').get()?.trade_lifecycle_json,null)
+      f.sqls.paper.exec('DROP TRIGGER fail_progress_receivable')
+      for(const [remaining,filled,hit] of [[2999,1000,0],[1999,2000,1]]) {
+        await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+        const position=f.sqls.paper.prepare('SELECT shares,tp1_hit,trade_lifecycle_json FROM paper_positions').get()!
+        assert.equal(position.shares,remaining)
+        assert.equal(position.tp1_hit,hit)
+        assert.equal(JSON.parse(String(position.trade_lifecycle_json)).position_tp1_progress.filled_shares,filled)
+      }
+      oddExitDepth=true
+      await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+      // The 499-share residual is below the configured 30k minimum, not another TP1.
+      assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1999)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,2)
+      f.cfg.position.minPositionValue=1000
+      f.kvs.set('trading:config',JSON.stringify(f.cfg))
+      await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+      assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1500)
+      assert.deepEqual(f.sqls.paper.prepare("SELECT shares FROM paper_orders WHERE side='sell' ORDER BY id").all().map(r=>r.shares),[1000,1000,499])
+      await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,3)
+    } finally {
+      limitedExitDepth=false
+      oddExitDepth=true
+      f.cfg.position.minPositionValue=originalMinimumTrade
+      f.kvs.set('trading:config',JSON.stringify(f.cfg))
+      f.sqls.paper.exec('ROLLBACK TO multifill_exit_probe; RELEASE multifill_exit_probe')
+    }
     f.sqls.paper.exec("CREATE TRIGGER fail_sell_receivable BEFORE INSERT ON paper_settlements WHEN NEW.side='sell' BEGIN SELECT RAISE(ABORT,'injected_settlement_failure'); END")
     await assert.rejects(withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env)),/injected_settlement_failure/)
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3999)

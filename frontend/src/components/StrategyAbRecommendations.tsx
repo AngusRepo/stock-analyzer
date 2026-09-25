@@ -1,3 +1,4 @@
+import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { useQuery } from '@tanstack/react-query'
 import { apiGet } from '@/lib/apiClient'
 import { recommendationsApi } from '@/lib/api'
@@ -15,7 +16,8 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
     queryFn: ({ signal }) => apiGet<Comparison>(`/dashboard/v4/strategy-ab/recommendations?date=${signalDate}`, { signal, timeoutMs: 15_000 }), staleTime: 30_000 })
   const raw = daily.data as any
   const rows: any[] = Array.isArray(raw?.all_recommendations) ? raw.all_recommendations : Array.isArray(raw?.recommendations) ? raw.recommendations : Array.isArray(raw?.data) ? raw.data : []
-  const names = new Map(rows.map(row => [row.symbol, row.name]))
+  // A dated comparison must never borrow cards from a different signal day.
+  const cards = new Map(rows.filter(row => (row.date || raw?.date) === signalDate).map(row => [String(row.symbol), row]))
   if (comparison.isError || daily.isError) return <div role="alert" className="rounded-xl border border-amber-500/30 p-4 text-sm text-amber-200">
     A/B 配置讀取失敗。<button className="ml-3 underline" onClick={() => { void comparison.refetch(); void daily.refetch() }}>重新讀取</button>
   </div>
@@ -26,6 +28,7 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
     <p className="text-xs leading-5 text-muted-foreground">{data.scope === 'retrospective_research'
       ? '事後補算比較：僅供觀察，不計入原生 NAV 績效，也不會產生委託。'
       : '下列為各方案的配置目標；是否成交仍以待買檢查、辯論及成交紀錄為準。'}</p>
+    <p className="text-xs leading-5 text-muted-foreground">卡片編號為配置清單順序。ML_EDGE 是校準機率換算分，可能因校準曲線平臺而同分；個股配置仍依 L4 預測與 sparse＋OPB 決定。待買清單可先顯示「等待辯論」，通過辯論及交易檢查後才可執行。</p>
     <div className="grid gap-3 xl:grid-cols-2">
       {(['A', 'B'] as const).map(role => {
         const arm = data[role]
@@ -35,11 +38,18 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
           {arm.status !== 'available' ? <p role="status" className="mt-4 text-sm text-amber-200">{arm.reason}</p> : <>
             <div className="mt-3 flex justify-between text-xs text-muted-foreground"><span>{arm.picks.length} 檔配置</span><span>現金 {(arm.cash_weight! * 100).toFixed(2)}%</span></div>
             {arm.picks.length === 0 ? <p className="mt-4 text-sm">已完成配置，本日持有現金。</p> :
-              <table className="mt-3 w-full text-sm"><thead className="text-xs text-muted-foreground"><tr><th className="pb-2 text-left">股票</th><th className="pb-2 text-right">目標權重</th></tr></thead>
-                <tbody>{arm.picks.map(pick => <tr key={pick.symbol} className={`border-t border-muted/30 ${selectedSymbol === pick.symbol ? 'bg-emerald-500/10' : ''}`}>
-                  <td className="py-3"><button className="text-left hover:underline" onClick={() => onSelectSymbol?.(pick.symbol)}>{pick.symbol}{names.get(pick.symbol) ? ` ${names.get(pick.symbol)}` : ''}</button></td>
-                  <td className="py-3 text-right tabular-nums">{(pick.weight * 100).toFixed(2)}%</td>
-                </tr>)}</tbody></table>}
+              <div className="mt-3 space-y-4">{arm.picks.map((pick, index) => {
+                const rec = cards.get(pick.symbol)
+                return <article key={pick.symbol} aria-label={`${role} ${pick.symbol} 配置`} className={`rounded-xl border p-2 ${selectedSymbol === pick.symbol ? 'border-emerald-500/60 bg-emerald-500/5' : 'border-muted/30'}`}>
+                  <div className="mb-2 flex items-center justify-between gap-3 px-2 py-1 text-sm">
+                    <button className="text-left font-medium hover:underline" onClick={() => onSelectSymbol?.(pick.symbol)}>{pick.symbol}{rec?.name ? ` ${rec.name}` : ''}</button>
+                    <span className="shrink-0 tabular-nums">{role} 目標 {(pick.weight * 100).toFixed(2)}%</span>
+                  </div>
+                  {role === 'B' && <p className="mb-2 px-2 text-xs leading-5 text-amber-200">下方為同日正式 A 個股資訊，供行情與模型對照；B 的模型分數與交易價位尚未提供。B 配置以本卡上方權重為準。</p>}
+                  {rec ? <RecommendationCardClean rec={rec} rank={index + 1} context="home" />
+                    : <p role="status" className="p-3 text-xs text-muted-foreground">尚無 {data.date} 的首頁個股資訊；保留已核實的配置權重。</p>}
+                </article>
+              })}</div>}
           </>}
         </div>
       })}

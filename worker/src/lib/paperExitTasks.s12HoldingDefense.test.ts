@@ -1,3 +1,4 @@
+import { resolvePositionExit, positionTakeProfitSatisfied } from './positionExitArbiter'
 import { readFileSync } from 'node:fs'
 import { resolveS12HoldingDefenseEventAction, resolveS12HoldingDefenseUpdate, shouldRecordS12HoldingDefenseEvent } from './paperExitTasks'
 import type { S12IntradayAssessment } from './s12IntradayStructure'
@@ -736,6 +737,14 @@ const tp1Partial = resolveS12HoldingDefenseUpdate({
 })
 assert(tp1Partial?.action === 'partial_sell', 'S12 position decision should trigger persisted TP1 partial sell')
 assert(tp1Partial?.sellShares === 1000, 'S12 TP1 should sell lot-rounded 50% of original shares')
+const simultaneousL4 = resolvePositionExit({
+  positionShares: 2000, positionDecision: tp1Partial!,
+  l4Decision: { action: 'partial_sell', sellShares: 1500, reason: '[L4Target] test', exitIntentKind: 'take_profit' },
+})
+assert(simultaneousL4.decision.sellShares === 1500, 'real S12 TP1 should reconcile with the larger L4 reduction')
+assert(!positionTakeProfitSatisfied(simultaneousL4, 999), 'incomplete fill must not mark real S12 TP1 done')
+assert(positionTakeProfitSatisfied(simultaneousL4, 1500), 'larger actual L4 fill must satisfy real S12 TP1')
+
 
 const tp1OddLotPartial = resolveS12HoldingDefenseUpdate({
   pos: {

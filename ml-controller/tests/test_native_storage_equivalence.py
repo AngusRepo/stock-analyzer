@@ -13,12 +13,19 @@ from test_native_paper_sandbox import native_runner
 from test_paired_nav_execution_environment import environment_packet
 
 
-def test_exact_running_native_build_is_certified(native_runner):
-    certificate=json.loads(Path(__file__).parents[1].joinpath('services/native_execution_equivalence.json').read_text())
+def test_exact_running_behavior_release_retains_separate_identity(native_runner):
+    services=Path(__file__).parents[1]/'services'
+    release=json.loads((services/'native_execution_behavior_release.json').read_text())
+    certificate=json.loads((services/'native_execution_equivalence.json').read_text())
     actual=native_execution_identity(native_runner)
-    group = certificate['additional_groups'][-1]
-    assert actual in {'native-paper-v1:'+digest(p) for p in group['runtime_components']}
-    assert policy_execution_owner(actual)=='native-paper-v1:'+digest(group['policy_components'])
+    assert release['schema_version']=='native-paper-behavior-release-v1'
+    assert release['scope']=='paper' and release['efficacy_status']=='unproven'
+    assert release['source_equivalence'] is False and release['maturity_transfer'] is False
+    assert release['authorization'] and release['review']
+    assert actual==release['execution_owner_version']
+    groups=[certificate,*certificate.get('additional_groups',[])]
+    assert actual not in {'native-paper-v1:'+digest(parts) for group in groups for parts in group['runtime_components']}
+    assert policy_execution_owner(actual)==actual
     assert policy_execution_owner('native-paper-v1:'+'f'*64)=='native-paper-v1:'+'f'*64
 
 

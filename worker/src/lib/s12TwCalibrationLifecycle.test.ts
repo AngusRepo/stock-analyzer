@@ -29,6 +29,7 @@ test('includes terminal lifecycle evidence and censors partial, missing, and pos
         signal_date TEXT NOT NULL,
         trade_date TEXT NOT NULL,
         assessment_state TEXT,
+        setup_id TEXT,
         market TEXT,
         entry_ms INTEGER,
         entry_price REAL,

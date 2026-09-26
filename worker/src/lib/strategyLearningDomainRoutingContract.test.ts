@@ -75,7 +75,7 @@ assert.match(learning, /listStrategyLearningCandidates\(options\.candidateDb \?\
 assert.match(runState, /inspectCanonicalStrategyUniverse\([\s\S]*input\.universeDb \?\? db, input\.businessDate, input\.canonicalProducerRunId/)
 assert.match(learning, /listStrategyLearningCandidatesAcrossDomains\([\s\S]*funnelDb\.prepare\(`[\s\S]*FROM screener_funnel_items[\s\S]*recommendationDb\.prepare\(`[\s\S]*FROM daily_recommendations/)
 assert.match(learning, /hydrateStrategyCandidateDailyFeatures\(marketDb, date, candidates, recommendationDb\)/)
-assert.match(learning, /hydrateS12StrategyEvidence\(referenceDb, date, candidates\)/)
+assert.match(learning, /hydrateS12StrategyEvidence\(referenceDb, date, candidates, archiveEnv\)/)
 assert.match(learning, /reconcileSelectionDecisionEvidenceV4\(db, date, \{[\s\S]*identityDb: options\.identityDb,[\s\S]*canonicalProducerRunId: canonicalRunIds\?\.\[date\]/)
 assert.match(selectionReference, /reconcileSelectionDecisionEvidenceV4\([\s\S]*options\.identityDb[\s\S]*canonicalProducerRunId[\s\S]*FROM selection_reference_snapshots_v1[\s\S]*options\.identityDb\.prepare[\s\S]*FROM daily_recommendations/)
 assert.match(learning, /FROM json_each\(\?\) h WHERE h\.key=m\.signal_date AND h\.value=m\.producer_run_id/)

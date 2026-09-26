@@ -1,3 +1,6 @@
+import { loadS12ReplayRewardDates } from './s12ReplayRewardHistory'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { mergeArchivedS12Evidence, type S12ArchiveEnv } from './retentionS12StructureReader'
 import navReviewPolicy from '../../../ml-controller/services/paired_nav_review_policy.json'
 import { buildStrategyReadinessWeights, strategyWeightEvidenceReady,
   STRATEGY_WEIGHT_MIN_SAMPLES, STRATEGY_WEIGHT_MIN_MATURE_DATES } from './strategyWeightReadiness'
@@ -1369,6 +1372,7 @@ export async function listStrategyLearningCandidates(
   date: string,
   limit = STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
   afterSymbol = '',
+  archiveEnv?: S12ArchiveEnv,
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
   const safeAfterSymbol = cleanToken(afterSymbol)
@@ -1450,7 +1454,7 @@ export async function listStrategyLearningCandidates(
     }
   })
   await hydrateStrategyCandidateDailyFeatures(db, date, candidates)
-  await hydrateS12StrategyEvidence(db, date, candidates)
+  await hydrateS12StrategyEvidence(db, date, candidates, archiveEnv)
   return candidates
 }
 
@@ -1483,6 +1487,7 @@ export async function listStrategyLearningCandidatesAcrossDomains(
   canonicalProducerRunId: string,
   limit = STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
   afterSymbol = '',
+  archiveEnv?: S12ArchiveEnv,
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
   const safeAfterSymbol = cleanToken(afterSymbol)
@@ -1566,7 +1571,7 @@ export async function listStrategyLearningCandidatesAcrossDomains(
     } satisfies StrategyCandidateInput
   })
   await hydrateStrategyCandidateDailyFeatures(marketDb, date, candidates, recommendationDb)
-  await hydrateS12StrategyEvidence(referenceDb, date, candidates)
+  await hydrateS12StrategyEvidence(referenceDb, date, candidates, archiveEnv)
   return candidates
 }
 
@@ -1611,17 +1616,19 @@ export async function hydrateS12StrategyEvidence(
   db: D1Database,
   date: string,
   candidates: StrategyCandidateInput[],
+  archiveEnv?: S12ArchiveEnv,
 ): Promise<{ available: number; unavailable: number; missing: number }> {
   if (!candidates.length) return { available: 0, unavailable: 0, missing: 0 }
+  const sourceDb = archiveEnv ? databaseForDataDomain(archiveEnv, 'learning') : db
   const bySymbol = new Map<string, StrategyS12EvidenceRow>()
   const symbols = [...new Set(candidates.map((candidate) => cleanToken(candidate.symbol)).filter(Boolean))]
   for (let offset = 0; offset < symbols.length; offset += 80) {
     const chunk = symbols.slice(offset, offset + 80)
     const placeholders = chunk.map(() => '?').join(',')
-    const page = await db.prepare(`
-      SELECT symbol, source, state, ready, invalidated
+    const page = await sourceDb.prepare(`
+      SELECT symbol, source, state, ready, invalidated, updated_at, id
         FROM (
-          SELECT symbol, source, state, ready, invalidated,
+          SELECT symbol, source, state, ready, invalidated, updated_at, id,
                  ROW_NUMBER() OVER (
                    PARTITION BY symbol
                    ORDER BY CASE source
@@ -1638,6 +1645,11 @@ export async function hydrateS12StrategyEvidence(
        WHERE row_rank=1
     `).bind(date, ...chunk).all<StrategyS12EvidenceRow>()
     for (const row of page.results ?? []) bySymbol.set(cleanToken(row.symbol), row)
+  }
+  if (archiveEnv) {
+    // One archive pass for the entire request, not one download per 80-stock hot page.
+    const rows = await mergeArchivedS12Evidence(archiveEnv, sourceDb, date, symbols, [...bySymbol.values()])
+    for (const row of rows) bySymbol.set(cleanToken(row.symbol), row as StrategyS12EvidenceRow)
   }
   let available = 0
   let unavailable = 0
@@ -1981,7 +1993,7 @@ export async function materializeStrategyDecisionLog(
         Math.max(1, Math.min(options.limit ?? STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT, 2000)),
         '',
       )
-    : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, options.limit)
+    : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, options.limit, '', options.artifactEnv)
   const rows = options.candidateReferenceDb && options.canonicalProducerRunId
     ? await loadCanonicalStrategyDecisionRows(
         options.candidateReferenceDb,
@@ -2682,7 +2694,7 @@ export async function materializeStrategyDecisionLogChunk(
         options.candidateReferenceDb, options.date, options.canonicalProducerRunId,
         limit + 1, afterSymbol,
       )
-    : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol)
+    : await listStrategyLearningCandidates(options.candidateDb ?? db, options.date, limit + 1, afterSymbol, options.artifactEnv)
   const hasMore = candidatePage.length > limit
   const candidates = candidatePage.slice(0, limit)
   const nextCursorSymbol = cleanToken(candidates[candidates.length - 1]?.symbol) || afterSymbol
@@ -3569,14 +3581,7 @@ export async function refreshStrategyAdaptivePolicyState(
   }
 }
 
-interface S12ExecutionDateMetric {
-  date: string
-  outcome_known_date: string | null
-  samples: number
-  hits: number
-  reward_sum: number
-  date_return: number
-}
+
 
 interface S12ExecutionLearningMetrics {
   lifetimeSamples: number
@@ -3598,34 +3603,7 @@ async function loadS12ExecutionLearningMetrics(
   asOfDate: string,
   windowStart: string | null,
 ): Promise<S12ExecutionLearningMetrics> {
-  const rows = (await db.prepare(`
-    SELECT o.signal_date AS date,
-           MAX(date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date'))) AS outcome_known_date,
-           COUNT(*) AS samples,
-           SUM(CASE WHEN CAST(o.pnl_pct AS REAL) - (? / 10000.0) > 0 THEN 1 ELSE 0 END) AS hits,
-           SUM(CAST(o.pnl_pct AS REAL) - (? / 10000.0)) AS reward_sum,
-           AVG(CAST(o.pnl_pct AS REAL) - (? / 10000.0)) AS date_return
-      FROM s12_replay_trade_outcomes o
-     WHERE o.signal_date IS NOT NULL
-       AND date(o.signal_date) <= date(?)
-       AND o.sample_eligible=1
-       AND o.source='s12_multisession_structure_replay_v3'
-       AND o.pnl_pct IS NOT NULL
-       AND json_extract(o.detail_json, '$.schema_version')='s12-replay-trade-outcome-v3'
-       AND json_extract(o.detail_json, '$.observation_kind')='executed'
-       AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature')=?
-       AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) IS NOT NULL
-       AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) <= date(?)
-     GROUP BY o.signal_date
-     ORDER BY o.signal_date
-  `).bind(
-    CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
-    CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
-    CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
-    asOfDate,
-    S12_REPLAY_ENGINE_SIGNATURE,
-    asOfDate,
-  ).all<S12ExecutionDateMetric>()).results ?? []
+  const rows = await loadS12ReplayRewardDates(db, asOfDate)
   const normalized = rows.map((row) => ({
     date: cleanToken(row.date),
     outcomeKnownDate: cleanToken(row.outcome_known_date) || null,

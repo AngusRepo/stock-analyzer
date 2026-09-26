@@ -87,10 +87,11 @@ void (async () => {
       async get() { return stored ? { text: async () => stored } : null },
     },
     DB: {
-      prepare() {
+      prepare(sql:string) {
         return {
           bind() {
-            return { async run() { manifestWrites += 1; return { success: true, meta: { changes: 1 } } } }
+            return { async first() { assert.match(sql,/artifact_deletion_claims_v1/); return null },
+              async run() { manifestWrites += 1; return { success: true, meta: { changes: 1 } } } }
           },
         }
       },

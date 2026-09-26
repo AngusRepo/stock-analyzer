@@ -1,3 +1,6 @@
+import { prepareReplayReleaseProjection, type ReplayReleaseProjection } from './retentionS12ReplayProjection'
+import { retentionReplayClockMetadata } from './retentionReplayClocks'
+import { runRetentionDrainRounds } from './retentionDrainRounds'
 import { reconcileRetentionReleases } from './retentionReleaseReconciliation'
 import { releaseArchivedRows } from './retentionSourceRelease'
 import type { Bindings } from '../types'
@@ -55,7 +58,7 @@ type DrainDatasetResult = {
   artifact_id: string | null
   checksum: string | null
   backlog_remaining: boolean
-  status: 'dry_run' | 'success' | 'skipped' | 'error'
+  status: 'dry_run' | 'success' | 'skipped' | 'blocked' | 'error'
   error?: string
 }
 
@@ -185,9 +188,10 @@ async function deleteVerifiedRows(
   cutoffDate: string,
   rows: Record<string, unknown>[],
   artifact: { artifact_id: string; checksum: string },
+  projection?: ReplayReleaseProjection,
 ): Promise<number> {
   await assertRowsUnchanged(db, source, cutoffDate, rows)
-  return releaseArchivedRows(db, source, cutoffDate, rows, artifact)
+  return releaseArchivedRows(db, source, cutoffDate, rows, artifact, projection)
 }
 
 async function runPolicy(
@@ -213,9 +217,20 @@ async function runPolicy(
 
   if (!dryRun) await beginRetentionRun(opsDb, { runId, policyId, businessDate })
 
-  const drainSources = config.sources.filter(
-    (source) => source.deleteTable && source.deleteKeyColumn,
-  )
+  const drainSources = config.sources.filter(source => source.deleteTable && source.deleteKeyColumn)
+  for (const source of config.sources.filter(source => !source.deleteTable || !source.deleteKeyColumn)) {
+    const message = `cold_reader_not_verified:${source.datasetId}`
+    errors.push(message)
+    datasets.push({ dataset_id: source.datasetId, source_domain: source.sourceDomain,
+      cutoff_date: cutoffDate, candidates: 0, archived_rows: 0, deleted_rows: 0,
+      archived_bytes: 0, artifact_id: null, checksum: null, backlog_remaining: true,
+      status: 'blocked', error: message })
+    if (!dryRun) await checkpointRetentionItem(opsDb, {
+      runId, policyId, datasetId: `hot-drain:${source.datasetId}`, status: 'error',
+      backlogRemaining: true, error: message,
+      evidence: { delete_executor: false, candidate_count_known: false, dry_run: false },
+    })
+  }
   for (const configured of drainSources) {
     const source = retentionSourceAtCutoff(configured, cutoffDate)
     const sourceDb = retentionSourceDatabase(env, source.sourceDomain)
@@ -313,16 +328,20 @@ async function runPolicy(
             ? { stock_keys: [...new Set(rows.map(row => row[source.datasetId === 'chip_data' ? 'symbol' : 'stock_id']))] } : {}),
           coverage_start: first.__archive_date,
           coverage_end: last.__archive_date,
+          ...(source.datasetId === 's12_replay_trade_outcomes' ? retentionReplayClockMetadata(rows) : {}),
           exact_row_key_recheck: true,
           delete_executor: true,
           dry_run: false,
         },
       })
-      const deleted = await deleteVerifiedRows(sourceDb, source, cutoffDate, rows, artifact)
+      const compact = source.sourceDomain === 'learning' && source.datasetId === 's12_replay_trade_outcomes'
+        ? await prepareReplayReleaseProjection(env, rows, artifact) : undefined
+      const deleted = await deleteVerifiedRows(sourceDb, source, cutoffDate, rows, artifact, compact)
       const backlogRemaining = hasMore
       archivedRows += rows.length
       deletedRows += deleted
-      archivedBytes += Number(artifact.byte_size)
+      const archiveBytes = Number(artifact.byte_size) + Number(compact?.projection.byte_size ?? 0)
+      archivedBytes += archiveBytes
       datasets.push({
         dataset_id: source.datasetId,
         source_domain: source.sourceDomain,
@@ -330,7 +349,7 @@ async function runPolicy(
         candidates: rows.length,
         archived_rows: rows.length,
         deleted_rows: deleted,
-        archived_bytes: artifact.byte_size,
+        archived_bytes: archiveBytes,
         artifact_id: artifact.artifact_id,
         checksum: artifact.checksum,
         backlog_remaining: backlogRemaining,
@@ -344,7 +363,7 @@ async function runPolicy(
         scannedRows: rows.length,
         archivedRows: rows.length,
         deletedRows: deleted,
-        archivedBytes: artifact.byte_size,
+        archivedBytes: archiveBytes,
         backlogRemaining,
         cycleComplete: !backlogRemaining,
         evidence: {
@@ -355,6 +374,8 @@ async function runPolicy(
           r2_key: artifact.r2_key,
           checksum: artifact.checksum,
           checksum_verified_at: artifact.checksum_verified_at,
+          ...(compact ? {projection_artifact_id:compact.projection.artifact_id,projection_checksum:compact.projection.checksum,
+            projection_bytes:compact.projection.byte_size} : {}),
           cutoff_date: cutoffDate,
         },
       })
@@ -408,7 +429,7 @@ async function runPolicy(
   }
   return {
     policy_id: policyId,
-    status: dryRun ? 'dry_run' : errors.length ? 'error' : 'success',
+    status: errors.length ? 'error' : dryRun ? 'dry_run' : 'success',
     cutoff_date: cutoffDate,
     scanned_rows: scannedRows,
     archived_rows: archivedRows,
@@ -426,6 +447,8 @@ export async function runRetentionHotWindowDrain(
     businessDate?: string | null
     policyIds?: readonly RetentionHotWindowDrainPolicyId[]
     limitPerDataset?: number
+    maxRounds?: number
+    budgetMs?: number
     confirmPhrase?: string | null
   } = {},
 ) {
@@ -438,10 +461,11 @@ export async function runRetentionHotWindowDrain(
   const unknown = policyIds.filter((policyId) => !allowed.has(policyId))
   if (unknown.length) throw new Error(`retention_hot_drain_policy_not_allowed:${unknown.join(',')}`)
   const opsDb = databaseForDataDomain(env, 'ops')
-  const policies: DrainPolicyResult[] = []
-  for (const policyId of policyIds) {
-    policies.push(await runPolicy(env, opsDb, policyId, businessDate, limit, dryRun))
-  }
+  const rounds = await runRetentionDrainRounds({
+    policyIds, dryRun, maxRounds: options.maxRounds, budgetMs: options.budgetMs,
+    run: policyId => runPolicy(env, opsDb, policyId as RetentionHotWindowDrainPolicyId, businessDate, limit, dryRun),
+  })
+  const policies = rounds.latest
   const failed = policies.filter((policy) => policy.status === 'error')
   return {
     schema_version: 'retention-hot-window-drain-v1' as const,
@@ -449,13 +473,19 @@ export async function runRetentionHotWindowDrain(
     business_date: businessDate,
     dry_run: dryRun,
     delete_executor: true,
-    policy_count: policies.length,
+    policy_count: policyIds.length,
+    policy_attempts: rounds.attempts.length,
+    complete: !dryRun && rounds.pendingPolicyIds.length === 0,
+    stop_reason: rounds.stopReason,
+    elapsed_ms: rounds.elapsedMs,
+    unstarted_policies: rounds.unstartedPolicyIds,
+    pending_policies: rounds.pendingPolicyIds,
     failed_policies: failed.map((policy) => policy.policy_id),
-    scanned_rows: policies.reduce((sum, policy) => sum + policy.scanned_rows, 0),
-    archived_rows: policies.reduce((sum, policy) => sum + policy.archived_rows, 0),
-    deleted_rows: policies.reduce((sum, policy) => sum + policy.deleted_rows, 0),
-    archived_bytes: policies.reduce((sum, policy) => sum + policy.archived_bytes, 0),
-    backlog_remaining: policies.some((policy) => policy.backlog_remaining),
+    scanned_rows: rounds.attempts.reduce((sum, policy) => sum + policy.scanned_rows, 0),
+    archived_rows: rounds.attempts.reduce((sum, policy) => sum + policy.archived_rows, 0),
+    deleted_rows: rounds.attempts.reduce((sum, policy) => sum + policy.deleted_rows, 0),
+    archived_bytes: rounds.attempts.reduce((sum, policy) => sum + policy.archived_bytes, 0),
+    backlog_remaining: rounds.pendingPolicyIds.length > 0,
     policies,
   }
 }
@@ -467,6 +497,8 @@ export function summarizeRetentionHotWindowDrain(
     `retention_hot_window_drain status=${result.status}`,
     `dry_run=${result.dry_run}`,
     `policies=${result.policy_count}`,
+    `attempts=${result.policy_attempts} stop=${result.stop_reason}`,
+    `pending=${result.pending_policies.join(',') || 'none'}`,
     `scanned=${result.scanned_rows}`,
     `archived=${result.archived_rows}`,
     `deleted=${result.deleted_rows}`,

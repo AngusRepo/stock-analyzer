@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 function fixture(mode='normal') {
  const objects=new Map<string,string>();let puts=0;let manifests=0
- const db={prepare(){return {bind(){return this},async run(){manifests++}}}}
+ const db={prepare(sql:string){return {bind(){return this},async first(){assert.match(sql,/artifact_deletion_claims_v1/);return null},async run(){manifests++}}}}
  const bucket={async get(key:string){const body=objects.get(key);return body===undefined?null:{text:async()=>body}},
   async put(key:string,body:string,options:any){puts++;assert.equal(options.onlyIf.etagDoesNotMatch,'*')
    if(mode==='missing')throw new Error('unavailable')
@@ -22,5 +22,5 @@ test('identical concurrent winner under bucket lock is verified and accepted',as
  const f=fixture('race');await writeEvidenceArtifact(f.env,f.input);assert.equal(f.manifests(),1)
 })
 for(const mode of ['missing','corrupt'])test(`cold write ${mode} cannot publish a manifest`,async()=>{
- const f=fixture(mode);await assert.rejects(writeEvidenceArtifact(f.env,f.input));assert.equal(f.manifests(),0)
+ const f=fixture(mode);await assert.rejects(writeEvidenceArtifact(f.env,f.input),mode==='missing'?/unavailable/:/checksum_mismatch/);assert.equal(f.manifests(),0)
 })

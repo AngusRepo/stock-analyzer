@@ -775,7 +775,7 @@ adminReadRoutes.post('/api/admin/strategy/dry-run', async (c) => {
   const opsDb = databaseForDataDomain(c.env, 'ops')
   const { specs, source: specSource } = await listStrategySpecsForLearning(learningDb)
   if (!candidates.length) {
-    candidates = await listStrategyLearningCandidates(opsDb, date, limit) as unknown as Array<Record<string, unknown>>
+    candidates = await listStrategyLearningCandidates(opsDb, date, limit, '', c.env) as unknown as Array<Record<string, unknown>>
     candidateSource = 'screener_funnel_scoring_pass'
   }
   const runtimeSpecs = listStrategySpecs(specs)
@@ -995,6 +995,13 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
        SELECT p.policy_id,
               CASE WHEN r.status='success'
                          AND r.completed_at >= datetime('now', '-7 days')
+                         AND (r.run_id NOT LIKE 'retention-hot-window-drain:%' OR (
+                           EXISTS (SELECT 1 FROM data_retention_run_items i WHERE i.run_id=r.run_id)
+                           AND NOT EXISTS (
+                             SELECT 1 FROM data_retention_run_items i
+                              WHERE i.run_id=r.run_id AND (i.backlog_remaining=1 OR i.status='error')
+                           )
+                         ))
                           AND (
                             p.action='archive_scrub'
                             OR r.run_id LIKE 'retention-hot-window-drain:%'
@@ -1069,9 +1076,13 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     })),
     growthForecasts: capacityForecasts,
   })
-  const { inspectNavColdStorageReadiness } = await import('../lib/learningTenYearRetentionReadiness')
-  const navColdStorage = await inspectNavColdStorageReadiness(databaseForDataDomain(c.env, 'learning'))
+  const { inspectLearningTenYearRetentionReadiness } = await import('../lib/learningTenYearRetentionReadiness')
+  const learningRetention = await inspectLearningTenYearRetentionReadiness(
+    databaseForDataDomain(c.env, 'learning'), opsDb, twToday(),
+  )
+  const navColdStorage = learningRetention.nav_cold_storage
   const tenYearClosure = buildDataDomainTenYearClosure({
+    learningRetention,
     navColdStorage,
     activeDomains,
     strictRequested: String(c.env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true',

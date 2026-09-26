@@ -8,7 +8,7 @@ function fixture(mode: 'normal' | 'concurrent' | 'corrupt' | 'lost_ack' = 'norma
   const sql = new DatabaseSync(':memory:')
   for (const [domain, tables] of Object.entries({
     learning: ['strategy_decision_log', 'strategy_candidate_contexts'],
-    ops: ['legacy_migration_cursors', 'run_artifacts', 'artifact_hard_references'],
+    ops: ['legacy_migration_cursors', 'run_artifacts', 'artifact_hard_references', 'artifact_deletion_claims_v1'],
   })) {
     const schema = readFileSync(`domain-schemas/${domain}.sql`, 'utf8')
     for (const table of tables) {

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Miniflare } from 'miniflare'
@@ -54,6 +55,7 @@ test('actual REST writer -> local D1/R2 canonical source -> full-universe Atomic
       domain TEXT,business_date TEXT,producer_run_id TEXT,canonical_run_id TEXT,r2_key TEXT,checksum TEXT,schema_version TEXT,
       row_count INTEGER,byte_size INTEGER,created_at TEXT,retain_until TEXT,pinned INTEGER,legal_hold INTEGER,
       hard_ref_count INTEGER,checksum_verified_at TEXT,metadata_json TEXT,updated_at TEXT,payload_deleted_at TEXT)`).run()
+    await db.prepare(readFileSync('domain-migrations/ops/0020_artifact_deletion_claims.sql','utf8').split(';')[0]).run()
     await db.prepare(`CREATE TABLE pipeline_runs (run_id TEXT PRIMARY KEY,business_date TEXT,domain TEXT,status TEXT,
       canonical_at TEXT,artifact_id TEXT)`).run()
     const env = { DB: db, ARTIFACTS: r2, STOCKVISION_AUTH_TOKEN: 'isolated-test-token' } as any

@@ -5,7 +5,6 @@ import {
   releaseArtifactHardReferencesByOwner,
   registerPipelineRun,
   runD1EvidenceScrub,
-  runR2RetentionSweep,
   runStorageHealthCheck,
   STORAGE_LIFECYCLE_SCHEDULE,
   writeEvidenceArtifact,
@@ -157,22 +156,6 @@ async function testHardReferenceEdgesAreReachabilitySourceOfTruth(): Promise<voi
   assert.equal(released, 1)
   assert.equal(db.batches.length, 2)
   assert.match(db.batches[1][0].sql, /SET active=0/)
-}
-
-async function testRetentionSweepPreservesMetadataAfterPayloadDelete(): Promise<void> {
-  const db = new MockDb()
-  const r2 = new MockR2()
-  r2.objects.set('evidence/expired.json', '{}')
-  db.allHandler = () => [{ artifact_id: 'expired', r2_key: 'evidence/expired.json' }]
-
-  const result = await runR2RetentionSweep({ DB: db as any, ARTIFACTS: r2 as any }, {
-    now: '2035-07-14T00:00:00Z',
-  })
-
-  assert.deepEqual(result, { candidates: 1, deleted: 1, failed: 0, errors: [] })
-  assert.deepEqual(r2.deleted, ['evidence/expired.json'])
-  assert.match(db.runs[0].sql, /status='payload_deleted'/)
-  assert.doesNotMatch(db.runs[0].sql, /DELETE FROM run_artifacts/)
 }
 
 async function testD1EvidenceScrubBatchesVerifiedRowsAtomically(): Promise<void> {
@@ -370,7 +353,6 @@ async function main(): Promise<void> {
   await testContentAddressDoesNotDuplicateAcrossRunIds()
   await testCanonicalPromotionSupersedesOnlyAfterVerifiedArtifact()
   await testHardReferenceEdgesAreReachabilitySourceOfTruth()
-  await testRetentionSweepPreservesMetadataAfterPayloadDelete()
   await testD1EvidenceScrubBatchesVerifiedRowsAtomically()
   await testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow()
   await testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope()

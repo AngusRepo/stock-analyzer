@@ -74,6 +74,22 @@ for (const [database, query] of [
 ]) {
   run(process.execPath, [wranglerCli, 'd1', 'execute', database, '--remote', '--command', query], { cwd: workerDir })
 }
+// A frozen calibration attempt is tied to its source tag. Finish the attempt
+// and explicitly apply Learning 0058 before admitting a different build.
+const calibrationState = JSON.parse(run(process.execPath, [
+  wranglerCli, 'd1', 'execute', 'stockvision-learning-db', '--remote', '--json', '--command',
+  'SELECT run_id,revision,commit_token,checkpoint_json FROM s12_calibration_work_v1 LIMIT 0; '
+  + 'SELECT run_id,id,row_json,payload_bytes FROM s12_calibration_work_rows_v1 LIMIT 0; '
+  + 'SELECT run_id,business_date,state,updated_at FROM s12_calibration_work_lifecycle_v1 LIMIT 0; '
+  + 'SELECT run_id,signal_key,kind,rows FROM s12_calibration_work_censor_v1 LIMIT 0; '
+  + 'SELECT canonical_run_id,work_id FROM s12_calibration_work_current_v1 LIMIT 0; '
+  + "SELECT COUNT(*) AS active FROM s12_calibration_work_v1 WHERE phase IN ('reading','ready');",
+], { cwd: workerDir, capture: true }))
+if (!Array.isArray(calibrationState) || calibrationState.length !== 6
+  || calibrationState.some(result => result.success !== true)
+  || calibrationState.at(-1)?.results?.[0]?.active !== 0) {
+  throw new Error('calibration schema missing or frozen attempt active; finish it before changing source tag')
+}
 run(process.execPath, [
   wranglerCli, 'deploy', '--strict',
   '--tag', sourceSha,

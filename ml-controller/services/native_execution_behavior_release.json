@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:1d1b83a62975363db5e7384fe64bbd48ae8fabc9ee6e86e877a9e126b3973d0e",
+  "execution_owner_version": "native-paper-v1:603b0789d9000a289a3c984a63345def64fc55b516f541c6ce91afc5500f7586",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized implementation of the causal audit, parameter neighborhood and verified-bundle workbench on 2026-09-26. This source-build declaration grants no Paper runtime admission or prestart replacement authority.",
-  "review": "ml-controller/RESEARCH_VALIDATION_HARDENING.md",
+  "authorization": "Wei explicitly approved this exact source-build fingerprint and S12 calibration checkpoint release on 2026-09-26 after review against production 338f416a. This source-build declaration grants no Paper runtime admission or prestart replacement authority.",
+  "review": "docs/releases/2026-09-26-s12-calibration-checkpoint.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

@@ -43,7 +43,7 @@ export interface S12TwCalibrationArtifact {
   approvedAt: string | null
 }
 
-interface CalibrationEvidence {
+export interface CalibrationEvidence {
   symbol: string
   tradeDate: string
   marketSegment: string
@@ -135,7 +135,12 @@ function parseJson<T>(value: unknown, fallback: T): T {
   }
 }
 
-function detailValue(detail: string, key: string): string | null {
+export const CALIBRATION_DETAIL_KEYS = [
+  'atr15m', 'equity_mutation_score', 'vwap_fast_reasons', 'vwap_fast_blockers',
+  'session_60m_move_atr', 'session_60m_close_position',
+] as const
+
+function detailValue(detail: string, key: typeof CALIBRATION_DETAIL_KEYS[number]): string | null {
   const match = detail.match(new RegExp(`(?:^|;)${key}=([^;]*)`))
   return match?.[1]?.trim() || null
 }
@@ -319,9 +324,9 @@ export function applyS12TwCalibrationArtifact(
 }
 
 const CALIBRATION_EVIDENCE_PAGE_SIZE = 128
-const CALIBRATION_EVIDENCE_SCAN_LIMIT = 100_000
+export const CALIBRATION_EVIDENCE_SCAN_LIMIT = 100_000
 
-const CALIBRATION_LIFECYCLE_RECENT_MS = 6 * 60 * 60_000
+export const CALIBRATION_LIFECYCLE_RECENT_MS = 6 * 60 * 60_000
 
 export interface S12TwCalibrationLifecycleCensoring {
   completeRows: number
@@ -584,7 +589,7 @@ export async function loadS12TwCalibrationEvidence(
 }
 
 
-function calibrationEvidenceFromRow(row: ReplayRow): CalibrationEvidence | null {
+export function calibrationEvidenceFromRow(row: ReplayRow): CalibrationEvidence | null {
   const assessmentDetail = String(row.assessment_detail ?? '')
   const entry = finite(row.entry_price)
   const stop = finite(row.stop_price)
@@ -790,6 +795,8 @@ export interface S12TwCalibrationAtomicCommitInput {
   failedGateDistribution: Record<string, number>
   lifecycleCensoring?: S12TwCalibrationLifecycleCensoring
   replaceExistingRunArtifacts?: boolean
+  transactionBefore?: D1PreparedStatement[]
+  transactionAfter?: D1PreparedStatement[]
 }
 
 export async function commitS12TwCalibrationAtomically(
@@ -797,7 +804,7 @@ export async function commitS12TwCalibrationAtomically(
   input: S12TwCalibrationAtomicCommitInput,
 ): Promise<number> {
   const approved = input.artifacts.filter((artifact) => artifact.status === 'approved')
-  const statements: D1PreparedStatement[] = []
+  const statements: D1PreparedStatement[] = [...(input.transactionBefore ?? [])]
   if (input.replaceExistingRunArtifacts === true) {
     statements.push(db.prepare(`
       DELETE FROM s12_tw_calibration_artifacts
@@ -871,6 +878,7 @@ export async function commitS12TwCalibrationAtomically(
       lifecycle_censoring: input.lifecycleCensoring ?? null,
     }),
   ))
+  statements.push(...(input.transactionAfter ?? []))
   if (statements.length > S12_TW_CALIBRATION_BATCH_MAX_STATEMENTS) {
     throw new Error(
       `s12 calibration atomic batch exceeds ${S12_TW_CALIBRATION_BATCH_MAX_STATEMENTS} statements: ${statements.length}`,
@@ -898,6 +906,18 @@ export async function runS12TwCalibration(
   const lifecycleCensoring = options.lifecycleCensoring
     ?? await inspectS12TwCalibrationLifecycleCensoring(db, options.runDate, cadence, options.history?.nowMs, options.history)
   const evidence = await loadS12TwCalibrationEvidence(db, startDate, options.runDate, options.history)
+  return runS12TwCalibrationFromEvidence(db, {...options, lifecycleCensoring}, evidence)
+}
+
+/** The existing numerical algorithm, shared by synchronous and frozen resumable inputs. */
+export async function runS12TwCalibrationFromEvidence(db: D1Database, options: {
+  runDate: string; cadence?: S12TwCalibrationCadence; dryRun?: boolean;
+  lifecycleCensoring: S12TwCalibrationLifecycleCensoring; replaceExistingRunArtifacts?: boolean;
+  beforeCommit?: () => Promise<void>; transactionBefore?: D1PreparedStatement[]; transactionAfter?: D1PreparedStatement[];
+}, evidence: CalibrationEvidence[]): Promise<{status:string;summary:string;artifacts:S12TwCalibrationArtifact[];written:number}> {
+  const cadence = options.cadence ?? 'weekly'
+  const startDate = daysBefore(options.runDate, cadence === 'monthly' ? 180 : 90)
+  const lifecycleCensoring = options.lifecycleCensoring
   const grouped = new Map<string, { scope: S12TwCalibrationScope; rows: CalibrationEvidence[] }>()
   const append = (scope: S12TwCalibrationScope, row: CalibrationEvidence) => {
     const key = scopeKey(scope)
@@ -938,6 +958,8 @@ export async function runS12TwCalibration(
         failedGateDistribution,
         lifecycleCensoring,
         replaceExistingRunArtifacts: options.replaceExistingRunArtifacts,
+        transactionBefore: options.transactionBefore,
+        transactionAfter: options.transactionAfter,
       })
   const status = approved.length ? (options.dryRun ? 'validated' : 'promoted') : 'frozen'
   return {

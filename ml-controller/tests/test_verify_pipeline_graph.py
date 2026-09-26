@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import sys
-import types
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-sys.modules.setdefault(
-    "services.cloud_run_jobs_client",
-    types.SimpleNamespace(
-        CloudRunJobsClient=lambda *args, **kwargs: types.SimpleNamespace(run_job=lambda **_: None),
-        JobAlreadyRunningError=RuntimeError,
-    ),
-)
 
 from graphs import verify_pipeline  # noqa: E402
 from routers import verify as verify_router  # noqa: E402

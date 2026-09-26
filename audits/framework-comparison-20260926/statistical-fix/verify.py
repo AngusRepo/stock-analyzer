@@ -118,7 +118,7 @@ record = {
         "Current main exact DSR v2 and its trial-distribution lineage gates were preserved unchanged.",
     ],
 }
-OUT.joinpath("verification.json").write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+OUT.joinpath("verification.json").write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
 print(output.getvalue())
 print(json.dumps({k: record[k] for k in ["exit_code", "passed", "failed", "skipped", "errors", "blocked_network_attempts"]}))
 raise SystemExit(int(code))

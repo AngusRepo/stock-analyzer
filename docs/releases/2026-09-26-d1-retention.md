@@ -36,3 +36,7 @@ Restore the previous Worker version if code qualification fails after deployment
 ## Pre-release compatibility fix
 
 Native integration identified that the shared artifact writer queried the production expiry table inside the sealed private host. The writer now uses the existing trusted request-local database capability to recognize the isolated artifact store; production calls still require the claim check, with no request/config bypass. Native frame/ledger/registration tests must pass before publication.
+
+## CI dependency boundary correction
+
+The initial P9 run caught a direct UUID call in the expiry module while traversing the native dependency graph. Expiry now uses the existing scoped clock and UUID ports. All 125 dependency modules pass the unchanged boundary assertion; nine expiry fault/concurrency tests pass. Tree shaking leaves the actual native bundle checksum and reviewed owner unchanged.

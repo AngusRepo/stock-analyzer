@@ -1,4 +1,4 @@
-import { paperExecutionDate } from './paperExecutionScope'
+import { paperExecutionDate, paperExecutionNow, paperExecutionUUID } from './paperExecutionScope'
 
 const ELIGIBLE = `a.status='ready' AND a.payload_deleted_at IS NULL AND a.retain_until IS NOT NULL
   AND datetime(a.retain_until)<=datetime(?) AND a.pinned=0 AND a.legal_hold=0 AND a.hard_ref_count=0
@@ -16,7 +16,7 @@ export async function sweepExpiredArtifacts(db: D1Database, r2: {delete(key:stri
   options: ArtifactExpiryOptions = {}): Promise<ArtifactExpiryResult> {
   const now = new Date(options.now ?? paperExecutionDate().toISOString()).toISOString()
   const limit = Math.max(1,Math.min(1000,Math.floor(options.limit ?? 250)))
-  const clock = options.clock ?? Date.now, started = clock()
+  const clock = options.clock ?? paperExecutionNow, started = clock()
   const budget = Math.max(1,Math.min(60_000,Math.floor(options.budgetMs ?? 25_000)))
   if (![limit,budget].every(Number.isFinite)) throw new Error('artifact_expiry_budget_invalid')
   // Query each indexed queue once. Updating a failed claim's scheduling time prevents a bad oldest object pinning the head.
@@ -36,7 +36,7 @@ export async function sweepExpiredArtifacts(db: D1Database, r2: {delete(key:stri
     budget_exhausted:false,has_more:retries.length+fresh.length>candidates.length || fresh.length===limit || retries.length===limit,errors:[]}
   for (const row of candidates) {
     if (clock()-started>=budget) {result.budget_exhausted=true;result.has_more=true;break}
-    const owner = crypto.randomUUID()
+    const owner = paperExecutionUUID()
     // Wall clock advances within this invocation even when tests pin the starting business time.
     const attemptAt = new Date(Date.parse(now)+Math.max(0,clock()-started)).toISOString()
     const leaseUntil = new Date(Date.parse(attemptAt)+LEASE_MS).toISOString()

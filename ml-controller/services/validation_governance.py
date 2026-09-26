@@ -8,10 +8,10 @@ promotion and Strategy Lab do not grow separate validation owners.
 from __future__ import annotations
 
 import math
-import random
 from statistics import NormalDist
 from datetime import datetime, timezone
 from typing import Any
+from services.data_snooping_validation import data_snooping_evidence_errors, run_data_snooping_test
 from services.promotion_policy import _as_float, _as_int, risk_metric_within, optional_metric, parse_regime_evidence
 
 
@@ -33,7 +33,7 @@ VALIDATION_SCOPE = {
     "data_snooping": "promotion_grade_stationary_bootstrap_white_or_studentized_spa_required",
     "model_family_validation_owners_are_declared_in_training_metadata": "required",
     "known_gaps": [
-        "promotion_grade_stationary_bootstrap_white_and_studentized_spa_require_external_exact_evidence",
+        "full_search_completeness_requires_historical_trial_ledger",
     ],
 }
 
@@ -57,13 +57,13 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
 
 
 def _requires_promotion_grade_evidence(source: str, external_risk_required: bool) -> bool:
-    if not external_risk_required:
-        return False
+    # Mandatory promotion evidence cannot be downgraded by a research option.
     normalized = str(source or "").lower()
     return normalized in {
         "promotion_gate",
         "alpha_policy_latest_gate",
         "alpha_policy_evidence_gate",
+        "alpha_policy_evidence_bundle",
         "parameter_candidate_evidence_gate",
     }
 
@@ -319,68 +319,15 @@ def data_snooping_reality_check(
     n_bootstrap: int = 1000,
     seed: int = 42,
     alpha: float = 0.20,
+    block_size: int | None = None,
+    search_candidate_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Deterministic iid max-mean diagnostic; not a promotion-grade White RC."""
-
-    cleaned = {
-        str(name): _float_series(values)
-        for name, values in (strategy_returns_by_partition or {}).items()
-        if isinstance(values, list)
-    }
-    cleaned = {name: values for name, values in cleaned.items() if len(values) >= 4}
-    if len(cleaned) < 2:
-        return {
-            "method": "white_iid_max_mean_diagnostic_v1",
-            "exact_formula": False,
-            "promotion_eligible": False,
-            "status": "FAIL",
-            "passed": False,
-            "go_live_verdict": "FAIL",
-            "reason": "requires_at_least_two_candidates_with_four_partitions",
-            "candidate_count": len(cleaned),
-            "p_value": 1.0,
-        }
-
-    n = min(len(values) for values in cleaned.values())
-    aligned = {name: values[:n] for name, values in cleaned.items()}
-    means = {name: sum(values) / n for name, values in aligned.items()}
-    best_candidate = max(means, key=means.get)
-    best_mean = means[best_candidate]
-    observed = math.sqrt(n) * max(0.0, best_mean)
-    centered = {
-        name: [value - means[name] for value in values]
-        for name, values in aligned.items()
-    }
-    rng = random.Random(seed)
-    sims = max(1, _as_int(n_bootstrap, 1000))
-    exceed = 0
-    for _ in range(sims):
-        indices = [rng.randrange(n) for _ in range(n)]
-        boot_best = max(
-            sum(values[i] for i in indices) / n
-            for values in centered.values()
-        )
-        if math.sqrt(n) * boot_best >= observed:
-            exceed += 1
-    p_value = (exceed + 1) / (sims + 1)
-    passed = p_value <= alpha and best_mean > 0.0
-    return {
-        "method": "white_iid_max_mean_diagnostic_v1",
-            "exact_formula": False,
-            "promotion_eligible": False,
-        "status": "PASS" if passed else "FAIL",
-        "passed": passed,
-        "go_live_verdict": "PASS" if passed else "FAIL",
-        "reason": "ok" if passed else "data_snooping_p_value_above_threshold",
-        "candidate_count": len(aligned),
-        "partition_count": n,
-        "best_candidate": best_candidate,
-        "best_mean_return": round(best_mean, 6),
-        "p_value": round(p_value, 6),
-        "alpha": alpha,
-        "n_bootstrap": sims,
-        "seed": seed,
-    }
+    """Stationary-bootstrap White RC against a zero-return benchmark."""
+    return run_data_snooping_test(
+        strategy_returns_by_partition, method="white_reality_check",
+        n_bootstrap=n_bootstrap, seed=seed, alpha=alpha,
+        block_size=block_size, search_candidate_ids=search_candidate_ids,
+    )
 
 
 def hansen_spa_reality_check(
@@ -390,93 +337,15 @@ def hansen_spa_reality_check(
     n_bootstrap: int = 1000,
     seed: int = 42,
     alpha: float = 0.20,
+    block_size: int | None = None,
+    search_candidate_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Deterministic iid benchmark-relative diagnostic; not full Hansen SPA."""
-
-    cleaned = {
-        str(name): _float_series(values)
-        for name, values in (strategy_returns_by_partition or {}).items()
-        if isinstance(values, list)
-    }
-    cleaned = {name: values for name, values in cleaned.items() if len(values) >= 4}
-    if benchmark not in cleaned or len(cleaned) < 2:
-        return {
-            "method": "hansen_iid_max_mean_diagnostic_v1",
-            "exact_formula": False,
-            "promotion_eligible": False,
-            "status": "FAIL",
-            "passed": False,
-            "go_live_verdict": "FAIL",
-            "reason": "requires_benchmark_and_at_least_one_candidate",
-            "benchmark": benchmark,
-            "candidate_count": max(0, len(cleaned) - (1 if benchmark in cleaned else 0)),
-            "p_value": 1.0,
-        }
-
-    n = min(len(values) for values in cleaned.values())
-    benchmark_returns = cleaned[benchmark][:n]
-    excess_by_candidate = {
-        name: [values[i] - benchmark_returns[i] for i in range(n)]
-        for name, values in cleaned.items()
-        if name != benchmark
-    }
-    excess_by_candidate = {
-        name: values for name, values in excess_by_candidate.items()
-        if len(values) >= 4
-    }
-    if not excess_by_candidate:
-        return {
-            "method": "hansen_iid_max_mean_diagnostic_v1",
-            "exact_formula": False,
-            "promotion_eligible": False,
-            "status": "FAIL",
-            "passed": False,
-            "go_live_verdict": "FAIL",
-            "reason": "no_candidate_excess_series",
-            "benchmark": benchmark,
-            "candidate_count": 0,
-            "p_value": 1.0,
-        }
-
-    means = {name: sum(values) / n for name, values in excess_by_candidate.items()}
-    best_candidate = max(means, key=means.get)
-    best_mean = means[best_candidate]
-    observed = math.sqrt(n) * max(0.0, best_mean)
-    centered = {
-        name: [value - means[name] for value in values]
-        for name, values in excess_by_candidate.items()
-    }
-    rng = random.Random(seed)
-    sims = max(1, _as_int(n_bootstrap, 1000))
-    exceed = 0
-    for _ in range(sims):
-        indices = [rng.randrange(n) for _ in range(n)]
-        boot_best = max(
-            sum(values[i] for i in indices) / n
-            for values in centered.values()
-        )
-        if math.sqrt(n) * boot_best >= observed:
-            exceed += 1
-    p_value = (exceed + 1) / (sims + 1)
-    passed = best_mean > 0.0 and p_value <= alpha
-    return {
-        "method": "hansen_iid_max_mean_diagnostic_v1",
-            "exact_formula": False,
-            "promotion_eligible": False,
-        "status": "PASS" if passed else "FAIL",
-        "passed": passed,
-        "go_live_verdict": "PASS" if passed else "FAIL",
-        "reason": "ok" if passed else "spa_p_value_or_excess_return_failed",
-        "benchmark": benchmark,
-        "candidate_count": len(excess_by_candidate),
-        "partition_count": n,
-        "best_candidate": best_candidate,
-        "best_mean_excess_return": round(best_mean, 6),
-        "p_value": round(p_value, 6),
-        "alpha": alpha,
-        "n_bootstrap": sims,
-        "seed": seed,
-    }
+    """Studentized SPA with Hansen's consistent sample-dependent null."""
+    return run_data_snooping_test(
+        strategy_returns_by_partition, method="hansen_spa", benchmark=benchmark,
+        n_bootstrap=n_bootstrap, seed=seed, alpha=alpha,
+        block_size=block_size, search_candidate_ids=search_candidate_ids,
+    )
 
 
 def explain_backtest_metrics(backtest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -904,17 +773,8 @@ def build_validation_packet(
         )
 
     if data_snooping:
-        data_snooping_method = str(data_snooping.get("method") or "").lower()
-        data_snooping_promotion_ready = (
-            str(data_snooping.get("go_live_verdict") or "").upper() == "PASS"
-            and data_snooping.get("exact_formula") is True
-            and data_snooping.get("promotion_eligible") is True
-            and data_snooping_method in {
-                "white_reality_check_stationary_bootstrap_v2",
-                "hansen_spa_studentized_stationary_bootstrap_v2",
-            }
-            and risk_metric_within(data_snooping.get('p_value'), max_data_snooping_p)
-        )
+        errors = data_snooping_evidence_errors(data_snooping, max_p_value=max_data_snooping_p)
+        data_snooping_promotion_ready = not errors
         gates.append(
             _gate(
                 "data_snooping_overfit_guard",
@@ -930,7 +790,7 @@ def build_validation_packet(
                     if data_snooping_promotion_ready
                     else "diagnostic_or_non_exact_data_snooping_evidence"
                 ),
-                evidence=data_snooping,
+                evidence={**data_snooping, "contract_errors": errors},
             )
         )
     else:

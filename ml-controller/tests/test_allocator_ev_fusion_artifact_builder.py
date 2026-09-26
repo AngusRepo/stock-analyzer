@@ -274,6 +274,12 @@ def test_allocator_ev_fusion_multiple_testing_fails_closed_without_corrected_evi
     assert rejected_artifact["validation_packet"]["gate_layers"]["statistical_validity"]["decision"] == "FAIL"
     assert "multiple_testing:approved_correction_missing" in rejected_artifact["validation_packet"]["failed_gates"]
 
+    from services.validation_governance import hansen_spa_reality_check
+    trial_returns = {f"trial-{i}": [0.02 + i * 0.0001, 0.018, 0.021, 0.019] * 10 for i in range(24)}
+    full_evidence = hansen_spa_reality_check(
+        {"champion": [0.001] * 40, **trial_returns},
+        search_candidate_ids=list(trial_returns), n_bootstrap=200,
+    )
     corrected = build_allocator_ev_fusion_artifact_from_rows(
         rows,
         trained_until="2026-07-07",
@@ -281,11 +287,7 @@ def test_allocator_ev_fusion_multiple_testing_fails_closed_without_corrected_evi
         min_dates=20,
         l2=0.15,
         search_trial_count=24,
-        multiple_testing_evidence={
-            "method": "hansen_spa",
-            "passed": True,
-            "adjusted_p_value": 0.04,
-        },
+        multiple_testing_evidence=full_evidence,
     )
 
     corrected_artifact = corrected["artifact"]

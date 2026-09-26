@@ -111,7 +111,7 @@ def test_run_alpha_candidate_evidence_keeps_iid_spa_diagnostic_out_of_promotion(
     assert out["monte_carlo"]["simulation_method"] == "regime_block_bootstrap"
     assert out["pbo"]["method"] == "cscv_rank_logit"
     assert out["pbo"]["n_trades"] == 72
-    assert out["data_snooping"]["method"] == "hansen_iid_max_mean_diagnostic_v1"
+    assert out["data_snooping"]["method"] == "hansen_spa_studentized_stationary_bootstrap_v2"
     assert out["data_snooping"]["benchmark"] == "champion"
     assert out["data_snooping"]["candidate_count"] == 1
     assert out["validation_packet"]["validation_scope"]["data_snooping"] == "promotion_grade_stationary_bootstrap_white_or_studentized_spa_required"

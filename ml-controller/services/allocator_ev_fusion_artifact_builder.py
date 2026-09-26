@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from scipy.stats import t as student_t
+from services.data_snooping_validation import CANONICAL_METHODS, data_snooping_evidence_errors
 
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
 from services.evidence_contracts import (
@@ -1034,25 +1035,19 @@ def _multiple_testing_gate(
     trials = max(1, int(search_trial_count))
     record = evidence if isinstance(evidence, dict) else {}
     method = str(record.get("method") or "").strip().lower()
-    allowed_methods = {"white_reality_check", "hansen_spa", "deflated_sharpe_ratio"}
-    adjusted_p_value = _float_or_none(record.get("adjusted_p_value"))
-    passed = (
-        trials == 1
-        or (
-            method in allowed_methods
-            and record.get("passed") is True
-            and (adjusted_p_value is None or adjusted_p_value <= 0.10)
-        )
-    )
+    # A method name / boolean alone cannot authenticate correction or coverage.
+    allowed_methods = set(CANONICAL_METHODS.values())
+    adjusted_p_value = _float_or_none(record.get("p_value"))
     failed_gates: list[str] = []
-    if trials > 1 and method not in allowed_methods:
-        failed_gates.append("approved_correction_missing")
-    if trials > 1 and record.get("passed") is not True:
-        failed_gates.append("corrected_test_not_passed")
-    if trials > 1 and adjusted_p_value is not None and adjusted_p_value > 0.10:
-        failed_gates.append("adjusted_p_value_gt_0_10")
+    if trials > 1:
+        if method not in allowed_methods:
+            failed_gates.append("approved_correction_missing")
+        failed_gates.extend(data_snooping_evidence_errors(
+            record, max_p_value=0.10, required_trial_count=trials,
+        ))
+    passed = not failed_gates
     return {
-        "schema_version": "fusion-multiple-testing-gate-v1",
+        "schema_version": "fusion-multiple-testing-gate-v2",
         "decision": "PASS" if passed else "FAIL",
         "failed_gates": sorted(set(failed_gates)),
         "search_trial_count": trials,

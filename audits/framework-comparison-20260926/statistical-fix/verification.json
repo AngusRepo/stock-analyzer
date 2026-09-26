@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-09-26T07:21:14.842491+00:00",
+  "scope": "local_working_tree_offline_fixtures_only",
+  "python": "3.12.13",
+  "exit_code": 0,
+  "passed": 125,
+  "failed": 0,
+  "skipped": 0,
+  "errors": 0,
+  "blocked_network_attempts": 0,
+  "allowed_internal_socketpairs": 4,
+  "tests": [
+    "test_data_snooping_validation.py",
+    "test_statistical_promotion_integration.py",
+    "test_validation_governance.py",
+    "test_alpha_evidence_runner.py",
+    "test_promotion_service.py",
+    "test_allocator_ev_fusion_artifact_builder.py",
+    "test_parameter_candidate_validation_chain.py",
+    "test_lifecycle_promotion_gate.py"
+  ],
+  "source_sha256": {
+    "ml-controller/services/data_snooping_validation.py": "99b96a3221fd04bd3946e077add351c0a5313be87d1f6d433605855c73fc36ca",
+    "ml-controller/services/validation_governance.py": "6638c0201aa7f8890212c2b5f633251e5f18166b6a26f93d38a7b98bdc806dd5",
+    "ml-controller/services/promotion_service.py": "e770acce1ad97612814f92c5868f4de44ddcdc22c8e8f200f2f8812425e840f4",
+    "ml-controller/services/alpha_evidence_runner.py": "c3a53dd1327da63dc167d081ade2bc32b9f2efb1f5efc148c8d879fd297474d6",
+    "ml-controller/services/allocator_ev_fusion_artifact_builder.py": "702c2ce0ab61025c1fd5b0705226da7d35f3d68f46ed59cbe631c75b384a639d",
+    "ml-controller/routers/config_pool.py": "c9f3b599538a5e35bccd80e640b7c1a466b87e4e9ba7f4bfe675e8e6d8a46bef",
+    "ml-controller/tests/test_data_snooping_validation.py": "49f87de8a7665d0903965b55fbd91c6f1250e57ba5f315e0e8a6b9ba90fd726a",
+    "ml-controller/tests/test_statistical_promotion_integration.py": "20942a46d0028564887531b732d1699b2bdcd28e2976bb602c42f39abc23b813",
+    "ml-controller/tests/test_validation_governance.py": "09e2e8e67558fe7884520df7508b218f934797118d97ba512080dec874675fc4",
+    "ml-controller/tests/test_alpha_evidence_runner.py": "3aa91ec06ddab61a12cbd0583cc90b063ab8dda95ad3d6a9e8870a62cdf9ce34",
+    "ml-controller/tests/test_promotion_service.py": "f6f3bba1f1116d59933786950a773866d500bb4a697efe477fe55abaa834b8a9",
+    "ml-controller/tests/test_allocator_ev_fusion_artifact_builder.py": "bcf8d539a2edc3a9c27112a16271279292a27ff1fe99734c9265d62d5659b9f7",
+    "ml-controller/tests/test_parameter_candidate_validation_chain.py": "b2a3322033a8720188b90a0b04cc848ddf1f8169bc474a22d1a2f589b341593e",
+    "ml-controller/tests/test_lifecycle_promotion_gate.py": "8fc03ab09ab00c6d5d9ea5641eed97601916f1426f3f6adde11434dcb4d3c73f"
+  },
+  "limitations": [
+    "No production, deployment, retraining or live trading verification.",
+    "Search completeness relies on a caller-declared manifest; historical trial ledger ingestion is not implemented here.",
+    "Equal-length ordered partitions are enforced; timestamp identity must be supplied correctly by the caller.",
+    "Current main exact DSR v2 and its trial-distribution lineage gates were preserved unchanged."
+  ]
+}

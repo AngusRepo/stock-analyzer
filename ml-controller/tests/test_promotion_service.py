@@ -41,13 +41,11 @@ def _exact_dsr_inputs() -> dict:
 
 
 def _promotion_grade_data_snooping() -> dict:
-    return {
-        "method": "hansen_spa_studentized_stationary_bootstrap_v2",
-        "exact_formula": True,
-        "promotion_eligible": True,
-        "go_live_verdict": "PASS",
-        "p_value": 0.05,
-    }
+    from services.validation_governance import hansen_spa_reality_check
+    return hansen_spa_reality_check(
+        {"champion": [0.001] * 40, "candidate": [0.02, 0.018, 0.021, 0.019] * 10},
+        search_candidate_ids=["candidate"], n_bootstrap=200,
+    )
 
 
 def test_normalization_preserves_zero_and_rejects_nonfinite_instead_of_using_better_summary():

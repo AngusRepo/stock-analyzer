@@ -98,14 +98,10 @@ def _pbo() -> dict:
 
 
 def _data_snooping_pass() -> dict:
-    return {
-        "method": "white_reality_check_stationary_bootstrap_v2",
-        "p_value": 0.12,
-        "go_live_verdict": "PASS",
-        "candidate_count": 4,
-        "exact_formula": True,
-        "promotion_eligible": True,
-    }
+    return hansen_spa_reality_check(
+        {"champion": [0.001] * 40, "candidate": [0.02, 0.018, 0.021, 0.019] * 10},
+        search_candidate_ids=["candidate"], n_bootstrap=200,
+    )
 
 
 def test_metric_explanations_are_human_readable_chinese():
@@ -174,10 +170,11 @@ def test_data_snooping_reality_check_passes_clear_robust_edge():
         seed=7,
     )
 
-    assert out["method"] == "white_iid_max_mean_diagnostic_v1"
+    assert out["method"] == "white_reality_check_stationary_bootstrap_v2"
     assert out["promotion_eligible"] is False
-    assert out["exact_formula"] is False
-    assert out["go_live_verdict"] == "PASS"
+    assert out["exact_formula"] is True
+    assert out["passed"] is True
+    assert out["go_live_verdict"] == "FAIL"  # No search manifest supplied.
     assert out["best_candidate"] == "robust_alpha"
     assert out["p_value"] <= 0.20
 
@@ -193,9 +190,9 @@ def test_data_snooping_reality_check_fails_when_edge_is_not_distinct():
         seed=11,
     )
 
-    assert out["method"] == "white_iid_max_mean_diagnostic_v1"
+    assert out["method"] == "white_reality_check_stationary_bootstrap_v2"
     assert out["promotion_eligible"] is False
-    assert out["exact_formula"] is False
+    assert out["exact_formula"] is True
     assert out["go_live_verdict"] == "FAIL"
     assert out["p_value"] > 0.20
 
@@ -212,10 +209,11 @@ def test_hansen_spa_reality_check_passes_clear_candidate_edge():
         seed=17,
     )
 
-    assert out["method"] == "hansen_iid_max_mean_diagnostic_v1"
+    assert out["method"] == "hansen_spa_studentized_stationary_bootstrap_v2"
     assert out["promotion_eligible"] is False
-    assert out["exact_formula"] is False
-    assert out["go_live_verdict"] == "PASS"
+    assert out["exact_formula"] is True
+    assert out["passed"] is True
+    assert out["go_live_verdict"] == "FAIL"  # No search manifest supplied.
     assert out["best_candidate"] == "candidate"
     assert out["p_value"] <= 0.20
 
@@ -231,11 +229,11 @@ def test_hansen_spa_reality_check_fails_when_candidate_does_not_beat_benchmark()
         seed=19,
     )
 
-    assert out["method"] == "hansen_iid_max_mean_diagnostic_v1"
+    assert out["method"] == "hansen_spa_studentized_stationary_bootstrap_v2"
     assert out["promotion_eligible"] is False
-    assert out["exact_formula"] is False
+    assert out["exact_formula"] is True
     assert out["go_live_verdict"] == "FAIL"
-    assert out["best_mean_excess_return"] <= 0
+    assert out["reason"] == "degenerate_long_run_variance"
 
 
 def test_validation_packet_accepts_hansen_spa_data_snooping_guard():
@@ -244,14 +242,7 @@ def test_validation_packet_accepts_hansen_spa_data_snooping_guard():
         backtest=_promotion_grade_backtest(),
         monte_carlo=_monte_carlo(),
         pbo=_pbo(),
-        data_snooping={
-            "method": "hansen_spa_studentized_stationary_bootstrap_v2",
-            "p_value": 0.11,
-            "go_live_verdict": "PASS",
-            "candidate_count": 3,
-            "exact_formula": True,
-            "promotion_eligible": True,
-        },
+        data_snooping=_data_snooping_pass(),
         walk_forward={"passed": True, "windows": 6},
     )
     gate = next(g for g in packet["gates"] if g["name"] == "data_snooping_overfit_guard")

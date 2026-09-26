@@ -668,7 +668,7 @@ async def parameter_candidates_validation_chain(
             "monte_carlo": "regime-aware block bootstrap",
             "pbo": "cscv_rank_logit",
             "walk_forward": "paired partition walk-forward",
-            "data_snooping": "Hansen SPA / White Reality Check",
+            "data_snooping": "Studentized stationary-bootstrap SPA; full search coverage required",
         },
         "total": len(results),
         "ready": ready,

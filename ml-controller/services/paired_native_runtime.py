@@ -246,11 +246,9 @@ def register_candidate_execution_plans(*, collection: dict, query, writer, objec
             old = read_snapshot(query, identity)
             if old['payload']['content']['allocation_snapshot_id'] != plan['snapshot_id']:
                 raise ValueError('native_registration_parent_changed')
-            from services.paired_native_prestart import succession
-            retired = succession(query, old_snapshot_id=identity)
-            if retired:
-                old = read_snapshot(query, retired['new_snapshot_id'])
-                registration_order[old['manifest']['snapshot_id']] = registration_order[identity]
+            from services.paired_native_prestart import active_registration
+            old = active_registration(query, identity)
+            registration_order[old['manifest']['snapshot_id']] = registration_order[identity]
             from services.native_paper_sandbox import native_execution_identity
             if old['payload']['content']['execution_owner_version'] != native_execution_identity(runner):
                 raise ValueError('native_registration_execution_owner_changed')

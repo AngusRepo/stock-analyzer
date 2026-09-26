@@ -54,3 +54,7 @@ Reference: https://bashtage.github.io/kevinsheppard.com/files/teaching/mfe/advan
 Historical trial ledger, causal replay checks, parameter robustness views and
 verified-bundle drift checks are the authorized next phases, not features
 already delivered by this initial correction.
+
+## Unstarted native successor chains
+
+The zero-traffic release preflight found that an already replaced first paper session could not receive another execution version. Successors now validate every immutable predecessor plan and receipt, first-phase clock and original comparison. Cycles, missing commits and chains above 32 nodes fail closed. Registration resolves the unique committed leaf; retired nodes remain ineligible. Any ancestor journal, execution receipt or first frame blocks another replacement. Frozen inputs, predictions, schedule and initial assets are retained; maturity is never transferred. Runtime-owner checks and explicit paper runtime approval remain unchanged.

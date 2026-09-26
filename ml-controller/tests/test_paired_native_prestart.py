@@ -269,3 +269,100 @@ def test_comparison_view_retains_shared_verifier_checks_without_copying_output()
     for context in (parent, validation):
         with pytest.raises(ValueError, match='candidate_predictions_changed'):
             verify_strategy_inputs(config,context,signal_date=DAY)
+
+
+def repeated_fixture(runner, monkeypatch):
+    from services import native_paper_sandbox
+    db, kw, original = fixture(runner)
+    intermediate = 'native-paper-v1:' + 'b'*64
+    with monkeypatch.context() as patch:
+        patch.setattr(native_paper_sandbox, 'native_execution_identity', lambda runner=None: intermediate)
+        first = repair.replace_unstarted_registration(**{**kw, 'new_owner':intermediate})
+    leaf_args = {**kw, 'snapshot_id':first['new_snapshot_id'], 'now':SUNDAY+timedelta(minutes=1)}
+    return db, kw, original, first, leaf_args
+
+
+def test_repeated_replacement_preserves_inputs_and_resolves_active_leaf(native_runner, monkeypatch):
+    from services.paired_native_runtime import register_candidate_execution_plans
+    from services.paired_native_registration import register_allocation_pair
+    db, kw, original, first, leaf_args = repeated_fixture(native_runner, monkeypatch)
+    second = repair.replace_unstarted_registration(**leaf_args)
+    leaf = repair.active_registration(db.query, kw['snapshot_id'])
+    assert leaf['manifest']['snapshot_id'] == second['new_snapshot_id']
+    assert resolve_comparison(query=db.query, execution=leaf) == resolve_comparison(
+        query=db.query, execution=read_snapshot(db.query, kw['snapshot_id']))
+    for key in ('initial_state_objects','initial_state_checksums','initial_account','source_context',
+                'schedule','fees','model_prediction_arms','candidate_checksum','baseline_checksum'):
+        assert leaf['payload']['content'][key] == original[key]
+    assert first['inherited_mature_sessions'] == second['inherited_mature_sessions'] == 0
+    assert len(db.query('SELECT * FROM '+repair.TABLE, [])) == 2
+    assert db.query('SELECT * FROM paired_nav_daily_journal_v1', []) == []
+    assert repair.replace_unstarted_registration(**leaf_args) == second
+    with pytest.raises(ValueError, match='successor_changed'):
+        repair.replace_unstarted_registration(**kw)
+    for sid in (kw['snapshot_id'], first['new_snapshot_id']):
+        with pytest.raises(ValueError, match='superseded'):
+            repair.assert_collectible(read_snapshot(db.query, sid), query=db.query)
+    allocation_id = original['allocation_snapshot_id']
+    result = register_allocation_pair(snapshot_id=allocation_id, query=db.query, writer=db.writer,
+        domain_queries={}, kv_read=None, objects=kw['objects'], account_id=2, variables={},
+        kv_read_policy={}, runner=native_runner, now=SUNDAY)
+    assert result['snapshot_id'] == second['new_snapshot_id']
+    collection = {'plans':[{'snapshot_id':allocation_id, 'pair_id':original['pair_id'], 'owner':original['owner']}]}
+    result = register_candidate_execution_plans(collection=collection, query=db.query, writer=db.writer,
+        objects=kw['objects'], runner=native_runner, clock=lambda:SUNDAY)
+    assert result['registrations'][0]['snapshot_id'] == second['new_snapshot_id']
+
+
+@pytest.mark.parametrize('artifact', ['journal', 'execution_receipt', 'frame'])
+def test_ancestor_execution_evidence_blocks_second_replacement(native_runner, monkeypatch, artifact):
+    db, kw, original, first, leaf_args = repeated_fixture(native_runner, monkeypatch)
+    pair_id = original['pair_id']
+    def query(sql, values):
+        if artifact == 'journal' and sql.startswith('SELECT session_date FROM paired_nav_daily_journal_v1') and values == [pair_id]:
+            return [{'session_date':original['session_date']}]
+        if artifact == 'execution_receipt' and sql.startswith('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind=') and values == [kw['snapshot_id']]:
+            return [{'snapshot_id':'existing-receipt'}]
+        return db.query(sql, values)
+    if artifact == 'frame':
+        identity = frame_identity(kw['snapshot_id'], original['schedule'][0])
+        kw['objects'].publish_delivery(digest(identity), kw['objects'].put({'identity':identity}))
+    with pytest.raises(ValueError, match='history_present|frame_present'):
+        repair.replace_unstarted_registration(**{**leaf_args, 'query':query})
+    assert len(db.query('SELECT * FROM '+repair.TABLE, [])) == 1
+
+
+def test_missing_committed_predecessor_blocks_repeated_replacement(native_runner, monkeypatch):
+    db, kw, original, first, leaf_args = repeated_fixture(native_runner, monkeypatch)
+    def query(sql, values):
+        if sql == 'SELECT * FROM '+repair.TABLE+' WHERE new_snapshot_id=?':
+            return []
+        return db.query(sql, values)
+    with pytest.raises(ValueError, match='uncommitted'):
+        repair.replace_unstarted_registration(**{**leaf_args, 'query':query})
+    assert len(db.query('SELECT * FROM '+repair.TABLE, [])) == 1
+
+
+def test_chain_depth_guard_restores_context_after_failure(native_runner, monkeypatch):
+    db, kw, original, first, leaf_args = repeated_fixture(native_runner, monkeypatch)
+    with monkeypatch.context() as patch:
+        patch.setattr(repair, 'MAX_SUCCESSION_DEPTH', 1)
+        with pytest.raises(ValueError, match='chain_invalid'):
+            repair.inspect_unstarted_registration(snapshot_id=first['new_snapshot_id'],
+                query=db.query, objects=kw['objects'], now=SUNDAY)
+    assert repair._source_stack.get() == ()
+    repair.inspect_unstarted_registration(snapshot_id=first['new_snapshot_id'],
+        query=db.query, objects=kw['objects'], now=SUNDAY)
+
+
+def test_forward_chain_cycle_fails_closed(native_runner, monkeypatch):
+    db, kw, original, first, leaf_args = repeated_fixture(native_runner, monkeypatch)
+    # Simulate a corrupt storage reader without weakening production triggers.
+    real = repair.succession
+    def cycle(query, *, old_snapshot_id=None, new_snapshot_id=None):
+        if old_snapshot_id == first['new_snapshot_id']:
+            return {'new_snapshot_id':kw['snapshot_id'], 'old_pair_id':'x', 'new_pair_id':original['pair_id']}
+        return real(query, old_snapshot_id=old_snapshot_id, new_snapshot_id=new_snapshot_id)
+    monkeypatch.setattr(repair, 'succession', cycle)
+    with pytest.raises(ValueError, match='chain_invalid'):
+        repair.active_registration(db.query, kw['snapshot_id'])

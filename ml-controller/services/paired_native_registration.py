@@ -99,10 +99,8 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
         existing = read_snapshot(query, registered_id)
         if existing['payload']['content']['allocation_snapshot_id'] != snapshot_id:
             raise ValueError('paired_native_registered_allocation_changed')
-        from services.paired_native_prestart import succession
-        retired = succession(query, old_snapshot_id=registered_id)
-        if retired:
-            existing = read_snapshot(query, retired['new_snapshot_id'])
+        from services.paired_native_prestart import active_registration
+        existing = active_registration(query, registered_id)
         from services.native_paper_sandbox import native_execution_identity
         if existing['payload']['content']['execution_owner_version'] != native_execution_identity(runner):
             raise ValueError('native_registration_execution_owner_changed')

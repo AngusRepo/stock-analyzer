@@ -4,6 +4,7 @@ Original predictions, allocations, cash and private state are retained. A new
 behavior gets a new pair, never source equivalence or inherited NAV maturity.
 """
 from copy import deepcopy
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import re
@@ -12,6 +13,8 @@ from services.paired_nav_journal import digest, encode, read_snapshot, freeze_sn
 
 TABLE = 'paired_native_prestart_successions_v1'
 SCHEMA = 'paired-native-prestart-successor-v1'
+MAX_SUCCESSION_DEPTH = 32
+_source_stack = ContextVar('paired_native_prestart_source_stack', default=())
 
 
 def _available(query):
@@ -64,12 +67,31 @@ def assert_collectible(saved, *, query):
 
 
 def _source(query, snapshot_id):
+    # Comparison verification recurses through exact immutable predecessor plans.
+    # Bound recursion and reject cycles before reading another ancestor.
+    stack = _source_stack.get()
+    if snapshot_id in stack or len(stack) >= MAX_SUCCESSION_DEPTH:
+        raise ValueError('paired_native_prestart_chain_invalid')
+    token = _source_stack.set((*stack, snapshot_id))
+    try:
+        return _verified_source(query, snapshot_id)
+    finally:
+        _source_stack.reset(token)
+
+
+def _verified_source(query, snapshot_id):
     old = read_snapshot(query, snapshot_id)
     m, packet = old['manifest'], old['payload']['content']
     if (m['snapshot_kind'] != 'execution_pair' or m['prospective'] != 1
-            or m['source_run_id'] != packet.get('pair_id') or packet.get('previous_session_date') is not None
-            or packet.get('prestart_predecessor_snapshot_id')):
+            or m['source_run_id'] != packet.get('pair_id') or packet.get('previous_session_date') is not None):
         raise ValueError('paired_native_prestart_first_original_session_required')
+    predecessor = packet.get('prestart_predecessor_snapshot_id')
+    if predecessor:
+        incoming = succession(query, new_snapshot_id=snapshot_id)
+        if (not incoming or incoming['old_snapshot_id'] != predecessor
+                or incoming['new_pair_id'] != packet['pair_id']
+                or incoming['first_phase_at'] != packet['schedule'][0]['observed_at']):
+            raise ValueError('paired_native_prestart_uncommitted')
     allocation = read_snapshot(query, packet['allocation_snapshot_id'])
     # Full role, frozen environment and A/B parent verification, not existence.
     from services.paired_nav_comparison import resolve_comparison
@@ -81,6 +103,31 @@ def _source(query, snapshot_id):
     from services.paired_native_session import validate_schedule
     validate_schedule(packet['schedule'], packet['session_date'])
     return old, allocation, comparison
+
+
+def active_registration(query, snapshot_id):
+    """Resolve committed successors; retain exact evidence and owner checks."""
+    visited = set()
+    saved = read_snapshot(query, snapshot_id)
+    while True:
+        sid = saved['manifest']['snapshot_id']
+        if sid in visited or len(visited) >= MAX_SUCCESSION_DEPTH:
+            raise ValueError('paired_native_prestart_chain_invalid')
+        visited.add(sid)
+        edge = succession(query, old_snapshot_id=sid)
+        if edge is None:
+            break
+        child = read_snapshot(query, edge['new_snapshot_id'])
+        if (child['payload']['content'].get('prestart_predecessor_snapshot_id') != sid
+                or saved['payload']['content']['pair_id'] != edge['old_pair_id']
+                or child['payload']['content']['pair_id'] != edge['new_pair_id']):
+            raise ValueError('paired_native_prestart_chain_invalid')
+        saved = child
+    if len(visited) > 1 or saved['payload']['content'].get('prestart_predecessor_snapshot_id'):
+        from services.paired_nav_comparison import resolve_comparison
+        resolve_comparison(query=query, execution=saved)
+    assert_collectible(saved, query=query)
+    return saved
 
 
 def successor_plan(old, allocation, new_owner):
@@ -139,7 +186,7 @@ def validate_successor_execution(saved, *, allocation, query):
 
 
 def inspect_unstarted_registration(*, snapshot_id, query, objects, now=None):
-    """Read-only preflight; validates original evidence and both private states."""
+    """Read-only preflight; validates the full lineage and both private states."""
     clock = now or datetime.now(timezone.utc)
     old, allocation, _ = _source(query, snapshot_id)
     packet = old['payload']['content']
@@ -147,8 +194,19 @@ def inspect_unstarted_registration(*, snapshot_id, query, objects, now=None):
         raise ValueError('paired_native_prestart_window_closed')
     from services.paired_native_collector import frame_identity
     # Any lawful execution forms a contiguous prefix. Its first receipt forbids replacement.
-    if objects.lookup_delivery(digest(frame_identity(snapshot_id, packet['schedule'][0]))):
-        raise ValueError('paired_native_prestart_frame_present')
+    ancestor, visited = old, set()
+    while True:
+        sid = ancestor['manifest']['snapshot_id']
+        if sid in visited or len(visited) >= MAX_SUCCESSION_DEPTH:
+            raise ValueError('paired_native_prestart_chain_invalid')
+        visited.add(sid)
+        content = ancestor['payload']['content']
+        if objects.lookup_delivery(digest(frame_identity(sid, content['schedule'][0]))):
+            raise ValueError('paired_native_prestart_frame_present')
+        predecessor = content.get('prestart_predecessor_snapshot_id')
+        if not predecessor:
+            break
+        ancestor = read_snapshot(query, predecessor)
     from services.native_paper_sandbox import PrivatePaperStore
     for arm in ('baseline', 'candidate'):
         state = objects.get(packet['initial_state_objects'][arm])
@@ -172,7 +230,9 @@ def replace_unstarted_registration(*, snapshot_id, new_owner, query, writer, obj
         raise ValueError('paired_native_prestart_runtime_not_current')
     existing = succession(query, old_snapshot_id=snapshot_id)
     if existing:
-        saved = read_snapshot(query, existing['new_snapshot_id'])
+        saved = active_registration(query, existing['new_snapshot_id'])
+        if saved['manifest']['snapshot_id'] != existing['new_snapshot_id']:
+            raise ValueError('paired_native_prestart_successor_changed')
         if saved['payload']['content']['execution_owner_version'] != new_owner:
             raise ValueError('paired_native_prestart_successor_changed')
         validate_successor_execution(saved, allocation=read_snapshot(query, saved['payload']['content']['allocation_snapshot_id']), query=query)

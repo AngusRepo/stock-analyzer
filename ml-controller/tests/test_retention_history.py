@@ -43,8 +43,9 @@ def test_backtest_rolling_accuracy_reads_original_cold_period(monkeypatch):
  monkeypatch.setattr(retention_history.LEARNING,'query',lambda *a:[])
  monkeypatch.setattr(retention_history,'download_archive',lambda manifest,**kwargs:raw)
  rows=backtest_state.load_verified_predictions('2025-01-01','2025-01-02')
- assert rows==[{'generated_at':'2025-01-01T00:00:00','direction_correct':1}]*2
- assert backtest_state.compute_rolling_accuracy_30d(rows,'2025-01-02',min_samples=1)==1.0
+ assert rows==[{'generated_at':'2025-01-01T00:00:00','direction_correct':1,'verified_at':None,'verification_label_known_date':None}]*2
+ # Legacy retained labels have no proof of when the answer became available.
+ assert backtest_state.compute_rolling_accuracy_30d(rows,'2025-01-02',min_samples=1)==0.6
 
 def test_prediction_cache_latest_revision_wins_across_hot_and_cold(monkeypatch):
  from services import domain_stock_read_models as stocks,retention_history
@@ -127,3 +128,22 @@ def test_legacy_prediction_rows_need_no_sql_restore_but_still_need_release_proof
  assert [r['id'] for r in read(raw,m)]==[1,2]
  m['release_verified_at']=None
  with pytest.raises(RuntimeError,match='release_receipt_incomplete'):read(raw,m)
+
+
+def test_replay_accuracy_waits_for_verification_and_label_maturity():
+ from services.backtest_state import compute_rolling_accuracy_30d
+ rows=[{'generated_at':'2025-01-01T00:00:00','direction_correct':1,
+        'verified_at':'2025-01-03T00:00:00Z','verification_label_known_date':'2025-01-04'}]
+ assert compute_rolling_accuracy_30d(rows,'2025-01-02',min_samples=1)==.6
+ assert compute_rolling_accuracy_30d(rows,'2025-01-04',min_samples=1)==.6
+ assert compute_rolling_accuracy_30d(rows,'2025-01-05',min_samples=1)==1.
+ rows[0]['verified_at']='2025-01-04T23:00:00Z'  # Taipei Jan 5, still too late for date-only proof.
+ assert compute_rolling_accuracy_30d(rows,'2025-01-05',min_samples=1)==.6
+ assert compute_rolling_accuracy_30d(rows,'2025-01-06',min_samples=1)==1.
+
+
+def test_missing_and_invalid_knowledge_timestamps_are_not_labels():
+ from services.backtest_state import compute_rolling_accuracy_30d
+ for verified in (None,'invalid',False):
+  rows=[{'generated_at':'2025-01-01T00:00:00','direction_correct':1,'verified_at':verified}]
+  assert compute_rolling_accuracy_30d(rows,'2025-01-03',min_samples=1)==.6

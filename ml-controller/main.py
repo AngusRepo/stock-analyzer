@@ -19,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
-from routers import paper_corporate, paired_nav
+from routers import paper_corporate, paired_nav, research_validation
 
 from routers import predict, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener, l4_alpha_ev, allocator_ev_fusion, opb_arm_prior, s12_structure
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
@@ -103,6 +103,7 @@ app.include_router(debate.router,       dependencies=[Depends(verify_token)])
 app.include_router(model_pool.router,   dependencies=[Depends(verify_token)])
 # 2026-04-20 #28b T3.4/T3.5: Config pool challenger weekly eval
 app.include_router(config_pool.router,  dependencies=[Depends(verify_token)])
+app.include_router(research_validation.router, dependencies=[Depends(verify_token)])
 # Authenticated operational endpoints; deployment control-plane routes are excluded.
 app.include_router(admin.router,        dependencies=[Depends(verify_token)])
 app.include_router(research_benchmark.router, dependencies=[Depends(verify_token)])

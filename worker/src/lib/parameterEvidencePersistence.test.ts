@@ -28,7 +28,10 @@ async function setup() {
   await ensureParameterCandidateTables(client)
   sqlite.exec("INSERT INTO parameter_candidate_registry(candidate_id,source,status) VALUES('candidate-A','test','SHADOW_COLLECTING')")
   const evidence = { candidate_id: 'candidate-A', decision: 'PASS',
-    gate: { decision: 'PASS', validation_packet: { decision: 'PASS' } } }
+    gate: { decision: 'PASS', validation_packet: { decision: 'PASS' }, inputs: { research_search_validation: {
+      status: 'PASS', run_key: 'fixture-search', selected_trial_id: 'trial-1',
+      validation_receipt_id: 'a'.repeat(64), panel_checksum: 'b'.repeat(64), trial_receipt_ids: ['c'.repeat(64)],
+    } } } }
   return { sqlite, client, evidence }
 }
 
@@ -40,6 +43,14 @@ test('recorded evidence, registry and event agree; inline PASS cannot override r
     assert.deepEqual(await recordParameterCandidateEvidence(client, { candidateId: 'candidate-A', evidence }), passed)
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM parameter_candidate_evidence').get()?.n, 1)
     assert.equal((await validateParameterCandidateEvidencePacket(client, { candidateId: 'candidate-A' })).ok, true)
+    const canonical = JSON.parse(String(sqlite.prepare('SELECT latest_evidence_json FROM parameter_candidate_registry').get()?.latest_evidence_json))
+    assert.equal((await validateParameterCandidateEvidencePacket(client, { candidateId: 'candidate-A', evidencePacket: canonical })).ok, true)
+    assert.equal((await validateParameterCandidateEvidencePacket(client, { candidateId: 'candidate-A', evidencePacket: { ...canonical, forged: true } })).error, 'submitted_evidence_not_canonical')
+    const legacy = { ...canonical, gate: { ...canonical.gate, inputs: {} } }
+    sqlite.prepare('UPDATE parameter_candidate_registry SET latest_evidence_json=?').run(JSON.stringify(legacy))
+    assert.equal((await validateParameterCandidateEvidencePacket(client, { candidateId: 'candidate-A' })).error, 'verified_search_binding_required')
+    sqlite.prepare('UPDATE parameter_candidate_registry SET latest_evidence_json=?').run(JSON.stringify(canonical))
+
     const failed = await recordParameterCandidateEvidence(client, { candidateId: 'candidate-A', decision: 'PASS',
       evidence: { ...evidence, gate: { ...evidence.gate, decision: 'FAIL' } } })
     assert.equal(failed.status, 'NOT_PROMOTION_READY')

@@ -68,7 +68,8 @@ def objective(trial, prices_by_stock: dict, benchmark_returns: list[float]):
 def search_rrg_params(prices_by_stock: dict, benchmark_returns: list[float]) -> dict:
     """Run Optuna search for RRG parameters."""
     study = optuna.create_study(direction="maximize")
-    study.optimize(
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study,
         lambda trial: objective(trial, prices_by_stock, benchmark_returns),
         n_trials=N_TRIALS,
         show_progress_bar=False,

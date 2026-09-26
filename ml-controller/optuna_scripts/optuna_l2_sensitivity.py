@@ -335,7 +335,8 @@ def run_l2_sensitivity_search(
         raise ValueError("run_l2_sensitivity_search: empty search_space")
 
     # Mode B objective — import lazily so unit-test stubs can intercept
-    from services.backtest_engine import replay_period, BacktestDataset  # type: ignore
+    from services.backtest_engine import replay_period, BacktestDataset, FeeParams  # type: ignore
+    from dataclasses import asdict
 
     # Load dataset ONCE outside objective — D6 pattern. Replay loop + D1 query
     # per trial would be N+1 disaster (200+ trials × 580+ days). Module docstring
@@ -375,6 +376,7 @@ def run_l2_sensitivity_search(
                 initial_capital=initial_capital,
             )
         except Exception as e:
+            trial.set_user_attr("replay_error", type(e).__name__)
             logger.warning(f"[L2 Optuna] trial {trial.number} replay crashed: {e}")
             return -1e9
 
@@ -396,6 +398,7 @@ def run_l2_sensitivity_search(
         )
         trial.set_user_attr("partition_returns", partition_returns)
         trial.set_user_attr("sharpe", sharpe)
+        trial.set_user_attr("n_trades", n_trades)
         logger.info(
             f"[L2 Optuna] trial {trial.number} sharpe={sharpe:.3f} "
             f"dd={max_dd:.3f} trades={n_trades} score={score:.3f}"
@@ -411,7 +414,12 @@ def run_l2_sensitivity_search(
         sampler=sampler,
         study_name="l2_sensitivity",
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study, objective, n_trials=n_trials, show_progress_bar=False,
+        ledger_context={'data_snapshot':data_access, 'search_window':[start_date,end_date],
+            'evaluation_scope':'optimization',
+            'cost':asdict(FeeParams.from_trading_config(baseline_config)), 'search_space':space,
+            'gaps':['mode_b_prediction_inputs_not_sealed']})
 
     best = study.best_trial
 
@@ -468,6 +476,7 @@ def run_l2_sensitivity_search(
             "pbo_max_candidates": policy.pbo_max_candidates,
             "pbo_min_partitions": policy.pbo_min_partitions,
         },
+        "research_ledger_run_key": study.user_attrs.get("research_ledger_run_key"),
         "all_trials": [
             {
                 "number": t.number,

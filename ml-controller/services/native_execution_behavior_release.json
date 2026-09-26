@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:571b9707466c347348777ee1ec7862b91f5c81ad95d200ace88807dc7762432e",
+  "execution_owner_version": "native-paper-v1:1d1b83a62975363db5e7384fe64bbd48ae8fabc9ee6e86e877a9e126b3973d0e",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized committing, pushing and deploying the reviewed research validation repairs on 2026-09-26. This source-build record grants no Paper runtime admission or prestart replacement authority.",
+  "authorization": "Wei authorized implementation of the causal audit, parameter neighborhood and verified-bundle workbench on 2026-09-26. This source-build declaration grants no Paper runtime admission or prestart replacement authority.",
   "review": "ml-controller/RESEARCH_VALIDATION_HARDENING.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

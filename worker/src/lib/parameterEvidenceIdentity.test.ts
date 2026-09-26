@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { evidenceDecision, validateParameterCandidateEvidencePacket } from './parameterCandidateRegistry'
 
-const db = { prepare() { throw new Error('inline evidence validation must not query unrelated latest rows') } } as unknown as D1Database
+const db = { prepare() { throw new Error('unpersisted PASS reached canonical row lookup') } } as unknown as D1Database
 const good = { candidate_id: 'candidate-A', decision: 'PASS', gate: {
   decision: 'PASS', failed_gates: [], validation_packet: { decision: 'PASS' },
 } }
@@ -17,9 +17,9 @@ void (async () => {
   assert.equal(evidenceDecision({ ...good, gate: { ...good.gate, passed: false } }), 'FAIL')
   assert.equal(evidenceDecision({ candidate_id: 'candidate-A', decision: 'PASS' }), 'FAIL')
 
-  assert.equal((await validateParameterCandidateEvidencePacket(db, {
+  await assert.rejects(validateParameterCandidateEvidencePacket(db, {
     candidateId: 'candidate-A', evidencePacket: good,
-  })).ok, true)
+  }), /canonical row lookup/)
   for (const candidate_id of [undefined, '', {}, 'candidate-B']) {
     const result = await validateParameterCandidateEvidencePacket(db, {
       candidateId: 'candidate-A', evidencePacket: { ...good, candidate_id },

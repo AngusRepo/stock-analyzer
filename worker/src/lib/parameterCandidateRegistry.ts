@@ -610,11 +610,7 @@ export async function validateParameterCandidateEvidencePacket(
     if (evidenceDecision(packet) !== 'PASS') {
       return { ok: false, error: 'evidence_packet_not_pass', candidate_id: candidateId }
     }
-    return {
-      ok: true,
-      candidate_id: candidateId,
-      promotion_packet_id: String(packet.promotion_packet_id ?? input.promotionPacketId ?? '') || null,
-    }
+    // Submitted PASS is diagnostic; authority must come from the persisted row.
   }
 
   const row = await latestCandidateRow(db, candidateId)
@@ -631,6 +627,21 @@ export async function validateParameterCandidateEvidencePacket(
   }
   if (evidenceDecision(evidence) !== 'PASS') {
     return { ok: false, error: 'latest_evidence_not_pass', candidate_id: candidateId }
+  }
+  const search = recordValue(recordValue(recordValue(evidence.gate).inputs).research_search_validation)
+  if (search.status !== 'PASS' || typeof search.run_key !== 'string' || !search.run_key ||
+      typeof search.selected_trial_id !== 'string' || !search.selected_trial_id ||
+      typeof search.validation_receipt_id !== 'string' || !/^[a-f0-9]{64}$/.test(search.validation_receipt_id) ||
+      typeof search.panel_checksum !== 'string' || !/^[a-f0-9]{64}$/.test(search.panel_checksum) ||
+      !Array.isArray(search.trial_receipt_ids) || !search.trial_receipt_ids.length ||
+      search.trial_receipt_ids.some(value => typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value))) {
+    return { ok: false, error: 'verified_search_binding_required', candidate_id: candidateId }
+  }
+  const canonical = (value: unknown) => JSON.stringify(value, (_key, item) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
+  if (packet && canonical(packet) !== canonical(evidence)) {
+    return { ok: false, error: 'submitted_evidence_not_canonical', candidate_id: candidateId }
   }
   return {
     ok: true,

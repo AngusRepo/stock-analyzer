@@ -322,7 +322,8 @@ def run_search(
         directions=["maximize", "minimize", "maximize"],
         study_name=f"per_regime_robust_{target}",
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study, objective, n_trials=n_trials, show_progress_bar=False)
 
     # Pick trial maximizing robust_sharpe among Pareto
     pareto = [t for t in study.best_trials if t.values[0] > PENALTY_ROBUST / 2]

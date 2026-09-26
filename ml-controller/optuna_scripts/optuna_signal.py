@@ -263,7 +263,8 @@ def create_objective(predictions: pl.DataFrame, orders: pl.DataFrame):
 
 def run_search(predictions: pl.DataFrame, orders: pl.DataFrame, n_trials: int = 200) -> dict:
     study = optuna.create_study(direction="maximize", study_name="signal_thresholds")
-    study.optimize(create_objective(predictions, orders), n_trials=n_trials)
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study, create_objective(predictions, orders), n_trials=n_trials)
 
     best = study.best_trial
     print(f"\n{'='*60}")

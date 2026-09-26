@@ -58,3 +58,35 @@ already delivered by this initial correction.
 ## Unstarted native successor chains
 
 The zero-traffic release preflight found that an already replaced first paper session could not receive another execution version. Successors now validate every immutable predecessor plan and receipt, first-phase clock and original comparison. Cycles, missing commits and chains above 32 nodes fail closed. Registration resolves the unique committed leaf; retired nodes remain ineligible. Any ancestor journal, execution receipt or first frame blocks another replacement. Frozen inputs, predictions, schedule and initial assets are retained; maturity is never transferred. Runtime-owner checks and explicit paper runtime approval remain unchanged.
+
+## Research workbench implementation
+
+The isolated implementation adds append-only Research source/run/trial receipts,
+explicit terminal-state Optuna capture, a checksum-pinned historical importer,
+and the existing StrategyLearningPage workbench. Historical recovery remains
+partial: 2,025 known trials, including 11 failed mining runs. Optimization
+objective scores are not relabeled as validation. The importer is idempotent;
+immutable triggers reject overwrite, update and delete.
+
+Mode A causal audits use a pinned dataset, repeated replay, two prefix cutoffs
+and actual future-cell perturbations. Decision traces include simulated entries,
+exits, positions and account state before terminal liquidation. Precomputed
+upstream features are not recomputed; Mode B unsealed prediction/state inputs
+remain INSUFFICIENT. Replay accuracy now requires label and verification clocks
+to precede the Taipei entry session; absent legacy timestamps remain unknown.
+
+Parameter neighborhoods require pinned, comparable validation context, unique
+parameters and at least five neighbors. Holdout never selects parameters.
+Complete bundle views bind six semantic components and use the original immutable
+Active-8 publication and exact paper approval; consistency is not efficacy.
+
+The parameter promotion gate additionally re-reads a sealed immutable search,
+binds its selected configuration, execution source, costs and dated panels to
+the actual candidate/champion replay, and recalculates stationary SPA. Only the
+actual tested winner can use the family result. Caller PASS or a declared ID
+list alone cannot authorize promotion; historical partial ledgers stay blocked.
+These changes grant no training, live order, publisher or paper admission authority.
+
+Release cutover and remote historical import remain separate operator steps.
+The first repair release is CI-passed main 4a188d6c; source-compatible paper
+runtime/successor approval is still required before its production cutover.

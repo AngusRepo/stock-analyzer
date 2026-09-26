@@ -48,6 +48,7 @@ import { adminWriteRoutes } from './routes/adminWriteRoutes'
 import { adminConfigCoreRoutes } from './routes/adminConfigCoreRoutes'
 import { adminConfigWorkflowRoutes } from './routes/adminConfigWorkflowRoutes'
 import { adminConfigLifecycleRoutes } from './routes/adminConfigLifecycleRoutes'
+import { researchValidationRoutes } from './routes/researchValidationRoutes'
 import { adminOptunaRoutes } from './routes/adminOptunaRoutes'
 import { finlabExecutionLoopRoutes } from './routes/finlabExecutionLoopRoutes'
 import { buildAdminTriggerTaskMap } from './lib/adminTriggerTaskMap'
@@ -161,6 +162,7 @@ app.route('/',                    adminWriteRoutes)
 app.route('/',                    adminConfigCoreRoutes)
 app.route('/',                    adminConfigWorkflowRoutes)
 app.route('/',                    adminConfigLifecycleRoutes)
+app.route('/',                    researchValidationRoutes)
 app.route('/',                    adminOptunaRoutes)
 app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)

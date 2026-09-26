@@ -420,7 +420,12 @@ def run_parameter_candidate_evidence(
         data_snooping=_data_snooping_row(champion_metrics, candidate_metrics, nav=nav),
         walk_forward=_walk_forward_row(champion_metrics, candidate_metrics, nav=nav),
     )
-    gate = evaluate_parameter_candidate_evidence_gate(candidate, evidence)
+    evidence['research_search_binding'] = metadata.get('research_search_binding')
+    gate = evaluate_parameter_candidate_evidence_gate(candidate, evidence,
+        candidate_configuration=candidate_params, search_context={
+            'snapshot':data_access,'dates':nav['dates'],
+            'benchmark_daily_returns':nav['champion']['daily_returns'],
+            'candidate_daily_returns':nav['candidate']['daily_returns']})
     return {
         **evidence,
         "gate": gate,

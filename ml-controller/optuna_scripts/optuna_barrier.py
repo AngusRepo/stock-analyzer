@@ -259,7 +259,8 @@ def run_optuna_search(
         study_name="triple_barrier_pareto",
     )
     objective = create_objective(all_data)
-    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs)
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study, objective, n_trials=n_trials, n_jobs=n_jobs)
 
     pareto_trials = study.best_trials
     print(f"\n{'='*60}")

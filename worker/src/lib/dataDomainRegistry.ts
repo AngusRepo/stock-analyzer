@@ -165,6 +165,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
   ]),
   research: new Set([
+    'research_trial_sources_v1', 'research_trial_runs_v1', 'research_trial_observations_v1',
     'input_snapshots', 'feature_versions', 'features', 'strategy_versions', 'strategies',
     'analysis_runs', 'workflow_steps', 'workflow_checkpoints', 'model_calls',
     'feature_clusters', 'gap_maps', 'hypotheses', 'candidates', 'candidate_lineage',

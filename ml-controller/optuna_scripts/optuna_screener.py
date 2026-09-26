@@ -355,7 +355,8 @@ def run_search(
         study_name="screener_factor_weights_nav_development_v3",
     )
     reject_counter: dict = {}
-    study.optimize(
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study,
         create_objective(dataset, development_start, development_end, baseline_params, reject_counter, evidence_id),
         n_trials=n_trials,
     )

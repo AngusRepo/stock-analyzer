@@ -576,7 +576,8 @@ def test_parameter_candidate_evidence_bundle_and_gate_are_available():
 
     assert bundle["candidate_id"] == "parameter-candidate-1"
     assert bundle["backtest"]["mode"] == "B"
-    assert gate["decision"] == "PASS"
+    assert gate["decision"] == "FAIL"
+    assert "parameter_search_binding:immutable_search_binding_missing" in gate["failed_gates"]
     assert gate["inputs"]["source"] == "parameter_candidate_evidence_bundle"
     assert gate["validation_packet"]["decision"] == "PASS"
 

@@ -63,7 +63,8 @@ def objective(trial, confidences: list[float], actuals: list[int]):
 def search_conformal_params(confidences: list[float], actuals: list[int]) -> dict:
     """Run Optuna search for conformal calibration parameters."""
     study = optuna.create_study(direction="minimize")
-    study.optimize(
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study,
         lambda trial: objective(trial, confidences, actuals),
         n_trials=N_TRIALS,
         show_progress_bar=False,

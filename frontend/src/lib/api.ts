@@ -2067,3 +2067,13 @@ export const adminApi = {
   setRole: (userId: number, role: 'user' | 'admin') =>
     post<any>(`/auth/admin/users/${userId}/role`, { role }),
 }
+
+
+export const researchValidationApi = {
+  productionBundle: () => get<any>('/admin/research-validation/production_bundle'),
+  runs: () => get<any>('/admin/research-validation/runs'),
+  run: (runKey: string) => get<any>(`/admin/research-validation/run?run_key=${encodeURIComponent(runKey)}`),
+  bundle: (runKey: string) => get<any>(`/admin/research-validation/bundle?run_key=${encodeURIComponent(runKey)}`),
+  causal: (body: { candidate_id: string; start_date: string; end_date: string; symbols: string[] }) =>
+    post<any>('/admin/research-validation/causal', body),
+}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import StrategyNavEvidence from '@/components/StrategyNavEvidence'
+import ResearchValidationWorkbench from '@/components/ResearchValidationWorkbench'
 import { Activity, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
@@ -1757,6 +1758,8 @@ export default function StrategyLearningPage() {
             <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} /> 重新讀取證據
           </Button>
         </header>
+
+        <ResearchValidationWorkbench />
 
         {loading ? (
           <div className="flex items-center gap-2 rounded-2xl border border-slate-800 bg-slate-950/70 p-5 text-sm text-slate-400"><Loader2 className="h-4 w-4 animate-spin" /> Loading reward ledger...</div>

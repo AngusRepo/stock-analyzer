@@ -271,7 +271,8 @@ def run_search(
         sampler=NSGAIISampler(seed=42),
         study_name="sltp_trailing_pareto_s51",
     )
-    study.optimize(create_objective(dataset, start_date, end_date, baseline_params), n_trials=n_trials)
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study, create_objective(dataset, start_date, end_date, baseline_params), n_trials=n_trials)
 
     # ── Step 4: extract Pareto front ────────────────────────────────────────
     pareto_trials = [t for t in study.best_trials if t.values and t.values[0] > -1e8]

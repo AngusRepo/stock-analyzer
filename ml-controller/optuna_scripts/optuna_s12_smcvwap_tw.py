@@ -108,7 +108,8 @@ def search_s12_smcvwap_tw(rows: list[dict[str, Any]], n_trials: int = 200) -> di
         return metrics["mean_r"] + 0.35 * metrics["hit_rate"] + 0.1 * metrics["max_drawdown_r"]
 
     study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=42))
-    study.optimize(objective, n_trials=max(10, int(n_trials)), show_progress_bar=False)
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study, objective, n_trials=max(10, int(n_trials)), show_progress_bar=False)
     params = {key: float(value) for key, value in study.best_params.items()}
     params["strictMutationMinScore"] = min(8.0, params["limitedMutationMinScore"] + 1.0)
     train_metrics = _metrics(train, params)

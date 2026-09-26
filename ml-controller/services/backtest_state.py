@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Iterable, Any
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
@@ -181,7 +181,7 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
     already-resolved predictions.
     """
     rows = LEARNING_D1_CLIENT.query(
-        "SELECT id, generated_at, direction_correct "
+        "SELECT id, generated_at, direction_correct, verified_at, verification_label_known_date "
         "FROM predictions "
         "WHERE generated_at BETWEEN ? AND ? "
         "  AND direction_correct IN (0, 1) "
@@ -191,7 +191,8 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
     from services.retention_history import archived_predictions
     cold = [row for row in archived_predictions(start_date, end_date, date_column='generated_at',
                 hot_ids=[row['id'] for row in rows]) if row.get('direction_correct') in (0, 1)]
-    return [{'generated_at': row['generated_at'], 'direction_correct': row['direction_correct']}
+    return [{'generated_at': row['generated_at'], 'direction_correct': row['direction_correct'],
+             'verified_at':row.get('verified_at'), 'verification_label_known_date':row.get('verification_label_known_date')}
             for row in sorted([*rows, *cold], key=lambda row: (row['generated_at'], row['id']))]
 
 
@@ -209,15 +210,45 @@ def compute_rolling_accuracy_30d(
     hardcode default — expressly kept consistent with production runtime).
 
     M11 discipline: this is a filter + count, NOT a reset-style counter.
-    Window is half-open `(as_of - window_days, as_of]` so the replay day itself
-    is included once it's verified (normally arrives next day in production).
+    Window excludes the entry session itself. Both verification and label-known
+    dates must precede the replay session; missing legacy timestamps are unknown.
     """
     if not verified_preds:
         return fallback
 
-    cutoff = (datetime.fromisoformat(as_of) - timedelta(days=window_days)).isoformat()
-    # Rows sorted by generated_at ASC — use rightmost slice
-    window_rows = [r for r in verified_preds if cutoff < r["generated_at"] <= as_of + "T23:59:59"]
+    # Normalize SQLite UTC timestamps and ISO offsets before comparing clocks.
+    def known_before_session(row):
+        # Entry occurs at the open. Date-only label receipts cannot prove intraday
+        # availability, so require both verification and label maturity before
+        # this Taipei business date. A NULL/invalid timestamp is not evidence.
+        stamp=row.get('verified_at')
+        if not stamp:
+            return False
+        try:
+            verified=datetime.fromisoformat(stamp.replace('Z','+00:00'))
+            if verified.tzinfo is None:
+                verified=verified.replace(tzinfo=timezone.utc)
+            local_date=verified.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+            known=row.get('verification_label_known_date')
+            if known:
+                datetime.fromisoformat(known.replace('Z','+00:00'))
+                local_date=max(local_date,known[:10])
+            return local_date < as_of
+        except (ValueError,TypeError,AttributeError):
+            return False
+    taipei=timezone(timedelta(hours=8))
+    entry_boundary=datetime.fromisoformat(as_of).replace(tzinfo=taipei)
+    start_boundary=entry_boundary-timedelta(days=window_days)
+    def in_prediction_window(row):
+        try:
+            stamp=row['generated_at']
+            generated=datetime.fromisoformat(stamp.replace('Z','+00:00'))
+            if generated.tzinfo is None:
+                generated=generated.replace(tzinfo=taipei if len(stamp)==10 else timezone.utc)
+            return start_boundary < generated < entry_boundary
+        except (ValueError,TypeError,AttributeError,KeyError):
+            return False
+    window_rows = [r for r in verified_preds if in_prediction_window(r) and known_before_session(r)]
 
     if len(window_rows) < min_samples:
         return fallback

@@ -430,6 +430,9 @@ def evaluate_parameter_candidate_evidence_gate(
     evidence: dict[str, Any],
     *,
     policy: PromotionPolicy | None = None,
+    candidate_configuration: dict | None = None,
+    research_query=None,
+    search_context: dict | None = None,
 ) -> dict[str, Any]:
     policy = policy or PromotionPolicy.from_env()
     candidate_id = _candidate_id(candidate)
@@ -446,6 +449,14 @@ def evaluate_parameter_candidate_evidence_gate(
     monte_carlo = evidence.get("monte_carlo") if isinstance(evidence.get("monte_carlo"), dict) else {}
     pbo = evidence.get("pbo") if isinstance(evidence.get("pbo"), dict) else {}
     data_snooping = evidence.get("data_snooping") if isinstance(evidence.get("data_snooping"), dict) else {}
+    from services.research_search_validation import verify_search_binding
+    search_validation = verify_search_binding(candidate_id=candidate_id,
+        configuration=candidate_configuration if candidate_configuration is not None else candidate.get('config', {}),
+        binding=evidence.get('research_search_binding'),query=research_query,runtime_evaluation=search_context)
+    if search_validation['status'] != 'PASS':
+        failed.append('parameter_search_binding:' + search_validation['reason'])
+    else:
+        data_snooping = search_validation['statistical_evidence']
     walk_forward = evidence.get("walk_forward") if isinstance(evidence.get("walk_forward"), dict) else {}
     for key, value in (("backtest", backtest), ("monte_carlo", monte_carlo), ("pbo", pbo)):
         if not value:
@@ -486,6 +497,7 @@ def evaluate_parameter_candidate_evidence_gate(
             "monte_carlo": monte_carlo,
             "pbo": pbo,
             "data_snooping": data_snooping,
+            "research_search_validation": search_validation,
             "walk_forward": walk_forward,
             "raw_rows_present": {
                 "backtest_results": bool(backtest),

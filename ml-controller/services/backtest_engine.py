@@ -4959,6 +4959,7 @@ def replay_period(
     mode: str = "A",
     verbose: bool = False,
     regime_label: Optional[str] = None,
+    decision_observer=None,
 ) -> BacktestMetrics:
     """
     Full Mode A rule-based backtest replay over [start_date, end_date].
@@ -5090,6 +5091,7 @@ def replay_period(
 
     # ── Main daily loop ────────────────────────────────────────────────────
     for i, day in enumerate(replay_days):
+        attempts = []
         # Step 0: T+2 settle matured settlements
         account.settle_matured(day)
         _apply_daily_corporate(account, dataset, day)
@@ -5192,6 +5194,16 @@ def replay_period(
                 ),
             )
             prev_decision_date = day
+
+        if decision_observer is not None:
+            # Capture before artificial terminal liquidation. The audit excludes
+            # the terminal date so prefix truncation cannot masquerade as leakage.
+            from dataclasses import asdict
+            decision_observer({'date': day,
+                'candidates': [asdict(c) for c in prev_candidates] if i < len(replay_days)-1 else [],
+                'entries': [asdict(a) for a in attempts], 'exits': [asdict(t) for t in trades_today],
+                'cash': account.cash, 'equity': equity,
+                'positions': {symbol: asdict(position) for symbol, position in sorted(account.positions.items())}})
 
         if verbose and (i + 1) % 20 == 0:
             logger.info(

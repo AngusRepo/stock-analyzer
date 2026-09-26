@@ -80,7 +80,8 @@ def search_feature_windows(closes: list[float], volumes: list[float]) -> dict:
     volumes_arr = np.array(volumes, dtype=float)
 
     study = optuna.create_study(direction="maximize")
-    study.optimize(
+    from services.research_study_capture import recorded_optimize
+    recorded_optimize(study,
         lambda trial: objective(trial, closes_arr, volumes_arr),
         n_trials=N_TRIALS,
         show_progress_bar=False,

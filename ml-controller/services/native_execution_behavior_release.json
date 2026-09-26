@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:45b37734e2682be6b199ac139147a5a9b8ac0c814bc30f4b6bc12893ab28e2bc",
+  "execution_owner_version": "native-paper-v1:571b9707466c347348777ee1ec7862b91f5c81ad95d200ace88807dc7762432e",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved the reviewed S12 cold-read and artifact-expiry release on 2026-09-26. This source-build record does not activate a new Paper runtime or authorize a prestart successor.",
-  "review": "docs/releases/2026-09-26-d1-retention.md",
+  "authorization": "Wei authorized committing, pushing and deploying the reviewed research validation repairs on 2026-09-26. This source-build record grants no Paper runtime admission or prestart replacement authority.",
+  "review": "ml-controller/RESEARCH_VALIDATION_HARDENING.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

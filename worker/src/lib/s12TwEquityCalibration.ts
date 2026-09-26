@@ -1,3 +1,4 @@
+import { archivedS12ReplayChunks, projectS12ReplayChunk, replayIdentityKeys, type ReplayArchiveEnv, type ReplayRow } from './retentionS12ReplayReader'
 import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import {
   DEFAULT_S12_TIMING_POLICY,
@@ -343,16 +344,81 @@ function commaDates(value: unknown): string[] {
     .sort()
 }
 
+
+export interface S12CalibrationHistory {
+  snapshotAt: string
+  nowMs: number
+  startDate: string
+  endDate: string
+  guard(): Promise<void>
+  rows(): Promise<ReplayRow[]>
+}
+
+/** One request-local cold pass shared by censor inspection and evidence selection. */
+export function createS12CalibrationHistory(env: ReplayArchiveEnv, db: D1Database,
+  startDate: string, endDate: string, nowMs = paperExecutionNow()): S12CalibrationHistory {
+  const snapshotAt = new Date(nowMs).toISOString()
+  const recentCutoff = new Date(nowMs - CALIBRATION_LIFECYCLE_RECENT_MS).toISOString()
+  let loaded: Promise<ReplayRow[]> | undefined
+  let hotIdentity: string | undefined
+  async function guard() {
+    const row = await db.prepare(`SELECT COUNT(*) AS row_count,COALESCE(SUM(id),0) AS id_sum,
+      COALESCE(MAX(id),0) AS max_id FROM s12_replay_trade_outcomes WHERE trade_date>=? AND trade_date<=?`)
+      .bind(startDate,endDate).first<ReplayRow>()
+    const identity = JSON.stringify(row)
+    if (hotIdentity !== undefined && identity !== hotIdentity) throw new Error('retention_replay_hot_snapshot_changed')
+    hotIdentity = identity
+  }
+  return { snapshotAt, nowMs, startDate, endDate, guard, rows() {
+    return loaded ??= (async () => {
+      await guard()
+      const collected: ReplayRow[] = []
+      const sql = `
+      SELECT o.id, o.symbol, o.signal_date, o.setup_id, o.trade_date, o.assessment_state,
+             COALESCE(NULLIF(TRIM(o.market), ''), 'UNKNOWN') AS market,
+             o.entry_ms, o.entry_price, o.stop_price, o.pnl_pct,
+             o.max_favorable_pct, o.max_adverse_pct,
+             COALESCE(
+               json_extract(o.detail_json, '$.assessment_detail'),
+               json_extract(o.detail_json, '$.assessmentDetail'),
+               ''
+             ) AS assessment_detail,
+             json_extract(o.detail_json, '$.assessment_state') AS detail_assessment_state,
+             json_extract(o.detail_json, '$.market_segment') AS market_segment,
+             json_extract(o.detail_json, '$.alpha_bucket') AS alpha_bucket,
+             l.state AS lifecycle_state,
+             CASE WHEN datetime(l.updated_at)>=datetime(?) THEN 1 ELSE 0 END AS lifecycle_recent,
+             CASE WHEN datetime(l.updated_at)<datetime(?) THEN 1 ELSE 0 END AS lifecycle_stale,
+             CASE WHEN l.state IN ('replay_complete','replay_pending_maturity')
+               AND datetime(l.updated_at)<=datetime(?) THEN 1 ELSE 0 END AS terminal_at_snapshot
+        FROM s12_replay_trade_outcomes o
+        LEFT JOIN allocator_ev_daily_lifecycle l ON l.business_date=o.signal_date
+        WHERE o.trade_date>=? AND o.trade_date<=? AND o.sample_eligible=1 AND o.pnl_pct IS NOT NULL
+          AND json_extract(o.detail_json,'$.replay_diagnostics.replay_engine_signature')=?
+          AND json_extract(o.detail_json,'$.replay_diagnostics.replay_cohort_signature') IS NOT NULL`
+      for await (const chunk of archivedS12ReplayChunks(env, db, startDate, endDate, snapshotAt)) {
+        for await (const rows of projectS12ReplayChunk(db, chunk, sql,
+          [recentCutoff, recentCutoff, snapshotAt, startDate, endDate, S12_REPLAY_ENGINE_SIGNATURE])) collected.push(...rows)
+      }
+      await guard()
+      return collected
+    })()
+  } }
+}
+
 export async function inspectS12TwCalibrationLifecycleCensoring(
   db: D1Database,
   runDate: string,
   cadence: S12TwCalibrationCadence,
   nowMs = paperExecutionNow(),
+  history?: S12CalibrationHistory,
 ): Promise<S12TwCalibrationLifecycleCensoring> {
   const startDate = daysBefore(runDate, cadence === 'monthly' ? 180 : 90)
-  const recentCutoff = new Date(nowMs - CALIBRATION_LIFECYCLE_RECENT_MS).toISOString()
-  const row = await db.prepare(`
-    SELECT
+  if (history && (history.startDate !== startDate || history.endDate !== runDate)) throw new Error('retention_replay_history_window_mismatch')
+  await history?.guard()
+  const recentCutoff = new Date((history?.nowMs ?? nowMs) - CALIBRATION_LIFECYCLE_RECENT_MS).toISOString()
+  const hotRows = (await db.prepare(`
+    SELECT o.signal_date,
       SUM(CASE WHEN l.state='replay_complete' THEN 1 ELSE 0 END) AS complete_rows,
       COUNT(DISTINCT CASE WHEN l.state='replay_complete' THEN o.signal_date END) AS complete_dates,
       SUM(CASE WHEN l.state='replay_pending_maturity' THEN 1 ELSE 0 END) AS pending_rows,
@@ -380,6 +446,7 @@ export async function inspectS12TwCalibrationLifecycleCensoring(
        AND o.pnl_pct IS NOT NULL
        AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
        AND json_extract(o.detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
+     GROUP BY o.signal_date
   `).bind(
     recentCutoff,
     recentCutoff,
@@ -388,18 +455,36 @@ export async function inspectS12TwCalibrationLifecycleCensoring(
     startDate,
     runDate,
     S12_REPLAY_ENGINE_SIGNATURE,
-  ).first<Record<string, unknown>>()
+  ).all<ReplayRow>()).results ?? []
+  const coldRows = (history ? await history.rows() : []).map(row => ({
+    signal_date: row.signal_date,
+    complete_rows: row.lifecycle_state === 'replay_complete' ? 1 : 0,
+    complete_dates: row.lifecycle_state === 'replay_complete' && row.signal_date != null ? 1 : 0,
+    pending_rows: row.lifecycle_state === 'replay_pending_maturity' ? 1 : 0,
+    pending_dates: row.lifecycle_state === 'replay_pending_maturity' && row.signal_date != null ? 1 : 0,
+    recent_enqueued_rows: row.lifecycle_state === 'replay_enqueued' ? Number(row.lifecycle_recent) : 0,
+    recent_enqueued_dates: row.lifecycle_state === 'replay_enqueued' && Number(row.lifecycle_recent) ? row.signal_date : null,
+    stale_enqueued_rows: row.lifecycle_state === 'replay_enqueued' ? Number(row.lifecycle_stale) : 0,
+    stale_enqueued_dates: row.lifecycle_state === 'replay_enqueued' && Number(row.lifecycle_stale) ? row.signal_date : null,
+    missing_or_other_rows: !['replay_complete','replay_pending_maturity','replay_enqueued'].includes(row.lifecycle_state) ? 1 : 0,
+    missing_or_other_dates: !['replay_complete','replay_pending_maturity','replay_enqueued'].includes(row.lifecycle_state) && row.signal_date != null ? 1 : 0,
+  }))
+  await history?.guard()
+  const allRows: ReplayRow[] = [...hotRows, ...coldRows]
+  const sum = (key: string) => allRows.reduce((total, row) => total + Math.max(0, Number(row[key] ?? 0)), 0)
+  const dates = (key: string) => new Set(allRows.filter(row => Number(row[key]) > 0 && row.signal_date != null).map(row => String(row.signal_date))).size
+  const enqueued = (key: string) => [...new Set(allRows.flatMap(row => commaDates(row[key])))].sort()
   return {
-    completeRows: Math.max(0, Number(row?.complete_rows ?? 0)),
-    completeDates: Math.max(0, Number(row?.complete_dates ?? 0)),
-    pendingMaturityTerminalRows: Math.max(0, Number(row?.pending_rows ?? 0)),
-    pendingMaturityTerminalDates: Math.max(0, Number(row?.pending_dates ?? 0)),
-    recentEnqueuedRows: Math.max(0, Number(row?.recent_enqueued_rows ?? 0)),
-    recentEnqueuedDates: commaDates(row?.recent_enqueued_dates),
-    staleEnqueuedRows: Math.max(0, Number(row?.stale_enqueued_rows ?? 0)),
-    staleEnqueuedDates: commaDates(row?.stale_enqueued_dates),
-    missingOrOtherRows: Math.max(0, Number(row?.missing_or_other_rows ?? 0)),
-    missingOrOtherDates: Math.max(0, Number(row?.missing_or_other_dates ?? 0)),
+    completeRows: sum('complete_rows'),
+    completeDates: dates('complete_dates'),
+    pendingMaturityTerminalRows: sum('pending_rows'),
+    pendingMaturityTerminalDates: dates('pending_dates'),
+    recentEnqueuedRows: sum('recent_enqueued_rows'),
+    recentEnqueuedDates: enqueued('recent_enqueued_dates'),
+    staleEnqueuedRows: sum('stale_enqueued_rows'),
+    staleEnqueuedDates: enqueued('stale_enqueued_dates'),
+    missingOrOtherRows: sum('missing_or_other_rows'),
+    missingOrOtherDates: dates('missing_or_other_dates'),
   }
 }
 
@@ -407,8 +492,11 @@ export async function loadS12TwCalibrationEvidence(
   db: D1Database,
   startDate: string,
   endDate: string,
+  history?: S12CalibrationHistory,
 ): Promise<CalibrationEvidence[]> {
-  const lifecycleSnapshotAt = paperExecutionDate().toISOString()
+  if (history && (history.startDate !== startDate || history.endDate !== endDate)) throw new Error('retention_replay_history_window_mismatch')
+  await history?.guard()
+  const lifecycleSnapshotAt = history?.snapshotAt ?? paperExecutionDate().toISOString()
   const snapshot = await db.prepare(`
     SELECT COALESCE(MAX(o.id), 0) AS max_id
       FROM s12_replay_trade_outcomes o
@@ -427,14 +515,20 @@ export async function loadS12TwCalibrationEvidence(
        )
   `).bind(startDate, endDate, S12_REPLAY_ENGINE_SIGNATURE, lifecycleSnapshotAt).first<{ max_id?: number | string | null }>()
   const snapshotMaxId = Math.max(0, Number(snapshot?.max_id ?? 0))
-  if (snapshotMaxId <= 0) return []
-  const evidence: CalibrationEvidence[] = []
+  if (snapshotMaxId <= 0 && !history) return []
+  const candidates = new Map<number, CalibrationEvidence | null>()
+  const coldKeys = new Map<string, number>()
+  for (const row of history ? await history.rows() : []) {
+    if (Number(row.terminal_at_snapshot) !== 1) continue
+    candidates.set(Number(row.id), calibrationEvidenceFromRow(row))
+    for (const key of replayIdentityKeys(row)) coldKeys.set(key, Number(row.id))
+  }
   let lastId = 0
   let scanned = 0
-  while (scanned < CALIBRATION_EVIDENCE_SCAN_LIMIT) {
+  while (snapshotMaxId > 0 && scanned < CALIBRATION_EVIDENCE_SCAN_LIMIT) {
     const limit = Math.min(CALIBRATION_EVIDENCE_PAGE_SIZE, CALIBRATION_EVIDENCE_SCAN_LIMIT - scanned)
     const { results } = await db.prepare(`
-      SELECT o.id, o.symbol, o.trade_date, o.assessment_state,
+      SELECT o.id, o.symbol, o.signal_date, o.setup_id, o.trade_date, o.assessment_state,
              COALESCE(NULLIF(TRIM(o.market), ''), 'UNKNOWN') AS market,
              o.entry_ms, o.entry_price, o.stop_price, o.pnl_pct,
              o.max_favorable_pct, o.max_adverse_pct,
@@ -470,46 +564,59 @@ export async function loadS12TwCalibrationEvidence(
     scanned += page.length
     for (const row of page) {
       lastId = Math.max(lastId, Number(row.id ?? 0))
-      const assessmentDetail = String(row.assessment_detail ?? '')
-      const entry = finite(row.entry_price)
-      const stop = finite(row.stop_price)
-      const atr = finite(detailValue(assessmentDetail, 'atr15m'))
-      const grossPnlPct = finite(row.pnl_pct)
-      const stopRiskPct = entry != null && stop != null && entry > stop ? (entry - stop) / entry : null
-      if (grossPnlPct == null || stopRiskPct == null || stopRiskPct <= 0) continue
-      const netPnlPct = grossPnlPct - CANONICAL_SELECTION_ROUNDTRIP_COST_BPS / 10_000
-      const pnlR = netPnlPct / stopRiskPct
-      const entryCohort = String(row.assessment_state ?? row.detail_assessment_state ?? '').trim().toLowerCase()
-      if (entryCohort !== 'reaction_ready' && entryCohort !== 'limited_takeover_ready') continue
-      evidence.push({
-        symbol: String(row.symbol ?? ''),
-        tradeDate: String(row.trade_date ?? ''),
-        marketSegment: normalizeScope({
-          marketSegment: String(row.market_segment ?? row.market ?? 'UNKNOWN'),
-          entryCohort,
-        }).marketSegment,
-        entryCohort,
-        alphaBucket: String(row.alpha_bucket ?? '').trim() || null,
-        entryTimeBucket: timeBucket(row.entry_ms),
-        pnlR,
-        mfePct: finite(row.max_favorable_pct) ?? 0,
-        maePct: Math.abs(finite(row.max_adverse_pct) ?? 0),
-        mutationScore: finite(detailValue(assessmentDetail, 'equity_mutation_score')),
-        fastVwapSignals: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_reasons')),
-        fastVwapBlockers: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_blockers')),
-        stopRiskPct,
-        stopRiskAtr: entry != null && stop != null && atr != null && atr > 0 && entry > stop ? (entry - stop) / atr : null,
-        sessionMoveAtr: finite(detailValue(assessmentDetail, 'session_60m_move_atr')),
-        sessionClosePosition: finite(detailValue(assessmentDetail, 'session_60m_close_position')),
-      })
+      for (const key of replayIdentityKeys(row)) {
+        const coldId = coldKeys.get(key)
+        if (coldId != null) candidates.delete(coldId)
+      }
+      candidates.set(Number(row.id), calibrationEvidenceFromRow(row))
     }
     if (page.length < limit) break
   }
+  await history?.guard()
+  const evidence = [...candidates.entries()].sort(([a], [b]) => a - b)
+    .slice(0, CALIBRATION_EVIDENCE_SCAN_LIMIT).map(([, value]) => value)
+    .filter((value): value is CalibrationEvidence => value !== null)
   evidence.sort((left, right) => (
     left.tradeDate.localeCompare(right.tradeDate)
     || left.symbol.localeCompare(right.symbol)
   ))
   return evidence
+}
+
+
+function calibrationEvidenceFromRow(row: ReplayRow): CalibrationEvidence | null {
+  const assessmentDetail = String(row.assessment_detail ?? '')
+  const entry = finite(row.entry_price)
+  const stop = finite(row.stop_price)
+  const atr = finite(detailValue(assessmentDetail, 'atr15m'))
+  const grossPnlPct = finite(row.pnl_pct)
+  const stopRiskPct = entry != null && stop != null && entry > stop ? (entry - stop) / entry : null
+  if (grossPnlPct == null || stopRiskPct == null || stopRiskPct <= 0) return null
+  const netPnlPct = grossPnlPct - CANONICAL_SELECTION_ROUNDTRIP_COST_BPS / 10_000
+  const pnlR = netPnlPct / stopRiskPct
+  const entryCohort = String(row.assessment_state ?? row.detail_assessment_state ?? '').trim().toLowerCase()
+  if (entryCohort !== 'reaction_ready' && entryCohort !== 'limited_takeover_ready') return null
+  return {
+    symbol: String(row.symbol ?? ''),
+    tradeDate: String(row.trade_date ?? ''),
+    marketSegment: normalizeScope({
+      marketSegment: String(row.market_segment ?? row.market ?? 'UNKNOWN'),
+      entryCohort,
+    }).marketSegment,
+    entryCohort,
+    alphaBucket: String(row.alpha_bucket ?? '').trim() || null,
+    entryTimeBucket: timeBucket(row.entry_ms),
+    pnlR,
+    mfePct: finite(row.max_favorable_pct) ?? 0,
+    maePct: Math.abs(finite(row.max_adverse_pct) ?? 0),
+    mutationScore: finite(detailValue(assessmentDetail, 'equity_mutation_score')),
+    fastVwapSignals: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_reasons')),
+    fastVwapBlockers: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_blockers')),
+    stopRiskPct,
+    stopRiskAtr: entry != null && stop != null && atr != null && atr > 0 && entry > stop ? (entry - stop) / atr : null,
+    sessionMoveAtr: finite(detailValue(assessmentDetail, 'session_60m_move_atr')),
+    sessionClosePosition: finite(detailValue(assessmentDetail, 'session_60m_close_position')),
+  }
 }
 
 function buildArtifactCandidate(
@@ -781,6 +888,7 @@ export async function runS12TwCalibration(
     dryRun?: boolean
     replaceExistingRunArtifacts?: boolean
     lifecycleCensoring?: S12TwCalibrationLifecycleCensoring
+    history?: S12CalibrationHistory
     beforeCommit?: () => Promise<void>
   },
 ): Promise<{ status: string; summary: string; artifacts: S12TwCalibrationArtifact[]; written: number }> {
@@ -788,8 +896,8 @@ export async function runS12TwCalibration(
   const cadence = options.cadence ?? 'weekly'
   const startDate = daysBefore(options.runDate, cadence === 'monthly' ? 180 : 90)
   const lifecycleCensoring = options.lifecycleCensoring
-    ?? await inspectS12TwCalibrationLifecycleCensoring(db, options.runDate, cadence)
-  const evidence = await loadS12TwCalibrationEvidence(db, startDate, options.runDate)
+    ?? await inspectS12TwCalibrationLifecycleCensoring(db, options.runDate, cadence, options.history?.nowMs, options.history)
+  const evidence = await loadS12TwCalibrationEvidence(db, startDate, options.runDate, options.history)
   const grouped = new Map<string, { scope: S12TwCalibrationScope; rows: CalibrationEvidence[] }>()
   const append = (scope: S12TwCalibrationScope, row: CalibrationEvidence) => {
     const key = scopeKey(scope)

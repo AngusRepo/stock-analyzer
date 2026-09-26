@@ -232,6 +232,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
 
   { table: 'scheduler_execution_tickets_v1', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'artifact_d1_scrub_queue', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
+  { table: 'artifact_deletion_claims_v1', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'data_source_inventory', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'finlab_materialization_manifest', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
@@ -244,6 +245,9 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'paired_nav_hot_releases_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'market_retention_releases_v1', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'learning_retention_releases_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 's12_replay_cold_batches_v1', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 's12_replay_cold_identities_v1', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 's12_replay_cold_rewards_v1', domain: 'learning', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'execution_retention_releases_v1', domain: 'execution', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ops_retention_releases_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'research_retention_releases_v1', domain: 'research', disposition: 'full_scalar', route_ready: true, shadow_ready: false },

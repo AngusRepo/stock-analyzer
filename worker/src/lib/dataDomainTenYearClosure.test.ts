@@ -52,6 +52,7 @@ const completeDomain = (domain: DataDomain): DataDomainCutoverReadiness => ({
 })
 
 const complete = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -64,6 +65,7 @@ assert.equal(complete.claim_allowed, true)
 assert.equal(complete.completed_domains, 7)
 
 const postCutoverParityDrift = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -83,6 +85,7 @@ assert.equal(postCutoverParityDrift.complete, true)
 assert.equal(postCutoverParityDrift.completed_domains, 7)
 
 const finalizedContractFailure = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -101,6 +104,7 @@ assert.equal(finalizedContractFailure.complete, false)
 assert.equal(finalizedContractFailure.completed_domains, 6)
 
 const learningOnly = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: ['learning'],
   strictRequested: true,
@@ -117,6 +121,7 @@ assert.equal(learningOnly.legacy_role, 'mixed_runtime_source_do_not_delete')
 assert(learningOnly.blockers.includes('seven_domain_cutover_incomplete'))
 
 const deferredRoute = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -132,6 +137,7 @@ assert.deepEqual(
 )
 
 const missingCapacity = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -142,6 +148,7 @@ assert.equal(missingCapacity.complete, false)
 assert(missingCapacity.blockers.includes('ten_year_capacity_receipt_missing'))
 
 const frozenLegacy = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -154,6 +161,7 @@ assert.deepEqual(frozenLegacy.capacity_classification.accepted_frozen_rollback_d
 assert.deepEqual(frozenLegacy.capacity_classification.blocking_critical_domains, [])
 
 const activeCritical = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -165,6 +173,7 @@ assert.equal(activeCritical.complete, false)
 assert(activeCritical.blockers.includes('d1_capacity_critical'))
 
 const missingExecutors = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -180,6 +189,7 @@ assert.equal(missingExecutors.complete, false)
 assert(missingExecutors.blockers.includes('retention_archive_executors_incomplete'))
 
 const pendingForecast = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -199,6 +209,7 @@ assert.equal(pendingForecast.complete, false)
 assert(pendingForecast.blockers.includes('ten_year_capacity_stable_baseline_pending'))
 
 const shortRunway = buildDataDomainTenYearClosure({
+  learningRetention: { complete: true, blockers: [] },
   navColdStorage: { ready: true },
   activeDomains: DATA_DOMAINS,
   strictRequested: true,
@@ -224,4 +235,19 @@ for (const navColdStorage of [undefined, { ready: false, orphan_parts: 22100 }])
   assert.equal(unresolved.complete, false)
   assert.equal(unresolved.claim_allowed, false)
   assert(unresolved.blockers.some(b => b.startsWith('nav_cold_storage_')))
+}
+
+for (const learningRetention of [undefined,
+  { complete: false, blockers: ['cold_reader_not_verified:strategy_decision_log'] },
+  { complete: true, blockers: ['retention_backlog:predictions'] },
+]) {
+  const unresolved = buildDataDomainTenYearClosure({ activeDomains: DATA_DOMAINS,
+    strictRequested: true, domains: DATA_DOMAINS.map(completeDomain),
+    unresolvedRouteTables: noUnresolvedRoutes, capacity: closedCapacity,
+    navColdStorage: { ready: true }, learningRetention })
+  assert.equal(unresolved.complete, false)
+  assert.equal(unresolved.claim_allowed, false)
+  assert.equal(unresolved.retention_architecture_complete, false)
+  assert(unresolved.blockers.some(b => b.startsWith('learning_retention_')))
+  for (const blocker of learningRetention?.blockers ?? []) assert(unresolved.blockers.includes(blocker))
 }

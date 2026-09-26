@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:62e24f33350617b91e2e2f1f20a95e1939e9ecf6ef35d2cac7b81693abaa1c78",
+  "execution_owner_version": "native-paper-v1:45b37734e2682be6b199ac139147a5a9b8ac0c814bc30f4b6bc12893ab28e2bc",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved commit, push, deploy, exact Paper runtime approval and the two checksum-pinned prestart successors on 2026-09-25; no Modal, no retraining, no real orders.",
-  "review": "docs/releases/2026-09-25-native-prestart-successor.md",
+  "authorization": "Wei approved the reviewed S12 cold-read and artifact-expiry release on 2026-09-26. This source-build record does not activate a new Paper runtime or authorize a prestart successor.",
+  "review": "docs/releases/2026-09-26-d1-retention.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

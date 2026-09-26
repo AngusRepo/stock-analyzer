@@ -286,6 +286,7 @@ async function runDurableTask(
       {
         ensureS12TwCalibrationTables,
         inspectS12TwCalibrationLifecycleCensoring,
+        createS12CalibrationHistory,
         runS12TwCalibration,
       },
       { resolveS12CalibrationCadence },
@@ -363,10 +364,15 @@ async function runDurableTask(
             `[S12 calibration] incomplete canonical receipt will be atomically rebuilt run_id=${canonicalRunId} expected=${expectedArtifacts} actual=${artifactIds.length}`,
           )
         }
+        const historyStart = new Date(`${runDate}T00:00:00.000Z`)
+        historyStart.setUTCDate(historyStart.getUTCDate() - (cadence === 'monthly' ? 180 : 90))
+        const history = createS12CalibrationHistory(env, learningDb, historyStart.toISOString().slice(0, 10), runDate)
         const lifecycleCensoring = await inspectS12TwCalibrationLifecycleCensoring(
           learningDb,
           runDate,
           cadence,
+          history.nowMs,
+          history,
         )
         if (lifecycleCensoring.recentEnqueuedRows > 0) {
           const holderDates = lifecycleCensoring.recentEnqueuedDates.join(',') || 'unknown'
@@ -396,6 +402,7 @@ async function runDurableTask(
           dryRun: false,
           replaceExistingRunArtifacts,
           lifecycleCensoring,
+          history,
           beforeCommit: () => assertS12ResearchLeaseRenewed(opsDb, researchLeaseRunId),
         })
         return {

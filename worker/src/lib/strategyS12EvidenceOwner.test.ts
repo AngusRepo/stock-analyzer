@@ -63,10 +63,12 @@ assert.equal(assessStrategySpecEvaluability(candidates[2], spec).evaluable, fals
 assert.equal(assessStrategySpecEvaluability(candidates[3], spec).evaluable, false, 'missing snapshot must remain unavailable')
 
 const learningSource = readFileSync('src/lib/strategyLearning.ts', 'utf8')
-assert.match(learningSource, /FROM s12_replay_trade_outcomes o/, 'S12 Strategy Lab rewards must come from the formal replay execution owner')
-assert.match(learningSource, /sample_eligible=1/, 'S12 execution rewards must reject ineligible replay rows')
-assert.match(learningSource, /S12_REPLAY_ENGINE_SIGNATURE/, 'S12 execution rewards must enforce the current replay lineage')
-assert.match(learningSource, /CANONICAL_SELECTION_ROUNDTRIP_COST_BPS/, 'S12 execution rewards must report cost-net returns')
+const rewardSource = readFileSync('src/lib/s12ReplayRewardHistory.ts', 'utf8')
+assert.match(learningSource, /loadS12ReplayRewardDates\(db, asOfDate\)/)
+assert.match(rewardSource, /FROM s12_replay_trade_outcomes o/, 'S12 Strategy Lab rewards must come from the formal replay execution owner')
+assert.match(rewardSource, /sample_eligible=1/, 'S12 execution rewards must reject ineligible replay rows')
+assert.match(rewardSource, /S12_REPLAY_ENGINE_SIGNATURE/, 'S12 execution rewards must enforce the current replay lineage')
+assert.match(rewardSource, /CANONICAL_SELECTION_ROUNDTRIP_COST_BPS/, 'S12 execution rewards must report cost-net returns')
 assert.match(learningSource, /production_owned_by_s12_calibration_not_selection_replacement/, 'S12 must not enter the selection-strategy replacement gate')
 
 const schemaSource = readFileSync('schema.sql', 'utf8')

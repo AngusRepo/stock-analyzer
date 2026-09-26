@@ -1,4 +1,5 @@
-import { paperExecutionDate } from './paperExecutionScope'
+import { sweepExpiredArtifacts, type ArtifactExpiryOptions, type ArtifactExpiryResult } from './artifactExpiry'
+import { paperExecutionDate, scopedPaperDatabase } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
@@ -165,6 +166,13 @@ export async function writeEvidenceArtifact(
     `chunk=${digest}.json`,
   ].join('/')
 
+  // The sealed private host has its own artifact store and no production expiry queue.
+  // This capability comes from request-local trusted ports, never from an env/request flag.
+  if (!scopedPaperDatabase(env, 'ops')) {
+    const deletion = await artifactOpsDb(env).prepare(`SELECT status FROM artifact_deletion_claims_v1 WHERE artifact_id=? OR r2_key=?`)
+      .bind(artifactId,r2Key).first<{status:string}>()
+    if (deletion) throw new Error('artifact_delete_in_progress_or_done')
+  }
   const immutable = input.retentionClass === 'ten_year_cold_archive'
   let readback = immutable ? await (env.ARTIFACTS as any).get(r2Key) : null
   if (!readback) {
@@ -420,46 +428,10 @@ export async function promoteCanonicalRun(
 
 export async function runR2RetentionSweep(
   env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
-  options: { now?: string; limit?: number } = {},
-): Promise<{ candidates: number; deleted: number; failed: number; errors: string[] }> {
+  options: ArtifactExpiryOptions = {},
+): Promise<ArtifactExpiryResult> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
-  const now = options.now ?? paperExecutionDate().toISOString()
-  const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
-  const opsDb = artifactOpsDb(env)
-  const { results } = await opsDb.prepare(`
-    SELECT artifact_id, r2_key
-      FROM run_artifacts
-     WHERE status = 'ready'
-       AND payload_deleted_at IS NULL
-       AND retain_until IS NOT NULL
-       AND retain_until <= ?
-       AND pinned = 0
-       AND legal_hold = 0
-       AND hard_ref_count = 0
-       AND NOT EXISTS (
-         SELECT 1 FROM artifact_hard_references r
-          WHERE r.artifact_id=run_artifacts.artifact_id AND r.active=1
-       )
-       AND checksum_verified_at IS NOT NULL
-     ORDER BY retain_until, artifact_id
-     LIMIT ?
-  `).bind(now, limit).all<{ artifact_id: string; r2_key: string }>()
-  let deleted = 0
-  const errors: string[] = []
-  for (const row of results ?? []) {
-    try {
-      await (env.ARTIFACTS as any).delete(row.r2_key)
-      await opsDb.prepare(`
-        UPDATE run_artifacts
-           SET status='payload_deleted', payload_deleted_at=?, updated_at=CURRENT_TIMESTAMP
-         WHERE artifact_id=? AND status='ready'
-      `).bind(now, row.artifact_id).run()
-      deleted += 1
-    } catch (error) {
-      errors.push(`${row.artifact_id}:${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-  return { candidates: (results ?? []).length, deleted, failed: errors.length, errors }
+  return sweepExpiredArtifacts(artifactOpsDb(env), env.ARTIFACTS, options)
 }
 
 type ArtifactIntegrityRow = {
@@ -520,6 +492,7 @@ export async function runArtifactIntegrityAudit(
     SELECT artifact_id, r2_key, checksum, status
       FROM run_artifacts
      WHERE status IN ${statuses}
+       AND NOT EXISTS(SELECT 1 FROM artifact_deletion_claims_v1 c WHERE c.artifact_id=run_artifacts.artifact_id)
        AND payload_deleted_at IS NULL
      ORDER BY CASE WHEN checksum_verified_at IS NULL THEN 0 ELSE 1 END,
               updated_at ASC

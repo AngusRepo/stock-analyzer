@@ -1,3 +1,5 @@
+import { acknowledgeArchivedReplayRetry } from './retentionS12ReplayRelease'
+import { REPLAY_PRODUCER_COLUMNS } from './retentionS12ReplayProjection'
 import {
   assessS12IntradayStructureFromBaseBars,
   type S12Bar,
@@ -1330,39 +1332,7 @@ export async function persistS12ReplayOutcome(
          AND lifecycle_authority.upstream_run_id=?
     )
   )`
-  const result = await db.prepare(`
-    INSERT INTO s12_replay_trade_outcomes (
-      symbol, market, signal_date, trade_date, assessment_state, setup_id,
-      entry_ms, exit_ms, entry_price, stop_price,
-      target1_price, target2_price, target3_price, exit_price,
-      pnl_pct, trade_pnl_r, max_favorable_pct, max_adverse_pct,
-      bars_to_exit, exit_reason, sample_eligible, source, detail_json
-    )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-     WHERE ${lifecycleAuthoritySql}
-    ON CONFLICT(symbol, signal_date, setup_id) WHERE signal_date IS NOT NULL DO UPDATE SET
-      market=excluded.market,
-      trade_date=excluded.trade_date,
-      assessment_state=excluded.assessment_state,
-      entry_ms=excluded.entry_ms,
-      exit_ms=excluded.exit_ms,
-      entry_price=excluded.entry_price,
-      stop_price=excluded.stop_price,
-      target1_price=excluded.target1_price,
-      target2_price=excluded.target2_price,
-      target3_price=excluded.target3_price,
-      exit_price=excluded.exit_price,
-      pnl_pct=excluded.pnl_pct,
-      trade_pnl_r=excluded.trade_pnl_r,
-      max_favorable_pct=excluded.max_favorable_pct,
-      max_adverse_pct=excluded.max_adverse_pct,
-      bars_to_exit=excluded.bars_to_exit,
-      exit_reason=excluded.exit_reason,
-      sample_eligible=excluded.sample_eligible,
-      source=excluded.source,
-      detail_json=excluded.detail_json
-    WHERE ${lifecycleAuthoritySql}
-  `).bind(
+  const producerValues = [
     outcome.symbol,
     outcome.market,
     outcome.signal_date,
@@ -1385,14 +1355,57 @@ export async function persistS12ReplayOutcome(
     outcome.exit_reason,
     outcome.sample_eligible ? 1 : 0,
     outcome.source,
-    JSON.stringify(outcome),
-    expectedLifecycleRunId,
-    outcome.signal_date,
-    expectedLifecycleRunId,
-    expectedLifecycleRunId,
-    outcome.signal_date,
-    expectedLifecycleRunId,
-  ).run()
+    JSON.stringify(outcome)
+  ]
+  let result: D1Result
+  try {
+    result = await db.prepare(`
+      INSERT INTO s12_replay_trade_outcomes (
+        symbol, market, signal_date, trade_date, assessment_state, setup_id,
+        entry_ms, exit_ms, entry_price, stop_price,
+        target1_price, target2_price, target3_price, exit_price,
+        pnl_pct, trade_pnl_r, max_favorable_pct, max_adverse_pct,
+        bars_to_exit, exit_reason, sample_eligible, source, detail_json
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE ${lifecycleAuthoritySql}
+      ON CONFLICT(symbol, signal_date, setup_id) WHERE signal_date IS NOT NULL DO UPDATE SET
+        market=excluded.market,
+        trade_date=excluded.trade_date,
+        assessment_state=excluded.assessment_state,
+        entry_ms=excluded.entry_ms,
+        exit_ms=excluded.exit_ms,
+        entry_price=excluded.entry_price,
+        stop_price=excluded.stop_price,
+        target1_price=excluded.target1_price,
+        target2_price=excluded.target2_price,
+        target3_price=excluded.target3_price,
+        exit_price=excluded.exit_price,
+        pnl_pct=excluded.pnl_pct,
+        trade_pnl_r=excluded.trade_pnl_r,
+        max_favorable_pct=excluded.max_favorable_pct,
+        max_adverse_pct=excluded.max_adverse_pct,
+        bars_to_exit=excluded.bars_to_exit,
+        exit_reason=excluded.exit_reason,
+        sample_eligible=excluded.sample_eligible,
+        source=excluded.source,
+        detail_json=excluded.detail_json
+      WHERE ${lifecycleAuthoritySql}
+    `).bind(
+      ...producerValues,
+      expectedLifecycleRunId,
+      outcome.signal_date,
+      expectedLifecycleRunId,
+      expectedLifecycleRunId,
+      outcome.signal_date,
+      expectedLifecycleRunId,
+    ).run()
+  } catch (error) {
+    const details = [String(error), String((error as {cause?:unknown})?.cause ?? '')].join(' ')
+    if (!details.includes('retention_s12_replay_archived_key')) throw error
+    return acknowledgeArchivedReplayRetry(db, Object.fromEntries(REPLAY_PRODUCER_COLUMNS.map((key,i) => [key,producerValues[i]])),
+      expectedLifecycleRunId)
+  }
   const persisted = Number(result.meta?.changes ?? 0) === 1
   if (!persisted) return false
   if (!isS12ReplayRetryableUnavailableReason(outcome.status_reason)) {

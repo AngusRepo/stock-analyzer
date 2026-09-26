@@ -1,3 +1,4 @@
+import { queryReplayStatusSymbols } from './s12ReplayStatusHistory'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
@@ -154,13 +155,12 @@ async function maturityBySymbol(
   return output
 }
 
-async function terminalReplaySymbols(env: DomainEnv, signalDate: string, symbols: string[]): Promise<Set<string>> {
-  const output = new Set<string>()
-  for (const chunk of chunks(symbols)) {
-    const marks = chunk.map(() => '?').join(',')
-    const result = await databaseForDataDomain(env, 'learning').prepare(`
+export async function terminalReplaySymbols(env: DomainEnv, signalDate: string, symbols: string[]): Promise<Set<string>> {
+  if (!symbols.length) return new Set()
+  // One JSON binding avoids one history-integrity scan and one network call per 36 symbols.
+  const result = await queryReplayStatusSymbols(databaseForDataDomain(env, 'learning'), signalDate, `
       SELECT DISTINCT symbol FROM s12_replay_trade_outcomes
-       WHERE signal_date=? AND symbol IN (${marks}) AND source='s12_multisession_structure_replay_v3'
+       WHERE signal_date=? AND symbol IN (SELECT value FROM json_each(?)) AND source='s12_multisession_structure_replay_v3'
          AND NOT (
            COALESCE(json_extract(detail_json, '$.observation_kind'), '')='unavailable'
            AND COALESCE(json_extract(detail_json, '$.status_reason'), '') IN (
@@ -168,10 +168,8 @@ async function terminalReplaySymbols(env: DomainEnv, signalDate: string, symbols
              'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
            )
          )
-    `).bind(signalDate, ...chunk).all<{ symbol: string }>()
-    for (const row of result.results ?? []) output.add(String(row.symbol))
-  }
-  return output
+    `, [signalDate, JSON.stringify([...new Set(symbols)])])
+  return new Set(result.results.map(row => String(row.symbol)))
 }
 
 export async function loadSplitFusionSnapshotSymbols(
@@ -235,7 +233,12 @@ export async function loadSplitSignedEligibleRepairSymbolsByHistoricalDate(
   env: DomainEnv,
   signalDate: string,
 ): Promise<S12L0PassedSymbol[]> {
-  const result = await databaseForDataDomain(env, 'learning').prepare(`
+  const pending = await loadSignedReplayRepairSymbolSet(databaseForDataDomain(env, 'learning'), signalDate)
+  return (await replayCandidates(env, signalDate)).filter((row) => pending.has(row.symbol))
+}
+
+export async function loadSignedReplayRepairSymbolSet(db: D1Database, signalDate: string): Promise<Set<string>> {
+  const result = await queryReplayStatusSymbols(db, signalDate, `
     SELECT DISTINCT legacy.symbol
       FROM s12_replay_trade_outcomes legacy
      WHERE legacy.signal_date=?
@@ -270,13 +273,12 @@ export async function loadSplitSignedEligibleRepairSymbolsByHistoricalDate(
             )
        )
      ORDER BY legacy.symbol
-  `).bind(
+  `, [
     signalDate,
     S12_REPLAY_ENGINE_SIGNATURE,
     S12_REPLAY_ENGINE_SIGNATURE,
     S12_REPLAY_ENGINE_SIGNATURE,
     S12_REPLAY_ENGINE_SIGNATURE,
-  ).all<{ symbol: string }>()
-  const pending = new Set((result.results ?? []).map((row) => String(row.symbol)))
-  return (await replayCandidates(env, signalDate)).filter((row) => pending.has(row.symbol))
+  ])
+  return new Set((result.results ?? []).map((row) => String(row.symbol)))
 }

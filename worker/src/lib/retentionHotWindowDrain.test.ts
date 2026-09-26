@@ -71,3 +71,37 @@ assert.match(retentionClassMigration, /CREATE TABLE run_artifacts_retention_v2/)
 assert.match(retentionClassMigration, /'ten_year_cold_archive'/)
 
 console.log('retention hot-window drain contract tests passed')
+
+// Exercise the real dry-run path: an empty predictions table cannot hide ten unverified readers.
+import { test } from 'node:test'
+import { runRetentionHotWindowDrain } from './retentionHotWindowDrain'
+import type { Bindings } from '../types'
+test('dry-run reports every Learning source and never touches unsupported readers', async () => {
+  const db = { prepare(sql: string) {
+    return { bind(..._args: unknown[]) { return this },
+      async first() {
+        if (sql.includes('FROM data_retention_policies')) return { policy_id: 'learning_lineage_v1',
+          hot_retention_days: 120, cold_retention_days: 3650, archive_store: 'r2', action: 'archive_delete',
+          hard_reference_protected: 1, status: 'active' }
+        if (sql.includes('FROM predictions')) return null
+        throw new Error(`unexpected read: ${sql}`)
+      },
+      async all() {
+        if (sql.includes('pragma_table_info')) return { results: [{ name: 'date' }, { name: 'symbol' }] }
+        if (sql.includes('WITH candidates AS MATERIALIZED')) return { results: [] }
+        throw new Error(`unexpected read: ${sql}`)
+      },
+    }
+  } }
+  const env = { DB: db, ARTIFACTS: {} } as unknown as Bindings
+  const result = await runRetentionHotWindowDrain(env, { policyIds: ['learning_lineage_v1'],
+    businessDate: '2026-09-26', maxRounds: 10 })
+  assert.equal(result.dry_run, true)
+  assert.equal(result.complete, false)
+  assert.equal(result.status, 'error')
+  assert.equal(result.policy_attempts, 1)
+  assert.equal(result.deleted_rows, 0)
+  assert.equal(result.backlog_remaining, true)
+  assert.equal(result.policies[0].datasets.length, learningConfig!.sources.length)
+  assert.equal(result.policies[0].datasets.filter(d => d.status === 'blocked').length, 10)
+})

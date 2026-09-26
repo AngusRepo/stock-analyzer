@@ -1169,7 +1169,7 @@ export function buildAdminWorkerDomainTaskMap(
         limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 1000),
       })
       if (result.failed) throw new Error(`r2 retention sweep failed ${JSON.stringify(result)}`)
-      return `r2_retention_sweep candidates=${result.candidates} deleted=${result.deleted}`
+      return `r2_retention_sweep candidates=${result.candidates} deleted=${result.deleted} skipped=${result.skipped} backlog_remaining=${result.has_more} budget_exhausted=${result.budget_exhausted}`
     },
     'orphan-reachability-gc': async () => {
       const { runOrphanReachabilityGc } = await import('./artifactLifecycle')
@@ -1563,6 +1563,8 @@ export function buildAdminWorkerDomainTaskMap(
         policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
         limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
         confirmPhrase: c.req.query('confirm_drain'),
+        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), 1, 10),
+        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), 60_000, 120_000),
       })
       if (result.status === 'error') throw new Error(`retention hot window drain failed ${JSON.stringify(result)}`)
       return summarizeRetentionHotWindowDrain(result)

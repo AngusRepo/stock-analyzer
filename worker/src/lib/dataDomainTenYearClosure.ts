@@ -82,6 +82,7 @@ export type TenYearDomainClosureInput = {
   activeDomains: readonly string[]
   strictRequested: boolean
   domains: readonly DataDomainCutoverReadiness[]
+  learningRetention?: { complete: boolean; blockers: readonly string[] } | null
   navColdStorage?: { ready: boolean; [key: string]: unknown } | null
   capacity?: TenYearCapacityClosureReceipt | null
   unresolvedRouteTables?: Partial<Record<DataDomain, readonly string[]>>
@@ -124,6 +125,10 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
     }
   })
   const globalBlockers: string[] = []
+  if (!input.learningRetention) globalBlockers.push('learning_retention_receipt_missing')
+  else if (!input.learningRetention.complete || input.learningRetention.blockers.length) {
+    globalBlockers.push('learning_retention_not_closed', ...input.learningRetention.blockers)
+  }
   if (!input.navColdStorage) globalBlockers.push('nav_cold_storage_receipt_missing')
   else if (!input.navColdStorage.ready) globalBlockers.push('nav_cold_storage_not_closed')
   if (!input.strictRequested) globalBlockers.push('multi_d1_strict_not_enabled')
@@ -181,6 +186,7 @@ export function buildDataDomainTenYearClosure(input: TenYearDomainClosureInput) 
     domains: domainReceipts,
     capacity,
     nav_cold_storage: input.navColdStorage ?? null,
+    learning_retention: input.learningRetention ?? null,
     capacity_classification: {
       blocking_critical_domains: blockingCriticalDomains,
       accepted_frozen_rollback_domains: acceptedFrozenRollbackDomains,

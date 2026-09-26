@@ -71,6 +71,7 @@ type DurableTaskResult = {
   summary: string
   receipt?: Record<string, unknown>
   d1Stats?: Record<string, unknown>
+  continuation?: {workId:string;revision:number}
 }
 
 const DURABLE_TASK_RECOVERY_MAX_ATTEMPTS = 3
@@ -285,16 +286,15 @@ async function runDurableTask(
     const [
       {
         ensureS12TwCalibrationTables,
-        inspectS12TwCalibrationLifecycleCensoring,
-        createS12CalibrationHistory,
-        runS12TwCalibration,
       },
       { resolveS12CalibrationCadence },
       { acquireS12ResearchLeaseDetailed, assertS12ResearchLeaseRenewed, releaseS12ResearchLease },
+      { captureS12CalibrationWork, appendS12CalibrationPage, finishS12CalibrationWork },
     ] = await Promise.all([
       import('./s12TwEquityCalibration'),
       import('./s12CalibrationCadence'),
       import('./s12ResearchLease'),
+      import('./s12CalibrationWork'),
     ])
     const cadence = resolveS12CalibrationCadence('auto', runDate)
     const learningDb = databaseForDataDomain(env, 'learning')
@@ -364,47 +364,23 @@ async function runDurableTask(
             `[S12 calibration] incomplete canonical receipt will be atomically rebuilt run_id=${canonicalRunId} expected=${expectedArtifacts} actual=${artifactIds.length}`,
           )
         }
-        const historyStart = new Date(`${runDate}T00:00:00.000Z`)
-        historyStart.setUTCDate(historyStart.getUTCDate() - (cadence === 'monthly' ? 180 : 90))
-        const history = createS12CalibrationHistory(env, learningDb, historyStart.toISOString().slice(0, 10), runDate)
-        const lifecycleCensoring = await inspectS12TwCalibrationLifecycleCensoring(
-          learningDb,
-          runDate,
-          cadence,
-          history.nowMs,
-          history,
-        )
-        if (lifecycleCensoring.recentEnqueuedRows > 0) {
-          const holderDates = lifecycleCensoring.recentEnqueuedDates.join(',') || 'unknown'
-          return {
-            skipped: true,
-            reason: `maintenance_lease_busy:s12-replay-lifecycle:${holderDates}`,
-            leaseGroup: 's12:research-market-data',
-            holderTaskName: 's12-replay-backfill',
-            holderOwnerId: `replay-lifecycle-enqueued:${holderDates}`,
-            leaseExpiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-          }
+        const sourceVersion=String(env.CF_VERSION_METADATA?.tag ?? '').trim()
+        const work=await captureS12CalibrationWork(learningDb,{runDate,cadence,sourceVersion})
+        const beforeCommit=()=>assertS12ResearchLeaseRenewed(opsDb,researchLeaseRunId)
+        const next=await appendS12CalibrationPage(env,learningDb,work,{beforeCommit})
+        if(next.phase==='reading')return {
+          summary:`s12_tw_calibration collecting run_id=${canonicalRunId} page=${next.revision} retained=${next.retained_rows}`,
+          continuation:{workId:next.run_id,revision:next.revision},
         }
-        if (lifecycleCensoring.staleEnqueuedRows > 0 || lifecycleCensoring.missingOrOtherRows > 0) {
-          console.warn(
-            '[S12 calibration] excluded non-terminal replay lifecycle evidence '
-            + JSON.stringify({
-              stale_enqueued_rows: lifecycleCensoring.staleEnqueuedRows,
-              stale_enqueued_dates: lifecycleCensoring.staleEnqueuedDates,
-              missing_or_other_rows: lifecycleCensoring.missingOrOtherRows,
-              missing_or_other_dates: lifecycleCensoring.missingOrOtherDates,
-            }),
-          )
+        const finished=await finishS12CalibrationWork(learningDb,next,{beforeCommit,replaceExistingRunArtifacts})
+        if(finished.deferred) {
+          const holderDates=finished.dates.join(',') || 'unknown'
+          return {skipped:true,reason:`maintenance_lease_busy:s12-replay-lifecycle:${holderDates}`,
+            leaseGroup:'s12:research-market-data',holderTaskName:'s12-replay-backfill',
+            holderOwnerId:`replay-lifecycle-enqueued:${holderDates}`,
+            leaseExpiresAt:new Date(Date.now()+10*60_000).toISOString()}
         }
-        const result = await runS12TwCalibration(learningDb, {
-          runDate,
-          cadence,
-          dryRun: false,
-          replaceExistingRunArtifacts,
-          lifecycleCensoring,
-          history,
-          beforeCommit: () => assertS12ResearchLeaseRenewed(opsDb, researchLeaseRunId),
-        })
+        const result=finished.result
         return {
           summary: result.summary,
           receipt: {
@@ -414,6 +390,8 @@ async function runDurableTask(
             artifact_ids: result.artifacts.map((artifact) => artifact.artifactId),
             idempotent: false,
             canonical_run_id: canonicalRunId,
+            input_work_id: finished.workId,
+            input_checkpoint: finished.checkpoint,
           },
         }
         } finally {
@@ -513,6 +491,20 @@ export async function processDurableSchedulerTask(
       if (recovery.reason !== 'deduplicated') {
         await releaseDurableTaskRecoveryFence(opsDb, msg, runId)
       }
+      return
+    }
+    if(taskResult.continuation) {
+      if(task!=='s12-smcvwap-calibration')throw new Error('unsupported durable input continuation')
+      // ACK only after successor acceptance. Paging preserves the lease-recovery counter; it neither consumes
+      // nor resets it, so repeated lifecycle deferrals cannot turn into an unbounded retry loop.
+      try {await env.UPDATE_QUEUE.send({...msg,runId},{delaySeconds:1})}
+      catch(error){throw new DurableTaskRecoveryEnqueueError(`calibration page continuation enqueue failed: ${String(error)}`)}
+      const summary=`durable_continuation ${taskResult.summary} work_id=${taskResult.continuation.workId}`
+      const result={status:'running' as const,summary,duration_ms:Date.now()-startedAt,run_id:runId,run_date:runDate}
+      await updateTicket('running',summary)
+      await logSchedulerResult(env.KV,task,result,env)
+      await putManualRunLog(env.KV,task,runId,result)
+      await releaseDurableTaskRecoveryFence(ticketDb,msg,runId)
       return
     }
     const status = classifySchedulerSummary(taskResult.summary)

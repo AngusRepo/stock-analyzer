@@ -30,6 +30,10 @@ const FIELDS = ['version','startDate','endDate','snapshotAt','upperRowid','inven
 async function checkpointHash(value:Omit<ReplayReadCheckpoint,'checksum'>):Promise<string> {
   return sha256Text(JSON.stringify(FIELDS.map(k=>value[k])))
 }
+/** Seal an inventory captured in the same Learning transaction as hot/lifecycle inputs. */
+export async function sealReplayReadCheckpoint(value:Omit<ReplayReadCheckpoint,'checksum'>):Promise<ReplayReadCheckpoint> {
+  return {...value,checksum:await checkpointHash(value)}
+}
 async function inventory(db:D1Database,upper:number|null):Promise<Inventory> {
   return (await db.prepare(`SELECT COALESCE(MAX(rowid),0) max_id,COUNT(*) batches,COALESCE(SUM(row_count),0) rows
     FROM s12_replay_cold_batches_v1 ${upper===null?'':'WHERE rowid<=?'}`).bind(...(upper===null?[]:[upper])).first<Inventory>())!

@@ -332,3 +332,40 @@ test('attempt limit is terminal error, ACKed, and never writes a success receipt
     'scheduler:terminal:s12-smcvwap-calibration:2026-08-23',
   ), false)
 })
+
+test('continuation persists running without consuming or resetting recovery budget, then closes only after all pages', async () => {
+  const db=new RecoveryDb(nowMs),queue=new RecoveryQueue(),setup=env(db,queue)
+  let delivery={...message,durableTaskRecoveryAttempt:3}
+  for(let revision=1;revision<=5;revision++) {
+    await processDurableSchedulerTask(delivery,setup.bindings,{
+      runTask:async()=>({summary:'collecting frozen input',continuation:{workId:'frozen-attempt',revision}}),
+    })
+    assert.equal(queue.sent.length,revision)
+    const current=JSON.parse(String(setup.kv.values.get('scheduler:run:s12-smcvwap-calibration:'+runDate)))
+    assert.equal(current.status,'running')
+    assert.equal(setup.kv.values.has('scheduler:terminal:s12-smcvwap-calibration:'+runDate),false)
+    assert.equal(queue.sent.at(-1)?.delaySeconds,1)
+    assert.equal(queue.sent.at(-1)?.body.runId,runId)
+    assert.equal(queue.sent.at(-1)?.body.durableTaskRecoveryAttempt,3)
+    delivery=queue.sent.at(-1)!.body as typeof delivery
+  }
+  await processDurableSchedulerTask(delivery,setup.bindings,{
+    runTask:async()=>({summary:'s12_tw_calibration status=frozen written=0'}),
+  })
+  assert.equal(queue.sent.length,5)
+  assert.equal(setup.kv.values.has('scheduler:terminal:s12-smcvwap-calibration:'+runDate),true)
+})
+
+test('continuation send failure is retryable, retains running and does not acknowledge terminal completion',async()=>{
+  const db=new RecoveryDb(nowMs),queue=new RecoveryQueue(),setup=env(db,queue)
+  queue.fail=true
+  const runner=async()=>({summary:'page stored',continuation:{workId:'frozen-attempt',revision:1}})
+  await assert.rejects(processDurableSchedulerTask(message,setup.bindings,{runTask:runner}),/continuation enqueue failed/)
+  assert.equal(queue.sent.length,0)
+  const current=JSON.parse(String(setup.kv.values.get('scheduler:run:s12-smcvwap-calibration:'+runDate)))
+  assert.equal(current.status,'running')
+  assert.equal(setup.kv.values.has('scheduler:terminal:s12-smcvwap-calibration:'+runDate),false)
+  queue.fail=false
+  await processDurableSchedulerTask(message,setup.bindings,{runTask:runner})
+  assert.equal(queue.sent.length,1)
+})

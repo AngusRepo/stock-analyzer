@@ -89,7 +89,7 @@ def _routing_closed_domains() -> frozenset[D1DataDomain]:
     return frozenset(closed)
 
 
-def database_id_for_domain(domain: D1DataDomain | str) -> str:
+def database_id_for_domain(domain: D1DataDomain | str, *, require_specific: bool = False) -> str:
     resolved_domain = D1DataDomain(domain)
     strict = os.environ.get("MULTI_D1_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
     active_domains = _active_domains()
@@ -102,7 +102,7 @@ def database_id_for_domain(domain: D1DataDomain | str) -> str:
     if strict and not active_domains:
         raise RuntimeError("multi_d1_strict_active_domains_missing")
     domain_active = resolved_domain in active_domains
-    if domain_active:
+    if domain_active or require_specific:
         specific = os.environ.get(_DOMAIN_ENV[resolved_domain], "").strip()
         if specific:
             return specific
@@ -117,6 +117,7 @@ def database_id_for_domain(domain: D1DataDomain | str) -> str:
 @dataclass(frozen=True)
 class DomainD1Client:
     domain: D1DataDomain
+    require_specific: bool = False
 
     def _uses_mining_gateway(self) -> bool:
         # Modal has a scoped Worker token, not direct database credentials.
@@ -129,7 +130,7 @@ class DomainD1Client:
 
     @property
     def database_id(self) -> str:
-        return database_id_for_domain(self.domain)
+        return database_id_for_domain(self.domain, require_specific=self.require_specific)
 
     def query(
         self,

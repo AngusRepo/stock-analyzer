@@ -258,3 +258,34 @@ def test_shadow_domain_client_rejects_every_mutation_surface(monkeypatch):
             assert str(exc) == "d1_shadow_client_read_only_violation"
         else:
             raise AssertionError(f"shadow client accepted mutation: {sql}")
+
+
+def test_explicit_research_client_never_borrows_legacy_binding(monkeypatch):
+    import pytest
+    monkeypatch.setenv('CF_D1_DB_ID', 'legacy')
+    monkeypatch.delenv('CF_D1_RESEARCH_DB_ID', raising=False)
+    monkeypatch.delenv('MULTI_D1_ACTIVE_DOMAINS', raising=False)
+    monkeypatch.delenv('MULTI_D1_STRICT', raising=False)
+    client = d1_domain_client.DomainD1Client(d1_domain_client.D1DataDomain.RESEARCH, require_specific=True)
+    with pytest.raises(RuntimeError, match='D1 domain database id missing: research'):
+        client.query('SELECT 1')
+
+
+def test_explicit_research_client_routes_real_query_and_batch_without_legacy(monkeypatch):
+    monkeypatch.setenv('CF_D1_DB_ID', 'legacy')
+    monkeypatch.setenv('CF_D1_RESEARCH_DB_ID', 'research-specific')
+    monkeypatch.delenv('MULTI_D1_ACTIVE_DOMAINS', raising=False)
+    monkeypatch.delenv('MULTI_D1_STRICT', raising=False)
+    captured = []
+    def post(body, timeout=60, database_id=None):
+        captured.append(database_id)
+        return {'result': [{'results': [{'ok': 1}]}]}
+    def batch(statements, timeout=30, chunk_size=250, database_id=None):
+        captured.append(database_id)
+        return {'total': len(statements), 'success_count': len(statements), 'error_count': 0}
+    monkeypatch.setattr(d1_domain_client.d1_client, '_post', post)
+    monkeypatch.setattr(d1_domain_client.d1_client, '_raw_batch_execute', batch)
+    client = d1_domain_client.DomainD1Client(d1_domain_client.D1DataDomain.RESEARCH, require_specific=True)
+    assert client.query('SELECT 1') == [{'ok': 1}]
+    assert client.batch_execute([('INSERT INTO research_trial_runs_v1 VALUES(?)', ['fixture'])])['success_count'] == 1
+    assert captured == ['research-specific', 'research-specific']

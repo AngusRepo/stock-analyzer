@@ -333,28 +333,43 @@ function retentionCursorPredicate(
   }
 }
 
-async function loadCandidateRows(
-  db: D1Database, target: AuditJsonTargetConfig, cutoffDate: string,
+export function buildAuditJsonCandidateQuery(
+  targetId: AuditJsonArchiveTargetId, cutoffDate: string,
   limit: number, minBlobBytes: number, cursor: RetentionCursor | null,
-): Promise<{ rows: Record<string, unknown>[]; hasMore: boolean }> {
+): { sql: string; binds: unknown[] } {
+  const target = TARGET_BY_ID.get(targetId)
+  if (!target) throw new Error('audit_json_target_invalid')
   const keyset = retentionCursorPredicate(target, cursor)
-  // Budget UTF-8 JSON bytes in SQLite BEFORE transporting full payloads.
+  // Fix page membership before quoting payloads: LIMIT on the payload SELECT
+  // still serializes every eligible row when SQLite sorts an unindexed suffix.
+  // Both materialized steps share one SQLite statement/snapshot.
   const rowBytes = target.selectedColumns.map(column =>
-    `(length(CAST(json_quote(${column}) AS BLOB))+${column.length + 4})`).join('+') + '+64'
-  const { results } = await db.prepare(`
-    WITH candidates AS MATERIALIZED (
-      SELECT ${target.keyColumn} row_key, ${target.dateColumn} row_date, (${rowBytes}) row_bytes
+    `(length(CAST(json_quote(${target.table}.${column}) AS BLOB))+${column.length + 4})`).join('+') + '+64'
+  return { sql: `
+    WITH key_page AS MATERIALIZED (
+      SELECT ${target.keyColumn} row_key, ${target.dateColumn} row_date
         FROM ${target.table}
        WHERE ${target.dateColumn} IS NOT NULL AND ${target.dateColumn}<?
          AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)}) ${keyset.sql}
        ORDER BY ${target.dateColumn},${target.keyColumn} LIMIT ?
+    ), candidates AS MATERIALIZED (
+      SELECT k.row_key, k.row_date, (${rowBytes}) row_bytes
+        FROM key_page k JOIN ${target.table} ON ${target.table}.${target.keyColumn}=k.row_key
     ), budgeted AS MATERIALIZED (
       SELECT *,SUM(row_bytes) OVER (ORDER BY row_date,row_key) total_bytes FROM candidates
     ) SELECT ${target.selectedColumns.map(column => `${target.table}.${column}`).join(',')},
         (${blobLengthExpr(target)}) __blob_bytes
       FROM ${target.table} JOIN budgeted b ON b.row_key=${target.table}.${target.keyColumn}
       WHERE b.total_bytes<=1048576 ORDER BY ${target.table}.${target.dateColumn},${target.table}.${target.keyColumn}
-  `).bind(cutoffDate, ...archiveableBinds(target, minBlobBytes), ...keyset.binds, limit).all<Record<string, unknown>>()
+  `, binds: [cutoffDate, ...archiveableBinds(target, minBlobBytes), ...keyset.binds, limit] }
+}
+
+async function loadCandidateRows(
+  db: D1Database, target: AuditJsonTargetConfig, cutoffDate: string,
+  limit: number, minBlobBytes: number, cursor: RetentionCursor | null,
+): Promise<{ rows: Record<string, unknown>[]; hasMore: boolean }> {
+  const query = buildAuditJsonCandidateQuery(target.id, cutoffDate, limit, minBlobBytes, cursor)
+  const { results } = await db.prepare(query.sql).bind(...query.binds).all<Record<string, unknown>>()
   const rows = results ?? []
   const last = rows.at(-1)
   const nextCursor = last ? { ...cursor, cursor_date: String(last[target.dateColumn]), cursor_key: String(last[target.keyColumn]) } as RetentionCursor : cursor

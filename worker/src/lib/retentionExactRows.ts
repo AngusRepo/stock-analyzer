@@ -69,7 +69,7 @@ export function buildBoundedRetentionSelect(source: RetentionArchiveSource, colu
   return `WITH candidates AS MATERIALIZED (
     SELECT rowid AS row_key, ${source.dateExpression} AS source_date, substr(${source.dateExpression},1,10) AS archive_date,
            (${fields}) + 256 AS row_bytes
-      FROM ${table} WHERE (${source.eligibilitySql}) AND ${source.dateExpression} < ?
+      FROM ${table} WHERE (${source.scanEligibilitySql ?? source.eligibilitySql}) AND ${source.dateExpression} < ?
      ORDER BY source_date,row_key LIMIT ?
   ), budgeted AS MATERIALIZED (
     SELECT *,SUM(row_bytes) OVER (ORDER BY source_date,row_key) AS total_bytes FROM candidates

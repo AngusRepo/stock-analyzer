@@ -1,3 +1,4 @@
+import { recentMarketRowsScan } from './retentionMarketScan'
 import { recentMarketRows, fundamentalAnchorEligibility, EXECUTION_EVENT_ELIGIBILITY, EXECUTION_LEG_ELIGIBILITY, EXECUTION_INTENT_ELIGIBILITY } from './retentionSourceProtection'
 import type { Bindings } from '../types'
 import type { RetentionClass } from './evidenceArtifactContract'
@@ -33,6 +34,7 @@ export type RetentionArchiveSource = {
   dateExpression: string
   keyExpression: string
   eligibilitySql: string
+  scanEligibilitySql?: string
   deleteTable?: string
   deleteKeyColumn?: string
 }
@@ -85,15 +87,22 @@ function archiveOnlyTableSource(
     deleteKeyColumn: undefined,
   }
 }
+function marketSource(table: string, key: string): RetentionArchiveSource {
+  return {
+    ...tableSource('market', table, 'date', recentMarketRows(table, key)),
+    scanEligibilitySql: recentMarketRowsScan(table, key),
+  }
+}
+
 const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
   canonical_market_hot_v1: {
     store: 'r2',
     retentionClass: 'ten_year_cold_archive',
     sources: [
-      tableSource('market', 'stock_prices', 'date', recentMarketRows('stock_prices', 'stock_id')),
-      tableSource('market', 'technical_indicators', 'date', recentMarketRows('technical_indicators', 'stock_id')),
-      tableSource('market', 'chip_data', 'date', recentMarketRows('chip_data', 'symbol')),
-      tableSource('market', 'margin_data', 'date', recentMarketRows('margin_data', 'stock_id')),
+      marketSource('stock_prices', 'stock_id'),
+      marketSource('technical_indicators', 'stock_id'),
+      marketSource('chip_data', 'symbol'),
+      marketSource('margin_data', 'stock_id'),
       tableSource('market', 'canonical_fundamental_features', 'available_date', fundamentalAnchorEligibility('0000-01-01')),
     ],
   },
@@ -265,9 +274,20 @@ export function buildRetentionArchiveOnlyQuery(
   const cursorPredicate = cursor?.cursor_date && cursor.cursor_key != null
     ? 'AND (__archive_date, __cursor_key) > (?, ?)'
     : ''
-  // predictions.prediction_date is a canonical YYYY-MM-DD business date.
-  // Wrapping it in substr prevents its existing date index from bounding each page.
-  const archiveDate = source.datasetId === 'predictions' && source.dateExpression === 'predictions.prediction_date'
+  // These source columns contain canonical YYYY-MM-DD business dates. Keep
+  // their date index usable for both the cutoff and the acknowledged cursor.
+  // Timestamp sources retain day-level ordering and the original cursor meaning.
+  const indexedDates: Readonly<Record<string, string>> = {
+    predictions: 'predictions.prediction_date',
+    stock_prices: 'stock_prices.date',
+    technical_indicators: 'technical_indicators.date',
+    chip_data: 'chip_data.date',
+    margin_data: 'margin_data.date',
+    strategy_decision_log: 'strategy_decision_log.date',
+    strategy_label_matrix_v4: 'strategy_label_matrix_v4.signal_date',
+    obsolete_screener_items: 'i.date',
+  }
+  const archiveDate = indexedDates[source.datasetId] === source.dateExpression
     ? source.dateExpression : `substr(${source.dateExpression}, 1, 10)`
   return `
     SELECT * FROM (
@@ -275,10 +295,11 @@ export function buildRetentionArchiveOnlyQuery(
              ${archiveDate} AS __archive_date,
              ${source.selectSql}
         FROM ${source.fromSql}
-       WHERE (${source.eligibilitySql})
+       WHERE ${source.dateExpression} IS NOT NULL
+         AND ${source.dateExpression} < ?
+         AND (${source.scanEligibilitySql ?? source.eligibilitySql})
     ) archive_rows
    WHERE __archive_date IS NOT NULL
-     AND __archive_date < ?
      ${cursorPredicate}
    ORDER BY __archive_date ASC, __cursor_key ASC
    LIMIT ?

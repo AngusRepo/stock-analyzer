@@ -30,7 +30,7 @@ const market = retentionArchiveOnlyPolicyConfig('canonical_market_hot_v1')
 if (market.store !== 'r2') throw new Error('canonical_market_hot_v1 must use r2')
 const source = market.sources[0]
 const firstQuery = buildRetentionArchiveOnlyQuery(source, null)
-assert.match(firstQuery, /__archive_date < \?/)
+assert.match(firstQuery, /stock_prices\.date < \?/)
 assert.match(firstQuery, /ORDER BY __archive_date ASC, __cursor_key ASC/)
 assert.doesNotMatch(firstQuery, /DELETE\s+FROM/i)
 

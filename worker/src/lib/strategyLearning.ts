@@ -2780,6 +2780,8 @@ export async function repairHistoricalStrategyDecisionGrid(
       `historical_strategy_decision_grid_overflow:${options.date}:${decisionRowsBefore}/${expectedRows}`,
     )
   }
+  // An identical retry must not rewrite the full grid and every index. Compare
+  // all persisted payload/lineage fields; created_at changes only with the row.
   const projection = await db.prepare(`
       INSERT INTO strategy_decision_log (
         decision_id, date, symbol, name, strategy_id, strategy_version,
@@ -2841,6 +2843,23 @@ export async function repairHistoricalStrategyDecisionGrid(
         created_at=excluded.created_at,
         context_id=NULL,
         evidence_artifact_id=NULL
+      WHERE NOT (
+        strategy_decision_log.decision_id IS excluded.decision_id
+        AND strategy_decision_log.name IS excluded.name
+        AND strategy_decision_log.strategy_status IS excluded.strategy_status
+        AND strategy_decision_log.alpha_bucket IS excluded.alpha_bucket
+        AND strategy_decision_log.evaluable IS excluded.evaluable
+        AND strategy_decision_log.evaluability_status IS excluded.evaluability_status
+        AND strategy_decision_log.unavailable_reason IS excluded.unavailable_reason
+        AND strategy_decision_log.evaluation_contract_version IS excluded.evaluation_contract_version
+        AND strategy_decision_log.matched IS excluded.matched
+        AND strategy_decision_log.match_score IS excluded.match_score
+        AND strategy_decision_log.reason_code IS excluded.reason_code
+        AND strategy_decision_log.context_json IS excluded.context_json
+        AND strategy_decision_log.evidence_json IS excluded.evidence_json
+        AND strategy_decision_log.context_id IS excluded.context_id
+        AND strategy_decision_log.evidence_artifact_id IS excluded.evidence_artifact_id
+      )
     `).bind(options.date, options.canonicalProducerRunId).run()
   const persistedRows = Number(projection?.meta?.changes ?? 0)
   const decisionRowsAfter = await countDecisionRows()

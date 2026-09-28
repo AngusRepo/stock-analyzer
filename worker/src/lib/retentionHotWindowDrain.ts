@@ -133,7 +133,7 @@ async function loadCandidates(
   if (!dateColumn || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(dateColumn)) throw new Error('retention_source_date_invalid')
   const after = last ? `AND (${source.dateExpression}>? OR (${source.dateExpression}=? AND ${source.keyExpression}>?))` : ''
   const binds = last ? [cutoffDate, last[dateColumn], last[dateColumn], last.__cursor_key] : [cutoffDate]
-  const next = await db.prepare(`SELECT 1 FROM ${source.fromSql} WHERE (${source.eligibilitySql})
+  const next = await db.prepare(`SELECT 1 FROM ${source.fromSql} WHERE (${source.scanEligibilitySql ?? source.eligibilitySql})
     AND ${source.dateExpression}<? ${after} LIMIT 1`).bind(...binds).first()
   if (!rows.length && next) throw new Error(`retention_row_requires_large_object_path:${source.datasetId}`)
   return { rows, hasMore: next != null }

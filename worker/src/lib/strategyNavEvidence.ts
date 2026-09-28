@@ -20,7 +20,12 @@ export async function readStrategyNavEvidence(env: Bindings, input: {
   ])
   if (response?.schema_version !== 'strategy-nav-evidence-v1'
     || response.strategy_id !== input.strategy_id || response.strategy_version !== input.strategy_version
-    || response.as_of_date !== input.business_date || response.read_only !== true || response.promotion_allowed !== false
+    || !/^\d{4}-\d{2}-\d{2}$/.test(response.as_of_date) || response.as_of_date > input.business_date
+    || (response.as_of_date !== input.business_date && !response.read_model)
+    || (response.read_model && (response.read_model.schema_version !== 'strategy-nav-read-model-v1'
+      || response.read_model.requested_as_of_date !== input.business_date
+      || response.read_model.is_prior_business_date !== (response.as_of_date < input.business_date)))
+    || response.read_only !== true || response.promotion_allowed !== false
     || response.source !== 'original_frozen_policy_and_verified_nav'
     || !['available', 'not_registered', 'unavailable'].includes(response.status)
     || !Array.isArray(response.entries) || response.entry_count !== response.entries.length
@@ -33,7 +38,7 @@ export async function readStrategyNavEvidence(env: Bindings, input: {
       || seen.has(entry.artifact_checksum) || !/^[a-f0-9]{64}$/.test(entry.artifact_checksum)
       || entry.artifact_id !== `atomic_strategy:${entry.artifact_checksum}`
       || typeof entry.source_run_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.source_run_date)
-      || entry.source_run_date > input.business_date
+      || entry.source_run_date > response.as_of_date
       || await atomicNavDigest(definition) !== entry.artifact_checksum) fail()
     seen.add(entry.artifact_checksum)
     const roles = ['candidate', 'incumbent'].filter(role => definition[role]?.id === input.strategy_id
@@ -47,7 +52,7 @@ export async function readStrategyNavEvidence(env: Bindings, input: {
     if (entry.status !== 'available' || entry.error !== null || !nav
       || nav.schema_version !== 'paired-nav-candidate-decision-v1' || nav.owner !== 'atomic_strategy'
       || nav.candidate_artifact_id !== entry.artifact_id || nav.candidate_checksum !== entry.artifact_checksum
-      || nav.as_of_date !== input.business_date || nav.policy_checksum !== policyChecksum
+      || nav.as_of_date !== response.as_of_date || nav.policy_checksum !== policyChecksum
       || nav.minimum_evaluable_dates !== policy.minimum_sessions || nav.maximum_evaluable_dates !== policy.final_sessions
       || nav.promotion_allowed !== false || !['PASS', 'HOLD', 'PENDING', 'FAIL'].includes(nav.decision)
       || typeof nav.decision_payload_json !== 'string') fail()

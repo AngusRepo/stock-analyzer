@@ -14,6 +14,7 @@ export default function StrategyNavEvidence({ data, loading, error, onRetry }: {
     {error ? <div role="alert" className="text-sm text-rose-200">原始 NAV 證據讀取失敗，不能當成未通過或 0 日。<button type="button" onClick={onRetry} className="ml-3 underline">重試</button></div> : null}
     {data && !error && !loading ? <>
       <p className="text-xs text-slate-300">目前替換 owner：{data.current_replacement_owner === 'original_paired_daily_nav' ? '原始配對 NAV' : '舊 Atomic V7（NAV 仍獨立觀察）'} · 決策截止 {data.as_of_date} · {data.entry_count} 組原始比較</p>
+      {data.read_model?.is_prior_business_date ? <p role="status" className="text-sm text-amber-200">顯示最近完成的原始證據，截至 {data.as_of_date}；{data.read_model.requested_as_of_date} 的證據尚未完成更新。下方判定與日數均屬於上述截止日。</p> : null}
       {data.status === 'not_registered' ? <p className="text-sm text-amber-200">此策略版本尚未找到原始凍結 NAV 比較；沒有把舊 Alpha 樣本換算成 NAV 成熟日。</p> : null}
       {data.status === 'unavailable' ? <p role="alert" className="text-sm text-rose-200">有原始證據尚不可驗證；下列完整列出，不以其他成功比較掩蓋。</p> : null}
       {data.entries.map(entry => {

@@ -66,7 +66,7 @@ async def _execute_lifecycle(
     from services.trading_config_loader import load_merged_trading_config_with_contract
     config=load_merged_trading_config_with_contract().config
     new_distribution=config.get('l4Distribution') is not None
-    nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution)
+    nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution, publish_strategy_display=True)
     nav_failed = nav.get("status") == "failed"
     candidates = nav.pop('_adoption_candidates', [])
     if promote and not nav_failed:
@@ -113,7 +113,7 @@ async def _execute_lifecycle(
     return result
 
 
-def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False) -> dict[str, Any]:
+def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False) -> dict[str, Any]:
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     started = time.monotonic()
     from services.paired_nav_read_cache import reuse_verified_cold_reads
@@ -134,6 +134,19 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
         else:
             result = _execute_daily_nav_scoped(end_date=end_date, now=now,
                 retire_legacy_owners=retire_legacy_owners)
+    # Also run on an unchanged daily-accounting retry: a missing display
+    # artifact must not stay missing merely because accounting was cached.
+    if publish_strategy_display and result.get('as_of_date') and not result.get('error_type'):
+        try:
+            from services.strategy_nav_read_model import refresh_strategy_nav_read_model, production_read_store
+            from services.d1_domain_client import D1DataDomain, client_for_domain
+            result['strategy_nav_read_model'] = refresh_strategy_nav_read_model(
+                business_date=result['as_of_date'], client=client_for_domain(D1DataDomain.LEARNING),
+                store=production_read_store(), now=now)
+        except Exception as exc:
+            logger.warning('[DailyNav] strategy NAV display unavailable error_type=%s', type(exc).__name__)
+            result['strategy_nav_read_model'] = {'status': 'unavailable',
+                'reason': 'strategy_nav_display_publication_failed', 'promotion_allowed': False}
     logger.info('[DailyNav] finished seconds=%.2f status=%s', time.monotonic() - started, result.get('status'))
     return result
 

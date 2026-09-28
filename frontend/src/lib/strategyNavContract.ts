@@ -3,6 +3,7 @@ export type StrategyNavEvidence = {
   strategy_id: string; strategy_version: string; as_of_date: string; observed_at: string
   current_replacement_owner: 'original_paired_daily_nav' | 'legacy_atomic_v7'
   status: 'available' | 'unavailable' | 'not_registered'; entry_count: number
+  read_model?: { requested_as_of_date: string; is_prior_business_date: boolean; evaluated_at: string; source_checked_at: string }
   read_only: true; promotion_allowed: false
   entries: Array<{
     artifact_id: string; artifact_checksum: string; source_run_date: string

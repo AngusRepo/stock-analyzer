@@ -154,11 +154,47 @@ def test_daily_oof_only_cache_cannot_skip_original_nav_reconciliation(monkeypatc
         walk_forward.OofLifecycleRequest(end_date='2026-09-09'), cadence='daily', bucket=object()) is None
 
 
+@pytest.mark.parametrize('publish', [False, True])
 @pytest.mark.parametrize('day', ['2099-01-01', '20260909', 'not-a-date'])
-def test_invalid_or_future_nav_cutoff_performs_no_storage_io(monkeypatch, day):
+def test_invalid_or_future_nav_cutoff_performs_no_storage_io(monkeypatch, day, publish):
     from services import d1_domain_client
     monkeypatch.setattr(d1_domain_client, 'client_for_domain',
         lambda *a: pytest.fail('date must be checked before D1 I/O'))
-    result = job._execute_daily_nav(end_date=day)
+    result = job._execute_daily_nav(end_date=day, publish_strategy_display=publish)
     assert result['status'] == 'failed'
     assert result['error_type'] == 'ValueError'
+
+
+@pytest.mark.parametrize('cached', [False, True])
+def test_display_publication_also_runs_after_accounting_receipt_reuse(monkeypatch, cached):
+    from services import strategy_nav_read_model as display, daily_nav_read_receipt as receipts
+    from services import d1_domain_client, walk_forward_retrain
+    calls=[]
+    client=object();store=object()
+    original={'status':'up_to_date','as_of_date':'2026-09-09'}
+    monkeypatch.setattr(d1_domain_client,'client_for_domain',lambda *a:client)
+    monkeypatch.setattr(walk_forward_retrain,'_get_bucket',lambda:object())
+    monkeypatch.setattr(job,'_execute_daily_nav_scoped',lambda **kw:dict(original))
+    monkeypatch.setattr(receipts,'run_with_receipt',lambda **kw:dict(original) if cached else kw['run'](client))
+    monkeypatch.setattr(display,'production_read_store',lambda:store)
+    def refresh(**kw):
+        calls.append(kw)
+        return {'status':'published','promotion_allowed':False}
+    monkeypatch.setattr(display,'refresh_strategy_nav_read_model',refresh)
+    result=job._execute_daily_nav(end_date='2026-09-09',retire_legacy_owners=True,publish_strategy_display=True)
+    assert result['status']=='up_to_date'
+    assert result['strategy_nav_read_model']['promotion_allowed'] is False
+    assert len(calls)==1 and calls[0]['client'] is client and calls[0]['store'] is store
+    assert calls[0]['business_date']=='2026-09-09'
+
+
+def test_display_failure_preserves_original_accounting_outcome(monkeypatch):
+    from services import strategy_nav_read_model as display, d1_domain_client
+    monkeypatch.setattr(job,'_execute_daily_nav_scoped',lambda **kw:{'status':'up_to_date','as_of_date':'2026-09-09'})
+    monkeypatch.setattr(d1_domain_client,'client_for_domain',lambda *a:object())
+    def unavailable():raise RuntimeError('fixture_display_storage_unavailable')
+    monkeypatch.setattr(display,'production_read_store',unavailable)
+    result=job._execute_daily_nav(end_date='2026-09-09',publish_strategy_display=True)
+    assert result['status']=='up_to_date'
+    assert result['strategy_nav_read_model']=={'status':'unavailable',
+        'reason':'strategy_nav_display_publication_failed','promotion_allowed':False}

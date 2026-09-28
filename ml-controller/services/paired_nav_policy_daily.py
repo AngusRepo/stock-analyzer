@@ -171,50 +171,52 @@ def refresh_registered_route_nav_decisions(**kwargs):
     return _refresh(owner='l15_route', **kwargs)
 
 
-def read_strategy_nav_evidence(*, strategy_id, strategy_version, business_date, query, now=None):
-    """On-demand strategy display, using the SAME original policy/NAV reader.
+def read_all_strategy_nav_evidence(*, business_date, query, now=None):
+    """One original census shared by every strategy's display projection.
 
-    Never evaluates a new statistical review or writes a projection. A request-
-    local read cache shares immutable source reads between all matching policies;
-    it is not persisted and cannot serve a different date/request.
+    This is an offline/nightly producer. The HTTP reader must never run it.
+    It preserves every original comparison and every unavailable entry.
     """
     clock = _clock(business_date, now)
-    cached = {}
-
-    def read(sql, params):
-        key = (sql, digest(params))
-        if key not in cached:
-            cached[key] = deepcopy(query(sql, params))
-        return deepcopy(cached[key])
-
     inventory = frozen_policy_inventory(owner='atomic_strategy', business_date=business_date,
-        query=read, now=clock)
-    decisions = NavCandidateDecisionReadScope(query=read, business_date=business_date, now=clock)
+        query=query, now=clock)
+    decisions = NavCandidateDecisionReadScope(query=query, business_date=business_date, now=clock)
     entries = []
     for item in inventory:
         definition = item['definition']
         if definition is None:
-            # An orphan allocation cannot be silently assigned to another strategy.
             raise ValueError('nav_policy_original_admission_missing')
-        roles = [role for role in ('candidate', 'incumbent')
-            if definition[role]['id'] == strategy_id and definition[role]['version'] == strategy_version]
-        if not roles:
-            continue
         entry = {'artifact_id': item['candidate_artifact_id'], 'artifact_checksum': item['candidate_checksum'],
             'source_run_date': item['source_run_date'], 'policy_definition': deepcopy(definition),
-            'strategy_roles': roles, 'status': 'available', 'error': None, 'nav': None}
+            'status': 'available', 'error': None, 'nav': None}
         try:
             _require_source(item)
             entry['nav'] = decisions.read(owner='atomic_strategy',
-                candidate_artifact_id=item['candidate_artifact_id'], candidate_checksum=item['candidate_checksum'],
-            )
+                candidate_artifact_id=item['candidate_artifact_id'], candidate_checksum=item['candidate_checksum'])
         except (ValueError, RuntimeError, KeyError, TypeError) as exc:
             entry['status'] = 'unavailable'
             entry['error'] = str(exc) if str(exc).startswith('nav_policy_') else 'nav_policy_original_evidence_unavailable'
         entries.append(entry)
+    return {'as_of_date': business_date, 'observed_at': clock.isoformat(), 'entries': entries}
+
+
+def select_strategy_nav_evidence(evidence, *, strategy_id, strategy_version):
+    entries = []
+    for item in evidence['entries']:
+        roles = [role for role in ('candidate', 'incumbent')
+            if item['policy_definition'][role]['id'] == strategy_id
+            and item['policy_definition'][role]['version'] == strategy_version]
+        if roles:
+            entries.append({**deepcopy(item), 'strategy_roles': roles})
     return {'schema_version': 'strategy-nav-evidence-v1', 'strategy_id': strategy_id,
-        'strategy_version': strategy_version, 'as_of_date': business_date, 'observed_at': clock.isoformat(),
+        'strategy_version': strategy_version, 'as_of_date': evidence['as_of_date'], 'observed_at': evidence['observed_at'],
         'source': 'original_frozen_policy_and_verified_nav', 'read_only': True, 'promotion_allowed': False,
         'status': 'unavailable' if any(e['status'] != 'available' for e in entries)
             else 'available' if entries else 'not_registered',
         'entries': entries, 'entry_count': len(entries)}
+
+
+def read_strategy_nav_evidence(*, strategy_id, strategy_version, business_date, query, now=None):
+    """Original verifier retained for offline parity checks; never an HTTP fallback."""
+    evidence = read_all_strategy_nav_evidence(business_date=business_date, query=query, now=now)
+    return select_strategy_nav_evidence(evidence, strategy_id=strategy_id, strategy_version=strategy_version)

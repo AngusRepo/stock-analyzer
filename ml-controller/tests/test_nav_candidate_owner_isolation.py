@@ -131,6 +131,7 @@ def test_original_nav_recovery_callbacks_close_the_same_admitted_root(isolated_j
             monkeypatch.setenv(key, value)
         return response
     initial_request = {'cadence': 'daily', 'end_date': '2026-09-09', 'dry_run': False,
+        'model_profile_schema_version': 'active8-release-model-profiles-v4-timexer-price',
         'promote': True, 'dispatch_full_fit': True,
         'scheduler_ticket_id': identity['ticket_id'], 'scheduler_run_id': identity['run_id']}
     dispatch(initial_request)

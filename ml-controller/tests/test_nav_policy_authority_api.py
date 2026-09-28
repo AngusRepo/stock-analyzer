@@ -80,6 +80,13 @@ def test_policy_api_rereads_original_owner_and_rejects_caller_verdict(prepared, 
     app = controller.app
     assert app.title == 'StockVision ML Controller'
     monkeypatch.setattr(paired_nav, 'LEARNING_D1_CLIENT', SimpleNamespace(query=query))
+    from services.strategy_nav_read_model import refresh_strategy_nav_read_model
+    from test_strategy_nav_read_model import Store
+    display_store = Store()
+    refresh_strategy_nav_read_model(business_date='2026-09-07', client=SimpleNamespace(query=query),
+        store=display_store, now=clock)
+    monkeypatch.setattr(paired_nav, 'production_read_store', lambda: display_store)
+
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):

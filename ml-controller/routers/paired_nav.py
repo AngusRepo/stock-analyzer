@@ -8,7 +8,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
-from services.paired_nav_policy_daily import read_policy_candidate_decision, read_strategy_nav_evidence
+from services.paired_nav_policy_daily import read_policy_candidate_decision
+from services.strategy_nav_read_model import read_strategy_nav_read_model, production_read_store
 
 
 router = APIRouter(prefix='/nav', tags=['paired-nav'])
@@ -38,14 +39,24 @@ class StrategyEvidenceRequest(BaseModel):
     business_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
 
 
+def _read_strategy_display(request, clock):
+    from services.d1_client import read_connection_scope
+    with read_connection_scope():
+        return read_strategy_nav_read_model(**request, client=LEARNING_D1_CLIENT,
+            store=production_read_store(), now=clock)
+
+
 @router.post('/strategy-evidence')
 async def strategy_evidence(request: StrategyEvidenceRequest):
     clock = datetime.now(timezone.utc)
     try:
-        return await asyncio.to_thread(read_strategy_nav_evidence, **request.model_dump(),
-            query=LEARNING_D1_CLIENT.query, now=clock)
-    except (ValueError, RuntimeError, KeyError, TypeError):
-        raise HTTPException(status_code=409, detail='nav_policy_original_evidence_unavailable') from None
+        return await asyncio.to_thread(_read_strategy_display, request.model_dump(), clock)
+    except (ValueError, RuntimeError, KeyError, TypeError) as exc:
+        reason = str(exc)
+        detail = reason if reason in {
+            'strategy_nav_read_model_missing', 'strategy_nav_read_model_source_changed',
+        } else 'nav_policy_original_evidence_unavailable'
+        raise HTTPException(status_code=409, detail=detail) from None
 
 
 @router.post('/committed-l3-baseline')

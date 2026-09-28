@@ -109,3 +109,33 @@ def test_policy_projection_rejects_future_business_date_before_inventory():
     with pytest.raises(ValueError, match='nav_policy_daily_time_invalid'):
         policy.refresh_registered_route_nav_decisions(business_date='2026-09-08', query=must_not_query,
             now=datetime.fromisoformat('2026-09-07T14:00:00+00:00'))
+
+@pytest.mark.parametrize('full_atomic', ['native_policy', 'native_policy_complete'], indirect=True)
+def test_display_projection_matches_actual_cold_original_policies(allocated, full_atomic, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from services import paired_nav_cold as cold
+    from services.strategy_nav_read_model import refresh_strategy_nav_read_model, read_strategy_nav_read_model
+    from test_strategy_nav_read_model import Store
+    from test_paired_nav_cold import Objects
+    db, _, state = allocated
+    collect_atomic_allocations(snapshot_id=state['paired_nav_collection']['snapshot_id'], query=db.query, writer=db.writer)
+    migrate(db)
+    db.conn.executescript((Path(__file__).parents[2]/'worker/domain-migrations/learning/0048_paired_nav_cold_storage.sql').read_text(encoding='utf-8'))
+    objects=Objects();monkeypatch.setattr(cold,'production_store',lambda:objects)
+    for item in db.query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1',[]):
+        cold.migrate_snapshot(query=db.query,writer=db.writer,snapshot_id=item['snapshot_id'],store=objects)
+    clock=datetime.fromisoformat(state['run_date']+'T14:00:00+00:00')
+    client=SimpleNamespace(query=db.query);store=Store()
+    before=db.conn.total_changes
+    refresh_strategy_nav_read_model(business_date=state['run_date'],client=client,store=store,now=clock)
+    definitions=policy.frozen_policy_inventory(owner='atomic_strategy',business_date=state['run_date'],query=db.query,now=clock)
+    for item in definitions:
+        for role in ('candidate','incumbent'):
+            spec=item['definition'][role]
+            expected=policy.read_strategy_nav_evidence(strategy_id=spec['id'],strategy_version=spec['version'],business_date=state['run_date'],query=db.query,now=clock)
+            with monkeypatch.context() as blocked:
+                blocked.setattr(objects,'download',lambda *a: (_ for _ in ()).throw(AssertionError('HTTP downloaded cold original')))
+                actual=read_strategy_nav_read_model(strategy_id=spec['id'],strategy_version=spec['version'],business_date=state['run_date'],client=client,store=store,now=clock)
+            actual.pop('read_model');assert actual==expected
+    assert db.conn.total_changes==before

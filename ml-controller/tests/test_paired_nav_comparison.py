@@ -89,11 +89,11 @@ def test_compact_reuse_preserves_validation_and_rejects_changed_parent(environme
         "SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind='allocation_pair'", [])]
     allocation = next(a for a in allocations if a['payload']['content']['owner'] == 'l4_alpha_ev')
     calls = []
-    real_read = comparison.read_snapshot
+    real_read = comparison.read_context_projection
     def tracked(*args):
         calls.append(1)
         return real_read(*args)
-    monkeypatch.setattr(comparison, 'read_snapshot', tracked)
+    monkeypatch.setattr(comparison, 'read_context_projection', tracked)
     with reuse_verified_cold_reads():
         expected = comparison.resolve_allocation_comparison(query=db.query, allocation=allocation)
         actual = comparison.resolve_allocation_comparison(query=db.query, allocation=allocation)
@@ -102,7 +102,7 @@ def test_compact_reuse_preserves_validation_and_rejects_changed_parent(environme
         mutated['payload']['content']['baseline_checksum'] = 'f' * 64
         with pytest.raises(ValueError, match='incumbent_mismatch'):
             comparison.resolve_allocation_comparison(query=db.query, allocation=mutated)
-        parent = real_read(db.query, allocation['payload']['content']['allocation_context_snapshot_id'])
+        parent = read_snapshot(db.query, allocation['payload']['content']['allocation_context_snapshot_id'])
         parent['payload']['content']['formal_output'] = []
         with pytest.raises(ValueError, match='incumbent_mismatch'):
             comparison.resolve_allocation_comparison(query=db.query, allocation=allocation, parent=parent)

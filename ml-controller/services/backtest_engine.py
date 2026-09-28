@@ -109,32 +109,30 @@ def _snapshot_component_uris(manifest: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _download_gcs_uri(uri: str) -> Path:
-    if not uri.startswith("gs://"):
-        raise RuntimeError(f"unsupported_snapshot_uri:{uri}")
-    try:
-        from google.cloud import storage
-    except Exception as exc:
-        raise RuntimeError("google_cloud_storage_not_available_for_snapshot_read") from exc
-
-    bucket_name, blob_name = uri[5:].split("/", 1)
-    target = Path(tempfile.mkdtemp(prefix="stockvision-snapshot-")) / Path(blob_name).name
-    client = storage.Client()
-    client.bucket(bucket_name).blob(blob_name).download_to_filename(str(target))
-    return target
+def _read_snapshot_parquet(uri: str, *, transform=None) -> pl.DataFrame:
+    from services.snapshot_parquet import read_snapshot_parquet
+    return read_snapshot_parquet(uri, transform=transform)
 
 
-def _read_snapshot_parquet(uri: str) -> pl.DataFrame:
-    if uri.startswith("file://"):
-        path = Path(uri[7:])
-    elif uri.startswith("gs://"):
-        path = _download_gcs_uri(uri)
-    else:
-        path = Path(uri)
-
-    if not path.exists():
-        raise RuntimeError(f"snapshot_component_not_found:{uri}")
-    return pl.scan_parquet(str(path)).collect()
+def _snapshot_lazy_filter(lazy: pl.LazyFrame, *, start_date: str, end_date: str,
+                          symbols=None, stocks=None) -> pl.LazyFrame:
+    """Execute the original join/filter order lazily, retaining empty schemas."""
+    columns = lazy.collect_schema().names()
+    if lazy.select(pl.len()).collect().item() == 0:
+        return lazy  # Original eager helpers leave empty inputs unchanged.
+    if (stocks is not None and 'symbol' not in columns and 'stock_id' in columns
+            and {'id', 'symbol'}.issubset(stocks.columns)):
+        lazy = lazy.join(stocks.select(pl.col('id').alias('stock_id'), 'symbol').lazy(),
+                         on='stock_id', how='inner').drop('stock_id')
+        columns = lazy.collect_schema().names()
+        if lazy.select(pl.len()).collect().item() == 0:
+            return lazy  # Empty join retains source date dtype, including Date.
+    if 'date' in columns:
+        lazy = lazy.with_columns(pl.col('date').cast(pl.Utf8)).filter(
+            (pl.col('date') >= start_date) & (pl.col('date') <= end_date))
+    if symbols and 'symbol' in columns:
+        lazy = lazy.filter(pl.col('symbol').is_in(set(symbols)))
+    return lazy
 
 
 def _date_filter(df: pl.DataFrame, start_date: str, end_date: str) -> pl.DataFrame:
@@ -311,14 +309,14 @@ class BacktestDataset:
             end_date,
         )
         component_uris = _snapshot_component_uris(manifest)
-        frames = {
-            name: _read_snapshot_parquet(uri)
-            for name, uri in component_uris.items()
-        }
+        # Validate the sealed accounting source before loading large market
+        # components. Presence alone is insufficient (schema, clock and scope
+        # identity can still fail); do not pay for a doomed full replay load.
         from services.backtest_corporate_accounting import load_corporate_tape
-        corporate_sources = load_corporate_tape(frames.get('corporate_source_records'))
-
-        stocks_df = frames["stocks"]
+        corporate_uri = component_uris.get('corporate_source_records')
+        corporate_frame = _read_snapshot_parquet(corporate_uri) if corporate_uri else None
+        corporate_sources = load_corporate_tape(corporate_frame)
+        stocks_df = _read_snapshot_parquet(component_uris["stocks"])
         if stocks_df.is_empty() or "symbol" not in stocks_df.columns:
             raise RuntimeError(f"backtest_snapshot_stocks_invalid:{snapshot_id}")
         stocks_df = stocks_df.with_columns([
@@ -332,6 +330,15 @@ class BacktestDataset:
         stocks_df = _filter_snapshot_symbols(stocks_df, symbols)
         if stocks_df.is_empty():
             raise RuntimeError(f"backtest_snapshot_no_stocks:{snapshot_id}")
+
+        def load_market_component(name):
+            return _read_snapshot_parquet(component_uris[name], transform=lambda lazy:
+                _snapshot_lazy_filter(lazy, start_date=start_date, end_date=end_date,
+                    symbols=symbols if name != "market_risk" else None,
+                    stocks=stocks_df if name != "market_risk" else None))
+        frames = {name: load_market_component(name) for name in ("prices", "indicators", "chips", "market_risk")}
+        # Remaining components are consumed by other snapshot readers; they do
+        # not participate in this dataset or its caches. Avoid unused downloads.
 
         prices_df = _with_symbol_from_stocks(frames["prices"], stocks_df)
         indicators_df = _with_symbol_from_stocks(frames["indicators"], stocks_df)

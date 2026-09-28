@@ -109,6 +109,9 @@ def reuse_verified_nav_evidence():
     phases only write review records. The same clock/query/census may therefore
     reuse evidence without re-decoding every immutable historical context.
     """
+    if _read_cache.get() is not None:
+        yield
+        return
     token = _read_cache.set({})
     try:
         yield

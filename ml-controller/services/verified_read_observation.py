@@ -32,7 +32,13 @@ def observed_value(key, fetch, *, batch=None):
     if observations is None:
         return fetch()
     if key not in observations:
-        observations[key] = (fetch, deepcopy(fetch()), batch)
+        from services.read_singleflight import UI_READS
+        # Only provider identities containing the exact database/query or
+        # account/namespace/key share their initial I/O. Every request still
+        # performs the original independent fresh verification below.
+        coalesce = isinstance(key, tuple) and key and key[0] in {"sql", "kv"}
+        initial = UI_READS.read(key, fetch) if coalesce else fetch()
+        observations[key] = (fetch, deepcopy(initial), batch)
     return deepcopy(observations[key][1])
 
 

@@ -258,14 +258,15 @@ def load(query, manifest, store=None, *, materialize=True, prefixes=None):
     if store is None:
         raise RuntimeError('paired_nav_cold_store_unavailable')
     started = time.monotonic()
+    from services.paired_nav_read_cache import cached_verified_read, cached_verified_file
+    # Both mutable metadata rows were freshly read above. File and projection
+    # caches share one tmpfs budget and never survive the job.
+    source_key = (query, json.dumps(manifest, sort_keys=True), json.dumps(row, sort_keys=True))
+    key = (*source_key, materialize, tuple(sorted(prefixes)) if prefixes is not None else None)
     def read():
-        with verified_file(store, row['object_key'], row['payload_checksum'], row['payload_bytes']) as path:
+        with cached_verified_file(source_key, lambda: verified_file(store, row['object_key'],
+                row['payload_checksum'], row['payload_bytes'])) as path:
             return parse_file(path, prefixes=prefixes) if materialize else True
-    from services.paired_nav_read_cache import cached_verified_read
-    # Both mutable metadata rows were freshly read above. A changed locator,
-    # checksum, manifest or projection cannot reuse an earlier verified value.
-    key = (query, json.dumps(manifest, sort_keys=True), json.dumps(row, sort_keys=True),
-           materialize, tuple(sorted(prefixes)) if prefixes is not None else None)
     # Never serialize giant complete histories merely to discover a cache miss.
     cacheable = (prefixes is not None or row['payload_bytes'] <= 16 * 1024 * 1024
                  or (manifest['snapshot_kind'] != 'allocation_context' and row['payload_bytes'] <= 128 * 1024 * 1024))

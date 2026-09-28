@@ -4,7 +4,7 @@ Fusion measures an increment over the exact L4 candidate, not a replacement of
 the incumbent portfolio. Legacy execution-only receipts have no attested role.
 This reader neither rewrites old journals nor grants statistical authority.
 """
-from services.paired_nav_journal import digest, read_snapshot, _timestamp
+from services.paired_nav_journal import digest, read_snapshot, read_context_projection, _timestamp
 
 
 class _ComparisonInputArms(dict):
@@ -34,7 +34,7 @@ def resolve_comparison(*, query, execution):
         from services.paired_native_prestart import validate_successor_execution
         _, _, comparison = validate_successor_execution(execution, allocation=allocation, query=query)
         return comparison
-    parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
+    parent = _comparison_parent(query, plan, include_environment=True)
     from services.paired_nav_execution_environment import validate_registered_environment
     validate_registered_environment(parent=parent, allocation=plan,
         runtime={'execution_owner_version': packet.get('execution_owner_version')},
@@ -51,10 +51,25 @@ def resolve_allocation_comparison(*, query, allocation, parent=None):
         if reused is not None:
             return reused
     am, plan = allocation['manifest'], allocation['payload']['content']
-    parent = parent if parent is not None else read_snapshot(query, plan['allocation_context_snapshot_id'])
+    parent = parent if parent is not None else _comparison_parent(query, plan)
     result = _resolve_allocation_comparison(query=query, allocation=allocation, parent=parent)
     remember_comparison(query, allocation, parent, result)
     return result
+
+
+def _comparison_parent(query, plan, *, include_environment=False):
+    # Explicit field sets follow the validators below. Strategy/OPB/atomic
+    # comparisons retain the complete parent and their original checks.
+    fields = ('formal_baseline_identity', 'formal_output')
+    if include_environment:
+        fields += ('native_execution_environment',)
+    if plan.get('execution_replacement') or plan['configuration'].get('strategy_bundle') is not None:
+        return read_snapshot(query, plan['allocation_context_snapshot_id'])
+    if plan['owner'] == 'l15_route':
+        fields += ('recommendation_context.inputs.screener_recs',)
+    elif plan['owner'] not in {'ensemble', 'l4_alpha_ev', 'allocator_ev_fusion'}:
+        return read_snapshot(query, plan['allocation_context_snapshot_id'])
+    return read_context_projection(query, plan['allocation_context_snapshot_id'], fields)
 
 
 def _resolve_allocation_comparison(*, query, allocation, parent):

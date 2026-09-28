@@ -51,6 +51,25 @@ class _Cache:
         with gzip.open(entry[0], 'rb') as source:
             return True, pickle.load(source)
 
+    def save_file(self, key, source):
+        size = os.path.getsize(source)
+        if size > self.entry_bytes:
+            return None
+        while self.entries and self.bytes + size > self.max_bytes:
+            _, (path, old_size) = self.entries.popitem(last=False)
+            os.unlink(path)
+            self.bytes -= old_size
+        self.serial += 1
+        path = os.path.join(self.directory, str(self.serial))
+        # Hard-link the already verified file: no second tmpfs allocation.
+        try:
+            os.link(source, path)
+        except OSError:
+            return None  # Filesystem without hard links: retain uncached reader.
+        self.entries[key] = (path, size)
+        self.bytes += size
+        return path
+
     def save(self, key, value):
         # Reserve enough space before writing, including the incomplete entry.
         while self.entries and self.bytes + self.entry_bytes > self.max_bytes:
@@ -153,3 +172,20 @@ def policy_definitions(query, snapshot_id, owner, read):
     result = read()
     remember_policy_definitions(query, result['manifest'], owner, result['definitions'])
     return result
+
+
+@contextmanager
+def cached_verified_file(key, acquire):
+    """Scope-owned original compressed bytes; locator is freshly checked by caller."""
+    scope = _scope.get()
+    entry = scope.entries.get(('file', key)) if scope is not None else None
+    if entry is not None:
+        scope.entries.move_to_end(('file', key))
+        yield entry[0]
+        return
+    with acquire() as path:
+        # Caller parses before publishing this path; an invalid parse never
+        # becomes a cached source. A parsed projection can subsequently evict it.
+        yield path
+        if scope is not None:
+            scope.save_file(('file', key), path)

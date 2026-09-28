@@ -54,7 +54,15 @@ def load_model_pool_overview(bundle: dict[str, Any], bucket: Any) -> dict[str, A
             daily = [b for b in blobs if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.daily\.json", b.name.removeprefix(prefix))]
             if daily:
                 latest = max(daily, key=lambda b: b.name)
-                receipt = json.loads(latest.download_as_text(timeout=10))
+                generation = getattr(latest, "generation", None)
+                if generation is not None and getattr(bucket, "name", None):
+                    from services.read_singleflight import UI_READS
+                    raw = UI_READS.read(("gcs-cohort-receipt", bucket.name, latest.name, str(generation),
+                        cohort_id, bundle.get("artifact_id"), bundle.get("payload_checksum")),
+                        lambda: latest.download_as_text(timeout=10, if_generation_match=int(generation)))
+                else:
+                    raw = latest.download_as_text(timeout=10)
+                receipt = json.loads(raw)
                 cohort = cohort_progress(receipt, cohort_id, latest.name)
         except Exception as exc:
             cohort["reason"] = "cohort_receipt_unavailable"

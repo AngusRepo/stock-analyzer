@@ -81,6 +81,13 @@ def _parts(query: Query, snapshot_id: str, count: int) -> str:
     return ''.join(r['payload_text'] for r in rows)
 
 
+def _hot_payload(query, manifest):
+    raw = _parts(query, manifest['snapshot_id'], manifest['part_count'])
+    if hashlib.sha256(raw.encode('utf-8')).hexdigest() != manifest['payload_checksum']:
+        raise RuntimeError('paired_nav_snapshot_checksum_mismatch')
+    return json.loads(raw)
+
+
 def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
     scope = _read_scope.get()
     if scope is not None and scope['snapshot_id'] == snapshot_id and scope['saved'] is not None:
@@ -92,10 +99,7 @@ def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
     from services.paired_nav_cold import load
     payload = load(query, manifest)
     if payload is None:
-        raw = _parts(query, snapshot_id, manifest['part_count'])
-        if hashlib.sha256(raw.encode('utf-8')).hexdigest() != manifest['payload_checksum']:
-            raise RuntimeError('paired_nav_snapshot_checksum_mismatch')
-        payload = json.loads(raw)
+        payload = _hot_payload(query, manifest)
     if (payload['signal_date'] != manifest['signal_date']
             or payload['source_run_id'] != manifest['source_run_id']
             or payload['snapshot_kind'] != manifest['snapshot_kind']):
@@ -135,6 +139,30 @@ def read_inventory_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
     payload.setdefault('content', {})
     payload.setdefault('content', {})
     return {'manifest': manifest, 'payload': payload, 'read_projection': 'selection_inventory_v1'}
+
+def read_context_projection(query, snapshot_id, fields):
+    """Checksum-verified fields for validation only; never an execution input.
+
+    Every lookup rereads the complete manifest/cold locator. Legacy hot storage
+    uses the full reader. Missing fields stay absent, as in the original source.
+    """
+    rows = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
+    if len(rows) != 1:
+        raise RuntimeError('paired_nav_manifest_missing')
+    manifest = rows[0]
+    if manifest['snapshot_kind'] != 'allocation_context':
+        return read_snapshot(query, snapshot_id)
+    from services.paired_nav_cold import load
+    prefixes = frozenset({'schema_version', 'signal_date', 'snapshot_kind', 'source_run_id'}
+        | {'content.' + field for field in fields})
+    payload = load(query, manifest, prefixes=prefixes)
+    if payload is None:
+        payload = _hot_payload(query, manifest)
+    if any(payload.get(key) != manifest[key] for key in ('signal_date', 'source_run_id', 'snapshot_kind')):
+        raise RuntimeError('paired_nav_manifest_identity_mismatch')
+    payload.setdefault('content', {})
+    return {'manifest': manifest, 'payload': payload, 'read_projection': 'validation_fields_v1'}
+
 
 def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,
                     content: dict[str, Any], query: Query, writer: Writer,

@@ -344,6 +344,14 @@ async def reconcile_pipeline_execution(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     callback = failure_callback(snapshot)
+    if snapshot.get('state') == 'succeeded':
+        from services.pipeline_prediction_recovery import reconcile_modal_request
+        recovery = await asyncio.to_thread(reconcile_modal_request, run_date=date, run_id=run_id)
+        snapshot = {**snapshot, 'modal_recovery': recovery, 'reason': recovery['reason']}
+        if recovery.get('error'):
+            callback = {'task': 'pipeline', 'status': 'error', 'run_id': run_id,
+                'run_date': date, 'duration_ms': 0, 'error': recovery['error'],
+                'summary': recovery['error']}
     if callback is not None:
         # Callback authority rejects stale runs and refuses to overwrite success.
         # Never synthesize success from an async dispatcher having exited zero.

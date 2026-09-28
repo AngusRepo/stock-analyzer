@@ -5069,8 +5069,14 @@ def get_graph():
 def _spawn_pipeline_prediction_bundle_from_artifact(modal_payload: dict[str, Any]) -> dict[str, Any]:
     from services import modal_client
 
+    from services.pipeline_prediction_recovery import register_request
     request_ref = write_pipeline_modal_request_artifact(modal_payload)
-    spawn_info = modal_client.spawn_pipeline_prediction_bundle(request_ref)
+    register_request(request_ref)
+    try:
+        spawn_info = modal_client.spawn_pipeline_prediction_bundle(request_ref)
+    except Exception:
+        # Registry is durable before dispatch; watchdog retries the SAME request.
+        spawn_info = {'status': 'dispatch_uncertain', 'function_name': 'pipeline_prediction_bundle'}
     return {
         **spawn_info,
         "request_gcs_uri": request_ref["request_gcs_uri"],

@@ -86,9 +86,13 @@ async def test_real_reconcile_route_uses_existing_callback_only_for_verified_fai
     exec(compile(ast.Module(body=[fn],type_ignores=[]),'pipeline.py','exec'),ns)
     result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
     assert result['failure_callback_sent'] is True and len(sent)==1 and auth
+    from services import pipeline_prediction_recovery
+    monkeypatch.setattr(pipeline_prediction_recovery, 'reconcile_modal_request',
+        lambda **kw: {'reason': 'same_request_resumed'})
     current=lookup([execution(state=4)])
     result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
     assert result['failure_callback_sent'] is False and len(sent)==1
+    assert result['modal_recovery']['reason'] == 'same_request_resumed'
 
 
 def test_old_job_history_does_not_block_recent_exact_run():

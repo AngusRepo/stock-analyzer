@@ -1938,12 +1938,17 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             return _skip("GNN retired by model_pool")
         return predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool)
 
+    from app.pipeline_prediction_stages import SCOPE, namespace
+    stage_journal = SCOPE.get()
+    stage_namespace = namespace(payload) if stage_journal is not None else None
+
     def _timexer_predict(**kwargs):
         # The validated research recipe is CUDA/high precision. Keep the
         # expensive GPU allocation separate from CPU feature/graph stages.
-        result = timexer_universal_predict.remote({**kwargs,
-            "feature_source": payload.get("timexer_feature_source"),
-            "signal_date": payload["run_date"]})
+        gpu_input = {**kwargs, "feature_source": payload.get("timexer_feature_source"),
+            "signal_date": payload["run_date"]}
+        result = (stage_journal.gpu(gpu_input) if stage_journal is not None
+                  else timexer_universal_predict.remote(gpu_input))
         return result["results"]
 
     def _timexer() -> dict:
@@ -2054,7 +2059,9 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             return name, {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()[:2000], "results": []}, timing
 
     for name, (fn, required_alpha) in stages.items():
-        stage_name, result, timing = _run_stage(name, fn, required_alpha)
+        stage_name, result, timing = (stage_journal.cpu(stage_namespace, name,
+            lambda: _run_stage(name, fn, required_alpha)) if stage_journal is not None
+            else _run_stage(name, fn, required_alpha))
         outputs[stage_name] = result
         timings[stage_name] = timing
 
@@ -2208,6 +2215,13 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     import time
     from app.paired_nav_inference import run_candidate_bundles
     from app.paired_nav_atomic_inference import run_atomic_slates, atomic_inference_failure, ATOMIC_RESULT_SCHEMA
+    from app.pipeline_prediction_stages import SCOPE
+    journal = SCOPE.get()
+    saved, _ = journal.store.read(journal.root + '/cpu/final/publication') if journal else (None, 0)
+    if saved is not None:
+        bundle = saved['value']
+        bundle['callback_status'] = _post_pipeline_prediction_callback(payload, bundle, bundle['elapsed_s'])
+        return bundle
     started = time.monotonic()
     bundle = _compute_pipeline_prediction_bundle(payload)
     try:
@@ -2233,7 +2247,21 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
             capacity['status'] = 'healthy' if elapsed <= 900 else ('watch' if elapsed <= 1800 else 'breached')
             capacity['bundle_elapsed_sec'] = elapsed
             capacity['timeout_headroom_ratio'] = round(capacity['bundle_timeout_sec'] / elapsed, 3) if elapsed > 0 else None
-    bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
+    from app.pipeline_prediction_stages import SCOPE
+    journal = SCOPE.get()
+    if journal is not None:
+        bundle["elapsed_s"] = round(journal.elapsed(), 3)
+        capacity = bundle.get("capacity_contract")
+        if isinstance(capacity, dict):
+            elapsed = bundle["elapsed_s"]
+            capacity.update(bundle_elapsed_sec=elapsed,
+                status="healthy" if elapsed <= 900 else ("watch" if elapsed <= 1800 else "breached"),
+                timeout_headroom_ratio=round(capacity["bundle_timeout_sec"] / elapsed, 3) if elapsed else None)
+    def publish():
+        bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
+        return bundle
+    # Redelivered continuations send exactly the same immutable final artifact.
+    bundle = journal.cpu('final', 'publication', publish) if journal is not None else publish()
     bundle["callback_status"] = _post_pipeline_prediction_callback(payload, bundle, bundle['elapsed_s'])
     return bundle
 @app.function(
@@ -2250,13 +2278,37 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
 
     started = time.time()
     callback_payload = payload or {}
+    journal = None
     try:
         # Hydration reads the generation-bound request artifact from GCS, so
         # initialize the Modal GCS credential contract before that first read.
         _setup_env()
         hydrated_payload = _hydrate_pipeline_prediction_request_reference(callback_payload)
         callback_payload = hydrated_payload
-        return _pipeline_prediction_bundle_impl(hydrated_payload)
+        from app.pipeline_prediction_stages import Journal, GCSStore, Suspended, REF_SCHEMA
+        if payload.get('schema_version') != REF_SCHEMA:
+            return _pipeline_prediction_bundle_impl(hydrated_payload)
+        from google.cloud import storage
+        journal = Journal(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload)
+        try:
+            with journal.driver():
+                result = _pipeline_prediction_bundle_impl(hydrated_payload)
+                if result.get('callback_status', {}).get('status') == 'ok':
+                    journal.store.put(journal.root + '/terminal', {'status': 'callback_accepted'})
+                return result
+        except Suspended as pending:
+            # Release the driver lease before dispatch; the CPU call returns immediately.
+            # A lost acknowledgement retains its claim; an identical request retry may take
+            # over only after the GPU timeout + lease grace, at most three times.
+            if pending.dispatch is not None:
+                try:
+                    timexer_universal_predict.spawn(pending.dispatch)
+                except Exception:
+                    # An RPC failure does not prove rejection. The durable claim
+                    # remains fenced; the existing watchdog recovers expired work.
+                    pass
+            return {'status': 'waiting_gpu', 'run_id': payload['run_id'],
+                'stage_root': journal.root, 'elapsed_s': round(journal.elapsed(), 3)}
     except Exception as exc:
         callback = _post_pipeline_prediction_error_callback(
             callback_payload,
@@ -2265,6 +2317,8 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         )
         if callback.get("status") != "ok":
             raise RuntimeError(f"pipeline_modal_error_callback_unclosed:{callback}") from exc
+        if journal is not None:
+            journal.store.put(journal.root + '/terminal', {'status': 'error_callback_accepted'})
         raise
 
 
@@ -4557,6 +4611,19 @@ def timexer_universal_predict(payload: dict) -> dict:
     """Immutable official TimeXer inference; no fit or publication side effects."""
     _setup_env()
     from app.timexer_inference import batch_predict
+    from app.pipeline_prediction_stages import GPU_SCHEMA, GCSStore, run_gpu_stage
+    def predict(source):
+        if payload.get('schema_version') == GPU_SCHEMA:
+            expected = payload['reference'].get('expected_source_sha')
+            if not expected or os.environ.get('STOCKVISION_SOURCE_SHA') != expected:
+                raise ValueError('pipeline_stage_gpu_source_sha_mismatch')
+        rows = batch_predict(**source)
+        return {"results": rows, "n_input": len(source["series_list"]),
+                "n_success": sum(row.get("available") is True for row in rows)}
+    if payload.get('schema_version') == GPU_SCHEMA:
+        from google.cloud import storage
+        return run_gpu_stage(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload,
+            predict=predict, resume=pipeline_prediction_bundle.spawn)
     results = batch_predict(**payload)
     return {"results":results, "n_input":len(payload["series_list"]),
             "n_success":sum(row.get("available") is True for row in results)}

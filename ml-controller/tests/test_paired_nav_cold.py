@@ -357,3 +357,33 @@ def test_stream_decode_matches_json_numbers_and_shared_keys(tmp_path):
     assert type(result) is dict and type(result['rows'][0]) is dict
     first_key = next(iter(result['rows'][0]))
     assert next(iter(result['rows'][1])) is first_key
+
+
+def test_projection_shares_verified_bytes_but_not_values_or_mutable_locator(env,monkeypatch):
+    from services.paired_nav_read_cache import reuse_verified_cold_reads, _scope
+    from services.paired_nav_journal import read_context_projection
+    db,objects=env
+    manifest=freeze(db,{'formal_output':{'weights':[.2,.8]},'native_execution_environment':{'version':'one'},
+                        'unused_history':list(range(20000))})
+    downloads=[];original=objects.download
+    def tracked(key,path):downloads.append(key);return original(key,path)
+    monkeypatch.setattr(objects,'download',tracked)
+    with reuse_verified_cold_reads():
+        for field in ('formal_output','native_execution_environment','formal_output'):
+            saved=read_context_projection(db.query,manifest['snapshot_id'],(field,))
+            assert 'unused_history' not in saved['payload']['content']
+            saved['payload']['content'][field]={'caller_mutation':True}
+        assert len(downloads)==1
+        assert read_snapshot(db.query,manifest['snapshot_id'])['payload']['content']['formal_output']=={'weights':[.2,.8]}
+        assert len(downloads)==1
+        directory=Path(_scope.get().directory)
+        assert _scope.get().bytes<=_scope.get().max_bytes
+        db.conn.execute('DROP TRIGGER IF EXISTS paired_nav_cold_object_no_update_v1')
+        # Use query substitution to prove a changed locator is reverified without mutating the immutable DB.
+        def moved(sql,params):
+            rows=db.query(sql,params)
+            if sql.startswith('SELECT * FROM paired_nav_cold_objects_v1'):
+                return [{**r,'object_key':'missing'} for r in rows]
+            return rows
+        with pytest.raises(KeyError):read_context_projection(moved,manifest['snapshot_id'],('formal_output',))
+    assert not directory.exists()

@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from contextlib import contextmanager
 
 import polars as pl
 
@@ -38,29 +39,31 @@ def snapshot_component_uri(
     return None
 
 
-def _download_gcs_uri(uri: str) -> Path:
+@contextmanager
+def snapshot_local_path(uri: str):
+    """Own only downloaded scratch files; local/file:// sources are borrowed."""
+    if not uri.startswith("gs://"):
+        yield Path(uri[7:] if uri.startswith("file://") else uri)
+        return
     try:
         from google.cloud import storage
-    except Exception as exc:
+    except ImportError as exc:
         raise RuntimeError("google_cloud_storage_not_available_for_snapshot_read") from exc
-
     bucket_name, blob_name = uri[5:].split("/", 1)
-    target = Path(tempfile.mkdtemp(prefix="stockvision-snapshot-")) / Path(blob_name).name
-    storage.Client().bucket(bucket_name).blob(blob_name).download_to_filename(str(target))
-    return target
+    if not bucket_name or not blob_name:
+        raise ValueError("snapshot_gcs_uri_invalid")
+    with tempfile.TemporaryDirectory(prefix="stockvision-snapshot-") as directory:
+        target = Path(directory) / "component.parquet"
+        storage.Client().bucket(bucket_name).blob(blob_name).download_to_filename(str(target))
+        yield target
 
 
-def read_snapshot_parquet(uri: str) -> pl.DataFrame:
-    if uri.startswith("file://"):
-        path = Path(uri[7:])
-    elif uri.startswith("gs://"):
-        path = _download_gcs_uri(uri)
-    else:
-        path = Path(uri)
-
-    if not path.exists():
-        raise RuntimeError(f"snapshot_component_not_found:{uri}")
-    return pl.scan_parquet(str(path)).collect()
+def read_snapshot_parquet(uri: str, *, transform: Callable[[pl.LazyFrame], pl.LazyFrame] | None = None) -> pl.DataFrame:
+    with snapshot_local_path(uri) as path:
+        if not path.exists():
+            raise RuntimeError(f"snapshot_component_not_found:{uri}")
+        lazy = pl.scan_parquet(str(path))
+        return (transform(lazy) if transform is not None else lazy).collect()
 
 
 def read_snapshot_component(

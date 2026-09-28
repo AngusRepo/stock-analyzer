@@ -1,3 +1,4 @@
+import { appendGroup } from './groupedRows'
 import { readMetricSnapshot, publishMetricSnapshot } from './strategyMetricSnapshots'
 import type { Bindings } from '../types'
 import { databaseForDataDomain, shadowDatabaseForDataDomain } from './dataDomainRegistry'
@@ -187,7 +188,7 @@ function dateClusteredValues(rows: StrategyEvidenceObservation[], read: (row: St
   for (const row of rows) {
     const value = read(row)
     if (value == null) continue
-    byDate.set(row.signal_date, [...(byDate.get(row.signal_date) ?? []), value])
+    appendGroup(byDate, row.signal_date, value)
   }
   return [...byDate.keys()].sort().map((date) => mean(byDate.get(date) ?? [])!).filter(Number.isFinite)
 }
@@ -244,7 +245,7 @@ function regimeConsistency(
   for (const row of rows) {
     const regime = row.market_regime ?? recordedMarketRegime(row.alpha_context)
     if (!regime || (supported.size && !supported.has(regime))) continue
-    byRegime.set(regime, [...(byRegime.get(regime) ?? []), row])
+    appendGroup(byRegime, regime, row)
   }
   const observedPartitions = [...byRegime.entries()].map(([regime, regimeRows]) => {
     const values = dateClusteredValues(regimeRows, (row) => finite(row.residual_return_net))
@@ -329,7 +330,7 @@ function rankIc(rows: StrategyEvidenceObservation[]): {
   excludedLegacyBinaryPairs: number
 } {
   const byDate = new Map<string, StrategyEvidenceObservation[]>()
-  for (const row of rows) byDate.set(row.signal_date, [...(byDate.get(row.signal_date) ?? []), row])
+  for (const row of rows) appendGroup(byDate, row.signal_date, row)
   const values: number[] = []
   let pairEligibleDates = 0
   let insufficientPairDates = 0
@@ -417,7 +418,7 @@ function timeToReversion(rows: StrategyEvidenceObservation[], horizons: number[]
   for (const row of rows) {
     if (!allowed.has(Number(row.horizon_days))) continue
     const key = `${row.signal_date}|${row.symbol}|${row.producer_run_id}`
-    bySignal.set(key, [...(bySignal.get(key) ?? []), row])
+    appendGroup(bySignal, key, row)
   }
   const resolved: number[] = []
   for (const signalRows of bySignal.values()) {
@@ -879,7 +880,7 @@ async function attachMaximumAdverseExcursions(
     `).bind(...stockIdChunk, dateStart, dateEnd).all<StrategyEvidencePriceRow>()
     for (const row of result.results ?? []) {
       const stockId = Number(row.stock_id)
-      pricesByStock.set(stockId, [...(pricesByStock.get(stockId) ?? []), row])
+      appendGroup(pricesByStock, stockId, row)
     }
   }
   for (const row of relevant) {
@@ -917,7 +918,7 @@ export function fundamentalRevisionPersistenceEvidenceAsOf(
   const byMonth = new Map<string, RevenueRevisionObservation[]>()
   for (const row of rows) {
     if (row.knowledge_time > cutoff) continue
-    byMonth.set(row.revenue_month, [...(byMonth.get(row.revenue_month) ?? []), row])
+    appendGroup(byMonth, row.revenue_month, row)
   }
   const revisions = [...byMonth.entries()].map(([revenueMonth, monthRows]) => {
     const ordered = [...monthRows].sort((left, right) => left.knowledge_time.localeCompare(right.knowledge_time))
@@ -979,7 +980,7 @@ async function attachFundamentalRevisionPersistence(
        ORDER BY stock_id, revenue_month, knowledge_time
     `).bind(...symbolChunk, `${outcomeAsOfDate}T23:59:59.999Z`).all<RevenueRevisionObservation>()
     for (const row of result.results ?? []) {
-      revisionsBySymbol.set(row.stock_id, [...(revisionsBySymbol.get(row.stock_id) ?? []), row])
+      appendGroup(revisionsBySymbol, row.stock_id, row)
     }
   }
   const cache = new Map<string, ReturnType<typeof fundamentalRevisionPersistenceEvidenceAsOf>>()
@@ -1096,7 +1097,7 @@ export async function materializeStrategyEvidenceMetrics(
     const byStrategy = new Map<string, StrategyEvidenceObservation[]>()
     for (const row of observations) {
       const key = `${row.strategy_id}|${row.strategy_version}`
-      byStrategy.set(key, [...(byStrategy.get(key) ?? []), row])
+      appendGroup(byStrategy, key, row)
     }
     const rows = profiles.flatMap((profile) => computeStrategyEvidenceMetricRows(
       profile,

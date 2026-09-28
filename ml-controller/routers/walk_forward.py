@@ -2792,7 +2792,16 @@ OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-in
 
 
 def _materialize_nav_with_reviews(*, business_date, learning_client, now=None):
-    """Actual nightly NAV boundary: accounting first, then owned daily reviews."""
+    """All daily/weekly callers share the same bounded verified-read scope."""
+    from services.paired_nav_read_cache import reuse_verified_cold_reads
+    from services.paired_nav_evidence import reuse_verified_nav_evidence
+    with reuse_verified_cold_reads(), reuse_verified_nav_evidence():
+        return _materialize_nav_with_reviews_scoped(
+            business_date=business_date, learning_client=learning_client, now=now)
+
+
+def _materialize_nav_with_reviews_scoped(*, business_date, learning_client, now=None):
+    """Accounting first, then owned daily reviews; never cache a verdict globally."""
     from services.paired_nav_journal import mature_staged_pairs
     from services.paired_nav_daily_review import run_daily_nav_reviews, NavDailyReviewIncomplete
     result = mature_staged_pairs(business_date=business_date,

@@ -1,10 +1,11 @@
 """Shared-account debate guard: fresh analytics + atomic conservative reservation.
 
-Analytics can lag and excludes in-flight requests. Reservations are intentionally
-never refunded, including failed attempts, and added to the analytics high-water
-mark. This may double-count debate traffic: safety takes priority over using every
-free neuron. Other account clients must respect the same free-allocation policy;
-a 2,000-neuron buffer is not a provider billing hard cap.
+Analytics can lag and excludes in-flight requests. Failed or ambiguous requests
+retain their full reservation. A completed response with valid usage settles to
+measured neurons plus a safety margin. The daily row still adds reservations to
+the analytics high-water mark, so it remains conservative. Other account clients
+must respect the same free-allocation policy; a 2,000-neuron buffer is not a
+provider billing hard cap.
 """
 from __future__ import annotations
 
@@ -41,6 +42,49 @@ RESERVE_SQL = """INSERT INTO workers_ai_debate_budget_v1
         WHEN MAX(observed_neurons,excluded.observed_neurons)+reserved_neurons+excluded.last_request_neurons<=?
         THEN 1 ELSE 0 END
     RETURNING observed_neurons,reserved_neurons,last_request_admitted"""
+
+
+SETTLE_SQL = """UPDATE workers_ai_debate_budget_v1
+    SET reserved_neurons=reserved_neurons-?+?, updated_at=?
+    WHERE account_id=? AND utc_day=? AND reserved_neurons>=?
+    RETURNING reserved_neurons"""
+
+
+def measured_call_neurons(model: str, usage: dict) -> int | None:
+    if model not in MODEL_RATES or not isinstance(usage, dict):
+        return None
+    prompt = usage.get('prompt_tokens')
+    completion = usage.get('completion_tokens')
+    if (type(prompt) is not int or type(completion) is not int
+            or prompt < 0 or completion < 0 or prompt + completion == 0):
+        return None
+    rate_in, rate_out = MODEL_RATES[model]
+    return max(1, math.ceil(1.1 * (prompt * rate_in + completion * rate_out) / 1_000_000))
+
+
+def settle_neurons(*, account: str, utc_day: str, bound: int, measured: int, query=None) -> dict:
+    if type(bound) is not int or type(measured) is not int or bound <= 0 or measured <= 0:
+        raise ValueError('workers_ai_debate_settlement_invalid')
+    if query is None:
+        from services.d1_domain_client import client_for_domain
+        query = client_for_domain('ops').query
+    rows = query(SETTLE_SQL, [bound, measured, datetime.now(timezone.utc).isoformat(),
+                              account, utc_day, bound])
+    if len(rows) != 1:
+        raise RuntimeError('workers_ai_debate_settlement_unavailable')
+    return rows[0]
+
+
+async def settle_call(*, account: str, utc_day: str, bound: int, model: str, usage: dict) -> None:
+    measured = measured_call_neurons(model, usage)
+    if measured is None:
+        return
+    try:
+        await asyncio.to_thread(settle_neurons, account=account, utc_day=utc_day,
+                                bound=bound, measured=measured)
+    except Exception:
+        # The original reservation remains in place when settlement is uncertain.
+        logger.warning('[DebateBudget] settlement unavailable day=%s', utc_day)
 
 
 def estimate_call_neurons(model: str, messages: list[dict], max_tokens: int) -> int:
@@ -101,7 +145,7 @@ def reserve_neurons(*, account: str, utc_day: str, observed: float, bound: int, 
     if effective >= WARN_NEURONS:
         logger.warning('[DebateBudget] warning day=%s conservative_neurons=%.2f warn=%s stop=%s',
             utc_day, effective, WARN_NEURONS, STOP_NEURONS)
-    return {**row, 'utc_day': utc_day, 'conservative_neurons': effective,
+    return {**row, 'utc_day': utc_day, 'reservation_neurons': bound, 'conservative_neurons': effective,
         'warn_neurons': WARN_NEURONS, 'stop_neurons': STOP_NEURONS}
 
 

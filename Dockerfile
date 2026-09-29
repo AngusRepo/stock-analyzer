@@ -49,6 +49,7 @@ RUN node -e "require('/app/worker-dist/src/lib/evidenceContracts.js'); require('
 COPY ml-controller/ /app/
 RUN test -f /app/scripts/repair_active8_source_and_evaluation.py
 RUN python -c "from scripts.repair_native_prestart import run"
+RUN python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"
 RUN python -c "from scripts.l4_distribution_refresh_job import execute, training_recipe_signature; training_recipe_signature()"
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json

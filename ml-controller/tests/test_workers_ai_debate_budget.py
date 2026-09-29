@@ -47,6 +47,32 @@ def test_usage_high_water_never_falls_and_failures_keep_reservations(database, c
         budget.reserve_neurons(account='a', utc_day='2026-09-22', observed=7999, bound=2, query=database)
 
 
+def test_completed_usage_settles_bound_without_touching_other_inflight_calls(database):
+    first = budget.reserve_neurons(account='a', utc_day='2026-09-22', observed=1606, bound=500, query=database)
+    second = budget.reserve_neurons(account='a', utc_day='2026-09-22', observed=1606, bound=400, query=database)
+    assert second['conservative_neurons'] == 2506
+    settled = budget.settle_neurons(account='a', utc_day='2026-09-22', bound=500, measured=75, query=database)
+    assert settled['reserved_neurons'] == 475
+    assert budget.measured_call_neurons(llm.MISTRAL_MODEL,
+        {'prompt_tokens': 250, 'completion_tokens': 100}) is not None
+    assert budget.measured_call_neurons(llm.MISTRAL_MODEL,
+        {'prompt_tokens': 0, 'completion_tokens': 0}) is None
+    assert budget.measured_call_neurons(llm.MISTRAL_MODEL,
+        {'prompt_tokens': '250', 'completion_tokens': 100}) is None
+
+
+def test_four_candidate_twenty_turns_fit_after_measured_settlement(database):
+    for _ in range(20):
+        reserved = budget.reserve_neurons(account='a', utc_day='2026-09-22',
+                                          observed=1606, bound=350, query=database)
+        assert reserved['reservation_neurons'] == 350
+        budget.settle_neurons(account='a', utc_day='2026-09-22',
+                              bound=350, measured=90, query=database)
+    row = database('SELECT * FROM workers_ai_debate_budget_v1', [])[0]
+    assert row['reserved_neurons'] == 1800
+    assert row['observed_neurons'] + row['reserved_neurons'] == 3406
+
+
 def test_large_prompt_is_charged_not_truncated():
     model = llm.MISTRAL_MODEL
     short = budget.estimate_call_neurons(model, [{'role': 'user', 'content': 'x'}], 512)
@@ -82,7 +108,9 @@ def test_real_quota_guard_reserves_each_http_retry(monkeypatch, database):
     monkeypatch.setenv('CF_API_TOKEN', 'fixture-secret')
     monkeypatch.delenv('CF_WORKERS_AI_API_TOKEN', raising=False)
     original = budget.reserve_neurons
+    original_settle = budget.settle_neurons
     monkeypatch.setattr(budget, 'reserve_neurons', lambda **kwargs: original(**kwargs, query=database))
+    monkeypatch.setattr(budget, 'settle_neurons', lambda **kwargs: original_settle(**kwargs, query=database))
     requests, usage = [], []
     def respond(request):
         if str(request.url).endswith('/graphql'):
@@ -102,9 +130,37 @@ def test_real_quota_guard_reserves_each_http_retry(monkeypatch, database):
     asyncio.run(scenario())
     bound = budget.estimate_call_neurons(llm.MISTRAL_MODEL,
         [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': 'u'}], 512)
-    assert database('SELECT * FROM workers_ai_debate_budget_v1', [])[0]['reserved_neurons'] == 2 * bound
+    measured = budget.measured_call_neurons(llm.MISTRAL_MODEL,
+        {'prompt_tokens': 10, 'completion_tokens': 10})
+    assert database('SELECT * FROM workers_ai_debate_budget_v1', [])[0]['reserved_neurons'] == bound + measured
     assert len(usage) == 1
 
+
+
+def test_incomplete_response_settles_known_usage_but_remains_retryable(monkeypatch, database):
+    monkeypatch.setenv('CF_ACCOUNT_ID', 'd' * 32)
+    monkeypatch.setenv('CF_API_TOKEN', 'fixture-secret')
+    monkeypatch.delenv('CF_WORKERS_AI_API_TOKEN', raising=False)
+    original = budget.reserve_neurons
+    original_settle = budget.settle_neurons
+    monkeypatch.setattr(budget, 'reserve_neurons', lambda **kwargs: original(**kwargs, query=database))
+    monkeypatch.setattr(budget, 'settle_neurons', lambda **kwargs: original_settle(**kwargs, query=database))
+    def respond(request):
+        if str(request.url).endswith('/graphql'):
+            return httpx.Response(200, json={'data': {'viewer': {'accounts': [
+                {'aiInferenceAdaptiveGroups': [{'sum': {'totalNeurons': 500}}]}]}}})
+        return httpx.Response(200, json={'choices': [
+            {'finish_reason': 'length', 'message': {'content': 'incomplete'}}],
+            'usage': {'prompt_tokens': 250, 'completion_tokens': 512}})
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            with pytest.raises(RuntimeError, match='incomplete_response'):
+                await llm.call_llm('s', 'u', client=client, role='bear', model=llm.MISTRAL_MODEL,
+                                   cost_sink=lambda *_: asyncio.sleep(0))
+    asyncio.run(scenario())
+    measured = budget.measured_call_neurons(llm.MISTRAL_MODEL,
+        {'prompt_tokens': 250, 'completion_tokens': 512})
+    assert database('SELECT * FROM workers_ai_debate_budget_v1', [])[0]['reserved_neurons'] == measured
 
 
 def test_denied_observation_is_persisted_and_cannot_reopen_on_lower_analytics(database):

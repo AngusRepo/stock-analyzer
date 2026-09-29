@@ -88,7 +88,7 @@ async def call_llm(
         response = None
         for attempt in range(2):
             from .workers_ai_debate_budget import reserve_call
-            await reserve_call(client=client, account=account, token=token, model=model,
+            reservation = await reserve_call(client=client, account=account, token=token, model=model,
                 messages=body['messages'], max_tokens=body['max_tokens'])
             try:
                 response = await client.post(url, headers={"Authorization": f"Bearer {token}"},
@@ -118,6 +118,12 @@ async def call_llm(
             raise RuntimeError("workers_ai_debate_empty_response")
         choice = choices[0]
         usage = data.get("usage") or {}
+        if (isinstance(reservation, dict)
+                and isinstance(reservation.get('utc_day'), str)
+                and type(reservation.get('reservation_neurons')) is int):
+            from .workers_ai_debate_budget import settle_call
+            await settle_call(account=account, utc_day=reservation['utc_day'],
+                              bound=reservation['reservation_neurons'], model=model, usage=usage)
         values = ('llm_debate', 'cloudflare_workers_ai', model,
             int(usage.get('prompt_tokens') or 0), int(usage.get('completion_tokens') or 0))
         if cost_sink is not None:

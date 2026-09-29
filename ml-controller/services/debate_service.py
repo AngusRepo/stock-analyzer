@@ -396,10 +396,9 @@ async def run_buy_debate(
 
         for r in range(1, max_rounds + 1):
             is_initial = r == 1
-            # R1 requests up to 300 Chinese characters; a live Mistral response
-            # exhausted 512 tokens. R2 requests only 180 characters.
-            # Each cap is reserved before inference; truncated turns fail closed.
-            max_tokens = 1024 if is_initial else 512
+            # Live Mistral output exhausted 512 tokens in both R1 and R2.
+            # Reserve the larger cap before inference; truncated turns still fail closed.
+            max_tokens = 1024
 
             # ── Zealot turn ────────────────────────────────────────────────
             if is_initial:

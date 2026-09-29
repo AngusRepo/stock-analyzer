@@ -206,7 +206,7 @@ function toDebateTurnsJson(turns: DebateAgentTurn[] | null | undefined): string 
         agent: turn.agent,
         round: turn.round ?? null,
         stance: turn.stance ?? null,
-        summary: turn.summary.slice(0, 700),
+        summary: turn.summary.slice(0, 4000),
         source: turn.source ?? null,
       }))
     : []

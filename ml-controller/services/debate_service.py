@@ -271,8 +271,8 @@ _FULCRUM_SYS_PROMPT = "\n".join([
 ])
 
 
-def _compact_turn_text(text: str, max_len: int = 360) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()[:max_len]
+def _compact_turn_text(text: str, max_len: int = 4000) -> str:
+    return (text or "").strip()[:max_len]
 
 
 def _build_agent_turns(

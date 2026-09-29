@@ -1,4 +1,5 @@
 import {
+  activePaperTrajectorySymbols,
   arrayFromPayload,
   paperOrdersFromPayload,
   paperPendingBuysFromPayload,
@@ -44,4 +45,17 @@ function assert(condition: unknown, message: string): void {
 
 {
   assert(arrayFromPayload({ orders: [] }).length === 0, 'generic array normalizer should reject objects')
+}
+
+{
+  const symbols = activePaperTrajectorySymbols(
+    { pendingBuys: [
+      { symbol: '2485', debate_status: 'pending', debate_verdict: 'PENDING', execution_status: 'pending' },
+      { symbol: '7792', debate_status: 'completed', debate_verdict: 'DOWNGRADE', execution_status: 'requoted' },
+      { symbol: '7822', debate_status: 'completed', debate_verdict: 'APPROVE', execution_status: 'checked_waiting' },
+      { symbol: '9999', debate_status: 'completed', debate_verdict: 'APPROVE', execution_status: 'filled' },
+    ] },
+    { positions: [{ symbol: '2330', shares: 1000 }, { symbol: '2317', shares: 0 }] },
+  )
+  assert(symbols.join(',') === '7792,7822,2330', 'trajectory must show held and approved active candidates only')
 }

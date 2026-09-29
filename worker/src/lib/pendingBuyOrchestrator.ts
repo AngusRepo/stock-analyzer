@@ -733,6 +733,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const settledL4Downgrades = activeL4Plan
       ? await withD1Retry('settled_l4_downgrades', () => loadSettledL4Downgrades(env, activeL4Plan))
       : new Set<string>()
+    const priorDebateTurns = new Map(
+      settledL4Downgrades.size
+        ? (await loadPendingBuySnapshot(env, pendingDate, { allowFallbackRecent: false })).pendingBuys
+          .filter((item) => settledL4Downgrades.has(item.symbol) && item.debate_status === 'completed')
+          .map((item) => [item.symbol, item.debate_turns ?? []] as const)
+        : [],
+    )
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
@@ -1154,6 +1161,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         ],
         debate_verdict: debateVerdict,
         debate_status: debateVerdict === 'PENDING' ? 'pending' : 'completed',
+        debate_turns: debateVerdict === 'DOWNGRADE' ? priorDebateTurns.get(rec.symbol) ?? [] : [],
         risk_pct: riskPct,
         kelly_pct: allocationPlanId ? null : kellyResult?.pct ?? null,
         score_v2: scoreV2 ? serializeScoreV2Snapshot(scoreV2) : null,

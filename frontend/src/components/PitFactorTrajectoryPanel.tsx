@@ -9,7 +9,7 @@ import {
   type FactorTrajectoryPoint,
   type FactorTrajectorySeries,
 } from '@/lib/api'
-import { paperPendingBuysFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
+import { activePaperTrajectorySymbols } from '@/lib/paperPayload'
 import { buildFactorTrajectoryTimeline, factorTrajectoryPlaybackInterval } from '@/lib/pitFactorTrajectoryPlayback'
 
 const WIDTH = 1040
@@ -637,14 +637,10 @@ export function GroupFactorTrajectoryPanel() {
 }
 
 export function StockFactorTrajectoryPanel() {
-  const pending = useQuery({ queryKey: ['paper', 'pending-buys'], queryFn: () => paperApi.pendingBuys(), staleTime: 60_000 })
-  const positions = useQuery({ queryKey: ['paper', 'positions'], queryFn: paperApi.positions, staleTime: 60_000 })
+  const pending = useQuery({ queryKey: ['paper', 'pending-buys'], queryFn: () => paperApi.pendingBuys(), staleTime: 60_000, refetchInterval: 60_000 })
+  const positions = useQuery({ queryKey: ['paper', 'positions'], queryFn: paperApi.positions, staleTime: 60_000, refetchInterval: 60_000 })
   const [days, setDays] = useState<number>(10)
-  const symbols = useMemo(() => {
-    const pendingSymbols = paperPendingBuysFromPayload<any>(pending.data).map((row) => String(row.symbol ?? row.stock_symbol ?? '')).filter(Boolean)
-    const positionSymbols = paperPositionsFromPayload<any>(positions.data).map((row) => String(row.symbol ?? row.stock_symbol ?? '')).filter(Boolean)
-    return [...new Set([...pendingSymbols, ...positionSymbols])]
-  }, [pending.data, positions.data])
+  const symbols = useMemo(() => activePaperTrajectorySymbols(pending.data, positions.data), [pending.data, positions.data])
   const query = useQuery({
     queryKey: ['recommendations', 'factor-flow-map', 'stocks', days, symbols.join(',')],
     queryFn: () => recommendationsApi.factorFlowMap({

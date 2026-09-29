@@ -421,59 +421,52 @@ function StockRow({ rec, rank }: { rec: any; rank: number }) {
 }
 
 // ─── T2 Pending Buy row ────────────────────────────────────────────────────
-function DebateTurnsList({ turns }: { turns: any[] }) {
+function DebateTurnsList({ turns, verdict, status }: { turns: any[]; verdict: string; status: string }) {
   const cleanTurns = Array.isArray(turns)
-    ? turns.filter((turn) => turn && typeof turn === 'object' && (turn.summary || turn.agent))
+    ? turns.filter((turn) => turn && typeof turn === 'object' && typeof turn.summary === 'string' && turn.summary.trim())
     : []
-  if (!cleanTurns.length) {
-    return (
-      <div className="rounded-lg border border-border/70 bg-background/45 p-2 text-[11px] leading-5 text-muted-foreground">
-        這筆是舊 run 或 controller 尚未回傳 agent turns；目前只保存 verdict / execution terminal。
-      </div>
-    )
-  }
-  const agentLabel: Record<string, string> = {
-    theme: 'Theme Agent',
-    bull: 'Bull Agent',
-    bear: 'Bear Agent',
-    risk: 'Risk Agent',
-    judge: 'Final Judge',
-    zealot: 'Bull Agent',
-    reaper: 'Bear/Risk Agent',
-    fulcrum: 'Final Judge',
-  }
+  const verdictLabel = verdict === 'APPROVE' ? '通過' : verdict === 'DOWNGRADE' ? '降級通過' : verdict === 'REJECT' ? '否決' : '待裁決'
+  const judge = cleanTurns.find((turn) => ['judge', 'fulcrum'].includes(String(turn.agent).toLowerCase()))
   return (
-    <div className="space-y-1 rounded-lg border border-border/70 bg-background/45 p-2">
-      <p className="text-[11px] font-semibold text-foreground">逐輪辯論</p>
-      {cleanTurns.slice(0, 8).map((turn, i) => {
-        const key = String(turn.agent ?? '').toLowerCase()
-        const label = agentLabel[key] ?? String(turn.agent ?? `Round ${i + 1}`)
-        return (
-          <div key={`${label}-${i}`} className="grid gap-1 rounded-md border border-border/50 px-2 py-1.5 text-[11px] md:grid-cols-[120px_minmax(0,1fr)]">
-            <div>
-              <span className="font-semibold text-primary">{label}</span>
-              {turn.round != null ? <span className="ml-1 sv-num text-muted-foreground">R{turn.round}</span> : null}
-            </div>
-            <p className="leading-5 text-muted-foreground">{String(turn.summary ?? turn.text ?? '-')}</p>
-          </div>
-        )
-      })}
+    <div className="space-y-3 rounded-lg border border-border/70 bg-background/45 p-3">
+      <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+        <span>兩輪多空辯論與裁決</span>
+        <Badge variant="outline" className="text-[10px]">{verdictLabel}</Badge>
+      </div>
+      {!cleanTurns.length ? (
+        <p className="text-xs leading-5 text-muted-foreground">
+          {status === 'completed'
+            ? '這次裁決沒有保存兩輪發言原文，無法還原；裁決結果仍保留。'
+            : '辯論尚未完成，暫無逐輪發言。'}
+        </p>
+      ) : (
+        <>
+          {[1, 2].map((round) => {
+            const roundTurns = cleanTurns.filter((turn) => Number(turn.round) === round && ['bull', 'zealot', 'bear', 'reaper'].includes(String(turn.agent).toLowerCase()))
+            return (
+              <section key={round} className="space-y-2">
+                <h4 className="text-xs font-semibold text-foreground">第 {round} 輪</h4>
+                {roundTurns.length ? roundTurns.map((turn, index) => (
+                  <div key={`${round}-${turn.agent}-${index}`} className="rounded-md border border-border/50 px-3 py-2">
+                    <p className="mb-1 text-xs font-semibold text-primary">{['bull', 'zealot'].includes(String(turn.agent).toLowerCase()) ? '多方' : '空方'}</p>
+                    <p className="whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{turn.summary}</p>
+                  </div>
+                )) : <p className="text-xs text-muted-foreground">本輪原文未保存。</p>}
+              </section>
+            )
+          })}
+          <section className="rounded-md border border-primary/20 bg-primary/5 px-3 py-2">
+            <h4 className="mb-1 text-xs font-semibold text-foreground">最終裁決 · {verdictLabel}</h4>
+            <p className="whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{judge?.summary || '裁決理由原文未保存。'}</p>
+          </section>
+        </>
+      )}
     </div>
   )
 }
 
-function cleanDecisionReason(reason: unknown): string {
-  const text = String(reason ?? '').trim()
-  if (!text) return ''
-  return text
-    .replace(/^[\s\S]*?Judge on fundamental merit\s*\/\s*industry context\.\s*/i, '')
-    .replace(/^Signal Provenance \([^)]*\): [\s\S]*?(?:Judge on business merit and industry context, not raw signal strength\.|Treat as ranking promotion, not a naturally strong BUY\.)\s*/i, '')
-    .trim()
-}
-
 function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
   const [expanded, setExpanded] = useState(false)
-  const reason = cleanDecisionReason(buy.reason)
   const scoreViewModel = buildScoreBreakdownViewModel(buy ?? {})
   return (
     <div className={`border rounded-lg transition-all ${expanded ? 'border-primary/20 bg-card' : 'border-transparent hover:bg-card/50'}`}>
@@ -500,24 +493,11 @@ function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
             <div>停損 <span className="sv-num text-emerald-400">${fmt(buy.ml_stop_loss, 1)}</span></div>
             <div>目標 <span className="sv-num text-red-400">${fmt(buy.ml_target1, 1)}</span></div>
           </div>
-          {reason && <p className="leading-relaxed">{reason}</p>}
-          <div className="grid grid-cols-2 gap-2 rounded-lg border border-border/70 bg-background/45 p-2">
-            <span>debate <b className="sv-num text-foreground">{buy.debate_verdict ?? buy.debate_status ?? '-'}</b></span>
-            <span>execution <b className="sv-num text-foreground">{buy.execution_status ?? 'pending'}</b></span>
-          </div>
-          <DebateTurnsList turns={buy.debate_turns ?? buy.debateTurns ?? []} />
-          {Array.isArray(buy.watch_points) && buy.watch_points.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {buy.watch_points.slice(0, 5).map((point: string) => (
-                <Badge key={point} variant="outline" className="text-[10px]">{point}</Badge>
-              ))}
-            </div>
-          )}
-          <div className="flex gap-3">
-            {buy.chip_score != null && <span>籌碼 <span className="sv-num">{buy.chip_score}/40</span></span>}
-            {buy.tech_score != null && <span>技術 <span className="sv-num">{buy.tech_score}/30</span></span>}
-            {buy.ml_score != null && <span>ML <span className="sv-num">{buy.ml_score}/30</span></span>}
-          </div>
+          <DebateTurnsList
+            turns={buy.debate_turns ?? buy.debateTurns ?? []}
+            verdict={String(buy.debate_verdict ?? 'PENDING').toUpperCase()}
+            status={String(buy.debate_status ?? 'pending').toLowerCase()}
+          />
         </div>
       )}
     </div>

@@ -679,9 +679,6 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       })
       : Promise.resolve()
   }))
-  const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, pendingSymbols)
-  const finLabL5MarketDataMap = finLabL5MarketDataSnapshot.quotes
-
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
     const errMsg = `Shioaji quote anomaly: ${zeroPriceSymbols.join(',')}`
@@ -1635,7 +1632,25 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     let currentOhlc = ohlcMap.get(pending.symbol)
     const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
-    let finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
+    const s12Assessment: S12IntradayAssessment | null = s12Sidecar?.assessment ?? null
+    const s12PrimaryOwnerEnabled =
+      s12Enabled &&
+      s12Mode === 'assist_entry' &&
+      enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+    const s12UnifiedDecision = resolveS12UnifiedDecision(s12Assessment)
+    if (s12PrimaryOwnerEnabled && s12UnifiedDecision.action !== 'READY') {
+      const reason = `s12_unified_${s12UnifiedDecision.action.toLowerCase()}`
+      if (['NO_BUY', 'INVALIDATED'].includes(s12UnifiedDecision.action)) {
+        recordExecutionEvent(pending.symbol, 'skipped', reason, s12UnifiedDecision.detail)
+        stateChanged = true
+      } else {
+        recordActiveExecutionStatus(pending.symbol, 'checked_waiting', reason, s12UnifiedDecision.detail)
+      }
+      continue
+    }
+    // S12 is the slow structure gate; fetch executable depth only after it is ready.
+    const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, [pending.symbol])
+    let finLabL5Quote = finLabL5MarketDataSnapshot.quotes.get(pending.symbol) ?? null
     const l5Thresholds={
         maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
         maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
@@ -1920,14 +1935,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         intradayTechnicalDecision.detail,
       )
     }
-    const s12Assessment: S12IntradayAssessment | null = s12Sidecar?.assessment ?? null
     const s12TechnicalDecision = s12Sidecar?.technicalDecision ?? null
     const s12AssistEntryOverlay = s12Sidecar?.assistEntryOverlay ?? null
-    const s12PrimaryOwnerEnabled =
-      s12Enabled &&
-      s12Mode === 'assist_entry' &&
-      enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
-    const s12UnifiedDecision = resolveS12UnifiedDecision(s12Assessment)
     const s12UnifiedTechnicalDecision = s12PrimaryOwnerEnabled
       ? s12UnifiedDecision.action === 'READY'
         ? (s12TechnicalDecision ?? {
@@ -2118,6 +2127,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const rawLimitPrice = preTrade.limitPrice ?? executionEntryPrice
     const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
+    const executionBook = (await batchGetExecutionOrderbooks([pending.symbol], {
+      SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL,
+      PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
+      marketDataLotType: currentOhlc.lotType ?? 'board_lot',
+    })).get(pending.symbol)
+    if (!executionBook || executionBook.source !== 'shioaji') {
+      recordActiveExecutionStatus(pending.symbol, 'quote_unavailable', 'execution_book_unavailable')
+      continue
+    }
+    currentOhlc = { ...currentOhlc, ...executionBook }
     const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({
       limitPrice,
       lotType: currentOhlc.lotType ?? 'board_lot',

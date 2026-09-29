@@ -233,8 +233,8 @@ function parseJsonArray(raw: string | null | undefined, maxItems = 3): string {
   }
 }
 
-function compactTurnText(text: string, max = 360): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, max)
+function compactTurnText(text: string, max = 4000): string {
+  return text.trim().slice(0, max)
 }
 
 function buildAgentTurns(

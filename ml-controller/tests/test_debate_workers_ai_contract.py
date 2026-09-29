@@ -116,6 +116,15 @@ def test_full_debate_required_turns_and_accurate_model_sources(failure_index):
             assert turn['source'] == 'cloudflare_workers_ai:' + llm.model_for_role(role, symbol='2330', session_date='2026-09-22', round_no=turn['round'])
 
 
+
+def test_agent_turns_preserve_full_round_text_and_line_breaks():
+    long_case = "多方證據一。\n" + "後續證據。" * 80
+    turns = debate._build_agent_turns("背景", [long_case, "第二輪多方"], ["第一輪空方", "第二輪空方"], "VERDICT: DOWNGRADE\n風險裁決。", "fixture")
+    assert [turn["summary"] for turn in turns if turn["agent"] == "bull"][0] == long_case
+    assert [turn["round"] for turn in turns if turn["agent"] == "bear"] == [1, 2]
+    assert next(turn["summary"] for turn in turns if turn["agent"] == "judge") == "風險裁決。"
+
+
 def test_cache_changes_with_policy_context_and_freezes_round_setting(monkeypatch):
     keys, rounds, executions = [], [], []
     async def config(client):

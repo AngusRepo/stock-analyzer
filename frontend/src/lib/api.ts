@@ -2043,7 +2043,7 @@ export const costsApi = {
 export const paperApi = {
   account:         () => get<any>('/paper/account'),
   positions:       () => get<any>('/paper/positions'),
-  orders:          (limit = 50) => get<any>(`/paper/orders?limit=${limit}`),
+  orders:          (limit = 50, page = 1) => get<any>(`/paper/orders?limit=${limit}&page=${page}`),
   pnl:             () => get<any>('/paper/pnl'),
   realized:        () => get<any>('/paper/realized'),
   journal:         () => get<any>('/paper/journal'),

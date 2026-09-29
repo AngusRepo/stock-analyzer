@@ -1024,14 +1024,20 @@ function PositionsTable() {
 // ─── Trade History ──────────────────────────────────────────────────────────
 
 function TradeHistory() {
-  const { data, isLoading } = useQuery({
-    queryKey: ['paper', 'orders'],
-    queryFn: () => paperApi.orders(30),
+  const [page, setPage] = useState(1)
+  const pageSize = 20
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['paper', 'orders', 'history', page],
+    queryFn: () => paperApi.orders(pageSize, page),
     staleTime: 60_000,
   })
 
   const orders = paperOrdersFromPayload(data)
+  const total = Number(data?.total ?? orders.length)
+  const totalPages = Math.max(1, Number(data?.totalPages ?? Math.ceil(total / pageSize)))
+  const currentPage = Number(data?.page ?? page)
   if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
+  if (isError) return <div className="text-muted-foreground text-sm p-4">成交歷史暫時無法載入</div>
   if (!orders.length) {
     return (
       <div className="text-center py-12 text-muted-foreground">
@@ -1042,7 +1048,8 @@ function TradeHistory() {
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div className="space-y-3">
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-muted-foreground text-xs normal-case border-b border-border">
@@ -1112,6 +1119,14 @@ function TradeHistory() {
           })}
         </tbody>
       </table>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>第 {currentPage} / {totalPages} 頁 · 共 {total} 筆，每頁 {pageSize} 筆</span>
+        <div className="flex items-center gap-2">
+          <button type="button" className="rounded border border-border px-3 py-1.5 disabled:opacity-40" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>上一頁</button>
+          <button type="button" className="rounded border border-border px-3 py-1.5 disabled:opacity-40" disabled={currentPage >= totalPages} onClick={() => setPage(currentPage + 1)}>下一頁</button>
+        </div>
+      </div>
     </div>
   )
 }

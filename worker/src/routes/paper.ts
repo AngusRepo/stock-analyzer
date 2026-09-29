@@ -1036,13 +1036,22 @@ paper.get('/pnl', async (c) => {
   })
 })
 
-// GET /api/paper/orders — recent order history, default limit 50.
-
+// GET /api/paper/orders — paginated order history, default 50 per page.
 paper.get('/orders', async (c) => {
-  const limit = Math.min(parseInt(c.req.query('limit') ?? '50'), 200)
-  const { results } = await paperDomainDatabase(c.env).prepare(
-    'SELECT * FROM paper_orders WHERE account_id=? ORDER BY created_at DESC LIMIT ?'
-  ).bind(ACCOUNT_ID, limit).all<any>()
+  const requestedLimit = Number(c.req.query('limit') ?? 50)
+  const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50
+  const requestedPage = Number(c.req.query('page') ?? 1)
+  const pageNumber = Number.isSafeInteger(requestedPage) ? Math.max(requestedPage, 1) : 1
+  const db = paperDomainDatabase(c.env)
+  const count = await db.prepare(
+    'SELECT COUNT(*) AS total FROM paper_orders WHERE account_id=?'
+  ).bind(ACCOUNT_ID).first<{ total: number }>()
+  const total = Number(count?.total ?? 0)
+  const totalPages = Math.ceil(total / limit)
+  const page = Math.min(pageNumber, Math.max(totalPages, 1))
+  const { results } = await db.prepare(
+    'SELECT * FROM paper_orders WHERE account_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+  ).bind(ACCOUNT_ID, limit, (page - 1) * limit).all<any>()
 
   const orders = (results ?? []).map((order: any) => {
     if (String(order.side ?? '').toLowerCase() !== 'sell') return order
@@ -1063,7 +1072,7 @@ paper.get('/orders', async (c) => {
     }
   })
 
-  return c.json({ status: 'success', orders })
+  return c.json({ status: 'success', orders, page, pageSize: limit, total, totalPages })
 })
 
 // GET /api/paper/realized — server-side realized PnL summary.

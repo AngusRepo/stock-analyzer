@@ -1,5 +1,5 @@
 -- One small row per account/UTC day; no Learning payload growth.
--- Failed/ambiguous attempts keep their reservation; never refund speculatively.
+-- Failed/ambiguous attempts keep their reservation; valid completed usage settles to measured neurons plus margin.
 CREATE TABLE IF NOT EXISTS workers_ai_debate_budget_v1 (
   account_id TEXT NOT NULL,
   utc_day TEXT NOT NULL,

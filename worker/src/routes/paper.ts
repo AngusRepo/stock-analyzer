@@ -30,6 +30,7 @@ import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } 
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
 import { loadPendingBuyRunHistory, loadPendingBuySnapshot } from '../lib/pendingBuyStore'
+import { loadPendingBuyExecutionPreviews } from '../lib/pendingBuyExecutionPreview'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from '../lib/paperAccountValue'
 import { corporateAccountRiskBounds } from '../lib/paperCorporateActions'
@@ -1211,7 +1212,16 @@ paper.get('/pending-buys', async (c) => {
     sourceRecoDate,
   )
   const runHistory = await loadPendingBuyRunHistory(c.env, twToday, { limit: 5 })
-  const pendingBuysForResponse = pendingBuys.map((item) => removeLegacyPendingBuyScoreFields(item))
+  const executionPreviews = await loadPendingBuyExecutionPreviews(
+    c.env, snapshot.date, snapshot.pendingBuys.map((item) => item.symbol),
+  ).catch((error) => {
+    console.warn('[paper/pending-buys] execution preview unavailable:', error)
+    return new Map()
+  })
+  const pendingBuysForResponse = pendingBuys.map((item) => ({
+    ...removeLegacyPendingBuyScoreFields(item),
+    execution_preview: executionPreviews.get(item.symbol) ?? null,
+  }))
   return c.json({
     requested_date: snapshot.requested_date,
     date: snapshot.date,

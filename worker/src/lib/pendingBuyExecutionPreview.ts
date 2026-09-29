@@ -1,0 +1,119 @@
+import type { Bindings } from '../types'
+import { paperDomainDatabase } from './paperDomainDatabase'
+
+interface ExecutionPreviewRow {
+  symbol: string
+  kind: 's12' | 'allocator'
+  status: string
+  reason: string | null
+  detail_json: string | null
+  created_at: string
+}
+
+export interface PendingBuyExecutionPreview {
+  s12: {
+    state: string
+    reason: string
+    ready: boolean
+    entry_price: number | null
+    chase_ceiling: number | null
+    checked_at: string
+  } | null
+  allocator: {
+    action: string
+    reason: string
+    budget_cap: number | null
+    target_value: number | null
+    available_cash: number | null
+    l5_status: string | null
+    l5_reasons: string[]
+    s12_hard_veto: boolean
+    checked_at: string
+  } | null
+}
+
+function finitePositive(value: unknown): number | null {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? number : null
+}
+
+function finiteNonnegative(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+function detailField(detail: string, key: string): string | null {
+  const match = detail.match(new RegExp('(?:^|[;:])' + key + '=([^;]*)'))
+  return match?.[1] ?? null
+}
+
+export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[]): Map<string, PendingBuyExecutionPreview> {
+  const previews = new Map<string, PendingBuyExecutionPreview>()
+  for (const row of rows) {
+    const preview = previews.get(row.symbol) ?? { s12: null, allocator: null }
+    try {
+      const payload = JSON.parse(row.detail_json ?? '{}') as Record<string, any>
+      if (row.kind === 's12') {
+        const overlay = payload.assist_entry_overlay
+        preview.s12 = {
+          state: String(payload.state ?? row.status),
+          reason: String(payload.reason ?? row.reason ?? ''),
+          ready: payload.ready === true,
+          entry_price: payload.ready === true ? finitePositive(overlay?.entryPrice) : null,
+          chase_ceiling: payload.ready === true ? finitePositive(overlay?.chaseCeiling) : null,
+          checked_at: row.created_at,
+        }
+      } else {
+        const detail = typeof payload.detail === 'string' ? payload.detail : ''
+        preview.allocator = {
+          action: row.status.replace(/^allocator_/, ''),
+          reason: String(row.reason ?? ''),
+          budget_cap: finiteNonnegative(detailField(detail, 'budget')),
+          target_value: finiteNonnegative(detailField(detail, 'target')),
+          available_cash: finiteNonnegative(detailField(detail, 'available_cash')),
+          l5_status: detailField(detail, 'l5_status'),
+          l5_reasons: (detailField(detail, 'l5_reasons') ?? '').split('|').filter(Boolean),
+          s12_hard_veto: detailField(detail, 's12_hard_veto') === 'true',
+          checked_at: row.created_at,
+        }
+      }
+      previews.set(row.symbol, preview)
+    } catch {
+      // A malformed audit event must not invent an execution price or budget.
+    }
+  }
+  return previews
+}
+
+export async function loadPendingBuyExecutionPreviews(
+  env: Bindings,
+  tradeDate: string,
+  symbols: string[],
+): Promise<Map<string, PendingBuyExecutionPreview>> {
+  if (symbols.length === 0) return new Map()
+  const placeholders = symbols.map(() => '?').join(',')
+  const { results } = await paperDomainDatabase(env).prepare(`
+    WITH candidate_events AS (
+      SELECT symbol, status, reason, detail_json, created_at, id,
+             CASE
+               WHEN event_type = 's12_intraday_structure' AND source = 's12_intraday_structure' THEN 's12'
+               ELSE 'allocator'
+             END AS kind
+        FROM paper_execution_events
+       WHERE account_id = ? AND trade_date = ?
+         AND created_at >= datetime('now', '-5 minutes')
+         AND symbol IN (${placeholders})
+         AND (
+           (event_type = 's12_intraday_structure' AND source = 's12_intraday_structure')
+           OR (event_type = 'pending_buy' AND source = 'intraday_check' AND status LIKE 'allocator_%')
+         )
+    ), ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol, kind ORDER BY id DESC) AS rn
+        FROM candidate_events
+    )
+    SELECT symbol, kind, status, reason, detail_json, created_at
+      FROM ranked WHERE rn = 1
+  `).bind(1, tradeDate, ...symbols).all<ExecutionPreviewRow>()
+  return buildPendingBuyExecutionPreviews(results ?? [])
+}

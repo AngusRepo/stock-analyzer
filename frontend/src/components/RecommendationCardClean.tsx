@@ -3150,6 +3150,9 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
+  const mlEdgePolicy = parseObject(scoreV2PayloadFromRec(rec)?.mlEdgePolicy)
+  const mlProbabilityDiagnosticOnly = mlEdgePolicy?.signal_status === 'policy_blocked'
+    || parseObject(mlEdgePolicy?.qualifications)?.calibration?.probability_status === 'diagnostic_only'
   const institutionalRaw = institutionalRawFromRec(rec)
   const brokerTopFlows = brokerTopFlowsFromRec(rec)
   const chipDisplaySummary = chipDisplaySummaryFromRec(rec)
@@ -3344,7 +3347,9 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
 
           {showFullDecisionDetail && rec.confidence != null && (
             <p className="text-[11px] text-slate-400">
-              ML 信心度 {(Number(rec.confidence) * 100).toFixed(0)}%
+              {mlProbabilityDiagnosticOnly
+                ? 'ML 方向信心未核准；校準機率僅供診斷，非個股買進信心'
+                : `ML 方向信心度 ${(Number(rec.confidence) * 100).toFixed(0)}%`}
               {rec.current_price != null && (
                 <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
               )}

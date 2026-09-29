@@ -208,6 +208,7 @@ const S12_STATE_LABELS: Record<string, string> = {
   waiting_bos: '等待 BOS',
   waiting_retest: '等待回測反應',
   reaction_ready: '多方反應結構成立',
+  limited_takeover_ready: '有限接手條件成立',
   bearish_defense_ready: '空方防守結構成立',
   invalidated: '結構失效',
 }
@@ -463,6 +464,10 @@ export function formatPendingBuyExecutionBadge(item: PendingBuyExecutionContext)
     }
   }
   return base
+}
+
+export function formatS12IntradayStructureState(state: string, reason: string): string {
+  return S12_STATE_LABELS[state] ?? humanizeExecutionReason(reason)
 }
 
 export function formatS12IntradayStructureBadge(watchPoints: unknown): PendingBuyExecutionBadge | null {

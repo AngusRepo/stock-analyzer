@@ -8,7 +8,7 @@ import StrategyAbRecommendations from '@/components/StrategyAbRecommendations'
 import { Fragment, lazy, Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useLocation, useSearch } from 'wouter'
-import { paperApi, marketApi, recommendationsApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
+import { paperApi, marketApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -23,8 +23,7 @@ import AppShell from '@/components/AppShell'
 import { DeferredRender } from '@/components/DeferredRender'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
-import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge } from '@/lib/pendingBuyExecutionUi'
-import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
+import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge, formatS12IntradayStructureState } from '@/lib/pendingBuyExecutionUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
 import {
@@ -33,7 +32,7 @@ import {
   WorkstationPanel,
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
-import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
+import { buildPendingBuyTradeView } from '@/lib/pendingBuyTradePreview'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
 const RecommendationCard = lazy(() => import('@/components/RecommendationCardClean').then((module) => ({
@@ -96,30 +95,6 @@ function isL4ExecutableRecommendation(rec: any): boolean {
   const engine = String(sparse?.engine ?? allocation?.engine ?? '').trim()
   const hasBuySignal = rec?.has_buy_signal === 1 || rec?.has_buy_signal === true
   return hasBuySignal && selected && engine === 'sparse_tangent_inverse_risk'
-}
-
-function recommendationRowsFromPayload(payload: any): any[] {
-  const explicitAll = Array.isArray(payload?.all_recommendations) ? payload.all_recommendations : []
-  const direct = Array.isArray(payload?.recommendations)
-    ? payload.recommendations
-    : Array.isArray(payload?.data)
-      ? payload.data
-      : []
-  const merged = explicitAll.length
-    ? explicitAll
-    : [
-        ...direct,
-        ...(Array.isArray(payload?.tradable_recommendations) ? payload.tradable_recommendations : []),
-        ...(Array.isArray(payload?.research_only_recommendations) ? payload.research_only_recommendations : []),
-      ]
-
-  const seen = new Set<string>()
-  return merged.filter((row: any, index: number) => {
-    const key = String(row?.stock_id ?? row?.symbol ?? index)
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }
 
 function parseRecommendationRecord(value: unknown): Record<string, any> | null {
@@ -490,14 +465,6 @@ function executionToneClass(tone: string): string {
   return 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
 }
 
-function dominantExecutionTone(...tones: Array<string | null | undefined>): string {
-  if (tones.includes('error')) return 'error'
-  if (tones.includes('warn')) return 'warn'
-  if (tones.includes('info')) return 'info'
-  if (tones.includes('ok')) return 'ok'
-  return 'neutral'
-}
-
 function pendingBuyEmptyMessage(meta?: any): string {
   const counts = meta?.execution_counts ?? {}
   const cancelled = Number(counts.cancelled ?? 0)
@@ -519,7 +486,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const { data: pbData, isLoading } = useQuery({
     queryKey: ['paper', 'pending-buys'],
     queryFn: () => paperApi.pendingBuys(),
-    staleTime: 5 * 60_000,
+    staleTime: isTWMarketOpen() ? 15_000 : 5 * 60_000,
+    refetchInterval: () => isTWMarketOpen() ? 30_000 : 5 * 60_000,
+    refetchOnWindowFocus: true,
   })
   const allPendingBuys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
   const buys = allPendingBuys.filter((item) => {
@@ -537,16 +506,6 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     : typeof pendingMeta?.source_reco_date === 'string'
       ? pendingMeta.source_reco_date
       : undefined
-
-  const { data: recContextData } = useQuery({
-    queryKey: ['recommendations', 'daily', 'pending-buy-context', pendingSourceRecoDate ?? 'latest'],
-    queryFn: () => recommendationsApi.daily(pendingSourceRecoDate),
-    enabled: buys.length > 0,
-    staleTime: 5 * 60_000,
-  })
-  const recContextBySymbol = new Map(
-    recommendationRowsFromPayload(recContextData).map((row: any) => [String(row?.symbol ?? '').trim(), row]),
-  )
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
 
@@ -572,83 +531,74 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
       <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
-      {buys.map((b: any, idx: number) => {
-        const sourceRec = recContextBySymbol.get(String(b.symbol ?? '').trim())
+      <p className="px-1 text-[11px] text-muted-foreground">數量為目前 L4 預算與參考／S12 價估算；實際模擬委託仍須通過即時報價、S12、風控與委託簿。</p>
+      {buys.map((b: any) => {
         const executionBadge = formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
-        const partialRemaining = formatPartialFillRemaining(b.watch_points)
-        const allocatorSummary = describeAllocatorDecision(b.watch_points)
-        const realtimeGateTone = dominantExecutionTone(
-          executionBadge.tone,
-          s12Badge?.tone,
-          allocatorSummary?.tone,
-        )
-        // 2026-04-22 fix: use backend b.reason (LLM 推薦理由) when present,
-        // prefix with price line. Previously price line 100% replaced reason.
-        // Also strip "⚠️ Signal Provenance ..." English debate-only preamble
-        // that shouldn't be shown to end users (it's a hint for debate LLM).
-        const priceLine = `限價 $${b.ml_entry_price} · 停損 $${b.ml_stop_loss} · TP1 $${b.ml_target1}`
-        const stripProvenance = (s: string): string => {
-          // Remove "⚠️ Signal Provenance (...): ... Judge on ... context." paragraph.
-          // Preserves zh-TW LLM reason that follows (separated by blank line or period).
-          return s.replace(/^[\s\S]*?Judge on fundamental merit\s*\/\s*industry context\.\s*/, '').trim()
-        }
-        const cleanReason = b.reason ? stripProvenance(b.reason) : ''
-        const rec = {
-          ...(sourceRec ?? {}),
-          symbol: b.symbol ?? sourceRec?.symbol,
-          name: b.name ?? sourceRec?.name,
-          signal: b.signal ?? sourceRec?.signal,
-          confidence: b.confidence ?? sourceRec?.confidence,
-          current_price: b.ml_entry_price ?? sourceRec?.current_price,
-          score: b.score ?? sourceRec?.score ?? b.score_v2?.finalScore ?? b.score_v2?.total ?? 0,
-          sector: sourceRec?.sector ?? sourceRec?.industry ?? '',
-          reason: cleanReason ? `${priceLine}\n\n${cleanReason}` : priceLine,
-          watch_points: b.watch_points ?? sourceRec?.watch_points ?? null,
-          chip_score: sourceRec?.chip_score ?? b.chip_score ?? null,
-          tech_score: sourceRec?.tech_score ?? b.tech_score ?? null,
-          ml_score: sourceRec?.ml_score ?? b.ml_score ?? null,
-          score_components: sourceRec?.score_components ?? b.score_components ?? b.score_v2 ?? buildScoreV2PayloadFromProjectedScores(sourceRec ?? b),
-          alpha_context: b.alpha_context ?? sourceRec?.alpha_context ?? null,
-          alpha_allocation: b.alpha_allocation ?? sourceRec?.alpha_allocation ?? null,
-          ml_vote_summary: b.ml_vote_summary ?? sourceRec?.ml_vote_summary ?? null,
-          prediction_forecast_data: b.prediction_forecast_data ?? sourceRec?.prediction_forecast_data ?? null,
-          institutional_raw_today: b.institutional_raw_today ?? sourceRec?.institutional_raw_today ?? null,
-          broker_top_flows_today: b.broker_top_flows_today ?? sourceRec?.broker_top_flows_today ?? null,
-        }
+        const trade = buildPendingBuyTradeView(b)
+        const s12Preview = b.execution_preview?.s12
+        const s12Label = s12Preview
+          ? formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)
+          : s12Badge?.label ?? '等待近期盤中結構資料'
+        const allocatorAction = b.execution_preview?.allocator?.action
         return (
-          <div key={b.symbol} className={`relative ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40 rounded-xl' : ''}`}>
-            <RecommendationCard rec={rec} rank={idx + 1} />
-            <div className="mx-2 -mt-2 mb-2 rounded-xl border border-muted/40 bg-background/45 px-4 py-3 text-[12px] leading-relaxed sv-num text-muted-foreground md:text-[13px]">
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                <span>execution: {executionBadge.label}</span>
-                <span>debate: {b.debate_status ?? 'pending'}</span>
-                <span>source: {b.source ?? 'morning_setup'}</span>
-                <span className="break-all">policy: {pendingExecutionPolicy?.execution_pool_policy ?? 'l4_sparse_final_buy_only'}</span>
-                <span>retry: {b.retry_count ?? 0}</span>
-              </div>
-              <div className="mt-2 text-[12px] text-muted-foreground/80 md:text-[13px]">
-                base {b.original_entry ? `$${b.original_entry}` : 'N/A'} {'->'} limit {b.ml_entry_price ? `$${b.ml_entry_price}` : 'N/A'} | risk {(Number(b.risk_pct ?? 0) * 100).toFixed(1)}%
-              </div>
-              <div className={[
-                'mt-2 rounded-lg border px-3 py-2',
-                executionToneClass(realtimeGateTone),
-              ].join(' ')}>
-                <div className="text-[13px] font-semibold md:text-sm">盤中 Real-time 檢查：{executionBadge.label}</div>
-                <div className="mt-1 space-y-1 text-[12px] leading-5 text-muted-foreground/90 md:text-[13px]">
-                  <div>交易門檻：{executionBadge.description}{partialRemaining ? ` | ${partialRemaining}` : ''}</div>
-                  {s12Badge && <div>S12 結構：{s12Badge.label}。{s12Badge.description}</div>}
-                  {allocatorSummary && <div>資金配置：{allocatorSummary.title}。{allocatorSummary.detail}</div>}
-                </div>
-              </div>
+          <div
+            key={b.symbol}
+            className={`relative rounded-xl border border-emerald-400/20 bg-background/55 p-4 sv-num ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40' : ''}`}
+          >
+            <div className="flex flex-wrap items-center gap-2 pr-8">
+              <span className="text-base font-bold text-foreground">{b.symbol}</span>
+              <span className="text-sm text-muted-foreground">{b.name}</span>
+              <span className="rounded-md border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-200">
+                {b.debate_verdict === 'DOWNGRADE' ? '辯論降級通過' : '辯論通過'}
+              </span>
+              <span className={`rounded-md border px-2 py-0.5 text-[11px] ${executionToneClass(executionBadge.tone)}`}>
+                {executionBadge.label}
+              </span>
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
-              className="absolute top-3 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+              className="absolute right-3 top-3 rounded p-1 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
               title="查看 K 線"
             >
               <Activity className="h-4 w-4" />
             </button>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
+                <div className="text-[11px] text-muted-foreground">預計買入價</div>
+                <div className="mt-1 text-base font-semibold text-foreground">
+                  {trade.entryPrice != null ? `$${fmt(trade.entryPrice, 2)}` : '待 S12 定價'}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {trade.entryPrice != null ? `S12 結構價${trade.chaseCeiling != null ? ` · 追價上限 $${fmt(trade.chaseCeiling, 2)}` : ''}` : trade.referencePrice != null ? `基準價 $${fmt(trade.referencePrice, 2)}` : '尚無基準價'}
+                </div>
+              </div>
+              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
+                <div className="text-[11px] text-muted-foreground">預估買入數量</div>
+                <div className="mt-1 text-base font-semibold text-foreground">
+                  {trade.estimatedShares != null ? formatTaiwanShareLots(trade.estimatedShares) : '待門檻通過'}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {trade.quantityBasis === 's12' ? '按 S12 價與 L4 上限估算' : trade.quantityBasis === 'reference' ? '按基準價與 L4 上限估算' : '尚無可執行配置'}
+                </div>
+              </div>
+              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
+                <div className="text-[11px] text-muted-foreground">本次配置上限</div>
+                <div className="mt-1 text-base font-semibold text-foreground">
+                  {trade.budgetCap != null ? `$${fmt(trade.budgetCap)}` : '待評估'}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {trade.availableCash != null ? `可用資金 $${fmt(trade.availableCash)}` : '資金快照待更新'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-1.5 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
+              <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
+              <div><span className="text-foreground">S12 結構：</span>{s12Label}</div>
+            </div>
+            {trade.checkedAt && (
+              <div className="mt-2 text-[11px] text-muted-foreground/70">最近檢查 {formatTwDateTimeShort(trade.checkedAt)}</div>
+            )}
           </div>
         )
       })}

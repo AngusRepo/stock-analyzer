@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { buildPendingBuyExecutionPreviews } from './pendingBuyExecutionPreview'
+
+test('latest S12 and allocator audits form one trading preview', () => {
+  const preview = buildPendingBuyExecutionPreviews([
+    {
+      symbol: '7792', kind: 's12', status: 'waiting_15m_completed_bars',
+      reason: 's12_waiting_15m_completed_bars', created_at: '2026-09-29 01:52:26',
+      detail_json: JSON.stringify({ state: 'waiting_15m_completed_bars', ready: false, reason: 's12_waiting_15m_completed_bars' }),
+    },
+    {
+      symbol: '7792', kind: 'allocator', status: 'allocator_buy',
+      reason: 'l4_target_reconciliation', created_at: '2026-09-29 01:52:26',
+      detail_json: JSON.stringify({ detail: 'allocator:buy:l4_target_reconciliation;target=60437;current=0;budget=60437;available_cash=966998;s12_hard_veto=false;l5_status=pass;l5_reasons=' }),
+    },
+  ]).get('7792')
+
+  assert.equal(preview?.s12?.ready, false)
+  assert.equal(preview?.s12?.entry_price, null)
+  assert.equal(preview?.allocator?.budget_cap, 60437)
+  assert.equal(preview?.allocator?.available_cash, 966998)
+  assert.equal(preview?.allocator?.l5_status, 'pass')
+  assert.deepEqual(preview?.allocator?.l5_reasons, [])
+})
+
+test('S12 entry overlay supplies a dynamic price and chase ceiling', () => {
+  const preview = buildPendingBuyExecutionPreviews([{
+    symbol: '7822', kind: 's12', status: 'reaction_ready', reason: 's12_reaction_ready',
+    created_at: '2026-09-29 02:10:00',
+    detail_json: JSON.stringify({ state: 'reaction_ready', ready: true, assist_entry_overlay: { entryPrice: 410, chaseCeiling: 414.5 } }),
+  }]).get('7822')
+
+  assert.equal(preview?.s12?.entry_price, 410)
+  assert.equal(preview?.s12?.chase_ceiling, 414.5)
+})
+
+test('a hard veto preserves zero budget and nonzero available cash', () => {
+  const preview = buildPendingBuyExecutionPreviews([{
+    symbol: '7822', kind: 'allocator', status: 'allocator_skip', reason: 'l4_hard_risk_veto',
+    created_at: '2026-09-29 02:12:25',
+    detail_json: JSON.stringify({ detail: 'allocator:skip:l4_hard_risk_veto:target=36262;budget=0;available_cash=966998;l5_status=blocked;l5_reasons=stale_l5_quote|wide_l5_spread' }),
+  }]).get('7822')
+
+  assert.equal(preview?.allocator?.budget_cap, 0)
+  assert.equal(preview?.allocator?.available_cash, 966998)
+  assert.deepEqual(preview?.allocator?.l5_reasons, ['stale_l5_quote', 'wide_l5_spread'])
+})

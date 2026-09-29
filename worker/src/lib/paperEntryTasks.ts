@@ -1296,6 +1296,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         s12_hard_veto: s12HardVeto,
         s12_vwap_fast_acceptance: s12VwapFast,
         l5_status: l5Quality?.status ?? null,
+        l5_reasons: l5Quality?.reasons.join('|') ?? null,
         nav_slot_floor_ratio: decision?.slotFloorRatio ?? null,
         nav_slot_floor_budget: decision == null ? null : Math.round(decision.slotFloorBudget),
         nav_slot_floor_reasons: decision?.slotFloorReasons.join('|') ?? null,

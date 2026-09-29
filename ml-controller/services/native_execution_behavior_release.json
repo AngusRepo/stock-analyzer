@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:d82a2b99b2ba0c671dca95d113427fb31c1caa04cd5827f360dc462a5b9f016e",
+  "execution_owner_version": "native-paper-v1:841102c50a88140579a2afb9fb86daa143df34d5f126e8f942aa3bbb38752553",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved this exact source-build fingerprint on 2026-09-29 for the session commit/push/deploy, conditional on fresh NAV display receipt validation before Controller traffic cutover. It grants no Paper runtime admission, source equivalence, maturity transfer or prestart replacement authority.",
-  "review": "docs/releases/2026-09-29-debate-budget-followup.md",
+  "authorization": "Wei explicitly approved this exact source-build fingerprint on 2026-09-29 for preserving the production backfill registry repair in the D1 maintenance release, with commit/push under the existing release authorization and complete checks plus CI required before Worker deployment. It grants no Paper runtime admission, source equivalence, maturity transfer or prestart replacement authority.",
+  "review": "docs/releases/2026-09-29-d1-capacity-truth.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

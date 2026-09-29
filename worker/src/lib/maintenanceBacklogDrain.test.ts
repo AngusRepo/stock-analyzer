@@ -237,14 +237,15 @@ void (async () => {
     failedSendValues.get('scheduler:run:audit-json-retention:2026-08-15') ?? '{}',
   ) as { status?: string; summary?: string; error?: string }
   assert.equal(failedSendLog.status, 'error')
-  assert.match(String(failedSendLog.summary), /continuation_send_failed/)
+  assert.match(String(failedSendLog.error), /continuation_send_failed/)
   assert.match(String(failedSendLog.summary), /backlog_remaining=true/)
-  assert.equal(failedSendLog.error, 'queue_unavailable')
+  assert.match(String(failedSendLog.error), /queue_unavailable/)
 
+  let initialActive: string | null = null
   const initialFailureEnv = {
     KV: {
-      get: async () => null,
-      put: async () => {},
+      get: async (key: string) => key.endsWith(':active') ? initialActive : null,
+      put: async (key: string, value: string) => { if (key.endsWith(':active')) initialActive = value },
       delete: async () => { throw new Error('active_release_failed') },
     },
     UPDATE_QUEUE: {
@@ -285,7 +286,7 @@ void (async () => {
   const maintenanceDrain = fs.readFileSync('src/lib/maintenanceBacklogDrain.ts', 'utf8')
   assert.equal(
     (maintenanceDrain.match(/await sendMaintenanceContinuation\(env,/g) ?? []).length,
-    3,
+    6,
   )
   const scheduler = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
   assert.match(scheduler, /legacy-strategy-evidence-migration[^\n]+durable=1/)

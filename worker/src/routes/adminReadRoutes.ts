@@ -343,6 +343,8 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
       growth_observation_count: estimate.observation_count,
       required_growth_observations: estimate.required_observations,
       daily_growth_bytes: estimate.daily_growth_bytes,
+      median_daily_growth_bytes: estimate.median_daily_growth_bytes,
+      net_daily_growth_bytes: estimate.net_daily_growth_bytes,
       projected_days_to_warning_65pct: estimate.projected_days_to_warning_65pct,
       projected_days_to_max: estimate.projected_days_to_max,
     }
@@ -352,7 +354,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
     schema_version: 'storage-capacity-snapshot-v2',
     mode: 'read_only',
     generated_at: new Date().toISOString(),
-    forecast_policy: 'median_daily_growth_after_domain_backfill_with_7_observation_minimum',
+    forecast_policy: 'max_median_and_interval_net_daily_growth_after_domain_backfill_with_7_observation_minimum',
     d1: {
       count: capacities.length,
       expected_count: 8,

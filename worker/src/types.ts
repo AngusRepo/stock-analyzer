@@ -373,6 +373,7 @@ export interface UpdateQueueMsg {
     | 'd1-evidence-scrub'
     | 'audit-json-retention'
   maxAttempts?: number
+  maintenanceFailureAttempt?: number // bounded audit chunk retry; same scheduler/run identity
   maintenanceTargets?: string[]
   maintenanceRetentionDays?: number
   maintenanceLimitPerTable?: number

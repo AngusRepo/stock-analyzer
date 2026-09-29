@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged } from './worker_deploy_preflight.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workerDir = join(root, 'worker')
@@ -48,12 +49,14 @@ if (productionBranch === canonicalProductionBranch) {
   run('git', ['merge-base', '--is-ancestor', canonicalRemoteRef, sourceSha])
 }
 
-const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'worker', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_worker_with_provenance.mjs'], { capture: true })
+const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'worker', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_worker_with_provenance.mjs', 'tools/worker_deploy_preflight.mjs'], { capture: true })
 if (dirty) throw new Error(`Worker deployment inputs are dirty:\n${dirty}`)
 if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${manifestPath}`)
 if (!existsSync(wranglerCli)) throw new Error('locked Worker Wrangler is missing; run npm ci in worker')
 
 const schedulerSha256 = createHash('sha256').update(readFileSync(manifestPath)).digest('hex')
+const guardOptions = { run, sourceSha, canonicalProductionBranch, productionBranch }
+const productionGuard = await captureWorkerDeployGuard(guardOptions)
 
 // Code admission depends on the domain-native ticket authority. Remote D1
 // migrations remain explicit, so deploy must fail closed until Ops 0011 has
@@ -90,6 +93,8 @@ if (!Array.isArray(calibrationState) || calibrationState.length !== 6
   || calibrationState.at(-1)?.results?.[0]?.active !== 0) {
   throw new Error('calibration schema missing or frozen attempt active; finish it before changing source tag')
 }
+// Slow schema gates must not let another session's release be overwritten.
+await assertWorkerDeployGuardUnchanged(productionGuard, guardOptions)
 run(process.execPath, [
   wranglerCli, 'deploy', '--strict',
   '--tag', sourceSha,

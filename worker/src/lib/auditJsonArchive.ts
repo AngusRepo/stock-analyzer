@@ -397,10 +397,17 @@ export function buildAuditJsonCompareAndSwap(
     `json_extract(b.value,'$.original.${column}') IS ${target.table}.${column}`).join(' AND ')
   const assignments = target.blobColumns.map(column =>
     `${column}=(SELECT json_extract(b.value,'$.pointers.${column}') FROM backed_up b WHERE ${keyMatch})`).join(',')
+  // SQLite permits NULL in a non-integer PRIMARY KEY unless NOT NULL is explicit.
+  const includeNullKey = rows.some(row => row[target.keyColumn] == null)
+  // Probe only backed-up primary keys before the complete original-value CAS.
+  // A correlated EXISTS alone scans every old row once per scrub statement.
   return {
     sql: `WITH backed_up AS MATERIALIZED (SELECT value FROM json_each(?))
       UPDATE ${target.table} SET ${assignments}
-      WHERE ${target.dateColumn}<? AND (${retentionEligibilityWhere(target)})
+      WHERE (${target.keyColumn} IN (
+          SELECT json_extract(value,'$.original.${target.keyColumn}') FROM backed_up
+        )${includeNullKey ? ` OR ${target.keyColumn} IS NULL` : ''})
+        AND ${target.dateColumn}<? AND (${retentionEligibilityWhere(target)})
         AND EXISTS (SELECT 1 FROM backed_up b WHERE ${keyMatch} AND ${same})`,
     rowsJson: JSON.stringify(rows.map(row => ({
       original: Object.fromEntries(target.selectedColumns.map(column => [column, row[column] ?? null])),
@@ -607,6 +614,7 @@ export async function runAuditJsonArchiveRetention(
       continue
     }
 
+    let phase = 'archive_prepare'
     try {
       const chunkId = cleanRunPart(`${rows[0]?.[target.keyColumn] ?? 'start'}-${rows[rows.length - 1]?.[target.keyColumn] ?? 'end'}`)
       const r2KeyPrefix = [
@@ -643,8 +651,10 @@ export async function runAuditJsonArchiveRetention(
       const r2Key = r2KeyPrefix.replace(/\.json$/, `-${checksum}.json`)
       const snapshotId = `${AUDIT_JSON_ARCHIVE_KIND}:${target.id}:${businessDate}:${runId}:${chunkId}:${checksum}`
 
+      phase = 'archive_readback'
       let readback = await env.ARTIFACTS!.get(r2Key)
       if (!readback) {
+        phase = 'archive_put'
         try {
           await env.ARTIFACTS!.put(r2Key, body, {
             httpMetadata: { contentType: 'application/json; charset=utf-8' },
@@ -652,15 +662,21 @@ export async function runAuditJsonArchiveRetention(
             onlyIf: { etagDoesNotMatch: '*' },
           })
         } catch (error) {
+          phase = 'archive_readback'
           readback = await env.ARTIFACTS!.get(r2Key)
-          if (!readback) throw error
+          if (!readback) {
+            phase = 'archive_put'
+            throw error
+          }
         }
+        phase = 'archive_readback'
         readback ??= await env.ARTIFACTS!.get(r2Key)
       }
       if (!readback) throw new Error('audit_json_archive_readback_missing')
       if (await sha256Text(await readback.text()) !== checksum)
         throw new Error('audit_json_archive_checksum_mismatch')
 
+      phase = 'manifest'
       const manifest: DatasetSnapshotManifest = {
         snapshot_id: snapshotId,
         kind: AUDIT_JSON_ARCHIVE_KIND,
@@ -695,6 +711,7 @@ export async function runAuditJsonArchiveRetention(
       }
       await upsertDatasetSnapshotManifest(env, manifest)
 
+      phase = 'scrub'
       const scrubbed = await scrubArchivedRows(targetDb, target, rows, cutoffDate, (row, blobColumn) => buildPointer({
         table: target.table,
         keyColumn: target.keyColumn,
@@ -727,6 +744,7 @@ export async function runAuditJsonArchiveRetention(
       result.total_archived_rows += rows.length
       result.total_scrubbed_rows += scrubbed
       result.total_archived_blob_bytes += archivedBlobBytes
+      phase = 'checkpoint'
       await checkpointRetentionItem(opsDb, {
         runId,
         policyId: AUDIT_JSON_RETENTION_POLICY_ID,
@@ -743,6 +761,7 @@ export async function runAuditJsonArchiveRetention(
         evidence: { snapshot_id: snapshotId, r2_key: r2Key, checksum, cutoff_date: cutoffDate },
       })
     } catch (error) {
+      const message = `audit_json_phase=${phase} ${error instanceof Error ? error.message : String(error)}`
       result.tables.push({
         target: target.id,
         table: target.table,
@@ -757,7 +776,7 @@ export async function runAuditJsonArchiveRetention(
         cursor_date: cursor?.cursor_date ?? null,
         cursor_key: cursor?.cursor_key ?? null,
         backlog_remaining: true,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       })
       if (!dryRun) {
         await checkpointRetentionItem(opsDb, {
@@ -768,7 +787,7 @@ export async function runAuditJsonArchiveRetention(
           cursorDate: cursor?.cursor_date ?? null,
           cursorKey: cursor?.cursor_key ?? null,
           backlogRemaining: true,
-          error: error instanceof Error ? error.message : String(error),
+          error: message,
         })
       }
     }

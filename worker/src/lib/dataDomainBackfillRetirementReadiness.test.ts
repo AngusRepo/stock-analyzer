@@ -111,17 +111,39 @@ for (const blocker of [
   'historical_full_table_parity_not_exact',
 ]) assert(incompleteEvidence.blockers.includes(blocker), `missing blocker ${blocker}`)
 
-const postCutoverLearningTables = [
-  'state_space_v2_runs',
-  'state_space_v2_observations',
-  'state_space_v2_evaluations',
-  'pit_factor_shadow_daily_v1',
-  'expected_return_candidate_forward_evaluations',
-  'expected_return_candidate_preoutcome_evaluations',
-]
-const learningBackfillTables = tablesForDataDomainShadowBackfill('learning')
-for (const table of postCutoverLearningTables) {
-  assert(!learningBackfillTables.includes(table), `${table} must not require a legacy backfill cursor`)
+const retirementNativeTables = {
+  learning: [
+    'state_space_v2_runs',
+    'state_space_v2_observations',
+    'state_space_v2_evaluations',
+    'pit_factor_shadow_daily_v1',
+    'expected_return_candidate_forward_evaluations',
+    'expected_return_candidate_preoutcome_evaluations',
+    'strategy_evidence_gap_dispositions_v1',
+  ],
+  paper: [
+    'l4_policy_account_rewards_v1',
+    'l4_portfolio_head_v1',
+    'l4_portfolio_plans_v1',
+    'l4_replan_outbox_v1',
+    'l4_replan_requests_v1',
+    'paper_corporate_entitlements_v1',
+    'paper_corporate_sessions_v1',
+  ],
+  research: [
+    'research_trial_observations_v1',
+    'research_trial_runs_v1',
+    'research_trial_sources_v1',
+  ],
+} as const
+for (const [domain, tables] of Object.entries(retirementNativeTables) as Array<[
+  keyof typeof retirementNativeTables,
+  readonly string[],
+]>) {
+  const backfillTables = tablesForDataDomainShadowBackfill(domain)
+  for (const table of tables) {
+    assert(!backfillTables.includes(table), `${domain}.${table} must not require legacy backfill evidence`)
+  }
 }
 assert(
   !tablesForDataDomainShadowBackfill('ops').includes('pit_residual_funnel_enrichment_runs_v1'),

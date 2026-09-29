@@ -168,6 +168,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const schedulerTicketId = ticketAdmission.ticket.ticket_id
     schedulerContext.schedulerTicketId = schedulerTicketId
     schedulerContext.schedulerRunId = executionRunId
+    if (task === 'audit-json-retention') schedulerContext.businessDate = ticketAdmission.ticket.business_date
     const updateTicket = (
       status: SchedulerExecutionTicketStatus,
       authority: SchedulerExecutionTicketAuthority,
@@ -433,15 +434,19 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           const result = await fn()
           const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
           const status = classifySchedulerSummary(summary)
-          await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-          await logSchedulerResult(c.env.KV, task, {
+          // Maintenance's queue owns its ticket from admission through terminal receipt.
+          const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
+          if (!maintenanceOwned) {
+            await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
+          }
+          if (!maintenanceOwned) await logSchedulerResult(c.env.KV, task, {
             status,
             summary,
             duration_ms: Date.now() - t0,
             run_id: runId,
             run_date: requestedRunDate,
           })
-          await putRunLog(c.env.KV, task, runId, {
+          if (!maintenanceOwned) await putRunLog(c.env.KV, task, runId, {
             status,
             summary,
             duration_ms: Date.now() - t0,
@@ -488,8 +493,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
       const status = classifySchedulerSummary(summary)
-      await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-      await logSchedulerResult(c.env.KV, task, {
+      const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
+      if (!maintenanceOwned) await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
+      if (!maintenanceOwned) await logSchedulerResult(c.env.KV, task, {
         status,
         summary,
         duration_ms: Date.now() - t0,
@@ -498,13 +504,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         strict: task === 'data-domain-shadow-backfill-next',
       })
       return c.json({
-        success: true,
-        message: `${task} 執行成功`,
+        success: task === 'audit-json-retention' ? status !== 'error' : true,
+        message: maintenanceOwned ? `${task} queued; completion pending` : task === 'audit-json-retention' ? `${task} status=${status}` : `${task} 執行成功`,
         triggered_at: new Date().toISOString(),
         result,
         run_id: syncRunId,
         ticket_id: schedulerTicketId,
-      })
+      }, maintenanceOwned ? 202 : 200)
     } catch (e: any) {
       await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
       await logSchedulerResult(

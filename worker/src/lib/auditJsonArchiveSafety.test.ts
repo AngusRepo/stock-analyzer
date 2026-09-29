@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { runAuditJsonArchiveRetention, AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE } from './auditJsonArchive'
 
-for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry', 'byte_budget', 'oversize'] as const) {
+for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry', 'byte_budget', 'oversize', 'cpu_scrub'] as const) {
   test(`audit JSON ${mode}: verify immutable copy and compare original before scrub`, async () => {
     const db = new DatabaseSync(':memory:')
     db.exec(`CREATE TABLE paper_execution_events(id INTEGER PRIMARY KEY, account_id INTEGER,
@@ -14,6 +14,8 @@ for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry
     if (mode === 'byte_budget') db.prepare("INSERT INTO paper_execution_events(id,trade_date,detail_json) VALUES(2,'2020-01-02',?)").run(original)
     let transportedBytes = 0
     let manifestWrites = 0
+    const checkpointErrors: unknown[] = []
+    const cpuError = 'D1_ERROR: D1 DB exceeded its CPU time limit and was reset.'
     const adapter = { prepare(sql: string) {
       let params: any[] = []
       return {
@@ -24,6 +26,10 @@ for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry
         async run() { if (sql.includes('INTO dataset_snapshots')) manifestWrites++; return { meta: { changes: 1 } } },
       }
     }, async batch(statements: any[]) {
+      for (const statement of statements) {
+        if (statement.sql.includes('INSERT INTO data_retention_run_items')) checkpointErrors.push(statement.params.at(-1))
+        if (mode === 'cpu_scrub' && statement.sql.includes('WITH backed_up')) throw new Error(cpuError)
+      }
       return statements.map(s => s.sql.includes('WITH backed_up')
         ? { meta: { changes: Number(db.prepare(s.sql).run(...s.params).changes) } }
         : { meta: { changes: 1 } })
@@ -55,6 +61,12 @@ for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry
       }
       const result = await run()
       assert(transportedBytes < 1100000)
+      if (mode === 'cpu_scrub') {
+        assert.equal(result.tables[0].error, `audit_json_phase=scrub ${cpuError}`)
+        assert.ok(checkpointErrors.includes(result.tables[0].error))
+        assert.equal(manifestWrites, 1)
+        assert.equal(objects.size, 1)
+      }
       if (mode === 'byte_budget') {
         assert.equal(result.total_scrubbed_rows, 1)
         assert.equal(result.tables[0].backlog_remaining, true)
@@ -69,7 +81,7 @@ for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry
       } else {
         assert.equal(result.tables[0].status, 'failed')
         assert.equal(stored, mode === 'concurrent_change' ? 'newer evidence' : original)
-        if (mode !== 'concurrent_change') assert.equal(manifestWrites, 0)
+        if (mode !== 'concurrent_change' && mode !== 'cpu_scrub') assert.equal(manifestWrites, 0)
       }
     } finally { db.close() }
   })

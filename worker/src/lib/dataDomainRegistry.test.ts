@@ -16,6 +16,7 @@ import {
   MULTI_D1_PROJECTION_CONTRACT_GATES,
   MULTI_D1_PROJECTION_CONTRACT_READY,
   MULTI_D1_ROUTING_CONTRACT_GATES,
+  POST_CUTOVER_NATIVE_TABLES,
   shadowDatabaseForDataDomain,
   MULTI_D1_STRICT_ROUTING_READY,
   resolveDataDomainRoute,
@@ -133,6 +134,26 @@ for (const [table, domain] of [
   assert.equal(tablesForDataDomainShadowBackfill(domain).includes(table), false,
     `${table} must not re-enter the retired legacy shadow-backfill inventory`)
 }
+
+for (const [domain, tables] of Object.entries(POST_CUTOVER_NATIVE_TABLES) as Array<[
+  Parameters<typeof tablesForDataDomainShadowBackfill>[0],
+  ReadonlySet<string>,
+]>) {
+  for (const table of tables) {
+    assert.equal(tableOwnershipMetadata(table)?.route_ready, true,
+      `${domain}.${table} must remain routed to its active domain owner`)
+    assert.equal(tableOwnershipMetadata(table)?.shadow_ready, false,
+      `${domain}.${table} is post-cutover native and must never require legacy backfill evidence`)
+    assert.equal(tablesForDataDomainShadowBackfill(domain).includes(table), false,
+      `${domain}.${table} must not enter the retired legacy backfill inventory`)
+  }
+}
+
+assert.deepEqual(
+  Object.fromEntries(DATA_DOMAINS.map((domain) => [domain, tablesForDataDomainShadowBackfill(domain).length])),
+  { core: 11, market: 42, learning: 74, ops: 37, execution: 4, paper: 18, research: 32 },
+  'legacy shadow-backfill inventory changed; every post-cutover table requires explicit native ownership',
+)
 
 const unresolvedProductionTables = productionTableNames.filter((table) => (
   tableOwnershipMetadata(table)?.route_ready === false

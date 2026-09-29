@@ -103,6 +103,8 @@ export type StorageCapacityGrowthEstimate = {
   observation_count: number
   required_observations: number
   daily_growth_bytes: number | null
+  median_daily_growth_bytes: number | null
+  net_daily_growth_bytes: number | null
   projected_days_to_warning_65pct: number | null
   projected_days_to_max: number | null
 }
@@ -144,6 +146,8 @@ export function buildStorageCapacityGrowthEstimate(input: {
       observation_count: points.length,
       required_observations: requiredObservations,
       daily_growth_bytes: null,
+      median_daily_growth_bytes: null,
+      net_daily_growth_bytes: null,
       projected_days_to_warning_65pct: null,
       projected_days_to_max: null,
     }
@@ -158,16 +162,33 @@ export function buildStorageCapacityGrowthEstimate(input: {
     )
     if (elapsedDays > 0) dailyDeltas.push((current.used_bytes - previous.used_bytes) / elapsedDays)
   }
-  const dailyGrowthBytes = median(dailyDeltas)
-  const projected = (limitBytes: number) => dailyGrowthBytes != null && dailyGrowthBytes > 0
-    ? Math.max(0, Math.floor((limitBytes - input.currentUsedBytes) / dailyGrowthBytes))
+  const medianDailyGrowthBytes = median(dailyDeltas)
+  const first = points[0]
+  const last = points[points.length - 1]
+  const elapsedDays = Math.round(
+    (Date.parse(`${last.observed_date}T00:00:00Z`) - Date.parse(`${first.observed_date}T00:00:00Z`))
+    / 86_400_000,
+  )
+  const netDailyGrowthBytes = elapsedDays > 0
+    ? Math.round((last.used_bytes - first.used_bytes) / elapsedDays)
     : null
+  // Quiet days must not hide the growth from periodic batches. Keep the median
+  // diagnostic, but never forecast below the observed interval's net growth.
+  const dailyGrowthBytes = medianDailyGrowthBytes == null ? netDailyGrowthBytes
+    : netDailyGrowthBytes == null ? medianDailyGrowthBytes
+      : Math.max(medianDailyGrowthBytes, netDailyGrowthBytes)
+  const projected = (limitBytes: number) => input.currentUsedBytes >= limitBytes ? 0
+    : dailyGrowthBytes != null && dailyGrowthBytes > 0
+      ? Math.floor((limitBytes - input.currentUsedBytes) / dailyGrowthBytes)
+      : null
   return {
     status: 'ready',
     baseline_after: baselineAfter,
     observation_count: points.length,
     required_observations: requiredObservations,
     daily_growth_bytes: dailyGrowthBytes,
+    median_daily_growth_bytes: medianDailyGrowthBytes,
+    net_daily_growth_bytes: netDailyGrowthBytes,
     projected_days_to_warning_65pct: projected(maxBytes * 0.65),
     projected_days_to_max: projected(maxBytes),
   }

@@ -955,6 +955,9 @@ export function buildAdminWorkerDomainTaskMap(
         const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
         const queued = await enqueueMaintenanceBacklogDrain(c.env, {
           task: 'audit-json-retention',
+          runId: schedulerContext.schedulerRunId,
+          schedulerTicketId: schedulerContext.schedulerTicketId,
+          schedulerRunId: schedulerContext.schedulerRunId,
           runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
           auditJsonOptions: {
@@ -964,7 +967,8 @@ export function buildAdminWorkerDomainTaskMap(
             minBlobBytes,
           },
         })
-        return `audit_json_retention durable=true queued=${queued.queued} run_id=${queued.runId}`
+        const status = queued.queued ? 'running' : queued.reason === 'failure_cooldown' ? 'error' : 'skipped'
+        return `audit_json_retention status=${status} durable=true queued=${queued.queued} reason=${queued.reason ?? 'admitted'} run_id=${queued.runId}${queued.queued ? ' maintenance_owner=durable_queue' : ''}`
       }
       const result = await runAuditJsonArchiveRetention(c.env, {
         businessDate: requestedRunDate(),

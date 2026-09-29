@@ -59,6 +59,25 @@ export async function controllerJson<T>(
   const res = await controllerFetch(env, path, options)
   if (!res.ok) {
     const text = await res.text().catch(() => '')
+    if (path === '/paper/native-execution-tick') {
+      let detail: { pairs?: Array<{ snapshot_id?: string; status?: string; reason?: string; error_type?: string }> } | undefined
+      try {
+        detail = JSON.parse(text)?.detail
+      } catch {
+        // Keep the generic HTTP error for a malformed response.
+      }
+      const failures = Array.isArray(detail?.pairs)
+        ? detail.pairs.filter((pair) => pair?.status === 'failed')
+        : []
+      if (failures.length) {
+        const summary = failures.slice(0, 8).map((pair) => ({
+          snapshot_id: pair.snapshot_id,
+          reason: pair.reason,
+          error_type: pair.error_type,
+        }))
+        throw new Error(`Controller ${path} HTTP ${res.status}: ${JSON.stringify(summary)}`)
+      }
+    }
     throw new Error(`Controller ${path} HTTP ${res.status}: ${text.slice(0, 300)}`)
   }
   return res.json() as Promise<T>

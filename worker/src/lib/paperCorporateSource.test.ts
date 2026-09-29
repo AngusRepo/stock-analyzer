@@ -122,3 +122,23 @@ test('actual GCP paired tick cannot translate a failed controller result into su
     await assert.rejects(tasks['paired-native-execution'](), /paired_native_execution_tick_failed/)
   } finally { globalThis.fetch = saved }
 })
+
+test('paired tick scheduler error retains active pair reasons after superseded pairs', async () => {
+  const f = fixture(), saved = globalThis.fetch
+  globalThis.fetch = (async () => Response.json({ detail: {
+    status: 'failed', pairs: [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        snapshot_id: `superseded-${index}`, status: 'superseded',
+      })),
+      { snapshot_id: 'active-ab', status: 'failed',
+        reason: 'native_paper_execution_owner_changed', error_type: 'ValueError' },
+    ],
+  } }, { status: 409 })) as typeof fetch
+  try {
+    const tasks = buildAdminWorkerDomainTaskMap({ env: f.env, req: { query: () => undefined } }, {} as any)
+    await assert.rejects(tasks['paired-native-execution'](), (error: Error) =>
+      error.message.includes('active-ab')
+      && error.message.includes('native_paper_execution_owner_changed')
+      && !error.message.includes('superseded-0'))
+  } finally { globalThis.fetch = saved }
+})

@@ -83,6 +83,35 @@ function intradayProfileEntryModel(
 
 {
   const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 409.5,
+    bestAsk: 409.5,
+    entryPrice: 409,
+    originalEntry: 434.84,
+    retryCount: 3,
+    previousClose: 435.5,
+    marketRiskLevel: 'orange',
+  }))
+  assert(decision.action === 'DEFER', 'orange risk should wait for the executable entry rather than count identical discounts')
+  assert(decision.reason === 'market_risk_orange_entry_not_reached', 'orange wait should identify the price gate')
+  assert(decision.nextEntryPrice == null && decision.retryCount == null, 'orange wait must not mutate price or retry count')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 408.5,
+    bestAsk: 409,
+    entryPrice: 409,
+    originalEntry: 434.84,
+    retryCount: 3,
+    previousClose: 435.5,
+    marketRiskLevel: 'orange',
+  }))
+  assert(decision.action === 'BUY_AT' && decision.limitPrice === 409,
+    'orange risk may proceed at the original entry when the current ask reaches it and other gates pass')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({
     marketRiskLevel: 'high',
     technical: {
       action: 'skip',

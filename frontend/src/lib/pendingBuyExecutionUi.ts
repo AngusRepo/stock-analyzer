@@ -157,6 +157,7 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   technical_distribution_cooldown: '技術分佈冷卻中',
   range_position_low: '區間位置偏低，避免接刀',
   price_above_entry: '價格高於可追價上限',
+  market_risk_orange_entry_not_reached: '橘色市場風險：等待價格回到 S12 進場價',
   broker_quote_required: '需要券商即時報價',
   rod_cancelled: 'ROD 委託已取消',
   paper_order_created: '模擬委託已建立',

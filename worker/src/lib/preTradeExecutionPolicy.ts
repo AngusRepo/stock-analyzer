@@ -86,7 +86,7 @@ export interface PreTradeExecutionDecision {
   retryCount?: number
 }
 
-const DANGEROUS_RISK_LEVELS = new Set(['high', 'orange', 'red', 'black', 'extreme'])
+const DANGEROUS_RISK_LEVELS = new Set(['high', 'red', 'black', 'extreme'])
 
 function roundPrice(value: number): number {
   return Math.round(value * 100) / 100
@@ -199,6 +199,20 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
     }
   }
 
+  if (risk === 'orange') {
+    const bestAsk = finitePositive(input.bestAsk) ?? currentPrice
+    if (currentPrice > entryPrice || bestAsk > entryPrice) {
+      return {
+        action: 'DEFER',
+        reason: 'market_risk_orange_entry_not_reached',
+        detail: metricDetail([
+          ['current', currentPrice],
+          ['best_ask', bestAsk],
+          ['entry', entryPrice],
+        ]),
+      }
+    }
+  }
   if (DANGEROUS_RISK_LEVELS.has(risk)) {
     const retryCount = Number(input.retryCount ?? 0)
     const maxRetries = input.policy.maxRetries ?? 3

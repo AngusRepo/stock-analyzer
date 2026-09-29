@@ -33,6 +33,7 @@ export interface PendingBuyTradeView {
   entrySource: 's12' | 'waiting'
   estimatedShares: number | null
   budgetCap: number | null
+  targetValue: number | null
   availableCash: number | null
   quantityBasis: 's12' | 'reference' | null
   gateReason: string | null
@@ -55,6 +56,7 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
   const referencePrice = positive(item.ml_entry_price)
   const s12Price = preview?.s12?.ready ? positive(preview.s12.entry_price) : null
   const budgetCap = nonnegative(preview?.allocator?.budget_cap)
+  const targetValue = nonnegative(preview?.allocator?.target_value)
   const l5ReasonLabels: Record<string, string> = {
     missing_l5_quote: '缺少 L5 報價',
     stale_l5_quote: 'L5 報價過期',
@@ -95,6 +97,7 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
     entrySource: s12Price != null ? 's12' : 'waiting',
     estimatedShares: estimatedShares && estimatedShares > 0 ? estimatedShares : null,
     budgetCap,
+    targetValue,
     availableCash,
     quantityBasis: estimatedShares && estimatedShares > 0
       ? s12Price != null ? 's12' : 'reference'

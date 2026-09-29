@@ -6,6 +6,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
+import { INTRADAY_PRICE_DISPLAY_MAX_AGE_MS, putIntradayPrice } from './paperIntradayPriceCache'
 import { recordSellSettlement } from './paperMarketData'
 import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
 import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
@@ -668,6 +669,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   })
   const priceMap = new Map<string, number>()
   for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
+  // The pending-buy display reuses this check's broker quotes. Untimed or
+  // expired observations must not appear as current prices.
+  await Promise.allSettled([...ohlcMap].map(([symbol, quote]) => {
+    const ageMs = quoteAgeMs(quote.quoteTime)
+    return quote.source === 'shioaji' && ageMs != null && ageMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
+      ? putIntradayPrice(env.KV, symbol, quote.last, undefined, {
+        source: 'shioaji', quoteTime: quote.quoteTime,
+      })
+      : Promise.resolve()
+  }))
   const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, pendingSymbols)
   const finLabL5MarketDataMap = finLabL5MarketDataSnapshot.quotes
 

@@ -483,12 +483,13 @@ function pendingBuyEmptyMessage(meta?: any): string {
 
 function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   // T2 過濾後的掛單（非 raw recommendations）
-  const { data: pbData, isLoading } = useQuery({
+  const { data: pbData, isLoading, isFetching, dataUpdatedAt, error } = useQuery({
     queryKey: ['paper', 'pending-buys'],
     queryFn: () => paperApi.pendingBuys(),
-    staleTime: isTWMarketOpen() ? 15_000 : 5 * 60_000,
+    staleTime: 0,
     refetchInterval: () => isTWMarketOpen() ? 30_000 : 5 * 60_000,
-    refetchOnWindowFocus: true,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: 'always',
   })
   const allPendingBuys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
   const buys = allPendingBuys.filter((item) => {
@@ -506,6 +507,11 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     : typeof pendingMeta?.source_reco_date === 'string'
       ? pendingMeta.source_reco_date
       : undefined
+  const refreshStatus = error
+    ? '更新失敗，保留上次資料'
+    : (isFetching ? '更新中 · ' : '') +
+      (dataUpdatedAt ? '同步 ' + formatTwDateTimeShort(new Date(dataUpdatedAt).toISOString()) : '等待同步') +
+      (isTWMarketOpen() ? ' · 盤中每 30 秒自動更新' : ' · 非盤中每 5 分鐘自動更新')
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
 
@@ -513,6 +519,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   if (!buys.length) {
     return (
       <div className="space-y-3">
+        <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}</div>
         <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
@@ -528,6 +535,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
+      <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}</div>
       <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
       <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
@@ -563,7 +571,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             >
               <Activity className="h-4 w-4" />
             </button>
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
+              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
+                <div className="text-[11px] text-muted-foreground">目前價位</div>
+                <div className="mt-1 text-base font-semibold text-foreground">
+                  {b.market_price?.price != null ? '$' + fmt(b.market_price.price, 2) : '報價待更新'}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {b.market_price?.as_of ? 'Shioaji · ' + formatTwDateTimeShort(b.market_price.as_of) : '僅顯示 90 秒內報價'}
+                </div>
+              </div>
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">預計買入價</div>
                 <div className="mt-1 text-base font-semibold text-foreground">
@@ -583,15 +600,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
                 </div>
               </div>
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">本次配置上限</div>
+                <div className="text-[11px] text-muted-foreground">本次可執行額度</div>
                 <div className="mt-1 text-base font-semibold text-foreground">
                   {trade.budgetCap != null ? `$${fmt(trade.budgetCap)}` : '待評估'}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {trade.availableCash != null ? `可用資金 $${fmt(trade.availableCash)}` : '資金快照待更新'}
+                  {trade.targetValue != null ? 'L4 目標 $' + fmt(trade.targetValue) : 'L4 目標待更新'}
                 </div>
               </div>
             </div>
+            {trade.availableCash != null && <div className="mt-2 text-[11px] text-muted-foreground">{'可用資金 $' + fmt(trade.availableCash)}</div>}
             <div className="mt-3 grid gap-1.5 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
               <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
               <div><span className="text-foreground">S12 結構：</span>{s12Label}</div>

@@ -1195,6 +1195,7 @@ paper.get('/quadrant-filter', async (c) => {
 
 // GET /api/paper/pending-buys — current pending-buy snapshot for Bot Dashboard.
 paper.get('/pending-buys', async (c) => {
+  c.header('Cache-Control', 'no-store, max-age=0')
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: false })
   const displayMeta = await reconcileLegacyP6DisplayMeta(c.env, snapshot.date, snapshot.meta as Record<string, any> | null)
@@ -1218,9 +1219,16 @@ paper.get('/pending-buys', async (c) => {
     console.warn('[paper/pending-buys] execution preview unavailable:', error)
     return new Map()
   })
+  const pendingPrices = await getIntradayPriceMap(
+    c.env.KV, snapshot.pendingBuys.map((item) => item.symbol), 90_000,
+  ).catch((error) => {
+    console.warn('[paper/pending-buys] intraday prices unavailable:', error)
+    return new Map()
+  })
   const pendingBuysForResponse = pendingBuys.map((item) => ({
     ...removeLegacyPendingBuyScoreFields(item),
     execution_preview: executionPreviews.get(item.symbol) ?? null,
+    market_price: pendingPrices.get(item.symbol) ?? null,
   }))
   return c.json({
     requested_date: snapshot.requested_date,

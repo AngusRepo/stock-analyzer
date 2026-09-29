@@ -39,6 +39,7 @@ test('L5 veto is distinguished from insufficient capital', () => {
   })
   assert.equal(view.estimatedShares, null)
   assert.equal(view.budgetCap, 0)
+  assert.equal(view.targetValue, 60437)
   assert.equal(view.gateReason, 'L5 即時報價未通過：L5 報價過期、買賣價差過寬')
   assert.equal(view.availableCash, 966998)
 })

@@ -302,7 +302,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'strategy_promotion_ledger', domain: 'research', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'strategy_similarity_matrix', domain: 'research', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
 ]
-const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
+export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
   // Domain-native tables have no legacy source by design. They are created and
   // populated only after the split, so routing/schema readiness includes them
   // while the legacy-to-domain backfill drain must skip them.
@@ -331,6 +331,7 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'ga_optimizer_shadow_candidates_v1',
     'ga_optimizer_shadow_daily_evidence_v1',
     'ga_optimizer_shadow_runs_v1',
+    'strategy_evidence_gap_dispositions_v1',
   ]),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
@@ -338,13 +339,6 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
   ]),
   ops: new Set([
     'maintenance_task_leases',
-    'data_domain_cutovers',
-    'data_domain_writer_epochs',
-    'data_domain_table_writer_epochs',
-    'data_domain_backfill_cursors',
-    'data_domain_parity_checks',
-    'data_domain_cutover_probe_receipts',
-    'data_domain_cutover_probe_canary',
     'price_horizon_projection_status_v2',
     'pit_residual_funnel_enrichment_runs_v1',
   ]),
@@ -353,6 +347,18 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
     'paper_kelly_calibration_runs_v1',
     'paper_kelly_calibration_artifacts_v1',
     'paper_kelly_calibration_head_v1',
+    'l4_policy_account_rewards_v1',
+    'l4_portfolio_head_v1',
+    'l4_portfolio_plans_v1',
+    'l4_replan_outbox_v1',
+    'l4_replan_requests_v1',
+    'paper_corporate_entitlements_v1',
+    'paper_corporate_sessions_v1',
+  ]),
+  research: new Set([
+    'research_trial_observations_v1',
+    'research_trial_runs_v1',
+    'research_trial_sources_v1',
   ]),
 }
 
@@ -364,7 +370,7 @@ const TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
       disposition: 'full_scalar',
       route_ready: !LEGACY_CONTROL_PLANE_TABLES.has(table),
       shadow_ready: !LEGACY_CONTROL_PLANE_TABLES.has(table)
-        && !(SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()).has(table),
+        && !(POST_CUTOVER_NATIVE_TABLES[domain] ?? new Set<string>()).has(table),
     }))
   )),
   ...EXTENDED_PRODUCTION_TABLE_OWNERSHIP,

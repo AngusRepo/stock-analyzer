@@ -9,6 +9,35 @@ import { logSchedulerResult } from './schedulerRunLogger'
 export const POST_SCREENER_CONTINUATION_STAGE = 'post_screener_continuation'
 export const POST_SCREENER_QUEUED_RECOVERY_SECONDS = 300
 
+// One-time September 29 recovery: both expired first sessions have immutable,
+// zero-NAV certificates. A generic snapshot_id error never grants replay.
+const SEPT29_UNOBSERVED_SNAPSHOTS = new Map([
+  ['cd0eaa2d8aca42a082c94ace8c2bab2d10e0778a3879469f2a0062bb0593b66c', 'ee173175ab6e9871ccda5859de896c9306552f2866a3c6120da86a2cb14c91a9'],
+  ['b95d998645eaa5681fefd5e35cc566769038d22c658cea85b32b124c67717b9e', 'd87d54c1f9faf3b3e20577e32420f95b8255bb682f505ab160a383be4044429c'],
+])
+
+async function certifiedSep29NavGap(env: Bindings, businessDate: string, error: string): Promise<boolean> {
+  if (businessDate !== '2026-09-29' || error !== "'snapshot_id'") return false
+  const rows = await databaseForDataDomain(env, 'learning').prepare(`
+    SELECT execution_snapshot_id, payload_checksum, payload_json
+      FROM paired_nav_unobserved_pairs_v1
+     WHERE session_date=? AND execution_snapshot_id IN (?, ?)
+  `).bind(businessDate, ...SEPT29_UNOBSERVED_SNAPSHOTS.keys()).all<{
+    execution_snapshot_id: string; payload_checksum: string; payload_json: string
+  }>()
+  if (rows.results.length !== SEPT29_UNOBSERVED_SNAPSHOTS.size) return false
+  return rows.results.every((row) => {
+    if (SEPT29_UNOBSERVED_SNAPSHOTS.get(row.execution_snapshot_id) !== row.payload_checksum) return false
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>
+    return payload.execution_snapshot_id === row.execution_snapshot_id
+      && payload.session_date === businessDate
+      && payload.reason === 'first_frame_expired_without_delivery'
+      && payload.nav_maturity_credit === 0
+      && payload.production_effect === false
+      && payload.promotion_allowed === false
+  })
+}
+
 async function reclaimStaleQueuedPostScreenerContinuation(
   db: D1Database,
   input: { businessDate: string; canonicalRunId: string },
@@ -154,6 +183,7 @@ export function pipelineProvenanceRecoveryDecision(input: {
   failure: PipelineExecutionFailure | null
   workerVersion?: Bindings['CF_VERSION_METADATA']
   runtimeApproval?: unknown
+  navGapCertified?: boolean
 }): PipelineProvenanceRecoveryDecision {
   const failure = input.failure
   if (!failure || failure.status !== 'error') return { retry: false, reason: 'pipeline_not_error' }
@@ -161,7 +191,8 @@ export function pipelineProvenanceRecoveryDecision(input: {
   const servingContractFailure = /(?:^|Error: )active8_ensemble_base_(?:identity_mismatch|not_serving):(?:LightGBM|XGBoost|ExtraTrees|TabM|GNN|DLinear|TimeXer|PatchTST|iTransformer)(?::|$)/.test(error)
   const cloudFailure = /^pipeline_cloud_run_failed:(memory_limit|task_failed);completed_at=([^;]+);execution=[a-z0-9-]+$/.exec(error)
   const paperApprovalFailure = error === 'active8_nav_current_configuration_changed_or_unverified'
-  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure && !paperApprovalFailure) {
+  const certifiedNavGap = error === "'snapshot_id'" && input.navGapCertified === true
+  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure && !paperApprovalFailure && !certifiedNavGap) {
     return { retry: false, reason: 'pipeline_error_not_provenance_mismatch' }
   }
   const failureMs = sqliteUtcMs(cloudFailure ? cloudFailure[2] : String(failure.updated_at ?? ''))
@@ -197,7 +228,8 @@ export function pipelineProvenanceRecoveryDecision(input: {
     return { retry: false, reason: 'worker_release_not_newer_than_failure' }
   }
   return { retry: true, reason: paperApprovalFailure ? 'new_worker_release_after_paper_runtime_reapproval'
-    : cloudFailure ? 'new_worker_release_after_cloud_failure' : 'new_worker_release_after_provenance_failure' }
+    : certifiedNavGap ? 'new_worker_release_after_certified_nav_gap'
+      : cloudFailure ? 'new_worker_release_after_cloud_failure' : 'new_worker_release_after_provenance_failure' }
 }
 
 export async function reconcilePipelineCloudFailure(
@@ -251,10 +283,14 @@ export async function enqueuePostScreenerPipelineRecovery(
   `).bind(options.businessDate).first<PipelineExecutionFailure>()
   const runtimeApproval = failure?.last_error === 'active8_nav_current_configuration_changed_or_unverified'
     ? await env.KV.get('ml:active8:paper_runtime_approval:v1', 'json') : null
+  const navGapCertified = await certifiedSep29NavGap(
+    env, options.businessDate, String(failure?.last_error ?? ''),
+  )
   const decision = pipelineProvenanceRecoveryDecision({
     failure: failure ?? null,
     workerVersion: options.workerVersion,
     runtimeApproval,
+    navGapCertified,
   })
   if (!decision.retry || !failure) {
     return {

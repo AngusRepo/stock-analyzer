@@ -280,3 +280,63 @@ test('Paper runtime reapproval requeues the failed pipeline stage once', async (
     await mf.dispose()
   }
 })
+
+
+test('September 29 snapshot failure recovers once only with both immutable zero-NAV certificates', async () => {
+  const mf = new Miniflare({ modules: true,
+    script: 'export default { fetch() { return new Response("ok") } }', d1Databases: ['OPS'] })
+  try {
+    const db = await mf.getD1Database('OPS')
+    await db.prepare(`CREATE TABLE pipeline_stage_runs (
+      business_date TEXT NOT NULL, stage TEXT NOT NULL, canonical_run_id TEXT NOT NULL,
+      status TEXT NOT NULL, cursor_key TEXT, processed_count INTEGER NOT NULL DEFAULT 0,
+      expected_count INTEGER, persisted_count INTEGER, attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT, lease_expires_at TEXT, queued_at TEXT, started_at TEXT,
+      completed_at TEXT, last_error TEXT, updated_at TEXT NOT NULL,
+      PRIMARY KEY (business_date, stage))`).run()
+    await db.prepare(`CREATE TABLE paired_nav_unobserved_pairs_v1 (
+      execution_snapshot_id TEXT PRIMARY KEY, session_date TEXT NOT NULL,
+      payload_checksum TEXT NOT NULL, payload_json TEXT NOT NULL)`).run()
+    await db.batch([
+      db.prepare(`INSERT INTO pipeline_stage_runs
+        (business_date,stage,canonical_run_id,status,last_error,updated_at)
+        VALUES ('2026-09-29','pipeline_execution','failed-run','error',?,?)`)
+        .bind("'snapshot_id'", '2026-09-29 16:54:44'),
+      db.prepare(`INSERT INTO pipeline_stage_runs
+        (business_date,stage,canonical_run_id,status,updated_at)
+        VALUES ('2026-09-29','post_screener_continuation','original-root','success',?)`)
+        .bind('2026-09-29 15:50:38'),
+    ])
+    const sent: unknown[] = []
+    const env = { DB: db, OPS_DB: db,
+      UPDATE_QUEUE: {send: async (message: unknown) => { sent.push(message) }},
+      KV: {get: async () => null, put: async () => {}},
+    } as unknown as Bindings
+    const options = {businessDate:'2026-09-29',source:'test',
+      workerVersion:{id:'nav-gap-release',tag:'a'.repeat(40),timestamp:'2026-09-30T00:10:00Z'}}
+    const certificates = [
+      ['cd0eaa2d8aca42a082c94ace8c2bab2d10e0778a3879469f2a0062bb0593b66c',
+        'ee173175ab6e9871ccda5859de896c9306552f2866a3c6120da86a2cb14c91a9'],
+      ['b95d998645eaa5681fefd5e35cc566769038d22c658cea85b32b124c67717b9e',
+        'd87d54c1f9faf3b3e20577e32420f95b8255bb682f505ab160a383be4044429c'],
+    ] as const
+    const insertCertificate = async ([id, checksum]: typeof certificates[number]) => {
+      const payload = {execution_snapshot_id:id,session_date:'2026-09-29',
+        reason:'first_frame_expired_without_delivery',nav_maturity_credit:0,
+        production_effect:false,promotion_allowed:false}
+      await db.prepare(`INSERT INTO paired_nav_unobserved_pairs_v1
+        (execution_snapshot_id,session_date,payload_checksum,payload_json) VALUES (?,?,?,?)`)
+        .bind(id,'2026-09-29',checksum,JSON.stringify(payload)).run()
+    }
+    assert.equal((await enqueuePostScreenerPipelineRecovery(env,options)).reason,
+      'pipeline_error_not_provenance_mismatch')
+    await insertCertificate(certificates[0])
+    assert.equal((await enqueuePostScreenerPipelineRecovery(env,options)).queued,false)
+    await insertCertificate(certificates[1])
+    const recovered = await enqueuePostScreenerPipelineRecovery(env,options)
+    assert.equal(recovered.queued,true)
+    assert.equal(sent.length,1)
+    assert.equal((await enqueuePostScreenerPipelineRecovery(env,options)).queued,false)
+    assert.equal(sent.length,1)
+  } finally { await mf.dispose() }
+})

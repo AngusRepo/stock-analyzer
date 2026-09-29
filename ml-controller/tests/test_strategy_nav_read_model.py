@@ -174,3 +174,40 @@ def test_actual_controller_display_batches_all_original_dependency_checks(setup,
         'business_date': DAY}, NOW)
     assert result['read_model']['source_read_count'] == 53
     assert batches == [25, 25, 3]
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_phase_timing_identifies_io_without_private_payload(setup, monkeypatch, caplog, fail):
+    client, store, _ = setup
+    build(client, store)
+    clock = [0.0]
+    monkeypatch.setattr(model, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    original_read = store.read
+    def timed_read(key):
+        clock[0] += 2.0
+        return original_read(key)
+    monkeypatch.setattr(store, 'read', timed_read)
+    original_query = client.query
+    def timed_query(*args):
+        clock[0] += 7.0
+        if fail:
+            raise RuntimeError('private-query-and-account')
+        return original_query(*args)
+    monkeypatch.setattr(client, 'query', timed_query)
+    def invoke():
+        return model.read_strategy_nav_read_model(strategy_id='private-strategy', strategy_version='v1',
+            business_date='2026-09-29', client=client, store=store, now=NOW)
+    if fail:
+        with pytest.raises(RuntimeError, match='private-query-and-account'):
+            invoke()
+    else:
+        result = invoke()
+        assert result['as_of_date'] == DAY
+        assert result['read_model']['source_read_count'] == 1
+    message = next(r.message for r in caplog.records if '[StrategyNavRead]' in r.message)
+    assert 'elapsed_s=13.0000' in message
+    assert ('outcome=error' if fail else 'outcome=success') in message
+    assert json.loads(message.split('stages_s=')[1]) == {
+        'source_identity': 0.0, 'gcs_requested': 2.0, 'gcs_latest': 2.0,
+        'gcs_prior': 2.0, 'd1_source_validation': 7.0}
+    assert 'private-' not in message and 'SELECT' not in message and 'exact-code' not in message

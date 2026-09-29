@@ -72,9 +72,13 @@ assert(
   'Bot dashboard must use item-aware execution status labels',
 )
 assert(
-  botDashboard.includes('盤中 Real-time 檢查：{executionBadge.label}') &&
-    botDashboard.includes('交易門檻：{executionBadge.description}') &&
-    botDashboard.includes('S12 結構：{s12Badge.label}'),
+  botDashboard.includes('{executionBadge.label}') &&
+    botDashboard.includes('交易門檻：</span>{trade.gateReason ??') &&
+    botDashboard.includes("allocatorAction === 'buy' || allocatorAction === 'add'") &&
+    botDashboard.includes('trade.l5Status') &&
+    botDashboard.includes('S12 結構：</span>{s12Label}') &&
+    botDashboard.includes('formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)') &&
+    botDashboard.includes("s12Badge?.label ?? '等待近期盤中結構資料'"),
   'Bot dashboard pending-buy cards must merge intraday threshold and S12 structure into one readable real-time gate card',
 )
 assert(

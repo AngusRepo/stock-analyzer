@@ -239,15 +239,24 @@ def _post_raw(body: dict, timeout: float = 60.0, database_id: str | None = None)
     max_attempts = max(1, MAX_D1_RETRIES + 1, MAX_D1_OVERLOAD_RETRIES + 1)
 
     for attempt in range(max_attempts):
+        started = time.monotonic()
         try:
-            resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
+            resp = (_READ_HTTP.get() or httpx).post(url, headers=headers, json=body, timeout=timeout)
         except httpx.RequestError as e:
+            if _READ_HTTP.get() is not None:
+                logger.warning("[d1_client] scoped_raw_transport_retry attempt=%d elapsed_s=%.3f error_type=%s",
+                               attempt + 1, time.monotonic() - started, type(e).__name__)
             last_error = RuntimeError(f"D1 raw request failed: network error: {e}")
             if attempt < MAX_D1_RETRIES:
                 _sleep_before_retry(attempt)
                 continue
             raise last_error from e
 
+        elapsed = time.monotonic() - started
+        if _READ_HTTP.get() is not None and elapsed >= 1.0:
+            # No SQL, parameters, response body, URLs or credentials in telemetry.
+            logger.warning("[d1_client] scoped_raw_slow attempt=%d elapsed_s=%.3f http=%d bytes=%d",
+                           attempt + 1, elapsed, resp.status_code, len(resp.content))
         if resp.status_code != 200:
             last_error = RuntimeError(f"D1 raw request failed: HTTP {resp.status_code}: {resp.text[:300]}")
             if _retry_d1_response(resp, attempt, resp.text):

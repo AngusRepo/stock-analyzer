@@ -6,6 +6,10 @@ schema and checksums. This is display-only and cannot authorize adoption.
 """
 from datetime import datetime
 import json
+import logging
+import os
+import threading
+import time
 from services.daily_nav_read_receipt import (
     RecordedClient, GcsReceiptStore, MAX_RECEIPT_BYTES, code_identity, unchanged, _digest, _readonly,
 )
@@ -15,6 +19,7 @@ from services.paired_nav_policy_daily import (
 
 SCHEMA = 'strategy-nav-read-model-v1'
 PREFIX = 'strategy-nav-read-model/v1/'
+log = logging.getLogger(__name__)
 
 
 def _key(day, identity):
@@ -80,23 +85,47 @@ def _valid(receipt, day, identity, now):
 
 
 def read_strategy_nav_read_model(*, strategy_id, strategy_version, business_date, client, store, now=None):
+    started = time.monotonic()
+    stages = {}
+    outcome = 'error'
+    def measure(name, run):
+        tick = time.monotonic()
+        try:
+            return run()
+        finally:
+            stages[name] = round(time.monotonic() - tick, 4)
+    try:
+        result = _read_strategy_nav_read_model(strategy_id=strategy_id, strategy_version=strategy_version,
+            business_date=business_date, client=client, store=store, now=now, measure=measure)
+        outcome = 'success'
+        return result
+    finally:
+        elapsed = time.monotonic() - started
+        # Fixed stage names and numbers only; no strategy/account, object key,
+        # SQL, payload or exception text. Errors retain their original contract.
+        emit = log.warning if elapsed >= 5.0 else log.debug
+        emit('[StrategyNavRead] outcome=%s elapsed_s=%.4f stages_s=%s', outcome, elapsed,
+             json.dumps(stages, sort_keys=True))
+
+
+def _read_strategy_nav_read_model(*, strategy_id, strategy_version, business_date, client, store, measure, now=None):
     clock = _clock(business_date, now)
-    identity = code_identity()
-    receipt = store.read(_key(business_date, identity))
+    identity = measure('source_identity', code_identity)
+    receipt = measure('gcs_requested', lambda: store.read(_key(business_date, identity)))
     effective_date = business_date
     if receipt is None:
-        pointer = store.read(_latest_key(identity))
+        pointer = measure('gcs_latest', lambda: store.read(_latest_key(identity)))
         if pointer is not None:
             effective_date = pointer['business_date']
             _clock(effective_date, clock)
             if (pointer.get('code_identity') != identity or pointer.get('key') != _key(effective_date, identity)):
                 raise ValueError('strategy_nav_read_model_index_invalid')
             if effective_date <= business_date:
-                receipt = store.read(pointer['key'])
+                receipt = measure('gcs_prior', lambda: store.read(pointer['key']))
     if receipt is None:
         raise ValueError('strategy_nav_read_model_missing')
     evidence = _valid(receipt, effective_date, identity, clock)
-    if not unchanged(client, receipt['reads']):
+    if not measure('d1_source_validation', lambda: unchanged(client, receipt['reads'])):
         raise ValueError('strategy_nav_read_model_source_changed')
     result = select_strategy_nav_evidence(evidence, strategy_id=strategy_id, strategy_version=strategy_version)
     result['read_model'] = {'schema_version': SCHEMA, 'source_checked_at': clock.isoformat(),
@@ -158,6 +187,26 @@ def refresh_strategy_nav_read_model(*, business_date, client, store, now=None):
         'source_read_count': len(receipt['reads']), 'bytes': len(raw), 'promotion_allowed': False}
 
 
+_READ_TRANSPORT = threading.local()
+
+
 def production_read_store():
+    # Reuse transport/auth within one worker thread only. No evidence, source
+    # verdict, Blob metadata or generation is cached; read() reloads each time.
+    # A fork or bucket change must construct its own client.
+    identity = (os.getpid(), os.environ.get('GCS_BUCKET_NAME', '').strip())
+    prior = getattr(_READ_TRANSPORT, 'state', None)
+    if prior is not None and prior[0] == identity:
+        return prior[1]
     from services.walk_forward_retrain import _get_bucket
-    return StrategyNavReceiptStore(_get_bucket())
+    bucket = _get_bucket()
+    if bucket is None:
+        raise ValueError('strategy_nav_read_model_store_unavailable')
+    store = StrategyNavReceiptStore(bucket)
+    _READ_TRANSPORT.state = (identity, store)
+    if prior is not None and prior[0][0] == identity[0]:
+        try:
+            prior[1].bucket.client.close()
+        except Exception:
+            log.warning('[StrategyNavRead] retired_transport_close_failed')
+    return store

@@ -134,19 +134,19 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
         else:
             result = _execute_daily_nav_scoped(end_date=end_date, now=now,
                 retire_legacy_owners=retire_legacy_owners)
-    # Also run on an unchanged daily-accounting retry: a missing display
-    # artifact must not stay missing merely because accounting was cached.
-    if publish_strategy_display and result.get('as_of_date') and not result.get('error_type'):
-        try:
-            from services.strategy_nav_read_model import refresh_strategy_nav_read_model, production_read_store
-            from services.d1_domain_client import D1DataDomain, client_for_domain
-            result['strategy_nav_read_model'] = refresh_strategy_nav_read_model(
-                business_date=result['as_of_date'], client=client_for_domain(D1DataDomain.LEARNING),
-                store=production_read_store(), now=now)
-        except Exception as exc:
-            logger.warning('[DailyNav] strategy NAV display unavailable error_type=%s', type(exc).__name__)
-            result['strategy_nav_read_model'] = {'status': 'unavailable',
-                'reason': 'strategy_nav_display_publication_failed', 'promotion_allowed': False}
+        # Also run on an unchanged daily-accounting retry: a missing display
+        # artifact must not stay missing merely because accounting was cached.
+        if publish_strategy_display and result.get('as_of_date') and not result.get('error_type'):
+            try:
+                from services.strategy_nav_read_model import refresh_strategy_nav_read_model, production_read_store
+                from services.d1_domain_client import D1DataDomain, client_for_domain
+                result['strategy_nav_read_model'] = refresh_strategy_nav_read_model(
+                    business_date=result['as_of_date'], client=client_for_domain(D1DataDomain.LEARNING),
+                    store=production_read_store(), now=now)
+            except Exception as exc:
+                logger.warning('[DailyNav] strategy NAV display unavailable error_type=%s', type(exc).__name__)
+                result['strategy_nav_read_model'] = {'status': 'unavailable',
+                    'reason': 'strategy_nav_display_publication_failed', 'promotion_allowed': False}
     logger.info('[DailyNav] finished seconds=%.2f status=%s', time.monotonic() - started, result.get('status'))
     return result
 

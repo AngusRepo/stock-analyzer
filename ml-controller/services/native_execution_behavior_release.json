@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:3bb2cb595b064b4900627f292c4d252ed03ecc4d607f1a984a26e559904264aa",
+  "execution_owner_version": "native-paper-v1:7dc732413642f0ed0e5c3653f3a9d0e6513a31c8ccc0e36774fec5d3831f0426",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved this exact source-build fingerprint on 2026-09-29 and authorized commit/push/deploy after all checks and CI pass. This declaration grants no Paper runtime admission, source equivalence, maturity transfer or prestart replacement authority.",
-  "review": "docs/releases/2026-09-29-six-performance-closure.md",
+  "authorization": "Wei explicitly approved this exact source-build fingerprint on 2026-09-29 and authorized commit/push/deploy after all checks and CI pass. This record synchronizes the existing 48f08719 native source-build identity; all native components remain unchanged from that production base. It grants no Paper runtime admission, source equivalence, maturity transfer or prestart replacement authority.",
+  "review": "docs/releases/2026-09-29-nav-transport.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

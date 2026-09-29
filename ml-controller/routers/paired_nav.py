@@ -2,6 +2,8 @@
 import asyncio
 from datetime import datetime, timezone
 import re
+import logging
+import time
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +14,7 @@ from services.paired_nav_policy_daily import read_policy_candidate_decision
 from services.strategy_nav_read_model import read_strategy_nav_read_model, production_read_store
 
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix='/nav', tags=['paired-nav'])
 LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
 
@@ -41,9 +44,24 @@ class StrategyEvidenceRequest(BaseModel):
 
 def _read_strategy_display(request, clock):
     from services.d1_client import read_connection_scope
-    with read_connection_scope():
-        return read_strategy_nav_read_model(**request, client=client_for_domain(D1DataDomain.LEARNING),
-            store=production_read_store(), now=clock)
+    started = time.monotonic()
+    setup_done = None
+    outcome = 'error'
+    try:
+        with read_connection_scope():
+            client = client_for_domain(D1DataDomain.LEARNING)
+            store = production_read_store()
+            setup_done = time.monotonic()
+            result = read_strategy_nav_read_model(**request, client=client, store=store, now=clock)
+            outcome = 'success'
+            return result
+    finally:
+        ended = time.monotonic()
+        elapsed = ended - started
+        emit = log.warning if elapsed >= 5.0 else log.debug
+        emit('[StrategyNavRequest] outcome=%s setup_s=%.4f display_s=%.4f total_s=%.4f',
+             outcome, (setup_done if setup_done is not None else ended) - started,
+             ended - setup_done if setup_done is not None else 0.0, elapsed)
 
 
 @router.post('/strategy-evidence')

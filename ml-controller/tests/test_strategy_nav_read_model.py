@@ -144,3 +144,33 @@ def test_index_conflict_on_reused_receipt_does_not_repeat_original_downloads(set
     monkeypatch.setattr(store,'publish_latest',conflict)
     with pytest.raises(ValueError,match='concurrent_update'):build(client,store)
     assert len(builds)==1
+
+
+def test_actual_controller_display_batches_all_original_dependency_checks(setup, monkeypatch):
+    from routers import paired_nav
+    from services import d1_client, d1_domain_client
+    client, store, _ = setup
+    build(client, store)
+    for key, raw in list(store.data.items()):
+        receipt = json.loads(raw)
+        if 'evidence' not in receipt:
+            continue
+        receipt['reads'] = [{'sql': 'SELECT ? AS i', 'params': [i],
+            'checksum': model._digest([{'i': i}])} for i in range(53)]
+        receipt['reads_checksum'] = model._digest(receipt['reads'])
+        store.data[key] = json.dumps(receipt)
+    batches = []
+    def forbidden(*args, **kwargs):
+        raise AssertionError('display_dependency_queries_must_be_batched')
+    def batch(statements, *, database_id):
+        assert database_id == 'fixture-learning'
+        batches.append(len(statements))
+        return [[{'i': statement['params'][0]}] for statement in statements]
+    monkeypatch.setattr(d1_domain_client, 'database_id_for_domain', lambda domain, require_specific=False: 'fixture-learning')
+    monkeypatch.setattr(d1_domain_client.DomainD1Client, 'query', forbidden)
+    monkeypatch.setattr(d1_client, 'read_raw_batch', batch)
+    monkeypatch.setattr(paired_nav, 'production_read_store', lambda: store)
+    result = paired_nav._read_strategy_display({'strategy_id': 's8', 'strategy_version': 'v1',
+        'business_date': DAY}, NOW)
+    assert result['read_model']['source_read_count'] == 53
+    assert batches == [25, 25, 3]

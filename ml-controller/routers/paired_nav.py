@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain, client_for_domain
 from services.paired_nav_policy_daily import read_policy_candidate_decision
 from services.strategy_nav_read_model import read_strategy_nav_read_model, production_read_store
 
@@ -42,7 +42,7 @@ class StrategyEvidenceRequest(BaseModel):
 def _read_strategy_display(request, clock):
     from services.d1_client import read_connection_scope
     with read_connection_scope():
-        return read_strategy_nav_read_model(**request, client=LEARNING_D1_CLIENT,
+        return read_strategy_nav_read_model(**request, client=client_for_domain(D1DataDomain.LEARNING),
             store=production_read_store(), now=clock)
 
 

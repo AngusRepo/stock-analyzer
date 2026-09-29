@@ -235,8 +235,18 @@ Use the immutable execution packet's close; do not invent another calendar.
             raise ValueError('paired_nav_population_journal_registration_mismatch')
         if any(session_closes[pair_id, day] > clock for day in rows):
             raise ValueError('paired_nav_population_journal_close_not_observable')
+        from services.paired_native_prestart import succession
+        from services.paired_nav_unobserved import unobserved_pair
+        superseded = sorted(day for day, snapshot_id in registered.items()
+            if succession(query, old_snapshot_id=snapshot_id))
+        unobserved = sorted(day for day, snapshot_id in registered.items()
+            if unobserved_pair(execution_snapshot_id=snapshot_id, query=query,
+                observed_at=_observed_at or clock))
+        if set(superseded) & set(unobserved) or unobserved and rows:
+            raise ValueError('paired_nav_population_unobserved_lineage_invalid')
         unaccounted = sorted(day for day in registered if day <= business_date
-            and session_closes[pair_id, day] <= clock and day not in rows)
+            and session_closes[pair_id, day] <= clock and day not in rows
+            and day not in superseded and day not in unobserved)
         future = sorted(day for day in registered if day > business_date or session_closes[pair_id, day] > clock)
         open_sessions = any(day <= business_date for day in future)
         closure = closure_for_pair(pair_id, signal_date=business_date, query=query,
@@ -247,11 +257,14 @@ Use the immutable execution packet's close; do not invent another calendar.
                 or rows[max(rows)] != closure['final_execution_snapshot_id']):
             raise ValueError('paired_nav_population_lifecycle_evidence_mismatch')
         info.update(execution_status='registered_evidence_missing' if unaccounted else
+            'unobserved_first_session' if unobserved else 'superseded_before_first_session' if superseded else
             'awaiting_session_close' if open_sessions else
             'observing' if rows else 'awaiting_session' if registered else 'not_registered',
-            lifecycle_status='comparison_closed' if closure else 'open' if has_lifecycle else 'unknown',
+            lifecycle_status='comparison_closed' if closure else 'unobserved_closed' if unobserved else
+                'superseded' if superseded else 'open' if has_lifecycle else 'unknown',
             successor_pair_id=closure['successor_pair_id'] if closure else None,
             registered_session_dates=sorted(registered), unaccounted_session_dates=unaccounted,
+            unobserved_session_dates=unobserved, superseded_session_dates=superseded,
             upcoming_session_dates=future, accounted_sessions=len(rows),
             exact_nav_sessions=sum(o.net_return_delta is not None for o in evidence.observations) if evidence else 0,
             evidence_checksum=evidence.checksum if evidence else None)

@@ -71,7 +71,10 @@ def registered_pairs(*, signal_date, query):
     active = []
     for row in rows:
         from services.paired_native_prestart import succession
+        from services.paired_nav_unobserved import unobserved_pair
         if succession(query, old_snapshot_id=row['snapshot_id']):
+            continue
+        if unobserved_pair(execution_snapshot_id=row['snapshot_id'], query=query):
             continue
         execution = read_snapshot(query, row['snapshot_id'])
         if (execution['payload']['content'].get('prestart_predecessor_snapshot_id')

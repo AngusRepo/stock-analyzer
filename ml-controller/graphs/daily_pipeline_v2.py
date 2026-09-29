@@ -2295,6 +2295,21 @@ def _build_active8_evidence_only_recommendation_result(
     }
 
 
+def _require_frozen_allocation_context(collection: dict | None) -> str:
+    """L4 plan publication must have its immutable NAV parent before D1 writes."""
+    if isinstance(collection, dict) and collection.get('status') == 'allocation_context_frozen':
+        snapshot_id = collection.get('snapshot_id')
+        if isinstance(snapshot_id, str) and re.fullmatch(r'[0-9a-f]{64}', snapshot_id):
+            return snapshot_id
+    stage = collection.get('stage') if isinstance(collection, dict) else None
+    reason = collection.get('reason') if isinstance(collection, dict) else None
+    if not isinstance(stage, str) or not re.fullmatch(r'[a-z0-9_]+', stage):
+        stage = 'unknown'
+    if not isinstance(reason, str) or not re.fullmatch(r'(?:paired_nav_|native_|paired_native_)[a-z0-9_]+', reason):
+        reason = 'paired_nav_source_or_capture_failed'
+    raise RuntimeError(f'paired_nav_allocation_context_unavailable:{stage}:{reason}')
+
+
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
     Preserve ML advice, compute Score V2, then let L4 own sparse allocation.
@@ -2595,6 +2610,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         run_allocation=apply_sparse_tangent_allocation,
     )
     if distribution_policy is not None:
+        _require_frozen_allocation_context(paired_nav_collection)
+    if distribution_policy is not None:
         plans = [row.pop('_l4_portfolio_plan') for row in final if '_l4_portfolio_plan' in row]
         if len(plans) != 1:
             raise RuntimeError('l4_distribution_portfolio_plan_missing')
@@ -2799,6 +2816,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     Predictions and recommendation projections use separate checked writes.
     NAV execution is reported only after exact prediction readback.
     """
+    if state.get('l4_pending_plan') is not None:
+        _require_frozen_allocation_context(state.get('paired_nav_collection'))
     _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_write_d1")
     run_date = state["run_date"]

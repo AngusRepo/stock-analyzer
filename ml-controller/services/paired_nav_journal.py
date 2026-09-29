@@ -851,6 +851,11 @@ def mature_staged_pairs(*, business_date: str, query: Query, writer: Writer,
             break
         for row in expected:
             snapshot_id = row['snapshot_id']
+            from services.paired_native_prestart import succession
+            from services.paired_nav_unobserved import unobserved_pair
+            if (succession(query, old_snapshot_id=snapshot_id)
+                    or unobserved_pair(execution_snapshot_id=snapshot_id, query=query)):
+                continue
             packet = read_snapshot(query, snapshot_id)['payload']['content']
             session = date.fromisoformat(packet['session_date']).isoformat()
             if session > business_date:

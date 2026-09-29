@@ -41,8 +41,11 @@ remote and live-source ancestry checks immediately before publication.
 
 The parallel evening pipeline release must finish its Controller/Paper
 sequence before this Worker release. That sequence's previously approved
-Paper quote-age policy belongs to its release; this D1 change does not create
-or alter any Paper admission, native fingerprint or equivalence certificate.
+Paper quote-age policy belongs to its release. The source-build record is
+updated to the explicitly approved
+`native-paper-v1:841102c50a88140579a2afb9fb86daa143df34d5f126e8f942aa3bbb38752553`.
+An isolated rebuild attributes that change solely to the preserved registry
+source. Paper runtime admission and equivalence certificates are unchanged.
 
 No cold-table drain, retention duration, scheduler frequency, RAM/CPU,
 Cloud Run or Modal deployment is part of this D1 release. No paid pipeline

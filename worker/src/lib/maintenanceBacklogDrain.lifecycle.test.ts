@@ -292,16 +292,20 @@ test('a concurrent successful terminal receipt wins over stale failure without a
   } finally { f.sql.close() }
 })
 
-test('HTTP enqueue receipt cannot downgrade a queue terminal ticket, and duplicate is not success', async () => {
+for (const admittedAt of ['2026-09-29T15:59:50Z', '2026-09-29T16:00:10Z']) {
+test(`HTTP enqueue receipt cannot downgrade a queue terminal ticket, and duplicate is not success (${admittedAt})`, async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(admittedAt) })
   const f = fixture()
   try {
     const routes = createAdminTriggerRoutes({ buildTaskMap: (_c, context) => ({ 'audit-json-retention': async () => {
-      const queued = await enqueueMaintenanceBacklogDrain(f.env, { task: 'audit-json-retention', runDate: '2026-09-29',
+      const queued = await enqueueMaintenanceBacklogDrain(f.env, { task: 'audit-json-retention', runDate: context!.businessDate!,
         runId: context!.schedulerRunId, schedulerTicketId: context!.schedulerTicketId, schedulerRunId: context!.schedulerRunId, auditJsonOptions: options })
       if (!queued.queued) return `audit_json_retention status=skipped durable=true queued=false reason=active run_id=${queued.runId}`
       // Queue completion wins the race before the initiating HTTP handler returns.
+      // It retains the admitted business date even if completion crosses TW midnight.
+      t.mock.timers.setTime(Date.parse(admittedAt) + 60_000)
       await updateSchedulerExecutionTicket(f.db as any, { ticketId: context!.schedulerTicketId!, runId: context!.schedulerRunId!, status: 'success', authority: 'durable_queue', summary: 'actual queue complete' })
-      await logSchedulerResult(f.env.KV, 'audit-json-retention', { status: 'success', summary: 'actual queue complete', duration_ms: 0, run_id: context!.schedulerRunId })
+      await logSchedulerResult(f.env.KV, 'audit-json-retention', { status: 'success', summary: 'actual queue complete', duration_ms: 0, run_id: context!.schedulerRunId, run_date: context!.businessDate })
       return `audit_json_retention status=running durable=true queued=true run_id=${queued.runId} maintenance_owner=durable_queue`
     } }) })
     const response = await routes.request('https://stockvision.invalid/api/admin/trigger/audit-json-retention?force=1&sync=1&durable=1', { method: 'POST' }, f.env)
@@ -309,12 +313,16 @@ test('HTTP enqueue receipt cannot downgrade a queue terminal ticket, and duplica
     const body = await response.json() as any
     assert.equal(f.ticketRow(body.ticket_id).status, 'success')
     assert.equal(f.ticketRow(body.ticket_id).last_summary, 'actual queue complete')
-    const logKey = [...f.values.keys()].find(k => /^scheduler:run:audit-json-retention:/.test(k))!
+    const businessDate = String(f.ticketRow(body.ticket_id).business_date)
+    assert.equal(businessDate, new Date(Date.parse(admittedAt) + 8 * 3_600_000).toISOString().slice(0, 10))
+    const logKey = `scheduler:run:audit-json-retention:${businessDate}`
     assert.equal(JSON.parse(f.values.get(logKey)!).status, 'success')
     assert.equal(JSON.parse(f.values.get(logKey)!).summary, 'actual queue complete')
+    assert.equal(JSON.parse(f.values.get(logKey)!).run_id, body.run_id)
     const duplicate = await routes.request('https://stockvision.invalid/api/admin/trigger/audit-json-retention?force=1&sync=1&durable=1', { method: 'POST' }, f.env)
     const duplicateBody = await duplicate.json() as any
     assert.equal(f.ticketRow(duplicateBody.ticket_id).status, 'skipped')
     assert.equal(f.ticketRow(body.ticket_id).status, 'success')
   } finally { f.sql.close() }
 })
+}

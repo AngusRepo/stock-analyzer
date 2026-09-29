@@ -1222,6 +1222,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     pending: PendingBuy,
     s12Sidecar: S12RuntimeSidecar | null,
     l5Quality: L5QuoteQuality | null,
+    l5GateForLotSizingOnly = false,
   ): Promise<{
     decision: FiveSlotDecision | null
     context: Record<string, unknown>
@@ -1241,7 +1242,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       s12Advisory,
       s12HardVeto,
       s12VwapFastAcceptance: s12VwapFast,
-      l5Pass: l5Quality?.status === 'pass',
+      l5Pass: l5GateForLotSizingOnly || l5Quality?.status === 'pass',
     }
     const holdings = await loadCurrentCapitalHoldings()
     const account = {
@@ -1269,7 +1270,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       plan, symbol: pending.symbol, holdings, nav: account.totalPortfolio, cash: account.cash,
       dailyRemaining: account.dailyRemaining, riskExposureCap: cb.targetExposurePct ?? 0,
       nameCap: effectiveMaxPositionPct, maxPositions: maxPos,
-      hardVeto: s12HardVeto || l5Quality?.status !== 'pass',
+      hardVeto: s12HardVeto || (!l5GateForLotSizingOnly && l5Quality?.status !== 'pass'),
       feeRate: cfg.fees.commission, minCommission: cfg.fees.minCommission,
     }) : buildFiveSlotExecutionDecision({ account, marketRiskLevel: marketRisk.risk_level,
       marketContext: allocatorMarketContext, config, holdings, candidate })
@@ -1308,6 +1309,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         s12_vwap_fast_acceptance: s12VwapFast,
         l5_status: l5Quality?.status ?? null,
         l5_reasons: l5Quality?.reasons.join('|') ?? null,
+        l5_quote_age_ms: l5Quality?.metrics.quoteAgeMs ?? null,
+        l5_max_quote_age_ms: l5Quality?.metrics.maxQuoteAgeMs ?? null,
         nav_slot_floor_ratio: decision?.slotFloorRatio ?? null,
         nav_slot_floor_budget: decision == null ? null : Math.round(decision.slotFloorBudget),
         nav_slot_floor_reasons: decision?.slotFloorReasons.join('|') ?? null,
@@ -1318,11 +1321,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     pending: PendingBuy,
     s12Sidecar: S12RuntimeSidecar | null,
     l5Quality: L5QuoteQuality | null,
+    l5GateForLotSizingOnly = false,
   ): Promise<{
     decision: FiveSlotDecision | null
     context: Record<string, unknown>
   }> => {
-    return buildExecutionAllocatorEvaluation(pending, s12Sidecar, l5Quality)
+    return buildExecutionAllocatorEvaluation(pending, s12Sidecar, l5Quality, l5GateForLotSizingOnly)
   }
   const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map(toCapitalHolding)
   const capitalPlanPreview = buildFiveSlotCapitalPlan({
@@ -1634,6 +1638,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     let finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
     const l5Thresholds={
         maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
         maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
         minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
         minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
@@ -1642,6 +1647,32 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           : -0.7
     }
     let finLabL5Quality = finLabL5Quote ? quoteQualityFromL5(finLabL5Quote,l5Thresholds) : null
+    const l4PlanId = planIdFromWatchPoints(pending.watch_points)
+    const fetchOddLotL5 = async () => {
+      const odd = (await batchGetExecutionOrderbooks([pending.symbol], {
+        SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL, PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
+        marketDataLotType: 'odd_lot',
+      })).get(pending.symbol)
+      const oddL5 = odd?.lotType === 'odd_lot' ? normalizeFinLabL5Quote(pending.symbol, {
+        provider: 'shioaji_proxy_orderbook', lot_type: 'odd_lot', last_price: odd.last,
+        bid_prices: odd.bidPrices, ask_prices: odd.askPrices, bid_volumes: odd.bidVolumes, ask_volumes: odd.askVolumes,
+        source_time: odd.quoteTime, received_at: odd.confirmationTime,
+      }, paperExecutionDate()) : null
+      return { odd, oddL5, quality: quoteQualityFromL5(oddL5, l5Thresholds) }
+    }
+    let oddLotBookChecked = false
+    if (l4PlanId && finLabL5Quality?.status !== 'pass') {
+      // Size the L4 target without the board-lot L5 veto; this decision cannot execute.
+      const sizing = await buildExecutionAllocatorPlan(pending, s12Sidecar, finLabL5Quality, true)
+      if (sizing.decision && ['buy', 'add'].includes(sizing.decision.action)
+        && sizing.decision.budgetCap < pending.ml_entry_price * 1000) {
+        const { odd, oddL5, quality } = await fetchOddLotL5()
+        oddLotBookChecked = true
+        finLabL5Quote = oddL5
+        finLabL5Quality = quality
+        if (odd && quality.status === 'pass') currentOhlc = { ...currentOhlc, ...odd }
+      }
+    }
     const allocatorPlan = await buildExecutionAllocatorPlan(pending, s12Sidecar, finLabL5Quality)
     const allocatorDecision = allocatorPlan.decision
     if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision, allocatorPlan.context)
@@ -1663,21 +1694,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
 
-    if (planIdFromWatchPoints(pending.watch_points) && allocatorDecision.budgetCap<pending.ml_entry_price*1000) {
+    if (l4PlanId && allocatorDecision.budgetCap < pending.ml_entry_price * 1000 && !oddLotBookChecked) {
       // A small target gap requires the actual odd-lot book; never relabel a board-lot quote.
-      const odd=(await batchGetExecutionOrderbooks([pending.symbol],{
-        SHIOAJI_PROXY_URL:env.SHIOAJI_PROXY_URL,PROXY_SERVICE_TOKEN:env.PROXY_SERVICE_TOKEN,
-        marketDataLotType:'odd_lot'})).get(pending.symbol)
-      const oddL5=odd?.lotType==='odd_lot' ? normalizeFinLabL5Quote(pending.symbol,{
-        provider:'shioaji_proxy_orderbook',lot_type:'odd_lot',last_price:odd.last,
-        bid_prices:odd.bidPrices,ask_prices:odd.askPrices,bid_volumes:odd.bidVolumes,ask_volumes:odd.askVolumes,
-        source_time:odd.quoteTime,received_at:odd.confirmationTime},paperExecutionDate()) : null
-      const quality=quoteQualityFromL5(oddL5,l5Thresholds)
-      if (!odd || quality.status!=='pass') {
-        recordActiveExecutionStatus(pending.symbol,'quote_unavailable','l4_odd_lot_book_not_ready',JSON.stringify(quality))
+      const { odd, oddL5, quality } = await fetchOddLotL5()
+      if (!odd || quality.status !== 'pass') {
+        recordActiveExecutionStatus(pending.symbol, 'quote_unavailable', 'l4_odd_lot_book_not_ready', JSON.stringify(quality))
         continue
       }
-      currentOhlc={...currentOhlc,...odd};finLabL5Quote=oddL5;finLabL5Quality=quality
+      currentOhlc = { ...currentOhlc, ...odd }
+      finLabL5Quote = oddL5
+      finLabL5Quality = quality
     }
 
     if (currentOhlc?.source !== 'shioaji') {

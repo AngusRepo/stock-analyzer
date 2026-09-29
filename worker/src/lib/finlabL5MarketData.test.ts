@@ -76,6 +76,38 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
+  const payload = {
+    price: 100,
+    bid_prices: [99.9, 99.8, 99.7, 99.6, 99.5],
+    ask_prices: [100.1, 100.2, 100.3, 100.4, 100.5],
+    bid_volumes: [12, 10, 8, 6, 4],
+    ask_volumes: [8, 7, 6, 5, 4],
+    source_time: '2026-05-28T01:00:00Z',
+  }
+  const thresholds = {
+    maxQuoteAgeMs: 3000,
+    maxOddLotQuoteAgeMs: 10000,
+    maxSpreadPct: 0.006,
+    minDepthLevels: 5,
+    minTopAskVolume: 1,
+    minOrderBookImbalance: -0.7,
+  }
+  const oddLot = normalizeFinLabL5Quote('2330', { ...payload, lot_type: 'odd_lot' }, new Date('2026-05-28T01:00:07Z'))
+  const boardLot = normalizeFinLabL5Quote('2330', payload, new Date('2026-05-28T01:00:07Z'))
+  const oldOddLot = normalizeFinLabL5Quote('2330', { ...payload, lot_type: 'odd_lot' }, new Date('2026-05-28T01:00:11Z'))
+  const wideOddLot = normalizeFinLabL5Quote('2330', {
+    ...payload, lot_type: 'odd_lot', bid_prices: [98, 97.9, 97.8, 97.7, 97.6],
+  }, new Date('2026-05-28T01:00:07Z'))
+
+  const oddQuality = quoteQualityFromL5(oddLot, thresholds)
+  assert(oddQuality.status === 'pass', 'odd-lot book within two matching intervals should pass freshness')
+  assert(oddQuality.metrics.maxQuoteAgeMs === 10000, 'odd-lot audit should expose its applied age limit')
+  assert(quoteQualityFromL5(boardLot, thresholds).reasons.includes('stale_l5_quote'), 'board-lot book must keep the three-second limit')
+  assert(quoteQualityFromL5(oldOddLot, thresholds).reasons.includes('stale_l5_quote'), 'old odd-lot book must still block')
+  assert(quoteQualityFromL5(wideOddLot, thresholds).reasons.includes('wide_l5_spread'), 'fresh odd-lot book must still meet spread quality')
+}
+
+{
   const quote = normalizeFinLabL5Quote('2330', {
     price: 100,
     bid_prices: [99.9, 99.8, 99.7, 99.6, 99.5],

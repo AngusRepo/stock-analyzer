@@ -20,6 +20,7 @@ export interface FinLabL5Quote {
 
 export interface L5QuoteQualityThresholds {
   maxQuoteAgeMs: number
+  maxOddLotQuoteAgeMs?: number
   maxSpreadPct: number
   minDepthLevels: number
   minTopAskVolume: number
@@ -31,6 +32,7 @@ export interface L5QuoteQuality {
   reasons: string[]
   metrics: {
     quoteAgeMs?: number | null
+    maxQuoteAgeMs?: number
     spreadPct?: number | null
     depthLevels?: number
     topAskVolume?: number | null
@@ -229,7 +231,10 @@ export function quoteQualityFromL5(
   const degraded: string[] = []
   const depthLevels = Math.min(quote.bidPrices.length, quote.askPrices.length)
   if (depthLevels < thresholds.minDepthLevels) degraded.push('l5_depth_incomplete')
-  if (quote.quoteAgeMs != null && quote.quoteAgeMs > thresholds.maxQuoteAgeMs) reasons.push('stale_l5_quote')
+  const maxQuoteAgeMs = quote.lotType === 'odd_lot'
+    ? thresholds.maxOddLotQuoteAgeMs ?? thresholds.maxQuoteAgeMs
+    : thresholds.maxQuoteAgeMs
+  if (quote.quoteAgeMs != null && quote.quoteAgeMs > maxQuoteAgeMs) reasons.push('stale_l5_quote')
   if (quote.spreadPct != null && quote.spreadPct > thresholds.maxSpreadPct) reasons.push('wide_l5_spread')
   if ((quote.askVolumes[0] ?? 0) < thresholds.minTopAskVolume) reasons.push('thin_top_ask')
   if (quote.orderBookImbalance != null && quote.orderBookImbalance < thresholds.minOrderBookImbalance) reasons.push('weak_l5_imbalance')
@@ -240,6 +245,7 @@ export function quoteQualityFromL5(
     reasons: [...reasons, ...degraded],
     metrics: {
       quoteAgeMs: quote.quoteAgeMs,
+      maxQuoteAgeMs,
       spreadPct: quote.spreadPct,
       depthLevels,
       topAskVolume: quote.askVolumes[0] ?? null,

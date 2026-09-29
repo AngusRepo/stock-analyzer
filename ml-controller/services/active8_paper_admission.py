@@ -60,6 +60,12 @@ def validate_admission(admission, *, artifact, now=None):
 
 RUNTIME_SCHEMA = 'active8-paper-runtime-approval-v1'
 RUNTIME_KEY = 'ml:active8:paper_runtime_approval:v1'
+ODD_LOT_QUOTE_AGE_CHANGE = {
+    'schema_version': 'active8-paper-odd-lot-quote-age-change-v1',
+    'variable': 'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS',
+    'previous': 'absent',
+    'approved': '10000',
+}
 
 
 def runtime_configuration_identity(configuration):
@@ -110,6 +116,15 @@ def validate_runtime_approval(approval, admission, *, now=None):
         for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
             if str(policy['variables'].get(flag, '')).lower() in {'1','true','yes','enabled','on'}:
                 raise RuntimeError('active8_paper_live_execution_forbidden')
+    change = approval.get('approved_execution_policy_change')
+    if change is not None:
+        key = ODD_LOT_QUOTE_AGE_CHANGE['variable']
+        prior = before['native_execution_policy']['variables']
+        current = after['native_execution_policy']['variables']
+        if (change != ODD_LOT_QUOTE_AGE_CHANGE or key in prior
+                or current.get(key) != ODD_LOT_QUOTE_AGE_CHANGE['approved']):
+            raise RuntimeError('active8_paper_runtime_policy_change_invalid')
+        current.pop(key)
     if digest(before) != digest(after):
         raise RuntimeError('active8_paper_runtime_approval_policy_changed')
     return deepcopy(approval)

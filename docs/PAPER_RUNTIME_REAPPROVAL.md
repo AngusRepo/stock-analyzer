@@ -6,6 +6,8 @@ The supplemental record embeds the exact original admission and a complete curre
 
 Only GA candidate_latest diagnostics are omitted from comparison, and only when the GA context explicitly declares shadow_learning_context, applies_to_trading_config=false and effect_policy.mutates_trading_config=false. Champion, effective policy and unknown data remain checked. Both original and supplemental approvals are reread before returning a grant. Original pointer/history/NAV review records are not rewritten or credited to the new runtime.
 
+The September 29 odd-lot release adds one Paper execution setting absent from the original admission: `FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS="10000"`. A supplemental approval may authorize this one exact addition only when its checksum covers `approved_execution_policy_change={"schema_version":"active8-paper-odd-lot-quote-age-change-v1","variable":"FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS","previous":"absent","approved":"10000"}`. A missing declaration, a different value, a prior value in the original admission, or any other policy change still fails closed. This is an explicit new Paper execution policy approval; it does not certify source equivalence or transfer NAV maturity.
+
 ## Operator procedure
 
 1. Obtain explicit authorization for the exact runtime change. Read current original admission, immutable publication, full configuration and source identities. Prepare a supplemental record with validate_runtime_approval; compare all changed fields.

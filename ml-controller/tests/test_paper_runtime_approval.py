@@ -90,6 +90,36 @@ def test_only_inactive_ga_candidate_metadata_is_projected(runtime_pair):
     assert 'candidate_latest' in paper.runtime_configuration_identity(config)['native_execution_policy']['frozen_kv']['ml:adaptive_params']['bandit_context']['ga_optimizer']
 
 
+def test_exact_odd_lot_quote_age_change_requires_signed_operator_declaration(runtime_pair):
+    admission, approval = runtime_pair
+    approval['configuration']['native_execution_policy']['variables'][
+        'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS'] = '10000'
+    reseal(approval)
+    with pytest.raises(RuntimeError, match='approval_policy_changed'):
+        paper.validate_runtime_approval(approval, admission)
+
+    approval['approved_execution_policy_change'] = deepcopy(paper.ODD_LOT_QUOTE_AGE_CHANGE)
+    reseal(approval)
+    assert paper.validate_runtime_approval(approval, admission) == approval
+
+    approval['configuration']['native_execution_policy']['variables'][
+        'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS'] = '20000'
+    reseal(approval)
+    with pytest.raises(RuntimeError, match='policy_change_invalid'):
+        paper.validate_runtime_approval(approval, admission)
+
+
+def test_odd_lot_change_cannot_hide_another_execution_policy_change(runtime_pair):
+    admission, approval = runtime_pair
+    variables = approval['configuration']['native_execution_policy']['variables']
+    variables['FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS'] = '10000'
+    variables['FINLAB_L5_MAX_SPREAD_PCT'] = '0.01'
+    approval['approved_execution_policy_change'] = deepcopy(paper.ODD_LOT_QUOTE_AGE_CHANGE)
+    reseal(approval)
+    with pytest.raises(RuntimeError, match='approval_policy_changed'):
+        paper.validate_runtime_approval(approval, admission)
+
+
 def test_runtime_reapproval_restores_only_paper_and_keeps_publication_immutable(approved,monkeypatch):
     (client,row,_,_,current),admission=approved
     add_runtime_fields(current)

@@ -153,14 +153,35 @@ function sqliteUtcMs(value: string): number {
 export function pipelineProvenanceRecoveryDecision(input: {
   failure: PipelineExecutionFailure | null
   workerVersion?: Bindings['CF_VERSION_METADATA']
+  runtimeApproval?: unknown
 }): PipelineProvenanceRecoveryDecision {
   const failure = input.failure
   if (!failure || failure.status !== 'error') return { retry: false, reason: 'pipeline_not_error' }
   const error = String(failure.last_error ?? '')
   const servingContractFailure = /(?:^|Error: )active8_ensemble_base_(?:identity_mismatch|not_serving):(?:LightGBM|XGBoost|ExtraTrees|TabM|GNN|DLinear|TimeXer|PatchTST|iTransformer)(?::|$)/.test(error)
   const cloudFailure = /^pipeline_cloud_run_failed:(memory_limit|task_failed);completed_at=([^;]+);execution=[a-z0-9-]+$/.exec(error)
-  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure) {
+  const paperApprovalFailure = error === 'active8_nav_current_configuration_changed_or_unverified'
+  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure && !paperApprovalFailure) {
     return { retry: false, reason: 'pipeline_error_not_provenance_mismatch' }
+  }
+  const failureMs = sqliteUtcMs(cloudFailure ? cloudFailure[2] : String(failure.updated_at ?? ''))
+  if (paperApprovalFailure) {
+    const approval = input.runtimeApproval
+    const record = approval && typeof approval === 'object' && !Array.isArray(approval)
+      ? approval as Record<string, unknown> : null
+    const change = record?.approved_execution_policy_change
+    const policy = change && typeof change === 'object' && !Array.isArray(change)
+      ? change as Record<string, unknown> : null
+    const approvedMs = Date.parse(String(record?.approved_at ?? ''))
+    if (record?.schema_version !== 'active8-paper-runtime-approval-v1'
+      || record.approved !== true
+      || policy?.schema_version !== 'active8-paper-odd-lot-quote-age-change-v1'
+      || policy.variable !== 'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS'
+      || policy.previous !== 'absent' || policy.approved !== '10000'
+      || !Number.isFinite(failureMs) || !Number.isFinite(approvedMs)
+      || approvedMs <= failureMs) {
+      return { retry: false, reason: 'paper_runtime_reapproval_not_verified_after_failure' }
+    }
   }
   const sourceSha = String(input.workerVersion?.tag ?? '').trim()
   const versionId = String(input.workerVersion?.id ?? '').trim()
@@ -168,7 +189,6 @@ export function pipelineProvenanceRecoveryDecision(input: {
   if (!/^[0-9a-f]{40}$/.test(sourceSha) || !versionId || !deployedAt) {
     return { retry: false, reason: 'worker_release_identity_unavailable' }
   }
-  const failureMs = sqliteUtcMs(cloudFailure ? cloudFailure[2] : String(failure.updated_at ?? ''))
   const deployedMs = Date.parse(deployedAt)
   if (!Number.isFinite(failureMs) || !Number.isFinite(deployedMs)) {
     return { retry: false, reason: 'release_timestamp_unparseable' }
@@ -176,7 +196,8 @@ export function pipelineProvenanceRecoveryDecision(input: {
   if (deployedMs <= failureMs) {
     return { retry: false, reason: 'worker_release_not_newer_than_failure' }
   }
-  return { retry: true, reason: cloudFailure ? 'new_worker_release_after_cloud_failure' : 'new_worker_release_after_provenance_failure' }
+  return { retry: true, reason: paperApprovalFailure ? 'new_worker_release_after_paper_runtime_reapproval'
+    : cloudFailure ? 'new_worker_release_after_cloud_failure' : 'new_worker_release_after_provenance_failure' }
 }
 
 export async function reconcilePipelineCloudFailure(
@@ -228,9 +249,12 @@ export async function enqueuePostScreenerPipelineRecovery(
       FROM pipeline_stage_runs
      WHERE business_date=? AND stage='pipeline_execution'
   `).bind(options.businessDate).first<PipelineExecutionFailure>()
+  const runtimeApproval = failure?.last_error === 'active8_nav_current_configuration_changed_or_unverified'
+    ? await env.KV.get('ml:active8:paper_runtime_approval:v1', 'json') : null
   const decision = pipelineProvenanceRecoveryDecision({
     failure: failure ?? null,
     workerVersion: options.workerVersion,
+    runtimeApproval,
   })
   if (!decision.retry || !failure) {
     return {

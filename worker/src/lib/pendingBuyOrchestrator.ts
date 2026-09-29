@@ -1,5 +1,5 @@
 import { requestL4Replan } from './l4Replan'
-import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, planIdFromWatchPoints, readL4PortfolioPlan } from './l4PortfolioPlan'
+import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, planIdFromWatchPoints, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import {
   runBuyDebateBatchViaController,
@@ -215,6 +215,64 @@ function parseWatchPoints(raw: unknown): string[] {
   } catch {
     return []
   }
+}
+
+interface CompletedL4DowngradeRow {
+  request_json: string
+  source_payload_json: string
+}
+
+export function settledL4DowngradeSymbols(
+  plan: L4PortfolioPlan,
+  rows: CompletedL4DowngradeRow[],
+): Set<string> {
+  const symbols = new Set<string>()
+  for (const row of rows) {
+    try {
+      const request = JSON.parse(row.request_json) as {
+        reason?: string
+        weight_caps?: Record<string, number>
+      }
+      const source = JSON.parse(row.source_payload_json) as L4PortfolioPlan
+      if (request.reason !== 'debate_risk_cap' || source.signal_date !== plan.signal_date) continue
+      for (const [symbol, cap] of Object.entries(request.weight_caps ?? {})) {
+        const originalWeight = source.targets?.[symbol]?.weight
+        const currentWeight = plan.targets[symbol]?.weight
+        const appliedCap = plan.constraints.name_caps?.[symbol]
+        if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0
+          && typeof originalWeight === 'number' && originalWeight > cap
+          && typeof currentWeight === 'number' && currentWeight > 0 && currentWeight <= cap + 1e-8
+          && typeof appliedCap === 'number' && Math.abs(appliedCap - cap) <= 1e-8) {
+          symbols.add(symbol)
+        }
+      }
+    } catch {
+      // Malformed evidence must not promote a pending debate.
+    }
+  }
+  return symbols
+}
+
+async function loadSettledL4Downgrades(env: Bindings, plan: L4PortfolioPlan): Promise<Set<string>> {
+  const db = databaseForDataDomain(env, 'paper')
+  const { results } = await db.prepare(`
+    WITH RECURSIVE lineage(plan_id, parent_plan_id, depth) AS (
+      SELECT plan_id, json_extract(payload_json, '$.parent_plan_id'), 0
+        FROM l4_portfolio_plans_v1 WHERE plan_id = ? AND activated = 1
+      UNION ALL
+      SELECT p.plan_id, json_extract(p.payload_json, '$.parent_plan_id'), lineage.depth + 1
+        FROM l4_portfolio_plans_v1 p JOIN lineage ON p.plan_id = lineage.parent_plan_id
+       WHERE p.activated = 1 AND lineage.depth < 32
+    )
+    SELECT o.request_json, source.payload_json AS source_payload_json
+      FROM l4_replan_outbox_v1 o
+      JOIN lineage result ON result.plan_id = o.result_plan_id
+      JOIN lineage ancestor ON ancestor.plan_id = o.source_plan_id
+      JOIN l4_portfolio_plans_v1 source ON source.plan_id = o.source_plan_id
+     WHERE o.status = 'completed' AND source.signal_date = ?
+       AND json_extract(o.request_json, '$.reason') = 'debate_risk_cap'
+  `).bind(plan.plan_id, plan.signal_date).all<CompletedL4DowngradeRow>()
+  return settledL4DowngradeSymbols(plan, results ?? [])
 }
 
 function formatDebateWatchPoints(watchPoints: string[] | undefined): string | null {
@@ -672,6 +730,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     if (cfg.l4Distribution && (!activeL4Plan || activeL4Plan.signal_date !== sourceRecoDate)) {
       throw new Error('l4_distribution_pending_plan_unavailable')
     }
+    const settledL4Downgrades = activeL4Plan
+      ? await withD1Retry('settled_l4_downgrades', () => loadSettledL4Downgrades(env, activeL4Plan))
+      : new Set<string>()
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
@@ -952,7 +1013,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         incAudit(filterAudit, 'alpha_risk_debate_required')
       }
 
-      let debateVerdict = 'PENDING'
+      let debateVerdict = settledL4Downgrades.has(rec.symbol) ? 'DOWNGRADE' : 'PENDING'
       let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
@@ -1278,7 +1339,6 @@ export async function reconcilePendingBuyDebates(
       if (source.constraints.name_caps?.[item.symbol] == null) {
         await requestL4Replan(env,downgradePlanId,[],'debate_risk_cap',
           {[item.symbol]:source.targets[item.symbol].weight*downgradeMultiplier})
-        continue
       }
     }
     const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2Context.get(item.symbol))

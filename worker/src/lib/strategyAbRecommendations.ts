@@ -102,8 +102,12 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
     const { manifest, content } = matches[0]
     const arms = content.allocation_preview ?? { A: content.baseline?.output, B: content.candidate?.output }
     if (arms.A && arms.B) {
-      result.A = allocationView(arms.A, manifest.snapshot_id)
+      // The comparison's baseline is an isolated replay. The live A card must
+      // retain the formal L4 plan used by the paper account and pipeline.
       result.B = allocationView(arms.B, manifest.snapshot_id)
+      const registered = await learning.prepare("SELECT prospective FROM paired_nav_frozen_manifests_v1 WHERE signal_date=? AND snapshot_kind='execution_pair' AND source_run_id=? LIMIT 1")
+        .bind(date, manifest.source_run_id).first<{ prospective: number }>()
+      result.B_account_status = registered?.prospective === 1 ? 'registered' : 'selection_only'
       result.generated_at = manifest.frozen_at
       if (!manifest.prospective) result.scope = 'retrospective_research'
       return result

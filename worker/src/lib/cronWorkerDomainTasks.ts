@@ -10,6 +10,19 @@ import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { databaseForTable } from './dataDomainRegistry'
 import { ensurePaperCorporateSource } from './paperCorporateSource'
 import { recoverPaperMorningSetup } from './paperMorningRecovery'
+import { prefetchS12PreviousSessionSeeds } from './s12RuntimeBars'
+
+async function prefetchPendingS12Seeds(env: Bindings, date: string, symbols: string[]): Promise<string> {
+  if (!symbols.length) return 's12_seed=empty'
+  try {
+    const result = await prefetchS12PreviousSessionSeeds(env, date, symbols)
+    if (result.errors.length) console.warn('[S12] Previous-session prefetch:', result.errors)
+    return `s12_seed=${result.ready}/${result.requested}`
+  } catch (error) {
+    console.warn('[S12] Previous-session prefetch failed:', error instanceof Error ? error.message : String(error))
+    return 's12_seed=unavailable'
+  }
+}
 
 interface WorkerCronDeps {
   cron: string
@@ -33,7 +46,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
       const debate = await reconcilePendingBuyDebates(env, twTodayStr)
       const snapshot = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
       const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      return formatPendingBuyCronSummary(`${warmup}; morning=${recovery}`, state, { debate })
+      const s12Seed = await prefetchPendingS12Seeds(env, twTodayStr, snapshot.pendingBuys.map((buy) => buy.symbol))
+      return formatPendingBuyCronSummary(`${warmup}; morning=${recovery}; ${s12Seed}`, state, { debate })
     })
     return true
   }
@@ -46,7 +60,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
       await setupMorningPendingBuys(env)
       const snapshot = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
       const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      return formatPendingBuyCronSummary('morning setup done', state, { source: snapshot.source })
+      const s12Seed = await prefetchPendingS12Seeds(env, twTodayStr, snapshot.pendingBuys.map((buy) => buy.symbol))
+      return formatPendingBuyCronSummary(`morning setup done; ${s12Seed}`, state, { source: snapshot.source })
     })
     return true
   }

@@ -67,6 +67,8 @@ async function testReadback() {
     assert.equal(absent.A.status, 'unavailable')
     assert.equal(absent.B.status, 'unavailable')
     const date = '2026-09-24'
+    insert.run(date, 'formal-a-plan', JSON.stringify({ signal_date: date,
+      plan_id: 'formal-a-plan', weights: { '2330': .3 } }))
     const tag = { schema_version: 'strategy-ab-price-threehead-exo-mlp-v1', experiment_id: 'e'.repeat(64),
       role: 'B', recipe: 'exo137_timexer_three_head_scalar_ev_mlp',
       baseline_primary: { role: 'A', recipe: 'price_timexer_three_head', bundle_checksum: 'a'.repeat(64), l3_checksum: 'b'.repeat(64) },
@@ -82,10 +84,17 @@ async function testReadback() {
       db.prepare('INSERT INTO paired_nav_frozen_parts_v1 VALUES(?,0,?)').run(id, raw)
       return checksum
     }
-    const oldHash = await snapshot('old-execution', 'old-pair', 'execution_pair', '2026-09-24T12:00:00Z')
     await snapshot('old-allocation', 'old-pair', 'allocation_pair', '2026-09-24T11:00:00Z')
+    const selectionOnly = await readStrategyAbRecommendations(live, date)
+    assert.equal(selectionOnly.B.status, 'available')
+    assert.equal(selectionOnly.B_account_status, 'selection_only', 'B selection alone must not claim a complete NAV account')
+    const oldHash = await snapshot('old-execution', 'old-pair', 'execution_pair', '2026-09-24T12:00:00Z')
     const original = await readStrategyAbRecommendations(live, date)
     assert.equal(original.B.status, 'available')
+    assert.equal(original.B_account_status, 'registered')
+    assert.equal(original.A.source_id, 'formal-a-plan', 'A must retain the executable formal L4 plan')
+    assert.deepEqual(original.A.picks, [{ symbol: '2330', weight: .3 }],
+      'isolated comparison baseline must not overwrite the paper account A list')
     const newHash = await snapshot('new-execution', 'new-pair', 'execution_pair', '2026-09-25T12:00:00Z')
     await snapshot('new-allocation', 'new-pair', 'allocation_pair', '2026-09-25T11:00:00Z')
     assert.equal((await readStrategyAbRecommendations(live, date)).B.status, 'unavailable', 'Uncommitted successor remains ambiguous')

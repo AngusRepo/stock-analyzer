@@ -4,6 +4,7 @@ import {
   normalizeS12KbarSessionTimeSkew,
   s12ResearchTerminalDataSourceReason,
   validateS12DailyPriceDomain,
+  validatePreviousSessionSeedBars,
 } from './s12RuntimeBars'
 import type { IntradayRollingBar } from './intradayTechnicalSnapshot'
 import { readFileSync } from 'node:fs'
@@ -45,6 +46,20 @@ function bar(iso: string): IntradayRollingBar {
 
 function twText(ms: number): string {
   return new Date(ms + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 16)
+}
+
+{
+  const prior = [
+    { ...bar('2026-09-29T01:00:00.000Z'), close: 178 },
+    { ...bar('2026-09-29T05:29:00.000Z'), close: 180 },
+  ]
+  const current = bar('2026-09-30T01:00:00.000Z')
+  const valid = validatePreviousSessionSeedBars([...prior, current], '2026-09-30', '2026-09-29', 180)
+  assert(valid.error == null && valid.bars.length === 2, 'prior-session seed should use only the last confirmed prior date')
+  const stale = validatePreviousSessionSeedBars(prior, '2026-09-30', '2026-09-28', 180)
+  assert(stale.error === 'previous_session_date_mismatch', 'stale prior-session K bars must be rejected')
+  const adjusted = validatePreviousSessionSeedBars(prior, '2026-09-30', '2026-09-29', 100)
+  assert(adjusted.error === 'previous_session_price_domain_mismatch', 'adjusted K bars must not enter raw intraday S12')
 }
 
 {

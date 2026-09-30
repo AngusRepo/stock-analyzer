@@ -35,6 +35,8 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
         return <div key={role} className="min-w-0 rounded-xl border border-muted/40 bg-background/40 p-4">
           <h3 className="font-semibold">{role === 'A' ? 'A 主方案' : 'B 挑戰方案'}</h3>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{role === 'A' ? '價格 TimeXer＋L4 三頭' : '外生 TimeXer＋L4 三頭＋EV 殘差 MLP'}</p>
+          {role === 'B' && arm.status === 'available' && data.B_account_status === 'selection_only' &&
+            <p className="mt-2 text-xs text-amber-200">B 已產生盤前配置；完整帳戶績效尚未註冊，本日不得計入 NAV。</p>}
           {arm.status !== 'available' ? <p role="status" className="mt-4 text-sm text-amber-200">{arm.reason}</p> : <>
             <div className="mt-3 flex justify-between text-xs text-muted-foreground"><span>{arm.picks.length} 檔配置</span><span>現金 {(arm.cash_weight! * 100).toFixed(2)}%</span></div>
             {arm.picks.length === 0 ? <p className="mt-4 text-sm">已完成配置，本日持有現金。</p> :

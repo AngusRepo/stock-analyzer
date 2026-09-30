@@ -92,17 +92,42 @@ def test_failed_sources_are_not_reclassified(source, mutation):
 
 
 def test_real_setup_skips_only_unobservable_work_and_preserves_frozen_input(source, monkeypatch):
+    from services import paired_nav_l3_candidate
     db, collection, _, read = source
     original = window.missed_setup_window
     monkeypatch.setattr(window, 'missed_setup_window', partial(original,
         kv_read=read, now=stamp('2026-09-22T08:00:00+08:00')))
+    selected = []
+    def select(**kwargs):
+        selected.append(kwargs['snapshot_id'])
+        return {'status': 'allocation_pairs_frozen', 'plans': [{'snapshot_id': 'b-selection'}],
+                'nav_maturity_credit': 0, 'production_effect': False}
+    monkeypatch.setattr(paired_nav_l3_candidate, 'collect_ensemble_allocations', select)
     result = complete_pipeline_shadow(collection, query=db.query,
         writer=lambda *args, **kwargs: pytest.fail('late setup must not write comparisons'),
         enforce_execution_window=True)
     assert pipeline_shadow_errors(result) == []
     assert result['status'] == 'missed_execution_window'
+    assert selected == [collection['snapshot_id']]
+    assert result['nav_maturity_credit'] == 0
+    assert 'candidate_allocations' not in result and 'native_execution' not in result
     failed = {**result, 'atomic_daily': {'status': 'failed', 'reason': 'paired_nav_actual_source_failure'}}
     assert pipeline_shadow_errors(failed) == ['paired_nav:atomic_daily:paired_nav_actual_source_failure']
+
+
+def test_late_b_selection_failure_is_visible(source, monkeypatch):
+    from services import paired_nav_l3_candidate
+    db, collection, _, read = source
+    original = window.missed_setup_window
+    monkeypatch.setattr(window, 'missed_setup_window', partial(original,
+        kv_read=read, now=stamp('2026-09-22T08:00:00+08:00')))
+    monkeypatch.setattr(paired_nav_l3_candidate, 'collect_ensemble_allocations',
+        lambda **kwargs: {'status': 'awaiting_frozen_candidate', 'plans': []})
+    result = complete_pipeline_shadow(collection, query=db.query, writer=db.writer,
+        enforce_execution_window=True)
+    assert result['status'] == 'failed'
+    assert result['stage'] == 'execution_window_check'
+    assert pipeline_shadow_errors(result)
 
 
 @pytest.mark.parametrize('field,value', [('nav_maturity_credit', 1), ('promotion_allowed', True),

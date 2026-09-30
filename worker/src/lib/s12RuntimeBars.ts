@@ -65,6 +65,8 @@ export interface S12BaseBarDiagnostics {
   previous_session_kbars_date: string | null
   previous_session_kbars_first_tw: string | null
   previous_session_kbars_last_tw: string | null
+  previous_session_seed_source?: string | null
+  previous_session_seed_error?: string | null
   kbars_error: string | null
   kbars_provider?: string | null
   kbars_cache_hit?: boolean
@@ -377,6 +379,23 @@ function selectPreviousSessionKbars(bars: IntradayRollingBar[], tradeDate: strin
     bars: (byDate.get(latestDate) ?? []).sort((a, b) => a.startMs - b.startMs),
     date: latestDate,
   }
+}
+
+export function validatePreviousSessionSeedBars(
+  bars: IntradayRollingBar[],
+  tradeDate: string,
+  referenceDate: string,
+  referenceClose: number,
+): { bars: IntradayRollingBar[]; error: string | null } {
+  const previous = selectPreviousSessionKbars(bars, tradeDate)
+  if (previous.date !== referenceDate || previous.bars.length === 0) {
+    return { bars: [], error: 'previous_session_date_mismatch' }
+  }
+  const lastClose = previous.bars[previous.bars.length - 1].close
+  if (lastClose / referenceClose < 0.8 || lastClose / referenceClose > 1.2) {
+    return { bars: [], error: 'previous_session_price_domain_mismatch' }
+  }
+  return { bars: previous.bars, error: null }
 }
 
 function parseIntradaySnapshotSample(row: { created_at?: string | null; detail_json?: string | null }): IntradaySnapshotSample | null {
@@ -996,6 +1015,73 @@ async function loadPreviousTradingDayContext(
   }
 }
 
+async function loadPreviousSessionSeedBars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+  referenceDate: string | null,
+  referenceClose: number | null,
+): Promise<{ bars: IntradayRollingBar[]; source: string | null; error: string | null }> {
+  if (!referenceDate || referenceDate >= tradeDate || referenceClose == null || referenceClose <= 0) {
+    return { bars: [], source: null, error: 'previous_session_reference_unavailable' }
+  }
+  try {
+    // Keep the minute execution loop free of historical network calls. The
+    // premarket job loads this checksum-verified artifact before trading.
+    const cached = await loadCachedS12ResearchBars(env, symbol, referenceDate)
+    if (!cached) return { bars: [], source: null, error: 'previous_session_seed_not_prefetched' }
+    const validated = validatePreviousSessionSeedBars(cached.bars, tradeDate, referenceDate, referenceClose)
+    return {
+      bars: validated.bars,
+      source: validated.error ? null : 'research_r2_cache',
+      error: validated.error,
+    }
+  } catch (error) {
+    return { bars: [], source: null, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function prefetchS12PreviousSessionSeeds(
+  env: Bindings,
+  tradeDate: string,
+  symbols: string[],
+): Promise<{ requested: number; ready: number; errors: string[] }> {
+  const unique = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
+  if (unique.length > 64) throw new Error('s12_previous_session_prefetch_too_large')
+  const groups = new Map<string, string[]>()
+  const closes = new Map<string, number>()
+  const errors: string[] = []
+  for (const symbol of unique) {
+    const reference = await loadPreviousTradingDayContext(env, symbol, tradeDate)
+    if (!reference.referenceDate || reference.referenceDate >= tradeDate || reference.referenceClose == null) {
+      errors.push(`${symbol}:previous_session_reference_unavailable`)
+      continue
+    }
+    groups.set(reference.referenceDate, [...(groups.get(reference.referenceDate) ?? []), symbol])
+    closes.set(symbol, reference.referenceClose)
+  }
+  let ready = 0
+  for (const [referenceDate, group] of groups) {
+    try {
+      const result = await fetchS12ResearchKbarsBatch(env, group, referenceDate, 25_000)
+      for (const symbol of group) {
+        const item = result.get(symbol)
+        if (!item?.bars.length) {
+          errors.push(`${symbol}:${item?.error ?? 'previous_session_seed_empty'}`)
+          continue
+        }
+        const validated = validatePreviousSessionSeedBars(item.bars, tradeDate, referenceDate, closes.get(symbol)!)
+        if (validated.error) errors.push(`${symbol}:${validated.error}`)
+        else ready += 1
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      errors.push(...group.map((symbol) => `${symbol}:${reason}`))
+    }
+  }
+  return { requested: unique.length, ready, errors }
+}
+
 export function validateS12DailyPriceDomain(
   barsInput: IntradayRollingBar[],
   referenceDate: string | null,
@@ -1128,6 +1214,9 @@ export async function loadS12IntradayBaseBars(
     loadPreviousTradingDayContext(env, symbol, tradeDate),
     loadCanonicalIntradayMinuteBars(env, symbol, tradeDate),
   ])
+  const previousSeed = await loadPreviousSessionSeedBars(
+    env, symbol, tradeDate, previousDaily.referenceDate, previousDaily.referenceClose,
+  )
   let diagnostics: S12BaseBarDiagnostics = {
     raw_kbars_count: 0,
     parsed_kbars_count: 0,
@@ -1157,10 +1246,12 @@ export async function loadS12IntradayBaseBars(
     previous_daily_context_row_count: previousDaily.bars.length,
     previous_daily_context_rejected_reason: previousDaily.rejectedReason,
     previous_daily_context_source: 'canonical_market_daily.raw_ohlcv.namespace_safe_v1',
-    previous_session_kbars_count: 0,
-    previous_session_kbars_date: null,
-    previous_session_kbars_first_tw: null,
-    previous_session_kbars_last_tw: null,
+    previous_session_kbars_count: previousSeed.bars.length,
+    previous_session_kbars_date: previousSeed.bars.length ? previousDaily.referenceDate : null,
+    previous_session_kbars_first_tw: twTimeText(previousSeed.bars[0]?.startMs),
+    previous_session_kbars_last_tw: twTimeText(previousSeed.bars[previousSeed.bars.length - 1]?.startMs),
+    previous_session_seed_source: previousSeed.source,
+    previous_session_seed_error: previousSeed.error,
     kbars_error: null,
     canonical_minute_bars_count: canonicalMinuteBars.bars.length,
     canonical_minute_bars_latest_tw: twTimeText(canonicalMinuteBars.bars[canonicalMinuteBars.bars.length - 1]?.startMs),
@@ -1168,13 +1259,17 @@ export async function loadS12IntradayBaseBars(
     canonical_minute_bar_continuity_restored: false,
     canonical_minute_bar_error: canonicalMinuteBars.error,
   }
-  let previousSessionBars: IntradayRollingBar[] = []
+  let previousSessionBars: IntradayRollingBar[] = previousSeed.bars
   try {
     const kbars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
-    previousSessionBars = kbars.previousSessionBars
+    if (kbars.previousSessionBars.length > 0) previousSessionBars = kbars.previousSessionBars
     diagnostics = {
       ...diagnostics,
       ...kbars.diagnostics,
+      previous_session_kbars_count: previousSessionBars.length,
+      previous_session_kbars_date: previousSessionBars.length ? previousDaily.referenceDate : null,
+      previous_session_kbars_first_tw: twTimeText(previousSessionBars[0]?.startMs),
+      previous_session_kbars_last_tw: twTimeText(previousSessionBars[previousSessionBars.length - 1]?.startMs),
     }
     if (kbars.bars.length > 0 && diagnostics.kbars_unusable_reason == null) {
       const latestPersistedMs = canonicalMinuteBars.bars[canonicalMinuteBars.bars.length - 1]?.startMs ?? null

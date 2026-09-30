@@ -47,6 +47,15 @@ def _complete_pipeline_shadow(collection, *, query, writer, enforce_execution_wi
             from services.paired_nav_execution_window import missed_setup_window, persist_missed_setup_window
             missed = missed_setup_window(collection, query=query)
             if missed is not None:
+                # A missed account start forbids NAV registration, but the sealed
+                # preopen model inputs can still produce today's B selection.
+                # This writes only allocation snapshots; no fills or NAV credit.
+                from services.paired_nav_l3_candidate import collect_ensemble_allocations
+
+                selection = collect_ensemble_allocations(
+                    snapshot_id=collection['snapshot_id'], query=query, writer=writer)
+                if selection.get('status') != 'allocation_pairs_frozen' or not selection.get('plans'):
+                    raise ValueError('paired_nav_b_selection_not_frozen')
                 return persist_missed_setup_window(missed)
         except Exception as exc:
             return {**collection, **shadow_failure('execution_window_check', exc)}

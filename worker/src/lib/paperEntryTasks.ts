@@ -166,6 +166,7 @@ function finiteNumber(value: unknown): number | null {
 
 interface S12AssistEntryOverlay {
   entryPrice: number
+  sizeMultiplier: number | null
   stopLoss: number | null
   chaseCeiling: number | null
   maxEntryChasePct: number | null
@@ -248,6 +249,8 @@ function buildS12AssistEntryOverlay(
   ) return null
   const entryPrice = positiveNumber(assessment.execution.entryPrice)
   if (entryPrice == null) return null
+  const sizeMultiplier = positiveNumber(assessment.execution.sizeMultiplier)
+  if (sizeMultiplier != null && sizeMultiplier > 1) return null
   const stopLoss = positiveNumber(assessment.execution.stopLoss)
   const chaseCeiling = positiveNumber(assessment.execution.chaseCeiling)
   const rawChasePct =
@@ -264,12 +267,13 @@ function buildS12AssistEntryOverlay(
     `risk_mode=${assessment.maturity.riskMode}`,
     assessment.setupId ? `setup_id=${assessment.setupId}` : null,
     `entry=${entryPrice}`,
+    sizeMultiplier != null ? `size_multiplier=${sizeMultiplier}` : null,
     stopLoss != null ? `stop=${stopLoss}` : null,
     chaseCeiling != null ? `chase_ceiling=${chaseCeiling}` : null,
     maxEntryChasePct != null ? `max_entry_chase_pct=${maxEntryChasePct}` : null,
     assessment.execution.target1 != null ? `t1=${assessment.execution.target1}` : null,
   ].filter(Boolean).join(';')
-  return { entryPrice, stopLoss, chaseCeiling, maxEntryChasePct, detail }
+  return { entryPrice, sizeMultiplier, stopLoss, chaseCeiling, maxEntryChasePct, detail }
 }
 
 function buildS12AssistTradePlan(
@@ -614,6 +618,24 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
   if (pendingBuys.length === 0) return holdingPoll
   const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
+  const pendingSymbols = pendingBuys.map((b) => b.symbol)
+  // Display quotes are observation data. Keep them fresh even when today's
+  // portfolio risk gate blocks every buy.
+  const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
+    SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
+    PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+    requireBrokerQuote: true,
+  })
+  const priceMap = new Map<string, number>()
+  for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
+  await Promise.allSettled([...ohlcMap].map(([symbol, quote]) => {
+    const ageMs = quoteAgeMs(quote.quoteTime)
+    return quote.source === 'shioaji' && ageMs != null && ageMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
+      ? putIntradayPrice(env.KV, symbol, quote.last, undefined, {
+        source: 'shioaji', quoteTime: quote.quoteTime,
+      })
+      : Promise.resolve()
+  }))
 
   {
     const { writeAuditEntry } = await import('./riskAudit')
@@ -661,24 +683,6 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     return holdingPoll
   }
 
-  const pendingSymbols = pendingBuys.map((b) => b.symbol)
-  const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
-    SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
-    PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
-    requireBrokerQuote: true,
-  })
-  const priceMap = new Map<string, number>()
-  for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
-  // The pending-buy display reuses this check's broker quotes. Untimed or
-  // expired observations must not appear as current prices.
-  await Promise.allSettled([...ohlcMap].map(([symbol, quote]) => {
-    const ageMs = quoteAgeMs(quote.quoteTime)
-    return quote.source === 'shioaji' && ageMs != null && ageMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
-      ? putIntradayPrice(env.KV, symbol, quote.last, undefined, {
-        source: 'shioaji', quoteTime: quote.quoteTime,
-      })
-      : Promise.resolve()
-  }))
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
     const errMsg = `Shioaji quote anomaly: ${zeroPriceSymbols.join(',')}`
@@ -2335,6 +2339,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       sizingMode = navSlotFloorBudget != null ? 'nav_slot_floor' : sparseFloor.sizingMode
     }
 
+    if (s12AssistEntryOverlay?.sizeMultiplier != null) {
+      budget *= s12AssistEntryOverlay.sizeMultiplier
+      recordExecutionNote(pending.symbol, 's12_limited_takeover_sizing',
+        `multiplier=${s12AssistEntryOverlay.sizeMultiplier};budget=${Math.round(budget)}`)
+    }
     const minPosVal = cfg.position.minPositionValue ?? 30_000
     const l4TargetContinuation = Boolean(planIdFromWatchPoints(pending.watch_points)
       && allocatorDecision.currentPositionValue > 0 && allocatorDecision.targetPositionValue >= minPosVal)

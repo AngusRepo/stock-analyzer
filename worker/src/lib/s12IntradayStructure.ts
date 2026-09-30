@@ -439,6 +439,7 @@ export interface S12IntradayAssessment {
   }
   execution: {
     entryPrice?: number | null
+    sizeMultiplier?: number | null
     chaseCeiling?: number | null
     stopLoss?: number | null
     target1?: number | null
@@ -2629,6 +2630,7 @@ function completeEquityMutationAssessment(params: {
     },
     execution: {
       entryPrice,
+      sizeMultiplier: params.mutation.sizeMultiplier,
       chaseCeiling: params.mutation.chaseCeiling,
       stopLoss: stopPlan.price,
       target1: exitPlan.tp1.price,
@@ -4262,6 +4264,73 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   return scanLongSequence({ input: inputWithZoneDiagnostics, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality, policy })
 }
 
+function assessOpeningFiveMinuteReclaim(
+  input: S12FromBaseBarsInput,
+  original: S12IntradayAssessment,
+  previous15m: S12Bar[],
+  previous1h: S12Bar[],
+  nowMs: number,
+): S12IntradayAssessment | null {
+  if (!['waiting_15m_completed_bars', 'waiting_1h_demand_zone', 'waiting_15m_zone_touch'].includes(original.state)
+    || previous15m.length < 3 || previous1h.length < 1) return null
+  const sessionOpen = twLocalDayStartUtcMs(nowMs) + TW_SESSION_OPEN_MS
+  if (nowMs < sessionOpen + 10 * 60_000 || nowMs >= sessionOpen + 30 * 60_000) return null
+  const bars = normalizeBars(input.baseBars).filter(bar =>
+    bar.startMs >= sessionOpen && bar.startMs + 60_000 <= nowMs)
+  const latest = bars[bars.length - 1]
+  if (!latest || nowMs - latest.startMs > 120_000) return null
+  const opening = bars.filter(bar => bar.startMs < sessionOpen + 5 * 60_000)
+  const sweep = bars.filter(bar => bar.startMs >= sessionOpen + 5 * 60_000
+    && bar.startMs < sessionOpen + 10 * 60_000)
+  if (opening.length < 5 || sweep.length < 5) return null
+  const openingHigh = Math.max(...opening.map(bar => bar.high))
+  const openingLow = Math.min(...opening.map(bar => bar.low))
+  const sweepLow = Math.min(...sweep.map(bar => bar.low))
+  const confirmation = bars.slice(-3)
+  if (sweepLow > openingLow || confirmation.length < 3
+    || confirmation[0].startMs < sessionOpen + 10 * 60_000
+    || confirmation.some((bar, index) => index > 0 && bar.close <= confirmation[index - 1].close)
+    || latest.close <= openingHigh || latest.close > openingHigh * 1.01) return null
+  const previousBias = resolve4hBias(previous1h, inputTimingPolicy(input))
+  if (previousBias.direction === 'short' && previousBias.confidence === 'confirmed') return null
+  const volume = bars.reduce((sum, bar) => sum + Number(bar.volume ?? 0), 0)
+  if (volume <= 0) return null
+  const vwap = bars.reduce((sum, bar) => sum + bar.close * Number(bar.volume ?? 0), 0) / volume
+  if (latest.close <= vwap) return null
+  const stopLoss = Math.max(sweepLow, Math.min(...confirmation.map(bar => bar.low)))
+  const risk = latest.close - stopLoss
+  if (risk <= 0 || risk / latest.close > 0.025) return null
+  const exitPlan = emptyExitPlan(original.bearishDefense)
+  exitPlan.tp1 = { price: latest.close + risk * 2, source: 'r_multiple_fallback', action: 'partial_take_profit' }
+  exitPlan.mainExit = { price: latest.close + risk * 3, zoneLow: null, zoneHigh: null,
+    source: 'r_multiple_fallback', action: 'main_take_profit' }
+  exitPlan.tp3 = { price: latest.close + risk * 4, source: 'r_multiple_fallback', action: 'extended_take_profit' }
+  exitPlan.tp4 = { price: latest.close + risk * 5, source: 'r_multiple_fallback', action: 'extended_take_profit' }
+  exitPlan.trailingStop = { initial: stopLoss, method: '15m_protected_low', source: '15m_protected_low',
+    activation: 'after_tp1_or_reverse_choch' }
+  const quality = emptyQuality()
+  quality.vwap = { value: price(vwap), priceVsVwapPct: round((latest.close / vwap - 1) * 100, 4), state: 'above' }
+  const completedBars = original.completedBars
+  return completeAssessment({
+    input: { ...input, bars15m: [], bars1h: [], barsSession60: previous1h,
+      h4Source: 'previous_trading_day_fallback', sessionContextSource: 'previous_session_60m',
+      barDiagnostics: { ...original.barDiagnostics, opening_5m_reclaim: 'true' } },
+    state: 'limited_takeover_ready', reason: 's12_opening_5m_reclaim_ready', completedBars,
+    bias4h: previousBias, bias1h: resolve1hBias(previous1h, inputTimingPolicy(input)),
+    demandZone1h: null, supplyZone1h: original.supplyZone1h,
+    bearishDefense: original.bearishDefense, quality, exitPlan,
+    sequence: { sweepMs: sweep[0].startMs, reactionMs: latest.startMs },
+    setupId: setupKey(input.symbol, opening[0].startMs, sweep[0].startMs),
+    execution: { entryPrice: latest.close, sizeMultiplier: 0.5,
+      chaseCeiling: Math.min(latest.close * 1.008, openingHigh * 1.018),
+      stopLoss, target1: exitPlan.tp1.price, target2: exitPlan.mainExit.price,
+      target3: exitPlan.tp3.price, target4: exitPlan.tp4.price },
+    extraDetail: { entry_archetype: 'opening_5m_reclaim', opening_high: price(openingHigh),
+      opening_low: price(openingLow), sweep_low: price(sweepLow), opening_vwap: price(vwap),
+      limited_takeover_sizing_multiplier: 0.5 },
+  })
+}
+
 export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInput): S12IntradayAssessment {
   const nowMs = input.nowMs ?? paperExecutionNow()
   const currentSession15m = aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true })
@@ -4283,7 +4352,7 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
     : sessionContextSource === 'previous_session_60m'
       ? 'previous_trading_day_fallback'
       : 'unavailable'
-  return assessS12IntradayStructure({
+  const assessment = assessS12IntradayStructure({
     symbol: input.symbol,
     nowMs,
     bars15m: currentSession15m,
@@ -4312,6 +4381,7 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
       completed_1d_proxy_bars: bars1d.length,
     },
   })
+  return assessOpeningFiveMinuteReclaim(input, assessment, fallback15m, fallback1h, nowMs) ?? assessment
 }
 
 export type S12IntradayGateMode = 'observe' | 'block_invalidated' | 'require_ready' | 'assist_entry'

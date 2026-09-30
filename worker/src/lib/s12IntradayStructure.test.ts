@@ -139,6 +139,39 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
 }
 
 {
+  const previous = Array.from({ length: 16 }, (_, i) =>
+    bar(-24 * H1 + i * M15, 160 + i * 0.5, 161 + i * 0.5, 159 + i * 0.5, 160.5 + i * 0.5, 200),
+  )
+  const opening = [
+    bar(0, 177, 177, 176, 176), bar(60_000, 176, 176, 173.5, 173.5),
+    bar(2 * 60_000, 173.5, 173.5, 170.5, 170.5),
+    bar(3 * 60_000, 170.5, 170.5, 170, 170),
+    bar(4 * 60_000, 170, 170.5, 170, 170),
+    bar(5 * 60_000, 170, 171.5, 170, 171.5),
+    bar(6 * 60_000, 172, 173, 172, 173),
+    bar(7 * 60_000, 173, 174.5, 173, 174.5),
+    bar(8 * 60_000, 173.5, 174.5, 173.5, 174.5),
+    bar(9 * 60_000, 174.5, 175, 174.5, 175),
+    bar(10 * 60_000, 175, 176.5, 175, 176.5),
+    bar(11 * 60_000, 176.5, 177.5, 176.5, 177.5),
+    bar(12 * 60_000, 177, 178, 177, 178),
+  ]
+  const assess = (now: number, baseBars = opening, fallback = previous) =>
+    assessS12IntradayStructureFromBaseBars({ symbol: '2221', baseBars, fallback15mBars: fallback,
+      fallback1hBars: fallback, nowMs: baseMs + now * 60_000,
+      h4ReferenceDate: '2026-06-25', h4ReferenceClose: 168 })
+  assert(!assess(10, opening.slice(0, 10)).ready, 'S12 must not enter during the opening selloff')
+  assert(!assess(13, opening, []).ready, 'S12 opening branch requires previous-session evidence')
+  const ready = assess(13)
+  assert(ready.state === 'limited_takeover_ready', `S12 5m reclaim should become ready at 09:13: ${ready.state}`)
+  assert(ready.execution.entryPrice === 178 && ready.execution.stopLoss === 175,
+    'S12 opening reclaim must carry a bounded entry and structural stop')
+  assert(ready.execution.sizeMultiplier === 0.5 && ready.maturity.riskMode === 'reduced_size_tight_stop',
+    'S12 opening reclaim must reduce actual paper sizing')
+  assert(!assess(16).ready, 'stale opening quote must not remain executable without continuity evidence')
+}
+
+{
   const policy = s12TimingPolicyFromEnv({
     S12_INTRADAY_MIN_15M_BARS: '2',
     S12_INTRADAY_ATR_15M_BARS: '99',

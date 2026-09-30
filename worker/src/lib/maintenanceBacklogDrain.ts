@@ -33,6 +33,7 @@ type MaintenanceChunkResult = {
   deferred?: 'window_closed' | 'ops_shadow_backfill_active' | 'chunk_retry' | 'stale_chunk'
   failureAttempt?: number
   failureError?: string
+  nextAuditTargets?: string[]
 }
 
 export function isAuditJsonDurableWindowOpen(now: Date): boolean {
@@ -346,7 +347,12 @@ async function runAuditChunkWithReceipt(env: Bindings, msg: UpdateQueueMsg, now:
   let result: MaintenanceChunkResult
   let failures = sameChunk ? previous.failures : 0
   try {
-    result = await runChunk(env, 'audit-json-retention', msg, now)
+    // Only a completed immediate predecessor may narrow this attempt. The
+    // original message keeps the full scope, so old deliveries and retries
+    // without a completed receipt safely fall back to a full sweep.
+    const selectedTargets = previous && previous.cycle === cycle && previous.attempt === attempt - 1
+      && !previous.result.deferred ? previous.result.nextAuditTargets : undefined
+    result = await runChunk(env, 'audit-json-retention', msg, now, selectedTargets)
   } catch (error) {
     failures += 1
     result = { summary: 'chunk_retry_pending', backlogRemaining: true, deferred: 'chunk_retry',
@@ -380,6 +386,7 @@ async function runChunk(
   task: MaintenanceBacklogTask,
   msg: UpdateQueueMsg,
   now: Date,
+  selectedAuditTargets?: string[],
 ): Promise<MaintenanceChunkResult> {
   if (task === 'audit-json-retention') {
     if (!isAuditJsonDurableWindowOpen(now)) return auditJsonWindowClosedResult()
@@ -398,13 +405,18 @@ async function runChunk(
     if (unknownTargets.length) {
       throw new Error(`audit_json_durable_unknown_target:${unknownTargets.join(',')}`)
     }
+    const effectiveTargets = selectedAuditTargets ?? targets
+    if (!effectiveTargets.length || new Set(effectiveTargets).size !== effectiveTargets.length
+        || effectiveTargets.some(target => !targets.includes(target))) {
+      throw new Error('audit_json_durable_target_scope_invalid')
+    }
     const result = await runAuditJsonArchiveRetention(env, {
       businessDate: msg.triggerTime,
       runId: `${msg.runId ?? 'audit-json-retention'}:cycle-${msg.maintenanceCycle ?? 0}:attempt-${msg.attempt ?? 0}`,
       retentionDays: msg.maintenanceRetentionDays,
       limitPerTable: msg.maintenanceLimitPerTable,
       minBlobBytes: msg.maintenanceMinBlobBytes,
-      targets,
+      targets: effectiveTargets,
       dryRun: false,
       confirmPhrase: AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE,
     })
@@ -412,9 +424,15 @@ async function runChunk(
     if (failed.length) {
       throw new Error(`audit json retention failed ${JSON.stringify(failed)}`)
     }
+    const pendingTargets = result.tables.filter(table => table.backlog_remaining).map(table => table.target)
+    const needsFullVerification = !pendingTargets.length && effectiveTargets.length < targets.length
+    // Empty targets are revisited once before terminal success: their source
+    // may have become eligible while another target was draining.
+    const nextAuditTargets = pendingTargets.length ? pendingTargets : needsFullVerification ? targets : []
     return {
-      summary: summarizeAuditJsonArchiveRun(result),
-      backlogRemaining: result.tables.some((table) => table.backlog_remaining),
+      summary: summarizeAuditJsonArchiveRun(result) + (needsFullVerification ? '; full_target_verification_pending=true' : ''),
+      backlogRemaining: nextAuditTargets.length > 0,
+      nextAuditTargets,
     }
   }
   if (task === 'legacy-strategy-evidence-migration') {

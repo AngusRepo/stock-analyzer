@@ -263,6 +263,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'paired_nav_daily_journal_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_native_prestart_successions_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_lifecycle_closures_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'paired_nav_unobserved_pairs_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'strategy_atomic_nav_adoptions_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'strategy_replacement_authority_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_review_records_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },

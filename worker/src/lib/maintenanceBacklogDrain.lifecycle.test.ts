@@ -33,13 +33,13 @@ function fixture() {
       async put(key: string, value: string) { values.set(key, value) }, async delete(key: string) { values.delete(key) } },
     UPDATE_QUEUE: { async send(message: UpdateQueueMsg) { messages.push(message) } },
   } as any
-  async function enqueue(runId = 'audit-run-1') {
+  async function enqueue(runId = 'audit-run-1', archiveOptions = options) {
     const { ticket } = await admitSchedulerExecutionTicket(db as any, {
       identity: { schedulerJobId: null, scheduledAt: null, ticketKind: 'manual' },
       task: 'audit-json-retention', requestedRunDate: '2026-09-29', proposedRunId: runId,
     })
     await enqueueMaintenanceBacklogDrain(env, { task: 'audit-json-retention', runDate: ticket.business_date, runId,
-      schedulerTicketId: ticket.ticket_id, schedulerRunId: runId, auditJsonOptions: options })
+      schedulerTicketId: ticket.ticket_id, schedulerRunId: runId, auditJsonOptions: archiveOptions })
     return ticket
   }
   const ticketRow = (id: string) => sql.prepare('SELECT * FROM scheduler_execution_tickets_v1 WHERE ticket_id=?').get(id)!
@@ -326,3 +326,153 @@ test(`HTTP enqueue receipt cannot downgrade a queue terminal ticket, and duplica
   } finally { f.sql.close() }
 })
 }
+
+
+test('hot-window preflight lease contention persists skipped, not successful work', async () => {
+  const f = fixture()
+  try {
+    const { buildAdminWorkerDomainTaskMap } = await import('./adminTriggerWorkerDomainTasks')
+    f.sql.exec("INSERT INTO maintenance_task_leases VALUES('d1_heavy_maintenance','audit-json-retention:queue','another-owner','2099-01-01','2026-09-29','2026-09-29')")
+    const routes = createAdminTriggerRoutes({ buildTaskMap: (c, context) =>
+      buildAdminWorkerDomainTaskMap(c, {} as any, context) })
+    const response = await routes.request('https://stockvision.invalid/api/admin/trigger/retention-hot-window-drain?force=1&sync=1', { method: 'POST' }, f.env)
+    assert.ok(response.ok)
+    const body = await response.json() as any
+    const ticket = f.ticketRow(body.ticket_id)
+    assert.equal(ticket.status, 'skipped')
+    assert.match(String(ticket.last_summary), /^maintenance_lease_busy:audit-json-retention:queue:/)
+    const key = `scheduler:run:retention-hot-window-drain:${ticket.business_date}`
+    assert.equal(JSON.parse(f.values.get(key)!).status, 'skipped')
+    assert.equal(f.sql.prepare('SELECT owner_id FROM maintenance_task_leases').get()?.owner_id, 'another-owner')
+    // No retention tables exist in this fixture: entering the actual drain
+    // would throw. A blocked claim must neither execute nor report success.
+    assert.equal(f.messages.length, 0)
+  } finally { f.sql.close() }
+})
+
+
+function archiveFixture(paperRows: number) {
+  const f = fixture()
+  for (const [domain, tables] of [
+    ['ops', ['data_retention_policies', 'data_retention_runs', 'data_retention_run_items', 'data_retention_cursors']],
+    ['learning', ['dataset_snapshots', 'strategy_decision_log']],
+    ['paper', ['paper_execution_events']],
+  ] as const) {
+    const schema = readFileSync(`domain-schemas/${domain}.sql`, 'utf8')
+    for (const table of tables) {
+      const start = schema.indexOf(`CREATE TABLE IF NOT EXISTS ${table} (`)
+      assert.ok(start >= 0, table)
+      const end = schema.indexOf('\n);', start)
+      assert.ok(end > start, table)
+      f.sql.exec(schema.slice(start, end + 3))
+    }
+  }
+  f.sql.exec("INSERT INTO data_retention_policies(policy_id,domain,dataset_pattern,hot_retention_days,cold_retention_days,archive_store,action,version,status,approved_reason) VALUES('audit_json_r2_v1','ops','*',90,3650,'r2','archive_scrub',1,'active','fixture')")
+  const objects = new Map<string, string>()
+  f.env.ARTIFACTS = {
+    async put(key: string, body: string) { assert.ok(!objects.has(key)); objects.set(key, body) },
+    async get(key: string) { const body = objects.get(key); return body == null ? null : { text: async () => body } },
+  }
+  ;(f.db as any).batch = async (statements: any[]) => {
+    f.sql.exec('BEGIN')
+    try { const rows = []; for (const statement of statements) rows.push(await statement.run()); f.sql.exec('COMMIT'); return rows }
+    catch (error) { f.sql.exec('ROLLBACK'); throw error }
+  }
+  const candidateScopes: string[] = []
+  const prepare = f.db.prepare
+  f.db.prepare = (query: string) => {
+    if (query.includes('WITH key_page AS MATERIALIZED')) candidateScopes.push(query.includes('FROM strategy_decision_log') ? 'strategy' : 'paper')
+    return prepare(query)
+  }
+  const raw = JSON.stringify({ source: 'unchanged original', padding: 'x'.repeat(1500) })
+  for (let i = 1; i <= paperRows; i++) f.sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','entry','completed',?)").run(i, raw)
+  const addStrategy = () => f.sql.prepare(`INSERT INTO strategy_decision_log(decision_id,date,symbol,strategy_id,strategy_version,strategy_status,alpha_bucket,matched,reason_code,context_json,evidence_json,context_id,evidence_artifact_id)
+    VALUES('late','2020-01-01','2330','s','v1','active','trend',1,'matched',?,?,'ctx','artifact')`).run(raw, raw)
+  const archiveOptions = { targets: ['strategy_decision_log', 'paper_execution_events'], retentionDays: 90, limitPerTable: 1, minBlobBytes: 1024 }
+  return { ...f, candidateScopes, addStrategy, archiveOptions }
+}
+
+test('drain skips exhausted targets between chunks and fully rechecks them before success', async () => {
+  const f = archiveFixture(3)
+  try {
+    const ticket = await f.enqueue('scoped-drain', f.archiveOptions)
+    await processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow)
+    f.addStrategy() // An exhausted target becomes eligible while the other drains.
+    await processMaintenanceBacklogDrain(f.env, f.messages[1], openWindow)
+    const beforeReplay = [...f.candidateScopes]
+    await processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow)
+    assert.deepEqual(f.candidateScopes, beforeReplay, 'stale delivery cannot rescan or widen scope')
+    await processMaintenanceBacklogDrain(f.env, f.messages[2], openWindow)
+    assert.equal(f.ticketRow(ticket.ticket_id).status, 'running', JSON.stringify(f.ticketRow(ticket.ticket_id)))
+    assert.match(String(JSON.parse(String(f.ticketRow(ticket.ticket_id).metadata_json)).maintenance_chunk.result.summary), /full_target_verification_pending/)
+    await processMaintenanceBacklogDrain(f.env, f.messages[3], openWindow)
+    assert.equal(f.ticketRow(ticket.ticket_id).status, 'success')
+    assert.deepEqual(f.candidateScopes, ['strategy', 'paper', 'paper', 'paper', 'strategy', 'paper'])
+    assert.equal(JSON.parse(String(f.sql.prepare("SELECT context_json FROM strategy_decision_log WHERE decision_id='late'").get()!.context_json)).archived_to_r2, true)
+    assert.equal(f.sql.prepare('SELECT SUM(scrubbed_rows) n FROM data_retention_runs').get()!.n, 4)
+    assert.equal(f.messages.length, 4)
+  } finally { f.sql.close() }
+})
+
+test('final full-scope verification consumes the existing attempt budget and cannot fake success', async () => {
+  const f = archiveFixture(2)
+  try {
+    const ticket = await f.enqueue('budgeted-scoped-drain', f.archiveOptions)
+    await processMaintenanceBacklogDrain(f.env, { ...f.messages[0], maxAttempts: 2 }, openWindow)
+    f.addStrategy()
+    await processMaintenanceBacklogDrain(f.env, f.messages[1], openWindow)
+    assert.equal(f.ticketRow(ticket.ticket_id).status, 'error', JSON.stringify(f.ticketRow(ticket.ticket_id)))
+    assert.match(String(f.ticketRow(ticket.ticket_id).last_error), /maintenance_drain_budget_exhausted/)
+    assert.equal(f.messages.length, 2)
+    assert.equal(f.candidateScopes.filter(x => x === 'strategy').length, 1)
+    assert.equal(JSON.parse(String(f.sql.prepare("SELECT context_json FROM strategy_decision_log WHERE decision_id='late'").get()!.context_json)).archived_to_r2, undefined)
+  } finally { f.sql.close() }
+})
+
+test('a predecessor receipt without target metadata retains a full-scope sweep', async () => {
+  const f = archiveFixture(2)
+  try {
+    const ticket = await f.enqueue('legacy-scope-receipt', f.archiveOptions)
+    await processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow)
+    assert.deepEqual(f.messages[1].maintenanceTargets, f.archiveOptions.targets)
+    f.sql.prepare("UPDATE scheduler_execution_tickets_v1 SET metadata_json=json_remove(metadata_json,'$.maintenance_chunk.result.nextAuditTargets') WHERE ticket_id=?").run(ticket.ticket_id)
+    f.addStrategy()
+    await processMaintenanceBacklogDrain(f.env, f.messages[1], openWindow)
+    assert.deepEqual(f.candidateScopes, ['strategy', 'paper', 'strategy', 'paper'])
+    assert.equal(f.ticketRow(ticket.ticket_id).status, 'success')
+    assert.equal(JSON.parse(String(f.sql.prepare("SELECT context_json FROM strategy_decision_log WHERE decision_id='late'").get()!.context_json)).archived_to_r2, true)
+    assert.equal(f.messages.length, 2)
+  } finally { f.sql.close() }
+})
+
+test('a failed narrowed chunk retries the original full scope and recovers newly eligible rows', async () => {
+  const f = archiveFixture(2)
+  try {
+    const ticket = await f.enqueue('narrowed-chunk-retry', f.archiveOptions)
+    await processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow)
+    f.addStrategy()
+    const originalPut = f.env.ARTIFACTS.put
+    let failed = false
+    f.env.ARTIFACTS.put = async (key: string, body: string) => {
+      if (!failed) { failed = true; throw new Error('transient_archive_write') }
+      return originalPut(key, body)
+    }
+    await processMaintenanceBacklogDrain(f.env, f.messages[1], openWindow)
+    const receipt = JSON.parse(String(f.ticketRow(ticket.ticket_id).metadata_json)).maintenance_chunk
+    assert.equal(receipt.result.deferred, 'chunk_retry')
+    assert.equal(receipt.failures, 1)
+    assert.equal(receipt.result.nextAuditTargets, undefined)
+    assert.deepEqual(f.candidateScopes, ['strategy', 'paper', 'paper'])
+    assert.equal(f.messages[2].attempt, 1)
+    assert.equal(f.messages[2].maintenanceFailureAttempt, 1)
+    assert.deepEqual(f.messages[2].maintenanceTargets, f.archiveOptions.targets)
+    const beforeStaleRetry = [...f.candidateScopes]
+    await processMaintenanceBacklogDrain(f.env, f.messages[1], openWindow)
+    assert.deepEqual(f.candidateScopes, beforeStaleRetry, 'stale failed delivery cannot repeat the narrowed scan')
+    await processMaintenanceBacklogDrain(f.env, f.messages[2], openWindow)
+    assert.deepEqual(f.candidateScopes, ['strategy', 'paper', 'paper', 'strategy', 'paper'])
+    assert.equal(f.ticketRow(ticket.ticket_id).status, 'success')
+    assert.equal(JSON.parse(String(f.sql.prepare("SELECT context_json FROM strategy_decision_log WHERE decision_id='late'").get()!.context_json)).archived_to_r2, true)
+    assert.equal(f.messages.length, 3)
+  } finally { f.sql.close() }
+})

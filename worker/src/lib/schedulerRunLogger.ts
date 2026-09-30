@@ -173,6 +173,7 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
     normalized.startsWith('skip') ||
     normalized.startsWith('skipped') ||
     normalized.startsWith('locked') ||
+    normalized.startsWith('maintenance_lease_busy:') ||
     normalized === 'empty' ||
     normalized.startsWith('no ')
   ) {

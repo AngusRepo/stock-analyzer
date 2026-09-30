@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:4625d891394904b5081cee9c431df4d8b79a2e35001914754cef65663da43be6",
+  "execution_owner_version": "native-paper-v1:1cc6a100af765c6c8b9b8f98d23d475a92b94604756b269d4c7bf6de947e96ac",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved on 2026-09-30 the exact zero-NAV unobserved-first-session repair, commit, push, Worker/Controller/Jobs/Modal deployment, and a separate owner-only Paper runtime supplemental approval for this source fingerprint. It grants no source equivalence, maturity transfer, prestart replacement or real-order authority.",
-  "review": "docs/releases/2026-09-29-nav-unobserved-first-session-restart.md",
+  "authorization": "Wei explicitly approved on 2026-09-30 this exact source-build identity for the Learning0059 ownership registration fix, with Worker commit, push and deployment conditional on all checks, exact-commit CI and fresh production verification. This approval grants no Paper runtime admission, source equivalence, maturity transfer, successor, cold deletion, Controller/Modal deployment or real-order authority.",
+  "review": "docs/releases/2026-09-30-d1-maintenance.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

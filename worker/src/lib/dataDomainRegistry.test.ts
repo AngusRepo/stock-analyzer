@@ -81,10 +81,12 @@ const tableNames = [...new Set([
 ])]
 assertSingleDomainOwnership(tableNames)
 for (const table of ['paired_nav_orphan_archives_v1', 'paired_nav_cold_objects_v1', 'paired_nav_cold_views_v1', 'paired_nav_hot_releases_v1', 'paired_nav_frozen_parts_v1', 'paired_nav_frozen_manifests_v1', 'paired_nav_daily_journal_v1',
-  'paired_nav_lifecycle_closures_v1', 'paired_nav_nominations_v1', 'paired_nav_assessment_reservations_v1',
+  'paired_nav_lifecycle_closures_v1', 'paired_nav_unobserved_pairs_v1', 'paired_nav_nominations_v1', 'paired_nav_assessment_reservations_v1',
   'paired_nav_review_records_v1', 'paired_nav_review_parts_v1']) {
   assert.deepEqual(tableOwnershipMetadata(table), { table, domain: 'learning', disposition: 'full_scalar',
     route_ready: true, shadow_ready: false }, 'NAV has one Learning owner and no legacy shadow-backfill owner')
+  assert(tablesForDataDomainRouteReady('learning').includes(table), `${table} must route to active Learning`)
+  assert(!tablesForDataDomainShadowBackfill('learning').includes(table), `${table} has no legacy backfill authority`)
 }
 
 for (const table of new Set(tableNames)) {
@@ -302,6 +304,7 @@ const learningActiveEnv = {
   MULTI_D1_ACTIVE_DOMAINS: 'learning',
 }
 assert.equal(databaseForDataDomain(learningActiveEnv, 'learning'), learning)
+assert.equal(databaseForTable(learningActiveEnv, 'paired_nav_unobserved_pairs_v1'), learning)
 assert.equal(databaseForDataDomain(learningActiveEnv, 'market'), legacy)
 const paperDb = { kind: 'paper' } as unknown as D1Database
 const paperActiveEnv = {

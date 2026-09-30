@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { Miniflare } from 'miniflare'
 import type { Bindings, UpdateQueueMsg } from '../types'
-import { enqueueActive8AfterDatasetSnapshot } from './active8SnapshotReadyContinuation'
+import { deferActive8UntilPipelinePublished, enqueueActive8AfterDatasetSnapshot } from './active8SnapshotReadyContinuation'
 import {
   admitSchedulerExecutionTicket,
   loadLatestSchedulerChildTicket,
@@ -27,6 +27,10 @@ async function main(): Promise<void> {
     const opsDb = await mf.getD1Database('OPS')
     const learningDb = await mf.getD1Database('LEARNING')
     await applySql(opsDb, opsMigration)
+    await opsDb.prepare(`CREATE TABLE pipeline_stage_runs (
+      business_date TEXT, stage TEXT, status TEXT,
+      PRIMARY KEY(business_date, stage)
+    )`).run()
     await learningDb.prepare(`
       CREATE TABLE dataset_snapshots (
         snapshot_id TEXT PRIMARY KEY,
@@ -100,6 +104,17 @@ async function main(): Promise<void> {
     assert.equal(snapshotChild?.status, 'success')
     assert.equal(child?.status, 'queued')
     assert.equal(JSON.parse(child?.metadata_json ?? '{}').snapshot_id, snapshotId)
+    await opsDb.prepare(`INSERT INTO pipeline_stage_runs VALUES (?, 'pipeline_execution', 'running')`)
+      .bind(businessDate).run()
+    assert.equal(await deferActive8UntilPipelinePublished(sent[0], env), true)
+    assert.equal(sent.length, 2)
+    assert.equal(sent[1].active8PipelineWaitAttempt, 1)
+    assert.equal((await loadLatestSchedulerChildTicket(opsDb, {
+      task: 'active8-oof-daily', businessDate, origin: 'dataset_snapshot_ready',
+    }))?.status, 'queued', 'the NAV child must stay unclaimed while publication is running')
+    await opsDb.prepare(`UPDATE pipeline_stage_runs SET status='success' WHERE business_date=?`)
+      .bind(businessDate).run()
+    assert.equal(await deferActive8UntilPipelinePublished(sent[1], env), false)
     console.log('active8 snapshot-ready D1/queue integration passed')
   } finally {
     await mf.dispose()

@@ -392,6 +392,7 @@ export interface UpdateQueueMsg {
   oofExpectedCohortId?: string
   oofContinuationAttempt?: number
   active8SnapshotId?: string
+  active8PipelineWaitAttempt?: number // defer NAV census until the same-day pipeline has published its allocation context
 }
 
 // MLQueueMsg removed in Phase 3 — ML batch predict now goes through Controller

@@ -13,6 +13,8 @@ import {
 import { classifySchedulerRunSummary, logSchedulerResult } from './schedulerRunLogger'
 
 const SNAPSHOT_CONTINUATION_ORIGIN = 'dataset_snapshot_ready'
+const PIPELINE_WAIT_DELAY_SECONDS = 300
+const PIPELINE_WAIT_MAX_ATTEMPTS = 72
 
 type ReadySnapshotRow = {
   snapshot_id?: string | null
@@ -151,6 +153,7 @@ export async function processActive8AfterDatasetSnapshot(
     throw new Error('active8_snapshot_continuation_identity_incomplete')
   }
   const opsDb = databaseForDataDomain(env, 'ops')
+  if (await deferActive8UntilPipelinePublished(msg, env)) return
   const claim = await claimSchedulerExecutionTicket(opsDb, { ticketId, runId })
   if (!claim.shouldExecute) return
 
@@ -188,6 +191,44 @@ export async function processActive8AfterDatasetSnapshot(
     })
     throw error
   }
+}
+
+export async function deferActive8UntilPipelinePublished(
+  msg: UpdateQueueMsg,
+  env: Bindings,
+): Promise<boolean> {
+  const ticketId = String(msg.schedulerTicketId ?? '').trim()
+  const runId = String(msg.runId ?? '').trim()
+  const businessDate = String(msg.triggerTime ?? '').slice(0, 10)
+  const db = databaseForDataDomain(env, 'ops')
+  const row = await db.prepare(`
+    SELECT root.scheduler_job_id, stage.status AS pipeline_status
+      FROM scheduler_execution_tickets_v1 child
+      JOIN scheduler_execution_tickets_v1 root ON root.ticket_id=child.root_ticket_id
+      LEFT JOIN pipeline_stage_runs stage
+        ON stage.business_date=child.business_date AND stage.stage='pipeline_execution'
+     WHERE child.ticket_id=? AND child.run_id=? AND child.business_date=?
+     LIMIT 1
+  `).bind(ticketId, runId, businessDate).first<{
+    scheduler_job_id: string | null
+    pipeline_status: string | null
+  }>()
+  if (!row) throw new Error('active8_snapshot_continuation_ticket_missing')
+  if (!row.scheduler_job_id || row.pipeline_status === 'success') return false
+
+  const attempt = Number(msg.active8PipelineWaitAttempt ?? 0)
+  if (!Number.isInteger(attempt) || attempt < 0 || attempt >= PIPELINE_WAIT_MAX_ATTEMPTS) {
+    await updateSchedulerExecutionTicket(db, {
+      ticketId, runId, status: 'error', authority: 'durable_queue',
+      summary: `active8_pipeline_publication_wait_exhausted:${businessDate}:${row.pipeline_status ?? 'missing'}`,
+      error: 'active8_pipeline_publication_wait_exhausted',
+    })
+    throw new Error('active8_pipeline_publication_wait_exhausted')
+  }
+  await env.UPDATE_QUEUE.send({ ...msg, active8PipelineWaitAttempt: attempt + 1 }, {
+    delaySeconds: PIPELINE_WAIT_DELAY_SECONDS,
+  })
+  return true
 }
 
 export async function settleActive8SnapshotContinuationTicket(

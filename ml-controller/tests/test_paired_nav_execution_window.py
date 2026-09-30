@@ -92,11 +92,13 @@ def test_failed_sources_are_not_reclassified(source, mutation):
 
 
 def test_real_setup_skips_only_unobservable_work_and_preserves_frozen_input(source, monkeypatch):
-    from services import paired_nav_l3_candidate
+    from services import paired_nav_l3_candidate, paired_nav_pipeline
     db, collection, _, read = source
     original = window.missed_setup_window
     monkeypatch.setattr(window, 'missed_setup_window', partial(original,
         kv_read=read, now=stamp('2026-09-22T08:00:00+08:00')))
+    monkeypatch.setattr(paired_nav_pipeline, '_verified_late_selection_plans',
+        lambda snapshot_id, **kwargs: [])
     selected = []
     def select(**kwargs):
         selected.append(kwargs['snapshot_id'])
@@ -115,12 +117,77 @@ def test_real_setup_skips_only_unobservable_work_and_preserves_frozen_input(sour
     assert pipeline_shadow_errors(failed) == ['paired_nav:atomic_daily:paired_nav_actual_source_failure']
 
 
+def test_retrospective_b_pair_readback_completes_missed_receipt(source, monkeypatch):
+    from services import paired_nav_l3_candidate, paired_nav_pipeline
+
+    db, collection, _, read = source
+    original = window.missed_setup_window
+    monkeypatch.setattr(window, 'missed_setup_window', partial(original,
+        kv_read=read, now=stamp('2026-09-22T10:00:00+08:00')))
+    calls = []
+    def verified(snapshot_id, **kwargs):
+        calls.append(snapshot_id)
+        return [] if len(calls) == 1 else [{'pair_id': 'frozen-b', 'snapshot_id': 'b-snapshot', 'owner': 'ensemble'}]
+    monkeypatch.setattr(paired_nav_pipeline, '_verified_late_selection_plans', verified)
+    def retrospective(**kwargs):
+        assert kwargs['snapshot_id'] == collection['snapshot_id']
+        raise ValueError('paired_nav_lifecycle_successor_invalid')
+    monkeypatch.setattr(paired_nav_l3_candidate, 'collect_ensemble_allocations', retrospective)
+    result = complete_pipeline_shadow(collection, query=db.query, writer=db.writer,
+        enforce_execution_window=True)
+    assert calls == [collection['snapshot_id']] * 2
+    assert result['status'] == 'missed_execution_window'
+    assert result['execution_window_receipt']['readback_verified'] is True
+    assert result['nav_maturity_credit'] == 0
+    assert 'native_execution' not in result
+
+
+def test_late_b_readback_requires_frozen_parent_and_no_execution(monkeypatch):
+    from services import paired_nav_pipeline, paired_nav_cold, paired_nav_journal, strategy_ab
+
+    root = {'manifest': {'snapshot_id': 'root', 'signal_date': '2026-09-29',
+        'frozen_at': '2026-09-30T00:19:00+00:00'}, 'payload': {'content': {
+        'formal_baseline_identity': {'payload_checksum': 'a' * 64},
+        'recommendation_context': {'l3_candidate_selection': {
+            'candidates': [{'artifact': {'payload_checksum': 'b' * 64}}]}}}}}
+    manifest = {'snapshot_id': 'pair', 'signal_date': '2026-09-29',
+        'source_run_id': 'pair-id', 'frozen_at': '2026-09-30T04:00:00+00:00', 'prospective': 0}
+    tag = {'schema_version': strategy_ab.SCHEMA, 'experiment_id': 'c' * 64,
+        'role': 'B', 'recipe': strategy_ab.RECIPES['B'], 'fee_terms': strategy_ab.FEE_TERMS,
+        'baseline_primary': {'role': 'A', 'recipe': strategy_ab.RECIPES['A'],
+            'bundle_checksum': 'd' * 64, 'l3_checksum': 'e' * 64}}
+    pair = {'content': {'pair_id': 'pair-id', 'owner': 'ensemble',
+        'candidate_checksum': 'b' * 64, 'baseline_checksum': 'a' * 64,
+        'allocation_context_snapshot_id': 'parent', 'production_effect': False,
+        'can_write_order': False, 'nav_maturity_credit': 0,
+        'candidate': {'output': [{'symbol': '2330', 'allocation_weight': .1}]},
+        'configuration': {'strategy_bundle': {'strategy_ab': tag}}}}
+    parent = {'manifest': {'source_run_id': 'l3:pair-id', 'signal_date': '2026-09-29'},
+        'payload': {'content': {'upstream_allocation_context_snapshot_id': 'root'}}}
+    executions = []
+    def query(sql, parameters):
+        return executions if "snapshot_kind='execution_pair'" in sql else [manifest]
+    monkeypatch.setattr(paired_nav_pipeline, 'read_snapshot', lambda *args: root)
+    monkeypatch.setattr(paired_nav_cold, 'load', lambda *args, **kwargs: pair)
+    monkeypatch.setattr(paired_nav_journal, 'read_context_projection', lambda *args: parent)
+    assert paired_nav_pipeline._verified_late_selection_plans('root', query=query) == [
+        {'pair_id': 'pair-id', 'snapshot_id': 'pair', 'owner': 'ensemble'}]
+    parent['payload']['content']['upstream_allocation_context_snapshot_id'] = 'other'
+    assert paired_nav_pipeline._verified_late_selection_plans('root', query=query) == []
+    parent['payload']['content']['upstream_allocation_context_snapshot_id'] = 'root'
+    executions.append({'snapshot_id': 'executed'})
+    with pytest.raises(ValueError, match='paired_nav_b_selection_readback_invalid'):
+        paired_nav_pipeline._verified_late_selection_plans('root', query=query)
+
+
 def test_late_b_selection_failure_is_visible(source, monkeypatch):
-    from services import paired_nav_l3_candidate
+    from services import paired_nav_l3_candidate, paired_nav_pipeline
     db, collection, _, read = source
     original = window.missed_setup_window
     monkeypatch.setattr(window, 'missed_setup_window', partial(original,
         kv_read=read, now=stamp('2026-09-22T08:00:00+08:00')))
+    monkeypatch.setattr(paired_nav_pipeline, '_verified_late_selection_plans',
+        lambda snapshot_id, **kwargs: [])
     monkeypatch.setattr(paired_nav_l3_candidate, 'collect_ensemble_allocations',
         lambda **kwargs: {'status': 'awaiting_frozen_candidate', 'plans': []})
     result = complete_pipeline_shadow(collection, query=db.query, writer=db.writer,

@@ -10,6 +10,59 @@ from services.paired_nav_journal import read_snapshot, reuse_frozen_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _verified_late_selection_plans(snapshot_id, *, query):
+    """Recover only complete, checksum-verified B plans from the frozen parent."""
+    from services.paired_nav_cold import load
+    from services.paired_nav_journal import read_context_projection, _timestamp
+    from services.strategy_ab import validate_tag
+
+    source = read_snapshot(query, snapshot_id)
+    manifest, context = source['manifest'], source['payload']['content']
+    candidates = (context.get('recommendation_context') or {}).get('l3_candidate_selection', {}).get('candidates') or []
+    expected = {item['artifact']['payload_checksum'] for item in candidates}
+    if not expected or len(expected) != len(candidates):
+        raise ValueError('paired_nav_b_selection_identity_invalid')
+    rows = query("SELECT * FROM paired_nav_frozen_manifests_v1 WHERE signal_date=? "
+        "AND snapshot_kind='allocation_pair' ORDER BY frozen_at DESC LIMIT 65", [manifest['signal_date']])
+    if len(rows) > 64:
+        raise ValueError('paired_nav_b_selection_inventory_exceeds_bound')
+    prefixes = frozenset({'schema_version', 'signal_date', 'snapshot_kind', 'source_run_id'} | {
+        'content.' + field for field in ('pair_id', 'owner', 'candidate_checksum', 'baseline_checksum',
+            'allocation_context_snapshot_id', 'production_effect', 'can_write_order', 'nav_maturity_credit',
+            'candidate.output', 'configuration.strategy_bundle.strategy_ab')})
+    found = {}
+    for row in rows:
+        payload = load(query, row, prefixes=prefixes)
+        if payload is None:
+            payload = read_snapshot(query, row['snapshot_id'])['payload']
+        plan = payload.get('content') or {}
+        checksum = plan.get('candidate_checksum')
+        if checksum not in expected:
+            continue
+        parent_id = plan.get('allocation_context_snapshot_id')
+        if not isinstance(parent_id, str):
+            raise ValueError('paired_nav_b_selection_parent_missing')
+        parent = read_context_projection(query, parent_id, ('upstream_allocation_context_snapshot_id',))
+        if parent['payload']['content'].get('upstream_allocation_context_snapshot_id') != snapshot_id:
+            continue
+        tag = validate_tag(((plan.get('configuration') or {}).get('strategy_bundle') or {}).get('strategy_ab'))
+        if (row['prospective'] not in (0, 1) or row['source_run_id'] != plan.get('pair_id')
+                or parent['manifest']['source_run_id'] != 'l3:' + row['source_run_id']
+                or parent['manifest']['signal_date'] != manifest['signal_date']
+                or _timestamp(row['frozen_at']) < _timestamp(manifest['frozen_at'])
+                or plan.get('owner') != 'ensemble'
+                or plan.get('baseline_checksum') != context['formal_baseline_identity']['payload_checksum']
+                or plan.get('production_effect') is not False or plan.get('can_write_order') is not False
+                or plan.get('nav_maturity_credit') != 0 or not isinstance((plan.get('candidate') or {}).get('output'), list)
+                or tag['role'] != 'B' or tag['baseline_primary']['role'] != 'A'
+                or checksum in found or query("SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 "
+                    "WHERE signal_date=? AND snapshot_kind='execution_pair' AND source_run_id=? LIMIT 1",
+                    [manifest['signal_date'], row['source_run_id']])):
+            raise ValueError('paired_nav_b_selection_readback_invalid')
+        found[checksum] = {'pair_id': row['source_run_id'], 'snapshot_id': row['snapshot_id'], 'owner': 'ensemble'}
+    return [found[key] for key in sorted(expected)] if set(found) == expected else []
+
+
 def _verify_registrations(candidates, native, *, signal_date, query):
     if native.get('status') != 'native_execution_pairs_registered':
         raise ValueError('paired_nav_native_registration_incomplete')
@@ -52,10 +105,22 @@ def _complete_pipeline_shadow(collection, *, query, writer, enforce_execution_wi
                 # This writes only allocation snapshots; no fills or NAV credit.
                 from services.paired_nav_l3_candidate import collect_ensemble_allocations
 
-                selection = collect_ensemble_allocations(
-                    snapshot_id=collection['snapshot_id'], query=query, writer=writer)
-                if selection.get('status') != 'allocation_pairs_frozen' or not selection.get('plans'):
-                    raise ValueError('paired_nav_b_selection_not_frozen')
+                plans = _verified_late_selection_plans(collection['snapshot_id'], query=query)
+                if not plans:
+                    try:
+                        selection = collect_ensemble_allocations(
+                            snapshot_id=collection['snapshot_id'], query=query, writer=writer)
+                    except ValueError as exc:
+                        # A retrospective pair is non-prospective. The common
+                        # lifecycle planner rejects it after all plans are sealed.
+                        if str(exc) != 'paired_nav_lifecycle_successor_invalid':
+                            raise
+                        plans = _verified_late_selection_plans(collection['snapshot_id'], query=query)
+                        if not plans:
+                            raise
+                    else:
+                        if selection.get('status') != 'allocation_pairs_frozen' or not selection.get('plans'):
+                            raise ValueError('paired_nav_b_selection_not_frozen')
                 return persist_missed_setup_window(missed)
         except Exception as exc:
             return {**collection, **shadow_failure('execution_window_check', exc)}

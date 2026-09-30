@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:1cc6a100af765c6c8b9b8f98d23d475a92b94604756b269d4c7bf6de947e96ac",
+  "execution_owner_version": "native-paper-v1:4f5f6555107617427166bf53f396696b7b0abc01df3bb8ae8d90eb509b274be0",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved on 2026-09-30 this exact source-build identity for the Learning0059 ownership registration fix, with Worker commit, push and deployment conditional on all checks, exact-commit CI and fresh production verification. This approval grants no Paper runtime admission, source equivalence, maturity transfer, successor, cold deletion, Controller/Modal deployment or real-order authority.",
-  "review": "docs/releases/2026-09-30-d1-maintenance.md",
+  "authorization": "Wei approved on 2026-09-30 commit, push and deployment of the S12 opening-entry, intraday-quote, A/B recommendation and NAV selection-only repairs to the production simulated trading system. This record attests this exact Paper build identity only; active Paper runtime admission remains governed by a separate exact active8-paper-runtime-approval-v1 record. No real orders, source equivalence or maturity transfer are authorized.",
+  "review": "docs/releases/2026-09-30-s12-ab-simulation-fix.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from services.backtest_engine import BacktestDataset, FormalPositionRiskParams, replay_period
 from services.backtest_result_store import persist_replay_backtest
+from services.backtest_corporate_accounting import require_corporate_component
 from services.backtest_trade_evidence import build_backtest_portfolio_return_evidence
 from services.dataset_snapshots import latest_dataset_snapshot, validate_dataset_snapshot_manifest
 from services.monte_carlo_service import _run_monte_carlo
@@ -51,6 +52,7 @@ def _resolve_snapshot(as_of_date: str) -> tuple[dict[str, Any], str, str]:
             "weekly_evidence_snapshot_not_ready:"
             f"as_of={as_of_date}:errors={','.join(errors)}"
         )
+    require_corporate_component(snapshot)
     start_date, end_date = _snapshot_range(snapshot)
     snapshot_created_date = str(snapshot.get("created_at") or "")[:10]
     if not snapshot_created_date or snapshot_created_date > as_of_date:
@@ -65,6 +67,29 @@ def _resolve_snapshot(as_of_date: str) -> tuple[dict[str, Any], str, str]:
             f"business_date={snapshot.get('business_date')}"
         )
     return snapshot, start_date, end_date
+
+
+def preflight_weekly_backtest_source(as_of_date: str) -> dict[str, Any]:
+    """Read only the chosen manifest before allocating a research Job.
+
+    The Job resolves/checks its snapshot again. A successful presence check is
+    not permission to skip original receipt, scope or per-session validation.
+    Transport/auth failures still propagate as infrastructure failures.
+    """
+    try:
+        snapshot, start_date, end_date = _resolve_snapshot(as_of_date)
+    except RuntimeError as exc:
+        reason = str(exc)
+        if not reason.startswith(('backtest_corporate_component_', 'weekly_evidence_snapshot_')):
+            raise
+        return {'status': 'blocked', 'reason': reason, 'blockers': [reason],
+                'production_effect': False, 'heavy_compute_started': False}
+    return {'status': 'ready', 'snapshot_id': snapshot['snapshot_id'],
+            'snapshot_checksum': snapshot.get('checksum'),
+            'start_date': start_date, 'end_date': end_date,
+            'check': 'manifest_component_presence_only',
+            'component_contents_verified': False, 'production_effect': False,
+            'heavy_compute_started': False}
 
 
 def _trade_dict(trade: Any) -> dict[str, Any]:

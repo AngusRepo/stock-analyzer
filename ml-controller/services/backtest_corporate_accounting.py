@@ -17,6 +17,27 @@ from services.paper_corporate_source import validate_source_schema
 from services.paired_nav_journal import digest
 
 
+def require_corporate_component(manifest):
+    """Presence preflight; the original tape/session PIT gates remain mandatory.
+
+    A zero-row declared component is distinct from an absent component. This
+    check does not download it or claim its contents cover any held universe.
+    """
+    metadata = manifest.get('metadata_json') or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError as exc:
+            raise RuntimeError('backtest_corporate_component_metadata_invalid') from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError('backtest_corporate_component_metadata_invalid')
+    components = metadata.get('components') or {}
+    uri = components.get('corporate_source_records') if isinstance(components, dict) else None
+    if not isinstance(uri, str) or not uri.strip():
+        raise RuntimeError('backtest_corporate_component_missing:' +
+                           str(manifest.get('snapshot_id') or 'unknown'))
+
+
 def load_corporate_tape(frame):
     """Load original immutable preopen receipts, never backdate a new fetch."""
     if frame is None:

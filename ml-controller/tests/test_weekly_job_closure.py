@@ -28,6 +28,8 @@ CANONICAL_WEEKLY_RUN_ID = "weekly-backtest-2026-08-23-1787500000000-abcdef123456
 @pytest.mark.asyncio
 async def test_backtest_research_bundle_dispatches_cloud_run_job(monkeypatch):
     captured: dict = {}
+    monkeypatch.setattr(backtest, 'preflight_weekly_backtest_source',
+                        lambda _: {'status': 'ready'})
 
     class FakeExecution:
         execution_id = "optuna-research-sweep-test"
@@ -82,6 +84,8 @@ async def test_backtest_research_bundle_rejects_run_id_date_mismatch():
 
 @pytest.mark.asyncio
 async def test_backtest_research_bundle_rejects_duplicate_running_execution(monkeypatch):
+    monkeypatch.setattr(backtest, 'preflight_weekly_backtest_source',
+                        lambda _: {'status': 'ready'})
     execution = cloud_run_jobs_client.JobExecution(
         execution_name="projects/p/locations/r/jobs/j/executions/weekly-backtest-research-live",
         execution_id="weekly-backtest-research-live",

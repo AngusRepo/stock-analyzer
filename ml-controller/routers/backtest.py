@@ -6,6 +6,7 @@ POST /backtest/monte-carlo → Monte Carlo MDD simulation
 POST /backtest/pbo         → Probability of Backtest Overfitting (CPCV)
 POST /backtest/replay      → Sprint 6 parameterized Mode A replay (Optuna objective)
 """
+import asyncio
 import json
 import hashlib
 import logging
@@ -18,6 +19,7 @@ from services.monte_carlo_service import run_monte_carlo_mdd
 from services.pbo_service import run_pbo_analysis, persist_pbo_attempt_receipt
 from services.weekly_evidence_service import (
     run_canonical_weekly_backtest,
+    preflight_weekly_backtest_source,
     run_historical_weekly_comparison,
     taiwan_today,
 )
@@ -68,6 +70,14 @@ class WeeklyBacktestResearchBundleRequest(BaseModel):
     dry_run: bool = Field(default=False)
 
 
+@router.get("/research-bundle/preflight")
+async def weekly_backtest_source_preflight(
+    run_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+):
+    """Read manifest readiness without dispatching a Job or downloading inputs."""
+    return await asyncio.to_thread(preflight_weekly_backtest_source, run_date or taiwan_today())
+
+
 @router.post("/research-bundle/run")
 async def trigger_weekly_backtest_research_bundle(
     req: WeeklyBacktestResearchBundleRequest = Body(...),
@@ -90,6 +100,15 @@ async def trigger_weekly_backtest_research_bundle(
             "run_date": run_date,
             "run_id": req.run_id,
         }
+
+    preflight = await asyncio.to_thread(preflight_weekly_backtest_source, run_date)
+    if preflight['status'] != 'ready':
+        raise HTTPException(status_code=409, detail={
+            'error': 'weekly_backtest_source_blocked', 'reason': preflight['reason'],
+            'status': 'blocked',
+            'triggered': False, 'task': req.callback_task, 'run_date': run_date,
+            'run_id': req.run_id, 'source_preflight': preflight,
+        })
 
     run_id = req.run_id
     env_overrides = {

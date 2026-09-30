@@ -132,10 +132,11 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const requestedTask = c.req.param('task')
     const task = resolveSchedulerTaskAlias(requestedTask)
     const maintenanceBackfill = task === 'data-domain-shadow-backfill'
+    const minuteTask = task === 'intraday-check' || task === 'paired-native-execution'
     const rateLimitNamespace = maintenanceBackfill
       ? 'admin-maintenance:data-domain-shadow-backfill'
-      : 'admin'
-    const rateLimit = maintenanceBackfill ? 500 : 100
+      : minuteTask ? `admin-minute:${task}` : 'admin'
+    const rateLimit = maintenanceBackfill ? 500 : minuteTask ? 90 : 100
     const rlKey = `ratelimit:${rateLimitNamespace}:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 13)}`
     let requestedRunDate = c.req.query('date') || undefined
     const schedulerContext: SchedulerCallbackContext = {}

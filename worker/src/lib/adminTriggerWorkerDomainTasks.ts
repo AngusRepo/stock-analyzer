@@ -1454,6 +1454,7 @@ export function buildAdminWorkerDomainTaskMap(
       const {
         inspectStorageCapacityTelemetry,
         buildStorageCapacityGrowthEstimate,
+        loadStorageCapacityBackfillBaselines,
       } = await import('./storageCapacityTelemetry')
       const health = await runStorageHealthCheck(c.env)
       const opsDb = databaseForDataDomain(c.env, 'ops')
@@ -1478,13 +1479,7 @@ export function buildAdminWorkerDomainTaskMap(
           used_bytes: number
           observed_date: string
         }>(),
-        opsDb.prepare(`
-          SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
-            FROM data_domain_backfill_cursors
-           GROUP BY domain
-        `).all() as Promise<{
-          results: Array<{ domain: string; baseline_after: string }>
-        }>,
+        loadStorageCapacityBackfillBaselines(c.env),
       ])
       const baselineByDomain = new Map(
         backfillBaselines.results.map((row) => [row.domain, row.baseline_after] as const),

@@ -35,9 +35,9 @@ class FakeStatement {
             score_before: 80,
             score_after: 82,
             rank: 1,
-            evidence: JSON.stringify({ large: true, payload: 'x'.repeat(256) }),
+            evidence: JSON.stringify({ large: true, payload: 'x'.repeat(2048) }),
             created_at: '2026-01-01T00:00:00Z',
-            __blob_bytes: 300,
+            __blob_bytes: 2073,
           },
         ] as T[],
       }

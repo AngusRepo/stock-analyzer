@@ -86,6 +86,9 @@ export type AuditJsonArchiveRunResult = {
     archived_rows: number
     scrubbed_rows: number
     archived_blob_bytes: number
+    /** UTF-8 payload bytes removed after successful CAS, not D1 physical size. */
+    reclaimed_blob_bytes?: number
+    skipped_no_savings_rows?: number
     r2_key: string | null
     snapshot_id: string | null
     checksum: string | null
@@ -295,7 +298,7 @@ function rowBlobBytes(row: Record<string, unknown>, target: AuditJsonTargetConfi
   return target.blobColumns.reduce((sum, column) => sum + byteLength(row[column]), 0)
 }
 
-function buildPointer(input: {
+type AuditJsonPointerInput = {
   table: string
   keyColumn: string
   keyValue: string | number
@@ -305,8 +308,11 @@ function buildPointer(input: {
   checksum: string
   archivedAt: string
   originalByteLength: number
-}): string {
+}
+
+function buildPointer(input: AuditJsonPointerInput, hotFields: Record<string, unknown> = {}): string {
   return JSON.stringify({
+    ...hotFields,
     schema_version: 'd1-audit-json-pointer-v1',
     archived_to_r2: true,
     archive_kind: AUDIT_JSON_ARCHIVE_KIND,
@@ -320,6 +326,39 @@ function buildPointer(input: {
     archived_at: input.archivedAt,
     original_byte_length: input.originalByteLength,
   })
+}
+
+const EXISTING_POINTER_SCHEMAS = new Set([
+  'd1-audit-json-pointer-v1', 'strategy-context-pointer-v1',
+  'strategy-evidence-pointer-v1', 'legacy-screener-evidence-pointer-v1',
+])
+
+function compactBlob(target: AuditJsonTargetConfig, original: unknown, input: AuditJsonPointerInput): unknown {
+  let parsed: Record<string, unknown> | null = null
+  try {
+    const value = JSON.parse(String(original))
+    if (value && typeof value === 'object' && !Array.isArray(value)) parsed = value
+  } catch { /* Non-JSON audit payloads can still be archived verbatim. */ }
+  // Do not wrap a pointer in another pointer: its resolver may require the
+  // original identity, and this also enlarges already compact strategy rows.
+  if (parsed && (parsed.archived_to_r2 === true || EXISTING_POINTER_SCHEMAS.has(String(parsed.schema_version)))) return original
+
+  let hotFields: Record<string, unknown> = {}
+  if (target.id === 'strategy_decision_log') {
+    if (!parsed) return original
+    // Historical recovery reads these fields directly with SQL/JSON and uses
+    // candidate + score_v2 when the shared candidate context is unavailable.
+    // Keep the exact values; never manufacture PIT or evaluability proof.
+    const retained = input.blobColumn === 'context_json'
+      ? ['candidate', 'score_v2']
+      : ['pit_reconstruction', 'feature_ref_diagnostics', 'evaluability',
+        'signal_dsl_diagnostics', 'base_gate_diagnostics', 'rejection_diagnostics']
+    hotFields = Object.fromEntries(Object.entries(parsed).filter(([key]) => retained.includes(key)))
+  }
+  const pointer = buildPointer(input, hotFields)
+  // Guard every column independently, including NULL/empty siblings of a large
+  // blob. A qualifying row is not evidence that both columns can be compacted.
+  return byteLength(pointer) < byteLength(original) ? pointer : original
 }
 
 function retentionCursorPredicate(
@@ -390,7 +429,7 @@ export function auditJsonRowsPerUpdateStatement(blobColumnCount: number): number
 
 export function buildAuditJsonCompareAndSwap(
   target: AuditJsonTargetConfig, rows: Record<string, unknown>[],
-  pointerFor: (row: Record<string, unknown>, blobColumn: string) => string,
+  pointerFor: (row: Record<string, unknown>, blobColumn: string) => unknown,
 ) {
   const keyMatch = `json_extract(b.value,'$.original.${target.keyColumn}') IS ${target.table}.${target.keyColumn}`
   const same = target.selectedColumns.map(column =>
@@ -418,7 +457,7 @@ export function buildAuditJsonCompareAndSwap(
 
 async function scrubArchivedRows(
   db: D1Database, target: AuditJsonTargetConfig, rows: Record<string, unknown>[],
-  cutoffDate: string, pointerFor: (row: Record<string, unknown>, blobColumn: string) => string,
+  cutoffDate: string, pointerFor: (row: Record<string, unknown>, blobColumn: string) => unknown,
 ): Promise<number> {
   if (!rows.length) return 0
   const statements: D1PreparedStatement[] = []
@@ -650,6 +689,47 @@ export async function runAuditJsonArchiveRetention(
       const checksum = await sha256Text(body)
       const r2Key = r2KeyPrefix.replace(/\.json$/, `-${checksum}.json`)
       const snapshotId = `${AUDIT_JSON_ARCHIVE_KIND}:${target.id}:${businessDate}:${runId}:${chunkId}:${checksum}`
+      const compacted = new Map<Record<string, unknown>, Record<string, unknown>>()
+      let reclaimedBlobBytes = 0
+      for (const row of rows) {
+        const pointers = Object.fromEntries(target.blobColumns.map(blobColumn => [blobColumn, compactBlob(target, row[blobColumn], {
+          table: target.table, keyColumn: target.keyColumn, keyValue: rowKey(row, target),
+          blobColumn, snapshotId, r2Key, checksum, archivedAt,
+          originalByteLength: byteLength(row[blobColumn]),
+        })]))
+        const saved = rowBlobBytes(row, target) - rowBlobBytes(pointers, target)
+        if (saved > 0) {
+          compacted.set(row, pointers)
+          reclaimedBlobBytes += saved
+        }
+      }
+      const rowsToScrub = rows.filter(row => compacted.has(row))
+      const lastRow = rows[rows.length - 1]
+      const backlogRemaining = candidates.hasMore
+      const skippedNoSavingsRows = rows.length - rowsToScrub.length
+      if (!rowsToScrub.length) {
+        // Advance past an unprofitable page without creating another archive,
+        // manifest or source UPDATE. A later scan may re-evaluate changed rows.
+        result.tables.push({
+          target: target.id, table: target.table, candidate_rows: rows.length,
+          archived_rows: 0, scrubbed_rows: 0, archived_blob_bytes: 0,
+          reclaimed_blob_bytes: 0, skipped_no_savings_rows: skippedNoSavingsRows,
+          r2_key: null, snapshot_id: null, checksum: null, status: 'skipped',
+          cursor_date: String(lastRow?.[target.dateColumn] ?? '') || null,
+          cursor_key: String(lastRow?.[target.keyColumn] ?? '') || null,
+          backlog_remaining: backlogRemaining,
+        })
+        phase = 'checkpoint'
+        await checkpointRetentionItem(opsDb, {
+          runId, policyId: AUDIT_JSON_RETENTION_POLICY_ID, datasetId: target.id,
+          status: 'skipped', scannedRows: rows.length,
+          cursorDate: String(lastRow?.[target.dateColumn] ?? '') || null,
+          cursorKey: lastRow?.[target.keyColumn] as string | number | null,
+          backlogRemaining, cycleComplete: !backlogRemaining,
+          evidence: { cutoff_date: cutoffDate, reason: 'no_safe_storage_saving', skipped_no_savings_rows: skippedNoSavingsRows },
+        })
+        continue
+      }
 
       phase = 'archive_readback'
       let readback = await env.ARTIFACTS!.get(r2Key)
@@ -703,6 +783,8 @@ export async function runAuditJsonArchiveRetention(
           coverage_start: rows[0]?.[target.dateColumn] ?? null,
           coverage_end: rows[rows.length - 1]?.[target.dateColumn] ?? null,
           archived_blob_bytes: archivedBlobBytes,
+          planned_reclaimed_blob_bytes: reclaimedBlobBytes,
+          skipped_no_savings_rows: skippedNoSavingsRows,
           retention_action: 'scrub_json_columns_to_r2_pointer',
           minimum_cold_days: 3650,
           retain_until: new Date(Date.parse(archivedAt) + 3650 * 86400_000).toISOString(),
@@ -712,20 +794,8 @@ export async function runAuditJsonArchiveRetention(
       await upsertDatasetSnapshotManifest(env, manifest)
 
       phase = 'scrub'
-      const scrubbed = await scrubArchivedRows(targetDb, target, rows, cutoffDate, (row, blobColumn) => buildPointer({
-        table: target.table,
-        keyColumn: target.keyColumn,
-        keyValue: rowKey(row, target),
-        blobColumn,
-        snapshotId,
-        r2Key,
-        checksum,
-        archivedAt,
-        originalByteLength: byteLength(row[blobColumn]),
-      }))
-
-      const lastRow = rows[rows.length - 1]
-      const backlogRemaining = candidates.hasMore
+      const scrubbed = await scrubArchivedRows(targetDb, target, rowsToScrub, cutoffDate,
+        (row, blobColumn) => compacted.get(row)![blobColumn])
       result.tables.push({
         target: target.id,
         table: target.table,
@@ -733,6 +803,8 @@ export async function runAuditJsonArchiveRetention(
         archived_rows: rows.length,
         scrubbed_rows: scrubbed,
         archived_blob_bytes: archivedBlobBytes,
+        reclaimed_blob_bytes: reclaimedBlobBytes,
+        skipped_no_savings_rows: skippedNoSavingsRows,
         r2_key: r2Key,
         snapshot_id: snapshotId,
         checksum,
@@ -758,7 +830,8 @@ export async function runAuditJsonArchiveRetention(
         cursorKey: lastRow?.[target.keyColumn] as string | number | null,
         backlogRemaining,
         cycleComplete: !backlogRemaining,
-        evidence: { snapshot_id: snapshotId, r2_key: r2Key, checksum, cutoff_date: cutoffDate },
+        evidence: { snapshot_id: snapshotId, r2_key: r2Key, checksum, cutoff_date: cutoffDate,
+          reclaimed_blob_bytes: reclaimedBlobBytes, skipped_no_savings_rows: skippedNoSavingsRows },
       })
     } catch (error) {
       const message = `audit_json_phase=${phase} ${error instanceof Error ? error.message : String(error)}`

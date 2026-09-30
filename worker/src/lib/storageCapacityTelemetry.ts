@@ -1,7 +1,19 @@
 import type { Bindings } from '../types'
-import { databaseForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, databaseForTable, type DataDomain } from './dataDomainRegistry'
 
 const D1_MAX_BYTES = 10_000_000_000
+
+export async function loadStorageCapacityBackfillBaselines(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+): Promise<{ results: Array<{ domain: string; baseline_after: string }> }> {
+  // The cutover control plane remains on DB after Ops activation. Its Ops
+  // shadow can be empty/stale and would count the initial migration as growth.
+  return databaseForTable(env, 'data_domain_backfill_cursors').prepare(`
+    SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
+      FROM data_domain_backfill_cursors
+     GROUP BY domain
+  `).all<{ domain: string; baseline_after: string }>()
+}
 
 export type StorageCapacityStatus = 'healthy' | 'warning' | 'drain' | 'critical'
 

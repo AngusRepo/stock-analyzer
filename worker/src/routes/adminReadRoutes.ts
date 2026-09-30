@@ -255,6 +255,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
   const {
     inspectStorageCapacityTelemetry,
     buildStorageCapacityGrowthEstimate,
+    loadStorageCapacityBackfillBaselines,
   } = await import('../lib/storageCapacityTelemetry')
   const opsDb = databaseForDataDomain(c.env, 'ops')
   const learningDb = databaseForDataDomain(c.env, 'learning')
@@ -308,11 +309,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
       SELECT COUNT(*) AS object_count, COALESCE(SUM(byte_size), 0) AS tracked_bytes
         FROM tracked_components
     `).first<{ object_count: number; tracked_bytes: number }>(),
-    opsDb.prepare(`
-      SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
-        FROM data_domain_backfill_cursors
-       GROUP BY domain
-    `).all<{ domain: string; baseline_after: string }>(),
+    loadStorageCapacityBackfillBaselines(c.env),
   ])
   const baselineByDomain = new Map(
     (backfillBaselines.results ?? []).map((row) => [row.domain, row.baseline_after] as const),
@@ -967,7 +964,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
   const [
     { inspectDataDomainCutoverReadiness },
     { inspectLatestEveningChainClosure },
-    { inspectStorageCapacityTelemetry, buildStorageCapacityGrowthEstimate },
+    { inspectStorageCapacityTelemetry, buildStorageCapacityGrowthEstimate, loadStorageCapacityBackfillBaselines },
     { buildDataDomainTenYearClosure, buildTenYearCapacityClosureReceipt },
   ] = await Promise.all([
     import('../lib/dataDomainCutoverReadiness'),
@@ -1033,11 +1030,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
       used_bytes: number
       observed_date: string
     }>(),
-    opsDb.prepare(`
-      SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
-        FROM data_domain_backfill_cursors
-       GROUP BY domain
-    `).all<{ domain: string; baseline_after: string }>(),
+    loadStorageCapacityBackfillBaselines(c.env),
   ])
   const baselineByDomain = new Map(
     (backfillBaselines.results ?? []).map((row) => [row.domain, row.baseline_after] as const),

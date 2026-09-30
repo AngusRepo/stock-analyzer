@@ -11,6 +11,7 @@ from scipy.stats import t as student_t
 from services.data_snooping_validation import CANONICAL_METHODS, data_snooping_evidence_errors
 
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
+from services.allocator_forecast_archive import hydrate_allocator_forecasts
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
 
@@ -2327,6 +2328,7 @@ def load_allocator_ev_fusion_training_rows(
     lookback_days: int = 90,
     limit: int = 6000,
     knowledge_cutoff_date: str | None = None,
+    forecast_archive_download: Callable[[str], bytes] | None = None,
 ) -> list[dict[str, Any]]:
     outcome_cutoff = knowledge_cutoff_date or end_date
     snapshot_rows: list[dict[str, Any]] = []
@@ -2454,6 +2456,7 @@ def load_allocator_ev_fusion_training_rows(
             raise
 
     if snapshot_available:
+        snapshot_rows = hydrate_allocator_forecasts(snapshot_rows, download=forecast_archive_download)
         if core_query_fn is None or not snapshot_rows:
             return snapshot_rows
         stock_ids = sorted({int(row["stock_id"]) for row in snapshot_rows if row.get("stock_id") is not None})

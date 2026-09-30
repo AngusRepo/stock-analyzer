@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
+from services.allocator_forecast_archive import archive_allocator_forecasts, reconcile_allocator_forecast_references, reconcile_allocator_forecast_date
 from services.evidence_contracts import SELECTION_ROUTE_SEMANTIC_VERSION
 from services.d1_domain_client import D1DataDomain, client_for_domain
 from services.ev_lineage_contract import (
@@ -585,7 +586,8 @@ def _snapshot_staging_statement(
             generation_mode,
             model_set_signature,
             target_semantic_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (SELECT 1 FROM allocator_ev_snapshot_runs r WHERE r.run_id=? AND r.status='writing')
         ON CONFLICT(run_id, stock_id) DO UPDATE SET
             snapshot_date=excluded.snapshot_date,
             symbol=excluded.symbol,
@@ -607,6 +609,8 @@ def _snapshot_staging_statement(
             generation_mode=excluded.generation_mode,
             model_set_signature=excluded.model_set_signature,
             target_semantic_version=excluded.target_semantic_version
+        WHERE EXISTS (SELECT 1 FROM allocator_ev_snapshot_runs r
+                       WHERE r.run_id=excluded.run_id AND r.status='writing')
         """.strip(),
         [
             run_id,
@@ -633,6 +637,7 @@ def _snapshot_staging_statement(
             generation_mode,
             model_set_signature,
             target_semantic_version,
+            run_id,
         ],
     )
 
@@ -661,6 +666,7 @@ def _snapshot_run_start_statement(
             reconstructed_lineage_rows=excluded.reconstructed_lineage_rows,
             rejected_lineage_rows=excluded.rejected_lineage_rows,
             error_code=NULL, updated_at=CURRENT_TIMESTAMP
+        WHERE allocator_ev_snapshot_runs.status='writing'
         """.strip(),
         [
             run_id,
@@ -695,6 +701,9 @@ def _snapshot_publish_statements(
             SELECT {columns}
               FROM allocator_ev_feature_snapshot_staging
              WHERE run_id = ?
+               AND EXISTS (SELECT 1 FROM allocator_ev_snapshot_runs own_run
+                            WHERE own_run.run_id=allocator_ev_feature_snapshot_staging.run_id
+                              AND own_run.status='writing')
                AND run_id = (
                    SELECT latest.run_id
                      FROM allocator_ev_snapshot_runs latest
@@ -732,6 +741,7 @@ def _snapshot_publish_statements(
             DELETE FROM allocator_ev_feature_snapshots
              WHERE snapshot_date = ?
                AND snapshot_source = ?
+               AND EXISTS (SELECT 1 FROM allocator_ev_snapshot_runs own_run WHERE own_run.run_id=? AND own_run.status='writing')
                AND ? = (
                    SELECT latest.run_id
                      FROM allocator_ev_snapshot_runs latest
@@ -747,7 +757,7 @@ def _snapshot_publish_statements(
                     WHERE run_id = ?
                )
             """.strip(),
-            [snapshot_date, SNAPSHOT_SOURCE, run_id, snapshot_date, SNAPSHOT_SOURCE, run_id],
+            [snapshot_date, SNAPSHOT_SOURCE, run_id, run_id, snapshot_date, SNAPSHOT_SOURCE, run_id],
         ),
         (
             """
@@ -768,7 +778,9 @@ def _snapshot_publish_statements(
             [expected_rows, expected_rows, run_id, snapshot_date, SNAPSHOT_SOURCE],
         ),
         (
-            "DELETE FROM allocator_ev_feature_snapshot_staging WHERE run_id=?",
+            """DELETE FROM allocator_ev_feature_snapshot_staging WHERE run_id=?
+               AND EXISTS (SELECT 1 FROM allocator_ev_snapshot_runs own_run
+                            WHERE own_run.run_id=allocator_ev_feature_snapshot_staging.run_id AND own_run.status='ready')""",
             [run_id],
         ),
     ]
@@ -809,6 +821,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     l4_min_dates: int = 20,
     l4_training_limit: int = 6000,
     lineage_cohort_id: str | None = None,
+    forecast_archive_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     run_id = f"allocator-snapshot:{snapshot_date}:{generated_at.replace(':', '').replace('-', '')}"
@@ -1080,6 +1093,7 @@ def build_allocator_ev_feature_snapshots_for_date(
 
     write_result: dict[str, Any] = {"dry_run": True, "changes_total": 0}
     publish_result: dict[str, Any] = {"dry_run": True, "changes_total": 0}
+    forecast_archive: dict[str, Any] = {"status": "not_attempted"}
     if not dry_run and candidate_total != len(statements):
         closure_error = (
             "allocator_snapshot_candidate_closure_mismatch:"
@@ -1103,20 +1117,31 @@ def build_allocator_ev_feature_snapshots_for_date(
         raise RuntimeError(closure_error)
     if statements and not dry_run:
         writer = learning_writer
-        stage_statements = [
-            _snapshot_run_start_statement(
+        start_statement = _snapshot_run_start_statement(
                 run_id=run_id,
                 snapshot_date=snapshot_date,
                 expected_rows=candidate_total,
                 native_lineage_rows=native_lineage_rows,
                 reconstructed_lineage_rows=reconstructed_lineage_rows,
                 rejected_lineage_rows=rejected_lineage_rows,
-            ),
-            *statements,
-        ]
+            )
+        archive_attempted = False
         try:
-            write_result = writer(stage_statements)
-            _assert_complete_write(write_result, len(stage_statements), phase="staging")
+            start_result = writer([start_statement])
+            _assert_complete_write(start_result, 1, phase="start")
+            if start_result.get('changes_total') == 0:
+                raise RuntimeError('allocator_snapshot_terminal_run_reopen_forbidden')
+            archive_attempted = any(len(str(values[4]).encode('utf-8')) >= 2048 for _, values in statements)
+            forecasts, _ = archive_allocator_forecasts([
+                {'snapshot_date': values[1], 'stock_id': values[2], 'snapshot_source': values[12],
+                 'as_of_guard': values[15], 'forecast_data': values[4]}
+                for _, values in statements
+            ], run_id=run_id, post=forecast_archive_post, summary=forecast_archive)
+            forecast_archive['status'] = 'verified' if forecast_archive['artifact_count'] else 'retained_inline'
+            for (_, values), forecast in zip(statements, forecasts, strict=True):
+                values[4] = forecast
+            write_result = writer(statements)
+            _assert_complete_write(write_result, len(statements), phase="staging")
             staged_rows = learning_query(
                 "SELECT COUNT(*) AS row_count FROM allocator_ev_feature_snapshot_staging WHERE run_id=?",
                 [run_id],
@@ -1148,11 +1173,28 @@ def build_allocator_ev_feature_snapshots_for_date(
                     f"run_id={run_id}:status={published.get('status')}:"
                     f"expected={candidate_total}:actual={published.get('published_rows')}"
                 )
+            try:
+                forecast_archive['reference_reconciliation'] = reconcile_allocator_forecast_date(
+                    snapshot_date, SNAPSHOT_SOURCE, learning_query, post=forecast_archive_post)
+            except Exception as cleanup_error:
+                # The canonical publish/readback succeeded and all referenced
+                # originals remain protected. Report cleanup separately; do
+                # not repeat expensive snapshot work just to release edges.
+                forecast_archive['reference_reconciliation'] = {
+                    'status': 'pending', 'run_id': run_id, 'error': str(cleanup_error)[:300],
+                }
         except Exception as exc:
             try:
                 writer([_snapshot_run_fail_statement(run_id=run_id, error_code=str(exc))])
             except Exception:
                 pass
+            if archive_attempted:
+                try:
+                    reconcile_allocator_forecast_references(run_id, post=forecast_archive_post)
+                except Exception:
+                    # Failed reconciliation keeps the registered hard reference;
+                    # retry by exact run_id, never release an unverified object.
+                    pass
             raise
 
     # A backfill may reconstruct L4, so it cannot own a prospective IPO freeze.
@@ -1208,6 +1250,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         "generated_at": generated_at,
         "write_result": write_result,
         "publish_result": publish_result,
+        "forecast_archive": forecast_archive,
     }
 
 
@@ -1224,6 +1267,7 @@ def backfill_allocator_ev_feature_snapshots(
     l4_min_dates: int = 20,
     l4_training_limit: int = 6000,
     lineage_cohort_id: str | None = None,
+    forecast_archive_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if next_session_date and start_date != end_date:
         raise ValueError("next_session_date_requires_single_snapshot_date")
@@ -1244,6 +1288,7 @@ def backfill_allocator_ev_feature_snapshots(
                 if start_date == end_date or not lineage_cohort_id
                 else f"{lineage_cohort_id}:{snapshot_date}"
             ),
+            forecast_archive_post=forecast_archive_post,
         ))
     aggregate_skip_reasons: dict[str, int] = {}
     for row in rows:

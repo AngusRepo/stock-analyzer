@@ -252,6 +252,10 @@ CREATE INDEX IF NOT EXISTS idx_artifact_hard_references_artifact_active
 CREATE INDEX IF NOT EXISTS idx_artifact_hard_references_owner_active
   ON artifact_hard_references(owner_type, owner_id, active);
 
+CREATE INDEX IF NOT EXISTS idx_allocator_forecast_active_refs_v1
+  ON artifact_hard_references(owner_id, artifact_id)
+  WHERE owner_type='allocator_ev_forecast_run' AND active=1;
+
 CREATE TABLE IF NOT EXISTS domain_projection_outbox (
   event_id TEXT PRIMARY KEY,
   source_domain TEXT NOT NULL,

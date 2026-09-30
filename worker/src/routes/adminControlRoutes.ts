@@ -450,6 +450,43 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/legacy-screener/resolv
   }
 })
 
+for (const operation of ['write', 'read', 'reconcile', 'preflight', 'gate'] as const) {
+  adminControlRoutes.post(`/api/internal/evidence-artifacts/allocator-forecast/${operation}`, async (c) => {
+    const authError = requireServiceToken(c)
+    if (authError) return authError
+    const owner = await import('../lib/allocatorEvFeatureArchive')
+    const limit = operation === 'write' ? owner.ALLOCATOR_FORECAST_MAX_BYTES : 8192
+    const reader = c.req.raw.body?.getReader()
+    if (!reader) return c.json({ error: 'allocator_forecast_request_missing' }, 400)
+    try {
+      const decoder = new TextDecoder('utf-8', { fatal: true })
+      let text = '', size = 0
+      for (;;) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        size += chunk.value.byteLength
+        if (size > limit) { await reader.cancel(); return c.json({ error: 'allocator_forecast_request_byte_limit' }, 413) }
+        text += decoder.decode(chunk.value, { stream: true })
+      }
+      text += decoder.decode()
+      const input = JSON.parse(text)
+      if (operation === 'preflight' || operation === 'gate') {
+        if (!input || Object.keys(input).length) return c.json({ error: 'allocator_forecast_request_invalid' }, 400)
+        return c.json({ ok: true, ...await (operation === 'gate'
+          ? owner.allocatorForecastWriterGate(c.env) : owner.allocatorForecastArchivePreflight(c.env)) })
+      }
+      if (operation === 'write') return c.json({ ok: true, ...await owner.writeAllocatorForecastArchive(c.env, input) })
+      if (operation === 'reconcile') return c.json({ ok: true, ...await owner.reconcileAllocatorForecastReferences(c.env, input) })
+      if (!input || Object.keys(input).join(',') !== 'artifact_id') return c.json({ error: 'allocator_forecast_request_invalid' }, 400)
+      const result = await owner.readAllocatorForecastArchive(c.env, input.artifact_id)
+      return new Response(result.body, { headers: { 'Content-Type': 'application/json; charset=utf-8',
+        'X-Artifact-Checksum': result.manifest.checksum, 'Cache-Control': 'private, no-store' } })
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : 'allocator_forecast_failed' }, 409)
+    } finally { reader.releaseLock() }
+  })
+}
+
 function nullableText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()

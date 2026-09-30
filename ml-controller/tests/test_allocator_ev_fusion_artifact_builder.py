@@ -1148,7 +1148,7 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_w
         calls.append(statements)
         return {"success_count": 0, "error_count": 1, "changes_total": 0, "first_error": "test"}
 
-    with pytest.raises(RuntimeError, match="allocator_snapshot_staging_partial_failure"):
+    with pytest.raises(RuntimeError, match="allocator_snapshot_start_partial_failure"):
         build_allocator_ev_feature_snapshots_for_date(
             snapshot_date="2026-07-07",
             query_fn=query_fn,
@@ -1158,7 +1158,7 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_w
 
     assert len(calls) == 2
     assert "INSERT INTO allocator_ev_snapshot_runs" in calls[0][0][0]
-    assert "allocator_ev_feature_snapshot_staging" in calls[0][1][0]
+    assert len(calls[0]) == 1
     assert "status='failed'" in calls[1][0][0]
 
 

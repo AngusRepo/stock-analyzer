@@ -77,6 +77,19 @@ for (const [database, query] of [
 ]) {
   run(process.execPath, [wranglerCli, 'd1', 'execute', database, '--remote', '--command', query], { cwd: workerDir })
 }
+// The bounded allocator reference owner must never scan all inactive history.
+// A namesake nonpartial index is not an equivalent migration.
+const allocatorIndexState = JSON.parse(run(process.execPath, [
+  wranglerCli, 'd1', 'execute', 'stockvision-ops-db', '--remote', '--json', '--command',
+  "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_allocator_forecast_active_refs_v1';",
+], { cwd: workerDir, capture: true }))
+const allocatorIndexSql = String(allocatorIndexState?.[0]?.results?.[0]?.sql ?? '').replace(/\s/g, '').toLowerCase()
+if (!Array.isArray(allocatorIndexState) || allocatorIndexState.length !== 1
+  || allocatorIndexState[0]?.success !== true || allocatorIndexState[0]?.results?.length !== 1
+  || !allocatorIndexSql.includes('onartifact_hard_references(owner_id,artifact_id)')
+  || !allocatorIndexSql.endsWith("whereowner_type='allocator_ev_forecast_run'andactive=1")) {
+  throw new Error('allocator forecast Ops0021 partial index missing or incompatible')
+}
 // A frozen calibration attempt is tied to its source tag. Finish the attempt
 // and explicitly apply Learning 0058 before admitting a different build.
 const calibrationState = JSON.parse(run(process.execPath, [

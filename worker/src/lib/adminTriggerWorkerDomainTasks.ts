@@ -987,13 +987,20 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'artifact-reconcile': async () => {
       const { runArtifactReconcile } = await import('./artifactLifecycle')
-      const result = await runArtifactReconcile(c.env, {
-        limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 500),
-      })
-      if (result.missing || result.mismatched || result.errors.length) {
-        throw new Error(`artifact reconcile failed ${JSON.stringify(result)}`)
-      }
-      return `artifact_reconcile checked=${result.checked} verified=${result.verified}`
+      const { reconcileAllocatorForecastReferenceTick } = await import('./allocatorEvFeatureArchive')
+      const errors: string[] = []
+      let result: Awaited<ReturnType<typeof runArtifactReconcile>> | undefined
+      let forecastRefs: Awaited<ReturnType<typeof reconcileAllocatorForecastReferenceTick>> | undefined
+      try {
+        result = await runArtifactReconcile(c.env, { limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 500) })
+        if (result.missing || result.mismatched || result.errors.length) errors.push(`artifact reconcile failed ${JSON.stringify(result)}`)
+      } catch (error) { errors.push(`artifact reconcile failed ${String(error)}`) }
+      // Each owner makes independent bounded progress; any error still fails
+      // the task after both have had their turn, preserving both diagnostics.
+      try { forecastRefs = await reconcileAllocatorForecastReferenceTick(c.env) }
+      catch (error) { errors.push(`allocator forecast references failed ${String(error)}`) }
+      if (errors.length) throw new Error(errors.join('; '))
+      return `artifact_reconcile checked=${result!.checked} verified=${result!.verified} allocator_refs_checked=${forecastRefs!.checked} allocator_refs_released=${forecastRefs!.released} allocator_refs_skipped=${forecastRefs!.skipped}`
     },
     'legacy-evidence-migration': async () => {
       const { runLegacyEvidenceMigration } = await import('./legacyEvidenceMigration')

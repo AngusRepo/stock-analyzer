@@ -335,6 +335,10 @@ load_release_provenance() {
     echo "  Source tree           : DIRTY (deploy would be blocked)"
   fi
 
+  # Git's clean status can miss checkout CRLF drift under `* -text`. L3 replay
+  # hashes raw source bytes, so reject any upload that differs from HEAD.
+  "$PYTHON_BIN" "$SCRIPT_DIR/tools/check_recommendation_source_bytes.py" || exit 7
+
   case "$SERVICE_RUNTIME_SERVICE_ACCOUNT,$JOB_RUNTIME_SERVICE_ACCOUNT,$BUILD_SERVICE_ACCOUNT" in
     *-compute@developer.gserviceaccount.com*)
       echo "ERROR: default Compute Engine identity is forbidden for StockVision runtime" >&2

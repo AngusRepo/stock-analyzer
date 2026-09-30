@@ -31,7 +31,8 @@ def test_snapshot_clock_rejects_future_data(monkeypatch):
             "business_date": "2026-08-17",
             "checksum": "abc",
             "created_at": "2026-08-15T12:00:00Z",
-            "metadata_json": '{"start_date":"2025-01-01","end_date":"2026-08-17"}',
+            "metadata_json": '{"start_date":"2025-01-01","end_date":"2026-08-17",'
+                             '"components":{"corporate_source_records":"gs://fixture/original-receipts"}}',
         },
     )
     monkeypatch.setattr(service, "validate_dataset_snapshot_manifest", lambda _: [])

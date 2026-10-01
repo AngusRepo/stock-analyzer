@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import time
 from typing import Any
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 def release_tag_url(service: dict[str, Any], tag: str, revision: str) -> str:
@@ -32,9 +32,20 @@ def verify_health(payload: dict[str, Any], expected: dict[str, str]) -> None:
             key for key, value in expected.items() if actual.get(key) != value))
 
 
+def verify_paper_runtime(payload: dict[str, Any]) -> None:
+    if (payload.get('schema_version') != 'canonical-serving-bundle-view-v1'
+            or payload.get('status') != 'PASS'
+            or payload.get('adoption_basis') != 'paper_experiment_unproven'
+            or payload.get('drift_fields') != []
+            or payload.get('missing_components') != []
+            or payload.get('promotion_authority') is not False
+            or payload.get('real_order_writes') != 0):
+        raise ValueError('candidate_paper_runtime_unverified')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify actual Cloud Run release traffic and HTTP provenance")
-    parser.add_argument("mode", choices=["tag-url", "traffic", "health"])
+    parser.add_argument("mode", choices=["tag-url", "traffic", "health", "paper"])
     parser.add_argument("--service")
     parser.add_argument("--region", default="asia-east1")
     parser.add_argument("--revision")
@@ -44,7 +55,28 @@ def main() -> None:
     parser.add_argument("--tree-sha")
     parser.add_argument("--branch")
     parser.add_argument("--scheduler-sha")
+    parser.add_argument("--token-secret")
     args = parser.parse_args()
+    if args.mode == 'paper':
+        if not args.url or not args.token_secret or ':' not in args.token_secret:
+            parser.error('paper URL and controller token secret name:version are required')
+        name, version = args.token_secret.rsplit(':', 1)
+        gcloud = shutil.which('gcloud.cmd') or shutil.which('gcloud')
+        token = subprocess.check_output([gcloud, 'secrets', 'versions', 'access', version,
+                                        '--secret=' + name], text=True, encoding='utf-8').strip()
+        request = Request(args.url.rstrip('/') + '/research_validation/production_bundle',
+                          headers={'X-Controller-Token': token})
+        for attempt in range(6):
+            try:
+                with urlopen(request, timeout=120) as response:
+                    verify_paper_runtime(json.load(response))
+                print('Cloud Run Paper runtime: exact configuration, no drift, no live authority')
+                return
+            except Exception:
+                if attempt == 5:
+                    raise
+                time.sleep(5)
+        return
     if args.mode in {"tag-url", "traffic"}:
         if not args.service or not args.revision:
             parser.error("service and revision are required")

@@ -31,6 +31,28 @@ case `test_changed_selection_policy_preserves_old_ten_sessions_without_transferr
 also fails on clean baseline `f7e6c59d` with `nav_review_immutable_input_conflict`.
 Mainline integration and deployment checks are recorded in the session draft.
 
+## Exact Paper runtime reapproval
+
+Wei explicitly approved the exact source compatibility repair, Paper supplemental
+KV update/readback, local commit and deployment on 2026-10-01 after the initial
+deployment attempt was stopped before production routing.
+
+The old supplemental Paper approval pins both changed source files.
+`approved_source_change` therefore supports only the two exact old/new hashes
+in `PERFORMANCE_SOURCE_CHANGE`. The updated KV record must retain the original
+admission, model identities, trading/risk settings and zero maturity transfer,
+and pin the complete new configuration. Every other source or policy change
+still fails. This does not normalize NAV identities or certify historical source
+equivalence. Retain the old approval for rollback and verify the candidate's
+exact serving configuration before switching production traffic.
+
+The candidate reads the release-specific supplemental key
+`ml:active8:paper_runtime_approval:v1:2026-10-01-native-nav-performance` first.
+Absence falls back to the existing key; an invalid staged record fails closed.
+The old serving version continues to read the original key during candidate
+verification. After the traffic switch, synchronize the original key for
+existing operational consumers. Keep its prior value as the rollback record.
+
 Raw evidence: Cloud Logging `pipeline-v2`, 2026-09-30 15:40-16:30 UTC;
 GCS `shadow/paired-native/v1/objects/0b7b187534f428c6e537e239c889009a0a15bf766fad8ae5268d569b1996b3f2.json`;
 Obsidian `02_Products/StockVision/Sessions/2026-10-01-native-nav-and-evening-performance-repair.draft.md`.

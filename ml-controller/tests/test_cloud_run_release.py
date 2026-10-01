@@ -1,5 +1,5 @@
 import pytest
-from tools.verify_cloud_run_release import release_tag_url, verify_health, verify_traffic
+from tools.verify_cloud_run_release import release_tag_url, verify_health, verify_traffic, verify_paper_runtime
 
 
 EXPECTED = {"sourceSha": "new", "sourceTreeSha": "tree", "sourceBranch": "main", "schedulerManifestSha256": "scheduler"}
@@ -40,3 +40,17 @@ def test_partial_rollout_cannot_claim_full_production_closure():
 def test_tag_must_point_to_exact_requested_revision():
     with pytest.raises(ValueError):
         release_tag_url({"status": {"traffic": [{"revisionName": "old", "tag": "candidate", "url": "https://old.example"}]}}, "candidate", "new")
+
+
+@pytest.mark.parametrize('change', [{}, {'status': 'FAIL'}, {'drift_fields': [{'field': 'allocator'}]},
+    {'missing_components': ['models']}, {'adoption_basis': 'unknown'},
+    {'promotion_authority': True}, {'real_order_writes': 1}, {'schema_version': 'unknown'}])
+def test_paper_candidate_requires_complete_exact_unpromoted_runtime(change):
+    payload = {'schema_version': 'canonical-serving-bundle-view-v1', 'status': 'PASS',
+               'adoption_basis': 'paper_experiment_unproven', 'drift_fields': [],
+               'missing_components': [], 'promotion_authority': False, 'real_order_writes': 0}
+    if change:
+        with pytest.raises(ValueError, match='candidate_paper_runtime_unverified'):
+            verify_paper_runtime({**payload, **change})
+    else:
+        verify_paper_runtime(payload)

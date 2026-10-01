@@ -60,11 +60,33 @@ def validate_admission(admission, *, artifact, now=None):
 
 RUNTIME_SCHEMA = 'active8-paper-runtime-approval-v1'
 RUNTIME_KEY = 'ml:active8:paper_runtime_approval:v1'
+RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-01-native-nav-performance'
 ODD_LOT_QUOTE_AGE_CHANGE = {
     'schema_version': 'active8-paper-odd-lot-quote-age-change-v1',
     'variable': 'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS',
     'previous': 'absent',
     'approved': '10000',
+}
+
+
+PERFORMANCE_SOURCE_CHANGE = {
+    'release': '2026-10-01-native-nav-performance',
+    'scope': 'paper',
+    'maturity_transfer': False,
+    'sources': {
+        'allocator_source_identity': {
+            'paired_nav_collection.py': {
+                'previous': '419cf1c77e601179945c6601d763b2105efc39488239d6d79849aa2529e9d288',
+                'approved': '8c117cbefe84f0b84a9f6627bf4fa53e640da85935679851e5dacfaeaf4893f2',
+            },
+        },
+        'l3_inference_source_identity': {
+            'paired_nav_strategy_bundle.py': {
+                'previous': '561d4926573ba93c93e9310be464a47aa40c7f41f320a2ffdc704196956caa42',
+                'approved': '4e52c91257cc9c9124cdfaaf787918da3eb20ba96db5f3a55e7cf3729efcad70',
+            },
+        },
+    },
 }
 
 
@@ -125,6 +147,19 @@ def validate_runtime_approval(approval, admission, *, now=None):
                 or current.get(key) != ODD_LOT_QUOTE_AGE_CHANGE['approved']):
             raise RuntimeError('active8_paper_runtime_policy_change_invalid')
         current.pop(key)
+    source_change = approval.get('approved_source_change')
+    if source_change is not None:
+        # Exact release-scoped Paper reapproval, never an allocator/NAV source
+        # equivalence. Serving still compares every current hash to the new
+        # configuration, and every unrelated policy field must remain equal.
+        if source_change != PERFORMANCE_SOURCE_CHANGE:
+            raise RuntimeError('active8_paper_runtime_source_change_invalid')
+        for section, sources in PERFORMANCE_SOURCE_CHANGE['sources'].items():
+            for name, transition in sources.items():
+                if (before.get(section, {}).get(name) != transition['previous']
+                        or after.get(section, {}).get(name) != transition['approved']):
+                    raise RuntimeError('active8_paper_runtime_source_change_invalid')
+                after[section][name] = transition['previous']
     if digest(before) != digest(after):
         raise RuntimeError('active8_paper_runtime_approval_policy_changed')
     return deepcopy(approval)
@@ -137,7 +172,11 @@ def verify_active_approval(admission, *, now=None):
     active = kv_client.get_json(KEY, default=None, strict=True)
     if active != admission:
         raise RuntimeError('active8_paper_operator_approval_missing_changed_or_revoked')
-    runtime = kv_client.get_json(RUNTIME_KEY, default=None, strict=True)
+    # Stage this release's exact approval before routing traffic. Older builds
+    # keep reading RUNTIME_KEY, so a candidate check cannot revoke their grant.
+    runtime = kv_client.get_json(RUNTIME_RELEASE_KEY, default=None, strict=True)
+    if runtime is None:
+        runtime = kv_client.get_json(RUNTIME_KEY, default=None, strict=True)
     if runtime is None:
         return deepcopy(active)
     return validate_runtime_approval(runtime, admission, now=now)

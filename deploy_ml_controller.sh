@@ -1322,6 +1322,10 @@ verify_release_http() {
     --branch "$SOURCE_BRANCH" --scheduler-sha "$SCHEDULER_MANIFEST_SHA256"
 }
 verify_release_http "$RELEASE_URL"
+if [ "${VERIFY_PAPER_RUNTIME_ADMISSION:-0}" = "1" ]; then
+  "$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" paper \
+    --url "$RELEASE_URL" --token-secret "$ML_CONTROLLER_SECRET_SECRET"
+fi
 gcloud run services update-traffic "$SERVICE" --region="$REGION" \
   --to-revisions="${RELEASE_REVISION}=100" --quiet
 "$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_cloud_run_release.py" traffic \

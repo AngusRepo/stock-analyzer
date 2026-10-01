@@ -173,6 +173,59 @@ def test_runtime_reapproval_restores_only_paper_and_keeps_publication_immutable(
         authority.load_committed_nav_serving_grant(query=client.query)
 
 
+@pytest.mark.parametrize('fault', [None, 'missing_declaration', 'unknown_source', 'wrong_previous',
+                                  'another_source', 'risk', 'maturity', 'declaration'])
+def test_performance_release_reapproval_is_exact_and_preserves_policy(runtime_pair, fault):
+    admission, approval = runtime_pair
+    before, after = admission['configuration'], approval['configuration']
+    for section, sources in paper.PERFORMANCE_SOURCE_CHANGE['sources'].items():
+        for name, transition in sources.items():
+            before[section][name] = transition['previous']
+            after[section][name] = transition['approved']
+    approval['admission'] = deepcopy(admission)
+    approval['approved_source_change'] = deepcopy(paper.PERFORMANCE_SOURCE_CHANGE)
+    if fault == 'missing_declaration':
+        approval.pop('approved_source_change')
+    elif fault == 'unknown_source':
+        after['l3_inference_source_identity']['paired_nav_strategy_bundle.py'] = 'f' * 64
+    elif fault == 'wrong_previous':
+        before['allocator_source_identity']['paired_nav_collection.py'] = 'f' * 64
+        approval['admission'] = deepcopy(admission)
+    elif fault == 'another_source':
+        after['allocator_source_identity']['allocator'] = 'f' * 64
+    elif fault == 'risk':
+        after['risk_config']['cap'] = .9
+    elif fault == 'maturity':
+        approval['maturity_transfer'] = True
+    elif fault == 'declaration':
+        approval['approved_source_change']['sources']['allocator_source_identity'][
+            'paired_nav_collection.py']['approved'] = 'f' * 64
+    reseal(approval)
+    original = deepcopy(approval)
+    if fault is None:
+        assert paper.validate_runtime_approval(approval, admission) == original
+        assert approval == original
+    else:
+        with pytest.raises(RuntimeError):
+            paper.validate_runtime_approval(approval, admission)
+
+
+def test_release_approval_stages_without_overwriting_current_key(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'new exact release'})
+    records = {paper.KEY: admission, paper.RUNTIME_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.RUNTIME_KEY] == old
+    records[paper.RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'):
+        paper.verify_active_approval(admission)
+
+
 def test_supplemental_approval_cannot_override_original_revocation(runtime_pair,monkeypatch):
     admission,approval=runtime_pair
     from services import kv_client

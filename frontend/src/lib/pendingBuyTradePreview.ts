@@ -1,4 +1,16 @@
 export interface PendingBuyExecutionPreview {
+  entry_owner?: 's12' | 'or15_vwap_v1'
+  or15?: {
+    action: string
+    reason: string
+    or_high: number | null
+    or_low: number | null
+    vwap: number | null
+    latest_bar_ms: number | null
+    bar_source: string | null
+    bar_error: string | null
+    checked_at: string
+  } | null
   s12: {
     state: string
     reason: string
@@ -51,10 +63,31 @@ function nonnegative(value: unknown): number | null {
   return Number.isFinite(number) && number >= 0 ? number : null
 }
 
+const OR15_REASONS: Record<string, string> = {
+  or15_opening_bars_missing: '等待開盤 15 分鐘的一分鐘 K 棒補齊',
+  or15_waiting_breakout: '等待收盤價突破開盤 15 分鐘高點，且站上 VWAP',
+  or15_minute_bars_stale: '最新一分鐘 K 棒過期，等待更新',
+  or15_latest_bar_gap: '最近 K 棒有缺口，等待補齊',
+  or15_signal_expired: '突破訊號超過 3 分鐘，等待下一次有效突破',
+  or15_breakout_lost: '突破後跌回區間高點或 VWAP 下方，等待重新站穩',
+  or15_market_data_unavailable: '盤中行情暫不可用，等待更新',
+  or15_quote_below_breakout_or_vwap: '即時報價未站上區間高點與 VWAP',
+  or15_limit_above_selection_max_buy: '委託價超過選股最高可買價',
+  or15_depth_fill_above_selection_max_buy: '委託簿可成交價超過選股最高可買價',
+  or15_market_risk_guard: '市場風險條件未通過',
+  or15_entry_window_closed: '今日進場時段已結束',
+  or15_vwap_breakout: '開盤區間突破且站上 VWAP，等待即時報價與風控確認',
+}
+
+export function describeOr15Reason(reason: string): string {
+  return OR15_REASONS[reason] ?? reason.replace(/^or15_/, '').replace(/_/g, ' ')
+}
+
 export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuyTradeView {
   const preview = item.execution_preview
   const referencePrice = positive(item.ml_entry_price)
-  const s12Price = preview?.s12?.ready ? positive(preview.s12.entry_price) : null
+  const isOr15 = preview?.entry_owner === 'or15_vwap_v1'
+  const s12Price = !isOr15 && preview?.s12?.ready ? positive(preview.s12.entry_price) : null
   const budgetCap = nonnegative(preview?.allocator?.budget_cap)
   const targetValue = nonnegative(preview?.allocator?.target_value)
   const l5ReasonLabels: Record<string, string> = {
@@ -82,10 +115,14 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
   if (preview?.allocator?.reason === 'l4_hard_risk_veto') {
     gateReason = preview.allocator.l5_status === 'blocked' || preview.allocator.l5_status === 'missing'
       ? `L5 即時報價未通過${l5Reasons.length ? `：${l5Reasons.join('、')}` : ''}`
-      : preview.allocator.s12_hard_veto
+      : isOr15
+        ? 'L4 進場保護門檻未通過'
+        : preview.allocator.s12_hard_veto
         ? 'S12 結構風控否決'
         : 'L4 進場保護門檻未通過'
-  } else if (preview?.s12 && !preview.s12.ready) {
+  } else if (isOr15 && preview?.or15?.action !== 'pass') {
+    gateReason = preview?.or15 ? describeOr15Reason(preview.or15.reason) : '等待 A 盤中檢查結果'
+  } else if (!isOr15 && preview?.s12 && !preview.s12.ready) {
     gateReason = '等待 S12 結構成立'
   }
 
@@ -103,6 +140,6 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
       ? s12Price != null ? 's12' : 'reference'
       : null,
     gateReason,
-    checkedAt: preview?.s12?.checked_at ?? preview?.allocator?.checked_at ?? null,
+    checkedAt: (isOr15 ? preview?.or15?.checked_at : preview?.s12?.checked_at) ?? preview?.allocator?.checked_at ?? null,
   }
 }

@@ -43,3 +43,17 @@ test('L5 veto is distinguished from insufficient capital', () => {
   assert.equal(view.gateReason, 'L5 即時報價未通過：L5 報價過期、買賣價差過寬')
   assert.equal(view.availableCash, 966998)
 })
+
+test('A owner ignores stale S12 price and explains its own wait', () => {
+  const view = buildPendingBuyTradeView({ ml_entry_price: 48, execution_preview: {
+    ...preview,
+    entry_owner: 'or15_vwap_v1',
+    s12: { ...preview.s12!, ready: true, entry_price: 49, chase_ceiling: 50 },
+    or15: { action: 'defer', reason: 'or15_waiting_breakout', or_high: 52, or_low: 51, vwap: 51.33,
+      latest_bar_ms: 1790818200000, bar_source: 'shioaji_research_current_session', bar_error: null, checked_at: '2026-10-01 01:31:15' },
+  } })
+  assert.equal(view.entryPrice, null)
+  assert.equal(view.referencePrice, 48)
+  assert.equal(view.gateReason, '等待收盤價突破開盤 15 分鐘高點，且站上 VWAP')
+  assert.equal(view.checkedAt, '2026-10-01 01:31:15')
+})

@@ -1236,7 +1236,8 @@ paper.get('/pending-buys', async (c) => {
   })
   const pendingBuysForResponse = pendingBuys.map((item) => ({
     ...removeLegacyPendingBuyScoreFields(item),
-    execution_preview: executionPreviews.get(item.symbol) ?? null,
+    execution_preview: executionPreviews.get(item.symbol) ?? (String(c.env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
+      ? { entry_owner: 'or15_vwap_v1', or15: null, s12: null, allocator: null } : null),
     market_price: pendingPrices.get(item.symbol) ?? null,
   }))
   return c.json({

@@ -131,6 +131,10 @@ assert(cancelled.allItems[0].execution_status === 'cancelled', 'cancelled item s
     updated.allItems[0].watch_points?.includes('execution:checked_waiting:between_buy_reference_and_confirmation:current=100;confirmation=102'),
     'checked waiting should preserve the intraday defer reason for the card UI',
   )
+  const unchanged = applyPendingBuyExecutionStatusUpdates(updated.allItems, [
+    { symbol: '2317', status: 'checked_waiting', reason: 'between_buy_reference_and_confirmation', detail: 'current=100;confirmation=102' },
+  ])
+  assert(unchanged.changed === false, 'an identical intraday wait must not create another pending run')
   const refreshed = applyPendingBuyExecutionStatusUpdates(updated.allItems, [
     { symbol: '2317', status: 'checked_waiting', reason: 'volume_ratio_low', detail: 'volume_ratio=0.4;min=0.55' },
   ])

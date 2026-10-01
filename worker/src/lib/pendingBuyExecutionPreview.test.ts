@@ -46,3 +46,17 @@ test('a hard veto preserves zero budget and nonzero available cash', () => {
   assert.equal(preview?.allocator?.available_cash, 966998)
   assert.deepEqual(preview?.allocator?.l5_reasons, ['stale_l5_quote', 'wide_l5_spread'])
 })
+
+test('A preview reads OR15 structure without inventing an entry price', () => {
+  const preview = buildPendingBuyExecutionPreviews([{
+    symbol: '3311', kind: 'or15', status: 'defer', reason: 'or15_waiting_breakout',
+    created_at: '2026-10-01 01:31:15',
+    detail_json: JSON.stringify({ signal: { action: 'defer', reason: 'or15_waiting_breakout', orHigh: 52, orLow: 51, vwap: 51.33, latestBarMs: 1790818200000 }, bar_source: 'shioaji_research_current_session' }),
+  }], 'or15_vwap_v1').get('3311')
+
+  assert.equal(preview?.entry_owner, 'or15_vwap_v1')
+  assert.equal(preview?.or15?.reason, 'or15_waiting_breakout')
+  assert.equal(preview?.or15?.or_high, 52)
+  assert.equal(preview?.or15?.vwap, 51.33)
+  assert.equal(preview?.s12, null)
+})

@@ -32,7 +32,7 @@ import {
   WorkstationPanel,
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
-import { buildPendingBuyTradeView } from '@/lib/pendingBuyTradePreview'
+import { buildPendingBuyTradeView, describeOr15Reason } from '@/lib/pendingBuyTradePreview'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
 const RecommendationCard = lazy(() => import('@/components/RecommendationCardClean').then((module) => ({
@@ -512,6 +512,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     : (isFetching ? '更新中 · ' : '') +
       (dataUpdatedAt ? '同步 ' + formatTwDateTimeShort(new Date(dataUpdatedAt).toISOString()) : '等待同步') +
       (isTWMarketOpen() ? ' · 盤中每 30 秒自動更新' : ' · 非盤中每 5 分鐘自動更新')
+  const pendingRunLabel = Number.isFinite(Number(pendingMeta?.run_id)) && Number(pendingMeta?.run_id) > 0
+    ? ` · 執行批次 #${pendingMeta.run_id}` : ''
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
 
@@ -519,7 +521,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   if (!buys.length) {
     return (
       <div className="space-y-3">
-        <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}</div>
+        <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
         <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
@@ -535,15 +537,17 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}</div>
+      <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
       <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
       <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
-      <p className="px-1 text-[11px] text-muted-foreground">數量為目前 L4 預算與參考／S12 價估算；實際模擬委託仍須通過即時報價、S12、風控與委託簿。</p>
+      <p className="px-1 text-[11px] text-muted-foreground">數量依目前 L4 預算與參考價估算；實際模擬委託仍須通過盤中進場條件、即時報價、風控與委託簿。</p>
       {buys.map((b: any) => {
         const executionBadge = formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const trade = buildPendingBuyTradeView(b)
+        const isOr15 = b.execution_preview?.entry_owner === 'or15_vwap_v1'
+        const or15 = b.execution_preview?.or15
         const s12Preview = b.execution_preview?.s12
         const s12Label = s12Preview
           ? formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)
@@ -584,10 +588,10 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">預計買入價</div>
                 <div className="mt-1 text-base font-semibold text-foreground">
-                  {trade.entryPrice != null ? `$${fmt(trade.entryPrice, 2)}` : '待 S12 定價'}
+                  {trade.entryPrice != null ? `$${fmt(trade.entryPrice, 2)}` : isOr15 ? '待 A 訊號與即時報價' : '待 S12 定價'}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {trade.entryPrice != null ? `S12 結構價${trade.chaseCeiling != null ? ` · 追價上限 $${fmt(trade.chaseCeiling, 2)}` : ''}` : trade.referencePrice != null ? `基準價 $${fmt(trade.referencePrice, 2)}` : '尚無基準價'}
+                  {trade.entryPrice != null ? `S12 結構價${trade.chaseCeiling != null ? ` · 追價上限 $${fmt(trade.chaseCeiling, 2)}` : ''}` : trade.referencePrice != null ? `選股參考價 $${fmt(trade.referencePrice, 2)}；非委託價` : '尚無選股參考價'}
                 </div>
               </div>
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
@@ -612,8 +616,15 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             {trade.availableCash != null && <div className="mt-2 text-[11px] text-muted-foreground">{'可用資金 $' + fmt(trade.availableCash)}</div>}
             <div className="mt-3 grid gap-1.5 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
               <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
-              <div><span className="text-foreground">S12 結構：</span>{s12Label}</div>
+              <div><span className="text-foreground">{isOr15 ? 'A 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
             </div>
+            {isOr15 && or15 && <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
+              {or15.or_high != null && `開盤 15 分鐘高點 $${fmt(or15.or_high, 2)}`}
+              {or15.or_low != null && ` · 低點 $${fmt(or15.or_low, 2)}`}
+              {or15.vwap != null && ` · VWAP $${fmt(or15.vwap, 2)}`}
+              {or15.latest_bar_ms != null && ` · 最新 K 棒 ${formatTwDateTimeShort(new Date(or15.latest_bar_ms).toISOString())}`}
+              {or15.bar_error && ` · 行情異常 ${or15.bar_error}`}
+            </div>}
             {trade.checkedAt && (
               <div className="mt-2 text-[11px] text-muted-foreground/70">最近檢查 {formatTwDateTimeShort(trade.checkedAt)}</div>
             )}

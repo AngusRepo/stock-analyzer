@@ -191,11 +191,14 @@ export function applyPendingBuyExecutionStatusUpdates(
     if (!update || isPendingBuyTerminal(item.execution_status)) {
       return { ...item, execution_status: item.execution_status ?? 'pending' }
     }
-    changed = true
     const noted = appendPendingBuyExecutionNote(
       item,
       formatExecutionStatusEvent(update.status, update.reason, update.detail),
     )
+    const oldPoints = item.watch_points ?? []
+    const newPoints = noted.watch_points ?? []
+    if (item.execution_status !== update.status || oldPoints.length !== newPoints.length ||
+      oldPoints.some((point, index) => point !== newPoints[index])) changed = true
     return {
       ...noted,
       execution_status: update.status,

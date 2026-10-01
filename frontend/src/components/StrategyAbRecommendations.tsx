@@ -13,7 +13,8 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
     staleTime: queryTtl.dailyDecision })
   const signalDate = date || daily.data?.date
   const comparison = useQuery({ queryKey: ['strategy-ab-recommendations', signalDate], enabled: !!signalDate,
-    queryFn: ({ signal }) => apiGet<Comparison>(`/dashboard/v4/strategy-ab/recommendations?date=${signalDate}`, { signal, timeoutMs: 15_000 }), staleTime: 30_000 })
+    queryFn: ({ signal }) => apiGet<Comparison>(`/dashboard/v4/strategy-ab/recommendations?date=${signalDate}`, { signal, timeoutMs: 15_000 }),
+    staleTime: 0, refetchInterval: 30_000, refetchIntervalInBackground: true, refetchOnWindowFocus: 'always' })
   const raw = daily.data as any
   const rows: any[] = Array.isArray(raw?.all_recommendations) ? raw.all_recommendations : Array.isArray(raw?.recommendations) ? raw.recommendations : Array.isArray(raw?.data) ? raw.data : []
   // A dated comparison must never borrow cards from a different signal day.
@@ -29,6 +30,7 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
       ? '事後補算比較：僅供觀察，不計入原生 NAV 績效，也不會產生委託。'
       : '下列為各方案的配置目標；是否成交仍以待買檢查、辯論及成交紀錄為準。'}</p>
     <p className="text-xs leading-5 text-muted-foreground">卡片編號為配置清單順序。ML_EDGE 是校準機率換算分，可能因校準曲線平臺而同分；個股配置仍依 L4 預測與 sparse＋OPB 決定。待買清單可先顯示「等待辯論」，通過辯論及交易檢查後才可執行。</p>
+    <p className="text-xs leading-5 text-muted-foreground">現金比例＝100% 減配置權重總和；它是配置目標，並非模擬帳戶當下現金。盤中 L4 重算會改變 A 清單；下方 pending buys 以最新執行批次為準。</p>
     <div className="grid gap-3 xl:grid-cols-2">
       {(['A', 'B'] as const).map(role => {
         const arm = data[role]
@@ -39,6 +41,7 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
             <p className="mt-2 text-xs text-amber-200">B 已產生盤前配置；完整帳戶績效尚未註冊，本日不得計入 NAV。</p>}
           {arm.status !== 'available' ? <p role="status" className="mt-4 text-sm text-amber-200">{arm.reason}</p> : <>
             <div className="mt-3 flex justify-between text-xs text-muted-foreground"><span>{arm.picks.length} 檔配置</span><span>現金 {(arm.cash_weight! * 100).toFixed(2)}%</span></div>
+            <div className="mt-1 text-[11px] text-muted-foreground/70">來源 {arm.source_id?.slice(0, 12)}{role === 'B' ? ` · B 封存 ${data.generated_at}` : ''}</div>
             {arm.picks.length === 0 ? <p className="mt-4 text-sm">已完成配置，本日持有現金。</p> :
               <div className="mt-3 space-y-4">{arm.picks.map((pick, index) => {
                 const rec = cards.get(pick.symbol)

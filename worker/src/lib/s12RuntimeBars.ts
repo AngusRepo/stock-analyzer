@@ -1184,6 +1184,47 @@ export async function loadIntradayTechnicalRollingBars(
     }]
 }
 
+function hasOr15OpeningBars(bars: IntradayRollingBar[], tradeDate: string): boolean {
+  const openMs = Date.parse(`${tradeDate}T09:00:00+08:00`)
+  const minutes = new Set(bars.map((bar) => bar.startMs))
+  const firstMs = minutes.has(openMs) ? openMs : openMs + 60_000
+  return Array.from({ length: 15 }, (_, index) => minutes.has(firstMs + index * 60_000)).every(Boolean)
+}
+
+export async function loadOr15ResearchSessionBars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+): Promise<IntradayRollingBar[]> {
+  const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
+  const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
+  if (!researchUrl || !token) throw new Error('or15_research_source_unconfigured')
+  const minute = Math.floor(paperExecutionNow() / 60_000)
+  const cacheKey = `or15:research-session:${tradeDate}:${symbol}:${minute}`
+  const cached = await env.KV.get(cacheKey)
+  if (cached) {
+    try {
+      const rows = JSON.parse(cached) as IntradayRollingBar[]
+      if (Array.isArray(rows)) return rows
+    } catch {
+      // A malformed cache entry must not prevent a fresh, authoritative read.
+    }
+  }
+  const response = await paperExecutionFetch(
+    `${researchUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=500`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) },
+  )
+  if (!response.ok) throw new Error(`or15_research_http_${response.status}`)
+  const payload = await response.json() as { data?: S12KbarRow[] }
+  const bars = (Array.isArray(payload.data) ? payload.data : [])
+    .map(s12KbarRowToBar)
+    .filter((bar): bar is IntradayRollingBar => bar != null)
+    .filter((bar) => twDateText(bar.startMs) === tradeDate && isTwSessionTime(bar.startMs))
+    .sort((a, b) => a.startMs - b.startMs)
+  await env.KV.put(cacheKey, JSON.stringify(bars), { expirationTtl: 90 })
+  return bars
+}
+
 /** Current-session completed OHLCV only; the Paper A entry never loads S12 history. */
 export async function loadOr15AuthoritativeMinuteBars(
   env: Bindings,
@@ -1196,16 +1237,38 @@ export async function loadOr15AuthoritativeMinuteBars(
       .then(value => ({ value, error: null as string | null }))
       .catch(error => ({ value: null, error: error instanceof Error ? error.message : String(error) })),
   ])
-  if (remote.value?.bars.length && remote.value.diagnostics.kbars_unusable_reason == null) {
+  const streamingBars = remote.value?.bars.length && remote.value.diagnostics.kbars_unusable_reason == null
+    ? mergeS12CurrentSessionBars(canonical.bars, remote.value.bars, [])
+    : canonical.bars
+  if (hasOr15OpeningBars(streamingBars, tradeDate)) {
     return {
-      bars: mergeS12CurrentSessionBars(canonical.bars, remote.value.bars, []),
-      source: 'shioaji_kbars_with_canonical_continuity',
+      bars: streamingBars,
+      source: remote.value?.bars.length ? 'shioaji_kbars_with_canonical_continuity' : 'canonical_intraday_minute_bars',
       error: canonical.error,
     }
   }
+  if (paperExecutionNow() < Date.parse(`${tradeDate}T09:16:00+08:00`)) {
+    return {
+      bars: streamingBars,
+      source: streamingBars.length ? 'incomplete_streaming_session' : 'unavailable',
+      error: remote.error ?? remote.value?.diagnostics.kbars_unusable_reason ?? canonical.error,
+    }
+  }
+  try {
+    const researchBars = await loadOr15ResearchSessionBars(env, symbol, tradeDate)
+    if (hasOr15OpeningBars(researchBars, tradeDate)) {
+      return { bars: researchBars, source: 'shioaji_research_current_session', error: null }
+    }
+  } catch (error) {
+    return {
+      bars: streamingBars,
+      source: streamingBars.length ? 'incomplete_streaming_session' : 'unavailable',
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
   return {
-    bars: canonical.bars,
-    source: canonical.bars.length ? 'canonical_intraday_minute_bars' : 'unavailable',
+    bars: streamingBars,
+    source: streamingBars.length ? 'incomplete_streaming_session' : 'unavailable',
     error: remote.error ?? remote.value?.diagnostics.kbars_unusable_reason ?? canonical.error,
   }
 }

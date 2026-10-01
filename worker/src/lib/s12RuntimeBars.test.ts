@@ -1,5 +1,6 @@
 import {
   filterS12KbarsToTradeDate,
+  loadOr15ResearchSessionBars,
   mergeS12CurrentSessionBars,
   normalizeS12KbarSessionTimeSkew,
   s12ResearchTerminalDataSourceReason,
@@ -47,6 +48,39 @@ function bar(iso: string): IntradayRollingBar {
 function twText(ms: number): string {
   return new Date(ms + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 16)
 }
+
+void (async () => {
+  const cache = new Map<string, string>()
+  const env = {
+    S12_RESEARCH_KBARS_URL: 'https://research.example',
+    PROXY_SERVICE_TOKEN: 'test-token',
+    KV: {
+      get: async (key: string) => cache.get(key) ?? null,
+      put: async (key: string, value: string) => { cache.set(key, value) },
+    },
+  } as unknown as Parameters<typeof loadOr15ResearchSessionBars>[0]
+  const originalFetch = globalThis.fetch
+  let requests = 0
+  try {
+    globalThis.fetch = async (input) => {
+      requests += 1
+      assert(String(input).includes('/kbars/1101?start=2026-10-01&end=2026-10-01'),
+        'Paper A research fallback must request only the current trading day')
+      return Response.json({ data: [
+        { ts: '2026-10-01T09:01:00+08:00', open: 26, high: 26.2, low: 25.9, close: 26.1, volume: 120 },
+        { ts: '2026-10-01T09:02:00+08:00', open: 26.1, high: 26.3, low: 26, close: 26.2, volume: 150 },
+      ] })
+    }
+    const first = await loadOr15ResearchSessionBars(env, '1101', '2026-10-01')
+    const cached = await loadOr15ResearchSessionBars(env, '1101', '2026-10-01')
+    assert(first.length === 2 && first[0].startMs === Date.parse('2026-10-01T09:01:00+08:00'),
+      'current-session research bars must retain their Taiwan minute labels')
+    assert(cached.length === 2 && requests === 1,
+      'same-minute Paper checks must reuse the quota-aware research cache')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})().catch((error) => { console.error(error); process.exitCode = 1 })
 
 {
   const prior = [

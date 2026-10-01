@@ -704,16 +704,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       tradeDate: today,
       symbol,
       side: 'buy',
-      eventType: 's12_intraday_structure',
+      eventType: paperOr15Owner ? 'intraday_technical_decision' : 's12_intraday_structure',
       status: 'error',
-      reason: 's12_market_data_unavailable',
+      reason: paperOr15Owner ? 'or15_market_data_unavailable' : 's12_market_data_unavailable',
       detail: {
         stage: 'authoritative_market_data',
         broker_quote_required: true,
         contract_bypass_allowed: false,
       },
       pendingRunId,
-      source: 's12_intraday_structure',
+      source: paperOr15Owner ? 'or15_vwap_entry_v1' : 's12_intraday_structure',
     })))
   }
   if (priceMap.size === 0) {
@@ -1420,6 +1420,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const s12Sidecars = new Map<string, S12RuntimeSidecar>()
   const or15Sidecars = new Map<string, Or15VwapDecision>()
   const or15BarSources = new Map<string, string>()
+  const or15BarErrors = new Map<string, string>()
   const runS12Sidecar = async (
     pending: PendingBuy,
     price: number,
@@ -1432,6 +1433,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       if (paperOr15Owner) {
         const minute = await loadOr15AuthoritativeMinuteBars(env, pending.symbol, today)
         or15BarSources.set(pending.symbol, minute.source)
+        if (minute.error) or15BarErrors.set(pending.symbol, minute.error)
         or15Sidecars.set(pending.symbol, assessOr15VwapEntry({
           bars: minute.bars,
           tradeDate: today,
@@ -1662,6 +1664,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         reason: or15Assessment?.reason ?? 'or15_market_data_unavailable',
         detail: { owner: 'or15_vwap_v1', signal: or15Assessment,
           bar_source: or15BarSources.get(pending.symbol) ?? 'unavailable',
+          bar_error: or15BarErrors.get(pending.symbol) ?? null,
           s12_role: 'not_in_entry_path', paper_only: true },
         pendingRunId,
         source: 'or15_vwap_entry_v1',

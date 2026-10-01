@@ -77,7 +77,9 @@ export function assessOr15VwapEntry(input: {
     const vwap = totalVolume > 0 ? weightedClose / totalVolume : null
     if (bar.startMs === latest.startMs) latestVwap = vwap
     const minutesAfterOpening = (bar.startMs - firstMs) / MINUTE_MS
-    if (signalMs == null && minutesAfterOpening >= 15 &&
+    // A genuine new crossover replaces an expired signal; staying above the
+    // range does not renew its age. Retain the full market-session window.
+    if (minutesAfterOpening >= 15 &&
       previous && bar.startMs - previous.startMs === MINUTE_MS && vwap != null &&
       previous.close <= orHigh && bar.close > orHigh && bar.close > vwap) {
       signalMs = bar.startMs + MINUTE_MS

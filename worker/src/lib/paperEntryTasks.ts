@@ -549,7 +549,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   let holdingPoll = await pollIntradayStopLoss(env, baseCb)
   if (cfg.l4Distribution) {
     const signalDate = await getL4PreviousSession(databaseForDataDomain(env, 'core'), env.KV)
-    if (!await flushL4Replans(env, signalDate)) return holdingPoll
+    if (!await flushL4Replans(env, signalDate, { debatePending: staleDebateItems.length > 0 })) return holdingPoll
     const latest = await readL4PortfolioPlan(env)
     if (latest && latest.signal_date===signalDate) {
       const nameCap=resolveCircuitAdjustedSingleNameCap({configuredSingleNameCap:configuredMaxSingleNamePct,

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:ce3452efa2a326451da44a17085730bba8bfde496b9ce099b4e2d9b024efa62d",
+  "execution_owner_version": "native-paper-v1:ecf988c7760d6ddd7d17cac19a219c0e35eb650e5bc83c79b952b2b2b95de355",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved the complete B TabPack Paper release on 2026-10-01, including commit, push/main integration, Controller and required Jobs, Worker, Pages, exact Paper configuration/admission and original atomic model publication. Preserve the account and OR15; real orders remain disabled. This build record itself grants no runtime authority.",
-  "review": "docs/releases/2026-10-01-single-b-tabpack.md",
-  "runtime_admission": "new exact active8-paper-experiment-admission-v1 through the original atomic publisher"
+  "authorization": "Wei 2026-10-01 explicitly approved commit, push and deploy of L4 completed-debate batching and OR15 fresh second-crossover fixes. This exact supplemental Paper execution identity is necessary for that authorized release. B TabPack, the full market-session window, the original account, configuration and original admission are preserved; no retraining or real orders.",
+  "review": "docs/releases/2026-10-01-intraday-replan-rebreak.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-01-or15-rebreak-l4-batch"
 }

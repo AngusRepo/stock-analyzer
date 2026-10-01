@@ -44,3 +44,19 @@ for (const time of ['11:30:00', '11:31:00', '12:00:00', '13:29:00']) {
 assert(assessOr15VwapEntry({
   bars: firstBreakoutAt('13:29:00'), tradeDate: '2026-08-03', nowMs: Date.parse('2026-08-03T13:31:00+08:00'),
 }).reason === 'or15_entry_window_closed', 'a fresh signal must not bypass the existing market close')
+
+for (const time of ['09:25:00', '12:00:00', '13:29:00']) {
+  const second = firstBreakoutAt(time)
+  second[15] = { ...second[15], high: 103, close: 102 }
+  const signalMs = second.at(-1)!.startMs + 60_000
+  const next = assessOr15VwapEntry({ bars: second, tradeDate: '2026-08-03', nowMs: signalMs })
+  assert(next.action === 'pass' && next.signalMs === signalMs,
+    `fresh second crossover at ${time} must replace the expired first crossover`)
+  const ongoing = [...second, { ...second.at(-1)!, startMs: signalMs, close: 102.5 }]
+  assert(assessOr15VwapEntry({ bars: ongoing, tradeDate: '2026-08-03', nowMs: signalMs }).signalMs === signalMs,
+    'an unfinished strong bar must not change signal time')
+}
+
+const lost = [...bars.slice(0, 17), { ...bars[17], close: 100 }]
+assert(assessOr15VwapEntry({ bars: lost, tradeDate: '2026-08-03', nowMs: open + 18 * 60_000 }).reason === 'or15_breakout_lost',
+  'a fresh signal must still defer if the breakout is lost')

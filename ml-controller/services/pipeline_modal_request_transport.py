@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from services.pipeline_json_transport import compress_json
+from services.pipeline_sequence_transport import compact_sequence_subsets
 
 
 REQUEST_SCHEMA = "pipeline-modal-prediction-request-v1"
@@ -68,6 +69,7 @@ def prepare_pipeline_modal_request(payload: dict[str, Any]) -> tuple[bytes, dict
         for key, value in payload.items()
         if key not in {"callback_url", "callback_token"}
     }
+    durable_payload = compact_sequence_subsets(durable_payload)
     max_raw = min(
         DEFAULT_MAX_UNCOMPRESSED_BYTES,
         _positive_int_env(

@@ -1671,6 +1671,8 @@ def _hydrate_pipeline_prediction_request_reference(payload: dict) -> dict:
         or len(durable.get("payloads") or []) != n_input
     ):
         raise ValueError("pipeline_modal_request_reference_payload_mismatch")
+    from services.pipeline_sequence_transport import expand_sequence_subsets
+    durable = expand_sequence_subsets(durable)
     return {
         **durable,
         "callback_url": callback_url,

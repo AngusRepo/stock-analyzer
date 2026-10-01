@@ -1,3 +1,5 @@
+import { getTwTickSize, snapToTwPriceTick } from './twMarketRules'
+
 export interface OhlcvRow {
   date: string
   time?: string | null
@@ -306,13 +308,17 @@ export function resolveOhlcvEntryPlan(
     : mode === 'breakout'
       ? confirmation
       : buyReferenceHigh
-  const stopAnchor = levels.atrLower == null
-    ? levels.support
-    : Math.min(levels.support, levels.atrLower)
-  const stopLoss = stopAnchor < entryPrice ? stopAnchor : entryPrice * 0.97
-  const target1 = mode === 'pullback' ? confirmation : optimisticHigh
-  const target2Base = Math.max(optimisticHigh, target1)
-  const target2 = levels.atr != null ? target2Base + levels.atr : target2Base
+  // Keep the structural invalidation separate from the chase ceiling.
+  // 1.5R / 3R are planned gross targets, checked again against costs at fill.
+  const buffer = Math.max(getTwTickSize(entryPrice), (levels.atr ?? 0) * 0.25)
+  const stopAnchor = levels.support < entryPrice ? levels.support : entryPrice - (levels.atr ?? entryPrice * 0.02) * 1.5
+  const stopLoss = snapToTwPriceTick(Math.max(getTwTickSize(entryPrice), stopAnchor - buffer), 'floor')
+  const risk = entryPrice - stopLoss
+  if (!(risk > 0)) return null
+  const previousTarget1 = mode === 'pullback' ? confirmation : optimisticHigh
+  const previousTarget2 = Math.max(optimisticHigh, previousTarget1) + (levels.atr ?? 0)
+  const target1 = snapToTwPriceTick(Math.max(previousTarget1, entryPrice + 1.5 * risk), 'ceil')
+  const target2 = snapToTwPriceTick(Math.max(previousTarget2, entryPrice + 3 * risk, target1 + (levels.atr ?? getTwTickSize(target1))), 'ceil')
 
   return {
     source: 'ohlcv',

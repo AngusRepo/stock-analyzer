@@ -3601,7 +3601,35 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         )
     from services.active8_release_model_profiles import model_profiles, MODEL_PROFILE_SCHEMA_VERSION
     model_profiles(schema_version=req.model_profile_schema_version)  # Validate before dispatch.
-    new_distribution = load_merged_trading_config_with_contract().config.get('l4Distribution') is not None
+    config = load_merged_trading_config_with_contract().config
+    new_distribution = config.get('l4Distribution') is not None
+    if (cadence == 'daily' and not req.dry_run and scheduler_ticket_id
+            and os.environ.get('OOF_MATERIALIZE_JOB_EXECUTION', '').strip() != '1'):
+        # Validate the same active Paper plan as the job; never reuse an OOF-only
+        # receipt as NAV evidence. Preserve the durable scheduler callback owner.
+        import asyncio
+        from services.single_b_daily_closure import single_b_daily_closure
+        completed = await asyncio.to_thread(single_b_daily_closure, config, req.end_date)
+        if completed and completed.get('status') == 'native_l4_daily_accounted':
+            from routers.pipeline import _callback_worker
+            from oof_materialize_job_main import _summary, _nav_callback_summary
+            run_date = completed['native_l4_daily_closure']['signal_date']
+            run_id = f'active8-oof-daily:{run_date}:resolve-after-prep'
+            await _callback_worker({
+                'task':'active8-oof-daily', 'status':'success',
+                'summary':_summary(run_id, completed, mode='oof_lifecycle'),
+                'run_id':run_id, 'run_date':run_date,
+                'attempt_id':f'pre-dispatch:{scheduler_run_id}',
+                'scheduler_ticket_id':scheduler_ticket_id, 'scheduler_run_id':scheduler_run_id,
+                'metadata':{'cadence':'daily', 'mode':'oof_lifecycle',
+                    'lifecycle_status':'native_l4_daily_accounted',
+                    'native_l4_daily_closure':completed['native_l4_daily_closure'],
+                    'paired_nav_maturity':_nav_callback_summary(completed['paired_nav_maturity']),
+                    'nav_retry_required':False, 'pre_dispatch_verified':True}})
+            # The callback, not the dispatch response, closes the original ticket.
+            return {'status':'pending', 'reason':'verified_paper_plan_callback_delivered',
+                    'cadence':cadence, 'run_date':run_date, 'run_id':run_id,
+                    'job_dispatched':False, 'callback_delivered':True}
     bucket = _get_bucket()
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
         try:

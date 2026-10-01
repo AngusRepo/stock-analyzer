@@ -825,7 +825,7 @@ export default function PipelineMaturityContribution({
           <p className="mt-2 text-xs leading-5 text-slate-400">上方負責者顯示現行正式設定；下方 NAV 區顯示實際封存與帳務證據。舊收益模型與 IPO 比較卡已退出重構主流程。</p>
         </section>
       )}
-      <NavCollectionSummary data={data.paired_nav_shadow} />
+      {data.l4_distribution?.operating_mode === 'single_b_tabpack_v1' ? <section className="rounded-xl border border-slate-700/70 p-4"><h3 className="text-sm font-semibold">B 主策略帳務</h3><p className="mt-2 text-sm text-slate-400">目前以單一模擬帳戶的持倉、現金及成交追蹤績效。</p><a href="/bot" className="mt-3 inline-block text-sm text-sky-200">查看模擬帳戶 →</a></section> : <NavCollectionSummary data={data.paired_nav_shadow} />}
         {otherStages.length ? (
           <div className="grid items-start gap-3 lg:grid-cols-2">
             {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}

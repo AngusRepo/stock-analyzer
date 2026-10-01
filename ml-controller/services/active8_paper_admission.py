@@ -65,7 +65,7 @@ def validate_admission(admission, *, artifact, now=None):
 
 RUNTIME_SCHEMA = 'active8-paper-runtime-approval-v1'
 RUNTIME_KEY = 'ml:active8:paper_runtime_approval:v1'
-RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-01-premarket-event-chain'
+RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-fixed-risk-single-b'
 ODD_LOT_QUOTE_AGE_CHANGE = {
     'schema_version': 'active8-paper-odd-lot-quote-age-change-v1',
     'variable': 'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS',

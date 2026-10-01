@@ -221,7 +221,7 @@ export interface StrategyRouteBundleMaturity {
 
 
 export interface PipelineDecisionMaturityPacket {
-  l4_distribution?: { status: string; plan?: unknown; reason?: string }
+  l4_distribution?: { operating_mode?: string; residual_model?: string; status: string; plan?: unknown; reason?: string }
   active_ml_ensemble?: ActiveMlEnsembleVersion
   ipo_shadow?: IpoShadowReadModel
   paired_nav_shadow?: PairedNavReadModel
@@ -495,7 +495,9 @@ export async function buildPipelineDecisionMaturityPacket(
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
 
-  const pairedNavPromise = readPairedNav(learningDb, requestedDate)
+  const distributionConfig = await env.KV.get('trading:config', 'json') as { l4Distribution?: {operating_mode?: string; artifact?:{model?:{residual_tabpack?:unknown;residual_mlp?:unknown};release?:{efficacy_status?:string;acceptance_mode?:string}}} } | null
+  const singleB = distributionConfig?.l4Distribution?.operating_mode === 'single_b_tabpack_v1'
+  const pairedNavPromise = singleB ? Promise.resolve(undefined) : readPairedNav(learningDb, requestedDate)
   const marketDb = databaseForDataDomain(env, 'market')
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
 
@@ -1942,8 +1944,7 @@ export async function buildPipelineDecisionMaturityPacket(
     maturity_projection: routeMaturityProjection,
   }
 
-  const distributionConfig = await env.KV.get('trading:config', 'json') as { l4Distribution?: {artifact?:{release?:{efficacy_status?:string;acceptance_mode?:string}}} } | null
-  let distributionStatus: { status: string; plan?: unknown; reason?: string; efficacy_status?: string; acceptance_mode?: string } | undefined
+  let distributionStatus: { operating_mode?: string; residual_model?: string; status: string; plan?: unknown; reason?: string; efficacy_status?: string; acceptance_mode?: string } | undefined
   if (distributionConfig?.l4Distribution) {
     try {
       const { readL4PortfolioPlan } = await import('./l4PortfolioPlan')
@@ -1956,6 +1957,9 @@ export async function buildPipelineDecisionMaturityPacket(
   }
   if (distributionStatus) {
     const release=distributionConfig?.l4Distribution?.artifact?.release
+    distributionStatus.operating_mode=distributionConfig?.l4Distribution?.operating_mode
+    const model=distributionConfig?.l4Distribution?.artifact?.model
+    distributionStatus.residual_model=model?.residual_tabpack ? 'TabPack' : model?.residual_mlp ? 'MLP' : 'none'
     distributionStatus.efficacy_status=release?.efficacy_status ?? 'unproven'
     distributionStatus.acceptance_mode=release?.acceptance_mode ?? 'unknown'
   }

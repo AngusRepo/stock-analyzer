@@ -75,6 +75,15 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
   const result: StrategyAbRecommendations = { schema_version: 'strategy-ab-recommendations-v1', date,
     scope: 'daily_allocation', generated_at: new Date().toISOString(), production_effect: false, nav_maturity_credit: 0,
     A: unavailable('當日 A 配置尚未產生'), B: unavailable('當日 B 配置尚未產生；不代表 B 選擇持有現金') }
+  const config = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?:string;strategy_role?:string}} | null
+  const singleB = config?.l4Distribution?.operating_mode === 'single_b_tabpack_v1'
+  if (singleB) {
+    if (config?.l4Distribution?.strategy_role !== 'B') throw Error('strategy_ab_single_primary_mismatch')
+    result.operating_mode = 'single_b_tabpack_v1'
+    result.primary_role = 'B'
+    result.B_account_status = 'primary'
+    result.A = unavailable('A 策略已停用；歷史紀錄保留')
+  }
   const paper = paperDomainDatabase(env), learning = databaseForDataDomain(env, 'learning')
   // parent_plan_id is the prior active plan, including valid cross-day plans.
   // It is lineage, not a marker that today's allocation is provisional.
@@ -95,8 +104,10 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
       return result
     }
     if (body.strategy_role != null || body.strategy_mode != null) throw Error('strategy_ab_unknown_primary_mode')
-    result.A = view
+    if (!singleB) result.A = view
   }
+  // Current operation is independent of the queried day's available plan.
+  if (singleB) return result
   const manifests = await learning.prepare("SELECT * FROM paired_nav_frozen_manifests_v1 WHERE signal_date=? AND snapshot_kind='allocation_pair' ORDER BY frozen_at DESC LIMIT 65")
     .bind(date).all<Record<string, any>>()
   if ((manifests.results?.length ?? 0) > 64) throw Error('strategy_ab_comparison_inventory_exceeds_bound')

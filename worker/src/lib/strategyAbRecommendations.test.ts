@@ -131,6 +131,13 @@ async function testReadback() {
     assert.deepEqual(b.B.picks, [{ symbol: '2221', weight: .3 }, { symbol: '3441', weight: .2 }])
     assert.equal((await readStrategyAbRecommendations(live, '2026-09-21')).A.source_id, 'day1',
       'historical A must retain its identity')
+    const current = {...bOnly, KV:{async get(){return {l4Distribution:{operating_mode:'single_b_tabpack_v1',strategy_role:'B'}}}}} as any
+    const waiting = await readStrategyAbRecommendations(current,'2026-10-02')
+    assert.equal(waiting.operating_mode,'single_b_tabpack_v1')
+    assert.equal(waiting.B.status,'unavailable')
+    assert.equal(waiting.A.status,'unavailable')
+    assert.deepEqual(waiting.B.picks,[])
+    assert.equal((await readStrategyAbRecommendations(current,'2026-09-21')).B.status,'unavailable','never relabel historical A as current B')
 
   } finally { db.close() }
   console.log('strategyAbRecommendations tests passed')

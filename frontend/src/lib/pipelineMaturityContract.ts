@@ -230,7 +230,7 @@ export type PairedNavShadowReadModel = {
 }
 
 export type PipelineDecisionMaturityPacket = {
-  l4_distribution?: { status: string; reason?: string; efficacy_status?: string; acceptance_mode?: string; plan?: {
+  l4_distribution?: { operating_mode?: string; residual_model?: string; status: string; reason?: string; efficacy_status?: string; acceptance_mode?: string; plan?: {
     plan_id: string; signal_date: string; model_checksum: string; nav_at_decision: number;
     weights: Record<string, number>; cash_weight: number;
     prediction_coverage?: { available: number; candidate_count: number; unavailable: Record<string, string[]> };

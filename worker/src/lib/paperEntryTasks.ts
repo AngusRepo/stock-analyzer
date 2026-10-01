@@ -71,7 +71,7 @@ import {
   releaseIntradayExecutionLease,
 } from './intradayExecutionLease'
 import { loadIntradayTechnicalRollingBars, loadOr15AuthoritativeMinuteBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
-import { assessOr15PaperPrice, resolveOr15PaperExitTargets } from './or15PaperPricePolicy'
+import { assessOr15PaperPrice, resolveOr15PaperExitTargets, assessOr15NetRewardRisk } from './or15PaperPricePolicy'
 import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
@@ -1999,7 +1999,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const s12PrimaryStructureOwnerActive = s12PrimaryOwnerEnabled
     if (paperOr15Owner) {
       executionEntryPrice = Math.max(price, finLabL5Quote?.bestAsk ?? price)
-      executionStopLoss = Math.max(or15Assessment?.orLow ?? 0, pending.ml_stop_loss ?? 0)
+      const structuralFloor = Math.max(or15Assessment?.orLow ?? 0, pending.ml_stop_loss ?? 0)
+      executionStopLoss = normalizeTwEquityStopPrice(structuralFloor - getTwTickSize(structuralFloor))
       effectivePreTradePlan = null
       entryModelV2 = null
     } else if (s12AssistEntryOverlay) {
@@ -2376,8 +2377,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const mediumRiskDampen = marketRisk.risk_level === 'medium' ? cfg.L2_formula.medium_risk_scale : 1.0
     const stopPct = Math.max(
       cfg.position.minStopPct,
-      paperOr15Owner && or15Assessment?.orLow != null
-        ? (executionEntryPrice - or15Assessment.orLow) / executionEntryPrice
+      paperOr15Owner && executionStopLoss != null
+        ? (executionEntryPrice - executionStopLoss) / executionEntryPrice
         : (atr14 * 2) / price,
     )
 
@@ -2730,6 +2731,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       fillPrice,
       selectedTp1: pending.ml_target1,
       selectedTp2: pending.ml_target2,
+      structuralResistance: ohlcvLevelsBySymbol.get(pending.symbol)?.resistance,
       atrTp1: tp1Price,
       atrTp2: tp2Price,
       isNetProfitable: sellPrice => {
@@ -2753,6 +2755,24 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       const tp1SellValue = effectiveTp1Price * shares
       if (tp1SellValue - calcCommission(tp1SellValue, cfg) - calcTax(tp1SellValue, cfg) <= totalCost) {
         recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_tp1_not_profitable_after_costs')
+        continue
+      }
+      const rewardRisk = assessOr15NetRewardRisk({
+        entry: fillPrice, stop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,
+        buyCost: totalCost,
+        netProceeds: target => {
+          const conservativePrice = normalizeTwEquityStopPrice(target - getTwTickSize(target))
+          const firstLeg = Math.floor(shares * cfg.exit.tp1SellRatio / 1000) * 1000
+          const split = firstLeg > 0 && firstLeg < shares
+          const legShares = split && target === effectiveTp1Price ? firstLeg
+            : split && target === effectiveTp2Price ? shares - firstLeg : shares
+          const value = conservativePrice * legShares
+          return (value - calcCommission(value, cfg) - calcTax(value, cfg)) * shares / legShares
+        },
+      })
+      if (!rewardRisk.pass) {
+        recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_insufficient_net_reward_risk',
+          `fill=${fillPrice};stop=${effectiveInitialStop};tp1=${effectiveTp1Price};tp2=${effectiveTp2Price};net_tp1_r=${rewardRisk.tp1R.toFixed(3)};net_tp2_r=${rewardRisk.tp2R.toFixed(3)};required=1/2`)
         continue
       }
       recordExecutionNote(pending.symbol, 'or15_price_plan', 'or15_exit_targets_replanned',

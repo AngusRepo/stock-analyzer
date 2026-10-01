@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:e100bb146055253de398b091a2dae932cba070017db11eb453b320eed118e7c5",
+  "execution_owner_version": "native-paper-v1:66d0590c41aadbabb51904e9253a44d019fe21d393b78bce4397915f94fabebe",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved this release and dedicated Paper KV (\u6279\u51c6\u672c\u6b21\u767c\u5e03\u8207\u5c08\u7528 Paper KV): commit, push, Worker/Pages/Controller release, Scheduler descriptions, and exact supplemental key 2026-10-01-premarket-event-chain for native identity 9a480363 to e100bb14. No model replacement, retraining, live orders or NAV backfill.",
+  "authorization": "Wei explicitly approved dedicated Paper KV and release on 2026-10-02 (\u6279\u51c6\u5c08\u7528 Paper KV \u4e26\u5b8c\u6210\u767c\u5e03), including the 18-file single-B UI/daily pre-dispatch/fixed-initial-stop and TP1-entry protection release. Exact native identity e100bb14 to 66d0590c. No model replacement, retraining, real orders or NAV backfill; efficacy unproven.",
   "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-01-premarket-event-chain"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-fixed-risk-single-b"
 }

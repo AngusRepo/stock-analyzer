@@ -54,12 +54,13 @@ export function checkExitConditions(
   regime?: MarketRegime,
 ): ExitDecision {
   const ex = cfg.exit
-  const sltp = resolvedSltp ?? cfg.sltp
+  void resolvedSltp
+  void atr14
   const entryPrice = pos.entry_price ?? pos.avg_cost
   const pnlPct = (currentPrice - entryPrice) / entryPrice
 
-  // S12 is the structural owner. The fixed paper cascade remains a safety
-  // fallback; the retired hand-written regime multiplier must never change it.
+  // Fixed initial risk; only a completed TP1 fill may move protection to entry.
+  // Existing tighter stops remain protected during migration.
   void regime
   void ex.dynamicExitPriorityEnabled
 
@@ -77,7 +78,7 @@ export function checkExitConditions(
   if (currentPrice <= effInitStop) {
     return {
       action: 'full_sell',
-      reason: `ATR 初始停損 @ ${effInitStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`,
+      reason: `InitStop 初始停損 @ ${effInitStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`,
       exitIntentKind: 'risk_stop',
     }
   }
@@ -86,7 +87,7 @@ export function checkExitConditions(
     return { action: 'full_sell', reason: 'ML SELL', exitIntentKind: 'model_exit' }
   }
 
-  const trailingStopRaw = pos.trailing_stop ?? initStopRaw
+  const trailingStopRaw = Math.max(pos.trailing_stop ?? initStopRaw, pos.tp1_hit ? entryPrice : initStopRaw)
   const effTrailingStop = trailingStopRaw
   if (currentPrice <= effTrailingStop && effTrailingStop > effInitStop) {
     return {
@@ -116,14 +117,6 @@ export function checkExitConditions(
   }
 
   const highestSoFar = Math.max(pos.highest_since_entry ?? entryPrice, currentPrice)
-  const trailSwitch3 = sltp?.trailSwitch3pct ?? 0.03
-  const trailSwitch8 = sltp?.trailSwitch8pct ?? 0.08
-
-  let trailMult = ex.trailMultDefault
-  if (pnlPct > trailSwitch8) trailMult = ex.trailMultAt8pct
-  else if (pnlPct > trailSwitch3) trailMult = ex.trailMultAt3pct
-
-  const effectiveAtr = atr14 > 0 ? atr14 : currentPrice * ex.fallbackAtrPct
   const tp2 = normalizeTwEquityTargetPrice(pos.tp2_price ?? entryPrice * ex.fallbackTp2Mult)
   const previousHighest = pos.highest_since_entry ?? entryPrice
 
@@ -138,16 +131,13 @@ export function checkExitConditions(
     }
   }
 
-  const newTrailing = highestSoFar - effectiveAtr * trailMult
-  const floorStop = pos.tp1_hit ? entryPrice : initStop
-  const finalTrailing = Math.max(newTrailing, floorStop)
   const prevTrailing = pos.trailing_stop ?? initStop
-  const updatedTrailing = normalizeTwEquityStopPrice(Math.max(finalTrailing, prevTrailing))
+  const updatedTrailing = normalizeTwEquityStopPrice(Math.max(prevTrailing, pos.tp1_hit ? entryPrice : initStop))
 
   if (updatedTrailing !== prevTrailing || highestSoFar !== previousHighest) {
     return {
       action: 'hold',
-      reason: 'trailing update',
+      reason: 'fixed stop / high-water mark update',
       newTrailingStop: updatedTrailing,
       newHighest: highestSoFar,
     }

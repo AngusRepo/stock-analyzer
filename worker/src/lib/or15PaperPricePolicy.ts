@@ -49,7 +49,7 @@ export function assessOr15PaperPrice(input: {
 export interface Or15PaperExitTargets {
   tp1: number
   tp2: number
-  tp1Source: 'selected_tp1' | 'selected_tp2_promoted'
+  tp1Source: 'selected_tp1' | 'selected_tp2_promoted' | 'ohlcv_resistance'
   tp2Source: 'selected_tp2' | 'atr_extension'
 }
 
@@ -58,6 +58,7 @@ export function resolveOr15PaperExitTargets(input: {
   fillPrice: number
   selectedTp1: number | null | undefined
   selectedTp2: number | null | undefined
+  structuralResistance?: number | null
   atrTp1: number
   atrTp2: number
   isNetProfitable: (sellPrice: number) => boolean
@@ -67,7 +68,9 @@ export function resolveOr15PaperExitTargets(input: {
   const selectedTp1Valid = profitable(input.selectedTp1)
   const selectedTp2Valid = profitable(input.selectedTp2)
   if (!selectedTp1Valid && !selectedTp2Valid) return null
-  const tp1 = selectedTp1Valid ? input.selectedTp1! : input.selectedTp2!
+  const selectedFirst = selectedTp1Valid ? input.selectedTp1! : input.selectedTp2!
+  const pressure = positive(input.structuralResistance)
+  const tp1 = pressure != null && pressure > input.fillPrice ? Math.min(selectedFirst, pressure) : selectedFirst
   const tp2Source = selectedTp2Valid && input.selectedTp2! > tp1 ? 'selected_tp2' : 'atr_extension'
   const tp2 = tp2Source === 'selected_tp2' ? input.selectedTp2! :
     [input.atrTp1, input.atrTp2].filter(price => profitable(price) && price > tp1).at(-1)
@@ -75,7 +78,21 @@ export function resolveOr15PaperExitTargets(input: {
   return {
     tp1,
     tp2,
-    tp1Source: selectedTp1Valid ? 'selected_tp1' : 'selected_tp2_promoted',
+    tp1Source: tp1 < selectedFirst ? 'ohlcv_resistance' : selectedTp1Valid ? 'selected_tp1' : 'selected_tp2_promoted',
     tp2Source,
   }
+}
+
+/** Actual fill, fees and adverse stop execution share one R denominator. */
+export function assessOr15NetRewardRisk(input: {
+  entry: number; stop: number; tp1: number; tp2: number;
+  buyCost: number; netProceeds: (price: number) => number;
+}): { pass: boolean; risk: number; tp1R: number; tp2R: number } {
+  const risk = input.buyCost - input.netProceeds(input.stop)
+  const tp1R = (input.netProceeds(input.tp1) - input.buyCost) / risk
+  const tp2R = (input.netProceeds(input.tp2) - input.buyCost) / risk
+  return { pass: [input.entry, input.stop, input.tp1, input.tp2, risk, tp1R, tp2R].every(Number.isFinite)
+      && input.buyCost > 0 && input.stop > 0 && input.stop < input.entry && input.tp1 > input.entry
+      && input.tp2 > input.tp1 && risk > 0 && tp1R >= 1 && tp2R >= 2,
+    risk, tp1R, tp2R }
 }

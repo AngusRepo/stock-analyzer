@@ -51,7 +51,7 @@ interface GatheredContext {
   top_concepts?: Array<{ concept: string; mention_count: number; sentiment_avg: number }>
 }
 
-export function isReadyNight(night: GatheredContext['taifex_night'], now = Date.now()): boolean {
+export function isReadyNight(night: GatheredContext['taifex_night'], now = paperExecutionNow()): boolean {
   if (!night || !Number.isFinite(night.lastPrice) || night.lastPrice <= 0 || !Number.isFinite(night.changePct)) return false
   const date = String(night.date).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')
   const time = String(night.time).replace(/^(\d{2})(\d{2})(\d{2})$/, '$1:$2:$3')
@@ -300,7 +300,7 @@ export async function readCurrentNewsReport(
     const report = await kv.get(`market:news_analyst:${today}`, 'json') as NewsAnalystReport | null
     if (!report || report.date !== today || report.schema_version !== 'news-evidence-v2' || report.status !== 'ready' ||
       !isReadyUSSignal(report.macro_evidence?.us_signal, today) || !isReadyNight(report.macro_evidence?.taifex_night as GatheredContext['taifex_night']) ||
-      !report.evidence?.length || !report.cutoff || Date.parse(report.cutoff) > Date.now() ||
+      !report.evidence?.length || !report.cutoff || Date.parse(report.cutoff) > paperExecutionNow() ||
       new Date(Date.parse(report.cutoff) + 8 * 3600_000).toISOString().slice(0, 10) !== today ||
       filterNewsEvidence(report.evidence, report.cutoff).length !== report.evidence.length || !parseReportJson(JSON.stringify(report), report.evidence)) return null
     return report

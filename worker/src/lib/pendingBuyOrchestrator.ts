@@ -459,18 +459,20 @@ async function loadMacroContext(env: Bindings, tradeDate: string): Promise<{
     : undefined
 
   let newsContextStr: string | undefined
+  let taifex: { changePct: number; changePoints: number; lastPrice: number } | null = null
   try {
     const { readCurrentNewsReport, formatNewsDebateContext } = await import('./newsAnalyst')
     const newsReport = await readCurrentNewsReport(env.KV, tradeDate)
     if (newsReport) {
       newsContextStr = formatNewsDebateContext(newsReport)
+      taifex = newsReport.macro_evidence?.taifex_night as typeof taifex
     }
   } catch (error) {
     console.warn('[PendingBuyOrchestrator] news analyst read failed:', error)
   }
 
   const { fetchTaifexNightClose } = await import('./twseApi')
-  const taifex = await fetchTaifexNightClose(env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET).catch((error) => {
+  taifex ??= await fetchTaifexNightClose(env.ML_CONTROLLER_URL, env.ML_CONTROLLER_SECRET).catch((error) => {
     console.warn('[PendingBuyOrchestrator] TAIFEX fetch failed:', error)
     return null
   })

@@ -1,3 +1,4 @@
+import { paperExecutionFetch, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * usLeading.ts — 美股先行指標
@@ -27,7 +28,7 @@ interface USSignal {
 
 async function fetchYahooQuote(symbol: string): Promise<{ close: number; prevClose: number; observedAt: string } | null> {
   try {
-    const res = await fetch(
+    const res = await paperExecutionFetch(
       `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`,
       { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) },
     )
@@ -43,7 +44,7 @@ async function fetchYahooQuote(symbol: string): Promise<{ close: number; prevClo
 
 async function fetchYahooMA5(symbol: string): Promise<number | null> {
   try {
-    const res = await fetch(
+    const res = await paperExecutionFetch(
       `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=10d`,
       { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) },
     )
@@ -61,7 +62,7 @@ async function fetchYahooMA5(symbol: string): Promise<number | null> {
 async function fetchHYSpread(apiKey: string): Promise<{ value: number; prevValue: number; observedAt: string } | null> {
   try {
     // BAMLH0A0HYM2 = ICE BofA US High Yield OAS
-    const res = await fetch(
+    const res = await paperExecutionFetch(
       `https://api.stlouisfed.org/fred/series/observations?series_id=BAMLH0A0HYM2&sort_order=desc&limit=5&file_type=json&api_key=${apiKey}`,
       { signal: AbortSignal.timeout(10000) },
     )
@@ -75,7 +76,7 @@ async function fetchHYSpread(apiKey: string): Promise<{ value: number; prevValue
 
 // ─── Main: 蒐集 + 存儲 ──────────────────────────────────────────────────────
 
-export function isReadyUSSignal(signal: any, date: string, now = Date.now()): signal is USSignal {
+export function isReadyUSSignal(signal: any, date: string, now = paperExecutionNow()): signal is USSignal {
   return Boolean(signal && signal.date === date && Number.isFinite(signal.gspc_close) && Number.isFinite(signal.sox_close) &&
     Number.isFinite(signal.vix_close) && ['sox', 'gspc', 'vix'].every(key => {
       const timestamp = Date.parse(signal.source_times?.[key] ?? '')
@@ -84,7 +85,7 @@ export function isReadyUSSignal(signal: any, date: string, now = Date.now()): si
 }
 
 export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | null> {
-  const date = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const date = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   return runPremarketEvidenceStage(env, date, 'us-leading', async () => {
     const cached = await env.KV.get(`us:leading:${date}`, 'json')
     return isReadyUSSignal(cached, date) ? cached : null
@@ -92,7 +93,7 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
 }
 
 async function produceUSLeading(env: Bindings, assertOwner: () => Promise<void>): Promise<USSignal> {
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
+  const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
   console.log(`[USLeading] Fetching US market signals for ${today}...`)
 
   // 平行抓 6 支標的
@@ -130,7 +131,7 @@ async function produceUSLeading(env: Bindings, assertOwner: () => Promise<void>)
   else if (bearSignals >= 2) sentiment = 'bearish'
 
   const signal: USSignal = {
-    date: today, fetched_at: new Date().toISOString(),
+    date: today, fetched_at: paperExecutionDate().toISOString(),
     source_times: { sox: sox?.observedAt ?? null, tsm: tsm?.observedAt ?? null, gspc: gspc?.observedAt ?? null, dxy: dxy?.observedAt ?? null, vix: vix?.observedAt ?? null, hy: hy?.observedAt ?? null },
     sox_close: sox?.close ?? null, sox_return: soxReturn, sox_ma5: soxMa5,
     tsm_close: tsm?.close ?? null, tsm_return: tsmReturn, tsm_premium: null,  // 需台股開盤價對比

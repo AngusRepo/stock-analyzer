@@ -789,18 +789,8 @@ export function buildAdminWorkerDomainTaskMap(
       return `paired_native_execution ${JSON.stringify(result)}`
     },
     'morning-setup': async () => {
-      const { settlePaperT2 } = await import('./cronOrchestrator')
-      const { ensurePaperCorporateSource } = await import('./paperCorporateSource')
-      const { loadPendingBuySnapshot } = await import('./pendingBuyStore')
-      const { buildPendingBuyStateSummary } = await import('./pendingBuyStateSummary')
-      const { formatPendingBuyCronSummary } = await import('./pendingBuyCronSummary')
-      await ensurePaperCorporateSource(c.env, twToday())
-      await settlePaperT2(c.env)
-      await runMorningWarmup(c.env)
-      await deps.setupMorningPendingBuys()
-      const snapshot = await loadPendingBuySnapshot(c.env, twToday(), { allowFallbackRecent: false })
-      const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      return formatPendingBuyCronSummary('morning setup done', state, { source: snapshot.source })
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      return ensurePremarketEventChain(c.env,twToday())
     },
     'intraday-check': () => {
       const h = (new Date().getUTCHours() + 8) % 24
@@ -831,22 +821,10 @@ export function buildAdminWorkerDomainTaskMap(
     warmup: () => deps.runMorningWarmup(),
     'ml-warmup': () => runMlControllerWarmup(c.env),
     'pre-market-warmup': async () => {
-      const { runPreMarketWarmup, settlePaperT2 } = await import('./cronOrchestrator')
-      const { recoverPaperMorningSetup } = await import('./paperMorningRecovery')
-      const { reconcilePendingBuyDebates } = await import('./pendingBuyOrchestrator')
-      const { loadPendingBuySnapshot } = await import('./pendingBuyStore')
-      const { buildPendingBuyStateSummary } = await import('./pendingBuyStateSummary')
-      const { formatPendingBuyCronSummary } = await import('./pendingBuyCronSummary')
+      const { runPreMarketWarmup } = await import('./cronOrchestrator')
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
       const warmup = await runPreMarketWarmup(c.env)
-      const tradeDate = twToday()
-      const recovery = await recoverPaperMorningSetup(c.env, tradeDate, settlePaperT2)
-      const debate = await reconcilePendingBuyDebates(c.env, twToday())
-      const snapshot = await loadPendingBuySnapshot(c.env, twToday(), { allowFallbackRecent: false })
-      const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      return formatPendingBuyCronSummary(warmup, state, {
-        debate,
-        morning_setup_repair: recovery,
-      })
+      return `${warmup}; ${await ensurePremarketEventChain(c.env,twToday())}`
     },
     'intraday-rescore': async () => {
       const { runIntradayRescore } = await import('./cronOrchestrator')
@@ -904,6 +882,8 @@ export function buildAdminWorkerDomainTaskMap(
     'news-analyst': async () => {
       const { runDailyNewsAnalysis } = await import('./newsAnalyst')
       const report = await runDailyNewsAnalysis(c.env as any)
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      await ensurePremarketEventChain(c.env,twToday())
       return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
     },
     'debate-memory-retention': async () => {
@@ -1594,7 +1574,10 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'us-leading': async () => {
       const { fetchAndStoreUSLeading } = await import('./usLeading')
-      return fetchAndStoreUSLeading(c.env)
+      const signal = await fetchAndStoreUSLeading(c.env)
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      await ensurePremarketEventChain(c.env,twToday())
+      return signal
     },
     adapt: async () => {
       const { runAdaptiveUpdate } = await import('./adaptiveEngine')

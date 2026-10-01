@@ -9,6 +9,7 @@ function row(id: string, symbol: string, cap: number, reason = 'debate_risk_cap'
   return { request_id: id, request_json: JSON.stringify({ plan_id: source, veto_symbols: [], weight_caps: { [symbol]: cap }, reason }), status: 'pending', attempts: 0 }
 }
 function fixture(rows: Row[]) {
+  let leaseOwner: string | null = null
   const db = {
     prepare(sql: string) {
       let args: unknown[] = []
@@ -18,8 +19,16 @@ function fixture(rows: Row[]) {
           const pending = rows.filter(r => r.status === 'pending')
           return { results: (sql.includes('LIMIT 1') ? pending.slice(0, 1) : pending).map(r => ({ ...r })) }
         },
-        async first() { return { n: rows.filter(r => r.status === 'pending').length } },
+        async first() {
+          if (sql.includes('INSERT INTO maintenance_task_leases')) {
+            if (leaseOwner) return null
+            leaseOwner = String(args[2]); return { owner_id: leaseOwner }
+          }
+          if (sql.includes('FROM maintenance_task_leases')) return { task_name:'l4', owner_id:leaseOwner,lease_expires_at:'later' }
+          return { n: rows.filter(r => r.status === 'pending').length }
+        },
         async run() {
+          if (sql.includes('DELETE FROM maintenance_task_leases')) { leaseOwner = null; return {success:true} }
           if (sql.includes("status='expired'")) return { success: true }
           const target = rows.find(r => r.request_id === args.at(-1))!
           if (target.status !== 'pending') return { success: true }
@@ -75,6 +84,14 @@ async function main() {
     urgent.rows[1].request_json = JSON.stringify({ plan_id: source, veto_symbols: ['3576'], weight_caps: {}, reason: 'execution_hard_risk_veto' })
     assert.equal(await flushL4Replans(urgent.env, '2026-09-30', { debatePending: true }), true)
     assert.deepEqual(JSON.parse(calls.at(-1)!).veto_symbols, ['3576'], 'urgent risk cannot wait for debate completion')
+
+    const concurrent = fixture([row('concurrent', '1101', .04)])
+    const before = calls.length
+    let second: Promise<boolean> | undefined
+    onSend = () => { onSend = undefined; second = flushL4Replans(concurrent.env, '2026-09-30') }
+    assert.equal(await flushL4Replans(concurrent.env, '2026-09-30'), true)
+    assert.equal(await second, false, 'concurrent delivery must be busy, not another optimizer call')
+    assert.equal(calls.length, before + 1, 'simultaneous flushes make one HTTP request')
 
     invalidReceipt = true
     const missingReceipt = fixture([row('11', '1101', .04), row('12', '3290', .04)])

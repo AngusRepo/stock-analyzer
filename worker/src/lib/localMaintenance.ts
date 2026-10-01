@@ -28,10 +28,10 @@ async function selectTopStockByMarketHistory(env: Bindings): Promise<{ id: numbe
   return selected ? { id: selected.id, symbol: selected.symbol } : null
 }
 
-export async function runMorningWarmup(env: Bindings) {
+export async function runMorningWarmup(env: Bindings, options: { healthProbe?: boolean } = {}) {
   console.log('[Cron] Morning warmup starting...')
 
-  if (env.ML_SERVICE_URL) {
+  if (options.healthProbe !== false && env.ML_SERVICE_URL) {
     try {
       const res = await fetch(`${env.ML_SERVICE_URL}/health`, {
         signal: AbortSignal.timeout(10_000),

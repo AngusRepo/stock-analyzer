@@ -324,6 +324,7 @@ export interface UpdateQueueMsg {
     | 'update_batch'
     | 'finalize_update'
     | 'post_screener_pipeline'
+    | 'premarket_stage'
     | 's12_candidate_snapshot_chunk'
     | 's12_structure_batch_complete'
     | 's12_intraday_setup_watch_complete'
@@ -345,6 +346,7 @@ export interface UpdateQueueMsg {
     | 'strategy_evidence_rebuild'
     | 'active8_oof_continuation'
     | 'active8_oof_after_snapshot'
+  premarketStage?: string
   newsStocks?: Array<{
     id: number
     symbol: string

@@ -3,7 +3,6 @@ import {
   dataQualityApi,
   deployGateApi,
   marketApi,
-  modelPoolApi,
   observabilityApi,
   opsApi,
   paperApi,
@@ -83,7 +82,6 @@ export function prefetchWorkstationRoute(
       { queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), staleTime: queryTtl.realtime },
       { queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), staleTime: queryTtl.realtime },
       { queryKey: ['obs', 'drilldown'], queryFn: () => observabilityApi.drilldown(), staleTime: queryTtl.realtime },
-      { queryKey: ['obs', 'model-pool-lineage'], queryFn: modelPoolApi.lineage, staleTime: queryTtl.intraday },
       { queryKey: ['obs', 'system'], queryFn: systemApi.status, staleTime: queryTtl.realtime },
       { queryKey: ['obs', 'resource-audit'], queryFn: opsApi.resourceAudit, staleTime: 2 * queryTtl.intraday },
     ])

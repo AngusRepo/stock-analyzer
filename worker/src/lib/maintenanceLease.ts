@@ -1,3 +1,4 @@
+import { paperExecutionUUID } from './paperExecutionScope'
 export interface MaintenanceLeaseBusy {
   skipped: true
   reason: string
@@ -21,7 +22,7 @@ export async function runWithMaintenanceLease<T>(
   },
 ): Promise<T | MaintenanceLeaseBusy> {
   const leaseGroup = input.leaseGroup ?? 'd1_heavy_maintenance'
-  const ownerId = `${input.taskName}:${crypto.randomUUID()}`
+  const ownerId = `${input.taskName}:${paperExecutionUUID()}`
   const modifier = `+${Math.max(300, Math.floor(input.leaseSeconds ?? 3600))} seconds`
   const claimed = await db.prepare(`
     INSERT INTO maintenance_task_leases (

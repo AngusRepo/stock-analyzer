@@ -1,3 +1,4 @@
+import { paperExecutionDate } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { crawlYahooRSS } from './news'
 import type { Bindings } from '../types'
@@ -37,7 +38,7 @@ function utcTimestamp(value: string): string {
 
 export async function gatherNewsEvidence(env: Bindings): Promise<{ cutoff: string; evidence: NewsEvidence[] }> {
   const db = databaseForDataDomain(env, 'market')
-  const at = new Date().toISOString()
+  const at = paperExecutionDate().toISOString()
   const result = await db.prepare(`SELECT id, title, summary, url, source, published_at, created_at
     FROM news WHERE julianday(published_at) <= julianday(?) AND julianday(created_at) <= julianday(?)
       AND julianday(published_at) >= julianday(?, '-72 hours')
@@ -51,7 +52,7 @@ export async function gatherNewsEvidence(env: Bindings): Promise<{ cutoff: strin
   }))
   // A single public feed provides US macro/ADR headlines, not another per-stock LLM loop.
   const feed = await crawlYahooRSS('TSM,^GSPC', 0)
-  const cutoff = new Date().toISOString()
+  const cutoff = paperExecutionDate().toISOString()
   for (const item of feed) {
     if (!item.url) continue
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(item.url))

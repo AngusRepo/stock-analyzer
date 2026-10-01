@@ -3084,6 +3084,13 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'premarket_stage') {
+    const { processPremarketEvent } = await import('./premarketEventChain')
+    const { premarketWork } = await import('./premarketEventWork')
+    await processPremarketEvent(env, msg, premarketWork(env,msg.triggerTime))
+    return
+  }
+
   if (msg.type === 'active8_oof_after_snapshot') {
     const { processActive8AfterDatasetSnapshot } = await import('./active8SnapshotReadyContinuation')
     await processActive8AfterDatasetSnapshot(msg, env)

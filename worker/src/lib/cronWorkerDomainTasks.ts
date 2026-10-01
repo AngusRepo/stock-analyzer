@@ -1,28 +1,9 @@
 import type { Bindings } from '../types'
-import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
+import { runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { runEODExit } from './paperExitTasks'
 import { runWeeklyModelRegistryCheck } from './controllerWorkflows'
-import { loadPendingBuySnapshot } from './pendingBuyStore'
-import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
-import { formatPendingBuyCronSummary } from './pendingBuyCronSummary'
-import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { databaseForTable } from './dataDomainRegistry'
-import { ensurePaperCorporateSource } from './paperCorporateSource'
-import { recoverPaperMorningSetup } from './paperMorningRecovery'
-import { prefetchS12PreviousSessionSeeds } from './s12RuntimeBars'
-
-async function prefetchPendingS12Seeds(env: Bindings, date: string, symbols: string[]): Promise<string> {
-  if (!symbols.length) return 's12_seed=empty'
-  try {
-    const result = await prefetchS12PreviousSessionSeeds(env, date, symbols)
-    if (result.errors.length) console.warn('[S12] Previous-session prefetch:', result.errors)
-    return `s12_seed=${result.ready}/${result.requested}`
-  } catch (error) {
-    console.warn('[S12] Previous-session prefetch failed:', error instanceof Error ? error.message : String(error))
-    return 's12_seed=unavailable'
-  }
-}
 
 interface WorkerCronDeps {
   cron: string
@@ -41,27 +22,15 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
 
   if (cron === '50 0 * * 1-5') {
     runWithLog('pre-market-warmup', async () => {
-      const warmup = await runPreMarketWarmup(env)
-      const recovery = await recoverPaperMorningSetup(env, twTodayStr, settlePaperT2)
-      const debate = await reconcilePendingBuyDebates(env, twTodayStr)
-      const snapshot = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
-      const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      const s12Seed = await prefetchPendingS12Seeds(env, twTodayStr, snapshot.pendingBuys.map((buy) => buy.symbol))
-      return formatPendingBuyCronSummary(`${warmup}; morning=${recovery}; ${s12Seed}`, state, { debate })
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      return `${await runPreMarketWarmup(env)}; ${await ensurePremarketEventChain(env,twTodayStr)}`
     })
     return true
   }
-
   if (cron === '15 23 * * SUN-THU') {
     runWithLog('morning-setup', async () => {
-      await ensurePaperCorporateSource(env, twTodayStr)
-      await settlePaperT2(env)
-      await runMorningWarmup(env)
-      await setupMorningPendingBuys(env)
-      const snapshot = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
-      const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      const s12Seed = await prefetchPendingS12Seeds(env, twTodayStr, snapshot.pendingBuys.map((buy) => buy.symbol))
-      return formatPendingBuyCronSummary(`morning setup done; ${s12Seed}`, state, { source: snapshot.source })
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      return ensurePremarketEventChain(env,twTodayStr)
     })
     return true
   }
@@ -125,6 +94,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     runWithLog('us-leading', async () => {
       const { fetchAndStoreUSLeading } = await import('./usLeading')
       const signal = await fetchAndStoreUSLeading(env)
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      await ensurePremarketEventChain(env,twTodayStr)
       return signal ? `SOX ${((signal.sox_return ?? 0) * 100).toFixed(1)}% | ${signal.sentiment}` : 'us-leading failed'
     })
     return true
@@ -134,6 +105,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     runWithLog('news-analyst', async () => {
       const { runDailyNewsAnalysis } = await import('./newsAnalyst')
       const report = await runDailyNewsAnalysis(env as any)
+      const { ensurePremarketEventChain } = await import('./premarketEventChain')
+      await ensurePremarketEventChain(env,twTodayStr)
       return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
     })
     return true

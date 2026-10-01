@@ -1,3 +1,5 @@
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLease'
 import { scopedPaperAccountId } from './paperExecutionScope'
 import { replanPrivateL4 } from './l4PrivateExecution'
 import type { Bindings } from '../types'
@@ -45,6 +47,14 @@ function mergeRequests(rows: ReplanRow[]): ReplanRequest {
 export async function flushL4Replans(
   env: Bindings, signalDate: string, options: { debatePending?: boolean } = {},
 ): Promise<boolean> {
+  const result = await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
+    taskName: 'l4-replan-delivery', leaseGroup: `l4-replan:${scopedPaperAccountId() ?? 1}:${signalDate}`, leaseSeconds: 300,
+    run: () => flushL4ReplansOwned(env, signalDate, options),
+  })
+  return isMaintenanceLeaseBusy(result) ? false : result
+}
+
+async function flushL4ReplansOwned(env: Bindings, signalDate: string, options: { debatePending?: boolean }): Promise<boolean> {
   const db = paperDomainDatabase(env)
   await db.prepare("UPDATE l4_replan_outbox_v1 SET status='expired' WHERE status='pending' AND source_plan_id IN (SELECT plan_id FROM l4_portfolio_plans_v1 WHERE signal_date<?)")
     .bind(signalDate).run()
@@ -63,7 +73,7 @@ export async function flushL4Replans(
       result = await replanPrivateL4(env, signalDate)
     } else {
       const response = await controllerFetch(env, '/l4_distribution/replan', {
-        method: 'POST', timeoutMs: 45_000, jsonBody: request,
+        method: 'POST', timeoutMs: 180_000, jsonBody: request,
       })
       if (!response.ok) throw new Error(`http_${response.status}`)
       result = await response.json() as { status?: string; plan_id?: string }

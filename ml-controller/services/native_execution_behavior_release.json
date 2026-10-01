@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:9a480363505d7d5b4e3cf6d8f59acb22e830f383d88c31bb29db65444204fc14",
+  "execution_owner_version": "native-paper-v1:e100bb146055253de398b091a2dae932cba070017db11eb453b320eed118e7c5",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-01 approved Breeze2 retirement commit, push and Worker/Controller deploy. This local proposal pins the exact resulting Paper runtime and reader source identity; remote supplemental KV write requires separate explicit approval. No model, trading configuration, original admission or NAV history changes.",
+  "authorization": "Wei explicitly approved this release and dedicated Paper KV (\u6279\u51c6\u672c\u6b21\u767c\u5e03\u8207\u5c08\u7528 Paper KV): commit, push, Worker/Pages/Controller release, Scheduler descriptions, and exact supplemental key 2026-10-01-premarket-event-chain for native identity 9a480363 to e100bb14. No model replacement, retraining, live orders or NAV backfill.",
   "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-01-breeze2-retirement"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-01-premarket-event-chain"
 }

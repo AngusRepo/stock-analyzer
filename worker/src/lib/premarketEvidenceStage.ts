@@ -1,3 +1,4 @@
+import { paperExecutionUUID } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 
@@ -6,7 +7,7 @@ export async function runPremarketEvidenceStage<T>(env: Bindings, date: string, 
   read: () => Promise<T | null>, produce: (assertOwner: () => Promise<void>) => Promise<T>,
 ): Promise<T> {
   const db = databaseForDataDomain(env, 'ops')
-  const owner = crypto.randomUUID()
+  const owner = paperExecutionUUID()
   const key = `premarket_v2:${stage}`
   const existing = await read()
   if (existing) return existing

@@ -1,3 +1,4 @@
+import { paperExecutionFetch } from './paperExecutionScope'
 /**
  * news.ts — 新聞爬蟲 + 規則情感分析
  * 資料來源：Yahoo Finance API / RSS + 鉅亨網 RSS
@@ -50,7 +51,7 @@ async function crawlYahooNews(symbol: string, stockId: number): Promise<CrawledN
   const results: CrawledNews[] = []
   try {
     const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(symbol)}&newsCount=20&enableFuzzyQuery=false`
-    const res = await fetch(url, {
+    const res = await paperExecutionFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     })
     if (!res.ok) return results
@@ -80,7 +81,7 @@ export async function crawlYahooRSS(symbol: string, stockId: number): Promise<Cr
   const results: CrawledNews[] = []
   try {
     const url = `https://finance.yahoo.com/rss/headline?s=${encodeURIComponent(symbol)}`
-    const res = await fetch(url, {
+    const res = await paperExecutionFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       signal: AbortSignal.timeout(10_000),
     })
@@ -120,7 +121,7 @@ async function crawlCnyesRSS(stockNo: string, stockId: number): Promise<CrawledN
   try {
     // 鉅亨網個股新聞 RSS
     const url = `https://feeds.cnyes.com/market/tw/${stockNo}/news.rss`
-    const res = await fetch(url, {
+    const res = await paperExecutionFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       signal: AbortSignal.timeout(10_000),
     })

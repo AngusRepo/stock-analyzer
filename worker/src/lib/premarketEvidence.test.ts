@@ -94,7 +94,7 @@ test('LLM joins text parts, enables JSON mode and rejects truncated output', asy
 test('paused briefing, watchdog ownership and entry-only readiness gate', () => {
   assert.equal(schedulerJobAccounting('morning-briefing').desiredState, 'PAUSED')
   const source = readFileSync(new URL('./pendingBuyOrchestrator.ts', import.meta.url), 'utf8')
-  assert.ok(source.indexOf('premarket_evidence_wait:') < source.indexOf('const breeze2Context ='))
+  assert.ok(source.indexOf('premarket_evidence_wait:') < source.indexOf('const candidates: BatchDebateCandidate[]'))
   const exits = readFileSync(new URL('./paperExitTasks.ts', import.meta.url), 'utf8')
   assert.ok(!exits.includes('readCurrentNewsReport') && !exits.includes('premarket_evidence_wait'))
 })
@@ -111,6 +111,7 @@ test('news producer retries bad JSON without writing neutral KV, then publishes 
   let calls = 0, good = false
   globalThis.fetch = async () => new Response('<rss/>')
   f.ports.fetchFrozen = async (input: any) => {
+    if (String(input).includes('yahoo.com')) return new Response('<rss/>')
     if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: tw.slice(0, 10).replaceAll('-', ''), CTime: tw.slice(11, 19).replaceAll(':', '') }] } })
     if (String(input).includes('generativelanguage')) { calls++; return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: good ? JSON.stringify(valid) : 'not JSON' }] } }] }) }
     throw new Error('unexpected test network')
@@ -122,7 +123,7 @@ test('news producer retries bad JSON without writing neutral KV, then publishes 
     await assert.rejects(run(), /premarket_wait/); assert.equal(calls, 1)
     f.ports.nowMs += 601_000; good = true
     assert.equal((await run()).result.status, 'ready')
-    const published = await readCurrentNewsReport(f.env.KV, date)
+    const published = (await withPaperExecutionScope(f.ports, () => readCurrentNewsReport(f.env.KV, date))).result
     assert.ok(published?.evidence_receipt?.sha256)
     assert.ok(f.artifacts.has(published.evidence_receipt.key))
     await run(); assert.equal(calls, 2)

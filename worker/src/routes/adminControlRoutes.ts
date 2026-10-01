@@ -736,6 +736,7 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  let verifiedNativeL4Closure = false
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
     const hasSchedulerTicketIdentity = Boolean(callbackSchedulerTicketId || callbackSchedulerRunId)
     if (hasSchedulerTicketIdentity && !(callbackSchedulerTicketId && callbackSchedulerRunId)) {
@@ -751,6 +752,7 @@ async function handleSchedulerCallback(c: any) {
       if (body.status==='success') {
         try {
           await verifyL4DailyClosure(c.env,nativeClosure,callbackRunDate ?? '')
+          verifiedNativeL4Closure = true
         } catch {
           body.status='error';body.error='new_l4_daily_closure_unverified'
         }
@@ -883,6 +885,7 @@ async function handleSchedulerCallback(c: any) {
         callbackRunId,
         schedulerTicketId: callbackSchedulerTicketId || undefined,
         schedulerRunId: callbackSchedulerRunId || undefined,
+        verifiedNativeL4Closure,
         status: body.status as 'success' | 'error' | 'skipped',
         summary: String(body.summary ?? body.status),
         error: body.error != null ? String(body.error) : undefined,

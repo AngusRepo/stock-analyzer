@@ -31,8 +31,12 @@ async function fixture(run: (value: any) => Promise<void>) {
       producer_run_id TEXT,status TEXT,expected_candidates INTEGER,processed_candidates INTEGER,
       expected_decision_rows INTEGER,persisted_decision_rows INTEGER,production_authority_intent INTEGER,
       policy_closure_status TEXT,policy_closure_reason TEXT,completed_at TEXT)`).run()
+    await learning.prepare(`CREATE TABLE dataset_snapshots (snapshot_id TEXT,business_date TEXT,
+      kind TEXT,access_tier TEXT,status TEXT)`).run()
     const day = '2026-09-09'
     const canonical = `pipeline:${day}:fixture`
+    await learning.prepare(`INSERT INTO dataset_snapshots VALUES('fixture-snapshot',?,
+      'backtest_dataset','compute','ready')`).bind(day).run()
     for (const stage of ['pipeline_execution', 'post_pipeline_chain', 'verify_v2', 'screener_v2', 'post_verify_chain']) {
       await ops.prepare('INSERT INTO pipeline_stage_runs VALUES(?,?,?,?,?)')
         .bind(day, stage, canonical, 'success', stage === 'screener_v2' ? 'fixture-screener' : null).run()
@@ -49,14 +53,15 @@ async function fixture(run: (value: any) => Promise<void>) {
       status: 'triggered', authority: 'scheduler_http', summary: 'fixture stages pending child' })
     const snapshot = await admitSchedulerChildTicket(ops as any, { rootTicketId: root.ticket_id,
       parentTicketId: root.ticket_id, childKey: 'snapshot', task: 'dataset-snapshot-export', businessDate: day,
-      runId: `${canonical}:snapshot`, metadata: { origin: 'dataset_snapshot_ready' } })
+      runId: `${canonical}:snapshot`, metadata: { origin: 'dataset_snapshot_ready', snapshot_id: 'fixture-snapshot' } })
     await updateSchedulerExecutionTicket(ops as any, { ticketId: snapshot.ticket_id, runId: snapshot.run_id,
       status: 'success', authority: 'logical_child', summary: 'fixture snapshot ready' })
     const callbackRunId = `active8-oof-daily:${day}:resolve-after-prep`
     const child = await admitSchedulerChildTicket(ops as any, { rootTicketId: root.ticket_id,
       parentTicketId: snapshot.ticket_id, childKey: 'active8', task: 'active8-oof-daily', businessDate: day,
       runId: `${snapshot.run_id}:active8`, metadata: { origin: 'dataset_snapshot_ready',
-        snapshot_run_id: snapshot.run_id, active8_callback_run_id: callbackRunId } })
+        snapshot_id: 'fixture-snapshot', snapshot_run_id: snapshot.run_id,
+        active8_callback_run_id: callbackRunId } })
     const env = { DB: ops, OPS_DB: ops, LEARNING_DB: learning, KV: kv,
       MULTI_D1_ACTIVE_DOMAINS: 'ops,learning', MULTI_D1_STRICT: 'true',
       STOCKVISION_AUTH_TOKEN: 'isolated-nav-token', UPDATE_QUEUE: {
@@ -123,6 +128,51 @@ test('wrong callback identity or conflicting terminal result cannot close the ro
   assert.equal((await f.row(f.child.ticket_id)).status, 'error')
 }))
 
+test('verified later native L4 plan can satisfy a stale snapshot continuation with its own source receipt', async () => fixture(async f => {
+  await updateSchedulerExecutionTicket(f.ops, { ticketId: f.child.ticket_id, runId: f.child.run_id,
+    status: 'triggered', authority: 'durable_queue', summary: 'original compute dispatched' })
+  const source = await admitSchedulerExecutionTicket(f.ops, {
+    identity: schedulerDeliveryIdentity(new Headers({
+      'X-CloudScheduler-JobName': 'projects/local/locations/asia-east1/jobs/active8-oof-daily-watchdog',
+      'X-CloudScheduler-ScheduleTime': `${f.day}T23:25:00Z`,
+    })), task: 'active8-oof-daily', requestedRunDate: f.day,
+    proposedRunId: 'later-physical-active8-run',
+  })
+  const summary = `run_id=${f.callbackRunId} status=native_l4_daily_accounted completion_scope=verified_formal_paper_plan`
+  await updateSchedulerExecutionTicket(f.ops, { ticketId: source.ticket.ticket_id, runId: source.ticket.run_id,
+    status: 'success', authority: 'scheduler_http', summary })
+  await f.ops.prepare("UPDATE scheduler_execution_tickets_v1 SET completed_at=datetime('now','+1 second') WHERE ticket_id=?")
+    .bind(source.ticket.ticket_id).run()
+  const input = { businessDate: f.day, callbackRunId: f.callbackRunId,
+    schedulerTicketId: source.ticket.ticket_id, schedulerRunId: source.ticket.run_id,
+    status: 'success' as const, summary }
+  assert.equal(await settleActive8SnapshotContinuationTicket(f.env, {
+    ...input, verifiedNativeL4Closure: true,
+  }), false, 'a recent child may still have an active original attempt')
+  await f.ops.prepare("UPDATE scheduler_execution_tickets_v1 SET updated_at=datetime('now','-2 hours') WHERE ticket_id=?")
+    .bind(f.child.ticket_id).run()
+  assert.equal(await settleActive8SnapshotContinuationTicket(f.env, input), false,
+    'unverified callback must not bridge ticket identities')
+  assert.equal((await f.row(f.child.ticket_id)).status, 'triggered')
+  assert.equal(await settleActive8SnapshotContinuationTicket(f.env, {
+    ...input, callbackRunId: 'different-callback', verifiedNativeL4Closure: true,
+  }), false, 'the source callback identity must match the logical child')
+  await f.learning.prepare("UPDATE dataset_snapshots SET status='pending' WHERE snapshot_id='fixture-snapshot'").run()
+  await assert.rejects(settleActive8SnapshotContinuationTicket(f.env, {
+    ...input, verifiedNativeL4Closure: true,
+  }), /active8_snapshot_ready_receipt_missing/)
+  assert.equal((await f.row(f.child.ticket_id)).status, 'triggered')
+  await f.learning.prepare("UPDATE dataset_snapshots SET status='ready' WHERE snapshot_id='fixture-snapshot'").run()
+  assert.equal(await settleActive8SnapshotContinuationTicket(f.env, {
+    ...input, verifiedNativeL4Closure: true,
+  }), true)
+  const settled = await f.row(f.child.ticket_id)
+  assert.equal(settled.status, 'success')
+  assert.match(settled.last_summary, new RegExp(source.ticket.ticket_id))
+  assert.equal((await f.row(f.root.ticket_id)).status, 'success')
+  assert.equal((await f.kv.get(`scheduler:run:evening-chain:${f.day}`, 'json')).status, 'success')
+}))
+
 test('root D1 commit without KV projection is retryable and replays its log', async () => fixture(async f => {
   const originalKv = f.env.KV
   f.env.KV = {
@@ -175,10 +225,6 @@ test('continuation verifies the original ticket date, task and run before dispat
 
 for (const status of ['pending', 'spawned']) {
   test(`snapshot child retains scheduler identity through ${status} controller dispatch`, async () => fixture(async f => {
-    await f.learning.prepare(`CREATE TABLE dataset_snapshots (snapshot_id TEXT,business_date TEXT,
-      kind TEXT,access_tier TEXT,status TEXT)`).run()
-    await f.learning.prepare(`INSERT INTO dataset_snapshots VALUES('fixture-snapshot',?,'backtest_dataset','compute','ready')`)
-      .bind(f.day).run()
     const sent: any[] = []
     const requests: any[] = []
     f.env.ML_CONTROLLER_URL = 'https://isolated-controller.test'

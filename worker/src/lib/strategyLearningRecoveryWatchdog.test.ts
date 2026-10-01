@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { strategyLearningRecoveryDecision, type StrategyLearningRecoveryRow } from './strategyLearningRecoveryWatchdog'
+import { hasStrategyLearningSuccessReceipt, strategyLearningRecoveryDecision, type StrategyLearningRecoveryRow } from './strategyLearningRecoveryWatchdog'
 
 const base: StrategyLearningRecoveryRow = {
   business_date: '2026-08-31',
@@ -18,6 +18,8 @@ const base: StrategyLearningRecoveryRow = {
   updated_at: '2026-08-31 16:38:28',
   production_authority_intent: 1,
   policy_closure_status: 'pending',
+  completed_at: null,
+  policy_closure_completed_at: null,
 }
 
 assert.deepEqual(
@@ -52,6 +54,20 @@ assert.equal(
   strategyLearningRecoveryDecision({ ...base, persisted_decision_rows: -1 }).reason,
   'recoverable_progress_invalid',
 )
+
+const successfulRun: StrategyLearningRecoveryRow = {
+  ...base,
+  status: 'success',
+  policy_closure_status: 'materialized',
+  completed_at: '2026-08-31 17:40:53',
+  policy_closure_completed_at: '2026-08-31 17:40:52',
+}
+assert.equal(hasStrategyLearningSuccessReceipt(successfulRun), true)
+assert.equal(hasStrategyLearningSuccessReceipt({ ...successfulRun, completed_at: null }), false)
+assert.equal(hasStrategyLearningSuccessReceipt({ ...successfulRun, persisted_decision_rows: 21579 }), false)
+assert.equal(hasStrategyLearningSuccessReceipt({ ...successfulRun, policy_closure_status: 'pending' }), false)
+assert.equal(hasStrategyLearningSuccessReceipt({ ...successfulRun, policy_closure_status: 'evidence_only' }), false)
+assert.equal(hasStrategyLearningSuccessReceipt({ ...successfulRun, production_authority_intent: 0, policy_closure_status: 'evidence_only' }), true)
 
 const source = fs.readFileSync('src/lib/strategyLearningRecoveryWatchdog.ts', 'utf8')
 const tasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')

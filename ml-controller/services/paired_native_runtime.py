@@ -112,18 +112,24 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
                 continue
             assert_collectible(saved, query=query)
             validate_schedule(packet['schedule'], session_date)
-            # Deliveries form a contiguous prefix: collect_frame requires the
-            # predecessor before publication. Binary search avoids rereading
-            # every past frame on every minute (quadratic object-store I/O).
+            # Aliases locate the contiguous prefix without downloading a full
+            # two-arm state at each binary-search probe. Verify the boundary
+            # receipt before using it; collect_frame and close still verify
+            # every state they consume before any NAV accounting.
+            locate = getattr(objects, 'lookup_delivery_address', objects.lookup_delivery)
             low, high = 0, len(packet['schedule'])
             while low < high:
                 middle = (low + high) // 2
-                old = objects.lookup_delivery(digest(frame_identity(snapshot_id, packet['schedule'][middle])))
+                old = locate(digest(frame_identity(snapshot_id, packet['schedule'][middle])))
                 if old is None:
                     high = middle
                 else:
                     low = middle + 1
             completed, capture = low, None
+            if completed:
+                boundary = objects.lookup_delivery(digest(frame_identity(snapshot_id, packet['schedule'][completed - 1])))
+                if boundary is None:
+                    raise ValueError('paired_native_previous_frame_missing')
             if completed and _timestamp(packet['schedule'][completed - 1]['observed_at']) > clock():
                 raise ValueError('paired_native_future_frame_receipt')
             for index in range(completed, len(packet['schedule'])):
@@ -228,7 +234,7 @@ def read_worker_context(*, transport=None, clock=None):
 
 def register_candidate_execution_plans(*, collection: dict, query, writer, objects=None,
                                      domain_queries=None, kv_read=None, context_reader=None,
-                                     runner=None, clock=None) -> dict:
+                                     runner=None, clock=None, bootstrap_cache=None) -> dict:
     plans = collection.get('plans', [])
     if not plans:
         return {'status': 'no_allocation_pairs', 'registrations': [], 'production_effect': False}
@@ -292,7 +298,8 @@ def register_candidate_execution_plans(*, collection: dict, query, writer, objec
                         raise ValueError('native_registration_live_submission_enabled')
                 registered.append(_register_with_visible_budget(snapshot_id=plan['snapshot_id'], query=query, writer=writer,
                     domain_queries=domain_queries, kv_read=kv_read, objects=objects, account_id=1,
-                    variables=variables, kv_read_policy=KV_READ_POLICY, runner=runner, now=clock(), source_context=context))
+                    variables=variables, kv_read_policy=KV_READ_POLICY, runner=runner, now=clock(),
+                    source_context=context, bootstrap_cache=bootstrap_cache))
             del parent, parent_content
     # A resumed batch may discover existing registrations before pending ones.
     # Keep the original plan order on both paths so receipts are retry-stable.

@@ -46,10 +46,16 @@ def collect_frame(*, snapshot_id: str, frame_index: int, objects, query, capture
         raise ValueError('paired_native_expired_frame_without_receipt')
     previous_key = None
     if frame_index:
-        previous_key = objects.lookup_delivery(digest(frame_identity(snapshot_id, schedule[frame_index - 1])))
-        if previous_key is None:
+        previous_id = digest(frame_identity(snapshot_id, schedule[frame_index - 1]))
+        if hasattr(objects, 'verified_delivery_record'):
+            previous = objects.verified_delivery_record(previous_id)
+        else:
+            previous_key = objects.lookup_delivery(previous_id)
+            previous = (previous_key, objects.get(previous_key)) if previous_key is not None else None
+        if previous is None:
             raise ValueError('paired_native_previous_frame_missing')
-        states = objects.get(previous_key)['states']
+        previous_key, record = previous
+        states = record['states']
     else:
         states = {arm: objects.get(packet['initial_state_objects'][arm]) for arm in ARMS}
         if any(states[arm]['state_checksum'] != packet['initial_state_checksums'][arm] for arm in ARMS):
@@ -81,7 +87,9 @@ def collect_frame(*, snapshot_id: str, frame_index: int, objects, query, capture
     # First writer wins, but differing state is an error, not a silent overwrite.
     if authoritative_key != key:
         raise RuntimeError('paired_native_concurrent_frame_conflict')
-    return objects.get(authoritative_key)
+    # put verified the immutable bytes and publish verified the alias. Avoid a
+    # fourth full-state download inside this frame's one-minute source window.
+    return result
 
 
 def close_collected_session(*, snapshot_id: str, objects, query, writer, source_receipt: dict,

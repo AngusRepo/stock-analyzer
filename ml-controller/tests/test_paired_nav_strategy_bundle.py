@@ -243,3 +243,10 @@ def test_capture_freezes_canonical_risk_for_candidate_own_holdings(monkeypatch):
     assert {p['symbol'] for p in context['canonical_risk_payloads']}=={'POOL','HELD'}
     assert [p['symbol'] for p in payloads]==['POOL']
     assert replay_allocator_return_history(context,payloads=payloads,signal_date=day)==context['return_history']
+    monkeypatch.setattr(prices, 'load_canonical_risk_payloads',
+        lambda **kw: pytest.fail('identical formal risk context must not be fetched twice'))
+    reused = strategy.capture_strategy_context(
+        selection={'candidates':[{'artifact':{'payload_checksum':'a'*64},'strategy_bundle':{'bound':True}}]},
+        recommendation_context={'inputs':{'payloads':payloads}},signal_date=day,
+        query=None,writer=None,formal_risk_context=context)
+    assert reused['strategy_bundle_risk_context'] == context

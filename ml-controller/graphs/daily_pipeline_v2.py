@@ -2448,11 +2448,13 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             candidate_recs = {k: d['screener_recs'] for k, d in atomic_prepared['definitions'].items() if d['status'] == 'ready'}
         except Exception as exc:
             atomic_recommendation = shadow_failure('atomic_recommendation_inputs', exc)
+    source_phase_started = time.perf_counter()
     recommendation_sources = await asyncio.to_thread(capture_recommendation_sources,
         run_date=state['run_date'], formal_recs=screener_recs, candidate_recs=candidate_recs,
         knowledge_cutoff=decision_cutoff, query=MARKET_D1_CLIENT.query,
         core_query=CORE_D1_CLIENT.query,
         saved=state.get('pipeline_recommendation_source_context'))
+    logger.info('[Pipeline V2] recommend_sources seconds=%.3f', time.perf_counter() - source_phase_started)
     sector_experts = recommendation_sources['formal']['pit_sector_alpha_by_symbol']
     sector_load_error = recommendation_sources['formal']['sector_load_error']
     sector_loaded = sum(
@@ -2486,6 +2488,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     from services.paired_nav_l3_candidate import load_candidate_ensembles
     from services.paired_nav_l3_dispatch import capture_candidate_selection
     from services.pipeline_modal_handoff import prediction_source_state
+    path_phase_started = time.perf_counter()
     recommendation_result, recommendation_context = run_and_capture_recommendation_path(
         inputs={
             "screener_recs": screener_recs, "predictions": state["predictions"],
@@ -2510,6 +2513,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
                 manifest=_pipeline_frozen_serving_manifest(state), signal_date=state['run_date'],
                 decision_cutoff=decision_cutoff, query=LEARNING_D1_CLIENT.query)),
     )
+    logger.info('[Pipeline V2] recommend_path seconds=%.3f', time.perf_counter() - path_phase_started)
     if atomic_prepared is not None:
         try:
             from services.paired_nav_atomic_recommendation import run_atomic_recommendations
@@ -2553,6 +2557,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
                                               "screenerDenominator": 60.0, "promoteMinConf": 0.60})
     ev2_cfg = trading_cfg.get("ensemble_v2", {}) or {}
     distribution_policy = trading_cfg.get('l4Distribution')
+    l4_phase_started = time.perf_counter()
     if distribution_policy is not None:
         from services.l4_distribution_context import prepare_runtime_policy
         alpha_policy = dict(alpha_policy or {})
@@ -2577,10 +2582,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             or 'canonical_risk_payloads' not in allocator_history):
         raise ValueError('l4_risk_dated_history_required')
     return_history = allocator_history['return_history']
+    logger.info('[Pipeline V2] recommend_l4_context seconds=%.3f', time.perf_counter() - l4_phase_started)
 
     from services.paired_nav_collection import run_and_capture_allocation
     from services.paired_nav_execution_environment import capture_pipeline_execution_environment
     paired_nav_source_run_id = str(state.get("producer_run_id") or f"daily:{state['run_date']}")
+    allocation_phase_started = time.perf_counter()
     # Read the independent risk owner, never infer it from trading:config.
     # Missing risk config is recorded as missing, not filled with current defaults.
     final, paired_nav_collection = await asyncio.to_thread(run_and_capture_allocation,
@@ -2609,6 +2616,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         writer=LEARNING_D1_CLIENT.batch_execute,
         run_allocation=apply_sparse_tangent_allocation,
     )
+    logger.info('[Pipeline V2] recommend_allocation_and_seal seconds=%.3f',
+        time.perf_counter() - allocation_phase_started)
     if distribution_policy is not None:
         _require_frozen_allocation_context(paired_nav_collection)
     if distribution_policy is not None:

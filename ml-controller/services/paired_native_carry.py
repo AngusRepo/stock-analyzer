@@ -8,7 +8,7 @@ from services.paired_nav_journal import digest, read_snapshot, _timestamp
 ARMS = ('baseline', 'candidate')
 
 
-def read_native_carry(*, pair_id, signal_date, query, objects, now=None):
+def read_native_carry(*, pair_id, signal_date, query, objects, now=None, holdings_only=False):
     rows = query('SELECT session_date,snapshot_id,payload_json,payload_checksum FROM paired_nav_daily_journal_v1 '
                  'WHERE pair_id=? ORDER BY session_date DESC LIMIT 1', [pair_id])
     if not rows:
@@ -35,6 +35,23 @@ def read_native_carry(*, pair_id, signal_date, query, objects, now=None):
             or any(execution.get(k) != registration.get(k) for k in journal['pair_identity'])
             or journal['pair_identity'] != {k: registration.get(k) for k in journal['pair_identity']}):
         raise ValueError('paired_native_carry_receipt_corrupt')
+    reference = {'pair_id': pair_id, 'session_date': signal_date,
+        'execution_snapshot_id': row['snapshot_id'], 'receipt_snapshot_id': receipt_id,
+        'journal_checksum': row['payload_checksum'],
+        'native_state_objects': execution['native_state_objects'],
+        'native_state_checksums': execution['native_state_checksums']}
+    holdings = execution.get('native_holding_symbols_v1')
+    if holdings_only and holdings is not None:
+        if (set(holdings) != set(ARMS)
+                or set(execution['native_state_objects']) != set(ARMS)
+                or set(execution['native_state_checksums']) != set(ARMS)
+                or any(not isinstance(holdings[arm], list)
+                    or any(not isinstance(symbol, str) or not symbol.strip()
+                        or symbol != symbol.strip() for symbol in holdings[arm])
+                    or holdings[arm] != sorted(set(holdings[arm]))
+                    for arm in ARMS)):
+            raise ValueError('paired_native_carry_holdings_projection_invalid')
+        return {'registration': registration, 'holdings': holdings, 'reference': reference}
     states = {arm: objects.get(execution['native_state_objects'][arm]) for arm in ARMS}
     for arm in ARMS:
         if states[arm]['state_checksum'] != execution['native_state_checksums'][arm]:
@@ -42,9 +59,4 @@ def read_native_carry(*, pair_id, signal_date, query, objects, now=None):
         # Validate actual SQL bytes, not only a matching checksum field.
         store = PrivatePaperStore(**states[arm], inputs={})
         store.db.close()
-    return {'registration': registration, 'states': states,
-        'reference': {'pair_id': pair_id, 'session_date': signal_date,
-            'execution_snapshot_id': row['snapshot_id'], 'receipt_snapshot_id': receipt_id,
-            'journal_checksum': row['payload_checksum'],
-            'native_state_objects': execution['native_state_objects'],
-            'native_state_checksums': execution['native_state_checksums']}}
+    return {'registration': registration, 'states': states, 'reference': reference}

@@ -200,13 +200,14 @@ def publication_configuration(configuration, *, signal_date):
     return result
 
 
-def capture_strategy_context(*, selection, recommendation_context, signal_date, query, writer):
+def capture_strategy_context(*, selection, recommendation_context, signal_date, query, writer,
+                             formal_risk_context=None):
     """Freeze canonical risk for today's pool PLUS each private account's holdings."""
     from services.l4_distribution_context import worker_request
     from services.paired_nav_native_holdings import capture_native_holdings
     from services.l4_risk_history import load_held_risk_payloads,load_canonical_risk_payloads
     from services.recommendation_service import gnn_return_history_lookback
-    from services.paired_nav_collection import capture_allocator_return_history
+    from services.paired_nav_collection import capture_allocator_return_history, replay_allocator_return_history
     from services.paired_nav_journal import _timestamp
     from datetime import datetime,timezone,timedelta
     start=datetime.now(timezone.utc)
@@ -226,8 +227,20 @@ def capture_strategy_context(*, selection, recommendation_context, signal_date, 
     lookback=gnn_return_history_lookback()
     held=load_held_risk_payloads(holdings=[{'symbol':s} for s in sorted(symbols)],
         payloads=payloads,signal_date=signal_date,lookback=lookback)
-    canonical=load_canonical_risk_payloads(payloads=payloads,held_payloads=held,signal_date=signal_date,lookback=lookback)
-    risk=capture_allocator_return_history(payloads=payloads,signal_date=signal_date,
-        held_payloads=held,canonical_risk_payloads=canonical)
+    # The formal allocator already sealed and replay-verified this complete
+    # dated risk read. Reuse it only when the private holding population is
+    # identical; otherwise capture the candidate's additional symbols.
+    if (formal_risk_context is not None
+            and formal_risk_context.get('schema_version') == 'allocator-return-history-context-v3'
+            and formal_risk_context.get('signal_date') == signal_date
+            and formal_risk_context.get('payload_checksum') == digest(payloads)
+            and formal_risk_context.get('held_payloads') == held
+            and formal_risk_context.get('canonical_risk_payloads') is not None):
+        replay_allocator_return_history(formal_risk_context, payloads=payloads, signal_date=signal_date)
+        risk = formal_risk_context
+    else:
+        canonical=load_canonical_risk_payloads(payloads=payloads,held_payloads=held,signal_date=signal_date,lookback=lookback)
+        risk=capture_allocator_return_history(payloads=payloads,signal_date=signal_date,
+            held_payloads=held,canonical_risk_payloads=canonical)
     return {'strategy_bundle_account':account,'strategy_bundle_native_holdings':holdings,
         'strategy_bundle_risk_context':risk}

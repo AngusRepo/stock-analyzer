@@ -92,10 +92,14 @@ def capture_native_holdings(*, signal_date, definition_checksums, query, writer,
                 if objects is None:
                     from services.paper_corporate_source import production_objects
                     objects = production_objects()
-                carry = read_native_carry(pair_id=packet['pair_id'], signal_date=signal_date, query=query, objects=objects, now=clock)
+                carry = read_native_carry(pair_id=packet['pair_id'], signal_date=signal_date,
+                    query=query, objects=objects, now=clock, holdings_only=True)
                 if carry is None or carry['reference']['execution_snapshot_id'] != entry['execution']['manifest']['snapshot_id']:
                     raise ValueError('paired_native_holdings_registration_changed')
                 for arm in ARMS:
+                    if 'holdings' in carry:
+                        arms[arm].update(carry['holdings'][arm])
+                        continue
                     store = PrivatePaperStore(**carry['states'][arm], inputs={})
                     try:
                         rows = _account_rows(lambda sql, args: [dict(r) for r in store.db.execute(sql, args)], account_id)

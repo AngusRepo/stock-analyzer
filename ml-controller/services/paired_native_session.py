@@ -241,6 +241,13 @@ def run_paired_session(*, snapshot_id: str, tapes: dict[str, Any], states: dict[
         'marks': marks, 'arms': receipts, 'source_checksum': digest(source),
         'native_state_checksums': {arm: outputs[arm]['state_checksum'] for arm in ARMS},
         'native_input_checksums': {arm: outputs[arm]['input_checksum'] for arm in ARMS}})
+    # The close replay already reconciled these holdings against the native
+    # account. Seal a compact projection so tomorrow's inference need not
+    # restore two full private histories merely to list held symbols.
+    receipt['native_holding_symbols_v1'] = {arm: sorted(
+        {symbol for symbol, shares in valuations[arm]['positions'].items() if shares > 0}
+        | {row['symbol'] for row in valuations[arm].get('corporate_receivables', [])
+           if row['shares_due'] > 0}) for arm in ARMS}
     # Persist BOTH carry states before acknowledging the session receipt. An
     # interrupted upload must never leave a mature day with missing next state.
     if state_objects is not None:

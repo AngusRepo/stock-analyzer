@@ -7,8 +7,10 @@ an old frame. No orders, training, or production configuration writes exist here
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import base64
 import json
 from typing import Any
+import zlib
 
 from services.paired_nav_journal import _timestamp, digest, encode
 from services.native_paper_sandbox import _TOKENS, clock_sql
@@ -21,34 +23,91 @@ class ImmutableNativeObjects:
 
     def __init__(self, bucket):
         self.bucket = bucket
+        # Keys only; never retain a two-arm state in the process cache.
+        self._verified_delivery_ids: dict[str, str] = {}
+
+    @staticmethod
+    def _pack_state(state: dict) -> dict:
+        sql = state.get('state_sql')
+        if not isinstance(sql, str) or len(sql) < 64 * 1024:
+            return state
+        raw = sql.encode('utf-8')
+        zipped = zlib.compress(raw, level=1)
+        if 4 * ((len(zipped) + 2) // 3) >= len(raw):
+            return state
+        return {**{key: value for key, value in state.items() if key != 'state_sql'},
+                'state_sql_zlib_base64_v1': base64.b64encode(zipped).decode('ascii')}
+
+    @staticmethod
+    def _unpack_state(state: dict) -> dict:
+        packed = state.get('state_sql_zlib_base64_v1')
+        if packed is None:
+            return state
+        if 'state_sql' in state or not isinstance(packed, str):
+            raise ValueError('native_source_object_state_encoding_invalid')
+        try:
+            sql = zlib.decompress(base64.b64decode(packed, validate=True)).decode('utf-8')
+        except (ValueError, zlib.error, UnicodeDecodeError) as exc:
+            raise ValueError('native_source_object_state_encoding_invalid') from exc
+        return {**{key: value for key, value in state.items() if key != 'state_sql_zlib_base64_v1'},
+                'state_sql': sql}
+
+    @classmethod
+    def _stored(cls, payload: dict) -> dict:
+        if 'state_sql' in payload:
+            return cls._pack_state(payload)
+        if isinstance(payload.get('states'), dict):
+            return {**payload, 'states': {arm: cls._pack_state(state)
+                for arm, state in payload['states'].items()}}
+        return payload
+
+    @classmethod
+    def _logical(cls, stored: dict) -> dict:
+        if 'state_sql_zlib_base64_v1' in stored:
+            return cls._unpack_state(stored)
+        if isinstance(stored.get('states'), dict):
+            return {**stored, 'states': {arm: cls._unpack_state(state)
+                for arm, state in stored['states'].items()}}
+        return stored
 
     def put(self, payload: dict) -> str:
         key = self.PREFIX + digest(payload) + '.json'
         blob = self.bucket.blob(key)
-        raw = encode(payload)
+        raw = encode(self._stored(payload))
+        verified_existing = False
         try:
             blob.upload_from_string(raw, content_type='application/json', if_generation_match=0)
         except Exception:
             # Successful write + lost acknowledgement and competing identical
-            # writers are equivalent only after exact content is read back.
-            if blob.download_as_text() != raw:
+            # writers are equivalent only after the original logical payload
+            # is read back, including legacy uncompressed objects.
+            if self.get(key) != payload:
                 raise
-        if blob.download_as_text() != raw:
+            verified_existing = True
+        if not verified_existing and blob.download_as_text() != raw:
             raise RuntimeError('native_source_object_readback_mismatch')
+        if isinstance(payload.get('identity'), dict):
+            self._verified_delivery_ids[key] = digest(payload['identity'])
         return key
 
     def get(self, key: str) -> dict:
-        if not key.startswith(self.PREFIX) or len(key) != len(self.PREFIX) + 69:
-            raise ValueError('native_source_object_key_invalid')
-        expected = key[len(self.PREFIX):-5]
-        if any(char not in '0123456789abcdef' for char in expected):
-            raise ValueError('native_source_object_key_invalid')
-        result = json.loads(self.bucket.blob(key).download_as_text())
+        expected = self._object_digest(key)
+        result = self._logical(json.loads(self.bucket.blob(key).download_as_text()))
         if digest(result) != expected:
             raise ValueError('native_source_object_checksum_mismatch')
         return result
 
-    def lookup_delivery(self, delivery_id: str) -> str | None:
+    @classmethod
+    def _object_digest(cls, key: str) -> str:
+        if not isinstance(key, str) or not key.startswith(cls.PREFIX) or len(key) != len(cls.PREFIX) + 69:
+            raise ValueError('native_source_object_key_invalid')
+        expected = key[len(cls.PREFIX):-5]
+        if any(char not in '0123456789abcdef' for char in expected):
+            raise ValueError('native_source_object_key_invalid')
+        return expected
+
+    def lookup_delivery_address(self, delivery_id: str) -> str | None:
+        """Read only the immutable alias for prefix search; this is not a receipt."""
         from google.api_core.exceptions import NotFound
         if len(delivery_id) != 64 or any(c not in '0123456789abcdef' for c in delivery_id):
             raise ValueError('native_source_delivery_id_invalid')
@@ -57,14 +116,38 @@ class ImmutableNativeObjects:
             value = json.loads(blob.download_as_text())
         except NotFound:
             return None
-        record = self.get(value['object_key'])
+        key = value['object_key']
+        self._object_digest(key)
+        return key
+
+    def lookup_delivery(self, delivery_id: str) -> str | None:
+        key = self.lookup_delivery_address(delivery_id)
+        if key is None:
+            return None
+        identity = self._verified_delivery_ids.get(key)
+        if identity is None:
+            record = self.get(key)
+            identity = digest(record['identity'])
+        if identity != delivery_id:
+            raise ValueError('native_source_delivery_identity_mismatch')
+        return key
+
+    def verified_delivery_record(self, delivery_id: str) -> tuple[str, dict] | None:
+        """Return one verified predecessor without downloading it twice."""
+        key = self.lookup_delivery_address(delivery_id)
+        if key is None:
+            return None
+        record = self.get(key)
         if digest(record['identity']) != delivery_id:
             raise ValueError('native_source_delivery_identity_mismatch')
-        return value['object_key']
+        return key, record
 
     def publish_delivery(self, delivery_id: str, object_key: str) -> str:
-        record = self.get(object_key)
-        if digest(record['identity']) != delivery_id:
+        identity = self._verified_delivery_ids.get(object_key)
+        if identity is None:
+            record = self.get(object_key)
+            identity = digest(record['identity'])
+        if identity != delivery_id:
             raise ValueError('native_source_delivery_identity_mismatch')
         blob = self.bucket.blob(self.DELIVERY_PREFIX + delivery_id + '.json')
         try:

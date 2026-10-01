@@ -156,6 +156,7 @@ def _register_owner_groups(candidates, *, signal_date, query, writer):
     from services.paired_nav_lifecycle import close_changed_comparisons
     failures, registrations, transitions = {}, [], []
     plans = candidates['plans']
+    bootstrap_cache = {}
     if (len({p['snapshot_id'] for p in plans}) != len(plans)
             or len({p['pair_id'] for p in plans}) != len(plans)):
         raise ValueError('paired_nav_duplicate_allocation_plans')
@@ -164,7 +165,8 @@ def _register_owner_groups(candidates, *, signal_date, query, writer):
         stage = 'native_registration'
         try:
             group = {**candidates, 'plans': [plan]}
-            native = register_candidate_execution_plans(collection=group, query=query, writer=writer)
+            native = register_candidate_execution_plans(collection=group, query=query, writer=writer,
+                bootstrap_cache=bootstrap_cache)
             _verify_registrations(group, native, signal_date=signal_date, query=query)
             # Preserve verified registrations even if lifecycle commit needs retry.
             registrations.extend(native['registrations'])

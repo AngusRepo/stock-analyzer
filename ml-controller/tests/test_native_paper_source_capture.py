@@ -6,6 +6,7 @@ import pytest
 
 from services.native_paper_sandbox import PrivatePaperStore, run_native_paper_frames
 from services.native_paper_source_capture import NativeSourceCapture, ImmutableNativeObjects, read_only_sql
+from services.paired_nav_journal import digest, encode
 from test_native_paper_sandbox import checksum, frame, native_runner, snapshot_state, snapshot_input
 
 
@@ -98,6 +99,41 @@ def test_new_process_reuses_persisted_first_delivery_without_requery():
     restarted = NativeSourceCapture(objects=ImmutableNativeObjects(bucket),
         clock=lambda: datetime(2026, 9, 8, tzinfo=timezone.utc), domain_queries={'market': forbidden})
     assert restarted.read('source_sql', request, frame()) == record
+
+
+def test_large_native_states_are_compact_and_legacy_objects_remain_readable():
+    bucket = Bucket()
+    objects = ImmutableNativeObjects(bucket)
+    state = {'state_sql': "INSERT INTO events VALUES(1,'audit');\n" * 4000,
+             'state_checksum': 'sealed-state-checksum'}
+    payload = {'identity': {'frame': 1}, 'states': {'baseline': state, 'candidate': state}}
+    key = objects.put(payload)
+    stored = bucket.objects[key]
+    assert len(stored) < len(json.dumps(payload)) // 10
+    assert 'state_sql_zlib_base64_v1' in stored and '"state_sql"' not in stored
+    assert ImmutableNativeObjects(bucket).get(key) == payload
+    delivery_id = digest(payload['identity'])
+    assert objects.publish_delivery(delivery_id, key) == key
+    assert ImmutableNativeObjects(bucket).lookup_delivery(delivery_id) == key
+    assert ImmutableNativeObjects(bucket).verified_delivery_record(delivery_id) == (key, payload)
+    legacy = {'identity': {'frame': 2}, 'states': {'baseline': {'state_sql': 'SELECT 1;'}}}
+    legacy_key = objects.PREFIX + digest(legacy) + '.json'
+    bucket.objects[legacy_key] = encode(legacy)
+    assert ImmutableNativeObjects(bucket).get(legacy_key) == legacy
+
+
+def test_delivery_address_is_not_a_verified_receipt():
+    bucket = Bucket()
+    objects = ImmutableNativeObjects(bucket)
+    identity = {'frame': 3}
+    delivery_id = digest(identity)
+    key = objects.put({'identity': identity, 'state_sql': 'SELECT 1;'})
+    objects.publish_delivery(delivery_id, key)
+    bucket.objects[key] = encode({'identity': identity, 'state_sql': 'SELECT 2;'})
+    restarted = ImmutableNativeObjects(bucket)
+    assert restarted.lookup_delivery_address(delivery_id) == key
+    with pytest.raises(ValueError, match='checksum_mismatch'):
+        restarted.lookup_delivery(delivery_id)
 
 
 def test_morning_long_inference_uses_real_observed_clock_not_scheduled_time():

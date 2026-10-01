@@ -99,6 +99,42 @@ def test_registration_freezes_original_serializer_states_and_retry_does_not_read
         source.close()
 
 
+def test_sibling_registrations_share_one_twice_verified_bootstrap(native_runner, monkeypatch):
+    from services import paired_native_registration as registration
+    source, query_source = source_fixture()
+    db = DB()
+    try:
+        config = {'trading_config': {'fees': {'commission': .001425, 'minCommission': 20,
+                   'tax': .003, 'dayTradeTax': .0015}}, 'risk_config': {'system': {'killSwitch': True}}}
+        recommendations = state_fixture()['recommendations']
+        packet = {'pair_id': 'sibling-one', 'owner': 'l4_alpha_ev', 'candidate_checksum': 'c' * 64,
+            'baseline_checksum': 'b' * 64, 'configuration': config, 'configuration_checksum': digest(config),
+            'baseline': {'recommendations': recommendations}, 'candidate': {'recommendations': recommendations}}
+        freeze_model_context(db, packet)
+        original = registration.capture_native_bootstrap
+        captures = []
+        def counted(**kwargs):
+            captures.append(kwargs['signal_date'])
+            return original(**kwargs)
+        monkeypatch.setattr(registration, 'capture_native_bootstrap', counted)
+        owners = native_runtime_manifest(native_runner)['tables']
+        cache, checksums = {}, []
+        for name in ('sibling-one', 'sibling-two'):
+            allocation = {**packet, 'pair_id': name}
+            seal = freeze_snapshot(signal_date='2026-09-07', source_run_id=name,
+                snapshot_kind='allocation_pair', content=allocation, query=db.query, writer=db.writer, now=NOW)
+            result = register_allocation_pair(snapshot_id=seal['snapshot_id'], query=db.query, writer=db.writer,
+                domain_queries={domain: query_source for domain in set(owners.values())}, kv_read=calendar,
+                objects=ImmutableNativeObjects(Bucket()), account_id=1, variables={},
+                kv_read_policy={'source': ['holiday:'], 'private': ['paper:']}, runner=native_runner,
+                now=NOW, bootstrap_cache=cache)
+            checksums.append(read_snapshot(db.query, result['snapshot_id'])['payload']['content']['initial_state_checksums'])
+        assert captures == ['2026-09-07']
+        assert checksums[0] == checksums[1]
+    finally:
+        source.close()
+
+
 @pytest.mark.parametrize('prior_status', ['nightly', 'receipt_only', 'missing_receipt', 'unrelated_failed'])
 def test_next_day_registration_carries_both_verified_native_accounts_not_formal_cash(native_runner, prior_status):
     source, query_source = source_fixture()

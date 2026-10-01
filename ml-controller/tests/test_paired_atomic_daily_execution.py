@@ -33,8 +33,8 @@ def isolated_execution_environment(monkeypatch):
         return value
     monkeypatch.setattr(fixture, 'environment_packet', packet)
     from services import native_paper_debate
-    monkeypatch.setattr(native_paper_debate.NativeGeminiRead, '__call__', lambda self, request:
-        {'text': 'VERDICT: APPROVE | CONVICTION: 85\nSynthetic fixture.', 'source': 'gemini_api', 'usage': []})
+    monkeypatch.setattr(native_paper_debate.NativeWorkersAIRead, '__call__', lambda self, request:
+        {'text': 'VERDICT: APPROVE | CONVICTION: 85\nSynthetic fixture.', 'source': 'workers_ai', 'usage': []})
 
 
 @pytest.mark.parametrize('full_atomic', ['native_policy_execution','native_policy_holdings'], indirect=True)
@@ -158,6 +158,7 @@ def test_daily_atomic_original_complete_session_and_ledger(allocated, native_run
         assert tick['pairs'][0]['accounting_status']=='materialized'
         assert read_snapshot(db.query,tick['pairs'][0]['receipt_snapshot_id'])==original_receipt
         execution = read_snapshot(db.query,tick['pairs'][0]['receipt_snapshot_id'])['payload']['content']
+        assert execution['native_holding_symbols_v1'] == {'baseline': [], 'candidate': []}
         for arm in ('baseline','candidate'):
             fills = execution['arms'][arm]['fills']
             assert sum(f['shares'] for f in fills if f['side']=='sell' and f['symbol']==held_symbol)==100
@@ -181,6 +182,11 @@ def test_daily_atomic_original_complete_session_and_ledger(allocated, native_run
         from services.paired_native_carry import read_native_carry
         observed = capture_native_holdings(signal_date='2026-09-07',definition_checksums=[key],
             query=db.query,writer=db.writer,objects=objects,paper_query=query,now=now)
+        class NoFullStateRead:
+            def get(self, key):
+                pytest.fail('sealed holdings must not reload either full native state')
+        assert capture_native_holdings(signal_date='2026-09-07',definition_checksums=[key],
+            query=db.query,writer=db.writer,objects=NoFullStateRead(),paper_query=query,now=now)['definitions'][key] == observed['definitions'][key]
         own = observed['definitions'][key]
         assert own['status']=='ready' and own['source_kind']=='verified_native_carry'
         assert own['arms']=={'baseline':[],'candidate':[]}  # Actual private exit, formal fixture still holds.

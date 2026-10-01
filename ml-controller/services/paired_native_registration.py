@@ -86,7 +86,8 @@ def next_session(signal_date: str, *, kv_read, now: datetime) -> tuple[str, dict
 def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries: dict, kv_read,
                              objects, account_id: int, variables: dict, kv_read_policy: dict,
                              runner: Path | None = None, now: datetime | None = None,
-                             source_context: dict | None = None) -> dict:
+                             source_context: dict | None = None,
+                             bootstrap_cache: dict | None = None) -> dict:
     clock = now or datetime.now(timezone.utc)
     saved = read_snapshot(query, snapshot_id)
     manifest, allocation = saved['manifest'], saved['payload']['content']
@@ -149,8 +150,16 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
     from services.paired_nav_journal import materialize_staged_receipts
     materialize_staged_receipts(business_date=signal_date, pair_id=source_run_id,
         query=query, writer=writer, now=clock)
-    bootstrap = capture_native_bootstrap(domain_queries=domain_queries, ownership=runtime['tables'],
-        account_id=account_id, signal_date=signal_date, frozen_kv={})
+    # Sibling candidates compare from one twice-verified account observation.
+    # This cache lives only for the current owner group; failed captures are
+    # never cached and retries still run the original source checks.
+    bootstrap_key = (account_id, signal_date, digest(runtime['tables']))
+    bootstrap = bootstrap_cache.get(bootstrap_key) if bootstrap_cache is not None else None
+    if bootstrap is None:
+        bootstrap = capture_native_bootstrap(domain_queries=domain_queries, ownership=runtime['tables'],
+            account_id=account_id, signal_date=signal_date, frozen_kv={})
+        if bootstrap_cache is not None:
+            bootstrap_cache[bootstrap_key] = bootstrap
     from services.paired_native_carry import read_native_carry
     previous = read_native_carry(pair_id=source_run_id, signal_date=signal_date, query=query, objects=objects, now=clock)
     previous_date = None

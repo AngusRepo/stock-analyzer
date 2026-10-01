@@ -299,7 +299,8 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
                 extra.update({key:previous[key] for key in keys})
             else:
                 extra.update(capture_strategy_context(selection=selection,recommendation_context=recommendation_context,
-                    signal_date=signal_date,query=query,writer=writer))
+                    signal_date=signal_date,query=query,writer=writer,
+                    formal_risk_context=allocator_history_context))
         receipt = freeze_snapshot(signal_date=signal_date, source_run_id=source_run_id,
             snapshot_kind='allocation_context', query=query, writer=writer, content={
                 **extra,

@@ -126,7 +126,13 @@ def staged_native_tick():
     # Only the already-delivered index is stubbed at this boundary. No capture,
     # synthetic native fills, shortened schedule or OOF consumer is invoked.
     class Delivered:
+        address_reads = 0
+        verified_reads = 0
+        def lookup_delivery_address(self, key):
+            self.address_reads += 1
+            return 'already-delivered-frame'
         def lookup_delivery(self, key):
+            self.verified_reads += 1
             return 'already-delivered-frame'
     def forbidden(**kwargs):
         pytest.fail('sealed receipt must not acquire new sources')
@@ -134,6 +140,14 @@ def staged_native_tick():
         objects=Delivered(), capture_factory=forbidden, clock=lambda: now)
     yield db, value, staged, args
     db.conn.close()
+
+
+def test_tick_locates_prefix_with_aliases_and_verifies_boundary(staged_native_tick):
+    _, _, _, args = staged_native_tick
+    result = collect_due_execution_frames(**args)
+    assert result['status'] == 'ok'
+    assert args['objects'].address_reads <= 9  # log2(281) probes
+    assert args['objects'].verified_reads == 1
 
 
 def test_completed_receipt_is_accounted_by_tick_without_oof(staged_native_tick):

@@ -55,6 +55,7 @@ def _read_source_set(query, reads, columns=None):
             columns[row['table_name']].append(name)
         if any(not names for names in columns.values()):
             raise RuntimeError('active8_bundle_source_schema_missing')
+        columns = {table: sorted(names) for table, names in columns.items()}
     selects, bindings = [], []
     for table, where, params in reads:
         # Scalar json_quote concatenation avoids D1's 32-argument function cap.

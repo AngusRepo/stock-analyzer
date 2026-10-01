@@ -35,6 +35,24 @@ def state(db):
         'active8_ensemble_artifacts_v1', 'active8_ensemble_pointer_v1')}
 
 
+def test_offline_bundle_cannot_commit_without_original_nav(monkeypatch):
+    rows,pointers,ensemble=_fixture()
+    ensemble.update(knowledge_cutoff_date='2026-08-27',schema_version='active8-oof-ensemble-serving-artifact-v1',
+        validation_json=json.dumps(json.loads(ensemble['payload_json'])['validation']),archive_uri='test://offline-bundle')
+    db=SQLiteBundle()
+    for table,records in (('model_artifact_registry',rows),('model_champion_pointers',pointers),
+                          ('active8_ensemble_artifacts_v1',[ensemble])):
+        for row in records:db.insert(table,row)
+    db.conn.commit()
+    monkeypatch.setattr(registry,'d1_client',db)
+    before=state(db)
+    result=registry.run_active8_ensemble_bundle_promotion_controller(training_run_id='run-new',registry_rows=rows,
+        d1_pointers=pointers,ensemble_rows=[ensemble],confirm=True)
+    assert result['can_promote'] is False
+    assert result['decision']=='active8_new_publication_requires_daily_nav'
+    assert db.batches==0 and state(db)==before
+
+
 def test_real_sql_commit_keeps_exact_base_and_ensemble_pointer(bundle):
     db, _, _, ensemble = bundle
     result = publish(bundle)

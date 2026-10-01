@@ -49,4 +49,6 @@ AGENTS.md 要求 Wei 明確批准 commit、push、deploy。新模型使用新的
 
 ## 回滾
 
+發布時發現原 D1 batch 重複綁定大型 Paper admission：56 statements 共 26,012,703 bytes，HTTP 500，讀回確認模型 pointer 未提交。純 SELECT length 同一份 1,966,113 bytes 證據：1 份通過、11 份重現 500。修補讓第一個 pointer 綁定完整證據一次，後續 pointer/history/ensemble pointer 在同一 CAS transaction 中引用它；證據內容與回讀檢查不變。載荷降至 6,110,783 bytes；遠端 28 個原 CAS guards＋1 份證據的唯讀測試全部通過、零寫入。大型 SQLite 證據測試驗證各 pointer/history 完全相同及中途失敗全部回滾。Cloudflare 官方單列上限為 2,000,000 bytes；此次逐列均低於該值，未以拆交易方式規避限制。來源：https://developers.cloudflare.com/d1/platform/limits/；原始結果見 d1-readonly-payload-probe.json、d1-reduced-payload-probe.json、atomic-payload-diagnostic.json。
+
 cutover-packet.json 保存原配置及模型指標；current-paper-admission.json 與 current-runtime-approval.json 保存舊核准證據。若正式讀回不符，阻擋新買單，保留硬風控退出、帳戶與交易紀錄；回復先前已核准 image/config/admission，透過既有 pointer 控制恢復模型。不得刪除已發生交易，亦不得直接套回舊帳戶現金。

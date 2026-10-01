@@ -67,6 +67,29 @@ def publish(approved):
         evaluation_business_date=SESSIONS[-1],paper_admission=approval,confirm=True)
 
 
+@pytest.mark.parametrize('fail_mid_transaction',[False,True])
+def test_large_paper_receipt_bound_once_and_remains_atomic(approved,fail_mid_transaction):
+    (client,row,*_),approval=approved
+    approval['source_reference']='SYNTHETIC LARGE RECEIPT '+('x'*1_200_000)
+    approval['admission_checksum']=digest({k:v for k,v in approval.items() if k!='admission_checksum'})
+    original=client.query('SELECT * FROM active8_ensemble_pointer_v1')
+    original_models=client.query('SELECT * FROM model_champion_pointers ORDER BY model_name')
+    if fail_mid_transaction:
+        client.fail_after_writes=4
+        with pytest.raises(RuntimeError,match='injected_mid_batch_failure'):
+            publish(approved)
+        assert client.query('SELECT * FROM active8_ensemble_pointer_v1')==original
+        assert client.query('SELECT * FROM model_champion_pointers ORDER BY model_name')==original_models
+    else:
+        result=publish(approved)
+        assert result['readback_verified']
+        evidence=client.query('SELECT promotion_evidence_json FROM active8_ensemble_pointer_v1')[0]['promotion_evidence_json']
+        pointers=client.query('SELECT promotion_evidence_json FROM model_champion_pointers WHERE promotion_evidence_json=?',[evidence])
+        histories=client.query('SELECT evidence_json FROM model_champion_history WHERE retired_at IS NULL AND evidence_json=?',[evidence])
+        assert len(pointers)==len(histories)==len(result['release_models'])
+        assert sum(value==evidence for sql,params in client.statements for value in params)==1
+
+
 def test_paper_publication_has_no_nav_pass_and_reaches_original_frozen_path(approved,monkeypatch):
     (client,row,*_),approval=approved
     reviews=client.query('SELECT * FROM paired_nav_review_records_v1 ORDER BY record_id')

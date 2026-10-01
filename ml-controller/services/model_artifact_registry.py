@@ -3585,7 +3585,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         INSERT INTO model_champion_pointers (
           model_name, champion_version, champion_artifact_id, rollback_version,
           rollback_artifact_id, promoted_at, promotion_reason, promotion_evidence_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, {evidence}, CURRENT_TIMESTAMP)
         ON CONFLICT(model_name) DO UPDATE SET
           champion_version=excluded.champion_version,
           champion_artifact_id=excluded.champion_artifact_id,
@@ -3598,8 +3598,15 @@ def run_active8_ensemble_bundle_promotion_controller(
         INSERT INTO model_champion_history (
           event_id, model_name, version, artifact_id, effective_at,
           retired_at, source, evidence_grade, evidence_json
-        ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', ?)
+        ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', {evidence})
     """
+    # Bind the immutable receipt once. Later statements read that exact value
+    # from the first pointer written inside this SAME guarded transaction.
+    # Repeating a large model-bearing receipt per pointer/history can exhaust
+    # D1's request memory even when each individual row is below its size limit.
+    evidence_reference = '(SELECT promotion_evidence_json FROM model_champion_pointers WHERE model_name=?)'
+    evidence_anchor = release_models[0]
+    evidence_json = _json_dumps(evidence)
     statements: list[tuple[str, list[Any]]] = []
     for model_name in release_models:
         artifact = by_model[model_name]
@@ -3613,16 +3620,18 @@ def run_active8_ensemble_bundle_promotion_controller(
         statements.extend([
             ("UPDATE model_artifact_registry SET state='archived', promotion_decision='replaced_by_active8_bundle', updated_at=CURRENT_TIMESTAMP WHERE model_name=? AND state='production' AND artifact_id != ?", [model_name, artifact_id]),
             ("UPDATE model_artifact_registry SET state='production', promotion_decision='active8_bundle_promoted', approval_state='not_required', updated_at=CURRENT_TIMESTAMP WHERE artifact_id=? AND training_run_id=?", [artifact_id, training_run_id]),
-            (pointer_sql, [model_name, artifact.get("version"), artifact_id, rollback_version, rollback_artifact, reason, _json_dumps(evidence)]),
+            (pointer_sql.format(evidence='?' if model_name == evidence_anchor else evidence_reference),
+             [model_name, artifact.get("version"), artifact_id, rollback_version, rollback_artifact, reason,
+              evidence_json if model_name == evidence_anchor else evidence_anchor]),
             ("UPDATE model_champion_history SET retired_at=? WHERE model_name=? AND retired_at IS NULL", [promoted_at, model_name]),
-            (history_sql, [f"champion:{model_name}:{artifact.get('version')}:{training_run_id}:ensemble:{ensemble_row['payload_checksum']}", model_name, artifact.get("version"), artifact_id, promoted_at, _json_dumps(evidence)]),
+            (history_sql.format(evidence=evidence_reference), [f"champion:{model_name}:{artifact.get('version')}:{training_run_id}:ensemble:{ensemble_row['payload_checksum']}", model_name, artifact.get("version"), artifact_id, promoted_at, evidence_anchor]),
         ])
     ensemble_artifact_id = str(ensemble_row.get("artifact_id") or "")
     ensemble_pointer_sql = """
         INSERT INTO active8_ensemble_pointer_v1 (
           singleton_id, artifact_id, cohort_id, payload_checksum,
           base_artifact_set_checksum, promoted_at, promotion_reason, promotion_evidence_json
-        ) VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+        ) VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, {evidence})
         ON CONFLICT(singleton_id) DO UPDATE SET
           artifact_id=excluded.artifact_id, cohort_id=excluded.cohort_id,
           payload_checksum=excluded.payload_checksum,
@@ -3633,7 +3642,7 @@ def run_active8_ensemble_bundle_promotion_controller(
     statements.extend([
         ("UPDATE active8_ensemble_artifacts_v1 SET state='archived', production_effect=0, updated_at=CURRENT_TIMESTAMP WHERE state='production' AND artifact_id != ?", [ensemble_artifact_id]),
         ("UPDATE active8_ensemble_artifacts_v1 SET state='production', production_effect=1, updated_at=CURRENT_TIMESTAMP WHERE artifact_id=? AND training_run_id=? AND state IN ('candidate','production')", [ensemble_artifact_id, training_run_id]),
-        (ensemble_pointer_sql, [ensemble_artifact_id, ensemble_row.get("cohort_id"), ensemble_row.get("payload_checksum"), ensemble_row.get("base_artifact_set_checksum"), reason, _json_dumps(evidence)]),
+        (ensemble_pointer_sql.format(evidence=evidence_reference), [ensemble_artifact_id, ensemble_row.get("cohort_id"), ensemble_row.get("payload_checksum"), ensemble_row.get("base_artifact_set_checksum"), reason, evidence_anchor]),
     ])
     # The immutable-source and baseline guards are part of this same commit,
     # not a preflight-only check that can race another adoption.

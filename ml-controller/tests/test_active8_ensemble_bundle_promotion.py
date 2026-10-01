@@ -146,22 +146,6 @@ def test_bundle_dry_run_observes_weak_learner_but_promotes_only_selected_models(
     assert result["validation"]["decision"] == "PASS"
 
 
-def test_offline_bundle_cannot_commit_without_original_nav(monkeypatch):
-    rows, pointers, ensemble = _fixture()
-    d1 = AtomicD1(rows, ensemble)
-    monkeypatch.setattr(registry, "d1_client", d1)
-    result = registry.run_active8_ensemble_bundle_promotion_controller(
-        training_run_id="run-new",
-        registry_rows=rows,
-        d1_pointers=pointers,
-        ensemble_rows=[ensemble],
-        confirm=True,
-    )
-    assert result['can_promote'] is False
-    assert result['decision'] == 'active8_new_publication_requires_daily_nav'
-    assert d1.statements is None
-
-
 def test_serving_bundle_read_model_never_falls_back_to_legacy_pointers(monkeypatch):
     rows, _, ensemble = _fixture()
     d1 = AtomicD1(rows, ensemble)

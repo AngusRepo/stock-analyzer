@@ -21,6 +21,7 @@ interface JobDef {
   name: string
   schedule: string
   cron: string
+  timeZone?: string
   group: 'pipeline_chain' | 'intraday' | 'weekly' | 'monthly' | 'daily'
   chainIndex?: number
   legacyLogIds?: string[]
@@ -78,7 +79,8 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'us-leading', name: 'US Leading', schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
   { id: 'news-analyst', name: 'News Analyst', schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
   { id: 'morning-setup', name: 'Morning Setup / Debate', schedule: 'Mon-Fri 07:15', cron: '15 23 * * SUN-THU', group: 'daily' },
-  { id: 'morning-briefing', name: 'Morning Briefing', schedule: 'Mon-Fri 07:50', cron: '50 23 * * SUN-THU', group: 'daily' },
+  { id: 'premarket-evidence-watchdog', name: 'Premarket Evidence Recovery', schedule: 'Mon-Fri 07:00-08:50', cron: '*/10 7-8 * * 1-5', timeZone: 'Asia/Taipei', group: 'daily' },
+  { id: 'morning-briefing', name: 'Morning Briefing (paused)', schedule: 'Paused / manual only', cron: '50 23 * * SUN-THU', group: 'daily' },
   { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
   { id: 'daily-execution-paper-lineage', name: 'Daily Execution/Paper Lineage', schedule: 'Weekdays 14:35, 14:50', cron: '35,50 6 * * 1-5', group: 'daily' },
   { id: 'external-evidence', name: 'External Evidence', schedule: 'Weekdays 23:15', cron: '15 15 * * 1-5', group: 'daily' },

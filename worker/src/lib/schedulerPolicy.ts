@@ -20,6 +20,7 @@ const DEFAULT_POLICY: SchedulerTaskPolicy = {
 }
 
 export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
+  'premarket-evidence-watchdog': { kind: 'trading_day', holidayGated: true, description: 'bounded evidence recovery and pending debate continuation' },
   'intraday-check': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday execution guard' },
   'intraday-rescore': { kind: 'trading_day', holidayGated: true, description: 'market-hours intraday ML re-score' },
   'eod-exit': { kind: 'trading_day', holidayGated: true, description: 'market close exit workflow' },

@@ -57,16 +57,14 @@ async function crawlYahooNews(symbol: string, stockId: number): Promise<CrawledN
 
     const data = await res.json() as any
     for (const item of data.news ?? []) {
-      if (!item.title || !item.link) continue
+      if (!item.title || !item.link || !Number.isFinite(item.providerPublishTime) || item.providerPublishTime <= 0) continue
       const sentiment = analyzeSentiment(item.title + ' ' + (item.summary ?? ''))
       results.push({
         stockId,
         title: item.title,
         url: item.link,
         source: item.publisher ?? 'Yahoo Finance',
-        publishedAt: item.providerPublishTime
-          ? new Date(item.providerPublishTime * 1000).toISOString()
-          : new Date().toISOString(),
+        publishedAt: new Date(item.providerPublishTime * 1000).toISOString(),
         sentiment: sentiment.label,
         summary: item.summary ?? null,
       })
@@ -78,12 +76,13 @@ async function crawlYahooNews(symbol: string, stockId: number): Promise<CrawledN
 }
 
 // ─── Yahoo Finance RSS ───────────────────────────────────────────────────────
-async function crawlYahooRSS(symbol: string, stockId: number): Promise<CrawledNews[]> {
+export async function crawlYahooRSS(symbol: string, stockId: number): Promise<CrawledNews[]> {
   const results: CrawledNews[] = []
   try {
     const url = `https://finance.yahoo.com/rss/headline?s=${encodeURIComponent(symbol)}`
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) return results
 
@@ -96,7 +95,7 @@ async function crawlYahooRSS(symbol: string, stockId: number): Promise<CrawledNe
       const pubDate = item.match(/<pubDate>(.*?)<\/pubDate>/)?.[1]
       const desc    = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/)?.[1]
 
-      if (!title || !link) continue
+      if (!title || !link || !pubDate || !Number.isFinite(Date.parse(pubDate))) continue
       const safeUrl = link.trim().match(/^https?:\/\//) ? link.trim() : null
       const sentiment = analyzeSentiment(title + ' ' + (desc ?? ''))
       results.push({
@@ -104,7 +103,7 @@ async function crawlYahooRSS(symbol: string, stockId: number): Promise<CrawledNe
         title: title.trim(),
         url: safeUrl,
         source: 'Yahoo Finance RSS',
-        publishedAt: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
+        publishedAt: new Date(pubDate).toISOString(),
         sentiment: sentiment.label,
         summary: desc ? desc.replace(/<[^>]*>/g, '').trim().slice(0, 200) : null,
       })
@@ -123,6 +122,7 @@ async function crawlCnyesRSS(stockNo: string, stockId: number): Promise<CrawledN
     const url = `https://feeds.cnyes.com/market/tw/${stockNo}/news.rss`
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) return results
 
@@ -134,7 +134,7 @@ async function crawlCnyesRSS(stockNo: string, stockId: number): Promise<CrawledN
       const link    = item.match(/<link>(.*?)<\/link>/)?.[1]
       const pubDate = item.match(/<pubDate>(.*?)<\/pubDate>/)?.[1]
 
-      if (!title || !link) continue
+      if (!title || !link || !pubDate || !Number.isFinite(Date.parse(pubDate))) continue
       const safeUrl = link.trim().match(/^https?:\/\//) ? link.trim() : null
       const sentiment = analyzeSentiment(title)
       results.push({
@@ -142,7 +142,7 @@ async function crawlCnyesRSS(stockNo: string, stockId: number): Promise<CrawledN
         title: title.trim(),
         url: safeUrl,
         source: '鉅亨網',
-        publishedAt: pubDate ? new Date(pubDate).toISOString() : new Date().toISOString(),
+        publishedAt: new Date(pubDate).toISOString(),
         sentiment: sentiment.label,
         summary: null,
       })

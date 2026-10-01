@@ -1,3 +1,4 @@
+import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLease'
 import { requestL4Replan } from './l4Replan'
 import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, planIdFromWatchPoints, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
@@ -460,11 +461,10 @@ async function loadMacroContext(env: Bindings, tradeDate: string): Promise<{
 
   let newsContextStr: string | undefined
   try {
-    const { readCurrentNewsReport } = await import('./newsAnalyst')
+    const { readCurrentNewsReport, formatNewsDebateContext } = await import('./newsAnalyst')
     const newsReport = await readCurrentNewsReport(env.KV, tradeDate)
     if (newsReport) {
-      const factors = (newsReport.key_factors ?? []).slice(0, 3).join(' / ')
-      newsContextStr = `News Analyst bias=${newsReport.bias} conf=${Number(newsReport.confidence ?? 0).toFixed(2)} | ${factors}`
+      newsContextStr = formatNewsDebateContext(newsReport)
     }
   } catch (error) {
     console.warn('[PendingBuyOrchestrator] news analyst read failed:', error)
@@ -1232,9 +1232,17 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   }
 }
 
-export async function reconcilePendingBuyDebates(
+export async function reconcilePendingBuyDebates(env: Bindings, tradeDate = getTwDate()): Promise<string> {
+  const result = await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
+    taskName: 'pending-buy-debate', leaseGroup: `pending-buy-debate:${tradeDate}`, leaseSeconds: 600,
+    run: () => reconcilePendingBuyDebatesOwned(env, tradeDate),
+  })
+  return isMaintenanceLeaseBusy(result) ? `status=pending ${result.reason}` : result
+}
+
+async function reconcilePendingBuyDebatesOwned(
   env: Bindings,
-  tradeDate = getTwDate(),
+  tradeDate: string,
 ): Promise<string> {
   const snapshot = await loadPendingBuySnapshot(env, tradeDate, { allowFallbackRecent: false })
   const pendingItems = snapshot.pendingBuys.filter((item) =>
@@ -1247,6 +1255,9 @@ export async function reconcilePendingBuyDebates(
 
   const cfg = await getTradingConfig(env.KV)
   const { usContextStr, newsContextStr, taifexContextStr } = await loadMacroContext(env, tradeDate)
+  if (!newsContextStr || !usContextStr || !taifexContextStr) {
+    return persistPendingDebateFailure(env, tradeDate, snapshot, pendingItems, 'premarket_evidence_wait:news_us_or_night')
+  }
   const profileMap = await loadStockProfiles(
     databaseForDataDomain(env, 'market'),
     pendingItems.map((item) => item.symbol),

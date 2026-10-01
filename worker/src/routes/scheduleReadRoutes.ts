@@ -18,7 +18,7 @@ const schedule: ScheduleRow[] = [
   { task: 'us-leading', tw_time: '06:30', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Pre-market US leading signal readout.' },
   { task: 'news-analyst', tw_time: '06:45', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Pre-market news analyst context.' },
   { task: 'morning-setup', tw_time: '07:15', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Morning debate and pending-buy preparation.' },
-  { task: 'morning-briefing', tw_time: '07:50', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Morning briefing delivery.' },
+  { task: 'premarket-evidence-watchdog', tw_time: '07:00-08:50', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Recover evidence then continue pending debates.' },
   { task: 'pre-market-warmup', tw_time: '08:50', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Control-plane warmup before market open.' },
   { task: 'intraday-check', tw_time: '09:00-13:30', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Market-hours quote sanity and execution guard.' },
   { task: 'eod-exit', tw_time: '13:25', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Market close exit workflow.' },

@@ -106,7 +106,7 @@ const STAGES: Record<string, StageDefinition> = {
   'daily-snapshot': { id: 'daily-snapshot', label: 'Daily snapshot', icon: Database },
   'us-leading': { id: 'us-leading', label: 'US leading', icon: Activity },
   'news-analyst': { id: 'news-analyst', label: 'News analyst', icon: Microscope },
-  'morning-briefing': { id: 'morning-briefing', label: 'Morning briefing', icon: FileCheck2 },
+  'premarket-evidence-watchdog': { id: 'premarket-evidence-watchdog', label: 'Evidence recovery', icon: FileCheck2 },
   'external-evidence': { id: 'external-evidence', label: 'External evidence', icon: Layers3 },
   'artifact-reconcile': { id: 'artifact-reconcile', label: 'Artifact reconcile', icon: Archive },
   'legacy-hot-data-retirement': { id: 'legacy-hot-data-retirement', label: 'Hot-data retire', icon: Archive, optional: true },
@@ -210,12 +210,12 @@ const SCOPES: ChainScope[] = [
       {
         id: 'premarket-context',
         label: 'Pre-market context branch',
-        description: 'Evidence-only：US leading 與 news feed Morning Briefing，不是盤中 hard gate。',
+        description: 'US leading 與新聞補齊後續跑 pending 辯論；不阻擋既有持倉保護出場。',
         anchorId: 'morning-setup',
         relation: 'evidence',
         columns: [
           ['us-leading', 'news-analyst'],
-          ['morning-briefing'],
+          ['premarket-evidence-watchdog'],
         ],
       },
       {

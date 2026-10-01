@@ -135,7 +135,9 @@ export async function callLLM(
   systemPrompt: string,
   userPrompt: string,
   temperature: number = 0.4,
+  options: { maxTokens?: number; json?: boolean } = {},
 ): Promise<{ text: string; source: string }> {
+  const maxTokens = Math.min(2048, Math.max(128, options.maxTokens ?? 512))
 
   // ── Layer 1: 本地 Tunnel (Claude Opus) ──────────────────────────────────
   if (env.LOCAL_TUNNEL_URL) {
@@ -147,13 +149,14 @@ export async function callLLM(
         const res = await paperExecutionFetch(`${env.LOCAL_TUNNEL_URL}/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ system: systemPrompt, user: userPrompt, max_tokens: 512, temperature }),
+          body: JSON.stringify({ system: systemPrompt, user: userPrompt, max_tokens: maxTokens, temperature }),
           signal: AbortSignal.timeout(30000),
         })
         if (res.ok) {
           const json = await res.json() as any
           const text = json?.text ?? json?.content ?? json?.response ?? ''
-          if (text) return { text, source: 'tunnel' }
+          if (json?.stop_reason === 'max_tokens' || json?.finish_reason === 'length') throw new Error('llm_incomplete_response')
+          if (typeof text === 'string' && text) return { text, source: 'tunnel' }
         }
       }
     } catch {
@@ -172,13 +175,16 @@ export async function callLLM(
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-            generationConfig: { temperature, maxOutputTokens: 512 },
+            generationConfig: { temperature, maxOutputTokens: maxTokens, ...(options.json ? { responseMimeType: 'application/json' } : {}) },
           }),
+          signal: AbortSignal.timeout(30_000),
         }
       )
       if (res.ok) {
         const json = await res.json() as any
-        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+        const candidate = json?.candidates?.[0]
+        if (candidate?.finishReason && candidate.finishReason !== 'STOP') throw new Error('llm_incomplete_response')
+        const text = (candidate?.content?.parts ?? []).filter((p: any) => !p.thought).map((p: any) => p.text ?? '').join('')
         if (text) return { text, source: 'gemini_api' }
       }
     } catch (e) {
@@ -201,15 +207,17 @@ export async function callLLM(
         },
         body: JSON.stringify({
           model: debateModel,
-          max_tokens: 512,
+          max_tokens: maxTokens,
           temperature,
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }],
         }),
+        signal: AbortSignal.timeout(30_000),
       })
       if (res.ok) {
         const json = await res.json() as any
-        const text = json?.content?.[0]?.text ?? ''
+        if (json?.stop_reason && json.stop_reason !== 'end_turn') throw new Error('llm_incomplete_response')
+        const text = (json?.content ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text ?? '').join('')
         if (text) return { text, source: 'anthropic_api' }
       }
     } catch (e) {

@@ -34,44 +34,11 @@ type MorningEvidence = {
 }
 
 async function ensureMorningEvidence(env: Bindings, twToday: string): Promise<MorningEvidence> {
-  const notes: string[] = []
-  let usSignal = await env.KV.get(`us:leading:${twToday}`, 'json') as any
-
-  if (usSignal) {
-    notes.push('us-leading:kv')
-  } else {
-    try {
-      const { fetchAndStoreUSLeading } = await import('./usLeading')
-      usSignal = await fetchAndStoreUSLeading(env)
-      notes.push(usSignal ? 'us-leading:refreshed' : 'us-leading:missing')
-    } catch (error) {
-      notes.push(`us-leading:error:${truncate(String(error), 60)}`)
-    }
-  }
-
-  if (!usSignal) {
-    const previous = await env.KV.get(`us:leading:${getPrevDate(twToday)}`, 'json') as any
-    if (previous) {
-      usSignal = previous
-      notes.push('us-leading:previous-day')
-    }
-  }
-
-  let newsReport: any | null = null
-  try {
-    const { readCurrentNewsReport, runDailyNewsAnalysis } = await import('./newsAnalyst')
-    newsReport = await readCurrentNewsReport(env.KV, twToday)
-    if (newsReport) {
-      notes.push('news-analyst:kv')
-    } else {
-      newsReport = await runDailyNewsAnalysis(env as any)
-      notes.push(newsReport ? 'news-analyst:refreshed' : 'news-analyst:missing')
-    }
-  } catch (error) {
-    notes.push(`news-analyst:error:${truncate(String(error), 60)}`)
-  }
-
-  return { usSignal, newsReport, notes }
+  const { readCurrentNewsReport } = await import('./newsAnalyst')
+  const usSignal = await env.KV.get(`us:leading:${twToday}`, 'json')
+  const newsReport = await readCurrentNewsReport(env.KV, twToday)
+  return { usSignal, newsReport, notes: [usSignal ? 'us-leading:kv' : 'us-leading:missing',
+    newsReport ? 'news-analyst:kv' : 'news-analyst:missing', 'recovery-owner:premarket-evidence-watchdog'] }
 }
 
 export async function generateMorningBriefing(env: Bindings): Promise<string> {

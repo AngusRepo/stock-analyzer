@@ -139,10 +139,10 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     return true
   }
 
-  if (cron === '50 23 * * SUN-THU') {
-    runWithLog('morning-briefing', async () => {
-      const { generateMorningBriefing } = await import('./morningBriefing')
-      return generateMorningBriefing(env)
+  if (cron === '*/10 23 * * SUN-THU' || cron === '*/10 0 * * 1-5' || cron === '50 22 * * SUN-THU') {
+    runWithLog('premarket-evidence-watchdog', async () => {
+      const { runPremarketEvidenceWatchdog } = await import('./premarketEvidenceWatchdog')
+      return runPremarketEvidenceWatchdog(env)
     })
     return true
   }

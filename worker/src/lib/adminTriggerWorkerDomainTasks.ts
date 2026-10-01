@@ -889,6 +889,10 @@ export function buildAdminWorkerDomainTaskMap(
         throw error
       }
     },
+    'premarket-evidence-watchdog': async () => {
+      const { runPremarketEvidenceWatchdog } = await import('./premarketEvidenceWatchdog')
+      return runPremarketEvidenceWatchdog(c.env)
+    },
     'morning-briefing': async () => {
       const { generateMorningBriefing } = await import('./morningBriefing')
       return generateMorningBriefing(c.env)

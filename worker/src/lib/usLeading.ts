@@ -2,15 +2,18 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 /**
  * usLeading.ts — 美股先行指標
  *
- * 每日 08:30 TW (00:30 UTC) 抓取美股前夜收盤，寫入 D1 + KV。
+ * 每日 06:30 TW (22:30 UTC) 抓取美股前夜收盤，寫入 D1 + KV。
  * 標的：SOX, TSM(TSMC ADR), ^GSPC, DXY, HY OAS, VIX
  * 數據源：Yahoo Finance（免費）+ FRED API（HY spread，免費）
  */
 
 import type { Bindings } from '../types'
+import { runPremarketEvidenceStage } from './premarketEvidenceStage'
 
 interface USSignal {
   date: string
+  fetched_at?: string
+  source_times?: Record<string, string | null>
   sox_close: number | null; sox_return: number | null; sox_ma5: number | null
   tsm_close: number | null; tsm_return: number | null; tsm_premium: number | null
   gspc_close: number | null; gspc_return: number | null
@@ -22,7 +25,7 @@ interface USSignal {
 
 // ─── Yahoo Finance 抓取 ──────────────────────────────────────────────────────
 
-async function fetchYahooQuote(symbol: string): Promise<{ close: number; prevClose: number } | null> {
+async function fetchYahooQuote(symbol: string): Promise<{ close: number; prevClose: number; observedAt: string } | null> {
   try {
     const res = await fetch(
       `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`,
@@ -31,9 +34,10 @@ async function fetchYahooQuote(symbol: string): Promise<{ close: number; prevClo
     if (!res.ok) return null
     const json = await res.json() as any
     const closes: number[] = json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? []
-    const valid = closes.filter((c: any) => c != null && c > 0)
+    const timestamps: number[] = json?.chart?.result?.[0]?.timestamp ?? []
+    const valid = closes.map((close, i) => ({ close, time: timestamps[i] })).filter(c => Number.isFinite(c.close) && c.close > 0 && Number.isFinite(c.time))
     if (valid.length < 2) return null
-    return { close: valid[valid.length - 1], prevClose: valid[valid.length - 2] }
+    return { close: valid[valid.length - 1].close, prevClose: valid[valid.length - 2].close, observedAt: new Date(valid[valid.length - 1].time * 1000).toISOString() }
   } catch { return null }
 }
 
@@ -54,7 +58,7 @@ async function fetchYahooMA5(symbol: string): Promise<number | null> {
 
 // ─── FRED API（HY OAS 信用利差）──────────────────────────────────────────────
 
-async function fetchHYSpread(apiKey: string): Promise<{ value: number; prevValue: number } | null> {
+async function fetchHYSpread(apiKey: string): Promise<{ value: number; prevValue: number; observedAt: string } | null> {
   try {
     // BAMLH0A0HYM2 = ICE BofA US High Yield OAS
     const res = await fetch(
@@ -65,13 +69,29 @@ async function fetchHYSpread(apiKey: string): Promise<{ value: number; prevValue
     const json = await res.json() as any
     const obs = (json?.observations ?? []).filter((o: any) => o.value !== '.')
     if (obs.length < 2) return null
-    return { value: parseFloat(obs[0].value), prevValue: parseFloat(obs[1].value) }
+    return { value: parseFloat(obs[0].value), prevValue: parseFloat(obs[1].value), observedAt: obs[0].date }
   } catch { return null }
 }
 
 // ─── Main: 蒐集 + 存儲 ──────────────────────────────────────────────────────
 
+export function isReadyUSSignal(signal: any, date: string, now = Date.now()): signal is USSignal {
+  return Boolean(signal && signal.date === date && Number.isFinite(signal.gspc_close) && Number.isFinite(signal.sox_close) &&
+    Number.isFinite(signal.vix_close) && ['sox', 'gspc', 'vix'].every(key => {
+      const timestamp = Date.parse(signal.source_times?.[key] ?? '')
+      return Number.isFinite(timestamp) && timestamp <= now && now - timestamp <= 96 * 3600_000
+    }))
+}
+
 export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | null> {
+  const date = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  return runPremarketEvidenceStage(env, date, 'us-leading', async () => {
+    const cached = await env.KV.get(`us:leading:${date}`, 'json')
+    return isReadyUSSignal(cached, date) ? cached : null
+  }, assertOwner => produceUSLeading(env, assertOwner))
+}
+
+async function produceUSLeading(env: Bindings, assertOwner: () => Promise<void>): Promise<USSignal> {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) // TW date
   console.log(`[USLeading] Fetching US market signals for ${today}...`)
 
@@ -110,7 +130,8 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
   else if (bearSignals >= 2) sentiment = 'bearish'
 
   const signal: USSignal = {
-    date: today,
+    date: today, fetched_at: new Date().toISOString(),
+    source_times: { sox: sox?.observedAt ?? null, tsm: tsm?.observedAt ?? null, gspc: gspc?.observedAt ?? null, dxy: dxy?.observedAt ?? null, vix: vix?.observedAt ?? null, hy: hy?.observedAt ?? null },
     sox_close: sox?.close ?? null, sox_return: soxReturn, sox_ma5: soxMa5,
     tsm_close: tsm?.close ?? null, tsm_return: tsmReturn, tsm_premium: null,  // 需台股開盤價對比
     gspc_close: gspc?.close ?? null, gspc_return: gspcReturn,
@@ -119,6 +140,9 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
     vix_close: vix?.close ?? null,
     sentiment,
   }
+
+  if (!isReadyUSSignal(signal, today)) throw new Error('premarket_wait:us-leading_missing_or_stale')
+  await assertOwner()
 
   // 存 D1
   try {
@@ -141,6 +165,7 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
             signal.vix_close, signal.sentiment).run()
   } catch (e) { console.warn(`[USLeading] D1 write failed:`, e) }
 
+  await assertOwner()
   // 存 KV（供 Screener/Debate 快速讀取）
   await env.KV.put(`us:leading:${today}`, JSON.stringify(signal), { expirationTtl: 86400 })
 
@@ -148,7 +173,7 @@ export async function fetchAndStoreUSLeading(env: Bindings): Promise<USSignal | 
     sox ? `SOX ${soxReturn! >= 0 ? '+' : ''}${((soxReturn ?? 0) * 100).toFixed(1)}%` : null,
     gspc ? `S&P ${gspcReturn! >= 0 ? '+' : ''}${((gspcReturn ?? 0) * 100).toFixed(1)}%` : null,
     vix ? `VIX ${vix.close.toFixed(1)}` : null,
-    hy ? `HY ${hy.value.toFixed(0)}bps` : null,
+    hy ? `HY ${(hy.value * 100).toFixed(0)}bps` : null,
     `→ ${sentiment}`,
   ].filter(Boolean).join(' | ')
   console.log(`[USLeading] ${summary}`)

@@ -105,21 +105,11 @@ for (const task of ['news-analyst', 'us-leading', 'sector-leaders']) {
   assert(spec.downstream.length > 0, `${task} must declare consumers before being moved under another chain`)
 }
 
-assert(
-  morningBriefing.includes('fetchAndStoreUSLeading') &&
-    morningBriefing.includes('us-leading:refreshed'),
-  'morning briefing must be able to backfill us-leading before us-leading scheduler can be consolidated',
-)
-assert(
-  morningBriefing.includes('readCurrentNewsReport') &&
-    morningBriefing.includes('runDailyNewsAnalysis') &&
-    morningBriefing.includes('news-analyst:refreshed'),
-  'morning briefing must consume/backfill news analyst evidence before news-analyst scheduler can be consolidated',
-)
-assert(
-  morningBriefing.includes('Evidence path / 資料閉環'),
-  'morning briefing must expose evidence path so fallback/backfill is observable',
-)
+const recovery = fs.readFileSync('src/lib/premarketEvidenceWatchdog.ts', 'utf8')
+assert(recovery.includes('fetchAndStoreUSLeading') && recovery.includes('runDailyNewsAnalysis') &&
+  recovery.includes('reconcilePendingBuyDebates'), 'watchdog owns evidence recovery and pending debate continuation')
+assert(!morningBriefing.includes('runDailyNewsAnalysis') && !morningBriefing.includes('fetchAndStoreUSLeading'),
+  'manual briefing cannot own producer retries')
 
 assert(
   sectorCorrelation.includes('ensureSectorLeadersForScreener') &&

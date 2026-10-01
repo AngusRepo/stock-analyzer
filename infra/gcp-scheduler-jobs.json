@@ -95,7 +95,8 @@
     { "id": "us-leading", "schedule": "30 22 * * 0-4", "task": "us-leading", "description": "TW 06:30 US leading signal" },
     { "id": "news-analyst", "schedule": "45 22 * * 0-4", "task": "news-analyst", "description": "TW 06:45 news analyst" },
     { "id": "morning-setup", "schedule": "15 23 * * 0-4", "task": "morning-setup", "description": "TW 07:15 morning setup and debate" },
-    { "id": "morning-briefing", "schedule": "50 23 * * 0-4", "task": "morning-briefing", "description": "TW 07:50 morning briefing" },
+    { "id": "premarket-evidence-watchdog", "schedule": "*/10 7-8 * * 1-5", "timeZone": "Asia/Taipei", "attemptDeadline": "600s", "task": "premarket-evidence-watchdog", "query": "sync=1", "description": "TW 07:00-08:50 bounded evidence recovery and pending debate continuation; max 3 attempts per stage/date" },
+    { "id": "morning-briefing", "schedule": "50 23 * * 0-4", "task": "morning-briefing", "desiredState": "PAUSED", "description": "TW 07:50 morning briefing" },
     { "id": "pre-market-warmup", "schedule": "50 0 * * 1-5", "task": "pre-market-warmup", "description": "TW 08:50 control-plane drift and debate reconciliation" }
   ]
 }

@@ -59,6 +59,7 @@ const TASK_NAMES: Record<string, string> = {
   'us-leading': 'US Leading',
   'news-analyst': 'News Analyst',
   'morning-setup': 'Morning Setup',
+  'premarket-evidence-watchdog': 'Premarket Evidence Recovery',
   'morning-briefing': 'Morning Briefing',
   'daily-snapshot': 'Daily Snapshot',
   adapt: 'Adapt Params',
@@ -151,6 +152,7 @@ export function isSchedulerRunStatus(status: unknown): status is SchedulerRunSta
 
 export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus {
   const normalized = summary.trim().toLowerCase()
+  if (normalized.includes('not delivered:') || normalized.includes('not_sent:')) return 'skipped'
   if (/\bstatus=(?:failed|error)\b/.test(normalized)) return 'error'
   if (/\bstatus=skipped\b/.test(normalized)) return 'skipped'
   if (/\bstatus=(?:pending|spawned|triggered)\b/.test(normalized)) return 'triggered'

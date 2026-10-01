@@ -45,13 +45,15 @@ assert(JSON.stringify(nativeJobs.map(job => job.id).sort()) === JSON.stringify([
   'paired-native-execution-day', 'paired-native-execution-morning',
 ]), 'private native collection has exactly two UTC slots under one logical owner')
 assert(nativeJobs.every(job => job.query === 'sync=1'), 'native collector failures must reach the scheduler ticket')
-assert(schedulerManifestJobs().length - nativeJobs.length === 59, 'all 59 pre-existing physical roots must remain accounted')
-assert(manifestTasks.filter(task => task !== 'paired-native-execution').length === 52, 'existing logical inventory remains 52')
-assert(summary.physicalRoots === 61, 'summary physical root count mismatch')
-assert(summary.uniqueLogicalTasks === 53 && summary.accountedLogicalTasks === 53, 'logical task accounting must be 53/53')
-assert(summary.reviewedDependencies === 36, 'reviewed dependency baseline includes the new private native owner')
+const recoveryJobs = manifest.jobs.filter(job => job.task === 'premarket-evidence-watchdog')
+assert(recoveryJobs.length === 1 && recoveryJobs[0].timeZone === 'Asia/Taipei', 'one Taipei-time recovery scheduler replaces the briefing schedule')
+assert(schedulerManifestJobs().length - nativeJobs.length - recoveryJobs.length === 59, 'all pre-existing physical roots remain accounted')
+assert(manifestTasks.filter(task => task !== 'paired-native-execution' && task !== 'premarket-evidence-watchdog').length === 52, 'existing logical inventory remains 52')
+assert(summary.physicalRoots === 62, 'summary physical root count mismatch')
+assert(summary.uniqueLogicalTasks === 54 && summary.accountedLogicalTasks === 54, 'logical task accounting must be 54/54')
+assert(summary.reviewedDependencies === 37, 'reviewed dependency baseline includes the new private native owner')
 assert(summary.unmappedDependencies === 17 && summary.unmappedTasks.length === 17, 'unreviewed non-daily dependency debt must remain fail-visible')
-assert(summary.pausedPhysicalRoots === 3, 'exactly three manifest-owned physical roots should be paused')
+assert(summary.pausedPhysicalRoots === 4, 'exactly four manifest-owned physical roots should be paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 
 const paused = manifest.jobs.filter((job) => 'desiredState' in job && job.desiredState === 'PAUSED')
@@ -60,6 +62,7 @@ assert(
     'data-domain-shadow-backfill-execution',
     'data-domain-shadow-backfill-ops',
     'data-domain-shadow-backfill-paper',
+    'morning-briefing',
   ]),
   'production PAUSED truth must be represented in manifest',
 )

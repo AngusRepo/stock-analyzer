@@ -6,7 +6,7 @@ export interface CanonicalTradeLifecycle {
   symbol: string
   owners: {
     context: 'market_regime_alpha_context_v1'
-    entry: 's12_intraday_structure_v1' | 'ohlcv_pre_trade_plan_v1'
+    entry: 's12_intraday_structure_v1' | 'ohlcv_pre_trade_plan_v1' | 'or15_vwap_v1'
     exit: 'tw_equity_exit_fusion_v2' | 'paper_sltp_atr_trailing_v1'
     fallbackExit: 'paper_sltp_atr_trailing_v1'
   }
@@ -23,7 +23,8 @@ export interface CanonicalTradeLifecycle {
     entryPrice: number
     stopLoss: number | null
     chaseCeiling: number | null
-    source: 's12_assist_entry' | 'pre_trade_plan'
+    source: 's12_assist_entry' | 'pre_trade_plan' | 'or15_vwap_entry'
+    or15: { signalMs: number; orHigh: number; orLow: number; vwap: number } | null
     s12: {
       engineVersion: string | null
       entryState: string | null
@@ -119,8 +120,8 @@ export interface CanonicalTradeLifecycle {
     stopMultiplier: number
     tpMultiplier: number
     tp2Multiplier: number
-    tp1Source: 'tw_equity_runner_fusion_v2' | 'sltp_atr_default'
-    tp2Source: 'tw_equity_runner_fusion_v2' | 'sltp_atr_default'
+    tp1Source: 'tw_equity_runner_fusion_v2' | 'sltp_atr_default' | 'or15_selection_plan_v1'
+    tp2Source: 'tw_equity_runner_fusion_v2' | 'sltp_atr_default' | 'or15_selection_plan_v1'
     fusionPolicy: 'tw_equity_exit_fusion_v2' | null
     anchors: {
       atrTp1: number | null
@@ -211,6 +212,7 @@ export function buildCanonicalTradeLifecycle(input: {
   chaseCeiling: number | null
   s12Assessment: S12IntradayAssessment | null
   s12AssistApplied: boolean
+  or15Entry?: { signalMs: number; orHigh: number; orLow: number; vwap: number } | null
   s12ExitPrimary: boolean
   initialStop: number
   trailingStop: number
@@ -235,7 +237,7 @@ export function buildCanonicalTradeLifecycle(input: {
     symbol: input.symbol,
     owners: {
       context: 'market_regime_alpha_context_v1',
-      entry: input.s12AssistApplied ? 's12_intraday_structure_v1' : 'ohlcv_pre_trade_plan_v1',
+      entry: input.or15Entry ? 'or15_vwap_v1' : input.s12AssistApplied ? 's12_intraday_structure_v1' : 'ohlcv_pre_trade_plan_v1',
       exit: exitOwner,
       fallbackExit: 'paper_sltp_atr_trailing_v1',
     },
@@ -252,7 +254,8 @@ export function buildCanonicalTradeLifecycle(input: {
       entryPrice: input.entryPrice,
       stopLoss: input.stopLoss,
       chaseCeiling: input.chaseCeiling,
-      source: input.s12AssistApplied ? 's12_assist_entry' : 'pre_trade_plan',
+      source: input.or15Entry ? 'or15_vwap_entry' : input.s12AssistApplied ? 's12_assist_entry' : 'pre_trade_plan',
+      or15: input.or15Entry ?? null,
       s12: s12
         ? {
           engineVersion: s12.engineVersion ?? null,
@@ -337,8 +340,8 @@ export function buildCanonicalTradeLifecycle(input: {
       stopMultiplier: input.stopMultiplier,
       tpMultiplier: input.tpMultiplier,
       tp2Multiplier: input.tp2Multiplier,
-      tp1Source: input.s12ExitPrimary ? 'tw_equity_runner_fusion_v2' : 'sltp_atr_default',
-      tp2Source: input.s12ExitPrimary ? 'tw_equity_runner_fusion_v2' : 'sltp_atr_default',
+      tp1Source: input.or15Entry ? 'or15_selection_plan_v1' : input.s12ExitPrimary ? 'tw_equity_runner_fusion_v2' : 'sltp_atr_default',
+      tp2Source: input.or15Entry ? 'or15_selection_plan_v1' : input.s12ExitPrimary ? 'tw_equity_runner_fusion_v2' : 'sltp_atr_default',
       fusionPolicy: input.s12ExitPrimary ? 'tw_equity_exit_fusion_v2' : null,
       anchors: {
         atrTp1: positiveNumber(input.atrTp1),

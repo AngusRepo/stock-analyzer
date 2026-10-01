@@ -177,3 +177,34 @@ const setupOnlyLifecycle = buildCanonicalTradeLifecycle({
 assert(setupOnlyLifecycle.owners.entry === 'ohlcv_pre_trade_plan_v1', 'setup-only S12 context must not take entry ownership')
 assert(setupOnlyLifecycle.owners.exit === 'paper_sltp_atr_trailing_v1', 'setup-only S12 context must keep paper SLTP exit ownership')
 assert(setupOnlyLifecycle.exit.initialStop === 117.75, 'setup-only lifecycle must preserve the executable paper SLTP stop')
+
+const or15Lifecycle = buildCanonicalTradeLifecycle({
+  tradeDate: '2026-08-03',
+  symbol: '1605',
+  marketRiskLevel: 'low',
+  marketRiskScore: 0.2,
+  regime: 'bull',
+  sizingMode: 'risk_parity',
+  targetExposure: 0.5,
+  allocationAction: 'add',
+  allocationReason: 'test',
+  entryPrice: 102,
+  stopLoss: 99,
+  chaseCeiling: null,
+  s12Assessment: null,
+  s12AssistApplied: false,
+  or15Entry: { signalMs: Date.parse('2026-08-03T09:17:00+08:00'), orHigh: 101, orLow: 99, vwap: 100.5 },
+  s12ExitPrimary: false,
+  initialStop: 99,
+  trailingStop: 99,
+  tp1: 106,
+  tp2: 110,
+  atr14: 2,
+  stopMultiplier: 1.5,
+  tpMultiplier: 2,
+  tp2Multiplier: 2,
+  protectiveFloorPolicy: lifecycle.exit.protectiveFloorPolicy,
+})
+assert(or15Lifecycle.owners.entry === 'or15_vwap_v1', 'A fill must name A as its entry owner')
+assert(or15Lifecycle.owners.exit === 'paper_sltp_atr_trailing_v1', 'A fill must use the existing Paper exit owner')
+assert(or15Lifecycle.exit.initialStop === 99 && or15Lifecycle.entry.or15?.orLow === 99, 'A fill must persist the ORL initial stop')

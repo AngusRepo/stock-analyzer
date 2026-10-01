@@ -271,7 +271,7 @@ export function mergeS12CurrentSessionBars(
   return mergeMinuteBars(completedBars, eventBars.filter((bar) => bar.startMs > latestCompletedMs))
 }
 
-async function loadCanonicalIntradayMinuteBars(
+export async function loadCanonicalIntradayMinuteBars(
   env: Pick<Bindings, 'DB'>,
   symbol: string,
   tradeDate: string,
@@ -1182,6 +1182,32 @@ export async function loadIntradayTechnicalRollingBars(
       close: currentPrice,
       volume: Math.max(0, currentTotalVolume),
     }]
+}
+
+/** Current-session completed OHLCV only; the Paper A entry never loads S12 history. */
+export async function loadOr15AuthoritativeMinuteBars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+): Promise<{ bars: IntradayRollingBar[]; source: string; error: string | null }> {
+  const [canonical, remote] = await Promise.all([
+    loadCanonicalIntradayMinuteBars(env, symbol, tradeDate),
+    fetchS12ShioajiKbars(env, symbol, tradeDate)
+      .then(value => ({ value, error: null as string | null }))
+      .catch(error => ({ value: null, error: error instanceof Error ? error.message : String(error) })),
+  ])
+  if (remote.value?.bars.length && remote.value.diagnostics.kbars_unusable_reason == null) {
+    return {
+      bars: mergeS12CurrentSessionBars(canonical.bars, remote.value.bars, []),
+      source: 'shioaji_kbars_with_canonical_continuity',
+      error: canonical.error,
+    }
+  }
+  return {
+    bars: canonical.bars,
+    source: canonical.bars.length ? 'canonical_intraday_minute_bars' : 'unavailable',
+    error: remote.error ?? remote.value?.diagnostics.kbars_unusable_reason ?? canonical.error,
+  }
 }
 
 export async function loadS12IntradayBaseBars(

@@ -43,7 +43,8 @@ import {
   type S12IntradayAssessment,
   type S12UnifiedDecision,
 } from './s12IntradayStructure'
-import { loadS12IntradayBaseBars } from './s12RuntimeBars'
+import { loadCanonicalIntradayMinuteBars, loadS12IntradayBaseBars } from './s12RuntimeBars'
+import { assessOr15VwapHolding } from './or15VwapHolding'
 import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
@@ -1852,6 +1853,39 @@ export async function pollIntradayStopLoss(
     const quote = quoteMap.get(pos.symbol)
     if (!quote) continue
     const currentPrice = quote.last
+
+    const entryLifecycle = parseJsonObject(pos.trade_lifecycle_json)
+    if (entryLifecycle?.entry?.source === 'or15_vwap_entry') {
+      try {
+        const minute = await loadCanonicalIntradayMinuteBars(env, pos.symbol, intradayToday)
+        const advice = assessOr15VwapHolding(minute.bars, paperExecutionNow())
+        if (advice) {
+          const latest = await paperDomainDatabase(env).prepare(`
+            SELECT detail_json FROM paper_execution_events
+             WHERE account_id=? AND trade_date=? AND symbol=? AND source='or15_vwap_holding_v1'
+             ORDER BY id DESC LIMIT 1
+          `).bind(paperAccountId(), intradayToday, pos.symbol).first<{ detail_json: string | null }>()
+          if (Number(parseJsonObject(latest?.detail_json)?.barCloseMs) !== advice.barCloseMs) {
+            await recordPaperExecutionEvent(env, {
+              tradeDate: intradayToday,
+              symbol: pos.symbol,
+              side: 'sell',
+              eventType: 'intraday_technical_decision',
+              status: 'advisory',
+              reason: `or15_vwap_${advice.reason}`,
+              detail: { owner: 'or15_vwap_holding_v1', ...advice,
+                tp1: pos.tp1_price ?? null, tp2: pos.tp2_price ?? null,
+                stop: pos.trailing_stop ?? pos.initial_stop ?? null,
+                action: advice.reason === 'healthy_reclaim_hold' ? 'hold' : 'review_or_tighten_stop',
+                automatic_exit: false, source: 'canonical_completed_1m' },
+              source: 'or15_vwap_holding_v1',
+            })
+          }
+        }
+      } catch (error) {
+        console.warn('[Or15Holding] advisory unavailable:', error)
+      }
+    }
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const s12ExitDecision = await evaluateS12HoldingDefense(

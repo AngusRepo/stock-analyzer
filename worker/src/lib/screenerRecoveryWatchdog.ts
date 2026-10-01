@@ -372,8 +372,9 @@ export async function runScreenerRecoveryWatchdog(
           source: 'screener-v2-watchdog-pipeline-recovery',
         })
       : null
+    const blocked = pipelineRecovery?.status === 'error' && !pipelineRecovery.queued
     return [
-      `success funnel=${funnel.run_id}`,
+      `${blocked ? 'status=error pipeline_blocked' : 'success'} funnel=${funnel.run_id}`,
       `universe=${Number(funnel.universe_count ?? 0)}`,
       `continuation=${continuation.queued ? 'queued' : `already_${continuation.status}`}`,
       `pipeline_recovery=${pipelineRecovery

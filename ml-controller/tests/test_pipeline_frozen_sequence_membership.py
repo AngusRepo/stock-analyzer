@@ -170,6 +170,8 @@ def test_original_dispatch_to_callback_never_reads_updated_history(monkeypatch, 
 
 
 def test_real_callback_rejects_inconsistent_counts_before_downstream_writes(monkeypatch, dispatched):
+    # Membership fixture is independent of the live historical write window.
+    monkeypatch.setattr(pipeline, '_assert_pipeline_canonical_window', lambda state: None)
     state, request, bundle = dispatched
     core = deepcopy(state['pipeline_modal_sequence_input_contract'])
     core['sequence_point_counts']['2454'] = 512  # conflicts with sealed model membership

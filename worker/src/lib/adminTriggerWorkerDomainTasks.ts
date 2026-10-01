@@ -367,7 +367,9 @@ export function buildAdminWorkerDomainTaskMap(
         classifySchedulerSummary(screenerSummary),
         classifySchedulerSummary(strategyLearningSummary),
       ]
-      const compositeStatus = compositeStatuses.includes('triggered')
+      const compositeStatus = compositeStatuses.includes('error')
+        ? 'error'
+        : compositeStatuses.includes('triggered')
         ? 'triggered'
         : compositeStatuses.includes('running')
           ? 'running'

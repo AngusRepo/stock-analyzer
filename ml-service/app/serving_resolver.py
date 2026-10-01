@@ -137,17 +137,11 @@ def _bounded_env_int(name: str, default: int, *, minimum: int, maximum: int) -> 
 
 
 def serving_manifest_digest(manifest: dict[str, Any]) -> str:
-    payload = json.dumps(
-        manifest,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    payload_bytes = payload.encode("utf-8")
-    if len(payload_bytes) > FROZEN_MANIFEST_MAX_BYTES:
-        raise ServingPoolResolutionError(
-            f"frozen_serving_manifest_total_bytes:{len(payload_bytes)}"
-        )
+    from services.frozen_manifest_budget import canonical_manifest_bytes
+    try:
+        payload_bytes = canonical_manifest_bytes(manifest)
+    except ValueError as exc:
+        raise ServingPoolResolutionError(f"frozen_serving_manifest_total_bytes:{exc}") from exc
     return hashlib.sha256(payload_bytes).hexdigest()
 
 

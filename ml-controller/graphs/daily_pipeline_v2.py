@@ -3231,16 +3231,11 @@ def _read_pipeline_async_state_artifact(gcs_uri: str) -> PipelineStateV2:
 
 
 def _pipeline_modal_canonical_digest(value: dict[str, Any]) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    if len(encoded) > PIPELINE_MODAL_MANIFEST_MAX_BYTES:
-        raise RuntimeError(
-            f"pipeline_modal_serving_manifest:total_bytes:{len(encoded)}"
-        )
+    from services.frozen_manifest_budget import canonical_manifest_bytes
+    try:
+        encoded = canonical_manifest_bytes(value)
+    except ValueError as exc:
+        raise RuntimeError(f"pipeline_modal_serving_manifest:{exc}") from exc
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -5193,12 +5188,16 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         await _run_pipeline_nodes(state, [
             node_load_inputs,
             node_load_market_env,
+        ])
+        # Validate and freeze the exact serving contract before expensive L2 work.
+        # The request builder below reuses this context, never recaptures it.
+        await _attach_pipeline_modal_serving_context(state)
+        await _run_pipeline_nodes(state, [
             node_capture_atomic_inputs,
             node_build_payloads,
             node_l2_timesfm_enrich,
         ])
         state["pipeline_payload_identity"] = build_pipeline_payload_identity(state.get("payloads") or [])
-        await _attach_pipeline_modal_serving_context(state)
         modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
         assert_canonical_window_open(run_date)
         state_gcs_uri = _write_pipeline_async_state_artifact(state)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import re
 from typing import Any
 
@@ -326,7 +327,9 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
             f"{tail_prefix}/raw/daily_price/adj_close.parquet",
             f"{tail_prefix}/raw/daily_price/adj_open.parquet",
         ]
-        missing_uris = [uri for uri in required_uris if not _gcs_object_exists(uri)]
+        missing_uris = await asyncio.to_thread(
+            lambda: [uri for uri in required_uris if not _gcs_object_exists(uri)]
+        )
         if missing_uris:
             return {
                 "status": "skipped",
@@ -336,13 +339,17 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
                 "missing_uris": missing_uris,
             }
         run_date = str(body.get("run_date") or "")[:10]
-        prior_source_prefixes = _latest_verified_sequence_sources(bucket_name, run_date)
+        prior_source_prefixes = await asyncio.to_thread(
+            _latest_verified_sequence_sources, bucket_name, run_date
+        )
         source_prefixes = list(dict.fromkeys([*prior_source_prefixes, tail_prefix]))
         base_required_uris = [
             f"{base_prefix}/raw/daily_price/adj_close.parquet",
             f"{base_prefix}/raw/daily_price/adj_open.parquet",
         ]
-        base_missing_uris = [uri for uri in base_required_uris if not _gcs_object_exists(uri)]
+        base_missing_uris = await asyncio.to_thread(
+            lambda: [uri for uri in base_required_uris if not _gcs_object_exists(uri)]
+        )
         if not prior_source_prefixes and not base_missing_uris:
             source_prefixes.insert(0, base_prefix)
 
@@ -476,7 +483,8 @@ async def finlab_backfill_controller_callback(req: FinLabBackfillCallbackRequest
     from routers.pipeline import _callback_worker
 
     body = _model_dump(req)
-    long_sequence_refresh = await _maybe_spawn_long_sequence_refresh(body)
+    # Worker atomically records market + sequence outbox before acknowledging.
+    # Slow GCS probing must not hold the Modal completion callback open.
     await _callback_worker(body)
     return {
         "ok": True,
@@ -485,8 +493,15 @@ async def finlab_backfill_controller_callback(req: FinLabBackfillCallbackRequest
         "status": body.get("status"),
         "run_id": body.get("run_id"),
         "run_date": body.get("run_date"),
-        "long_sequence_refresh": long_sequence_refresh,
+        "long_sequence_refresh": {"status": "queued_by_worker_outbox"},
     }
+
+
+@router.post("/backfill/sequence-refresh")
+async def finlab_sequence_refresh(req: FinLabBackfillCallbackRequest) -> dict:
+    # Synchronous GCS probes are offloaded inside preparation; Modal stays on
+    # the request event loop with the rest of the async client lifecycle.
+    return await _maybe_spawn_long_sequence_refresh(_model_dump(req))
 
 
 @router.post("/execution/smoke")

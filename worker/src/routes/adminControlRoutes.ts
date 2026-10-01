@@ -1222,14 +1222,11 @@ async function handleSchedulerCallback(c: any) {
         run_date: callbackRunDate,
         supersedePrevious: true,
       })
-      await c.env.UPDATE_QUEUE.send({
-        type: 'finlab_backfill_complete',
-        cursor: 0,
-        triggerTime: callbackRunDate,
-        runId: callbackRunId,
-        force: forceContinuation,
-        attempt: 1,
-      })
+      const { queueFinLabCompletion } = await import('../lib/finlabCompletionOutbox')
+      await queueFinLabCompletion(c.env, callbackRunDate, callbackRunId!, forceContinuation)
+    } else if (body.status === 'success' && callbackRunDate && callbackRunId) {
+      const { queueFinLabCompletion } = await import('../lib/finlabCompletionOutbox')
+      await queueFinLabCompletion(c.env, callbackRunDate, callbackRunId, forceContinuation, false)
     } else if (body.status !== 'success' && continueEveningChain) {
       await logSchedulerResult(c.env.KV, 'update', {
         status: body.status === 'skipped' ? 'skipped' : 'error',

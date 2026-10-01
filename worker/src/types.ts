@@ -331,6 +331,7 @@ export interface UpdateQueueMsg {
     | 'news_batch'
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'
+    | 'finlab_sequence_refresh'
     | 'strategy_learning_materialize'
     | 'strategy_decision_prefill'
     | 'meta_learning_shadow_closure'

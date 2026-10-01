@@ -27,9 +27,11 @@ import {
   enqueuePipelineStage,
   markPipelineStage,
   markPipelineStageFenced,
+  startPipelineStageLeaseHeartbeat,
 } from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { schedulerTicketStatusForRunLog } from './schedulerExecutionTickets'
+import { runFinLabCompletionStage, dispatchFinLabCompletion } from './finlabCompletionOutbox'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
 import {
   resolveEveningChainClosureDurationMs,
@@ -2296,7 +2298,9 @@ async function continuePostScreenerPipeline(
   triggerTime: string,
   runId?: string,
   snapshotsReady = false,
+  guard: (phase?: string) => Promise<void> = async () => {},
 ): Promise<void> {
+  await guard('post_screener:regime')
   if (!snapshotsReady) {
     await ensureSameDateRegimeReady(env, triggerTime, runId, 'post-screener-callback')
 
@@ -2304,6 +2308,7 @@ async function continuePostScreenerPipeline(
     // causal L0-L4 evidence; S12 remains the next-session execution policy.
   }
 
+  await guard('post_screener:allocator')
   const evReadiness = await runDailyAllocatorEvReadiness(env, triggerTime)
   if (!evReadiness.ok) {
     await logSchedulerResult(env.KV, 'evening-chain', {
@@ -2316,6 +2321,7 @@ async function continuePostScreenerPipeline(
   }
 
   try {
+    await guard('post_screener:pipeline_dispatch')
     const summary = await deps.runMLAndRiskV2(env, triggerTime, { prevalidatedEventChain: true })
     if (summary.trim().toUpperCase().startsWith('LOCKED')) {
       const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`
@@ -2408,12 +2414,21 @@ async function markShardComplete(
   await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount)
 }
 
-async function continueAfterFinLabBackfill(
+async function continueAfterFinLabBackfill(env: Bindings, twDate: string, force = false, runId?: string): Promise<string> {
+  return runFinLabCompletionStage(env, {type:'finlab_backfill_complete',triggerTime:twDate,cursor:0,
+    runId:runId??`finlab-market:${twDate}`,force}, 'finlab_market',
+    guard => continueAfterFinLabBackfillWork(env,twDate,force,runId,guard))
+}
+
+async function continueAfterFinLabBackfillWork(
   env: Bindings,
   twDate: string,
   force = false,
   runId?: string,
+  guard: (phase?: string) => Promise<void> = async () => {},
 ): Promise<string> {
+  const started = Date.now()
+  await guard('before_source_readiness')
   const officialMarketSummary = await refreshOfficialMarketSummaryIfMissing(env, twDate, Date.now())
   if (officialMarketSummary?.startsWith('official_market_summary_waiting=')) {
     await scheduleSourceReadinessRetry(env, twDate, 1, officialMarketSummary)
@@ -2423,6 +2438,7 @@ async function continueAfterFinLabBackfill(
   await ensureTradingRestrictionsDailyReadiness(env, twDate)
   let bulkSummary: string
   try {
+    await guard('before_bulk_fetch')
     bulkSummary = await runBulkFetch(env, force, twDate)
   } catch (e) {
     if (!isBulkPriceSourceNotReady(e)) throw e
@@ -2434,14 +2450,16 @@ async function continueAfterFinLabBackfill(
   if (!readiness.ok) {
     throw new Error(`source readiness not ready after refresh: ${readiness.summary}`)
   }
+  await guard('before_market_success')
   await logSchedulerResult(env.KV, 'update', {
     status: 'success',
     summary: `market data update ready for ${twDate}; FinLab primary canonical ready; official market summary ready; TWSE/TPEX supplemental refresh complete; ${canonicalSummary}; ${officialMarketSummary ?? 'official_market_summary=already_ready'}; ${bulkSummary}`,
-    duration_ms: 0,
+    duration_ms: Date.now() - started,
     details: readinessDetails(readiness),
     run_id: runId,
     run_date: twDate,
   })
+  await guard('before_indicator_queue')
   await runQueueUpdate(env, twDate, force)
   return `${canonicalSummary}; ${officialMarketSummary ?? 'official_market_summary=already_ready'}; TWSE/TPEX supplemental refresh complete; ${bulkSummary}; indicator queue accepted`
 }
@@ -2670,6 +2688,8 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
 
 export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  // Recover lost sends/expired consumers even when the market/root already finished.
+  await dispatchFinLabCompletion(env, twDate)
   if (await hasEveningChainSucceeded(env, twDate)) {
     return `skipped: evening-chain already succeeded for ${twDate}`
   }
@@ -3555,6 +3575,24 @@ export async function processUpdateBatch(
     return
   }
 
+  if (msg.type === 'finlab_sequence_refresh') {
+    await runFinLabCompletionStage(env, msg, 'finlab_sequence', async guard => {
+      await guard('before_sequence_dispatch')
+      const response = await fetch(`${env.ML_CONTROLLER_URL}/finlab/backfill/sequence-refresh`, {
+        method:'POST',headers:{'Content-Type':'application/json','X-Controller-Token':env.ML_CONTROLLER_SECRET!},
+        body:JSON.stringify({task:'finlab-v4-backfill',status:'success',run_id:msg.runId,run_date:msg.triggerTime}),
+        signal:AbortSignal.timeout(180_000),
+      })
+      if (!response.ok) throw new Error(`finlab_sequence_refresh_http:${response.status}`)
+      const result = await response.json() as {status?:string;reason?:string;error?:string}
+      if (result.error || (result.status !== 'spawned' && !(result.status === 'skipped'
+        && ['disabled','not_daily_tail_backfill'].includes(result.reason??''))))
+        throw new Error(`finlab_sequence_refresh_incomplete:${JSON.stringify(result)}`)
+      return `status=success sequence_refresh=${JSON.stringify(result)}`
+    })
+    return
+  }
+
   if (msg.type === 'finlab_backfill_complete') {
     const triggerTime = msg.triggerTime
     const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
@@ -3565,6 +3603,8 @@ export async function processUpdateBatch(
 
     try {
       const summary = await continueAfterFinLabBackfill(env, triggerTime, Boolean(msg.force), msg.runId)
+      // A duplicate delivery must not replace a completed chain head with running.
+      if (/^status=(?:success|pending) finlab_stage=/.test(summary)) return
       await logSchedulerResult(env.KV, 'evening-chain', {
         status: 'running',
         summary: `FinLab canonical callback accepted for ${triggerTime}; ${summary}`,
@@ -4411,30 +4451,44 @@ export async function processUpdateBatch(
       businessDate: triggerTime,
       stage: POST_SCREENER_CONTINUATION_STAGE,
       ownerId,
-      leaseSeconds: 1800,
+      canonicalRunId: runId,
+      leaseSeconds: 300,
     })
     if (!claimed) {
       console.log(`[Queue] Duplicate post-screener continuation ignored date=${triggerTime} run_id=${runId}`)
       return
     }
+    const identity = {businessDate:triggerTime,stage:POST_SCREENER_CONTINUATION_STAGE,canonicalRunId:runId,leaseOwner:ownerId}
+    const heartbeat = startPipelineStageLeaseHeartbeat(databaseForDataDomain(env,'ops'),{...identity,leaseSeconds:300})
+    const guard = async (phase?: string) => {
+      await heartbeat.assertActive(phase)
+      await databaseForDataDomain(env,'ops').prepare(`UPDATE pipeline_stage_runs SET cursor_key=?,updated_at=CURRENT_TIMESTAMP
+        WHERE business_date=? AND stage=? AND canonical_run_id=? AND lease_owner=? AND lease_expires_at>=CURRENT_TIMESTAMP`)
+        .bind(phase??'post_screener',triggerTime,POST_SCREENER_CONTINUATION_STAGE,runId,ownerId).run()
+    }
     try {
-      await continuePostScreenerPipeline(env, deps, triggerTime, runId)
-      await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
+      await continuePostScreenerPipeline(env, deps, triggerTime, runId, false, guard)
+      await guard('post_screener:complete')
+      const closed = await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: POST_SCREENER_CONTINUATION_STAGE,
         canonicalRunId: runId,
+        leaseOwner: ownerId,
         status: 'success',
       })
+      if (!closed) throw new Error('post_screener_completion_stale_owner')
     } catch (error) {
+      if (heartbeat.leaseError()) throw error
       await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
         businessDate: triggerTime,
         stage: POST_SCREENER_CONTINUATION_STAGE,
         canonicalRunId: runId,
+        leaseOwner: ownerId,
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
       })
       throw error
-    }
+    } finally { await heartbeat.stop() }
     return
   }
 

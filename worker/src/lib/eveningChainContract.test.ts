@@ -313,7 +313,7 @@ const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8
 const pipelineStageLease = fs.readFileSync('src/lib/pipelineStageLease.ts', 'utf8')
 assert(
   callbackRoutes.includes('const forceContinuation = Boolean') &&
-    callbackRoutes.includes('force: forceContinuation'),
+    callbackRoutes.includes('callbackRunId!, forceContinuation'),
   'FinLab callback must preserve manual force rerun through the async queue continuation',
 )
 assert(

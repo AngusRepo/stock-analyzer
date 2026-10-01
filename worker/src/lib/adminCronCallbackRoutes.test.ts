@@ -71,7 +71,7 @@ assert(
 
 assert(
   adminControlRoutes.includes("body.task === 'finlab-v4-backfill'") &&
-    adminControlRoutes.includes("type: 'finlab_backfill_complete'") &&
+    adminControlRoutes.includes("queueFinLabCompletion(c.env, callbackRunDate") &&
     adminControlRoutes.includes('continue_evening_chain'),
   'FinLab backfill callback must enqueue the post-backfill evening-chain continuation',
 )

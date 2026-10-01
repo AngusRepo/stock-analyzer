@@ -60,7 +60,7 @@ def validate_admission(admission, *, artifact, now=None):
 
 RUNTIME_SCHEMA = 'active8-paper-runtime-approval-v1'
 RUNTIME_KEY = 'ml:active8:paper_runtime_approval:v1'
-RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-01-native-nav-performance'
+RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-01-or15-market-session'
 ODD_LOT_QUOTE_AGE_CHANGE = {
     'schema_version': 'active8-paper-odd-lot-quote-age-change-v1',
     'variable': 'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS',
@@ -192,7 +192,7 @@ def verify_active_approval(admission, *, now=None):
     if active != admission:
         raise RuntimeError('active8_paper_operator_approval_missing_changed_or_revoked')
     # Stage this release's exact approval before routing traffic. Older builds
-    # keep reading RUNTIME_KEY, so a candidate check cannot revoke their grant.
+    # retain their own release key, so a candidate check cannot revoke their grant.
     runtime = kv_client.get_json(RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None:
         runtime = kv_client.get_json(RUNTIME_KEY, default=None, strict=True)

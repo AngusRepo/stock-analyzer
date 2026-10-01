@@ -1,3 +1,5 @@
+import { isTwIntradayTradingMinute } from './twMarketSession'
+
 /** Closed-minute opening-range entry permission for the Paper account. */
 export interface Or15Bar {
   startMs: number
@@ -38,7 +40,7 @@ export function assessOr15VwapEntry(input: {
 }): Or15VwapDecision {
   const openMs = Date.parse(`${input.tradeDate}T09:00:00+08:00`)
   if (!Number.isFinite(openMs)) return wait('or15_invalid_trade_date')
-  if (input.nowMs > openMs + 151 * MINUTE_MS) return wait('or15_entry_window_closed')
+  if (!isTwIntradayTradingMinute(new Date(input.nowMs))) return wait('or15_entry_window_closed')
   const byMinute = new Map<number, Or15Bar>()
   for (const bar of input.bars) {
     if (twDate(bar.startMs) !== input.tradeDate || bar.startMs < openMs || bar.startMs > openMs + 270 * MINUTE_MS) continue
@@ -75,7 +77,7 @@ export function assessOr15VwapEntry(input: {
     const vwap = totalVolume > 0 ? weightedClose / totalVolume : null
     if (bar.startMs === latest.startMs) latestVwap = vwap
     const minutesAfterOpening = (bar.startMs - firstMs) / MINUTE_MS
-    if (signalMs == null && minutesAfterOpening >= 15 && bar.startMs <= openMs + 150 * MINUTE_MS &&
+    if (signalMs == null && minutesAfterOpening >= 15 &&
       previous && bar.startMs - previous.startMs === MINUTE_MS && vwap != null &&
       previous.close <= orHigh && bar.close > orHigh && bar.close > vwap) {
       signalMs = bar.startMs + MINUTE_MS

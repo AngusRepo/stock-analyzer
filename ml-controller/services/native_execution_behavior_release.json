@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:4f5f6555107617427166bf53f396696b7b0abc01df3bb8ae8d90eb509b274be0",
+  "execution_owner_version": "native-paper-v1:52d29436dabf158873b4f8c0b7c3648cf879d92b7c1342083c303ccd52ee5893",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved on 2026-09-30 commit, push and deployment of the S12 opening-entry, intraday-quote, A/B recommendation and NAV selection-only repairs to the production simulated trading system. This record attests this exact Paper build identity only; active Paper runtime admission remains governed by a separate exact active8-paper-runtime-approval-v1 record. No real orders, source equivalence or maturity transfer are authorized.",
-  "review": "docs/releases/2026-09-30-s12-ab-simulation-fix.md",
+  "authorization": "Wei approved on 2026-10-01 deployment and local commit of the native NAV and evening pipeline performance repairs. This build includes origin/main 6c8e4e90. This record attests this exact Paper build identity only; active Paper runtime admission remains governed by a separate exact active8-paper-runtime-approval-v1 record. No real orders, source equivalence or maturity transfer are authorized.",
+  "review": "docs/releases/2026-10-01-native-nav-performance.md",
   "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
 }

@@ -53,6 +53,19 @@ The old serving version continues to read the original key during candidate
 verification. After the traffic switch, synchronize the original key for
 existing operational consumers. Keep its prior value as the rollback record.
 
+## Existing OR15 context drift
+
+Before release, production's canonical bundle endpoint already reported a
+variables checksum mismatch. Its exact cause was S12 primary owner `1` in the
+old admission versus `0` on the Worker. The Worker was already configured for
+OR15 but the native context scalar allowlist omitted `PAPER_INTRADAY_ENTRY_OWNER`.
+Wei explicitly approved exporting that existing flag and aligning the Paper
+supplemental approval to `S12_INTRADAY_PRIMARY_OWNER_ENABLED=0` and
+`PAPER_INTRADAY_ENTRY_OWNER=or15_vwap_v1`, including tests, local commit, Worker and
+Controller deployment. The exact declaration rejects any other prior/current
+owner or additional policy drift. Worker trading settings are not changed by
+this repair; historical NAV registrations and missing frames are not rewritten.
+
 Raw evidence: Cloud Logging `pipeline-v2`, 2026-09-30 15:40-16:30 UTC;
 GCS `shadow/paired-native/v1/objects/0b7b187534f428c6e537e239c889009a0a15bf766fad8ae5268d569b1996b3f2.json`;
 Obsidian `02_Products/StockVision/Sessions/2026-10-01-native-nav-and-evening-performance-repair.draft.md`.

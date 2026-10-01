@@ -6,12 +6,15 @@ test('native context preserves actual flags while credentials and unrelated acco
   const result = await captureNativePaperSourceContext({
     KV: { get: async (key: string) => key.endsWith('debate_max_rounds') ? '3' : '{}' },
     FINLAB_L5_MARKET_DATA_ENABLED: '1', S12_INTRADAY_GATE_MODE: 'assist_entry',
+    S12_INTRADAY_PRIMARY_OWNER_ENABLED: '0', PAPER_INTRADAY_ENTRY_OWNER: 'or15_vwap_v1',
     ML_CONTROLLER_URL: 'https://controller.invalid', ML_CONTROLLER_SECRET: 'never-record-this',
     PROXY_SERVICE_TOKEN: 'never-record-this-either', DISCORD_WEBHOOK_URL: 'private-webhook',
     STOCKVISION_AUTH_TOKEN: 'private-service-token',
   } as any)
   assert.equal(result.variables.FINLAB_L5_MARKET_DATA_ENABLED, '1')
   assert.equal(result.variables.S12_INTRADAY_GATE_MODE, 'assist_entry')
+  assert.equal(result.variables.S12_INTRADAY_PRIMARY_OWNER_ENABLED, '0')
+  assert.equal(result.variables.PAPER_INTRADAY_ENTRY_OWNER, 'or15_vwap_v1')
   assert.equal(result.variables.ML_CONTROLLER_SECRET, '__SEALED_CREDENTIAL__')
   assert.equal(result.frozen_kv['ml:config.debate_max_rounds'], '3')
   assert.doesNotMatch(JSON.stringify(result), /never-record-this|private-webhook|private-service-token/)

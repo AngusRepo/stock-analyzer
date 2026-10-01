@@ -210,6 +210,34 @@ def test_performance_release_reapproval_is_exact_and_preserves_policy(runtime_pa
             paper.validate_runtime_approval(approval, admission)
 
 
+@pytest.mark.parametrize('fault', [None, 'missing_declaration', 's12_enabled', 'different_owner',
+                                  'prior_owner', 'another_flag'])
+def test_or15_parity_approval_only_accepts_exact_current_worker_settings(runtime_pair, fault):
+    admission, approval = runtime_pair
+    prior = admission['configuration']['native_execution_policy']['variables']
+    current = approval['configuration']['native_execution_policy']['variables']
+    prior['S12_INTRADAY_PRIMARY_OWNER_ENABLED'] = '1'
+    current.update(paper.PAPER_ENTRY_OWNER_CHANGE['approved'])
+    approval['approved_paper_entry_owner_change'] = deepcopy(paper.PAPER_ENTRY_OWNER_CHANGE)
+    if fault == 'missing_declaration':
+        approval.pop('approved_paper_entry_owner_change')
+    elif fault == 's12_enabled':
+        current['S12_INTRADAY_PRIMARY_OWNER_ENABLED'] = '1'
+    elif fault == 'different_owner':
+        current['PAPER_INTRADAY_ENTRY_OWNER'] = 'unknown'
+    elif fault == 'prior_owner':
+        prior['PAPER_INTRADAY_ENTRY_OWNER'] = 'another-policy'
+    elif fault == 'another_flag':
+        current['S12_INTRADAY_GATE_MODE'] = 'different'
+    approval['admission'] = deepcopy(admission)
+    reseal(approval)
+    if fault is None:
+        assert paper.validate_runtime_approval(approval, admission) == approval
+    else:
+        with pytest.raises(RuntimeError):
+            paper.validate_runtime_approval(approval, admission)
+
+
 def test_release_approval_stages_without_overwriting_current_key(runtime_pair, monkeypatch):
     admission, approval = runtime_pair
     from services import kv_client

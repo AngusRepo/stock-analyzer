@@ -69,6 +69,13 @@ ODD_LOT_QUOTE_AGE_CHANGE = {
 }
 
 
+PAPER_ENTRY_OWNER_CHANGE = {
+    'release': '2026-10-01-existing-or15-context-parity',
+    'previous': {'S12_INTRADAY_PRIMARY_OWNER_ENABLED': '1'},
+    'approved': {'S12_INTRADAY_PRIMARY_OWNER_ENABLED': '0',
+                 'PAPER_INTRADAY_ENTRY_OWNER': 'or15_vwap_v1'},
+}
+
 PERFORMANCE_SOURCE_CHANGE = {
     'release': '2026-10-01-native-nav-performance',
     'scope': 'paper',
@@ -147,6 +154,18 @@ def validate_runtime_approval(approval, admission, *, now=None):
                 or current.get(key) != ODD_LOT_QUOTE_AGE_CHANGE['approved']):
             raise RuntimeError('active8_paper_runtime_policy_change_invalid')
         current.pop(key)
+    entry_change = approval.get('approved_paper_entry_owner_change')
+    if entry_change is not None:
+        prior = before['native_execution_policy']['variables']
+        current = after['native_execution_policy']['variables']
+        if (entry_change != PAPER_ENTRY_OWNER_CHANGE
+                or prior.get('S12_INTRADAY_PRIMARY_OWNER_ENABLED') != '1'
+                or 'PAPER_INTRADAY_ENTRY_OWNER' in prior
+                or current.get('S12_INTRADAY_PRIMARY_OWNER_ENABLED') != '0'
+                or current.get('PAPER_INTRADAY_ENTRY_OWNER') != 'or15_vwap_v1'):
+            raise RuntimeError('active8_paper_runtime_entry_owner_change_invalid')
+        current['S12_INTRADAY_PRIMARY_OWNER_ENABLED'] = '1'
+        current.pop('PAPER_INTRADAY_ENTRY_OWNER')
     source_change = approval.get('approved_source_change')
     if source_change is not None:
         # Exact release-scoped Paper reapproval, never an allocator/NAV source

@@ -22,6 +22,8 @@ export type StrategyLearningRecoveryRow = {
   updated_at: string | null
   production_authority_intent: number | string | null
   policy_closure_status: string | null
+  completed_at: string | null
+  policy_closure_completed_at: string | null
 }
 
 export type StrategyLearningRecoveryDecision = {
@@ -70,6 +72,19 @@ export function strategyLearningRecoveryDecision(
   return { resume: true, reason: 'lease_expired' }
 }
 
+export function hasStrategyLearningSuccessReceipt(row: StrategyLearningRecoveryRow): boolean {
+  const policyClosed = row.policy_closure_status === 'materialized'
+    || (Number(row.production_authority_intent ?? 0) === 0
+      && row.policy_closure_status === 'evidence_only')
+  return row.status === 'success'
+    && Boolean(row.completed_at && row.policy_closure_completed_at)
+    && Number(row.expected_candidates) > 0
+    && Number(row.processed_candidates) === Number(row.expected_candidates)
+    && Number(row.expected_decision_rows) > 0
+    && Number(row.persisted_decision_rows) === Number(row.expected_decision_rows)
+    && policyClosed
+}
+
 async function loadRecoveryRun(
   db: D1Database,
   requestedDate?: string,
@@ -80,7 +95,8 @@ async function loadRecoveryRun(
              expected_candidates, processed_candidates,
              expected_decision_rows, persisted_decision_rows,
              lease_owner, lease_expires_at, attempt_count, last_error, updated_at,
-             production_authority_intent, policy_closure_status
+             production_authority_intent, policy_closure_status,
+             completed_at, policy_closure_completed_at
         FROM strategy_learning_runs
        WHERE business_date=?
        LIMIT 1
@@ -92,26 +108,19 @@ async function loadRecoveryRun(
            expected_candidates, processed_candidates,
            expected_decision_rows, persisted_decision_rows,
            lease_owner, lease_expires_at, attempt_count, last_error, updated_at,
-           production_authority_intent, policy_closure_status
+           production_authority_intent, policy_closure_status,
+           completed_at, policy_closure_completed_at
       FROM strategy_learning_runs
      WHERE business_date BETWEEN date(?, ?) AND ?
        AND (
          (status='queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
          OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP))
-         OR (status='success' AND (
-           business_date=? OR EXISTS (
-             SELECT 1 FROM pipeline_stage_runs post_verify
-              WHERE post_verify.business_date=strategy_learning_runs.business_date
-                AND post_verify.stage='post_verify_chain'
-                AND post_verify.canonical_run_id=strategy_learning_runs.canonical_run_id
-                AND post_verify.status='waiting' AND post_verify.lease_owner IS NULL
-           )
-         ))
+         OR status='success'
        )
      ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,
               business_date DESC
      LIMIT 1
-  `).bind(cutoffDate, `-${RECOVERY_LOOKBACK_DAYS} days`, cutoffDate, cutoffDate).first<StrategyLearningRecoveryRow>()
+  `).bind(cutoffDate, `-${RECOVERY_LOOKBACK_DAYS} days`, cutoffDate).first<StrategyLearningRecoveryRow>()
 }
 
 async function loadPostVerifyAuthority(
@@ -170,6 +179,16 @@ export async function runStrategyLearningRecoveryWatchdog(
       throw new Error(summary)
     }
     if (decision.reason === 'run_success') {
+      if (!hasStrategyLearningSuccessReceipt(row)) {
+        throw new Error(`strategy_learning_success_receipt_incomplete:${row.business_date}:${row.canonical_run_id}`)
+      }
+      await logSchedulerResult(env.KV, 'strategy-learning', {
+        status: 'success', duration_ms: 0,
+        summary: `durable strategy-learning finalize confirmed date=${row.business_date} run_id=${row.canonical_run_id} policy_closure=${row.policy_closure_status} candidates=${row.processed_candidates}/${row.expected_candidates} decision_rows=${row.persisted_decision_rows}/${row.expected_decision_rows}`,
+        run_id: row.canonical_run_id, run_date: row.business_date,
+        run_scope: Number(row.production_authority_intent ?? 0) === 1 ? 'live_canonical' : 'historical_replay',
+        strict: true,
+      }, env)
       const { closeStrategyLearningPostVerifyStage } = await import('./strategyLearningRunState')
       const stageClosed = await closeStrategyLearningPostVerifyStage(opsDb, {
         businessDate: row.business_date, canonicalRunId: row.canonical_run_id,

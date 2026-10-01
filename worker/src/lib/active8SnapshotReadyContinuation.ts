@@ -15,6 +15,7 @@ import { classifySchedulerRunSummary, logSchedulerResult } from './schedulerRunL
 const SNAPSHOT_CONTINUATION_ORIGIN = 'dataset_snapshot_ready'
 const PIPELINE_WAIT_DELAY_SECONDS = 300
 const PIPELINE_WAIT_MAX_ATTEMPTS = 72
+const STALE_SNAPSHOT_CHILD_MS = 90 * 60_000
 
 type ReadySnapshotRow = {
   snapshot_id?: string | null
@@ -241,6 +242,7 @@ export async function settleActive8SnapshotContinuationTicket(
     error?: string
     schedulerTicketId?: string
     schedulerRunId?: string
+    verifiedNativeL4Closure?: boolean
   },
 ): Promise<boolean> {
   const opsDb = databaseForDataDomain(env, 'ops')
@@ -259,7 +261,58 @@ export async function settleActive8SnapshotContinuationTicket(
   // Old callbacks without ticket identity remain usable only when unambiguous.
   // A same-day callback run ID is shared by distinct snapshot deliveries.
   if ((matches.results ?? []).length > 1) throw new Error('active8_snapshot_callback_ticket_ambiguous')
-  const ticket = matches.results?.[0]
+  let ticket = matches.results?.[0]
+  if (!ticket && input.status === 'success' && input.verifiedNativeL4Closure && ticketId) {
+    const source = await opsDb.prepare(`
+      SELECT * FROM scheduler_execution_tickets_v1
+       WHERE ticket_id=? AND run_id=? AND business_date=?
+         AND task='active8-oof-daily' AND ticket_kind='physical_root'
+         AND status='success' AND status_authority='scheduler_http'
+         AND last_summary LIKE '%status=native_l4_daily_accounted%'
+         AND last_summary LIKE '%completion_scope=verified_formal_paper_plan%'
+       LIMIT 1
+    `).bind(ticketId, runId, input.businessDate).first<SchedulerExecutionTicketRow>()
+    if (source?.last_summary?.startsWith(`run_id=${input.callbackRunId} status=native_l4_daily_accounted `)) {
+      const children = await opsDb.prepare(`
+        SELECT * FROM scheduler_execution_tickets_v1
+         WHERE task='active8-oof-daily' AND business_date=? AND ticket_kind='logical_child'
+           AND status='triggered'
+           AND json_extract(metadata_json, '$.origin')=?
+           AND json_extract(metadata_json, '$.active8_callback_run_id')=?
+         LIMIT 2
+      `).bind(input.businessDate, SNAPSHOT_CONTINUATION_ORIGIN, input.callbackRunId)
+        .all<SchedulerExecutionTicketRow>()
+      if ((children.results ?? []).length > 1) throw new Error('active8_snapshot_recovery_child_ambiguous')
+      const child = children.results?.[0]
+      const childUpdated = Date.parse(String(child?.updated_at ?? '').replace(' ', 'T') + 'Z')
+      const sourceCompleted = Date.parse(String(source.completed_at ?? '').replace(' ', 'T') + 'Z')
+      if (child && Number.isFinite(childUpdated)
+        && Number.isFinite(sourceCompleted) && sourceCompleted > childUpdated
+        && Date.now() - childUpdated >= STALE_SNAPSHOT_CHILD_MS) {
+        const metadata = JSON.parse(child.metadata_json || '{}') as Record<string, unknown>
+        const snapshot = await opsDb.prepare(`
+          SELECT * FROM scheduler_execution_tickets_v1
+           WHERE ticket_id=? AND root_ticket_id=? AND task='dataset-snapshot-export'
+             AND status='success' AND run_id=?
+           LIMIT 1
+        `).bind(child.parent_ticket_id, child.root_ticket_id, metadata.snapshot_run_id)
+          .first<SchedulerExecutionTicketRow>()
+        const root = await loadLatestSchedulerRootTicket(opsDb, {
+          schedulerJobId: 'evening-chain', businessDate: input.businessDate,
+        })
+        if (snapshot && root?.ticket_id === child.root_ticket_id
+          && String(JSON.parse(snapshot.metadata_json || '{}').snapshot_id ?? '') === String(metadata.snapshot_id ?? '')
+          && String(metadata.snapshot_id ?? '')) {
+          await requireReadyBacktestSnapshot(env, input.businessDate, String(metadata.snapshot_id))
+          ticket = await updateSchedulerExecutionTicket(opsDb, {
+            ticketId: child.ticket_id, runId: child.run_id,
+            status: 'success', authority: 'logical_child',
+            summary: `active8 logical continuation reconciled from verified native L4 daily plan source_ticket=${source.ticket_id} source_run=${source.run_id} original_child=${child.ticket_id}`,
+          })
+        }
+      }
+    }
+  }
   if (!ticket) return false
   const metadata = JSON.parse(ticket.metadata_json || '{}') as Record<string, unknown>
   if (String(metadata.active8_callback_run_id ?? '') !== input.callbackRunId) return false

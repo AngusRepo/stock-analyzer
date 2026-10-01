@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { controllerFetch } from './controllerClient'
+import type { controllerFetch } from './controllerClient'
 import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export type Breeze2Trigger = 'morning_debate' | 'screener_enrichment'
@@ -35,8 +35,6 @@ export interface Breeze2FactCheckRequest {
 }
 
 export type Breeze2Report = Record<string, any>
-
-const BREEZE2_ADVISORY_CACHE_TTL_SECONDS = 6 * 60 * 60
 
 function asNumber(value: unknown, fallback = 0): number {
   const parsed = Number(value)
@@ -195,44 +193,15 @@ export function validReport(report: Breeze2Report): boolean {
     && report.primary_candidate_source_allowed === false
 }
 
+/** Retired provider: keep historical replay helpers, but never read cached
+ * context or invoke Controller/Modal from an old caller. */
 export async function requestBreeze2FactCheck(
-  env: Bindings,
-  request: Breeze2FactCheckRequest,
-  timeoutMs = 60_000,
-  fetcher: typeof controllerFetch = controllerFetch,
+  _env: Bindings,
+  _request: Breeze2FactCheckRequest,
+  _timeoutMs = 60_000,
+  _fetcher?: typeof controllerFetch,
 ): Promise<Breeze2Report | null> {
-  if (!env.ML_CONTROLLER_URL || !request.symbol) return null
-  let cacheKey: string | null = null
-  try {
-    cacheKey = await breeze2AdvisoryCacheKey(request)
-    const cached = await env.KV.get(cacheKey, 'json') as Breeze2Report | null
-    if (cached && validReport(cached)) return cached
-  } catch (error) {
-    console.warn('[Breeze2] advisory cache read skipped:', error)
-  }
-  try {
-    const res = await fetcher(env, '/breeze2/fact_check', {
-      method: 'POST',
-      jsonBody: request,
-      timeoutMs,
-    })
-    if (!res.ok) return null
-    const report = await res.json() as Breeze2Report
-    if (!validReport(report)) return null
-    if (cacheKey) {
-      try {
-        await env.KV.put(cacheKey, JSON.stringify(report), {
-          expirationTtl: BREEZE2_ADVISORY_CACHE_TTL_SECONDS,
-        })
-      } catch (error) {
-        console.warn('[Breeze2] advisory cache write skipped:', error)
-      }
-    }
-    return report
-  } catch (error) {
-    console.warn('[Breeze2] fact check skipped:', error)
-    return null
-  }
+  return null
 }
 
 export async function enrichScreenerCandidatesWithBreeze2<T extends Breeze2CandidateShape>(

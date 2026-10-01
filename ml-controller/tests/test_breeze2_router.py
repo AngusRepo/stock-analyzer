@@ -9,24 +9,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from routers.breeze2 import Breeze2FactCheckRequest, breeze2_fact_check  # noqa: E402
 
 
-def test_breeze2_router_dry_run_builds_non_mutating_context_packet():
-    req = Breeze2FactCheckRequest(
-        symbol="2330",
-        trigger="morning_debate",
-        reason="theme_score_high_but_fact_support_low",
-        theme={"theme_score": 0.86, "fact_support": 0.25, "hype_risk": 0.8},
-        evidence_items=[{"source": "social", "snippet": "topic momentum but no source url"}],
-        execute_modal=False,
-        generated_at="2026-05-17T09:10:00+08:00",
-    )
+def test_breeze2_router_retired_for_local_and_modal_requests():
+    from fastapi import HTTPException
+    import pytest
 
-    report = asyncio.run(breeze2_fact_check(req))
-
-    assert report["schema_version"] == "breeze2-research-context-v1"
-    assert report["execution"]["executor"] == "controller_local_contract"
-    assert report["allowed_use"] == "research_context_only"
-    assert report["recommended_decision_context"] == "human_review"
-    assert report["primary_candidate_source_allowed"] is False
+    for execute_modal in (False, True):
+        req = Breeze2FactCheckRequest(symbol="2330", execute_modal=execute_modal)
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(breeze2_fact_check(req))
+        assert error.value.status_code == 410
+        assert error.value.detail == "breeze2_retired"
 
 
 def test_breeze2_router_rejects_mutating_or_real_trade_scope():

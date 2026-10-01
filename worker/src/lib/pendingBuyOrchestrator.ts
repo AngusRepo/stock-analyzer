@@ -7,7 +7,6 @@ import {
   type BatchDebateCandidate,
   type StockProfile,
 } from './debateTrader'
-import { enrichMorningDebateCandidatesWithBreeze2, extractBreeze2WatchPoint } from './breeze2Runtime'
 import { sendDiscordNotification } from './notify'
 import {
   expireRecentPendingBuys,
@@ -1263,22 +1262,6 @@ async function reconcilePendingBuyDebatesOwned(
     pendingItems.map((item) => item.symbol),
   )
   const mergedUsContext = [newsContextStr, usContextStr].filter(Boolean).join(' || ')
-  const breeze2Context = await enrichMorningDebateCandidatesWithBreeze2(
-    env,
-    pendingItems.map((item, index) => ({
-      symbol: item.symbol,
-      name: item.name ?? item.symbol,
-      score_v2: item.score_v2 ?? null,
-      reason: item.reason ?? 'ML ensemble signal',
-      watch_points: item.watch_points,
-      rank: index + 1,
-      recommendation_lane: 'tradable',
-    })),
-    { runDate: tradeDate, executeModal: true },
-  ).catch((error) => {
-    console.warn('[MorningSetup] Breeze2 debate context skipped:', error)
-    return new Map<string, any>()
-  })
   const candidates: BatchDebateCandidate[] = pendingItems.map((item) => ({
     symbol: item.symbol,
     stock_name: item.name ?? item.symbol,
@@ -1287,7 +1270,6 @@ async function reconcilePendingBuyDebatesOwned(
     reasoning: [
       item.reason ?? 'ML ensemble signal',
       formatDebateWatchPoints(item.watch_points),
-      extractBreeze2WatchPoint(breeze2Context.get(item.symbol)),
     ].filter(Boolean).join('\n'),
     us_context: mergedUsContext || undefined,
     taifex_context: taifexContextStr,
@@ -1298,7 +1280,6 @@ async function reconcilePendingBuyDebatesOwned(
           key_suppliers: profileMap.get(item.symbol)?.key_suppliers ?? undefined,
         }
       : undefined,
-    breeze2_context: breeze2Context.get(item.symbol),
     cache_key_date: tradeDate,
   }))
 
@@ -1360,13 +1341,8 @@ async function reconcilePendingBuyDebatesOwned(
           {[item.symbol]:source.targets[item.symbol].weight*downgradeMultiplier})
       }
     }
-    const breeze2WatchPoint = extractBreeze2WatchPoint(breeze2Context.get(item.symbol))
     nextPendingBuys.push({
       ...item,
-      watch_points: [
-        ...item.watch_points,
-        ...(breeze2WatchPoint ? [breeze2WatchPoint] : []),
-      ],
       debate_verdict: debate.verdict,
       debate_status: 'completed',
       risk_pct: !downgradePlanId && debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,

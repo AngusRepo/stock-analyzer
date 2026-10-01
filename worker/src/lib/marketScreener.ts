@@ -46,7 +46,7 @@ import {
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
 import { readMarketRegimeState } from './marketRegimeState'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
-import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, mapScreenerBreeze2Candidates } from './breeze2Runtime'
+import { extractBreeze2WatchPoint } from './breeze2Runtime'
 import { controllerPostJson } from './controllerClient'
 import { assertTradingRestrictionPromotionAuthority, loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { isEtfPatternSymbol } from './boardTradability'
@@ -4812,37 +4812,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // sector bonus, so canonical sealing must happen AFTER its inputs are read.
   const atomicPostOverlayFinalSeed = structuredClone(finalCandidates)
 
-  const breeze2ScreenerContext = await enrichScreenerCandidatesWithBreeze2(
-    env,
-    mapScreenerBreeze2Candidates(finalCandidates),
-    { runDate: endDate, maxCandidates: 5, executeModal: true },
-  ).catch((error) => {
-    console.warn('[Screener v2] Breeze2 enrichment skipped:', error)
-    return new Map<string, any>()
-  })
-  if (breeze2ScreenerContext.size > 0) {
-    debugLog.push(`[Step 5f] Breeze2 semantic context enriched ${breeze2ScreenerContext.size}/${finalCandidates.length}`)
-    for (const [symbol, report] of breeze2ScreenerContext) {
-      const candidate = finalCandidates.find((item) => item.symbol === symbol)
-      pushFunnelItem(funnelItems, {
-        symbol,
-        name: candidate?.name,
-        stage: 'breeze2_semantic_context',
-        decision: report.recommended_decision_context === 'human_review' ? 'observe' : 'pass',
-        reasonCode: String(report.recommended_decision_context ?? 'semantic_context'),
-        scoreAfter: candidate ? Number((candidate as any).score ?? 0) : null,
-        evidence: {
-          allowed_use: report.allowed_use,
-          decision_effect: report.decision_effect,
-          scores: report.scores,
-          risk_flags: report.risk_flags,
-          quality: report.quality,
-        },
-      })
-    }
-  } else {
-    debugLog.push('[Step 5f] Breeze2 semantic context: no eligible/enriched candidates')
-  }
+  // Empty compatibility field for frozen screener packets; provider is retired.
+  const breeze2ScreenerContext = new Map<string, any>()
 
   debugLog.push(`[Final] candidates=${finalCandidates.length}`)
   const canonicalL15BySymbol = new Map(

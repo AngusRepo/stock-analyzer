@@ -21,14 +21,7 @@ assert(!candidateInterface.includes('score_components?: unknown'), 'Breeze2 cand
 for (const legacyField of ['score?: unknown', 'ml_score?: unknown', 'chip_score?: unknown', 'tech_score?: unknown', 'momentum_score?: unknown']) {
   assert(!candidateInterface.includes(legacyField), `Breeze2 candidate input must not expose legacy ${legacyField}`)
 }
-assert(
-  pendingBuyOrchestratorSource.includes('score_v2: item.score_v2 ?? null'),
-  'morning debate Breeze2 context should pass canonical pending-buy score_v2 as score_v2',
-)
-assert(
-  !pendingBuyOrchestratorSource.includes('score: item.score ??'),
-  'morning debate Breeze2 context must not pass legacy scalar score',
-)
+assert(!pendingBuyOrchestratorSource.includes('breeze2_context'), 'retired provider must not enter debate payloads')
 
 function scoreV2(finalScore: number): string {
   return JSON.stringify({

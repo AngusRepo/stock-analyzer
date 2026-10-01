@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:ecf988c7760d6ddd7d17cac19a219c0e35eb650e5bc83c79b952b2b2b95de355",
+  "execution_owner_version": "native-paper-v1:9a480363505d7d5b4e3cf6d8f59acb22e830f383d88c31bb29db65444204fc14",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-01 explicitly approved commit, push and deploy of L4 completed-debate batching and OR15 fresh second-crossover fixes. This exact supplemental Paper execution identity is necessary for that authorized release. B TabPack, the full market-session window, the original account, configuration and original admission are preserved; no retraining or real orders.",
-  "review": "docs/releases/2026-10-01-intraday-replan-rebreak.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-01-or15-rebreak-l4-batch"
+  "authorization": "Wei 2026-10-01 approved Breeze2 retirement commit, push and Worker/Controller deploy. This local proposal pins the exact resulting Paper runtime and reader source identity; remote supplemental KV write requires separate explicit approval. No model, trading configuration, original admission or NAV history changes.",
+  "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-01-breeze2-retirement"
 }

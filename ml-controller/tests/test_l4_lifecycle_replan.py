@@ -156,7 +156,7 @@ def test_daily_new_l4_closes_its_plan_without_legacy_oof_or_retraining(monkeypat
     monkeypatch.setattr(job,'_execute_oof_lifecycle',no_oof)
     result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date='2026-09-11',promote=False,
         dispatch_full_fit=True,expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
-    assert calls==[{'end_date':'2026-09-11','retire_legacy_owners':True}]
+    assert calls==[{'end_date':'2026-09-11','retire_legacy_owners':True,'publish_strategy_display':True}]
     assert result['status']=='native_l4_daily_accounted'
     assert result['native_l4_daily_closure']['legacy_oof_maturity_requested'] is False
     assert result['native_l4_daily_closure']['training_dispatched'] is False

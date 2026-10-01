@@ -84,7 +84,18 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
     const body = JSON.parse(plan.payload_json)
     if (body.signal_date !== date || body.plan_id !== plan.plan_id) throw Error('strategy_ab_primary_date_mismatch')
     if (!body.weights || typeof body.weights !== 'object' || Array.isArray(body.weights)) throw Error('strategy_ab_primary_weights_missing')
-    result.A = allocationView(Object.entries(body.weights).map(([symbol, weight]) => ({ symbol, allocation_weight: weight })), plan.plan_id)
+    const view = allocationView(Object.entries(body.weights).map(([symbol, weight]) => ({ symbol, allocation_weight: weight })), plan.plan_id)
+    if (body.strategy_mode === 'single_b_tabpack_v1') {
+      if (body.strategy_role !== 'B') throw Error('strategy_ab_single_primary_mismatch')
+      result.B = view
+      result.A = unavailable('A 策略已停用；歷史紀錄保留')
+      result.operating_mode = 'single_b_tabpack_v1'
+      result.primary_role = 'B'
+      result.B_account_status = 'primary'
+      return result
+    }
+    if (body.strategy_role != null || body.strategy_mode != null) throw Error('strategy_ab_unknown_primary_mode')
+    result.A = view
   }
   const manifests = await learning.prepare("SELECT * FROM paired_nav_frozen_manifests_v1 WHERE signal_date=? AND snapshot_kind='allocation_pair' ORDER BY frozen_at DESC LIMIT 65")
     .bind(date).all<Record<string, any>>()

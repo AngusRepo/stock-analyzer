@@ -33,8 +33,13 @@ def validate_admission(admission, *, artifact, now=None):
         **{k:artifact[k] for k in ('cohort_id','payload_checksum','base_artifact_set_checksum')}}
     bundle = validate_strategy_bundle(admission['strategy_bundle'], candidate_identity=identity,
         signal_date=admission['business_date'])
-    if validate_tag(bundle.get('strategy_ab'))['role'] != 'A':
+    tag=validate_tag(bundle.get('strategy_ab'))
+    from services.paper_strategy_mode import single_b_policy
+    from services.strategy_ab import TABPACK_SCHEMA
+    mode=single_b_policy(bundle['candidate_trading_config'],signal_date=admission['business_date'])
+    if tag['role']!='A' and not (mode and tag['role']=='B' and tag['schema_version']==TABPACK_SCHEMA):
         raise ValueError('active8_paper_primary_A_required')
+    if mode and tag['role']!='B':raise ValueError('active8_paper_single_B_identity_required')
     release = bundle['candidate_trading_config']['l4Distribution']['artifact']['release']
     if release.get('acceptance_mode') != 'paper_experiment' or release.get('efficacy_status') != 'unproven':
         raise ValueError('active8_paper_engineering_acceptance_required')

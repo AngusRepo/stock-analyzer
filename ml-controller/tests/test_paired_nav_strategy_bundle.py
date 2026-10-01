@@ -37,6 +37,26 @@ def reseal(bundle):
     bundle['bundle_checksum']=digest({k:v for k,v in bundle.items() if k!='bundle_checksum'})
 
 
+def test_packet_uses_its_original_l4_serializer_with_unicode():
+    from services.l4_distribution import digest as packet_digest
+    from services.paired_nav_strategy_bundle import bundle_from_packet
+    bundle,_,_=fixture_bundle()
+    for key in ('baseline_trading_config','candidate_trading_config'):
+        bundle[key]['description']='正式模擬策略'
+    packet={'schema_version':'l4-local-cutover-packet-v1','release_kind':'nav_strategy_candidate',
+        'can_publish':False,'l3_nav_gate_waived':False,'signal_date':DAY,
+        'rollback_config':bundle['baseline_trading_config'],'next_config':bundle['candidate_trading_config'],
+        'expected_l3_identity':bundle['baseline_l3_identity'],'next_l3_identity':bundle['candidate_l3_identity'],
+        'source_evidence_checksum':bundle['source_evidence_checksum']}
+    packet['previous_config_checksum']=packet_digest(packet['rollback_config'])
+    packet['next_config_checksum']=packet_digest(packet['next_config'])
+    actual=bundle_from_packet(packet)
+    assert actual['candidate_trading_config']['description']=='正式模擬策略'
+    assert actual['bundle_checksum']==digest({k:v for k,v in actual.items() if k!='bundle_checksum'})
+    packet['next_config']['description']='被修改'
+    with pytest.raises(ValueError,match='candidate_packet_invalid'):bundle_from_packet(packet)
+
+
 def test_complete_chain_has_distinct_policies_same_risk_and_no_promotion():
     bundle,config,_=fixture_bundle()
     assert validate_strategy_bundle(bundle,candidate_identity=IDENTITY,signal_date=DAY)==bundle

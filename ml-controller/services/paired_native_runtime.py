@@ -179,6 +179,13 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
 
 def run_native_execution_tick(*, session_date):
     """Deployment caller. Only private objects and Learning evidence are written."""
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    from services.paper_strategy_mode import single_b_policy,disabled_receipt
+    loaded=load_merged_trading_config_with_contract()
+    if loaded.contract.degraded or loaded.contract.malformed:
+        raise ValueError('native_tick_trading_config_unverified')
+    mode=single_b_policy(loaded.config,signal_date=session_date)
+    if mode:return disabled_receipt(mode,signal_date=session_date)
     from services.paper_corporate_source import production_objects
     from services.d1_domain_client import D1DataDomain, client_for_domain
     from services.kv_client import get

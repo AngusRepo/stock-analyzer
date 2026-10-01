@@ -258,6 +258,12 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                 'distribution':outputs.get(s)}
                 for i,s in enumerate(symbols)}}
     plan['plan_id']=digest(plan)
+    if policy.get('operating_mode') is not None:
+        from services.paper_strategy_mode import MODE
+        if policy.get('operating_mode')!=MODE or policy.get('strategy_role')!='B' or not bundle['model'].get('residual_tabpack'):
+            raise ValueError('l4_distribution_strategy_mode_invalid')
+        plan.update(strategy_role='B',strategy_mode=MODE)
+        plan['plan_id']=digest({k:v for k,v in plan.items() if k!='plan_id'})
     rank = {s:i+1 for i,s in enumerate(sorted(symbols,key=lambda s:(-result['weights'][s],s)))}
     for row in rows:
         symbol=row['symbol'];weight=result['weights'][symbol]

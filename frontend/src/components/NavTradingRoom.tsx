@@ -6,6 +6,8 @@ import StrategyCandidateComparison from '@/components/StrategyCandidateCompariso
 import StrategyAbLive from '@/components/StrategyAbLive'
 import { comparisonTitle, navNumber, navPercent, navSign } from '@/lib/navTradingRoom'
 import { navTradingRoomApi } from '@/lib/navTradingRoomApi'
+import { apiGet } from '@/lib/apiClient'
+import type { StrategyAbRecommendations } from '../../../worker/src/lib/strategyAbRecommendationContract'
 import type { NavAccountView, NavComparisonDetail, NavFillView } from '@/lib/navTradingRoom'
 
 const panel = 'min-w-0 rounded-xl border border-[#263247] bg-[#070a10] p-4'
@@ -71,13 +73,28 @@ export default function NavTradingRoom() {
   const queryClient = useQueryClient()
   const [selection, setSelection] = useState('')
   const [date, setDate] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-  const query = useQuery({ queryKey: ['nav-comparisons', date], queryFn: () => navTradingRoomApi.comparisons(date || undefined), staleTime: 30_000 })
+  const strategy = useQuery({ queryKey: ['strategy-ab-recommendations', today],
+    queryFn: ({ signal }) => apiGet<StrategyAbRecommendations>(`/dashboard/v4/strategy-ab/recommendations?date=${today}`, { signal, timeoutMs: 15_000 }),
+    staleTime: 30_000 })
+  const singleB = strategy.data?.operating_mode === 'single_b_tabpack_v1'
+  const query = useQuery({ queryKey: ['nav-comparisons', date], queryFn: () => navTradingRoomApi.comparisons(date || undefined),
+    enabled: strategy.isSuccess && (!singleB || showHistory), staleTime: 30_000 })
   const data = query.data
   const selected = data?.pairs.find(pair => pair.pair_id === selection) ?? data?.pairs.find(pair => !pair.lifecycle) ?? data?.pairs[0]
+  if (strategy.isPending) return <p role="status" className={panel}>讀取策略狀態…</p>
+  if (strategy.isError) return <p role="alert" className={panel}>策略狀態讀取失敗。<button className={input} onClick={() => void strategy.refetch()}>重新讀取</button></p>
+  if (singleB && !showHistory) return <section className={panel} aria-label="B 主策略帳務">
+    <h2 className="text-lg font-semibold">B 為唯一 Paper 主策略</h2>
+    <p className="mt-2 text-sm text-slate-300">目前持倉、現金與成交以正式模擬帳戶為準。A/B 配對比較已停止新增，歷史帳本保留。</p>
+    <button className={`${input} mt-3`} onClick={() => setShowHistory(true)}>查看歷史比較</button>
+  </section>
   return <section aria-label="NAV 候選比較" className="min-w-0 space-y-3">
-    <StrategyAbLive data={data} date={date}/>
-    <StrategyCandidateComparison/>
+    {singleB ? <button className={input} onClick={() => setShowHistory(false)}>收起歷史比較</button> : <>
+      <StrategyAbLive data={data} date={date}/>
+      <StrategyCandidateComparison/>
+    </>}
     <h2 className="pt-5 text-lg font-semibold text-slate-100">每日配對 NAV 帳本</h2>
     <div className={panel}><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">NAV 候選比較</h2><span className="rounded border border-sky-400/30 px-2 py-1 text-xs text-sky-200">隔離模擬 · 唯讀</span></div>
       <p className="mt-2 text-sm leading-6 text-slate-300">看候選機制與凍結基準如何配置資金、買賣及承擔虧損。這些不是現行 Paper 帳戶，不會因查看或切換比較而下單、改權重或晉級。</p>

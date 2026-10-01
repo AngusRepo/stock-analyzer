@@ -156,6 +156,12 @@ def predict(rows: list[dict], model: dict) -> list[dict]:
     output = [{**{name: float(values[i]) for name, values in predictions.items()},
              "expected_return_gross": float(gross[i]), "output_is_net_of_costs": False,
              "horizon_sessions": 5, "l4plus_status": "disabled"} for i in range(len(rows))]
+    if model.get('residual_tabpack') is not None:
+        if model.get('residual_mlp') is not None:
+            raise ValueError('l4_distribution_multiple_residual_owners')
+        from services.l4_residual_tabpack import apply
+        return apply(rows,output,model['residual_tabpack'],
+                     anchor_model={key:model[key] for key in ('recipe','heads')})
     if model.get("residual_mlp") is not None:
         from services.l4_residual_mlp import apply
         return apply(rows, output, model["residual_mlp"],
@@ -178,6 +184,14 @@ def validate_bundle(bundle: dict, *, l3_identity: dict, signal_date: str,
         raise ValueError("l4_distribution_model_checksum_mismatch")
     if bundle.get("l4plus", {}).get("enabled") is True:
         raise ValueError("l4_distribution_unvalidated_calibrator")
+    if bundle['model'].get('residual_tabpack') is not None:
+        if bundle['model'].get('residual_mlp') is not None:
+            raise ValueError('l4_distribution_multiple_residual_owners')
+        from services.l4_residual_tabpack import validate
+        tabpack=bundle['model']['residual_tabpack']
+        validate(tabpack,anchor_model={key:bundle['model'][key] for key in ('recipe','heads')},signal_date=signal_date)
+        if tabpack['training_label_known_max']>bundle['training_label_known_max']:
+            raise ValueError('l4_distribution_training_cutoff_omits_tabpack')
     if bundle['model'].get('residual_mlp') is not None:
         from services.l4_residual_mlp import validate
         mlp = bundle['model']['residual_mlp']

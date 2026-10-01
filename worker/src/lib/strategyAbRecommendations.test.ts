@@ -116,6 +116,22 @@ async function testReadback() {
     db.prepare("UPDATE paired_nav_frozen_manifests_v1 SET payload_checksum='tampered' WHERE snapshot_id='new-execution'").run()
     await assert.rejects(() => readStrategyAbRecommendations(live, date), /succession_identity_invalid/)
 
+    // A new formal B plan must return without reading retired comparison state.
+    insert.run('2026-10-01', 'formal-b-plan', JSON.stringify({ signal_date: '2026-10-01',
+      plan_id: 'formal-b-plan', parent_plan_id: 'formal-a-plan', strategy_role: 'B',
+      strategy_mode: 'single_b_tabpack_v1', weights: { '2221': .3, '3441': .2 } }))
+    const bOnly = { ...live, DB: { prepare(sql: string) {
+      assert.ok(sql.includes('l4_portfolio_plans_v1'), 'single B must not query comparison tables')
+      return live.DB.prepare(sql)
+    } } } as any
+    const b = await readStrategyAbRecommendations(bOnly, '2026-10-01')
+    assert.equal(b.operating_mode, 'single_b_tabpack_v1')
+    assert.equal(b.B_account_status, 'primary')
+    assert.equal(b.A.status, 'unavailable')
+    assert.deepEqual(b.B.picks, [{ symbol: '2221', weight: .3 }, { symbol: '3441', weight: .2 }])
+    assert.equal((await readStrategyAbRecommendations(live, '2026-09-21')).A.source_id, 'day1',
+      'historical A must retain its identity')
+
   } finally { db.close() }
   console.log('strategyAbRecommendations tests passed')
 }

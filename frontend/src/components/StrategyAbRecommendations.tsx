@@ -14,29 +14,32 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
   const signalDate = date || daily.data?.date
   const comparison = useQuery({ queryKey: ['strategy-ab-recommendations', signalDate], enabled: !!signalDate,
     queryFn: ({ signal }) => apiGet<Comparison>(`/dashboard/v4/strategy-ab/recommendations?date=${signalDate}`, { signal, timeoutMs: 15_000 }),
-    staleTime: 0, refetchInterval: 30_000, refetchIntervalInBackground: true, refetchOnWindowFocus: 'always' })
+    staleTime: 0, refetchInterval: 30_000, refetchIntervalInBackground: false, refetchOnWindowFocus: 'always' })
   const raw = daily.data as any
   const rows: any[] = Array.isArray(raw?.all_recommendations) ? raw.all_recommendations : Array.isArray(raw?.recommendations) ? raw.recommendations : Array.isArray(raw?.data) ? raw.data : []
   // A dated comparison must never borrow cards from a different signal day.
   const cards = new Map(rows.filter(row => (row.date || raw?.date) === signalDate).map(row => [String(row.symbol), row]))
   if (comparison.isError || daily.isError) return <div role="alert" className="rounded-xl border border-amber-500/30 p-4 text-sm text-amber-200">
-    A/B 配置讀取失敗。<button className="ml-3 underline" onClick={() => { void comparison.refetch(); void daily.refetch() }}>重新讀取</button>
+    策略配置讀取失敗。<button className="ml-3 underline" onClick={() => { void comparison.refetch(); void daily.refetch() }}>重新讀取</button>
   </div>
-  if (!comparison.data) return <p role="status" className="p-4 text-sm text-muted-foreground">讀取 A/B 同日配置…</p>
+  if (!comparison.data) return <p role="status" className="p-4 text-sm text-muted-foreground">讀取同日配置…</p>
   const data = comparison.data
-  return <section className="space-y-3" aria-label="A B 選股與配置權重">
-    <div className="text-sm font-semibold">{data.date} · A／B 選股與配置權重</div>
+  const singleB = data.operating_mode === 'single_b_tabpack_v1'
+  const roles: ('A' | 'B')[] = singleB ? ['B'] : ['A', 'B']
+  return <section className="space-y-3" aria-label={singleB ? 'B 選股與配置權重' : 'A B 選股與配置權重'}>
+    <div className="text-sm font-semibold">{data.date} · {singleB ? 'B 主策略' : 'A／B'} 選股與配置權重</div>
     <p className="text-xs leading-5 text-muted-foreground">{data.scope === 'retrospective_research'
       ? '事後補算比較：僅供觀察，不計入原生 NAV 績效，也不會產生委託。'
       : '下列為各方案的配置目標；是否成交仍以待買檢查、辯論及成交紀錄為準。'}</p>
     <p className="text-xs leading-5 text-muted-foreground">卡片編號為配置清單順序。ML_EDGE 是校準機率換算分，可能因校準曲線平臺而同分；個股配置仍依 L4 預測與 sparse＋OPB 決定。待買清單可先顯示「等待辯論」，通過辯論及交易檢查後才可執行。</p>
-    <p className="text-xs leading-5 text-muted-foreground">現金比例＝100% 減配置權重總和；它是配置目標，並非模擬帳戶當下現金。盤中 L4 重算會改變 A 清單；下方 pending buys 以最新執行批次為準。</p>
-    <div className="grid gap-3 xl:grid-cols-2">
-      {(['A', 'B'] as const).map(role => {
+    <p className="text-xs leading-5 text-muted-foreground">現金比例＝100% 減配置權重總和；它是配置目標，並非模擬帳戶當下現金。待買清單以最新執行批次為準。</p>
+    {singleB && <p className="text-xs leading-5 text-muted-foreground">A 已停止新增配置，歷史紀錄保留。B 沿用 OR15／VWAP 盤中進出場與帳戶風控。</p>}
+    <div className={singleB ? 'grid gap-3' : 'grid gap-3 xl:grid-cols-2'}>
+      {roles.map(role => {
         const arm = data[role]
         return <div key={role} className="min-w-0 rounded-xl border border-muted/40 bg-background/40 p-4">
-          <h3 className="font-semibold">{role === 'A' ? 'A 主方案' : 'B 挑戰方案'}</h3>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{role === 'A' ? '價格 TimeXer＋L4 三頭' : '外生 TimeXer＋L4 三頭＋EV 殘差 MLP'}</p>
+          <h3 className="font-semibold">{singleB ? 'B 主策略' : role === 'A' ? 'A 主方案' : 'B 挑戰方案'}</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{singleB ? '外生 TimeXer＋L4 三頭＋TabPack 殘差校正' : role === 'A' ? '價格 TimeXer＋L4 三頭' : '外生 TimeXer＋L4 三頭＋EV 殘差 MLP'}</p>
           {role === 'B' && arm.status === 'available' && data.B_account_status === 'selection_only' &&
             <p className="mt-2 text-xs text-amber-200">B 已產生盤前配置；完整帳戶績效尚未註冊，本日不得計入 NAV。</p>}
           {arm.status !== 'available' ? <p role="status" className="mt-4 text-sm text-amber-200">{arm.reason}</p> : <>
@@ -50,7 +53,7 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
                     <button className="text-left font-medium hover:underline" onClick={() => onSelectSymbol?.(pick.symbol)}>{pick.symbol}{rec?.name ? ` ${rec.name}` : ''}</button>
                     <span className="shrink-0 tabular-nums">{role} 目標 {(pick.weight * 100).toFixed(2)}%</span>
                   </div>
-                  {role === 'B' && <p className="mb-2 px-2 text-xs leading-5 text-amber-200">下方為同日正式 A 個股資訊，供行情與模型對照；B 的模型分數與交易價位尚未提供。B 配置以本卡上方權重為準。</p>}
+                  {role === 'B' && !singleB && <p className="mb-2 px-2 text-xs leading-5 text-amber-200">下方為同日正式 A 個股資訊，供行情與模型對照；B 的模型分數與交易價位尚未提供。B 配置以本卡上方權重為準。</p>}
                   {rec ? <RecommendationCardClean rec={rec} rank={index + 1} context="home" />
                     : <p role="status" className="p-3 text-xs text-muted-foreground">尚無 {data.date} 的首頁個股資訊；保留已核實的配置權重。</p>}
                 </article>

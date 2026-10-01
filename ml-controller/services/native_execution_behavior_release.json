@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:5e5fbd3340c572f0f537d6069ced7e4dbc10740f37a15e218174003013a5701e",
+  "execution_owner_version": "native-paper-v1:ce3452efa2a326451da44a17085730bba8bfde496b9ce099b4e2d9b024efa62d",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved on 2026-10-01 committing and deploying removal of the unrequested OR15 11:30/11:31 cutoffs, reuse of the existing market-session guard, and exact Paper runtime reapproval. This build retains the previous performance and OR15 context repairs. This record attests this exact Paper build identity only; active Paper runtime admission remains governed by a separate exact active8-paper-runtime-approval-v1 record. No real orders, source equivalence or maturity transfer are authorized.",
-  "review": "docs/releases/2026-10-01-or15-market-session.md",
-  "runtime_admission": "separate exact active8-paper-runtime-approval-v1 required; this file grants no runtime authority"
+  "authorization": "Wei explicitly approved the complete B TabPack Paper release on 2026-10-01, including commit, push/main integration, Controller and required Jobs, Worker, Pages, exact Paper configuration/admission and original atomic model publication. Preserve the account and OR15; real orders remain disabled. This build record itself grants no runtime authority.",
+  "review": "docs/releases/2026-10-01-single-b-tabpack.md",
+  "runtime_admission": "new exact active8-paper-experiment-admission-v1 through the original atomic publisher"
 }

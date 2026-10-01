@@ -67,12 +67,15 @@ def validate_strategy_bundle(bundle, *, candidate_identity=None, signal_date):
 
 def bundle_from_packet(packet):
     """Consume the engineering-approved candidate packet, never its NAV claim."""
+    # The L4 packet producer hashes ASCII-escaped JSON; journal bundles use
+    # UTF-8. Verify each boundary with its own original canonical serializer.
+    from services.l4_distribution import digest as packet_digest
     if (packet.get('schema_version')!='l4-local-cutover-packet-v1'
             or packet.get('release_kind')!='nav_strategy_candidate'
             or packet.get('can_publish') is not False
             or packet.get('l3_nav_gate_waived') is not False
-            or digest(packet['rollback_config'])!=packet.get('previous_config_checksum')
-            or digest(packet['next_config'])!=packet.get('next_config_checksum')):
+            or packet_digest(packet['rollback_config'])!=packet.get('previous_config_checksum')
+            or packet_digest(packet['next_config'])!=packet.get('next_config_checksum')):
         raise ValueError('paired_nav_strategy_candidate_packet_invalid')
     result={'schema_version':SCHEMA,'comparison_unit':'complete_l3_l4_strategy',
         'declared_signal_date':packet['signal_date'],

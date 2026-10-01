@@ -65,6 +65,25 @@ async def _execute_lifecycle(
         return await _execute_oof_lifecycle(**kwargs)
     from services.trading_config_loader import load_merged_trading_config_with_contract
     config=load_merged_trading_config_with_contract().config
+    from services.paper_strategy_mode import single_b_policy, disabled_receipt
+    from datetime import date, datetime, timezone, timedelta
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    business_date = end_date or today.isoformat()
+    mode = single_b_policy(config, signal_date=business_date)
+    if mode:
+        if date.fromisoformat(business_date) > today:
+            raise ValueError('paper_single_b_future_daily_closure')
+        from services.l4_oof_lifecycle import L4DailyPlanPending, daily_plan_closure
+        from services.d1_domain_client import client_proxy_for_domain
+        nav = disabled_receipt(mode, signal_date=business_date)
+        try:
+            closure = daily_plan_closure(config, business_date, client_proxy_for_domain('paper'))
+        except L4DailyPlanPending as exc:
+            return {'status':'pending','dependency_retry_required':True,'reason':str(exc),
+                'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False}
+        return {'status':'native_l4_daily_accounted','native_l4_daily_closure':closure,
+            'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False,
+            'comparison_review_status':'disabled_by_single_b_policy','completion_scope':'verified_formal_paper_plan'}
     new_distribution=config.get('l4Distribution') is not None
     nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution, publish_strategy_display=True)
     nav_failed = nav.get("status") == "failed"

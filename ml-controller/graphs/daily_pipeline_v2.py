@@ -2333,6 +2333,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     cfg_result = load_merged_trading_config_with_contract()
     _require_trading_config_contract(cfg_result, "recommend")
     trading_cfg = cfg_result.config
+    from services.paper_strategy_mode import single_b_policy
+    single_b = single_b_policy(trading_cfg,signal_date=state['run_date'])
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
     if trading_cfg.get('l4Distribution') is not None:
         alpha_policy = dict(alpha_policy or {})
@@ -2507,11 +2509,13 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         },
         filter_rows=filter_and_score_recommendations,
         enrich_l2=apply_l2_timesfm_evidence, enrich_core=apply_core_family_evidence,
-        candidate_reader=lambda: (
+        candidate_reader=lambda: ({'schema_version':'paired-nav-l3-candidate-selection-v1',
+            'signal_date':state['run_date'],'decision_cutoff':decision_cutoff,'base_artifacts':{},
+            'candidates':[],'production_effect':False,'status':'disabled_by_single_b_policy'} if single_b else (
             capture_candidate_selection(state=prediction_source_state(state), predictions=state['predictions'])
             if 'paired_nav_l3_dispatch' in state else load_candidate_ensembles(
                 manifest=_pipeline_frozen_serving_manifest(state), signal_date=state['run_date'],
-                decision_cutoff=decision_cutoff, query=LEARNING_D1_CLIENT.query)),
+                decision_cutoff=decision_cutoff, query=LEARNING_D1_CLIENT.query))),
     )
     logger.info('[Pipeline V2] recommend_path seconds=%.3f', time.perf_counter() - path_phase_started)
     if atomic_prepared is not None:
@@ -2753,6 +2757,9 @@ async def node_paired_nav_setup(state: PipelineStateV2) -> dict:
     collection = await asyncio.to_thread(complete_pipeline_shadow,
         state.get('paired_nav_collection'), query=LEARNING_D1_CLIENT.query,
         writer=LEARNING_D1_CLIENT.batch_execute, enforce_execution_window=True)
+    from services.paper_strategy_mode import STATUS
+    if collection.get('status') == STATUS:
+        return {'paired_nav_collection': collection}
     if 'paired_nav_atomic_inputs' in state:
         from services.paired_nav_atomic_inputs import daily_setup_status
         collection = {**collection, 'atomic_daily': daily_setup_status({**state, 'paired_nav_collection': collection})}
@@ -3347,7 +3354,11 @@ def _pipeline_modal_compact_shadow_suppressions(
 def _pipeline_modal_active8_shadow_selection(
     serving_pool: dict[str, Any],
 ) -> dict[str, Any]:
-    _ = serving_pool  # Observation identity is independent of champion pointers.
+    from services.paper_strategy_mode import from_manifest
+    from datetime import datetime, timezone, timedelta
+    day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    if from_manifest(serving_pool, signal_date=day):
+        return {'selected': [], 'suppressed': []}
     return build_active8_observation_candidate_selection(
         list_artifact_registry(limit=500),
     )
@@ -3908,9 +3919,11 @@ def _build_pipeline_modal_serving_manifest(
             paper_buy_authorized=True, live_buy_authorized=False, efficacy_status='unproven',
             admission_checksum=admission['admission_checksum'], reason='operator_approved_paper_experiment')
 
-    active8_shadow = _pipeline_modal_active8_shadow_projection(
-        active8_shadow_selection,
-    )
+    from services.paper_strategy_mode import from_manifest
+    # Formal eight-model observations remain in execution_models below.
+    # Only the additional comparison inference population is retired.
+    mode = from_manifest(serving_pool, signal_date=admission['business_date']) if 'paper_admission' in publication else None
+    active8_shadow = _pipeline_modal_active8_shadow_projection(None if mode else active8_shadow_selection)
     if action_authority["mode"] == ACTIVE8_ACTION_MODE_EVIDENCE_ONLY:
         observation_models = _pipeline_modal_active8_observation_models(
             active8_shadow["candidates"],
@@ -4345,7 +4358,9 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         contracts=active8_shadow_sequence_contracts,
     )
     nav_requests = None
-    if isinstance(serving_manifest.get('active8_ensemble'), dict):
+    from services.paper_strategy_mode import from_manifest
+    single_b = from_manifest(serving_manifest,signal_date=state['run_date'])
+    if isinstance(serving_manifest.get('active8_ensemble'), dict) and not single_b:
         from services.paired_nav_l3_dispatch import prepare_candidate_requests, freeze_candidate_selection_context
         from services import kv_client
         from services.paired_nav_collection import shadow_failure

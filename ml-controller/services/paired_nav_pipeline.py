@@ -87,8 +87,23 @@ def _verify_registrations(candidates, native, *, signal_date, query):
 
 def complete_pipeline_shadow(collection, *, query, writer, enforce_execution_window=False):
     """Complete post-serving NAV without reloading the large frozen parent."""
+    from services.paper_strategy_mode import STATUS, valid_disabled_receipt, single_b_policy, disabled_receipt
+    if isinstance(collection, dict) and collection.get('status') == STATUS:
+        if not valid_disabled_receipt(collection):
+            raise ValueError('paired_nav_invalid_single_strategy_receipt')
+        return deepcopy(collection)
     snapshot_id = collection.get('snapshot_id') if isinstance(collection, dict) else None
     with reuse_frozen_snapshot(snapshot_id):
+        if snapshot_id:
+            from services.paired_nav_journal import read_context_projection
+            try:
+                parent = read_context_projection(query, snapshot_id, ('trading_config',))
+                mode = single_b_policy(parent['payload']['content'].get('trading_config'),
+                    signal_date=parent['manifest']['signal_date'])
+            except Exception as exc:
+                return {**collection, **shadow_failure('allocation_context_readback', exc)}
+            if mode:
+                return disabled_receipt(mode, signal_date=parent['manifest']['signal_date'], snapshot_id=snapshot_id)
         return _complete_pipeline_shadow(collection, query=query, writer=writer,
             enforce_execution_window=enforce_execution_window)
 
@@ -279,6 +294,9 @@ def pipeline_shadow_errors(collection):
     """Terminal truth: WAIT/explicit abstention can close, absent setup cannot."""
     if not isinstance(collection, dict):
         return ['paired_nav:collection_missing']
+    from services.paper_strategy_mode import STATUS,valid_disabled_receipt
+    if collection.get('status')==STATUS:
+        return [] if valid_disabled_receipt(collection) else ['paired_nav:invalid_single_strategy_receipt']
     errors = []
     atomic_collection = collection.get('atomic_collection')
     if atomic_collection is not None and atomic_collection.get('status') not in {

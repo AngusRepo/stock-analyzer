@@ -112,7 +112,7 @@ export interface AlphaFrameworkConfig {
 }
 
 export interface TradingConfig {
-  l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown> }
+  l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown>; operating_mode?: 'single_b_tabpack_v1'; strategy_role?: 'B' }
 
   fees: {
     commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
@@ -1623,6 +1623,11 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     const policy=config.l4Distribution
     const c=policy.constraints
     const a=policy.artifact as any
+    if (policy.operating_mode != null && (policy.operating_mode !== 'single_b_tabpack_v1'
+      || policy.strategy_role !== 'B' || policy.scope !== 'paper'
+      || a?.model?.residual_tabpack?.schema_version !== 'l4-three-head-residual-tabpack-v1'
+      || a?.model?.residual_mlp != null)) errors.push('single B mode requires a Paper TabPack artifact')
+    if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'
     if ((!isolatedCandidate && policy.scope!=='paper') || a?.schema_version!=='l4-distribution-v1'
       || !validL4FeatureSchema(a)

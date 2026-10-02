@@ -120,13 +120,17 @@ test('news producer retries bad JSON without writing neutral KV, then publishes 
   try {
     await assert.rejects(run(), /invalid_output/)
     assert.equal(f.kvs.has(`market:news_analyst:${date}`), false)
-    await assert.rejects(run(), /premarket_wait/); assert.equal(calls, 1)
+    await assert.rejects(run(), /premarket_wait/); assert.equal(calls, 2)
+    const failure = JSON.parse(f.kvs.get(`market:news_analyst_failure:${date}`)!)
+    assert.equal(failure.error, 'json_object_missing')
+    assert.equal(failure.attempt, 1)
+    assert.ok(f.artifacts.has(failure.key))
     f.ports.nowMs += 601_000; good = true
     assert.equal((await run()).result.status, 'ready')
     const published = (await withPaperExecutionScope(f.ports, () => readCurrentNewsReport(f.env.KV, date))).result
     assert.ok(published?.evidence_receipt?.sha256)
     assert.ok(f.artifacts.has(published.evidence_receipt.key))
-    await run(); assert.equal(calls, 2)
+    await run(); assert.equal(calls, 3)
   } finally { globalThis.fetch = originalFetch; f.close() }
 })
 test('expired third producer attempt becomes terminal error without another API call', async () => {
@@ -135,4 +139,43 @@ test('expired third producer attempt becomes terminal error without another API 
     f.sqls.ops.exec("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,attempt_count,lease_expires_at) VALUES('2026-09-14','premarket_v2:crash','crash','running',3,'2026-09-13 00:00:00')")
     await assert.rejects(runPremarketEvidenceStage(f.env, '2026-09-14', 'crash', async () => null, async () => { throw new Error('must-not-call') }), /error:attempt=3/)
   } finally { f.close() }
+})
+
+test('news producer repairs once with same evidence, then caches valid output', async () => {
+  const f = l4NativeFixture(), originalFetch = globalThis.fetch
+  const now = new Date(), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
+  f.ports.nowMs = now.getTime(); f.env.GEMINI_API_KEY = 'fixture-only'
+  f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
+    source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
+  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
+    .run(row.title, row.summary, row.url, row.source, now.toISOString())
+  const tw = new Date(now.getTime() + 8 * 3600_000 - 60_000).toISOString()
+  let calls = 0
+  globalThis.fetch = async () => new Response('<rss/>')
+  f.ports.fetchFrozen = async (input: any, init: any) => {
+    if (String(input).includes('yahoo.com')) return new Response('<rss/>')
+    if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: tw.slice(0, 10).replaceAll('-', ''), CTime: tw.slice(11, 19).replaceAll(':', '') }] } })
+    if (String(input).includes('generativelanguage')) { calls++; const body = JSON.parse(init.body); if (calls === 2) { assert.ok(JSON.stringify(body).includes('json_object_missing')); assert.ok(JSON.stringify(body).includes(row.title)); assert.equal(f.kvs.has(`market:news_analyst:${date}`), false) }; return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: calls === 2 ? JSON.stringify(valid) : 'not JSON' }] } }] }) }
+    throw new Error('unexpected test network')
+  }
+  const run = () => withPaperExecutionScope(f.ports, () => runDailyNewsAnalysis(f.env))
+  try {
+    assert.equal((await run()).result.status, 'ready')
+    const published = (await withPaperExecutionScope(f.ports, () => readCurrentNewsReport(f.env.KV, date))).result
+    assert.ok(published?.evidence_receipt?.sha256)
+    assert.ok(f.artifacts.has(published.evidence_receipt.key))
+    await run(); assert.equal(calls, 2)
+  } finally { globalThis.fetch = originalFetch; f.close() }
+})
+
+test('news parser identifies actionable citation and assessment failures', () => {
+  for (const [bad, expected] of [
+    [{ ...valid, key_factors: ['Orders [news:1, macro]'] }, 'key_factors[0].citation_missing_unknown_or_combined'],
+    [{ ...valid, assessments: [{ ...valid.assessments[0], evidence_ids: ['macro'] }] }, 'assessments[0].evidence_ids_unknown'],
+    [{ ...valid, assessments: [{ ...valid.assessments[0], rationale: 'x'.repeat(201) }] }, 'assessments[0].rationale_1_to_200_required'],
+  ] as const) {
+    let reason = ''
+    assert.equal(parseReportJson(JSON.stringify(bad), [row], error => { reason = error }), null)
+    assert.equal(reason, expected)
+  }
 })

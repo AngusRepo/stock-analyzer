@@ -2542,9 +2542,9 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     stats.priceRowsOnLatest >= 1000 &&
     Number(stats.priceTwseRowsOnLatest ?? 0) >= 900 &&
     Number(stats.priceOtcRowsOnLatest ?? 0) >= 700
-  const status = priceReady && !sourceWaiting ? 'success' : 'running'
+  const status = priceReady && !sourceWaiting ? 'success' : 'error'
   const summary = [
-    status === 'running' ? 'running: market-close refresh waiting for complete close data' : 'market-close refresh complete',
+    status === 'error' ? 'error: market-close refresh incomplete; attempt finished; retry required' : 'market-close refresh complete',
     `date=${twDate}`,
     `price_latest=${stats.priceLatestDate ?? 'none'}`,
     `price_rows=${stats.priceRowsOnLatest}`,
@@ -2558,6 +2558,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
     run_date: twDate,
   })
   if (status === 'success') await env.KV.put(lockKey, '1', { expirationTtl: 86400 })
+  if(status==='error') throw new Error(summary)
   return summary
 }
 

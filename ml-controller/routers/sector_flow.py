@@ -345,9 +345,23 @@ async def proxy_tpex_prices(req: TpexProxyRequest):
         headers={"User-Agent": _USER_AGENT},
         follow_redirects=True,
     ) as client:
-        resp = await client.get(url, timeout=30.0)
-        resp.raise_for_status()
-        body = resp.json()
+        # Retry the entire body read: a response can fail after receiving headers.
+        for attempt in range(3):
+            try:
+                async with asyncio.timeout(15):
+                    resp = await client.get(url, timeout=12.0)
+                    resp.raise_for_status()
+                    body = resp.json()
+                    if not isinstance(body, dict):
+                        raise ValueError("TPEX response is not an object")
+                break
+            except (httpx.RequestError, httpx.HTTPStatusError, ValueError, TimeoutError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (408, 429, 500, 502, 503, 504):
+                    raise HTTPException(status_code=502, detail="tpex_upstream_rejected") from exc
+                logger.warning("TPEX price attempt %s/3 failed: %s", attempt + 1, type(exc).__name__)
+                if attempt == 2:
+                    raise HTTPException(status_code=503, detail="tpex_upstream_unavailable_after_retries") from exc
+                await asyncio.sleep(.5 * (2 ** attempt))
 
     report_date = str(body.get("date") or "")
     requested = target_date.replace("-", "")

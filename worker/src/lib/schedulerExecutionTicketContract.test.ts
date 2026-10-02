@@ -21,10 +21,10 @@ assert(manifest.jobs.some(job => job.id === 'active8-oof-daily' && job.task === 
 const retryEnabled = manifest.jobs.filter((job) => Number(job.retryConfig?.retryCount ?? 0) > 0)
 assert.deepEqual(
   retryEnabled.map((job) => job.id).sort(),
-  ['external-evidence', 'retention-archive-only', 'weekly-cleanup', 'weekly-s12-smcvwap-calibration'],
+  ['external-evidence', 'market-close-refresh', 'retention-archive-only', 'weekly-cleanup', 'weekly-s12-smcvwap-calibration'],
 )
 for (const job of retryEnabled) {
-  assert.equal(job.attemptDeadline, job.id === 'retention-archive-only' ? '300s' : '60s')
+  assert.equal(job.attemptDeadline, ['retention-archive-only','market-close-refresh'].includes(job.id) ? '300s' : '60s')
   assert.equal(job.retryConfig?.retryCount, 2)
   assert.equal(job.retryConfig?.maxRetryDuration, '900s')
 }

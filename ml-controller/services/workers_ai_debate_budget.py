@@ -1,11 +1,11 @@
-"""Shared-account debate guard: fresh analytics + atomic conservative reservation.
+"""Shared-account guard with distinct completed charges and unresolved holds.
 
-Analytics can lag and excludes in-flight requests. Failed or ambiguous requests
-retain their full reservation. A completed response with valid usage settles to
-measured neurons plus a safety margin. The daily row still adds reservations to
-the analytics high-water mark, so it remains conservative. Other account clients
-must respect the same free-allocation policy; a 2,000-neuron buffer is not a
-provider billing hard cap.
+Use max(provider high-water, opening baseline + locally settled charges), then
+add every unresolved reservation. Successful charges are not added again to
+provider-observed usage. Unknown outcomes retain the entire bound. Per-request
+settlement is idempotent. The 8,000 guard and 10% measurement margin remain.
+Analytics may lag unrelated account users: this guard is not a provider billing
+cap, and other clients must share the same reservation policy.
 """
 from __future__ import annotations
 
@@ -27,27 +27,20 @@ MODEL_RATES = {
     '@cf/mistralai/mistral-small-3.1-24b-instruct': (31876, 50488),
     '@cf/openai/gpt-oss-20b': (18182, 27273),
 }
-RESERVE_SQL = """INSERT INTO workers_ai_debate_budget_v1
-    (account_id,utc_day,observed_neurons,reserved_neurons,updated_at,
-     last_request_neurons,last_request_admitted)
-    VALUES (?,?,?,CASE WHEN ?+?<=? THEN ? ELSE 0 END,?,?,CASE WHEN ?+?<=? THEN 1 ELSE 0 END)
-    ON CONFLICT(account_id,utc_day) DO UPDATE SET
-      observed_neurons=MAX(observed_neurons,excluded.observed_neurons),
-      reserved_neurons=reserved_neurons+CASE
-        WHEN MAX(observed_neurons,excluded.observed_neurons)+reserved_neurons+excluded.last_request_neurons<=?
-        THEN excluded.last_request_neurons ELSE 0 END,
-      updated_at=excluded.updated_at,
-      last_request_neurons=excluded.last_request_neurons,
-      last_request_admitted=CASE
-        WHEN MAX(observed_neurons,excluded.observed_neurons)+reserved_neurons+excluded.last_request_neurons<=?
-        THEN 1 ELSE 0 END
-    RETURNING observed_neurons,reserved_neurons,last_request_admitted"""
-
-
-SETTLE_SQL = """UPDATE workers_ai_debate_budget_v1
-    SET reserved_neurons=reserved_neurons-?+?, updated_at=?
-    WHERE account_id=? AND utc_day=? AND reserved_neurons>=?
-    RETURNING reserved_neurons"""
+DAY_SQL = """INSERT INTO workers_ai_debate_days_v2
+ (account_id,utc_day,observed_neurons,baseline_neurons,legacy_hold,updated_at)
+ VALUES (?,?,?,?,COALESCE((SELECT reserved_neurons FROM workers_ai_debate_budget_v1
+ WHERE account_id=? AND utc_day=?),0),?)
+ ON CONFLICT(account_id,utc_day) DO UPDATE SET
+ observed_neurons=MAX(observed_neurons,excluded.observed_neurons),updated_at=excluded.updated_at"""
+RESERVE_SQL = """INSERT INTO workers_ai_debate_calls_v2
+ (request_id,account_id,utc_day,bound_neurons,created_at)
+ SELECT ?,account_id,utc_day,?,? FROM workers_ai_debate_balances_v2
+ WHERE account_id=? AND utc_day=? AND conservative_neurons+?<=?
+ RETURNING request_id"""
+SETTLE_SQL = """UPDATE workers_ai_debate_calls_v2 SET measured_neurons=?,completed_at=?
+ WHERE request_id=? AND account_id=? AND utc_day=? AND bound_neurons=? AND measured_neurons IS NULL
+ RETURNING measured_neurons"""
 
 
 def measured_call_neurons(model: str, usage: dict) -> int | None:
@@ -62,29 +55,30 @@ def measured_call_neurons(model: str, usage: dict) -> int | None:
     return max(1, math.ceil(1.1 * (prompt * rate_in + completion * rate_out) / 1_000_000))
 
 
-def settle_neurons(*, account: str, utc_day: str, bound: int, measured: int, query=None) -> dict:
-    if type(bound) is not int or type(measured) is not int or bound <= 0 or measured <= 0:
+def settle_neurons(*, account: str, utc_day: str, request_id: str, bound: int, measured: int, query=None) -> dict:
+    if type(bound) is not int or type(measured) is not int or bound <= 0 or measured <= 0 or not request_id:
         raise ValueError('workers_ai_debate_settlement_invalid')
     if query is None:
         from services.d1_domain_client import client_for_domain
         query = client_for_domain('ops').query
-    rows = query(SETTLE_SQL, [bound, measured, datetime.now(timezone.utc).isoformat(),
-                              account, utc_day, bound])
-    if len(rows) != 1:
+    rows = query(SETTLE_SQL, [measured, datetime.now(timezone.utc).isoformat(), request_id, account, utc_day, bound])
+    if not rows:
+        rows = query('SELECT measured_neurons FROM workers_ai_debate_calls_v2 WHERE request_id=? AND account_id=? AND utc_day=? AND bound_neurons=?',
+                     [request_id, account, utc_day, bound])
+    if len(rows) != 1 or rows[0]['measured_neurons'] != measured:
         raise RuntimeError('workers_ai_debate_settlement_unavailable')
-    return rows[0]
+    return query('SELECT * FROM workers_ai_debate_balances_v2 WHERE account_id=? AND utc_day=?', [account, utc_day])[0]
 
 
-async def settle_call(*, account: str, utc_day: str, bound: int, model: str, usage: dict) -> None:
+async def settle_call(*, account: str, utc_day: str, request_id: str, bound: int, model: str, usage: dict) -> None:
     measured = measured_call_neurons(model, usage)
     if measured is None:
         return
     try:
-        await asyncio.to_thread(settle_neurons, account=account, utc_day=utc_day,
+        await asyncio.to_thread(settle_neurons, account=account, utc_day=utc_day, request_id=request_id,
                                 bound=bound, measured=measured)
     except Exception:
-        # The original reservation remains in place when settlement is uncertain.
-        logger.warning('[DebateBudget] settlement unavailable day=%s', utc_day)
+        logger.warning('[DebateBudget] settlement unavailable day=%s request=%s', utc_day, request_id)
 
 
 def estimate_call_neurons(model: str, messages: list[dict], max_tokens: int) -> int:
@@ -127,25 +121,31 @@ async def read_account_usage(client, account: str, token: str, utc_day: str) -> 
 
 
 def reserve_neurons(*, account: str, utc_day: str, observed: float, bound: int, query=None) -> dict:
+    from uuid import uuid4
+    if type(observed) not in (int, float) or not math.isfinite(observed) or observed < 0 or type(bound) is not int or bound <= 0:
+        raise ValueError('workers_ai_debate_budget_request_invalid')
     if query is None:
         from services.d1_domain_client import client_for_domain
         query = client_for_domain('ops').query
     now = datetime.now(timezone.utc).isoformat()
+    request_id = str(uuid4())
     try:
-        rows = query(RESERVE_SQL, [account, utc_day, observed, observed, bound, STOP_NEURONS, bound, now, bound,
-            observed, bound, STOP_NEURONS, STOP_NEURONS, STOP_NEURONS])
+        # Persist even denied high-water observations. Admission is ONE atomic
+        # INSERT ... SELECT over current charges, so parallel callers cannot
+        # borrow the same headroom. No timeout ever releases a reservation.
+        query(DAY_SQL, [account, utc_day, observed, observed, account, utc_day, now])
+        admitted = query(RESERVE_SQL, [request_id, bound, now, account, utc_day, bound, STOP_NEURONS])
+        row = query('SELECT * FROM workers_ai_debate_balances_v2 WHERE account_id=? AND utc_day=?', [account, utc_day])[0]
     except Exception:
         raise RuntimeError('workers_ai_debate_budget_store_unavailable') from None
-    if len(rows) != 1 or rows[0].get('last_request_admitted') != 1:
-        logger.warning('[DebateBudget] stopped day=%s observed=%.2f bound=%s stop=%s',
-            utc_day, observed, bound, STOP_NEURONS)
+    if len(admitted) != 1:
+        logger.warning('[DebateBudget] stopped day=%s observed=%.2f completed=%s reserved=%s bound=%s stop=%s',
+            utc_day, observed, row['completed_neurons'], row['reserved_neurons'], bound, STOP_NEURONS)
         raise RuntimeError('workers_ai_debate_daily_safe_budget_exhausted')
-    row = rows[0]
-    effective = row['observed_neurons'] + row['reserved_neurons']
-    if effective >= WARN_NEURONS:
+    if row['conservative_neurons'] >= WARN_NEURONS:
         logger.warning('[DebateBudget] warning day=%s conservative_neurons=%.2f warn=%s stop=%s',
-            utc_day, effective, WARN_NEURONS, STOP_NEURONS)
-    return {**row, 'utc_day': utc_day, 'reservation_neurons': bound, 'conservative_neurons': effective,
+            utc_day, row['conservative_neurons'], WARN_NEURONS, STOP_NEURONS)
+    return {**row, 'request_id': request_id, 'reservation_neurons': bound,
         'warn_neurons': WARN_NEURONS, 'stop_neurons': STOP_NEURONS}
 
 

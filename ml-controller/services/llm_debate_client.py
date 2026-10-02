@@ -120,9 +120,10 @@ async def call_llm(
         usage = data.get("usage") or {}
         if (isinstance(reservation, dict)
                 and isinstance(reservation.get('utc_day'), str)
-                and type(reservation.get('reservation_neurons')) is int):
+                and type(reservation.get('reservation_neurons')) is int
+                and isinstance(reservation.get('request_id'), str)):
             from .workers_ai_debate_budget import settle_call
-            await settle_call(account=account, utc_day=reservation['utc_day'],
+            await settle_call(account=account, utc_day=reservation['utc_day'], request_id=reservation['request_id'],
                               bound=reservation['reservation_neurons'], model=model, usage=usage)
         values = ('llm_debate', 'cloudflare_workers_ai', model,
             int(usage.get('prompt_tokens') or 0), int(usage.get('completion_tokens') or 0))

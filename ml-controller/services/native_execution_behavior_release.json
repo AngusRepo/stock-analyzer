@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:4240e393d04a60661447e41783c204dd242b9cd8ac172bab0897e1a915b9347e",
+  "execution_owner_version": "native-paper-v1:9571677af49ea80edeb04b1acabcb2fd6a7df5697306e40ab8ddbf89065b5799",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "News output validation diagnostics, explicit prompt constraints and one bounded repair using identical evidence. Wei explicitly approved this complete release and recovery on 2026-10-02: \u6279\u51c6\u672c\u6b21\u5b8c\u6574\u4fee\u88dc\u767c\u5e03\u8207\u6062\u5fa9. Exact identity 76c9c6c0 to 4240e393 and dedicated news-output-recovery KV authorized. No model, risk policy, real orders or NAV changes.",
+  "authorization": "Separate completed LLM charges from unresolved reservations; retain 8000 neuron guard, per-request idempotent settlement, evidence-backed legacy migration. User requested fix and resume today pending debates. Wei explicitly approved this release, schema, accounting reconciliation and exact Paper KV identity on2026-10-02: \u6279\u51c6\u672c\u6b21\u984d\u5ea6\u4fee\u88dc\u767c\u5e03\u8207\u5e33\u52d9\u8f49\u63db. No model, trading policy, real orders or NAV changes.",
   "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-news-output-recovery"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-budget-ledger-recovery"
 }

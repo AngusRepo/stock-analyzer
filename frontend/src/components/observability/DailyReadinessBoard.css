@@ -1,37 +1,34 @@
 .daily-readiness-board { min-width: 0; padding: 16px; }
-.daily-readiness-board__phases { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.daily-readiness-board__phase { display: flex; flex-direction: column; min-width: 0; gap: 10px; padding: 14px; border: 1px solid #2a3543; border-radius: 12px; text-align: left; background: #101820; color: #9aaabb; }
-.daily-readiness-board__phase:hover { border-color: #63768a; }
-.daily-readiness-board__phase.is-selected { border-color: #38a9ff; background: #112234; box-shadow: inset 0 2px #38a9ff; }
-.daily-readiness-board__phase:focus-visible { outline: 2px solid #67e8f9; outline-offset: 3px; }
-.daily-readiness-board__phase-title { display: flex; align-items: center; gap: 9px; }
-.daily-readiness-board__phase-title small { font-size: 11px; color: #718399; }
-.daily-readiness-board__phase-title strong { color: #edf3f8; font-size: 14px; }
-.daily-readiness-board__phase-title em { margin-left: auto; font-size: 12px; font-style: normal; }
-.daily-readiness-board__caption, .daily-readiness-board__attention { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.daily-readiness-board__attention { margin-top: auto; }
-.daily-readiness-board__phase.is-blocked .daily-readiness-board__attention { color: #ff9390; }
-.daily-readiness-board__phase.is-running .daily-readiness-board__attention { color: #70bfff; }
-.daily-readiness-board__preview { display: grid; gap: 5px; font-size: 11px; }
-.daily-readiness-board__preview > span { display: flex; justify-content: space-between; gap: 8px; }
-.daily-readiness-board__preview b { font-weight: 500; }
-.daily-readiness-board__preview .is-blocked { color: #ff9390; }
-.daily-readiness-board__preview .is-running { color: #70bfff; }
-.daily-readiness-board__preview .is-completed, .daily-readiness-board__preview .is-noop { color: #86dda0; }
-.daily-readiness-board__preview .is-waiting { color: #e7be71; }
-.daily-readiness-board__panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0 12px; }
-.daily-readiness-board__panel-head h4 { margin: 0; font-size: 14px; color: #eef4fa; }
-.daily-readiness-board__panel-head p, .daily-readiness-board__panel-head > span { margin: 4px 0 0; font-size: 12px; color: #8092a5; }
-.daily-readiness-board__stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
-.daily-readiness-board__stage { min-width: 0; padding: 10px; border: 1px solid #253346; border-radius: 10px; background: rgba(8,16,27,.6); }
-.daily-readiness-board .obs-chain__stage { display: grid; grid-template-columns: 42px minmax(0, 1fr); width: 100%; align-items: center; justify-items: start; gap: 12px; padding: 4px 0; text-align: left; border: 0; background: transparent; }
-.daily-readiness-board .obs-chain__orb { width: 40px; height: 40px; }
-.daily-readiness-board .obs-chain__orb > svg { width: 19px; height: 19px; }
+.daily-readiness-board__phases { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,calc((100% - 57px) * .4)) minmax(0,1fr); align-items: start; column-gap: 12px; gap: 12px; }
+.daily-readiness-board__phase { min-width: 0; padding: 12px; border: 1px solid #2a3543; border-radius: 12px; background: #101820; color: #9aaabb; }
+.daily-readiness-board__phase.is-evidence { grid-column: auto; }
+.daily-readiness-board__phase.is-evidence .daily-readiness-board__stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.daily-readiness-board__phase.is-blocked { border-color: #8b4247; }
+.daily-readiness-board__phase.is-running { border-color: #38a9ff; background: #101e2c; box-shadow: inset 0 2px #38a9ff; }
+.daily-readiness-board__phase-title { display: flex; align-items: center; gap: 7px; }
+.daily-readiness-board__phase-title small { font-size: 10px; color: #718399; }
+.daily-readiness-board__phase-title h4 { margin: 0; color: #edf3f8; font-size: 13px; }
+.daily-readiness-board__phase-state { display: flex; align-items: center; gap: 7px; margin-left: auto; font-size: 11px; }
+.daily-readiness-board__running { display: inline-flex; color: #70bfff; }
+.daily-readiness-board__running svg { width: 16px; height: 16px; animation: readiness-spin 1s linear infinite; }
+.daily-readiness-board__caption { margin: 7px 0 12px; font-size: 11px; line-height: 1.5; color: #8395a9; }
+.daily-readiness-board__stages { display: grid; gap: 5px 12px; }
+.daily-readiness-board__stage { min-width: 0; height: 76px; box-sizing: border-box; display: grid; align-items: center; padding: 8px; border: 1px solid #253346; border-radius: 8px; background: #0b141f; }
+.daily-readiness-board .obs-chain__stage { display: grid; grid-template-columns: 28px minmax(0, 1fr); width: 100%; align-items: center; justify-items: start; gap: 9px; padding: 0; text-align: left; border: 0; background: transparent; }
+.daily-readiness-board .obs-chain__stage:focus-visible { outline: 2px solid #70bfff; outline-offset: 4px; border-radius: 4px; }
+.daily-readiness-board .obs-chain__orb { width: 28px; height: 28px; border-radius: 7px; box-shadow: none; }
+.daily-readiness-board .obs-chain__orb > svg { width: 15px; height: 15px; }
+.daily-readiness-board .obs-chain__orb::before, .daily-readiness-board .obs-chain__orb::after { display: none; }
+.daily-readiness-board .obs-chain__state-mark { width: 14px; height: 14px; right: -4px; bottom: -3px; border-width: 1px; }
+.daily-readiness-board .obs-chain__state-mark > svg { width: 9px; height: 9px; }
 .daily-readiness-board .obs-chain__ordinal { display: none; }
-.daily-readiness-board .obs-chain__stage-copy { margin: 0; justify-items: start; }
-.daily-readiness-board .obs-chain__stage-copy strong { font-size: 13px; text-align: left; }
+.daily-readiness-board .obs-chain__stage-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 5px; margin: 0; justify-items: start; align-items: start; }
+.daily-readiness-board .obs-chain__stage-copy strong { font-size: 12px; text-align: left; text-wrap: initial; overflow-wrap: anywhere; }
 .daily-readiness-board .obs-chain__stage-copy > span { display: none; }
-.daily-readiness-board .obs-chain__stage-copy small, .daily-readiness-board .obs-chain__stage-copy em { font-size: 11px; white-space: normal; }
-.daily-readiness-board__date { display: block; margin: 10px 0 0 54px; font-size: 11px; color: #8191a3; }
-@media (max-width: 1150px) { .daily-readiness-board__phases, .daily-readiness-board__stages { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 540px) { .daily-readiness-board { padding: 12px; } .daily-readiness-board__phases { gap: 8px; } .daily-readiness-board__phase { padding: 10px; } .daily-readiness-board__phase-title { flex-wrap: wrap; gap: 5px; } .daily-readiness-board__phase-title strong { font-size: 12px; } .daily-readiness-board__stages { grid-template-columns: minmax(0, 1fr); } }
+.daily-readiness-board .obs-chain__stage-copy small { grid-row: 2; grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 3px 8px; width: 100%; margin: 2px 0 0; font-size: 10px; white-space: normal; color: #93a4b8; }
+.daily-readiness-board .obs-chain__stage-copy em { grid-row: 1; grid-column: 2; margin: 0; font-size: 10px; max-width: 76px; line-height: 1.35; text-align: right; }
+.daily-readiness-board__date { margin-left: auto; font-size: 10px; color: #718399; }
+@keyframes readiness-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1250px) { .daily-readiness-board__phase.is-evidence { grid-column: 1 / -1; } .daily-readiness-board__phases { grid-template-columns: repeat(2, minmax(0, 1fr)); } .daily-readiness-board__phase.is-evidence .daily-readiness-board__stages { column-gap: 38px; } }
+@media (max-width: 540px) { .daily-readiness-board { padding: 10px; } .daily-readiness-board__phases { grid-template-columns: minmax(0, 1fr); gap: 10px; } .daily-readiness-board__phase.is-evidence, .daily-readiness-board__phase.is-premarket { grid-column: auto; grid-row: auto; } .daily-readiness-board__phase.is-evidence .daily-readiness-board__stages { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .daily-readiness-board__running svg, .daily-readiness-board .obs-chain__orb, .daily-readiness-board .obs-chain__state-mark > svg { animation: none !important; } }

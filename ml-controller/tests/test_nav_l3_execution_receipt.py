@@ -107,6 +107,8 @@ def test_terminal_cannot_claim_nav_execution_from_counts_only(persisted):
 
 
 def test_original_write_node_projects_verified_receipt(persisted, monkeypatch):
+    # This unit tests receipt persistence; the canonical-window gate has its own tests.
+    monkeypatch.setattr(graph, "_assert_pipeline_canonical_window", lambda _state: None)
     _, predictions, receipt, _, _, manifest, _ = persisted
     seeds = [{'symbol': s, 'id': i+1} for i, s in enumerate(predictions)]
     state = {'run_date': '2026-09-22', 'predictions': predictions, 'nav_inference_receipt': receipt,

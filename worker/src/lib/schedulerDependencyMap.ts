@@ -20,10 +20,11 @@ export interface SchedulerDependencySpec {
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
   'paired-native-execution': {
-    task: 'paired-native-execution', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
-    currentFunction: 'Collects immutable current-session source frames for both private native paper arms, then derives and replays the close receipt.',
-    upstream: ['pipeline'], downstream: ['active8-oof-daily'], requiredBeforeDisable: ['no_open_native_pair_sessions'], operatorRisk: 'high',
-    recommendation: 'One private execution owner across morning/day slots; never backfill missing expired inputs or mutate formal paper accounts. Nightly materialization consumes its verified receipts.',
+    task: 'paired-native-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',
+    currentFunction: 'Retired under the single-B policy; both physical roots are paused. Historical paired receipts remain readable.',
+    replacementOwner: 'single-B formal Paper execution; paired research accounts retired',
+    upstream: [], downstream: [], requiredBeforeDisable: ['single_b_tabpack_v1 active', 'both physical roots PAUSED', 'historical paired receipts retained'], operatorRisk: 'low',
+    recommendation: 'Keep roots PAUSED. Single-B Worker returns a disabled receipt before waking Controller; formal Paper keeps its shared native engine.',
   },
   'daily-execution-paper-lineage': {
     task: 'daily-execution-paper-lineage', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',

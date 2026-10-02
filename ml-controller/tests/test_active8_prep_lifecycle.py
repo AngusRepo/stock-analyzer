@@ -316,3 +316,48 @@ def test_inference_rechecks_produced_snapshot_before_prep_without_training(monke
     assert result['training_dispatched'] is False
     assert result['source_gcs_prefix'].endswith('expanded1280')
     assert len(produced) == int(behind)
+
+
+@pytest.mark.parametrize("corrupt_latest", [False, True])
+def test_sequence_selection_reads_only_newest_valid_batches(monkeypatch, corrupt_latest):
+    bucket = _Bucket()
+    _, template = _seal_sequence(bucket)
+    bucket.store = {}
+    for i in range(49):
+        prefix = lifecycle.SEQUENCE_PREFIX + f"run-{i:03}"
+        raw = f"sequence-{i}".encode()
+        manifest = {**template, "output_gcs_prefix": prefix,
+                    "created_at": f"2026-07-24T14:00:{i:02}+00:00", "batch_count": 5}
+        manifest["output_checksums"] = {}
+        for j in range(5):
+            path = f"{prefix}/prep/batch_{j}.npz"
+            bucket.store[path] = raw
+            manifest["output_checksums"][path] = hashlib.sha256(raw).hexdigest()
+        manifest["manifest_checksum"] = lifecycle._manifest_checksum(manifest)
+        bucket.store[f"{prefix}/prep/sequence_manifest.json"] = json.dumps(manifest).encode()
+    if corrupt_latest:
+        bucket.store[lifecycle.SEQUENCE_PREFIX + "run-048/prep/batch_0.npz"] = b"corrupt"
+    reads = []
+    original = _Blob.download_as_bytes
+    def read(self):
+        reads.append(self.name)
+        return original(self)
+    monkeypatch.setattr(_Blob, "download_as_bytes", read)
+    prefix, selected = lifecycle._latest_immutable_sequence(bucket, "2026-07-25")
+    assert prefix.endswith("run-047" if corrupt_latest else "run-048")
+    assert selected["manifest_checksum"] == lifecycle._manifest_checksum(selected)
+    assert len(reads) == (6 if corrupt_latest else 5)
+
+
+def test_sequence_selection_rejects_future_and_corrupt_manifest(monkeypatch):
+    bucket = _Bucket()
+    prefix, manifest = _seal_sequence(bucket, date_max="2026-07-26")
+    def no_read(self):
+        raise AssertionError("ineligible batch must not be downloaded")
+    monkeypatch.setattr(_Blob, "download_as_bytes", no_read)
+    with pytest.raises(lifecycle.Active8PrepDependencyPending):
+        lifecycle._latest_immutable_sequence(bucket, "2026-07-25")
+    manifest["summary"]["date_max"] = "2026-07-24"  # Invalid seal; do not recompute checksum.
+    bucket.store[f"{prefix}/prep/sequence_manifest.json"] = json.dumps(manifest).encode()
+    with pytest.raises(lifecycle.Active8PrepDependencyPending):
+        lifecycle._latest_immutable_sequence(bucket, "2026-07-25")

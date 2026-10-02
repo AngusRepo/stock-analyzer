@@ -79,21 +79,29 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
             expected = [f"{prefix}/prep/batch_{index}.npz" for index in range(batch_count)]
             if batch_count < 1 or any(item not in checksums for item in expected):
                 continue
-            if any(
-                _sha256(bucket.blob(item).download_as_bytes()) != checksums[item]
-                for item in expected
-            ):
-                continue
             candidates.append((date_max, str(manifest.get("created_at") or ""), manifest))
         except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never selected.
             continue
-    if not candidates:
-        raise Active8PrepDependencyPending(
-            "immutable_sequence_v3_missing",
-            {"prefix": SEQUENCE_PREFIX, "cutoff": cutoff},
-        )
-    manifest = max(candidates, key=lambda item: (item[0], item[1]))[2]
-    return str(manifest["output_gcs_prefix"]).rstrip("/"), manifest
+    # The old selector downloaded every historical batch before choosing the
+    # latest valid seal. Rank the already-verified manifests first, then verify
+    # every byte of the candidate we will actually use. Corrupt/missing newest
+    # data still falls back through exactly the same ordered candidate set.
+    for _, _, manifest in sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True):
+        prefix = str(manifest["output_gcs_prefix"]).rstrip("/")
+        checksums = manifest["output_checksums"]
+        try:
+            if all(
+                _sha256(bucket.blob(f"{prefix}/prep/batch_{index}.npz").download_as_bytes())
+                == checksums[f"{prefix}/prep/batch_{index}.npz"]
+                for index in range(int(manifest["batch_count"]))
+            ):
+                return prefix, manifest
+        except Exception:  # Same invalid-artifact fallback as the previous selector.
+            continue
+    raise Active8PrepDependencyPending(
+        "immutable_sequence_v3_missing",
+        {"prefix": SEQUENCE_PREFIX, "cutoff": cutoff},
+    )
 
 
 def _receipt_checksum(receipt: dict[str, Any]) -> str:

@@ -106,8 +106,8 @@ for (const task of ['news-analyst', 'us-leading', 'sector-leaders']) {
 }
 
 const recovery = fs.readFileSync('src/lib/premarketEvidenceWatchdog.ts', 'utf8')
-assert(recovery.includes('fetchAndStoreUSLeading') && recovery.includes('runDailyNewsAnalysis') &&
-  recovery.includes('reconcilePendingBuyDebates'), 'watchdog owns evidence recovery and pending debate continuation')
+assert(recovery.includes('return ensurePremarketEventChain(env,clock.date,now)'),
+  'watchdog delegates dated evidence recovery and downstream continuation to the atomic premarket owner')
 assert(!morningBriefing.includes('runDailyNewsAnalysis') && !morningBriefing.includes('fetchAndStoreUSLeading'),
   'manual briefing cannot own producer retries')
 

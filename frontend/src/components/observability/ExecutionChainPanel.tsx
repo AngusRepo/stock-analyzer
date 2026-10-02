@@ -1,3 +1,4 @@
+import { eveningClosureDisplay } from './eveningClosureDisplay'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -95,7 +96,7 @@ const STAGES: Record<string, StageDefinition> = {
   'obsidian-sync': { id: 'obsidian-sync', label: 'Obsidian sync', icon: Archive, optional: true },
   'meta-learning-shadow': { id: 'meta-learning-shadow', label: 'Meta shadow', icon: MoonStar, optional: true },
   'strategy-learning': { id: 'strategy-learning', label: 'Strategy learning', icon: BrainCircuit, optional: true },
-  'evening-closure': { id: 'evening-closure', label: 'Closure receipt', icon: FileCheck2, dependsOn: 'strategy-learning' },
+  'evening-closure': { id: 'evening-closure', label: '全鏈完成收據', icon: FileCheck2, dependsOn: 'strategy-learning' },
   'morning-setup': { id: 'morning-setup', label: 'Morning setup', icon: Settings2 },
   'pre-market-warmup': { id: 'pre-market-warmup', label: 'Pre-market', icon: CircleGauge },
   'intraday-check': { id: 'intraday-check', label: 'Intraday check', icon: Radar },
@@ -507,13 +508,7 @@ export default function ExecutionChainPanel({
     if (scope.id === 'daily_readiness') {
       const rootClosure = next.get('evening-chain')
       if (rootClosure) {
-        next.set('evening-closure', {
-          ...rootClosure,
-          id: 'evening-closure',
-          name: 'Evening root terminal receipt',
-          summary: rootClosure.summary || 'Root finalizer waits for both daily branches, then writes the terminal receipt consumed by this view.',
-          displayNote: 'This is the actual Evening Chain root ticket, shown again at the end as the post-20a/20b closure receipt.',
-        })
+        next.set('evening-closure', eveningClosureDisplay(rootClosure))
       }
     }
     scopeExecutionStageIds(scope).forEach((id) => {
@@ -698,7 +693,7 @@ export default function ExecutionChainPanel({
               <p>Intraday guard &rarr; EOD &rarr; close refresh &rarr; daily snapshot.</p>
             </div>
           )}
-          {scope.id === 'daily_readiness' ? <DailyReadinessBoard currentId={currentId} selectedId={selectedId}
+          {scope.id === 'daily_readiness' ? <DailyReadinessBoard
             stageView={id => ({ label: STAGES[id]?.label ?? id, status: visualStatus(scopedJobMap.get(id)),
               statusLabel: statusLabel(scopedJobMap.get(id)), date: scopedJobMap.get(id)?.statusRunDate })}
             renderStage={(id, ordinal) => {
@@ -713,7 +708,9 @@ export default function ExecutionChainPanel({
                 <span className="obs-chain__ordinal sv-num">{ordinal}</span>
                 <span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>
                 <span className="obs-chain__stage-copy"><strong>{definition.label}</strong><span>{job?.name ?? id}</span>
-                  <small className="sv-num">{runtimeEvidence(job)}</small><em>{statusLabel(job)}{definition.optional ? ' · optional' : ''}</em></span>
+                  <small className="sv-num">{runtimeEvidence(job)}{job?.lastDuration ? ` · ${job.lastDuration}` : ''}
+                    <span className="daily-readiness-board__date">{job?.statusRunDate ?? '尚無收據'}</span></small>
+                  <em title={definition.optional ? 'Optional job' : undefined}>{statusLabel(job)}</em></span>
               </button>
             }} /> : <div className="obs-chain__viewport" ref={viewportRef}>
         <div className={`obs-chain__sequence ${scope.columns.length >= 16 ? 'is-dense' : ''}`}>
@@ -764,9 +761,9 @@ export default function ExecutionChainPanel({
       </div>}
         </section>
 
-      {scope.branches && scope.branches.length > 0 && (
-        <details className="obs-chain__branch-disclosure" open={scope.id !== 'daily_readiness'}>
-        <summary>{scope.id === 'daily_readiness' ? '延伸證據與復原' : '獨立排程'} · {(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).length} 項
+      {scope.id !== 'daily_readiness' && scope.branches && scope.branches.length > 0 && (
+        <details className="obs-chain__branch-disclosure" open>
+        <summary>獨立排程 · {(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).length} 項
           <span>{(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).filter(id=>visualStatus(scopedJobMap.get(id))==='blocked').length} 項異常</span>
         </summary>
         <div className="obs-chain__branches" aria-label="Execution branches">

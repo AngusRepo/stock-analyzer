@@ -16,3 +16,6 @@ const source=readFileSync('src/components/observability/ExecutionChainPanel.tsx'
 const intraday=source.slice(source.indexOf("id: 'intraday',"),source.indexOf("id: 'weekly',"))
 for(const id of PREMARKET_READINESS_IDS) assert.ok(!intraday.includes(id),id+' must leave intraday scope')
 console.log('dailyReadinessPhases: unique coverage, morning ownership and replay isolation passed')
+
+assert.equal(dailyPhaseForStage('dataset-snapshot-export'),'models')
+for (const id of ['active8-oof-daily','allocator-ev-lifecycle-watchdog']) assert.equal(dailyPhaseForStage(id),'evidence')

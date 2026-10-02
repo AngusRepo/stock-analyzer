@@ -784,11 +784,8 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'paper-trade': () => deps.runPaperAutoTrade(),
     'paired-native-execution': async () => {
-      const { controllerPostJson } = await import('./controllerClient')
-      const result = await controllerPostJson<{ status: string; pairs: unknown[] }>(c.env,
-        '/paper/native-execution-tick', { session_date: twToday() }, 240_000)
-      if (result.status !== 'ok' || !Array.isArray(result.pairs)) throw new Error('paired_native_execution_tick_failed')
-      return `paired_native_execution ${JSON.stringify(result)}`
+      const { pairedNativeExecution } = await import('./pairedNativeExecution')
+      return pairedNativeExecution(c.env)
     },
     'morning-setup': async () => {
       const { ensurePremarketEventChain } = await import('./premarketEventChain')

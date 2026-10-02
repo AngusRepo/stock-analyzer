@@ -3057,6 +3057,9 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     if state.get('l4_pending_plan') is not None:
         from services.l4_distribution_context import publish_plan
         await asyncio.to_thread(publish_plan, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
+        from services.rfs_comparison_store import observe_safely
+        metrics['rfs_sparse_comparison'] = await asyncio.to_thread(
+            observe_safely, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
     logger.info(f"[Pipeline V2] write_d1 done: {metrics}")
     return {"metrics": metrics}
 

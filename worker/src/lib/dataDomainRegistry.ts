@@ -83,6 +83,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'sector_taxonomy_membership_snapshots_v1', 'sector_taxonomy_snapshot_runs_v1',
   ]),
   learning: new Set([
+    'rfs_sparse_comparisons_v1', 'rfs_sparse_outcomes_v1',
     'predictions', 's12_replay_trade_outcomes', 's12_structure_snapshots',
     's12_tw_calibration_runs', 's12_tw_calibration_artifacts', 'state_space_shadow_results',
     'state_space_v2_runs', 'state_space_v2_observations', 'state_space_v2_evaluations',
@@ -308,6 +309,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
   // populated only after the split, so routing/schema readiness includes them
   // while the legacy-to-domain backfill drain must skip them.
   learning: new Set([
+    'rfs_sparse_comparisons_v1', 'rfs_sparse_outcomes_v1',
     'entry_model_replay_reports',
     'price_horizon_labels_v2',
     'price_horizon_label_rejections_v2',

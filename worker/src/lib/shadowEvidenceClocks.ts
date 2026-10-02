@@ -1,4 +1,5 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { rfsSparseClock } from './rfsSparseClock'
 import type { Bindings } from '../types'
 import {
   STRATEGY_ROUTE_CHALLENGER_VERSION,
@@ -288,7 +289,7 @@ async function executionParityClock(env: Bindings): Promise<EvidenceClock> {
 export async function buildShadowEvidenceClockReport(env: Bindings): Promise<EvidenceClockReport> {
   const results = await Promise.all([
     shadowAClock(env).catch((error) => unavailable('shadow_a', 'Shadow A route comparison', 'comparison_only', error)),
-    rfsClock(env).catch((error) => unavailable('rfs_allocator', 'RFS allocator comparison', 'comparison_only', error)),
+    rfsSparseClock(env).catch((error) => unavailable('rfs_allocator', 'RFS allocator comparison', 'comparison_only', error)),
     executionParityClock(env).catch((error) => unavailable('execution_parity', 'Execution parity', 'manual_only', error)),
   ])
   return {

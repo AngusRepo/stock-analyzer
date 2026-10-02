@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:2d9830035a868a08a28886f58f2069a44558fc13b41cf97d61e26751b2405ff0",
+  "execution_owner_version": "native-paper-v1:c9c0399ef4fe447b3de53ac085ab9d80cda785dbc8b7ac254e360d62e72af292",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "LOCAL PROPOSAL ONLY: daily single L4 plan and no-TP swing policy. Wei authorized local implementation; deployment and exact KV write remain unapproved. No training, no live orders, no maturity transfer.",
+  "authorization": "Wei explicitly approved the combined Paper release and exact supplemental KV on 2026-10-03. RFS research registry, readiness/closure display and OOF read optimization. Existing single B account; unchanged trading rules, models and CPU/RAM. No retraining, real orders or NAV maturity transfer.",
   "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
   "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-single-plan-swing"
 }

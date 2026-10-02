@@ -1064,7 +1064,7 @@ export async function buildPipelineDecisionMaturityPacket(
         published_at: promotedRoute.promoted_at, business_date: requestedDate,
         run_id: promotedRoute.run_id, route_version: receipt.policy_definition.challenger_version })
       stages.push({
-        id: 'route_score_v2', layer: 'L1.5', title: 'New route score',
+        id: 'route_score_v2', layer: 'L1.5', title: '策略路由校準',
         version: receipt.policy_definition.challenger_version, status: execution.executed ? 'serving' : 'ready', contribution_mode: 'production',
         maturity_kind: 'daily_coverage',
         progress: maturityProgress(nav.evaluable_date_count, nav.minimum_evaluable_dates, 'dates'),
@@ -1091,11 +1091,11 @@ export async function buildPipelineDecisionMaturityPacket(
           source: ROUTE_NAV_ARTIFACT_VERSION, updated_at: promotedRoute.promoted_at },
       })
     } catch {
-      stages.push(unavailableStage('route_score_v2', 'L1.5', 'New route score', requestedDate,
+      stages.push(unavailableStage('route_score_v2', 'L1.5', '策略路由校準', requestedDate,
         'strategy_route_calibration_head_v1', ['strategy_route_nav_publication_or_execution_unverified']))
     }
   } else if (!route) {
-    stages.push(unavailableStage('route_score_v2', 'L1.5', 'New route score', requestedDate, 'strategy_route_calibration_runs_v1', [routeRun.error, routeHead.error]))
+    stages.push(unavailableStage('route_score_v2', 'L1.5', '策略路由校準', requestedDate, 'strategy_route_calibration_runs_v1', [routeRun.error, routeHead.error]))
   } else {
     const gates = jsonRecord(route.gate_json)
     const splitCounts = routeCalibrationSplitCounts(jsonRecord(gates._metadata))
@@ -1115,7 +1115,7 @@ export async function buildPipelineDecisionMaturityPacket(
     stages.push({
       id: 'route_score_v2',
       layer: 'L1.5',
-      title: 'New route score',
+      title: '策略路由校準',
       version: route.candidate_route_version ?? STRATEGY_ROUTE_CHALLENGER_VERSION,
       status,
       contribution_mode: promoted ? 'production' : 'shadow',

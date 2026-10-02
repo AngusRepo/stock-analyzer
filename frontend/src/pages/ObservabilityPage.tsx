@@ -1095,7 +1095,7 @@ function EvidenceClockPanel({
           <div className="rounded-xl border border-rose-400/25 bg-rose-400/5 p-4 text-xs text-rose-200">{error}</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {(report?.clocks ?? []).map((clock) => (
+            {(report?.clocks ?? []).filter(clock => clock.mechanism !== 'shadow_a').map((clock) => (
               <article key={clock.mechanism} className="min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -1107,7 +1107,7 @@ function EvidenceClockPanel({
                 <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div><dt className="text-slate-500">latest</dt><dd className="sv-num mt-1 text-slate-200">{clock.latest_evidence_date ?? 'N/A'}</dd></div>
                   <div>
-                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '當日候選數' : 'samples'}</dt>
+                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '有效配置配對' : 'samples'}</dt>
                     <dd className="sv-num mt-1 text-slate-200">
                       {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
                         ? 'N/A'
@@ -1115,7 +1115,7 @@ function EvidenceClockPanel({
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '封包日期數（含空集合）' : 'dates'}</dt>
+                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '有效配置日期' : 'dates'}</dt>
                     <dd className="sv-num mt-1 text-slate-200">
                       {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
                         ? 'N/A'
@@ -1129,27 +1129,12 @@ function EvidenceClockPanel({
                   <p>delta {clock.incumbent_delta == null ? 'N/A' : clock.incumbent_delta.toFixed(4)} · LCB {clock.confidence_bound == null ? 'N/A' : clock.confidence_bound.toFixed(4)}</p>
                   <p className="truncate">receipt {clock.artifact_or_packet_checksum?.slice(0, 16) ?? 'N/A'}</p>
                 </div>
-                {clock.mechanism === 'shadow_a' && (
-                  <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
-                    <p>cohort {String(asRecord(clock.details).candidate_route_version ?? 'N/A')}</p>
-                    <p>
-                      maturity {String(asRecord(asRecord(clock.details).maturity).observed_total_dates ?? 0)}
-                      {' / '}
-                      {String(asRecord(asRecord(clock.details).maturity).minimum_total_dates ?? '-')} total dates
-                    </p>
-                    <p>
-                      prior cohort {String(asRecord(asRecord(clock.details).prior_cohort).sample_count ?? 'N/A')} samples
-                      {asRecord(clock.details).cohort_reset === true ? ' · current semantic reset is isolated' : ''}
-                    </p>
-                  </div>
-                )}
                 {clock.mechanism === 'rfs_allocator' && (
                   <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
-                    <p>packets {String(asRecord(clock.details).latest_packet_count ?? 0)} · persisted rows {String(asRecord(clock.details).latest_recommendation_rows ?? 0)}</p>
-                    <p>formal candidates {String(asRecord(clock.details).candidate_count ?? 'N/A')} · usable {String(asRecord(clock.details).usable_candidate_count ?? 'N/A')}</p>
-                    {asRecord(clock.details).zero_candidate_run_materialized === true && (
-                      <p className="text-amber-200">本次已記錄空集合：缺少具正式 L4／Fusion 預期報酬的候選。L3 模型晉級不代表此條件已滿足；空封包不算有效配置比較樣本。</p>
-                    )}
+                    <p>配置配對 {clock.sample_count ?? 0} · 阻擋 {String(asRecord(clock.details).blocked_receipts ?? 0)}</p>
+                    <p>同池候選 {String(asRecord(clock.details).candidate_count ?? 'N/A')} · 對手 sparse allocator</p>
+                    <p>5 日成熟 {String(asRecord(clock.details).mature_5_session_dates ?? 0)} · 20 日成熟 {String(asRecord(clock.details).mature_20_session_dates ?? 0)}</p>
+                    <p>相同輸入與配置限制；固定籃子收盤價比較，不代表 Paper 帳戶績效。</p>
                   </div>
                 )}
                 {clock.mechanism === 'execution_parity' && (

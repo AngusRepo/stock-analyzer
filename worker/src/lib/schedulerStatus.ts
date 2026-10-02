@@ -3,6 +3,7 @@
  */
 
 import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
+import { sealedPremarketDisplay } from './schedulerPipelinePhase'
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
@@ -101,7 +102,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'storage-integrity-audit', name: 'Storage Integrity Audit', schedule: 'Sunday 03:30', cron: '30 19 * * 6', group: 'weekly' },
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
-  { id: 'paired-native-execution', name: 'Paired Native Shadow Execution', schedule: 'Weekdays 07:15-14:59 per-min; private accounts only', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
+  { id: 'paired-native-execution', name: 'Paired Native Shadow Execution（已停用）', schedule: 'PAUSED · single B; history retained', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
   { id: 'rescore-10', name: 'Intraday Re-score 10:00', schedule: 'Weekdays 10:00', cron: '0 2 * * 1-5', group: 'intraday' },
   { id: 'rescore-11', name: 'Intraday Re-score 11:00', schedule: 'Weekdays 11:00', cron: '0 3 * * 1-5', group: 'intraday' },
   { id: 'rescore-12', name: 'Intraday Re-score 12:00', schedule: 'Weekdays 12:00', cron: '0 4 * * 1-5', group: 'intraday' },
@@ -335,7 +336,7 @@ export function getSchedulerScanDates(anchorDate?: string): string[] {
 
 export type DurablePipelineStageDisplayRow = {
   business_date: string
-  stage: 'post_pipeline_chain' | 'verify_v2' | 'post_verify_chain'
+  stage: 'pipeline_execution' | 'post_pipeline_chain' | 'verify_v2' | 'post_verify_chain'
   canonical_run_id: string
   status: 'queued' | 'running' | 'waiting' | 'success' | 'error'
   attempt_count: number
@@ -347,6 +348,7 @@ export type DurablePipelineStageDisplayRow = {
 }
 
 const DURABLE_STAGE_JOB_IDS: Record<DurablePipelineStageDisplayRow['stage'], string> = {
+  pipeline_execution: 'pipeline',
   post_pipeline_chain: 'post-pipeline-chain',
   verify_v2: 'verify-v2',
   post_verify_chain: 'post-verify-chain',
@@ -511,7 +513,7 @@ async function loadDurablePipelineStageStates(
            queued_at, started_at, completed_at, updated_at, last_error
       FROM pipeline_stage_runs
      WHERE business_date IN (${placeholders})
-       AND stage IN ('post_pipeline_chain', 'verify_v2', 'post_verify_chain')
+       AND stage IN ('pipeline_execution', 'post_pipeline_chain', 'verify_v2', 'post_verify_chain')
   `).bind(...dates).all<DurablePipelineStageDisplayRow>()
   return new Map((result.results ?? []).map((row) => [
     `${row.business_date}:${DURABLE_STAGE_JOB_IDS[row.stage]}`,
@@ -1058,7 +1060,13 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ticket: executionTicket,
       expectedRunDate: resolvedDisplay.statusRunDate,
     })
-    const lastStatus = executionTicketOverride?.lastStatus ?? baseLastStatus
+    const phaseDisplay = sealedPremarketDisplay({
+      jobId: def.id, businessDate: resolvedDisplay.statusRunDate,
+      stage: durableStageStates.get(`${resolvedDisplay.statusRunDate}:pipeline`),
+      log: allLogs[resolvedDisplay.statusRunDate ?? '']?.find(row => row.task === 'pipeline'),
+      ticketStatus: executionTicket?.status,
+    })
+    const lastStatus = phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
     const displayTime = executionTicketOverride
       ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
       : resolveSchedulerRunDisplayTime({
@@ -1126,7 +1134,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       statusAuthority: ticketAuthority,
       consolidation: getSchedulerDependencySpec(accounting.task) ?? null,
       accounting,
-      ticket,
+      ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}) },
+      ...phaseDisplay,
     }
   }))
 

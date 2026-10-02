@@ -1,3 +1,5 @@
+import { paperExecutionNow } from './paperExecutionScope'
+import { reviewedTarget, type DailyPlanReview } from './paperDailyPlan'
 import { l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { privateL4ResearchAllowed } from './paperExecutionScope'
 import type { Bindings } from '../types'
@@ -6,6 +8,8 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 
 export interface L4PortfolioPlan {
+  /** Execution-only overlay. It is not part of the optimizer's sealed proof. */
+  execution_review?: DailyPlanReview
   execution_scope?: 'paper' | 'private_research'
   schema_version: 'l4-portfolio-plan-v1'
   owner: 'l4_distribution'
@@ -80,6 +84,7 @@ export async function storeL4PortfolioPlan(env: Bindings, raw: unknown) {
   const envelope = raw as { plan: unknown; canonical_payload: string; allocation_snapshot_id: string }
   if (!/^[a-f0-9]{64}$/.test(envelope?.allocation_snapshot_id)) throw new Error('l4_plan_source_snapshot_missing')
   const plan = validateL4PortfolioPlan(envelope.plan)
+  if (plan.execution_review) throw new Error('l4_execution_view_cannot_publish_as_optimizer_plan')
   if (plan.execution_scope==='private_research' && !privateL4ResearchAllowed(env.KV)) throw new Error('l4_private_plan_cannot_publish')
   if (typeof envelope.canonical_payload !== 'string') throw new Error('l4_plan_canonical_payload_missing')
   const sealed = JSON.parse(envelope.canonical_payload)
@@ -94,6 +99,13 @@ export async function storeL4PortfolioPlan(env: Bindings, raw: unknown) {
     .map(b=>b.toString(16).padStart(2,'0')).join('')
   if (checksum !== plan_id || stable(sealed) !== stable(unsigned)) throw new Error('l4_plan_checksum_mismatch')
   const db = paperDomainDatabase(env)
+  if(env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1') {
+    const now=paperExecutionNow(),date=new Date(now+8*3600_000).toISOString().slice(0,10)
+    const same=await db.prepare('SELECT plan_id FROM l4_portfolio_plans_v1 WHERE account_id=1 AND signal_date=? AND activated=1 LIMIT 1')
+      .bind(plan.signal_date).first<{plan_id:string}>()
+    if((same && same.plan_id!==plan.plan_id) || (!same && (date<=plan.signal_date || now>=Date.parse(date+'T08:45:00+08:00'))))
+      throw new Error('daily_plan_optimizer_publication_forbidden')
+  }
   const payload = JSON.stringify(plan)
   const anchor=plan.account_anchor
   if (!anchor || !Number.isSafeInteger(anchor.order_watermark) || !amount(anchor.cash) || !Array.isArray(anchor.positions)) throw new Error('l4_plan_account_anchor_missing')
@@ -149,7 +161,7 @@ export function l4TargetExecutionDecision(input: {
   hardVeto: boolean; reservedCash?: number; feeRate: number; minCommission: number;
 }): FiveSlotDecision {
   const p = validateL4PortfolioPlan(input.plan)
-  const target = p.targets[input.symbol]
+  const target = p.execution_review ? reviewedTarget(p,p.execution_review,input.symbol) : p.targets[input.symbol]
   const value = (h: FiveSlotHolding) => h.shares * Number(h.lastPrice ?? h.avgCost)
   if (input.nav <= 0 || input.cash < 0 || input.feeRate < 0 || input.minCommission < 0
     || !Number.isSafeInteger(input.maxPositions) || input.maxPositions < 1) throw new Error('l4_execution_limits_invalid')
@@ -167,10 +179,11 @@ export function l4TargetExecutionDecision(input: {
   const grossBudget = Math.max(0, Math.min(...groupRemaining,targetValue-current, exposure*input.nav-invested, input.dailyRemaining,
     free/(1+input.feeRate), free-input.minCommission))
   const full = !held && input.holdings.filter(h => h.shares>0).length >= input.maxPositions
-  const blocked = !target || target.locked || input.hardVeto || full || grossBudget<=0
+  const existingDailyPosition = Boolean(p.execution_review && held && held.shares>0)
+  const blocked = !target || target.locked || input.hardVeto || full || grossBudget<=0 || existingDailyPosition
   return { symbol: input.symbol, action: blocked ? 'skip' : held ? 'add' : 'buy',
     reason: !target ? 'l4_target_missing' : target.locked ? 'l4_target_locked' : input.hardVeto ? 'l4_hard_risk_veto'
-      : full ? 'l4_unsold_position_capacity' : grossBudget<=0 ? 'l4_target_met_or_cash_reserved' : 'l4_target_reconciliation',
+      : existingDailyPosition ? 'daily_plan_existing_position' : full ? 'l4_unsold_position_capacity' : grossBudget<=0 ? 'l4_target_met_or_cash_reserved' : 'l4_target_reconciliation',
     budgetCap: blocked ? 0 : grossBudget, targetPositionValue: targetValue, currentPositionValue: current,
     targetExposure: exposure, targetSlotValue: targetValue, confidenceMultiplier: 1,
     slotFloorRatio: 0, slotFloorBudget: 0, slotFloorReasons: [], replaceSymbol: null }
@@ -185,14 +198,25 @@ export function planIdFromAllocation(raw: unknown): string | null {
 }
 
 export function l4TargetExitShares(input: {
-  plan: L4PortfolioPlan; symbol: string; shares: number; price: number; nav: number; minTradeValue: number;
+  plan: L4PortfolioPlan; symbol: string; shares: number; price: number; nav: number; minTradeValue: number; originalShares?:number;
 }): number {
-  const target = validateL4PortfolioPlan(input.plan).targets[input.symbol]
+  const p = validateL4PortfolioPlan(input.plan)
+  const target = p.execution_review ? reviewedTarget(p,p.execution_review,input.symbol) : p.targets[input.symbol]
   if (!target || target.locked) return 0
   if (!Number.isSafeInteger(input.shares) || input.shares < 0 || !amount(input.price) || input.price <= 0
     || !amount(input.nav) || input.nav <= 0) throw new Error('l4_target_exit_units_invalid')
   if (target.weight === 0) return input.shares
-  const desiredShares = Math.floor(input.nav * target.weight / input.price)
+  let desiredShares: number
+  if (p.execution_review) {
+    // A price rally alone is not a new reduction instruction. Use the original
+    // decision's holding quantities; partial fills only reduce the remaining gap.
+    const anchor=p.account_anchor?.positions.find(row=>row.symbol===input.symbol)
+    const referenceWeight=anchor && anchor.shares>0 ? target.current_weight : p.targets[input.symbol].weight
+    const referenceShares=anchor && anchor.shares>0 ? anchor.shares : input.originalShares
+    if (target.weight>=referenceWeight || !Number.isSafeInteger(referenceShares) || (referenceShares ?? 0)<=0) return 0
+    if (referenceWeight<=0) return 0
+    desiredShares=Math.floor(referenceShares! * target.weight/referenceWeight)
+  } else desiredShares = Math.floor(input.nav * target.weight / input.price)
   const reduction = Math.max(0, input.shares-desiredShares)
   return reduction * input.price >= input.minTradeValue ? reduction : 0
 }
@@ -215,7 +239,7 @@ export async function assertL4PlanCurrentPolicy(env: Bindings, plan: L4Portfolio
 
 /** Targets include held names; only a positive target gap belongs in buy debate. */
 export function l4HasTargetBuyGap(plan: L4PortfolioPlan, symbol: string, actual?:{nav:number;shares:number;price:number}): boolean {
-  const target=plan.targets[symbol]
+  const target=plan.execution_review ? reviewedTarget(plan,plan.execution_review,symbol) : plan.targets[symbol]
   if (!target || target.locked) return false
   if (actual) {
     if (![actual.nav,actual.shares,actual.price].every(amount) || actual.nav<=0 || actual.price<=0

@@ -47,11 +47,12 @@ async function main() {
   const calls: string[] = []
   let fail = false
   let invalidReceipt = false
+  let inProgress = false
   let onSend: (() => void) | undefined
   globalThis.fetch = async (_input, init) => {
     calls.push(String(init?.body)); onSend?.()
     if (fail) throw new Error('synthetic delivery failure')
-    return Response.json(invalidReceipt ? { status: 'queued' } : { status: 'replanned', plan_id: resultPlan })
+    return Response.json(inProgress ? { status: 'in_progress' } : invalidReceipt ? { status: 'queued' } : { status: 'replanned', plan_id: resultPlan })
   }
   try {
     const f = fixture([row('1', '1101', .0625), row('2', '3576', .0625), row('3', '3290', .0625), row('4', '8105', .0375)])
@@ -93,6 +94,13 @@ async function main() {
     assert.equal(await second, false, 'concurrent delivery must be busy, not another optimizer call')
     assert.equal(calls.length, before + 1, 'simultaneous flushes make one HTTP request')
 
+    inProgress = true
+    const busy = fixture([row('busy', '1101', .04)])
+    assert.equal(await flushL4Replans(busy.env, '2026-09-30'), false)
+    assert.equal(busy.rows[0].attempts, 0, 'running server task is not a failed delivery')
+    assert.equal(busy.rows[0].status, 'pending', 'do not acknowledge before completion receipt')
+    inProgress = false
+    assert.equal(await flushL4Replans(busy.env, '2026-09-30'), true)
     invalidReceipt = true
     const missingReceipt = fixture([row('11', '1101', .04), row('12', '3290', .04)])
     assert.equal(await flushL4Replans(missingReceipt.env, '2026-09-30'), false)

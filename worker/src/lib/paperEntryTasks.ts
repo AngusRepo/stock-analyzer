@@ -1,6 +1,11 @@
+import { getPrevTradingDay } from './paperMarketData'
+import { assessSwingEntry, SWING_POLICY_VERSION, type SwingEntryDecision } from './paperSwingPolicy'
+import { writeSwingState } from './paperSwingLifecycle'
+import { loadSwingMinuteBars } from './s12RuntimeBars'
+import { dailyPlanOwner, readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
 import { requestL4Replan, flushL4Replans } from './l4Replan'
 import { getPrevTradingDay as getL4PreviousSession } from './paperMarketData'
-import { assertL4PlanCurrentPolicy, readL4PortfolioPlan, planIdFromWatchPoints, l4TargetExecutionDecision } from './l4PortfolioPlan'
+import { assertL4PlanCurrentPolicy, planIdFromWatchPoints, l4TargetExecutionDecision } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow, paperAccountId, paperExecutionFetch, paperExecutionUUID } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
@@ -71,7 +76,8 @@ import {
   releaseIntradayExecutionLease,
 } from './intradayExecutionLease'
 import { loadIntradayTechnicalRollingBars, loadOr15AuthoritativeMinuteBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
-import { assessOr15PaperPrice, resolveOr15PaperExitTargets, assessOr15NetRewardRisk } from './or15PaperPricePolicy'
+import { assessOr15NetRewardRisk } from './or15PaperPricePolicy'
+import { buildOr15ExecutionPlan, capOr15PlanByCosts } from './or15ExecutionPlan'
 import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
@@ -496,6 +502,8 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
 }
 
 async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
+  const paperSwingOwner = env.PAPER_INTRADAY_ENTRY_OWNER === SWING_POLICY_VERSION
+  const paperOr15Owner = paperSwingOwner || String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
   const opsDb = databaseForDataDomain(env, 'ops')
   const cfg = await getTradingConfig(env.KV)
   const riskCfg = await getRiskConfig(env.KV)
@@ -509,7 +517,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
   const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
-  await reconcilePendingBuyDebates(env, today).catch((e) =>
+  if (!dailyPlanOwner(env)) await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )
   if (!await refreshIntradayExecutionLease(opsDb, leaseRunId)) {
@@ -550,8 +558,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   if (cfg.l4Distribution) {
     const signalDate = await getL4PreviousSession(databaseForDataDomain(env, 'core'), env.KV)
     if (!await flushL4Replans(env, signalDate, { debatePending: staleDebateItems.length > 0 })) return holdingPoll
-    const latest = await readL4PortfolioPlan(env)
-    if (latest && latest.signal_date===signalDate) {
+    const latest = await readL4PortfolioPlan(env).catch(error=>{
+      if(dailyPlanOwner(env) && String(error).includes('daily_plan_not_finalized'))return null
+      throw error
+    })
+    if(dailyPlanOwner(env) && !latest)return holdingPoll
+    if (!dailyPlanOwner(env) && latest && latest.signal_date===signalDate) {
       const nameCap=resolveCircuitAdjustedSingleNameCap({configuredSingleNameCap:configuredMaxSingleNamePct,
         circuitBaselinePositionPct:cfg.circuit.maxPositionPct,circuitEffectivePositionPct:baseCb.maxPositionPct})
       if (latest.constraints.exposure_cap>(baseCb.targetExposurePct ?? 0)+1e-8 || latest.constraints.name_cap>nameCap+1e-8) {
@@ -563,6 +575,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const allPlanIds = new Set(pendingState.pendingBuys.map(item => planIdFromWatchPoints(item.watch_points)))
     if (latest && (allPlanIds.size !== 1 || !allPlanIds.has(latest.plan_id))
       && pendingState.meta?.l4_plan_id !== latest.plan_id) {
+      if (dailyPlanOwner(env)) throw new Error('daily_plan_pending_reference_mismatch')
       const { setupMorningPendingBuys } = await import('./pendingBuyOrchestrator')
       await setupMorningPendingBuys(env)
     }
@@ -634,7 +647,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const ageMs = quoteAgeMs(quote.quoteTime)
     return quote.source === 'shioaji' && ageMs != null && ageMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
       ? putIntradayPrice(env.KV, symbol, quote.last, undefined, {
-        source: 'shioaji', quoteTime: quote.quoteTime,
+        source: 'shioaji', quoteTime: quote.quoteTime, referencePrice: quote.referencePrice,
       })
       : Promise.resolve()
   }))
@@ -1281,6 +1294,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     return {
       decision,
       context: {
+        daily_review_checksum: plan?.execution_review?.checksum ?? null,
         settled_cash: Math.round(settledCash),
         available_cash: Math.round(account.cash),
         safe_buying_power: Math.round(account.cash),
@@ -1413,7 +1427,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
   const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
   const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)
-  const paperOr15Owner = String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
+  const swingSidecars = new Map<string,SwingEntryDecision>()
+  let swingBenchmark: Promise<{bars: Awaited<ReturnType<typeof loadSwingMinuteBars>>; closes: Awaited<ReturnType<typeof loadMarketPriceHistoryBySymbols>>}> | undefined
   const s12CalibrationArtifactsPromise = s12Enabled && !paperOr15Owner
     ? listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning')).catch(() => [])
     : Promise.resolve([])
@@ -1424,12 +1439,45 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const runS12Sidecar = async (
     pending: PendingBuy,
     price: number,
-    currentOhlc: { totalVolume?: number | null; referencePrice?: number | null } | null | undefined,
+    currentOhlc: { totalVolume?: number | null; referencePrice?: number | null; quoteTime?: string } | null | undefined,
   ): Promise<S12RuntimeSidecar | null> => {
     if (!s12Enabled && !paperOr15Owner) return null
     const existing = s12Sidecars.get(pending.symbol)
     if (existing) return existing
     try {
+      if (paperSwingOwner) {
+        const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
+        if(sinceOpen<20*60000 || sinceOpen>=241*60000 || sinceOpen%(5*60000)>=60000) {
+          const reason=sinceOpen<20*60000||sinceOpen>=241*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
+          const assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION}
+          swingSidecars.set(pending.symbol,assessment)
+          or15Sidecars.set(pending.symbol,{action:'defer',reason,signalMs:null,orHigh:null,orLow:null,vwap:null,latestBarMs:null})
+          return null
+        }
+        swingBenchmark ??= Promise.all([loadSwingMinuteBars(env,'0050',today),
+          loadMarketPriceHistoryBySymbols(env,['0050'],{beforeDate:today,rowsPerSymbol:60,requireQuerySuccess:true})])
+          .then(([bars,closes])=>({bars,closes}))
+        const [minute,benchmark,previousSession]=await Promise.all([loadSwingMinuteBars(env,pending.symbol,today),
+          swingBenchmark,getPrevTradingDay(databaseForDataDomain(env,'core'),env.KV,today)])
+        const orHigh=Math.max(...minute.bars.filter(b=>b.startMs>=Date.parse(today+'T09:00:00+08:00')
+          && b.startMs<Date.parse(today+'T09:15:00+08:00')).map(b=>b.high))
+        const reference=Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))
+        const maxBuyPrice=normalizeTwLimitPrice(orHigh*(1+cfg.position.strongBreakoutMaxEntryChasePct),'buy')
+        const assessment=assessSwingEntry({tradeDate:today,nowMs:paperExecutionNow(),label:'start',bars:minute.bars,
+          benchmarkBars:benchmark.bars.bars,previousClose:reference,
+          benchmarkPreviousClose:Number(benchmark.closes.find(r=>r.date===previousSession)?.close),
+          benchmarkPriorCloses:benchmark.closes.map(r=>({date:r.date,close:Number(r.close)})),previousSession,
+          quote:{price,observedAtMs:Date.parse(currentOhlc?.quoteTime ?? '')},
+          limitUp:resolveTwEquityPriceBand(reference).limitUp ?? NaN,maxBuyPrice,
+          boughtToday:false,alreadyHeld:false,planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),
+          candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))})
+        swingSidecars.set(pending.symbol,assessment)
+        or15Sidecars.set(pending.symbol,{action:assessment.action,reason:assessment.reason,
+          signalMs:assessment.signalMs??null,orHigh:assessment.orHigh??null,orLow:assessment.orLow??null,
+          vwap:assessment.vwap??null,latestBarMs:assessment.signalMs??null})
+        or15BarSources.set(pending.symbol,minute.source)
+        return null
+      }
       if (paperOr15Owner) {
         const minute = await loadOr15AuthoritativeMinuteBars(env, pending.symbol, today)
         or15BarSources.set(pending.symbol, minute.source)
@@ -1662,12 +1710,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         eventType: 'intraday_technical_decision',
         status: or15Assessment?.action ?? 'defer',
         reason: or15Assessment?.reason ?? 'or15_market_data_unavailable',
-        detail: { owner: 'or15_vwap_v1', signal: or15Assessment,
+        detail: { owner: paperSwingOwner ? SWING_POLICY_VERSION : 'or15_vwap_v1', signal: paperSwingOwner ? swingSidecars.get(pending.symbol) : or15Assessment,
           bar_source: or15BarSources.get(pending.symbol) ?? 'unavailable',
           bar_error: or15BarErrors.get(pending.symbol) ?? null,
           s12_role: 'not_in_entry_path', paper_only: true },
         pendingRunId,
-        source: 'or15_vwap_entry_v1',
+        source: paperSwingOwner ? SWING_POLICY_VERSION : 'or15_vwap_entry_v1',
       })
       if (or15Assessment?.action !== 'pass') {
         recordActiveExecutionStatus(pending.symbol, 'checked_waiting', or15Assessment?.reason ?? 'or15_market_data_unavailable')
@@ -1999,8 +2047,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const s12PrimaryStructureOwnerActive = s12PrimaryOwnerEnabled
     if (paperOr15Owner) {
       executionEntryPrice = Math.max(price, finLabL5Quote?.bestAsk ?? price)
-      const structuralFloor = Math.max(or15Assessment?.orLow ?? 0, pending.ml_stop_loss ?? 0)
-      executionStopLoss = normalizeTwEquityStopPrice(structuralFloor - getTwTickSize(structuralFloor))
+      // Entry, stop and targets are assigned together by the signal-time plan below.
+      executionStopLoss = null
       effectivePreTradePlan = null
       entryModelV2 = null
     } else if (s12AssistEntryOverlay) {
@@ -2025,29 +2073,31 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         `${s12Assessment.detail};primary_owner=true;entry_model_v2_allowed=false;unified_action=${s12UnifiedDecision.action}`,
       )
     }
-    const or15PricePlan = paperOr15Owner ? assessOr15PaperPrice({
-      referenceEntry: pending.original_entry ?? pending.ml_entry_price,
-      proposedBuy: executionEntryPrice,
-      structuralStop: executionStopLoss,
-      modelTp1: pending.ml_target1,
-      modelTp2: pending.ml_target2,
+    let or15PricePlan = paperOr15Owner && !paperSwingOwner ? buildOr15ExecutionPlan({
+      signalMs: or15Assessment?.signalMs ?? 0,
+      entry: executionEntryPrice,
+      orHigh: or15Assessment?.orHigh ?? 0,
+      orLow: or15Assessment?.orLow ?? 0,
+      vwap: or15Assessment?.vwap ?? 0,
+      support: ohlcvLevelsBySymbol.get(pending.symbol)?.support,
+      resistance: ohlcvLevelsBySymbol.get(pending.symbol)?.resistance,
+      atr: atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct,
       maxChasePct: Math.min(cfg.position.strongBreakoutMaxEntryChasePct,
         adaptivePolicy.policy.strongBreakoutMaxEntryChasePct),
     }) : null
     if (or15PricePlan?.action === 'defer') {
       recordActiveExecutionStatus(pending.symbol, 'checked_waiting', or15PricePlan.reason,
-        `reference=${pending.original_entry ?? pending.ml_entry_price};proposed=${executionEntryPrice};max_buy=${or15PricePlan.maxBuyPrice ?? 'na'};tp1=${pending.ml_target1 ?? 'na'};tp2=${pending.ml_target2 ?? 'na'}`)
+        JSON.stringify({ ...or15PricePlan, selection_reference: pending.original_entry ?? pending.ml_entry_price }))
       continue
     }
-    if (or15PricePlan?.modelTp1State === 'crossed_before_entry') {
-      recordExecutionNote(pending.symbol, 'or15_price_plan', 'selection_tp1_crossed_before_entry',
-        `original_tp1=${pending.ml_target1};proposed=${executionEntryPrice};effective_tp1=requires_replan`)
+    if (or15PricePlan) {
+      executionStopLoss = or15PricePlan.stop
+      recordExecutionNote(pending.symbol, 'or15_price_plan', 'or15_unified_execution_plan', JSON.stringify(or15PricePlan))
     }
-    if (or15PricePlan?.action === 'pass') {
-      recordExecutionNote(pending.symbol, 'or15_price_plan', 'selection_price_bounds',
-        `reference=${pending.original_entry ?? pending.ml_entry_price};max_buy=${or15PricePlan.maxBuyPrice};proposed=${executionEntryPrice};stop=${executionStopLoss};selected_tp1=${pending.ml_target1};selected_tp2=${pending.ml_target2}`)
-    }
-    const or15QuoteAboveStructure = or15Assessment?.action === 'pass' &&
+    const swingAssessment = swingSidecars.get(pending.symbol)
+    const swingMaxBuyPrice = paperSwingOwner && or15Assessment?.orHigh
+      ? normalizeTwLimitPrice(or15Assessment.orHigh*(1+Math.min(cfg.position.strongBreakoutMaxEntryChasePct,adaptivePolicy.policy.strongBreakoutMaxEntryChasePct)),'buy') : null
+    const or15QuoteAboveStructure = paperSwingOwner ? swingAssessment?.action === 'pass' : or15Assessment?.action === 'pass' &&
       or15Assessment.orHigh != null && or15Assessment.vwap != null &&
       price > or15Assessment.orHigh && price > or15Assessment.vwap
     const or15MarketRiskAllowed = !['high', 'red', 'black', 'extreme']
@@ -2211,7 +2261,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const rawLimitPrice = preTrade.limitPrice ?? executionEntryPrice
     const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
     if (paperOr15Owner && or15PricePlan?.maxBuyPrice != null && limitPrice > or15PricePlan.maxBuyPrice) {
-      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_limit_above_selection_max_buy',
+      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_limit_above_structure_max_buy',
         `limit=${limitPrice};max_buy=${or15PricePlan.maxBuyPrice}`)
       continue
     }
@@ -2375,7 +2425,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const atr14 = atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct
     const dailyRemaining = DAILY_BUY_LIMIT - dailyBuyTotal
     const mediumRiskDampen = marketRisk.risk_level === 'medium' ? cfg.L2_formula.medium_risk_scale : 1.0
-    const stopPct = Math.max(
+    const stopPct = paperSwingOwner ? .08 : Math.max(
       cfg.position.minStopPct,
       paperOr15Owner && executionStopLoss != null
         ? (executionEntryPrice - executionStopLoss) / executionEntryPrice
@@ -2433,7 +2483,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       recordExecutionNote(pending.symbol, 's12_limited_takeover_sizing',
         `multiplier=${s12AssistEntryOverlay.sizeMultiplier};budget=${Math.round(budget)}`)
     }
-    if (paperOr15Owner) {
+    if (paperOr15Owner && !paperSwingOwner) {
       const structuralRiskBudget = totalPortfolio * Math.max(0, pending.risk_pct * mediumRiskDampen) / stopPct
       budget = Math.min(budget, structuralRiskBudget)
     }
@@ -2546,7 +2596,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     shares = depthMatch.filledShares
     fillPrice = depthMatch.averageFillPrice
     if (paperOr15Owner && or15PricePlan?.maxBuyPrice != null && fillPrice > or15PricePlan.maxBuyPrice) {
-      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_depth_fill_above_selection_max_buy',
+      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_depth_fill_above_structure_max_buy',
         `fill=${fillPrice};max_buy=${or15PricePlan.maxBuyPrice}`)
       continue
     }
@@ -2724,59 +2774,40 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const twPriceBand = currentOhlc?.referencePrice
       ? resolveTwEquityPriceBand(currentOhlc.referencePrice)
       : null
-    const effectiveInitialStop = normalizeTwEquityStopPrice(effectiveExitInputs.initialStop, twPriceBand)
+    const effectiveInitialStop = paperSwingOwner ? fillPrice*.92 : or15PricePlan?.stop ?? normalizeTwEquityStopPrice(effectiveExitInputs.initialStop, twPriceBand)
     let effectiveTp1Price = normalizeTwEquityTargetPrice(effectiveExitInputs.tp1, twPriceBand)
     let effectiveTp2Price = normalizeTwEquityTargetPrice(effectiveExitInputs.tp2, twPriceBand)
-    const or15TargetPlan = paperOr15Owner ? resolveOr15PaperExitTargets({
-      fillPrice,
-      selectedTp1: pending.ml_target1,
-      selectedTp2: pending.ml_target2,
-      structuralResistance: ohlcvLevelsBySymbol.get(pending.symbol)?.resistance,
-      atrTp1: tp1Price,
-      atrTp2: tp2Price,
-      isNetProfitable: sellPrice => {
-        const sellValue = sellPrice * shares
-        return sellValue - calcCommission(sellValue, cfg) - calcTax(sellValue, cfg) > totalCost
-      },
-    }) : null
-    if (paperOr15Owner && !or15TargetPlan) {
-      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_no_profitable_ordered_targets',
-        `fill=${fillPrice};selected_tp1=${pending.ml_target1 ?? 'na'};selected_tp2=${pending.ml_target2 ?? 'na'};atr_tp1=${tp1Price};atr_tp2=${tp2Price}`)
-      continue
-    }
-    if (or15TargetPlan) {
-      effectiveTp1Price = normalizeTwEquityTargetPrice(or15TargetPlan.tp1, twPriceBand)
-      effectiveTp2Price = normalizeTwEquityTargetPrice(or15TargetPlan.tp2, twPriceBand)
-      if (effectiveTp1Price <= fillPrice || effectiveTp2Price <= effectiveTp1Price) {
-        recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_target_tick_or_band_collapse',
-          `fill=${fillPrice};tp1=${effectiveTp1Price};tp2=${effectiveTp2Price}`)
-        continue
+    if (or15PricePlan) {
+      effectiveTp1Price = or15PricePlan.tp1
+      effectiveTp2Price = or15PricePlan.tp2
+      const netProceeds = (target: number) => {
+        const conservativePrice = normalizeTwEquityStopPrice(target - getTwTickSize(target))
+        const firstLeg = Math.floor(shares * cfg.exit.tp1SellRatio / 1000) * 1000
+        const split = firstLeg > 0 && firstLeg < shares
+        const legShares = split && target === effectiveTp1Price ? firstLeg
+          : split && target === effectiveTp2Price ? shares - firstLeg : shares
+        const value = conservativePrice * legShares
+        return (value - calcCommission(value, cfg) - calcTax(value, cfg)) * shares / legShares
       }
-      const tp1SellValue = effectiveTp1Price * shares
-      if (tp1SellValue - calcCommission(tp1SellValue, cfg) - calcTax(tp1SellValue, cfg) <= totalCost) {
-        recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_tp1_not_profitable_after_costs')
-        continue
-      }
+      // Actual depth fill may improve entry, but may not move the plan's stop/targets.
+      or15PricePlan = capOr15PlanByCosts({ ...or15PricePlan, entry: fillPrice }, {
+        buyCost: entry => entry * shares + calcCommission(entry * shares, cfg), netProceeds,
+      })
       const rewardRisk = assessOr15NetRewardRisk({
         entry: fillPrice, stop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,
-        buyCost: totalCost,
-        netProceeds: target => {
-          const conservativePrice = normalizeTwEquityStopPrice(target - getTwTickSize(target))
-          const firstLeg = Math.floor(shares * cfg.exit.tp1SellRatio / 1000) * 1000
-          const split = firstLeg > 0 && firstLeg < shares
-          const legShares = split && target === effectiveTp1Price ? firstLeg
-            : split && target === effectiveTp2Price ? shares - firstLeg : shares
-          const value = conservativePrice * legShares
-          return (value - calcCommission(value, cfg) - calcTax(value, cfg)) * shares / legShares
-        },
+        buyCost: totalCost, netProceeds,
       })
-      if (!rewardRisk.pass) {
+      if (or15PricePlan.action !== 'pass' || !rewardRisk.pass) {
         recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_insufficient_net_reward_risk',
-          `fill=${fillPrice};stop=${effectiveInitialStop};tp1=${effectiveTp1Price};tp2=${effectiveTp2Price};net_tp1_r=${rewardRisk.tp1R.toFixed(3)};net_tp2_r=${rewardRisk.tp2R.toFixed(3)};required=1/2`)
+          JSON.stringify({ ...or15PricePlan, ...rewardRisk, required_tp1_r: 1, required_tp2_r: 2 }))
         continue
       }
-      recordExecutionNote(pending.symbol, 'or15_price_plan', 'or15_exit_targets_replanned',
-        `tp1=${effectiveTp1Price};tp1_source=${or15TargetPlan.tp1Source};tp2=${effectiveTp2Price};tp2_source=${or15TargetPlan.tp2Source};reference_entry=${pending.original_entry ?? pending.ml_entry_price}`)
+      if (fillPrice <= Math.max(or15Assessment?.orHigh ?? 0, or15Assessment?.vwap ?? 0)) {
+        recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_fill_below_breakout_or_vwap')
+        continue
+      }
+      recordExecutionNote(pending.symbol, 'or15_price_plan', 'or15_execution_plan_cost_verified',
+        JSON.stringify({ ...or15PricePlan, ...rewardRisk, shares, selection_reference: pending.original_entry ?? pending.ml_entry_price }))
     }
     const canonicalTradeLifecycle = buildCanonicalTradeLifecycle({
       tradeDate: today,
@@ -2790,7 +2821,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       allocationReason: allocatorDecision.reason,
       entryPrice: fillPrice,
       stopLoss: executionStopLoss ?? effectiveInitialStop,
-      chaseCeiling: s12AssistEntryOverlay?.chaseCeiling ?? null,
+      chaseCeiling: or15PricePlan?.maxBuyPrice ?? s12AssistEntryOverlay?.chaseCeiling ?? null,
       s12Assessment: paperOr15Owner ? null : s12Assessment,
       s12AssistApplied: s12AssistEntryOverlay != null,
       or15Entry: paperOr15Owner && or15Assessment?.action === 'pass' &&
@@ -2827,10 +2858,19 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     )
     effectiveTp1Price = entryFusionTargets.runnerTp1 ?? effectiveTp1Price
     effectiveTp2Price = entryFusionTargets.runnerTp2 ?? effectiveTp2Price
-    const canonicalTradeLifecycleJson = migrateCanonicalLifecycleExitFusionV2(
+    const legacyLifecycleJson = migrateCanonicalLifecycleExitFusionV2(
       canonicalTradeLifecycle,
       entryFusionTargets,
     ) ?? serializeCanonicalTradeLifecycle(canonicalTradeLifecycle)
+
+    if(paperSwingOwner && (swingAssessment?.action!=='pass' || !swingAssessment.orLow
+      || paperExecutionNow()>=(swingAssessment.submitUntilMs ?? 0) || !swingMaxBuyPrice || fillPrice>swingMaxBuyPrice
+      || fillPrice >= (resolveTwEquityPriceBand(Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))).limitUp ?? 0))) {
+      recordActiveExecutionStatus(pending.symbol,'checked_waiting','swing_execution_window_or_price_changed')
+      continue
+    }
+    const canonicalTradeLifecycleJson=paperSwingOwner ? writeSwingState(legacyLifecycleJson,{policy:SWING_POLICY_VERSION,
+      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAssessment!.orLow!}) : legacyLifecycleJson
 
     const existing = await paperDomainDatabase(env).prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
@@ -2845,8 +2885,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       .bind(paperAccountId(),pending.symbol).first<{shares:number}>() : null
     const { getSettlementDate } = await import('./dateUtils')
     const settleDate = await getSettlementDate(today, env.KV)
+    if (dailyPlanOwner(env) && (!targetPlanId || !allocatorPlan.context.daily_review_checksum))
+      throw new Error('daily_plan_buy_without_review')
     const intent = await acquirePaperBuyIntent(env, today, pending.symbol, targetPlanId ? {
       planId:targetPlanId, currentShares:Number(currentTargetPosition?.shares ?? 0),
+      ...(dailyPlanOwner(env) ? {dailyReview:String(allocatorPlan.context.daily_review_checksum ?? '')} : {}),
     } : undefined)
     if (!intent.acquired) {
       const intentReason = intent.reason ?? 'duplicate_buy_intent'
@@ -2885,8 +2928,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           effectiveInitialStop,
           fillPrice,
           slMult,
-          effectiveTp1Price,
-          effectiveTp2Price,
+          paperSwingOwner ? null : effectiveTp1Price,
+          paperSwingOwner ? null : effectiveTp2Price,
           shares,
           canonicalTradeLifecycleJson,
         ),
@@ -2940,14 +2983,17 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             atr_tp1: tp1Price,
             atr_tp2: tp2Price,
             effective_initial_stop: effectiveInitialStop,
-            effective_tp1: effectiveTp1Price,
-            effective_tp2: effectiveTp2Price,
+            or15_execution_plan: or15PricePlan,
+            effective_tp1: paperSwingOwner ? null : effectiveTp1Price,
+            effective_tp2: paperSwingOwner ? null : effectiveTp2Price,
             exit_input_source: effectiveExitInputs.source,
-            exit_owner: canonicalTradeLifecycle.owners.exit,
-            fallback_exit_owner: canonicalTradeLifecycle.owners.fallbackExit,
+            l4_plan_id: targetPlanId,
+            execution_policy: paperSwingOwner ? SWING_POLICY_VERSION : env.PAPER_INTRADAY_ENTRY_OWNER,
+            exit_owner: paperSwingOwner ? SWING_POLICY_VERSION : canonicalTradeLifecycle.owners.exit,
+            fallback_exit_owner: paperSwingOwner ? SWING_POLICY_VERSION : canonicalTradeLifecycle.owners.fallbackExit,
             s12_exit_plan: s12Assessment?.exitPlan ?? null,
             s12_quality: s12Assessment?.quality ?? null,
-            canonical_trade_lifecycle: canonicalTradeLifecycle,
+            canonical_trade_lifecycle: JSON.parse(canonicalTradeLifecycleJson),
             canonical_trade_lifecycle_json: canonicalTradeLifecycleJson,
             budget: Math.round(budget),
             fill_type: 'limit_intraday',
@@ -3153,6 +3199,8 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
   }
   const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = `intraday-check:${today}:${paperExecutionUUID()}`
+  const paperSwingOwner = env.PAPER_INTRADAY_ENTRY_OWNER === SWING_POLICY_VERSION
+  const paperOr15Owner = paperSwingOwner || String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
   const opsDb = databaseForDataDomain(env, 'ops')
   const acquired = await acquireIntradayExecutionLease(opsDb, runId, today)
   if (!acquired) {

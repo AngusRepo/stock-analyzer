@@ -1,9 +1,12 @@
+import { readSwingState } from './paperSwingLifecycle'
+import { assessSwingExit } from './paperSwingPolicy'
 import { paperExecutionNow } from './paperExecutionScope'
 import type { MarketRegime } from './dynamicExitPriority'
 import type { TradingConfig } from './tradingConfig'
 import { normalizeTwEquityStopPrice, normalizeTwEquityTargetPrice } from './twEquityMarketContract'
 
 export interface ExitPosition {
+  trade_lifecycle_json?: unknown
   symbol: string
   shares: number
   avg_cost: number
@@ -53,6 +56,13 @@ export function checkExitConditions(
   resolvedSltp?: TradingConfig['sltp'],
   regime?: MarketRegime,
 ): ExitDecision {
+  const swing=readSwingState(pos.trade_lifecycle_json)
+  if(swing) {
+    const nowMs=paperExecutionNow(), date=new Date(nowMs+8*3600_000).toISOString().slice(0,10)
+    if(currentPrice<=swing.entryPrice*.92 || (swing.pendingExit && nowMs>=swing.pendingExit.notBeforeMs))
+      return assessSwingExit(swing,{date,nowMs,price:currentPrice,calendar:[]})
+    return {action:'hold',reason:'swing_hold_requires_daily_evidence'}
+  }
   const ex = cfg.exit
   void resolvedSltp
   void atr14

@@ -728,6 +728,19 @@ export async function loadPendingBuyRunHistory(
   }
 }
 
+/** Only persisted fields define a new batch; item order and read-time enrichments do not. */
+export function pendingBuyPersistedContent(items: PendingBuy[], debateStatus: PendingBuyDebateStatus, withTurns = true): string {
+  return JSON.stringify([...items].sort((a, b) => a.symbol.localeCompare(b.symbol)).map(item => [
+    item.symbol, item.name, item.signal, item.confidence, item.ml_entry_price,
+    item.ml_stop_loss ?? null, item.ml_target1 ?? null, item.ml_target2 ?? null,
+    item.reason ?? '', toWatchPointsJson(item.watch_points), item.debate_verdict ?? 'PENDING',
+    item.debate_status ?? debateStatus, item.execution_status ?? 'pending', item.risk_pct ?? 0,
+    item.kelly_pct ?? null, item.chip_score ?? null, item.tech_score ?? null, item.ml_score ?? null,
+    item.score ?? null, item.source ?? 'morning_setup', item.original_entry ?? null, item.retry_count ?? 0,
+    withTurns ? toDebateTurnsJson(item.debate_turns) : null,
+  ]))
+}
+
 export async function replacePendingBuyState(
   env: Bindings,
   params: ReplacePendingBuyStateParams,
@@ -746,6 +759,26 @@ export async function replacePendingBuyState(
   }
   let runId: number | null = null
   try {
+    const current = await pendingBuyDatabase(env).prepare(
+      `SELECT id,source_reco_date,status,debate_status,candidate_count,error_message
+       FROM pending_buy_runs WHERE trade_date=? AND status!='superseded' ORDER BY id DESC LIMIT 1`
+    ).bind(params.tradeDate).first<PendingBuyRunRow>()
+    if (current && current.status === params.status && current.debate_status === debateStatus
+      && (current.source_reco_date ?? null) === (params.sourceRecoDate ?? null)
+      && (current.error_message ?? null) === (params.errorMessage ?? null)
+      && current.candidate_count === pendingBuys.length) {
+      const withTurns = await hasDebateTurnsColumn(pendingBuyDatabase(env))
+      const rows = await pendingBuyDatabase(env).prepare(
+        `SELECT ${withTurns ? PENDING_BUY_COLUMNS_WITH_TURNS : PENDING_BUY_BASE_COLUMNS}
+         FROM pending_buy_items WHERE run_id=? ORDER BY symbol`
+      ).bind(current.id).all<PendingBuyItemRow>()
+      if (pendingBuyPersistedContent((rows.results ?? []).map(mapItemRow), debateStatus, withTurns)
+        === pendingBuyPersistedContent(pendingBuys, debateStatus, withTurns)) {
+        // Reconcile KV even after a previous post-D1 KV failure; keep the durable run ID.
+        await syncKvSnapshot(env, params.tradeDate, kvPendingBuys, { ...baseMeta, run_id: current.id })
+        return current.id
+      }
+    }
     await pendingBuyDatabase(env).prepare(
       `UPDATE pending_buy_runs
           SET status='superseded', updated_at=datetime('now')

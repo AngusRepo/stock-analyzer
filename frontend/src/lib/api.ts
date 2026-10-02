@@ -2041,6 +2041,7 @@ export const costsApi = {
 }
 
 export const paperApi = {
+  rotationAudit: () => get<any>('/paper/rotation-audit'),
   account:         () => get<any>('/paper/account'),
   positions:       () => get<any>('/paper/positions'),
   orders:          (limit = 50, page = 1) => get<any>(`/paper/orders?limit=${limit}&page=${page}`),

@@ -57,3 +57,11 @@ test('A owner ignores stale S12 price and explains its own wait', () => {
   assert.equal(view.gateReason, '等待收盤價突破開盤 15 分鐘高點，且站上 VWAP')
   assert.equal(view.checkedAt, '2026-10-01 01:31:15')
 })
+
+test('swing owner never shows stale S12 price and distinguishes relative-strength wait',()=>{
+ const view=buildPendingBuyTradeView({ml_entry_price:100,execution_preview:{...preview,
+  entry_owner:'or15-5m-orl8-20-v1',s12:{...preview.s12!,ready:true,entry_price:101},
+  or15:{action:'defer',reason:'swing_waiting_relative_strength',or_high:102,or_low:99,vwap:101,
+    relative_return:-.01,ma60:99,latest_bar_ms:1,bar_source:'fixture',bar_error:null,checked_at:'2026-10-02T01:20:00Z'}}})
+ assert.equal(view.entryPrice,null);assert.match(view.gateReason!,/0050/);assert.doesNotMatch(view.gateReason!,/S12/)
+})

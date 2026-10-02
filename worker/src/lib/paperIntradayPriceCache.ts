@@ -22,6 +22,7 @@ export type PostClosePriceSnapshot = {
 export type IntradayPriceSnapshot = {
   symbol: string
   price: number
+  reference_price?: number | null
   source: string
   quote_time: string | null
   updated_at: string
@@ -77,7 +78,7 @@ export async function putIntradayPrice(
   symbol: string,
   price: number,
   ttlSeconds = INTRADAY_PRICE_TTL_SECONDS,
-  metadata: { source?: string; quoteTime?: string | null; updatedAt?: string } = {},
+  metadata: { source?: string; quoteTime?: string | null; updatedAt?: string; referencePrice?: number | null } = {},
 ): Promise<void> {
   const updatedAt = metadata.updatedAt ?? paperExecutionDate().toISOString()
   const quoteTime = metadata.quoteTime ?? null
@@ -85,6 +86,7 @@ export async function putIntradayPrice(
   const snapshot: IntradayPriceSnapshot = {
     symbol,
     price,
+    reference_price: finitePositive(metadata.referencePrice),
     source: metadata.source ?? 'shioaji',
     quote_time: quoteTime,
     updated_at: updatedAt,
@@ -124,6 +126,7 @@ export async function getIntradayPriceMap(
       out.set(uniqueSymbols[i], {
         symbol: uniqueSymbols[i],
         price,
+        reference_price: finitePositive(parsed.reference_price),
         source: String(parsed.source ?? 'shioaji'),
         quote_time: quoteTime,
         updated_at: new Date(updatedAtMs).toISOString(),

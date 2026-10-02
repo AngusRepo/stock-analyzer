@@ -11,13 +11,16 @@ interface ExecutionPreviewRow {
 }
 
 export interface PendingBuyExecutionPreview {
-  entry_owner?: 's12' | 'or15_vwap_v1'
+  entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
   or15?: {
     action: string
     reason: string
     or_high: number | null
     or_low: number | null
     vwap: number | null
+    relative_return?: number | null
+    ma60?: number | null
+    vwap_basis?: string | null
     latest_bar_ms: number | null
     bar_source: string | null
     bar_error: string | null
@@ -60,7 +63,7 @@ function detailField(detail: string, key: string): string | null {
   return match?.[1] ?? null
 }
 
-export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], entryOwner: 's12' | 'or15_vwap_v1' = 's12'): Map<string, PendingBuyExecutionPreview> {
+export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], entryOwner: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1' = 's12'): Map<string, PendingBuyExecutionPreview> {
   const previews = new Map<string, PendingBuyExecutionPreview>()
   for (const row of rows) {
     const preview = previews.get(row.symbol) ?? { entry_owner: entryOwner, or15: null, s12: null, allocator: null }
@@ -74,7 +77,9 @@ export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], en
           or_high: finitePositive(signal.orHigh),
           or_low: finitePositive(signal.orLow),
           vwap: finitePositive(signal.vwap),
-          latest_bar_ms: finitePositive(signal.latestBarMs),
+          latest_bar_ms: finitePositive(signal.latestBarMs ?? signal.signalMs),
+          relative_return: typeof signal.relativeReturn === "number" ? signal.relativeReturn : null,
+          ma60: finitePositive(signal.ma60), vwap_basis: signal.vwapBasis ?? null,
           bar_source: typeof payload.bar_source === 'string' ? payload.bar_source : null,
           bar_error: typeof payload.bar_error === 'string' ? payload.bar_error : null,
           checked_at: row.created_at,
@@ -117,14 +122,15 @@ export async function loadPendingBuyExecutionPreviews(
   symbols: string[],
 ): Promise<Map<string, PendingBuyExecutionPreview>> {
   if (symbols.length === 0) return new Map()
-  const entryOwner = String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1' ? 'or15_vwap_v1' : 's12'
+  const owner = String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim()
+  const entryOwner = owner === 'or15-5m-orl8-20-v1' ? owner : owner === 'or15_vwap_v1' ? owner : 's12'
   const placeholders = symbols.map(() => '?').join(',')
   const { results } = await paperDomainDatabase(env).prepare(`
     WITH candidate_events AS (
       SELECT symbol, status, reason, detail_json, created_at, id,
              CASE
                WHEN event_type = 's12_intraday_structure' AND source = 's12_intraday_structure' THEN 's12'
-               WHEN event_type = 'intraday_technical_decision' AND source = 'or15_vwap_entry_v1' THEN 'or15'
+               WHEN event_type = 'intraday_technical_decision' AND source IN ('or15_vwap_entry_v1','or15-5m-orl8-20-v1') THEN 'or15'
                ELSE 'allocator'
              END AS kind
         FROM paper_execution_events
@@ -133,7 +139,7 @@ export async function loadPendingBuyExecutionPreviews(
          AND symbol IN (${placeholders})
          AND (
            (event_type = 's12_intraday_structure' AND source = 's12_intraday_structure')
-           OR (event_type = 'intraday_technical_decision' AND source = 'or15_vwap_entry_v1')
+           OR (event_type = 'intraday_technical_decision' AND source IN ('or15_vwap_entry_v1','or15-5m-orl8-20-v1'))
            OR (event_type = 'pending_buy' AND source = 'intraday_check' AND status LIKE 'allocator_%')
          )
     ), ranked AS (

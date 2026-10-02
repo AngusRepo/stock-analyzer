@@ -1226,6 +1226,20 @@ export async function loadOr15ResearchSessionBars(
 }
 
 /** Current-session completed OHLCV only; the Paper A entry never loads S12 history. */
+export async function loadSwingMinuteBars(env: Bindings, symbol: string, tradeDate: string) {
+  const remote = await fetchS12ShioajiKbars(env,symbol,tradeDate).catch(()=>null)
+  const bars = remote?.diagnostics.kbars_unusable_reason == null ? remote?.bars ?? [] : []
+  const open=Date.parse(tradeDate+'T09:00:00+08:00')
+  const completeUntil=Math.floor((paperExecutionNow()-open)/300_000)*300_000+open
+  const byTime=new Set(bars.map(b=>b.startMs))
+  if(completeUntil>open && Array.from({length:(completeUntil-open)/60_000},(_,i)=>open+i*60_000).every(t=>byTime.has(t)))
+    return {bars,source:'streaming_start_label',error:null}
+  // SDK api.kbars uses closing timestamps (09:01 represents 09:00–09:01).
+  // Never infer the label from whether a missing opening minute happens to exist.
+  const history=await loadOr15ResearchSessionBars(env,symbol,tradeDate)
+  return {bars:history.map(b=>({...b,startMs:b.startMs-60_000})),source:'research_end_label_normalized',error:null}
+}
+
 export async function loadOr15AuthoritativeMinuteBars(
   env: Bindings,
   symbol: string,

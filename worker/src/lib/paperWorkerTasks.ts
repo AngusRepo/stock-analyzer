@@ -211,6 +211,8 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   await writeDailyExecutionPaperClosureArtifacts(env, today)
   const { recordL4AccountReward } = await import('./l4AccountReward')
   await recordL4AccountReward(env, today, totalValue)
+  const {updateRotationAudit}=await import('./paperRotationAudit')
+  await updateRotationAudit(env,today)
 
   console.log(`[Snapshot] total_value=NT$${Math.round(totalValue).toLocaleString()} pnl=${pnlPct.toFixed(2)}%`)
 

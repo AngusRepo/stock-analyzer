@@ -66,6 +66,20 @@ def validate_admission(admission, *, artifact, now=None):
 RUNTIME_SCHEMA = 'active8-paper-runtime-approval-v1'
 RUNTIME_KEY = 'ml:active8:paper_runtime_approval:v1'
 RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-budget-ledger-recovery'
+
+SWING_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-single-plan-swing'
+SWING_POLICY_CHANGE = {
+    'schema_version':'paper-single-plan-swing-change-v1',
+    'scope':'paper', 'maturity_transfer':False, 'efficacy_status':'unproven',
+    'variables':{
+        'PAPER_INTRADAY_ENTRY_OWNER':{'previous':'or15_vwap_v1','approved':'or15-5m-orl8-20-v1'},
+        'PAPER_DAILY_PLAN_OWNER':{'previous':None,'approved':'premarket_once_v1'},
+    },
+    'allocator_sources':{'l4_distribution_context.py':{
+        'previous':'471d8a905838b84c1498fcb3915856d98a00c8b4893e7d256bc1b0fa415730f2',
+        'approved':'7bb742c3ec3cde5c173e1d37d04117c1f577c5f84369d36a7a9f5ef6dee0719f'}},
+}
+
 ODD_LOT_QUOTE_AGE_CHANGE = {
     'schema_version': 'active8-paper-odd-lot-quote-age-change-v1',
     'variable': 'FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS',
@@ -150,6 +164,21 @@ def validate_runtime_approval(approval, admission, *, now=None):
         for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
             if str(policy['variables'].get(flag, '')).lower() in {'1','true','yes','enabled','on'}:
                 raise RuntimeError('active8_paper_live_execution_forbidden')
+    swing_change = approval.get('approved_single_plan_swing_change')
+    if swing_change is not None:
+        if swing_change != SWING_POLICY_CHANGE:
+            raise RuntimeError('active8_paper_swing_change_invalid')
+        prior=before['native_execution_policy']['variables']
+        current=after['native_execution_policy']['variables']
+        for key,transition in SWING_POLICY_CHANGE['variables'].items():
+            if prior.get(key)!=transition['previous'] or current.get(key)!=transition['approved']:
+                raise RuntimeError('active8_paper_swing_variables_invalid')
+            if transition['previous'] is None:current.pop(key)
+            else:current[key]=transition['previous']
+        for name,transition in SWING_POLICY_CHANGE['allocator_sources'].items():
+            if before['allocator_source_identity'].get(name)!=transition['previous'] or after['allocator_source_identity'].get(name)!=transition['approved']:
+                raise RuntimeError('active8_paper_swing_sources_invalid')
+            after['allocator_source_identity'][name]=transition['previous']
     change = approval.get('approved_execution_policy_change')
     if change is not None:
         key = ODD_LOT_QUOTE_AGE_CHANGE['variable']
@@ -198,7 +227,9 @@ def verify_active_approval(admission, *, now=None):
         raise RuntimeError('active8_paper_operator_approval_missing_changed_or_revoked')
     # Stage this release's exact approval before routing traffic. Older builds
     # retain their own release key, so a candidate check cannot revoke their grant.
-    runtime = kv_client.get_json(RUNTIME_RELEASE_KEY, default=None, strict=True)
+    import os
+    release_key=SWING_RUNTIME_RELEASE_KEY if os.environ.get('PIPELINE_DAILY_PLAN_OWNER')=='premarket_once_v1' else RUNTIME_RELEASE_KEY
+    runtime = kv_client.get_json(release_key, default=None, strict=True)
     if runtime is None:
         runtime = kv_client.get_json(RUNTIME_KEY, default=None, strict=True)
     if runtime is None:

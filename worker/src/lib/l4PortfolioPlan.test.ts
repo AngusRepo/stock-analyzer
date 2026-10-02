@@ -10,6 +10,9 @@ import { requestL4Replan, flushL4Replans } from './l4Replan'
 
 async function main() {
   const sql=new DatabaseSync(':memory:')
+  sql.exec(`CREATE TABLE maintenance_task_leases(lease_group TEXT PRIMARY KEY,task_name TEXT NOT NULL,owner_id TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,acquired_at TEXT DEFAULT CURRENT_TIMESTAMP,heartbeat_at TEXT DEFAULT CURRENT_TIMESTAMP)`)
+
   sql.exec(`CREATE TABLE paper_order_intents(intent_key TEXT PRIMARY KEY,account_id INTEGER,trade_date TEXT,symbol TEXT,side TEXT,source TEXT,status TEXT,created_at TEXT,updated_at TEXT,order_id INTEGER,error_message TEXT)`)
   sql.exec(readFileSync(new URL('../../domain-migrations/paper/0005_l4_distribution.sql',import.meta.url),'utf8'))
   sql.exec(`CREATE TABLE paper_exit_intents(account_id INTEGER,state TEXT); CREATE TABLE paper_orders(id INTEGER PRIMARY KEY,account_id INTEGER,source TEXT,created_at TEXT); CREATE TABLE paper_accounts(id INTEGER PRIMARY KEY,cash REAL);INSERT INTO paper_accounts VALUES(1,1000000); CREATE TABLE paper_positions(account_id INTEGER,symbol TEXT,shares INTEGER); CREATE TABLE paper_settlements(account_id INTEGER,settled INTEGER,side TEXT,amount REAL);`)

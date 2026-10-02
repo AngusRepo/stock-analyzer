@@ -10,6 +10,7 @@ from services import l4_distribution_lifecycle as lifecycle
 from services.l4_distribution_dataset import build_native_oof_rows,NET_LABEL_SCHEMA
 from services.l4_distribution_runtime import run
 from services.l4_replan import replan
+from test_l4_replan_claim import LeaseDB
 from test_l4_distribution_runtime import fixture,IDENTITY,bundle
 
 
@@ -90,7 +91,7 @@ def test_veto_replan_failure_retry_and_completed_idempotency(monkeypatch):
         calls.append(plan)
         if len(calls)==1:raise RuntimeError('publication_failed')
     args=dict(plan_id=source['plan_id'],veto_symbols=['B'],reason='debate_reject',paper=db,
-        learning=SimpleNamespace(query=None),account_reader=lambda _:deepcopy(account),publisher=publish)
+        learning=SimpleNamespace(query=None),account_reader=lambda _:deepcopy(account),publisher=publish,leases=LeaseDB())
     with pytest.raises(RuntimeError,match='publication_failed'):replan(**args)
     assert list(db.requests.values())[0]['result_plan_id'] is None
     receipt=replan(**args)

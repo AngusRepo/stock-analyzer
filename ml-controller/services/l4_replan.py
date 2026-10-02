@@ -7,7 +7,28 @@ from services.l4_distribution import digest
 from services.l4_distribution_runtime import run
 
 
-def replan(*, plan_id, veto_symbols, reason, paper, learning, account_reader, publisher, weight_caps=None):
+def replan(*, plan_id, veto_symbols, reason, paper, learning, account_reader, publisher, leases, weight_caps=None):
+    from services.l4_replan_lease import replan_claim
+    request={'source_plan_id':plan_id,'veto_symbols':sorted(set(veto_symbols)),
+             'weight_caps':weight_caps or {},'reason':reason}
+    request_id=digest(request)
+    existing=paper.query('SELECT * FROM l4_replan_requests_v1 WHERE request_id=?',[request_id])
+    if existing and existing[0].get('result_plan_id'):
+        return {'status':'replanned','plan_id':existing[0]['result_plan_id'],'request_id':request_id}
+    # Claim before snapshot/account reads. A timed-out HTTP caller does not own
+    # this lease and cannot release a computation still running on Cloud Run.
+    with replan_claim(leases) as fence:
+        if fence is None:
+            return {'status':'in_progress','request_id':request_id}
+        def fenced_publish(plan, snapshot):
+            fence()
+            return publisher(plan, snapshot)
+        return _replan_owned(plan_id=plan_id,veto_symbols=veto_symbols,reason=reason,
+            paper=paper,learning=learning,account_reader=account_reader,publisher=fenced_publish,
+            weight_caps=weight_caps)
+
+
+def _replan_owned(*, plan_id, veto_symbols, reason, paper, learning, account_reader, publisher, weight_caps=None):
     weight_caps=weight_caps or {}
     request={'source_plan_id':plan_id,'veto_symbols':sorted(set(veto_symbols)),'weight_caps':weight_caps,'reason':reason}
     request_id=digest(request)

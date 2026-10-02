@@ -50,14 +50,23 @@ export async function acquirePaperBuyIntent(
   env: Bindings,
   tradeDate: string,
   symbol: string,
-  targetRevision?: {planId:string; currentShares:number},
+  targetRevision?: {planId:string; currentShares:number; dailyReview?:string},
 ): Promise<PaperOrderIntent> {
   if (targetRevision && (!/^[a-f0-9]{64}$/.test(targetRevision.planId) || !Number.isSafeInteger(targetRevision.currentShares) || targetRevision.currentShares<0))
     throw new Error('l4_buy_intent_revision_invalid')
+  if (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && !targetRevision?.dailyReview)
+    throw new Error('daily_plan_buy_review_required')
+  if (targetRevision?.dailyReview && (!/^[a-f0-9]{64}$/.test(targetRevision.dailyReview) || targetRevision.currentShares!==0))
+    throw new Error('daily_plan_buy_revision_invalid')
   const intentKey = buildPaperBuyIntentKey(tradeDate, symbol) + (targetRevision ? `:l4:${targetRevision.planId}:from:${targetRevision.currentShares}` : '')
-  const revisionGuard = targetRevision ? ` AND EXISTS(SELECT 1 FROM l4_portfolio_head_v1 WHERE account_id=? AND plan_id=?)
+  let revisionGuard = targetRevision ? ` AND EXISTS(SELECT 1 FROM l4_portfolio_head_v1 WHERE account_id=? AND plan_id=?)
     AND COALESCE((SELECT shares FROM paper_positions WHERE account_id=? AND symbol=?),0)=?` : ''
   const revisionArgs = targetRevision ? [paperAccountId(),targetRevision.planId,paperAccountId(),symbol,targetRevision.currentShares] : []
+  if (targetRevision?.dailyReview) {
+    revisionGuard += ` AND EXISTS(SELECT 1 FROM paper_daily_plan_heads_v1 WHERE account_id=? AND trade_date=? AND checksum=? AND plan_id=?)
+      AND NOT EXISTS(SELECT 1 FROM paper_order_intents WHERE account_id=? AND trade_date=? AND symbol=? AND side='buy' AND status IN ('filled','partial'))`
+    revisionArgs.push(paperAccountId(),tradeDate,targetRevision.dailyReview,targetRevision.planId,paperAccountId(),tradeDate,symbol)
+  }
   try {
     const result = await paperDomainDatabase(env).prepare(
       `INSERT OR IGNORE INTO paper_order_intents

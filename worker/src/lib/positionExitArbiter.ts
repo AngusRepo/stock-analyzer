@@ -1,3 +1,4 @@
+import { readSwingState } from './paperSwingLifecycle'
 import type { ExitDecision } from './paperExitPolicy'
 
 export type PositionExitOwner = 'position_policy' | 'l4_target' | 'portfolio_risk'
@@ -91,6 +92,7 @@ function lifecycleObject(raw: unknown): Record<string, unknown> {
 export function preparePositionTakeProfit(input: {
   lifecycle: unknown; entryDate: string; tp1Hit: boolean; positionShares: number; decision: ExitDecision
 }): { decision: ExitDecision; progress: PositionTakeProfitProgress | null } {
+  if(readSwingState(input.lifecycle)) return {decision:input.decision,progress:null}
   // Emergency exits must not depend on optional TP1 metadata.
   if (input.tp1Hit || input.decision.exitIntentKind === 'risk_stop')
     return { decision: input.decision, progress: null }

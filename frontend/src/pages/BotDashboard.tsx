@@ -62,6 +62,23 @@ function pctClass(pct: number | null): string {
   return 'text-muted-foreground'
 }
 
+function RotationAudit() {
+  const {data,error}=useQuery({queryKey:['paper','rotation-audit'],queryFn:paperApi.rotationAudit,refetchInterval:60000})
+  if(error)return <p className="text-xs text-muted-foreground">換倉追蹤暫時無法讀取</p>
+  if(!data?.policy_active)return null
+  return <details className="rounded-lg border border-muted/40 p-3 mt-3">
+    <summary className="cursor-pointer text-sm">L4 換倉追蹤 · {data.items?.length ?? 0} 筆</summary>
+    <p className="text-xs text-muted-foreground my-2">原股後續 20 個交易日走勢，與同日計畫實際換入部位的淨損益分開記錄。未成熟與缺資料不算成零；同批資金共用，不推定一對一因果。</p>
+    {!data.items?.length && <p className="text-sm">尚無 L4 換倉紀錄</p>}
+    <div className="grid gap-3 md:grid-cols-2">{data.items?.map((r:any)=><details key={r.order_id} className="rounded border border-muted/30 p-3">
+      <summary className="cursor-pointer text-sm">委託 #{r.order_id} · 浮盈 {(r.floating_pnl_pct*100).toFixed(2)}% · {r.status==='mature'?'已滿 20 日':r.status==='missing_data'?'缺資料':'觀察中'}</summary>
+      <p className="text-xs break-words mt-2">{r.exit_reason}</p>
+      <p className="text-xs my-2">原股：{r.original_next_20_sessions?.map((p:any)=>`${p.date.slice(5)} $${p.close}`).join(' → ') || '尚無後續收盤'}</p>
+      {r.replacement_status==='not_replaced'?<p className="text-xs">未換入，資金保留現金</p>:r.replacements?.map((p:any)=><p className="text-xs" key={p.order_id}>{p.symbol} · {p.status==='mature'?'20 日':'觀察中'} · 淨損益 {p.net_pnl==null?'待完整資料':`$${p.net_pnl.toFixed(0)}`} · 截至 {p.as_of_date}</p>)}
+    </details>)}</div>
+  </details>
+}
+
 function signalBadge(signal: string) {
   const s = signal?.toUpperCase() ?? ''
   // 台股慣例：紅=買/漲, 綠=賣/跌
@@ -543,7 +560,14 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         const executionBadge = formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const trade = buildPendingBuyTradeView(b)
-        const isOr15 = b.execution_preview?.entry_owner === 'or15_vwap_v1'
+        const quotePrice = b.market_price?.price
+        const quoteReference = b.market_price?.reference_price
+        const priceChange = typeof quotePrice === 'number' && Number.isFinite(quotePrice) && quotePrice > 0
+          && typeof quoteReference === 'number' && Number.isFinite(quoteReference) && quoteReference > 0
+          ? Number((quotePrice - quoteReference).toFixed(6)) : null
+        const priceChangePct = priceChange != null ? priceChange / quoteReference * 100 : null
+        const changeSign = priceChange != null && priceChange > 0 ? '+' : ''
+        const isOr15 = ['or15_vwap_v1','or15-5m-orl8-20-v1'].includes(b.execution_preview?.entry_owner ?? '')
         const or15 = b.execution_preview?.or15
         const s12Preview = b.execution_preview?.s12
         const s12Label = s12Preview
@@ -575,9 +599,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">目前價位</div>
-                <div className="mt-1 text-base font-semibold text-foreground">
+                <div className={`mt-1 text-base font-semibold ${priceChange == null ? 'text-foreground' : pctClass(priceChange)}`}>
                   {b.market_price?.price != null ? '$' + fmt(b.market_price.price, 2) : '報價待更新'}
                 </div>
+                <div className={`text-xs font-medium ${pctClass(priceChange)}`}
+                  title="相對券商當日昨收參考價；除權息等調整日依券商參考價計算">
+                  {priceChange != null && priceChangePct != null
+                    ? `${priceChange === 0 ? '平盤 ' : ''}${changeSign}${fmt(priceChange, 2)}（${changeSign}${fmt(priceChangePct, 2)}%）`
+                    : '漲跌待更新'}
+                </div>
+                {priceChange != null && <div className="text-[11px] text-muted-foreground">昨收參考 ${fmt(quoteReference, 2)}</div>}
                 <div className="text-[11px] text-muted-foreground">
                   {b.market_price?.as_of ? 'Shioaji · ' + formatTwDateTimeShort(b.market_price.as_of) : '僅顯示 90 秒內報價'}
                 </div>
@@ -585,7 +616,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">預計買入價</div>
                 <div className="mt-1 text-base font-semibold text-foreground">
-                  {trade.entryPrice != null ? `$${fmt(trade.entryPrice, 2)}` : isOr15 ? '待 A 訊號與即時報價' : '待 S12 定價'}
+                  {trade.entryPrice != null ? `$${fmt(trade.entryPrice, 2)}` : isOr15 ? '待 OR15 訊號與即時報價' : '待 S12 定價'}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
                   {trade.entryPrice != null ? `S12 結構價${trade.chaseCeiling != null ? ` · 追價上限 $${fmt(trade.chaseCeiling, 2)}` : ''}` : trade.referencePrice != null ? `選股參考價 $${fmt(trade.referencePrice, 2)}；非委託價` : '尚無選股參考價'}
@@ -613,12 +644,15 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             {trade.availableCash != null && <div className="mt-2 text-[11px] text-muted-foreground">{'可用資金 $' + fmt(trade.availableCash)}</div>}
             <div className="mt-3 grid gap-1.5 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
               <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
-              <div><span className="text-foreground">{isOr15 ? 'A 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
+              <div><span className="text-foreground">{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
             </div>
             {isOr15 && or15 && <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
               {or15.or_high != null && `開盤 15 分鐘高點 $${fmt(or15.or_high, 2)}`}
               {or15.or_low != null && ` · 低點 $${fmt(or15.or_low, 2)}`}
               {or15.vwap != null && ` · VWAP $${fmt(or15.vwap, 2)}`}
+              {or15.relative_return != null && ` · 相對 0050 ${fmt(or15.relative_return * 100, 2)} 個百分點`}
+              {or15.ma60 != null && ` · 0050 MA60 $${fmt(or15.ma60, 2)}`}
+              {or15.vwap_basis === 'five_minute_typical' && ' · VWAP 使用 5 分 K 典型價近似'}
               {or15.latest_bar_ms != null && ` · 最新 K 棒 ${formatTwDateTimeShort(new Date(or15.latest_bar_ms).toISOString())}`}
               {or15.bar_error && ` · 行情異常 ${or15.bar_error}`}
             </div>}
@@ -1641,6 +1675,7 @@ export default function BotDashboard() {
             </WorkstationPanel>
 
             <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
+              <RotationAudit />
               <TradeHistory />
             </WorkstationPanel>
           </div>

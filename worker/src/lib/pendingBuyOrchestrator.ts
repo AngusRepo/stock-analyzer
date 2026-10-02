@@ -1,4 +1,5 @@
 import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLease'
+import { hasPendingBuyDebateChanges } from './pendingBuyDebateChange'
 import { requestL4Replan } from './l4Replan'
 import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, planIdFromWatchPoints, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
@@ -174,6 +175,10 @@ async function persistPendingDebateFailure(
     ? String(snapshot.meta.source_reco_date)
     : tradeDate
 
+  if (!hasPendingBuyDebateChanges(snapshot.pendingBuys, nextPendingBuys)
+    && snapshot.meta?.debate_status === 'pending' && snapshot.meta?.error_message === reason) {
+    return `debate_retry_unchanged=${pendingItems.length} reason=${reason}`
+  }
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate,
@@ -1353,6 +1358,10 @@ async function reconcilePendingBuyDebatesOwned(
   }
 
   for (const [planId, symbols] of l4Rejected) await requestL4Replan(env, planId, symbols, 'debate_risk_reject')
+  if (!hasPendingBuyDebateChanges(snapshot.pendingBuys, nextPendingBuys)
+    && snapshot.meta?.debate_status === (failedCount > 0 ? 'pending' : 'completed')) {
+    return `debate_unchanged=${results.size} failed=${failedCount} remaining=${nextPendingBuys.length}`
+  }
   await replacePendingBuyState(env, {
     tradeDate,
     sourceRecoDate,

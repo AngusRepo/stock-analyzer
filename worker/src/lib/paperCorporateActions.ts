@@ -259,7 +259,7 @@ export async function processPaperCorporateActions(env: Bindings, sessionDate: s
   if (now.toISOString() >= sessionDate + 'T01:00:00.000Z') throw new Error('paper_corporate_exdate_opening_state_required')
   const openingStatement = await prepareCorporateOpeningBasis(db, {
     schema_version: 'paper-corporate-opening-basis-v1', account_id: accountId, session_date: sessionDate,
-    observed_at: now.toISOString(), source_checksum: snapshot.source_checksum, positions,
+    observed_at: now.toISOString(), source_checksum: snapshot.source_checksum, positions, actions: snapshot.actions,
   })
   const statements: D1PreparedStatement[] = []
   // A marker inserted last makes the entire D1 batch retry-idempotent. Conflict
@@ -375,7 +375,7 @@ export async function processPaperCorporateActions(env: Bindings, sessionDate: s
     // Theoretical ex-right price basis is for stops only, NEVER booked as NAV
     // or as the holder's (different) subscription-right quantity/value.
     const factor = (previousClose - cash + paidAmount) / previousClose / ((1 + stock + paidRatio) * conversion)
-    const lifecycle = adjustCanonicalCorporatePriceBasis(position.trade_lifecycle_json, factor, actions.map(a => a.action_id))
+    const lifecycle = adjustCanonicalCorporatePriceBasis(position.trade_lifecycle_json, factor, actions.map(a => a.action_id), sessionDate)
     // Preserve the economic stop distance; an exchange adjustment is not a loss.
     statements.push(db.prepare(`UPDATE paper_positions SET avg_cost=MAX(0,avg_cost-?)/?,
       entry_price=entry_price*?, initial_stop=initial_stop*?, trailing_stop=trailing_stop*?,

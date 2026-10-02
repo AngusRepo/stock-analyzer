@@ -208,6 +208,7 @@ async def _run() -> int:
         f"job-{int(time.time())}-{uuid.uuid4().hex[:8]}",
     )
     run_id = os.environ.get("PIPELINE_PARENT_RUN_ID", "").strip() or run_id
+    premarket_mode = _truthy_env('PIPELINE_PREMARKET_RESUME_MODE')
     continuation_mode = _truthy_env("PIPELINE_MODAL_CONTINUATION_MODE")
     snapshot_recovery_mode = _truthy_env("PIPELINE_SNAPSHOT_RECOVERY_MODE")
     from services.allocator_contract_guard import assert_allocator_contract_run_date
@@ -224,9 +225,12 @@ async def _run() -> int:
     emit_subtasks = True
 
     try:
-        if continuation_mode and snapshot_recovery_mode:
+        if sum([continuation_mode,snapshot_recovery_mode,premarket_mode])>1:
             raise ValueError("pipeline continuation and snapshot recovery modes are mutually exclusive")
-        if snapshot_recovery_mode:
+        if premarket_mode:
+            from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
+            result=await run_pipeline_v2_from_premarket(os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI',''))
+        elif snapshot_recovery_mode:
             source_gcs_uri = os.environ.get("PIPELINE_SNAPSHOT_RECOVERY_SOURCE_GCS_URI", "").strip()
             result = await run_pipeline_v2_from_snapshot_recovery(
                 source_gcs_uri=source_gcs_uri,
@@ -278,6 +282,10 @@ async def _run() -> int:
                 f"snapshot={snapshot_status} "
                 f"errors={error_count}"
             )
+        elif isinstance(result,dict) and result.get('status')=='awaiting_premarket':
+            status='triggered'
+            emit_subtasks=False
+            summary='awaiting_premarket l3_sealed=true cloud_compute_stopped=true'
         elif isinstance(result, dict) and result.get("status") == "deferred":
             status = "triggered"
             emit_subtasks = False
@@ -306,6 +314,8 @@ async def _run() -> int:
         "duration_ms": elapsed_ms,
         "run_id": run_id,
     }
+    if isinstance(result,dict) and result.get('l3_receipt'):
+        overall_payload['l3_receipt']=result['l3_receipt']
     if run_date:
         overall_payload["run_date"] = run_date
     if error:

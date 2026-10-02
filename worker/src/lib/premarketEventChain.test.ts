@@ -63,7 +63,7 @@ test('dependency wait preserves compute budget; target breach is visible',async(
  try{
   await ensurePremarketEventChain(f.env,date,f.now())
   await assert.rejects(processPremarketEvent(f.env,f.messages[0],async()=>{throw new Error('premarket_wait:evening_pipeline')},f.now()),/premarket_wait/)
-  assert.equal(f.rows()[0].attempt_count,0);f.ports.nowMs=Date.parse(date+'T00:30:00Z')
+  assert.equal(f.rows()[0].attempt_count,0);f.ports.nowMs=Date.parse(date+'T00:45:00Z')
   assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/overdue=true/)
  }finally{f.close()}
 })
@@ -91,4 +91,16 @@ test('dependency retries advance from delayed queue without waiting for watchdog
 test('holiday wake does not create or dispatch a daily chain',async()=>{
  const f=fixture()
  try{f.kvs.set(`holiday:${date}`,'1');assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/non_trading_day/);assert.equal(f.rows().length,0);assert.equal(f.messages.length,0)}finally{f.close()}
+})
+
+test('single-plan mode accepts 08:44:59 and expires at 08:45 without doing more work',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
+ try{
+  f.ports.nowMs=Date.parse(date+'T08:44:59+08:00')
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/queued=1/)
+  f.ports.nowMs+=1000
+  await processPremarketEvent(f.env,f.messages[0],async()=>{calls++;return {next:null,receipt:{}}},f.now())
+  assert.equal(calls,0);assert.equal(f.rows()[0].status,'error')
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/outside_window/)
+ }finally{f.close()}
 })

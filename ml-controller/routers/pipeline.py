@@ -445,3 +445,20 @@ async def trigger_pipeline_v2(
             ),
         },
     )
+
+
+@router.get('/v2/premarket-state')
+async def premarket_state(request:Request,date:str,run_id:str):
+    _check_service_token(request)
+    from services.premarket_pipeline import enabled,read_seal
+    if not enabled():raise HTTPException(409,'premarket_owner_disabled')
+    receipt=await asyncio.to_thread(read_seal,date,run_id)
+    return {'status':'sealed' if receipt else 'waiting','receipt':receipt}
+
+@router.post('/v2/premarket-resume')
+async def premarket_resume(request:Request):
+    _check_service_token(request)
+    from services.premarket_pipeline import enabled,dispatch
+    if not enabled():raise HTTPException(409,'premarket_owner_disabled')
+    body=await request.json()
+    return await asyncio.to_thread(dispatch,body['receipt'],body['context'],jobs_client=_jobs_client)

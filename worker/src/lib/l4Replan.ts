@@ -1,3 +1,4 @@
+import { dailyPlanOwner, restrictDailyExecutionPlan } from './paperDailyPlanRuntime'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLease'
 import { scopedPaperAccountId } from './paperExecutionScope'
@@ -68,7 +69,17 @@ async function flushL4ReplansOwned(env: Bindings, signalDate: string, options: {
   try {
     const request = mergeRequests(results)
     let result: { status?: string; plan_id?: string }
-    if (scopedPaperAccountId() != null) {
+    if (dailyPlanOwner(env)) {
+      // One frozen candidate set: deliver reductions, never call an optimizer.
+      if (results.some(row=>JSON.parse(row.request_json).plan_id!==request.plan_id)) throw new Error('daily_plan_mixed_sources')
+      const restrictions=results.flatMap(row=>{
+        const item=JSON.parse(row.request_json) as ReplanRequest
+        return [...item.veto_symbols.map(symbol=>({symbol,maxWeight:0,reason:item.reason})),
+          ...Object.entries(item.weight_caps ?? {}).map(([symbol,maxWeight])=>({symbol,maxWeight,reason:item.reason}))]
+      })
+      await restrictDailyExecutionPlan(env,request.plan_id,restrictions)
+      result={status:'replanned',plan_id:request.plan_id}
+    } else if (scopedPaperAccountId() != null) {
       // The private account adapter reads the same union of durable constraints.
       result = await replanPrivateL4(env, signalDate)
     } else {
@@ -78,6 +89,7 @@ async function flushL4ReplansOwned(env: Bindings, signalDate: string, options: {
       if (!response.ok) throw new Error(`http_${response.status}`)
       result = await response.json() as { status?: string; plan_id?: string }
     }
+    if (result.status === 'in_progress') return false
     if (result.status !== 'replanned' || !/^[a-f0-9]{64}$/.test(result.plan_id ?? '')) throw new Error('receipt_missing')
     // Complete only the captured request IDs; arrivals during execution belong
     // to the next information batch and must not be silently acknowledged.

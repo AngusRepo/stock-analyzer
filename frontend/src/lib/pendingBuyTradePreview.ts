@@ -1,11 +1,14 @@
 export interface PendingBuyExecutionPreview {
-  entry_owner?: 's12' | 'or15_vwap_v1'
+  entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
   or15?: {
     action: string
     reason: string
     or_high: number | null
     or_low: number | null
     vwap: number | null
+    relative_return?: number | null
+    ma60?: number | null
+    vwap_basis?: string | null
     latest_bar_ms: number | null
     bar_source: string | null
     bar_error: string | null
@@ -64,6 +67,27 @@ function nonnegative(value: unknown): number | null {
 }
 
 const OR15_REASONS: Record<string, string> = {
+  swing_plan_not_authorized: '等待今日盤前計畫完成封存；缺計畫不建新倉',
+  swing_existing_position_or_daily_fill: '已有持倉或今日已成交，不重複加碼',
+  swing_entry_window_closed: '訊號須為 09:15～12:55 的完整 5 分 K；最晚 13:00 進場',
+  swing_next_bar_submission_missed: '已超過下一根 K 的送單窗口，等下一個完整 5 分訊號',
+  swing_ma60_evidence_missing: '0050 昨收或前 60 個交易日資料不完整',
+  swing_market_below_ma60: '0050 昨收未高於 60 日均線，今日不建新倉',
+  swing_price_contract_missing: '昨收、漲停價或追價上限缺資料',
+  swing_minutes_missing: '等待 09:00 至訊號收盤的一分鐘 K 棒補齊',
+  swing_benchmark_timestamp_missing: '等待同一時刻的 0050 K 棒，尚不能比較相對強度',
+  swing_waiting_or_touch: '這根 5 分 K 尚未觸及開盤 15 分鐘高點',
+  swing_waiting_vwap: '5 分 K 收盤低於累積 VWAP，等待收復',
+  swing_waiting_relative_strength: '個股漲幅低於同時刻 0050，等待相對強度通過',
+  swing_fresh_execution_quote_missing: '等待訊號後的新報價，且須在 90 秒內',
+  swing_opening_range_at_limit: '開盤區間高點已達漲停，今日不買',
+  swing_buy_at_limit: '可成交價已達漲停，不買',
+  swing_chase_limit: '可成交價超過既有追價上限',
+  swing_or15_vwap_relative_strength: '觸及 ORH、收在 VWAP 上方且強於 0050；等待成交確認',
+  swing_volume_missing: '缺少成交量，無法計算 VWAP',
+  swing_turnover_volume_units_invalid: '成交金額與量的單位不一致，等待行情修復',
+  swing_invalid_minute: 'K 棒欄位不完整或價格不合理',
+  swing_conflicting_minute: '同一分鐘有衝突 K 棒，等待行情修復',
   or15_opening_bars_missing: '等待開盤 15 分鐘的一分鐘 K 棒補齊',
   or15_waiting_breakout: '等待收盤價突破開盤 15 分鐘高點，且站上 VWAP',
   or15_minute_bars_stale: '最新一分鐘 K 棒過期，等待更新',
@@ -86,7 +110,7 @@ export function describeOr15Reason(reason: string): string {
 export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuyTradeView {
   const preview = item.execution_preview
   const referencePrice = positive(item.ml_entry_price)
-  const isOr15 = preview?.entry_owner === 'or15_vwap_v1'
+  const isOr15 = ['or15_vwap_v1','or15-5m-orl8-20-v1'].includes(preview?.entry_owner ?? '')
   const s12Price = !isOr15 && preview?.s12?.ready ? positive(preview.s12.entry_price) : null
   const budgetCap = nonnegative(preview?.allocator?.budget_cap)
   const targetValue = nonnegative(preview?.allocator?.target_value)
@@ -121,7 +145,7 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
         ? 'S12 結構風控否決'
         : 'L4 進場保護門檻未通過'
   } else if (isOr15 && preview?.or15?.action !== 'pass') {
-    gateReason = preview?.or15 ? describeOr15Reason(preview.or15.reason) : '等待 A 盤中檢查結果'
+    gateReason = preview?.or15 ? describeOr15Reason(preview.or15.reason) : '等待 OR15 盤中檢查結果'
   } else if (!isOr15 && preview?.s12 && !preview.s12.ready) {
     gateReason = '等待 S12 結構成立'
   }

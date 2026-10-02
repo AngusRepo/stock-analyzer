@@ -672,3 +672,26 @@
 @media (prefers-reduced-motion: reduce) {
   .obs-chain *, .obs-chain *::before, .obs-chain *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
 }
+
+/* Daily phases replace the dense scrolling strip. Intraday has only its remaining execution branch. */
+.obs-chain__scopes { flex-wrap: wrap; overflow: visible; }
+@media (min-width: 1180px) {
+  .obs-chain__topology.is-intraday { grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr); }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane { grid-column: 1; }
+  .obs-chain__topology.is-intraday .obs-chain__branch:nth-child(1) { grid-column: 2; grid-row: 1; }
+}
+
+@media (max-width: 640px) {
+  .obs-chain__toolbar-meta { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .obs-chain__runtime { width: 100%; grid-template-columns: 30px minmax(0, 1fr) auto; }
+  .obs-chain__orchestrator { width: 100%; }
+}
+
+.obs-chain__branch-disclosure { width:100%; min-width:0; }
+.obs-chain__branch-disclosure > summary { cursor:pointer; padding:14px 20px; color:#9bacbd; border-top:1px solid #22303c; font-size:12px; }
+.obs-chain__branch-disclosure > summary span { margin-left:16px; color:#dce7ef; }
+.obs-chain.is-intraday .obs-chain__branch-disclosure { min-width:0; }
+
+.obs-chain__toolbar { flex-wrap:wrap; }
+.obs-chain__toolbar-meta { flex-wrap:wrap; flex:1 1 620px; }
+.obs-chain__phase { flex-shrink:0; }

@@ -92,10 +92,10 @@ class CloudRunJobsClient:
                 return True
         return False
 
-    def pipeline_execution_status(self, *, run_date: str, run_id: str, execution_name: str = "") -> dict:
+    def pipeline_execution_status(self, *, run_date: str, run_id: str, execution_name: str = "", required_env: dict | None = None) -> dict:
         from services.pipeline_execution_status import lookup_execution
         return lookup_execution(self._get_executions_client(), parent=self._parent,
-                                run_date=run_date, run_id=run_id, execution_name=execution_name)
+                                run_date=run_date, run_id=run_id, execution_name=execution_name, required_env=required_env)
 
     def execution_state(self, execution: JobExecution) -> str:
         """Observe one dispatched job; dispatch acceptance is not completion."""

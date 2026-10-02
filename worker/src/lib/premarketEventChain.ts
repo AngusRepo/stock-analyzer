@@ -2,16 +2,16 @@ import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { logSchedulerResult } from './schedulerRunLogger'
 
-export type PremarketStage = 'context' | 'setup' | `debate:${number}` | `replan:${number}` | `publish:${number}`
+export type PremarketStage = 'context' | 'setup' | 'allocate' | `debate:${number}` | `replan:${number}` | `publish:${number}`
 export interface PremarketPayload { [key: string]: unknown }
 export interface PremarketResult { next: PremarketStage | null; receipt: PremarketPayload }
 export type PremarketWork = (stage: PremarketStage, input: PremarketPayload, guard: () => Promise<void>) => Promise<PremarketResult>
 const PREFIX = 'premarket_v3:'
 const RUN = (date: string) => `${date}:premarket-v3`
 const MAX_ATTEMPTS = 3
-export const PREMARKET_READY_TARGET = '08:30'
+export const PREMARKET_READY_TARGET = '08:45'
 function validStage(stage: string): stage is PremarketStage {
-  return /^(context|setup|(debate|replan|publish):[0-2])$/.test(stage)
+  return /^(context|setup|allocate|(debate|replan|publish):[0-2])$/.test(stage)
 }
 export function premarketClock(now = Date.now()) {
   const tw = new Date(now + 8 * 3600_000)
@@ -57,7 +57,7 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
 /** All signals converge on one daily root; watchdog never resets successful stages. */
 export async function ensurePremarketEventChain(env: Bindings, date: string, now = Date.now()): Promise<string> {
   const clock = premarketClock(now)
-  if (date !== clock.date || clock.minutes < 390 || clock.minutes >= 540) return 'status=skipped premarket_outside_window'
+  if (date !== clock.date || clock.minutes < 390 || clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?525:540)) return 'status=skipped premarket_outside_window'
   const day = new Date(`${date}T12:00:00+08:00`).getUTCDay()
   if (day === 0 || day === 6 || await env.KV.get(`holiday:${date}`)) return 'status=skipped premarket_non_trading_day'
   const db = databaseForDataDomain(env, 'ops')
@@ -78,7 +78,7 @@ export async function ensurePremarketEventChain(env: Bindings, date: string, now
   const ready = results.some(r => r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success'
     && JSON.parse(r.cursor_key ?? '{}').output?.ready === true)
   const status = failed ? 'error' : ready ? 'success' : 'pending'
-  return `status=${status} premarket_event_chain queued=${sent} ready_target=${PREMARKET_READY_TARGET} overdue=${!ready && clock.minutes >= 510} stage=${failed?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'complete'}`
+  return `status=${status} premarket_event_chain queued=${sent} ready_target=${PREMARKET_READY_TARGET} overdue=${!ready && clock.minutes >= 525} stage=${failed?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'complete'}`
 }
 
 export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, work: PremarketWork, now = Date.now()): Promise<void> {
@@ -87,7 +87,7 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   if (!validStage(stage) || msg.runId !== RUN(date)) throw new Error('premarket_message_invalid')
   const db = databaseForDataDomain(env, 'ops')
   const key = PREFIX + stage
-  if (date !== premarketClock(now).date || premarketClock(now).minutes >= 540) {
+  if (date !== premarketClock(now).date || premarketClock(now).minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?525:540)) {
     await db.prepare(`UPDATE pipeline_stage_runs SET status='error',last_error='premarket_session_expired',updated_at=CURRENT_TIMESTAMP
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status!='success'`)
       .bind(date,key,RUN(date)).run()

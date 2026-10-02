@@ -16,6 +16,7 @@ class ReplanRequest(BaseModel):
 @router.post('/replan')
 def replan_portfolio(request: ReplanRequest):
     return replan(**request.model_dump(),paper=client_proxy_for_domain('paper'),
+        leases=client_proxy_for_domain('ops'),
         learning=client_proxy_for_domain('learning'),
         account_reader=lambda day:worker_request('/api/internal/l4-distribution/account',{'signal_date':day}),
         publisher=publish_plan)

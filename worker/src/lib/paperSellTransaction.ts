@@ -7,12 +7,14 @@ import { getSettlementDate } from './dateUtils'
  * The supplied statements must end in the corresponding paper_orders INSERT.
  */
 export async function executePaperSellBatch(env: Bindings, statements: D1PreparedStatement[],
-  symbol: string, proceeds: number): Promise<number> {
+  symbol: string, proceeds: number, notAfterMs?:number): Promise<number> {
   if (!symbol || !Number.isFinite(proceeds) || proceeds<0 || statements.length<2)
     throw new Error('paper_sell_transaction_invalid')
   const db=paperDomainDatabase(env),accountId=paperAccountId()
   const day=new Date(paperExecutionNow()+8*3600_000).toISOString().slice(0,10)
   const settlementDate=await getSettlementDate(day,env.KV)
+  if(notAfterMs!=null && (!Number.isFinite(notAfterMs) || paperExecutionNow()>=notAfterMs))
+    throw new Error('paper_sell_submission_window_expired')
   const result=await db.batch([...statements,db.prepare(`INSERT INTO paper_settlements
     (account_id,order_id,symbol,side,amount,trade_date,settlement_date)
     VALUES (?,(SELECT id FROM paper_orders WHERE id=last_insert_rowid()

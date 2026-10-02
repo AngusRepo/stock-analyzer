@@ -12,7 +12,7 @@ SCHEMA = "pipeline-cloud-execution-status-v1"
 
 def _environment(execution: Any) -> dict[str, str]:
     # Only identity fields are read; secret references/other values never leave here.
-    wanted = {"PIPELINE_RUN_DATE", "PIPELINE_PARENT_RUN_ID"}
+    wanted = {"PIPELINE_RUN_DATE", "PIPELINE_PARENT_RUN_ID", "PIPELINE_PREMARKET_RESUME_MODE", "PIPELINE_PREMARKET_INPUT_GCS_URI"}
     return {item.name: item.value for container in execution.template.containers
             for item in container.env if item.name in wanted}
 
@@ -24,7 +24,7 @@ def _iso(value: Any) -> str | None:
 
 
 def lookup_execution(client: Any, *, parent: str, run_date: str, run_id: str,
-                     execution_name: str = "", scan_limit: int = 100) -> dict:
+                     execution_name: str = "", scan_limit: int = 100, required_env: dict | None = None) -> dict:
     if date.fromisoformat(run_date).isoformat() != run_date or not run_id or not parent:
         raise ValueError("pipeline_cloud_execution_identity_invalid")
     prefix = parent + "/executions/"
@@ -32,7 +32,8 @@ def lookup_execution(client: Any, *, parent: str, run_date: str, run_id: str,
         values = _environment(execution)
         return (execution.name.startswith(prefix)
                 and values.get("PIPELINE_RUN_DATE") == run_date
-                and values.get("PIPELINE_PARENT_RUN_ID") == run_id)
+                and values.get("PIPELINE_PARENT_RUN_ID") == run_id
+                and all(values.get(k)==v for k,v in (required_env or {}).items()))
     pinned = None
     if execution_name:
         if not execution_name.startswith(prefix) or "/" in execution_name[len(prefix):]:

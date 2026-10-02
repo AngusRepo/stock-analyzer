@@ -2,6 +2,7 @@
  * Written inside the corporate session transaction, never reconstructed from
  * today's position. Missing legacy evidence is null, NOT an empty account.
  */
+import type { CorporateAction } from './paperCorporateActions'
 import { paperExecutionNow } from './paperExecutionScope'
 
 const OWNER = 'paper_corporate_actions_v1'
@@ -13,6 +14,7 @@ export interface CorporateOpeningBasis {
   session_date: string
   observed_at: string
   source_checksum: string
+  actions?: CorporateAction[] // New receipts retain exchange terms; old receipts remain readable.
   positions: Array<Record<string, unknown>>
 }
 
@@ -121,4 +123,18 @@ export async function readCorporateCashDiscoveryDates(db: D1Database, accountId:
   }
   return Object.fromEntries([...dates].sort(([a], [b]) => a.localeCompare(b))
     .map(([symbol, values]) => [symbol, [...values].sort()]))
+}
+
+/** Bulk verified historical evidence for diagnostics, with the same receipt validation. */
+export async function readCorporateOpeningHistory(db:D1Database, accountId:number, afterDate:string, throughDate:string) {
+  const rows=await db.prepare(eventQuery+' WHERE e.account_id=? AND e.event_type=? AND e.trade_date>? AND e.trade_date<=? ORDER BY e.trade_date,e.id')
+    .bind(accountId,EVENT,afterDate,throughDate).all<OpeningEvent>()
+  if(!rows.success || !Array.isArray(rows.results))throw new Error('paper_corporate_opening_basis_read_failed')
+  const out:CorporateOpeningBasis[]=[], seen=new Set<string>()
+  for(const row of rows.results) {
+    if(seen.has(row.trade_date))throw new Error('paper_corporate_opening_basis_ambiguous')
+    seen.add(row.trade_date)
+    out.push(await decodeEvent(row,accountId,row.trade_date,Date.parse(throughDate+'T23:59:59+08:00')))
+  }
+  return out
 }

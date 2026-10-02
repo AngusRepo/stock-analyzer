@@ -12,6 +12,7 @@
  */
 
 import { Hono, type Context } from 'hono'
+import { readSwingState } from '../lib/paperSwingLifecycle'
 import { verifyJWT }  from '../lib/auth'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from '../lib/tradingConfig'
 import { getStockName } from '../lib/paperMarketData'
@@ -923,9 +924,10 @@ paper.get('/positions', async (c) => {
       calibration?.exit ?? null,
     )
     const migratedLifecycleJson = migrateCanonicalLifecycleExitFusionV2(rawCanonicalLifecycle, fusionTargets)
-    const canonicalLifecycle = parseJsonRecord(migratedLifecycleJson) ?? rawCanonicalLifecycle
-    const tp1Price = fusionTargets.runnerTp1 ?? finiteNumber(pos.tp1_price)
-    const tp2Price = fusionTargets.runnerTp2 ?? finiteNumber(pos.tp2_price)
+    const swing=readSwingState(rawCanonicalLifecycle)
+    const canonicalLifecycle = swing ? rawCanonicalLifecycle : parseJsonRecord(migratedLifecycleJson) ?? rawCanonicalLifecycle
+    const tp1Price = swing ? null : fusionTargets.runnerTp1 ?? finiteNumber(pos.tp1_price)
+    const tp2Price = swing ? null : fusionTargets.runnerTp2 ?? finiteNumber(pos.tp2_price)
     totalPositionValue += marketValue
 
     return {
@@ -956,8 +958,8 @@ paper.get('/positions', async (c) => {
       trailing_stop:    pos.trailing_stop ? Math.round(pos.trailing_stop * 10) / 10 : null,
       tp1_price:        tp1Price ? Math.round(tp1Price * 10) / 10 : null,
       tp2_price:        tp2Price ? Math.round(tp2Price * 10) / 10 : null,
-      tp1_source:       fusionTargets.runnerTp1Source ?? canonicalLifecycle?.exit?.tp1Source ?? null,
-      tp_fusion_policy: fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2' : canonicalLifecycle?.exit?.fusionPolicy ?? null,
+      tp1_source:       swing ? null : fusionTargets.runnerTp1Source ?? canonicalLifecycle?.exit?.tp1Source ?? null,
+      tp_fusion_policy: swing ? null : fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2' : canonicalLifecycle?.exit?.fusionPolicy ?? null,
       tp_fusion_calibration_artifact_id: calibration?.artifactId ?? null,
       s12_near_pressure_price: fusionTargets.nearPressureTp1 ? Math.round(fusionTargets.nearPressureTp1 * 10) / 10 : null,
       s12_near_pressure_source: fusionTargets.nearPressureTp1Source,
@@ -1037,6 +1039,15 @@ paper.get('/pnl', async (c) => {
 })
 
 // GET /api/paper/orders — paginated order history, default 50 per page.
+paper.get('/rotation-audit', async (c) => {
+  if (c.env.PAPER_DAILY_PLAN_OWNER !== 'premarket_once_v1') return c.json({items: [], policy_active: false})
+  const {results} = await paperDomainDatabase(c.env).prepare(`WITH latest AS (
+    SELECT *,ROW_NUMBER() OVER(PARTITION BY order_id ORDER BY as_of_date DESC) AS rn
+    FROM paper_rotation_outcomes_v1 WHERE account_id=?)
+    SELECT payload_json FROM latest WHERE rn=1 ORDER BY order_id DESC LIMIT 20`).bind(ACCOUNT_ID).all<{payload_json:string}>()
+  return c.json({items:results.map(r=>JSON.parse(r.payload_json)),policy_active:true})
+})
+
 paper.get('/orders', async (c) => {
   const requestedLimit = Number(c.req.query('limit') ?? 50)
   const limit = Number.isSafeInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50
@@ -1236,8 +1247,8 @@ paper.get('/pending-buys', async (c) => {
   })
   const pendingBuysForResponse = pendingBuys.map((item) => ({
     ...removeLegacyPendingBuyScoreFields(item),
-    execution_preview: executionPreviews.get(item.symbol) ?? (String(c.env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
-      ? { entry_owner: 'or15_vwap_v1', or15: null, s12: null, allocator: null } : null),
+    execution_preview: executionPreviews.get(item.symbol) ?? (['or15_vwap_v1','or15-5m-orl8-20-v1'].includes(String(c.env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim())
+      ? { entry_owner: c.env.PAPER_INTRADAY_ENTRY_OWNER, or15: null, s12: null, allocator: null } : null),
     market_price: pendingPrices.get(item.symbol) ?? null,
   }))
   return c.json({

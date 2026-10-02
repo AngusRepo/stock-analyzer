@@ -45,7 +45,9 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
             rows=client_proxy_for_domain('paper').query(
                 'SELECT payload_json FROM l4_policy_account_rewards_v1 WHERE known_date<? ORDER BY known_date,receipt_id',
                 [signal_date])
-            return [json.loads(row['payload_json']) for row in rows]
+            receipts=[json.loads(row['payload_json']) for row in rows]
+            execution_policy=account.get('execution_policy','legacy')
+            return [row for row in receipts if row.get('execution_policy','legacy')==execution_policy]
     frozen['_account_rewards']=reward_reader() if (frozen.get('opb') or {}).get('enabled') else []
     return frozen
 

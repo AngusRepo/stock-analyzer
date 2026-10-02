@@ -1,3 +1,6 @@
+import { dailyPlanOwner } from './paperDailyPlanRuntime'
+import { singlePlanContext,dispatchSinglePlan,finalizeSinglePlan } from './premarketSinglePlan'
+import { ensurePaperCorporateSource } from './paperCorporateSource'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { fetchAndStoreUSLeading, isReadyUSSignal } from './usLeading'
@@ -22,6 +25,7 @@ const pending = (rows: Awaited<ReturnType<typeof loadPendingBuySnapshot>>['pendi
   (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending')
 
 const defaultDependencies = {
+  singlePlanContext,dispatchSinglePlan,finalizeSinglePlan,ensurePaperCorporateSource,
   contextIdentity, fetchAndStoreUSLeading, runDailyNewsAnalysis, getPrevTradingDay,
   recoverPaperMorningSetup, loadPendingBuySnapshot, reconcilePendingBuyDebates,
   setupMorningPendingBuys, flushL4Replans, readL4PortfolioPlan, getTradingConfig,
@@ -34,7 +38,7 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
   return async (stage,input,assertOwner) => {
     const guard = async () => {
       await assertOwner()
-      if (stage !== 'context' && input.context_hash !== await deps.contextIdentity(env,date))
+      if (!dailyPlanOwner(env) && stage !== 'context' && input.context_hash !== await deps.contextIdentity(env,date))
         throw new Error('premarket_context_changed_requires_review')
     }
     await guard()
@@ -43,6 +47,7 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       if (!isReadyUSSignal(us,date)) throw new Error('premarket_wait:us-leading')
       await deps.runDailyNewsAnalysis(env)
       const signalDate = await deps.getPrevTradingDay(databaseForDataDomain(env,'core'),env.KV,date)
+      if(dailyPlanOwner(env))return {next:'setup',receipt:await deps.singlePlanContext(env,date,signalDate)}
       const source = await databaseForDataDomain(env,'ops').prepare(`SELECT status FROM pipeline_stage_runs
         WHERE business_date=? AND stage='pipeline_execution'`).bind(signalDate).first<{status:string}>()
       if (source?.status !== 'success') throw new Error('premarket_wait:evening_pipeline')
@@ -51,8 +56,19 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
     if (stage === 'setup') {
       await deps.warmup(env)
       await guard()
+      if(dailyPlanOwner(env)) {
+        await deps.ensurePaperCorporateSource(env,date); await deps.settle(env)
+        return {next:'allocate',receipt:input}
+      }
       await deps.recoverPaperMorningSetup(env,date,deps.settle)
       return {next:'debate:0',receipt:input}
+    }
+    if(stage==='allocate') {
+      if(!dailyPlanOwner(env))throw new Error('premarket_owner_mismatch')
+      const planId=await deps.dispatchSinglePlan(env,input)
+      await guard()
+      await deps.recoverPaperMorningSetup(env,date,deps.settle)
+      return {next:'debate:0',receipt:{...input,plan_id:planId}}
     }
     const round = Number(stage.split(':')[1])
     if (stage.startsWith('debate:')) {
@@ -64,11 +80,16 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       return {next:`replan:${round}`,receipt:{...input,debate_summary:summary,debated_plan_id:(await deps.readL4PortfolioPlan(env))?.plan_id ?? null}}
     }
     if (stage.startsWith('replan:')) {
+      if(dailyPlanOwner(env))return {next:'publish:0',receipt:input}
       const cfg = await deps.getTradingConfig(env.KV)
       if (cfg.l4Distribution && !await deps.flushL4Replans(env,String(input.signal_date),{debatePending:false}))
         throw new Error('premarket_l4_replan_delivery_failed')
       await guard()
       return {next:`publish:${round}`,receipt:input}
+    }
+    if(dailyPlanOwner(env)) {
+      await guard()
+      return {next:null,receipt:await deps.finalizeSinglePlan(env,date,input)}
     }
     const cfg = await deps.getTradingConfig(env.KV)
     let state = await deps.loadPendingBuySnapshot(env,date,{allowFallbackRecent:false})

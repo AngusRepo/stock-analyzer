@@ -85,7 +85,7 @@ export async function captureL4AccountContext(env: Bindings, signalDate: string)
     const {results}=await databaseForDataDomain(env,'core').prepare(`SELECT symbol,sector FROM stocks WHERE symbol IN (${positions.map(()=>'?').join(',')})`).bind(...positions.map(row=>row.symbol)).all<{symbol:string;sector:string|null}>()
     for (const row of results) if (row.sector) sectors.set(row.symbol,row.sector)
   }
-  return { schema_version: 'l4-account-context-v1', account_id: 1, signal_date: signalDate,
+  return { execution_policy:env.PAPER_INTRADAY_ENTRY_OWNER ?? 'legacy',schema_version: 'l4-account-context-v1', account_id: 1, signal_date: signalDate,
     active_plan_id: finalHead?.plan_id ?? null, observed_at: paperExecutionDate().toISOString(), nav, available_cash: cash,
     complete: unchanged && currentPrices && corporate.complete && Number(pending?.n ?? 0) === 0 && Number(exitPending?.n ?? 0) === 0,
     holdings: positions.map(row => ({ symbol: row.symbol, sector:sectors.get(row.symbol) ?? null, shares: row.shares,

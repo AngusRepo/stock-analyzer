@@ -361,7 +361,7 @@ export function serializeCanonicalTradeLifecycle(lifecycle: CanonicalTradeLifecy
 
 /** Price-coordinate change only. Never rescale returns, confidence, quantities,
  * risk multipliers, dates or immutable original order notes. */
-export function adjustCanonicalCorporatePriceBasis(raw: unknown, factor: number, actionIds: string[]): string | null {
+export function adjustCanonicalCorporatePriceBasis(raw: unknown, factor: number, actionIds: string[], effectiveDate?: string): string | null {
   if (raw == null || raw === '') return null
   if (!Number.isFinite(factor) || factor <= 0 || !actionIds.length) throw new Error('corporate_price_basis_invalid')
   const value = typeof raw === 'string' ? JSON.parse(raw) : JSON.parse(JSON.stringify(raw))
@@ -378,6 +378,9 @@ export function adjustCanonicalCorporatePriceBasis(raw: unknown, factor: number,
       object[key] = price * factor
     }
   }
+  if(value.swing && effectiveDate) value.swing.priceAdjustments=[...(value.swing.priceAdjustments??[]),{effectiveDate,factor}]
+  scale(value.swing, ['entryPrice','entryOrLow'])
+  scale(value.entry?.or15, ['orHigh','orLow','vwap'])
   scale(value.entry, ['entryPrice', 'stopLoss', 'chaseCeiling'])
   const s12 = value.entry?.s12
   scale(s12, ['demandZoneLow', 'demandZoneHigh', 'supplyZoneLow', 'supplyZoneHigh', 'structureStop'])

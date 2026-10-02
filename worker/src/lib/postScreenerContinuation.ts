@@ -241,6 +241,7 @@ export async function reconcilePipelineCloudFailure(
   `).bind(businessDate).first<{
     canonical_run_id: string; status: string; cursor_key: string | null; last_error: string | null
   }>()
+  if(row?.last_error==='awaiting_premarket')return {reason:'awaiting_premarket_l3_sealed'}
   if (!row || !(['running', 'waiting'].includes(row.status)
     || (row.status === 'error' && row.last_error?.startsWith('pipeline_cloud_run_failed:')))) {
     return { reason: 'no_unclosed_cloud_execution' }

@@ -1,3 +1,4 @@
+import { readSwingState } from './paperSwingLifecycle'
 import type { ExitDecision } from './paperExitPolicy'
 
 export const S12_PROFIT_CONTINUATION_CONTRACT = 's12-profit-continuation-v1' as const
@@ -224,6 +225,7 @@ export function resolveS12ProfitContinuationPolicy(input: {
   nowMs: number
   allowActivation: boolean
 }): S12ProfitContinuationResolution {
+  if(readSwingState(input.position.trade_lifecycle_json)) return {decision:input.baseDecision,lifecycleJson:null,state:'inactive',artifactId:null}
   const policy = input.policy
   const shares = Math.max(0, Math.floor(Number(input.position.shares ?? 0)))
   const active = readActiveState(input.position.trade_lifecycle_json)

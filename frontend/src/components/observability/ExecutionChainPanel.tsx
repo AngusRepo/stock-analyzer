@@ -34,6 +34,8 @@ import {
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
+import DailyReadinessBoard from './DailyReadinessBoard'
+import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
 import './ExecutionChainPanel.css'
 
 type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped'
@@ -142,7 +144,7 @@ const SCOPES: ChainScope[] = [
     id: 'daily_readiness',
     label: 'Daily readiness',
     title: 'Daily readiness execution chain',
-    description: 'Callback、readiness gate 與 pipeline stage 的正式 runtime 狀態。',
+    description: '晚間資料、模型驗證與次日盤前準備分段查看；狀態與日期以各階段執行收據為準。',
     relation: 'event',
     orchestratorId: 'evening-chain',
     columns: [
@@ -167,6 +169,10 @@ const SCOPES: ChainScope[] = [
       ['obsidian-sync'],
       ['meta-learning-shadow', 'strategy-learning'],
       ['evening-closure'],
+      ['us-leading', 'news-analyst'],
+      ['premarket-evidence-watchdog'],
+      ['morning-setup'],
+      ['pre-market-warmup'],
     ],
     branches: [
       {
@@ -195,29 +201,16 @@ const SCOPES: ChainScope[] = [
   {
     id: 'intraday',
     label: 'Intraday guard',
-    title: 'Intraday readiness & execution chain',
-    description: '盤前準備、盤中 guard、定時 re-score 與收盤後帳務；依真實 dependency 與 shared live context 分層呈現。',
+    title: 'Intraday execution & account chain',
+    description: '盤中執行、持倉保護與收盤帳務。US、新聞及盤前定案請查看 Daily readiness。',
     relation: 'mixed',
     columns: [
-      ['morning-setup'],
-      ['pre-market-warmup'],
       ['intraday-check'],
       ['eod-exit'],
       ['post-close-price-refresh'],
       ['daily-snapshot'],
     ],
     branches: [
-      {
-        id: 'premarket-context',
-        label: 'Pre-market context branch',
-        description: 'US leading 與新聞補齊後續跑 pending 辯論；不阻擋既有持倉保護出場。',
-        anchorId: 'morning-setup',
-        relation: 'evidence',
-        columns: [
-          ['us-leading', 'news-analyst'],
-          ['premarket-evidence-watchdog'],
-        ],
-      },
       {
         id: 'intraday-rescore-spots',
         label: 'Intraday Re-score branch',
@@ -506,7 +499,10 @@ export default function ExecutionChainPanel({
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
   const scopedJobMap = useMemo(() => {
-    const attemptAware = buildAttemptAwareJobMap(jobMap, scope, inferOrchestratorStage)
+    // Morning receipts belong to their own trade date, not the previous evening root attempt.
+    const attemptScope = scope.id === 'daily_readiness'
+      ? { ...scope, columns: scope.columns.filter(column => !column.some(id => PREMARKET_READINESS_IDS.has(id))) } : scope
+    const attemptAware = buildAttemptAwareJobMap(jobMap, attemptScope, inferOrchestratorStage)
     const next = new Map(attemptAware)
     if (scope.id === 'daily_readiness') {
       const rootClosure = next.get('evening-chain')
@@ -562,7 +558,9 @@ export default function ExecutionChainPanel({
   const expectedJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(
     job && visualStatus(job) !== 'skipped' && !STAGES[job.id]?.optional,
   ))
-  const progressJobs = expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
+  // Missing receipts count as incomplete; do not silently shrink the daily denominator.
+  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().map(id=>scopedJobMap.get(id))
+    : expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0
   const running = scopeJobs.some((job) => job?.lastStatus === 'running') || orchestratorJob?.lastStatus === 'running'
@@ -697,10 +695,27 @@ export default function ExecutionChainPanel({
             <div className="obs-chain__lane-head">
               <span>Primary guard</span>
               <strong id="intraday-main-flow-title">Intraday main flow</strong>
-              <p>Pre-market warmup &rarr; intraday guard &rarr; EOD &rarr; close refresh &rarr; daily snapshot.</p>
+              <p>Intraday guard &rarr; EOD &rarr; close refresh &rarr; daily snapshot.</p>
             </div>
           )}
-          <div className="obs-chain__viewport" ref={viewportRef}>
+          {scope.id === 'daily_readiness' ? <DailyReadinessBoard currentId={currentId} selectedId={selectedId}
+            stageView={id => ({ label: STAGES[id]?.label ?? id, status: visualStatus(scopedJobMap.get(id)),
+              statusLabel: statusLabel(scopedJobMap.get(id)), date: scopedJobMap.get(id)?.statusRunDate })}
+            renderStage={(id, ordinal) => {
+              const definition = STAGES[id] ?? { id, label: id, icon: Workflow }
+              const job = scopedJobMap.get(id)
+              const status = visualStatus(job)
+              const Icon = definition.icon
+              return <button type="button" data-chain-stage={id}
+                className={`obs-chain__stage is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
+                onClick={() => setSelectedId(id)} aria-label={`${definition.label}: ${statusLabel(job)}`}
+                aria-current={currentId === id ? 'step' : undefined}>
+                <span className="obs-chain__ordinal sv-num">{ordinal}</span>
+                <span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>
+                <span className="obs-chain__stage-copy"><strong>{definition.label}</strong><span>{job?.name ?? id}</span>
+                  <small className="sv-num">{runtimeEvidence(job)}</small><em>{statusLabel(job)}{definition.optional ? ' · optional' : ''}</em></span>
+              </button>
+            }} /> : <div className="obs-chain__viewport" ref={viewportRef}>
         <div className={`obs-chain__sequence ${scope.columns.length >= 16 ? 'is-dense' : ''}`}>
           {scope.columns.map((column, index) => {
             const previousColumn = scope.columns[index - 1] ?? []
@@ -746,10 +761,14 @@ export default function ExecutionChainPanel({
             )
           })}
         </div>
-      </div>
+      </div>}
         </section>
 
       {scope.branches && scope.branches.length > 0 && (
+        <details className="obs-chain__branch-disclosure" open={scope.id !== 'daily_readiness'}>
+        <summary>{scope.id === 'daily_readiness' ? '延伸證據與復原' : '獨立排程'} · {(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).length} 項
+          <span>{(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).filter(id=>visualStatus(scopedJobMap.get(id))==='blocked').length} 項異常</span>
+        </summary>
         <div className="obs-chain__branches" aria-label="Execution branches">
           {scope.branches.map((branch) => (
             <section className="obs-chain__branch" key={branch.id} aria-labelledby={`${branch.id}-title`}>
@@ -807,12 +826,13 @@ export default function ExecutionChainPanel({
             </section>
           ))}
         </div>
+        </details>
       )}
       </div>
 
       <div className="obs-chain__progress">
         <div className="obs-chain__progress-label">
-          <span><Activity aria-hidden="true" /> Overall progress</span>
+          <span><Activity aria-hidden="true" /> {scope.id === 'daily_readiness' ? '主流程進度（含尚無收據項目）' : 'Overall progress'}</span>
           <strong className="sv-num">{completedCount} / {progressJobs.length} completed · {progress}%</strong>
         </div>
         <div className={`obs-chain__progress-track ${progressActive ? 'is-active' : ''} ${progressBlocked ? 'is-blocked' : ''}`} aria-label={`Overall progress ${progress}%`}>

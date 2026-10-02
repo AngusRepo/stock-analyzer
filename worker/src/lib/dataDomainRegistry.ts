@@ -156,7 +156,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
   paper: new Set([
     'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_p5_rearms_v1',
-    'l4_portfolio_plans_v1', 'l4_policy_account_rewards_v1', 'l4_replan_requests_v1', 'l4_portfolio_head_v1', 'l4_replan_outbox_v1',
+    'l4_portfolio_plans_v1', 'l4_policy_account_rewards_v1', 'paper_daily_plan_reviews_v1', 'paper_daily_plan_heads_v1', 'paper_rotation_outcomes_v1', 'l4_replan_requests_v1', 'l4_portfolio_head_v1', 'l4_replan_outbox_v1',
     'paper_daily_snapshots', 'paper_execution_events', 'paper_order_intents',
     'paper_exit_intents', 'paper_challenger_candidates',
     'paper_challenger_daily_metrics', 'paper_decision_attribution',
@@ -348,7 +348,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
     'paper_kelly_calibration_runs_v1',
     'paper_kelly_calibration_artifacts_v1',
     'paper_kelly_calibration_head_v1',
-    'l4_policy_account_rewards_v1',
+    'l4_policy_account_rewards_v1', 'paper_daily_plan_reviews_v1', 'paper_daily_plan_heads_v1', 'paper_rotation_outcomes_v1',
     'l4_portfolio_head_v1',
     'l4_portfolio_plans_v1',
     'l4_replan_outbox_v1',

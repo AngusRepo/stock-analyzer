@@ -31,6 +31,7 @@ export interface S12HoldingDefenseContext {
 }
 
 export interface CanonicalTradeLifecycleContext {
+  swing?: {policy:string;entryOrLow:number;entryPrice:number;pendingExit?:{reason:string;notBeforeMs:number}}
   version?: unknown
   tradeDate?: unknown
   symbol?: unknown
@@ -558,6 +559,11 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
 
 export function formatPositionRiskPlan(raw: Record<string, unknown> | null | undefined): PositionRiskPlanBadge {
   const lifecycle = parseLifecycle(raw?.canonical_trade_lifecycle)
+  if(lifecycle?.swing?.policy==='or15-5m-orl8-20-v1')return {
+    stop:fmtPrice(lifecycle.swing.entryPrice*.92),stopSource:'成交價 −8% 災難線',stopTone:'warn',
+    tp1:null,tp2:null,tp3:null,tp4:null,tpSource:`無 TP · 收盤 < ORL ${fmtPrice(lifecycle.swing.entryOrLow)} → 次日 09:05；第 20 交易日收盤退出`,
+    nearPressure:null,nearPressureSource:null,fusionV2:false,tp1Hit:false,primaryS12:false,
+  }
   const s12Defense = raw?.s12_holding_defense as S12HoldingDefenseContext | null | undefined
   const s12HoldingExitPlan = s12Defense?.detail?.exitPlan ?? {}
   const s12PositionStop = s12Defense?.detail?.holding_defense?.position_stop_trailing ?? {}
@@ -644,6 +650,12 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
 
 export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExecutionBadge | null {
   const lifecycle = parseLifecycle(raw)
+  if(lifecycle?.swing?.policy==='or15-5m-orl8-20-v1')return {
+    label:'OR15 · 5 分 K / 日線退出',tone:lifecycle.swing.pendingExit?'warn':'info',
+    description:lifecycle.swing.pendingExit
+      ? `已排定 ${lifecycle.swing.pendingExit.reason==='swing_daily_orl'?'ORL 隔日退出':'20 日到期退出'}；等待可成交報價，反彈不取消`
+      : '無 TP、無保本移動；ORL／−8%／20 交易日及有效 L4 減碼各自可觸發退出',
+  }
   if (!lifecycle?.owners) return null
   const entryOwner = String(lifecycle.owners.entry ?? '').trim()
   const exitOwner = String(lifecycle.owners.exit ?? '').trim()

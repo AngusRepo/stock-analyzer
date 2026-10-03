@@ -974,6 +974,11 @@ def run_alpha_framework(req: AlphaFrameworkOptunaReq = Body(default=AlphaFramewo
 @router.post("/ga_optimizer")
 def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
     """GA meta optimizer direct learning endpoint."""
+    from services.weekly_evidence_service import taiwan_today
+    # Jobs supply this context through env; direct HTTP calls need their own ID.
+    run_id = os.environ.get("OPTUNA_RUN_ID", "").strip() or f"ga-optimizer:{uuid.uuid4()}"
+    run_date = os.environ.get("OPTUNA_RUN_DATE", "").strip() or req.validation_as_of_date or taiwan_today()
+    cadence = os.environ.get("OPTUNA_CADENCE", "").strip() or "direct"
     contract = _contract_meta(
         source="ga_optimizer",
         scope="production_meta_optimizer_learning",
@@ -1063,6 +1068,9 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
             meta={
                 "status": result.get("status", "completed"),
                 "target": "production_meta_optimizer_learning_state",
+                "run_id": run_id,
+                "run_date": run_date,
+                "cadence": cadence,
                 "optimizer": "GAOptimizer",
                 "population_size": result.get("population_size"),
                 "generations": result.get("generations"),

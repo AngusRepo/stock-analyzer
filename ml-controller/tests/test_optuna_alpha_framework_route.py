@@ -122,6 +122,8 @@ def test_alpha_framework_route_uses_quality_outcome_limit_when_subset_omitted(mo
 
 
 def test_ga_optimizer_route_pushes_learning_state(monkeypatch):
+    for name in ("OPTUNA_RUN_ID", "OPTUNA_RUN_DATE", "OPTUNA_CADENCE"):
+        monkeypatch.delenv(name, raising=False)
     captured: dict = {}
 
     def fake_run(req, *, evaluator):
@@ -178,6 +180,16 @@ def test_ga_optimizer_route_pushes_learning_state(monkeypatch):
     assert out["contract"]["applies_to_production"] == "learning_state_only_until_gated_promotion"
     assert out["contract"]["push_target"] == "worker_kv_ga_optimizer_state"
     assert captured["source"] == "ga_optimizer"
+    assert captured["meta"]["run_id"].startswith("ga-optimizer:")
+    assert captured["meta"]["run_date"]
+    assert captured["meta"]["cadence"] == "direct"
+    monkeypatch.setenv("OPTUNA_RUN_ID", "existing-scheduled-run")
+    monkeypatch.setenv("OPTUNA_RUN_DATE", "2026-10-03")
+    monkeypatch.setenv("OPTUNA_CADENCE", "weekly")
+    optuna.run_ga_optimizer(optuna.GAOptimizerReq(validate_top_candidate=False))
+    assert captured["meta"]["run_id"] == "existing-scheduled-run"
+    assert captured["meta"]["run_date"] == "2026-10-03"
+    assert captured["meta"]["cadence"] == "weekly"
     assert captured["params"]["status"] == "learning"
     assert captured["params"]["best_alphaFramework"]["riskOverlay"]["highVolThreshold"] == 0.045
     assert captured["meta"]["optimizer"] == "GAOptimizer"

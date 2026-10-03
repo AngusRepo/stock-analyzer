@@ -411,10 +411,8 @@ function scoreToLevel(score: number): 'green' | 'yellow' | 'orange' | 'red' | 'b
 // ── 主函式：計算今日大盤風險 ──────────────────────────────────────────────────
 export async function calcMarketRisk(
   db: D1Database,
-  anthropicKey?: string,
   controllerUrl?: string,
   controllerSecret?: string,
-  geminiKey?: string,
   runDate?: string,
 ): Promise<MarketRiskResult> {
   const today = runDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -461,8 +459,8 @@ export async function calcMarketRisk(
   const { score, triggers } = calcRiskScore(partial)
   const level = scoreToLevel(score)
 
-  // 生成文字摘要（用 AI 或 fallback 規則）
-  const summary = await generateRiskSummary(partial, score, level, triggers, anthropicKey, geminiKey)
+  // 依同一風險分數與警示產生規則摘要
+  const summary = generateRiskSummary(score, level, triggers)
 
   return {
     ...partial,
@@ -473,11 +471,8 @@ export async function calcMarketRisk(
   }
 }
 
-// ── AI 生成風險摘要（fallback 到規則文字）────────────────────────────────────
-async function generateRiskSummary(
-  data: any, score: number, level: string, triggers: string[],
-  anthropicKey?: string, geminiKey?: string,
-): Promise<string> {
+// Rule-based summary; no external LLM call.
+function generateRiskSummary(score: number, level: string, triggers: string[]): string {
   const levelText: Record<string, string> = {
     green:  '市場正常，可正常操作',
     yellow: '輕度警戒，留意風險',
@@ -486,71 +481,8 @@ async function generateRiskSummary(
     black:  '極端風險，建議保留現金觀望',
   }
 
-  // 無 AI key 時用規則文字
-  if (!geminiKey && !anthropicKey) {
-    const parts = [`當前大盤風險評分 ${score}/100（${levelText[level]}）。`]
-    if (triggers.length) parts.push(`主要警示：${triggers.slice(0, 3).join('、')}。`)
-    else parts.push('目前各項指標正常，無重大警示。')
-    return parts.join('')
-  }
-
-  const prompt = `
-當前大盤風險數據：
-- VIX 恐慌指數：${data.vix ?? 'N/A'}（${data.vixLevel}）
-- 加權指數：${data.twiiClose ?? 'N/A'}，20日均線：${data.twiiMa20 ?? 'N/A'}，乖離率：${data.twiiBias ?? 'N/A'}%
-- 20日年化波動率：${data.twiiVol20 ?? 'N/A'}%
-- 外資近5日買賣超：${data.foreignNet5d ?? 'N/A'} 億，連續動向：${data.foreignConsecutiveSell} 日
-- 融資使用率：${data.marginRatio ?? 'N/A'}%
-- 騰落線(ADL)趨勢：${data.adlTrend ?? 'N/A'}（${data.adlValue ?? 'N/A'}）
-- 多頭排列家數：${data.bullAlignmentCount ?? 'N/A'}（${data.bullAlignmentPct ?? 'N/A'}%）
-- 綜合風險評分：${score}/100，等級：${levelText[level]}
-- 觸發警示：${triggers.length ? triggers.join('、') : '無'}
-
-請用2-3句繁體中文，給出今日大盤風險的簡要說明與操作建議。語氣客觀，不過度樂觀也不過度悲觀。`
-
-  // Layer 1: Gemini 3.5 Flash
-  // 2026-04-10: 取代 Haiku，省 $0.2/月
-  if (geminiKey) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${geminiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.4, maxOutputTokens: 300 },
-          }),
-        }
-      )
-      if (res.ok) {
-        const json = await res.json() as any
-        const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-        if (text) return text
-      }
-    } catch { /* fallback to Anthropic */ }
-  }
-
-  // Layer 2: Anthropic Haiku（fallback）
-  if (anthropicKey) {
-    try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': anthropicKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 300,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      })
-      const json = await res.json() as any
-      return json.content?.[0]?.text ?? levelText[level]
-    } catch { /* fall through */ }
-  }
-
-  return `風險評分 ${score}/100。${levelText[level]}。${triggers[0] ?? ''}`
+  const parts = [`當前大盤風險評分 ${score}/100（${levelText[level]}）。`]
+  if (triggers.length) parts.push(`主要警示：${triggers.slice(0, 3).join('、')}。`)
+  else parts.push('目前各項指標正常，無重大警示。')
+  return parts.join('')
 }

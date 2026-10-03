@@ -34,9 +34,7 @@ try {
     'os.environ.get',
     'MODAL_TOKEN_SECRET',
     'CF_API_TOKEN',
-    'GITHUB_TOKEN',
-    'ANTHROPIC_API_KEY',
-    'GEMINI_API_KEY'
+    'GITHUB_TOKEN'
   )
 
   $violations = @()

@@ -16,7 +16,7 @@ def test_original_debate_uses_private_inference_and_audit_without_formal_cache_o
     async def infer(system, user, **kwargs):
         calls.append((system, user))
         return ('VERDICT: APPROVE | CONVICTION: 70\nEvidence verified.' if len(calls) == 5
-                else 'The supplied evidence supports a balanced assessment.', 'gemini_api')
+                else 'The supplied evidence supports a balanced assessment.', 'cloudflare_workers_ai:fixture')
     async def audit(**kwargs):
         audits.append(kwargs)
     async def execute():

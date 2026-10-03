@@ -8,26 +8,21 @@ for older D1 columns only; they are not the ranking source.
 
 import json
 import logging
-import os
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from services.llm_service import generate_reasons
 from services.recommend_score_v2_projection import rank_score_v2_route_candidates
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-_ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 
 class RecommendRequest(BaseModel):
     date: str
     stocks: list[dict[str, Any]]
     sectors: list[dict[str, Any]] = Field(default_factory=list)
-    anthropic_api_key: Optional[str] = None
     top_n: int = 5
 
 
@@ -45,11 +40,9 @@ def post_recommend(req: RecommendRequest):
         logger.info("[recommend] date=%s: no stocks passed finalScore threshold", req.date)
         return {"recommendations": [], "sectors": req.sectors}
 
-    # 2. Generate reasons with the same Score V2 payload.
-    api_key = req.anthropic_api_key or _ANTHROPIC_KEY
-    reasons = generate_reasons(api_key, top, req.sectors, score_components_by_symbol) if api_key else []
-    if len(reasons) < len(top):
-        reasons += [{"reason": "Score V2 context available; LLM reason not generated.", "watch_points": []}] * (len(top) - len(reasons))
+    # 2. Preserve the existing deterministic fallback without provider calls.
+    reasons = [{"reason": "Score V2 context available; LLM reason not generated.", "watch_points": []}
+               for _ in top]
 
     # 3. Return Score V2 response plus storage projection fields.
     recommendations = []

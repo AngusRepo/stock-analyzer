@@ -29,8 +29,6 @@ def test_no_runtime_workload_uses_default_compute_identity() -> None:
 
     pipeline_secrets = set(contract["secret_access"]["pipeline"])
     assert {
-        "stockvision-anthropic-api-key",
-        "stockvision-gemini-api-key",
         "stockvision-github-token",
         "stockvision-ml-service-secret",
     } <= pipeline_secrets

@@ -102,7 +102,7 @@ from services.recommendation_service import (
     merge_breeze2_reason_shadow_into_score_components,
     merge_llm_reasons_into_recommendations,
 )
-from services.llm_reason import build_canonical_candidate_payloads, generate_recommendation_reasons_from_payloads
+from services.llm_reason import build_canonical_candidate_payloads
 from services.breeze2_reason_shadow import (
     breeze2_reason_shadow_metrics,
     build_breeze2_generation_shadow_for_canonical_payloads,
@@ -2778,27 +2778,17 @@ async def node_paired_nav_setup(state: PipelineStateV2) -> dict:
 
 async def node_llm_reasons(state: PipelineStateV2) -> dict:
     """
-    Generate Gemini reasons plus advisory-only Breeze2 trade-plan shadow.
+    Preserve template reasons and optional advisory-only trade-plan shadow.
     """
     logger.info("[Pipeline V2] node_llm_reasons")
     candidates = state["final_recommendations"]
     if not candidates:
         return {"llm_reasons": {}, "breeze2_reason_shadow": {}}
 
-    # Current-run sector flow is intentionally computed after this node.
-    # Optional context for LLM prompt; empty list is acceptable fallback.
-    top_themes: list[str] = []
-    sf = state.get("sector_flow_summary") or {}
-    # Summary carries counts only; LLM prompt enhancement can read D1 directly if needed.
-    # Keep minimal for now to avoid extra D1 roundtrip in hot path.
-
     canonical_candidate_payloads = build_canonical_candidate_payloads(candidates)
 
     try:
-        reasons = await generate_recommendation_reasons_from_payloads(
-            canonical_candidate_payloads,
-            top_themes=top_themes,
-        )
+        reasons = {}  # Recommendation templates remain the primary reason source.
         breeze2_shadow = {}
         if _breeze2_reason_shadow_enabled():
             provider = _breeze2_reason_shadow_provider()

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:dff7f150cbfecce3d0b103fd286a7c0a56e377f7a7413ff8288146dfa4e3f5ac",
+  "execution_owner_version": "native-paper-v1:777530484fef32e9794f0a4d9a0e196c54b39f71fa243dcb9beacc84978c19fc",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Pending explicit release and exact Paper KV approval. GA historical source recovery and issuer parser corrections; local Paper runtime simulation PASS. Research-only accrual and non-subscription policies never apply to Paper; no model changes, retraining, live orders or NAV backfill.",
+  "authorization": "Wei approved the complete GA/event/OBS release on 2026-10-03 and resumed commit/push/deploy after the paid-provider release, requiring preservation of production fixes. This declaration grants no supplemental runtime admission. Exact merged runtime KV approval is validated separately. Research accounting policies do not apply to Paper; no retraining, model replacement or real orders.",
   "review": "audits/evening-ga-obs-20261003/finlab-history/GA-RESTORATION-REPORT.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-single-plan-swing"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-03-ga-event-recovery"
 }

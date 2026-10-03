@@ -68,6 +68,16 @@ RUNTIME_KEY = 'ml:active8:paper_runtime_approval:v1'
 RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-budget-ledger-recovery'
 
 SWING_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-single-plan-swing'
+PAID_PROVIDER_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-03-paid-provider-retirement'
+GA_RECOVERY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-03-ga-event-recovery'
+PAID_PROVIDER_SOURCE_CHANGE = {
+    'release': '2026-10-03-paid-provider-retirement',
+    'scope': 'paper', 'maturity_transfer': False,
+    'sources': {section: {'recommendation_service.py': {
+        'previous': '921811e0007819bf386acb6da193c73ae2951011ecc2dfb735f90dc7198dd401',
+        'approved': '27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d',
+    }} for section in ('allocator_source_identity', 'l3_inference_source_identity')},
+}
 SWING_POLICY_CHANGE = {
     'schema_version':'paper-single-plan-swing-change-v1',
     'scope':'paper', 'maturity_transfer':False, 'efficacy_status':'unproven',
@@ -213,6 +223,16 @@ def validate_runtime_approval(approval, admission, *, now=None):
                         or after.get(section, {}).get(name) != transition['approved']):
                     raise RuntimeError('active8_paper_runtime_source_change_invalid')
                 after[section][name] = transition['previous']
+    provider_change = approval.get('approved_paid_provider_source_change')
+    if provider_change is not None:
+        if provider_change != PAID_PROVIDER_SOURCE_CHANGE:
+            raise RuntimeError('active8_paper_paid_provider_source_change_invalid')
+        for section, sources in PAID_PROVIDER_SOURCE_CHANGE['sources'].items():
+            for name, transition in sources.items():
+                if (before.get(section, {}).get(name) != transition['previous']
+                        or after.get(section, {}).get(name) != transition['approved']):
+                    raise RuntimeError('active8_paper_paid_provider_source_change_invalid')
+                after[section][name] = transition['previous']
     if digest(before) != digest(after):
         raise RuntimeError('active8_paper_runtime_approval_policy_changed')
     return deepcopy(approval)
@@ -229,7 +249,14 @@ def verify_active_approval(admission, *, now=None):
     # retain their own release key, so a candidate check cannot revoke their grant.
     import os
     release_key=SWING_RUNTIME_RELEASE_KEY if os.environ.get('PIPELINE_DAILY_PLAN_OWNER')=='premarket_once_v1' else RUNTIME_RELEASE_KEY
-    runtime = kv_client.get_json(release_key, default=None, strict=True)
+    # Stage this exact source release separately. The old production revision
+    # keeps reading its old key until the candidate has passed admission.
+    runtime = (kv_client.get_json(GA_RECOVERY_RUNTIME_RELEASE_KEY, default=None, strict=True)
+               if release_key == SWING_RUNTIME_RELEASE_KEY else None)
+    if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
+        runtime = kv_client.get_json(PAID_PROVIDER_RUNTIME_RELEASE_KEY, default=None, strict=True)
+    if runtime is None:
+        runtime = kv_client.get_json(release_key, default=None, strict=True)
     if runtime is None:
         runtime = kv_client.get_json(RUNTIME_KEY, default=None, strict=True)
     if runtime is None:

@@ -5720,10 +5720,11 @@ def merge_llm_reasons_into_recommendations(
                     variants = payload.get("reasonVariants")
                     if not isinstance(variants, dict):
                         variants = {}
-                    variants["gemini"] = {
-                        "source": str(entry.get("source") or "gemini_3_5_flash"),
-                        "provider": "gemini",
-                        "model": str(entry.get("model") or "gemini-3.5-flash"),
+                    provider = str(entry.get("provider") or "llm")
+                    variants[provider] = {
+                        "source": str(entry.get("source") or provider),
+                        "provider": provider,
+                        "model": entry.get("model"),
                         "decision_effect": "advisory_only",
                         "reason": reason[:700],
                         "tradePlan": _clean_reason_variant_trade_plan(entry),
@@ -5739,7 +5740,7 @@ def merge_breeze2_reason_shadow_into_score_components(
 ) -> None:
     """Persist Breeze2 as a side-by-side Score V2 reason variant.
 
-    This keeps Gemini/primary reasons authoritative for the card headline while
+    This keeps Template/primary reasons authoritative for the card headline while
     exposing Breeze2's advisory-only text for UI comparison.
     """
     if not breeze2_shadow:

@@ -681,3 +681,20 @@ def test_weekly_continuation_fails_closed_after_bounded_attempts(monkeypatch):
     assert asyncio.run(oof_materialize_job_main._run()) == 1
     assert callbacks[0]["status"] == "error"
     assert "oof_cohort_continuation_exhausted" in callbacks[0]["error"]
+
+
+def test_missing_plan_job_callback_is_terminal_even_at_first_attempt(monkeypatch):
+    callbacks=[]
+    async def execute(**kwargs):return {'status':'blocked','reason':'l4_daily_plan_pending_for_signal_date',
+        'dependency_retry_required':False}
+    async def callback(payload):callbacks.append(payload)
+    monkeypatch.setattr(oof_materialize_job_main,'_execute_lifecycle',execute)
+    monkeypatch.setattr(oof_materialize_job_main,'_callback_worker',callback)
+    monkeypatch.setenv('OOF_MATERIALIZE_CADENCE','daily')
+    monkeypatch.setenv('OOF_MATERIALIZE_END_DATE','2026-10-02')
+    monkeypatch.setenv('OOF_MATERIALIZE_RUN_ID','run-blocked')
+    monkeypatch.setenv('OOF_MATERIALIZE_CONTINUATION_ATTEMPT','0')
+    assert asyncio.run(oof_materialize_job_main._run())==1
+    assert callbacks[0]['status']=='error'
+    assert 'awaiting=paper_plan_activation' in callbacks[0]['error']
+    assert 'continuation_exhausted' not in callbacks[0]['error']

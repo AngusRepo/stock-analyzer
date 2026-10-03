@@ -25,7 +25,6 @@ scipy>=1.10.0  # optuna_feature_window 需要
 # 2026-04-07 LangGraph A+B refactor: real StateGraph + LLM reason in controller
 langgraph==1.0.10
 langgraph-checkpoint==4.0.0
-anthropic==0.40.0
 google-cloud-storage>=2.14.0
 # 2026-04-16: pipeline/v2 moved from asyncio.create_task in Service (idle-killed
 # after 15 min) to a dedicated Cloud Run Job.

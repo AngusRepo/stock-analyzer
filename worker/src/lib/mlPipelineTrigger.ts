@@ -87,10 +87,8 @@ export async function runMLAndRiskV2(
       } else {
         const risk = await calcMarketRisk(
           marketDb,
-          env.ANTHROPIC_API_KEY,
           env.ML_CONTROLLER_URL,
           env.ML_CONTROLLER_SECRET,
-          env.GEMINI_API_KEY,
           twDate,
         )
         await databaseForDataDomain(env, 'core').prepare(`

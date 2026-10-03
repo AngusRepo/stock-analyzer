@@ -341,3 +341,26 @@ test('delayed continuation cannot redispatch an already successful exact child',
     assert.deepEqual(await f.row(f.child.ticket_id), before)
   } finally { globalThis.fetch = previousFetch }
 }))
+
+
+test('queued Active-8 awaiting premarket settles its ticket and acknowledges without dispatch', async () => fixture(async f => {
+  await f.ops.prepare('ALTER TABLE pipeline_stage_runs ADD COLUMN last_error TEXT').run()
+  await f.ops.prepare("UPDATE pipeline_stage_runs SET status='waiting',last_error='awaiting_premarket' WHERE business_date=? AND stage='pipeline_execution'").bind(f.day).run()
+  f.env.PAPER_DAILY_PLAN_OWNER = 'premarket_once_v1'
+  f.env.ML_CONTROLLER_URL = 'https://controller.invalid'
+  const originalFetch = globalThis.fetch
+  let requests = 0
+  globalThis.fetch = (async () => { requests++; throw new Error('unexpected dispatch') }) as typeof fetch
+  try {
+    const message = { type: 'active8_oof_continuation', cursor: 0, triggerTime: f.day,
+      oofCadence: 'daily', oofContinuationAttempt: 1,
+      schedulerTicketId: f.child.ticket_id, schedulerRunId: f.child.run_id } as any
+    await processUpdateBatch(message, f.env, {} as any)
+    const settled = await f.row(f.child.ticket_id)
+    assert.equal(settled.status, 'blocked')
+    assert.match(settled.last_error, /^active8_daily_blocked:awaiting_premarket:/)
+    await processUpdateBatch(message, f.env, {} as any)
+    assert.deepEqual(await f.row(f.child.ticket_id), settled, 'redelivery preserves terminal owner')
+    assert.equal(requests, 0)
+  } finally { globalThis.fetch = originalFetch }
+}))

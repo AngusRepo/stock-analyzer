@@ -2,7 +2,7 @@
 modal_app_quantaalpha.py — #11 QuantaAlpha POC (Phase 1 T1.1)
 
 Runs on Modal (python 3.10) — base image clones QuantaAlpha repo, installs Qlib,
-configures Gemini 3.5 Flash via OpenAI-compatible endpoint. Consumes a
+requires an explicitly configured OpenAI-compatible endpoint. Consumes a
 pre-built Qlib binary directory (built by scripts/d1_to_qlib_adapter.py, T1.2)
 mounted via a Modal Volume at /data/qlib_tw.
 
@@ -45,7 +45,7 @@ image = (
         "tables>=3.8",              # HDF5 support (daily_pv.h5)
         "pyyaml",
         "tqdm",
-        "openai>=1.0",              # OpenAI-compatible SDK for Gemini endpoint
+        "openai>=1.0",              # OpenAI-compatible provider SDK
         "scikit-learn",
         "loguru",
         "requests",                 # D1 REST client in build_qlib_binary
@@ -68,7 +68,7 @@ qlib_volume = modal.Volume.from_name("quantaalpha-qlib-tw", create_if_missing=Tr
 results_volume = modal.Volume.from_name("quantaalpha-results", create_if_missing=True)
 
 # ── Secrets ────────────────────────────────────────────────────────────────
-# quantaalpha-llm: GEMINI_API_KEY (created by /admin/quantaalpha-bootstrap)
+# quantaalpha-llm: OPENAI_API_KEY / OPENAI_BASE_URL / CHAT_MODEL / REASONING_MODEL
 # stockvision-cf: CF_API_TOKEN / CF_ACCOUNT_ID / CF_D1_DB_ID (already exists
 #   from ml-service/modal_app.py, reused for D1 REST access in build_qlib_binary)
 def _opt_secret(name: str) -> modal.Secret:
@@ -86,17 +86,14 @@ VOL_QLIB = "/data/qlib_tw"
 VOL_RESULTS = "/data/results"
 
 
-def _gemini_env() -> dict[str, str]:
-    """OpenAI-compatible endpoint config for Gemini 3.5 Flash."""
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    return {
-        "OPENAI_API_KEY": api_key,
-        "OPENAI_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "CHAT_MODEL": "gemini-3.5-flash",
-        "REASONING_MODEL": "gemini-3.5-flash",
-        "QLIB_DATA_DIR": VOL_QLIB,
-        "DATA_RESULTS_DIR": VOL_RESULTS,
-    }
+def _llm_env() -> dict[str, str]:
+    """Require an explicit OpenAI-compatible provider; no implicit paid default."""
+    names = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "CHAT_MODEL", "REASONING_MODEL")
+    config = {name: os.environ.get(name, "").strip() for name in names}
+    missing = [name for name, value in config.items() if not value]
+    if missing:
+        raise RuntimeError("quantaalpha_llm_config_missing:" + ",".join(missing))
+    return {**config, "QLIB_DATA_DIR": VOL_QLIB, "DATA_RESULTS_DIR": VOL_RESULTS}
 
 
 @app.function(
@@ -121,14 +118,14 @@ def run_mine_cycle(research_direction: str, experiment_suffix: str = "poc") -> d
     t0 = time.time()
 
     env = os.environ.copy()
-    gemini_env = _gemini_env()
-    env.update(gemini_env)
+    llm_env = _llm_env()
+    env.update(llm_env)
 
-    # run.sh 要 /opt/quantaalpha/.env 存在 → 寫一份從 gemini_env 值
+    # run.sh 要 /opt/quantaalpha/.env 存在 → 寫一份從 llm_env 值
     env_file = Path("/opt/quantaalpha/.env")
     try:
         env_file.write_text(
-            "\n".join(f"{k}={v}" for k, v in gemini_env.items()) + "\n",
+            "\n".join(f"{k}={v}" for k, v in llm_env.items()) + "\n",
             encoding="utf-8",
         )
     except Exception as e:

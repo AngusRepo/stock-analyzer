@@ -423,7 +423,7 @@ def test_merge_llm_reasons_preserves_domain_watch_points():
 
     assert rows[0]["reason"] == "LLM reason"
     assert rows[0]["watch_points"][:2] == ["觀察 2265 支撐", "留意成交量"]
-    assert rows[0]["score_components"]["reasonVariants"]["gemini"]["tradePlan"]["entry"] == "轉強確認"
+    assert rows[0]["score_components"]["reasonVariants"]["llm"]["tradePlan"]["entry"] == "轉強確認"
     assert any(point.startswith("Alpha bucket:") for point in rows[0]["watch_points"])
     assert any("window=2026-04-13~2026-04-27" in point for point in rows[0]["watch_points"])
 

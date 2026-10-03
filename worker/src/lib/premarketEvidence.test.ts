@@ -47,7 +47,7 @@ test('US and night freshness rejects missing source times', () => {
   assert.equal(isReadyNight({ lastPrice: 100, changePct: 0, changePoints: 0, date: '20260901', time: '050000' }, Date.parse(at)), false)
 })
 test('legacy parse-failed KV report is missing, never successful evidence', async () => {
-  const kv = { get: async () => ({ date: '2026-10-01', bias: 'neutral', confidence: .3, source: 'gemini_api:parse_failed' }) } as any
+  const kv = { get: async () => ({ date: '2026-10-01', bias: 'neutral', confidence: .3, source: 'tunnel:parse_failed' }) } as any
   assert.equal(await readCurrentNewsReport(kv, '2026-10-01'), null)
 })
 test('SQLite stage serializes parallel calls, caches success and fences stale owners', async () => {
@@ -76,19 +76,20 @@ test('SQLite stage limits failed attempts across restarts and cooldowns', async 
     assert.equal(calls, 3)
   } finally { f.close() }
 })
-test('LLM joins text parts, enables JSON mode and rejects truncated output', async () => {
-  const f = l4NativeFixture(); let finish = 'STOP'
-  f.env.GEMINI_API_KEY = 'fixture-not-a-secret'
-  f.ports.fetchFrozen = async (_input: any, init: any) => {
+test('Configured tunnel honors token bounds and rejects truncated output', async () => {
+  const f = l4NativeFixture(); let finish = 'end_turn'
+  f.env.LOCAL_TUNNEL_URL = 'https://tunnel.invalid'
+  f.ports.fetchFrozen = async (input: any, init: any) => {
+    if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
+    assert.equal(String(input), 'https://tunnel.invalid/chat')
     const body = JSON.parse(init.body)
-    assert.equal(body.generationConfig.maxOutputTokens, 2048)
-    assert.equal(body.generationConfig.responseMimeType, 'application/json')
-    return Response.json({ candidates: [{ finishReason: finish, content: { parts: [{ text: '{' }, { thought: true, text: 'private reasoning' }, { text: '}' }] } }] })
+    assert.equal(body.max_tokens, 2048)
+    return Response.json({ stop_reason: finish, text: '{}' })
   }
   try {
     const run = () => withPaperExecutionScope(f.ports, () => callLLM(f.env, 'fixture', 'fixture', .2, { maxTokens: 2048, json: true }))
     assert.equal((await run()).result.text, '{}')
-    finish = 'MAX_TOKENS'; await assert.rejects(run(), /All LLM layers unavailable/)
+    finish = 'max_tokens'; await assert.rejects(run(), /Configured LLM tunnel unavailable/)
   } finally { f.close() }
 })
 test('paused briefing, watchdog ownership and entry-only readiness gate', () => {
@@ -102,7 +103,7 @@ test('paused briefing, watchdog ownership and entry-only readiness gate', () => 
 test('news producer retries bad JSON without writing neutral KV, then publishes and reuses valid evidence', async () => {
   const f = l4NativeFixture(), originalFetch = globalThis.fetch
   const now = new Date(), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
-  f.ports.nowMs = now.getTime(); f.env.GEMINI_API_KEY = 'fixture-only'
+  f.ports.nowMs = now.getTime(); f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
   f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
     source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
   f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
@@ -111,9 +112,10 @@ test('news producer retries bad JSON without writing neutral KV, then publishes 
   let calls = 0, good = false
   globalThis.fetch = async () => new Response('<rss/>')
   f.ports.fetchFrozen = async (input: any) => {
+    if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
     if (String(input).includes('yahoo.com')) return new Response('<rss/>')
     if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: tw.slice(0, 10).replaceAll('-', ''), CTime: tw.slice(11, 19).replaceAll(':', '') }] } })
-    if (String(input).includes('generativelanguage')) { calls++; return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: good ? JSON.stringify(valid) : 'not JSON' }] } }] }) }
+    if (String(input) === 'https://controller.invalid/news/analyze') { calls++; return Response.json({ source: 'cloudflare_workers_ai:@cf/mistralai/mistral-small-3.1-24b-instruct', text: good ? JSON.stringify(valid) : 'not JSON' }) }
     throw new Error('unexpected test network')
   }
   const run = () => withPaperExecutionScope(f.ports, () => runDailyNewsAnalysis(f.env))
@@ -144,7 +146,7 @@ test('expired third producer attempt becomes terminal error without another API 
 test('news producer repairs once with same evidence, then caches valid output', async () => {
   const f = l4NativeFixture(), originalFetch = globalThis.fetch
   const now = new Date(), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
-  f.ports.nowMs = now.getTime(); f.env.GEMINI_API_KEY = 'fixture-only'
+  f.ports.nowMs = now.getTime(); f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
   f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
     source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
   f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
@@ -153,9 +155,10 @@ test('news producer repairs once with same evidence, then caches valid output', 
   let calls = 0
   globalThis.fetch = async () => new Response('<rss/>')
   f.ports.fetchFrozen = async (input: any, init: any) => {
+    if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
     if (String(input).includes('yahoo.com')) return new Response('<rss/>')
     if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: tw.slice(0, 10).replaceAll('-', ''), CTime: tw.slice(11, 19).replaceAll(':', '') }] } })
-    if (String(input).includes('generativelanguage')) { calls++; const body = JSON.parse(init.body); if (calls === 2) { assert.ok(JSON.stringify(body).includes('json_object_missing')); assert.ok(JSON.stringify(body).includes(row.title)); assert.equal(f.kvs.has(`market:news_analyst:${date}`), false) }; return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: calls === 2 ? JSON.stringify(valid) : 'not JSON' }] } }] }) }
+    if (String(input) === 'https://controller.invalid/news/analyze') { calls++; const body = JSON.parse(init.body); if (calls === 2) { assert.ok(JSON.stringify(body).includes('json_object_missing')); assert.ok(JSON.stringify(body).includes(row.title)); assert.equal(f.kvs.has(`market:news_analyst:${date}`), false) }; return Response.json({ source: 'cloudflare_workers_ai:@cf/mistralai/mistral-small-3.1-24b-instruct', text: calls === 2 ? JSON.stringify(valid) : 'not JSON' }) }
     throw new Error('unexpected test network')
   }
   const run = () => withPaperExecutionScope(f.ports, () => runDailyNewsAnalysis(f.env))
@@ -178,4 +181,15 @@ test('news parser identifies actionable citation and assessment failures', () =>
     assert.equal(parseReportJson(JSON.stringify(bad), [row], error => { reason = error }), null)
     assert.equal(reason, expected)
   }
+})
+
+test('missing tunnel never calls a paid provider', async () => {
+  const f = l4NativeFixture()
+  let calls = 0
+  f.ports.fetchFrozen = async () => { calls++; throw new Error('unexpected network') }
+  try {
+    await assert.rejects(withPaperExecutionScope(f.ports, () => callLLM(f.env, 'system', 'news')),
+      /Configured LLM tunnel unavailable/)
+    assert.equal(calls, 0)
+  } finally { f.close() }
 })

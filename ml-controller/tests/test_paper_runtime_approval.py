@@ -260,3 +260,62 @@ def test_supplemental_approval_cannot_override_original_revocation(runtime_pair,
     monkeypatch.setattr(kv_client,'get_json',lambda key,**kw:None if key==paper.KEY else approval)
     with pytest.raises(RuntimeError,match='missing_changed_or_revoked'):
         paper.verify_active_approval(admission)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing', 'old_source', 'new_source', 'another_source', 'risk', 'live', 'declaration'])
+def test_paid_provider_reapproval_accepts_only_reviewed_source_transition(runtime_pair, fault):
+    admission, approval = runtime_pair
+    before, after = admission['configuration'], approval['configuration']
+    for section, sources in paper.PAID_PROVIDER_SOURCE_CHANGE['sources'].items():
+        for name, transition in sources.items():
+            before[section][name] = transition['previous']
+            after[section][name] = transition['approved']
+    approval['approved_paid_provider_source_change'] = deepcopy(paper.PAID_PROVIDER_SOURCE_CHANGE)
+    if fault == 'missing': approval.pop('approved_paid_provider_source_change')
+    elif fault == 'old_source': before['allocator_source_identity']['recommendation_service.py'] = 'f'*64
+    elif fault == 'new_source': after['l3_inference_source_identity']['recommendation_service.py'] = 'f'*64
+    elif fault == 'another_source': after['allocator_source_identity']['allocator'] = 'f'*64
+    elif fault == 'risk': after['risk_config']['cap'] = .9
+    elif fault == 'live': after['native_execution_policy']['variables']['LIVE_EXECUTION_CLIENT_ENABLED'] = '1'
+    elif fault == 'declaration': approval['approved_paid_provider_source_change']['scope'] = 'live'
+    approval['admission'] = deepcopy(admission)
+    reseal(approval)
+    if fault is None:
+        original = deepcopy(approval)
+        assert paper.validate_runtime_approval(approval, admission) == original
+        assert approval == original
+    else:
+        with pytest.raises(RuntimeError): paper.validate_runtime_approval(approval, admission)
+
+
+def test_paid_provider_release_staging_preserves_old_swing_key_and_revocation(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'new exact provider release'})
+    records = {paper.KEY: admission, paper.SWING_RUNTIME_RELEASE_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.PAID_PROVIDER_RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.SWING_RUNTIME_RELEASE_KEY] == old
+    records[paper.PAID_PROVIDER_RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'): paper.verify_active_approval(admission)
+
+
+def test_ga_recovery_staging_preserves_paid_provider_release_and_revocation(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'exact merged GA recovery'})
+    records = {paper.KEY: admission, paper.PAID_PROVIDER_RUNTIME_RELEASE_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.GA_RECOVERY_RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.PAID_PROVIDER_RUNTIME_RELEASE_KEY] == old
+    records[paper.GA_RECOVERY_RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'):
+        paper.verify_active_approval(admission)

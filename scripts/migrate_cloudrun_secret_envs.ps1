@@ -9,9 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $secretEnvNames = @(
-  "ANTHROPIC_API_KEY",
   "CF_API_TOKEN",
-  "GEMINI_API_KEY",
   "GITHUB_TOKEN",
   "ML_CONTROLLER_SECRET",
   "ML_SERVICE_SECRET",

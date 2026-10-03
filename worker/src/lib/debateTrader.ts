@@ -5,10 +5,8 @@ import { paperExecutionNow, paperExecutionFetch } from './paperExecutionScope'
  * 3 rounds: Bull(ML reasoning) → Bear(challenge) → Judge(verdict)
  * MAX 3 rounds hardcoded to control token cost
  *
- * LLM 三層 fallback（成本最低優先）：
- *   1. 本地 Tunnel → Claude Opus（Max Plan 已付費，透過 Cloudflare Tunnel 呼叫）
- *   2. Gemini 3.5 Flash（stable primary）
- *   3. Anthropic API → Claude Haiku（花錢，最後手段）
+ * Legacy inline/news LLM requires an explicitly configured local tunnel:
+ *   LOCAL_TUNNEL_URL /health → /chat; formal batch debate uses the controller.
  *
  * Verdict: APPROVE → normal buy / DOWNGRADE → halve position / REJECT → skip
  *
@@ -23,8 +21,6 @@ import {
 } from './debateMemory'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
-
-const GEMINI_FLASH_MODEL = 'gemini-3.5-flash'
 
 // ─── P1#14: Prompt Injection Detection ────────────────────────────────────────
 const DANGER_PATTERNS: Array<[RegExp, string, string]> = [
@@ -73,7 +69,7 @@ export interface DebateResult {
   verdict: DebateVerdict
   rounds: number
   summary: string  // stored in paper_orders.note
-  llmSource: string // 'tunnel' | 'gemini_api' | 'anthropic_api'
+  llmSource: string // 'tunnel'
   convictionScore: number // 0-100, judge 的信念度評分
   terminalStatus: DebateTerminalStatus
   retryable: boolean
@@ -91,9 +87,7 @@ export interface StockProfile {
 export interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
-  GEMINI_API_KEY?: string     // Gemini 3.5 Flash (stable primary)
-  ANTHROPIC_API_KEY?: string  // Anthropic API key (last resort fallback)
-  KV?: KVNamespace            // 讀 ml:config.debate_model（可 runtime 換模型）
+  KV?: KVNamespace            // Shared context storage
   DB?: D1Database             // Legacy/control-plane binding; formal FinMem resolves Paper owner.
   PAPER_DB?: D1Database
   MULTI_D1_ACTIVE_DOMAINS?: string
@@ -104,32 +98,7 @@ export interface LLMEnv {
 declare const KVNamespace: any
 type KVNamespace = { get(k: string, t?: string): Promise<any>; put(k: string, v: string): Promise<void> }
 
-// in-memory cache for ml:config（5 min，避免每次 debate 都讀 KV）
-const mlConfigCache = new WeakMap<KVNamespace, { value: Record<string, any>; at: number }>()
-const ML_CONFIG_TTL = 5 * 60_000
-
-async function getMlConfig(kv: KVNamespace): Promise<Record<string, any>> {
-  const cached = mlConfigCache.get(kv)
-  if (cached && paperExecutionNow() - cached.at < ML_CONFIG_TTL) return cached.value
-  let value: Record<string, any>
-  try {
-    const raw = await kv.get('ml:config', 'json') as Record<string, any> | null
-    value = raw ?? {}
-  } catch {
-    value = {}
-  }
-  mlConfigCache.set(kv, { value, at: paperExecutionNow() })
-  return value
-}
-
-// ─── 三層 LLM Fallback ──────────────────────────────────────────────────────
-
-/**
- * 依優先順序嘗試呼叫 LLM：
- *   1. 本地 Tunnel (Claude Opus) — 最強品質，Max Plan 免費
- *   2. Gemini 3.5 Flash — stable primary
- *   3. Anthropic API (Haiku) — 花錢，最後手段
- */
+/** Optional configured tunnel only; no paid API fallback. */
 export async function callLLM(
   env: LLMEnv,
   systemPrompt: string,
@@ -164,68 +133,7 @@ export async function callLLM(
     }
   }
 
-  // ── Layer 2: Gemini 3.5 Flash — stable primary ──────────
-  if (env.GEMINI_API_KEY) {
-    try {
-      const res = await paperExecutionFetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_FLASH_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-            generationConfig: { temperature, maxOutputTokens: maxTokens, ...(options.json ? { responseMimeType: 'application/json' } : {}) },
-          }),
-          signal: AbortSignal.timeout(30_000),
-        }
-      )
-      if (res.ok) {
-        const json = await res.json() as any
-        const candidate = json?.candidates?.[0]
-        if (candidate?.finishReason && candidate.finishReason !== 'STOP') throw new Error('llm_incomplete_response')
-        const text = (candidate?.content?.parts ?? []).filter((p: any) => !p.thought).map((p: any) => p.text ?? '').join('')
-        if (text) return { text, source: 'gemini_api' }
-      }
-    } catch (e) {
-      console.warn('[Debate] Gemini API failed:', e)
-    }
-  }
-
-  // ── Layer 3: Anthropic API (Haiku) — 最後手段 fallback ─────────────────
-  if (env.ANTHROPIC_API_KEY) {
-    try {
-      const debateModel = env.KV
-        ? (await getMlConfig(env.KV)).debate_model ?? 'claude-haiku-4-5-20251001'
-        : 'claude-haiku-4-5-20251001'
-      const res = await paperExecutionFetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: debateModel,
-          max_tokens: maxTokens,
-          temperature,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userPrompt }],
-        }),
-        signal: AbortSignal.timeout(30_000),
-      })
-      if (res.ok) {
-        const json = await res.json() as any
-        if (json?.stop_reason && json.stop_reason !== 'end_turn') throw new Error('llm_incomplete_response')
-        const text = (json?.content ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text ?? '').join('')
-        if (text) return { text, source: 'anthropic_api' }
-      }
-    } catch (e) {
-      console.warn('[Debate] Anthropic API failed:', e)
-    }
-  }
-
-  throw new Error('All LLM layers unavailable — debate skipped')
+  throw new Error('Configured LLM tunnel unavailable')
 }
 
 // ─── Main Debate Function ─────────────────────────────────────────────────────

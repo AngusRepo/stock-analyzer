@@ -141,7 +141,7 @@ def test_pipeline_keeps_breeze2_shadow_out_of_canonical_reason_writer():
     assert 'def _breeze2_reason_shadow_enabled() -> bool:\n    return False' in pipeline
     assert 'or "context"' in pipeline
     assert "build_canonical_candidate_payloads(candidates)" in pipeline
-    assert "generate_recommendation_reasons_from_payloads" in pipeline
+    assert "generate_recommendation_reasons_from_payloads" not in pipeline
     assert "build_breeze2_generation_shadow_for_canonical_payloads" in pipeline
     assert "asyncio.wait_for" in pipeline
     assert "BREEZE2_REASON_GENERATION_TIMEOUT_SECONDS" in pipeline

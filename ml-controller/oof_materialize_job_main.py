@@ -707,6 +707,9 @@ async def _run() -> int:
                 if not result.get('native_l4_daily_closure') or result.get('nav_retry_required'):
                     raise RuntimeError('l4_daily_closure_incomplete')
                 callback_status='success'
+            elif status == 'blocked':
+                # Missing morning-owned plan cannot be repaired by this job.
+                raise RuntimeError(f"oof_daily_blocked:{result.get('reason')}:awaiting=paper_plan_activation")
             elif status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
                 freshness = _oof_freshness_evidence(result)
                 if freshness["status"] != "fresh":

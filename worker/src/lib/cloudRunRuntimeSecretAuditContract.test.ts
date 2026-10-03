@@ -17,9 +17,7 @@ const audit = fs.readFileSync(auditPath, 'utf8')
 const gate = fs.readFileSync(gatePath, 'utf8')
 
 for (const envName of [
-  'ANTHROPIC_API_KEY',
   'CF_API_TOKEN',
-  'GEMINI_API_KEY',
   'GITHUB_TOKEN',
   'ML_CONTROLLER_SECRET',
   'ML_SERVICE_SECRET',

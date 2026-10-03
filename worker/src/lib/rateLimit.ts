@@ -1,7 +1,7 @@
 /**
  * rateLimit.ts — KV-based sliding window rate limiter
  *
- * 保護 LLM 和 ML 端點，防止惡意或意外的大量呼叫耗盡 Anthropic 配額
+ * 保護 LLM 和 ML 端點，防止惡意或意外的大量呼叫耗盡服務配額
  *
  * 規則：
  *   - LLM 端點（/ai/*）：每 IP 每分鐘 10 次

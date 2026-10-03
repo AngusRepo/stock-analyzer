@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -72,74 +70,34 @@ def test_canonical_candidate_payload_prefers_score_v2_and_excludes_legacy_scores
         assert legacy_key not in payload
 
 
-def test_generate_recommendation_reasons_prompt_uses_canonical_payload_and_trade_plan(monkeypatch: pytest.MonkeyPatch):
-    captured: dict[str, str] = {}
-
-    async def fake_call_gemini(user_prompt: str, n_candidates: int, timeout: float):
-        if "invalid_items=" not in user_prompt:
-            captured["prompt"] = user_prompt
-        if "invalid_items=" in user_prompt:
-            captured["repair_prompt"] = user_prompt
-            return json.dumps([
-                {
-                    "symbol": "2330",
-                    "reason": "Score V2 reason",
-                    "tradePlan": {
-                        "bias": "bullish",
-                        "entry": "頧撥蝣箄?",
-                        "risk": "use system stop",
-                        "target": "take profit near resistance",
-                        "invalidation": "breaks support",
-                        "positionSizing": "cap by allocator weight",
-                        "timeHorizon": "3-10 sessions",
-                        "catalyst": "chip and volume continuation",
-                        "noTradeCondition": "skip gap-up chase",
-                    },
-                    "watchPoints": ["risk"],
-                }
-            ])
-        return json.dumps([
-            {
-                "symbol": "2330",
-                "reason": "Score V2 reason",
-                "tradePlan": {"bias": "偏多", "entry": "轉強確認", "risk": "跌破支撐", "target": "壓力區"},
-                "watchPoints": ["risk"],
-            }
-        ])
-
-    monkeypatch.setattr(llm_reason, "GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(llm_reason, "_call_gemini", fake_call_gemini)
-
-    result = asyncio.run(llm_reason.generate_recommendation_reasons([_candidate()], top_themes=["AI"]))
-
-    assert result["2330"]["reason"] == "Score V2 reason"
-    assert result["2330"]["provider"] == "gemini"
-    assert result["2330"]["tradePlanStatus"] == "valid"
-    assert result["2330"]["tradePlanRepairAttempted"] is True
-    assert result["2330"]["tradePlan"]["entry"] == "轉強確認"
-    assert "canonical_candidate_payload=" in captured["prompt"]
-    assert "tradePlan_required_fields=" in captured["prompt"]
-    assert "invalid_items=" in captured["repair_prompt"]
-    assert '"schema_version":"stockvision-canonical-candidate-payload-v1"' in captured["prompt"]
-    assert '"score_components"' in captured["prompt"]
-    assert '"finalScore":88' in captured["prompt"]
-    assert '"top_themes":["AI"]' in captured["prompt"]
-    for legacy_key in ('"ml_score"', '"chip_score"', '"tech_score"', '"momentum_score"'):
-        assert legacy_key not in captured["prompt"]
+def test_advisory_payload_preserves_canonical_score_and_filters_recursive_variants():
+    candidate = _candidate()
+    candidate["score_components"]["reasonVariants"] = {"old": {"reason": "not input evidence"}}
+    canonical = llm_reason.build_canonical_candidate_payloads([candidate, {"symbol": ""}])
+    request = build_breeze2_reason_generation_payload_from_canonical(
+        canonical, run_date="2026-10-03", execute_model=True)
+    assert request["candidates"] == canonical
+    assert len(canonical) == 1
+    assert canonical[0]["score_components"]["finalScore"] == 88
+    assert "reasonVariants" not in canonical[0]["score_components"]
+    assert "reasonVariants" in candidate["score_components"]
+    json.dumps(request, allow_nan=False)
 
 
-def test_gemini_and_breeze2_trade_plans_share_same_canonical_candidate_payload():
-    canonical_candidates = llm_reason.build_canonical_candidate_payloads([_candidate()])
-    gemini_request = llm_reason.build_gemini_trade_plan_request(canonical_candidates, top_themes=["AI"])
-    breeze2_request = build_breeze2_reason_generation_payload_from_canonical(
-        canonical_candidates,
-        run_date="2026-06-21",
-        execute_model=True,
-    )
+def test_pipeline_keeps_template_reasons_without_external_generation(monkeypatch):
+    import asyncio
+    from copy import deepcopy
+    import httpx
+    from graphs import daily_pipeline_v2 as pipeline
 
-    assert gemini_request["provider_task"] == "gemini_trade_plan"
-    assert breeze2_request["provider_task"] == "breeze2_trade_plan"
-    assert gemini_request["candidates"] == breeze2_request["candidates"]
-    assert gemini_request["candidates"][0]["schema_version"] == "stockvision-canonical-candidate-payload-v1"
-    assert "score" not in gemini_request["candidates"][0]
-    assert "ml_score" not in breeze2_request["candidates"][0]
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("recommendation reasons must not call an external provider")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", unexpected_request)
+    monkeypatch.setattr(httpx.Client, "post", unexpected_request)
+    candidates = [{**_candidate(), "reason": "verified template evidence"}]
+    before = deepcopy(candidates)
+    result = asyncio.run(pipeline.node_llm_reasons({
+        "final_recommendations": candidates, "run_date": "2026-10-03"}))
+    assert result == {"llm_reasons": {}, "breeze2_reason_shadow": {}}
+    assert candidates == before

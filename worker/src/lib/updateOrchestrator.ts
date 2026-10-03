@@ -3149,7 +3149,7 @@ export async function processUpdateBatch(
       if (!owner) throw new Error('active8_oof_continuation_scheduler_identity_mismatch')
       // Delayed collision retries may arrive after this exact job callback finished.
       // A completed ticket must never dispatch the same durable work again.
-      if (owner.status === 'success') return
+      if (['success', 'error', 'blocked', 'skipped'].includes(owner.status)) return
     }
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
     const summary = await runActive8OofLifecycle(env, runDate, cadence, {

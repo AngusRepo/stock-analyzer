@@ -3610,6 +3610,22 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         import asyncio
         from services.single_b_daily_closure import single_b_daily_closure
         completed = await asyncio.to_thread(single_b_daily_closure, config, req.end_date)
+        if completed and completed.get('status') == 'blocked':
+            from routers.pipeline import _callback_worker
+            run_date = completed['expected_signal_date']
+            run_id = f'active8-oof-daily:{run_date}:resolve-after-prep'
+            reason = completed['reason']
+            await _callback_worker({
+                'task':'active8-oof-daily', 'status':'error',
+                'summary':f'active8_daily_blocked:{reason}:signal_date={run_date}:awaiting=paper_plan_activation:job_dispatched=false',
+                'error':reason, 'run_id':run_id, 'run_date':run_date,
+                'attempt_id':f'pre-dispatch:{scheduler_run_id}',
+                'scheduler_ticket_id':scheduler_ticket_id, 'scheduler_run_id':scheduler_run_id,
+                'metadata':{'cadence':'daily','mode':'oof_lifecycle','lifecycle_status':'blocked',
+                    'dependency_retry_required':False,'pre_dispatch_verified':True,
+                    'expected_signal_date':run_date,'resume_after':'paper_plan_activation'}})
+            return {'status':'blocked','reason':reason,'cadence':cadence,'run_date':run_date,
+                    'run_id':run_id,'job_dispatched':False,'callback_delivered':True}
         if completed and completed.get('status') == 'native_l4_daily_accounted':
             from routers.pipeline import _callback_worker
             from oof_materialize_job_main import _summary, _nav_callback_summary

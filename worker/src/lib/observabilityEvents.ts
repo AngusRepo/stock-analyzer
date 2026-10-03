@@ -432,6 +432,9 @@ export function buildEventsFromModelPool(input: {
   models?: Record<string, Record<string, unknown>>
   sourceError?: string
 }): ObservabilityEvent[] {
+  // Normal OBS polling does not perform model-authority verification.
+  // Omitted evidence must never manufacture a green lifecycle event.
+  if (input.models === undefined && !input.sourceError) return []
   if (input.sourceError) {
     return [{
       id: eventId('model_pool', 'model_pool_lineage', 'unavailable'),
@@ -1243,9 +1246,11 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
         summary: String(error),
       }],
     })),
-    controllerJson<{ models?: Record<string, Record<string, unknown>> }>(env, '/model_pool/lineage', { timeoutMs: 12_000 })
-      .then((payload) => ({ payload }))
-      .catch((error: unknown) => ({ error: String(error) })),
+    options.live === true
+      ? controllerJson<{ models?: Record<string, Record<string, unknown>> }>(env, '/model_pool/lineage', { timeoutMs: 12_000 })
+        .then((payload) => ({ payload }))
+        .catch((error: unknown) => ({ error: String(error) }))
+      : Promise.resolve({ skipped: true }),
     readLatestValidationPackets(env),
     import('./adaptiveConfig')
       .then(({ getAdaptiveParamsForRegime }) => getAdaptiveParamsForRegime(env.KV))

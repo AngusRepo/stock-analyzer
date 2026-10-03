@@ -82,3 +82,53 @@ test('long-running exact cohort preserves its attempt beyond the former twelve-p
     assert.equal(request.promote, false)
   } finally { globalThis.fetch = previousFetch }
 })
+
+
+test('delayed continuations cannot reopen any terminal owner ticket', async () => {
+  let calls = 0
+  const original = globalThis.fetch
+  globalThis.fetch = async () => { calls++; throw new Error('must not dispatch') }
+  try {
+    for (const status of ['success', 'error', 'blocked', 'skipped']) {
+      const db = { prepare: () => ({ bind: () => ({ first: async () => ({ ticket_id: 'ticket', status }) }) }) }
+      await processUpdateBatch({ type: 'active8_oof_continuation', cursor: 0,
+        triggerTime: '2026-10-02', oofCadence: 'daily', oofContinuationAttempt: 13,
+        schedulerTicketId: 'ticket', schedulerRunId: 'run' },
+        { DB: db, OPS_DB: db, MULTI_D1_ACTIVE_DOMAINS: 'ops', ML_CONTROLLER_URL: 'https://controller.invalid' } as any, {} as any)
+    }
+    assert.equal(calls, 0)
+  } finally { globalThis.fetch = original }
+})
+
+test('plan blocked response remains visibly failed and never queues a retry', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => Response.json({status: 'blocked', job_dispatched: false,
+    reason: 'l4_daily_plan_pending_for_signal_date'})
+  try {
+    await assert.rejects(runActive8OofLifecycle({ ML_CONTROLLER_URL: 'https://controller.invalid',
+      UPDATE_QUEUE: {send: async () => {throw new Error('must not retry')}} } as any,
+      '2026-10-02', 'daily', {schedulerTicketId: 'ticket', schedulerRunId: 'run'}),
+      /active8_daily_blocked:l4_daily_plan_pending_for_signal_date:awaiting=paper_plan_activation/)
+  } finally { globalThis.fetch = original }
+})
+
+test('sealed nightly phase blocks watchdog before Cloud Run and resumes after publication', async () => {
+  let calls = 0, published = false
+  const original = globalThis.fetch
+  globalThis.fetch = async () => { calls++; return Response.json({ status: 'spawned' }) }
+  const db = { prepare: () => ({ bind: (date: string) => {
+    assert.equal(date, '2026-10-02')
+    return { first: async () => ({ status: published ? 'success' : 'waiting', last_error: published ? null : 'awaiting_premarket' }) }
+  } }) }
+  const env = { DB: db, OPS_DB: db, MULTI_D1_ACTIVE_DOMAINS: 'ops',
+    PAPER_DAILY_PLAN_OWNER: 'premarket_once_v1', ML_CONTROLLER_URL: 'https://controller.invalid' } as any
+  try {
+    for (let tick = 0; tick < 12; tick++) {
+      await assert.rejects(runActive8OofLifecycle(env, '2026-10-02', 'daily'), /active8_daily_blocked:awaiting_premarket/)
+    }
+    assert.equal(calls, 0)
+    published = true
+    assert.match(await runActive8OofLifecycle(env, '2026-10-02', 'daily'), /status=spawned/)
+    assert.equal(calls, 1)
+  } finally { globalThis.fetch = original }
+})

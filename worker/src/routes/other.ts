@@ -2,7 +2,6 @@ import { buildDailyFunnelLayers, buildFinalSignalLayer } from '../lib/dailyFunne
 import { Hono } from 'hono'
 
 import { d1SafeInChunks } from '../lib/d1BindChunks'
-import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
 import { loadCoreStockIdentitiesByIds, loadMarketPriceHistoryBySymbols } from '../lib/stockIdentityMarketBridge'
 import {
   DEFAULT_STRATEGY_SPECS,
@@ -196,12 +195,6 @@ import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
 import { fetchAndStoreStockData } from './stocks'
 import { computeAndStoreIndicators } from '../lib/technicalIndicators'
-import {
-  generateTechnicalAnalysis,
-  generateTradingAdvice,
-  generateAnalystSummary,
-  answerStockQuestion,
-} from '../lib/llm'
 import {
   buildHardGateSummary,
   buildSparseAllocationSummary,
@@ -2076,142 +2069,12 @@ market.get('/news', async (c) => {
 // ════════════════════════════════════════════════════════════════════════════
 export const llm = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-// LLM 費用最貴，全部端點限速（10次/分鐘/IP）並要求登入
-llm.use('/*', rateLimitMiddleware('llm'))
-
-// Helper: build snapshot + rich context from DB
-async function buildSnapshot(env: Bindings, stockId: number) {
-  const coreDb = databaseForDataDomain(env, 'core')
-  const marketDb = databaseForDataDomain(env, 'market')
-  const learningDb = databaseForDataDomain(env, 'learning')
-  const [stock, latestPrice, latestInd, prediction, factor, risk,
-         recentNews, marketRisk, modelAccuracy, stockMemories, recentPredictions] = await Promise.all([
-    coreDb.prepare('SELECT * FROM stocks WHERE id=?').bind(stockId).first<any>(),
-    marketDb.prepare('SELECT * FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
-    marketDb.prepare('SELECT * FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
-    learningDb.prepare('SELECT * FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 1').bind(stockId).first<any>(),
-    marketDb.prepare('SELECT * FROM factor_scores WHERE stock_id=? ORDER BY date DESC LIMIT 1').bind(stockId).first<any>(),
-    coreDb.prepare("SELECT * FROM risk_metrics WHERE stock_id=? AND period='1y' ORDER BY calculated_at DESC LIMIT 1").bind(stockId).first<any>(),
-    marketDb.prepare('SELECT title, sentiment, published_at FROM news WHERE stock_id=? ORDER BY published_at DESC LIMIT 7').bind(stockId).all<any>(),
-    coreDb.prepare('SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1').all<any>(),
-    learningDb.prepare("SELECT model_name, accuracy, total_count, period FROM model_accuracy WHERE stock_id=? AND period IN ('30d','all') ORDER BY period, model_name").bind(stockId).all<any>(),
-    learningDb.prepare('SELECT memory_type, content FROM stock_memories WHERE stock_id=? ORDER BY updated_at DESC LIMIT 5').bind(stockId).all<any>(),
-    learningDb.prepare('SELECT trade_signal as signal, direction_correct, generated_at FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 5').bind(stockId).all<any>(),
-  ])
-  if (!stock) return null
-
-  const rich = {
-    recentNews: recentNews?.results?.map((n: any) => ({
-      title: n.title, sentiment: n.sentiment, publishedAt: n.published_at,
-    })) ?? null,
-    marketRisk: marketRisk?.results?.[0] ? {
-      riskLevel: marketRisk.results[0].risk_level,
-      riskScore: marketRisk.results[0].risk_score,
-      riskSummary: marketRisk.results[0].risk_summary,
-    } : null,
-    modelAccuracy: modelAccuracy?.results?.map((a: any) => ({
-      modelName: a.model_name, accuracy: a.accuracy,
-      totalCount: a.total_count, period: a.period,
-    })) ?? null,
-    stockMemories: stockMemories?.results?.map((m: any) => ({
-      memoryType: m.memory_type, content: m.content,
-    })) ?? null,
-    recentPredictions: recentPredictions?.results?.map((p: any) => ({
-      signal: p.signal, direction_correct: p.direction_correct, generatedAt: p.generated_at,
-    })) ?? null,
-  }
-
-  return {
-    stock, rich, snapshot: {
-      symbol: stock.symbol, name: stock.name,
-      currentPrice: latestPrice?.close ?? 0,
-      ma5: latestInd?.ma5, ma10: latestInd?.ma10, ma20: latestInd?.ma20, ma60: latestInd?.ma60,
-      rsi14: latestInd?.rsi14, macd: latestInd?.macd, macdSignal: latestInd?.macd_signal, macdHist: latestInd?.macd_hist,
-      bbUpper: latestInd?.bb_upper, bbMid: latestInd?.bb_mid, bbLower: latestInd?.bb_lower, atr14: latestInd?.atr14,
-      compositeScore: factor?.composite_score, quantile: factor?.quantile,
-      zMomentum: factor?.z_momentum, zValue: factor?.z_value, zQuality: factor?.z_quality,
-      sharpeRatio: risk?.sharpe_ratio, maxDrawdown: risk?.max_drawdown, beta: risk?.beta, var95: risk?.var95,
-      tradeSignal: prediction?.trade_signal, entryPrice: prediction?.entry_price,
-      stopLoss: prediction?.stop_loss, target1: prediction?.target1, target2: prediction?.target2,
-    }
-  }
+// Explicitly retired: no external provider, cache read, or DB fan-out.
+for (const path of ['/technical-analysis', '/trading-advice', '/analyst-summary', '/ask']) {
+  llm.post(path, authMiddleware, (c) => c.json({
+    error: '付費 AI 分析功能已停用。', code: 'paid_llm_retired',
+  }, 410))
 }
-
-// ── LLM KV 快取：同一天同一支股票不重複打 Anthropic API ──────────────────────
-const llmCacheKey = (type: string, stockId: number) => {
-  const twDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  return `llm:${type}:${stockId}:${twDate}`
-}
-
-llm.post('/technical-analysis', authMiddleware, async (c) => {
-  const { stockId } = await c.req.json()
-  const cacheKey = llmCacheKey('tech', stockId)
-  const cached = await c.env.KV.get(cacheKey)
-  if (cached) return c.json({ analysis: cached, cached: true })
-
-  const result = await buildSnapshot(c.env, stockId)
-  if (!result) return c.json({ error: '股票不存在' }, 404)
-  const analysis = await generateTechnicalAnalysis(c.env.ANTHROPIC_API_KEY, result.snapshot, result.rich)
-  await c.env.KV.put(cacheKey, analysis, { expirationTtl: 86400 })
-  return c.json({ analysis })
-})
-
-llm.post('/trading-advice', authMiddleware, async (c) => {
-  const { stockId } = await c.req.json()
-  const cacheKey = llmCacheKey('trade', stockId)
-  const cached = await c.env.KV.get(cacheKey)
-  if (cached) return c.json({ advice: cached, cached: true })
-
-  const result = await buildSnapshot(c.env, stockId)
-  if (!result) return c.json({ error: '股票不存在' }, 404)
-  const advice = await generateTradingAdvice(c.env.ANTHROPIC_API_KEY, result.snapshot, result.rich)
-  await c.env.KV.put(cacheKey, advice, { expirationTtl: 86400 })
-  return c.json({ advice })
-})
-
-llm.post('/analyst-summary', authMiddleware, async (c) => {
-  const { stockId } = await c.req.json()
-  const cacheKey = llmCacheKey('summary', stockId)
-  const cached = await c.env.KV.get(cacheKey)
-  if (cached) return c.json({ summary: cached, cached: true })
-
-  const result = await buildSnapshot(c.env, stockId)
-  if (!result) return c.json({ error: '股票不存在' }, 404)
-
-  const [latestFin, latestChip] = await Promise.all([
-    loadLatestStockFinancialSnapshot(c.env, stockId),
-    databaseForDataDomain(c.env, 'market').prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
-  ])
-
-  const financials = toLlmFinancialContext(latestFin)
-  const chipData   = latestChip ? { foreignNetBuy: latestChip.foreign_net, investmentTrustNetBuy: latestChip.trust_net, dealerNetBuy: latestChip.dealer_net, marginBalance: latestChip.margin_balance } : null
-
-  const summary = await generateAnalystSummary(c.env.ANTHROPIC_API_KEY, { snapshot: result.snapshot, financials, chipData, rich: result.rich })
-  await c.env.KV.put(cacheKey, summary, { expirationTtl: 86400 })
-  return c.json({ summary })
-})
-
-llm.post('/ask', authMiddleware, async (c) => {
-  const { stockId, question, conversationHistory } = await c.req.json()
-  if (!question?.trim()) return c.json({ error: '請輸入問題' }, 400)
-
-  const result = await buildSnapshot(c.env, stockId)
-  if (!result) return c.json({ error: '股票不存在' }, 404)
-
-  const [latestFin, latestChip] = await Promise.all([
-    loadLatestStockFinancialSnapshot(c.env, stockId),
-    databaseForDataDomain(c.env, 'market').prepare('SELECT * FROM chip_data WHERE symbol=? ORDER BY date DESC LIMIT 1').bind(result.stock.symbol).first<any>(),
-  ])
-
-  const answer = await answerStockQuestion(c.env.ANTHROPIC_API_KEY, {
-    question,
-    snapshot: result.snapshot,
-    financials: toLlmFinancialContext(latestFin),
-    chipData: latestChip ? { foreignNetBuy: latestChip.foreign_net, marginBalance: latestChip.margin_balance } : null,
-    conversationHistory,
-  })
-  return c.json({ answer })
-})
 
 // ════════════════════════════════════════════════════════════════════════════
 // WATCHLIST routes

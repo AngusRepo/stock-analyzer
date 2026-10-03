@@ -17,7 +17,9 @@ def single_b_daily_closure(config, end_date=None):
         try:
             closure = daily_plan_closure(config, business_date, client_proxy_for_domain('paper'))
         except L4DailyPlanPending as exc:
-            return {'status':'pending','dependency_retry_required':True,'reason':str(exc),
+            # A Paper plan is produced by the morning pipeline, not by an OOF retry.
+            return {'status':'blocked','dependency_retry_required':False,'reason':str(exc),
+                'expected_signal_date':business_date,'resume_after':'paper_plan_activation',
                 'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False}
         return {'status':'native_l4_daily_accounted','native_l4_daily_closure':closure,
             'paired_nav_maturity':nav,'nav_retry_required':False,'promoted':False,

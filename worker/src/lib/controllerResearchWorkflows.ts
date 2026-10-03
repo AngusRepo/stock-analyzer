@@ -456,6 +456,17 @@ export async function runActive8OofLifecycle(
   } = {},
 ) {
   requireController(env)
+  if (cadence === 'daily' && runDate && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1') {
+    const stage = await databaseForDataDomain(env, 'ops').prepare(`
+      SELECT status, last_error FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='pipeline_execution'
+    `).bind(runDate).first<{status: string; last_error: string | null}>()
+    if (stage?.status === 'waiting' && stage.last_error === 'awaiting_premarket') {
+      // The nightly producer sealed L3; only morning publication can create this plan.
+      // Do not turn a known phase boundary into repeated Cloud Run dispatches.
+      throw new Error(`active8_daily_blocked:awaiting_premarket:signal_date=${runDate}:job_dispatched=false`)
+    }
+  }
 
   // The existing durable job reconciles original NAV receipts independently
   // BEFORE OOF prep. An absent compute snapshot or OOF-only success ticket
@@ -491,6 +502,9 @@ export async function runActive8OofLifecycle(
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
   const status = String(data.status ?? '').toLowerCase()
+  if (status === 'blocked' && data.job_dispatched === false) {
+    throw new Error(`active8_daily_blocked:${data.reason ?? 'paper_plan_unavailable'}:awaiting=paper_plan_activation`)
+  }
   if (!['skipped', 'pending', 'spawned', 'materialized', 'shadow_evaluated', 'idempotent_complete'].includes(status)) {
     throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
   }

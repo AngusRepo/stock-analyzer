@@ -7,7 +7,6 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $SecretEnvNames = @(
-  'ANTHROPIC_API_KEY',
   'CF_API_TOKEN',
   'EXECUTION_GATEWAY_SERVICE_TOKEN',
   'FINLAB_API_KEY',
@@ -19,7 +18,6 @@ $SecretEnvNames = @(
   'SHIOAJI_CERT_PERSON_ID',
   'SHIOAJI_PERSON_ID',
   'SHIOAJI_SECRET_KEY',
-  'GEMINI_API_KEY',
   'GITHUB_TOKEN',
   'ML_CONTROLLER_SECRET',
   'ML_SERVICE_SECRET',
@@ -95,7 +93,7 @@ function Get-LiteralSecretNames($Document) {
     $isLiteralEnv =
       ($properties -contains 'name') -and
       ($properties -contains 'value') -and
-      ($SecretEnvNames -contains [string]$Node.name) -and
+      (($SecretEnvNames -contains [string]$Node.name) -or ([string]$Node.name -match '_(API_KEY|TOKEN|SECRET)$')) -and
       ($null -ne $Node.value) -and
       ([string]$Node.value).Length -gt 0
     if ($isLiteralEnv) {

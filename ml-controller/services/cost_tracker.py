@@ -10,13 +10,8 @@ Rationale (ship-day):
   growing again post Debate FinMem) also needs tracking. All instrumented
   calls record here so Wei + Discord alerts can see daily / monthly spend.
 
-Pricing table (USD per 1M tokens, input / output, 2026-06 Gemini rates):
-  claude-sonnet-4-6:          3.00 / 15.00
-  claude-opus-4-7:           15.00 / 75.00
-  gemini-3.5-flash:           1.50 / 9.00
-  gemini-2.5-flash-lite:      0.10 / 0.40
+Pricing table (USD per 1M tokens, input / output, configured providers):
   deepseek-v3:                0.14 / 0.28
-  gemma-27b (via Gemini API): 0.05 / 0.10  (approximate)
 
 Modal cost estimation:
   Uses public per-second Modal rates for CPU, memory, and common GPUs.
@@ -56,16 +51,10 @@ def _ops_d1_url() -> str:
 
 # Price per 1K tokens (simpler math vs per-1M)
 _PRICE_PER_1K: dict[str, tuple[float, float]] = {
-    "claude-sonnet-4-6":              (0.003, 0.015),
-    "claude-sonnet-4-5-20250929":     (0.003, 0.015),
-    "claude-opus-4-7":                (0.015, 0.075),
-    "gemini-3.5-flash":               (0.0015, 0.009),
-    "gemini-2.5-flash-lite":          (0.0001, 0.00040),
     "deepseek-v3":                    (0.00014, 0.00028),
     "@cf/mistralai/mistral-small-3.1-24b-instruct": (0.000351, 0.000555),
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast": (0.000293, 0.002253),
     "@cf/openai/gpt-oss-20b": (0.000200, 0.000300),
-    "gemma-27b":                      (0.00005, 0.00010),
 }
 
 _MODAL_CPU_CORE_SEC_PRICE = 0.0000131
@@ -336,7 +325,7 @@ async def record_llm_call(
     meta: Optional[dict] = None,
 ) -> None:
     """Record one LLM API call. Caller picks source label (e.g. 'llm_reason',
-    'llm_debate', 'llm_newsanalyst'). provider = 'anthropic'/'gemini'/etc."""
+    'llm_debate', 'llm_newsanalyst'). provider = 'cloudflare'/etc."""
     est = _est_llm_cost(model, tokens_in, tokens_out)
     await _record(
         source, provider, model,

@@ -9,7 +9,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from routers import recommend as recommend_router  # noqa: E402
-from services import llm_service  # noqa: E402
 from services.obsidian_writer import _render  # noqa: E402
 from services.recommend_score_v2_projection import build_score_v2_route_candidate, rank_score_v2_route_candidates  # noqa: E402
 
@@ -58,7 +57,10 @@ def _score_seed_inputs(*, high: bool = True) -> dict[str, float]:
 
 
 def test_legacy_recommend_route_returns_score_v2_payload(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(recommend_router, "_ANTHROPIC_KEY", "")
+    import httpx
+    def reject_network(*args, **kwargs):
+        raise AssertionError("recommend route must not call an LLM provider")
+    monkeypatch.setattr(httpx, "post", reject_network)
 
     req = recommend_router.RecommendRequest(
         date="2026-05-21",
@@ -91,110 +93,11 @@ def test_legacy_recommend_route_returns_score_v2_payload(monkeypatch: pytest.Mon
     result = recommend_router.post_recommend(req)
 
     rec = result["recommendations"][0]
+    assert rec["reason"] == "Score V2 context available; LLM reason not generated."
     assert rec["score_components"]["version"] == "score_v2"
     assert rec["score_components"]["weights"]["mlEdge"] == 25
     assert rec["score"] == pytest.approx(rec["score_components"]["finalScore"])
     assert rec["score"] < rec["score_components"]["rawScore"]
-
-
-def test_legacy_recommend_passes_score_v2_payload_to_llm(monkeypatch: pytest.MonkeyPatch):
-    captured: dict[str, str] = {}
-
-    def fake_generate_reasons(api_key, candidates, sectors, score_payloads_by_symbol=None):
-        captured["api_key"] = api_key
-        captured["final_score"] = score_payloads_by_symbol["2330"]["finalScore"]
-        return [{"reason": "ok", "watch_points": ["risk"]}]
-
-    monkeypatch.setattr(recommend_router, "_ANTHROPIC_KEY", "test-key")
-    monkeypatch.setattr(recommend_router, "generate_reasons", fake_generate_reasons)
-
-    req = recommend_router.RecommendRequest(
-        date="2026-05-21",
-        top_n=1,
-        stocks=[
-            {
-                "stock_id": 1,
-                "symbol": "2330",
-                "name": "TSMC",
-                "sector": "Semiconductor",
-                "current_price": 900,
-                "foreign_net_5d": 2_000_000_000,
-                "trust_net_5d": 200_000_000,
-                "foreign_consecutive": 5,
-                "rsi14": 60,
-                "macd_hist": 2.5,
-                "ma5": 880,
-                "ma20": 850,
-                "ma60": 800,
-                "momentum_score": 20,
-                "ml_signal": "STRONG_BUY",
-                "ml_confidence": 0.9,
-                "hist_accuracy": 0.62,
-                "hist_count": 30,
-                "score_seed_inputs": _score_seed_inputs(),
-            }
-        ],
-    )
-
-    result = recommend_router.post_recommend(req)
-
-    assert captured["api_key"] == "test-key"
-    assert captured["final_score"] == pytest.approx(result["recommendations"][0]["score"])
-
-
-def test_llm_reason_prompt_uses_score_v2_vocabulary(monkeypatch: pytest.MonkeyPatch):
-    captured: dict[str, str] = {}
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"content": [{"text": '[{"reason":"ok","watch_points":["risk"]}]'}]}
-
-    def fake_post(url, headers, json, timeout):
-        captured["prompt"] = json["messages"][0]["content"]
-        return FakeResponse()
-
-    monkeypatch.setattr(llm_service.httpx, "post", fake_post)
-
-    candidate = build_score_v2_route_candidate(
-        {
-            "stock_id": 1,
-            "symbol": "2330",
-            "name": "TSMC",
-            "sector": "Semiconductor",
-            "current_price": 900,
-            "foreign_net_5d": 2_000_000_000,
-            "trust_net_5d": 200_000_000,
-            "foreign_consecutive": 5,
-            "rsi14": 60,
-            "macd_hist": 2.5,
-            "ma5": 880,
-            "ma20": 850,
-            "ma60": 800,
-            "momentum_score": 20,
-            "ml_signal": "STRONG_BUY",
-            "ml_confidence": 0.9,
-            "ml_forecast_pct": 0.03,
-            "hist_accuracy": 0.62,
-            "hist_count": 30,
-            "score_seed_inputs": _score_seed_inputs(),
-        }
-    )
-
-    result = llm_service.generate_reasons(
-        "test-key",
-        [candidate],
-        [],
-        {"2330": json.loads(_score_v2_payload(88))},
-    )
-
-    assert result[0]["reason"] == "ok"
-    assert "Score V2 finalScore: 88.0/100" in captured["prompt"]
-    assert "Score V2 components: ML Edge 22.0/25, Chip Flow 21.0/25, Technical 20.0/25" in captured["prompt"]
-    assert "Chip 1/40" not in captured["prompt"]
-    assert "chip+tech+ml" not in captured["prompt"]
 
 
 def test_recommend_route_projection_ranks_by_score_v2_final_score():

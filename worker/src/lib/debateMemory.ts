@@ -23,7 +23,7 @@ export interface DebateMemoryRow {
   key_factors?: string[] | null
   verdict: 'APPROVE' | 'DOWNGRADE' | 'REJECT'
   conviction_score: number         // 0-100
-  llm_source: string               // tunnel | gemini_api | anthropic_api | unknown
+  llm_source: string               // tunnel | unknown
 }
 
 export interface ThesisSlice {

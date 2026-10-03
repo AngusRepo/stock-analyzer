@@ -55,8 +55,6 @@ function buildBindings(): Bindings {
     JWT_SECRET: '',
     GOOGLE_CLIENT_ID: '',
     GOOGLE_CLIENT_SECRET: '',
-    ANTHROPIC_API_KEY: '',
-    GEMINI_API_KEY: '',
     FINMIND_TOKEN: '',
     ML_SERVICE_URL: env.ML_SERVICE_URL ?? '',
     ML_CONTROLLER_URL: env.ML_CONTROLLER_URL || env.ML_CONTROLLER_PUBLIC_URL || '',

@@ -26,6 +26,8 @@ DEBATERS = (MISTRAL_MODEL, GPT_OSS_MODEL)
 
 def model_for_role(role: str, *, symbol: str = "", session_date: str = "", round_no: int = 1) -> str:
     """Reproducible random draw shared by retries and A/B; second round swaps."""
+    if role == "news":
+        return MISTRAL_MODEL
     if role == "judge":
         return JUDGE_MODEL
     if role not in ("bull", "bear") or round_no not in (1, 2):
@@ -36,7 +38,7 @@ def model_for_role(role: str, *, symbol: str = "", session_date: str = "", round
 
 def validate_role_model(role: str, model: str) -> str:
     if (role == "judge" and model == JUDGE_MODEL
-            or role in ("bull", "bear") and model in DEBATERS):
+            or role in ("bull", "bear", "news") and model in DEBATERS):
         return model
     raise ValueError("debate_role_model_invalid")
 
@@ -125,7 +127,7 @@ async def call_llm(
             from .workers_ai_debate_budget import settle_call
             await settle_call(account=account, utc_day=reservation['utc_day'], request_id=reservation['request_id'],
                               bound=reservation['reservation_neurons'], model=model, usage=usage)
-        values = ('llm_debate', 'cloudflare_workers_ai', model,
+        values = ('llm_newsanalyst' if role == 'news' else 'llm_debate', 'cloudflare_workers_ai', model,
             int(usage.get('prompt_tokens') or 0), int(usage.get('completion_tokens') or 0))
         if cost_sink is not None:
             await cost_sink(*values)

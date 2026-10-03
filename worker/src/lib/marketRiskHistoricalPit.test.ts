@@ -21,7 +21,7 @@ const db={prepare(sql:string){return{params:[] as unknown[],bind(...params:unkno
   throw new Error(sql)
 }}}} as unknown as D1Database
 async function main(){try{
-  const risk=await calcMarketRisk(db,undefined,'https://latest-only.invalid',undefined,undefined,target)
+  const risk=await calcMarketRisk(db,'https://latest-only.invalid',undefined,target)
   assert.equal(risk.date,target)
   assert.equal(risk.vix,17,'future VIX must be excluded even if upstream returns it')
   assert.equal(risk.marginRatio,null,'latest-only margin ratio must not enter historical backfill')

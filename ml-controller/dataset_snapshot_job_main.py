@@ -126,6 +126,21 @@ async def _run() -> int:
         await _callback_worker(payload)
     else:
         logger.info("[DatasetSnapshotJob] Input-only completion: %s", summary)
+        stage_path = os.environ.get('DATASET_SNAPSHOT_INPUT_STAGE', '').strip()
+        if stage_path:
+            from services.pipeline_input_events import record_snapshot_result
+            stage = await asyncio.to_thread(record_snapshot_result, stage_path, status=status,
+                snapshot=(exported.get('snapshot') if status == 'success' else None), error=error)
+            # The result is durable before HTTP. Reconciliation retries a lost notification.
+            import httpx
+            token = os.environ.get('ML_CONTROLLER_TOKEN') or os.environ.get('STOCKVISION_AUTH_TOKEN', '')
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    response = await client.post(stage['callback_url'], json={'stage_path': stage_path},
+                        headers={'X-Service-Token': token})
+                    response.raise_for_status()
+            except Exception:
+                logger.exception('Input snapshot callback pending reconciliation')
 
     logger.info(
         "[DatasetSnapshotJob] Finished status=%s elapsed_ms=%d",

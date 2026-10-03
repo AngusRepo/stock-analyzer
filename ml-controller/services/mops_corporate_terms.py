@@ -97,7 +97,8 @@ class _PublicForm(HTMLParser):
             self.row['parts'].append(value.strip())
 
 
-def fetch_mops_delivery_announcements(*, symbol: str, client: httpx.Client | None = None, clock=None) -> dict:
+def fetch_mops_delivery_announcements(*, symbol: str, client: httpx.Client | None = None, clock=None,
+                                      history_start: str | None = None) -> dict:
     """Read the separate company-law delivery feed, including exact raw pointers.
 
     The official form supplies a trailing-one-year range. Old unresolved events
@@ -108,7 +109,7 @@ def fetch_mops_delivery_announcements(*, symbol: str, client: httpx.Client | Non
     clock = clock or (lambda: datetime.now(timezone.utc))
     if client is None:
         with httpx.Client(timeout=30, follow_redirects=False) as owned:
-            return fetch_mops_delivery_announcements(symbol=symbol, client=owned, clock=clock)
+            return fetch_mops_delivery_announcements(symbol=symbol, client=owned, clock=clock, history_start=history_start)
     endpoint = ORIGIN + '/mops/web/ajax_t146sb10'
     request = {'step': '1', 'firstin': '1', 'off': '1', 'queryName': 'co_id_1',
         'inpuType': 'co_id', 'scope': '1', 'co_id_1': symbol, 'typek': 'all',
@@ -124,6 +125,14 @@ def fetch_mops_delivery_announcements(*, symbol: str, client: httpx.Client | Non
     start, end = (datetime.strptime(params[key], '%Y%m%d').date() for key in ('SDATE', 'EDATE'))
     if not 0 < (end - start).days <= 366:
         raise ValueError('mops_delivery_range_invalid')
+    # Explicit research query extension. Capture remains today's actual clock;
+    # the default live request still uses the server's trailing-year window.
+    if history_start is not None:
+        requested_start = date.fromisoformat(history_start)
+        if not 0 < (end - requested_start).days <= 1096:
+            raise ValueError('mops_delivery_history_range_invalid')
+        start = min(start, requested_start)
+        params = {**params, 'SDATE': start.strftime('%Y%m%d')}
     second = _public_post(client, endpoint, data={**params, 'rpt': 'bool_t59sb09'})
     second.raise_for_status()
     listing = _PublicForm('fm_t59sb09')
@@ -195,6 +204,21 @@ def _parse_stock_payment_terms(compact: str, *, ex_date: str) -> dict:
             'fractional_treatment': fractional}
 
 
+def _stock_dividend_ratios(text):
+    pattern = r'每[仟千]股(?:無償)?配發(?:股票股利)?([0-9]+(?:\.[0-9]+)?)股'
+    ratios = {Decimal(m) / 1000 for m in re.findall(pattern, text)}
+    # Two explicitly named components form one dividend. Never sum arbitrary
+    # multiple ratios (which may describe a revision or a separate event).
+    components = [re.findall(label + pattern, text)
+                  for label in ('盈餘轉增資', '資本公積轉增資')]
+    if all(len(values) == 1 for values in components):
+        values = [Decimal(matches[0]) / 1000 for matches in components]
+        total = sum(values)
+        if ratios <= {*values, total}:
+            return {total}
+    return ratios
+
+
 def enrich_stock_delivery_source(snapshot: dict, evidence_by_symbol: dict) -> dict:
     """Join exact record date AND dividend ratio, not merely industry/symbol/year.
 
@@ -220,14 +244,15 @@ def enrich_stock_delivery_source(snapshot: dict, evidence_by_symbol: dict) -> di
                 raise ValueError('corporate_delivery_future_document')
             text = re.sub(r'\s+', '', document['body'])
             record_dates = {_date(m) for m in re.finditer(r'基準日(?:為|[:：])' + DATE, text)}
+            record_dates.update(_date(m) for m in re.finditer(DATE + r'為(?:增資)?(?:配股[及、]配息|配股|配息|除權|除息)基準日', text))
             if not action.get('record_date') or action['record_date'] not in record_dates:
                 continue
             if action['kind'] == 'cash':
-                ratios = {Decimal(m) for m in re.findall(r'每股配發(?:現金股利)?新[臺台]幣([0-9]+(?:\.[0-9]+)?)元', text)}
+                ratios = {Decimal(m) for m in re.findall(r'每股配發(?:現金股利)?(?:新[臺台]幣)?([0-9]+(?:\.[0-9]+)?)元', text)}
                 expected = Decimal(str(action['cash_per_share']))
                 terms = {'cash_rounding': 'floor_twd' if re.search(r'現金股利.{0,45}元以下(?:全捨|無條件捨去)', text) else None}
             else:
-                ratios = {Decimal(m) / 1000 for m in re.findall(r'每[仟千]股(?:無償)?配發(?:股票股利)?([0-9]+(?:\.[0-9]+)?)股', text)}
+                ratios = _stock_dividend_ratios(text)
                 expected = Decimal(str(action['stock_per_share']))
                 terms = _parse_stock_payment_terms(text, ex_date=action['ex_date'])
             if len(ratios) != 1 or abs(next(iter(ratios)) - expected) > Decimal('0.000000000001'):
@@ -300,7 +325,7 @@ def fetch_mops_stock_evidence(*, symbol: str, ex_date: str, observed_at: datetim
         if row.get('AN_CODE') not in ('M11', 'M14', 'M99'):
             continue
         title = row['SUBJECT']
-        if '代子公司' in title or not any(k in title for k in ('股利', '除權', '增資', '發行新股')):
+        if '代子公司' in title or not any(k in title for k in ('股利', '除權', '除息', '配息', '增資', '發行新股')):
             continue
         match = re.fullmatch(DATE, row['CDATE'])
         if match is None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -40,19 +40,25 @@ def _snapshot_range(snapshot: dict[str, Any]) -> tuple[str, str]:
     return start_date, end_date
 
 
-def _resolve_snapshot(as_of_date: str) -> tuple[dict[str, Any], str, str]:
+def _resolve_snapshot(as_of_date: str, *, prefer_corporate_history: bool = False) -> tuple[dict[str, Any], str, str]:
+    corporate_component = 'corporate_history_records' if prefer_corporate_history else 'corporate_source_records'
     snapshot = latest_dataset_snapshot(
-        kind="backtest_dataset",
+        kind="ga_research_dataset" if prefer_corporate_history else "backtest_dataset",
         as_of_business_date=as_of_date,
         access_tier="compute",
+        required_components=('signals', corporate_component),
+        available_before=(datetime.fromisoformat(as_of_date).replace(tzinfo=TAIPEI) + timedelta(days=1)).isoformat(),
     )
+    if snapshot is None and prefer_corporate_history:
+        return _resolve_snapshot(as_of_date)  # Original complete tape still supported.
     errors = validate_dataset_snapshot_manifest(snapshot) if snapshot else ["manifest_missing"]
     if errors:
         raise RuntimeError(
             "weekly_evidence_snapshot_not_ready:"
             f"as_of={as_of_date}:errors={','.join(errors)}"
         )
-    require_corporate_component(snapshot)
+    if not prefer_corporate_history:
+        require_corporate_component(snapshot)
     start_date, end_date = _snapshot_range(snapshot)
     snapshot_created_date = str(snapshot.get("created_at") or "")[:10]
     if not snapshot_created_date or snapshot_created_date > as_of_date:

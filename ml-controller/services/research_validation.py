@@ -73,7 +73,8 @@ def dataset_variant(dataset, *, cutoff, perturb=False):
     result=BacktestDataset(**frames,stocks=dataset.stocks.clone(),
         trading_days=list(dataset.trading_days) if perturb else [d for d in dataset.trading_days if d<=cutoff],
         start_date=dataset.start_date,end_date=dataset.end_date if perturb else cutoff,
-        corporate_sources=deepcopy({d:v for d,v in dataset.corporate_sources.items() if perturb or d<=cutoff}))
+        corporate_sources=deepcopy({d:v for d,v in dataset.corporate_sources.items() if perturb or d<=cutoff}),
+        replay_frames=deepcopy(getattr(dataset, 'replay_frames', None)))
     result._build_hot_caches()
     return result,changed
 

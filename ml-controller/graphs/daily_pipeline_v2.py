@@ -5188,34 +5188,21 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
         }
 
 
-async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", producer_run_id: str = "") -> dict:
-    """Run pipeline-v2 through L2 payload enrichment, then defer L3 raw prediction to Modal."""
-    if not run_date:
-        tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
-        run_date = tw_now.strftime("%Y-%m-%d")
-
-    state: PipelineStateV2 = {
-        "run_date": run_date,
-        "producer_run_id": producer_run_id or f"pipeline-v2:{run_date}",
-        "errors": [],
-        "metrics": {},
-    }
+async def _continue_pipeline_after_l2(state: PipelineStateV2) -> dict:
+    from services.pipeline_input_events import InputDeferred
+    run_date = state['run_date']
     t0 = asyncio.get_event_loop().time()
+    assert_canonical_window_open(run_date)
     try:
-        await _run_pipeline_nodes(state, [
-            node_load_inputs,
-            node_load_market_env,
-        ])
-        # Validate and freeze the exact serving contract before expensive L2 work.
-        # The request builder below reuses this context, never recaptures it.
-        await _attach_pipeline_modal_serving_context(state)
-        await _run_pipeline_nodes(state, [
-            node_capture_atomic_inputs,
-            node_build_payloads,
-            node_l2_timesfm_enrich,
-        ])
-        state["pipeline_payload_identity"] = build_pipeline_payload_identity(state.get("payloads") or [])
-        modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
+        # Seal observable L2 inputs before a detached dependency can complete.
+        from services.pipeline_input_events import input_context, seal_checkpoint
+        original_uri = _write_pipeline_async_state_artifact(state)
+        from google.cloud import storage
+        bucket_name, key = original_uri[5:].split("/", 1)
+        raw = storage.Client().bucket(bucket_name).blob(key).download_as_bytes()
+        checkpoint_uri = seal_checkpoint(state, raw)
+        with input_context(state, checkpoint_uri):
+            modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
         assert_canonical_window_open(run_date)
         state_gcs_uri = _write_pipeline_async_state_artifact(state)
         modal_payload["state_gcs_uri"] = state_gcs_uri
@@ -5245,6 +5232,52 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
             },
             "errors": list(state.get("errors") or []),
         }
+    except InputDeferred as deferred:
+        return deferred.result(run_date)
+
+
+async def run_pipeline_v2_from_input_event(*, stage_path: str, run_date: str, producer_run_id: str) -> dict:
+    from services.pipeline_input_events import resume_state, claim_consumption, finish_consumption, InputDeferred
+    state = resume_state(stage_path, run_id=producer_run_id, run_date=run_date)
+    try:
+        previous = claim_consumption(stage_path)
+    except InputDeferred as pending:
+        return pending.result(run_date)
+    if previous is not None:
+        return previous
+    result = await _continue_pipeline_after_l2(state)
+    finish_consumption(stage_path, result)
+    return result
+
+
+async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", producer_run_id: str = "") -> dict:
+    """Run pipeline-v2 through L2 payload enrichment, then defer L3 raw prediction to Modal."""
+    if not run_date:
+        tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+        run_date = tw_now.strftime("%Y-%m-%d")
+
+    state: PipelineStateV2 = {
+        "run_date": run_date,
+        "producer_run_id": producer_run_id or f"pipeline-v2:{run_date}",
+        "errors": [],
+        "metrics": {},
+    }
+    t0 = asyncio.get_event_loop().time()
+    try:
+        await _run_pipeline_nodes(state, [
+            node_load_inputs,
+            node_load_market_env,
+        ])
+        # Validate and freeze the exact serving contract before expensive L2 work.
+        # The request builder below reuses this context, never recaptures it.
+        await _attach_pipeline_modal_serving_context(state)
+        await _run_pipeline_nodes(state, [
+            node_capture_atomic_inputs,
+            node_build_payloads,
+            node_l2_timesfm_enrich,
+        ])
+        state["pipeline_payload_identity"] = build_pipeline_payload_identity(state.get("payloads") or [])
+        return await _continue_pipeline_after_l2(state)
     except Exception as e:  # noqa: BLE001
         elapsed = asyncio.get_event_loop().time() - t0
         logger.exception("[Pipeline V2] async Modal prediction spawn failed after %.1fs", elapsed)

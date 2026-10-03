@@ -133,6 +133,8 @@ def latest_dataset_snapshot(
     as_of_business_date: str | None = None,
     access_tier: SnapshotAccessTier = "compute",
     market_segment: str | None = None,
+    required_components: tuple[str, ...] = (),
+    available_before: str | None = None,
 ) -> dict[str, Any] | None:
     if business_date and as_of_business_date:
         raise ValueError("dataset_snapshot_date_filter_conflict")
@@ -148,6 +150,15 @@ def latest_dataset_snapshot(
     if market_segment:
         where.append("(market_segment = ? OR market_segment IS NULL)")
         params.append(market_segment)
+
+    if available_before:
+        where.append('datetime(created_at) < datetime(?)')
+        params.append(available_before)
+    for component in required_components:
+        if not component or any(not (c.isalnum() or c == '_') for c in component):
+            raise ValueError('dataset_snapshot_component_name_invalid')
+        where.append("json_extract(CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, ?) IS NOT NULL")
+        params.append('$.components.' + component)
 
     rows = client_for_domain("learning").query(
         f"""

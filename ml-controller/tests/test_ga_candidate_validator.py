@@ -103,3 +103,38 @@ def test_validator_rejects_candidate_without_alpha_framework(monkeypatch):
             baseline_config={},
             evidence_runner=lambda *_args, **_kwargs: _completed_evidence(),
         )
+
+
+
+def test_missing_holdout_signal_days_never_promote_a_passing_fake_packet(monkeypatch):
+    from types import SimpleNamespace
+    from services.ga_candidate_validator import validate_ga_top_candidate
+    context=SimpleNamespace(snapshot={'snapshot_id':'s','checksum':'sealed'},
+        split={'validation_start':'2026-09-01','validation_end':'2026-09-03'},baseline={},
+        dataset=SimpleNamespace(replay_frames={},trading_days=['2026-09-01','2026-09-02','2026-09-03']))
+    monkeypatch.setattr('services.backtest_snapshot_state.frozen_mode_b',
+        lambda ds:(SimpleNamespace(_dates={'2026-09-01'}),None,None))
+    search=evaluate_ga_population([build_ga_candidate(None,generation=0,candidate_index=0)])
+    out=validate_ga_top_candidate(search,as_of_date='2026-10-03',search_context=context,
+        evidence_runner=lambda *a,**kw:_completed_evidence())
+    assert out['validation']['status']=='completed'
+    assert 'frozen_prediction_calendar_incomplete' in out['validation']['failed_gates']
+    assert out['best']['gate']['passed'] is False
+    assert out['frozen_prediction_coverage']['missing_decision_dates']==['2026-09-02']
+
+
+
+def test_validator_passes_daily_nav_sharpe_to_evidence_not_trade_sharpe():
+    from types import SimpleNamespace
+    from services.ga_candidate_validator import validate_ga_top_candidate
+    context=SimpleNamespace(snapshot={'snapshot_id':'s','checksum':'sealed'},
+        split={'validation_start':'2026-09-01','validation_end':'2026-09-03'},baseline={},
+        dataset=SimpleNamespace(replay_frames=None),replay=lambda **kw:SimpleNamespace(
+            initial_capital=100.,final_equity=95.,sharpe=9.,max_drawdown=.1,
+            equity_curve=[('2026-09-01',100.),('2026-09-02',90.),('2026-09-03',95.)]))
+    def evidence(candidate,**kwargs):
+        metric=kwargs['replay_fn']()
+        assert metric.sharpe<0 and metric.trade_sharpe_diagnostic==9.
+        return _completed_evidence()
+    search=evaluate_ga_population([build_ga_candidate(None,generation=0,candidate_index=0)])
+    validate_ga_top_candidate(search,search_context=context,evidence_runner=evidence)

@@ -990,17 +990,36 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
             "This endpoint persists production learning state directly; trading:config changes require promotion gates and Wei approval at L3/L4.",
         ],
     )
-    result = run_ga_optimizer_service(
-        GAOptimizerRequest(
-            population_size=req.population_size,
-            generations=req.generations,
-            mutation_rate=req.mutation_rate,
-            crossover_rate=req.crossover_rate,
-            elite_count=req.elite_count,
-            seed=req.seed,
-            top_k=req.top_k,
+    from services.ga_backtest_fitness import prepare_ga_backtest
+    try:
+        search_context = prepare_ga_backtest(as_of_date=req.validation_as_of_date)
+    except Exception as exc:
+        logger.exception("[Optuna/ga_optimizer] training source preflight blocked")
+        return {"status": "infra_blocked", "source": "ga_optimizer", "best": None,
+            "history": [], "ranked": [], "push": None, "contract": contract,
+            "validation": {"status": "infra_blocked", "decision": "FAIL",
+                "reason": f"{type(exc).__name__}: {str(exc)[:300]}"}}
+    try:
+        result = run_ga_optimizer_service(
+            GAOptimizerRequest(
+                population_size=req.population_size,
+                generations=req.generations,
+                mutation_rate=req.mutation_rate,
+                crossover_rate=req.crossover_rate,
+                elite_count=req.elite_count,
+                seed=req.seed,
+                top_k=req.top_k,
+            ), evaluator=search_context,
         )
-    )
+    except Exception as exc:
+        logger.exception('[Optuna/ga_optimizer] training replay blocked')
+        return {'status':'infra_blocked','source':'ga_optimizer','best':None,'history':[],
+            'ranked':[],'push':None,'contract':contract,
+            'source_requirements':getattr(exc, 'requirements', None),
+            'validation':{'status':'infra_blocked','decision':'FAIL','reason':f'{type(exc).__name__}: {str(exc)[:300]}'}}
+    result['training'] = {'split': search_context.split, 'unique_backtests': search_context.replays,
+        'fitness': 'net_of_cost_training_sharpe', 'mode': 'A',
+        'snapshot_id': search_context.snapshot['snapshot_id'], 'holdout_used_for_selection': False}
     if req.validate_top_candidate:
         try:
             from services.ga_candidate_validator import validate_ga_top_candidate
@@ -1009,6 +1028,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
                 result,
                 as_of_date=req.validation_as_of_date,
                 mc_simulations=req.mc_simulations,
+                search_context=search_context,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[Optuna/ga_optimizer] candidate-specific validation unavailable")
@@ -1017,10 +1037,15 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
                 reason=f"{type(exc).__name__}: {str(exc)[:300]}",
                 as_of_date=req.validation_as_of_date,
             )
+            if getattr(exc, 'requirements', None) is not None:
+                result['source_requirements'] = {**exc.requirements, 'stage':'validation',
+                    'candidate_id':((result.get('best') or {}).get('candidate') or {}).get('id'),
+                    'snapshot_id':search_context.snapshot['snapshot_id'],
+                    'snapshot_checksum':search_context.snapshot.get('checksum')}
     best = ((result.get("best") or {}).get("candidate") or {}).get("params", {}).get("alphaFramework")
     learning_state = {
         "optimizer": "GAOptimizer",
-        "status": "learning",
+        "status": "infra_blocked" if result.get("status")=="infra_blocked" else "learning",
         "population_size": result.get("population_size"),
         "generations": result.get("generations"),
         "history": result.get("history") or [],
@@ -1036,7 +1061,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
             source="ga_optimizer",
             params=learning_state,
             meta={
-                "status": "completed",
+                "status": result.get("status", "completed"),
                 "target": "production_meta_optimizer_learning_state",
                 "optimizer": "GAOptimizer",
                 "population_size": result.get("population_size"),
@@ -1066,7 +1091,7 @@ def _run_optuna_sweep_source_inner(source: str, runner) -> dict[str, Any]:
         if isinstance(result, dict) and result.get("status") in {"skipped", "insufficient_data"}:
             summary = f"{source}:SKIPPED_NOT_READY({str(result.get('reason') or result.get('status'))[:140]})"
             return {"source": source, "status": "skipped", "summary": summary}
-        if not isinstance(result, dict) or result.get("status") in {"error", "failed", "blocked"}:
+        if not isinstance(result, dict) or result.get("status") in {"error", "failed", "blocked", "infra_blocked"}:
             raise RuntimeError(f"source_result_not_successful:{result}")
         return {
             "source": source,

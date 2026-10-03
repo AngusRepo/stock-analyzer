@@ -357,6 +357,7 @@ def mark_ga_candidate_validation_unavailable(
     best["metrics"] = metrics
     best["gate"] = _gate(metrics)
     best["evidence"] = None
+    out["status"] = "infra_blocked"
     out["validation"] = {
         "status": "infra_blocked",
         "as_of_date": as_of_date,
@@ -473,6 +474,10 @@ def _crossover(left: dict[str, Any], right: dict[str, Any], rng: random.Random, 
 
 
 def run_ga_optimizer(req: GAOptimizerRequest, *, evaluator: Evaluator | None = None) -> dict[str, Any]:
+    # A full evolutionary run must rank observed objective values. The explicit
+    # population preview may retain its labelled synthetic prior for diagnostics.
+    if not callable(evaluator):
+        raise ValueError('ga_real_fitness_evaluator_required')
     population_size = max(6, min(int(req.population_size), 200))
     generations = max(1, min(int(req.generations), 50))
     elite_count = max(1, min(int(req.elite_count), population_size // 2))
@@ -522,6 +527,8 @@ def run_ga_optimizer(req: GAOptimizerRequest, *, evaluator: Evaluator | None = N
     return {
         "status": "completed",
         "optimizer": "GAOptimizer",
+        "algorithm": "genetic_algorithm",
+        "learning_method": "selection_crossover_mutation",
         "population_size": population_size,
         "generations": generations,
         "history": history,

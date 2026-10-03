@@ -1846,6 +1846,25 @@ async def trigger_universal_retrain(
             batch_index=idx,
         )
 
+    from services.pipeline_input_events import current_context, defer_prep
+    if req.prep_only and current_context():
+        event_payloads = []
+        for idx, batch_payloads in enumerate(batches):
+            stock_ids = {str(item['stock_id']) for item in batch_payloads}
+            payload = {'payloads': batch_payloads, 'barrier_params': barrier_params,
+                       'batch_index': idx, 'shared_market_history': shared_history,
+                       'per_stock_ts_map': {key: value for key, value in ps_ts_str.items() if key in stock_ids},
+                       'gcs_prefix': prep_output_gcs_prefix, 'retain_unlabeled_features': True}
+            if active_features:
+                payload['active_features'] = active_features
+            event_payloads.append(payload)
+        defer_prep(payloads=event_payloads, lock_key=lock_key, lock_run_id=run_id,
+                   receipt_template={'schema_version': ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
+                     'run_id': run_id, 'business_date': run_date, 'output_gcs_prefix': prep_output_gcs_prefix,
+                     'feature_semantic_version': ACTIVE8_FEATURE_SEMANTIC_VERSION,
+                     'feature_imputation_semantic': ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
+                     'producer_source_sha': _runtime_source_sha()})
+
     prep_task_results = await asyncio.gather(
         *(
             _run_prep_batch_resilient(idx, batch_payloads)

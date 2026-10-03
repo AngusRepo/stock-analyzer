@@ -33,6 +33,7 @@ async def ensure_snapshot_price_dates(snapshot: dict, *, bucket: Any, expected_d
     from services.dataset_snapshot_exporter import DatasetSnapshotExportRequest, export_backtest_dataset_snapshot
     from services.dataset_snapshots import latest_dataset_snapshot
 
+    from services.pipeline_input_events import current_context, defer_snapshot
     missing = missing_snapshot_price_dates(snapshot, bucket=bucket, expected_dates=expected_dates)
     if not missing:
         return snapshot
@@ -43,6 +44,9 @@ async def ensure_snapshot_price_dates(snapshot: dict, *, bucket: Any, expected_d
     if isinstance(meta, str):
         meta = json.loads(meta)
     business_date = snapshot['business_date']
+    if current_context():
+        from datetime import date
+        await defer_snapshot(business_date=business_date, required_history=(date.fromisoformat(business_date) - date.fromisoformat(meta['start_date'])).days)
     # Existing exporter remains the owner. New objects/receipt retain the old
     # business date and today's actual creation time; never edit the old seal.
     await asyncio.to_thread(export_backtest_dataset_snapshot, DatasetSnapshotExportRequest(
@@ -65,6 +69,9 @@ async def produce_inference_snapshot(*, business_date: str, required_history: in
     This is not the post-pipeline research export: no prediction labels/signals,
     Worker success callback, or OOF continuation may be emitted by this input job.
     """
+    from services.pipeline_input_events import current_context, defer_snapshot
+    if current_context():
+        await defer_snapshot(business_date=business_date, required_history=required_history)
     import logging
     import os
     import time

@@ -916,6 +916,7 @@ export function buildEventsFromGaOptimizer(input: {
       best_score: best?.score,
       best_candidate_id: bestCandidate?.id,
       best_metrics: metrics,
+      validation: state.validation,
       learned_alpha_framework: learnedAlphaFramework,
       population_size: state.population_size ?? meta?.population_size,
       generations: state.generations ?? meta?.generations,

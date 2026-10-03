@@ -198,6 +198,7 @@ class BacktestDataset:
 
     # Optional sealed daily source component; absence is not proof of no action.
     corporate_sources: dict[str, dict] = field(default_factory=dict)
+    replay_frames: Optional[dict[str, pl.DataFrame]] = field(default=None, repr=False)
 
     # Lazy-computed universe cache — point-in-time tradable set per date
     _universe_cache: dict[str, set[str]] = field(default_factory=dict)
@@ -299,6 +300,7 @@ class BacktestDataset:
         start_date: str,
         end_date: str,
         symbols: Optional[list[str]] = None,
+        allow_corporate_history: bool = False,
     ) -> "BacktestDataset":
         """Load replay inputs from a compute snapshot manifest."""
         snapshot_id = manifest.get("snapshot_id") or "unknown"
@@ -309,13 +311,11 @@ class BacktestDataset:
             end_date,
         )
         component_uris = _snapshot_component_uris(manifest)
-        # Validate the sealed accounting source before loading large market
-        # components. Presence alone is insufficient (schema, clock and scope
-        # identity can still fail); do not pay for a doomed full replay load.
-        from services.backtest_corporate_accounting import load_corporate_tape
-        corporate_uri = component_uris.get('corporate_source_records')
-        corporate_frame = _read_snapshot_parquet(corporate_uri) if corporate_uri else None
-        corporate_sources = load_corporate_tape(corporate_frame)
+        # GA may explicitly consume reconstructed economic history. The live
+        # Paper receipt reader remains strict and is never used as a fallback.
+        from services.research_corporate_history import load_research_corporate_components
+        corporate_sources = load_research_corporate_components(
+            component_uris, _read_snapshot_parquet, allow_history=allow_corporate_history)
         stocks_df = _read_snapshot_parquet(component_uris["stocks"])
         if stocks_df.is_empty() or "symbol" not in stocks_df.columns:
             raise RuntimeError(f"backtest_snapshot_stocks_invalid:{snapshot_id}")
@@ -337,8 +337,10 @@ class BacktestDataset:
                     symbols=symbols if name != "market_risk" else None,
                     stocks=stocks_df if name != "market_risk" else None))
         frames = {name: load_market_component(name) for name in ("prices", "indicators", "chips", "market_risk")}
-        # Remaining components are consumed by other snapshot readers; they do
-        # not participate in this dataset or its caches. Avoid unused downloads.
+        # Mode B must use the same immutable inputs, never today's mutable D1.
+        for name in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals'):
+            if name in component_uris:
+                frames[name] = _read_snapshot_parquet(component_uris[name])
 
         prices_df = _with_symbol_from_stocks(frames["prices"], stocks_df)
         indicators_df = _with_symbol_from_stocks(frames["indicators"], stocks_df)
@@ -364,7 +366,11 @@ class BacktestDataset:
             ["date"],
         )
 
-        trading_days = sorted(prices_df.get_column("date").cast(pl.Utf8).unique().to_list())
+        calendar_prices = prices_df
+        if 'market' in stocks_df.columns:
+            tradable_symbols = stocks_df.filter(pl.col('market').is_in(['TWSE', 'OTC']))['symbol']
+            calendar_prices = prices_df.filter(pl.col('symbol').is_in(tradable_symbols.implode()))
+        trading_days = sorted(calendar_prices.get_column("date").cast(pl.Utf8).unique().to_list())
         ds = cls(
             prices=prices_df,
             indicators=indicators_df,
@@ -375,6 +381,7 @@ class BacktestDataset:
             start_date=start_date,
             end_date=end_date,
             corporate_sources=corporate_sources,
+            replay_frames={k: frames[k] for k in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals') if k in frames},
         )
         ds._build_hot_caches()
         return ds
@@ -855,7 +862,7 @@ class BacktestDataset:
         # The existing emerging lane is watchlist/shadow only, not a paper-buy
         # universe. Preserve exact FinLab venue instead of treating ROTC as OTC.
         if 'market' in active_df.columns:
-            active = set(active_df.filter(pl.col('market').fill_null('') != 'ROTC')
+            active = set(active_df.filter(pl.col('market').is_in(['TWSE', 'OTC']))
                          .get_column('symbol').to_list())
 
         universe = has_bar & active
@@ -2679,6 +2686,8 @@ class AccountState:
     pending_settlements: list[PendingSettlement] = field(default_factory=list)
     corporate_receivables: dict[str, dict] = field(default_factory=dict)
     corporate_sessions: dict[str, str] = field(default_factory=dict)
+    corporate_rounding_assumptions: list[dict] = field(default_factory=list)
+    corporate_subscription_assumptions: list[dict] = field(default_factory=list)
 
     @property
     def settlement_adjusted_cash(self) -> float:
@@ -2694,7 +2703,7 @@ class AccountState:
         'cost basis' since OpenPosition tracks entry_price (post-slippage fill)."""
         pos_value = sum(p.shares * p.cost_basis for p in self.positions.values())
         # Sizing's conservative cost proxy includes non-spendable rights.
-        rights = sum(r['cash_due'] + r['whole_shares_due'] * r['share_cost_basis']
+        rights = sum(r['cash_due'] + (r['whole_shares_due'] * r['share_cost_basis'] if r['kind'] != 'subscription' else 0.)
                      for r in self.corporate_receivables.values())
         return self.settlement_adjusted_cash + pos_value + rights
 
@@ -4305,6 +4314,8 @@ class BacktestMetrics:
     end_date: str = ""
     initial_capital: float = 0.0
     final_equity: float = 0.0
+    corporate_rounding_assumptions: list[dict] = field(default_factory=list)
+    corporate_subscription_assumptions: list[dict] = field(default_factory=list)
 
     # Core return metrics
     total_return: float = 0.0                    # (final / initial) - 1
@@ -4930,9 +4941,14 @@ def _mark_to_market(account: AccountState, dataset: BacktestDataset, date: str) 
     return total
 
 
-def _apply_daily_corporate(account: AccountState, dataset: BacktestDataset, day: str) -> None:
+def _apply_daily_corporate(account: AccountState, dataset: BacktestDataset, day: str, *, research_cash_mode=None, research_subscription_policy=None) -> None:
     from services.backtest_corporate_accounting import apply_corporate_session
     snapshot = getattr(dataset, 'corporate_sources', {}).get(day)
+    if snapshot and snapshot.get('schema_version') == 'research-corporate-history-v1':
+        from services.research_corporate_history import account_history_snapshot
+        required = set(account.positions) | {r['symbol'] for r in account.corporate_receivables.values()}
+        snapshot = account_history_snapshot(snapshot, required,
+            outstanding_action_ids=account.corporate_receivables)
     previous_closes = {}
     if snapshot:
         symbols = {a['symbol'] for a in snapshot['actions'] if a['ex_date'] == day} & set(account.positions)
@@ -4940,7 +4956,8 @@ def _apply_daily_corporate(account: AccountState, dataset: BacktestDataset, day:
             hist = dataset.get_price_history(symbol, _date_add(day, -1), 1)
             if not hist.is_empty():
                 previous_closes[symbol] = hist['close'][-1]
-    apply_corporate_session(account, snapshot, day, previous_closes)
+    apply_corporate_session(account, snapshot, day, previous_closes, research_cash_mode=research_cash_mode,
+        research_subscription_policy=research_subscription_policy)
 
 
 def _get_settlement_date(trade_date: str, trading_days: list[str]) -> str:
@@ -5043,44 +5060,18 @@ def replay_period(
     market_state: Optional[BacktestMarketState] = None
 
     if mode == "B":
-        try:
+        circuit_cfg_b = (params or {}).get("circuit", {}) or {}
+        buy_conf_threshold = float(circuit_cfg_b.get("buyConfThreshold", 0.60))
+        if dataset.replay_frames is not None:
+            from services.backtest_snapshot_state import frozen_mode_b
+            ml_cache, market_state, verified_preds_cache = frozen_mode_b(dataset)
+        else:
+            # Fail closed on source errors: Mode A cannot be labeled Mode B.
             ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
-            circuit_cfg_b = (params or {}).get("circuit", {}) or {}
-            buy_conf_threshold = float(circuit_cfg_b.get("buyConfThreshold", 0.60))
-            logger.info(
-                f"[BacktestEngine] Mode B: cache_size={ml_cache._n}, "
-                f"buy_conf_threshold={buy_conf_threshold}"
-            )
             if ml_cache._n == 0:
-                logger.warning(
-                    "[BacktestEngine] Mode B: empty ML cache — every candidate "
-                    "will be skipped 'no_ml_pred'. Run Stage 2 cron / verify "
-                    "or backfill historical predictions first."
-                )
-            # 2026-04-20 #28 P2: preload per-date market state + verified
-            # predictions for L2 circuit breakers (Layer 1 dd halt, Layer 2
-            # low-accuracy conf raise). Both are one-shot reads — O(1) lookup
-            # per-day inside the replay loop.
-            try:
-                market_state = BacktestMarketState(start_date, end_date)
-                verified_preds_cache = load_verified_predictions(start_date, end_date)
-                logger.info(
-                    f"[BacktestEngine] Mode B #28 P2: preloaded market state "
-                    f"(risk={len(market_state._risk)}) + "
-                    f"verified_preds={len(verified_preds_cache)}"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"[BacktestEngine] #28 P2 state preload failed: {e} — "
-                    f"circuit breakers will be disabled this run"
-                )
-                market_state = None
-                verified_preds_cache = []
-        except Exception as e:
-            logger.error(f"[BacktestEngine] Mode B cache load failed: {e} — falling back to Mode A behavior")
-            ml_cache = None
-            buy_conf_threshold = None
-            circuit_cfg_b = None
+                raise ValueError('backtest_mode_b_predictions_empty')
+            market_state = BacktestMarketState(start_date, end_date)
+            verified_preds_cache = load_verified_predictions(start_date, end_date)
 
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
@@ -5101,7 +5092,9 @@ def replay_period(
         attempts = []
         # Step 0: T+2 settle matured settlements
         account.settle_matured(day)
-        _apply_daily_corporate(account, dataset, day)
+        _apply_daily_corporate(account, dataset, day,
+            research_cash_mode=(params.get('researchAccounting') or {}).get('cashRoundingMode'),
+            research_subscription_policy=(params.get('researchAccounting') or {}).get('subscriptionPolicy'))
 
         # Step 1: exit sweep on existing positions
         trades_today = step_all_positions(account, dataset, day, exit_p, fees_p, replay_days)
@@ -5141,19 +5134,19 @@ def replay_period(
                 # 2026-04-20 #28 P3 effective confidence delta
                 l2_formula_cfg=(params or {}).get("L2_formula") if mode == "B" else None,
                 risk_score=(
-                    market_state.get_risk(day).risk_score
-                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    market_state.get_risk(prev_decision_date).risk_score
+                    if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
                     else None
                 ),
                 # 2026-04-20 #28 P4 SLTP add + bull align
                 risk_level=(
-                    market_state.get_risk(day).risk_level
-                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                    market_state.get_risk(prev_decision_date).risk_level
+                    if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
                     else None
                 ),
                 bull_align_pct=(
-                    market_state.get_breadth(day).bull_alignment_pct
-                    if (mode == "B" and market_state is not None and market_state.get_breadth(day))
+                    market_state.get_breadth(prev_decision_date).bull_alignment_pct
+                    if (mode == "B" and market_state is not None and market_state.get_breadth(prev_decision_date))
                     else None
                 ),
                 # 2026-04-20 #28 P5 night drop + PF quality blend
@@ -5271,6 +5264,8 @@ def replay_period(
         regime_by_date=regime_map,
     )
 
+    metrics.corporate_rounding_assumptions = account.corporate_rounding_assumptions
+    metrics.corporate_subscription_assumptions = account.corporate_subscription_assumptions
     logger.info(
         f"[BacktestEngine] Done: trades={metrics.total_trades} "
         f"sharpe={metrics.sharpe} max_dd={metrics.max_drawdown:.3f} "

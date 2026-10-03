@@ -216,7 +216,8 @@ async def test_readonly_preflight_route_never_allocates_or_downloads(monkeypatch
         else:
             assert 'backtest_corporate_component_missing' in result['reason']
     assert source_reads == [{'kind': 'backtest_dataset', 'as_of_business_date': '2026-08-23',
-                             'access_tier': 'compute'}]
+                             'access_tier': 'compute', 'required_components': ('signals', 'corporate_source_records'),
+                             'available_before': '2026-08-24T00:00:00+08:00'}]
     assert heavy_calls == []
 
 
@@ -244,3 +245,16 @@ async def test_readonly_preflight_http_date_validation_precedes_source_query(mon
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://fixture') as client:
         response = await client.get('/backtest/research-bundle/preflight', params={'run_date': '2026/08/23'})
     assert response.status_code == 422 and source_calls == []
+
+
+
+def test_ga_history_selector_is_separate_from_generic_pipeline_snapshots(monkeypatch):
+    from services import weekly_evidence_service as weekly
+    seen=[]
+    def latest(**kwargs):
+        seen.append(kwargs)
+        return None
+    monkeypatch.setattr(weekly,'latest_dataset_snapshot',latest)
+    with pytest.raises(RuntimeError,match='snapshot_not_ready'):
+        weekly._resolve_snapshot('2026-10-03',prefer_corporate_history=True)
+    assert [r['kind'] for r in seen]==['ga_research_dataset','backtest_dataset']

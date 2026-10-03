@@ -140,3 +140,35 @@ def test_finlab_source_carries_distinct_entitlement_and_issuance_ratios():
     following = normalize_dividend_announcements(pl.DataFrame([data]), symbols=['2330'], session_date='2026-09-08',
         observed_at=datetime(2026, 9, 8, tzinfo=timezone.utc), outstanding_action_ids=(a['action_id'],))
     assert following['actions'] == [a]
+
+
+
+def test_6465_labelled_record_and_two_periods_use_original_holders_only():
+    text = """現金增資認股基準日:115/07/05。每仟股可認購191.18962112股。
+    發行價格:每股發行價格新台幣46.7元。原股東、員工放棄認購之部分，授權董事長洽特定人認購。
+    原股東及員工股款繳納期間:115/07/07～115/07/13
+    特定人股款繳納期間:115/07/14～115/07/16
+    與銀行訂約日期:115/6/22。"""
+    out=parse_subscription_terms(text,record_date='2026-07-05',ratio=.19118962112,price=46.7)
+    assert out['payment_start']=='2026-07-07' and out['payment_deadline']=='2026-07-13'
+
+
+
+def test_research_no_subscription_zero_value_is_explicit_and_audited():
+    book=account();tape=source('2026-09-07',[action()])
+    before=deepcopy(book)
+    with pytest.raises(ValueError,match='research_cash_requires_history'):
+        apply_corporate_session(book,tape,'2026-09-07',{'2330':100.},
+            research_subscription_policy='do_not_subscribe_zero_value')
+    assert book==before
+    tape['schema_version']='research-corporate-history-v1'
+    apply_corporate_session(book,tape,'2026-09-07',{'2330':100.},
+        research_subscription_policy='do_not_subscribe_zero_value')
+    assert book.cash==99000. and len(book.corporate_subscription_assumptions)==1
+    assert book.corporate_subscription_assumptions[0]['value_twd']==0.
+    assert nav(book,90.)==108000.  # dilution loss retained, no synthetic cash credit
+    assert book.total_portfolio==109000.  # no KeyError from zero-share subscription right
+    tape['session_date']='2026-09-10'
+    apply_corporate_session(book,tape,'2026-09-10',{},
+        research_subscription_policy='do_not_subscribe_zero_value')
+    assert not book.corporate_receivables and book.cash==99000.

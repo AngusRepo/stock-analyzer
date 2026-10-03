@@ -208,6 +208,7 @@ async def _run() -> int:
         f"job-{int(time.time())}-{uuid.uuid4().hex[:8]}",
     )
     run_id = os.environ.get("PIPELINE_PARENT_RUN_ID", "").strip() or run_id
+    input_mode = _truthy_env('PIPELINE_INPUT_CONTINUATION_MODE')
     premarket_mode = _truthy_env('PIPELINE_PREMARKET_RESUME_MODE')
     continuation_mode = _truthy_env("PIPELINE_MODAL_CONTINUATION_MODE")
     snapshot_recovery_mode = _truthy_env("PIPELINE_SNAPSHOT_RECOVERY_MODE")
@@ -225,9 +226,13 @@ async def _run() -> int:
     emit_subtasks = True
 
     try:
-        if sum([continuation_mode,snapshot_recovery_mode,premarket_mode])>1:
+        if sum([continuation_mode,snapshot_recovery_mode,premarket_mode,input_mode])>1:
             raise ValueError("pipeline continuation and snapshot recovery modes are mutually exclusive")
-        if premarket_mode:
+        if input_mode:
+            from graphs.daily_pipeline_v2 import run_pipeline_v2_from_input_event
+            result = await run_pipeline_v2_from_input_event(stage_path=os.environ.get('PIPELINE_INPUT_STAGE', ''),
+                run_date=run_date, producer_run_id=run_id)
+        elif premarket_mode:
             from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
             result=await run_pipeline_v2_from_premarket(os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI',''))
         elif snapshot_recovery_mode:
@@ -291,9 +296,12 @@ async def _run() -> int:
             emit_subtasks = False
             metrics = result.get("metrics") or {}
             async_state = metrics.get("async_modal_prediction") or {}
+            input_state = metrics.get('async_input_dependency') or {}
             summary = (
                 f"run_id={run_id} "
-                f"modal_prediction={async_state.get('status', 'triggered')} "
+                f"dependency={result.get('deferred_reason')} cloud_compute_stopped=true "
+                f"stage={input_state.get('stage') or 'modal_prediction'} "
+                f"modal_prediction={async_state.get('status', 'not_started')} "
                 f"function_call_id={async_state.get('function_call_id')} "
                 f"callback expected"
             )

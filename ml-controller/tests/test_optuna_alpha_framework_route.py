@@ -124,8 +124,9 @@ def test_alpha_framework_route_uses_quality_outcome_limit_when_subset_omitted(mo
 def test_ga_optimizer_route_pushes_learning_state(monkeypatch):
     captured: dict = {}
 
-    def fake_run(req):
+    def fake_run(req, *, evaluator):
         captured["req"] = req
+        captured["evaluator"] = evaluator
         return {
             "status": "completed",
             "optimizer": "GAOptimizer",
@@ -155,6 +156,10 @@ def test_ga_optimizer_route_pushes_learning_state(monkeypatch):
         captured["meta"] = meta
         return {"success": True, "sandbox_id": "ga-1"}
 
+    from types import SimpleNamespace
+    monkeypatch.setattr('services.ga_backtest_fitness.prepare_ga_backtest',lambda **kw:SimpleNamespace(
+        split={'train_start':'2025-01-01','train_end':'2025-06-01'},replays=3,snapshot={'snapshot_id':'frozen'}))
+    monkeypatch.setattr('services.ga_candidate_validator.validate_ga_top_candidate',lambda result,**kw:result)
     monkeypatch.setattr(optuna, "run_ga_optimizer_service", fake_run)
     monkeypatch.setattr(optuna, "push_optuna_result", fake_push)
 

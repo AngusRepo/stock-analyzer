@@ -94,7 +94,7 @@ def _terms(action):
     return result
 
 
-def apply_corporate_session(account, snapshot, day, previous_closes):
+def apply_corporate_session(account, snapshot, day, previous_closes, *, research_cash_mode=None, research_subscription_policy=None):
     """Apply before today's exit/entry; commit only after all checks pass."""
     date.fromisoformat(day)
     required = set(account.positions) | {r['symbol'] for r in account.corporate_receivables.values()}
@@ -102,11 +102,17 @@ def apply_corporate_session(account, snapshot, day, previous_closes):
         if required:
             raise ValueError('backtest_corporate_source_missing:' + day)
         return
+    if research_cash_mode not in (None, 'exact_accrual', 'minus_one_twd'):
+        raise ValueError('backtest_research_cash_mode_invalid')
+    if research_subscription_policy not in (None, 'do_not_subscribe_zero_value'):
+        raise ValueError('backtest_research_subscription_policy_invalid')
+    if (research_cash_mode or research_subscription_policy) and snapshot.get('schema_version') != 'research-corporate-history-v1':
+        raise ValueError('backtest_research_cash_requires_history')
     validate_source_schema(snapshot)
     if (snapshot.get('session_date') != day or snapshot['blockers']
             or required - set(snapshot['covered_symbols'])):
         raise ValueError('backtest_corporate_source_incomplete:' + day)
-    checksum = digest(snapshot)
+    checksum = digest({'snapshot': snapshot, 'research_cash_mode': research_cash_mode, 'research_subscription_policy': research_subscription_policy})
     old = account.corporate_sessions.get(day)
     if old is not None:
         if old != checksum:
@@ -116,6 +122,8 @@ def apply_corporate_session(account, snapshot, day, previous_closes):
         raise ValueError('backtest_corporate_session_out_of_order')
     positions, pending = deepcopy(account.positions), deepcopy(account.corporate_receivables)
     cash = account.cash
+    assumptions = deepcopy(account.corporate_rounding_assumptions)
+    subscription_assumptions = deepcopy(account.corporate_subscription_assumptions)
     by_id = {a['action_id']: a for a in snapshot['actions']}
     for key, right in pending.items():
         action = by_id.get(key)
@@ -174,7 +182,13 @@ def apply_corporate_session(account, snapshot, day, previous_closes):
                 'action_id': action['action_id'], 'symbol': symbol, 'kind': 'subscription',
                 'terms': _terms(action), 'eligible_shares': old_shares, 'cash_due': 0.,
                 'shares_due': 0., 'whole_shares_due': 0, 'payable_date': None, 'fractional_treatment': None,
-                'rights_json': json.dumps({**action['rights'], 'quantity': units, 'whole_quantity': whole})}
+                'rights_json': json.dumps({**action['rights'], 'quantity': units, 'whole_quantity': whole}),
+                'research_valuation_policy': research_subscription_policy}
+            if research_subscription_policy:
+                subscription_assumptions.append({'session_date': day, 'symbol': symbol,
+                    'action_id': action['action_id'], 'policy': research_subscription_policy,
+                    'quantity': units, 'subscription_price': action['rights']['subscription_price'],
+                    'value_twd': 0., 'execution_parity_credit': False})
         for action in dividends:
             total, whole = _quantity(old_shares, action['stock_per_share'])
             due = _cash(old_shares, action)
@@ -199,13 +213,23 @@ def apply_corporate_session(account, snapshot, day, previous_closes):
         if not right['payable_date'] or right['payable_date'] > day:
             continue
         if right['kind'] == 'cash':
-            if not right['cash_due'].is_integer() and right['cash_rounding'] is None:
-                raise ValueError('backtest_corporate_cash_rounding_missing')
-            cash += right['cash_due']
+            adjustment = 0.
+            if right['cash_rounding'] is None:
+                context = {'session_date': day, 'symbol': right['symbol'], 'action_id': key,
+                           'ex_date': right['terms']['ex_date']}
+                if research_cash_mode:
+                    # A bounded cash sensitivity, never an invented issuer term.
+                    adjustment = -min(1., right['cash_due']) if research_cash_mode == 'minus_one_twd' else 0.
+                    assumptions.append({**context, 'mode': research_cash_mode,
+                        'cash_due': right['cash_due'], 'adjustment_twd': adjustment,
+                        'execution_parity_credit': False})
+                elif not right['cash_due'].is_integer():
+                    raise ValueError('backtest_corporate_cash_rounding_missing:' + json.dumps(context, sort_keys=True))
+            cash += right['cash_due'] + adjustment
         else:
             quantity = right['whole_shares_due']
             if right['shares_due'] != quantity and right['fractional_treatment'] != 'book_entry_fee':
-                raise ValueError('backtest_corporate_fractional_delivery_missing')
+                raise ValueError('backtest_corporate_fractional_delivery_missing:' + json.dumps({'session_date':day, 'symbol':right['symbol'], 'action_id':key, 'ex_date':right['terms']['ex_date']}, sort_keys=True))
             if quantity:
                 pos = positions.get(right['symbol'])
                 if pos:
@@ -218,6 +242,8 @@ def apply_corporate_session(account, snapshot, day, previous_closes):
                         **right['position_basis'], 'shares': quantity, 'average_cost': right['share_cost_basis']})
         del pending[key]
     account.cash, account.positions, account.corporate_receivables = cash, positions, pending
+    account.corporate_rounding_assumptions = assumptions
+    account.corporate_subscription_assumptions = subscription_assumptions
     account.corporate_sessions[day] = checksum
 
 
@@ -225,6 +251,8 @@ def receivables_value(account, mark):
     value = 0.
     for right in account.corporate_receivables.values():
         if right['kind'] == 'subscription':
+            if right.get('research_valuation_policy') == 'do_not_subscribe_zero_value':
+                continue
             raise ValueError('backtest_subscription_fair_value_unobservable:' + right['action_id'])
         value += right['cash_due']
         shares = right['whole_shares_due'] if right['fractional_treatment'] == 'book_entry_fee' else right['shares_due']

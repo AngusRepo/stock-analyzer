@@ -132,3 +132,12 @@ def test_attached_candidate_evidence_replaces_search_proxy_with_real_pit_gate():
     assert result["best"]["metrics"]["evidence_semantic"] == "candidate_specific_pit_mode_b_replay"
     assert result["best"]["gate"]["passed"] is True
     assert result["best"]["gate"]["failed_gates"] == []
+
+
+def test_full_evolution_requires_fitness_instead_of_silently_using_parameter_prior():
+    import pytest
+    with pytest.raises(ValueError, match='ga_real_fitness_evaluator_required'):
+        run_ga_optimizer(GAOptimizerRequest(population_size=6,generations=1))
+    result=run_ga_optimizer(GAOptimizerRequest(population_size=6,generations=1),evaluator=_score)
+    assert result['algorithm']=='genetic_algorithm'
+    assert result['learning_method']=='selection_crossover_mutation'

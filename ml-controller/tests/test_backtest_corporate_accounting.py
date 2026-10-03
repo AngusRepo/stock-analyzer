@@ -167,3 +167,32 @@ def test_archived_source_loader_rejects_backdated_or_corrupt_receipt(defect):
             load_corporate_tape(frame)
     else:
         assert load_corporate_tape(frame) == {'2026-09-07': snapshot}
+
+
+@pytest.mark.parametrize('mode,delta', [('exact_accrual', 72.07), ('minus_one_twd', 71.07)])
+def test_research_rounding_policy_is_explicit_audited_idempotent_and_paper_rejected(mode, delta):
+    book = account()
+    tape = source('2026-09-07', [action('cash', .7207, '2026-09-07')])
+    with pytest.raises(ValueError, match='research_cash_requires_history'):
+        apply_corporate_session(book, tape, '2026-09-07', {'2330':100.}, research_cash_mode=mode)
+    assert book.cash == 99000. and not book.corporate_sessions
+    tape['schema_version'] = 'research-corporate-history-v1'
+    apply_corporate_session(book, tape, '2026-09-07', {'2330':100.}, research_cash_mode=mode)
+    assert book.cash == pytest.approx(99000. + delta)
+    assert len(book.corporate_rounding_assumptions) == 1
+    before = deepcopy(book)
+    apply_corporate_session(book, tape, '2026-09-07', {'2330':100.}, research_cash_mode=mode)
+    assert book == before
+    other = 'minus_one_twd' if mode == 'exact_accrual' else 'exact_accrual'
+    with pytest.raises(ValueError, match='source_changed'):
+        apply_corporate_session(book, tape, '2026-09-07', {}, research_cash_mode=other)
+
+
+def test_research_cash_policy_does_not_waive_stock_fraction_or_partial_commit():
+    book = account()
+    tape = source('2026-09-07', [action('cash', .7207, '2026-09-07'), action('stock', .012, '2026-09-07')])
+    tape['schema_version'] = 'research-corporate-history-v1'
+    before = deepcopy(book)
+    with pytest.raises(ValueError, match='fractional_delivery_missing'):
+        apply_corporate_session(book, tape, '2026-09-07', {'2330':100.}, research_cash_mode='exact_accrual')
+    assert book == before

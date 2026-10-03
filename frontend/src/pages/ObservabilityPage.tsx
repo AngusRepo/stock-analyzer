@@ -1224,13 +1224,15 @@ function AdaptiveMetaPanel({
   const historyRows = Array.isArray(historyTail) ? historyTail.map(asRecord) : []
   const previousHistory = historyRows.length >= 2 ? historyRows[historyRows.length - 2] : null
   const latestHistory = historyRows.length >= 1 ? historyRows[historyRows.length - 1] : null
+  const validation = asRecord(gaEvidence.validation)
+  const gaInfrastructureBlocked = validation.status === 'infra_blocked'
   const gate = asRecord(gaEvidence.gate)
   const failedGates = Array.isArray(gaEvidence.failed_gates)
     ? gaEvidence.failed_gates.map(String)
     : Array.isArray(gate.failed_gates)
       ? gate.failed_gates.map(String)
       : []
-  const l3Blockers = rawL3Blockers.flatMap((item) => (
+  const l3Blockers = gaInfrastructureBlocked ? [String(validation.reason ?? '驗證資料未就緒')] : rawL3Blockers.flatMap((item) => (
     item === 'primary_gate' && failedGates.length
       ? failedGates.map((gateName) => 'primary_gate / ' + gateName)
       : [item]
@@ -1284,11 +1286,14 @@ function AdaptiveMetaPanel({
       status: missingEvidence.includes(item) ? 'missing' as const : 'pass' as const,
       detail: missingEvidence.includes(item) ? '缺 evidence，不能升 L3/L4。' : 'promotion packet 已具備此 evidence。',
     })),
-    ...failedGates.slice(0, 4).map((item) => ({
+    ...(gaInfrastructureBlocked ? [{
+      label: '驗證資料未就緒', status: 'missing' as const,
+      detail: String(validation.reason ?? '缺少有效回測證據；尚未測得本輪績效。'),
+    }] : failedGates.map((item) => ({
       label: 'primary_gate / ' + item,
       status: 'fail' as const,
-      detail: '這是 primary gate 的具體失敗子門檻，不再另列一筆 missing primary_gate。',
-    })),
+      detail: '已完成驗證但未通過此門檻；保留原本晉級標準。',
+    }))),
     {
       label: 'Wei approval boundary',
       status: pendingApprovalLevel || approvalRequiredForNextLevel ? 'warn' : 'pass',

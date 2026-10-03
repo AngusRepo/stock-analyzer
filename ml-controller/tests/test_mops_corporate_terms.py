@@ -120,3 +120,50 @@ def test_cash_floor_is_explicit_and_newer_unlinked_revision_cannot_use_old_terms
     result = enrich_stock_delivery_source(snapshot, {'8932': evidence})
     assert result['blockers']['8932'] == ['issuer_latest_revision_not_linked']
     assert 'cash_rounding' not in result['actions'][0]
+
+
+def test_historical_feed_extension_keeps_real_capture_and_live_default():
+    from urllib.parse import parse_qs
+    first = '<form name="fm_show"><input type="hidden" name="step" value="2"><input type="hidden" name="co_id_1" value="2330"><input type="hidden" name="noticeKind" value="11"><input type="hidden" name="scope" value="1"><input type="hidden" name="SDATE" value="20251003"><input type="hidden" name="EDATE" value="20261003"></form>'
+    second = '<form name="fm_t59sb09"><input type="hidden" name="step" value="2"><input type="hidden" name="ST" value="1"></form>'
+    requests=[]
+    def handle(request):
+        body=parse_qs(request.content.decode());requests.append(body)
+        return httpx.Response(200,text=first if body.get('step')==['1'] else second)
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        result=fetch_mops_delivery_announcements(symbol='2330',history_start='2024-12-01',
+            client=client,clock=lambda:datetime(2026,10,3,tzinfo=timezone.utc))
+    assert requests[1]['SDATE']==['20241201']
+    assert result['query_start']=='2024-12-01' and result['observed_at'].startswith('2026-10-03')
+
+
+def test_reverse_record_date_form_preserves_announced_pending_delivery():
+    text='訂定115年9月16日為配股及配息基準日。每仟股無償配發50股。發放日另行公告。'
+    snapshot={'source_checksum':'a'*64,'observed_at':'2026-10-03T00:00:00+00:00',
+        'covered_symbols':['5906'],'actions':[{'action_id':'s','symbol':'5906','kind':'stock',
+        'ex_date':'2026-09-10','record_date':'2026-09-16','stock_per_share':.05,
+        'cash_per_share':0,'payable_date':None}]}
+    evidence={'symbol':'5906','query_start':'2024-12-01','query_end':'2026-10-03',
+        'observed_at':'2026-10-03T00:00:00+00:00','documents':[
+        {'published_date':'2026-09-09','body':text,'body_checksum':digest(text)}]}
+    result=enrich_stock_delivery_source(snapshot,{'5906':evidence})
+    assert result['actions'][0]['stock_terms_status']=='awaiting_issuer_schedule'
+    assert result['actions'][0]['payable_date'] is None
+
+
+def test_two_labelled_stock_components_link_but_certificate_is_not_common_delivery():
+    action={'action_id':'s','symbol':'4114','kind':'stock','ex_date':'2026-07-17',
+        'record_date':'2026-07-25','stock_per_share':.079847978,'cash_per_share':0,'payable_date':None}
+    text=('115年7月25日為增資配股、配息基準日。盈餘轉增資每仟股無償配發64.876482股；'
+          '資本公積轉增資每仟股無償配發14.971496股。增資新股權利證書發放日期：115年8月20日。')
+    evidence={'symbol':'4114','query_start':'2026-01-01','query_end':'2026-10-03',
+        'observed_at':'2026-10-03T00:00:00+00:00','documents':[
+        {'published_date':'2026-07-02','body':text,'body_checksum':digest(text)}]}
+    snapshot={'source_checksum':'a'*64,'observed_at':'2026-10-03T00:00:00+00:00','actions':[action]}
+    result=enrich_stock_delivery_source(snapshot,{'4114':evidence})
+    assert result['actions'][0]['stock_terms_status']=='awaiting_issuer_schedule'
+    assert result['actions'][0]['payable_date'] is None
+    # Arbitrary unrelated rates cannot be silently added together.
+    from services.mops_corporate_terms import _stock_dividend_ratios
+    from decimal import Decimal
+    assert _stock_dividend_ratios('每仟股配發20股；每仟股配發30股') == {Decimal('.02'),Decimal('.03')}

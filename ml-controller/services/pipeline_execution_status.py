@@ -12,7 +12,7 @@ SCHEMA = "pipeline-cloud-execution-status-v1"
 
 def _environment(execution: Any) -> dict[str, str]:
     # Only identity fields are read; secret references/other values never leave here.
-    wanted = {"PIPELINE_RUN_DATE", "PIPELINE_PARENT_RUN_ID", "PIPELINE_PREMARKET_RESUME_MODE", "PIPELINE_PREMARKET_INPUT_GCS_URI"}
+    wanted = {"PIPELINE_RUN_DATE", "PIPELINE_PARENT_RUN_ID", "PIPELINE_PREMARKET_RESUME_MODE", "PIPELINE_PREMARKET_INPUT_GCS_URI", "PIPELINE_INPUT_STAGE"}
     return {item.name: item.value for container in execution.template.containers
             for item in container.env if item.name in wanted}
 

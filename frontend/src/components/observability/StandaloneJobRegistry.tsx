@@ -10,7 +10,13 @@ const GROUP_LABEL: Record<SchedulerJob['group'], string> = {
   monthly: 'Monthly operations',
 }
 
-const GROUP_ORDER: SchedulerJob['group'][] = ['weekly', 'pipeline_chain', 'daily', 'intraday', 'monthly']
+const GROUP_ORDER: SchedulerJob['group'][] = ['weekly', 'daily', 'pipeline_chain', 'intraday', 'monthly']
+
+export function isRetiredRegistryJob(job: SchedulerJob): boolean {
+  return job.accounting?.desiredState === 'PAUSED'
+    || (job.consolidation?.owner === 'manual_only'
+      && job.consolidation.consolidationClass === 'disable_candidate')
+}
 
 const STATUS_LABEL: Record<SchedulerJob['lastStatus'], string> = {
   success: 'Completed',
@@ -66,9 +72,9 @@ export default function StandaloneJobRegistry({
   governance?: SchedulerStatus['governance']
 }) {
   const registryJobs = jobs
-    .filter((job) => !mappedJobIds.has(job.id))
+    .filter((job) => !mappedJobIds.has(job.id) && !isRetiredRegistryJob(job))
     .sort((a, b) => STATUS_ORDER[a.lastStatus] - STATUS_ORDER[b.lastStatus] || a.name.localeCompare(b.name))
-  const mappedCount = jobs.length - registryJobs.length
+  const mappedCount = jobs.filter(job => mappedJobIds.has(job.id)).length
 
   return (
     <section className="obs-standalone" aria-labelledby="obs-standalone-title">
@@ -98,7 +104,7 @@ export default function StandaloneJobRegistry({
             const groupJobs = registryJobs.filter((job) => job.group === group)
             if (!groupJobs.length) return null
             return (
-              <section className="obs-standalone__group-card" key={group} aria-label={GROUP_LABEL[group]}>
+              <section className="obs-standalone__group-card" data-group={group} key={group} aria-label={GROUP_LABEL[group]}>
                 <div className="obs-standalone__group-header">
                   <div>
                     <p>{GROUP_LABEL[group]}</p>

@@ -2420,6 +2420,17 @@ def prep_universal_batch(payload: dict) -> dict:
         return {"error": str(e), "batch_index": payload.get("batch_index", -1)}
 
 
+@app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=3)
+def prep_universal_batch_event(payload: dict) -> dict:
+    """Prepare one immutable batch, publish completion, notify the pipeline."""
+    _setup_env()
+    from google.cloud import storage
+    from app.pipeline_input_prep import execute_event
+    from app.use_cases import prep_universal_batch as prepare, UniversalPrepRequest
+    return execute_event(payload, bucket=storage.Client().bucket(payload['bucket']),
+        prep=lambda request: prepare(UniversalPrepRequest(**request)), token=_controller_callback_token())
+
+
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     gpu="L4",                    # Sequence training can use GPU; tree-only groups run in CPU split jobs.

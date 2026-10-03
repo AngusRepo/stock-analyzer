@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:c9c0399ef4fe447b3de53ac085ab9d80cda785dbc8b7ac254e360d62e72af292",
+  "execution_owner_version": "native-paper-v1:dff7f150cbfecce3d0b103fd286a7c0a56e377f7a7413ff8288146dfa4e3f5ac",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved the combined Paper release and exact supplemental KV on 2026-10-03. RFS research registry, readiness/closure display and OOF read optimization. Existing single B account; unchanged trading rules, models and CPU/RAM. No retraining, real orders or NAV maturity transfer.",
-  "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
+  "authorization": "Pending explicit release and exact Paper KV approval. GA historical source recovery and issuer parser corrections; local Paper runtime simulation PASS. Research-only accrual and non-subscription policies never apply to Paper; no model changes, retraining, live orders or NAV backfill.",
+  "review": "audits/evening-ga-obs-20261003/finlab-history/GA-RESTORATION-REPORT.md",
   "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-single-plan-swing"
 }

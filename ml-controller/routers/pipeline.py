@@ -330,6 +330,18 @@ async def pipeline_modal_prediction_callback(request: Request) -> JSONResponse:
         },
     )
 
+@callback_router.post('/v2/input/callback')
+async def input_dependency_callback(request: Request):
+    _check_service_token(request)
+    from services.pipeline_input_events import dispatch_ready
+    payload = await request.json()
+    try:
+        result = await asyncio.to_thread(dispatch_ready, str(payload.get('stage_path') or ''), jobs_client=_jobs_client)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result
+
+
 @router.post("/v2/reconcile")
 async def reconcile_pipeline_execution(
     request: Request, date: str = Query(...), run_id: str = Query(..., max_length=180),
@@ -345,6 +357,17 @@ async def reconcile_pipeline_execution(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     callback = failure_callback(snapshot)
     if snapshot.get('state') == 'succeeded':
+        from services.pipeline_input_events import reconcile_inputs
+        try:
+            dependency = await asyncio.to_thread(reconcile_inputs, run_date=date, run_id=run_id, jobs_client=_jobs_client)
+        except ValueError as exc:
+            dependency = {'status': 'error', 'reason': str(exc), 'error': str(exc)}
+        if dependency:
+            if dependency.get('error'):
+                await _callback_worker({'task': 'pipeline', 'status': 'error', 'run_id': run_id,
+                    'run_date': date, 'duration_ms': 0, 'error': dependency['error'], 'summary': dependency['error']})
+            return {**snapshot, 'input_recovery': dependency, 'reason': dependency['reason'],
+                    'failure_callback_sent': bool(dependency.get('error'))}
         from services.pipeline_prediction_recovery import reconcile_modal_request
         recovery = await asyncio.to_thread(reconcile_modal_request, run_date=date, run_id=run_id)
         snapshot = {**snapshot, 'modal_recovery': recovery, 'reason': recovery['reason']}

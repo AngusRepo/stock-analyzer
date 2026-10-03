@@ -103,3 +103,15 @@ def test_snapshot_loader_requires_all_components():
         assert "backtest_snapshot_components_missing" in str(exc)
     else:
         raise AssertionError("expected missing component error")
+
+
+def test_reference_us_symbol_and_emerging_are_not_tradable():
+    dataset = BacktestDataset.__new__(BacktestDataset)
+    dataset._universe_cache = {}
+    dataset.stocks = pl.DataFrame([
+        {'symbol':'2330','market':'TWSE','listed_date':'2000-01-01','delisted_date':None},
+        {'symbol':'6488','market':'OTC','listed_date':'2000-01-01','delisted_date':None},
+        {'symbol':'NVDA','market':'US','listed_date':'2000-01-01','delisted_date':None},
+        {'symbol':'7777','market':'ROTC','listed_date':'2000-01-01','delisted_date':None}])
+    dataset.prices = pl.DataFrame({'symbol':['2330','6488','NVDA','7777'],'date':['2026-09-10']*4})
+    assert dataset.get_universe_at('2026-09-10') == {'2330','6488'}

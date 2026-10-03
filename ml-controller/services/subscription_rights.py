@@ -11,9 +11,10 @@ def parse_subscription_terms(text: str, *, record_date: str, ratio: float, price
     from services.mops_corporate_terms import DATE, _date
     compact = re.sub(r'\s+', '', text)
     records = {_date(m) for m in re.finditer(DATE + r'為現金增資認股基準日', compact)}
+    records.update(_date(m) for m in re.finditer(r'現金增資認股基準日[:：]' + DATE, compact))
     if record_date not in records:
         return None
-    ratios = {Decimal(m) / 1000 for m in re.findall(r'每[仟千]股得認購([0-9.]+)股', compact)}
+    ratios = {Decimal(m) / 1000 for m in re.findall(r'每[仟千]股(?:得|可)認購([0-9.]+)股', compact)}
     prices = {Decimal(m) for m in re.findall(
         r'(?:每股發行價格[:：]?|發行價格[:：]每股)新[臺台]幣([0-9.]+)元', compact)}
     if (len(ratios) != 1 or abs(next(iter(ratios)) - Decimal(str(ratio))) > Decimal('0.000000000001')
@@ -21,8 +22,10 @@ def parse_subscription_terms(text: str, *, record_date: str, ratio: float, price
         raise ValueError('subscription_issuer_ratio_or_price_mismatch')
     # Deliberately anchored to original holders, NOT the following placement
     # subscription period. No deadline is inferred from record/ex dates.
+    period_date = re.sub(r'\(\?P<[^>]+>', '(?:', DATE)
     periods = re.finditer(
-        r'原股東(?:及員工)?(?:股款繳納期間[:：]|繳款期間自)([^()（）]+)', compact)
+        r'原股東(?:及員工)?(?:股款繳納期間[:：]|繳款期間自)'
+        r'(' + period_date + r'(?:日起至|至|～|~)' + period_date + r'(?:止)?)', compact)
     dated_periods = {tuple(_date(m) for m in re.finditer(DATE, period[1])) for period in periods}
     days = next(iter(dated_periods)) if len(dated_periods) == 1 else ()
     if len(days) != 2 or days[0] > days[1]:

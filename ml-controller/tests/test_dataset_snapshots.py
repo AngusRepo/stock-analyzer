@@ -182,3 +182,20 @@ def test_latest_dataset_snapshot_rejects_conflicting_date_filters():
         assert str(exc) == "dataset_snapshot_date_filter_conflict"
     else:
         raise AssertionError("expected conflict error")
+
+def test_research_selector_excludes_input_only_and_later_materialization(monkeypatch):
+    import sqlite3,json
+    from services import dataset_snapshots as snapshots
+    db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+    db.execute('CREATE TABLE dataset_snapshots(snapshot_id,kind,access_tier,status,business_date,created_at,metadata_json)')
+    for name,created,components in [('research','2026-09-29T12:00:00Z',{'signals':'gs://signals','corporate_source_records':'gs://original'}),
+         ('input','2026-09-29T13:00:00Z',{'prices':'gs://prices'}),
+         ('too_late','2026-09-30T00:35:49Z',{'signals':'gs://signals','corporate_source_records':'gs://original'})]:
+        db.execute('INSERT INTO dataset_snapshots VALUES(?,?,?,?,?,?,?)',(name,'backtest_dataset','compute','ready','2026-09-29',created,json.dumps({'components':components})))
+    from types import SimpleNamespace
+    monkeypatch.setattr(snapshots,'client_for_domain',lambda _:SimpleNamespace(query=lambda sql,params:[dict(row) for row in db.execute(sql,params)]))
+    monkeypatch.setattr(snapshots,'validate_dataset_snapshot_manifest',lambda _:[])
+    assert snapshots.latest_dataset_snapshot(kind='backtest_dataset',access_tier='compute',as_of_business_date='2026-09-29',
+        required_components=('signals','corporate_source_records'),available_before='2026-09-30T00:00:00+08:00')['snapshot_id']=='research'
+    # Inference retains its normal latest-date contract.
+    assert snapshots.latest_dataset_snapshot(kind='backtest_dataset',access_tier='compute',business_date='2026-09-29')['snapshot_id']=='too_late'

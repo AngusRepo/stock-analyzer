@@ -6,7 +6,7 @@ import os
 import re
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -475,6 +475,8 @@ def _register_compute_manifest(
         "end_date": req.end_date,
         "components": {name: meta["gcs_uri"] for name, meta in component_meta.items()},
         "component_meta": component_meta,
+        "corporate_history_coverage_policy": (
+            "declared_scope_checked_against_opening_entitlements" if "corporate_history_records" in component_meta else None),
         "d1_query_counts": d1_query_counts,
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -518,15 +520,39 @@ class DatasetSnapshotExportRequest:
     producer_run_id: str | None = None
     chunk_days: int = 10
     include_signals: bool = True
+    corporate_history_path: str | None = None
+    corporate_history_checksum: str | None = None
 
 
 def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[str, Any]:
     """Export D1 research data into a GCS compute snapshot and D1 manifest."""
+    history_frame = None
+    if req.corporate_history_path or req.corporate_history_checksum:
+        if not req.include_signals or not (req.corporate_history_path and req.corporate_history_checksum):
+            raise ValueError('corporate_history_export_request_incomplete')
+        from services.research_corporate_history import load_history_artifact
+        history_frame = load_history_artifact(req.corporate_history_path, req.corporate_history_checksum)
+        req = replace(req, kind="ga_research_dataset")
     started = time.perf_counter()
     chunk_days = max(1, min(int(req.chunk_days or 10), 30))
 
     stocks = _query_active_stocks(req.start_date, req.end_date)
     prices, price_queries = _query_prices(req.start_date, req.end_date, chunk_days)
+    if history_frame is not None:
+        from services.research_corporate_history import validate_history_coverage
+        tradable = stocks.filter(pl.col('market').is_in(['TWSE', 'OTC']))
+        symbol_set = set(tradable.get_column('symbol'))
+        if 'symbol' in prices.columns:
+            calendar = prices.filter(pl.col('symbol').is_in(sorted(symbol_set)))
+        else:
+            calendar = prices.filter(pl.col('stock_id').is_in(tradable.get_column('id').to_list()))
+        days = sorted(calendar.get_column('date').cast(pl.String).unique().to_list())
+        if not days:
+            raise ValueError('corporate_history_export_calendar_empty')
+        # Every market session is required, but an unheld issuer's missing terms
+        # must not prevent research. Exact opening holdings/receivables are checked
+        # by account_history_snapshot on every replay session, before accounting.
+        validate_history_coverage(history_frame, days=days, symbols=())
     indicators, indicator_queries = _query_date_range(
         """
         SELECT stock_id, date, ma5, ma10, ma20, ma60, rsi14, macd, macd_signal,
@@ -609,6 +635,27 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         "margin_data": margin_data,
         "shareholding": shareholding,
     }
+    if history_frame is not None:
+        components['corporate_history_records'] = history_frame
+    if req.include_signals:
+        from services.backtest_corporate_export import export_original_corporate_records
+        # Applied session index bounds object reads; never probe 504 historical
+        # days of absent hashed delivery keys on every nightly export.
+        paper = client_for_domain(D1DataDomain.PAPER)
+        indexed = paper.query('SELECT DISTINCT session_date FROM paper_corporate_sessions_v1 '
+            'WHERE account_id=1 AND session_date BETWEEN ? AND ? ORDER BY session_date', [req.start_date, req.end_date])
+        components['corporate_source_records'] = export_original_corporate_records(
+            [row['session_date'] for row in indexed])
+        # Small dated state tables and outcome known-at times belong to the same
+        # immutable research snapshot; replay must never re-read mutable live D1.
+        for name in ('market_breadth', 'us_market_signals'):
+            rows = MARKET_D1_CLIENT.query(f'SELECT * FROM {name} WHERE date BETWEEN ? AND ? ORDER BY date',
+                [req.start_date, req.end_date])
+            components[name] = _frame(rows) if rows else _empty_frame(['date'])
+        from services.backtest_state import load_verified_predictions
+        verified = load_verified_predictions(req.start_date, req.end_date)
+        components['verified_predictions'] = _frame(verified) if verified else _empty_frame(
+            ['generated_at', 'verified_at', 'direction_correct'])
     signal_queries = 0
     if req.include_signals:
         signals, signal_queries = _query_date_range(
@@ -716,6 +763,8 @@ def export_daily_research_snapshots(req: DatasetSnapshotExportRequest) -> dict[s
         producer_run_id=req.producer_run_id,
         chunk_days=req.chunk_days,
         include_signals=True,
+        corporate_history_path=req.corporate_history_path,
+        corporate_history_checksum=req.corporate_history_checksum,
     )
     backtest_summary = export_backtest_dataset_snapshot(backtest_req)
     backtest_snapshot = backtest_summary.get("snapshot") or {}

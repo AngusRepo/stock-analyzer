@@ -40,3 +40,7 @@ Taiwan Oct 2 full day is 981 / 17.72 hours. Request latency totals are not billa
 - Consume terminal premarket dependency failures on the durable continuation path, settle the exact scheduler ticket as blocked, and acknowledge the queue message. Infrastructure errors still retry. A real D1/KV test verifies redelivery creates no external work.
 - The initial no-traffic Cloud Build correctly rejected the stale native execution declaration. Production traffic stayed on 85e791adfad80335dc0a27cc6ab9de340497ea02.
 - Exact candidate native identity: native-paper-v1:d5a2f5815c24cf3794911fb75e432b49d93e2649b0b4310e01842d6e53f4f62c. The build declaration is updated; it is not supplemental runtime admission or source equivalence. Candidate runtime admission must pass before production traffic is switched.
+
+## Explicit Paper release approval
+
+Wei approved the exact supplemental source compatibility change, independent release KV write/readback, commit/push/deploy on 2026-10-03 after reviewing the preflight. The new key is ml:active8:paper_runtime_approval:v1:2026-10-03-paid-provider-retirement; original admission and the prior swing key remain intact. Runtime compatibility accepts only the reviewed recommendation_service.py source transition. Forty-two admission tests and a production-data read-only canonical bundle simulation passed without drift. No real trading, retraining, source equivalence or maturity transfer was authorized.

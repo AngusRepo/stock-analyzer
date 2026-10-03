@@ -3152,13 +3152,35 @@ export async function processUpdateBatch(
       if (['success', 'error', 'blocked', 'skipped'].includes(owner.status)) return
     }
     const { runActive8OofLifecycle } = await import('./controllerWorkflows')
-    const summary = await runActive8OofLifecycle(env, runDate, cadence, {
-      expectedCohortId,
-      continuationAttempt: attempt,
-      continuationOnly: Boolean(expectedCohortId),
-      schedulerTicketId: msg.schedulerTicketId,
-      schedulerRunId: msg.schedulerRunId,
-    })
+    let summary: string
+    try {
+      summary = await runActive8OofLifecycle(env, runDate, cadence, {
+        expectedCohortId,
+        continuationAttempt: attempt,
+        continuationOnly: Boolean(expectedCohortId),
+        schedulerTicketId: msg.schedulerTicketId,
+        schedulerRunId: msg.schedulerRunId,
+      })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      if (!schedulerTicketId || !reason.startsWith('active8_daily_blocked:')) throw error
+      // Missing premarket evidence is terminal for this delivery. Settle the
+      // exact owner before acknowledging; infrastructure failures still retry.
+      const { updateSchedulerExecutionTicket } = await import('./schedulerExecutionTickets')
+      await updateSchedulerExecutionTicket(databaseForDataDomain(env, 'ops'), {
+        ticketId: schedulerTicketId,
+        runId: schedulerRunId,
+        status: 'blocked',
+        authority: 'durable_queue',
+        summary: reason,
+        error: reason,
+      })
+      await logSchedulerResult(env.KV, `active8-oof-${cadence}`, {
+        status: 'error', summary: reason, error: reason, duration_ms: 0,
+        run_id: schedulerRunId, run_date: runDate,
+      })
+      return
+    }
     const schedulerStatus = classifySchedulerSummary(summary)
     if (schedulerTicketId && schedulerStatus !== 'triggered') {
       const { updateSchedulerExecutionTicket } = await import('./schedulerExecutionTickets')

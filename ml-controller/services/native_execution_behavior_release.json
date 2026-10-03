@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:c9c0399ef4fe447b3de53ac085ab9d80cda785dbc8b7ac254e360d62e72af292",
+  "execution_owner_version": "native-paper-v1:d5a2f5815c24cf3794911fb75e432b49d93e2649b0b4310e01842d6e53f4f62c",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved the combined Paper release and exact supplemental KV on 2026-10-03. RFS research registry, readiness/closure display and OOF read optimization. Existing single B account; unchanged trading rules, models and CPU/RAM. No retraining, real orders or NAV maturity transfer.",
+  "authorization": "Wei authorized this session provider retirement, OBS polling repair, Active-8 dependency termination, Cloudflare news analysis, commit/push/deploy on 2026-10-03. This build declaration grants no supplemental runtime admission, source equivalence, efficacy or NAV maturity transfer. Existing per-stock debate retained; no retraining or real orders.",
   "review": "docs/PAPER_RUNTIME_REAPPROVAL.md",
   "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-02-single-plan-swing"
 }

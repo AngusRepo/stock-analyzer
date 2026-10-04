@@ -203,7 +203,7 @@ export async function deferActive8UntilPipelinePublished(
   const businessDate = String(msg.triggerTime ?? '').slice(0, 10)
   const db = databaseForDataDomain(env, 'ops')
   const row = await db.prepare(`
-    SELECT root.scheduler_job_id, stage.status AS pipeline_status
+    SELECT root.scheduler_job_id, stage.status AS pipeline_status, stage.last_error AS pipeline_reason
       FROM scheduler_execution_tickets_v1 child
       JOIN scheduler_execution_tickets_v1 root ON root.ticket_id=child.root_ticket_id
       LEFT JOIN pipeline_stage_runs stage
@@ -213,10 +213,16 @@ export async function deferActive8UntilPipelinePublished(
   `).bind(ticketId, runId, businessDate).first<{
     scheduler_job_id: string | null
     pipeline_status: string | null
+    pipeline_reason: string | null
   }>()
   if (!row) throw new Error('active8_snapshot_continuation_ticket_missing')
   if (!row.scheduler_job_id || row.pipeline_status === 'success') return false
 
+  if (row.pipeline_status === 'waiting' && row.pipeline_reason === 'awaiting_premarket') {
+    const { parkActive8PremarketTicket } = await import('./active8PremarketWait')
+    await parkActive8PremarketTicket(env, { ...msg, active8PipelineWaitAttempt: 0 })
+    return true
+  }
   const attempt = Number(msg.active8PipelineWaitAttempt ?? 0)
   if (!Number.isInteger(attempt) || attempt < 0 || attempt >= PIPELINE_WAIT_MAX_ATTEMPTS) {
     await updateSchedulerExecutionTicket(db, {

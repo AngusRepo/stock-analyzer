@@ -136,8 +136,9 @@ async def generate_weekly_audit() -> dict:
     if not CF_API_TOKEN:
         return {"error": "CF_API_TOKEN not set", "status": "failed"}
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    now = datetime.now(timezone(timedelta(hours=8)))
+    today = now.strftime("%Y-%m-%d")
+    week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
     async with httpx.AsyncClient() as client:
         # ── L1: Trade Performance (7-day) ──

@@ -534,8 +534,6 @@ async def parameter_candidates_validation_chain(
     paired partition walk-forward, and Hansen SPA data-snooping guard. Proxy
     PBO remains proxy_pbo_blocked and cannot create a promotion_packet_id.
     """
-    end_date = req.end_date or req.run_date or _twdate()
-    start_date = req.start_date or (datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)).strftime("%Y-%m-%d")
     validation_run_id = req.run_id or f"parameter-validation-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     await fetch_worker_admin("/api/admin/config/parameter-candidates?limit=1", method="GET")
     rows = _load_parameter_candidate_rows(req.candidate_ids, req.limit)
@@ -549,6 +547,14 @@ async def parameter_candidates_validation_chain(
             "message": "No parameter candidate rows found in D1 registry.",
         }
 
+    from services.research_data_access import resolve_research_end_date
+
+    end_date = resolve_research_end_date(
+        kind="backtest_dataset", as_of_date=req.run_date or _twdate(), explicit_end_date=req.end_date,
+    )
+    start_date = req.start_date or (datetime.fromisoformat(end_date) - timedelta(days=req.lookback_days)).strftime("%Y-%m-%d")
+    if start_date > end_date:
+        raise HTTPException(status_code=422, detail="parameter_validation_start_after_end")
     baseline_config = await fetch_worker_admin("/api/admin/config", method="GET")
     baseline_config = baseline_config if isinstance(baseline_config, dict) else {}
 

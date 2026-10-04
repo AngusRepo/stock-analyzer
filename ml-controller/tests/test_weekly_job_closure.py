@@ -509,3 +509,61 @@ async def test_research_sweep_does_not_retry_permanent_failure(monkeypatch):
     assert result["status"] == "error"
     assert result["staging"]["status"] == "blocked"
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_weekly_operations_job_preserves_ticket_and_terminal_callback(monkeypatch):
+    from services import weekly_operations
+    monkeypatch.setenv('OPTUNA_JOB_MODE','weekly_operations')
+    monkeypatch.setenv('OPTUNA_CALLBACK_TASK','model-ic-full-check')
+    monkeypatch.setenv('OPTUNA_RUN_ID','ic-run')
+    monkeypatch.setenv('OPTUNA_RUN_DATE','2026-10-02')
+    monkeypatch.setenv('OPTUNA_SCHEDULER_TICKET_ID','ticket')
+    monkeypatch.setenv('OPTUNA_SCHEDULER_RUN_ID','ic-run')
+    calls=[]
+    async def work(task, day):
+        assert (task, day)==('model-ic-full-check','2026-10-02')
+        return {'status':'completed','summary':'all three steps verified'}
+    async def callback(payload): calls.append(payload)
+    monkeypatch.setattr(weekly_operations,'run_weekly_operations',work)
+    monkeypatch.setattr(optuna_job_main,'_callback_optuna_with_bounded_retry',callback)
+    assert await optuna_job_main._run()==0
+    assert calls[0]['status']=='success'
+    assert calls[0]['scheduler_ticket_id']=='ticket'
+    assert calls[0]['scheduler_run_id']==calls[0]['run_id']=='ic-run'
+    assert calls[0]['metadata']['source']=='weekly_operations'
+
+
+def test_weekly_operations_dispatch_only_calls_job_not_compute(monkeypatch):
+    from routers.audit import trigger_weekly_operations, WeeklyOperationsRequest
+    captured={}
+    class FakeClient:
+        def __init__(self, **kw): pass
+        def run_job(self, **kw):
+            captured.update(kw)
+            return types.SimpleNamespace(execution_id='job-1',execution_name='projects/p/jobs/j/executions/job-1')
+    monkeypatch.setattr(cloud_run_jobs_client,'CloudRunJobsClient',FakeClient)
+    result=trigger_weekly_operations(WeeklyOperationsRequest(task='weekly-audit',run_date='2026-10-02',
+        run_id='audit-1',scheduler_ticket_id='ticket-1',scheduler_run_id='audit-1'))
+    assert result['status']=='triggered'
+    assert captured['env_overrides']['OPTUNA_JOB_MODE']=='weekly_operations'
+    assert captured['env_overrides']['OPTUNA_SCHEDULER_TICKET_ID']=='ticket-1'
+
+
+@pytest.mark.asyncio
+async def test_weekly_audit_completion_preserves_report_for_worker_notification(monkeypatch):
+    from services import weekly_operations
+    monkeypatch.setenv('OPTUNA_JOB_MODE', 'weekly_operations')
+    monkeypatch.setenv('OPTUNA_CALLBACK_TASK', 'weekly-audit')
+    monkeypatch.setenv('OPTUNA_RUN_ID', 'audit-run')
+    monkeypatch.setenv('OPTUNA_RUN_DATE', '2026-10-02')
+    calls = []
+    async def work(task, day):
+        return {'status':'completed', 'summary':'verified',
+                'audit':{'report':'archived report', 'report_date':day}}
+    async def callback(payload): calls.append(payload)
+    monkeypatch.setattr(weekly_operations, 'run_weekly_operations', work)
+    monkeypatch.setattr(optuna_job_main, '_callback_optuna_with_bounded_retry', callback)
+    assert await optuna_job_main._run() == 0
+    assert calls[0]['metadata']['audit_report'] == 'archived report'
+    assert calls[0]['metadata']['audit_report_date'] == '2026-10-02'

@@ -86,7 +86,8 @@ def test_search_samples_only_legal_and_delivered_dimensions():
 def stub_dataset(monkeypatch, replay):
     days = [(date(2026, 6, 6) + timedelta(days=i)).isoformat() for i in range(91)
             if (date(2026, 6, 6) + timedelta(days=i)).weekday() < 5]
-    dataset = SimpleNamespace(trading_days=days)
+    dataset = SimpleNamespace(trading_days=days, get_universe_at=lambda day: {'2330'},
+        corporate_sources={d:{'actions':[],'covered_symbols':['2330'],'blockers':{}} for d in days})
     monkeypatch.setattr(search, 'select_stratified_subset', lambda **_: ['2330'])
     monkeypatch.setattr(search.BacktestDataset, 'load_for_research',
                         lambda **_: (dataset, {'snapshot': 'fixed-test'}))

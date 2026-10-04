@@ -419,13 +419,21 @@ async def _execute_research_sweep_with_bounded_retry(
 
 async def _run() -> int:
     mode = os.environ.get("OPTUNA_JOB_MODE", "research_sweep").strip().lower()
-    if mode not in {"research_sweep", "per_regime", "parameter_validation", "weekly_backtest", "ga_shadow_daily"}:
+    if mode not in {"research_sweep", "per_regime", "parameter_validation", "weekly_backtest", "ga_shadow_daily", "weekly_operations"}:
         raise RuntimeError(f"unsupported OPTUNA_JOB_MODE={mode}")
 
     run_date = os.environ.get("OPTUNA_RUN_DATE", "") or ""
     queue_entry_id = os.environ.get("OPTUNA_QUEUE_ENTRY_ID", "") or ""
     trigger_source = os.environ.get("OPTUNA_TRIGGER_SOURCE", "") or ""
-    if mode == "ga_shadow_daily":
+    if mode == "weekly_operations":
+        req: Any = None
+        cadence = "weekly"
+        task = os.environ.get("OPTUNA_CALLBACK_TASK", "")
+        from services.weekly_operations import TASKS
+        if task not in TASKS:
+            raise ValueError('weekly_operations_task_invalid')
+        log_parallel = 1
+    elif mode == "ga_shadow_daily":
         req: Any = None
         cadence = "daily"
         task = os.environ.get("OPTUNA_CALLBACK_TASK", "ga-shadow-daily") or "ga-shadow-daily"
@@ -456,7 +464,7 @@ async def _run() -> int:
     )
     run_id = (
         (os.environ.get("OPTUNA_RUN_ID") or execution_run_id)
-        if mode in {"weekly_backtest", "ga_shadow_daily"}
+        if mode in {"weekly_backtest", "ga_shadow_daily", "weekly_operations"}
         else execution_run_id
     )
     if mode == "parameter_validation":
@@ -481,7 +489,12 @@ async def _run() -> int:
     research_sweep_attempts = 0
 
     try:
-        if mode == "ga_shadow_daily":
+        if mode == "weekly_operations":
+            from services.weekly_operations import run_weekly_operations
+            result = await run_weekly_operations(task, run_date)
+            status = 'success' if result.get('status') == 'completed' else 'error'
+            summary = str(result.get('summary') or result)
+        elif mode == "ga_shadow_daily":
             from services.ga_production_shadow_service import run_ga_production_shadow
 
             result = await asyncio.to_thread(
@@ -571,7 +584,13 @@ async def _run() -> int:
         payload["run_date"] = run_date
     if error:
         payload["error"] = error[:1200]
-    if mode == "ga_shadow_daily":
+    if mode == "weekly_operations":
+        payload['metadata'] = {'source':'weekly_operations', 'executor':'cloud_run_job', 'mode':mode}
+        if task == 'weekly-audit' and status == 'success':
+            audit = result.get('audit') or {}
+            payload['metadata']['audit_report'] = str(audit.get('report') or '')[:2000]
+            payload['metadata']['audit_report_date'] = audit.get('report_date')
+    elif mode == "ga_shadow_daily":
         payload["metadata"] = {
             "source": "ga_production_shadow",
             "executor": "cloud_run_job",

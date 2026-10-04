@@ -426,6 +426,7 @@ class BacktestDataset:
             required_start_date=start_date,
             required_end_date=end_date,
             mode=mode,
+            required_components=("signals", "corporate_source_records"),
         )
         if data_access.source == "snapshot" and data_access.snapshot:
             dataset = cls.load_from_snapshot_manifest(

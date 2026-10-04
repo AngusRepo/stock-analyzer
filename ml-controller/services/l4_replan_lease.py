@@ -9,16 +9,16 @@ GROUP = 'l4-replan-compute:1'
 
 
 @contextmanager
-def replan_claim(db):
+def replan_claim(db, *, group=GROUP, task_name='l4-replan-compute'):
     owner = str(uuid4())
     claimed = db.query("""INSERT INTO maintenance_task_leases
         (lease_group,task_name,owner_id,lease_expires_at,acquired_at,heartbeat_at)
-        VALUES (?,'l4-replan-compute',?,datetime('now','+600 seconds'),CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+        VALUES (?,?,?,datetime('now','+600 seconds'),CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
         ON CONFLICT(lease_group) DO UPDATE SET owner_id=excluded.owner_id,
           lease_expires_at=excluded.lease_expires_at,acquired_at=CURRENT_TIMESTAMP,heartbeat_at=CURRENT_TIMESTAMP
         WHERE maintenance_task_leases.lease_expires_at < CURRENT_TIMESTAMP
           OR maintenance_task_leases.owner_id=excluded.owner_id
-        RETURNING owner_id""", [GROUP, owner])
+        RETURNING owner_id""", [group, task_name, owner])
     if not claimed or claimed[0]['owner_id'] != owner:
         yield None
         return
@@ -29,7 +29,7 @@ def replan_claim(db):
         rows = db.query("""UPDATE maintenance_task_leases
             SET lease_expires_at=datetime('now','+600 seconds'),heartbeat_at=CURRENT_TIMESTAMP
             WHERE lease_group=? AND owner_id=? AND lease_expires_at>=CURRENT_TIMESTAMP
-            RETURNING owner_id""", [GROUP, owner])
+            RETURNING owner_id""", [group, owner])
         if not rows:
             raise RuntimeError('l4_replan_lease_lost')
 
@@ -54,6 +54,6 @@ def replan_claim(db):
         stop.set()
         thread.join(timeout=65)
         try:
-            db.query('DELETE FROM maintenance_task_leases WHERE lease_group=? AND owner_id=? RETURNING owner_id', [GROUP, owner])
+            db.query('DELETE FROM maintenance_task_leases WHERE lease_group=? AND owner_id=? RETURNING owner_id', [group, owner])
         except Exception:
             log.warning('L4 claim release failed; bounded lease expiry will recover it')

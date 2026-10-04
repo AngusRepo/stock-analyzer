@@ -1474,6 +1474,8 @@ async function handleSchedulerCallback(c: any) {
         if (!executionStillCurrent) {
           return c.json({ success: false, ignored: true, reason: 'stale_pipeline_callback' }, 409)
         }
+        const { resumeActive8PremarketTickets } = await import('../lib/active8PremarketWait')
+        await resumeActive8PremarketTickets(c.env, callbackRunDate)
         await logAcceptedCallbackTask()
         await logSchedulerResult(c.env.KV, 'evening-chain', {
           status: 'running',
@@ -1677,6 +1679,19 @@ async function handleSchedulerCallback(c: any) {
         error: 'optuna_scheduler_ticket_settlement_failed',
         detail: message,
       }, 503)
+    }
+  }
+
+  if (body.task === 'weekly-audit' && body.status === 'success'
+    && body.metadata?.source === 'weekly_operations'
+    && body.metadata?.audit_report && c.env.DISCORD_WEBHOOK_URL) {
+    // Preserve the existing best-effort report notification after background completion.
+    const key = `weekly-audit:notification:${callbackRunDate}:${callbackRunId}`
+    if (!await c.env.KV.get(key)) {
+      const { sendDiscordNotification } = await import('../lib/notify')
+      await sendDiscordNotification(c.env.DISCORD_WEBHOOK_URL,
+        `Weekly AI Audit Report (${body.metadata.audit_report_date})\n\n${body.metadata.audit_report}`.slice(0, 2000))
+      await c.env.KV.put(key, 'attempted', { expirationTtl: 60 * 60 * 24 * 35 })
     }
   }
 

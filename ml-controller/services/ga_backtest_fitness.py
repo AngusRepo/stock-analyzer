@@ -107,6 +107,8 @@ def prepare_ga_backtest(*, as_of_date=None):
     from services.backtest_snapshot_state import frozen_mode_b
     frozen_mode_b(dataset)  # Validate holdout inputs before any expensive generation.
     split = split_dates(evaluation_days(dataset))
+    from services.research_corporate_preflight import require_corporate_coverage
+    require_corporate_coverage(dataset, split['train_start'], split['validation_end'])
     baseline = _with_formal_position_risk(load_merged_trading_config_with_contract().config)
     evaluator = BacktestFitness(dataset=dataset, baseline=baseline, split=split, snapshot=snapshot, replay=replay_period)
     return evaluator

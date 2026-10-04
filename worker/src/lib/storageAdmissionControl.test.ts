@@ -99,7 +99,7 @@ test('major admin writers have explicit drain or critical admission coverage', (
     'legacy-strategy-evidence-migration',
   ]) {
     assert.equal(isStorageAdmissionManagedTask(task), true, `${task} must be managed`)
-    assert.equal(classifyStorageAdmission(task, 75).allowed, false, `${task} must stop in drain`)
+    assert.equal(classifyStorageAdmission(task, 75).allowed, true, `${task} drain is monitoring only`)
   }
 
   for (const task of [
@@ -111,7 +111,7 @@ test('major admin writers have explicit drain or critical admission coverage', (
   ]) {
     assert.equal(isStorageAdmissionManagedTask(task), true, `${task} must be managed`)
     assert.equal(classifyStorageAdmission(task, 75).allowed, true, `${task} remains guarded at drain`)
-    assert.equal(classifyStorageAdmission(task, 85).allowed, false, `${task} must stop at critical`)
+    assert.equal(classifyStorageAdmission(task, 90).allowed, false, `${task} must stop at critical`)
   }
 })
 
@@ -122,5 +122,12 @@ test('trading and capacity-reducing cutover tasks remain allowed but visibly cri
     assert.equal(decision.managed, false)
     assert.equal(decision.status, 'critical')
     assert.equal(decision.reason, 'critical_exempt_trading_or_capacity_reducing_path')
+  }
+})
+
+ test('research and retrain writes stop at the approved 90 percent boundary', () => {
+  for (const task of ['weekly-optuna', 'monthly-optuna', 'active8-oof-monthly', 's12-smcvwap-calibration']) {
+    for (const pct of [75, 85, 89.999]) assert.equal(classifyStorageAdmission(task, pct).allowed, true)
+    assert.equal(classifyStorageAdmission(task, 90).allowed, false)
   }
 })

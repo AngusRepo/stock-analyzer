@@ -92,6 +92,25 @@ def latest_snapshot_business_end_date(
     return end_date or snapshot.get("business_date")
 
 
+def resolve_research_end_date(*, kind: str, as_of_date: str, explicit_end_date: str | None = None) -> str:
+    """Default to available data, but never silently truncate an explicit window."""
+    from datetime import date
+
+    date.fromisoformat(as_of_date)
+    if explicit_end_date:
+        date.fromisoformat(explicit_end_date)
+        if explicit_end_date > as_of_date:
+            raise ResearchSnapshotNotReadyError("research_end_date_after_as_of")
+        return explicit_end_date  # The dataset loader must enforce requested coverage.
+    end_date = latest_snapshot_business_end_date(kind=kind, as_of_business_date=as_of_date)
+    if not end_date:
+        raise ResearchSnapshotNotReadyError("research_default_end_snapshot_missing")
+    date.fromisoformat(end_date)
+    if end_date > as_of_date:
+        raise ResearchSnapshotNotReadyError("research_snapshot_end_after_as_of")
+    return end_date
+
+
 def _snapshot_range_errors(
     snapshot: dict[str, Any] | None,
     required_start_date: str | None,
@@ -126,6 +145,7 @@ def resolve_research_data_access(
     required_start_date: str | None = None,
     required_end_date: str | None = None,
     mode: ResearchDataMode | None = None,
+    required_components: tuple[str, ...] = (),
 ) -> ResearchDataAccessDecision:
     """Resolve heavy research data access without silent D1 fallback.
 
@@ -146,6 +166,7 @@ def resolve_research_data_access(
         as_of_business_date=business_date,
         access_tier="compute",
         market_segment=market_segment,
+        required_components=required_components,
     )
     errors = validate_dataset_snapshot_manifest(snapshot) if snapshot else ["manifest_missing"]
     errors.extend(_snapshot_range_errors(snapshot, required_start_date, required_end_date))

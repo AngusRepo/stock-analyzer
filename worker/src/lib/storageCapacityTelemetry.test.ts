@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 
 const source = fs.readFileSync('src/lib/storageCapacityTelemetry.ts', 'utf8')
-if (!source.includes("utilizationPct >= 85") || !source.includes("return 'critical'")) {
+if (!source.includes("utilizationPct >= 90") || !source.includes("return 'critical'")) {
   throw new Error('capacity telemetry must fail before D1 reaches the hard 10GB limit')
 }
 if (!source.includes("utilizationPct >= 75") || !source.includes("return 'drain'")) {

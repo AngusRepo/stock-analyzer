@@ -129,43 +129,11 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
 
   return `regime=${newLabel} idx=${persisted.regime_index} kv=verified shift=${shiftSummary}`
 }
-export async function runModelIcFullCheck(env: Bindings) {
+export async function runModelIcFullCheck(env: Bindings, runDate?: string,
+  context: {schedulerTicketId?: string; schedulerRunId?: string} = {}) {
   requireController(env)
-  const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
-    method: 'POST',
-    jsonBody: { lookback_days: 35, min_samples: 50, min_dates: 10, append_history: true },
-    timeoutMs: 120_000,
-  })
-  const computed = Object.entries(icData.per_model_ic || {})
-    .filter(([_, value]: any) => value.status === 'computed')
-    .map(([name, value]: any) => `${name}:${value.ic?.toFixed(3)}`)
-    .join(' ') || 'none'
-  const queue = await controllerJson<any>(env, '/model_pool/artifact_registry/promotion_queue', {
-    timeoutMs: 60_000,
-  })
-  const rows = Array.isArray(queue.queue) ? queue.queue : []
-  const autoReady = rows.filter((row: any) => row.promotion_decision === 'auto_promote_candidate').length
-  const blocked = rows.filter((row: any) => String(row.promotion_decision ?? '').includes('blocked')).length
-
-  let configEval = '(skip)'
-  try {
-    const ceRes = await controllerFetch(env, '/config_pool/weekly_eval', {
-      method: 'POST',
-      jsonBody: { apply: false, confirm: false },
-      timeoutMs: 300_000,
-    })
-    if (ceRes.ok) {
-      const data = await ceRes.json() as any
-      configEval = data.status === 'no_challenger'
-        ? 'no_challenger'
-        : `${data.action}(paired_nav=${data.paired_nav_evidence?.status ?? 'missing'} delta=${data.paired_nav_evidence?.mean_daily_nav_delta ?? 'NA'}; historical_diagnostic_only)`
-    } else {
-      configEval = `HTTP ${ceRes.status}`
-    }
-  } catch (error: any) {
-    configEval = `exception ${error?.message?.slice(0, 40) ?? 'unknown'}`
-  }
-  return `IC n_rows=${icData.n_rows_total} | ${computed} || D1Registry queue=${rows.length} auto=${autoReady} blocked=${blocked} || ConfigEval ${configEval}`
+  const { dispatchWeeklyOperation } = await import('./weeklyOperationsDispatch')
+  return dispatchWeeklyOperation(env, 'model-ic-full-check', runDate, context)
 }
 
 export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) {

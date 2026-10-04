@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { Miniflare } from 'miniflare'
 import type { Bindings, UpdateQueueMsg } from '../types'
+import { resumeActive8PremarketTickets } from './active8PremarketWait'
 import { deferActive8UntilPipelinePublished, enqueueActive8AfterDatasetSnapshot } from './active8SnapshotReadyContinuation'
 import {
   admitSchedulerExecutionTicket,
@@ -28,7 +29,7 @@ async function main(): Promise<void> {
     const learningDb = await mf.getD1Database('LEARNING')
     await applySql(opsDb, opsMigration)
     await opsDb.prepare(`CREATE TABLE pipeline_stage_runs (
-      business_date TEXT, stage TEXT, status TEXT,
+      business_date TEXT, stage TEXT, status TEXT, last_error TEXT,
       PRIMARY KEY(business_date, stage)
     )`).run()
     await learningDb.prepare(`
@@ -104,7 +105,7 @@ async function main(): Promise<void> {
     assert.equal(snapshotChild?.status, 'success')
     assert.equal(child?.status, 'queued')
     assert.equal(JSON.parse(child?.metadata_json ?? '{}').snapshot_id, snapshotId)
-    await opsDb.prepare(`INSERT INTO pipeline_stage_runs VALUES (?, 'pipeline_execution', 'running')`)
+    await opsDb.prepare(`INSERT INTO pipeline_stage_runs VALUES (?, 'pipeline_execution', 'running', NULL)`)
       .bind(businessDate).run()
     assert.equal(await deferActive8UntilPipelinePublished(sent[0], env), true)
     assert.equal(sent.length, 2)
@@ -115,6 +116,16 @@ async function main(): Promise<void> {
     await opsDb.prepare(`UPDATE pipeline_stage_runs SET status='success' WHERE business_date=?`)
       .bind(businessDate).run()
     assert.equal(await deferActive8UntilPipelinePublished(sent[1], env), false)
+    await opsDb.prepare("UPDATE pipeline_stage_runs SET status='waiting',last_error='awaiting_premarket'").run()
+    assert.equal(await deferActive8UntilPipelinePublished({ ...sent[0], active8PipelineWaitAttempt: 72 }, env), true)
+    assert.equal(sent.length, 2, 'overnight wait does not poll or exhaust attempts')
+    assert.equal(await resumeActive8PremarketTickets(env, businessDate), 0)
+    await opsDb.prepare("UPDATE pipeline_stage_runs SET status='success',last_error=NULL").run()
+    assert.equal(await resumeActive8PremarketTickets(env, businessDate), 1)
+    assert.equal(sent.length, 3)
+    assert.equal(sent[2].schedulerTicketId, child?.ticket_id)
+    assert.equal(sent[2].active8PipelineWaitAttempt, 0)
+    assert.equal(await resumeActive8PremarketTickets(env, businessDate), 0, 'duplicate publication does not enqueue again')
     console.log('active8 snapshot-ready D1/queue integration passed')
   } finally {
     await mf.dispose()

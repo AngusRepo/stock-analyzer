@@ -176,6 +176,9 @@ def create_objective(dataset: BacktestDataset, start_date: str, end_date: str, b
                 verbose=False,
             )
         except Exception as e:
+            from services.research_corporate_preflight import is_corporate_data_error
+            if is_corporate_data_error(e):
+                raise
             logger.warning(f"[optuna_sltp] trial {trial.number} replay error: {e}")
             return PENALTY
 
@@ -264,6 +267,9 @@ def run_search(
         business_date=end_date,
         mode=data_mode,
     )
+
+    from services.research_corporate_preflight import require_corporate_coverage
+    require_corporate_coverage(dataset, start_date, end_date)
 
     # ── Step 3: Optuna NSGA-II Pareto search ────────────────────────────────
     study = optuna.create_study(

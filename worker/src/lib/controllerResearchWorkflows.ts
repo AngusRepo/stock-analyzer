@@ -16,27 +16,11 @@ function requireController(env: Bindings): void {
   }
 }
 
-export async function runWeeklyAudit(env: Bindings) {
+export async function runWeeklyAudit(env: Bindings, runDate?: string,
+  context: {schedulerTicketId?: string; schedulerRunId?: string} = {}) {
   requireController(env)
-
-  const resp = await controllerFetch(env, '/audit/weekly', {
-    method: 'POST',
-    timeoutMs: 120_000,
-  }).catch(() => null)
-  if (!resp?.ok) return 'failed'
-
-  const result = await resp.json() as Record<string, any>
-  if (result.status !== 'success') return `failed: ${result.error ?? result.status}`
-
-  if ((env as any).DISCORD_WEBHOOK_URL && result.report) {
-    const { sendDiscordNotification } = await import('./notify')
-    await sendDiscordNotification(
-      (env as any).DISCORD_WEBHOOK_URL,
-      `Weekly AI Audit Report (${result.report_date})\n\n${result.report}`.slice(0, 2000),
-    )
-  }
-
-  return `report generated, return=${result.l1?.weekly_return ?? 'N/A'}`
+  const { dispatchWeeklyOperation } = await import('./weeklyOperationsDispatch')
+  return dispatchWeeklyOperation(env, 'weekly-audit', runDate, context)
 }
 
 type OptunaCadence = 'weekly' | 'monthly'
@@ -464,7 +448,28 @@ export async function runActive8OofLifecycle(
     if (stage?.status === 'waiting' && stage.last_error === 'awaiting_premarket') {
       // The nightly producer sealed L3; only morning publication can create this plan.
       // Do not turn a known phase boundary into repeated Cloud Run dispatches.
-      throw new Error(`active8_daily_blocked:awaiting_premarket:signal_date=${runDate}:job_dispatched=false`)
+      const { PREMARKET_WAIT, parkActive8PremarketTicket } = await import('./active8PremarketWait')
+      const waitingOwner = options.schedulerTicketId && options.schedulerRunId
+        ? await databaseForDataDomain(env, 'ops').prepare(`SELECT ticket_kind FROM scheduler_execution_tickets_v1
+            WHERE ticket_id=? AND run_id=?`).bind(options.schedulerTicketId, options.schedulerRunId)
+            .first<{ticket_kind: string}>() : null
+      const park = waitingOwner?.ticket_kind === 'logical_child' || options.continuationAttempt != null
+      if (park && options.schedulerTicketId && options.schedulerRunId) {
+        await parkActive8PremarketTicket(env, {
+          type: 'active8_oof_continuation', cursor: 0, triggerTime: runDate,
+          runId: options.schedulerRunId, schedulerRunId: options.schedulerRunId,
+          schedulerTicketId: options.schedulerTicketId, oofCadence: 'daily',
+          oofContinuationAttempt: 1, oofExpectedCohortId: options.expectedCohortId,
+        })
+      }
+      return `${park ? PREMARKET_WAIT : PREMARKET_WAIT.replace('status=pending', 'status=skipped')} signal_date=${runDate}`
+    }
+  }
+
+  if (cadence === 'daily' && runDate && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1') {
+    const { resumeActive8PremarketTickets } = await import('./active8PremarketWait')
+    if (await resumeActive8PremarketTickets(env, runDate)) {
+      return 'active8_oof_lifecycle status=skipped reason=parked_ticket_resumed job_dispatched=false'
     }
   }
 

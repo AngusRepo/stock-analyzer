@@ -175,6 +175,8 @@ def _replay(
         end_date=end_date,
         symbols=symbols,
     )
+    from services.research_corporate_preflight import require_corporate_coverage
+    require_corporate_coverage(dataset, start_date, end_date)
     metrics = replay_period(
         dataset=dataset,
         start_date=start_date,

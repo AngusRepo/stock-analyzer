@@ -33,6 +33,12 @@ def _candidate_row() -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def snapshot_date(monkeypatch):
+    monkeypatch.setattr("services.research_data_access.latest_snapshot_business_end_date",
+                        lambda **kwargs: kwargs["as_of_business_date"])
+
+
 @pytest.fixture
 def learning_batches(monkeypatch):
     batches: list[list[tuple[str, list]]] = []

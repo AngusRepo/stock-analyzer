@@ -3,7 +3,7 @@ import { databaseForDataDomain, type DataDomain } from './dataDomainRegistry'
 
 const D1_MAX_BYTES = 10_000_000_000
 const DRAIN_UTILIZATION_PCT = 75
-const CRITICAL_UTILIZATION_PCT = 85
+const CRITICAL_UTILIZATION_PCT = 90
 
 const DRAIN_BLOCKED_TASKS = new Set([
   'weekly-optuna',
@@ -136,18 +136,15 @@ export function classifyStorageAdmission(
     }
   }
   if (utilizationPct >= DRAIN_UTILIZATION_PCT) {
-    const drainBlocked = DRAIN_BLOCKED_TASKS.has(task)
     return {
-      allowed: !drainBlocked,
+      allowed: true,
       managed,
       task,
       utilizationPct,
       status: 'drain',
-      reason: drainBlocked
-        ? 'drain_blocks_expansion_or_research_write'
-        : managed
-          ? 'drain_allows_guarded_model_refresh'
-          : 'drain_exempt_trading_or_capacity_reducing_path',
+      reason: managed
+        ? 'drain_monitors_writes_below_90_percent'
+        : 'drain_exempt_trading_or_capacity_reducing_path',
     }
   }
   return {

@@ -51,7 +51,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:20-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'indicator-queue-watchdog', name: 'Indicator Queue Watchdog', schedule: 'Weekdays 21:00-01:55 / 5m', cron: '*/5 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'allocator-ev-lifecycle-watchdog', name: 'Allocator EV Lifecycle Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'daily' },
-  { id: 'active8-oof-daily', name: 'Active-8 Daily Evidence', schedule: 'Snapshot-ready event + Tue-Sat watchdog', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
+  { id: 'active8-oof-daily', name: 'Active-8 Daily Evidence', schedule: 'Snapshot-ready event + daily recovery (waits for premarket)', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'After indicators, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6 },
@@ -698,6 +698,10 @@ export function resolveSchedulerLogStatus(
   nowMs = Date.now(),
 ): SchedulerResolvedStatus {
   if (!log) return { status: null, staleRunning: false }
+  if (def?.id === 'active8-oof-daily' && ['triggered', 'skipped'].includes(log.status)
+    && log.summary?.includes('reason=awaiting_premarket job_dispatched=false')) {
+    return { status: 'waiting', staleRunning: false }
+  }
   if (log.status === 'success') return { status: 'success', staleRunning: false }
   if (log.status === 'error') return { status: 'failed', staleRunning: false }
   if (log.status === 'skipped') return { status: 'skip', staleRunning: false }

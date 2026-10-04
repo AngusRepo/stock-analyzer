@@ -27,6 +27,7 @@ async function fixture(run: (value: any) => Promise<void>) {
     }
     await ops.prepare(`CREATE TABLE pipeline_stage_runs (business_date TEXT,stage TEXT,canonical_run_id TEXT,
       status TEXT,cursor_key TEXT,PRIMARY KEY(business_date,stage))`).run()
+    await ops.prepare('ALTER TABLE pipeline_stage_runs ADD COLUMN last_error TEXT').run()
     await ops.prepare(`CREATE TABLE strategy_learning_runs (business_date TEXT PRIMARY KEY,canonical_run_id TEXT,
       producer_run_id TEXT,status TEXT,expected_candidates INTEGER,processed_candidates INTEGER,
       expected_decision_rows INTEGER,persisted_decision_rows INTEGER,production_authority_intent INTEGER,
@@ -38,7 +39,7 @@ async function fixture(run: (value: any) => Promise<void>) {
     await learning.prepare(`INSERT INTO dataset_snapshots VALUES('fixture-snapshot',?,
       'backtest_dataset','compute','ready')`).bind(day).run()
     for (const stage of ['pipeline_execution', 'post_pipeline_chain', 'verify_v2', 'screener_v2', 'post_verify_chain']) {
-      await ops.prepare('INSERT INTO pipeline_stage_runs VALUES(?,?,?,?,?)')
+      await ops.prepare('INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key) VALUES(?,?,?,?,?)')
         .bind(day, stage, canonical, 'success', stage === 'screener_v2' ? 'fixture-screener' : null).run()
     }
     await ops.prepare(`INSERT INTO strategy_learning_runs VALUES(?,?,?,'success',1,1,1,1,0,'evidence_only',NULL,CURRENT_TIMESTAMP)`)
@@ -343,8 +344,7 @@ test('delayed continuation cannot redispatch an already successful exact child',
 }))
 
 
-test('queued Active-8 awaiting premarket settles its ticket and acknowledges without dispatch', async () => fixture(async f => {
-  await f.ops.prepare('ALTER TABLE pipeline_stage_runs ADD COLUMN last_error TEXT').run()
+test('queued Active-8 awaiting premarket parks its ticket and acknowledges without dispatch', async () => fixture(async f => {
   await f.ops.prepare("UPDATE pipeline_stage_runs SET status='waiting',last_error='awaiting_premarket' WHERE business_date=? AND stage='pipeline_execution'").bind(f.day).run()
   f.env.PAPER_DAILY_PLAN_OWNER = 'premarket_once_v1'
   f.env.ML_CONTROLLER_URL = 'https://controller.invalid'
@@ -357,10 +357,12 @@ test('queued Active-8 awaiting premarket settles its ticket and acknowledges wit
       schedulerTicketId: f.child.ticket_id, schedulerRunId: f.child.run_id } as any
     await processUpdateBatch(message, f.env, {} as any)
     const settled = await f.row(f.child.ticket_id)
-    assert.equal(settled.status, 'blocked')
-    assert.match(settled.last_error, /^active8_daily_blocked:awaiting_premarket:/)
+    assert.equal(settled.status, 'triggered')
+    assert.equal(settled.last_error, null)
+    assert.match(settled.last_summary, /reason=awaiting_premarket/)
+    assert.equal(JSON.parse(settled.metadata_json).premarket_resume.schedulerTicketId, f.child.ticket_id)
     await processUpdateBatch(message, f.env, {} as any)
-    assert.deepEqual(await f.row(f.child.ticket_id), settled, 'redelivery preserves terminal owner')
+    assert.equal((await f.row(f.child.ticket_id)).attempt_count, settled.attempt_count, 'waiting does not consume attempts')
     assert.equal(requests, 0)
   } finally { globalThis.fetch = originalFetch }
 }))

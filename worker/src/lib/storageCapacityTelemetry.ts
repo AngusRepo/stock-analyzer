@@ -27,7 +27,7 @@ export type StorageCapacityRow = {
 }
 
 function capacityStatus(utilizationPct: number): StorageCapacityStatus {
-  if (utilizationPct >= 85) return 'critical'
+  if (utilizationPct >= 90) return 'critical'
   if (utilizationPct >= 75) return 'drain'
   if (utilizationPct >= 65) return 'warning'
   return 'healthy'

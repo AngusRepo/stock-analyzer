@@ -887,3 +887,13 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(scoped?.resolvedDisplay.status === 'success', 'same-date callback terminal status must remain authoritative')
   assert(scoped?.resolvedDisplay.statusRunDate === '2026-08-27', 'same-date callback must retain the DAG business date')
 }
+
+
+for (const status of ['triggered','skipped'] as const) {
+  const waiting = resolveSchedulerLogStatus({ task:'active8-oof-daily',status,
+    summary:'active8_oof_lifecycle status=pending reason=awaiting_premarket job_dispatched=false',
+    timestamp:'2026-10-02T15:00:00Z',duration_ms:0 },
+    {id:'active8-oof-daily',group:'daily'},Date.parse('2026-10-04T12:00:00Z'))
+  assert(waiting.status === 'waiting', 'known premarket boundary is waiting')
+  assert(waiting.staleRunning === false, 'holiday wait does not expire as running compute')
+}

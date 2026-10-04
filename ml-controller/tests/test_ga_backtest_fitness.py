@@ -82,7 +82,7 @@ def test_paper_held_symbols_are_not_whole_ga_universe_coverage(monkeypatch):
     snapshot={'snapshot_id':'s','metadata_json':{'component_meta':{'corporate_source_records':{'row_count':120}}}}
     monkeypatch.setattr(weekly_evidence_service,'_resolve_snapshot',lambda day, **kwargs:(snapshot,days[0],days[-1]))
     monkeypatch.setattr(backtest_engine,'_snapshot_component_uris',lambda s:dict.fromkeys(['corporate_source_records',*COMPONENTS],'gs://immutable'))
-    dataset=SimpleNamespace(trading_days=days,corporate_sources={d:{'covered_symbols':['2485']} for d in days},
+    dataset=SimpleNamespace(trading_days=days,corporate_sources={d:{'actions':[],'blockers':{},'covered_symbols':['2485']} for d in days},
         get_universe_at=lambda d:{'2485','2330'})
     monkeypatch.setattr('services.ga_backtest_fitness.preflight_corporate_tape',lambda uri, **kwargs:None)
     monkeypatch.setattr(backtest_engine.BacktestDataset,'load_from_snapshot_manifest',lambda **kw:dataset)
@@ -101,12 +101,12 @@ def test_original_tape_blocks_insufficient_history_before_prices(monkeypatch):
     assert calls==['gs://original-small-tape']
 
 
-def test_history_preflight_accepts_declared_scope_without_changing_stock_universe(monkeypatch):
+def test_history_preflight_blocks_incomplete_scope_without_changing_stock_universe(monkeypatch):
     from services import backtest_engine,weekly_evidence_service,trading_config_loader,backtest_snapshot_state
     from services.ga_backtest_fitness import prepare_ga_backtest
     days=[(date(2025,1,1)+timedelta(days=i)).isoformat() for i in range(120)]
     snapshot={'snapshot_id':'s','checksum':'unchanged'}
-    dataset=SimpleNamespace(trading_days=days,corporate_sources={d:{'covered_symbols':['2485']} for d in days},
+    dataset=SimpleNamespace(trading_days=days,corporate_sources={d:{'actions':[],'blockers':{},'covered_symbols':['2485']} for d in days},
         get_universe_at=lambda d:{'2485','2330'})
     monkeypatch.setattr(weekly_evidence_service,'_resolve_snapshot',lambda *a,**kw:(snapshot,days[0],days[-1]))
     monkeypatch.setattr(backtest_engine,'_snapshot_component_uris',lambda s:dict.fromkeys(
@@ -120,10 +120,11 @@ def test_history_preflight_accepts_declared_scope_without_changing_stock_univers
     dataset.market_risk=pl.DataFrame({'date':days})
     dataset.replay_frames={'signals':pl.DataFrame({'prediction_date':days}),
         'market_breadth':pl.DataFrame({'date':days}),'us_market_signals':pl.DataFrame({'date':days})}
-    prepared=prepare_ga_backtest(as_of_date=days[-1])
-    assert prepared.dataset is dataset
-    assert prepared.dataset.get_universe_at(days[0])=={'2485','2330'}
-    assert prepared.snapshot['checksum']=='unchanged'
+    from services.research_corporate_preflight import CorporateCoverageError
+    with pytest.raises(CorporateCoverageError):
+        prepare_ga_backtest(as_of_date=days[-1])
+    assert dataset.get_universe_at(days[0])=={'2485','2330'}
+    assert snapshot['checksum']=='unchanged'
 
 
 def test_missing_held_evidence_aborts_population_and_preserves_exact_requirement(monkeypatch):

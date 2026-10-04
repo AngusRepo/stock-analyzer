@@ -201,6 +201,9 @@ def evaluate_params(dataset, start_date, end_date, params):
         metrics = replay_period(dataset, start_date, end_date, deepcopy(params),
                                 initial_capital=1_000_000, mode="A", verbose=False)
     except Exception as exc:
+        from services.research_corporate_preflight import is_corporate_data_error
+        if is_corporate_data_error(exc):
+            raise
         logger.exception("[optuna_screener] replay failed")
         return {"category": "replay_error", "reject_reason": type(exc).__name__, "metrics": {}}
     try:
@@ -321,6 +324,9 @@ def run_search(
         business_date=end_date,
         mode=data_mode,
     )
+
+    from services.research_corporate_preflight import require_corporate_coverage
+    require_corporate_coverage(dataset, start_date, end_date)
 
     evidence_id = SCHEMA + '-' + uuid.uuid4().hex
     try:

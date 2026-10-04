@@ -1,6 +1,7 @@
 import { twToday } from './dateUtils'
 import {
   runModelIcFullCheck,
+  runWeeklyAudit,
   runActive8OofLifecycle,
   runObsidianDaily,
   runPaperActivePostmarketPromotion,
@@ -33,7 +34,7 @@ export function buildAdminGcpTriggerTaskMap(
     'obsidian-daily': async () => runObsidianDaily(c.env, twToday()),
     'obsidian-sync': async () => runObsidianDaily(c.env, twToday()),
     'regime-compute': async () => runRegimeCompute(c.env, requestedRunDate()),
-    'model-ic-full-check': async () => runModelIcFullCheck(c.env),
+    'model-ic-full-check': async () => runModelIcFullCheck(c.env, requestedRunDate(), schedulerContext),
     'finlab-v4-backfill': async () => runFinLabV4Backfill(
       c.env,
       requestedRunDate(),
@@ -77,7 +78,7 @@ export function buildAdminGcpTriggerTaskMap(
       return runAllocatorEvLifecycleWatchdog(c.env, requestedRunDate())
     },
     'paper-active-postmarket': async () => runPaperActivePostmarketPromotion(c.env, requestedRunDate()),
-    'weekly-audit': () => deps.runWeeklyAudit(),
+    'weekly-audit': () => runWeeklyAudit(c.env, requestedRunDate(), schedulerContext),
     'verify-v2': async () => runVerifyV2Repair(c.env, requestedRunDate(), {
       resumeWaiting: c.req.query('retry') === '1',
     }),

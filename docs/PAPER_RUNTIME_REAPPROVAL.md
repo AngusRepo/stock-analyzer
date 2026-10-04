@@ -19,3 +19,7 @@ The September 29 odd-lot release adds one Paper execution setting absent from th
 Rollback: revoke the supplemental record (approved=false) to fail closed, or restore the archived prior supplemental value together with its matching source. Removing supplementation does not authorize changed runtime code under an old admission.
 
 2026-09-24 source receipt: audits/model-pool-502-20260924/DIAGNOSIS.md; runtime-preflight.json; workbench-profile.json. User explicitly approved the scoped mechanism after automatic review required that authorization. No real trading authorized.
+
+## 2026-10-04 exact TabPack/monthly retirement
+
+The dedicated `:2026-10-04-tabpack-monthly-retirement` key has priority only in the new revision. Its signed `approved_tabpack_runtime_change` must match `TABPACK_RUNTIME_CHANGE` exactly: three pinned allocator source transitions and S12 assist 1 to 0 / gate assist_entry to observe. No unknown differences are ignored. Old production continues to use the GA release key. The original admission, incumbent model, risk settings and live-order flags remain enforced. This code declaration does not grant approval to write KV.

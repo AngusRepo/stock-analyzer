@@ -3603,6 +3603,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     model_profiles(schema_version=req.model_profile_schema_version)  # Validate before dispatch.
     config = load_merged_trading_config_with_contract().config
     new_distribution = config.get('l4Distribution') is not None
+    single_b = (config.get('l4Distribution') or {}).get('operating_mode') == 'single_b_tabpack_v1'
+    from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
+    if single_b and 'model_profile_schema_version' not in req.model_fields_set:
+        req.model_profile_schema_version = TIMEXER_EXO_PROFILE_SCHEMA
+    if single_b and req.model_profile_schema_version != TIMEXER_EXO_PROFILE_SCHEMA:
+        raise HTTPException(409, 'single_b_oof_requires_exogenous_profile')
     if (cadence == 'daily' and not req.dry_run and scheduler_ticket_id
             and os.environ.get('OOF_MATERIALIZE_JOB_EXECUTION', '').strip() != '1'):
         # Validate the same active Paper plan as the job; never reuse an OOF-only
@@ -3732,6 +3738,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         parent = (exact_path, exact_manifest)
         # An exact continuation keeps its immutable cohort's recipe.
         req.model_profile_schema_version = exact_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION)
+        if single_b and req.model_profile_schema_version != TIMEXER_EXO_PROFILE_SCHEMA:
+            raise HTTPException(409, 'single_b_oof_continuation_profile_mismatch')
     else:
         parent = (_latest_ready_oof_manifest(bucket) if req.model_profile_schema_version == MODEL_PROFILE_SCHEMA_VERSION
                   else _latest_ready_oof_manifest(bucket, model_profile_schema_version=req.model_profile_schema_version))

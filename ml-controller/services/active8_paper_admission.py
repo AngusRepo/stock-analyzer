@@ -70,6 +70,20 @@ RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-budget-ledger-recovery'
 SWING_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-02-single-plan-swing'
 PAID_PROVIDER_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-03-paid-provider-retirement'
 GA_RECOVERY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-03-ga-event-recovery'
+TABPACK_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-04-tabpack-monthly-retirement'
+TABPACK_RUNTIME_CHANGE = {'release': '2026-10-04-tabpack-monthly-retirement',
+ 'scope': 'paper',
+ 'maturity_transfer': False,
+ 'efficacy_status': 'unproven',
+ 'allocator_sources': {'l4_residual_tabpack.py': {'previous': '5e4bd04d809094ae453a7db6df0297ae9c0268d435b47ee43b63e53048effe5a',
+                                                  'approved': '09efa26dfeb66da748939b00faae46c2b6f97b82d08119f203e3f9ab0caaa1b8'},
+                       'l4_tabpack_weights.py': {'previous': None,
+                                                 'approved': '5240a98a713e8e18f3308da2895e5ed5465f41c1fa6c5a801893d4e5830d1cc5'},
+                       'paired_nav_collection.py': {'previous': '998bc3c884f0cdbed7cd1bc2c2cf012f5ad580cdb4a98b4d7ad58ac963cfc805',
+                                                    'approved': '76cc9ad2d8afff10d1a4f3708890cd683cec1f9ccd3c35a7d8406f32140b5690'}},
+ 'variables': {'S12_INTRADAY_ASSIST_ENABLED': {'previous': '1', 'approved': '0'},
+               'S12_INTRADAY_GATE_MODE': {'previous': 'assist_entry', 'approved': 'observe'}}}
+
 PAID_PROVIDER_SOURCE_CHANGE = {
     'release': '2026-10-03-paid-provider-retirement',
     'scope': 'paper', 'maturity_transfer': False,
@@ -233,6 +247,24 @@ def validate_runtime_approval(approval, admission, *, now=None):
                         or after.get(section, {}).get(name) != transition['approved']):
                     raise RuntimeError('active8_paper_paid_provider_source_change_invalid')
                 after[section][name] = transition['previous']
+    tabpack_change = approval.get('approved_tabpack_runtime_change')
+    if tabpack_change is not None:
+        if tabpack_change != TABPACK_RUNTIME_CHANGE:
+            raise RuntimeError('active8_paper_tabpack_change_invalid')
+        for section, transitions in (
+            ('allocator_source_identity', TABPACK_RUNTIME_CHANGE['allocator_sources']),
+            ('variables', TABPACK_RUNTIME_CHANGE['variables']),
+        ):
+            prior = before[section] if section != 'variables' else before['native_execution_policy']['variables']
+            current = after[section] if section != 'variables' else after['native_execution_policy']['variables']
+            for name, transition in transitions.items():
+                if (prior.get(name) != transition['previous'] or current.get(name) != transition['approved']
+                        or (transition['previous'] is None and name in prior)):
+                    raise RuntimeError('active8_paper_tabpack_change_mismatch')
+                if transition['previous'] is None:
+                    current.pop(name)
+                else:
+                    current[name] = transition['previous']
     if digest(before) != digest(after):
         raise RuntimeError('active8_paper_runtime_approval_policy_changed')
     return deepcopy(approval)
@@ -251,8 +283,10 @@ def verify_active_approval(admission, *, now=None):
     release_key=SWING_RUNTIME_RELEASE_KEY if os.environ.get('PIPELINE_DAILY_PLAN_OWNER')=='premarket_once_v1' else RUNTIME_RELEASE_KEY
     # Stage this exact source release separately. The old production revision
     # keeps reading its old key until the candidate has passed admission.
-    runtime = (kv_client.get_json(GA_RECOVERY_RUNTIME_RELEASE_KEY, default=None, strict=True)
+    runtime = (kv_client.get_json(TABPACK_RUNTIME_RELEASE_KEY, default=None, strict=True)
                if release_key == SWING_RUNTIME_RELEASE_KEY else None)
+    if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
+        runtime = kv_client.get_json(GA_RECOVERY_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
         runtime = kv_client.get_json(PAID_PROVIDER_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None:

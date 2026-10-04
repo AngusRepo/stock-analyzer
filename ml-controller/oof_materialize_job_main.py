@@ -281,7 +281,21 @@ async def _execute_oof_lifecycle(
         try:
             profile = os.environ.get("OOF_MATERIALIZE_MODEL_PROFILE_SCHEMA", "active8-release-model-profiles-v3")
             prep_options = {} if profile == "active8-release-model-profiles-v3" else {"model_profile_schema_version":profile}
-            prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False, **prep_options)
+            if cadence in ('weekly', 'monthly'):
+                from services.oof_prep_events import prep_context, reconcile_current
+                from services.pipeline_input_events import InputDeferred
+                with prep_context(cadence=cadence, end_date=end_date, profile=profile, controls={
+                        'promote':promote, 'dispatch_full_fit':dispatch_full_fit,
+                        'continuation_attempt':continuation_attempt, 'continuation_only':continuation_only}):
+                    try:
+                        reconcile_current()
+                        prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False, **prep_options)
+                    except InputDeferred as exc:
+                        return {'status': 'pending', 'reason': 'awaiting_oof_' + exc.kind,
+                                'dependency_retry_required': True,
+                                'prep_lifecycle': {'stage_path': exc.path, 'cloud_compute_stopped': True}}
+            else:
+                prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False, **prep_options)
         except Active8PrepDependencyPending as exc:
             return {
                 "status": "pending",

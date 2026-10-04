@@ -5,6 +5,15 @@ const bars:SwingMinute[]=Array.from({length:20},(_,i)=>({startMs:open+i*minute,o
 const prior=Array.from({length:60},(_,i)=>({date:new Date(Date.UTC(2026,7,3+i)).toISOString().slice(0,10),close:i===59?100:98}))
 const base:SwingEntryInput={tradeDate:date,nowMs:open+20*minute,label:'start',bars,benchmarkBars:bars.map(b=>({...b,open:100,high:100,low:100,close:100})),previousClose:100,benchmarkPreviousClose:100,benchmarkPriorCloses:prior,previousSession:'2026-10-01',quote:{price:101,observedAtMs:open+20*minute},limitUp:110,maxBuyPrice:103,boughtToday:false,alreadyHeld:false,planReady:true,candidateAllowed:true}
 assert.equal(assessSwingEntry(base).action,'pass')
+for(const elapsed of [245,250,255,260]) {
+  const lateBars=Array.from({length:elapsed},(_,i)=>({...bars[Math.min(i,19)],startMs:open+i*minute}))
+  const late={...base,nowMs:open+elapsed*minute,bars:lateBars,
+    benchmarkBars:lateBars.map(b=>({...b,open:100,high:100,low:100,close:100})),
+    quote:{price:101,observedAtMs:open+elapsed*minute}}
+  assert.equal(assessSwingEntry(late).action,'pass',`late entry at ${elapsed} minutes`)
+}
+assert.equal(assessSwingEntry({...base,nowMs:open+261*minute}).reason,'swing_next_bar_submission_missed')
+assert.equal(assessSwingEntry({...base,nowMs:open+265*minute}).reason,'swing_entry_window_closed')
 assert.equal(assessSwingEntry({...base,nowMs:open+19*minute+59_999}).reason,'swing_entry_window_closed')
 assert.equal(assessSwingEntry({...base,nowMs:open+21*minute}).reason,'swing_next_bar_submission_missed')
 assert.equal(assessSwingEntry({...base,bars:bars.slice(1)}).reason,'swing_minutes_missing')

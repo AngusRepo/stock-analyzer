@@ -23,7 +23,7 @@ import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions']) test(`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction']) test(`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
   const f=l4NativeFixture()
   f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
   f.env.PAPER_INTRADAY_ENTRY_OWNER=SWING_POLICY_VERSION
@@ -59,7 +59,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions']) test(`native swin
       const px=url.includes('/0050')?100:20
       const open=Date.parse('2026-09-14T09:00:00+08:00')
       return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
-        data:Array.from({length:20},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px,high:px,low:px,close:px,volume:100}))})
+        data:Array.from({length:scenario==='closing_auction'?260:20},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px,high:px,low:px,close:px,volume:100}))})
     }
     if(url.includes('taifex'))return new Response('',{status:503})
     throw new Error('unseeded_native_source:'+url)
@@ -119,7 +119,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions']) test(`native swin
       assert.equal(review.ready,true)
       assert.deepEqual(await finalizeSinglePlan(f.env,'2026-09-14',input),review)
     })
-    f.ports.nowMs=Date.parse('2026-09-14T01:20:00Z')
+    f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:20:00Z')
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
@@ -145,12 +145,21 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions']) test(`native swin
       f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(2,?,100)').run(day)
       f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(1,?,?)').run(day,scenario==='daily_orl'?19.8:20)
     }
-    quotePrice=scenario==='hard_stop'?18.3:20
-    f.ports.nowMs=Date.parse(exitDay+(scenario==='20_sessions'?'T13:24:00+08:00':'T09:05:00+08:00'))
+    quotePrice=['hard_stop','closing_auction'].includes(scenario)?18.3:20
+    f.ports.nowMs=Date.parse(exitDay+(scenario==='20_sessions'?'T13:24:00+08:00':scenario==='closing_auction'?'T13:25:00+08:00':'T09:05:00+08:00'))
     await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env,{halt:false,forceLiquidate:false,targetExposurePct:1,maxPositionPct:.2} as any))
+    if(scenario==='closing_auction') {
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,0)
+      const blocked:any=f.sqls.paper.prepare('SELECT shares,trade_lifecycle_json FROM paper_positions').get()
+      assert.equal(blocked.shares,1000)
+      assert.equal(JSON.parse(blocked.trade_lifecycle_json).swing.pendingExit.reason,'swing_hard_stop_8')
+      quotePrice=20 // A rebound must not erase the deferred disaster exit.
+      f.ports.nowMs=Date.parse(sessions[2]+'T09:05:00+08:00')
+      await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env,{halt:false,forceLiquidate:false,targetExposurePct:1,maxPositionPct:.2} as any))
+    }
     const exits:any[]=f.sqls.paper.prepare("SELECT * FROM paper_orders WHERE side='sell'").all()
     assert.equal(exits.length,1,JSON.stringify(f.sqls.paper.prepare("SELECT reason,detail_json FROM paper_execution_events WHERE side='sell'").all()))
-    assert.match(exits[0].note,new RegExp('swing_'+scenario))
+    assert.match(exits[0].note,new RegExp('swing_'+(scenario==='closing_auction'?'hard_stop':scenario)))
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions WHERE shares>0').get()?.n,0)
   } finally {f.close()}
 })

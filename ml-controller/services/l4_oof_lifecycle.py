@@ -54,31 +54,45 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
     from routers.walk_forward import dispatch_oof_full_fit_training,_materialize_nav_with_reviews
     manifest,_=load_verified_oof_manifest(manifest_path,bucket=bucket,require_formal_lineage=True)
     if manifest['cohort_id']!=cohort_id:raise ValueError('l4_native_base_manifest_mismatch')
-    predictions=load_oof_prediction_rows(manifest,bucket=bucket)
-    index=persist_base_index(manifest=manifest,predictions=predictions,client=client,dry_run=dry_run)
-    del predictions  # The index is complete; L3/L4 own their subsequent data loads.
+    from services.l4_oof_index_receipt import reuse_index, seal_index
+    index = None if dry_run else reuse_index(manifest, bucket, client)
+    if index is None:
+        predictions=load_oof_prediction_rows(manifest,bucket=bucket)
+        index=persist_base_index(manifest=manifest,predictions=predictions,client=client,dry_run=dry_run)
+        del predictions
+        if not dry_run:
+            seal_index(manifest, index, bucket, client)
     full_fit={'status':'not_requested','retry_required':False}
     if dispatch_full_fit and not dry_run:
         full_fit=await dispatch_oof_full_fit_training(manifest=manifest,knowledge_cutoff_date=as_of,
             bucket=bucket,lifecycle_cadence=cadence,allow_new_dispatch=not poll_only)
-    # Existing upstream NAV evidence remains owned by its original evaluator.
-    nav=None if dry_run else _materialize_nav_with_reviews(business_date=as_of,learning_client=client)
+    # Training candidates do not consume execution-accounting evidence. The
+    # daily accounting/release owners retain all NAV and promotion gates.
+    nav = ({'status': 'not_requested', 'owner': 'daily_nav',
+            'reason': 'training_candidate_does_not_require_account_nav',
+            'accounting_verified': False, 'promotion_allowed': False}
+           if cadence in ('weekly', 'monthly') else
+           None if dry_run else _materialize_nav_with_reviews(business_date=as_of,learning_client=client))
     refresh=None
     if cadence in ('weekly','monthly') and not dry_run and not full_fit.get('retry_required'):
         from scripts.l4_distribution_refresh_job import execute
         registry=full_fit.get('release_registry') or {}
         target=(registry.get('ensemble_candidate') or {}).get('artifact_id')
-        if dispatch_full_fit and not target:
+        if not target:
             refresh={'status':'awaiting_l3_candidate','promoted':False,'reason':'full_fit_has_no_usable_ensemble_candidate'}
         else:
             from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
             options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') == TIMEXER_EXO_PROFILE_SCHEMA else {}
             refresh=execute(as_of=as_of,cadence=cadence,target_l3_artifact_id=target,**options)
-    result={'status':'dry_run' if dry_run else 'pending' if full_fit.get('retry_required') else 'materialized',
-        'dependency_retry_required':bool(full_fit.get('retry_required')),'calendar':calendar or {},
+    refresh_status = (refresh or {}).get('status')
+    pending = bool(full_fit.get('retry_required')) or refresh_status in ('pending', 'awaiting_l3_candidate')
+    failed = refresh_status == 'failed'
+    result={'status':'dry_run' if dry_run else 'failed' if failed else 'pending' if pending else 'materialized',
+        'dependency_retry_required':pending and not failed,'calendar':calendar or {},
         'cadence':cadence,'knowledge_cutoff_date':as_of,'materialization_owner':'native_l3_new_l4',
         'cohort_id':cohort_id,'persistence':index,'full_fit_dispatch':full_fit,
         'full_fit_retry_required':bool(full_fit.get('retry_required')),'paired_nav_maturity':nav,
+        **({'reason':(refresh or {}).get('reason') or 'awaiting_l4_candidate'} if pending or failed else {}),
         'l4_distribution_refresh':refresh,'promoted':False,'promotion_allowed':False,
         'promotion_reason':'paired_l3_l4_paper_release_required',
         'physical_prediction_coverage':{'date_count':index['prediction_dates'],'min_date':index['min_date'],

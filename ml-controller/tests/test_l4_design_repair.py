@@ -132,10 +132,15 @@ def test_old_engineering_acceptance_cannot_be_reused_after_design_repair(field):
 
 
 def test_scalar_mlp_evaluation_separates_head_mean_and_corrected_ev():
-    from app.l4_mlp_training import AnchoredResidualMLP
     from services.l4_residual_mlp import SCHEMA, OUTPUTS
-    net=AnchoredResidualMLP(inputs=34)
-    state={k:v.detach().tolist() for k,v in net.state_dict().items()}
+    shapes={'input.weight':(128,34),'input.bias':(128,),
+            'output.weight':(1,128),'output.bias':(1,)}
+    for block in range(3):
+        prefix=f'blocks.{block}.transform.'
+        shapes.update({prefix+'0.weight':(128,),prefix+'0.bias':(128,),
+                       prefix+'1.weight':(128,128),prefix+'1.bias':(128,),
+                       prefix+'4.weight':(128,128),prefix+'4.bias':(128,)})
+    state={key:np.zeros(shape,dtype=np.float32).tolist() for key,shape in shapes.items()}
     state['output.bias']=[.125]
     anchor=constant_model()
     correction={'schema_version':SCHEMA,'inputs':34,'width':128,'blocks':3,'output':'scalar_ev_correction',

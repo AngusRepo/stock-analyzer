@@ -61,6 +61,7 @@ import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow }
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { paperDomainDatabase } from '../lib/paperDomainDatabase'
+import { executeContinuousPaperBatch, isPaperContinuousSession } from '../lib/paperContinuousExecution'
 import { getRiskConfig } from '../lib/riskConfig'
 import { validateOrder } from '../lib/validateOrder'
 import { loadAverageMarketVolumeBySymbols, loadPreviousMarketCloseBySymbols } from '../lib/stockIdentityMarketBridge'
@@ -795,7 +796,12 @@ paper.get('/positions', async (c) => {
   const canonicalLifecycleMap = new Map<string, any>()
   const buyOrderNoteMap = new Map<string, unknown>()
   const marketBySymbol = new Map<string, string>()
-  const s12CalibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(c.env, 'learning')).catch(() => [])
+  // Unknown/legacy lifecycles keep historical readers; native swing positions have no S12 owner.
+  const legacyS12Symbols = (positions ?? []).filter((pos: any) => !readSwingState(normalizeCanonicalTradeLifecycle(pos.trade_lifecycle_json)))
+    .map((pos: any) => String(pos.symbol ?? '').trim()).filter(Boolean)
+  const s12CalibrationArtifacts = legacyS12Symbols.length
+    ? await listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(c.env, 'learning')).catch(() => [])
+    : []
   if (positions?.length) {
     const symbols = positionSymbols
     if (symbols.length > 0) {
@@ -807,35 +813,37 @@ paper.get('/positions', async (c) => {
         const symbol = String(row.symbol ?? '').trim()
         if (symbol) marketBySymbol.set(symbol, String(row.market ?? 'UNKNOWN'))
       }
-      const { results: s12Events } = await paperDomainDatabase(c.env).prepare(`
-        SELECT symbol, status, reason, detail_json, created_at
-          FROM paper_execution_events
-         WHERE account_id = ?
-           AND symbol IN (${placeholders})
-           AND event_type = 's12_intraday_structure'
-           AND source = 's12_holding_defense'
-         ORDER BY id DESC
-         LIMIT 80
-      `).bind(ACCOUNT_ID, ...symbols).all<any>()
-      for (const event of s12Events ?? []) {
-        const symbol = String(event.symbol ?? '').trim()
-        if (!symbol || s12HoldingDefenseMap.has(symbol)) continue
-        let detail: any = null
-        try {
-          detail = event.detail_json ? JSON.parse(event.detail_json) : null
-        } catch {
-          detail = null
+      if (legacyS12Symbols.length) {
+        const { results: s12Events } = await paperDomainDatabase(c.env).prepare(`
+          SELECT symbol, status, reason, detail_json, created_at
+            FROM paper_execution_events
+           WHERE account_id = ?
+             AND symbol IN (${legacyS12Symbols.map(() => '?').join(',')})
+             AND event_type = 's12_intraday_structure'
+             AND source = 's12_holding_defense'
+           ORDER BY id DESC
+           LIMIT 80
+        `).bind(ACCOUNT_ID, ...legacyS12Symbols).all<any>()
+        for (const event of s12Events ?? []) {
+          const symbol = String(event.symbol ?? '').trim()
+          if (!symbol || s12HoldingDefenseMap.has(symbol)) continue
+          let detail: any = null
+          try {
+            detail = event.detail_json ? JSON.parse(event.detail_json) : null
+          } catch {
+            detail = null
+          }
+          s12HoldingDefenseMap.set(symbol, {
+            status: event.status ?? null,
+            reason: event.reason ?? null,
+            detail,
+            created_at: event.created_at ?? null,
+            active: Boolean(detail?.holding_defense?.active),
+            action: detail?.holding_defense?.action ?? null,
+            trailing_stop_before: detail?.holding_defense?.trailing_stop_before ?? null,
+            trailing_stop_after: detail?.holding_defense?.trailing_stop_after ?? null,
+          })
         }
-        s12HoldingDefenseMap.set(symbol, {
-          status: event.status ?? null,
-          reason: event.reason ?? null,
-          detail,
-          created_at: event.created_at ?? null,
-          active: Boolean(detail?.holding_defense?.active),
-          action: detail?.holding_defense?.action ?? null,
-          trailing_stop_before: detail?.holding_defense?.trailing_stop_before ?? null,
-          trailing_stop_after: detail?.holding_defense?.trailing_stop_after ?? null,
-        })
       }
 
       const { results: pendingExitEvents } = await paperDomainDatabase(c.env).prepare(`
@@ -914,7 +922,8 @@ paper.get('/positions', async (c) => {
     const unrealizedPnl    = marketValue - costBasis
     const unrealizedPnlPct = costBasis > 0 ? (unrealizedPnl / costBasis * 100) : 0
     const rawCanonicalLifecycle = normalizeCanonicalTradeLifecycle(pos.trade_lifecycle_json) ?? canonicalLifecycleMap.get(pos.symbol) ?? null
-    const calibration = resolveS12TwCalibrationArtifact(s12CalibrationArtifacts, {
+    const swing=readSwingState(rawCanonicalLifecycle)
+    const calibration = swing ? null : resolveS12TwCalibrationArtifact(s12CalibrationArtifacts, {
       entryCohort: s12TwEntryCohortFromState(rawCanonicalLifecycle?.entry?.s12?.state),
       marketSegment: marketBySymbol.get(pos.symbol) ?? 'UNKNOWN',
     })
@@ -924,7 +933,6 @@ paper.get('/positions', async (c) => {
       calibration?.exit ?? null,
     )
     const migratedLifecycleJson = migrateCanonicalLifecycleExitFusionV2(rawCanonicalLifecycle, fusionTargets)
-    const swing=readSwingState(rawCanonicalLifecycle)
     const canonicalLifecycle = swing ? rawCanonicalLifecycle : parseJsonRecord(migratedLifecycleJson) ?? rawCanonicalLifecycle
     const tp1Price = swing ? null : fusionTargets.runnerTp1 ?? finiteNumber(pos.tp1_price)
     const tp2Price = swing ? null : fusionTargets.runnerTp2 ?? finiteNumber(pos.tp2_price)
@@ -961,10 +969,10 @@ paper.get('/positions', async (c) => {
       tp1_source:       swing ? null : fusionTargets.runnerTp1Source ?? canonicalLifecycle?.exit?.tp1Source ?? null,
       tp_fusion_policy: swing ? null : fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2' : canonicalLifecycle?.exit?.fusionPolicy ?? null,
       tp_fusion_calibration_artifact_id: calibration?.artifactId ?? null,
-      s12_near_pressure_price: fusionTargets.nearPressureTp1 ? Math.round(fusionTargets.nearPressureTp1 * 10) / 10 : null,
-      s12_near_pressure_source: fusionTargets.nearPressureTp1Source,
+      s12_near_pressure_price: !swing && fusionTargets.nearPressureTp1 ? Math.round(fusionTargets.nearPressureTp1 * 10) / 10 : null,
+      s12_near_pressure_source: swing ? null : fusionTargets.nearPressureTp1Source,
       tp1_hit:          !!pos.tp1_hit,
-      s12_holding_defense: s12HoldingDefenseMap.has(pos.symbol)
+      s12_holding_defense: !swing && s12HoldingDefenseMap.has(pos.symbol)
         ? {
             ...s12HoldingDefenseMap.get(pos.symbol),
             execution: pendingExitExecutionMap.get(pos.symbol) ?? null,
@@ -1325,6 +1333,7 @@ paper.get('/gate-calibration', async (c) => {
 // POST /api/paper/buy — manual paper buy.
 
 paper.post('/buy', async (c) => {
+  if (!isPaperContinuousSession()) return c.json({ error: '僅逐筆交易時段允許 Paper 成交；13:25 起禁止交易', reason: 'paper_outside_continuous_session' }, 409)
   const cfg = await getTradingConfig(c.env.KV)
   const riskCfg = await getRiskConfig(c.env.KV)
   const body = await c.req.json<any>().catch(() => ({}))
@@ -1488,7 +1497,7 @@ paper.post('/buy', async (c) => {
     }),
   )
 
-  await paperDomainDatabase(c.env).batch([
+  await executeContinuousPaperBatch(c.env,[
     // Upsert position immediately for T+0 paper state.
     paperDomainDatabase(c.env).prepare(`
       INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
@@ -1559,6 +1568,7 @@ paper.post('/buy', async (c) => {
 // POST /api/paper/sell — manual paper sell.
 
 paper.post('/sell', async (c) => {
+  if (!isPaperContinuousSession()) return c.json({ error: '僅逐筆交易時段允許 Paper 成交；13:25 起禁止交易', reason: 'paper_outside_continuous_session' }, 409)
   const cfg = await getTradingConfig(c.env.KV)
   const body = await c.req.json<any>().catch(() => ({}))
   const symbol: string  = String(body.symbol ?? '').toUpperCase().trim()
@@ -1640,7 +1650,7 @@ paper.post('/sell', async (c) => {
     VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(ACCOUNT_ID, symbol, name, sharesRaw, price, commission, tax, proceeds, source, signal ?? null, confidence ?? null, sellNote)
 
-  await paperDomainDatabase(c.env).batch([
+  await executeContinuousPaperBatch(c.env,[
     // Update or delete position row depending on remaining shares.
     newShares > 0
       ? paperDomainDatabase(c.env).prepare(

@@ -1625,7 +1625,7 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     const a=policy.artifact as any
     if (policy.operating_mode != null && (policy.operating_mode !== 'single_b_tabpack_v1'
       || policy.strategy_role !== 'B' || policy.scope !== 'paper'
-      || a?.model?.residual_tabpack?.schema_version !== 'l4-three-head-residual-tabpack-v1'
+      || !['l4-three-head-residual-tabpack-v1', 'l4-three-head-residual-tabpack-official-v2'].includes(a?.model?.residual_tabpack?.schema_version)
       || a?.model?.residual_mlp != null)) errors.push('single B mode requires a Paper TabPack artifact')
     if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'

@@ -1,4 +1,5 @@
 import { paperExecutionNow, paperAccountId, scopedPaperAccountId } from './paperExecutionScope'
+import { executeContinuousPaperBatch, isPaperContinuousSession } from './paperContinuousExecution'
 import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
 import { recordSellSettlement } from './paperMarketData'
@@ -242,6 +243,7 @@ export interface RescoreSellParams {
 }
 
 export async function executeRescoreSell(env: Bindings, params: RescoreSellParams): Promise<{ filled: boolean; price?: number; reason?: string }> {
+  if (!isPaperContinuousSession()) return { filled: false, reason: 'paper_outside_continuous_session' }
   const { getTradingConfig } = await import('./tradingConfig')
   const cfg = await getTradingConfig(env.KV)
   const { symbol, shares, price, quote, reason, source } = params
@@ -321,7 +323,7 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
     { entryPrice, exitPrice: sellPrice, shares, commission, tax },
   )
 
-  await paperDb.batch([
+  await executeContinuousPaperBatch(env,[
     shares === Number(pos.shares)
       ? paperDb.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), symbol)
       : paperDb.prepare('UPDATE paper_positions SET shares=shares-? WHERE account_id=? AND symbol=?')

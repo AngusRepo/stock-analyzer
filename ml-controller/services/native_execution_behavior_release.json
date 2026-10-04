@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:777530484fef32e9794f0a4d9a0e196c54b39f71fa243dcb9beacc84978c19fc",
+  "execution_owner_version": "native-paper-v1:91187ff8ea190e0b857300576d3e1ee9d31f52d1218c77b35950c4496fff1bb8",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved the complete GA/event/OBS release on 2026-10-03 and resumed commit/push/deploy after the paid-provider release, requiring preservation of production fixes. This declaration grants no supplemental runtime admission. Exact merged runtime KV approval is validated separately. Research accounting policies do not apply to Paper; no retraining, model replacement or real orders.",
-  "review": "audits/evening-ga-obs-20261003/finlab-history/GA-RESTORATION-REPORT.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-03-ga-event-recovery"
+  "authorization": "Wei authorized commit/push/deploy on 2026-10-04; exact supplemental runtime KV remains separately required. No model replacement, retrain or live orders.",
+  "review": "docs/TABPACK_OFFICIAL_MONTHLY.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-04-tabpack-monthly-retirement"
 }

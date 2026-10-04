@@ -4,6 +4,7 @@ import { readSwingState } from './paperSwingLifecycle'
 import { readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
 import { resolvePositionExit, preparePositionTakeProfit, recordPositionTakeProfitFill } from './positionExitArbiter'
 import { executePaperSellBatch } from './paperSellTransaction'
+import { isPaperContinuousSession } from './paperContinuousExecution'
 import { assertL4PlanCurrentPolicy, l4TargetExitShares } from './l4PortfolioPlan'
 import { paperAccountId, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
@@ -1159,6 +1160,7 @@ async function runPostExitDiscipline(
 }
 
 export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, today: string): Promise<void> {
+  if (!isPaperContinuousSession()) return
   const { results: sameDayPos } = await paperDomainDatabase(env).prepare(
     'SELECT * FROM paper_positions WHERE account_id=? AND shares>0 AND entry_date=?',
   ).bind(paperAccountId(), today).all<any>()
@@ -1268,7 +1270,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const proceeds = txValue - commission - tax
     const entryPrice = pos.entry_price ?? pos.avg_cost
     const sellNote = buildSellOrderNote({
-      reason: `[13:25 daytrade force close] ${decision.reason}`,
+      reason: `[13:24 daytrade force close] ${decision.reason}`,
       is_day_trade: true,
       entry_date: pos.entry_date,
       order_intent: sellOrderIntent,
@@ -1307,10 +1309,10 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       source: 'daytrade_force_close',
     })
     const pnl = (fillPrice - entryPrice) / entryPrice
-    console.log(`[DayTrade] 13:25 force close ${pos.symbol} ${shares} @ ${fillPrice} ${(pnl * 100).toFixed(1)}%`)
+    console.log(`[DayTrade] 13:24 force close ${pos.symbol} ${shares} @ ${fillPrice} ${(pnl * 100).toFixed(1)}%`)
     void sendDiscordNotification(
       (env as any).DISCORD_WEBHOOK_URL,
-      formatTradeNotification('sell', pos.symbol, pos.name, shares, fillPrice, `13:25 daytrade force close: ${decision.reason}`, pnl),
+      formatTradeNotification('sell', pos.symbol, pos.name, shares, fillPrice, `13:24 daytrade force close: ${decision.reason}`, pnl),
     )
   }
 }
@@ -1473,6 +1475,14 @@ export async function runEODExit(env: Bindings): Promise<void> {
       positionShares: Number(pos.shares), decision })
     decision = positionTakeProfit.decision
 
+    if (decision.action !== 'hold' && !isPaperContinuousSession()) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate: eodToday, symbol: pos.symbol, side: 'sell', eventType: 'paper_order',
+        status: 'pending', reason: 'paper_outside_continuous_session',
+        detail: { exit_reason: decision.reason, shares: pos.shares }, source: 'eod_exit',
+      })
+      continue
+    }
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
       const exitIntentKind = decision.exitIntentKind ?? 'risk_stop'
@@ -1978,6 +1988,16 @@ export async function pollIntradayStopLoss(
       }
     }
 
+    if (decision.action !== 'hold' && !isPaperContinuousSession()) {
+      await recordPendingExitAttempt(env, {
+        tradeDate: intradayToday, symbol: pos.symbol, reason: 'paper_outside_continuous_session',
+        intentKey: buildExitIntentKey({ accountId: paperAccountId(), symbol: pos.symbol,
+          entryDate: pos.entry_date, shares: decision.sellShares ?? pos.shares,
+          stopVersion: resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost), action: decision.action }),
+        detail: { exit_reason: decision.reason, shares: decision.sellShares ?? pos.shares }, source: 'intraday_exit',
+      })
+      continue
+    }
     let dayTradeSell = false
     if (pos.entry_date === intradayToday && decision.action !== 'hold') {
       const exitIntentKind = decision.exitIntentKind ?? 'risk_stop'

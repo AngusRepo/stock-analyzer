@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import gzip
 import hashlib
 import json
+import os
 import time
 import urllib.request
 from google.api_core.exceptions import PreconditionFailed
@@ -15,6 +16,8 @@ def execute_event(payload, *, bucket, prep, token, sleep=time.sleep):
     if not stage_path.startswith('pipeline-v2/input-events/v1/') or not stage_path.endswith('/request.json') or not isinstance(index, int) or index < 0:
         raise ValueError('input_prep_event_identity_invalid')
     stage = json.loads(bucket.blob(stage_path).download_as_bytes())
+    if stage.get('oof_resume') and stage.get('producer_source_sha') != os.environ.get('STOCKVISION_SOURCE_SHA'):
+        raise ValueError('oof_prep_producer_source_mismatch')
     expected = stage['spec']['batches'][index]
     if stage['kind'] != 'prep' or expected != payload.get('request') or stage['callback_url'] != payload.get('callback_url'):
         raise ValueError('input_prep_event_request_mismatch')

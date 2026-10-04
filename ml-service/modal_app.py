@@ -125,6 +125,19 @@ image = (
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
+# Upstream needs NumPy 2. Keep its locked venv separate from the shared ML
+# runtime (NumPy 1.26). Never mutate the existing eight-model dependencies.
+tabpack_image = (
+    dependency_image
+    .pip_install('uv==0.8.22')
+    .add_local_dir(str(_LOCAL_SOURCE_ROOT / 'vendor' / 'tabpack'), remote_path='/opt/tabpack', copy=True,
+                   ignore=lambda p: any(part in {'.venv', '__pycache__', '.cache'} or part.endswith('.egg-info') for part in p.parts))
+    .run_commands('uv sync --frozen --no-dev --project /opt/tabpack')
+    .env({'STOCKVISION_TABPACK_ROOT': '/opt/tabpack'})
+    .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path='/root/services')
+    .add_local_dir(str(_LOCAL_APP_DIR), remote_path='/root/app')
+)
+
 # The Modal writer is a dedicated service account with bucket-level
 # roles/storage.objectAdmin only. Never bind project Editor to this identity.
 MODAL_GCS_WRITER_SECRET = os.environ.get(
@@ -4650,9 +4663,31 @@ def train_timexer_universal(payload: dict) -> dict:
     return run(payload)
 
 
-@app.function(cpu=8,memory=4096,timeout=3600,max_containers=1,scaledown_window=60)
-def train_l4_mlp_candidate(payload: dict) -> dict:
-    """Purged B candidate fitting on CPU; model/data SHA identities are mandatory."""
+@app.function(cpu=8, memory=8192, timeout=3600,
+              max_containers=1, scaledown_window=10, retries=0)
+def train_l4_tabpack_candidate(payload: dict) -> dict:
     _setup_env()
-    from app.l4_mlp_job import run
+    from app.l4_tabpack_job import run
     return run(payload)
+
+
+@app.function(cpu=4, memory=8192, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
+def rebuild_canonical_adjusted_prep_event(payload: dict) -> dict:
+    _setup_env()
+    from app.oof_adjusted_prep_event import run
+    return run(payload, token=_controller_callback_token())
+
+
+@app.function(image=tabpack_image, gpu='L4', cpu=8, memory=8192, timeout=3600,
+              max_containers=1, scaledown_window=10, retries=0)
+def fit_l4_tabpack_gpu(payload: dict) -> dict:
+    _setup_env()
+    from app.l4_tabpack_stages import run_stage
+    return run_stage(payload, 'gpu')
+
+
+@app.function(cpu=8, memory=8192, timeout=1800, max_containers=1, scaledown_window=10, retries=0)
+def finalize_l4_tabpack_candidate(payload: dict) -> dict:
+    _setup_env()
+    from app.l4_tabpack_stages import run_stage
+    return run_stage(payload, 'finalize')

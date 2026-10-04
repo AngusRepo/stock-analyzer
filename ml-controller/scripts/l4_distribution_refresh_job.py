@@ -15,7 +15,8 @@ def training_recipe_signature():
         'l4_distribution_lifecycle.py','active8_oof_stacker.py','active8_ensemble_artifact.py','ensemble_v2.py',
         'active8_score_semantics.py','active8_oof_cohort_materializer.py',
         'l4_distribution_runtime.py','l4_l3_baseline.py','recommendation_service.py','l4_alpha_ev_producer.py',
-        'alpha_model_roster.py','l4_residual_mlp.py','l4_prediction_evaluation.py')
+        'alpha_model_roster.py','l4_residual_mlp.py','l4_prediction_evaluation.py',
+        'l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_dispatch.py')
     sources={name:hashlib.sha256((services/name).read_bytes()).hexdigest() for name in names}
     sources['scripts/l4_distribution_refresh_job.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     return digest(sources)
@@ -41,6 +42,8 @@ def load_target_parent(artifact_id,client):
 def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A"):
     if strategy_role not in ("A","B"):
         raise ValueError("l4_refresh_strategy_role_invalid")
+    if strategy_role == 'B' and not target_l3_artifact_id:
+        raise ValueError('l4_B_requires_explicit_exo_parent')
     from graphs.daily_pipeline_v2 import _load_active8_serving_pool,_load_active8_ensemble_snapshot,_active8_action_authority
     from services.paired_nav_collection import baseline_model_identity
     from services.active8_oof_cohort_materializer import load_verified_oof_manifest,load_oof_prediction_rows
@@ -62,17 +65,38 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A"):
     recipe=training_recipe_signature()
     if strategy_role == "B":
         from services.alpha_model_roster import TIMEXER_MODELS,validate_order
+        from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
         if validate_order(parent["model_order"]) != TIMEXER_MODELS:
-            raise ValueError("l4_mlp_challenger_requires_timexer_roster")
+            raise ValueError("l4_tabpack_requires_timexer_roster")
+        if manifest.get('model_profile_schema_version') != TIMEXER_EXO_PROFILE_SCHEMA:
+            raise ValueError('l4_tabpack_requires_exogenous_B_oof_profile')
         source_sha = os.environ.get('STOCKVISION_SOURCE_SHA','')
         if len(source_sha) != 40 or any(c not in '0123456789abcdef' for c in source_sha):
-            raise ValueError('l4_mlp_training_source_sha_missing')
-        recipe=digest({'anchor_recipe':recipe,'B_source_sha':source_sha,'recipe':'three-head-oof-scalar-mlp-v1'})
+            raise ValueError('l4_tabpack_training_source_sha_missing')
+        from services.l4_tabpack_dispatch import RECIPE
+        recipe=digest({'anchor_recipe':recipe,'B_source_sha':source_sha,'recipe':RECIPE})
     run_key=digest({'source':manifest['manifest_checksum'],'identity':identity,'as_of':as_of,'cadence':cadence,'training_recipe':recipe,**({'strategy_role':'B'} if strategy_role=='B' else {})})
+    if strategy_role == 'B':
+        from services.l4_tabpack_dispatch import dispatch
+        def make_payload():
+            stored, candidate, receipt = prepare_anchor(manifest, bucket, parent, identity, as_of, cadence, source, recipe)
+            return {'dataset_path':receipt['dataset_path'], 'rows_checksum':receipt['rows_checksum'],
+                    'anchor_path':stored['artifact_path'], 'anchor_checksum':digest(candidate),
+                    'as_of':as_of, 'expected_source_sha':source_sha}
+        return {**dispatch(bucket, run_key, make_payload), 'as_of':as_of, 'cadence':cadence,
+                'training_recipe_signature':recipe}
     receipt_path=f'l4_distribution/refresh/{run_key}.json'
     receipt_blob=bucket.blob(receipt_path)
     if receipt_blob.exists():
         return json.loads(receipt_blob.download_as_text())
+    stored, candidate, receipt = prepare_anchor(manifest, bucket, parent, identity, as_of, cadence, source, recipe)
+    result={**stored,'run_key':run_key,'as_of':as_of,'cadence':cadence,'dataset_receipt':receipt,'training_recipe_signature':recipe}
+    receipt_blob.upload_from_string(json.dumps(result,sort_keys=True),content_type='application/json',if_generation_match=0)
+    return result
+
+
+def prepare_anchor(manifest, bucket, parent, identity, as_of, cadence, source, recipe):
+    from services.active8_oof_cohort_materializer import load_oof_prediction_rows
     predictions=load_oof_prediction_rows(manifest,bucket=bucket)
     sequence_lineage=validate_sequence_oof_lineage(predictions)
     rows,receipt=build_native_oof_rows(predictions,manifest=manifest,
@@ -89,15 +113,7 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A"):
     if digest(json.loads(dataset_blob.download_as_text()))!=receipt['rows_checksum']:
         raise ValueError('l4_refresh_dataset_readback_mismatch')
     stored=persist_candidate(candidate,bucket=bucket)
-    if strategy_role == "B":
-        from services.modal_client import _lookup
-        stored = _lookup("train_l4_mlp_candidate").remote({
-            "dataset_path":dataset_path,"rows_checksum":receipt['rows_checksum'],
-            "anchor_path":stored['artifact_path'],"anchor_checksum":digest(candidate),"as_of":as_of,
-            "expected_source_sha":source_sha})
-    result={**stored,'run_key':run_key,'as_of':as_of,'cadence':cadence,'dataset_receipt':receipt,'training_recipe_signature':recipe}
-    receipt_blob.upload_from_string(json.dumps(result,sort_keys=True),content_type='application/json',if_generation_match=0)
-    return result
+    return stored, candidate, receipt
 
 if __name__=='__main__':
-    print(json.dumps(execute(as_of=os.environ['L4_REFRESH_DATE'],cadence=os.environ['L4_REFRESH_CADENCE'],target_l3_artifact_id=os.environ.get('L4_PARENT_ARTIFACT_ID'),strategy_role=os.environ.get('L4_STRATEGY_ROLE','A')),sort_keys=True))
+    print(json.dumps(execute(as_of=os.environ['L4_REFRESH_DATE'],cadence=os.environ['L4_REFRESH_CADENCE'],target_l3_artifact_id=os.environ.get('L4_PARENT_ARTIFACT_ID'),strategy_role=os.environ['L4_STRATEGY_ROLE']),sort_keys=True))

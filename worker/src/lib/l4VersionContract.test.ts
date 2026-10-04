@@ -4,6 +4,7 @@ import { L4_FEATURE_SCHEMA, L4_TIMEXER_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS } fr
 import { buildChampionTradingConfig, validateTradingConfig } from './tradingConfig'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
 import { officialTradingRestrictionsRefreshComplete, runDailyAllocatorEvReadiness } from './updateOrchestrator'
+import { runL4DistributionRefresh, runActive8OofLifecycle } from './controllerResearchWorkflows'
 
 function fixture() {
   const config=buildChampionTradingConfig(null)
@@ -18,6 +19,41 @@ function fixture() {
   config.l4Distribution={scope:'paper',artifact,constraints:{exposure_cap:.8,name_cap:.08,min_weight:0,max_positions:5}}
   return {config,artifact,identity,receipt}
 }
+
+test('single B accepts official v2 while rejecting MLP and unknown residual schemas', () => {
+  const f=fixture(), a:any=f.artifact
+  Object.assign(f.config.l4Distribution!, {operating_mode:'single_b_tabpack_v1',strategy_role:'B'})
+  a.model={residual_tabpack:{schema_version:'l4-three-head-residual-tabpack-official-v2'}}
+  assert.deepEqual(validateTradingConfig(f.config),[])
+  a.model.residual_tabpack.schema_version='unknown'
+  assert.ok(validateTradingConfig(f.config).includes('single B mode requires a Paper TabPack artifact'))
+  a.model.residual_tabpack.schema_version='l4-three-head-residual-tabpack-v1'
+  assert.deepEqual(validateTradingConfig(f.config),[])
+  a.model.residual_mlp={}
+  assert.ok(validateTradingConfig(f.config).includes('single B mode requires a Paper TabPack artifact'))
+})
+
+test('independent monthly trigger cannot race the canonical B OOF parent', async () => {
+  const env:any={KV:{get:async()=>({l4Distribution:{operating_mode:'single_b_tabpack_v1'}})}}
+  assert.equal(await runL4DistributionRefresh(env,'2026-10-04','monthly'),
+    'skipped single_b_tabpack_refresh_owned_by_canonical_oof_completion')
+})
+
+test('monthly scheduler sends exogenous B profile and candidate-only controls', async () => {
+  const original=globalThis.fetch, bodies:any[]=[]
+  globalThis.fetch=async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)))
+    return new Response(JSON.stringify({status:'spawned',execution_id:'synthetic'}),{status:200})
+  }
+  try {
+    const env:any={ML_CONTROLLER_URL:'https://example.invalid',
+      KV:{get:async()=>({l4Distribution:{operating_mode:'single_b_tabpack_v1'}})}}
+    await runActive8OofLifecycle(env,'2026-10-04','monthly')
+    assert.equal(bodies[0].model_profile_schema_version,'active8-release-model-profiles-v4-timexer-exo137')
+    assert.equal(bodies[0].dispatch_full_fit,true)
+    assert.equal(bodies[0].promote,false)
+  } finally { globalThis.fetch=original }
+})
 
 test('v3 configuration and serving state agree; v2 or incomplete evidence cannot be ready',async()=>{
   const f=fixture(),writes:any[]=[]

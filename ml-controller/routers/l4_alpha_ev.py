@@ -1,48 +1,15 @@
-from __future__ import annotations
-
-import hashlib
-import json
-from datetime import datetime, timezone
+"""Permanent retirement responses; old clients cannot fit models or write registry."""
 from typing import Any, Literal
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
-from services.l4_alpha_ev_artifact_builder import (
-    build_l4_alpha_ev_artifact_from_rows,
-    load_l4_alpha_ev_training_rows,
-)
-from services.l4_alpha_ev_producer import assess_l4_artifact_cutover
-from services.ev_lineage_contract import (
-    load_model_champion_history,
-    reconstruct_rows_with_point_in_time_lineage,
-)
-from services.model_artifact_registry import upsert_artifact_record
-from services.trading_session_maturity import fifth_session_maturity_cutoff
-
-
 router = APIRouter(prefix="/l4_alpha_ev", tags=["l4_alpha_ev"])
-LEARNING_D1_CLIENT = client_proxy_for_domain(D1DataDomain.LEARNING)
-CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
-
 
 class IpoShadowFreezeReq(BaseModel):
     signal_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     source_run_id: str = Field(min_length=1, max_length=300)
     dry_run: bool = False
     input_mode: Literal['native', 'frozen_stacker_prospective'] = 'native'
-
-
-@router.post('/ipo-shadow/freeze')
-def freeze_ipo_shadow(req: IpoShadowFreezeReq) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail='ipo_collection_retired_new_l4_distribution')
-
-
-DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
-DIRECT_REFRESH_PROMOTION_ENDPOINT = "/walk_forward/oof/lifecycle"
-DIRECT_REFRESH_PROMOTION_DETAIL = "direct_refresh_promotion_disabled_use_active8_oof_lifecycle"
-
 
 class L4AlphaEvRefreshReq(BaseModel):
     end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
@@ -55,210 +22,10 @@ class L4AlphaEvRefreshReq(BaseModel):
     dry_run: bool = False
     trigger_source: str = "worker_scheduler"
 
+@router.post('/ipo-shadow/freeze')
+def freeze_ipo_shadow(req: IpoShadowFreezeReq) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail='ipo_collection_retired_new_l4_distribution')
 
-def _latest_mature_prediction_date(max_date: str | None) -> str:
-    cutoff = max_date or "now"
-    mature_cutoff = fifth_session_maturity_cutoff(cutoff)
-    if not mature_cutoff:
-        raise HTTPException(status_code=409, detail="l4_alpha_ev_market_calendar_insufficient")
-    rows = LEARNING_D1_CLIENT.query(
-        """
-        SELECT MAX(date(p.prediction_date)) AS end_date
-        FROM predictions p
-        WHERE p.model_name = 'ensemble'
-          AND p.forecast_data IS NOT NULL
-          AND date(p.prediction_date) <= date(?)
-        """,
-        [mature_cutoff],
-    )
-    end_date = str((rows[0] if rows else {}).get("end_date") or "").strip()
-    if not end_date:
-        raise HTTPException(status_code=409, detail="l4_alpha_ev_no_mature_executable_labels")
-    return end_date
-
-
-def _defaults_for_cadence(cadence: str) -> dict[str, int]:
-    if cadence == "monthly":
-        return {"lookback_days": 180, "min_samples": 1000, "min_dates": 35}
-    return {"lookback_days": 90, "min_samples": 500, "min_dates": 20}
-
-
-def _artifact_checksum(artifact: dict[str, Any]) -> str:
-    payload = json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _registry_lifecycle_state(*, decision: str) -> str:
-    return "offline_passed" if decision == "PASS" else "offline_failed"
-
-
-def _registry_record(
-    *,
-    artifact: dict[str, Any],
-    validation: dict[str, Any],
-    cadence: str,
-    end_date: str,
-    lookback_days: int,
-    rows_loaded: int,
-) -> dict[str, Any]:
-    model_version = str(artifact.get("model_version") or "unknown")
-    decision = str(validation.get("decision") or "PENDING").upper()
-    failed_gates = validation.get("failed_gates") if isinstance(validation.get("failed_gates"), list) else []
-    artifact_checksum = _artifact_checksum(artifact)
-    evidence = {
-        "identity_schema_version": "expected-return-candidate-identity-v1",
-        "expected_return_owner": artifact.get("expected_return_owner"),
-        "model_version": model_version,
-        "cadence": cadence,
-        "end_date": end_date,
-        "lookback_days": lookback_days,
-        "rows_loaded": rows_loaded,
-        "artifact_contract_version": artifact.get("artifact_contract_version"),
-        "feature_semantic_version": artifact.get("feature_semantic_version"),
-        "label_schema_version": artifact.get("label_schema_version"),
-        "validation_packet": validation,
-        "training_data": artifact.get("training_data"),
-        "direct_refresh_mode": "candidate_research_only",
-        "production_mutation_allowed": False,
-        "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
-    }
-    return {
-        "artifact_id": f"l4_alpha_ev:{model_version}",
-        "model_name": "l4_alpha_ev",
-        "version": model_version,
-        "candidate_type": "l4_alpha_ev_refresh",
-        "state": _registry_lifecycle_state(decision=decision),
-        "artifact_path": None,
-        "metadata_path": None,
-        "training_run_id": f"l4_alpha_ev_refresh:{cadence}:{end_date}",
-        "training_manifest_path": None,
-        "trained_from_snapshot": artifact.get("feature_snapshot_version"),
-        "evaluation_baseline_version": None,
-        "final_compared_to": None,
-        "feature_policy_version": artifact.get("feature_snapshot_version"),
-        "checksum": artifact_checksum,
-        "source_run_date": end_date,
-        "is_monthly": 1 if cadence == "monthly" else 0,
-        "offline_gate_status": "passed" if decision == "PASS" else "failed",
-        "offline_gate_decision": decision,
-        "offline_gate_failed_gates": json.dumps(failed_gates, ensure_ascii=False),
-        "offline_evidence_json": json.dumps(evidence, ensure_ascii=False),
-        "live_gate_status": "not_started",
-        "live_evidence_json": json.dumps(
-            {"production_mutation_allowed": False, "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER},
-            ensure_ascii=False,
-        ),
-        "promotion_decision": "active8_oof_lifecycle_only",
-        "approval_state": "not_required",
-    }
-
-
-@router.post("/refresh")
+@router.post('/refresh')
 async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, Any]:
-    """Build and persist a research candidate; Active8 OOF lifecycle owns promotion."""
-
-    from services.trading_config_loader import load_merged_trading_config_with_contract
-    if load_merged_trading_config_with_contract().config.get('l4Distribution') is not None:
-        raise HTTPException(status_code=410,detail='legacy_ev_refresh_retired_use_l4_distribution')
-    if req.promote:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": DIRECT_REFRESH_PROMOTION_DETAIL,
-                "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
-                "promotion_endpoint": DIRECT_REFRESH_PROMOTION_ENDPOINT,
-            },
-        )
-    defaults = _defaults_for_cadence(req.cadence)
-    knowledge_cutoff_date = req.end_date or datetime.now(timezone.utc).date().isoformat()
-    end_date = _latest_mature_prediction_date(knowledge_cutoff_date)
-    lookback_days = req.lookback_days or defaults["lookback_days"]
-    min_samples = req.min_samples or defaults["min_samples"]
-    min_dates = req.min_dates or defaults["min_dates"]
-
-    rows = load_l4_alpha_ev_training_rows(
-        LEARNING_D1_CLIENT.query,
-        core_query_fn=CORE_D1_CLIENT.query,
-        end_date=end_date,
-        knowledge_cutoff_date=knowledge_cutoff_date,
-        lookback_days=lookback_days,
-        limit=req.limit,
-    )
-    generated_values = sorted(
-        str(row.get("prediction_generated_at") or "").strip()
-        for row in rows
-        if str(row.get("prediction_generated_at") or "").strip()
-    )
-    history_start = generated_values[0] if generated_values else f"{end_date}T00:00:00Z"
-    history_end = generated_values[-1] if generated_values else f"{end_date}T23:59:59Z"
-    champion_events, champion_history_load = load_model_champion_history(
-        LEARNING_D1_CLIENT.query,
-        start_at=history_start,
-        end_at=history_end,
-    )
-    lineage_rows, lineage_audit = reconstruct_rows_with_point_in_time_lineage(
-        rows,
-        champion_events=champion_events,
-    )
-    result = build_l4_alpha_ev_artifact_from_rows(
-        lineage_rows,
-        trained_until=end_date,
-        lookback_days=lookback_days,
-        min_samples=min_samples,
-        min_dates=min_dates,
-    )
-    artifact = result.get("artifact") if isinstance(result, dict) else None
-    validation = result.get("validation_packet") if isinstance(result, dict) else None
-    if isinstance(artifact, dict):
-        training_data = artifact.get("training_data") if isinstance(artifact.get("training_data"), dict) else {}
-        artifact["training_data"] = {
-            **training_data,
-            "lineage_reconstruction": lineage_audit,
-            "champion_history_load": champion_history_load,
-        }
-    cutover_readiness = assess_l4_artifact_cutover(artifact if isinstance(artifact, dict) else None)
-    decision = str((validation or {}).get("decision") or "").upper()
-    registry_error: str | None = None
-    if isinstance(artifact, dict) and not req.dry_run:
-        try:
-            upsert_artifact_record(
-                _registry_record(
-                    artifact=artifact,
-                    validation=validation if isinstance(validation, dict) else {},
-                    cadence=req.cadence,
-                    end_date=end_date,
-                    lookback_days=lookback_days,
-                    rows_loaded=len(rows),
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - surface candidate registry persistence failure.
-            registry_error = str(exc)
-
-    status = "validated" if decision == "PASS" else "failed_validation"
-
-    return {
-        **result,
-        "status": status,
-        "cadence": req.cadence,
-        "end_date": end_date,
-        "lookback_days": lookback_days,
-        "min_samples": min_samples,
-        "min_dates": min_dates,
-        "rows_loaded": len(rows),
-        "lineage_rows_accepted": len(lineage_rows),
-        "lineage_rows_rejected": max(0, len(rows) - len(lineage_rows)),
-        "lineage_reconstruction": lineage_audit,
-        "champion_history_load": champion_history_load,
-        "promoted": False,
-        "registry_error": registry_error,
-        "cutover_readiness": cutover_readiness,
-        "production_mutation_allowed": False,
-        "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
-        "promotion_endpoint": DIRECT_REFRESH_PROMOTION_ENDPOINT,
-        "summary": (
-            f"l4_alpha_ev_refresh status={status} cadence={req.cadence} "
-            f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
-            f"decision={decision or 'UNKNOWN'} lineage={len(lineage_rows)}/{len(rows)} "
-            "mode=candidate_research_only"
-        ),
-    }
+    raise HTTPException(status_code=410, detail='legacy_ev_refresh_retired_use_l4_distribution')

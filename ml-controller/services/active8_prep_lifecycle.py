@@ -345,13 +345,19 @@ async def ensure_active8_daily_prep(
                 "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
                 "training_dispatched": False}
 
-    adjusted = await modal_client.rebuild_canonical_adjusted_prep({
+    adjusted_request = {
         "source_gcs_prefix": source_prefix,
         "sequence_gcs_prefix": sequence_prefix,
         "output_gcs_prefix": adjusted_prefix,
         "batch_count": int(prep_result.get("batch_count") or 0),
         "sequence_batch_count": int(sequence_manifest.get("batch_count") or 0),
-    })
+    }
+    from services.pipeline_input_events import current_context
+    if (current_context() or {}).get('oof_resume'):
+        from services.oof_prep_events import adjusted_result
+        adjusted = adjusted_result(adjusted_request)
+    else:
+        adjusted = await modal_client.rebuild_canonical_adjusted_prep(adjusted_request)
     if adjusted.get("error"):
         raise RuntimeError(f"canonical adjusted prep failed: {adjusted['error']}")
     if (

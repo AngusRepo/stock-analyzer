@@ -1,5 +1,6 @@
 import { getPrevTradingDay } from './paperMarketData'
-import { assessSwingEntry, SWING_POLICY_VERSION, type SwingEntryDecision } from './paperSwingPolicy'
+import { assessSwingEntry, SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
+import { executeContinuousPaperBatch } from './paperContinuousExecution'
 import { writeSwingState } from './paperSwingLifecycle'
 import { loadSwingMinuteBars } from './s12RuntimeBars'
 import { dailyPlanOwner, readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
@@ -555,7 +556,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   const baseCb = await checkCircuitBreakersForDomains(env, cfg, env.KV)
   let holdingPoll = await pollIntradayStopLoss(env, baseCb)
-  if (cfg.l4Distribution) {
+  // After the buy window, cancelled pending rows no longer carry a plan reference.
+  // Holding exits have already checked their own L4 target; do not revalidate a buy batch.
+  if (cfg.l4Distribution && minutesSinceOpen < (paperSwingOwner ? SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1 : 265)) {
     const signalDate = await getL4PreviousSession(databaseForDataDomain(env, 'core'), env.KV)
     if (!await flushL4Replans(env, signalDate, { debatePending: staleDebateItems.length > 0 })) return holdingPoll
     const latest = await readL4PortfolioPlan(env).catch(error=>{
@@ -598,8 +601,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     throw new Error('intraday_execution_lease_lost_after_holding_poll')
   }
 
-  if (twHour === 13 && twMin >= 25) {
-    await forceDayTradeClose(env, cfg, today)
+  if (twHour === 13 && twMin === 24) await forceDayTradeClose(env, cfg, today)
+  if (twHour === 13 && twMin >= (paperSwingOwner ? 21 : 25)) {
 
     const pendingSnapshot = await withD1ReadRetry(
       'close_pending_snapshot',
@@ -1090,7 +1093,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         tax: sellTax,
       })
 
-      await paperDomainDatabase(env).batch([
+      await executeContinuousPaperBatch(env,[
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, note, created_at)
           VALUES (?, ?, ?, 'sell', ?, ?, ?, ?, ?, 'auto_swap', ?, datetime('now'))
@@ -1426,7 +1429,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     )
   }
   const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
-  const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)
+  const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, false)
   const swingSidecars = new Map<string,SwingEntryDecision>()
   let swingBenchmark: Promise<{bars: Awaited<ReturnType<typeof loadSwingMinuteBars>>; closes: Awaited<ReturnType<typeof loadMarketPriceHistoryBySymbols>>}> | undefined
   const s12CalibrationArtifactsPromise = s12Enabled && !paperOr15Owner
@@ -1447,8 +1450,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     try {
       if (paperSwingOwner) {
         const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
-        if(sinceOpen<20*60000 || sinceOpen>=241*60000 || sinceOpen%(5*60000)>=60000) {
-          const reason=sinceOpen<20*60000||sinceOpen>=241*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
+        if(sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000) {
+          const reason=sinceOpen<20*60000||sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
           const assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION}
           swingSidecars.set(pending.symbol,assessment)
           or15Sidecars.set(pending.symbol,{action:'defer',reason,signalMs:null,orHigh:null,orLow:null,vwap:null,latestBarMs:null})
@@ -1542,7 +1545,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       const s12PrimaryOwnerEnabled =
         s12Enabled &&
         s12Mode === 'assist_entry' &&
-        enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+        enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, false)
       const assistEntryOverlay = buildS12AssistEntryOverlay(
         assessment,
         s12Mode,
@@ -1727,7 +1730,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       !paperOr15Owner &&
       s12Enabled &&
       s12Mode === 'assist_entry' &&
-      enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
+      enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, false)
     const s12UnifiedDecision = resolveS12UnifiedDecision(s12Assessment)
     if (s12PrimaryOwnerEnabled && s12UnifiedDecision.action !== 'READY') {
       const reason = `s12_unified_${s12UnifiedDecision.action.toLowerCase()}`
@@ -2900,7 +2903,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
 
     try {
-      await paperDomainDatabase(env).batch([
+      await executeContinuousPaperBatch(env,[
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_positions (account_id, symbol, name, shares, avg_cost, updated_at,
             entry_price, entry_date, initial_stop, trailing_stop, highest_since_entry,
@@ -3032,7 +3035,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         // Publish shares, the order, T+2 liability and completion atomically.
         ...(targetPlanId ? l4BuySettlementStatements(env, {symbol:pending.symbol,totalCost,tradeDate:today,
           settlementDate:settleDate,intentKey:intent.intentKey,status:isPartialFill ? 'partial' : 'filled'}) : []),
-      ])
+      ],paperSwingOwner ? swingAssessment?.submitUntilMs : undefined)
     } catch (error) {
       await completePaperBuyIntent(
         env,

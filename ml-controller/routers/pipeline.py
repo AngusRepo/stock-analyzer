@@ -485,3 +485,14 @@ async def premarket_resume(request:Request):
     if not enabled():raise HTTPException(409,'premarket_owner_disabled')
     body=await request.json()
     return await asyncio.to_thread(dispatch,body['receipt'],body['context'],jobs_client=_jobs_client)
+
+
+@callback_router.post('/v2/oof-input/callback')
+async def oof_input_dependency_callback(request: Request):
+    _check_service_token(request)
+    from services.oof_prep_events import dispatch_ready
+    payload = await request.json()
+    try:
+        return await asyncio.to_thread(dispatch_ready, str(payload.get('stage_path') or ''))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

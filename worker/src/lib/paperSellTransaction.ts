@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import { paperAccountId, paperExecutionNow } from './paperExecutionScope'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { getSettlementDate } from './dateUtils'
+import { executeContinuousPaperBatch } from './paperContinuousExecution'
 
 /** The native position mutation, order and T+2 receivable are one D1 transaction.
  * The supplied statements must end in the corresponding paper_orders INSERT.
@@ -15,7 +16,7 @@ export async function executePaperSellBatch(env: Bindings, statements: D1Prepare
   const settlementDate=await getSettlementDate(day,env.KV)
   if(notAfterMs!=null && (!Number.isFinite(notAfterMs) || paperExecutionNow()>=notAfterMs))
     throw new Error('paper_sell_submission_window_expired')
-  const result=await db.batch([...statements,db.prepare(`INSERT INTO paper_settlements
+  const result=await executeContinuousPaperBatch(env,[...statements,db.prepare(`INSERT INTO paper_settlements
     (account_id,order_id,symbol,side,amount,trade_date,settlement_date)
     VALUES (?,(SELECT id FROM paper_orders WHERE id=last_insert_rowid()
       AND account_id=? AND symbol=? AND side='sell' AND total_cost=?),?,'sell',?,?,?)`)

@@ -61,7 +61,7 @@ def run_prefix(run_id, run_date):
 
 
 def load_stage(store, path):
-    if not re.fullmatch(re.escape(PREFIX) + r'\d{4}-\d{2}-\d{2}/[a-f0-9]{64}/(?:snapshot|prep)-[a-f0-9]{64}/request.json', path):
+    if not re.fullmatch(re.escape(PREFIX) + r'\d{4}-\d{2}-\d{2}/[a-f0-9]{64}/(?:snapshot|prep|adjusted)-[a-f0-9]{64}/request.json', path):
         raise ValueError('pipeline_input_stage_path_invalid')
     stage = read(store, path)
     if not stage or stage.get('schema_version') != 'pipeline-input-stage-v1':
@@ -112,7 +112,7 @@ def callback_url():
     base = (os.environ.get('ML_CONTROLLER_PUBLIC_URL') or os.environ.get('ML_CONTROLLER_URL') or '').rstrip('/')
     if not base:
         raise ValueError('pipeline_input_callback_url_missing')
-    return base + '/pipeline/v2/input/callback'
+    return base + ('/pipeline/v2/oof-input/callback' if (current_context() or {}).get('oof_resume') else '/pipeline/v2/input/callback')
 
 
 def register(kind, spec):
@@ -296,6 +296,8 @@ def _complete_prep(store, stage, path):
 def dispatch_ready(path, *, jobs_client, store=None):
     store = store or bucket()
     stage = load_stage(store, path)
+    if stage.get('oof_resume'):
+        raise ValueError('pipeline_input_wrong_owner')
     from services.pipeline_canonical_window import assert_canonical_window_open
     assert_canonical_window_open(stage['run_date'])
     existing = read(store, path.replace('request.json', 'continuation.json'))

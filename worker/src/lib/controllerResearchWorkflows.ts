@@ -472,11 +472,14 @@ export async function runActive8OofLifecycle(
   // BEFORE OOF prep. An absent compute snapshot or OOF-only success ticket
   // cannot skip that work. Prep/PIT checks still run inside the OOF owner;
   // singleton job collision handling and bounded continuation remain below.
-
+  const trading = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?: string}} | null
+  const modelProfile = trading?.l4Distribution?.operating_mode === 'single_b_tabpack_v1'
+    ? 'active8-release-model-profiles-v4-timexer-exo137'
+    : 'active8-release-model-profiles-v4-timexer-price'
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',
     jsonBody: {
-      model_profile_schema_version: 'active8-release-model-profiles-v4-timexer-price',
+      model_profile_schema_version: modelProfile,
       cadence,
       end_date: runDate,
       dry_run: false,
@@ -561,41 +564,20 @@ async function newL4Configured(env: Bindings): Promise<boolean> {
   return config?.l4Distribution != null
 }
 
-export async function runL4DistributionRefresh(env: Bindings, runDate: string, cadence: 'weekly'|'monthly') {
-  const response=await controllerFetch(env,'/l4_distribution/refresh',{method:'POST',timeoutMs:45_000,
-    jsonBody:{end_date:runDate,cadence,promote:false,dry_run:false}})
-  if (!response.ok) throw new Error(`l4_distribution_refresh_http_${response.status}`)
-  const result=await response.json() as {status?:string;execution_id?:string}
-  if (!['spawned','pending'].includes(result.status ?? '')) throw new Error('l4_distribution_refresh_dispatch_invalid')
-  return `l4_distribution_refresh status=${result.status} execution=${result.execution_id} candidate_only=true`
+export async function runL4DistributionRefresh(env: Bindings, _runDate: string, _cadence: 'weekly'|'monthly') {
+  const config = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?: string; strategy_role?: string; scope?: string}} | null
+  const policy = config?.l4Distribution
+  if (policy?.operating_mode !== 'single_b_tabpack_v1' || policy.strategy_role !== 'B' || policy.scope !== 'paper') {
+    throw new Error('l4_distribution_policy_invalid_independent_refresh_retired')
+  }
+  // Only canonical OOF completion owns the exact new L3 parent. Missing/old
+  // configuration must never dispatch an independent training job.
+  return 'skipped single_b_tabpack_refresh_owned_by_canonical_oof_completion'
 }
 
 export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {
-  if (await newL4Configured(env)) return runL4DistributionRefresh(env,runDate ?? twToday(),cadence)
-  requireController(env)
-
-  const resp = await controllerFetch(env, '/l4_alpha_ev/refresh', {
-    method: 'POST',
-    jsonBody: {
-      cadence,
-      end_date: runDate,
-      promote: false,
-      dry_run: false,
-      trigger_source: 'worker_scheduler',
-    },
-    timeoutMs: 120_000,
-  })
-  const text = await resp.text().catch(() => '')
-  if (!resp.ok) {
-    throw new Error(`l4 alpha EV refresh HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
-  }
-  const data = text ? JSON.parse(text) as Record<string, any> : {}
-  const status = String(data.status ?? '').toLowerCase()
-  const summary = String(data.summary ?? `l4_alpha_ev_refresh status=${status || 'unknown'}`)
-  if (!['validated', 'failed_validation'].includes(status)) {
-    throw new Error(summary)
-  }
-  return summary
+  if (!await newL4Configured(env)) throw new Error('l4_distribution_config_required_legacy_refresh_retired')
+  return runL4DistributionRefresh(env, runDate ?? twToday(), cadence)
 }
 
 export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {

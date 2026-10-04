@@ -23,3 +23,8 @@ Rollback: revoke the supplemental record (approved=false) to fail closed, or res
 ## 2026-10-04 exact TabPack/monthly retirement
 
 The dedicated `:2026-10-04-tabpack-monthly-retirement` key has priority only in the new revision. Its signed `approved_tabpack_runtime_change` must match `TABPACK_RUNTIME_CHANGE` exactly: three pinned allocator source transitions and S12 assist 1 to 0 / gate assist_entry to observe. No unknown differences are ignored. Old production continues to use the GA release key. The original admission, incumbent model, risk settings and live-order flags remain enforced. This code declaration does not grant approval to write KV.
+
+
+## 2026-10-04 monthly source recovery
+
+The new revision reads `:2026-10-04-monthly-source-recovery` before the prior TabPack key. Old revisions keep their original key. Exact source identity changes cover verified MOPS/subscription parsing and subsidiary exclusion; Worker native bundle remains unchanged. Staging needs explicit operator authorization, local simulation, exact readback and prior-key preservation. Revocation never falls back to an older grant. Monthly candidate retraining is separately user-authorized; no serving model promotion or NAV maturity transfer.

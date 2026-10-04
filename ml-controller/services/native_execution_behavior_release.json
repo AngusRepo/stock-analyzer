@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:91187ff8ea190e0b857300576d3e1ee9d31f52d1218c77b35950c4496fff1bb8",
+  "execution_owner_version": "native-paper-v1:f094c74871d5d1d0bdddcac459197b7c588a1c4382a31c999d265dc75c9e4571",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized commit/push/deploy on 2026-10-04; exact supplemental runtime KV remains separately required. No model replacement, retrain or live orders.",
+  "authorization": "Wei authorized commit/push/deploy on 2026-10-04; exact supplemental runtime KV remains separately required. Monthly retrain authorized; no model replacement or live orders.",
   "review": "docs/TABPACK_OFFICIAL_MONTHLY.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-04-tabpack-monthly-retirement"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-04-monthly-source-recovery"
 }

@@ -172,3 +172,15 @@ def test_research_no_subscription_zero_value_is_explicit_and_audited():
     apply_corporate_session(book,tape,'2026-09-10',{},
         research_subscription_policy='do_not_subscribe_zero_value')
     assert not book.corporate_receivables and book.cash==99000.
+
+
+@pytest.mark.parametrize("symbol,published,record,ratio,price,deadline", [('1295', '2026-06-25', '2026-07-05', 0.0679844408, 45.0, '2026-08-10'), ('1312', '2026-06-04', '2026-06-19', 0.28403535073, 14.0, '2026-07-03'), ('3234', '2026-08-19', '2026-09-01', 0.10764775201, 110.0, '2026-09-11'), ('3260', '2026-09-11', '2026-09-27', 0.04622447459, 290.0, '2026-10-07')])
+def test_official_extended_wording_still_requires_exact_event(symbol,published,record,ratio,price,deadline):
+    from pathlib import Path
+    document=json.loads((Path(__file__).parent/'fixtures/subscription'/f'{symbol}.json').read_text(encoding='utf8'))
+    assert digest(document['body'])==document['body_checksum']
+    terms=parse_subscription_terms(document['body'],record_date=record,ratio=ratio,price=price)
+    assert terms['payment_deadline']==deadline
+    assert terms['policy']=='do_not_subscribe' and terms['fair_value_per_right'] is None
+    with pytest.raises(ValueError,match='ratio_or_price'):
+        parse_subscription_terms(document['body'],record_date=record,ratio=ratio,price=price+1)

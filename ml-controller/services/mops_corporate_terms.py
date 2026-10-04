@@ -25,18 +25,27 @@ DATE = r'(?P<y>\d{3,4})[年/](?P<m>\d{1,2})[月/](?P<d>\d{1,2})日?'
 
 def _public_post(client, endpoint, *, data):
     for attempt in range(3):
+        retry_delay = 0.25 * 2 ** attempt
         try:
             response = client.post(endpoint, data=data)
         except httpx.RequestError:
             if attempt == 2:
                 raise RuntimeError('mops_source_transport_unavailable') from None
         else:
-            if response.status_code not in {429, 500, 502, 503, 504}:
+            rate_limited = response.status_code == 429 or (
+                response.status_code == 200 and any(marker in response.text
+                    for marker in ('Too many query requests', 'Overrun -')))
+            if rate_limited:
+                retry_delay = 30 * 2 ** attempt
+                retry_after = response.headers.get('Retry-After', '')
+                if retry_after.isdigit():
+                    retry_delay = max(retry_delay, min(120, int(retry_after)))
+            if not rate_limited and response.status_code not in {500, 502, 503, 504}:
                 response.raise_for_status()
                 return response
             if attempt == 2:
-                raise RuntimeError('mops_source_temporarily_unavailable')
-        time.sleep(0.25 * 2 ** attempt)
+                raise RuntimeError('mops_source_rate_limited' if rate_limited else 'mops_source_temporarily_unavailable')
+        time.sleep(retry_delay)
     raise RuntimeError('mops_source_retry_exhausted')
 
 

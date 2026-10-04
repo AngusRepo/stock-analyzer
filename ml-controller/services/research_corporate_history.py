@@ -156,6 +156,12 @@ def account_history_snapshot(snapshot, required_symbols, *, outstanding_action_i
             unresolved = set(snapshot.get('unresolved_outstanding_action_ids', {}).get(symbol, []))
             if not unresolved & outstanding:
                 reasons = [r for r in reasons if r != 'outstanding_event_revision_unresolved']
+            issuer_ids = snapshot.get('issuer_blocker_action_ids', {}).get(symbol, {})
+            current_ids = {a['action_id'] for a in snapshot['actions']
+                           if a['symbol'] == symbol and a['ex_date'] == snapshot['session_date']}
+            eligible_ids = current_ids | outstanding
+            reasons = [reason for reason in reasons if reason not in issuer_ids
+                       or bool(set(issuer_ids[reason]) & eligible_ids)]
             if reasons:
                 blocked[symbol] = reasons
             else:
@@ -213,6 +219,7 @@ def reconstruct_company_sessions(rows, *, days, symbols, captured_at, source_ref
             observed_at=timestamp(day+'T08:59:59.999999+08:00'), outstanding_action_ids=tuple(pending),
             outstanding_scope='union_component')
         snap['vendor_asof_cutoff'] = day+'T08:59:59.999999+08:00'
+        snap['issuer_blocker_action_ids'] = {}
         # Only documents within their declared historical query bounds may join.
         for symbol in sorted({a['symbol'] for a in snap['actions']}):
             evidence = issuer_evidence.get(symbol)
@@ -220,7 +227,9 @@ def reconstruct_company_sessions(rows, *, days, symbols, captured_at, source_ref
                 continue
             evidence = deepcopy(evidence)
             evidence['documents'] = [d for d in evidence['documents'] if d['published_date'] < day]
-            part = deepcopy(snap)
+            part = deepcopy({k: v for k, v in snap.items() if k != 'blockers'})
+            # Existing blockers stay on snap; merge only new issuer findings.
+            part['blockers'] = {}
             part['actions'] = [a for a in snap['actions'] if a['symbol']==symbol
                 and evidence['query_start'] <= a['ex_date'] <= evidence['query_end']]
             if not part['actions']:
@@ -229,7 +238,9 @@ def reconstruct_company_sessions(rows, *, days, symbols, captured_at, source_ref
             part = enrich_subscription_source(enrich_stock_delivery_source(part,{symbol:evidence}),{symbol:evidence})
             snap['actions'] = [a for a in snap['actions'] if a['action_id'] not in enriched_ids]+part['actions']
             for key, reasons in part.get('blockers',{}).items():
-                snap['blockers'].setdefault(key,[]).extend(reasons)
+                snap['blockers'][key] = sorted(set(snap['blockers'].get(key, [])) | set(reasons))
+                for reason in reasons:
+                    snap['issuer_blocker_action_ids'].setdefault(key, {})[reason] = sorted(enriched_ids)
         snap = apply_issuer_cash_rounding(snap, cash_rounding_rules, source_refs)
         snap = apply_reviewed_stock_rules(snap, reviewed_stock_rules, source_refs)
         snap['unverified_stock_action_ids'] = {}

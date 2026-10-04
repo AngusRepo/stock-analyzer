@@ -167,3 +167,31 @@ def test_two_labelled_stock_components_link_but_certificate_is_not_common_delive
     from services.mops_corporate_terms import _stock_dividend_ratios
     from decimal import Decimal
     assert _stock_dividend_ratios('每仟股配發20股；每仟股配發30股') == {Decimal('.02'),Decimal('.03')}
+
+
+@pytest.mark.parametrize('status,body', [(200, 'Overrun - Too many query requests'), (429, 'rate limit')])
+def test_official_rate_limit_page_is_not_parsed_as_changed_layout(monkeypatch,status,body):
+    import httpx
+    from services import mops_corporate_terms as mops
+    waits=[];calls=[]
+    monkeypatch.setattr(mops.time,'sleep',waits.append)
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(status if len(calls)<3 else 200,text=body if len(calls)<3 else 'valid',request=request)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result=mops._public_post(client,'https://example.invalid',data={})
+    assert result.text=='valid' and len(calls)==3 and waits==[30,60]
+
+
+def test_persistent_http_200_rate_limit_has_bounded_retries(monkeypatch):
+    import httpx
+    from services import mops_corporate_terms as mops
+    waits=[];calls=[]
+    monkeypatch.setattr(mops.time,'sleep',waits.append)
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200,text='Overrun - Too many query requests',request=request)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError,match='mops_source_rate_limited'):
+            mops._public_post(client,'https://example.invalid',data={})
+    assert len(calls)==3 and waits==[30,60]

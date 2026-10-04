@@ -334,3 +334,47 @@ def test_reviewed_stock_join_requires_exact_event_sources_and_publication_clock(
         apply_reviewed_stock_rules(snap,[rule],[])
     rule['record_date']='2025-07-01'
     assert 'payable_date' not in apply_reviewed_stock_rules(snap,[rule],refs)['actions'][0]
+
+
+def test_issuer_enrichment_does_not_duplicate_previous_symbols_blockers(monkeypatch):
+    from test_finlab_corporate_actions import row, STOCK
+    from services import mops_corporate_terms as mops, subscription_rights as rights
+    from services.research_corporate_history import reconstruct_company_sessions
+    symbols = [str(2300+i) for i in range(12)]
+    rows = [row(stock_id=s, **{STOCK[0]: 0., '除權交易日': None,
+            '現金股利發放日': '2026-09-09'}) for s in symbols]
+    seen = []
+    def enrich(snapshot, evidence):
+        seen.append(sum(len(v) for v in snapshot['blockers'].values()))
+        symbol = next(iter(evidence))
+        snapshot['blockers'].setdefault(symbol, []).append('exact_issuer_gap')
+        return snapshot
+    monkeypatch.setattr(mops, 'enrich_stock_delivery_source', enrich)
+    monkeypatch.setattr(rights, 'enrich_subscription_source', lambda snapshot, evidence: snapshot)
+    refs = sample()['source_refs'] + [{'dataset': 'official.exchange_census',
+        'uri': 'local://census.json', 'sha256': 'c'*64, 'fetched_at': '2026-10-03T00:00:00+00:00'}]
+    evidence = {s: {'symbol': s, 'query_start': '2026-01-01', 'query_end': '2026-10-01',
+                    'documents': []} for s in symbols}
+    tape = load_history_tape(reconstruct_company_sessions(pl.DataFrame(rows),
+        days=['2026-09-07'], symbols=symbols, captured_at='2026-10-03T01:00:00+00:00',
+        source_refs=refs, issuer_evidence=evidence, other_events={'2026-09-07': []}))
+    assert seen == [0]*len(symbols)
+    assert tape['2026-09-07']['blockers'] == {s: ['exact_issuer_gap'] for s in symbols}
+
+
+def test_old_issuer_gap_scoped_to_entitlement_and_never_removed_without_map():
+    from services.research_corporate_history import account_history_snapshot
+    snap = sample()['snapshot']
+    snap['session_date'] = '2026-07-15'
+    snap['blockers'] = {'1582': ['issuer_latest_revision_not_linked']}
+    snap['issuer_blocker_action_ids'] = {'1582': {'issuer_latest_revision_not_linked': ['cash-event']}}
+    assert not account_history_snapshot(snap, {'1582'}, outstanding_action_ids=[])['blockers']
+    with pytest.raises(ValueError, match='issuer_latest_revision_not_linked'):
+        account_history_snapshot(snap, {'1582'}, outstanding_action_ids=['cash-event'])
+    snap['session_date'] = '2026-06-16'
+    with pytest.raises(ValueError, match='issuer_latest_revision_not_linked'):
+        account_history_snapshot(snap, {'1582'}, outstanding_action_ids=[])
+    snap['session_date'] = '2026-07-15'
+    del snap['issuer_blocker_action_ids']
+    with pytest.raises(ValueError, match='issuer_latest_revision_not_linked'):
+        account_history_snapshot(snap, {'1582'}, outstanding_action_ids=[])

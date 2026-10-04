@@ -64,7 +64,9 @@ def test_source_receipt_inventory_uses_same_order_for_multi_digit_batches(monkey
     from app import canonical_adjusted_prep as prep
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "a" * 40)
     objects = {f"features/prep/batch_{i}.npz": f"batch-{i}".encode() for i in range(batch_count)}
+    objects["features/prep/feature_names.json"] = b'["feature"]'
     receipt = {
+        "feature_names_path": "features/prep/feature_names.json",
         "schema_version": prep.SOURCE_RECEIPT_SCHEMA_VERSION,
         "feature_semantic_version": prep.FEATURE_SEMANTIC_VERSION,
         "feature_imputation_semantic": prep.FEATURE_IMPUTATION_SEMANTIC_VERSION,
@@ -82,6 +84,12 @@ def test_source_receipt_inventory_uses_same_order_for_multi_digit_batches(monkey
                 def download_as_bytes(self): return objects[name]
             return Blob()
     assert prep._verified_source_receipt(Bucket(), "features", batch_count) == receipt
+    # Metadata and data are both checksum-protected.
+    original = objects["features/prep/feature_names.json"]
+    objects["features/prep/feature_names.json"] = b'["tampered"]'
+    with pytest.raises(ValueError, match="checksum_mismatch"):
+        prep._verified_source_receipt(Bucket(), "features", batch_count)
+    objects["features/prep/feature_names.json"] = original
     # Real missing and altered batches must still be rejected.
     objects["features/prep/batch_0.npz"] = b"changed"
     with pytest.raises(ValueError, match="checksum_mismatch"):

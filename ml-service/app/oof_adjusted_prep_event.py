@@ -1,6 +1,7 @@
 """CPU-only canonical adjustment, with a durable result before notification."""
 from datetime import datetime, timezone
 import json
+import logging
 import os
 import urllib.request
 from google.api_core.exceptions import PreconditionFailed
@@ -32,6 +33,7 @@ def run(payload, *, token, bucket=None, rebuild=None):
                 raise ValueError('oof_adjusted_result_not_ready')
             result = {'status':'ready', 'result':output, 'request_checksum':events.digest(events.encoded(stage))}
         except Exception as exc:
+            logging.getLogger(__name__).exception('OOF canonical adjustment failed')
             result = {'status':'failed', 'error_type':type(exc).__name__,
                       'request_checksum':events.digest(events.encoded(stage))}
         events.put_once(bucket, result_path, result)

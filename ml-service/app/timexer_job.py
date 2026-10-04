@@ -36,7 +36,11 @@ def materialize_inputs(bucket, payload, directory):
             or receipt.get('feature_semantic_version') != 'formal137-pit-asof-source-quality-v3'):
         raise ValueError('timexer_training_feature_source_invalid')
     from .features import FEATURE_COLS
-    names = json.loads(bucket.blob(feature_prefix+'/prep/feature_names.json').download_as_bytes())
+    names_path = feature_prefix+'/prep/feature_names.json'
+    names_raw = bucket.blob(names_path).download_as_bytes()
+    if hashlib.sha256(names_raw).hexdigest() != manifest['source_checksums'].get(names_path):
+        raise ValueError('timexer_training_feature_names_changed')
+    names = json.loads(names_raw)
     if names != list(FEATURE_COLS) or len(names) != 137:
         raise ValueError('timexer_training_feature_order_invalid')
     sequence_prefix = manifest['sequence_gcs_prefix']

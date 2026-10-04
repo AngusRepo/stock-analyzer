@@ -334,7 +334,7 @@ def fetch_mops_stock_evidence(*, symbol: str, ex_date: str, observed_at: datetim
         if row.get('AN_CODE') not in ('M11', 'M14', 'M99'):
             continue
         title = row['SUBJECT']
-        if '代子公司' in title or not any(k in title for k in ('股利', '除權', '除息', '配息', '增資', '發行新股')):
+        if re.search(r'代(?:重要)?子公司', title) or not any(k in title for k in ('股利', '除權', '除息', '配息', '增資', '發行新股')):
             continue
         match = re.fullmatch(DATE, row['CDATE'])
         if match is None:

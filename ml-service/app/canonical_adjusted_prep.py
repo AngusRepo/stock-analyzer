@@ -183,6 +183,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             and manifest.get("source_gcs_prefix") == source_prefix
             and manifest.get("sequence_gcs_prefix") == sequence_prefix
             and manifest.get("source_receipt_checksum") == source_receipt_checksum
+            and manifest.get("source_checksums") == source_receipt["output_checksums"]
             and manifest.get("sequence_manifest_checksum") == sequence_manifest_checksum
             and manifest.get("feature_semantic_version") == FEATURE_SEMANTIC_VERSION
             and manifest.get("feature_imputation_semantic") == FEATURE_IMPUTATION_SEMANTIC_VERSION
@@ -194,11 +195,12 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("canonical_adjusted_output_prefix_collision")
 
     source_batches: list[dict[str, np.ndarray]] = []
-    source_checksums: dict[str, str] = {}
+    source_checksums: dict[str, str] = dict(source_receipt["output_checksums"])
     for index in range(batch_count):
         path = f"{source_prefix}/prep/batch_{index}.npz"
         raw = bucket.blob(path).download_as_bytes()
-        source_checksums[path] = hashlib.sha256(raw).hexdigest()
+        if hashlib.sha256(raw).hexdigest() != source_checksums[path]:
+            raise ValueError(f"canonical_adjusted_source_checksum_mismatch:{path}")
         source_batches.append(_load_npz(raw))
 
     sequence_records = load_sequence_dataset({
@@ -272,9 +274,12 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         output_rows.append(count)
 
     feature_source = bucket.blob(f"{source_prefix}/prep/feature_names.json")
+    feature_raw = feature_source.download_as_bytes()
+    if hashlib.sha256(feature_raw).hexdigest() != source_checksums[f"{source_prefix}/prep/feature_names.json"]:
+        raise ValueError("canonical_adjusted_source_feature_names_changed")
     if feature_source.exists():
         bucket.blob(f"{output_prefix}/prep/feature_names.json").upload_from_string(
-            feature_source.download_as_bytes(),
+            feature_raw,
             content_type="application/json",
         )
     bucket.blob(f"{output_prefix}/prep/symbol_market.json").upload_from_string(

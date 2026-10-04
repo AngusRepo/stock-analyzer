@@ -94,3 +94,75 @@ def test_source_receipt_inventory_uses_same_order_for_multi_digit_batches(monkey
     objects["features/prep/batch_0.npz"] = b"changed"
     with pytest.raises(ValueError, match="checksum_mismatch"):
         prep._verified_source_receipt(Bucket(), "features", batch_count)
+
+
+def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeypatch, tmp_path):
+    import hashlib
+    import io
+    import json
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    import numpy as np
+    from app import canonical_adjusted_prep as prep
+    from app.features import FEATURE_COLS
+    from app.timexer_job import materialize_inputs
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ml-controller"))
+    from routers.retrain_trigger import _verify_prebuilt_canonical_prep
+
+    sha = "a" * 40
+    monkeypatch.setenv("STOCKVISION_SOURCE_SHA", sha)
+    n = 10000
+    buffer = io.BytesIO()
+    np.savez_compressed(buffer, dates=np.array(["2026-01-01"] * n),
+        symbols=np.array(["2330"] * n), markets=np.array(["LISTED"] * n),
+        X=np.zeros((n, 137), dtype=np.float32))
+    objects = {"features/prep/batch_0.npz": buffer.getvalue(),
+        "features/prep/feature_names.json": json.dumps(list(FEATURE_COLS)).encode(),
+        "sequence/prep/batch_0.npz": b"verified-sequence"}
+    receipt = {"schema_version": prep.SOURCE_RECEIPT_SCHEMA_VERSION,
+        "feature_semantic_version": prep.FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": prep.FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": sha, "business_date": "2026-01-07",
+        "status": "ready", "output_gcs_prefix": "features", "batch_count": 1,
+        "feature_names_path": "features/prep/feature_names.json",
+        "output_checksums": {k: hashlib.sha256(v).hexdigest() for k, v in objects.items() if k.startswith("features/")}}
+    receipt["receipt_checksum"] = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+    objects["features/prep/immutable_receipt.json"] = json.dumps(receipt).encode()
+    sequence = {"status": "ready", "contract": "sequence_records_v3", "output_gcs_prefix": "sequence",
+        "batch_count": 1, "summary": {"date_min": "2026-01-01", "date_max": "2026-01-07"},
+        "output_checksums": {"sequence/prep/batch_0.npz": hashlib.sha256(b"verified-sequence").hexdigest()}}
+    sequence["manifest_checksum"] = prep._sequence_manifest_checksum(sequence)
+    objects["sequence/prep/sequence_manifest.json"] = json.dumps(sequence).encode()
+    class Bucket:
+        def blob(self, name):
+            class Blob:
+                def exists(self): return name in objects
+                def download_as_text(self): return objects[name].decode()
+                def download_as_bytes(self): return objects[name]
+                def upload_from_string(self, raw, **kwargs): objects[name] = raw.encode() if isinstance(raw, str) else raw
+            return Blob()
+    bucket = Bucket()
+    monkeypatch.setattr(prep, "_get_bucket", lambda: bucket)
+    records = [{"symbol": "2330", "dates": [f"2026-01-{i:02d}" for i in range(1, 8)],
+        "open": [100.] * 7, "close": [110.] * 7}]
+    monkeypatch.setattr(prep, "load_sequence_dataset", lambda _: SimpleNamespace(records=records))
+    payload = {"source_gcs_prefix": "features", "sequence_gcs_prefix": "sequence",
+        "output_gcs_prefix": "adjusted", "batch_count": 1, "sequence_batch_count": 1}
+    manifest = prep.rebuild_canonical_adjusted_prep(payload)
+    assert manifest["source_checksums"] == receipt["output_checksums"]
+    training = {"run_date": "2026-01-07", "dataset_snapshot": {
+        "manifest_path": "adjusted/prep/manifest.json", "manifest_checksum": manifest["manifest_checksum"]}}
+    _, counts = materialize_inputs(bucket, training, tmp_path)
+    assert counts == {"2026-01-01": n}
+    full_fit = _verify_prebuilt_canonical_prep(bucket=bucket, prefix="adjusted",
+        expected_manifest_checksum=manifest["manifest_checksum"],
+        expected_target_semantic_version=manifest["target_semantic_version"], expected_producer_source_sha=sha)
+    assert full_fit["total_rows"] == n
+    assert prep.rebuild_canonical_adjusted_prep(payload)["status"] == "idempotent_ready"
+    # Even whitespace-only metadata mutation must fail exact-byte provenance.
+    objects["features/prep/feature_names.json"] += b" "
+    with pytest.raises(ValueError, match="feature_names_changed"):
+        materialize_inputs(bucket, training, tmp_path)
+    with pytest.raises(ValueError, match="checksum_mismatch"):
+        prep.rebuild_canonical_adjusted_prep(payload)

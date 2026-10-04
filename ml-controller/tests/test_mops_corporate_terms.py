@@ -195,3 +195,15 @@ def test_persistent_http_200_rate_limit_has_bounded_retries(monkeypatch):
         with pytest.raises(RuntimeError,match='mops_source_rate_limited'):
             mops._public_post(client,'https://example.invalid',data={})
     assert len(calls)==3 and waits==[30,60]
+
+
+@pytest.mark.parametrize("title", ["代子公司公告股票股利", "代重要子公司公告股票股利"])
+def test_subsidiary_announcements_are_not_parent_entitlements(title):
+    row = {"COMPANY_ID": "1235", "AN_CODE": "M14", "SUBJECT": title}
+    def transport(request):
+        assert str(request.url) == QUERY
+        return httpx.Response(200, json={"status": "success", "data": [row]})
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        evidence = fetch_mops_stock_evidence(symbol="1235", ex_date="2026-08-28",
+            observed_at=datetime(2026, 10, 4, tzinfo=timezone.utc), client=client)
+    assert evidence["documents"] == []

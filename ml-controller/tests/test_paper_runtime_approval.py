@@ -336,3 +336,20 @@ def test_monthly_recovery_preserves_tabpack_key_and_revocation(runtime_pair, mon
     records[paper.MONTHLY_RECOVERY_RUNTIME_RELEASE_KEY]['approved'] = False
     with pytest.raises(RuntimeError, match='approval_invalid'):
         paper.verify_active_approval(admission)
+
+
+def test_tabpack_evaluation_preserves_monthly_key_and_revocation(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'exact monthly source recovery'})
+    records = {paper.KEY: admission, paper.MONTHLY_RECOVERY_RUNTIME_RELEASE_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.TABPACK_EVALUATION_RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.MONTHLY_RECOVERY_RUNTIME_RELEASE_KEY] == old
+    records[paper.TABPACK_EVALUATION_RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'):
+        paper.verify_active_approval(admission)

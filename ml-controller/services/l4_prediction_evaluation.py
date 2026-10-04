@@ -34,8 +34,15 @@ def evaluate_predictions(rows, outputs, *, model=None):
     if not rows or len(rows)!=len(outputs):
         raise ValueError('l4_evaluation_pool_mismatch')
     correction_model = (model or {}).get('residual_mlp')
-    if correction_model is not None:
+    tabpack_model = (model or {}).get('residual_tabpack')
+    if correction_model is not None and tabpack_model is not None:
+        raise ValueError('l4_evaluation_multiple_residual_owners')
+    if tabpack_model is not None:
+        from services.l4_residual_tabpack import validate
+        correction_model = tabpack_model
+    elif correction_model is not None:
         from services.l4_residual_mlp import validate
+    if correction_model is not None:
         validate(correction_model, anchor_model={key:model[key] for key in ('recipe','heads')})
     groups=defaultdict(list);seen=set()
     for i,(row,output) in enumerate(zip(rows,outputs,strict=True)):
@@ -58,7 +65,11 @@ def evaluate_predictions(rows, outputs, *, model=None):
                     or output.get('calibration_checksum') != correction_model['payload_checksum']
                     or abs(finite(output.get('three_head_expected_return_gross'),'three_head_mean')-implied)>1e-12):
                 raise ValueError('l4_evaluation_residual_anchor_mismatch')
-            corrected=float(np.float32(np.float32(implied)+np.float32(finite(output.get('residual_ev_correction'),'residual_correction'))))
+            correction = finite(output.get('residual_ev_correction'),'residual_correction')
+            # TabPack adds its exported correction to float64 head outputs;
+            # the historical MLP intentionally performs float32 addition.
+            corrected = (implied + correction if tabpack_model is not None else
+                         float(np.float32(np.float32(implied) + np.float32(correction))))
             if abs(corrected-output['expected_return_gross'])>1e-12:
                 raise ValueError('l4_evaluation_residual_mean_incoherent')
     daily=[]

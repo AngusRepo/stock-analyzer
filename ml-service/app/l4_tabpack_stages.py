@@ -111,6 +111,12 @@ def read_gpu_output(payload, bucket, destination):
         path.write_bytes(_bytes(bucket, ref, _root(payload) + 'gpu/'))
 
 
+def _stage_owner():
+    from modal import current_function_call_id, current_input_id
+    call, item = current_function_call_id(), current_input_id()
+    return {'function_call_id':call, 'input_id':item} if call and item else None
+
+
 def run_stage(payload, stage, *, bucket=None):
     started = time.monotonic()
     if (stage not in ('prepare','gpu','finalize') or payload.get('expected_source_sha') != os.environ.get('STOCKVISION_SOURCE_SHA')
@@ -129,12 +135,24 @@ def run_stage(payload, stage, *, bucket=None):
     output = {'prepare':'prepared.json', 'gpu':'gpu_output.json', 'finalize':'completed.json'}[stage]
     result = read(bucket, root + output)
     if result is None:
+        owner = _stage_owner()
         try:
             bucket.blob(root + stage + '_claim.json').upload_from_string(json.dumps({
-                'created_at':datetime.now(timezone.utc).isoformat(), 'payload_checksum':digest(payload)}),
+                'created_at':datetime.now(timezone.utc).isoformat(), 'payload_checksum':digest(payload),
+                'owner':owner}),
                 content_type='application/json', if_generation_match=0)
         except PreconditionFailed:
-            return {'status':'pending', 'reason':'tabpack_' + stage + '_already_claimed'}
+            claim = read(bucket, root + stage + '_claim.json') or {}
+            if claim.get('payload_checksum') != digest(payload):
+                raise ValueError('tabpack_stage_claim_payload_mismatch')
+            if owner is None or claim.get('owner') != owner:
+                return {'status':'pending', 'reason':'tabpack_' + stage + '_already_claimed'}
+            # Modal preemption restarts the same input after its old container
+            # terminates. Only that exact provider owner may resume its claim.
+            # Partial GPU exports need explicit reconciliation, never refitting
+            # into an immutable object namespace with different weights.
+            if stage == 'gpu' and any(bucket.list_blobs(prefix=root + 'gpu/', max_results=1)):
+                raise ValueError('tabpack_partial_gpu_exports_require_review')
         try:
             if stage == 'prepare':
                 result = prepare_stage(payload, bucket)

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:f094c74871d5d1d0bdddcac459197b7c588a1c4382a31c999d265dc75c9e4571",
+  "execution_owner_version": "native-paper-v1:01c6198b053a2101b51d0beb4576723dfffdc3181a1c98316ac9341a8d0b49ed",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized commit/push/deploy on 2026-10-04; exact supplemental runtime KV remains separately required. Monthly retrain authorized; no model replacement or live orders.",
-  "review": "docs/TABPACK_OFFICIAL_MONTHLY.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-04-monthly-source-recovery"
+  "authorization": "Pending exact Paper KV authorization for evaluation-only identity change. Existing monthly repair release authority; no promotion, refit or real orders.",
+  "review": "audits/weekend-research-20261004/tabpack-evaluation-recovery/REPORT.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-tabpack-evaluation-recovery"
 }

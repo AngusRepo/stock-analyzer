@@ -161,3 +161,30 @@ def test_scalar_mlp_evaluation_separates_head_mean_and_corrected_ev():
     bad=deepcopy(outputs);bad[0]['calibration_checksum']='wrong'
     with pytest.raises(ValueError,match='residual_anchor_mismatch'):
         evaluate_predictions(rows,bad,model=model)
+
+
+@pytest.mark.parametrize('fault', [None, 'mean', 'anchor', 'checksum', 'two_owners'])
+def test_tabpack_evaluation_preserves_corrected_mean_contract(fault):
+    from test_paper_single_b_tabpack import residual
+    anchor = constant_model()
+    model = {**anchor, 'residual_tabpack': residual(anchor)}
+    rows = [{'date':'2026-08-20', 'symbol':str(i), 'features':features(v),
+             'gross_return':y, 'l3_baseline':baseline(y/2)}
+            for i,(v,y) in enumerate(zip((.1,.5,.9),(-.03,.01,.05),strict=True))]
+    outputs = predict(rows, model)
+    if fault == 'mean': outputs[0]['expected_return_gross'] += .01
+    if fault == 'anchor': outputs[0]['three_head_expected_return_gross'] += .01
+    if fault == 'checksum': outputs[0]['calibration_checksum'] = 'wrong'
+    if fault == 'two_owners': model['residual_mlp'] = {}
+    if fault:
+        with pytest.raises(ValueError): evaluate_predictions(rows, outputs, model=model)
+        return
+    report = evaluate_predictions(rows, outputs, model=model)
+    assert 'three_head' in report['metrics']
+    assert report['metrics']['l4']['mse'] != report['metrics']['three_head']['mse']
+    # Regression: TabPack's float64 sum must not be evaluated as the old MLP float32 sum.
+    assert any(abs(float(np.float32(np.float32(o['three_head_expected_return_gross']) +
+                                   np.float32(o['residual_ev_correction']))) -
+                   o['expected_return_gross']) > 1e-12 for o in outputs)
+    with pytest.raises(ValueError, match='incoherent'):
+        evaluate_predictions(rows, outputs)

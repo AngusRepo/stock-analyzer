@@ -370,3 +370,52 @@ def test_entry_visibility_preserves_evaluation_key_and_revocation(runtime_pair, 
     records[paper.ENTRY_UI_RUNTIME_RELEASE_KEY]['approved'] = False
     with pytest.raises(RuntimeError, match='approval_invalid'):
         paper.verify_active_approval(admission)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing_declaration', 'wrong_previous',
+                                  'wrong_new', 'another_source', 'risk', 'declaration'])
+def test_l4_risk_overlay_reapproval_accepts_only_exact_source(runtime_pair, fault):
+    admission, approval = runtime_pair
+    transition = paper.L4_RISK_OVERLAY_SOURCE_CHANGE['allocator_sources']['l4_distribution_runtime.py']
+    prior = admission['configuration']['allocator_source_identity']
+    current = approval['configuration']['allocator_source_identity']
+    prior['l4_distribution_runtime.py'] = transition['previous']
+    current['l4_distribution_runtime.py'] = transition['approved']
+    approval['admission'] = deepcopy(admission)
+    approval['approved_l4_risk_overlay_source_change'] = deepcopy(paper.L4_RISK_OVERLAY_SOURCE_CHANGE)
+    if fault == 'missing_declaration':
+        approval.pop('approved_l4_risk_overlay_source_change')
+    elif fault == 'wrong_previous':
+        prior['l4_distribution_runtime.py'] = 'f' * 64
+        approval['admission'] = deepcopy(admission)
+    elif fault == 'wrong_new':
+        current['l4_distribution_runtime.py'] = 'f' * 64
+    elif fault == 'another_source':
+        current['allocator'] = 'f' * 64
+    elif fault == 'risk':
+        approval['configuration']['risk_config']['cap'] = .9
+    elif fault == 'declaration':
+        approval['approved_l4_risk_overlay_source_change']['scope'] = 'live'
+    reseal(approval)
+    if fault is None:
+        assert paper.validate_runtime_approval(approval, admission) == approval
+    else:
+        with pytest.raises(RuntimeError):
+            paper.validate_runtime_approval(approval, admission)
+
+
+def test_l4_risk_overlay_key_has_priority_and_revocation_fails_closed(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'exact L4 risk overlay release'})
+    records = {paper.KEY: admission, paper.ENTRY_UI_RUNTIME_RELEASE_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.L4_RISK_OVERLAY_RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.ENTRY_UI_RUNTIME_RELEASE_KEY] == old
+    records[paper.L4_RISK_OVERLAY_RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'):
+        paper.verify_active_approval(admission)

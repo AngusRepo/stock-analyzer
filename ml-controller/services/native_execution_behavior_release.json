@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:4791968bcfde0f9b4900524fbe14d2786200ef9551490c063dc38e8a44ccc9e2",
+  "execution_owner_version": "native-paper-v1:b738eef531f291a276942ee0801cc44ae249fb40f4c88c4f67141f9ca1f40718",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Pending explicit UI publication and exact supplemental KV approval. No retrain, model replacement or live orders.",
-  "review": "audits/weekend-research-20261004/entry-ui-release/REPORT.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-entry-visibility"
+  "authorization": "Wei approved the L4 risk_overlay.skip Paper new-buy gate only; seed42 model retained. No retrain or live orders.",
+  "review": "docs/PAPER_RUNTIME_REAPPROVAL.md#2026-10-05-l4-risk-overlay-new-buy-gate",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-l4-risk-overlay"
 }

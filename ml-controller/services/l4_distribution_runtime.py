@@ -237,7 +237,11 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     if hard.get('buys_halted'):
         forbidden.update(symbols)
     for symbol, row in by_symbol.items():
-        if row.get('eligible_for_pending_buy') not in (1, True) or row.get('risk_skip') is True:
+        context = row.get('alpha_context')
+        overlay = context.get('risk_overlay') if isinstance(context, dict) else None
+        if (row.get('eligible_for_pending_buy') not in (1, True)
+                or row.get('risk_skip') is True
+                or isinstance(overlay, dict) and overlay.get('skip') is True):
             forbidden.add(symbol)
     result = allocate(symbols=symbols,expected_gross=gross,covariance=covariance,
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},

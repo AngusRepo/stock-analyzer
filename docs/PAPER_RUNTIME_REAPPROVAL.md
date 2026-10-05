@@ -38,3 +38,7 @@ The dedicated `:2026-10-05-tabpack-evaluation-recovery` key is staged independen
 ## 2026-10-05 entry visibility (pending operator grant)
 
 The dedicated `:2026-10-05-entry-visibility` key pins the native bundle that adds entry-condition evidence and specific execution rejection reasons. Entry/exit decision gates remain unchanged. Old revisions retain their evaluation recovery key. Local simulation and explicit exact-identity authorization precede any KV write; prior keys remain untouched and revocation never falls back. Display quotes are read-only and do not authorize trading.
+
+## 2026-10-05 L4 risk overlay new-buy gate
+
+The dedicated `:2026-10-05-l4-risk-overlay` key pins the one changed allocator source `l4_distribution_runtime.py`. It connects the existing `alpha_context.risk_overlay.skip` recommendation field to L4 `forbidden_buys`; model weights, L3 identity, account, risk limits, and live-order flags remain unchanged. The transition is exact-source only (`b1d3773b...` to `4ce7820f...`) and does not claim economic equivalence or transfer NAV maturity. Stage the new approval with the original admission and latest supplemental approval preserved, validate locally, read back its exact checksum, then route the matching Controller and Job source. A revoked new key fails closed rather than falling back to the prior entry-visibility key.

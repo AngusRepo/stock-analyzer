@@ -73,7 +73,16 @@ GA_RECOVERY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-03-ga-event-recovery'
 MONTHLY_RECOVERY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-04-monthly-source-recovery'
 TABPACK_EVALUATION_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-tabpack-evaluation-recovery'
 ENTRY_UI_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-entry-visibility'
+L4_RISK_OVERLAY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-l4-risk-overlay'
 TABPACK_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-04-tabpack-monthly-retirement'
+L4_RISK_OVERLAY_SOURCE_CHANGE = {
+    'release': '2026-10-05-l4-risk-overlay',
+    'scope': 'paper', 'maturity_transfer': False,
+    'allocator_sources': {'l4_distribution_runtime.py': {
+        'previous': 'b1d3773bac8cb892a73fb555bc32fbc5e8f8f9ff23c5f2b01dd3805f68b07686',
+        'approved': '4ce7820f1a0da71ab3939a6a5da10793d833a5e8429565f856b662d2c95f4400',
+    }},
+}
 TABPACK_RUNTIME_CHANGE = {'release': '2026-10-04-tabpack-monthly-retirement',
  'scope': 'paper',
  'maturity_transfer': False,
@@ -268,6 +277,17 @@ def validate_runtime_approval(approval, admission, *, now=None):
                     current.pop(name)
                 else:
                     current[name] = transition['previous']
+    l4_risk_change = approval.get('approved_l4_risk_overlay_source_change')
+    if l4_risk_change is not None:
+        if l4_risk_change != L4_RISK_OVERLAY_SOURCE_CHANGE:
+            raise RuntimeError('active8_paper_l4_risk_overlay_change_invalid')
+        before_sources = before['allocator_source_identity']
+        after_sources = after['allocator_source_identity']
+        for name, transition in L4_RISK_OVERLAY_SOURCE_CHANGE['allocator_sources'].items():
+            if (before_sources.get(name) != transition['previous']
+                    or after_sources.get(name) != transition['approved']):
+                raise RuntimeError('active8_paper_l4_risk_overlay_change_mismatch')
+            after_sources[name] = transition['previous']
     if digest(before) != digest(after):
         raise RuntimeError('active8_paper_runtime_approval_policy_changed')
     return deepcopy(approval)
@@ -286,8 +306,10 @@ def verify_active_approval(admission, *, now=None):
     release_key=SWING_RUNTIME_RELEASE_KEY if os.environ.get('PIPELINE_DAILY_PLAN_OWNER')=='premarket_once_v1' else RUNTIME_RELEASE_KEY
     # Stage this exact source release separately. The old production revision
     # keeps reading its old key until the candidate has passed admission.
-    runtime = (kv_client.get_json(ENTRY_UI_RUNTIME_RELEASE_KEY, default=None, strict=True)
+    runtime = (kv_client.get_json(L4_RISK_OVERLAY_RUNTIME_RELEASE_KEY, default=None, strict=True)
                if release_key == SWING_RUNTIME_RELEASE_KEY else None)
+    if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
+        runtime = kv_client.get_json(ENTRY_UI_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
         runtime = kv_client.get_json(TABPACK_EVALUATION_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:

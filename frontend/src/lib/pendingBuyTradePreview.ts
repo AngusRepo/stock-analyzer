@@ -1,5 +1,6 @@
 export interface PendingBuyExecutionPreview {
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
+  submission_window?: { open: boolean | null; reason: string; checked_at: string } | null
   or15?: {
     conditions?: Record<string, boolean | null>
     signal_high?: number | null

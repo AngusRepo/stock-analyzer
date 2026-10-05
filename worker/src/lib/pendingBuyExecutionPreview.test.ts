@@ -68,3 +68,21 @@ test('swing conditions preserve false/unknown and show price limits without infe
   assert.equal(preview?.or15?.max_buy_price,103)
   assert.equal(preview?.or15?.signal_close,99)
 })
+
+test('a missed submission window does not erase the last complete swing bar', () => {
+  const preview = buildPendingBuyExecutionPreviews([
+    { symbol: '6217', kind: 'window', status: 'defer', reason: 'swing_next_bar_submission_missed',
+      created_at: '2026-10-05 04:16:00', detail_json: JSON.stringify({ signal: { conditions: { window: false } } }) },
+    { symbol: '6217', kind: 'or15', status: 'defer', reason: 'swing_waiting_or_touch',
+      created_at: '2026-10-05 04:15:19', detail_json: JSON.stringify({ signal: {
+        action: 'defer', reason: 'swing_waiting_or_touch', conditions: { window: true, or_touch: false },
+        orHigh: 181, signalHigh: 179, signalClose: 178.5, vwap: 178.916,
+      } }) },
+  ], 'or15-5m-orl8-20-v1').get('6217')
+
+  assert.equal(preview?.or15?.reason, 'swing_waiting_or_touch')
+  assert.equal(preview?.or15?.or_high, 181)
+  assert.equal(preview?.or15?.signal_high, 179)
+  assert.equal(preview?.submission_window?.open, false)
+  assert.equal(preview?.submission_window?.reason, 'swing_next_bar_submission_missed')
+})

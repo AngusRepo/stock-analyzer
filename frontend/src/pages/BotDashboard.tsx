@@ -602,6 +602,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           ? formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)
           : s12Badge?.label ?? '等待近期盤中結構資料'
         const allocatorAction = b.execution_preview?.allocator?.action
+        const sourceRiskSkip = Array.isArray(b.watch_points) && b.watch_points.some(
+          (point: unknown) => typeof point === 'string' && point.startsWith('alpha_risk_overlay:skip=true'),
+        )
         return (
           <div
             key={b.symbol}
@@ -617,6 +620,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
                 {executionBadge.label}
               </span>
             </div>
+            {sourceRiskSkip && <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+              來源風控標記「跳過買入」，但此檔仍在今日待買清單；目前等待技術條件不代表風控已否決。
+            </div>}
             <button
               onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
               className="absolute right-3 top-3 rounded p-1 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
@@ -671,7 +677,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             </div>
             {trade.availableCash != null && <div className="mt-2 text-[11px] text-muted-foreground">{'可用資金 $' + fmt(trade.availableCash)}</div>}
             <div className="mt-3 grid gap-1.5 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
-              <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
+              <div><span className="text-foreground">{b.execution_preview?.entry_owner === 'or15-5m-orl8-20-v1' ? '最近完整 5 分 K 門檻：' : '交易門檻：'}</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
               <div><span className="text-foreground">{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
             </div>
             {isOr15 && <PendingEntryChecklist preview={b.execution_preview} />}
@@ -686,7 +692,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               {or15.bar_error && ` · 行情異常 ${or15.bar_error}`}
             </div>}
             {trade.checkedAt && (
-              <div className="mt-2 text-[11px] text-muted-foreground/70">最近檢查 {formatTwDateTimeShort(trade.checkedAt)}</div>
+              <div className="mt-2 text-[11px] text-muted-foreground/70">{b.execution_preview?.entry_owner === 'or15-5m-orl8-20-v1' ? '最近完整 5 分 K 檢查 ' : '最近檢查 '}{formatTwDateTimeShort(trade.checkedAt)}</div>
             )}
           </div>
         )

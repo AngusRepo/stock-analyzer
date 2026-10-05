@@ -1484,7 +1484,7 @@ def display_quotes(req: BatchRequest, authorization: str | None = Header(default
                     continue
                 data[symbol] = {key: tick.get(key) for key in
                                 ("price", "price_chg", "change_rate", "timestamp")}
-                data[symbol]["source_time"] = tick["timestamp"]
+                data[symbol]["source_time"] = source_time.isoformat()
     return {"data": data, "source": "streaming_display_cache", "executable": False}
 
 

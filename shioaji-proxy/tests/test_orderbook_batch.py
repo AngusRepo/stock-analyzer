@@ -712,3 +712,21 @@ def test_display_quotes_uses_90_second_source_time_without_sdk_or_subscription(m
     assert proxy.get_snapshot("2330") is None  # Execution freshness remains 1.5 seconds.
     proxy.connected = False
     assert proxy.display_quotes(proxy.BatchRequest(symbols=["2330"]))["data"] == {}
+
+
+def test_display_quotes_normalizes_naive_broker_time_for_utc_consumers(monkeypatch):
+    proxy = _load_proxy_main()
+    now = datetime(2026, 10, 5, 13, 5, 30, tzinfo=proxy.TW_TZ)
+    monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
+    monkeypatch.setattr(proxy, "verify_token", lambda token: None)
+    proxy.connected = True
+    proxy._process_poisoned = False
+    proxy._session_epoch = 4
+    proxy.last_ticks["6994"] = {
+        "price": 31.95, "price_chg": -0.1, "change_rate": -0.31,
+        "timestamp": "2026-10-05T13:05:25.813537", "session_epoch": 4,
+    }
+    quote = proxy.display_quotes(proxy.BatchRequest(symbols=["6994"]))["data"]["6994"]
+    assert quote["source_time"] == "2026-10-05T13:05:25.813537+08:00"
+    assert 0 <= (now - datetime.fromisoformat(quote["source_time"])).total_seconds() < 5
+    assert quote["price_chg"] == -0.1

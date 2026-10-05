@@ -15,6 +15,7 @@ export interface PendingBuyExecutionPreview {
   last_or15_assessment?: PendingBuyExecutionPreview['or15']
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
   or15?: {
+    atr_once?: {policy:string;status:string;reason:string;firstSignalMs?:number;delta?:number;atr5?:number;threshold?:number} | null
     conditions?: Record<string, boolean | null>
     stock_return?: number | null
     benchmark_return?: number | null
@@ -88,6 +89,7 @@ export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], en
         const signal = payload.signal ?? {}
         preview.or15 = {
           conditions: signal.conditions && typeof signal.conditions === 'object' ? Object.fromEntries(Object.entries(signal.conditions).map(([key, value]) => [key, typeof value === 'boolean' ? value : null])) : undefined,
+          atr_once: signal.atrOnce ?? null,
           signal_high: finitePositive(signal.signalHigh), signal_close: finitePositive(signal.signalClose),
           max_buy_price: finitePositive(signal.maxBuyPrice), quote_price: finitePositive(signal.quotePrice),
           stock_return: typeof signal.stockReturn === 'number' && Number.isFinite(signal.stockReturn) ? signal.stockReturn : null,

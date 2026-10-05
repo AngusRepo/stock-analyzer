@@ -74,6 +74,7 @@ MONTHLY_RECOVERY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-04-monthly-source
 TABPACK_EVALUATION_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-tabpack-evaluation-recovery'
 ENTRY_UI_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-entry-visibility'
 ENTRY_EVIDENCE_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-entry-evidence'
+ATR_ONCE_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-atr5-once'
 ENTRY_EVIDENCE_MERGED_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-entry-evidence-risk-merged'
 L4_RISK_OVERLAY_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-05-l4-risk-overlay'
 TABPACK_RUNTIME_RELEASE_KEY = RUNTIME_KEY + ':2026-10-04-tabpack-monthly-retirement'
@@ -308,8 +309,10 @@ def verify_active_approval(admission, *, now=None):
     release_key=SWING_RUNTIME_RELEASE_KEY if os.environ.get('PIPELINE_DAILY_PLAN_OWNER')=='premarket_once_v1' else RUNTIME_RELEASE_KEY
     # Stage this exact source release separately. The old production revision
     # keeps reading its old key until the candidate has passed admission.
-    runtime = (kv_client.get_json(ENTRY_EVIDENCE_MERGED_RUNTIME_RELEASE_KEY, default=None, strict=True)
+    runtime = (kv_client.get_json(ATR_ONCE_RUNTIME_RELEASE_KEY, default=None, strict=True)
                if release_key == SWING_RUNTIME_RELEASE_KEY else None)
+    if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
+        runtime = kv_client.get_json(ENTRY_EVIDENCE_MERGED_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
         runtime = kv_client.get_json(L4_RISK_OVERLAY_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:

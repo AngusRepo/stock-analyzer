@@ -147,6 +147,11 @@ const STATUS_BADGES: Record<string, PendingBuyExecutionBadge> = {
 }
 
 const EXECUTION_REASON_LABELS: Record<string, string> = {
+  swing_atr_day_veto: '首次原進場訊號動能未通過；今日不再買入',
+  swing_atr_first_passed: '首次 ATR5 動能已通過；仍須本次結構與送單檢查',
+  swing_atr_waiting_first_signal: '等待首次 ORH／VWAP／相對強度訊號',
+  swing_atr_warmup_missing: '首次訊號 ATR5 暖資料待補；不改用後續訊號',
+  swing_atr_first_signal_evidence_missing: '首次訊號歷史 K 棒或同時刻 0050 資料待補',
   swing_chase_limit: '價格超過追價上限',
   swing_buy_at_limit: '買價已達漲停',
   swing_next_bar_submission_missed: '已超過下一根 K 棒的送單期限',

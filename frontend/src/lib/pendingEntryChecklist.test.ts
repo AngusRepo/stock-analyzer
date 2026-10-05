@@ -38,3 +38,9 @@ test('clock expiry clears execution checks while confirmed bar values remain',()
  assert.equal(result.conditions.quote,null)
  assert.equal(result.conditions.vwap,true)
 })
+
+
+test('daily ATR veto survives minute-only events while old quote green checks expire',()=>{
+ const evidence=checklistEvidence({or15:{reason:'swing_atr_day_veto',conditions:{window:false,atr_once:false}},last_or15_assessment:{conditions:{plan:true,vwap:true,atr_once:false,quote:true}}} as any)
+ assert.equal(evidence.conditions.atr_once,false);assert.equal(evidence.conditions.vwap,true);assert.equal(evidence.conditions.quote,null)
+})

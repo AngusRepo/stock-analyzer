@@ -4,7 +4,7 @@ import { checklistEvidence, checklistNumbers, checklistUnknownReason, evidenceTi
 
 const groups = [
   {title:'當日基準',note:'跨日重置；計畫修訂或資料更正時更新',rows:[
-    ['plan','盤前計畫封存且標的允許買入'],['ma60','0050 昨收高於 60 日均線'],['opening_limit','開盤 ORH 未達漲停']]},
+    ['plan','盤前計畫封存且標的允許買入'],['ma60','0050 昨收高於 60 日均線'],['opening_limit','開盤 ORH 未達漲停'],['atr_once','首次訊號動能 > 1.5 × ATR5（SMA）；不通過當日不買']]},
   {title:'完整 5 分 K 訊號',note:'保留最近確認值；下一根完整 K 棒後更新',rows:[
     ['bars','一分鐘 K 棒完整'],['or_touch','訊號根最高價觸及 ORH'],['vwap','訊號根收盤 ≥ 累積 VWAP'],['relative_strength','同時刻漲幅 ≥ 0050']]},
   {title:'送單前檢查',note:'每次送單重查，歷史通過不代表目前可下單',rows:[
@@ -24,7 +24,7 @@ export function PendingEntryChecklist({preview,plannedAllocation,todayFills,live
   const signal=evidence.signal
   const daily=preview?.daily_assessment??signal
   const conditions:Record<string,boolean|null>={...evidence.conditions}
-  for(const key of ['ma60','opening_limit']) if(typeof conditions[key]!=='boolean' && typeof daily?.conditions?.[key]==='boolean') conditions[key]=daily.conditions[key]
+  for(const key of ['ma60','opening_limit','atr_once']) if(typeof conditions[key]!=='boolean' && typeof daily?.conditions?.[key]==='boolean') conditions[key]=daily.conditions[key]
   conditions.plan=plannedAllocation ? plannedAllocation.target_weight>0 && !plannedAllocation.locked : null
   if(todayFills?.shares && todayFills.shares>0) conditions.position=false
   // Allocator and L5 audit details remain evidence, never an enduring execution authorization.
@@ -37,8 +37,8 @@ export function PendingEntryChecklist({preview,plannedAllocation,todayFills,live
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1"><h4 className="text-base font-semibold text-foreground">{group.title}</h4><span className="text-sm text-muted-foreground">{group.note}</span></div>
       <div className="mt-2 grid gap-x-5 gap-y-3 sm:grid-cols-2">{group.rows.map(([key,label])=>{
         const value=conditions[key]??null
-        const source=['ma60','opening_limit'].includes(key) && typeof evidence.conditions[key]!=='boolean'?daily:signal
-        let detail=checklistNumbers(key,source)
+        const source=['ma60','opening_limit','atr_once'].includes(key) && typeof evidence.conditions[key]!=='boolean'?daily:signal
+        let detail=checklistNumbers(key,key==='atr_once' && preview?.or15?.atr_once?preview.or15:source)
         if(key==='plan' && plannedAllocation) detail=`權重 ${(plannedAllocation.target_weight*100).toFixed(2)}% · 目標 $${Math.round(plannedAllocation.target_value).toLocaleString('zh-TW')} · 封存 ${evidenceTime(plannedAllocation.finalized_at)}`
         if(key==='position' && todayFills?.shares) detail=`今日已有 ${todayFills.shares.toLocaleString('zh-TW')} 股成交`
         if(key==='allocation' && preview?.allocator) detail=`最近檢查 ${evidenceTime(preview.allocator.checked_at)} · 上限 $${preview.allocator.budget_cap?.toLocaleString('zh-TW')??'未記錄'}（送單時重查）`

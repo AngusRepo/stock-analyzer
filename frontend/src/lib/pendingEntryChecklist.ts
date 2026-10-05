@@ -2,8 +2,8 @@ import type { PendingBuyExecutionPreview } from './pendingBuyTradePreview'
 
 export function checklistEvidence(preview?: PendingBuyExecutionPreview | null, nowMs = Date.now()) {
   const current = preview?.or15
-  const timingOnly = current?.reason === 'swing_next_bar_submission_missed'
-    && typeof current.conditions?.plan !== 'boolean'
+  const timingOnly = ['swing_next_bar_submission_missed','swing_atr_day_veto','swing_atr_warmup_missing'].includes(current?.reason??'')
+    && typeof current?.conditions?.plan !== 'boolean'
   const signal = timingOnly ? preview?.last_or15_assessment ?? current : current
   const historical = !!signal && signal !== current
   const conditions = { ...signal?.conditions, ...current?.conditions }
@@ -30,6 +30,11 @@ const price=(v:number|null|undefined)=>num(v)?'$'+v!.toFixed(2):'未記錄'
 const percent=(v:number|null|undefined)=>num(v)?(v!>0?'+':'')+(v!*100).toFixed(2)+'%':'未記錄'
 export function checklistNumbers(key:string,s:PendingBuyExecutionPreview['or15']):string {
   if (!s) return '等待原始檢查數值'
+  if(key==='atr_once') {
+    const a=s.atr_once
+    if(!a) return '等待首次原進場訊號；當日資格確認後保留'
+    return `首次訊號 ${evidenceTime(a.firstSignalMs)} · 差額 ${num(a.delta)?a.delta!.toFixed(4):'待補'} ／ 1.5 × ATR5 ${num(a.threshold)?a.threshold!.toFixed(4):'待補'} · ${a.status==='veto'?'當日不再進場':a.status==='passed'?'當日動能資格已通過':'首次訊號資料待補，不改用後續訊號'}`
+  }
   if(key==='ma60') return `0050 昨收 ${price(s.benchmark_previous_close)} ＞ MA60 ${price(s.ma60)}`
   if(key==='opening_limit') return `ORH ${price(s.or_high)} ／ 漲停 ${price(s.limit_up)}`
   if(key==='or_touch') return `當根最高 ${price(s.signal_high)} ／ ORH ${price(s.or_high)}`

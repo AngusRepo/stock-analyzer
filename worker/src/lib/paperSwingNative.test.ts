@@ -23,7 +23,7 @@ import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction']) test(`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto']) test(`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
   const f=l4NativeFixture()
   f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
   f.env.PAPER_INTRADAY_ENTRY_OWNER=SWING_POLICY_VERSION
@@ -59,7 +59,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction'])
       const px=url.includes('/0050')?100:20
       const open=Date.parse('2026-09-14T09:00:00+08:00')
       return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
-        data:Array.from({length:scenario==='closing_auction'?260:20},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px,high:px,low:px,close:px,volume:100}))})
+        data:Array.from({length:scenario==='closing_auction'?260:25},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),high:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),low:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),close:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),volume:100}))})
     }
     if(url.includes('taifex'))return new Response('',{status:503})
     throw new Error('unseeded_native_source:'+url)
@@ -119,9 +119,15 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction'])
       assert.equal(review.ready,true)
       assert.deepEqual(await finalizeSinglePlan(f.env,'2026-09-14',input),review)
     })
-    f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:20:00Z')
+    f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:25:00Z')
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
+    if(scenario==='atr_veto') {
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+      assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_atr_once_v1').get()?.status,'veto')
+      assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE reason='swing_atr_day_veto' LIMIT 1").get()?.reason,'swing_atr_day_veto')
+      return
+    }
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
     assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
     assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,20029)

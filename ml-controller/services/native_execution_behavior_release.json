@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:e9eb80b850fa984a38c929b118bb5b772d027ef8093f66b168f2d2e03415838f",
+  "execution_owner_version": "native-paper-v1:5eacd16f4e32cc637cbd020265c98c86d6d080bc51f26ef79659650277558001",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Pending explicit UI publication and exact supplemental KV approval. No retrain, model replacement or live orders.",
-  "review": "audits/weekend-research-20261004/entry-evidence-merged-release/REPORT.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-entry-evidence-risk-merged"
+  "authorization": "Wei authorized ATR5 first-chance Paper release; exact supplemental KV approval pending. No retrain, model replacement or live orders.",
+  "review": "audits/weekend-research-20261004/atr5-once-release/REPORT.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-atr5-once"
 }

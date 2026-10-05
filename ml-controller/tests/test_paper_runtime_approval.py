@@ -453,3 +453,20 @@ def test_merged_evidence_preserves_risk_key_and_revocation(runtime_pair, monkeyp
     records[paper.ENTRY_EVIDENCE_MERGED_RUNTIME_RELEASE_KEY]['approved'] = False
     with pytest.raises(RuntimeError, match='approval_invalid'):
         paper.verify_active_approval(admission)
+
+
+def test_atr_once_key_preserves_previous_production_and_revocation(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'ATR5 first-signal Paper release'})
+    records = {paper.KEY: admission, paper.ENTRY_EVIDENCE_MERGED_RUNTIME_RELEASE_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.ATR_ONCE_RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.ENTRY_EVIDENCE_MERGED_RUNTIME_RELEASE_KEY] == old
+    records[paper.ATR_ONCE_RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'):
+        paper.verify_active_approval(admission)

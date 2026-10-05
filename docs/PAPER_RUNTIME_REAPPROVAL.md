@@ -33,3 +33,8 @@ The new revision reads `:2026-10-04-monthly-source-recovery` before the prior Ta
 ## 2026-10-05 TabPack evaluation recovery (pending operator grant)
 
 The dedicated `:2026-10-05-tabpack-evaluation-recovery` key is staged independently before the prior monthly source key. Old revisions retain the prior key. The sole native identity source delta is `l4_prediction_evaluation.py`: recognize validated TabPack residual EV and its float64 sum while retaining the original MLP float32 contract. This does not change predictions, portfolio decisions or serving models. The Modal stage claim additionally records the provider function-call/input owner; only a restart of that exact input may resume, and partial GPU exports require review. The new key requires explicit exact-identity authorization, local admission simulation and remote readback. Existing GPU artifacts may be finalized after verification; training provenance and evaluation provenance must remain distinct. No model promotion or NAV maturity is granted.
+
+
+## 2026-10-05 entry visibility (pending operator grant)
+
+The dedicated `:2026-10-05-entry-visibility` key pins the native bundle that adds entry-condition evidence and specific execution rejection reasons. Entry/exit decision gates remain unchanged. Old revisions retain their evaluation recovery key. Local simulation and explicit exact-identity authorization precede any KV write; prior keys remain untouched and revocation never falls back. Display quotes are read-only and do not authorize trading.

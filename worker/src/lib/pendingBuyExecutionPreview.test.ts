@@ -60,3 +60,11 @@ test('A preview reads OR15 structure without inventing an entry price', () => {
   assert.equal(preview?.or15?.vwap, 51.33)
   assert.equal(preview?.s12, null)
 })
+
+test('swing conditions preserve false/unknown and show price limits without inferring all-pass', () => {
+  const preview=buildPendingBuyExecutionPreviews([{symbol:'2330',kind:'or15',status:'defer',reason:'swing_waiting_vwap',created_at:'2026-10-05 02:00:00',
+    detail_json:JSON.stringify({signal:{action:'defer',conditions:{or_touch:true,vwap:false,position:null,invalid:'yes'},signalHigh:102,signalClose:99,maxBuyPrice:103,quotePrice:99}})}], 'or15-5m-orl8-20-v1').get('2330')
+  assert.deepEqual(preview?.or15?.conditions,{or_touch:true,vwap:false,position:null,invalid:null})
+  assert.equal(preview?.or15?.max_buy_price,103)
+  assert.equal(preview?.or15?.signal_close,99)
+})

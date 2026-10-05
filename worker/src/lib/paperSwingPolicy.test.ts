@@ -53,3 +53,15 @@ for(const clock of ['13:25','13:30']) assert.equal(assessSwingExit(expiry,{date:
 assert.equal(assessSwingExit(expiry,{date:calendar[21],nowMs:Date.parse(calendar[21]+'T09:04:00+08:00'),price:103,calendar:[]}).action,'hold')
 assert.equal(assessSwingExit(expiry,{date:calendar[21],nowMs:Date.parse(calendar[21]+'T09:05:00+08:00'),price:103,calendar:[]}).reason,'swing_20_sessions')
 assert.equal(assessSwingExit(state,{date:calendar[21],nowMs:Date.parse(calendar[21]+'T09:05:00+08:00'),price:103,calendar}).reason,'swing_20_sessions','missed expiry poll catches up next session')
+
+// First-minute touch is not sufficient: the completed fifth-minute close controls VWAP.
+const reverted=bars.map((b,i)=>i===19?{...b,low:98,close:98}:b)
+const rejected=assessSwingEntry({...base,bars:reverted})
+assert.equal(rejected.reason,'swing_waiting_vwap')
+assert.equal(rejected.conditions?.or_touch,true)
+assert.equal(rejected.conditions?.vwap,false)
+assert.equal(rejected.conditions?.relative_strength,false,'show all evaluated criteria, not just first failure')
+assert.equal(assessSwingEntry({...base,planReady:false}).conditions?.vwap,null,'no invented pass without evidence')
+assert.equal(assessSwingEntry({...base,quote:{price:99,observedAtMs:base.nowMs}}).action,'pass','no extra submission VWAP filter after completed signal')
+assert.equal(assessSwingEntry({...base,quote:{price:104,observedAtMs:base.nowMs}}).conditions?.chase,false)
+assert.equal(assessSwingEntry({...base,quote:{price:101,observedAtMs:base.nowMs-1}}).conditions?.quote,false,'pre-signal quote cannot execute')

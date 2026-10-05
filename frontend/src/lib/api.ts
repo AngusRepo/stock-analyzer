@@ -2050,6 +2050,7 @@ export const paperApi = {
   journal:         () => get<any>('/paper/journal'),
   cronLogs:        (date?: string) => get<any>(`/admin/cron-logs${date ? `?date=${date}` : ''}`),
   riskAudit:       (date?: string, options?: ApiRequestOptions) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`, options),
+  displayQuotes: (symbols: string[], options?: ApiRequestOptions) => get<any>('/paper/display-quotes?symbols=' + encodeURIComponent(symbols.join(',')), options),
   pendingBuys:     (options?: ApiRequestOptions) => get<any>('/paper/pending-buys', options),
   gateCalibration: (days = 7) => get<any>(`/paper/gate-calibration?days=${days}`),
 }

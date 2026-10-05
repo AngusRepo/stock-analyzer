@@ -1452,7 +1452,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
         if(sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000) {
           const reason=sinceOpen<20*60000||sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
-          const assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION}
+          const assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION,conditions:{window:false}}
           swingSidecars.set(pending.symbol,assessment)
           or15Sidecars.set(pending.symbol,{action:'defer',reason,signalMs:null,orHigh:null,orLow:null,vwap:null,latestBarMs:null})
           return null
@@ -1474,6 +1474,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           limitUp:resolveTwEquityPriceBand(reference).limitUp ?? NaN,maxBuyPrice,
           boughtToday:false,alreadyHeld:false,planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),
           candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))})
+        // This sidecar receives placeholders for position state; the allocator/intent gate owns that check.
+        if (assessment.conditions) assessment.conditions.position = null
         swingSidecars.set(pending.symbol,assessment)
         or15Sidecars.set(pending.symbol,{action:assessment.action,reason:assessment.reason,
           signalMs:assessment.signalMs??null,orHigh:assessment.orHigh??null,orLow:assessment.orLow??null,
@@ -2869,7 +2871,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     if(paperSwingOwner && (swingAssessment?.action!=='pass' || !swingAssessment.orLow
       || paperExecutionNow()>=(swingAssessment.submitUntilMs ?? 0) || !swingMaxBuyPrice || fillPrice>swingMaxBuyPrice
       || fillPrice >= (resolveTwEquityPriceBand(Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))).limitUp ?? 0))) {
-      recordActiveExecutionStatus(pending.symbol,'checked_waiting','swing_execution_window_or_price_changed')
+      const reason = paperExecutionNow()>=(swingAssessment?.submitUntilMs ?? 0) ? 'swing_next_bar_submission_missed'
+        : swingMaxBuyPrice && fillPrice>swingMaxBuyPrice ? 'swing_chase_limit'
+        : fillPrice >= (resolveTwEquityPriceBand(Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))).limitUp ?? 0)
+          ? 'swing_buy_at_limit' : 'swing_execution_window_or_price_changed'
+      recordActiveExecutionStatus(pending.symbol,'checked_waiting',reason,
+        `fill=${fillPrice};limit=${limitPrice};max_buy=${swingMaxBuyPrice};submit_until=${swingAssessment?.submitUntilMs ?? 'missing'}`)
       continue
     }
     const canonicalTradeLifecycleJson=paperSwingOwner ? writeSwingState(legacyLifecycleJson,{policy:SWING_POLICY_VERSION,

@@ -3,7 +3,7 @@ import { paperDomainDatabase } from './paperDomainDatabase'
 
 interface ExecutionPreviewRow {
   symbol: string
-  kind: 's12' | 'or15' | 'allocator'
+  kind: 's12' | 'or15' | 'window' | 'allocator'
   status: string
   reason: string | null
   detail_json: string | null
@@ -11,19 +11,10 @@ interface ExecutionPreviewRow {
 }
 
 export interface PendingBuyExecutionPreview {
-  daily_assessment?: PendingBuyExecutionPreview['or15']
-  last_or15_assessment?: PendingBuyExecutionPreview['or15']
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
+  submission_window?: { open: boolean | null; reason: string; checked_at: string } | null
   or15?: {
     conditions?: Record<string, boolean | null>
-    stock_return?: number | null
-    benchmark_return?: number | null
-    previous_close?: number | null
-    benchmark_close?: number | null
-    benchmark_previous_close?: number | null
-    quote_observed_at_ms?: number | null
-    assessed_at_ms?: number | null
-    limit_up?: number | null
     signal_high?: number | null
     signal_close?: number | null
     max_buy_price?: number | null
@@ -81,21 +72,22 @@ function detailField(detail: string, key: string): string | null {
 export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], entryOwner: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1' = 's12'): Map<string, PendingBuyExecutionPreview> {
   const previews = new Map<string, PendingBuyExecutionPreview>()
   for (const row of rows) {
-    const preview: PendingBuyExecutionPreview = previews.get(row.symbol) ?? { entry_owner: entryOwner, or15: null, s12: null, allocator: null }
+    const preview = previews.get(row.symbol) ?? { entry_owner: entryOwner, submission_window: null, or15: null, s12: null, allocator: null }
     try {
       const payload = JSON.parse(row.detail_json ?? '{}') as Record<string, any>
-      if (row.kind === 'or15') {
+      if (row.kind === 'window') {
+        const signal = payload.signal ?? {}
+        preview.submission_window = {
+          open: typeof signal.conditions?.window === 'boolean' ? signal.conditions.window : null,
+          reason: String(signal.reason ?? row.reason ?? ''),
+          checked_at: row.created_at,
+        }
+      } else if (row.kind === 'or15') {
         const signal = payload.signal ?? {}
         preview.or15 = {
           conditions: signal.conditions && typeof signal.conditions === 'object' ? Object.fromEntries(Object.entries(signal.conditions).map(([key, value]) => [key, typeof value === 'boolean' ? value : null])) : undefined,
           signal_high: finitePositive(signal.signalHigh), signal_close: finitePositive(signal.signalClose),
           max_buy_price: finitePositive(signal.maxBuyPrice), quote_price: finitePositive(signal.quotePrice),
-          stock_return: typeof signal.stockReturn === 'number' && Number.isFinite(signal.stockReturn) ? signal.stockReturn : null,
-          benchmark_return: typeof signal.benchmarkReturn === 'number' && Number.isFinite(signal.benchmarkReturn) ? signal.benchmarkReturn : null,
-          previous_close: finitePositive(signal.previousClose), benchmark_close: finitePositive(signal.benchmarkClose),
-          benchmark_previous_close: finitePositive(signal.benchmarkPreviousClose),
-          quote_observed_at_ms: finitePositive(signal.quoteObservedAtMs), assessed_at_ms: finitePositive(signal.assessedAtMs),
-          limit_up: finitePositive(signal.limitUp),
           action: String(signal.action ?? row.status),
           reason: String(signal.reason ?? row.reason ?? ''),
           or_high: finitePositive(signal.orHigh),
@@ -108,10 +100,6 @@ export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], en
           bar_error: typeof payload.bar_error === 'string' ? payload.bar_error : null,
           checked_at: row.created_at,
         }
-        // Keep one complete signal snapshot; minute-only timing events must not erase it.
-        if (typeof preview.or15.conditions?.plan === 'boolean') preview.last_or15_assessment = preview.or15
-        if (typeof preview.or15.conditions?.ma60 === 'boolean' && typeof preview.or15.conditions?.opening_limit === 'boolean')
-          preview.daily_assessment = preview.or15
       } else if (row.kind === 's12') {
         const overlay = payload.assist_entry_overlay
         preview.s12 = {
@@ -163,34 +151,36 @@ export async function loadPendingBuyExecutionPreviews(
              END AS kind
         FROM paper_execution_events
        WHERE account_id = ? AND trade_date = ?
+         AND (created_at >= datetime('now', '-5 minutes')
+           OR (event_type = 'intraday_technical_decision' AND source = 'or15-5m-orl8-20-v1'
+               AND created_at >= datetime('now', '-10 minutes')))
          AND symbol IN (${placeholders})
          AND (
            (event_type = 's12_intraday_structure' AND source = 's12_intraday_structure')
-           OR (event_type = 'intraday_technical_decision' AND source IN ('or15_vwap_entry_v1','or15-5m-orl8-20-v1'))
+           OR (event_type = 'intraday_technical_decision' AND source IN ('or15_vwap_entry_v1','or15-5m-orl8-20-v1')
+               AND reason NOT IN ('swing_next_bar_submission_missed','swing_entry_window_closed')
+               AND (source <> 'or15-5m-orl8-20-v1'
+                 OR (json_valid(detail_json) AND json_extract(detail_json, '$.signal.orHigh') IS NOT NULL)))
            OR (event_type = 'pending_buy' AND source = 'intraday_check' AND status LIKE 'allocator_%')
          )
-    ), classified AS (
-      SELECT *, CASE WHEN kind = 'or15' AND CASE WHEN json_valid(detail_json)
-        THEN json_type(detail_json, '$.signal.conditions.plan') IN ('true','false') ELSE 0 END
-        THEN 1 ELSE 0 END AS has_assessment,
-        CASE WHEN kind='or15' AND CASE WHEN json_valid(detail_json) THEN
-          json_type(detail_json, '$.signal.conditions.ma60') IN ('true','false') AND
-          json_type(detail_json, '$.signal.conditions.opening_limit') IN ('true','false') ELSE 0 END
-          THEN 1 ELSE 0 END AS has_daily FROM candidate_events
+      UNION ALL
+      SELECT symbol, status, reason, detail_json, created_at, id, 'window' AS kind
+        FROM paper_execution_events
+       WHERE account_id = ? AND trade_date = ?
+         AND created_at >= datetime('now', '-5 minutes')
+         AND symbol IN (${placeholders})
+         AND event_type = 'intraday_technical_decision'
+         AND source = 'or15-5m-orl8-20-v1'
     ), ranked AS (
-      SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol, kind ORDER BY id DESC) AS rn,
-        ROW_NUMBER() OVER (PARTITION BY symbol, kind, has_assessment ORDER BY id DESC) AS assessment_rn,
-        ROW_NUMBER() OVER (PARTITION BY symbol, kind, has_daily ORDER BY id DESC) AS daily_rn
-        FROM classified
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol, kind ORDER BY id DESC) AS rn
+        FROM candidate_events
     )
     SELECT symbol, kind, status, reason, detail_json, created_at
-      FROM ranked WHERE (rn = 1 AND (kind='or15' OR created_at >= datetime('now', '-5 minutes'))) OR (kind = 'or15' AND has_assessment = 1 AND assessment_rn = 1)
-        OR (kind = 'or15' AND has_daily = 1 AND daily_rn = 1)
-      ORDER BY id ASC
-  `).bind(1, tradeDate, ...symbols).all<ExecutionPreviewRow>()
+      FROM ranked WHERE rn = 1
+  `).bind(1, tradeDate, ...symbols, 1, tradeDate, ...symbols).all<ExecutionPreviewRow>()
   const previews = buildPendingBuyExecutionPreviews(results ?? [], entryOwner)
   for (const symbol of symbols) {
-    if (!previews.has(symbol)) previews.set(symbol, { entry_owner: entryOwner, or15: null, s12: null, allocator: null })
+    if (!previews.has(symbol)) previews.set(symbol, { entry_owner: entryOwner, submission_window: null, or15: null, s12: null, allocator: null })
   }
   return previews
 }

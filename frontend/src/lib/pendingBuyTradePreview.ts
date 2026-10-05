@@ -1,17 +1,8 @@
 export interface PendingBuyExecutionPreview {
-  daily_assessment?: PendingBuyExecutionPreview['or15']
-  last_or15_assessment?: PendingBuyExecutionPreview['or15']
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
+  submission_window?: { open: boolean | null; reason: string; checked_at: string } | null
   or15?: {
     conditions?: Record<string, boolean | null>
-    stock_return?: number | null
-    benchmark_return?: number | null
-    previous_close?: number | null
-    benchmark_close?: number | null
-    benchmark_previous_close?: number | null
-    quote_observed_at_ms?: number | null
-    assessed_at_ms?: number | null
-    limit_up?: number | null
     signal_high?: number | null
     signal_close?: number | null
     max_buy_price?: number | null
@@ -51,8 +42,6 @@ export interface PendingBuyExecutionPreview {
 }
 
 interface PendingBuyTradeInput {
-  planned_allocation?: {target_value: number; target_weight: number; locked: boolean} | null
-  today_fills?: {shares: number} | null
   ml_entry_price?: number | null
   execution_preview?: PendingBuyExecutionPreview | null
 }
@@ -67,7 +56,7 @@ export interface PendingBuyTradeView {
   budgetCap: number | null
   targetValue: number | null
   availableCash: number | null
-  quantityBasis: 's12' | 'reference' | 'plan_reference' | null
+  quantityBasis: 's12' | 'reference' | null
   gateReason: string | null
   checkedAt: string | null
 }
@@ -133,7 +122,7 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
   const isOr15 = ['or15_vwap_v1','or15-5m-orl8-20-v1'].includes(preview?.entry_owner ?? '')
   const s12Price = !isOr15 && preview?.s12?.ready ? positive(preview.s12.entry_price) : null
   const budgetCap = nonnegative(preview?.allocator?.budget_cap)
-  const targetValue = nonnegative(item.planned_allocation?.target_value) ?? nonnegative(preview?.allocator?.target_value)
+  const targetValue = nonnegative(preview?.allocator?.target_value)
   const l5ReasonLabels: Record<string, string> = {
     missing_l5_quote: '缺少 L5 報價',
     stale_l5_quote: 'L5 報價過期',
@@ -154,10 +143,6 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
   const estimatedShares = executableBudget && sizingPrice
     ? boardLots > 0 ? boardLots * 1000 : Math.floor(executableBudget / sizingPrice)
     : null
-
-  const plannedShares = !item.today_fills?.shares && item.planned_allocation && !item.planned_allocation.locked
-    && targetValue != null && targetValue > 0 && referencePrice != null
-    ? Math.floor(targetValue / referencePrice) : null
 
   let gateReason: string | null = null
   if (preview?.allocator?.reason === 'l4_hard_risk_veto') {
@@ -180,13 +165,13 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
     chaseCeiling: s12Price != null ? positive(preview?.s12?.chase_ceiling) : null,
     l5Status: preview?.allocator?.l5_status ?? null,
     entrySource: s12Price != null ? 's12' : 'waiting',
-    estimatedShares: estimatedShares && estimatedShares > 0 ? estimatedShares : plannedShares,
+    estimatedShares: estimatedShares && estimatedShares > 0 ? estimatedShares : null,
     budgetCap,
     targetValue,
     availableCash,
     quantityBasis: estimatedShares && estimatedShares > 0
       ? s12Price != null ? 's12' : 'reference'
-      : plannedShares != null ? 'plan_reference' : null,
+      : null,
     gateReason,
     checkedAt: (isOr15 ? preview?.or15?.checked_at : preview?.s12?.checked_at) ?? preview?.allocator?.checked_at ?? null,
   }

@@ -69,27 +69,20 @@ test('swing conditions preserve false/unknown and show price limits without infe
   assert.equal(preview?.or15?.signal_close,99)
 })
 
+test('a missed submission window does not erase the last complete swing bar', () => {
+  const preview = buildPendingBuyExecutionPreviews([
+    { symbol: '6217', kind: 'window', status: 'defer', reason: 'swing_next_bar_submission_missed',
+      created_at: '2026-10-05 04:16:00', detail_json: JSON.stringify({ signal: { conditions: { window: false } } }) },
+    { symbol: '6217', kind: 'or15', status: 'defer', reason: 'swing_waiting_or_touch',
+      created_at: '2026-10-05 04:15:19', detail_json: JSON.stringify({ signal: {
+        action: 'defer', reason: 'swing_waiting_or_touch', conditions: { window: true, or_touch: false },
+        orHigh: 181, signalHigh: 179, signalClose: 178.5, vwap: 178.916,
+      } }) },
+  ], 'or15-5m-orl8-20-v1').get('6217')
 
-test('timing-only minute keeps last assessment separate from current execution status', () => {
- const p=buildPendingBuyExecutionPreviews([
-  {symbol:'6217',kind:'or15',status:'defer',reason:'swing_waiting_vwap',created_at:'2026-10-05 01:50:15',detail_json:JSON.stringify({signal:{conditions:{plan:true,window:true,vwap:false},vwap:100}})},
-  {symbol:'6217',kind:'or15',status:'defer',reason:'swing_next_bar_submission_missed',created_at:'2026-10-05 01:51:15',detail_json:JSON.stringify({signal:{conditions:{window:false}}})},
- ],'or15-5m-orl8-20-v1').get('6217')
- assert.equal(p?.or15?.reason,'swing_next_bar_submission_missed')
- assert.deepEqual(p?.or15?.conditions,{window:false})
- assert.equal(p?.last_or15_assessment?.conditions?.vwap,false)
- assert.equal(p?.last_or15_assessment?.checked_at,'2026-10-05 01:50:15')
-})
-
-
-test('daily evidence and raw comparison inputs survive a later timing-only audit',()=>{
- const rows=[{symbol:'2330',kind:'or15' as const,status:'pass',reason:'swing_or15_vwap_relative_strength',created_at:'2026-10-05 01:20:10',
- detail_json:JSON.stringify({signal:{conditions:{plan:true,ma60:true,opening_limit:true},stockReturn:0,benchmarkReturn:-.01,benchmarkClose:99,benchmarkPreviousClose:100,quoteObservedAtMs:1791163200000,assessedAtMs:1791163210000,limitUp:110}})},
- {symbol:'2330',kind:'or15' as const,status:'defer',reason:'swing_next_bar_submission_missed',created_at:'2026-10-05 02:01:10',detail_json:JSON.stringify({signal:{conditions:{window:false}}})}]
- const result=buildPendingBuyExecutionPreviews(rows,'or15-5m-orl8-20-v1').get('2330')!
- assert.equal(result.daily_assessment?.conditions?.ma60,true)
- assert.equal(result.daily_assessment?.stock_return,0)
- assert.equal(result.daily_assessment?.benchmark_return,-.01)
- assert.equal(result.daily_assessment?.quote_observed_at_ms,1791163200000)
- assert.equal(result.or15?.conditions?.window,false)
+  assert.equal(preview?.or15?.reason, 'swing_waiting_or_touch')
+  assert.equal(preview?.or15?.or_high, 181)
+  assert.equal(preview?.or15?.signal_high, 179)
+  assert.equal(preview?.submission_window?.open, false)
+  assert.equal(preview?.submission_window?.reason, 'swing_next_bar_submission_missed')
 })

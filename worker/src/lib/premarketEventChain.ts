@@ -46,11 +46,11 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
   const failed = rows.find(r => r.status === 'error')
   const common = {run_date:date,run_id:RUN(date),run_scope:'live_canonical' as const,duration_ms:0}
   if (setupDone) await logSchedulerResult(env.KV,'morning-setup',{
-    ...common,status:'success',summary:'status=success event_stage=setup; debate/replan/publication follow immediately',
+    ...common,status:'success',summary:'status=success event_stage=setup; successor stages follow immediately',
   })
-  if (published || failed) await logSchedulerResult(env.KV, failed && !setupDone ? 'morning-setup' : 'pre-market-warmup',{
-    ...common,status:failed ? 'error' : 'success',
-    summary:failed ? `status=error event_stage=${failed.stage}` : `status=success event_driven_ready ${published?.cursor_key}`,
+  if (published || failed) await logSchedulerResult(env.KV, failed && !setupDone && !published ? 'morning-setup' : 'pre-market-warmup',{
+    ...common,status:published ? 'success' : 'error',
+    summary:published ? `status=success event_driven_ready ${published.cursor_key}` : `status=error event_stage=${failed?.stage}`,
   })
 }
 
@@ -77,8 +77,8 @@ export async function ensurePremarketEventChain(env: Bindings, date: string, now
   const failed = results.find(r => r.status === 'error')
   const ready = results.some(r => r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success'
     && JSON.parse(r.cursor_key ?? '{}').output?.ready === true)
-  const status = failed ? 'error' : ready ? 'success' : 'pending'
-  return `status=${status} premarket_event_chain queued=${sent} ready_target=${PREMARKET_READY_TARGET} overdue=${!ready && clock.minutes >= 525} stage=${failed?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'complete'}`
+  const status = ready ? 'success' : failed ? 'error' : 'pending'
+  return `status=${status} premarket_event_chain queued=${sent} ready_target=${PREMARKET_READY_TARGET} overdue=${!ready && clock.minutes >= 525} stage=${ready ? 'complete' : failed?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'complete'}`
 }
 
 export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, work: PremarketWork, now = Date.now()): Promise<void> {
@@ -87,7 +87,9 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   if (!validStage(stage) || msg.runId !== RUN(date)) throw new Error('premarket_message_invalid')
   const db = databaseForDataDomain(env, 'ops')
   const key = PREFIX + stage
-  if (date !== premarketClock(now).date || premarketClock(now).minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?525:540)) {
+  const clock = premarketClock(now)
+  const advisoryWindow = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && stage.startsWith('debate:') && clock.minutes < 960
+  if (date !== clock.date || (!advisoryWindow && clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?525:540))) {
     await db.prepare(`UPDATE pipeline_stage_runs SET status='error',last_error='premarket_session_expired',updated_at=CURRENT_TIMESTAMP
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status!='success'`)
       .bind(date,key,RUN(date)).run()

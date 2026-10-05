@@ -47,16 +47,16 @@ export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
  if(!plan||plan.signal_date!==receipt.run_date)throw new Error('premarket_wait:l4_publication')
  return plan.plan_id
 }
-/** The daily head is the admission commit point after the whole pending debate is durable. */
+/** The daily head admits the sealed L4 plan and deterministic pending-buy checks. */
 export async function finalizeSinglePlan(env:Bindings,date:string,input:PremarketPayload) {
  const plan=await readL4PortfolioPlan(env)
  if(!plan||plan.plan_id!==input.plan_id||plan.signal_date!==input.signal_date)throw new Error('daily_plan_source_changed')
  const state=await loadPendingBuySnapshot(env,date,{allowFallbackRecent:false})
  if(!['ready','empty','halted'].includes(String(state.meta?.status)) || state.pendingBuys.some(p=>
-   p.debate_verdict==='PENDING'||p.debate_status==='pending'||planIdFromWatchPoints(p.watch_points)!==plan.plan_id))
-   throw new Error('premarket_wait:debate_publication')
+   planIdFromWatchPoints(p.watch_points)!==plan.plan_id))
+   throw new Error('premarket_wait:pending_publication')
  const db=paperDomainDatabase(env)
- const rows=(await db.prepare("SELECT request_id,request_json FROM l4_replan_outbox_v1 WHERE source_plan_id=? AND status='pending' ORDER BY request_id")
+ const rows=(await db.prepare("SELECT request_id,request_json FROM l4_replan_outbox_v1 WHERE source_plan_id=? AND status='pending' AND substr(json_extract(request_json,'$.reason'),1,7)!='debate_' ORDER BY request_id")
    .bind(plan.plan_id).all<{request_id:string;request_json:string}>()).results
  const restrictions:RiskRestriction[]=rows.flatMap(row=>{
    const r=JSON.parse(row.request_json)

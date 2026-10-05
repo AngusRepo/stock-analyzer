@@ -11,7 +11,7 @@ const plan:any={account_anchor:{positions:[{symbol:'B',shares:2000},{symbol:'C',
   constraints:{name_cap:.3,min_weight:.03,max_positions:5,exposure_cap:.8},
   proof:{within_tolerance:true,preselection:false,absolute_objective_gap:0,tolerance:1e-8,evaluated_candidate_count:4}}
 const base={plan,tradeDate:date,contextHash:'e'.repeat(64),nowMs:clock('08:10'),restrictions:[]}
-test('debate only reduces weights, leaves cash, retains explicit zero and original proof',async()=>{
+test('deterministic restrictions only reduce weights, leave cash, and retain the original proof',async()=>{
   const before=JSON.stringify(plan)
   const review=await sealDailyReview({...base,restrictions:[{symbol:'A',maxWeight:.1,reason:'news risk'},{symbol:'B',maxWeight:0,reason:'veto'}]})
   assert.deepEqual(review.weights,{A:.1,B:0,C:0,D:.1});assert.equal(JSON.stringify(plan),before)
@@ -61,6 +61,10 @@ test('execution consumes reviewed weights; cap outbox performs zero optimizer ca
     await persistDailyReview(f.env.PAPER_DB,plan,first)
     advancePaperExecutionClock(clock('10:00'))
     await requestL4Replan(f.env,plan.plan_id,['B'],'debate_risk_reject',{A:.1})
+    assert.equal(await flushL4Replans(f.env,plan.signal_date),true)
+    assert.deepEqual((await readL4ExecutionPlan(f.env))!.execution_review?.weights,plan.weights)
+    assert.equal((f.sqls.paper.prepare("SELECT status FROM l4_replan_outbox_v1 WHERE json_extract(request_json,'$.reason')='debate_risk_reject'").get() as any).status,'expired')
+    await requestL4Replan(f.env,plan.plan_id,['B'],'execution_hard_risk_veto',{A:.1})
     assert.equal(await flushL4Replans(f.env,plan.signal_date),true)
     const view=(await readL4ExecutionPlan(f.env))!
     assert.deepEqual(view.execution_review?.weights,{A:.1,B:0,C:0,D:.1})

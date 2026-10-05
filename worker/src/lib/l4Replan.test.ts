@@ -5,7 +5,7 @@ import type { Bindings } from '../types'
 type Row = { request_id: string; request_json: string; status: string; attempts: number; result_plan_id?: string }
 const source = 'a'.repeat(64)
 const resultPlan = 'b'.repeat(64)
-function row(id: string, symbol: string, cap: number, reason = 'debate_risk_cap'): Row {
+function row(id: string, symbol: string, cap: number, reason = 'execution_hard_risk_cap'): Row {
   return { request_id: id, request_json: JSON.stringify({ plan_id: source, veto_symbols: [], weight_caps: { [symbol]: cap }, reason }), status: 'pending', attempts: 0 }
 }
 function fixture(rows: Row[]) {
@@ -29,7 +29,11 @@ function fixture(rows: Row[]) {
         },
         async run() {
           if (sql.includes('DELETE FROM maintenance_task_leases')) { leaseOwner = null; return {success:true} }
-          if (sql.includes("status='expired'")) return { success: true }
+          if (sql.includes("status='expired'")) {
+            if (sql.includes('json_extract')) rows.filter(r => r.status === 'pending' && JSON.parse(r.request_json).reason.startsWith('debate_'))
+              .forEach(r => { r.status = 'expired' })
+            return { success: true }
+          }
           const target = rows.find(r => r.request_id === args.at(-1))!
           if (target.status !== 'pending') return { success: true }
           target.attempts++
@@ -55,11 +59,13 @@ async function main() {
     return Response.json(inProgress ? { status: 'in_progress' } : invalidReceipt ? { status: 'queued' } : { status: 'replanned', plan_id: resultPlan })
   }
   try {
+    const advisory = fixture([row('advisory', '1101', .04, 'debate_risk_cap')])
+    assert.equal(await flushL4Replans(advisory.env, '2026-09-30'), true)
+    assert.equal(advisory.rows[0].status, 'expired', 'queued debate limits never reach the optimizer')
+    assert.equal(calls.length, 0)
     const f = fixture([row('1', '1101', .0625), row('2', '3576', .0625), row('3', '3290', .0625), row('4', '8105', .0375)])
-    assert.equal(await flushL4Replans(f.env, '2026-09-30', { debatePending: true }), false)
-    assert.equal(calls.length, 0, 'partial debate must not trigger incremental optimizations')
     assert.equal(await flushL4Replans(f.env, '2026-09-30'), true)
-    assert.equal(calls.length, 1, 'four completed debate constraints require only one optimizer request')
+    assert.equal(calls.length, 1, 'four hard-risk constraints require only one optimizer request')
     assert.equal(Object.keys(JSON.parse(calls[0]).weight_caps).length, 4)
     assert.ok(f.rows.every(r => r.status === 'completed' && r.result_plan_id === resultPlan))
     assert.equal(await flushL4Replans(f.env, '2026-09-30'), true)
@@ -83,7 +89,7 @@ async function main() {
 
     const urgent = fixture([row('9', '1101', .04), row('10', '3576', 0, 'execution_hard_risk_veto')])
     urgent.rows[1].request_json = JSON.stringify({ plan_id: source, veto_symbols: ['3576'], weight_caps: {}, reason: 'execution_hard_risk_veto' })
-    assert.equal(await flushL4Replans(urgent.env, '2026-09-30', { debatePending: true }), true)
+    assert.equal(await flushL4Replans(urgent.env, '2026-09-30'), true)
     assert.deepEqual(JSON.parse(calls.at(-1)!).veto_symbols, ['3576'], 'urgent risk cannot wait for debate completion')
 
     const concurrent = fixture([row('concurrent', '1101', .04)])
@@ -106,6 +112,6 @@ async function main() {
     assert.equal(await flushL4Replans(missingReceipt.env, '2026-09-30'), false)
     assert.ok(missingReceipt.rows.every(r => r.status === 'pending'), 'no complete acknowledgement without a valid plan receipt')
   } finally { globalThis.fetch = originalFetch }
-  console.log('L4 debate batching: PASS')
+  console.log('L4 hard-risk batching and advisory expiry: PASS')
 }
 void main().catch(error => { console.error(error); process.exitCode = 1 })

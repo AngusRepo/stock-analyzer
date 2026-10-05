@@ -68,10 +68,15 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       const planId=await deps.dispatchSinglePlan(env,input)
       await guard()
       await deps.recoverPaperMorningSetup(env,date,deps.settle)
-      return {next:'debate:0',receipt:{...input,plan_id:planId}}
+      return {next:'publish:0',receipt:{...input,plan_id:planId}}
     }
     const round = Number(stage.split(':')[1])
     if (stage.startsWith('debate:')) {
+      if (dailyPlanOwner(env)) {
+        const summary = await deps.reconcilePendingBuyDebates(env,date).catch((error) =>
+          `debate_observation_failed=${error instanceof Error ? error.message : String(error)}`)
+        return {next:null,receipt:{...input,advisory_debate:summary}}
+      }
       const summary = await deps.reconcilePendingBuyDebates(env,date)
       const state = await deps.loadPendingBuySnapshot(env,date,{allowFallbackRecent:false})
       if (pending(state.pendingBuys) || /status=pending|debate_retry_pending=|failed=[1-9]/.test(summary))
@@ -82,14 +87,14 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
     if (stage.startsWith('replan:')) {
       if(dailyPlanOwner(env))return {next:'publish:0',receipt:input}
       const cfg = await deps.getTradingConfig(env.KV)
-      if (cfg.l4Distribution && !await deps.flushL4Replans(env,String(input.signal_date),{debatePending:false}))
+      if (cfg.l4Distribution && !await deps.flushL4Replans(env,String(input.signal_date)))
         throw new Error('premarket_l4_replan_delivery_failed')
       await guard()
       return {next:`publish:${round}`,receipt:input}
     }
     if(dailyPlanOwner(env)) {
       await guard()
-      return {next:null,receipt:await deps.finalizeSinglePlan(env,date,input)}
+      return {next:'debate:0',receipt:await deps.finalizeSinglePlan(env,date,input)}
     }
     const cfg = await deps.getTradingConfig(env.KV)
     let state = await deps.loadPendingBuySnapshot(env,date,{allowFallbackRecent:false})

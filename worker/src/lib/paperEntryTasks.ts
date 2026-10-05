@@ -29,7 +29,7 @@ import {
   type PendingBuy,
 } from './pendingBuyStore'
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
-import { checkCircuitBreakersForDomains, reconcilePendingBuyDebates } from './pendingBuyOrchestrator'
+import { checkCircuitBreakersForDomains } from './pendingBuyOrchestrator'
 import { mergeIntradayPortfolioRisk, readP9IntradayHalt, checkP9IntradayDrawdown } from './intradayPortfolioRisk'
 import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
 import { acquirePaperBuyIntent, completePaperBuyIntent, l4BuySettlementStatements } from './paperOrderIntent'
@@ -100,7 +100,6 @@ import { evaluatePartialFillRemainingPolicy } from './partialFillRemainingPolicy
 import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { runLiveExecutionShadow } from './liveExecutionShadow'
-import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperPositionValuation, computePaperTotalValue, getUnsettledSettlementSummary, requireCompletePaperPositionValue } from './paperAccountValue'
 import { corporateAccountRiskBounds } from './paperCorporateActions'
@@ -520,40 +519,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
   const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
-  if (!dailyPlanOwner(env)) await reconcilePendingBuyDebates(env, today).catch((e) =>
-    console.warn('[Intraday] pending debate reconcile failed:', e),
-  )
   if (!await refreshIntradayExecutionLease(opsDb, leaseRunId)) {
-    throw new Error('intraday_execution_lease_lost_after_reconcile')
-  }
-
-  const debateSnapshot = await withD1ReadRetry(
-    'pending_debate_snapshot',
-    'pending_buy_state',
-    () => loadPendingBuySnapshot(env, today, { allowFallbackRecent: false }),
-  )
-  const staleDebateItems = debateSnapshot.pendingBuys.filter((item) =>
-    (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
-  )
-  const pendingDebateSlaMinutes = Number((cfg.position as any).pendingDebateSlaMinutes ?? 10)
-  if (staleDebateItems.length > 0 && shouldMarkPendingDebateSlaReached(paperExecutionDate(), pendingDebateSlaMinutes)) {
-    const transition = applyPendingBuyExecutionStatusUpdates(
-      debateSnapshot.pendingBuys,
-      staleDebateItems.map((item) => ({
-        symbol: item.symbol,
-        status: 'pending',
-        reason: 'debate_sla_waiting',
-        detail: `sla_minutes=${pendingDebateSlaMinutes}`,
-      })),
-    )
-    if (transition.changed) {
-      await persistPendingBuyActiveState(
-        env,
-        today,
-        transition.activeItems as PendingBuy[],
-        { stage: 'debate_sla', reason: 'debate_sla_waiting', sla_minutes: pendingDebateSlaMinutes },
-      )
-    }
+    throw new Error('intraday_execution_lease_lost_after_precheck')
   }
 
   const baseCb = await checkCircuitBreakersForDomains(env, cfg, env.KV)
@@ -562,7 +529,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   // Holding exits have already checked their own L4 target; do not revalidate a buy batch.
   if (cfg.l4Distribution && minutesSinceOpen < (paperSwingOwner ? SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1 : 265)) {
     const signalDate = await getL4PreviousSession(databaseForDataDomain(env, 'core'), env.KV)
-    if (!await flushL4Replans(env, signalDate, { debatePending: staleDebateItems.length > 0 })) return holdingPoll
+    if (!await flushL4Replans(env, signalDate)) return holdingPoll
     const latest = await readL4PortfolioPlan(env).catch(error=>{
       if(dailyPlanOwner(env) && String(error).includes('daily_plan_not_finalized'))return null
       throw error
@@ -1698,7 +1665,6 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
   }
   for (const pending of [...pendingBuys]) {
-    if ((pending.debate_verdict ?? 'PENDING') === 'PENDING') continue
     const price = priceMap.get(pending.symbol)
     if (!price) continue
     // L4 partials re-enter all risk/quote checks against the current signed target.

@@ -75,6 +75,17 @@ def _extract_regime_surface(info: dict) -> dict:
     return out
 
 
+def _apply_transition_guard_to_surface(
+    surface: dict[str, float], raw_label: str, effective_label: str,
+) -> dict[str, float]:
+    """Move a rejected raw label's mass to the guard fallback for downstream policy."""
+    adjusted = dict(surface)
+    if raw_label != effective_label:
+        adjusted[effective_label] += adjusted[raw_label]
+        adjusted[raw_label] = 0.0
+    return adjusted
+
+
 def _to_float(value: Any) -> float | None:
     try:
         parsed = float(value)
@@ -348,7 +359,24 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
                 detail=f"regime feature lineage mismatch: feature_date={feature_date} proxy_date={proxy_date}",
             )
     evidence_pack = build_regime_evidence_pack(market_env, raw_label=label_en)
+    evidence_pack["hmm_semantic_mapping_version"] = info.get("semantic_mapping_version", "legacy_artifact_map_v1")
+    evidence_pack["hmm_state_semantic_map"] = info.get("state_semantic_map", {})
+    evidence_pack["hmm_raw_regime_index"] = reg_idx
     effective_label = evidence_pack["effective_label"]
+    evidence_pack["hmm_raw_regime_surface"] = regime_surface
+    regime_surface = _apply_transition_guard_to_surface(regime_surface, label_en, effective_label)
+    effective_policy = (info.get("regime_policies") or {}).get(effective_label)
+    if effective_label != label_en and (
+        not isinstance(effective_policy, dict)
+        or "consensus_threshold" not in effective_policy
+        or not isinstance(effective_policy.get("weight_multipliers"), dict)
+    ):
+        raise HTTPException(status_code=502, detail="effective regime policy missing from HMM response")
+    consensus_threshold = (effective_policy or info).get("consensus_threshold", 0.60)
+    weight_multipliers = (effective_policy or info).get("weight_multipliers", {})
+    if effective_label != label_en:
+        reg_idx = {"bull_market": 0, "volatile": 1, "sideways": 2, "bear_market": 3}[effective_label]
+        label_zh = effective_policy.get("label", label_zh)
 
     # Push to Worker KV — source='regime' → worker writes market_regime_state plus legacy mirrors
     kv_push_ok = False
@@ -362,8 +390,8 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
                 "hmm_state":           hmm_state,
                 "label_zh":            label_zh,
                 "regime_surface":      regime_surface,
-                "consensus_threshold": info.get("consensus_threshold", 0.60),
-                "weight_multipliers":  info.get("weight_multipliers", {}),
+                "consensus_threshold": consensus_threshold,
+                "weight_multipliers":  weight_multipliers,
                 "regime_evidence":     evidence_pack,
                 "transition_guard":    evidence_pack["transition_guard"],
                 "monitors":            evidence_pack["monitors"],

@@ -19,12 +19,12 @@ logger = logging.getLogger(__name__)
 
 # ── 各 Regime 的模型權重調整方案 ──────────────────────────────────────────────
 # 0 = 低波動牛市：趨勢動能強，純價格模型（Kalman, ARIMA）訊號可靠
-# 1 = 高波動牛市：籌碼動量驅動，特徵模型（XGB, ExtraTrees）更準確
+# 1 = 高波動市場：保留現有模型權重政策，待逐日重播驗收
 # 2 = 震盪整理：訊號雜訊高，整體降信心，收緊共識門檻
 # 3 = 熊市危機：所有模型保守，GP 寬區間反而誠實
 DEFAULT_REGIME_CONFIG = {
     0: {"label": "低波動牛市", "price_mult": 1.2,  "feature_mult": 1.0,  "consensus_threshold": 0.55},
-    1: {"label": "高波動牛市", "price_mult": 0.9,  "feature_mult": 1.25, "consensus_threshold": 0.60},
+    1: {"label": "高波動市場", "price_mult": 0.9,  "feature_mult": 1.25, "consensus_threshold": 0.60},
     2: {"label": "震盪整理",   "price_mult": 0.8,  "feature_mult": 0.85, "consensus_threshold": 0.68},
     3: {"label": "熊市危機",   "price_mult": 0.65, "feature_mult": 0.75, "consensus_threshold": 0.72},
 }
@@ -39,6 +39,7 @@ REGIME_SURFACE_LABELS = {
 PRICE_MODEL_NAMES   = {"DLinear", "PatchTST", "iTransformer"}
 FEATURE_MODEL_NAMES = {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
 REGIME_FEATURE_WIDTH = 6
+REGIME_SEMANTIC_MAPPING_VERSION = "emission_direction_vol_v2"
 
 
 class RegimeDetector:
@@ -108,9 +109,9 @@ class RegimeDetector:
         )
         self.model.fit(features)
 
-        # 語意映射：根據各狀態的平均報酬 & 波動率分類
+        # Semantic labels describe the learned emissions, not relative state ranks.
         states = self.model.predict(features)
-        self.regime_map = self._assign_semantic_regimes(features_raw, states)
+        self.regime_map = self._emission_semantic_regimes() or self._assign_semantic_regimes(features_raw, states)
         self._trained = True
 
         labels = [REGIME_CONFIG[self.regime_map.get(s, 1)]["label"] for s in range(best_n)]
@@ -118,40 +119,46 @@ class RegimeDetector:
         return self
 
     def _assign_semantic_regimes(self, features_raw: np.ndarray, states: np.ndarray) -> dict:
-        """Map latent states to stable market semantics using return and realized volatility."""
-        state_stats: dict[int, dict[str, float | int]] = {}
+        """Fallback for models without emission means; never force a class by rank."""
+        baseline_vol = float(features_raw[:, 5].mean())
+        regime_map: dict[int, int] = {}
         for state in range(self.n_components):
             mask = states == state
             if mask.sum() < 3:
+                regime_map[state] = 2
                 continue
-            features = features_raw[mask]
-            mean_daily_return = 0.35 * float(features[:, 0].mean()) + 0.65 * float(features[:, 1].mean()) / 5.0
-            state_stats[state] = {
-                "mean_return": mean_daily_return,
-                "mean_vol": float(features[:, 5].mean()),
-                "count": int(mask.sum()),
-            }
-
-        if not state_stats:
-            return {state: 2 for state in range(self.n_components)}
-
-        ranked = sorted(state_stats, key=lambda state: state_stats[state]["mean_return"])
-        regime_map: dict[int, int] = {}
-        if len(ranked) == 1:
-            regime_map[ranked[0]] = 2
-        else:
-            regime_map[ranked[0]] = 3
-            regime_map[ranked[-1]] = 0
-            middle = ranked[1:-1]
-            if middle:
-                volatile_state = max(middle, key=lambda state: state_stats[state]["mean_vol"])
-                regime_map[volatile_state] = 1
-                for state in middle:
-                    regime_map.setdefault(state, 2)
-
-        for state in range(self.n_components):
-            regime_map.setdefault(state, 2)
+            means = features_raw[mask].mean(axis=0)
+            regime_map[state] = self._semantic_label(means, baseline_vol)
         return regime_map
+
+    @staticmethod
+    def _semantic_label(means: np.ndarray, baseline_vol: float) -> int:
+        """Direction needs agreement across horizons; volatility uses its training baseline."""
+        ret_1d, ret_5d, vol = float(means[0]), float(means[1]), float(means[5])
+        if not np.isfinite([ret_1d, ret_5d, vol, baseline_vol]).all():
+            return 2
+        if ret_1d < 0 and ret_5d < 0:
+            return 3
+        if vol > baseline_vol:
+            return 1
+        if ret_1d > 0 and ret_5d > 0:
+            return 0
+        return 2
+
+    def _emission_semantic_regimes(self) -> dict[int, int] | None:
+        """Reinterpret an existing artifact in memory without fitting or rewriting it."""
+        means = getattr(self.model, "means_", None)
+        if means is None or self.feature_means is None or self.feature_stds is None:
+            return None
+        normalized_means = np.asarray(means, dtype=float)
+        if normalized_means.ndim != 2 or normalized_means.shape[1] != REGIME_FEATURE_WIDTH:
+            return None
+        if len(self.feature_means) != REGIME_FEATURE_WIDTH or len(self.feature_stds) != REGIME_FEATURE_WIDTH:
+            return None
+        raw_means = normalized_means * self.feature_stds + self.feature_means
+        baseline_vol = float(self.feature_means[5])
+        return {state: self._semantic_label(row, baseline_vol) for state, row in enumerate(raw_means)}
+
     def predict_regime(self, current_features_raw: np.ndarray, regime_config_override: dict | None = None) -> dict:
         """Infer the latest regime from the full point-in-time feature sequence."""
         if regime_config_override:
@@ -200,9 +207,11 @@ class RegimeDetector:
             normalized = (sequence - self.feature_means) / self.feature_stds
             state_probabilities = np.asarray(self.model.predict_proba(normalized)[-1], dtype=float)
             state = int(np.argmax(state_probabilities))
+            semantic_map = self._emission_semantic_regimes()
+            effective_map = semantic_map if semantic_map is not None else self.regime_map
             regime_surface = {label: 0.0 for label in REGIME_SURFACE_LABELS.values()}
             for state_index, probability in enumerate(state_probabilities):
-                regime_index = self.regime_map.get(state_index, 2)
+                regime_index = effective_map.get(state_index, 2)
                 regime_surface[REGIME_SURFACE_LABELS[regime_index]] += float(probability)
             total_probability = sum(regime_surface.values())
             if total_probability <= 0:
@@ -218,6 +227,16 @@ class RegimeDetector:
             config = effective_config.get(regime_index, effective_config[2])
             multipliers = {model: config["price_mult"] for model in PRICE_MODEL_NAMES}
             multipliers.update({model: config["feature_mult"] for model in FEATURE_MODEL_NAMES})
+            regime_policies = {}
+            for index, label in REGIME_SURFACE_LABELS.items():
+                policy = effective_config[index]
+                weights = {model: policy["price_mult"] for model in PRICE_MODEL_NAMES}
+                weights.update({model: policy["feature_mult"] for model in FEATURE_MODEL_NAMES})
+                regime_policies[label] = {
+                    "label": policy["label"],
+                    "weight_multipliers": weights,
+                    "consensus_threshold": policy["consensus_threshold"],
+                }
 
             return {
                 "regime_index": regime_index,
@@ -225,12 +244,15 @@ class RegimeDetector:
                 "label": config["label"],
                 "weight_multipliers": multipliers,
                 "consensus_threshold": config["consensus_threshold"],
+                "regime_policies": regime_policies,
                 "regime_surface": regime_surface,
                 "state_probabilities": {
                     str(index): float(probability)
                     for index, probability in enumerate(state_probabilities)
                 },
+                "state_semantic_map": {str(index): label for index, label in effective_map.items()},
                 "sequence_length": int(len(sequence)),
+                "semantic_mapping_version": REGIME_SEMANTIC_MAPPING_VERSION if semantic_map is not None else "legacy_artifact_map_v1",
             }
         except Exception as exc:
             logger.warning("[Regime] predict_regime failed: %s", exc)

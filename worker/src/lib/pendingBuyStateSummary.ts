@@ -116,7 +116,6 @@ export function buildPendingBuyStateSummary(
   const terminalCount = executionCounts.filled + executionCounts.skipped + executionCounts.cancelled + executionCounts.expired + executionCounts.rejected
   const totalCount = Math.max(num(meta?.candidate_count), activeItems.length + terminalCount, filterAuditInitialBuySignals(meta))
   const runStatus = meta?.status ?? (activeItems.length > 0 ? 'ready' : 'empty')
-  const debateStatus = meta?.debate_status ?? (debateCounts.pending > 0 ? 'pending' : 'completed')
 
   if (runStatus === 'error') {
     return {
@@ -147,9 +146,6 @@ export function buildPendingBuyStateSummary(
     const terminal = terminalStateLabel(executionCounts)
     state = terminal.state
     label = terminal.label
-  } else if (activeItems.length > 0 && (debateStatus === 'pending' || debateCounts.pending > 0)) {
-    state = 'debate_pending'
-    label = 'Base ready / 辯論中'
   } else if (activeItems.length > 0) {
     state = 'ready_to_execute'
     label = 'Ready / 等待執行'

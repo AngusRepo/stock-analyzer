@@ -373,7 +373,9 @@ def build_regime_evidence_pack(market_env: dict[str, Any], raw_label: str) -> di
             "volatility_or_leverage_confirmed": vol_or_leverage,
         }
         if not confirmed:
-            effective = "volatile"
+            # A rejected bear label is not evidence of high volatility by itself.
+            effective = "volatile" if vol_or_leverage else "sideways"
+            transition_guard["fallback_label"] = effective
     elif raw == "bull_market" and bearish >= 3:
         transition_guard = {
             **transition_guard,

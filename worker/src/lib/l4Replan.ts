@@ -46,26 +46,24 @@ function mergeRequests(rows: ReplanRow[]): ReplanRequest {
 
 /** Returns false while constraints are undelivered: buys wait, exits continue. */
 export async function flushL4Replans(
-  env: Bindings, signalDate: string, options: { debatePending?: boolean } = {},
+  env: Bindings, signalDate: string,
 ): Promise<boolean> {
   const result = await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
     taskName: 'l4-replan-delivery', leaseGroup: `l4-replan:${scopedPaperAccountId() ?? 1}:${signalDate}`, leaseSeconds: 300,
-    run: () => flushL4ReplansOwned(env, signalDate, options),
+    run: () => flushL4ReplansOwned(env, signalDate),
   })
   return isMaintenanceLeaseBusy(result) ? false : result
 }
 
-async function flushL4ReplansOwned(env: Bindings, signalDate: string, options: { debatePending?: boolean }): Promise<boolean> {
+async function flushL4ReplansOwned(env: Bindings, signalDate: string): Promise<boolean> {
   const db = paperDomainDatabase(env)
   await db.prepare("UPDATE l4_replan_outbox_v1 SET status='expired' WHERE status='pending' AND source_plan_id IN (SELECT plan_id FROM l4_portfolio_plans_v1 WHERE signal_date<?)")
     .bind(signalDate).run()
+  // Debate is advisory. Expire legacy requests before they can alter a plan.
+  await db.prepare("UPDATE l4_replan_outbox_v1 SET status='expired' WHERE status='pending' AND substr(json_extract(request_json,'$.reason'),1,7)='debate_'").run()
   const { results } = await db.prepare("SELECT o.request_id,o.request_json FROM l4_replan_outbox_v1 o JOIN l4_portfolio_plans_v1 p ON p.plan_id=o.source_plan_id WHERE o.status='pending' AND p.signal_date=? ORDER BY o.created_at,o.request_id")
     .bind(signalDate).all<ReplanRow>()
   if (!results.length) return true
-  // Partial debate results are durable, but do not optimize until the round is
-  // complete. Independent hard-risk events may still require immediate action.
-  if (options.debatePending && results.every(row =>
-    (JSON.parse(row.request_json) as ReplanRequest).reason.startsWith('debate_'))) return false
   try {
     const request = mergeRequests(results)
     let result: { status?: string; plan_id?: string }

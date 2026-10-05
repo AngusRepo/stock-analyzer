@@ -58,8 +58,9 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
     { symbol: '2330', debate_status: 'pending', execution_status: 'pending' },
   ], { status: 'ready', debate_status: 'pending', candidate_count: 1 })
 
-  assert(summary.state === 'debate_pending', 'pending debate should be explicit')
-  assert(summary.label === 'Base ready / 辯論中', 'pending debate should have zh-TW label')
+  assert(summary.state === 'ready_to_execute', 'advisory debate must not block an active pending buy')
+  assert(summary.label === 'Ready / 等待執行', 'pending buy state should reflect execution readiness')
+  assert(summary.debate_counts.pending === 1, 'advisory debate should remain visible in its own count')
 }
 
 {

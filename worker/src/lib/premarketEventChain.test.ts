@@ -22,6 +22,26 @@ test('atomic chain deduplicates signals and simultaneous deliveries',async()=>{
   assert.equal(JSON.parse(f.kvs.get(`scheduler:run:pre-market-warmup:${date}`)!).status,'success')
  }finally{f.close()}
 })
+test('published daily head stays ready if later advisory debate fails',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ const work:PremarketWork=async(stage)=>{
+   if(stage==='context')return {next:'publish:0',receipt:{}}
+   if(stage==='publish:0')return {next:'debate:0',receipt:{ready:true}}
+   throw new Error('observer offline')
+ }
+ try{
+   await ensurePremarketEventChain(f.env,date,f.now())
+   await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+   await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+   assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=success/)
+   for(let attempt=0;attempt<3;attempt++){
+     await assert.rejects(processPremarketEvent(f.env,f.messages.shift()!,work,f.now()),/observer offline/)
+     f.ports.nowMs+=121_000
+   }
+   assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=success/)
+   assert.equal(JSON.parse(f.kvs.get(`scheduler:run:pre-market-warmup:${date}`)!).status,'success')
+ }finally{f.close()}
+})
 test('lost queue send recovers committed successor without repeating producer',async()=>{
  const f=fixture();let calls=0
  const work:PremarketWork=async()=>{calls++;return {next:'setup',receipt:{}}}
@@ -102,5 +122,26 @@ test('single-plan mode accepts 08:44:59 and expires at 08:45 without doing more 
   await processPremarketEvent(f.env,f.messages[0],async()=>{calls++;return {next:null,receipt:{}}},f.now())
   assert.equal(calls,0);assert.equal(f.rows()[0].status,'error')
   assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/outside_window/)
+ }finally{f.close()}
+})
+
+test('published plan permits advisory debate after the 08:45 publication cutoff',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';const ran:string[]=[]
+ const work:PremarketWork=async(stage)=>{
+   ran.push(stage)
+   return stage==='context' ? {next:'publish:0',receipt:{}}
+     : stage==='publish:0' ? {next:'debate:0',receipt:{ready:true}}
+     : {next:null,receipt:{advisory_debate:'observed'}}
+ }
+ try{
+   f.ports.nowMs=Date.parse(date+'T08:44:59+08:00')
+   await ensurePremarketEventChain(f.env,date,f.now())
+   await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+   await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+   f.ports.nowMs+=1000
+   await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+   assert.deepEqual(ran,['context','publish:0','debate:0'])
+   assert.ok(f.rows().every(row=>row.status==='success'))
+   assert.equal(JSON.parse(f.kvs.get(`scheduler:run:pre-market-warmup:${date}`)!).status,'success')
  }finally{f.close()}
 })

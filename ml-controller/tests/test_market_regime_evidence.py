@@ -28,10 +28,29 @@ def test_bear_label_is_downgraded_when_only_price_weakness_supports_it():
     )
 
     assert pack["raw_label"] == "bear_market"
-    assert pack["effective_label"] == "volatile"
+    assert pack["effective_label"] == "sideways"
     assert pack["transition_guard"]["status"] == "blocked"
     assert pack["transition_guard"]["reason"] == "insufficient_cross_evidence_for_bear"
     assert pack["support_counts"]["bearish"] < 3
+
+
+def test_unconfirmed_bear_retains_volatile_only_with_independent_stress():
+    pack = build_regime_evidence_pack(
+        {
+            "twii_return_1d": -0.025,
+            "twii_return_5d": -0.03,
+            "atr_pct": 0.02,
+            "advance_ratio": 0.52,
+            "bull_alignment_pct": 0.58,
+            "us_vix": 18.0,
+            "history": {"2026-05-15": {"market_return_1d": -0.025}},
+        },
+        raw_label="bear_market",
+    )
+
+    assert pack["transition_guard"]["status"] == "blocked"
+    assert pack["evidence"]["atr_vturn"]["stance"] == "bearish"
+    assert pack["effective_label"] == "volatile"
 
 
 def test_bear_label_is_confirmed_when_breadth_volatility_and_global_evidence_agree():

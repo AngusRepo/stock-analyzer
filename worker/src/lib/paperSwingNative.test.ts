@@ -1,5 +1,7 @@
 import fs from 'node:fs'
 import {finalizeSinglePlan} from './premarketSinglePlan'
+import {readL4ExecutionPlan} from './paperDailyPlanRuntime'
+import {requestL4Replan} from './l4Replan'
 import { sealDailyReview,persistDailyReview } from './paperDailyPlan'
 import { SWING_POLICY_VERSION } from './paperSwingPolicy'
 import { runDailySnapshot } from './paperWorkerTasks'
@@ -8,7 +10,6 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
 import { pollIntradayStopLoss, runEODExit } from './paperExitTasks'
-import { persistPendingBuyActiveState } from './pendingBuyStore'
 import { getTradingConfig } from './tradingConfig'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
@@ -110,14 +111,14 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     assert.equal(snapshot.pendingBuys[0].ml_entry_price,20)
     assert.ok(snapshot.pendingBuys[0].watch_points.includes('l4_execution_reference:canonical_signal_close'))
     assert.equal(snapshot.pendingBuys[0].debate_verdict,'PENDING')
-    // Synthetic external debate result, fed through the original state writer.
-    await withPaperExecutionScope(f.ports,()=>persistPendingBuyActiveState(f.env,'2026-09-14',
-      snapshot.pendingBuys.map(row=>({...row,debate_verdict:'APPROVED',debate_status:'completed' as any})),{...snapshot.meta,status:'ready'}))
+    // Publication and entry must work while the advisory debate is pending.
+    if(scenario==='daily_orl')await withPaperExecutionScope(f.ports,()=>requestL4Replan(f.env,plan.plan_id,['2330'],'debate_risk_reject'))
     await withPaperExecutionScope(f.ports,async()=>{
       const input={plan_id:plan.plan_id,signal_date:'2026-09-11',context_hash:'f'.repeat(64)}
       const review=await finalizeSinglePlan(f.env,'2026-09-14',input)
       assert.equal(review.ready,true)
       assert.deepEqual(await finalizeSinglePlan(f.env,'2026-09-14',input),review)
+      if(scenario==='daily_orl')assert.deepEqual((await readL4ExecutionPlan(f.env))?.execution_review?.weights,plan.weights)
     })
     f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:25:00Z')
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))

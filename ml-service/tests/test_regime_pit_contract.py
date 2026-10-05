@@ -65,7 +65,8 @@ def test_semantic_mapping_uses_realized_volatility_not_risk_score_column():
         (3, 0.03, 0.3, 0.02),
     ):
         for _ in range(3):
-            rows.append([daily_return, daily_return * 5, risk, daily_return, abs(daily_return), realized_vol])
+            five_day_return = 0.01 if state == 1 else daily_return * 5
+            rows.append([daily_return, five_day_return, risk, daily_return, abs(daily_return), realized_vol])
             states.append(state)
 
     mapping = detector._assign_semantic_regimes(np.asarray(rows), np.asarray(states))
@@ -74,6 +75,45 @@ def test_semantic_mapping_uses_realized_volatility_not_risk_score_column():
     assert mapping[3] == 0
     assert mapping[2] == 1
     assert mapping[1] == 2
+
+
+def test_semantic_mapping_does_not_force_bull_or_volatile_from_return_rank():
+    detector = RegimeDetector()
+    detector.n_components = 3
+    rows = np.repeat(np.asarray([
+        [-0.03, -0.15, 0.1, 0.0, 0.03, 0.03],
+        [-0.02, -0.10, 0.1, 0.0, 0.02, 0.02],
+        [-0.01, -0.05, 0.9, 0.0, 0.01, 0.01],
+    ]), 3, axis=0)
+    states = np.repeat(np.arange(3), 3)
+
+    mapping = detector._assign_semantic_regimes(rows, states)
+
+    assert 0 not in mapping.values(), "all-negative states cannot produce a bull label"
+    assert mapping[2] != 1, "low observed volatility cannot be called volatile"
+
+
+class _EmissionPosteriorModel(_PosteriorModel):
+    means_ = np.asarray([
+        [-0.01, -0.02, 0.0, 0.0, 0.0, -0.2],
+        [0.01, 0.02, 0.0, 0.0, 0.0, -0.4],
+    ])
+
+
+def test_loaded_artifact_relabels_emissions_without_fitting():
+    detector = RegimeDetector()
+    detector._trained = True
+    detector.model = _EmissionPosteriorModel()
+    detector.feature_means = np.asarray([0, 0, 0, 0, 0, 0.01])
+    detector.feature_stds = np.asarray([1, 1, 1, 1, 1, 0.005])
+    detector.regime_map = {0: 1, 1: 0}  # legacy persisted map is wrong
+
+    result = detector.predict_regime(np.zeros((3, 6)))
+
+    assert result["regime_surface"]["bear_market"] == 0.1
+    assert result["regime_surface"]["bull_market"] == 0.9
+    assert result["semantic_mapping_version"] == "emission_direction_vol_v2"
+    assert result["regime_policies"]["sideways"]["consensus_threshold"] == 0.68
 
 def test_fit_rejects_legacy_feature_width():
     detector = RegimeDetector()

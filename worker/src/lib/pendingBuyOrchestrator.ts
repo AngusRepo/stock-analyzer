@@ -1,7 +1,6 @@
 import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLease'
-import { hasPendingBuyDebateChanges } from './pendingBuyDebateChange'
 import { requestL4Replan } from './l4Replan'
-import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, planIdFromWatchPoints, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
+import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
 import {
   runBuyDebateBatchViaController,
@@ -32,9 +31,6 @@ import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { loadMarketPriceHistoryBySymbols } from './stockIdentityMarketBridge'
 import type { CircuitBreakerState as _CBState, LegacyLayerDeps } from './riskTypes'
 import type { PortfolioRiskDatabases } from './riskChain'
-import {
-  applyPendingBuyExecutionStatusUpdates,
-} from './pendingBuyExecutionState'
 import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { loadTradingRestrictionBuckets } from './tradingRestrictions'
@@ -154,50 +150,6 @@ interface AlphaForecastContext {
   }
 }
 
-async function persistPendingDebateFailure(
-  env: Bindings,
-  tradeDate: string,
-  snapshot: Awaited<ReturnType<typeof loadPendingBuySnapshot>>,
-  pendingItems: PendingBuy[],
-  reason: string,
-): Promise<string> {
-  const transition = applyPendingBuyExecutionStatusUpdates(
-    snapshot.pendingBuys,
-    pendingItems.map((item) => ({
-      symbol: item.symbol,
-      status: 'pending',
-      reason: `debate_retry:${reason}`,
-    })),
-  )
-  const nextPendingBuys = transition.allItems as PendingBuy[]
-  const activeItems = transition.activeItems as PendingBuy[]
-  const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
-    ? String(snapshot.meta.source_reco_date)
-    : tradeDate
-
-  if (!hasPendingBuyDebateChanges(snapshot.pendingBuys, nextPendingBuys)
-    && snapshot.meta?.debate_status === 'pending' && snapshot.meta?.error_message === reason) {
-    return `debate_retry_unchanged=${pendingItems.length} reason=${reason}`
-  }
-  await replacePendingBuyState(env, {
-    tradeDate,
-    sourceRecoDate,
-    status: 'ready',
-    debateStatus: 'pending',
-    errorMessage: reason,
-    pendingBuys: nextPendingBuys,
-    kvPendingBuys: activeItems,
-    meta: {
-      stage: 'debate_async',
-      retry_reason: reason,
-      active_summary: transition.activeSummary,
-      retry_symbols: pendingItems.map((item) => item.symbol),
-    },
-  })
-
-  return `debate_retry_pending=${pendingItems.length} reason=${reason} active=${activeItems.length}`
-}
-
 function getTwDate(offsetDays = 0): string {
   const now = paperExecutionNow() + 8 * 3600_000 + offsetDays * 86400_000
   return new Date(now).toISOString().slice(0, 10)
@@ -256,28 +208,6 @@ export function settledL4DowngradeSymbols(
     }
   }
   return symbols
-}
-
-async function loadSettledL4Downgrades(env: Bindings, plan: L4PortfolioPlan): Promise<Set<string>> {
-  const db = databaseForDataDomain(env, 'paper')
-  const { results } = await db.prepare(`
-    WITH RECURSIVE lineage(plan_id, parent_plan_id, depth) AS (
-      SELECT plan_id, json_extract(payload_json, '$.parent_plan_id'), 0
-        FROM l4_portfolio_plans_v1 WHERE plan_id = ? AND activated = 1
-      UNION ALL
-      SELECT p.plan_id, json_extract(p.payload_json, '$.parent_plan_id'), lineage.depth + 1
-        FROM l4_portfolio_plans_v1 p JOIN lineage ON p.plan_id = lineage.parent_plan_id
-       WHERE p.activated = 1 AND lineage.depth < 32
-    )
-    SELECT o.request_json, source.payload_json AS source_payload_json
-      FROM l4_replan_outbox_v1 o
-      JOIN lineage result ON result.plan_id = o.result_plan_id
-      JOIN lineage ancestor ON ancestor.plan_id = o.source_plan_id
-      JOIN l4_portfolio_plans_v1 source ON source.plan_id = o.source_plan_id
-     WHERE o.status = 'completed' AND source.signal_date = ?
-       AND json_extract(o.request_json, '$.reason') = 'debate_risk_cap'
-  `).bind(plan.plan_id, plan.signal_date).all<CompletedL4DowngradeRow>()
-  return settledL4DowngradeSymbols(plan, results ?? [])
 }
 
 function formatDebateWatchPoints(watchPoints: string[] | undefined): string | null {
@@ -400,7 +330,6 @@ async function persistPendingBuyFilterAudit(
 function calcRiskPct(
   signal: string,
   confidence: number,
-  debateVerdict: string | undefined,
   cfg: TradingConfig,
 ): number {
   const position = cfg.position
@@ -409,12 +338,10 @@ function calcRiskPct(
   const strongBuyRisk = position.riskPctStrongBuy ?? 0.02
   const buyThreshold = position.riskPctBuyConfThreshold ?? 0.7
   const strongBuyThreshold = position.riskPctStrongBuyConfThreshold ?? 0.8
-  const downgradeMultiplier = position.downgradeRiskMultiplier ?? 0.5
 
   let risk = baseline
   if (signal.includes('STRONG_BUY') && confidence >= strongBuyThreshold) risk = strongBuyRisk
   else if (signal.includes('BUY') && confidence >= buyThreshold) risk = buyRisk
-  if (debateVerdict === 'DOWNGRADE') risk *= downgradeMultiplier
   return risk
 }
 
@@ -736,16 +663,6 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     if (cfg.l4Distribution && (!activeL4Plan || activeL4Plan.signal_date !== sourceRecoDate)) {
       throw new Error('l4_distribution_pending_plan_unavailable')
     }
-    const settledL4Downgrades = activeL4Plan
-      ? await withD1Retry('settled_l4_downgrades', () => loadSettledL4Downgrades(env, activeL4Plan))
-      : new Set<string>()
-    const priorDebateTurns = new Map(
-      settledL4Downgrades.size
-        ? (await loadPendingBuySnapshot(env, pendingDate, { allowFallbackRecent: false })).pendingBuys
-          .filter((item) => settledL4Downgrades.has(item.symbol) && item.debate_status === 'completed')
-          .map((item) => [item.symbol, item.debate_turns ?? []] as const)
-        : [],
-    )
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
@@ -1026,8 +943,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
         incAudit(filterAudit, 'alpha_risk_debate_required')
       }
 
-      let debateVerdict = settledL4Downgrades.has(rec.symbol) ? 'DOWNGRADE' : 'PENDING'
-      let riskPct = calcRiskPct(pendingSignal, rec.confidence, undefined, cfg)
+      let riskPct = calcRiskPct(pendingSignal, rec.confidence, cfg)
       const alphaSizing = clampNumber(alphaContext?.sizing_multiplier, 0.25, 1.25, 1.0)
       riskPct *= alphaSizing
       const hasTradingRestrictionRiskEvidence = restrictionPolicy.riskEvidenceSymbols.has(rec.symbol)
@@ -1066,12 +982,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       const nightDropPct = taifex?.changePct ?? 0
       const l2 = cfg.L2_formula
       if (!ohlcvEntryPlan) {
-        if (nightDropPct < l2.night_drop_severe_pct && debateVerdict === 'DOWNGRADE') {
-          adjustedEntry = Math.round(adjustedEntry * l2.night_drop_severe_adjust * 100) / 100
-          adjustedStop = adjustedStop != null
-            ? Math.round(adjustedStop * l2.night_drop_severe_adjust * 100) / 100
-            : adjustedStop
-        } else if (nightDropPct < l2.night_drop_mild_pct && debateVerdict !== 'APPROVE') {
+        if (nightDropPct < l2.night_drop_mild_pct) {
           adjustedEntry = Math.round(adjustedEntry * l2.night_drop_mild_adjust * 100) / 100
           adjustedStop = adjustedStop != null
             ? Math.round(adjustedStop * l2.night_drop_mild_adjust * 100) / 100
@@ -1165,9 +1076,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
           ...softRiskWatchPoints,
           ...entryWatchPoints,
         ],
-        debate_verdict: debateVerdict,
-        debate_status: debateVerdict === 'PENDING' ? 'pending' : 'completed',
-        debate_turns: debateVerdict === 'DOWNGRADE' ? priorDebateTurns.get(rec.symbol) ?? [] : [],
+        debate_verdict: 'PENDING',
+        debate_status: 'pending',
+        debate_turns: [],
         risk_pct: riskPct,
         kelly_pct: allocationPlanId ? null : kellyResult?.pct ?? null,
         score_v2: scoreV2 ? serializeScoreV2Snapshot(scoreV2) : null,
@@ -1246,6 +1157,43 @@ export async function reconcilePendingBuyDebates(env: Bindings, tradeDate = getT
   return isMaintenanceLeaseBusy(result) ? `status=pending ${result.reason}` : result
 }
 
+/** Persist the debate opinion on the same run; never replace candidates or execution state. */
+export async function recordAdvisoryDebateResults(
+  db: D1Database,
+  tradeDate: string,
+  runId: number,
+  observations: Array<{ symbol: string; verdict: string; agentTurns?: unknown[] }>,
+): Promise<number> {
+  if (!Number.isSafeInteger(runId) || runId <= 0) return 0
+  let recorded = 0
+  for (const observation of observations) {
+    const turns = JSON.stringify(observation.agentTurns ?? [])
+    let result: D1Result
+    try {
+      result = await db.prepare(`UPDATE pending_buy_items
+        SET debate_verdict=?, debate_status='completed', debate_turns_json=?, updated_at=datetime('now')
+        WHERE run_id=? AND symbol=? AND debate_status='pending' AND EXISTS (
+          SELECT 1 FROM pending_buy_runs WHERE id=? AND trade_date=? AND status='ready'
+        )`).bind(observation.verdict, turns, runId, observation.symbol, runId, tradeDate).run()
+    } catch (error) {
+      if (!/no such column.*debate_turns_json/i.test(String(error))) throw error
+      result = await db.prepare(`UPDATE pending_buy_items
+        SET debate_verdict=?, debate_status='completed', updated_at=datetime('now')
+          WHERE run_id=? AND symbol=? AND debate_status='pending' AND EXISTS (
+          SELECT 1 FROM pending_buy_runs WHERE id=? AND trade_date=? AND status='ready'
+        )`).bind(observation.verdict, runId, observation.symbol, runId, tradeDate).run()
+    }
+    recorded += Number(result.meta?.changes ?? 0)
+  }
+  if (recorded > 0) {
+    await db.prepare(`UPDATE pending_buy_runs SET debate_status=CASE WHEN EXISTS (
+      SELECT 1 FROM pending_buy_items WHERE run_id=? AND debate_status='pending'
+    ) THEN 'pending' ELSE 'completed' END, updated_at=datetime('now')
+      WHERE id=? AND trade_date=? AND status='ready'`).bind(runId, runId, tradeDate).run()
+  }
+  return recorded
+}
+
 async function reconcilePendingBuyDebatesOwned(
   env: Bindings,
   tradeDate: string,
@@ -1256,13 +1204,12 @@ async function reconcilePendingBuyDebatesOwned(
   )
   if (!pendingItems.length) return 'no_pending_debate'
   if (!env.ML_CONTROLLER_URL) {
-    return persistPendingDebateFailure(env, tradeDate, snapshot, pendingItems, 'no_controller')
+    return 'debate_observation_unavailable=no_controller'
   }
 
-  const cfg = await getTradingConfig(env.KV)
   const { usContextStr, newsContextStr, taifexContextStr } = await loadMacroContext(env, tradeDate)
   if (!newsContextStr || !usContextStr || !taifexContextStr) {
-    return persistPendingDebateFailure(env, tradeDate, snapshot, pendingItems, 'premarket_evidence_wait:news_us_or_night')
+    return 'debate_observation_unavailable=premarket_evidence_wait:news_us_or_night'
   }
   const profileMap = await loadStockProfiles(
     databaseForDataDomain(env, 'market'),
@@ -1294,86 +1241,19 @@ async function reconcilePendingBuyDebatesOwned(
     ML_CONTROLLER_URL: env.ML_CONTROLLER_URL,
     ML_CONTROLLER_SECRET: env.ML_CONTROLLER_SECRET,
   })
-  const sourceRecoDate = typeof snapshot.meta?.source_reco_date === 'string'
-    ? String(snapshot.meta.source_reco_date)
-    : tradeDate
-
   if (!results || results.size === 0) {
-    return persistPendingDebateFailure(env, tradeDate, snapshot, pendingItems, 'debate_batch_unavailable')
+    return 'debate_observation_unavailable=debate_batch_unavailable'
   }
 
-  const downgradeMultiplier = cfg.position.downgradeRiskMultiplier ?? 0.5
-  const nextPendingBuys: PendingBuy[] = []
-  const l4Rejected = new Map<string, string[]>()
-  let failedCount = 0
-
-  for (const item of snapshot.pendingBuys) {
+  const observations: Array<{ symbol: string; verdict: string; agentTurns?: unknown[] }> = []
+  for (const item of pendingItems) {
     const debate = results.get(item.symbol)
-    if (!pendingItems.some((pending) => pending.symbol === item.symbol)) {
-      nextPendingBuys.push(item)
-      continue
+    if (debate?.terminalStatus === 'completed' && !debate.retryable) {
+      observations.push({ symbol: item.symbol, verdict: debate.verdict, agentTurns: debate.agentTurns ?? [] })
     }
-    if (!debate) {
-      failedCount += 1
-      const transition = applyPendingBuyExecutionStatusUpdates([item], [{
-        symbol: item.symbol,
-        status: 'pending',
-        reason: 'debate_retry:debate_missing',
-      }])
-      nextPendingBuys.push(transition.allItems[0] as PendingBuy)
-      continue
-    }
-    if (debate.terminalStatus !== 'completed' || debate.retryable) {
-      failedCount += 1
-      const reason = debate.errorCode ?? 'debate_retryable_error'
-      const transition = applyPendingBuyExecutionStatusUpdates([item], [{
-        symbol: item.symbol,
-        status: 'pending',
-        reason: `debate_retry:${reason}`,
-      }])
-      nextPendingBuys.push(transition.allItems[0] as PendingBuy)
-      continue
-    }
-    if (debate.verdict === 'REJECT') {
-      const planId = planIdFromWatchPoints(item.watch_points)
-      if (planId) l4Rejected.set(planId, [...(l4Rejected.get(planId) ?? []), item.symbol])
-      continue
-    }
-    const downgradePlanId=planIdFromWatchPoints(item.watch_points)
-    if (downgradePlanId && debate.verdict==='DOWNGRADE') {
-      const source=await readL4PortfolioPlan(env,downgradePlanId)
-      if (!source?.targets[item.symbol]) throw new Error('l4_debate_target_missing')
-      if (source.constraints.name_caps?.[item.symbol] == null) {
-        await requestL4Replan(env,downgradePlanId,[],'debate_risk_cap',
-          {[item.symbol]:source.targets[item.symbol].weight*downgradeMultiplier})
-      }
-    }
-    nextPendingBuys.push({
-      ...item,
-      debate_verdict: debate.verdict,
-      debate_status: 'completed',
-      risk_pct: !downgradePlanId && debate.verdict === 'DOWNGRADE' ? item.risk_pct * downgradeMultiplier : item.risk_pct,
-      debate_turns: debate.agentTurns ?? [],
-    })
   }
-
-  for (const [planId, symbols] of l4Rejected) await requestL4Replan(env, planId, symbols, 'debate_risk_reject')
-  if (!hasPendingBuyDebateChanges(snapshot.pendingBuys, nextPendingBuys)
-    && snapshot.meta?.debate_status === (failedCount > 0 ? 'pending' : 'completed')) {
-    return `debate_unchanged=${results.size} failed=${failedCount} remaining=${nextPendingBuys.length}`
-  }
-  await replacePendingBuyState(env, {
-    tradeDate,
-    sourceRecoDate,
-    status: 'ready',
-    debateStatus: failedCount > 0 ? 'pending' : 'completed',
-    pendingBuys: nextPendingBuys,
-    meta: {
-      stage: 'debate_async',
-      updated_symbols: candidates.map((item) => item.symbol),
-      failed_count: failedCount,
-    },
-  })
-
-  return `debated=${results.size} failed=${failedCount} remaining=${nextPendingBuys.length}`
+  const recorded = await recordAdvisoryDebateResults(
+    databaseForDataDomain(env, 'paper'), tradeDate, Number(snapshot.meta?.run_id), observations,
+  )
+  return `debate_observed=${recorded} unavailable=${pendingItems.length - recorded} pending_buys_unchanged=${snapshot.pendingBuys.length}`
 }

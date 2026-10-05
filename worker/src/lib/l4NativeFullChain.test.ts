@@ -4,7 +4,6 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
 import { pollIntradayStopLoss, runEODExit } from './paperExitTasks'
-import { persistPendingBuyActiveState } from './pendingBuyStore'
 import { getTradingConfig } from './tradingConfig'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
@@ -92,9 +91,7 @@ test('native full chain executes positive L4 target through real entry owner',as
     assert.equal(snapshot.pendingBuys[0].ml_entry_price,20)
     assert.ok(snapshot.pendingBuys[0].watch_points.includes('l4_execution_reference:canonical_signal_close'))
     assert.equal(snapshot.pendingBuys[0].debate_verdict,'PENDING')
-    // Synthetic external debate result, fed through the original state writer.
-    await withPaperExecutionScope(f.ports,()=>persistPendingBuyActiveState(f.env,'2026-09-14',
-      snapshot.pendingBuys.map(row=>({...row,debate_verdict:'APPROVED',debate_status:'completed' as any})),snapshot.meta))
+    // Entry must use the sealed L4 plan while the advisory debate is pending.
     f.ports.nowMs=Date.parse('2026-09-14T01:45:00Z')
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)

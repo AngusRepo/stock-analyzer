@@ -106,8 +106,8 @@ async function main() {
   assert.equal((await acquirePaperBuyIntent(env,'2026-09-14','A',{planId:second.plan.plan_id,currentShares:1000})).acquired,false)
   sql.exec("UPDATE paper_positions SET shares=1600 WHERE symbol='A'")
   assert.equal((await acquirePaperBuyIntent(env,'2026-09-14','A',{planId:second.plan.plan_id,currentShares:1600})).acquired,true)
-  await requestL4Replan(env,first.plan.plan_id,['A'],'debate_risk_reject')
-  await requestL4Replan(env,first.plan.plan_id,['A'],'debate_risk_reject')
+  await requestL4Replan(env,first.plan.plan_id,['A'],'execution_hard_risk_veto')
+  await requestL4Replan(env,first.plan.plan_id,['A'],'execution_hard_risk_veto')
   assert.equal(sql.prepare('SELECT COUNT(*) n FROM l4_replan_outbox_v1').get()?.n,1)
   assert.equal(sql.prepare('SELECT status FROM l4_replan_outbox_v1').get()?.status,'pending')
   // A changed real account invalidates a previously computed plan even when the head is unchanged.

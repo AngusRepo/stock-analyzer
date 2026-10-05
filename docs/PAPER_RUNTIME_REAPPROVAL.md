@@ -38,3 +38,8 @@ The dedicated `:2026-10-05-tabpack-evaluation-recovery` key is staged independen
 ## 2026-10-05 entry visibility (pending operator grant)
 
 The dedicated `:2026-10-05-entry-visibility` key pins the native bundle that adds entry-condition evidence and specific execution rejection reasons. Entry/exit decision gates remain unchanged. Old revisions retain their evaluation recovery key. Local simulation and explicit exact-identity authorization precede any KV write; prior keys remain untouched and revocation never falls back. Display quotes are read-only and do not authorize trading.
+
+
+## 2026-10-05 entry evidence (pending exact operator grant)
+
+The dedicated `:2026-10-05-entry-evidence` key pins the native bundle adding raw entry-condition telemetry. Previous revisions retain their entry-visibility key. Entry and exit predicates remain unchanged. Local admission simulation and explicit exact-identity authorization precede any KV write; previous keys remain untouched and revocation never falls back. Display quote cache and sealed plan quantities confer no execution authorization.

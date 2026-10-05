@@ -65,3 +65,14 @@ assert.equal(assessSwingEntry({...base,planReady:false}).conditions?.vwap,null,'
 assert.equal(assessSwingEntry({...base,quote:{price:99,observedAtMs:base.nowMs}}).action,'pass','no extra submission VWAP filter after completed signal')
 assert.equal(assessSwingEntry({...base,quote:{price:104,observedAtMs:base.nowMs}}).conditions?.chase,false)
 assert.equal(assessSwingEntry({...base,quote:{price:101,observedAtMs:base.nowMs-1}}).conditions?.quote,false,'pre-signal quote cannot execute')
+
+
+const diagnostic=assessSwingEntry(base)
+assert.equal(diagnostic.stockReturn,.010000000000000009)
+assert.equal(diagnostic.benchmarkReturn,0)
+assert.equal(diagnostic.stockReturn!-diagnostic.benchmarkReturn!,diagnostic.relativeReturn)
+assert.equal(diagnostic.benchmarkClose,100)
+assert.equal(diagnostic.benchmarkPreviousClose,100)
+assert.equal(diagnostic.quoteObservedAtMs,base.quote.observedAtMs)
+assert.equal(diagnostic.assessedAtMs,base.nowMs)
+assert.equal(diagnostic.limitUp,110)

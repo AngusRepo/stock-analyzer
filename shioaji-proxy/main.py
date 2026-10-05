@@ -1465,6 +1465,29 @@ def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=N
     }
 
 
+@app.post("/display-quotes")
+def display_quotes(req: BatchRequest, authorization: str | None = Header(default=None)):
+    """Display only: no SDK calls, subscriptions, recovery or executable order book."""
+    verify_token(authorization)
+    symbols = list(dict.fromkeys(req.symbols))
+    if len(symbols) > 20:
+        raise HTTPException(400, "display_symbol_limit")
+    data = {}
+    now = get_tw_now()
+    with _state_lock:
+        if connected and not _process_poisoned:
+            for symbol in symbols:
+                tick = last_ticks.get(symbol) or {}
+                source_time = parse_quote_time(tick.get("timestamp"))
+                if (source_time is None or tick.get("session_epoch") != _session_epoch
+                        or not 0 <= (now - source_time).total_seconds() <= 90):
+                    continue
+                data[symbol] = {key: tick.get(key) for key in
+                                ("price", "price_chg", "change_rate", "timestamp")}
+                data[symbol]["source_time"] = tick["timestamp"]
+    return {"data": data, "source": "streaming_display_cache", "executable": False}
+
+
 @app.post("/snapshots")
 def batch_snapshots(req: BatchRequest, authorization: str | None = Header(default=None)):
     """相容 alias；execution snapshot 同樣只讀 streaming tick cache。"""

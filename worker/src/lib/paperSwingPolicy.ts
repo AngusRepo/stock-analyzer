@@ -17,6 +17,9 @@ export type SwingEntryDecision = {
   action: 'pass' | 'defer'; reason: string; policy: typeof SWING_POLICY_VERSION;
   signalMs?: number; signalKey?: string; submitUntilMs?: number; orHigh?: number; orLow?: number;
   conditions?: Record<string, boolean | null>; signalHigh?: number; signalClose?: number; maxBuyPrice?: number; quotePrice?: number;
+
+  stockReturn?: number; benchmarkReturn?: number; previousClose?: number; benchmarkClose?: number;
+  benchmarkPreviousClose?: number; quoteObservedAtMs?: number; assessedAtMs?: number; limitUp?: number;
   vwap?: number; vwapBasis?: 'amount_volume' | 'five_minute_typical'; relativeReturn?: number; ma60?: number;
 }
 function normalize(rows: SwingMinute[], label: 'start' | 'end', open: number, end: number) {
@@ -57,7 +60,7 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
     || Math.abs(closes.at(-1)!.close-input.benchmarkPreviousClose)>1e-8) return wait('swing_ma60_evidence_missing')
   const ma60=closes.reduce((s,r)=>s+r.close,0)/60
   conditions.ma60 = input.benchmarkPreviousClose>ma60
-  if (input.benchmarkPreviousClose<=ma60) return wait('swing_market_below_ma60',{ma60})
+  if (input.benchmarkPreviousClose<=ma60) return wait('swing_market_below_ma60',{ma60,benchmarkPreviousClose:input.benchmarkPreviousClose})
   if (!positive(input.previousClose) || !positive(input.maxBuyPrice) || !positive(input.limitUp)) return wait('swing_price_contract_missing')
   let bars:Map<number,SwingMinute>, benchmark:Map<number,SwingMinute>
   try { bars=normalize(input.bars,input.label,open,signalMs); benchmark=normalize(input.benchmarkBars,input.label,open,signalMs) }
@@ -87,7 +90,10 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   Object.assign(conditions, { or_touch: signalHigh>=orHigh, vwap: close>=vwap, relative_strength: relativeReturn>=-1e-12, opening_limit: orHigh<input.limitUp,
     quote: positive(input.quote.price) && Number.isFinite(input.quote.observedAtMs) && input.quote.observedAtMs<=input.nowMs && input.quote.observedAtMs>=signalMs && input.nowMs-input.quote.observedAtMs<=90_000,
     buy_limit: positive(input.quote.price) ? input.quote.price<input.limitUp : null, chase: positive(input.quote.price) ? input.quote.price<=input.maxBuyPrice : null })
-  const detail={signalMs,orHigh,orLow,vwap,relativeReturn,ma60,signalHigh,signalClose:close,maxBuyPrice:input.maxBuyPrice,quotePrice:input.quote.price,vwapBasis:exact?'amount_volume' as const:'five_minute_typical' as const}
+  const detail={stockReturn:close/input.previousClose-1,benchmarkReturn:benchmarkClose!/input.benchmarkPreviousClose-1,
+    previousClose:input.previousClose,benchmarkClose:benchmarkClose!,benchmarkPreviousClose:input.benchmarkPreviousClose,
+    quoteObservedAtMs:input.quote.observedAtMs,assessedAtMs:input.nowMs,limitUp:input.limitUp,
+    signalMs,orHigh,orLow,vwap,relativeReturn,ma60,signalHigh,signalClose:close,maxBuyPrice:input.maxBuyPrice,quotePrice:input.quote.price,vwapBasis:exact?'amount_volume' as const:'five_minute_typical' as const}
   if (orHigh>=input.limitUp) return wait('swing_opening_range_at_limit',detail)
   if (Math.max(...last.map(b=>b.high))<orHigh) return wait('swing_waiting_or_touch',detail)
   if (close<vwap) return wait('swing_waiting_vwap',detail)

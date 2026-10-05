@@ -12,6 +12,7 @@
  */
 
 import { Hono, type Context } from 'hono'
+import { loadPendingDisplayContext } from '../lib/pendingBuyDisplayContext'
 import { displayQuoteSymbols, projectDisplayQuotes } from '../lib/paperDisplayQuotes'
 import { readSwingState } from '../lib/paperSwingLifecycle'
 import { verifyJWT }  from '../lib/auth'
@@ -1237,7 +1238,7 @@ paper.get('/display-quotes', async (c) => {
   if (cached) return c.json(await cached.json())
   if (!c.env.SHIOAJI_PROXY_URL) return c.json({prices:{},status:'unavailable'},503)
   try {
-    const response = await fetch(`${c.env.SHIOAJI_PROXY_URL.replace(/\/$/,'')}/quotes`, {
+    const response = await fetch(`${c.env.SHIOAJI_PROXY_URL.replace(/\/$/,'')}/display-quotes`, {
       method:'POST', headers:{'Content-Type':'application/json',Authorization:`Bearer ${c.env.PROXY_SERVICE_TOKEN ?? ''}`},
       body:JSON.stringify({symbols}),signal:AbortSignal.timeout(2500),
     })
@@ -1281,7 +1282,9 @@ paper.get('/pending-buys', async (c) => {
     console.warn('[paper/pending-buys] intraday prices unavailable:', error)
     return new Map()
   })
+  const displayContext = await loadPendingDisplayContext(c.env, snapshot.date, pendingBuys)
   const pendingBuysForResponse = pendingBuys.map((item) => ({
+    ...displayContext.get(item.symbol),
     ...removeLegacyPendingBuyScoreFields(item),
     execution_preview: executionPreviews.get(item.symbol) ?? (['or15_vwap_v1','or15-5m-orl8-20-v1'].includes(String(c.env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim())
       ? { entry_owner: c.env.PAPER_INTRADAY_ENTRY_OWNER, or15: null, s12: null, allocator: null } : null),

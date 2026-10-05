@@ -370,3 +370,20 @@ def test_entry_visibility_preserves_evaluation_key_and_revocation(runtime_pair, 
     records[paper.ENTRY_UI_RUNTIME_RELEASE_KEY]['approved'] = False
     with pytest.raises(RuntimeError, match='approval_invalid'):
         paper.verify_active_approval(admission)
+
+
+def test_entry_evidence_preserves_visibility_key_and_revocation(runtime_pair, monkeypatch):
+    admission, approval = runtime_pair
+    from services import kv_client
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
+    old = deepcopy(approval)
+    staged = reseal({**deepcopy(approval), 'source_reference': 'entry evidence supplemental identity'})
+    records = {paper.KEY: admission, paper.ENTRY_UI_RUNTIME_RELEASE_KEY: old}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: deepcopy(records.get(key)))
+    assert paper.verify_active_approval(admission) == old
+    records[paper.ENTRY_EVIDENCE_RUNTIME_RELEASE_KEY] = staged
+    assert paper.verify_active_approval(admission) == staged
+    assert records[paper.ENTRY_UI_RUNTIME_RELEASE_KEY] == old
+    records[paper.ENTRY_EVIDENCE_RUNTIME_RELEASE_KEY]['approved'] = False
+    with pytest.raises(RuntimeError, match='approval_invalid'):
+        paper.verify_active_approval(admission)

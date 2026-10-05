@@ -13,7 +13,12 @@ export function projectDisplayQuotes(data: Record<string, unknown>, symbols: str
     const quote = normalizeShioajiSnapshot(data[symbol], {includeExecutableBook:false})
     const observed = Date.parse(quote?.quoteTime ?? '')
     if (!quote || !Number.isFinite(observed) || observed>nowMs || nowMs-observed>90_000) continue
-    prices[symbol] = {price:quote.last,reference_price:quote.referencePrice??null,as_of:new Date(observed).toISOString(),source:'shioaji_streaming_display'}
+    // TickSTKv1 reports price_chg rather than an explicit reference_price.
+    const raw = data[symbol] as Record<string, unknown>
+    const change = raw.price_chg
+    const derived = typeof change === 'number' && Number.isFinite(change) ? quote.last - change : null
+    const reference = quote.referencePrice ?? (derived != null && derived > 0 ? Number(derived.toFixed(6)) : null)
+    prices[symbol] = {price:quote.last,reference_price:reference,as_of:new Date(observed).toISOString(),source:'shioaji_streaming_display'}
   }
   return prices
 }

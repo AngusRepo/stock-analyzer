@@ -76,3 +76,15 @@ test('pre 09:20 swing wait says the first five-minute signal is forming', () => 
   } })
   assert.match(view.gateReason!, /等待 09:15～09:20/)
 })
+
+
+test('sealed allocation shows indicative shares before execution checks without inventing budget',()=>{
+ const planned={target_value:60437.38,target_weight:.0625,locked:false}
+ const view=buildPendingBuyTradeView({ml_entry_price:33,planned_allocation:planned})
+ assert.equal(view.targetValue,60437.38)
+ assert.equal(view.budgetCap,null)
+ assert.equal(view.estimatedShares,1831)
+ assert.equal(view.quantityBasis,'plan_reference')
+ assert.equal(buildPendingBuyTradeView({ml_entry_price:33,planned_allocation:planned,today_fills:{shares:1000}}).estimatedShares,null)
+ assert.equal(buildPendingBuyTradeView({ml_entry_price:33,planned_allocation:{...planned,locked:true}}).estimatedShares,null)
+})

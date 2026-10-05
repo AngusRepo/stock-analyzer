@@ -687,3 +687,28 @@ def test_tick_normalization_accepts_current_tickstkv1_without_bid_ask_fields():
     assert normalized["ask"] is None
     assert normalized["timestamp"] == tick_time.isoformat()
     assert normalized["session_epoch"] == 7
+
+
+def test_display_quotes_uses_90_second_source_time_without_sdk_or_subscription(monkeypatch):
+    from datetime import timedelta
+    proxy = _load_proxy_main()
+    now = datetime.now(proxy.TW_TZ)
+    monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
+    monkeypatch.setattr(proxy, "verify_token", lambda token: None)
+    proxy.connected = True
+    proxy._process_poisoned = False
+    proxy._session_epoch = 4
+    def forbidden(*args, **kwargs):
+        raise AssertionError("display must not perform SDK, subscription or recovery")
+    for name in ["run_broker_query", "watch_orderbook_symbols", "recover_orderbook_symbol_async"]:
+        monkeypatch.setattr(proxy, name, forbidden)
+    for symbol, age, epoch in [("2330",20,4),("0050",91,4),("6217",-1,4),("6994",1,3)]:
+        ts = (now-timedelta(seconds=age)).isoformat()
+        proxy.last_ticks[symbol] = {"price":100, "price_chg":1, "timestamp":ts, "updated_at":ts, "session_epoch":epoch}
+    result = proxy.display_quotes(proxy.BatchRequest(symbols=["2330","0050","6217","6994"]))
+    assert set(result["data"]) == {"2330"}
+    assert result["data"]["2330"]["price_chg"] == 1
+    assert result["executable"] is False
+    assert proxy.get_snapshot("2330") is None  # Execution freshness remains 1.5 seconds.
+    proxy.connected = False
+    assert proxy.display_quotes(proxy.BatchRequest(symbols=["2330"]))["data"] == {}

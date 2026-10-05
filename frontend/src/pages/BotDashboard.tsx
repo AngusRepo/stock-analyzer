@@ -584,7 +584,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       {completedCards}
       <p className="px-1 text-[11px] text-muted-foreground">數量依目前 L4 預算與參考價估算；實際模擬委託仍須通過盤中進場條件、即時報價、風控與委託簿。</p>
       {buys.map((b: any) => {
-        const executionBadge = formatPendingBuyExecutionBadge(b)
+        const executionBadge = b.today_fills?.shares > 0
+          ? {...formatPendingBuyExecutionBadge(b),label:'今日已有成交',tone:'info' as const}
+          : formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const trade = buildPendingBuyTradeView(b)
         const displayPrice = currentDisplayPrice(liveQuotes?.prices?.[b.symbol], b.market_price, displayNow)
@@ -624,6 +626,10 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             >
               <Activity className="h-4 w-4" />
             </button>
+            {b.today_fills?.shares > 0 && <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/10 p-3 text-base text-foreground">
+              今日已成交 {formatTaiwanShareLots(b.today_fills.shares)} · 均價 ${fmt(b.today_fills.average_price, 2)}
+              <div className="mt-1 text-sm text-muted-foreground">成交時間 {formatTwDateTimeShort(b.today_fills.last_fill_at)}；下方等待狀態不會撤銷既有成交。</div>
+            </div>}
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">目前價位</div>
@@ -656,16 +662,17 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
                   {trade.estimatedShares != null ? formatTaiwanShareLots(trade.estimatedShares) : '待門檻通過'}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {trade.quantityBasis === 's12' ? '按 S12 價與 L4 上限估算' : trade.quantityBasis === 'reference' ? '按基準價與 L4 上限估算' : '尚無可執行配置'}
+                  {trade.quantityBasis === 's12' ? '按 S12 價與 L4 上限估算' : trade.quantityBasis === 'reference' ? '按基準價與 L4 上限估算' : trade.quantityBasis === 'plan_reference' ? '盤前參考價估算（含零股、未扣手續費）；非委託數量' : b.today_fills?.shares > 0 ? '已有成交，剩餘配置須另經執行檢查' : '等待配置資料'}
                 </div>
               </div>
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">本次可執行額度</div>
+                <div className="text-[11px] text-muted-foreground">盤前配置目標</div>
                 <div className="mt-1 text-base font-semibold text-foreground">
-                  {trade.budgetCap != null ? `$${fmt(trade.budgetCap)}` : '待評估'}
+                  {trade.targetValue != null ? `$${fmt(trade.targetValue)}` : '缺少已封存計畫'}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {trade.targetValue != null ? 'L4 目標 $' + fmt(trade.targetValue) : 'L4 目標待更新'}
+                  {b.planned_allocation ? `權重 ${fmt(b.planned_allocation.target_weight * 100, 2)}% · 封存 ${formatTwDateTimeShort(b.planned_allocation.finalized_at)}` : '配置來源尚未確認'}
+                  <div>{trade.budgetCap != null ? '最近執行檢查上限 $' + fmt(trade.budgetCap) : '可執行額度待送單檢查'}</div>
                 </div>
               </div>
             </div>
@@ -674,7 +681,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
               <div><span className="text-foreground">{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
             </div>
-            {isOr15 && <PendingEntryChecklist preview={b.execution_preview} />}
+            {isOr15 && <PendingEntryChecklist preview={b.execution_preview} plannedAllocation={b.planned_allocation} todayFills={b.today_fills} liveQuote={displayPrice} nowMs={displayNow} />}
             {isOr15 && or15 && <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
               {or15.or_high != null && `開盤 15 分鐘高點 $${fmt(or15.or_high, 2)}`}
               {or15.or_low != null && ` · 低點 $${fmt(or15.or_low, 2)}`}

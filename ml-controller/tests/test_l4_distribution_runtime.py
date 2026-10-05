@@ -80,6 +80,19 @@ def test_full_pool_owns_selection_preserves_l3_and_has_replay_identity():
     assert run(rows,policy,return_history=history)==result
 
 
+@pytest.mark.parametrize('held', [False, True])
+def test_canonical_risk_overlay_skip_forbids_new_l4_buy(held):
+    rows, policy, history = fixture()
+    rows[1]['alpha_context'] = {'risk_overlay': {'skip': True, 'flags': ['extreme_volatility']}}
+    if held:
+        policy['runtime']['account'].update(available_cash=900000,
+            holdings=[{'symbol': 'B', 'market_value': 100000}])
+    plan = run(rows, policy, return_history=history)[0]['_l4_portfolio_plan']
+    assert 'B' in plan['forbidden_buys']
+    assert plan['weights']['B'] <= (.1 if held else 0) + 1e-8
+    assert plan['targets']['B']['distribution'] is not None
+
+
 def test_held_outside_pool_stays_in_portfolio_and_reserves_capital():
     rows,policy,history=fixture()
     policy['runtime']['account'].update(available_cash=800000,holdings=[{'symbol':'H','market_value':200000}])

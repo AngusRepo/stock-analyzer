@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:81d6d76efdc069c77f449175659aa793b60cac9f6d9c3cc2dc15919c18397b17",
+  "execution_owner_version": "native-paper-v1:e9eb80b850fa984a38c929b118bb5b772d027ef8093f66b168f2d2e03415838f",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly authorized commit, push and deploy on 2026-10-05. Exact supplemental KV authorization remains pending separately; no retrain, model replacement or live orders.",
-  "review": "audits/weekend-research-20261004/entry-evidence-release/task_plan.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-entry-evidence"
+  "authorization": "Pending explicit UI publication and exact supplemental KV approval. No retrain, model replacement or live orders.",
+  "review": "audits/weekend-research-20261004/entry-evidence-merged-release/REPORT.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-entry-evidence-risk-merged"
 }

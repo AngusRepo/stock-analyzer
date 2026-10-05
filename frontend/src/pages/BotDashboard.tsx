@@ -604,6 +604,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           ? formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)
           : s12Badge?.label ?? '等待近期盤中結構資料'
         const allocatorAction = b.execution_preview?.allocator?.action
+        const sourceRiskSkip = Array.isArray(b.watch_points) && b.watch_points.some(
+          (point: unknown) => typeof point === 'string' && point.startsWith('alpha_risk_overlay:skip=true'),
+        )
         return (
           <div
             key={b.symbol}
@@ -626,6 +629,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
             >
               <Activity className="h-4 w-4" />
             </button>
+            {sourceRiskSkip && <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
+              來源風控標記「跳過買入」，但此檔仍在今日待買清單；目前等待技術條件不代表風控已否決。
+            </div>}
             {b.today_fills?.shares > 0 && <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/10 p-3 text-base text-foreground">
               今日已成交 {formatTaiwanShareLots(b.today_fills.shares)} · 均價 ${fmt(b.today_fills.average_price, 2)}
               <div className="mt-1 text-sm text-muted-foreground">成交時間 {formatTwDateTimeShort(b.today_fills.last_fill_at)}；下方等待狀態不會撤銷既有成交。</div>

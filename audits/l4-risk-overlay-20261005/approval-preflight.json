@@ -1,0 +1,13 @@
+{
+  "status": "local_validation_passed_remote_unstaged",
+  "approval_key": "ml:active8:paper_runtime_approval:v1:2026-10-05-l4-risk-overlay",
+  "approval_checksum": "cda5732e07c265e6f97c014e50dc487c71eee14089ae1257a66b5aa2949f5de3",
+  "model_checksum_unchanged": "9f179226aa7f5255d9221107386d377addcef29e5fdcd91e9d8be63fb6879a33",
+  "l4_source_previous": "b1d3773bac8cb892a73fb555bc32fbc5e8f8f9ff23c5f2b01dd3805f68b07686",
+  "l4_source_approved": "4ce7820f1a0da71ab3939a6a5da10793d833a5e8429565f856b662d2c95f4400",
+  "admission_source_approved": "97a32a0f41ea6305ca0246f04dac0ccc1c39e5abd6163fa860f15d4aa08085be",
+  "native_execution_owner_approved": "native-paper-v1:b738eef531f291a276942ee0801cc44ae249fb40f4c88c4f67141f9ca1f40718",
+  "maturity_transfer": false,
+  "live_order_flags_disabled": true,
+  "prior_key_preserved": "ml:active8:paper_runtime_approval:v1:2026-10-05-entry-visibility"
+}

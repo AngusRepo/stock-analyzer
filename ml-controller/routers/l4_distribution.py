@@ -60,3 +60,15 @@ def refresh_distribution(request: RefreshRequest):
     except JobAlreadyRunningError as exc:
         return {'status':'pending','execution_id':exc.execution.execution_id,'promoted':False}
     return {'status':'spawned','execution_id':job.execution_id,'promoted':False}
+
+
+@router.get('/monthly-closure/{checksum}')
+def monthly_training_closure(checksum: str):
+    """Read-only artifact-backed verification for the authenticated Worker callback."""
+    from fastapi import HTTPException
+    from services.l4_monthly_closure import verify
+    from services.pipeline_input_events import bucket
+    try:
+        return verify(checksum, bucket(), client_proxy_for_domain('learning'))
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(409, str(exc)) from exc

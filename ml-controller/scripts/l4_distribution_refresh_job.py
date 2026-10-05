@@ -39,7 +39,7 @@ def load_target_parent(artifact_id,client):
     return parent,identity
 
 
-def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A"):
+def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",completed_run_key=None):
     if strategy_role not in ("A","B"):
         raise ValueError("l4_refresh_strategy_role_invalid")
     if strategy_role == 'B' and not target_l3_artifact_id:
@@ -62,6 +62,12 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A"):
         raise ValueError('l4_refresh_bucket_missing')
     source=f"walk_forward/oof_cohorts/{parent['cohort_id']}/manifest.json"
     manifest,_=load_verified_oof_manifest(source,bucket=bucket,require_formal_lineage=True)
+    if completed_run_key is not None:
+        if strategy_role != 'B' or cadence != 'monthly':
+            raise ValueError('completed_run_reuse_requires_monthly_B')
+        from services.l4_monthly_closure import completed_candidate
+        return completed_candidate(bucket, completed_run_key, identity=identity,
+            manifest_checksum=manifest['manifest_checksum'], as_of=as_of)
     recipe=training_recipe_signature()
     if strategy_role == "B":
         from services.alpha_model_roster import TIMEXER_MODELS,validate_order

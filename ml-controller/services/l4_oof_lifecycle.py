@@ -83,7 +83,27 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
         else:
             from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
             options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') == TIMEXER_EXO_PROFILE_SCHEMA else {}
+            binding = None
+            if cadence == 'monthly' and options.get('strategy_role') == 'B':
+                import os
+                binding = bucket.blob('l4_distribution/monthly_candidate_bindings/' + digest({
+                    'cohort_id':cohort_id, 'manifest_checksum':manifest['manifest_checksum'],
+                    'as_of':as_of, 'target_l3_artifact_id':target}) + '.json')
+                recovery_key = os.environ.get('OOF_COMPLETED_L4_RUN_KEY')
+                if binding.exists():
+                    bound = json.loads(binding.download_as_bytes())
+                    if recovery_key and recovery_key != bound['run_key']:
+                        raise ValueError('monthly_candidate_binding_conflict')
+                    recovery_key = bound['run_key']
+                if recovery_key:
+                    options['completed_run_key'] = recovery_key
             refresh=execute(as_of=as_of,cadence=cadence,target_l3_artifact_id=target,**options)
+            if binding is not None and refresh.get('status') == 'validated':
+                bound = {'run_key':refresh['run_key'], 'artifact_checksum':refresh['artifact_checksum']}
+                if not binding.exists():
+                    binding.upload_from_string(json.dumps(bound,sort_keys=True), content_type='application/json', if_generation_match=0)
+                if json.loads(binding.download_as_bytes()) != bound:
+                    raise ValueError('monthly_candidate_binding_readback_failed')
     refresh_status = (refresh or {}).get('status')
     pending = bool(full_fit.get('retry_required')) or refresh_status in ('pending', 'awaiting_l3_candidate')
     failed = refresh_status == 'failed'
@@ -98,6 +118,9 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
         'physical_prediction_coverage':{'date_count':index['prediction_dates'],'min_date':index['min_date'],
             'max_date':index['max_date'],'base_max_date':index['max_date'],
             'manifest_declared_end_date':manifest.get('end_date'),'declared_end_matches_physical':index['max_date']==manifest.get('end_date')}}
+    if not dry_run and cadence == 'monthly' and result['status'] == 'materialized':
+        from services.l4_monthly_closure import seal
+        result['monthly_training_closure'] = seal(result, manifest, bucket, client)
     if not dry_run:
         key='l4_distribution/native_base_receipts/'+digest(result)+'.json'
         blob=bucket.blob(key)

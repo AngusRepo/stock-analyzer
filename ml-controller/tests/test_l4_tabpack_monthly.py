@@ -112,7 +112,9 @@ def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected,
     from services import l4_oof_index_receipt as index_receipt
     monkeypatch.setattr(index_receipt, 'reuse_index', lambda *a: None)
     monkeypatch.setattr(index_receipt, 'seal_index', lambda *a: None)
-    manifest = {'cohort_id':'monthly', 'model_profile_schema_version':TIMEXER_EXO_PROFILE_SCHEMA, 'end_date':'2026-09-30'}
+    from services import l4_monthly_closure
+    monkeypatch.setattr(l4_monthly_closure, 'seal', lambda *a: {'status':'complete'})
+    manifest = {'cohort_id':'monthly', 'manifest_checksum':'a'*64, 'model_profile_schema_version':TIMEXER_EXO_PROFILE_SCHEMA, 'end_date':'2026-09-30'}
     monkeypatch.setattr(materializer, 'load_verified_oof_manifest', lambda *a, **kw: (manifest, {}))
     monkeypatch.setattr(materializer, 'load_oof_prediction_rows', lambda *a, **kw: [])
     monkeypatch.setattr(native, 'persist_base_index', lambda **kw: {'prediction_dates':20, 'min_date':'2026-09-01', 'max_date':'2026-09-30'})
@@ -121,7 +123,7 @@ def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected,
     monkeypatch.setattr(wf, 'dispatch_oof_full_fit_training', full_fit)
     monkeypatch.setattr(wf, '_materialize_nav_with_reviews', lambda **kw: pytest.fail('monthly must not read NAV'))
     calls = []
-    monkeypatch.setattr(refresh, 'execute', lambda **kw: (calls.append(kw) or {'status':status, 'promoted':False}))
+    monkeypatch.setattr(refresh, 'execute', lambda **kw: (calls.append(kw) or {'status':status, 'promoted':False, 'run_key':'a'*64, 'artifact_checksum':'b'*64}))
     result = asyncio.run(native.materialize_native_base(manifest_path='fixture', cohort_id='monthly', as_of='2026-10-04',
         cadence='monthly', dry_run=False, dispatch_full_fit=True, poll_only=False, bucket=Bucket(), client=object()))
     assert result['status'] == expected and result['dependency_retry_required'] is retry

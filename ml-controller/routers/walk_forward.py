@@ -4076,6 +4076,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.l4_oof_lifecycle import uses_native_l4
     if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base
+        if cadence == 'monthly':
+            calendar_evidence['deferred_oof_dates'] = [d for d in dates if d > manifest['end_date']]
         return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,
             as_of=knowledge_cutoff_date,cadence=cadence,dry_run=req.dry_run,
             dispatch_full_fit=req.dispatch_full_fit,poll_only=req.continuation_only,bucket=bucket,client=LEARNING_D1_CLIENT,calendar=calendar_evidence)

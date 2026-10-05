@@ -724,6 +724,13 @@ async def _run() -> int:
             elif status == 'blocked':
                 # Missing morning-owned plan cannot be repaired by this job.
                 raise RuntimeError(f"oof_daily_blocked:{result.get('reason')}:awaiting=paper_plan_activation")
+            elif cadence == 'monthly' and status == 'materialized' and result.get('materialization_owner') == 'native_l3_new_l4':
+                closure = result.get('monthly_training_closure') or {}
+                if (closure.get('schema_version') != 'l4-monthly-training-closure-v1'
+                        or closure.get('status') != 'complete' or not closure.get('receipt_checksum')
+                        or closure.get('as_of') != end_date or closure.get('daily_freshness_credit') is not False):
+                    raise RuntimeError('monthly_training_closure_incomplete')
+                callback_status = 'success'
             elif status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
                 freshness = _oof_freshness_evidence(result)
                 if freshness["status"] != "fresh":
@@ -775,6 +782,8 @@ async def _run() -> int:
             "continuation_only": continuation_only,
             "prep_lifecycle": result.get("prep_lifecycle") if isinstance(result.get("prep_lifecycle"), dict) else {},
         }
+        if cadence == 'monthly' and result.get('monthly_training_closure'):
+            payload['metadata']['monthly_training_closure'] = result['monthly_training_closure']
         if result.get('native_l4_daily_closure'):
             payload['metadata']['native_l4_daily_closure']=result['native_l4_daily_closure']
             payload['metadata'].pop('oof_freshness',None)

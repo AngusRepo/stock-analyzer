@@ -775,7 +775,19 @@ async function handleSchedulerCallback(c: any) {
     })
     active8FreshnessStatus = freshness.status
     active8FreshnessBusinessDate = freshnessBusinessDate
-    if (body.status === 'success' && freshness.status !== 'fresh') {
+    let monthlyTrainingVerified = false
+    const monthlyClosure = callbackMetadata?.monthly_training_closure
+    if (body.status === 'success' && monthlyClosure && typeof monthlyClosure === 'object') {
+      try {
+        const { verifyMonthlyTrainingClosure } = await import('../lib/monthlyTrainingClosure')
+        await verifyMonthlyTrainingClosure(c.env, monthlyClosure as Record<string, unknown>, body.task,
+          callbackMetadata?.cadence, callbackRunDate ?? '', callbackMetadata?.cohort_id)
+        monthlyTrainingVerified = true
+      } catch {
+        body.status = 'error'; body.error = 'monthly_training_closure_unverified'
+      }
+    }
+    if (body.status === 'success' && freshness.status !== 'fresh' && !monthlyTrainingVerified) {
       body.status = 'error'
       body.error = [
         'active8_oof_freshness_closure_failed',

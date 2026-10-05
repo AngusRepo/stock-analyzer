@@ -55,6 +55,9 @@ export function buildAttemptAwareJobMap(
   scope.columns.slice(currentColumnIndex + 1).flat().forEach((jobId) => {
     const job = next.get(jobId)
     if (!job) return
+    if (runtimeAuthority.id === 'pipeline' && runtimeAuthority.pipelinePhase === 'premarket_l4'
+      && jobId === 'ml-predict' && job.lastStatus === 'success'
+      && job.statusRunDate === runtimeAuthority.statusRunDate && job.runId === runtimeAuthority.runId) return
     next.set(jobId, {
       ...job,
       lastStatus: 'waiting',

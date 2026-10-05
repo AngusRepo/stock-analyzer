@@ -4,6 +4,7 @@
 
 import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import { sealedPremarketDisplay } from './schedulerPipelinePhase'
+import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay } from './schedulerPremarketProgress'
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
@@ -890,6 +891,10 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
 
   const allLogs: Record<string, CronLogEntry[]> = {}
   const opsDb = databaseForDataDomain(env, 'ops')
+  const premarketProgressPromise = loadPremarketProgress(opsDb, today).catch((error) => {
+    console.warn('[schedulerStatus] premarket progress read failed:', error)
+    return []
+  })
   const durableStageStatesPromise = loadDurablePipelineStageStates(opsDb, dates).catch((error) => {
     console.warn('[schedulerStatus] durable pipeline stage read failed:', error)
     return new Map<string, DurablePipelineStageDisplayRow>()
@@ -927,12 +932,13 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     allLogs[date] = mergeDirectSchedulerLog(allLogs[date] ?? [], log)
   }
 
-  const [durableStageStates, schedulerExecutionTickets] = await Promise.all([
+  const [durableStageStates, schedulerExecutionTickets, premarketProgress] = await Promise.all([
     durableStageStatesPromise,
     loadSchedulerExecutionTickets(opsDb, dates).catch((error) => {
       console.warn('[schedulerStatus] scheduler execution ticket read failed:', error)
       return [] as SchedulerExecutionTicketRow[]
     }),
+    premarketProgressPromise,
   ])
   const executionTicketsByJobDate = new Map<string, SchedulerExecutionTicketRow>()
   const executionTicketsByTaskDate = new Map<string, SchedulerExecutionTicketRow>()
@@ -1064,13 +1070,21 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ticket: executionTicket,
       expectedRunDate: resolvedDisplay.statusRunDate,
     })
-    const phaseDisplay = sealedPremarketDisplay({
+    const activePremarket = premarketExecutionDisplay({
+      jobId: def.id, today, businessDate: resolvedDisplay.statusRunDate, rows: premarketProgress,
+      pipeline: durableStageStates.get(`${resolvedDisplay.statusRunDate}:pipeline`),
+      ticketStatus: executionTicket?.status,
+    })
+    const phaseDisplay = activePremarket
+      ? { ...activePremarket, lastRun: formatTimestamp(activePremarket.lastRunAt) }
+      : sealedPremarketDisplay({
       jobId: def.id, businessDate: resolvedDisplay.statusRunDate,
       stage: durableStageStates.get(`${resolvedDisplay.statusRunDate}:pipeline`),
       log: allLogs[resolvedDisplay.statusRunDate ?? '']?.find(row => row.task === 'pipeline'),
       ticketStatus: executionTicket?.status,
     })
-    const lastStatus = phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
+    const watchdogDisplay = premarketWatchdogDisplay(def.id, displayLog, executionTicket?.status)
+    const lastStatus = watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
     const displayTime = executionTicketOverride
       ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
       : resolveSchedulerRunDisplayTime({
@@ -1140,6 +1154,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       accounting,
       ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}) },
       ...phaseDisplay,
+      ...watchdogDisplay,
     }
   }))
 

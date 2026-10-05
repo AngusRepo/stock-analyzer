@@ -287,6 +287,7 @@ export const cronApi = {
 
 // 2026-04-21 Scheduler Dashboard API
 export type SchedulerJob = {
+  pipelinePhase?: 'premarket_l4'
   id: string
   name: string
   schedule: string

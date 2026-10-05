@@ -148,11 +148,17 @@ def dispatch(receipt,context,*,jobs_client,client=None):
     claim.upload_from_string(json_bytes(result),if_generation_match=claim.generation)
     return result
 
-async def resume(input_uri, *, nodes, merge, client=None):
+async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
     b=bucket(client);root='gs://'+b.name+'/'
     if not input_uri.startswith(root):raise ValueError('premarket_input_bucket_mismatch')
     body=json.loads(b.blob(input_uri[len(root):]).download_as_bytes());receipt,context=body['receipt'],body['context']
-    validate_context(receipt,context)
+    if postwrite_only:
+        # Research cannot open a second allocation window. Validate the sealed
+        # capture time, then require both serving phase receipts before work.
+        captured=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))
+        validate_context(receipt,context,now=captured+timedelta(seconds=1))
+    else:
+        validate_context(receipt,context)
     state=load_state(receipt,client=client)
     baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
     delta=build_information_delta(baseline=baseline,current_records=source_records(context['us'],context['news'],captured_at=context['cutoff']),cutoff=context['cutoff'],
@@ -162,8 +168,14 @@ async def resume(input_uri, *, nodes, merge, client=None):
     state['premarket_context']=context
     state.setdefault('metrics',{})['premarket_information']={k:v for k,v in delta.items() if k!='changes'}
     p=prefix(receipt['run_date'],receipt['run_id'])
+    if postwrite_only:
+        if any(node.__name__ not in ('node_compute_sector_flow','node_compute_pit_residual_shadow') for node in nodes):
+            raise ValueError('premarket_postwrite_phase_invalid')
+        for required in ('node_paired_nav_setup','node_export_dataset_snapshot'):
+            if not b.blob(p+'/phases/'+required+'.json.gz').exists():
+                raise ValueError('premarket_postwrite_serving_not_sealed:'+required)
     for node in nodes:
-        validate_context(receipt,context)
+        if not postwrite_only:validate_context(receipt,context)
         key=p+'/phases/'+node.__name__+'.json.gz'; blob=b.blob(key)
         try:
             state=decode_pipeline_state_envelope(blob.download_as_bytes())['state']

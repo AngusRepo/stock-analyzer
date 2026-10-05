@@ -77,6 +77,27 @@ def test_pipeline_triggers_detached_dataset_snapshot_job(monkeypatch):
     ]
 
 
+def test_premarket_postwrite_is_dispatched_after_serving(monkeypatch):
+    calls: list[dict] = []
+    class FakeJobsClient:
+        def __init__(self, **kwargs):
+            pass
+        def run_job(self, env_overrides=None, *, reject_if_running=True):
+            calls.append(dict(env_overrides or {}))
+            return SimpleNamespace(execution_id="research-1")
+    async def fake_callback_worker(payload):
+        calls.append({"callback": payload["status"]})
+    monkeypatch.setenv("DATASET_SNAPSHOT_JOB_NAME", "dataset-snapshot-export")
+    monkeypatch.setattr(pipeline_job_main, "CloudRunJobsClient", FakeJobsClient)
+    monkeypatch.setattr(pipeline_job_main, "_callback_worker", fake_callback_worker)
+    asyncio.run(pipeline_job_main._run_deferred_snapshot_followup(
+        run_date="2026-10-02", run_id="parent-1",
+        premarket_input_uri="gs://bucket/morning-input.json",
+    ))
+    assert calls[0]["PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI"] == "gs://bucket/morning-input.json"
+    assert calls[1] == {"callback": "triggered"}
+
+
 def test_pipeline_keeps_inline_snapshot_fallback_without_job_name(monkeypatch):
     inline_calls: list[dict] = []
 
@@ -136,6 +157,50 @@ def test_detached_dataset_snapshot_job_exports_and_callbacks(monkeypatch):
     assert payloads[0]["run_date"] == "2026-05-18"
     assert "backtest=backtest-1 rows=12" in payloads[0]["summary"]
     assert "price=price-1 rows=5" in payloads[0]["summary"]
+
+
+def test_detached_premarket_research_precedes_snapshot_and_reports_failure(monkeypatch):
+    from services import premarket_postwrite
+    order: list[str] = []
+    payloads: list[dict] = []
+    async def research(uri):
+        assert uri == "gs://bucket/morning-input.json"
+        order.append("research")
+        raise RuntimeError("sector closure unavailable")
+    def export(request):
+        order.append("snapshot")
+        return {"snapshots": {}}
+    async def callback(payload):
+        payloads.append(payload)
+    monkeypatch.setenv("DATASET_SNAPSHOT_RUN_DATE", "2026-10-02")
+    monkeypatch.setenv("PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI", "gs://bucket/morning-input.json")
+    monkeypatch.setattr(premarket_postwrite, "run_premarket_postwrite", research)
+    monkeypatch.setattr(dataset_snapshot_job_main, "export_daily_research_snapshots", export)
+    monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", callback)
+    assert asyncio.run(dataset_snapshot_job_main._run()) == 1
+    assert order == ["research"]
+    assert payloads[0]["status"] == "error"
+    assert "sector closure unavailable" in payloads[0]["error"]
+
+
+def test_disabled_snapshot_still_closes_premarket_research(monkeypatch):
+    from services import premarket_postwrite
+    calls=[]
+    async def research(uri):
+        calls.append(uri)
+    async def callback(payload):
+        calls.append(payload)
+    monkeypatch.setenv("DATASET_SNAPSHOT_RUN_DATE", "2026-10-02")
+    monkeypatch.setenv("PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI", "gs://bucket/morning-input.json")
+    monkeypatch.setenv("DATASET_SNAPSHOT_SKIP_EXPORT", "1")
+    monkeypatch.setattr(premarket_postwrite, "run_premarket_postwrite", research)
+    monkeypatch.setattr(dataset_snapshot_job_main, "export_daily_research_snapshots",
+                        lambda request: (_ for _ in ()).throw(AssertionError("snapshot must stay disabled")))
+    monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", callback)
+    assert asyncio.run(dataset_snapshot_job_main._run()) == 0
+    assert calls[0] == "gs://bucket/morning-input.json"
+    assert calls[1]["status"] == "success"
+    assert "snapshot=disabled" in calls[1]["summary"]
 
 
 def test_deploy_provisions_detached_dataset_snapshot_job():

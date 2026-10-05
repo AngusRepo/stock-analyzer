@@ -14,13 +14,9 @@ def test_async_modal_continuation_persists_pit_shadow_before_export() -> None:
     callback = source.split(
         "async def run_pipeline_v2_from_modal_prediction_callback", 1
     )[1]
-    post_prediction_nodes = callback.split(
-        "await _run_pipeline_nodes(state, [\n            node_compute_personas,", 1
-    )[1].split("])", 1)[0]
-    nodes = [
-        "node_compute_personas",
-        *re.findall(r"\bnode_[a-z0-9_]+", post_prediction_nodes),
-    ]
+    callback = callback.split("async def run_pipeline_v2_from_premarket", 1)[0]
+    node_batches = re.findall(r"await _run_pipeline_nodes\(state, \[([^\]]+)\]\)", callback)
+    nodes = [name for batch in node_batches[1:] for name in re.findall(r"\bnode_[a-z0-9_]+", batch)]
 
     assert nodes == [
         "node_compute_personas",

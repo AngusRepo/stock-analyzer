@@ -15,6 +15,7 @@ class Blob:
         if self.raw is None:raise NotFound('missing')
         return self.raw
     def reload(self):pass
+    def exists(self):return self.raw is not None
 class Storage:
     name='local-fixture'
     def __init__(self):self.blobs={}
@@ -110,3 +111,50 @@ def test_ambiguous_l4_completion_cannot_recompute(f):
     with pytest.raises(RuntimeError):run()
     with pytest.raises(ValueError,match='requires_reconciliation'):run()
     assert len(calls)==1
+
+def test_postwrite_requires_serving_receipts_and_can_finish_after_allocation_cutoff(f,monkeypatch):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
+    async def node_paired_nav_setup(value):return {'nav':'sealed'}
+    async def node_export_dataset_snapshot(value):return {'snapshot':'deferred'}
+    async def node_compute_sector_flow(value):return {'research':'complete'}
+    def run(nodes,postwrite=False):return asyncio.run(m.resume(uri,nodes=nodes,
+        merge=lambda st,up:st.update(up),client=s,postwrite_only=postwrite))
+    with pytest.raises(ValueError,match='serving_not_sealed'):run([node_compute_sector_flow],True)
+    run([node_paired_nav_setup,node_export_dataset_snapshot])
+    class Late(datetime):
+        @classmethod
+        def now(cls,tz=None):return datetime(2026,10,2,0,46,tzinfo=timezone.utc)
+    monkeypatch.setattr(m,'datetime',Late)
+    assert run([node_compute_sector_flow],True)['research']=='complete'
+    with pytest.raises(ValueError,match='allocation_cutoff'):run([node_compute_sector_flow])
+    with pytest.raises(ValueError,match='phase_invalid'):run([node_paired_nav_setup],True)
+
+def test_premarket_serving_callback_does_not_wait_for_next_session_research(monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    seen=[]
+    async def fake_resume(uri, *, nodes, merge):
+        seen.extend(node.__name__ for node in nodes)
+        return {'run_date':'2026-10-02','metrics':{},'paired_nav_collection':{}}
+    monkeypatch.setattr(m,'resume',fake_resume)
+    monkeypatch.setattr(graph,'_pipeline_terminal_result',lambda state, **kw:{'status':'completed'})
+    assert asyncio.run(graph.run_pipeline_v2_from_premarket('gs://bucket/input'))['status']=='completed'
+    assert seen==['node_compute_personas','node_recommend','node_llm_reasons','node_write_d1',
+        'node_paired_nav_setup','node_export_dataset_snapshot']
+
+def test_premarket_snapshot_stays_deferred_even_if_global_mode_is_blocking(monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    monkeypatch.setenv('STOCKVISION_RESEARCH_SNAPSHOT_MODE','blocking')
+    monkeypatch.setattr(graph,'_assert_pipeline_canonical_window',lambda state:None)
+    result=asyncio.run(graph.node_export_dataset_snapshot({
+        'run_date':'2026-10-02','producer_run_id':'parent-1','metrics':{},
+        'premarket_context':{'trade_date':'2026-10-05'},
+    }))
+    assert result['metrics']['dataset_snapshot_export']['status']=='deferred'
+    monkeypatch.setenv('STOCKVISION_EXPORT_RESEARCH_SNAPSHOT','0')
+    result=asyncio.run(graph.node_export_dataset_snapshot({
+        'run_date':'2026-10-02','producer_run_id':'parent-1','metrics':{},
+        'premarket_context':{'trade_date':'2026-10-05'},
+    }))
+    assert result['metrics']['dataset_snapshot_export']['status']=='deferred'
+    assert result['metrics']['dataset_snapshot_export']['snapshot_enabled'] is False

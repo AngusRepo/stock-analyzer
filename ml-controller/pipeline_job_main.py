@@ -67,21 +67,27 @@ def _should_trigger_snapshot_job(mode: str, job_name: str) -> bool:
     return bool(job_name)
 
 
-def _snapshot_job_env(*, run_date: str, run_id: str) -> dict[str, str]:
-    return {
+def _snapshot_job_env(*, run_date: str, run_id: str, premarket_input_uri: str = "", snapshot_enabled: bool = True) -> dict[str, str]:
+    env = {
         "DATASET_SNAPSHOT_RUN_DATE": run_date,
         "DATASET_SNAPSHOT_PARENT_RUN_ID": run_id,
         "DATASET_SNAPSHOT_PRODUCER_RUN_ID": f"{run_id}:snapshot",
     }
+    if premarket_input_uri:
+        env["PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI"] = premarket_input_uri
+    if not snapshot_enabled:
+        env["DATASET_SNAPSHOT_SKIP_EXPORT"] = "1"
+    return env
 
 
-def _trigger_deferred_snapshot_job(*, run_date: str, run_id: str) -> JobExecution:
+def _trigger_deferred_snapshot_job(*, run_date: str, run_id: str, premarket_input_uri: str = "", snapshot_enabled: bool = True) -> JobExecution:
     job_name = _dataset_snapshot_job_name()
     if not job_name:
         raise RuntimeError("DATASET_SNAPSHOT_JOB_NAME not configured")
     client = CloudRunJobsClient(job_name=job_name)
     return client.run_job(
-        env_overrides=_snapshot_job_env(run_date=run_date, run_id=run_id),
+        env_overrides=_snapshot_job_env(run_date=run_date, run_id=run_id,
+                                        premarket_input_uri=premarket_input_uri, snapshot_enabled=snapshot_enabled),
         reject_if_running=not _falsey_env("DATASET_SNAPSHOT_JOB_REJECT_IF_RUNNING", "0"),
     )
 
@@ -137,7 +143,7 @@ async def _run_deferred_snapshot_inline(*, run_date: str, run_id: str) -> None:
     })
 
 
-async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None:
+async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str, premarket_input_uri: str = "", snapshot_enabled: bool = True) -> None:
     """Start the deferred research-snapshot loop without extending pipeline-v2.
 
     When DATASET_SNAPSHOT_JOB_NAME is configured, pipeline-v2 only triggers the
@@ -149,7 +155,7 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
     if allocator_contract_guard_enabled():
         logger.warning("[AllocatorContractGuard] Deferred dataset snapshot follow-up skipped")
         return
-    if _falsey_env("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP", "1"):
+    if _falsey_env("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP", "1") and not premarket_input_uri:
         return
     if not run_date:
         return
@@ -157,7 +163,15 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
     mode = _snapshot_followup_mode()
     job_name = _dataset_snapshot_job_name()
     if not _should_trigger_snapshot_job(mode, job_name):
-        await _run_deferred_snapshot_inline(run_date=run_date, run_id=run_id)
+        if premarket_input_uri:
+            from services.premarket_postwrite import run_premarket_postwrite
+            await run_premarket_postwrite(premarket_input_uri)
+        if snapshot_enabled:
+            await _run_deferred_snapshot_inline(run_date=run_date, run_id=run_id)
+        else:
+            await _callback_worker({"task": "dataset-snapshot-export", "status": "success",
+                                    "summary": f"run_id={run_id}:snapshot postwrite=complete snapshot=disabled",
+                                    "duration_ms": 0, "run_id": f"{run_id}:snapshot", "run_date": run_date})
         return
 
     started = time.time()
@@ -167,6 +181,8 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
             _trigger_deferred_snapshot_job,
             run_date=run_date,
             run_id=run_id,
+            premarket_input_uri=premarket_input_uri,
+            snapshot_enabled=snapshot_enabled,
         )
         await _callback_worker({
             "task": "dataset-snapshot-export",
@@ -335,7 +351,12 @@ async def _run() -> int:
 
     snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
     if status == "success" and snapshot_state.get("status") == "deferred":
-        await _run_deferred_snapshot_followup(run_date=run_date, run_id=run_id)
+        await _run_deferred_snapshot_followup(
+            run_date=run_date,
+            run_id=run_id,
+            premarket_input_uri=(os.environ.get("PIPELINE_PREMARKET_INPUT_GCS_URI", "") if premarket_mode else ""),
+            snapshot_enabled=snapshot_state.get("snapshot_enabled", True) is not False,
+        )
 
     logger.info(
         "[JobEntry] Pipeline finished: status=%s elapsed=%dms", status, elapsed_ms

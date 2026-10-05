@@ -3076,18 +3076,21 @@ async def node_export_dataset_snapshot(state: PipelineStateV2) -> dict:
     run_date = state["run_date"]
     producer_run_id = state.get("producer_run_id") or f"pipeline-v2:{run_date}"
 
-    if os.getenv("STOCKVISION_EXPORT_RESEARCH_SNAPSHOT", "1").strip().lower() in {"0", "false", "no", "off"}:
+    snapshot_enabled = os.getenv("STOCKVISION_EXPORT_RESEARCH_SNAPSHOT", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if not snapshot_enabled and not state.get("premarket_context"):
         metrics["dataset_snapshot_export"] = {
             "status": "skipped",
             "reason": "STOCKVISION_EXPORT_RESEARCH_SNAPSHOT disabled",
         }
         return {"metrics": metrics}
 
-    mode = os.getenv("STOCKVISION_RESEARCH_SNAPSHOT_MODE", "deferred").strip().lower()
+    mode = ("deferred" if state.get("premarket_context") else
+            os.getenv("STOCKVISION_RESEARCH_SNAPSHOT_MODE", "deferred").strip().lower())
     if mode not in {"blocking", "sync", "synchronous"}:
         metrics["dataset_snapshot_export"] = {
             "status": "deferred",
             "mode": mode or "deferred",
+            "snapshot_enabled": snapshot_enabled,
             "reason": "daily serving pipeline must not block on research/backtest snapshot export",
             "producer_run_id": producer_run_id,
         }
@@ -5419,6 +5422,6 @@ async def run_pipeline_v2_from_premarket(input_uri: str) -> dict:
     from services.premarket_pipeline import resume
     t0=asyncio.get_event_loop().time()
     state=await resume(input_uri,nodes=[node_compute_personas,node_recommend,node_llm_reasons,node_write_d1,
-        node_paired_nav_setup,node_compute_sector_flow,node_compute_pit_residual_shadow,node_export_dataset_snapshot],
+        node_paired_nav_setup,node_export_dataset_snapshot],
         merge=_merge_pipeline_state_update)
     return _pipeline_terminal_result(state,run_date=state['run_date'],elapsed=asyncio.get_event_loop().time()-t0)

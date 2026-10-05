@@ -91,21 +91,32 @@ async def _run() -> int:
     try:
         if not run_date:
             raise RuntimeError("DATASET_SNAPSHOT_RUN_DATE not configured")
-        request = DatasetSnapshotExportRequest(
-            business_date=run_date,
-            start_date=_snapshot_export_start_date(run_date),
-            end_date=run_date,
-            producer_run_id=run_id,
-            include_signals=False if input_only else _truthy_env("DATASET_SNAPSHOT_INCLUDE_SIGNALS", "1"),
-            chunk_days=_chunk_days(),
-        )
-        if input_only:
-            exported = await asyncio.to_thread(export_backtest_dataset_snapshot, request)
-            combined = {"snapshots": {"backtest_dataset": exported}}
+        premarket_input_uri = os.environ.get("PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI", "").strip()
+        if input_only and premarket_input_uri:
+            raise RuntimeError("input-only snapshot cannot run premarket postwrite")
+        if premarket_input_uri:
+            from services.premarket_postwrite import run_premarket_postwrite
+            await run_premarket_postwrite(premarket_input_uri)
+        if _truthy_env("DATASET_SNAPSHOT_SKIP_EXPORT", "0"):
+            if not premarket_input_uri:
+                raise RuntimeError("snapshot export skipped without premarket postwrite")
+            summary = f"run_id={run_id} postwrite=complete snapshot=disabled"
         else:
-            combined = await asyncio.to_thread(export_daily_research_snapshots, request)
+            request = DatasetSnapshotExportRequest(
+                business_date=run_date,
+                start_date=_snapshot_export_start_date(run_date),
+                end_date=run_date,
+                producer_run_id=run_id,
+                include_signals=False if input_only else _truthy_env("DATASET_SNAPSHOT_INCLUDE_SIGNALS", "1"),
+                chunk_days=_chunk_days(),
+            )
+            if input_only:
+                exported = await asyncio.to_thread(export_backtest_dataset_snapshot, request)
+                combined = {"snapshots": {"backtest_dataset": exported}}
+            else:
+                combined = await asyncio.to_thread(export_daily_research_snapshots, request)
+            summary = _format_snapshot_summary(run_id, combined)
         status = "success"
-        summary = _format_snapshot_summary(run_id, combined)
     except Exception as e:  # noqa: BLE001
         logger.exception("[DatasetSnapshotJob] Export failed")
         error = f"{type(e).__name__}: {e}"

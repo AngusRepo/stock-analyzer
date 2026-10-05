@@ -14,7 +14,7 @@ for(const elapsed of [245,250,255,260]) {
 }
 assert.equal(assessSwingEntry({...base,nowMs:open+261*minute}).reason,'swing_next_bar_submission_missed')
 assert.equal(assessSwingEntry({...base,nowMs:open+265*minute}).reason,'swing_entry_window_closed')
-assert.equal(assessSwingEntry({...base,nowMs:open+19*minute+59_999}).reason,'swing_entry_window_closed')
+assert.equal(assessSwingEntry({...base,nowMs:open+19*minute+59_999}).reason,'swing_entry_window_not_open')
 assert.equal(assessSwingEntry({...base,nowMs:open+21*minute}).reason,'swing_next_bar_submission_missed')
 assert.equal(assessSwingEntry({...base,bars:bars.slice(1)}).reason,'swing_minutes_missing')
 assert.equal(assessSwingEntry({...base,label:'end',bars:bars.map(b=>({...b,startMs:b.startMs+minute})),benchmarkBars:base.benchmarkBars.map(b=>({...b,startMs:b.startMs+minute}))}).action,'pass')

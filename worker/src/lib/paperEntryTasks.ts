@@ -1451,7 +1451,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       if (paperSwingOwner) {
         const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
         if(sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000) {
-          const reason=sinceOpen<20*60000||sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
+          const reason=sinceOpen<20*60000?'swing_entry_window_not_open':sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
           const assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION}
           swingSidecars.set(pending.symbol,assessment)
           or15Sidecars.set(pending.symbol,{action:'defer',reason,signalMs:null,orHigh:null,orLow:null,vwap:null,latestBarMs:null})

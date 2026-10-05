@@ -44,7 +44,8 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   const n = Math.floor((input.nowMs-open)/(5*MIN))
   const signalMs = open+n*5*MIN
   const signalStart = signalMs-5*MIN
-  if (signalStart < open+15*MIN || signalStart > open+(SWING_LAST_ENTRY_MINUTE_FROM_OPEN-5)*MIN) return wait('swing_entry_window_closed')
+  if (signalStart < open+15*MIN) return wait('swing_entry_window_not_open')
+  if (signalStart > open+(SWING_LAST_ENTRY_MINUTE_FROM_OPEN-5)*MIN) return wait('swing_entry_window_closed')
   // One minute for live scheduling/quote arrival, never catch up a stale prior bar.
   if (input.nowMs-signalMs >= MIN) return wait('swing_next_bar_submission_missed',{signalMs})
   const closes=[...input.benchmarkPriorCloses].sort((a,b)=>a.date.localeCompare(b.date)).slice(-60)

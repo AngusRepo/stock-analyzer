@@ -69,7 +69,8 @@ function nonnegative(value: unknown): number | null {
 const OR15_REASONS: Record<string, string> = {
   swing_plan_not_authorized: '等待今日盤前計畫完成封存；缺計畫不建新倉',
   swing_existing_position_or_daily_fill: '已有持倉或今日已成交，不重複加碼',
-  swing_entry_window_closed: '訊號須為 09:15～13:15 的完整 5 分 K；最晚 13:20 開始送單',
+  swing_entry_window_not_open: '開盤區間已開始觀察；等待 09:15～09:20 第一根完整 5 分 K 收盤',
+  swing_entry_window_closed: '只採用 09:15～13:15 起始的完整 5 分 K；最晚 13:20 開始送單',
   paper_outside_continuous_session: '已離開逐筆交易時段；13:25 起禁止成交，未完成退出保留',
   swing_next_bar_submission_missed: '已超過下一根 K 的送單窗口，等下一個完整 5 分訊號',
   swing_ma60_evidence_missing: '0050 昨收或前 60 個交易日資料不完整',

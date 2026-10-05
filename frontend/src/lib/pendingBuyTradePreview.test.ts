@@ -65,3 +65,14 @@ test('swing owner never shows stale S12 price and distinguishes relative-strengt
     relative_return:-.01,ma60:99,latest_bar_ms:1,bar_source:'fixture',bar_error:null,checked_at:'2026-10-02T01:20:00Z'}}})
  assert.equal(view.entryPrice,null);assert.match(view.gateReason!,/0050/);assert.doesNotMatch(view.gateReason!,/S12/)
 })
+
+test('pre 09:20 swing wait says the first five-minute signal is forming', () => {
+  const view = buildPendingBuyTradeView({ ml_entry_price: 100, execution_preview: {
+    ...preview,
+    entry_owner: 'or15-5m-orl8-20-v1',
+    or15: { action: 'defer', reason: 'swing_entry_window_not_open', or_high: null, or_low: null,
+      vwap: null, latest_bar_ms: null, bar_source: 'unavailable', bar_error: null,
+      checked_at: '2026-10-05T01:18:00Z' },
+  } })
+  assert.match(view.gateReason!, /等待 09:15～09:20/)
+})

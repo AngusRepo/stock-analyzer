@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:01c6198b053a2101b51d0beb4576723dfffdc3181a1c98316ac9341a8d0b49ed",
+  "execution_owner_version": "native-paper-v1:4791968bcfde0f9b4900524fbe14d2786200ef9551490c063dc38e8a44ccc9e2",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Pending exact Paper KV authorization for evaluation-only identity change. Existing monthly repair release authority; no promotion, refit or real orders.",
-  "review": "audits/weekend-research-20261004/tabpack-evaluation-recovery/REPORT.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-tabpack-evaluation-recovery"
+  "authorization": "Pending explicit UI publication and exact supplemental KV approval. No retrain, model replacement or live orders.",
+  "review": "audits/weekend-research-20261004/entry-ui-release/REPORT.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-entry-visibility"
 }

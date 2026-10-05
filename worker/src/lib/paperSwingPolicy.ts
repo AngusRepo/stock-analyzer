@@ -16,6 +16,7 @@ export type SwingEntryInput = {
 export type SwingEntryDecision = {
   action: 'pass' | 'defer'; reason: string; policy: typeof SWING_POLICY_VERSION;
   signalMs?: number; signalKey?: string; submitUntilMs?: number; orHigh?: number; orLow?: number;
+  conditions?: Record<string, boolean | null>; signalHigh?: number; signalClose?: number; maxBuyPrice?: number; quotePrice?: number;
   vwap?: number; vwapBasis?: 'amount_volume' | 'five_minute_typical'; relativeReturn?: number; ma60?: number;
 }
 function normalize(rows: SwingMinute[], label: 'start' | 'end', open: number, end: number) {
@@ -35,8 +36,9 @@ function normalize(rows: SwingMinute[], label: 'start' | 'end', open: number, en
   return result
 }
 export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
+  const conditions: Record<string, boolean | null> = { plan: input.planReady && input.candidateAllowed, position: !input.boughtToday && !input.alreadyHeld, window: null, ma60: null, bars: null, or_touch: null, vwap: null, relative_strength: null, opening_limit: null, quote: null, buy_limit: null, chase: null }
   const wait = (reason: string, detail: Partial<SwingEntryDecision> = {}): SwingEntryDecision =>
-    ({ action:'defer', reason, policy:SWING_POLICY_VERSION, ...detail })
+    ({ action:'defer', reason, policy:SWING_POLICY_VERSION, conditions, ...detail })
   const open = time(input.tradeDate,'09:00')
   if (!Number.isFinite(input.nowMs) || !Number.isFinite(open)) return wait('swing_invalid_time')
   if (!input.planReady || !input.candidateAllowed) return wait('swing_plan_not_authorized')
@@ -44,6 +46,7 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   const n = Math.floor((input.nowMs-open)/(5*MIN))
   const signalMs = open+n*5*MIN
   const signalStart = signalMs-5*MIN
+  conditions.window = signalStart >= open+15*MIN && signalStart <= open+(SWING_LAST_ENTRY_MINUTE_FROM_OPEN-5)*MIN && input.nowMs-signalMs < MIN
   if (signalStart < open+15*MIN) return wait('swing_entry_window_not_open')
   if (signalStart > open+(SWING_LAST_ENTRY_MINUTE_FROM_OPEN-5)*MIN) return wait('swing_entry_window_closed')
   // One minute for live scheduling/quote arrival, never catch up a stale prior bar.
@@ -53,12 +56,14 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
     || closes.at(-1)?.date!==input.previousSession || !positive(input.benchmarkPreviousClose)
     || Math.abs(closes.at(-1)!.close-input.benchmarkPreviousClose)>1e-8) return wait('swing_ma60_evidence_missing')
   const ma60=closes.reduce((s,r)=>s+r.close,0)/60
+  conditions.ma60 = input.benchmarkPreviousClose>ma60
   if (input.benchmarkPreviousClose<=ma60) return wait('swing_market_below_ma60',{ma60})
   if (!positive(input.previousClose) || !positive(input.maxBuyPrice) || !positive(input.limitUp)) return wait('swing_price_contract_missing')
   let bars:Map<number,SwingMinute>, benchmark:Map<number,SwingMinute>
   try { bars=normalize(input.bars,input.label,open,signalMs); benchmark=normalize(input.benchmarkBars,input.label,open,signalMs) }
   catch(error) { return wait(`swing_${(error as Error).message}`) }
   const minutes=Array.from({length:n*5},(_,i)=>bars.get(open+i*MIN))
+  conditions.bars = !minutes.some(b=>!b)
   if (minutes.some(b=>!b)) return wait('swing_minutes_missing',{signalMs})
   const completed=minutes as SwingMinute[]
   const benchmarkClose=benchmark.get(signalMs-MIN)?.close
@@ -78,7 +83,11 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   if (!positive(vwap) || vwap<Math.min(...completed.map(b=>b.low))-1e-8 || vwap>Math.max(...completed.map(b=>b.high))+1e-8)
     return wait('swing_turnover_volume_units_invalid',{signalMs})
   const relativeReturn=close/input.previousClose-benchmarkClose!/input.benchmarkPreviousClose
-  const detail={signalMs,orHigh,orLow,vwap,relativeReturn,ma60,vwapBasis:exact?'amount_volume' as const:'five_minute_typical' as const}
+  const signalHigh=Math.max(...last.map(b=>b.high))
+  Object.assign(conditions, { or_touch: signalHigh>=orHigh, vwap: close>=vwap, relative_strength: relativeReturn>=-1e-12, opening_limit: orHigh<input.limitUp,
+    quote: positive(input.quote.price) && Number.isFinite(input.quote.observedAtMs) && input.quote.observedAtMs<=input.nowMs && input.quote.observedAtMs>=signalMs && input.nowMs-input.quote.observedAtMs<=90_000,
+    buy_limit: positive(input.quote.price) ? input.quote.price<input.limitUp : null, chase: positive(input.quote.price) ? input.quote.price<=input.maxBuyPrice : null })
+  const detail={signalMs,orHigh,orLow,vwap,relativeReturn,ma60,signalHigh,signalClose:close,maxBuyPrice:input.maxBuyPrice,quotePrice:input.quote.price,vwapBasis:exact?'amount_volume' as const:'five_minute_typical' as const}
   if (orHigh>=input.limitUp) return wait('swing_opening_range_at_limit',detail)
   if (Math.max(...last.map(b=>b.high))<orHigh) return wait('swing_waiting_or_touch',detail)
   if (close<vwap) return wait('swing_waiting_vwap',detail)
@@ -87,7 +96,7 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
     || input.quote.observedAtMs<signalMs || input.nowMs-input.quote.observedAtMs>90_000) return wait('swing_fresh_execution_quote_missing',detail)
   if (input.quote.price>=input.limitUp) return wait('swing_buy_at_limit',detail)
   if (input.quote.price>input.maxBuyPrice) return wait('swing_chase_limit',detail)
-  return {action:'pass',reason:'swing_or15_vwap_relative_strength',policy:SWING_POLICY_VERSION,...detail,
+  return {action:'pass',reason:'swing_or15_vwap_relative_strength',policy:SWING_POLICY_VERSION,conditions,...detail,
     signalKey:`${input.tradeDate}:${signalMs}`,submitUntilMs:signalMs+MIN}
 }
 

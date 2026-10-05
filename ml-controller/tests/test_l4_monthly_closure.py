@@ -96,3 +96,14 @@ def test_monthly_job_requires_receipt_but_daily_remains_strict(monkeypatch):
         assert callbacks[-1]['metadata']['oof_freshness']['status']=='failed'
     result.pop('monthly_training_closure');monkeypatch.setenv('OOF_MATERIALIZE_CADENCE','monthly')
     assert asyncio.run(job._run())==1
+
+
+def test_monthly_callback_allows_bounded_artifact_readback(monkeypatch):
+    import oof_materialize_job_main as job
+    from routers import pipeline
+    calls=[]
+    async def callback(payload,client=None):calls.append(client.timeout.read if client else None)
+    monkeypatch.setattr(pipeline,'_callback_worker',callback)
+    asyncio.run(job._callback_worker({'task':'active8-oof-monthly','metadata':{'monthly_training_closure':{'status':'complete'}}}))
+    asyncio.run(job._callback_worker({'task':'active8-oof-daily'}))
+    assert calls==[150.0,None]

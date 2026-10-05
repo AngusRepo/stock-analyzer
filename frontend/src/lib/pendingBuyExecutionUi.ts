@@ -147,6 +147,10 @@ const STATUS_BADGES: Record<string, PendingBuyExecutionBadge> = {
 }
 
 const EXECUTION_REASON_LABELS: Record<string, string> = {
+  swing_chase_limit: '價格超過追價上限',
+  swing_buy_at_limit: '買價已達漲停',
+  swing_next_bar_submission_missed: '已超過下一根 K 棒的送單期限',
+  swing_execution_window_or_price_changed: '成交前訊號或價格複核未通過',
   volume_ratio_low: '量能不足',
   weak_no_reclaim: '尚未轉強收復',
   between_buy_reference_and_confirmation: '價格位於買入區與確認價之間',

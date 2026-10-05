@@ -1,6 +1,15 @@
 import type { Bindings } from '../types'
 import { controllerJson } from './controllerClient'
 
+function ordered(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(ordered)
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return Object.fromEntries(Object.keys(record).sort().map(key => [key, ordered(record[key])]))
+  }
+  return value
+}
+
 /** Monthly receipts carry no daily freshness or model-promotion credit. */
 export async function verifyMonthlyTrainingClosure(env: Bindings, receipt: Record<string, unknown>,
   task: string, cadence: unknown, day: string, cohort: unknown) {
@@ -13,8 +22,7 @@ export async function verifyMonthlyTrainingClosure(env: Bindings, receipt: Recor
     || verified.completion_scope !== 'monthly_training_candidate' || verified.as_of !== day
     || verified.cohort_id !== cohort || verified.daily_freshness_credit !== false
     || verified.promoted !== false || verified.promotion_allowed !== false
-    || Object.keys(verified).length !== Object.keys(receipt).length
-    || Object.entries(verified).some(([key, value]) => JSON.stringify(value) !== JSON.stringify(receipt[key])))
+    || JSON.stringify(ordered(verified)) !== JSON.stringify(ordered(receipt)))
     throw new Error('monthly_training_closure_identity_mismatch')
   return verified
 }

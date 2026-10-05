@@ -12,6 +12,7 @@
  */
 
 import { Hono, type Context } from 'hono'
+import { displayQuoteSymbols, projectDisplayQuotes } from '../lib/paperDisplayQuotes'
 import { readSwingState } from '../lib/paperSwingLifecycle'
 import { verifyJWT }  from '../lib/auth'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from '../lib/tradingConfig'
@@ -1221,6 +1222,33 @@ paper.get('/quadrant-filter', async (c) => {
   return c.json({ date, filters: raw ?? [] })
 })
 
+// Visible-page display polling reads the proxy streaming cache, not the minute trading loop.
+paper.get('/display-quotes', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  let symbols: string[]
+  try { symbols = displayQuoteSymbols(c.req.query('symbols') ?? '') }
+  catch { return c.json({error:'invalid_display_symbols'},400) }
+  const now = new Date(), date = new Date(now.getTime()+8*3600_000).toISOString().slice(0,10)
+  if (!symbols.length || !isTwIntradayTradingMinute(now) || await c.env.KV.get(`holiday:${date}`))
+    return c.json({prices:{},status:'outside_session',observed_at:now.toISOString()})
+  const cache = await caches.open('paper-display-quotes-v1')
+  const key = new Request(`${new URL(c.req.url).origin}/__paper_display_quotes/${date}/${symbols.join(',')}`)
+  const cached = await cache.match(key)
+  if (cached) return c.json(await cached.json())
+  if (!c.env.SHIOAJI_PROXY_URL) return c.json({prices:{},status:'unavailable'},503)
+  try {
+    const response = await fetch(`${c.env.SHIOAJI_PROXY_URL.replace(/\/$/,'')}/quotes`, {
+      method:'POST', headers:{'Content-Type':'application/json',Authorization:`Bearer ${c.env.PROXY_SERVICE_TOKEN ?? ''}`},
+      body:JSON.stringify({symbols}),signal:AbortSignal.timeout(2500),
+    })
+    if (!response.ok) throw new Error(`display_quotes_http_${response.status}`)
+    const payload = await response.json() as {data?:Record<string,unknown>}
+    const result = {prices:projectDisplayQuotes(payload.data??{},symbols,Date.now()),status:'ok',observed_at:new Date().toISOString()}
+    c.executionCtx.waitUntil(cache.put(key,new Response(JSON.stringify(result),{headers:{'Content-Type':'application/json','Cache-Control':'public, max-age=10'}})))
+    return c.json(result)
+  } catch { return c.json({prices:{},status:'unavailable'},503) }
+})
+
 // GET /api/paper/pending-buys — current pending-buy snapshot for Bot Dashboard.
 paper.get('/pending-buys', async (c) => {
   c.header('Cache-Control', 'no-store, max-age=0')
@@ -1269,6 +1297,9 @@ paper.get('/pending-buys', async (c) => {
     execution_policy: executionPolicy,
     state,
     pendingBuys: pendingBuysForResponse,
+    completedBuys: (runHistory.runs.find((run) => run.trade_date === snapshot.date && run.run_id === Number(snapshot.meta?.run_id))?.items ?? [])
+      .filter((item) => ['filled','skipped','cancelled','expired','rejected'].includes(item.execution_status ?? ''))
+      .map(removeLegacyPendingBuyScoreFields),
     runHistory: stripLegacyPendingBuyRunHistory(runHistory),
   })
 })

@@ -1,6 +1,11 @@
 export interface PendingBuyExecutionPreview {
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
   or15?: {
+    conditions?: Record<string, boolean | null>
+    signal_high?: number | null
+    signal_close?: number | null
+    max_buy_price?: number | null
+    quote_price?: number | null
     action: string
     reason: string
     or_high: number | null
@@ -84,6 +89,7 @@ const OR15_REASONS: Record<string, string> = {
   swing_fresh_execution_quote_missing: '等待訊號後的新報價，且須在 90 秒內',
   swing_opening_range_at_limit: '開盤區間高點已達漲停，今日不買',
   swing_buy_at_limit: '可成交價已達漲停，不買',
+  swing_execution_window_or_price_changed: '成交前訊號、送單期限或價格複核未通過',
   swing_chase_limit: '可成交價超過既有追價上限',
   swing_or15_vwap_relative_strength: '觸及 ORH、收在 VWAP 上方且強於 0050；等待成交確認',
   swing_volume_missing: '缺少成交量，無法計算 VWAP',

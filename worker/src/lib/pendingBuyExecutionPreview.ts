@@ -13,6 +13,11 @@ interface ExecutionPreviewRow {
 export interface PendingBuyExecutionPreview {
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
   or15?: {
+    conditions?: Record<string, boolean | null>
+    signal_high?: number | null
+    signal_close?: number | null
+    max_buy_price?: number | null
+    quote_price?: number | null
     action: string
     reason: string
     or_high: number | null
@@ -72,6 +77,9 @@ export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], en
       if (row.kind === 'or15') {
         const signal = payload.signal ?? {}
         preview.or15 = {
+          conditions: signal.conditions && typeof signal.conditions === 'object' ? Object.fromEntries(Object.entries(signal.conditions).map(([key, value]) => [key, typeof value === 'boolean' ? value : null])) : undefined,
+          signal_high: finitePositive(signal.signalHigh), signal_close: finitePositive(signal.signalClose),
+          max_buy_price: finitePositive(signal.maxBuyPrice), quote_price: finitePositive(signal.quotePrice),
           action: String(signal.action ?? row.status),
           reason: String(signal.reason ?? row.reason ?? ''),
           or_high: finitePositive(signal.orHigh),

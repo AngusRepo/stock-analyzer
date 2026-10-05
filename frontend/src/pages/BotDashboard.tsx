@@ -1,3 +1,5 @@
+import { PendingEntryChecklist } from '@/components/PendingEntryChecklist'
+import { completedPendingBuys, currentDisplayPrice } from '@/lib/pendingBuyDisplay'
 import StrategyAbRecommendations from '@/components/StrategyAbRecommendations'
 /**
  * 模擬交易室 — Auto Trade Bot 專頁
@@ -45,7 +47,9 @@ const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
 const OBSERVATIONAL_POTENTIAL_BUY_POLICY = 'non_executable_formal_ml_observation_missing_expected_return_v1'
 
 function isTWMarketOpen(): boolean {
-  const h = (new Date().getUTCHours() + 8) % 24
+  const tw = new Date(Date.now() + 8 * 3600_000)
+  if ([0,6].includes(tw.getUTCDay())) return false
+  const h = tw.getUTCHours()
   const m = new Date().getUTCMinutes()
   return h >= 9 && (h < 13 || (h === 13 && m <= 30))
 }
@@ -495,6 +499,16 @@ function pendingBuyEmptyMessage(meta?: any): string {
   return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在下一個交易日早上的 morning setup / debate 後產生。'
 }
 
+function usePaperDisplayQuotes(symbols: string[]) {
+  const unique = [...new Set(symbols)].sort()
+  return useQuery({
+    queryKey:['paper','display-quotes',unique.join(',')],
+    queryFn:({signal})=>paperApi.displayQuotes(unique,{signal,timeoutMs:5000}),
+    enabled:unique.length>0 && isTWMarketOpen(), staleTime:10_000,
+    refetchInterval:()=>isTWMarketOpen()?10_000:false, refetchIntervalInBackground:false, retry:false,
+  })
+}
+
 function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   // T2 過濾後的掛單（非 raw recommendations）
   const { data: pbData, isLoading, isFetching, dataUpdatedAt, error } = useQuery({
@@ -502,7 +516,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     queryFn: () => paperApi.pendingBuys(),
     staleTime: 0,
     refetchInterval: () => isTWMarketOpen() ? 30_000 : 5 * 60_000,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
   })
   const allPendingBuys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
@@ -511,6 +525,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     const verdict = String(item?.debate_verdict ?? '').toUpperCase()
     return status === 'completed' && ['APPROVE', 'DOWNGRADE'].includes(verdict)
   })
+  const completed = completedPendingBuys(pbData)
+  const {data: liveQuotes, dataUpdatedAt: quotesUpdatedAt} = usePaperDisplayQuotes(allPendingBuys.map(row=>row.symbol))
+  const displayNow = Math.max(Date.now(), quotesUpdatedAt)
+  const completedCards = completed.length>0 && <section className="space-y-2">
+    <h3 className="text-base font-semibold text-foreground">今日已結束的待買紀錄</h3>
+    {completed.map((row:any)=>{const badge=formatPendingBuyExecutionBadge(row);return <div key={row.symbol} className="rounded-xl border border-border bg-background/45 p-4">
+      <div className="flex flex-wrap gap-2 text-base font-semibold"><span>{row.symbol} {row.name}</span><span className={executionToneClass(badge.tone)}>{badge.label}</span></div>
+      <p className="mt-2 text-sm text-muted-foreground">{badge.description}</p>
+    </div>})}
+  </section>
   const showingDate = pbData?.date ?? ''
   const isStalePending = Boolean(pbData?.is_stale)
   const pendingState = pbData?.state
@@ -536,6 +560,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     return (
       <div className="space-y-3">
         <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
+        {completedCards}
         <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
@@ -555,13 +580,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
       <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
       <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
+      <p className="px-1 text-sm text-muted-foreground">行情每 10 秒讀取串流快取；訊號仍在完整 5 分 K 後判斷。</p>
+      {completedCards}
       <p className="px-1 text-[11px] text-muted-foreground">數量依目前 L4 預算與參考價估算；實際模擬委託仍須通過盤中進場條件、即時報價、風控與委託簿。</p>
       {buys.map((b: any) => {
         const executionBadge = formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const trade = buildPendingBuyTradeView(b)
-        const quotePrice = b.market_price?.price
-        const quoteReference = b.market_price?.reference_price
+        const displayPrice = currentDisplayPrice(liveQuotes?.prices?.[b.symbol], b.market_price, displayNow)
+        const quotePrice = displayPrice?.price
+        const quoteReference = displayPrice?.reference_price
         const priceChange = typeof quotePrice === 'number' && Number.isFinite(quotePrice) && quotePrice > 0
           && typeof quoteReference === 'number' && Number.isFinite(quoteReference) && quoteReference > 0
           ? Number((quotePrice - quoteReference).toFixed(6)) : null
@@ -600,7 +628,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
                 <div className="text-[11px] text-muted-foreground">目前價位</div>
                 <div className={`mt-1 text-base font-semibold ${priceChange == null ? 'text-foreground' : pctClass(priceChange)}`}>
-                  {b.market_price?.price != null ? '$' + fmt(b.market_price.price, 2) : '報價待更新'}
+                  {displayPrice?.price != null ? '$' + fmt(displayPrice.price, 2) : '報價待更新'}
                 </div>
                 <div className={`text-xs font-medium ${pctClass(priceChange)}`}
                   title="相對券商當日昨收參考價；除權息等調整日依券商參考價計算">
@@ -610,7 +638,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
                 </div>
                 {priceChange != null && <div className="text-[11px] text-muted-foreground">昨收參考 ${fmt(quoteReference, 2)}</div>}
                 <div className="text-[11px] text-muted-foreground">
-                  {b.market_price?.as_of ? 'Shioaji · ' + formatTwDateTimeShort(b.market_price.as_of) : '僅顯示 90 秒內報價'}
+                  {displayPrice?.as_of ? 'Shioaji · ' + formatTwDateTimeShort(displayPrice.as_of) : '僅顯示 90 秒內報價'}
                 </div>
               </div>
               <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
@@ -646,6 +674,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
               <div><span className="text-foreground">{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
             </div>
+            {isOr15 && <PendingEntryChecklist preview={b.execution_preview} />}
             {isOr15 && or15 && <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
               {or15.or_high != null && `開盤 15 分鐘高點 $${fmt(or15.or_high, 2)}`}
               {or15.or_low != null && ` · 低點 $${fmt(or15.or_low, 2)}`}
@@ -808,6 +837,8 @@ function PositionsTable() {
   })
 
   const positions = paperPositionsFromPayload(data)
+  const {data: positionQuotes, dataUpdatedAt: positionQuotesAt} = usePaperDisplayQuotes(positions.map((p:any)=>p.symbol))
+  const positionDisplayNow = Math.max(Date.now(),positionQuotesAt)
   const summary = (data as any)?.summary
   const orders = paperOrdersFromPayload(ordersData)
 
@@ -934,7 +965,10 @@ function PositionsTable() {
             </tr>
           </thead>
           <tbody>
-            {positions.map((p: any) => {
+            {positions.map((position: any) => {
+              const live = currentDisplayPrice(positionQuotes?.prices?.[position.symbol],
+                {price:position.current_price,as_of:position.quote_as_of},positionDisplayNow)
+              const p = live ? {...position,current_price:live.price,quote_as_of:live.as_of,quote_status:'fresh'} : {...position,quote_status:position.quote_status==='fresh'?'stale':position.quote_status}
               const entry = p.avg_cost ?? p.entry_price ?? 0
               const current = p.current_price ?? entry
               const shares = p.shares ?? 0

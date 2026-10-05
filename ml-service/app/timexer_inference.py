@@ -41,11 +41,21 @@ def feature_receipt(bucket, reference, signal_date):
             or receipt.get('feature_imputation_semantic') != 'prior_252_row_median_then_zero_v2'):
         raise ValueError('timexer_feature_receipt_mismatch')
     count = receipt.get('batch_count')
-    expected = {f'{prefix}/prep/batch_{i}.npz' for i in range(count or 0)}
-    if not expected or expected != set(receipt.get('output_checksums') or {}):
+    batch_paths = (
+        {f'{prefix}/prep/batch_{i}.npz' for i in range(count)}
+        if isinstance(count, int) and count > 0 else set()
+    )
+    names_path = f'{prefix}/prep/feature_names.json'
+    checksums = receipt.get('output_checksums') or {}
+    # Synchronous prep seals shards; event-driven prep also seals feature names.
+    if (not batch_paths or receipt.get('feature_names_path') != names_path
+            or set(checksums) not in (batch_paths, batch_paths | {names_path})):
         raise ValueError('timexer_feature_inventory_invalid')
     from .features import FEATURE_COLS
-    names = json.loads(bucket.blob(prefix+'/prep/feature_names.json').download_as_bytes())
+    names_raw = bucket.blob(names_path).download_as_bytes()
+    if names_path in checksums and _sha(names_raw) != checksums[names_path]:
+        raise ValueError('timexer_feature_names_checksum_mismatch')
+    names = json.loads(names_raw)
     if names != list(FEATURE_COLS) or len(names) != 137:
         raise ValueError('timexer_feature_order_mismatch')
     return receipt
@@ -82,7 +92,10 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
         histories[symbol] = (row['dates'], row['prices'])
     calendar = sorted({d for dates,_ in histories.values() for d in dates})
     outputs, seen = {}, set()
-    for path, digest in sorted(receipt['output_checksums'].items()):
+    prefix = feature_source['source_gcs_prefix'].rstrip('/')
+    for index in range(receipt['batch_count']):
+        path = f'{prefix}/prep/batch_{index}.npz'
+        digest = receipt['output_checksums'][path]
         raw = bucket.blob(path).download_as_bytes()
         if _sha(raw) != digest:
             raise ValueError('timexer_feature_shard_checksum_mismatch')

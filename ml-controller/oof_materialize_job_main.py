@@ -24,7 +24,14 @@ OOF_CONTINUATION_MAX_ATTEMPTS = COMPUTE_WAIT_MAX_ATTEMPTS
 async def _callback_worker(payload: dict[str, Any]) -> None:
     from routers.pipeline import _callback_worker as callback
 
-    await callback(payload)
+    if payload.get('task') == 'active8-oof-monthly' and (payload.get('metadata') or {}).get('monthly_training_closure'):
+        # Worker verifies GCS/D1 through Controller before settling the ticket.
+        # The shared 15s callback budget is insufficient for this bounded readback.
+        import httpx
+        async with httpx.AsyncClient(timeout=150.0) as client:
+            await callback(payload, client=client)
+    else:
+        await callback(payload)
 
 
 def _truthy(value: str) -> bool:

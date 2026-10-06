@@ -44,3 +44,14 @@ test('daily ATR veto survives minute-only events while old quote green checks ex
  const evidence=checklistEvidence({or15:{reason:'swing_atr_day_veto',conditions:{window:false,atr_once:false}},last_or15_assessment:{conditions:{plan:true,vwap:true,atr_once:false,quote:true}}} as any)
  assert.equal(evidence.conditions.atr_once,false);assert.equal(evidence.conditions.vwap,true);assert.equal(evidence.conditions.quote,null)
 })
+
+test('status-only legacy quote error keeps the last complete five-minute assessment',()=>{
+ const last={checked_at:'2026-10-06 05:10:22',latest_bar_ms:100000,conditions:{plan:true,bars:true,or_touch:true,vwap:true,relative_strength:true,window:true,quote:false}}
+ const current={reason:'or15_market_data_unavailable',checked_at:'2026-10-06 05:13:22'}
+ const evidence=checklistEvidence({or15:current,last_or15_assessment:last} as any,160000)
+ assert.equal(evidence.historical,true)
+ assert.equal(evidence.checkedAt,last.checked_at)
+ for(const key of ['plan','bars','or_touch','vwap','relative_strength']) assert.equal(evidence.conditions[key],true)
+ assert.equal(evidence.conditions.window,false)
+ assert.equal(evidence.conditions.quote,null)
+})

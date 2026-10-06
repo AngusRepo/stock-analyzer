@@ -2,9 +2,9 @@ import type { PendingBuyExecutionPreview } from './pendingBuyTradePreview'
 
 export function checklistEvidence(preview?: PendingBuyExecutionPreview | null, nowMs = Date.now()) {
   const current = preview?.or15
-  const timingOnly = ['swing_next_bar_submission_missed','swing_atr_day_veto','swing_atr_warmup_missing'].includes(current?.reason??'')
-    && typeof current?.conditions?.plan !== 'boolean'
-  const signal = timingOnly ? preview?.last_or15_assessment ?? current : current
+  // A status-only event cannot replace the last complete five-minute assessment.
+  const signal = typeof current?.conditions?.plan !== 'boolean'
+    ? preview?.last_or15_assessment ?? current : current
   const historical = !!signal && signal !== current
   const conditions = { ...signal?.conditions, ...current?.conditions }
   // A historical quote/price check is not a current execution authorization.

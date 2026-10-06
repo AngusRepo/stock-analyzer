@@ -34,7 +34,10 @@ def _client_tag(leg_id: str) -> str:
 
 
 def _event_id(payload: Mapping[str, Any], event_type: str) -> str:
-    stable = str(payload.get("exchange_sequence") or payload.get("event_id") or "").strip()
+    broker_event_id = str(payload.get("event_id") or "").strip()
+    if broker_event_id:
+        return hashlib.sha256(f"{event_type}:{broker_event_id}".encode("utf-8")).hexdigest()
+    stable = str(payload.get("exchange_sequence") or "").strip()
     if stable:
         material = (
             f"{event_type}:{stable}:{payload.get('broker_order_id') or ''}:"
@@ -84,7 +87,14 @@ class D1BrokerExecutionRepository:
         intent = self.find_intent(idempotency_key)
         if intent is None:
             return None
-        return {"intent": intent, "legs": self.list_legs(str(intent.get("intent_id") or ""))}
+        legs = self.list_legs(str(intent.get("intent_id") or ""))
+        statuses = {str(leg.get("status") or "") for leg in legs}
+        outcome = (
+            "reconciliation_required" if "UNKNOWN" in statuses or "SUBMITTING" in statuses
+            else "partial" if statuses & {"ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED"} and statuses & {"REJECTED", "CANCELLED"}
+            else str(intent.get("status") or "").lower()
+        )
+        return {"intent": intent, "legs": legs, "execution_outcome": outcome}
 
     def reserve_intent(self, packet: Mapping[str, Any]) -> dict[str, Any]:
         intent = packet.get("intent") if isinstance(packet.get("intent"), Mapping) else {}

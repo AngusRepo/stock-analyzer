@@ -5,17 +5,18 @@ from __future__ import annotations
 import os
 import threading
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from services.broker_execution_contract import (
     NON_RETRYABLE_LEG_STATES,
     limit_price,
     order_legs,
+    parse_time,
     validate_execution_packet,
 )
 from services.broker_execution_repository import BrokerExecutionRepository, D1BrokerExecutionRepository
-from services.finlab_execution_gateway import PersistentFinlabExecutionGateway
+from services.finlab_execution_gateway import BrokerOrderRejected, PersistentFinlabExecutionGateway
 from services.execution_snapshot_revalidator import revalidate_authoritative_snapshots
 from services.finlab_execution_preview_service import validate_stockvision_execution_intent
 from services.finlab_sinopac_l5_market_data import l5_market_data_env_status
@@ -214,6 +215,40 @@ def run_finlab_live_submit(
             if leg is None:
                 repo.mark_submit_rejected(str(claimed.get("leg_id") or ""), "execution_leg_payload_missing", {"intent_id": intent_id})
                 break
+            expires_at = parse_time(packet.get("expires_at"))
+            if expires_at is None or (now or datetime.now(timezone.utc)) >= expires_at:
+                leg_errors = ["execution_packet_expired_before_leg"]
+            else:
+                leg_packet = {**packet, "intent": {**packet_intent, "orderLegs": [leg]}}
+                try:
+                    leg_check = (
+                        snapshot_revalidator(leg_packet)
+                        if snapshot_revalidator is not None
+                        else revalidate_authoritative_snapshots(leg_packet, env=values)
+                    )
+                    leg_errors = list(leg_check.get("errors") or [])
+                except Exception as exc:
+                    leg_errors = [f"leg_market_data_revalidation_failed:{exc.__class__.__name__}"]
+            if leg_errors:
+                reason = ",".join(sorted(set(leg_errors)))
+                repo.mark_submit_rejected(
+                    str(claimed.get("leg_id") or ""), reason,
+                    {"intent_id": intent_id, "leg_key": leg_key},
+                )
+                return {
+                    "schema_version": SCHEMA_VERSION,
+                    "status": "partial" if submitted else "blocked",
+                    "reason": "leg_market_data_revalidation_failed",
+                    "blocked_reasons": sorted(set(leg_errors)),
+                    "symbol": symbol,
+                    "side": side,
+                    "intent_id": intent_id,
+                    "submitted_orders": submitted,
+                    "legs": repo.list_legs(intent_id),
+                    "can_submit_real_order": True,
+                    "live_submit_enabled": True,
+                    "env_status": env_status,
+                }
             quantity = int(leg.get("finlabQuantity") or leg.get("finlab_quantity") or 0)
             odd_lot = bool(leg.get("oddLot") if "oddLot" in leg else leg.get("odd_lot"))
             try:
@@ -247,6 +282,25 @@ def run_finlab_live_submit(
                         "status": ack.get("status"),
                     }
                 )
+            except BrokerOrderRejected as exc:
+                repo.mark_submit_rejected(
+                    str(claimed.get("leg_id") or ""),
+                    str(exc),
+                    {"intent_id": intent_id, "leg_key": leg_key},
+                )
+                return {
+                    "schema_version": SCHEMA_VERSION,
+                    "status": "partial" if submitted else "rejected",
+                    "reason": "broker_order_rejected",
+                    "symbol": symbol,
+                    "side": side,
+                    "intent_id": intent_id,
+                    "submitted_orders": submitted,
+                    "legs": repo.list_legs(intent_id),
+                    "can_submit_real_order": True,
+                    "live_submit_enabled": True,
+                    "env_status": env_status,
+                }
             except Exception as exc:
                 error = _sanitize(f"{exc.__class__.__name__}:{exc}", values)
                 repo.mark_submit_unknown(

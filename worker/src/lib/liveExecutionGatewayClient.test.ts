@@ -110,15 +110,17 @@ async function main(): Promise<void> {
   }
   let capturedHeaders = new Headers()
   let capturedBody: any = null
+  let capturedUrl = ''
   const submitted = await submitSignedLiveExecutionPacket({
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
     LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
     KV: { get: async () => null } as any,
-    EXECUTION_GATEWAY_URL: 'https://gateway.invalid/',
-    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    ML_CONTROLLER_URL: 'https://controller.invalid/',
+    ML_CONTROLLER_SECRET: 'controller-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
     LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
-  }, packet, async (_input, init) => {
+  }, packet, async (input, init) => {
+    capturedUrl = String(input)
     capturedHeaders = new Headers(init?.headers)
     capturedBody = JSON.parse(String(init?.body))
     return new Response(JSON.stringify({ status: 'submitted', intent_id: 'intent-1' }), {
@@ -126,7 +128,8 @@ async function main(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
     })
   })
-  assert.equal(capturedHeaders.get('Authorization'), 'Bearer service-token')
+  assert.equal(capturedUrl, 'https://controller.invalid/finlab/execution/live-relay')
+  assert.equal(capturedHeaders.get('X-Controller-Token'), 'controller-token')
   assert.equal(capturedHeaders.get('X-Execution-Signature'), signature)
   assert.equal(capturedBody.packet.idempotency_key, packet.idempotency_key)
   assert.equal(capturedBody.allow_live_submit, true)
@@ -137,8 +140,8 @@ async function main(): Promise<void> {
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
     LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
     KV: { get: async () => null } as any,
-    EXECUTION_GATEWAY_URL: 'https://gateway.invalid',
-    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    ML_CONTROLLER_URL: 'https://controller.invalid',
+    ML_CONTROLLER_SECRET: 'controller-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
     LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
   }, packet, async (_input, init) => {
@@ -150,6 +153,21 @@ async function main(): Promise<void> {
   })
   assert.equal(reconciled.status, 'reconciliation_required')
   assert.equal(reconciliationCalls, 2, 'unknown submit must reconcile once and never resubmit')
+
+  let serverErrorCalls = 0
+  const serverError = await submitOrReconcileSignedLiveExecutionPacket({
+    LIVE_EXECUTION_CLIENT_ENABLED: '1', LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
+    KV: { get: async () => null } as any,
+    ML_CONTROLLER_URL: 'https://controller.invalid', ML_CONTROLLER_SECRET: 'controller-token',
+    LIVE_EXECUTION_HMAC_SECRET: 'test-secret', LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
+  }, packet, async (_input, init) => {
+    serverErrorCalls += 1
+    return init?.method === 'POST'
+      ? new Response('{}', { status: 503 })
+      : new Response(JSON.stringify({ status: 'ok', legs: [{ status: 'ACKNOWLEDGED' }] }), { status: 200 })
+  })
+  assert.equal(serverError.status, 'reconciliation_required')
+  assert.equal(serverErrorCalls, 2)
 
   const shadowPacket = buildExecutionShadowPacket({
     intent,
@@ -211,11 +229,11 @@ async function main(): Promise<void> {
   assert.match(blockedSellSnapshot.reason, /authoritative_bid_below_limit/)
 
   const lifecycle = await fetchLiveExecutionIntentStatus({
-    EXECUTION_GATEWAY_URL: 'https://gateway.invalid',
-    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    ML_CONTROLLER_URL: 'https://controller.invalid',
+    ML_CONTROLLER_SECRET: 'controller-token',
   }, packet.idempotency_key, async (input, init) => {
-    assert.match(String(input), /\/v1\/intents\/live-client-4953-buy-20260713-001$/)
-    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer service-token')
+    assert.match(String(input), /\/finlab\/execution\/live-intents\/live-client-4953-buy-20260713-001$/)
+    assert.equal(new Headers(init?.headers).get('X-Controller-Token'), 'controller-token')
     return new Response(JSON.stringify({ status: 'ok', legs: [{ status: 'ACKNOWLEDGED' }] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

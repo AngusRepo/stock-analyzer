@@ -74,6 +74,7 @@ for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthori
     source: 'shioaji_hub' as const, lotType: 'odd_lot' as const, bid: 100, ask: 100,
     ageMs: 200, sourceTime: new Date(nowMs - 7_700).toISOString(),
     receivedAt: new Date(nowMs - 200).toISOString(), sessionEpoch: 7,
+    streamHeartbeatAgeMs: 200,
     confirmationMode: 'quote_session_static_book',
   }
   const snapshot = (observation: typeof staticOdd) => resolver({
@@ -82,12 +83,37 @@ for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthori
   assert(snapshot(staticOdd).status === 'ready', 'same-session 7.7s odd-lot book must remain executable')
   assert(snapshot({ ...staticOdd, confirmationMode: 'symbol_event' }).status === 'ready',
     'fresh callback with 7.7s broker source time must remain executable')
-  assert(snapshot({ ...staticOdd, sourceTime: new Date(nowMs - 176_000).toISOString() }).status === 'blocked',
-    '176s odd-lot source must remain blocked')
+  assert(snapshot({ ...staticOdd, sourceTime: new Date(nowMs - 176_000).toISOString() }).status === 'ready',
+    'an unchanged same-session book remains usable while actual stream callbacks continue')
+  assert(snapshot({ ...staticOdd, streamHeartbeatAgeMs: 11_000 }).status === 'blocked',
+    'an inactive callback stream cannot confirm the book')
   assert(snapshot({ ...staticOdd, confirmationMode: undefined as unknown as string }).status === 'blocked',
     'static exemption requires explicit Proxy confirmation')
   assert(snapshot({ ...staticOdd, sessionEpoch: 0 }).status === 'blocked',
     'static exemption requires a valid session')
   assert(snapshot({ ...staticOdd, receivedAt: new Date(nowMs - 2_000).toISOString() }).status === 'blocked',
     'stale confirmation must remain blocked')
+}
+
+for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot]) {
+  const nowMs = Date.parse('2026-10-06T05:10:15.400Z')
+  const oldSource = new Date(nowMs - 20_000).toISOString()
+  const book = {
+    source: 'shioaji_hub' as const, lotType: 'board_lot' as const, bid: 100, ask: 100.5,
+    ageMs: 200, sourceTime: oldSource, receivedAt: new Date(nowMs - 200).toISOString(),
+    sessionEpoch: 7, streamHeartbeatAgeMs: 200, confirmationMode: 'quote_session_static_book',
+  }
+  const resolve = (observation: typeof book) => resolver({
+    limitPrice: resolver === resolveAuthoritativeBuyExecutionSnapshot ? 100.5 : 100,
+    lotType: 'board_lot', nowMs, maxAgeMs: 1500, observations: [observation],
+  })
+  assert(resolve(book).status === 'ready', 'live callbacks may confirm an unchanged same-session stream book')
+  assert(resolve({ ...book, confirmationMode: 'symbol_event' }).status === 'blocked',
+    'an old event alone must not become executable')
+  assert(resolve({ ...book, sessionEpoch: 0 }).status === 'blocked',
+    'stream confirmation requires a valid broker session')
+  assert(resolve({ ...book, receivedAt: new Date(nowMs - 2_000).toISOString() }).status === 'blocked',
+    'an old stream confirmation must not authorize execution')
+  assert(resolve({ ...book, streamHeartbeatAgeMs: 11_000 }).status === 'blocked',
+    'a stale market callback heartbeat must not authorize execution')
 }

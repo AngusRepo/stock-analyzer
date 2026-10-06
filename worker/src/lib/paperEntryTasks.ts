@@ -13,7 +13,7 @@ import { paperExecutionDate, paperExecutionNow, paperAccountId, paperExecutionFe
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
-import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPrices } from './paperIntradayData'
+import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
 import { INTRADAY_PRICE_DISPLAY_MAX_AGE_MS, putIntradayPrice } from './paperIntradayPriceCache'
 import { recordSellSettlement } from './paperMarketData'
 import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
@@ -606,12 +606,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   if (pendingBuys.length === 0) return holdingPoll
   const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
   const pendingSymbols = pendingBuys.map((b) => b.symbol)
+  const quoteDiagnostics = new Map<string, string>()
+  const onOrderbookDiagnostic = (symbol: string, diagnostic: string) => quoteDiagnostics.set(symbol, diagnostic)
   // Display quotes are observation data. Keep them fresh even when today's
   // portfolio risk gate blocks every buy.
   const ohlcMap = await batchGetIntradayOHLC(pendingSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
+    onOrderbookDiagnostic,
   })
   const priceMap = new Map<string, number>()
   for (const [s, o] of ohlcMap) priceMap.set(s, o.last)
@@ -670,6 +673,43 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     return holdingPoll
   }
 
+  // Re-read the live stream book at the signal boundary after the initial quote pass.
+  const sinceOpen = paperExecutionNow() - Date.parse(`${today}T09:00:00+08:00`)
+  const signalWindowOpen = paperSwingOwner && sinceOpen >= 20 * 60_000
+    && sinceOpen < (SWING_LAST_ENTRY_MINUTE_FROM_OPEN + 1) * 60_000
+    && sinceOpen % (5 * 60_000) < 60_000
+  const quoteStreamRecheckAttempted = new Set<string>()
+  if (signalWindowOpen) {
+    const signalMs = paperExecutionNow() - sinceOpen % (5 * 60_000)
+    const unconfirmed = pendingSymbols.filter((symbol) => {
+      const quote = ohlcMap.get(symbol)
+      return !quote || quote.bid == null || quote.ask == null
+        || !Number.isFinite(Date.parse(quote.quoteTime ?? ''))
+        || Date.parse(quote.quoteTime ?? '') < signalMs
+    })
+    if (unconfirmed.length > 0) {
+      for (const symbol of unconfirmed) quoteStreamRecheckAttempted.add(symbol)
+      const recovered = await batchGetExecutionOrderbooks(unconfirmed, {
+        SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
+        PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+        marketDataLotType: 'board_lot',
+        onOrderbookDiagnostic,
+      })
+      for (const [symbol, quote] of recovered) {
+        ohlcMap.set(symbol, quote)
+        priceMap.set(symbol, quote.last)
+      }
+      await Promise.allSettled([...recovered].map(([symbol, quote]) => {
+        const tradeMs = Date.parse(quote.lastTradeTime ?? '')
+        return Number.isFinite(tradeMs) && tradeMs >= signalMs && tradeMs <= paperExecutionNow()
+          ? putIntradayPrice(env.KV, symbol, quote.last, undefined, {
+            source: 'shioaji', quoteTime: quote.lastTradeTime, referencePrice: quote.referencePrice,
+          })
+          : Promise.resolve()
+      }))
+    }
+  }
+
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
   if (zeroPriceSymbols.length > 0) {
     const errMsg = `Shioaji quote anomaly: ${zeroPriceSymbols.join(',')}`
@@ -696,6 +736,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         stage: 'authoritative_market_data',
         broker_quote_required: true,
         contract_bypass_allowed: false,
+        orderbook_diagnostic: quoteDiagnostics.get(symbol) ?? 'unavailable_without_proxy_diagnostic',
+        stream_recheck_attempted: quoteStreamRecheckAttempted.has(symbol),
       },
       pendingRunId,
       source: paperOr15Owner ? 'or15_vwap_entry_v1' : 's12_intraday_structure',
@@ -1411,7 +1453,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const runS12Sidecar = async (
     pending: PendingBuy,
     price: number,
-    currentOhlc: { totalVolume?: number | null; referencePrice?: number | null; quoteTime?: string } | null | undefined,
+    currentOhlc: IntradayOHLC | null | undefined,
   ): Promise<S12RuntimeSidecar | null> => {
     if (!s12Enabled && !paperOr15Owner) return null
     const existing = s12Sidecars.get(pending.symbol)
@@ -1441,7 +1483,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           benchmarkBars:benchmark.bars.bars,previousClose:reference,
           benchmarkPreviousClose:Number(benchmark.closes.find(r=>r.date===previousSession)?.close),
           benchmarkPriorCloses:benchmark.closes.map(r=>({date:r.date,close:Number(r.close)})),previousSession,
-          quote:{price,observedAtMs:Date.parse(currentOhlc?.quoteTime ?? '')},
+          quote:{price,observedAtMs:Date.parse(currentOhlc?.confirmationMode === 'quote_session_static_book'
+            ? currentOhlc.confirmationTime ?? '' : currentOhlc?.quoteTime ?? '')},
           limitUp:resolveTwEquityPriceBand(reference).limitUp ?? NaN,maxBuyPrice,
           boughtToday:false,alreadyHeld:false,planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),
           candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))}
@@ -1774,6 +1817,17 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     // S12 is the slow structure gate; fetch executable depth only after it is ready.
     const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, [pending.symbol])
     let finLabL5Quote = finLabL5MarketDataSnapshot.quotes.get(pending.symbol) ?? null
+    if (!finLabL5Quote && currentOhlc?.lotType === 'board_lot'
+        && currentOhlc.confirmationMode === 'quote_session_static_book') {
+      const streamBook = normalizeFinLabL5Quote(pending.symbol, {
+        provider: 'shioaji_proxy_live_stream_book', lot_type: 'board_lot', last_price: currentOhlc.last,
+        bid_prices: currentOhlc.bidPrices, ask_prices: currentOhlc.askPrices,
+        bid_volumes: currentOhlc.bidVolumes, ask_volumes: currentOhlc.askVolumes,
+        source_time: currentOhlc.quoteTime, received_at: currentOhlc.confirmationTime,
+      }, paperExecutionDate())
+      finLabL5Quote = streamBook ? { ...streamBook,
+        quoteAgeMs: quoteAgeMs(currentOhlc.confirmationTime) } : null
+    }
     const l5Thresholds={
         maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
         maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
@@ -2330,10 +2384,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             receivedAt: currentOhlc.confirmationTime ?? null,
             ageMs: quoteAgeMs(currentOhlc.confirmationTime) ?? currentOhlc.quoteAgeMs ?? null,
             sessionEpoch: currentOhlc.sessionEpoch ?? null,
+            streamHeartbeatAgeMs: currentOhlc.streamHeartbeatAgeMs ?? null,
             confirmationMode: currentOhlc.confirmationMode ?? null,
           }
           : null,
-        finLabL5Quote
+        finLabL5Quote && finLabL5Quote.provider !== 'shioaji_proxy_live_stream_book'
           ? {
             source: 'finlab_l5',
             lotType: finLabL5Quote.lotType ?? 'board_lot',

@@ -1,4 +1,4 @@
-import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, normalizeShioajiSnapshot } from './paperIntradayData'
+import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, normalizeShioajiSnapshot, prewarmOddLotOrderbooks } from './paperIntradayData'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -76,6 +76,54 @@ function assert(condition: unknown, message: string): void {
 }
 
 async function runAsyncTests(): Promise<void> {
+  {
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ url: string; body: any }> = []
+    globalThis.fetch = (async (input: any, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body)) })
+      return { ok: true } as Response
+    }) as any
+    try {
+      await prewarmOddLotOrderbooks(['3004', '3004'], { SHIOAJI_PROXY_URL: 'https://shioaji.local' })
+      assert(calls.length === 1 && calls[0].url.endsWith('/orderbook/watchlist'), 'odd-lot prewarm must use the streaming subscription endpoint')
+      assert(calls[0].body.lot_type === 'odd_lot' && calls[0].body.symbols.length === 1, 'prewarm must subscribe the odd-lot book once per symbol')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+
+  {
+    const originalFetch = globalThis.fetch
+    const calls: string[] = []
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.endsWith('/orderbooks')) return {
+        ok: true,
+        json: async () => ({ data: { '3004': {
+          status: 'ok', price: 100.25, bid_prices: [100], ask_prices: [100.5],
+          bid_volumes: [8], ask_volumes: [9], source_time: '2026-10-06T13:09:40+08:00',
+          confirmed_at: '2026-10-06T13:10:00+08:00', confirmation_mode: 'quote_session_static_book',
+          stream_heartbeat_age_ms: 200, last_trade_source_time: '2026-10-06T13:10:00+08:00',
+          session_epoch: 7, lot_type: 'board_lot',
+        } } }),
+      } as Response
+      throw new Error(`execution book must use one streaming batch request: ${url}`)
+    }) as any
+    try {
+      const books = await batchGetExecutionOrderbooks(['3004'], {
+        SHIOAJI_PROXY_URL: 'https://shioaji.local', marketDataLotType: 'board_lot',
+      })
+      assert(calls.length === 1, 'live stream execution must not add monitoring requests')
+      assert(books.get('3004')?.confirmationMode === 'quote_session_static_book', 'stream mode must reach execution')
+      assert(books.get('3004')?.sessionEpoch === 7, 'broker session epoch must reach execution')
+      assert(books.get('3004')?.streamHeartbeatAgeMs === 200, 'callback heartbeat evidence must reach execution')
+      assert(books.get('3004')?.lastTradeTime === '2026-10-06T13:10:00+08:00', 'a fresh trade time must remain distinct from the book event time')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+
   {
     const originalFetch = globalThis.fetch
     const calls: string[] = []

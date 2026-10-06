@@ -17,6 +17,7 @@ export interface ExecutionBookObservation {
   receivedAt?: string | null
   ageMs?: number | null
   sessionEpoch?: number | null
+  streamHeartbeatAgeMs?: number | null
   confirmationMode?: string | null
 }
 
@@ -135,7 +136,8 @@ function normalizedAge(observation: ExecutionBookObservation, nowMs: number): nu
     if (typeof observation.ageMs !== 'number' || !Number.isFinite(observation.ageMs) || observation.ageMs < 0) return null
     ages.push(observation.ageMs)
   }
-  if (observation.confirmationMode === 'quote_session_static_book' || observation.confirmationMode === 'symbol_event') {
+  if (observation.confirmationMode === 'quote_session_static_book'
+      || observation.confirmationMode === 'symbol_event') {
     if (observation.source !== 'shioaji_hub' || !Number.isInteger(observation.sessionEpoch)
         || Number(observation.sessionEpoch) <= 0 || observation.ageMs == null
         || observation.sourceTime == null || observation.receivedAt == null) return null
@@ -144,7 +146,13 @@ function normalizedAge(observation: ExecutionBookObservation, nowMs: number): nu
     const sourceAge = nowMs - sourceTime
     const maxSourceAge = observation.lotType === 'odd_lot' ? 10_000 : 3_000
     if (!Number.isFinite(sourceTime) || !Number.isFinite(confirmedAt)
-        || sourceAge < 0 || sourceAge > maxSourceAge || confirmedAt > nowMs
+        || sourceAge < 0
+        || (observation.confirmationMode === 'symbol_event' && sourceAge > maxSourceAge)
+        || (observation.confirmationMode === 'quote_session_static_book'
+          && (typeof observation.streamHeartbeatAgeMs !== 'number'
+            || !Number.isFinite(observation.streamHeartbeatAgeMs)
+            || observation.streamHeartbeatAgeMs < 0 || observation.streamHeartbeatAgeMs > 10_000))
+        || confirmedAt > nowMs
         || confirmedAt < sourceTime) return null
     return Math.max(...ages, nowMs - confirmedAt)
   }

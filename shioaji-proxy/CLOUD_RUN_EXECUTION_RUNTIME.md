@@ -35,7 +35,10 @@ lineage after a Cloud Run revision restart. The execution Hub must not perform
 D1/R2 writes or restore historical research bars into the broker session.
 
 An unchanged orderbook is execution-confirmed only when its subscription and
-session epoch still match the active Shioaji quote session. Shioaji system event
+session epoch still match the active Shioaji quote session and an actual market
+Tick/BidAsk callback arrived within 10 seconds. A subscription ACK is not a
+market heartbeat. The pending buy list prewarms the odd-lot stream before a
+signal; an absent book still cannot authorize an order. Shioaji system event
 codes `1`, `2`, and `12` immediately fail-close quote execution; codes `0` and
 `13` restore session readiness and trigger subscription recovery. The original
 exchange source time remains unchanged and is stored separately from the

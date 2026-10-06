@@ -2,6 +2,7 @@ import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLe
 import { requestL4Replan } from './l4Replan'
 import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
+import { prewarmOddLotOrderbooks } from './paperIntradayData'
 import {
   runBuyDebateBatchViaController,
   type BatchDebateCandidate,
@@ -1118,6 +1119,11 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       market_risk_blockers: cb.marketRiskBlockers ?? [],
     })
     await persistPendingBuyFilterAudit(env, runId, pendingDate, sourceRecoDate, quadrantFilterLog)
+    await prewarmOddLotOrderbooks(pendingBuys.map((item) => item.symbol), {
+      SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL,
+      PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
+      marketDataLotType: 'odd_lot',
+    })
 
     if (quadrantFilterLog.length > 0) {
       await env.KV.put(

@@ -197,6 +197,20 @@ def orderbook_symbol_confirmation_time(depth: dict | None) -> datetime | None:
     return parse_quote_time(depth.get("confirmed_at") or depth.get("updated_at") or depth.get("timestamp"))
 
 
+def quote_stream_heartbeat_age_ms() -> int | None:
+    """Age of the newest actual market callback, excluding subscription ACKs."""
+    now = get_tw_now()
+    with _state_lock:
+        events = [*last_ticks.values(), *last_bidasks.values(), *last_odd_bidasks.values()]
+        times = [(parse_quote_time(item.get("updated_at")), parse_quote_time(item.get("timestamp")))
+                 for item in events if item.get("session_epoch") == _session_epoch]
+    ages = [(now - received).total_seconds() * 1000 for received, source in times
+            if received is not None and source is not None
+            and -5_000 <= (received - source).total_seconds() * 1000 <= 10_000]
+    fresh_ages = [age for age in ages if age >= 0]
+    return int(min(fresh_ages)) if fresh_ages else None
+
+
 def orderbook_effective_confirmation(
     depth: dict | None,
     symbol: str | None = None,
@@ -222,14 +236,26 @@ def orderbook_effective_confirmation(
     source_time = orderbook_source_time(depth)
     source_age_ms = (now - source_time).total_seconds() * 1000 if source_time is not None else None
     max_source_age_ms = static_book_max_source_age_ms(lot_type)
-    if (direct_age_ms is None or not 0 <= direct_age_ms <= max_source_age_ms
-            or source_age_ms is None or not 0 <= source_age_ms <= max_source_age_ms):
+    if (direct_age_ms is None or direct_age_ms < 0 or source_age_ms is None or source_age_ms < 0
+            or source_time.date() != now.date()):
         return None, "stale_symbol_event" if direct else "unconfirmed"
-    if direct_age_ms is not None and -5_000 <= direct_age_ms <= orderbook_max_age_ms():
+    if direct_age_ms <= orderbook_max_age_ms() and source_age_ms <= max_source_age_ms:
         return direct, "symbol_event"
     if not bid_prices or not ask_prices:
         return direct, "stale_symbol_event" if direct else "unconfirmed"
-
+    heartbeat_age_ms = quote_stream_heartbeat_age_ms()
+    if heartbeat_age_ms is None or heartbeat_age_ms > 10_000:
+        return None, "stream_heartbeat_stale"
+    tick = last_ticks.get(symbol) or {}
+    tick_time = parse_quote_time(tick.get("updated_at"))
+    if (tick.get("session_epoch") == _session_epoch and tick_time is not None
+            and tick_time > direct and 0 <= (now - tick_time).total_seconds() * 1000 <= 10_000):
+        try:
+            trade_price = float(tick.get("price"))
+        except (TypeError, ValueError):
+            trade_price = 0
+        if trade_price > 0 and (trade_price < bid_prices[0] or trade_price > ask_prices[0]):
+            return None, "stream_book_price_disagrees_with_tick"
     return now, "quote_session_static_book"
 
 
@@ -1186,9 +1212,9 @@ def _watchdog_once() -> None:
             reset_shioaji_connection(f"watchdog_quote_session_down:{event_age:.1f}s")
         return
 
-    latest_event_age = latest_bidask_event_age_seconds(symbols)
-    if latest_event_age is not None and latest_event_age > reconnect_after_global_stale_seconds():
-        reset_shioaji_connection(f"watchdog_global_bidask_stale:{latest_event_age:.1f}s")
+    heartbeat_age_ms = quote_stream_heartbeat_age_ms()
+    if heartbeat_age_ms is not None and heartbeat_age_ms > reconnect_after_global_stale_seconds() * 1000:
+        reset_shioaji_connection(f"watchdog_global_market_stream_stale:{heartbeat_age_ms / 1000:.1f}s")
         return
 
     for lot_type, target_symbols in (("board_lot", board_symbols), ("odd_lot", odd_symbols)):
@@ -1197,14 +1223,14 @@ def _watchdog_once() -> None:
             depth = depth_store.get(symbol)
             bid_prices = list((depth or {}).get("bid_prices") or [])
             ask_prices = list((depth or {}).get("ask_prices") or [])
-            confirmation_age_ms = orderbook_symbol_confirmation_age_ms(depth)
             if (
                 depth
                 and bid_prices
                 and ask_prices
-                and confirmation_age_ms is not None
-                and confirmation_age_ms <= orderbook_symbol_recovery_after_ms()
+                and depth.get("session_epoch") == _session_epoch
             ):
+                # BidAsk is event driven. An unchanged book does not need a new
+                # callback, and forced unsubscribe/subscribe breaks continuity.
                 continue
             reason = "watchdog_waiting_callback" if not depth else "watchdog_subscription_unconfirmed"
             recover_orderbook_symbol(symbol, reason, lot_type)
@@ -1728,6 +1754,7 @@ def _orderbook_diagnostic(
         "confirmed_at": confirmation_time.isoformat() if confirmation_time else None,
         "symbol_confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
         "confirmation_mode": confirmation_mode,
+        "stream_heartbeat_age_ms": quote_stream_heartbeat_age_ms(),
         "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
         "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
         "source_age_ms": orderbook_source_age_ms(depth),
@@ -1783,7 +1810,9 @@ def _orderbook_payload(
                 lot_type=lot_type,
             )
         depth = depth_store.get(symbol)
-        if refresh and (not depth or not orderbook_is_fresh(depth, symbol, lot_type)):
+        complete_session_book = bool(depth and depth.get("bid_prices") and depth.get("ask_prices")
+                                     and depth.get("session_epoch") == _session_epoch)
+        if refresh and not complete_session_book and (not depth or not orderbook_is_fresh(depth, symbol, lot_type)):
             recover_orderbook_symbol_async(
                 symbol,
                 "request_waiting_callback" if not depth else "request_stale_depth",
@@ -1833,6 +1862,18 @@ def _orderbook_payload(
         bid_concentration = (bid_volumes[0] / total_bid_vol) if total_bid_vol > 0 and bid_volumes else 0
         source_time = orderbook_source_time(depth)
         confirmation_time, confirmation_mode = orderbook_effective_confirmation(depth, symbol, lot_type)
+        tick = last_ticks.get(symbol) or {}
+        tick_source = parse_quote_time(tick.get("timestamp"))
+        tick_age = tick_age_ms(tick) if tick.get("session_epoch") == _session_epoch else None
+        tick_price = tick.get("price") if (tick_age is not None and tick_age <= 10_000
+                                            and tick_source is not None
+                                            and 0 <= (get_tw_now() - tick_source).total_seconds() * 1000 <= 10_000) else None
+        try:
+            tick_price = float(tick_price) if tick_source and tick_source.date() == get_tw_now().date() else None
+        except (TypeError, ValueError):
+            tick_price = None
+        use_tick_price = tick_price is not None and math.isfinite(tick_price) and tick_price > 0
+        last_price = tick_price if use_tick_price else depth.get("price")
         stat = stats_store.get(symbol, {})
 
         return 200, {
@@ -1840,7 +1881,9 @@ def _orderbook_payload(
             "symbol": symbol,
             "lot_type": lot_type,
             "depth_available": len(bid_prices) >= 5 and len(ask_prices) >= 5,
-            "price": depth.get("price"),
+            "price": last_price,
+            "price_source": "streaming_tick" if use_tick_price else "streaming_bidask_mid",
+            "last_trade_source_time": tick_source.isoformat() if use_tick_price and tick_source else None,
             "bid_prices": bid_prices,
             "bid_volumes": bid_volumes,
             "ask_prices": ask_prices,
@@ -1855,6 +1898,8 @@ def _orderbook_payload(
             "confirmed_at": confirmation_time.isoformat() if confirmation_time else None,
             "symbol_confirmed_at": depth.get("confirmed_at") or depth.get("updated_at"),
             "confirmation_mode": confirmation_mode,
+            "session_epoch": depth.get("session_epoch"),
+            "stream_heartbeat_age_ms": quote_stream_heartbeat_age_ms(),
             "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
             "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
             "source_age_ms": orderbook_source_age_ms(depth),
@@ -1908,7 +1953,9 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
         for symbol in accepted_symbols:
             depth = dict(depth_store.get(symbol) or {})
             if not depth or not orderbook_is_fresh(depth, symbol, lot_type):
-                refresh_symbols.append(symbol)
+                if not (depth.get("bid_prices") and depth.get("ask_prices")
+                        and depth.get("session_epoch") == _session_epoch):
+                    refresh_symbols.append(symbol)
 
     for symbol in refresh_symbols:
         recover_orderbook_symbol_async(
@@ -1961,8 +2008,10 @@ def orderbook_watchlist(req: BatchRequest, authorization: str | None = Header(de
     verify_token(authorization)
     lot_type = normalize_lot_type(req.lot_type)
     symbols = watch_orderbook_symbols(req.symbols, lot_type=lot_type)
+    subscription_store = odd_bidask_subscribed if lot_type == "odd_lot" else bidask_subscribed
     for symbol in symbols:
-        recover_orderbook_symbol_async(symbol, "watchlist_prewarm", lot_type)
+        if symbol not in subscription_store:
+            recover_orderbook_symbol_async(symbol, "watchlist_prewarm", lot_type)
     return {
         "status": "ok",
         "count": len(symbols),

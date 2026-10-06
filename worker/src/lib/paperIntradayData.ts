@@ -17,8 +17,10 @@ export interface IntradayOHLC {
   askVolumes?: number[]
   volumeUnit?: 'lots' | 'shares'
   sessionEpoch?: number
+  streamHeartbeatAgeMs?: number
   totalVolume?: number
   quoteTime?: string
+  lastTradeTime?: string
   confirmationTime?: string
   confirmationMode?: string
   quoteAgeMs?: number
@@ -32,9 +34,10 @@ type IntradayEnv = {
   PROXY_SERVICE_TOKEN?: string
   requireBrokerQuote?: boolean
   marketDataLotType?: 'board_lot' | 'odd_lot'
+  onOrderbookDiagnostic?: (symbol: string, diagnostic: string) => void
 }
 
-export type ExecutionOrderbookEnv = Pick<IntradayEnv, 'SHIOAJI_PROXY_URL' | 'PROXY_SERVICE_TOKEN' | 'marketDataLotType'>
+export type ExecutionOrderbookEnv = Pick<IntradayEnv, 'SHIOAJI_PROXY_URL' | 'PROXY_SERVICE_TOKEN' | 'marketDataLotType' | 'onOrderbookDiagnostic'>
 type NormalizeSnapshotOptions = { includeExecutableBook?: boolean }
 
 function proxyHeaders(env?: IntradayEnv, json = false): Record<string, string> {
@@ -52,6 +55,7 @@ function compactOrderbookDiagnostic(symbol: string, payload: any, fallbackStatus
     detail?.message ? `message=${String(detail.message).slice(0, 80).replace(/\s+/g, '_')}` : null,
     detail?.quote_age_ms != null ? `age=${detail.quote_age_ms}` : null,
     detail?.source_age_ms != null ? `source_age=${detail.source_age_ms}` : null,
+    detail?.stream_heartbeat_age_ms != null ? `stream_heartbeat_age=${detail.stream_heartbeat_age_ms}` : null,
     detail?.max_quote_age_ms != null ? `max=${detail.max_quote_age_ms}` : null,
     detail?.refresh_wait_seconds != null ? `wait=${detail.refresh_wait_seconds}s` : null,
     detail?.source_time ? `source_time=${String(detail.source_time)}` : null,
@@ -238,11 +242,15 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
         ? payload.updated_at
           : undefined
   const confirmationMode = typeof payload?.confirmation_mode === 'string' ? payload.confirmation_mode : undefined
+  const lastTradeTime = typeof payload?.last_trade_source_time === 'string'
+    ? payload.last_trade_source_time : undefined
   const quoteAgeMs = Number.isFinite(Number(payload?.quote_age_ms)) ? Math.max(0, Number(payload.quote_age_ms)) : undefined
   const sourceAgeMs = Number.isFinite(Number(payload?.source_age_ms)) ? Math.max(0, Number(payload.source_age_ms)) : undefined
 
   const lotType = String(payload?.lot_type ?? '').toLowerCase() === 'odd_lot' ? 'odd_lot' : 'board_lot'
   const sessionEpoch = Number.isFinite(Number(payload?.session_epoch)) ? Number(payload.session_epoch) : undefined
+  const streamHeartbeatAgeMs = typeof payload?.stream_heartbeat_age_ms === 'number'
+    && Number.isFinite(payload.stream_heartbeat_age_ms) ? payload.stream_heartbeat_age_ms : undefined
   return {
     last, referencePrice, bid, ask, bidVolume, askVolume,
     bidPrices: bidPrices.length > 0 ? bidPrices : bid == null ? [] : [bid],
@@ -250,8 +258,8 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
     bidVolumes: bidVolumes.length > 0 ? bidVolumes : bidVolume == null ? [] : [bidVolume],
     askVolumes: askVolumes.length > 0 ? askVolumes : askVolume == null ? [] : [askVolume],
     volumeUnit: lotType === 'board_lot' ? 'lots' : 'shares',
-    quoteTime, confirmationTime, confirmationMode, quoteAgeMs, sourceAgeMs,
-    source: 'shioaji', lotType, sessionEpoch,
+    quoteTime, lastTradeTime, confirmationTime, confirmationMode, quoteAgeMs, sourceAgeMs,
+    source: 'shioaji', lotType, sessionEpoch, streamHeartbeatAgeMs,
   }
 }
 
@@ -367,14 +375,18 @@ async function fetchSingleOrderbookQuotes(
       signal: AbortSignal.timeout(3000),
     })
     if (!res.ok) {
-      console.warn(`[Price] orderbook unavailable: ${await readOrderbookDiagnostic(symbol, res)}`)
+      const diagnostic = await readOrderbookDiagnostic(symbol, res)
+      env?.onOrderbookDiagnostic?.(symbol, diagnostic)
+      console.warn(`[Price] orderbook unavailable: ${diagnostic}`)
       return
     }
     const json = await res.json() as any
     const payload = json?.data ?? json
     const normalized = normalizeShioajiOrderbook(payload)
     if (!normalized) {
-      console.warn(`[Price] orderbook unavailable: ${compactOrderbookDiagnostic(symbol, payload)}`)
+      const diagnostic = compactOrderbookDiagnostic(symbol, payload)
+      env?.onOrderbookDiagnostic?.(symbol, diagnostic)
+      console.warn(`[Price] orderbook unavailable: ${diagnostic}`)
       return
     }
     map.set(symbol, normalized)
@@ -407,18 +419,31 @@ async function fetchFreshOrderbookQuotes(
       for (const [symbol, payload] of Object.entries(data)) {
         const normalized = normalizeShioajiOrderbook(payload)
         if (normalized) map.set(symbol, normalized)
+        else env?.onOrderbookDiagnostic?.(symbol, compactOrderbookDiagnostic(symbol, payload, 'invalid_book'))
       }
       const errors = json?.errors && typeof json.errors === 'object' ? Object.entries(json.errors) : []
       for (const [symbol, error] of errors.slice(0, 8)) {
-        console.warn(`[Price] orderbook unavailable: ${compactOrderbookDiagnostic(symbol, error)}`)
+        const diagnostic = compactOrderbookDiagnostic(symbol, error)
+        env?.onOrderbookDiagnostic?.(symbol, diagnostic)
+        console.warn(`[Price] orderbook unavailable: ${diagnostic}`)
       }
+      for (const [symbol, error] of errors.slice(8)) env?.onOrderbookDiagnostic?.(symbol, compactOrderbookDiagnostic(symbol, error))
       if (errors.length > 8) console.warn(`[Price] orderbook unavailable: ${errors.length - 8} additional symbols omitted`)
       return map
     }
     if (res.status !== 404 && res.status !== 405) {
-      console.warn(`[Price] batch orderbook unavailable: ${await readOrderbookDiagnostic('batch', res)}`)
+      const body = await res.text().catch(() => '')
+      let payload: any = null
+      try { payload = JSON.parse(body) } catch { /* Keep the HTTP status if the body is not JSON. */ }
+      const detail = payload?.detail ?? payload
+      const errors = detail?.errors && typeof detail.errors === 'object' ? Object.entries(detail.errors) : []
+      for (const [symbol, error] of errors) env?.onOrderbookDiagnostic?.(symbol, compactOrderbookDiagnostic(symbol, error))
+      const diagnostic = compactOrderbookDiagnostic('batch', detail, `http_${res.status}`)
+      if (errors.length === 0) for (const symbol of symbols) env?.onOrderbookDiagnostic?.(symbol, diagnostic)
+      console.warn(`[Price] batch orderbook unavailable: ${diagnostic}`)
     }
   } catch (e) {
+    for (const symbol of symbols) env?.onOrderbookDiagnostic?.(symbol, `${symbol}:batch_fetch_failed`)
     console.warn(`[Price] batch orderbook failed, fallback single orderbook: ${e}`)
   }
 
@@ -438,6 +463,22 @@ export async function batchGetExecutionOrderbooks(
 ): Promise<Map<string, IntradayOHLC>> {
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
   return fetchFreshOrderbookQuotes(uniqueSymbols, env)
+}
+
+export async function prewarmOddLotOrderbooks(symbols: string[], env: ExecutionOrderbookEnv): Promise<void> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
+  if (!env.SHIOAJI_PROXY_URL || uniqueSymbols.length === 0) return
+  try {
+    const res = await paperExecutionFetch(`${env.SHIOAJI_PROXY_URL.replace(/\/$/, '')}/orderbook/watchlist`, {
+      method: 'POST',
+      headers: proxyHeaders(env, true),
+      body: JSON.stringify({ symbols: uniqueSymbols, lot_type: 'odd_lot' }),
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!res.ok) console.warn(`[Price] odd-lot stream prewarm HTTP ${res.status}`)
+  } catch (error) {
+    console.warn(`[Price] odd-lot stream prewarm failed: ${error}`)
+  }
 }
 
 async function enrichMissingOrderbookQuotes(

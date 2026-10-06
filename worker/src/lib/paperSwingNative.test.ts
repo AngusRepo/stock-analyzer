@@ -24,8 +24,10 @@ import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStore'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book']) test(
-  scenario==='missing_book'?'native swing missing broker book updates baseline without entry':`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book']) test(
+  scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
+    : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
+      :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
   const f=l4NativeFixture()
   f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
   f.env.PAPER_INTRADAY_ENTRY_OWNER=SWING_POLICY_VERSION
@@ -37,24 +39,36 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
   let quotePrice=20
   let limitedExitDepth=false
   let oddExitDepth=true
+  let initialStaticBookMissing=true
   f.ports.fetchFrozen=async(input:RequestInfo|URL,init?:RequestInit)=>{
     const url=String(input),time=new Date(f.ports.nowMs).toISOString()
+    if(url.includes('/orderbook/watchlist'))return Response.json({status:'ok',symbols:['2330'],lot_type:'odd_lot'})
     const quote={symbol:'2330',status:'ok',source_time:time,received_at:time,confirmed_at:time,
       quote_age_ms:0,source_age_ms:0,lot_type:'board_lot',volume_unit:'lots',
       last:20,price:20,open:20,high:20.5,low:19.5,reference_price:20,total_volume:100000,
       bid:20,ask:20,bid_prices:[20,19.95,19.9,19.85,19.8],ask_prices:[20,20.05,20.1,20.15,20.2],
       bid_volume:10,ask_volume:1,bid_volumes:[10,10,10,10,10],ask_volumes:[1,0,0,0,0]}
+    if(scenario==='unchanged_stream_book' && time.startsWith('2026-09-14'))Object.assign(quote,{
+      source_time:new Date(f.ports.nowMs-20_000).toISOString(),confirmation_mode:'quote_session_static_book',
+      stream_heartbeat_age_ms:200,session_epoch:7,
+    })
     if(quotePrice!==20)Object.assign(quote,{last:quotePrice,price:quotePrice,bid:quotePrice,ask:quotePrice,bid_prices:[quotePrice,quotePrice-.05,quotePrice-.1,quotePrice-.15,quotePrice-.2]})
     const odd=url.includes('lot_type=odd_lot') || String(init?.body ?? '').includes('odd_lot')
     if(odd)Object.assign(quote,{lot_type:'odd_lot',volume_unit:'shares',bid_volume:10000,ask_volume:10000,bid_volumes:[10000,10000,10000,10000,10000],ask_volumes:[10000,10000,10000,10000,10000]})
     if(limitedExitDepth)Object.assign(quote,odd
       ? {bid_volume:oddExitDepth?10000:0,bid_volumes:oddExitDepth?[10000,0,0,0,0]:[0,0,0,0,0]}
       : {bid_volume:1,bid_volumes:[1,0,0,0,0]})
-    if(url.includes('orderbooks') || url.includes('snapshots') || url.includes('/quotes'))return Response.json({data:scenario==='missing_book'?{'0050':{...quote,symbol:'0050'}}:{'2330':quote}})
+    if(url.includes('orderbooks') || url.includes('snapshots') || url.includes('/quotes')){
+      const missing=scenario==='missing_book' || (scenario==='unchanged_stream_book'
+        && initialStaticBookMissing && url.includes('orderbooks'))
+      if(scenario==='unchanged_stream_book' && url.includes('orderbooks'))initialStaticBookMissing=false
+      return Response.json({data:missing?{'0050':{...quote,symbol:'0050'}}:{'2330':quote}})
+    }
     if(url.includes('/orderbook/'))return Response.json({data:quote})
     if(url.includes('trend'))return Response.json({slope_5min:.002})
     if(url.includes('/snapshot/'))return Response.json({data:quote})
-    if(url.includes('/l5-market-data'))return Response.json({status:'ok',quotes:{'2330':{...quote,provider:'shioaji_proxy_orderbook',ask_volumes:[1,1,1,1,1]}}})
+    if(url.includes('/l5-market-data'))return Response.json({status:'ok',quotes:scenario==='unchanged_stream_book'
+      ? {} : {'2330':{...quote,provider:'shioaji_proxy_orderbook',ask_volumes:[1,1,1,1,1]}}})
     if(url.includes('twse.com.tw'))return Response.json({stat:'OK',data:[]})
     if(url.includes('tpex.org.tw'))return Response.json([])
     if(url.includes('/kbars/')) {
@@ -158,6 +172,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     }
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
+    if(scenario==='unchanged_stream_book')return
     // Continue the very same account and actual filled lot across sessions.
     const sessions:string[]=[]
     for(let ms=Date.parse('2026-09-14T00:00:00Z');sessions.length<21;ms+=86400000)

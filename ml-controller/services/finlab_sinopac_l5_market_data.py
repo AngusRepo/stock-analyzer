@@ -209,6 +209,8 @@ def normalize_l5_quote(
     source_time_raw = _quote_time(payload)
     source_time = _parse_time(source_time_raw)
     quote_age_ms = int(max(0, (received_at - source_time).total_seconds() * 1000)) if source_time else None
+    proxy_confirmed_at = _parse_time(payload.get("proxy_confirmed_at"))
+    proxy_transport_ms = int(max(0, (received_at - proxy_confirmed_at).total_seconds() * 1000)) if proxy_confirmed_at else None
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -227,6 +229,12 @@ def normalize_l5_quote(
         "source_time": _iso(source_time) if source_time else (str(source_time_raw) if source_time_raw else None),
         "received_at": _iso(received_at),
         "quote_age_ms": quote_age_ms,
+        "proxy_received_at": payload.get("proxy_received_at"),
+        "proxy_confirmed_at": _iso(proxy_confirmed_at) if proxy_confirmed_at else None,
+        "proxy_confirmation_mode": payload.get("proxy_confirmation_mode"),
+        "proxy_source_age_ms": payload.get("proxy_source_age_ms"),
+        "proxy_transport_ms": proxy_transport_ms,
+        "proxy_session_epoch": payload.get("proxy_session_epoch"),
         "live_submit_enabled": False,
     }
 
@@ -341,6 +349,11 @@ def _read_quotes_from_proxy_orderbook(symbols: list[str], env: dict[str, str]) -
             "ask_volumes": ask_volumes,
             "source_time": body.get("source_time") or body.get("quote_time") or body.get("timestamp") or body.get("updated_at"),
             "received_at": body.get("received_at") or body.get("updated_at"),
+            "proxy_received_at": body.get("received_at"),
+            "proxy_confirmed_at": body.get("confirmed_at"),
+            "proxy_confirmation_mode": body.get("confirmation_mode"),
+            "proxy_source_age_ms": body.get("source_age_ms"),
+            "proxy_session_epoch": body.get("session_epoch"),
             "depth_available": body.get("depth_available"),
             "features": body.get("features"),
         }

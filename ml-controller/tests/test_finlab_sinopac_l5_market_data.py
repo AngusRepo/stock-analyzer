@@ -38,6 +38,28 @@ def test_normalize_l5_quote_preserves_depth_and_quality_metrics() -> None:
     assert quote["live_submit_enabled"] is False
 
 
+def test_proxy_quote_keeps_source_callback_and_transport_timing() -> None:
+    quote = normalize_l5_quote(
+        "3004",
+        {
+            "provider": "shioaji_proxy_orderbook",
+            "bid_prices": [143.0], "ask_prices": [143.5],
+            "source_time": "2026-10-06T03:10:07.700Z",
+            "proxy_received_at": "2026-10-06T03:10:07.750Z",
+            "proxy_confirmed_at": "2026-10-06T03:10:15.000Z",
+            "proxy_confirmation_mode": "quote_session_static_book",
+            "proxy_source_age_ms": 7300,
+            "proxy_session_epoch": 7,
+        },
+        now=datetime(2026, 10, 6, 3, 10, 15, 300000, tzinfo=timezone.utc),
+    )
+    assert quote["quote_age_ms"] == 7600
+    assert quote["proxy_received_at"] == "2026-10-06T03:10:07.750Z"
+    assert quote["proxy_confirmation_mode"] == "quote_session_static_book"
+    assert quote["proxy_transport_ms"] == 300
+    assert quote["proxy_session_epoch"] == 7
+
+
 def test_l5_market_data_blocks_broker_login_unless_explicitly_allowed() -> None:
     result = run_finlab_l5_market_data(
         symbols=["2330"],

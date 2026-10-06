@@ -85,6 +85,8 @@ def revalidate_authoritative_snapshots(
             "age_ms": age_ms,
             "source_time": observation.get("source_time"),
             "received_at": observation.get("received_at"),
+            "confirmed_at": observation.get("confirmed_at"),
+            "confirmation_mode": observation.get("confirmation_mode"),
             "session_epoch": observation.get("session_epoch"),
             "bid_prices": bid_prices[:5],
             "ask_prices": ask_prices[:5],
@@ -92,17 +94,34 @@ def revalidate_authoritative_snapshots(
             "ask_volumes": (observation.get("ask_volumes") or [])[:5],
         }
         observations[current_lot] = normalized
-        if age_ms is None or age_ms > max_age_ms:
+        if observation.get("lot_type") != current_lot:
+            errors.append(f"authoritative_hub_lot_type_mismatch:{current_lot}")
+        if age_ms is None or age_ms < 0 or age_ms > max_age_ms:
             errors.append(f"authoritative_hub_book_stale:{current_lot}")
+        confirmed_book = observation.get("confirmation_mode") in {"quote_session_static_book", "symbol_event"}
+        source_max_age_ms = (10_000 if current_lot == "odd_lot" else 3_000) if confirmed_book else max_age_ms + 1000
         source_time = str(observation.get("source_time") or "").strip()
+        parsed_time = None
         try:
             parsed_time = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
             if parsed_time.tzinfo is None:
                 parsed_time = parsed_time.replace(tzinfo=timezone.utc)
-            if abs((datetime.now(timezone.utc) - parsed_time).total_seconds() * 1000) > max_age_ms + 1000:
+            source_age_ms = (datetime.now(timezone.utc) - parsed_time).total_seconds() * 1000
+            if source_age_ms < 0 or source_age_ms > source_max_age_ms:
                 errors.append(f"authoritative_hub_source_time_stale:{current_lot}")
         except (TypeError, ValueError):
             errors.append(f"authoritative_hub_source_time_invalid:{current_lot}")
+        if confirmed_book:
+            confirmed_at = str(observation.get("confirmed_at") or "").strip()
+            try:
+                confirmed_time = datetime.fromisoformat(confirmed_at.replace("Z", "+00:00"))
+                if confirmed_time.tzinfo is None:
+                    confirmed_time = confirmed_time.replace(tzinfo=timezone.utc)
+                confirmed_age_ms = (datetime.now(timezone.utc) - confirmed_time).total_seconds() * 1000
+                if confirmed_age_ms < 0 or confirmed_age_ms > max_age_ms or parsed_time is None or confirmed_time < parsed_time:
+                    errors.append(f"authoritative_hub_confirmation_stale:{current_lot}")
+            except (TypeError, ValueError):
+                errors.append(f"authoritative_hub_confirmation_invalid:{current_lot}")
         try:
             current_epoch = int(observation.get("session_epoch"))
             if current_epoch <= 0:

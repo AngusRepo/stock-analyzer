@@ -20,6 +20,7 @@ export interface IntradayOHLC {
   totalVolume?: number
   quoteTime?: string
   confirmationTime?: string
+  confirmationMode?: string
   quoteAgeMs?: number
   sourceAgeMs?: number
   source?: 'shioaji' | 'yahoo'
@@ -235,7 +236,8 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
       ? payload.received_at
       : typeof payload?.updated_at === 'string'
         ? payload.updated_at
-        : undefined
+          : undefined
+  const confirmationMode = typeof payload?.confirmation_mode === 'string' ? payload.confirmation_mode : undefined
   const quoteAgeMs = Number.isFinite(Number(payload?.quote_age_ms)) ? Math.max(0, Number(payload.quote_age_ms)) : undefined
   const sourceAgeMs = Number.isFinite(Number(payload?.source_age_ms)) ? Math.max(0, Number(payload.source_age_ms)) : undefined
 
@@ -248,7 +250,7 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
     bidVolumes: bidVolumes.length > 0 ? bidVolumes : bidVolume == null ? [] : [bidVolume],
     askVolumes: askVolumes.length > 0 ? askVolumes : askVolume == null ? [] : [askVolume],
     volumeUnit: lotType === 'board_lot' ? 'lots' : 'shares',
-    quoteTime, confirmationTime, quoteAgeMs, sourceAgeMs,
+    quoteTime, confirmationTime, confirmationMode, quoteAgeMs, sourceAgeMs,
     source: 'shioaji', lotType, sessionEpoch,
   }
 }

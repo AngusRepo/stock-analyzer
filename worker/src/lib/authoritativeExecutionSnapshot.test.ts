@@ -67,3 +67,27 @@ for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthori
     observations: [{ ...base, ageMs: null, sourceTime: '2026-09-07T01:00:09Z' }] }).status === 'ready',
     'a valid real source timestamp supplies age without fabricating zero')
 }
+
+for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot]) {
+  const nowMs = Date.parse('2026-10-06T03:10:15.400Z')
+  const staticOdd = {
+    source: 'shioaji_hub' as const, lotType: 'odd_lot' as const, bid: 100, ask: 100,
+    ageMs: 200, sourceTime: new Date(nowMs - 7_700).toISOString(),
+    receivedAt: new Date(nowMs - 200).toISOString(), sessionEpoch: 7,
+    confirmationMode: 'quote_session_static_book',
+  }
+  const snapshot = (observation: typeof staticOdd) => resolver({
+    limitPrice: 100, lotType: 'odd_lot', nowMs, maxAgeMs: 1500, observations: [observation],
+  })
+  assert(snapshot(staticOdd).status === 'ready', 'same-session 7.7s odd-lot book must remain executable')
+  assert(snapshot({ ...staticOdd, confirmationMode: 'symbol_event' }).status === 'ready',
+    'fresh callback with 7.7s broker source time must remain executable')
+  assert(snapshot({ ...staticOdd, sourceTime: new Date(nowMs - 176_000).toISOString() }).status === 'blocked',
+    '176s odd-lot source must remain blocked')
+  assert(snapshot({ ...staticOdd, confirmationMode: undefined as unknown as string }).status === 'blocked',
+    'static exemption requires explicit Proxy confirmation')
+  assert(snapshot({ ...staticOdd, sessionEpoch: 0 }).status === 'blocked',
+    'static exemption requires a valid session')
+  assert(snapshot({ ...staticOdd, receivedAt: new Date(nowMs - 2_000).toISOString() }).status === 'blocked',
+    'stale confirmation must remain blocked')
+}

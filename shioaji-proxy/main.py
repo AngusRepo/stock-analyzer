@@ -155,6 +155,10 @@ def orderbook_max_age_ms() -> int:
     return max(500, min(value, 60_000))
 
 
+def static_book_max_source_age_ms(lot_type: str = "board_lot") -> int:
+    return 10_000 if normalize_lot_type(lot_type) == "odd_lot" else 3_000
+
+
 def orderbook_refresh_wait_seconds() -> float:
     try:
         value = float(os.environ.get("SHIOAJI_ORDERBOOK_REFRESH_WAIT_SECONDS", "2.0"))
@@ -212,9 +216,15 @@ def orderbook_effective_confirmation(
     except (TypeError, ValueError):
         session_epoch = 0
     if symbol not in subscription_store or session_epoch != _session_epoch or not _quote_session_up:
-        return direct, "stale_symbol_event" if direct else "unconfirmed"
+        return None, "stale_symbol_event" if direct else "unconfirmed"
 
     direct_age_ms = (now - direct).total_seconds() * 1000 if direct is not None else None
+    source_time = orderbook_source_time(depth)
+    source_age_ms = (now - source_time).total_seconds() * 1000 if source_time is not None else None
+    max_source_age_ms = static_book_max_source_age_ms(lot_type)
+    if (direct_age_ms is None or not 0 <= direct_age_ms <= max_source_age_ms
+            or source_age_ms is None or not 0 <= source_age_ms <= max_source_age_ms):
+        return None, "stale_symbol_event" if direct else "unconfirmed"
     if direct_age_ms is not None and -5_000 <= direct_age_ms <= orderbook_max_age_ms():
         return direct, "symbol_event"
     if not bid_prices or not ask_prices:
@@ -1721,6 +1731,7 @@ def _orderbook_diagnostic(
         "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
         "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
         "source_age_ms": orderbook_source_age_ms(depth),
+        "static_source_max_age_ms": static_book_max_source_age_ms(lot_type),
         "max_quote_age_ms": orderbook_max_age_ms(),
         "refresh_wait_seconds": orderbook_refresh_wait_seconds(),
         "subscribed": symbol in subscribed,
@@ -1847,6 +1858,7 @@ def _orderbook_payload(
             "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
             "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
             "source_age_ms": orderbook_source_age_ms(depth),
+            "static_source_max_age_ms": static_book_max_source_age_ms(lot_type),
             "max_quote_age_ms": orderbook_max_age_ms(),
             "updated_at": depth.get("updated_at"),
             "bidask_event_count": int(stat.get("event_count") or 0),

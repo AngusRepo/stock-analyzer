@@ -139,10 +139,12 @@ async function runAsyncTests(): Promise<void> {
                 ask_prices: [305],
                 bid_volumes: [10],
                 ask_volumes: [12],
-                source_time: '2026-05-05T09:30:00+08:00',
+                source_time: '2026-05-05T09:30:53.300+08:00',
                 confirmed_at: '2026-05-05T09:31:00+08:00',
+                confirmation_mode: 'symbol_event',
+                session_epoch: 7,
                 quote_age_ms: 250,
-                source_age_ms: 60_250,
+                source_age_ms: 6_950,
               },
             },
             errors: {},
@@ -182,9 +184,10 @@ async function runAsyncTests(): Promise<void> {
       assert(quote?.bid === 304.5, 'orderbook bid should be the executable quote')
       assert(quote?.ask === 305, 'orderbook ask should be the executable quote')
       assert(quote?.bidVolume === 10 && quote.askVolume === 12, 'orderbook best volumes should be executable volumes')
-      assert(quote?.quoteTime === '2026-05-05T09:30:00+08:00', 'orderbook must preserve broker source time')
+      assert(quote?.quoteTime === '2026-05-05T09:30:53.300+08:00', 'orderbook must preserve broker source time')
       assert(quote?.confirmationTime === '2026-05-05T09:31:00+08:00', 'orderbook must preserve active confirmation time')
-      assert(quote?.quoteAgeMs === 250 && quote.sourceAgeMs === 60_250, 'execution age must remain separate from source-event age')
+      assert(quote?.confirmationMode === 'symbol_event' && quote.sessionEpoch === 7, 'orderbook must preserve same-session confirmation evidence')
+      assert(quote?.quoteAgeMs === 250 && quote.sourceAgeMs === 6_950, 'execution age must remain separate from source-event age')
       assert(quote?.low === 305 && quote.high === 305 && quote.totalVolume === 1000, 'snapshot may only enrich OHLC/volume context')
     } finally {
       globalThis.fetch = originalFetch

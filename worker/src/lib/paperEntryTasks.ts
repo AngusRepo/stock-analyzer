@@ -2305,6 +2305,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             receivedAt: currentOhlc.confirmationTime ?? null,
             ageMs: quoteAgeMs(currentOhlc.confirmationTime) ?? currentOhlc.quoteAgeMs ?? null,
             sessionEpoch: currentOhlc.sessionEpoch ?? null,
+            confirmationMode: currentOhlc.confirmationMode ?? null,
           }
           : null,
         finLabL5Quote

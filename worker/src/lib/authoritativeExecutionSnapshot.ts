@@ -17,6 +17,7 @@ export interface ExecutionBookObservation {
   receivedAt?: string | null
   ageMs?: number | null
   sessionEpoch?: number | null
+  confirmationMode?: string | null
 }
 
 export interface AuthoritativeExecutionSnapshot {
@@ -133,6 +134,19 @@ function normalizedAge(observation: ExecutionBookObservation, nowMs: number): nu
   if (observation.ageMs != null) {
     if (typeof observation.ageMs !== 'number' || !Number.isFinite(observation.ageMs) || observation.ageMs < 0) return null
     ages.push(observation.ageMs)
+  }
+  if (observation.confirmationMode === 'quote_session_static_book' || observation.confirmationMode === 'symbol_event') {
+    if (observation.source !== 'shioaji_hub' || !Number.isInteger(observation.sessionEpoch)
+        || Number(observation.sessionEpoch) <= 0 || observation.ageMs == null
+        || observation.sourceTime == null || observation.receivedAt == null) return null
+    const sourceTime = Date.parse(observation.sourceTime)
+    const confirmedAt = Date.parse(observation.receivedAt)
+    const sourceAge = nowMs - sourceTime
+    const maxSourceAge = observation.lotType === 'odd_lot' ? 10_000 : 3_000
+    if (!Number.isFinite(sourceTime) || !Number.isFinite(confirmedAt)
+        || sourceAge < 0 || sourceAge > maxSourceAge || confirmedAt > nowMs
+        || confirmedAt < sourceTime) return null
+    return Math.max(...ages, nowMs - confirmedAt)
   }
   for (const text of [observation.sourceTime, observation.receivedAt]) {
     if (text == null) continue

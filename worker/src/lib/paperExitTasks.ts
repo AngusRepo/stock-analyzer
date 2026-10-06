@@ -408,6 +408,7 @@ function buildSellShadowSnapshots(
             receivedAt: quote.confirmationTime ?? null,
             ageMs: quote.confirmationTime ? Math.max(0, paperExecutionNow() - (parseTimeMs(quote.confirmationTime) ?? paperExecutionNow())) : quote.quoteAgeMs ?? null,
             sessionEpoch: quote.sessionEpoch ?? null,
+            confirmationMode: quote.confirmationMode ?? null,
           }]
         : [],
     })
@@ -454,6 +455,7 @@ export function resolvePositionExitSellFill(
         receivedAt: quote.confirmationTime ?? null,
         ageMs: quote.confirmationTime ? Math.max(0, paperExecutionNow() - (parseTimeMs(quote.confirmationTime) ?? paperExecutionNow())) : quote.quoteAgeMs ?? null,
         sessionEpoch: quote.sessionEpoch ?? null,
+        confirmationMode: quote.confirmationMode ?? null,
       }],
     })
     const match = matchPaperOrderAgainstAuthoritativeDepth({ snapshot, requestedShares: leg.shares, limitPrice })

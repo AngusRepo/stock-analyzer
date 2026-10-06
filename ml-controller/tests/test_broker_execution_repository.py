@@ -111,6 +111,22 @@ def test_unknown_leg_cannot_be_claimed_for_automatic_retry() -> None:
     assert repo.claim_leg(intent_id, "0:board_lot") is None
 
 
+def test_lifecycle_exposes_partial_board_ack_and_odd_rejection() -> None:
+    repo, _ = _repository()
+    packet = _packet()
+    reservation = repo.reserve_intent(packet)
+    intent_id = reservation["intent_id"]
+    board = repo.claim_leg(intent_id, "0:board_lot")
+    odd = repo.claim_leg(intent_id, "1:odd_lot")
+    assert board is not None and odd is not None
+    repo.mark_submit_ack(board["leg_id"], "board-order-1", {"intent_id": intent_id})
+    repo.mark_submit_rejected(odd["leg_id"], "broker_order_rejected", {"intent_id": intent_id})
+    lifecycle = repo.intent_lifecycle(packet["idempotency_key"])
+    assert lifecycle is not None
+    assert lifecycle["execution_outcome"] == "partial"
+    assert [leg["status"] for leg in lifecycle["legs"]] == ["ACKNOWLEDGED", "REJECTED"]
+
+
 def test_multiple_deals_accumulate_once_and_duplicate_event_is_ignored() -> None:
     repo, conn = _repository()
     reservation = repo.reserve_intent(_packet())
@@ -132,6 +148,22 @@ def test_multiple_deals_accumulate_once_and_duplicate_event_is_ignored() -> None
     assert stored["filled_shares"] == 2000
     assert stored["status"] == "PARTIALLY_FILLED"
     assert conn.execute("SELECT COUNT(*) FROM broker_execution_events WHERE event_type='DEAL_CALLBACK'").fetchone()[0] == 2
+
+
+def test_official_event_id_deduplicates_replayed_odd_lot_fill() -> None:
+    repo, conn = _repository()
+    reservation = repo.reserve_intent(_packet())
+    leg = repo.claim_leg(reservation["intent_id"], "1:odd_lot")
+    assert leg is not None
+    repo.mark_submit_ack(leg["leg_id"], "odd-order-1", {"intent_id": reservation["intent_id"]})
+    fill = {
+        "broker_order_id": "odd-order-1", "event_id": "v1:SD:session:7",
+        "filled_shares": 100, "event_time": "2026-07-13T09:01:01+08:00",
+    }
+    repo.record_broker_event("DEAL_CALLBACK", fill, source="test")
+    repo.record_broker_event("DEAL_CALLBACK", {**fill, "event_time": "2026-07-13T09:01:02+08:00"}, source="test")
+    assert repo.list_legs(reservation["intent_id"])[1]["filled_shares"] == 100
+    assert conn.execute("SELECT COUNT(*) FROM broker_execution_events WHERE event_type='DEAL_CALLBACK'").fetchone()[0] == 1
 
 
 def test_reconciliation_can_close_cancelled_order() -> None:

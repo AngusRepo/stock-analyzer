@@ -12,6 +12,7 @@ from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
 from services.finlab_live_submit_service import run_finlab_live_submit
 from services.execution_gateway_shadow_relay import relay_execution_shadow
+from services.execution_gateway_live_relay import relay_execution_live_submit, relay_execution_live_status
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
     run_production_simulated_execution_loop,
@@ -573,6 +574,26 @@ def relay_finlab_execution_shadow_route(
 ) -> dict:
     """Relay a signed non-mutating shadow packet to the IAM-private gateway."""
     return relay_execution_shadow(packet=req.packet, signature=x_execution_signature)
+
+
+@router.post("/execution/live-relay")
+def relay_finlab_execution_live_route(
+    req: FinLabLiveSubmitRequest,
+    x_execution_signature: str | None = Header(default=None, alias="X-Execution-Signature"),
+) -> dict:
+    """Forward a signed live packet to the IAM-private gateway once."""
+    if req.intent is not None:
+        return {"status": "blocked", "reason": "legacy_live_submit_intent_not_allowed"}
+    return relay_execution_live_submit(
+        packet=req.packet,
+        signature=x_execution_signature,
+        allow_live_submit=req.allow_live_submit,
+    )
+
+
+@router.get("/execution/live-intents/{idempotency_key}")
+def relay_finlab_execution_live_status_route(idempotency_key: str) -> dict:
+    return relay_execution_live_status(idempotency_key)
 
 
 async def _run_finlab_production_simulated_loop(req: FinLabProductionSimulatedLoopRequest) -> dict:

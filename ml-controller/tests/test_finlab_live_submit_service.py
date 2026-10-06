@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 from services.broker_execution_contract import packet_hash, sign_packet  # noqa: E402
 from services.finlab_live_submit_service import run_finlab_live_submit  # noqa: E402
+from services.finlab_execution_gateway import BrokerOrderRejected  # noqa: E402
 
 
 TEST_NOW = datetime(2026, 7, 13, 1, 1, tzinfo=timezone.utc)
@@ -235,7 +236,7 @@ def _run(tmp_path: Path, repo: MemoryRepository, gateway: FakeGateway, packet: d
         repository=repo,
         gateway=gateway,  # type: ignore[arg-type]
         risk_loader=lambda: _risk(),
-        snapshot_revalidator=lambda _: {"errors": [], "observations": {}},
+        snapshot_revalidator=kwargs.pop("snapshot_revalidator", lambda _: {"errors": [], "observations": {}}),
         now=TEST_NOW,
         **kwargs,
     )
@@ -297,6 +298,38 @@ def test_second_leg_timeout_preserves_first_ack_and_blocks_resubmit(tmp_path: Pa
     second = _run(tmp_path, repo, gateway, packet)
     assert second["status"] == "idempotent_replay"
     assert len(gateway.calls) == 2, "replay must never resubmit ACKNOWLEDGED or UNKNOWN legs"
+
+
+def test_explicit_odd_lot_rejection_preserves_acknowledged_board_leg(tmp_path: Path) -> None:
+    class RejectOddGateway(FakeGateway):
+        def submit_leg(self, **kwargs: Any) -> str:
+            if kwargs["odd_lot"]:
+                self.calls.append(kwargs)
+                raise BrokerOrderRejected("broker_order_rejected")
+            return super().submit_leg(**kwargs)
+
+    repo = MemoryRepository()
+    gateway = RejectOddGateway()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "partial"
+    assert [row["status"] for row in result["legs"]] == ["ACKNOWLEDGED", "REJECTED"]
+    assert len(result["submitted_orders"]) == 1
+
+
+def test_each_leg_uses_new_market_data_before_broker_submit(tmp_path: Path) -> None:
+    checks = []
+
+    def revalidate(packet: Mapping[str, Any]) -> dict:
+        lots = [leg["lotType"] for leg in packet["intent"]["orderLegs"]]
+        checks.append(lots)
+        return {"errors": ["authoritative_hub_book_stale:odd_lot"] if lots == ["odd_lot"] else []}
+
+    repo, gateway = MemoryRepository(), FakeGateway()
+    result = _run(tmp_path, repo, gateway, _packet(), snapshot_revalidator=revalidate)
+    assert checks == [["board_lot", "odd_lot"], ["board_lot"], ["odd_lot"]]
+    assert result["status"] == "partial"
+    assert [call["odd_lot"] for call in gateway.calls] == [False]
+    assert [row["status"] for row in result["legs"]] == ["ACKNOWLEDGED", "REJECTED"]
 
 
 def test_runtime_kill_switch_blocks_even_when_signed_packet_says_false(tmp_path: Path) -> None:

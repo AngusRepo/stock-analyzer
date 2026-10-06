@@ -28,7 +28,7 @@ is enabled. With both features disabled, the service remains `min=0`.
 - `LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS=5`
 - `LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS=500`
 - `LIVE_EXECUTION_MAX_BROKER_TRUTH_AGE_SECONDS=5`
-- `LIVE_EXECUTION_RECONCILE_SECONDS=30` (callback-first; polling is only for ambiguous `SUBMITTING/UNKNOWN` recovery)
+- `LIVE_EXECUTION_RECONCILE_SECONDS=30` (callback-first; reconcile ambiguous legs, degraded trade cache, and unverified fill lot types)
 - `LIVE_EXECUTION_HUB_TIMEOUT_SECONDS=0.75`
 
 Worker live-submit also remains fail-closed unless all three values are enabled
@@ -38,8 +38,14 @@ for the same bounded approval window:
 - `LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=1`
 - `LIVE_TRADING_APPROVAL_SCOPE=<Wei-approved bounded scope>`
 
-An unknown submit response must query `/v1/intents/{idempotency_key}` and return
+The live path is Worker signed packet -> authenticated ml-controller
+`/finlab/execution/live-relay` -> Cloud Run IAM -> dedicated Gateway
+`/v1/execute`. The Controller relay has its own disabled-by-default
+`EXECUTION_GATEWAY_LIVE_RELAY_ENABLED=0` switch and never retries a live POST.
+An unknown submit response must query the read-only Controller
+`/finlab/execution/live-intents/{idempotency_key}` route and return
 `reconciliation_required`; it must never resend the same broker order.
+The Gateway image pins FinLab 2.0.15 and Shioaji 1.7.7.
 
 ## Paper-to-live shadow bridge
 
@@ -95,6 +101,7 @@ The service must remain disabled unless all shadow gates pass. Enabling needs
 all of the following at the same time:
 
 - `FINLAB_LIVE_SUBMIT_ENABLED=1`
+- `EXECUTION_GATEWAY_LIVE_RELAY_ENABLED=1` on the general ml-controller
 - `LIVE_TRADING_APPROVAL_SCOPE=<Wei-approved bounded scope>`
 - `LIVE_TRADING_APPROVAL_EXPIRES_AT=<short-lived UTC timestamp>`
 

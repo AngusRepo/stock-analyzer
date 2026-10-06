@@ -26,6 +26,12 @@ assert.equal(assessSwingEntry({...base,quote:{price:110,observedAtMs:base.nowMs}
 assert.equal(assessSwingEntry({...base,maxBuyPrice:100}).reason,'swing_chase_limit')
 assert.equal(assessSwingEntry({...base,boughtToday:true}).reason,'swing_existing_position_or_daily_fill')
 assert.equal(assessSwingEntry({...base,quote:{price:101,observedAtMs:base.nowMs+1}}).reason,'swing_fresh_execution_quote_missing')
+const missingExecutableQuote=assessSwingEntry({...base,quote:{price:Number.NaN,observedAtMs:Number.NaN}})
+assert.equal(missingExecutableQuote.reason,'swing_fresh_execution_quote_missing')
+assert.equal(missingExecutableQuote.action,'defer')
+assert.equal(missingExecutableQuote.conditions?.ma60,true)
+assert.equal(missingExecutableQuote.conditions?.opening_limit,true)
+assert.equal(missingExecutableQuote.conditions?.quote,false)
 const same=assessSwingEntry({...base,bars:[...bars,{...bars[19],startMs:base.nowMs,close:109,high:109}]})
 assert.deepEqual(same,assessSwingEntry(base),'unclosed next bar cannot change signal')
 const calendar=Array.from({length:40},(_,i)=>new Date(Date.UTC(2026,9,2+i))).filter(d=>![0,6].includes(d.getUTCDay())).map(d=>d.toISOString().slice(0,10)).filter(d=>d!=='2026-10-09').slice(0,22) // synthetic exchange calendar includes an explicit closure

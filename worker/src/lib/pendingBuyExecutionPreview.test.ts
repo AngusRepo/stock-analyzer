@@ -93,3 +93,16 @@ test('daily evidence and raw comparison inputs survive a later timing-only audit
  assert.equal(result.daily_assessment?.quote_observed_at_ms,1791163200000)
  assert.equal(result.or15?.conditions?.window,false)
 })
+
+test('missing broker book still advances the daily baseline without authorizing entry',()=>{
+ const rows=[
+  {symbol:'3004',kind:'or15' as const,status:'error',reason:'or15_market_data_unavailable',created_at:'2026-10-06 04:15:11',detail_json:JSON.stringify({stage:'authoritative_market_data'})},
+  {symbol:'3004',kind:'or15' as const,status:'defer',reason:'swing_fresh_execution_quote_missing',created_at:'2026-10-06 04:15:17',
+   detail_json:JSON.stringify({signal:{action:'defer',reason:'swing_fresh_execution_quote_missing',conditions:{plan:true,ma60:true,opening_limit:true,quote:false},quotePrice:null}})},
+ ]
+ const result=buildPendingBuyExecutionPreviews(rows,'or15-5m-orl8-20-v1').get('3004')!
+ assert.equal(result.daily_assessment?.checked_at,'2026-10-06 04:15:17')
+ assert.equal(result.daily_assessment?.conditions?.quote,false)
+ assert.equal(result.or15?.action,'defer')
+ assert.equal(result.or15?.quote_price,null)
+})

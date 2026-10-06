@@ -1666,7 +1666,32 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
   for (const pending of [...pendingBuys]) {
     const price = priceMap.get(pending.symbol)
-    if (!price) continue
+    if (!price) {
+      // A missing executable book must not suppress the independent 5-minute
+      // baseline assessment. Its absent quote keeps the entry gate closed.
+      if (paperSwingOwner) {
+        await runS12Sidecar(pending, Number.NaN, null)
+        const assessment = swingSidecars.get(pending.symbol)
+        if (assessment && typeof assessment.conditions?.ma60 === 'boolean'
+          && typeof assessment.conditions?.opening_limit === 'boolean') {
+          await recordPaperExecutionEvent(env, {
+            tradeDate: today,
+            symbol: pending.symbol,
+            side: 'buy',
+            eventType: 'intraday_technical_decision',
+            status: 'defer',
+            reason: assessment.reason,
+            detail: { owner: SWING_POLICY_VERSION, signal: assessment,
+              bar_source: or15BarSources.get(pending.symbol) ?? 'unavailable',
+              bar_error: or15BarErrors.get(pending.symbol) ?? null,
+              s12_role: 'not_in_entry_path', paper_only: true },
+            pendingRunId,
+            source: SWING_POLICY_VERSION,
+          })
+        }
+      }
+      continue
+    }
     // L4 partials re-enter all risk/quote checks against the current signed target.
     // Legacy keep-state only parks the remainder; it never submits another Paper fill.
     if (pending.execution_status === 'partially_filled' && !planIdFromWatchPoints(pending.watch_points)) {

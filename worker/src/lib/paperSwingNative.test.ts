@@ -22,9 +22,10 @@ import { captureL4AccountContext } from './l4AccountContext'
 import { setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
-import { loadPendingBuySnapshot } from './pendingBuyStore'
+import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStore'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto']) test(`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book']) test(
+  scenario==='missing_book'?'native swing missing broker book updates baseline without entry':`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
   const f=l4NativeFixture()
   f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
   f.env.PAPER_INTRADAY_ENTRY_OWNER=SWING_POLICY_VERSION
@@ -49,7 +50,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     if(limitedExitDepth)Object.assign(quote,odd
       ? {bid_volume:oddExitDepth?10000:0,bid_volumes:oddExitDepth?[10000,0,0,0,0]:[0,0,0,0,0]}
       : {bid_volume:1,bid_volumes:[1,0,0,0,0]})
-    if(url.includes('orderbooks') || url.includes('snapshots') || url.includes('/quotes'))return Response.json({data:{'2330':quote}})
+    if(url.includes('orderbooks') || url.includes('snapshots') || url.includes('/quotes'))return Response.json({data:scenario==='missing_book'?{'0050':{...quote,symbol:'0050'}}:{'2330':quote}})
     if(url.includes('/orderbook/'))return Response.json({data:quote})
     if(url.includes('trend'))return Response.json({slope_5min:.002})
     if(url.includes('/snapshot/'))return Response.json({data:quote})
@@ -120,9 +121,23 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       assert.deepEqual(await finalizeSinglePlan(f.env,'2026-09-14',input),review)
       if(scenario==='daily_orl')assert.deepEqual((await readL4ExecutionPlan(f.env))?.execution_review?.weights,plan.weights)
     })
+    if(scenario==='missing_book') await withPaperExecutionScope(f.ports,()=>replacePendingBuyState(f.env,{
+      tradeDate:'2026-09-14',sourceRecoDate:'2026-09-11',status:'ready',
+      pendingBuys:[snapshot.pendingBuys[0],{...snapshot.pendingBuys[0],symbol:'0050',name:'benchmark'}],
+    }))
     f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:25:00Z')
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
+    if(scenario==='missing_book') {
+      const row:any=f.sqls.paper.prepare("SELECT status,detail_json FROM paper_execution_events WHERE symbol='2330' AND source=? ORDER BY id DESC LIMIT 1").get(SWING_POLICY_VERSION)
+      assert.equal(row?.status,'defer')
+      const conditions=JSON.parse(row.detail_json).signal.conditions
+      assert.equal(conditions.ma60,true)
+      assert.equal(conditions.opening_limit,true)
+      assert.equal(conditions.quote,false)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+      return
+    }
     if(scenario==='atr_veto') {
       assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
       assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_atr_once_v1').get()?.status,'veto')

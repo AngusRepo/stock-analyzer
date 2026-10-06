@@ -12,6 +12,7 @@
  */
 
 import { Hono, type Context } from 'hono'
+import { loadPositionL4Context, positionL4Assessment } from '../lib/positionL4Assessment'
 import { loadPendingDisplayContext } from '../lib/pendingBuyDisplayContext'
 import { displayQuoteSymbols, projectDisplayQuotes } from '../lib/paperDisplayQuotes'
 import { readSwingState } from '../lib/paperSwingLifecycle'
@@ -911,6 +912,9 @@ paper.get('/positions', async (c) => {
       }
     }
   }
+  const l4Context = positions?.length
+    ? await loadPositionL4Context(c.env, new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10))
+    : { status: 'unavailable' as const, reason: 'no_positions' }
   const enriched = await Promise.all((positions ?? []).map(async (pos: any) => {
     const postClosePrice = postCloseMap.get(pos.symbol)
     const intradaySnapshot = intradaySnapshotMap.get(pos.symbol)
@@ -981,6 +985,7 @@ paper.get('/positions', async (c) => {
           }
         : null,
       canonical_trade_lifecycle: canonicalLifecycle,
+      l4_assessment: positionL4Assessment(l4Context, pos.symbol),
     }
   }))
 

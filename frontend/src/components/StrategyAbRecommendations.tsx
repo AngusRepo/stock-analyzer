@@ -30,8 +30,8 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
     <div className="text-sm font-semibold">{data.date} · {singleB ? 'B 主策略' : 'A／B'} 選股與配置權重</div>
     <p className="text-xs leading-5 text-muted-foreground">{data.scope === 'retrospective_research'
       ? '事後補算比較：僅供觀察，不計入原生 NAV 績效，也不會產生委託。'
-      : '下列為各方案的配置目標；是否成交仍以待買檢查、辯論及成交紀錄為準。'}</p>
-    <p className="text-xs leading-5 text-muted-foreground">卡片編號為配置清單順序。ML_EDGE 是校準機率換算分，可能因校準曲線平臺而同分；個股配置仍依 L4 預測與 sparse＋OPB 決定。待買清單可先顯示「等待辯論」，通過辯論及交易檢查後才可執行。</p>
+      : '下列為完整配置目標，包含既有持倉；新增買入請看待買清單，成交以盤中交易檢查與紀錄為準。'}</p>
+    <p className="text-xs leading-5 text-muted-foreground">卡片編號為配置清單順序。ML_EDGE 是校準機率換算分，可能因校準曲線平臺而同分；個股配置仍依 L4 預測與 sparse＋OPB 決定。辯論僅供觀察，不改變選股、配置或交易資格。</p>
     <p className="text-xs leading-5 text-muted-foreground">現金比例＝100% 減配置權重總和；它是配置目標，並非模擬帳戶當下現金。待買清單以最新執行批次為準。</p>
     {singleB && <p className="text-xs leading-5 text-muted-foreground">A 已停止新增配置，歷史紀錄保留。B 沿用 OR15／VWAP 盤中進出場與帳戶風控。</p>}
     <div className={singleB ? 'grid gap-3' : 'grid gap-3 xl:grid-cols-2'}>

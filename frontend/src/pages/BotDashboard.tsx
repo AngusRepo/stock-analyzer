@@ -1,6 +1,6 @@
 import { PendingEntryChecklist } from '@/components/PendingEntryChecklist'
 import { completedPendingBuys, currentDisplayPrice } from '@/lib/pendingBuyDisplay'
-import StrategyAbRecommendations from '@/components/StrategyAbRecommendations'
+import { visiblePendingBuys, debateObservationLabel, positionL4View } from '@/lib/paperDecisionUi'
 /**
  * 模擬交易室 — Auto Trade Bot 專頁
  *
@@ -491,12 +491,12 @@ function pendingBuyEmptyMessage(meta?: any): string {
   const expired = Number(counts.expired ?? 0)
   const terminal = cancelled + filled + skipped + expired
   if (cancelled > 0 && terminal > 0) {
-    return '今日執行池的 pending buys 已被風控取消；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+    return '今日執行池的 pending buys 已被風控取消；下一交易日盤前 L4 會產生新的待買清單。'
   }
   if (terminal > 0) {
-    return '今日執行池的 pending buys 已進入終態；AI 候選清單仍顯示今日推薦候選，明早 morning setup / debate 會重新產生下一個交易日的 pending buys。'
+    return '今日執行池的 pending buys 已進入終態；下一交易日盤前 L4 會產生新的待買清單。'
   }
-  return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在下一個交易日早上的 morning setup / debate 後產生。'
+  return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在盤前資訊到齊、L4 完成配置後產生；辯論不阻擋發布。'
 }
 
 function usePaperDisplayQuotes(symbols: string[]) {
@@ -519,12 +519,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
   })
-  const allPendingBuys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
-  const buys = allPendingBuys.filter((item) => {
-    const status = String(item?.debate_status ?? '').toLowerCase()
-    const verdict = String(item?.debate_verdict ?? '').toUpperCase()
-    return status === 'completed' && ['APPROVE', 'DOWNGRADE'].includes(verdict)
-  })
+  const allPendingBuys = visiblePendingBuys(pbData)
+  const buys = allPendingBuys
   const completed = completedPendingBuys(pbData)
   const {data: liveQuotes, dataUpdatedAt: quotesUpdatedAt} = usePaperDisplayQuotes(allPendingBuys.map(row=>row.symbol))
   const displayNow = Math.max(Date.now(), quotesUpdatedAt)
@@ -540,11 +536,6 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   const pendingState = pbData?.state
   const pendingMeta = pbData?.meta
   const pendingExecutionPolicy = pbData?.execution_policy
-  const pendingSourceRecoDate = typeof pendingExecutionPolicy?.source_reco_date === 'string'
-    ? pendingExecutionPolicy.source_reco_date
-    : typeof pendingMeta?.source_reco_date === 'string'
-      ? pendingMeta.source_reco_date
-      : undefined
   const refreshStatus = error
     ? '更新失敗，保留上次資料'
     : (isFetching ? '更新中 · ' : '') +
@@ -555,13 +546,12 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
 
-  // 如果沒有 pending buys，fallback 到 daily recommendations
+  // The execution pool must not borrow portfolio targets or raw recommendation cards.
   if (!buys.length) {
     return (
       <div className="space-y-3">
         <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
         {completedCards}
-        <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
@@ -577,10 +567,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   return (
     <div className="space-y-2">
       <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
-      <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
-      <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
+      <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔）</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
-      <p className="px-1 text-sm text-muted-foreground">行情每 10 秒讀取串流快取；訊號仍在完整 5 分 K 後判斷。</p>
+      <p className="px-1 text-sm text-muted-foreground">辯論僅供觀察，不改變選股、配置或交易資格。行情每 10 秒讀取串流快取；訊號仍在完整 5 分 K 後判斷。</p>
       {completedCards}
       <p className="px-1 text-[11px] text-muted-foreground">數量依目前 L4 預算與參考價估算；實際模擬委託仍須通過盤中進場條件、即時報價、風控與委託簿。</p>
       {buys.map((b: any) => {
@@ -616,7 +605,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
               <span className="text-base font-bold text-foreground">{b.symbol}</span>
               <span className="text-sm text-muted-foreground">{b.name}</span>
               <span className="rounded-md border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-200">
-                {b.debate_verdict === 'DOWNGRADE' ? '辯論降級通過' : '辯論通過'}
+                {debateObservationLabel(b)}
               </span>
               <span className={`rounded-md border px-2 py-0.5 text-[11px] ${executionToneClass(executionBadge.tone)}`}>
                 {executionBadge.label}
@@ -772,10 +761,6 @@ function CandidateRecommendationColumn({
       )}
     </div>
   )
-}
-
-function FallbackRecommendations({ date, onSelectSymbol, selectedSymbol }: { date?: string; onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
-  return <StrategyAbRecommendations date={date} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
 }
 
 // ─── Open Positions（完整庫存）──────────────────────────────────────────────
@@ -972,8 +957,9 @@ function PositionsTable() {
               <th className="text-right p-2">張數</th>
               <th className="text-right p-2">買入價</th>
               <th className="text-right p-2">現價</th>
-              <th className="text-right p-2">S12防守</th>
-              <th className="text-right p-2">S12出場</th>
+              <th className="text-left p-2">L4 持倉判斷</th>
+              <th className="text-right p-2">防守價</th>
+              <th className="text-right p-2">出場規則</th>
               <th className="text-right p-2">未實現</th>
             </tr>
           </thead>
@@ -993,6 +979,7 @@ function PositionsTable() {
               const s12HoldingDefense = formatS12HoldingDefenseBadge(p.s12_holding_defense)
               const lifecycleBadge = formatCanonicalTradeLifecycleBadge(p.canonical_trade_lifecycle)
               const riskPlan = formatPositionRiskPlan(p)
+              const l4 = positionL4View(p.l4_assessment)
               const riskContractBadge = riskPlan.primaryS12 ? null : lifecycleBadge
               totalUnrealized += pnlAmt
               totalCostBasis += costBasis
@@ -1020,6 +1007,11 @@ function PositionsTable() {
                         {p.quote_status === 'fresh' ? '即時' : p.quote_status === 'stale' ? '盤中末筆' : '即時報價不可用'}
                         {p.quote_as_of ? ` · ${formatTwDateTimeShort(p.quote_as_of)}` : ''}
                       </div>
+                    </td>
+                    <td className="p-2 text-left min-w-56">
+                      <div className="font-medium">{l4.label}</div>
+                      {l4.weights && <div className="mt-1 text-xs sv-num">{l4.weights}</div>}
+                      <div className="mt-1 text-xs text-muted-foreground">{l4.detail}</div>
                     </td>
                     <td className="p-2 text-right">
                       {riskPlan.stop ? (
@@ -1064,7 +1056,7 @@ function PositionsTable() {
                   </tr>
                   {(s12HoldingDefense || riskContractBadge) && (
                     <tr className="border-b border-border/50">
-                      <td colSpan={7} className="px-2 pb-3">
+                      <td colSpan={8} className="px-2 pb-3">
                         <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
                           {s12HoldingDefense && (
                             <div className={[
@@ -1646,7 +1638,7 @@ export default function BotDashboard() {
               <WorkstationCatCard
                 src="/stockvision-cats/03_ai_signal_skewer_stall.png"
                 title="AI 串燒別亂買"
-                caption="推薦只是候選，真正進場前還要過 debate、T2 與 quote sanity。"
+                caption="L4 產生待買清單，盤中依進場條件、風控與報價執行；辯論僅供觀察。"
                 tone="info"
               />
             </div>

@@ -26,13 +26,15 @@ assert(
 )
 
 assert(
-  botDashboard.includes('L4 selected rows can enter pending buys.') &&
-    !botDashboard.includes('會進 morning setup / debate / pending buys。'),
-  'BotDashboard tradable recommendation copy must not imply raw daily recommendations directly enter pending buys',
+  botDashboard.includes('visiblePendingBuys(pbData)') &&
+    !botDashboard.includes('FallbackRecommendations') &&
+    !botDashboard.includes('allPendingBuys.filter'),
+  'Pending-buy cards must show the execution pool without mixing full allocation targets or filtering advisory verdicts',
 )
 
 assert(
-  botDashboard.includes('L4 sparse final-buy execution pool') &&
-    botDashboard.includes('policy: {pendingExecutionPolicy?.execution_pool_policy'),
+  botDashboard.includes('title={executionPolicy}') &&
+    botDashboard.includes('policy?.execution_pool_policy') &&
+    botDashboard.includes('sourceRecoDate'),
   'BotDashboard pending-buy cards must expose execution-pool provenance beside item state',
 )

@@ -17,6 +17,26 @@ const valid = { bias: 'negative', confidence: .7, key_factors: ['Orders weakened
   sector_bias: { semiconductor: -.3 }, sector_evidence: { semiconductor: ['news:1'] }, risk_factors: ['Demand risk [news:1]'], summary: 'Fixture report',
   assessments: [{ evidence_ids: ['news:1'], features: Object.fromEntries(NEWS_FEATURES.map(k => [k, null])), rationale: 'Reported demand decline' }] }
 
+test('structured factors publish only explicit known citations and retain all citation gates', () => {
+  const factors = { ...valid,
+    key_factors: [{ text: 'Orders weakened', evidence_ids: ['news:1'] },
+      { text: 'Night session declined', evidence_ids: ['macro'] }],
+    risk_factors: [{ text: 'Demand risk', evidence_ids: ['news:1', 'macro'] }] }
+  const parsed = parseReportJson(JSON.stringify(factors), [row])
+  assert.deepEqual(parsed?.key_factors, ['Orders weakened [news:1]', 'Night session declined [macro]'])
+  assert.deepEqual(parsed?.risk_factors, ['Demand risk [news:1] [macro]'])
+  for (const factor of [
+    { text: 'Claim', evidence_ids: [] }, { text: 'Claim', evidence_ids: ['unknown'] },
+    { text: 'Claim', evidence_ids: ['news:1, macro'] }, { text: 'Claim [unknown]', evidence_ids: ['macro'] },
+    { text: 'Claim', evidence_ids: ['rss:truncated'] }, { text: ' ', evidence_ids: ['macro'] },
+    { text: 'x'.repeat(240), evidence_ids: ['macro'] }, { text: 'Claim', evidence_ids: Array(5).fill('macro') },
+  ]) assert.equal(parseReportJson(JSON.stringify({ ...factors, key_factors: [factor] }), [row]), null)
+  assert.equal(parseReportJson(JSON.stringify({ ...valid, key_factors: ['Night session declined'] }), [row]), null)
+  const prompt = buildPrompts('2026-10-01', { evidence: [row], cutoff: at })
+  assert.ok(prompt.system.includes('{text,evidence_ids}'))
+  assert.ok(prompt.system.includes('台指期夜盤'))
+})
+
 test('headline cutoff, first-seen, freshness and duplicate guards', () => {
   assert.equal(filterNewsEvidence([row, { ...row, id: 'duplicate' }, { ...row, id: 'future', title: 'future', url: 'https://example.com/b', published_at: '2026-10-02T00:00:00Z' },
     { ...row, title: 'late', url: 'https://example.com/c', observed_at: '2026-10-02T00:00:00Z' }, { ...row, url: 'https://', title: 'invalid' }], at).length, 1)

@@ -36,6 +36,7 @@ import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import DailyReadinessBoard from './DailyReadinessBoard'
+import { pipelinePreparationLabel } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
 import './ExecutionChainPanel.css'
 
@@ -79,9 +80,10 @@ const STAGES: Record<string, StageDefinition> = {
   screener: { id: 'screener', label: 'Screener', icon: ScanSearch },
   'regime-compute': { id: 'regime-compute', label: 'HMM regime', icon: Activity },
   'allocator-ev-readiness': { id: 'allocator-ev-readiness', label: 'Allocator EV', icon: CircleGauge },
-  pipeline: { id: 'pipeline', label: 'Pipeline', icon: Workflow },
-  'ml-predict': { id: 'ml-predict', label: 'ML predict', icon: BrainCircuit },
-  recommendation: { id: 'recommendation', label: 'Recommendation', icon: Target },
+  'strategy-learning-mature-evidence': { id: 'strategy-learning-mature-evidence', label: '成熟策略證據', icon: BookOpenCheck },
+  pipeline: { id: 'pipeline', label: 'Pipeline · 整體進度', icon: Workflow },
+  'ml-predict': { id: 'ml-predict', label: 'ML Predict · L3 預測', icon: BrainCircuit },
+  recommendation: { id: 'recommendation', label: 'Recommendation · L4 推薦', icon: Target },
   'post-pipeline-chain': { id: 'post-pipeline-chain', label: 'Pipeline callback', icon: GitBranch },
   'dataset-snapshot-export': { id: 'dataset-snapshot-export', label: 'Research snapshot', icon: Database },
   'allocator-ev-feature-snapshot-backfill': { id: 'allocator-ev-feature-snapshot-backfill', label: 'EV feature snapshot', icon: Database },
@@ -154,6 +156,7 @@ const SCOPES: ChainScope[] = [
       ['update'],
       ['indicator-queue'],
       ['regime-compute'],
+      ['strategy-learning-mature-evidence'],
       ['screener'],
       ['allocator-ev-readiness'],
       ['pipeline'],
@@ -702,6 +705,7 @@ export default function ExecutionChainPanel({
             </div>
           )}
           {scope.id === 'daily_readiness' ? <DailyReadinessBoard
+            pipelineSummary={pipelinePreparationLabel(scopedJobMap.get('pipeline'))}
             stageView={id => ({ label: STAGES[id]?.label ?? id, status: visualStatus(scopedJobMap.get(id)),
               statusLabel: statusLabel(scopedJobMap.get(id)), date: scopedJobMap.get(id)?.statusRunDate })}
             renderStage={(id, ordinal) => {

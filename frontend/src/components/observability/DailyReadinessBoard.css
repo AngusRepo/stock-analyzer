@@ -32,3 +32,10 @@
 @media (max-width: 1250px) { .daily-readiness-board__phase.is-evidence { grid-column: 1 / -1; } .daily-readiness-board__phases { grid-template-columns: repeat(2, minmax(0, 1fr)); } .daily-readiness-board__phase.is-evidence .daily-readiness-board__stages { column-gap: 38px; } }
 @media (max-width: 540px) { .daily-readiness-board { padding: 10px; } .daily-readiness-board__phases { grid-template-columns: minmax(0, 1fr); gap: 10px; } .daily-readiness-board__phase.is-evidence, .daily-readiness-board__phase.is-premarket { grid-column: auto; grid-row: auto; } .daily-readiness-board__phase.is-evidence .daily-readiness-board__stages { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .daily-readiness-board__running svg, .daily-readiness-board .obs-chain__orb, .daily-readiness-board .obs-chain__state-mark > svg { animation: none !important; } }
+
+.daily-readiness-board__item { min-width: 0; }
+.daily-readiness-board__pipeline { min-width: 0; padding: 10px; border: 1px solid var(--primary); border-radius: 10px; }
+.daily-readiness-board__container-title { margin: 0 0 10px; color: var(--foreground); font-size: .8125rem; font-weight: 600; }
+.daily-readiness-board__child { padding-left: 10px; border-left: 2px solid var(--primary); }
+.daily-readiness-board__child > span { display: block; margin-bottom: 7px; font-size: .75rem; }
+.daily-readiness-board__handoff { margin: 10px 0; font-size: .75rem; line-height: 1.6; color: var(--muted-foreground); overflow-wrap: anywhere; }

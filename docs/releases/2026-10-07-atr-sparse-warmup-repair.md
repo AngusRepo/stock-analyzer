@@ -1,6 +1,6 @@
 # 3004 稀疏分鐘棒 ATR 暖機修補
 
-狀態：本地驗證完成，Wei 已明確批准 commit／Research＋Worker deploy；發布與正式資料讀回進行中。不包含 push。基底為 production Worker source `7452a5ade09210c4e758cec837cab1642ded2c43`。
+狀態：已 commit 並部署 Research＋Worker，正式資料與自然排程讀回通過。發布 source `203c071cdac06eedcc6ef695834779363cbb9f07`；未 push。基底為 production Worker source `7452a5ade09210c4e758cec837cab1642ded2c43`。
 
 ## 問題與修補
 
@@ -44,3 +44,11 @@
 ## 來源
 
 Paper D1 2026-10-07 事件 169550/169552、paper_atr_once_v1；Cloud Run 09:20 logs；只讀 research/proxy K 線；Shioaji 1.5.5 本地 ticks signature 與官方歷史行情文件 https://sinotrade.github.io/tutor/market_data/historical/ 。
+
+## 正式發布結果（2026-10-07 10:10 Asia/Taipei）
+
+- Research revision `shioaji-research-sv-203c071c`、100% traffic；新舊 revision 執行設定相同。正式 `/atr-warmup/3004?date=2026-10-06` 返回完整六分鐘，13:21–23 皆 volume=0，前日暖機 TR=0.5。此為實際 broker ticks 收據，取代前述只有 fixture 驗證的限制。
+- Worker version `54e7f050-1d12-43c1-bcd5-3413d063f9de`；health status=ok、attested=true、sourceSha=203c071c，deployedAt=2026-10-07T02:09:16.205141Z。
+- 自然 10:10 排程 event169786 於10:10:19：3004 原 firstSignalMs=09:20 未變；ATR unknown→passed，delta=1、ATR5=0.4、threshold=0.6。未手動改 ATR table、核准 KV 或触發下單。
+- 當根仍 defer：signalHigh121.5<ORH122；signalClose121.5<VWAP122.081699。當次 Paper intents/orders 均0。資料阻擋已解除，不能宣稱已成交或以舊訊號補單。
+- 收據在 `output/atr-warmup-repair/release-receipt.json`、`3004-live-warmup.json`；未部署 Controller／Proxy／Pages。

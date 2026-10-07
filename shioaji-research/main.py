@@ -171,6 +171,106 @@ def _query_kbars(symbol: str, start: str, end: str):
     return client.kbars(contract, start=start, end=end)
 
 
+def _query_warmup_ticks(symbol: str, date: str):
+    client = api
+    if client is None or not connected:
+        raise RuntimeError("shioaji_research_disconnected")
+    contract = client.Contracts.Stocks.get(symbol)
+    if not contract:
+        raise LookupError(f"stock_contract_not_found:{symbol}")
+    from shioaji.constant import TicksQueryType
+    return client.ticks(
+        contract, date=date, query_type=TicksQueryType.RangeTime,
+        time_start="09:00:00", time_end="13:25:00",
+        timeout=int(query_timeout_seconds() * 1000),
+    )
+
+
+def warmup_bars_from_ticks(payload: object, date: str) -> list[dict]:
+    """Rebuild only the previous continuous-session tail from a complete tick query.
+
+    A missing Kbar alone is never evidence of no trades. The successful range
+    query supplies that evidence; seed prices come only from earlier real ticks.
+    Returned timestamps retain the SDK's minute-end convention.
+    """
+    times = _series_value(payload, "ts", "Time", "time")
+    prices = _series_value(payload, "close", "Close")
+    volumes = _series_value(payload, "volume", "Volume")
+    simulated = _series_value(payload, "simtrade", "SimTrade")
+    if any(values is None for values in (times, prices, volumes)):
+        raise HTTPException(502, "atr_warmup_ticks_missing_fields")
+    if len(times) != len(prices) or len(times) != len(volumes) or (simulated is not None and len(simulated) != len(times)):
+        raise HTTPException(502, "atr_warmup_ticks_length_mismatch")
+    session_open = datetime.fromisoformat(date + "T09:00:00").replace(tzinfo=TW_TZ)
+    tail_start = session_open.replace(hour=13, minute=19)
+    tail_end = session_open.replace(hour=13, minute=25)
+    trades = []
+    for index in range(len(times)):
+        timestamp = _normalize_datetime(times[index])
+        price, volume = _float_at(prices, index), _float_at(volumes, index)
+        if timestamp is None or price is None or price <= 0 or volume is None or volume < 0:
+            raise HTTPException(502, "atr_warmup_ticks_invalid_trade")
+        if simulated is not None:
+            flag = _float_at(simulated, index)
+            if flag not in (0, 1):
+                raise HTTPException(502, "atr_warmup_ticks_invalid_simtrade")
+            if flag == 1:
+                continue
+        if session_open <= timestamp < tail_end and volume > 0:
+            trades.append((timestamp, index, price, volume))
+    trades.sort(key=lambda trade: (trade[0], trade[1]))
+    buckets: dict[datetime, dict] = {}
+    previous_close = None
+    for timestamp, _, price, volume in trades:
+        minute = timestamp.replace(second=0, microsecond=0)
+        if minute < tail_start:
+            previous_close = price
+            continue
+        bar = buckets.get(minute)
+        if bar is None:
+            buckets[minute] = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
+        else:
+            bar["high"], bar["low"] = max(bar["high"], price), min(bar["low"], price)
+            bar["close"], bar["volume"] = price, bar["volume"] + volume
+    rows = []
+    minute = tail_start
+    while minute < tail_end:
+        bar = buckets.get(minute)
+        if bar is None:
+            if previous_close is None:
+                raise HTTPException(502, "atr_warmup_ticks_seed_missing")
+            bar = {"open": previous_close, "high": previous_close, "low": previous_close, "close": previous_close, "volume": 0.0}
+        previous_close = bar["close"]
+        rows.append({"ts": (minute + timedelta(minutes=1)).isoformat(), **bar})
+        minute += timedelta(minutes=1)
+    return rows
+
+
+def get_atr_warmup(symbol: str, date: str) -> list[dict]:
+    usage = _usage_status()
+    if _bandwidth_exhausted(usage):
+        _raise_bandwidth_exhausted(usage)
+    if not _query_capacity.acquire(blocking=False):
+        raise HTTPException(429, "Research query already in progress")
+    future = None
+    release_here = True
+    try:
+        future = _query_executor.submit(_query_warmup_ticks, symbol, date)
+        try:
+            payload = future.result(timeout=query_timeout_seconds())
+        except FutureTimeoutError as exc:
+            # SDK calls cannot be cancelled once running. Keep the capacity
+            # claim until the query exits, rather than queueing more broker calls.
+            if not future.cancel():
+                release_here = False
+                future.add_done_callback(lambda _: _query_capacity.release())
+            raise HTTPException(504, f"atr_warmup_ticks_timeout:{symbol}") from exc
+        return warmup_bars_from_ticks(payload, date)
+    finally:
+        if release_here:
+            _query_capacity.release()
+
+
 def get_kbars(symbol: str, start: str, end: str, limit: int = 5000) -> list[dict]:
     usage = _usage_status()
     if _bandwidth_exhausted(usage):
@@ -300,6 +400,23 @@ def kbars_endpoint(
         "count": len(rows),
         "data": rows,
     }
+
+
+@app.get("/atr-warmup/{symbol}")
+def atr_warmup_endpoint(symbol: str, date: str, authorization: str | None = Header(default=None)):
+    verify_token(authorization)
+    normalized_symbol = symbol.upper().strip()
+    if not re.fullmatch(r"[0-9A-Z]{2,10}", normalized_symbol):
+        raise HTTPException(400, "invalid Taiwan security symbol")
+    try:
+        trade_date = datetime.fromisoformat(date).date()
+    except ValueError as exc:
+        raise HTTPException(400, "date must be an ISO date") from exc
+    if trade_date >= datetime.now(TW_TZ).date():
+        raise HTTPException(400, "atr_warmup_requires_previous_session")
+    rows = get_atr_warmup(normalized_symbol, trade_date.isoformat())
+    return {"status": "ok", "symbol": normalized_symbol, "date": trade_date.isoformat(),
+            "source": "shioaji_ticks_atr_warmup_v1", "completed_only": True, "count": len(rows), "data": rows}
 
 
 @app.post("/kbars/batch")

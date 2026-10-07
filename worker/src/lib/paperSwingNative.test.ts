@@ -23,8 +23,10 @@ import { setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStore'
+import { latchAtrOnce } from './paperAtrOnceState'
+import { ATR_ONCE_POLICY } from './paperAtrOnce'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book']) test(
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
@@ -34,14 +36,25 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
   f.sqls.paper.exec(fs.readFileSync(new URL('../../domain-migrations/paper/0007_daily_plan_reviews.sql',import.meta.url),'utf8'))
   f.ports.allocateL4Private=async()=>{throw new Error('fixture_plan_already_supplied')}
   f.env.SHIOAJI_PROXY_URL='https://fixture.invalid'
+  if(scenario.startsWith('atr_sparse')) {
+    f.env.S12_RESEARCH_KBARS_URL='https://fixture.invalid'
+    f.env.PROXY_SERVICE_TOKEN='test-token'
+  }
   f.env.ML_CONTROLLER_URL='https://fixture.invalid'
   f.env.FINLAB_L5_MARKET_DATA_ENABLED='true'
   let quotePrice=20
   let limitedExitDepth=false
   let oddExitDepth=true
   let initialStaticBookMissing=true
+  let warmupRequests=0
   f.ports.fetchFrozen=async(input:RequestInfo|URL,init?:RequestInit)=>{
     const url=String(input),time=new Date(f.ports.nowMs).toISOString()
+    if(url.includes('/atr-warmup/')) {
+      warmupRequests++
+      if(scenario==='atr_sparse_missing')return new Response('ticks unavailable',{status:504})
+      return Response.json({status:'ok',source:'shioaji_ticks_atr_warmup_v1',completed_only:true,
+        data:Array.from({length:6},(_,i)=>({ts:`2026-09-11T13:${20+i}:00+08:00`,open:20,high:20,low:20,close:20,volume:i===0?1:0}))})
+    }
     if(url.includes('/orderbook/watchlist'))return Response.json({status:'ok',symbols:['2330'],lot_type:'odd_lot'})
     const quote={symbol:'2330',status:'ok',source_time:time,received_at:time,confirmed_at:time,
       quote_age_ms:0,source_age_ms:0,lot_type:'board_lot',volume_unit:'lots',
@@ -72,8 +85,14 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     if(url.includes('twse.com.tw'))return Response.json({stat:'OK',data:[]})
     if(url.includes('tpex.org.tw'))return Response.json([])
     if(url.includes('/kbars/')) {
+      if(scenario.startsWith('atr_sparse') && url.includes('start=2026-09-11'))return Response.json({data:[
+        {ts:'2026-09-11T13:20:00+08:00',open:20,high:20,low:20,close:20,volume:1},
+        {ts:'2026-09-11T13:25:00+08:00',open:20,high:20,low:20,close:20,volume:1},
+      ]})
       const px=url.includes('/0050')?100:20
       const open=Date.parse('2026-09-14T09:00:00+08:00')
+      if(scenario.startsWith('atr_sparse'))return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
+        data:Array.from({length:25},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px+(px===20&&i>=15?.1:0),high:px+(px===20&&i>=15?.1:0),low:px+(px===20&&i>=15?.1:0),close:px+(px===20&&i>=15?.1:0),volume:100}))})
       return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
         data:Array.from({length:scenario==='closing_auction'?260:25},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),high:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),low:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),close:px+(px===20?(i>=20?(scenario==='atr_veto'?0:.1):i>=15?-.01:0):0),volume:100}))})
     }
@@ -140,8 +159,23 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       pendingBuys:[snapshot.pendingBuys[0],{...snapshot.pendingBuys[0],symbol:'0050',name:'benchmark'}],
     }))
     f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:25:00Z')
+    if(scenario.startsWith('atr_sparse'))await latchAtrOnce(f.env.PAPER_DB,1,'2026-09-14','2330',{
+      policy:ATR_ONCE_POLICY,status:'unknown',reason:'swing_atr_warmup_missing',firstSignalMs:Date.parse('2026-09-14T09:20:00+08:00'),
+    })
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
+    if(scenario==='atr_sparse_missing') {
+      assert.equal(warmupRequests,1)
+      assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_atr_once_v1').get()?.status,'unknown')
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+      return
+    }
+    if(scenario==='atr_sparse_warmup') {
+      const atr:any=f.sqls.paper.prepare('SELECT status,first_signal_ms FROM paper_atr_once_v1').get()
+      assert.equal(atr.status,'passed');assert.equal(atr.first_signal_ms,Date.parse('2026-09-14T09:20:00+08:00'))
+      assert.equal(warmupRequests,1)
+    }
     if(scenario==='missing_book') {
       const row:any=f.sqls.paper.prepare("SELECT status,detail_json FROM paper_execution_events WHERE symbol='2330' AND source=? ORDER BY id DESC LIMIT 1").get(SWING_POLICY_VERSION)
       assert.equal(row?.status,'defer')
@@ -172,7 +206,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     }
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
-    if(scenario==='unchanged_stream_book')return
+    if(scenario==='unchanged_stream_book' || scenario==='atr_sparse_warmup')return
     // Continue the very same account and actual filled lot across sessions.
     const sessions:string[]=[]
     for(let ms=Date.parse('2026-09-14T00:00:00Z');sessions.length<21;ms+=86400000)

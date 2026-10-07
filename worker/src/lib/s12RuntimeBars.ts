@@ -1212,7 +1212,7 @@ export async function loadOr15ResearchSessionBars(
   }
   const response = await paperExecutionFetch(
     `${researchUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=500`,
-    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) },
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(25_000) },
   )
   if (!response.ok) throw new Error(`or15_research_http_${response.status}`)
   const payload = await response.json() as { data?: S12KbarRow[] }
@@ -1223,6 +1223,30 @@ export async function loadOr15ResearchSessionBars(
     .sort((a, b) => a.startMs - b.startMs)
   await env.KV.put(cacheKey, JSON.stringify(bars), { expirationTtl: 90 })
   return bars
+}
+
+/** Historical tail rebuilt from a successful broker tick query, never from gap guessing. */
+export async function loadAtrTickWarmupBars(env: Bindings, symbol: string, tradeDate: string): Promise<IntradayRollingBar[]> {
+  const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
+  const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
+  if (!researchUrl || !token) throw new Error('atr_tick_warmup_source_unconfigured')
+  const response = await paperExecutionFetch(
+    `${researchUrl}/atr-warmup/${encodeURIComponent(symbol)}?date=${encodeURIComponent(tradeDate)}`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(25_000) },
+  )
+  if (!response.ok) throw new Error(`atr_tick_warmup_http_${response.status}`)
+  const payload = await response.json() as { status?: string; source?: string; completed_only?: boolean; data?: S12KbarRow[] }
+  if (payload.status !== 'ok' || payload.source !== 'shioaji_ticks_atr_warmup_v1' || payload.completed_only !== true
+    || !Array.isArray(payload.data) || payload.data.length !== 6) throw new Error('atr_tick_warmup_unverified')
+  if (payload.data.some(row => ![row.open, row.high, row.low, row.close].every(value => typeof value === 'number' && Number.isFinite(value) && value > 0)
+    || typeof row.volume !== 'number' || !Number.isFinite(row.volume) || row.volume < 0
+    || Number(row.low) > Math.min(Number(row.open), Number(row.close))
+    || Number(row.high) < Math.max(Number(row.open), Number(row.close)))) throw new Error('atr_tick_warmup_ohlcv_invalid')
+  const bars = payload.data.map(s12KbarRowToBar)
+  const firstEnd = Date.parse(`${tradeDate}T13:20:00+08:00`)
+  if (bars.some((bar, index) => bar == null || bar.startMs !== firstEnd + index * 60_000))
+    throw new Error('atr_tick_warmup_minutes_invalid')
+  return bars as IntradayRollingBar[]
 }
 
 /** Current-session completed OHLCV only; the Paper A entry never loads S12 history. */

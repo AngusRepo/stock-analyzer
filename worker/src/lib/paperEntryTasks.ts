@@ -2,7 +2,7 @@ import { getPrevTradingDay } from './paperMarketData'
 import { assessSwingEntry, SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
 import { executeContinuousPaperBatch } from './paperContinuousExecution'
 import { writeSwingState } from './paperSwingLifecycle'
-import { loadSwingMinuteBars, loadOr15ResearchSessionBars } from './s12RuntimeBars'
+import { loadSwingMinuteBars, loadOr15ResearchSessionBars, loadAtrTickWarmupBars } from './s12RuntimeBars'
 import { assessAtrOnce, applyAtrOnce, previousAtrTR } from './paperAtrOnce'
 import { readAtrOnce, latchAtrOnce } from './paperAtrOnceState'
 import { dailyPlanOwner, readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
@@ -1496,15 +1496,19 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           if(candidate.reason==='swing_atr_warmup_missing') {
             try {
             // Immutable previous-session bars are cached by date, never re-fetched each minute.
-            const key=`paper:atr5-prior:v1:${previousSession}:${pending.symbol}`
+            const key=`paper:atr5-prior:v2:${previousSession}:${pending.symbol}`
             let history:Awaited<ReturnType<typeof loadOr15ResearchSessionBars>>
-            const cached=await env.KV.get(key)
+            const cached=await env.KV.get(key).catch(()=>null)
             if(cached) history=JSON.parse(cached)
             else {
               history=await loadOr15ResearchSessionBars(env,pending.symbol,previousSession)
-              if(previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,1,1)!=null)
-                await env.KV.put(key,JSON.stringify(history),{expirationTtl:86400})
             }
+            if(previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,1,1)==null)
+              history=await loadAtrTickWarmupBars(env,pending.symbol,previousSession)
+            if(previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,1,1)!=null)
+              await env.KV.put(key,JSON.stringify(history),{expirationTtl:86400}).catch(()=>{
+                console.warn('[ATR] prior-minute cache unavailable; using verified broker bars')
+              })
             const prior=await loadMarketPriceHistoryBySymbols(env,[pending.symbol],{beforeDate:today,rowsPerSymbol:1,requireQuerySuccess:true})
             const rawClose=Number(prior.find(r=>r.date===previousSession)?.close)
             const tr=previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,rawClose,reference)

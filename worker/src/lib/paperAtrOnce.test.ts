@@ -58,6 +58,23 @@ test('unknown repairs same timestamp only',async()=>{
 })
 
 import fixture from './paperAtrOnce.6994.fixture.json'
+import fixture3004 from './paperAtrOnce.3004.fixture.json'
+test('3004 actual current-session bars repair the same 09:20 first signal with validated warmup TR',()=>{
+ const rows=(data:typeof fixture3004.stock)=>data.map(b=>({...b,startMs:Date.parse(b.ts)}))
+ const x=input([100,100,100,100])
+ const actual={...x,tradeDate:fixture3004.tradeDate,previousSession:fixture3004.previousSession,
+   nowMs:Date.parse('2026-10-07T09:40:00+08:00'),label:'end' as const,
+   bars:rows(fixture3004.stock),benchmarkBars:rows(fixture3004.benchmark),previousClose:fixture3004.reference,
+   benchmarkPreviousClose:fixture3004.benchmarkReference,
+   benchmarkPriorCloses:prior.map((p,i)=>({...p,date:i===59?fixture3004.previousSession:p.date,close:i===59?fixture3004.benchmarkReference:fixture3004.benchmarkReference-1})),
+   limitUp:133.5,maxBuyPrice:124}
+ assert.equal(assessAtrOnce(actual).status,'unknown')
+ // The 0.5 tail TR is covered by the independently verified tick-tail fixture.
+ const repaired=assessAtrOnce(actual,.5)
+ assert.equal(repaired.firstSignalMs,Date.parse('2026-10-07T09:20:00+08:00'))
+ assert.equal(repaired.delta,1);assert.equal(repaired.status,'passed')
+ assert.ok(repaired.threshold!<1)
+})
 test('actual 6994 09:50 first signal matches Python research .55 vs .585, day veto',()=>{
  const toBars=(rows:typeof fixture.stock)=>rows.map(b=>({...b,startMs:Date.parse(b.ts)}))
  const x=input([100,100,100,100])

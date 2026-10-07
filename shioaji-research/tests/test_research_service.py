@@ -124,3 +124,45 @@ def test_kbars_fail_with_explicit_bandwidth_error(monkeypatch: pytest.MonkeyPatc
         research.get_kbars("2441", "2026-07-07", "2026-07-14")
     assert exc.value.status_code == 429
     assert "bandwidth_exhausted" in str(exc.value.detail)
+
+
+def test_3004_sparse_tail_is_rebuilt_from_ticks_not_missing_kbars():
+    rows = research.warmup_bars_from_ticks({
+        "ts": ["2026-10-06T13:19:30+08:00", "2026-10-06T13:23:10+08:00",
+               "2026-10-06T13:24:20+08:00", "2026-10-06T13:30:00+08:00"],
+        "close": [122, 121.5, 121.5, 999], "volume": [1, 1, 7, 1000],
+    }, "2026-10-06")
+    assert len(rows) == 6
+    assert [row["volume"] for row in rows] == [1, 0, 0, 0, 1, 7]
+    assert [row["close"] for row in rows] == [122, 122, 122, 122, 121.5, 121.5]
+    assert rows[-1]["ts"] == "2026-10-06T13:25:00+08:00"
+    assert max(row["high"] for row in rows) == 122  # auction excluded
+
+
+def test_warmup_uses_previous_real_trade_for_empty_tail_minutes():
+    rows = research.warmup_bars_from_ticks({
+        "ts": ["2026-10-06T13:12:00+08:00"], "close": [121], "volume": [2],
+    }, "2026-10-06")
+    assert all(row["volume"] == 0 and row["close"] == 121 for row in rows)
+
+
+@pytest.mark.parametrize("payload,reason", [
+    ({"ts": [], "close": [], "volume": []}, "seed_missing"),
+    ({"ts": ["2026-10-06T13:19:00+08:00"], "close": [122], "volume": []}, "length_mismatch"),
+    ({"ts": ["2026-10-06T13:19:00+08:00"], "close": [float("nan")], "volume": [1]}, "invalid_trade"),
+    ({"ts": ["2026-10-06T13:19:00+08:00"], "close": [122], "volume": [-1]}, "invalid_trade"),
+    ({"ts": ["2026-10-06T13:19:00+08:00"], "close": [122], "volume": [1], "simtrade": [1]}, "seed_missing"),
+])
+def test_warmup_never_fabricates_prices_for_bad_or_missing_ticks(payload, reason):
+    with pytest.raises(HTTPException, match=reason):
+        research.warmup_bars_from_ticks(payload, "2026-10-06")
+
+
+def test_warmup_endpoint_requires_auth_and_a_completed_previous_session(monkeypatch):
+    monkeypatch.setattr(research, "SERVICE_TOKEN", "test-token")
+    with pytest.raises(HTTPException) as exc:
+        research.atr_warmup_endpoint("3004", "2026-10-06", authorization="Bearer wrong")
+    assert exc.value.status_code == 401
+    with pytest.raises(HTTPException) as exc:
+        research.atr_warmup_endpoint("3004", research.datetime.now(research.TW_TZ).date().isoformat(), authorization="Bearer test-token")
+    assert exc.value.status_code == 400

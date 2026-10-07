@@ -1,6 +1,6 @@
 # 執行報價時鐘域修補
 
-狀態：本地修補與必要驗證全部通過，Wei已明確批准本次commit與僅Worker部署，發布進行中。正式基底為 Worker source203c071cdac06eedcc6ef695834779363cbb9f07，version54e7f050-1d12-43c1-bcd5-3413d063f9de。
+狀態：Wei批准後已commit並僅發布Worker，health來源驗證通過。source43fa60f029a64d0f82d6684ade93c013214e9d6b，versione3d9cb99-8c53-46e1-8b36-6b88aa047961。基底source203c071cdac06eedcc6ef695834779363cbb9f07，version54e7f050-1d12-43c1-bcd5-3413d063f9de。
 
 ## Root cause 與實際證據
 
@@ -36,6 +36,17 @@ Worker snapshot.createdAt=03:00:25.130Z，Proxy confirmed_at=11:00:25.154894+08:
 此變更只需Worker；Research/Proxy/Controller/Pages不需發布。不得重置ATR、手動補11:00舊訊號、強迫觸發送單、改核准KV或啟用真實交易。正式是否生效須以新Worker source attestation及自然五分訊號的最新snapshot收據核對。
 
 回滾：Worker54e7f050-1d12-43c1-bcd5-3413d063f9de；保留事件、委託、ATR與資金紀錄，不回復資料表。
+
+## 正式發布與只讀驗證
+
+- Worker於2026-10-07T03:20:14.850501Z發布，health status=ok/attested=true/source43fa60f0/versione3d9cb99。既有fresh-remote/live-ancestor、防覆蓋、遠端D1 schema與calibration guards全部通過；沒有push或發布其他服務。
+- 發布版本LIVE_EXECUTION_CLIENT_ENABLED=0、LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=0、SHADOW_GUARD_ENABLED=0，維持原設定。未改交易開關或核准KV，未強迫觸發排程／委託。
+- 自然11:21 event170355/170359仍正常執行；在五分訊號首分鐘之外，reason=swing_next_bar_submission_missed，ATR保留原09:20/passed。
+- 11:22:55只讀查正式Proxy3004零股五檔，再以同一已發布snapshot owner在本地評估，並未呼叫委託函式：round trip220ms、remote quoteAge0、heartbeat50ms、epoch1；buy/sell皆ready，age220<1500ms。broker confirmation11:22:55.929836，讀取端response11:22:55.687，相差242ms也不需任意skew寬限。這是實際live資料＋本地純驗證的收據，不能宣稱已完成正式下單。
+- 收據：output/atr-warmup-repair/clock-repair-receipt.json、clock-deploy.log、3004-clock-live-book.json、3004-clock-live-verification.json。內部token僅記憶體使用，未輸出／保存。
+- 自然11:25完整訊號event170387於03:25:15Z：research_end_label_normalized、bars/quote/ATR/window/MA60/opening_limit/buy_limit/chase皆true，bar_error=null；quoteObservedAtMs1791343511203<=assessedAtMs1791343515311，正確投影Worker時鐘。首次ATR仍09:20/passed/delta=1/ATR5=0.4/threshold=0.6。
+- 此次action=defer/swing_waiting_or_touch：signalHigh121<ORH122、signalClose121<VWAP121.33136094674556，relativeReturn=-0.0015401190413112387<0；當時3004 intents/orders仍0。沒有進入最後send/fill分支，所以不能宣稱正式最後snapshot或成交已被這一輪實際執行；只讀live book+本地已發布owner驗證與完整native測試覆蓋該分支。
+- 本次commit/deploy/驗證工作完成；正常後續市場訊號與風控仍決定是否委託。不以舊11:00訊號补單，不繼續擴大修補或更改策略門檻。
 
 ## Raw source pointers
 

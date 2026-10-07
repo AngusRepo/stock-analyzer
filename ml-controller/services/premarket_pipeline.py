@@ -148,6 +148,9 @@ def dispatch(receipt,context,*,jobs_client,client=None):
     claim.upload_from_string(json_bytes(result),if_generation_match=claim.generation)
     return result
 
+from services.paired_nav_read_cache import verified_reads_async
+
+@verified_reads_async
 async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
     b=bucket(client);root='gs://'+b.name+'/'
     if not input_uri.startswith(root):raise ValueError('premarket_input_bucket_mismatch')

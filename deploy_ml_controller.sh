@@ -1296,6 +1296,7 @@ RELEASE_SUFFIX="sv-${SOURCE_SHA:0:12}-$(date -u +%Y%m%d%H%M%S)"
 RELEASE_REVISION="${SERVICE}-${RELEASE_SUFFIX}"
 RELEASE_TAG="release-${SOURCE_SHA:0:12}"
 if ! gcloud run deploy "$SERVICE" \
+    --min-instances=0 \
     --revision-suffix="$RELEASE_SUFFIX" \
     --no-traffic \
     --tag="$RELEASE_TAG" \
@@ -1582,6 +1583,8 @@ fi
 
 SERVICE_REV=$(gcloud run services describe "$SERVICE" --region="$REGION" \
   --format="value(status.latestReadyRevisionName)")
+
+"$PYTHON_BIN" "$SCRIPT_DIR/scripts/runtime_min_policy.py" --service "$SERVICE" --project "$GCP_PROJECT_ID" --region "$REGION"
 
 echo "✅ Verification passed — Service and Job on identical image"
 echo ""

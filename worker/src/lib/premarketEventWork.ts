@@ -29,7 +29,13 @@ const defaultDependencies = {
   contextIdentity, fetchAndStoreUSLeading, runDailyNewsAnalysis, getPrevTradingDay,
   recoverPaperMorningSetup, loadPendingBuySnapshot, reconcilePendingBuyDebates,
   setupMorningPendingBuys, flushL4Replans, readL4PortfolioPlan, getTradingConfig,
-  warmup: async (env: Bindings) => (await import('./localMaintenance')).runMorningWarmup(env, { healthProbe: false }),
+  warmup: async (env: Bindings): Promise<unknown> => {
+    const result = await (await import('./cronOrchestrator')).runPreMarketWarmup(env,'setup')
+    if (result.startsWith('ERROR:')) throw new Error(result)
+    await (await import('./localMaintenance')).runMorningWarmup(env, { healthProbe: false })
+    return result
+  },
+  marketHealth: async (env: Bindings) => (await import('./cronOrchestrator')).runPreMarketWarmup(env,'market'),
   settle: async (env: Bindings) => (await import('./cronOrchestrator')).settlePaperT2(env),
 }
 
@@ -53,15 +59,20 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       if (source?.status !== 'success') throw new Error('premarket_wait:evening_pipeline')
       return {next:'setup',receipt:{context_hash:await deps.contextIdentity(env,date),signal_date:signalDate}}
     }
+    if (stage === 'market-health') {
+      const summary = await deps.marketHealth(env)
+      if (summary.startsWith('ERROR:')) throw new Error(summary)
+      return {next:null,receipt:{...input,market_health:summary}}
+    }
     if (stage === 'setup') {
-      await deps.warmup(env)
+      const warmup = await deps.warmup(env)
       await guard()
       if(dailyPlanOwner(env)) {
         await deps.ensurePaperCorporateSource(env,date); await deps.settle(env)
-        return {next:'allocate',receipt:input}
+        return {next:'allocate',followups:['market-health'],receipt:{...input,warmup}}
       }
       await deps.recoverPaperMorningSetup(env,date,deps.settle)
-      return {next:'debate:0',receipt:input}
+      return {next:'debate:0',followups:['market-health'],receipt:{...input,warmup}}
     }
     if(stage==='allocate') {
       if(!dailyPlanOwner(env))throw new Error('premarket_owner_mismatch')

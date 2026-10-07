@@ -62,3 +62,31 @@ def test_small_policy_definitions_reuse_fresh_identity_and_not_caller_mutations(
         manifest['payload_checksum'] = 'changed'
         with pytest.raises(RuntimeError, match='policy_source_changed'):
             policy_definitions(query, 'source', 'l15_route', must_not_read)
+
+
+def test_async_pipeline_scope_survives_thread_handoffs_and_expires():
+    import asyncio
+    from services.paired_nav_read_cache import verified_reads_async
+    calls=[]
+    @verified_reads_async
+    async def pipeline():
+        for _ in range(2):
+            result=await asyncio.to_thread(cached_verified_read,'same-projection',lambda: calls.append(1) or {'v':[1]})
+            result['v'].append(2)
+        return _scope.get().directory
+    directory=asyncio.run(pipeline())
+    assert calls==[1]
+    assert not os.path.exists(directory)
+    assert _scope.get() is None
+
+
+def test_proxy_and_direct_query_keys_reuse_only_same_actual_database(monkeypatch):
+    from services.paired_nav_read_cache import query_cache_identity
+    from services.d1_domain_client import DomainD1Client, DomainD1ClientProxy, D1DataDomain
+    import services.d1_domain_client as d
+    monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-a')
+    direct=DomainD1Client(D1DataDomain.LEARNING);proxy=DomainD1ClientProxy('learning')
+    key=query_cache_identity(direct.query)
+    assert query_cache_identity(proxy.query)==key
+    monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-b')
+    assert query_cache_identity(proxy.query)!=key

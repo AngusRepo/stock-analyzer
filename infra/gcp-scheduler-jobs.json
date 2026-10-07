@@ -27,6 +27,13 @@
     ]
   },
   "deleteJobIds": [
+    "data-domain-shadow-backfill-ops",
+    "data-domain-shadow-backfill-execution",
+    "paired-native-execution-morning",
+    "paired-native-execution-day",
+    "rescore-11",
+    "rescore-12",
+    "pre-market-warmup",
     "cleanup-dlq-replay",
     "d1-evidence-scrub",
     "legacy-evidence-migration",
@@ -36,15 +43,11 @@
   "jobs": [
     { "id": "intraday-check", "schedule": "* 1-4 * * 1-5", "task": "intraday-check", "description": "TW 09:00-12:59 intraday paper trading heartbeat" },
     { "id": "intraday-check-close-window", "schedule": "0-30 5 * * 1-5", "task": "intraday-check", "description": "TW 13:00-13:30 intraday paper trading heartbeat" },
-    { "id": "rescore-10", "schedule": "0 2 * * 1-5", "task": "intraday-rescore", "query": "sync=1&cron=0%202%20%2A%20%2A%201-5", "description": "TW 10:00 intraday ML re-score" },
-    { "id": "rescore-11", "schedule": "0 3 * * 1-5", "task": "intraday-rescore", "query": "sync=1&cron=0%203%20%2A%20%2A%201-5", "description": "TW 11:00 intraday ML re-score" },
-    { "id": "rescore-12", "schedule": "0 4 * * 1-5", "task": "intraday-rescore", "query": "sync=1&cron=0%204%20%2A%20%2A%201-5", "description": "TW 12:00 intraday ML re-score" },
+    { "id": "rescore-10", "schedule": "0 2-4 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 10:00/11:00/12:00; retain independent rescore slot receipts" },
     { "id": "rescore-1230", "schedule": "30 4 * * 1-5", "task": "intraday-rescore", "query": "sync=1&cron=30%204%20%2A%20%2A%201-5", "description": "TW 12:30 intraday ML re-score" },
     { "id": "eod-exit", "schedule": "25 5 * * 1-5", "task": "eod-exit", "description": "TW 13:25 EOD exit" },
     { "id": "post-close-price-refresh", "schedule": "40 5 * * 1-5", "task": "post-close-price-refresh", "query": "sync=1", "description": "TW 13:40 refresh open-position post-close quote cache for holdings and risk readability" },
     { "id": "daily-snapshot", "schedule": "20 6 * * 1-5", "task": "daily-snapshot", "description": "TW 14:20 paper account snapshot" },
-    { "id": "paired-native-execution-morning", "schedule": "15-59 23 * * SUN-THU", "task": "paired-native-execution", "query": "sync=1", "desiredState": "PAUSED", "description": "TW 07:15-07:59 private paired native morning capture; no production accounts or promotion" },
-    { "id": "paired-native-execution-day", "schedule": "* 0-6 * * 1-5", "task": "paired-native-execution", "query": "sync=1", "desiredState": "PAUSED", "description": "TW 08:00-14:59 private paired native frames and idempotent evidence-derived close; expired inputs cannot be backfilled" },
     { "id": "daily-execution-paper-lineage", "schedule": "35,50 6 * * 1-5", "task": "daily-execution-paper-lineage", "query": "sync=1", "description": "TW 14:35/14:50 idempotent watchdog: require daily snapshot then verify canonical execution and paper-shadow lineage artifacts" },
     { "id": "market-close-refresh", "schedule": "10 10 * * 1-5", "task": "market-close-refresh", "query": "sync=1", "attemptDeadline": "300s", "retryConfig": { "retryCount": 2, "maxRetryDuration": "900s", "minBackoffDuration": "60s", "maxBackoffDuration": "300s", "maxDoublings": 2 }, "description": "TW 18:10 early post-close refresh for official prices, market breadth, futures snapshot, and close-data cache" },
     { "id": "evening-chain", "schedule": "0 13 * * 1-5", "task": "evening-chain", "query": "sync=1", "description": "TW 21:00 primary evening-chain root" },
@@ -62,8 +65,6 @@
     { "id": "legacy-strategy-evidence-migration", "schedule": "5,25,45 17-21 * * *", "task": "legacy-strategy-evidence-migration", "query": "sync=1&durable=1&max_attempts=240", "description": "TW 01:05-05:45 idempotent durable queue drain: archive exact strategy JSON to R2 and preserve compact scalar learning rows" },
     { "id": "audit-json-retention", "schedule": "*/15 17-22 * * *", "task": "audit-json-retention", "query": "sync=1&retention_days=30&limit_per_table=500&min_blob_bytes=1024&confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2&durable=1", "description": "TW 01:00-06:45 every 15 minutes; durable writes stop by 06:40: bounded verified R2 archive and D1 pointer scrub with 30-day hot window" },
     { "id": "legacy-hot-data-retirement", "schedule": "10 17-21 * * *", "task": "legacy-hot-data-retirement", "query": "sync=1&targets=obsolete_screener_items&limit=500&max_chunks=20", "description": "TW 01:10-05:10 read-only retirement candidate audit; production deletion requires a separately approved bounded run" },
-    { "id": "data-domain-shadow-backfill-ops", "schedule": "* 17-22 * * *", "task": "data-domain-shadow-backfill", "query": "sync=1&durable=1&direct_step=1&domain=ops&limit=50", "desiredState": "PAUSED", "description": "TW 01:00-06:59 per-minute HTTP-isolated OPS shadow step with capacity-safe 50-row batches, FK parent refresh, target-only delete reconciliation, checksum parity, and shared session fence; never activates routing" },
-    { "id": "data-domain-shadow-backfill-execution", "schedule": "10 19 * * *", "task": "data-domain-shadow-backfill", "query": "sync=1&durable=1&domain=execution&max_attempts=500", "desiredState": "PAUSED", "description": "Daily TW 03:10 bounded execution D1 shadow copy and checksum parity; never activates routing" },
     { "id": "data-domain-shadow-backfill-paper", "schedule": "*/15 19-22 * * *", "task": "data-domain-shadow-backfill", "query": "sync=1&durable=1&domain=paper&max_attempts=5000", "desiredState": "PAUSED", "description": "TW 03:00-06:45 every 15 minutes: durable paper D1 shadow copy/checksum parity watchdog with stale-progress reclaim; never activates routing" },
     { "id": "artifact-reconcile", "schedule": "5 18 * * *", "task": "artifact-reconcile", "query": "sync=1&limit=100", "description": "Daily TW 02:05 bounded reconciliation of R2 objects, manifests and interrupted verification" },
     { "id": "learning-retention-readiness", "schedule": "20 18 * * *", "task": "learning-retention-readiness", "query": "sync=1", "description": "Daily TW 02:20 read-only audit of 120-day Learning hot window, 3650-day cold policy, candidate backlog and retention ledger; never deletes" },
@@ -96,7 +97,6 @@
     { "id": "news-analyst", "schedule": "45 22 * * 0-4", "task": "news-analyst", "description": "TW 06:45 news analyst" },
     { "id": "morning-setup", "schedule": "15 23 * * 0-4", "task": "morning-setup", "description": "TW 07:15 recovery wakeup for event-driven setup -> individual debate -> merged L4 replan -> pending publication" },
     { "id": "premarket-evidence-watchdog", "schedule": "*/10 7-8 * * 1-5", "timeZone": "Asia/Taipei", "attemptDeadline": "600s", "task": "premarket-evidence-watchdog", "query": "sync=1", "description": "TW 07:00-08:50 recover incomplete atomic premarket stages; 08:30 readiness target; max 3 execution failures per stage/date" },
-    { "id": "morning-briefing", "schedule": "50 23 * * 0-4", "task": "morning-briefing", "desiredState": "PAUSED", "description": "TW 07:50 morning briefing" },
-    { "id": "pre-market-warmup", "schedule": "50 0 * * 1-5", "task": "pre-market-warmup", "description": "TW 08:50 control-plane drift and debate reconciliation" }
+    { "id": "morning-briefing", "schedule": "50 23 * * 0-4", "task": "morning-briefing", "desiredState": "PAUSED", "description": "TW 07:50 morning briefing" }
   ]
 }

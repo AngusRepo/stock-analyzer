@@ -4,7 +4,8 @@ Production execution must use one persistent broker-session owner.
 
 Required Cloud Run settings:
 
-- minimum instances: `1`
+- service-level minimum instances: `1` during TW weekdays 08:30–13:31 (calendar gate), `0` outside
+- revision/template minimum instances: `0` always; service-level scaler is the sole owner
 - maximum instances: `1`
 - container concurrency: `4`
 - CPU throttling: disabled (CPU always allocated)
@@ -51,6 +52,7 @@ tests):
 gcloud run services update shioaji-proxy `
   --project gen-lang-client-0602998820 `
   --region asia-east1 `
+  --min-instances 0 `
   --min 1 `
   --max 1 `
   --concurrency 4 `
@@ -62,3 +64,5 @@ gcloud run services update shioaji-proxy `
 After deployment, verify service metadata and require orderbook quote-age,
 subscription recovery, 429/504, and impossible-fill gates to pass before any
 live-submit pilot.
+
+After every release and scale operation run `scripts/runtime_min_policy.py` for the service. It verifies both levels plus every routed/tagged revision. Use `--apply --desired 0/1` only with approved configuration changes; CPU/RAM, image, connection settings and environment must remain identical. Scalers refuse every revision-floor repair; it requires a separately approved release and routing change. Do not shorten this trading window.

@@ -387,3 +387,22 @@ def test_projection_shares_verified_bytes_but_not_values_or_mutable_locator(env,
             return rows
         with pytest.raises(KeyError):read_context_projection(moved,manifest['snapshot_id'],('formal_output',))
     assert not directory.exists()
+
+
+def test_tiny_verified_subset_reused_when_raw_file_exceeds_cache_budget(env,monkeypatch):
+    import os
+    from services.paired_nav_read_cache import reuse_verified_cold_reads, _scope
+    from services.paired_nav_journal import read_context_projection
+    db,objects=env
+    manifest=freeze(db,{'trading_config':{'strategy':'single_b'},'unused_history':os.urandom(20000).hex()})
+    downloads=[];original=objects.download
+    def tracked(key,path):downloads.append(key);return original(key,path)
+    monkeypatch.setattr(objects,'download',tracked)
+    with reuse_verified_cold_reads(max_bytes=4096,entry_bytes=2048):
+        saved=read_context_projection(db.query,manifest['snapshot_id'],('trading_config','unused_history'))
+        cold.remember_verified_projection(db.query,saved,('trading_config',))
+        saved['payload']['content']['trading_config']['strategy']='mutated'
+        config=read_context_projection(db.query,manifest['snapshot_id'],('trading_config',))
+        assert config['payload']['content']=={'trading_config':{'strategy':'single_b'}}
+        assert len(downloads)==1
+        assert _scope.get().bytes<=4096

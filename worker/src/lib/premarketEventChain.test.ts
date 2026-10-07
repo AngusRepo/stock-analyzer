@@ -145,3 +145,28 @@ test('published plan permits advisory debate after the 08:45 publication cutoff'
    assert.equal(JSON.parse(f.kvs.get(`scheduler:run:pre-market-warmup:${date}`)!).status,'success')
  }finally{f.close()}
 })
+
+
+test('setup commits allocation and delayed market health in the same transaction',async()=>{
+ const f=fixture()
+ const work:PremarketWork=async(stage)=>stage==='context'?{next:'setup',receipt:{}}:{next:'allocate',followups:['market-health'],receipt:{}}
+ try{
+  await ensurePremarketEventChain(f.env,date,f.now())
+  await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+  await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+  assert.deepEqual(f.rows().filter(r=>r.status==='queued').map(r=>r.stage).sort(),['premarket_v3:allocate','premarket_v3:market-health'])
+  assert(f.messages.some(m=>m.premarketStage==='market-health'))
+ }finally{f.close()}
+})
+
+
+test('published plan does not hide a terminal broker health failure',async()=>{
+ const f=fixture()
+ try {
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key) VALUES (?,?,?,? ,?)").run(date,'premarket_v3:publish:0',`${date}:premarket-v3`,'success',JSON.stringify({output:{ready:true}}))
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key) VALUES (?,?,?,? ,?)").run(date,'premarket_v3:market-health',`${date}:premarket-v3`,'error','{}')
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=error/)
+  const receipt=JSON.parse(f.kvs.get(`scheduler:run:pre-market-warmup:${date}`)!)
+  assert.equal(receipt.status,'error');assert.match(receipt.summary,/market-health.*plan_published=true/)
+ } finally {f.close()}
+})

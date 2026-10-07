@@ -87,27 +87,12 @@ set -euo pipefail
 __CALENDAR__
 for target in __TARGETS__; do
   IFS=: read -r service max cpu_policy <<< "$target"
-  gcloud run services update "$service" --project=__PROJECT__ --region=__REGION__ --min="$desired" --max="$max" --quiet
-  service_json="$(gcloud run services describe "$service" --project=__PROJECT__ --region=__REGION__ --format=json)"
-  SERVICE="$service" SERVICE_JSON="$service_json" DESIRED="$desired" MAX="$max" CPU_POLICY="$cpu_policy" python3 - <<'PY'
-import json, os
-doc = json.loads(os.environ["SERVICE_JSON"])
-annotations = doc.get("metadata", {}).get("annotations", {})
-template_annotations = doc.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
-errors = []
-if int(annotations.get("run.googleapis.com/minScale", "0")) != int(os.environ["DESIRED"]):
-    errors.append("service_min_mismatch")
-if int(annotations.get("run.googleapis.com/maxScale", "0")) != int(os.environ["MAX"]):
-    errors.append("service_max_mismatch")
-if os.environ["CPU_POLICY"] == "continuous" and template_annotations.get("run.googleapis.com/cpu-throttling") != "false":
-    errors.append("continuous_cpu_disabled")
-if errors:
-    raise SystemExit(os.environ["SERVICE"] + ":" + "|".join(errors))
-print(json.dumps({"service": os.environ["SERVICE"], "min": int(os.environ["DESIRED"]), "status": "verified"}))
-PY
+  RUNTIME_MIN_POLICY_B64="__MIN_POLICY__" python3 -c 'import os,base64; exec(compile(base64.b64decode(os.environ["RUNTIME_MIN_POLICY_B64"]),"runtime_min_policy.py","exec"))' --service="$service" --project=__PROJECT__ --region=__REGION__ --desired="$desired" --apply
+
 done
 '@
   return $script.
+    Replace("__MIN_POLICY__", [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot "runtime_min_policy.py")))).
     Replace("__CALENDAR__", $calendar).
     Replace("__TARGETS__", ($targets -join " ")).
     Replace("__PROJECT__", $project).

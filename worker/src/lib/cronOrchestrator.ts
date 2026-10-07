@@ -96,7 +96,7 @@ async function probeMlController(env: Bindings): Promise<string> {
   }
 }
 
-export async function runPreMarketWarmup(env: Bindings) {
+export async function runPreMarketWarmup(env: Bindings, phase: 'all' | 'setup' | 'market' = 'all') {
   const results: string[] = []
   results.push('Worker:self ok')
 
@@ -114,10 +114,10 @@ export async function runPreMarketWarmup(env: Bindings) {
     results.push('Frontend:skip(no PAGES_ORIGIN)')
   }
 
-  results.push(await probeMlController(env))
+  if (phase !== 'market') results.push(await probeMlController(env))
 
   const proxyUrl = (env as any).SHIOAJI_PROXY_URL as string | undefined
-  if (proxyUrl) {
+  if (proxyUrl && phase !== 'setup') {
     try {
       const res = await fetch(`${proxyUrl}/health`, {
         headers: { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN ?? ''}` },

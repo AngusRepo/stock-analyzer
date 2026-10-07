@@ -95,7 +95,9 @@ def observe_published_plan(plan, snapshot_id, *, now=None, learning=None, paper=
                 or json.loads(published[0]['payload_json'])!=plan):
             raise ValueError('rfs_published_plan_not_verified')
         saved=read_context_projection(learning.query,snapshot_id,
-            ['inputs.recommendations','inputs.return_history','inputs.alpha_policy.l4Distribution.runtime.account','capture.portfolio_plan'])
+            ['trading_config','inputs.recommendations','inputs.return_history','inputs.alpha_policy.l4Distribution.runtime.account','capture.portfolio_plan'])
+        from services.paired_nav_cold import remember_verified_projection
+        remember_verified_projection(learning.query, saved, ('trading_config',))
         inputs=saved['payload']['content']['inputs']
         try:
             if saved['payload']['content']['capture']['portfolio_plan'] != plan:

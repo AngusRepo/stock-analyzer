@@ -2,23 +2,23 @@ import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { logSchedulerResult } from './schedulerRunLogger'
 
-export type PremarketStage = 'context' | 'setup' | 'allocate' | `debate:${number}` | `replan:${number}` | `publish:${number}`
+export type PremarketStage = 'context' | 'setup' | 'allocate' | 'market-health' | `debate:${number}` | `replan:${number}` | `publish:${number}`
 export interface PremarketPayload { [key: string]: unknown }
-export interface PremarketResult { next: PremarketStage | null; receipt: PremarketPayload }
+export interface PremarketResult { next: PremarketStage | null; followups?: PremarketStage[]; receipt: PremarketPayload }
 export type PremarketWork = (stage: PremarketStage, input: PremarketPayload, guard: () => Promise<void>) => Promise<PremarketResult>
 const PREFIX = 'premarket_v3:'
 const RUN = (date: string) => `${date}:premarket-v3`
 const MAX_ATTEMPTS = 3
 export const PREMARKET_READY_TARGET = '08:45'
 function validStage(stage: string): stage is PremarketStage {
-  return /^(context|setup|allocate|(debate|replan|publish):[0-2])$/.test(stage)
+  return /^(context|setup|allocate|market-health|(debate|replan|publish):[0-2])$/.test(stage)
 }
 export function premarketClock(now = Date.now()) {
   const tw = new Date(now + 8 * 3600_000)
   return { date: tw.toISOString().slice(0, 10), minutes: tw.getUTCHours() * 60 + tw.getUTCMinutes() }
 }
 export function premarketStageNotBefore(date: string, stage: PremarketStage): number {
-  return Date.parse(`${date}T${stage === 'context' ? '06:45' : '07:15'}:00+08:00`)
+  return Date.parse(`${date}T${stage === 'context' ? '06:45' : stage === 'market-health' ? '08:30' : '07:15'}:00+08:00`)
 }
 interface Row { stage: string; status: string; cursor_key: string | null; attempt_count: number; lease_owner: string | null }
 
@@ -43,14 +43,15 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
   const setupDone = rows.some(r => r.stage === PREFIX + 'setup' && r.status === 'success')
   const published = rows.find(r => r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success'
     && JSON.parse(r.cursor_key ?? '{}').output?.ready === true)
+  const health = rows.find(r => r.stage === PREFIX + 'market-health')
   const failed = rows.find(r => r.status === 'error')
   const common = {run_date:date,run_id:RUN(date),run_scope:'live_canonical' as const,duration_ms:0}
   if (setupDone) await logSchedulerResult(env.KV,'morning-setup',{
     ...common,status:'success',summary:'status=success event_stage=setup; successor stages follow immediately',
   })
   if (published || failed) await logSchedulerResult(env.KV, failed && !setupDone && !published ? 'morning-setup' : 'pre-market-warmup',{
-    ...common,status:published ? 'success' : 'error',
-    summary:published ? `status=success event_driven_ready ${published.cursor_key}` : `status=error event_stage=${failed?.stage}`,
+    ...common,status:health?.status === 'error' ? 'error' : published ? 'success' : 'error',
+    summary:health?.status === 'error' ? 'status=error event_stage=market-health plan_published=' + Boolean(published) : published ? `status=success event_driven_ready market_health=${health?.status ?? 'not_scheduled'} ${published.cursor_key}` : `status=error event_stage=${failed?.stage}`,
   })
 }
 
@@ -77,7 +78,8 @@ export async function ensurePremarketEventChain(env: Bindings, date: string, now
   const failed = results.find(r => r.status === 'error')
   const ready = results.some(r => r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success'
     && JSON.parse(r.cursor_key ?? '{}').output?.ready === true)
-  const status = ready ? 'success' : failed ? 'error' : 'pending'
+  const healthFailed = results.some(r => r.stage === PREFIX + 'market-health' && r.status === 'error')
+  const status = healthFailed ? 'error' : ready ? 'success' : failed ? 'error' : 'pending'
   return `status=${status} premarket_event_chain queued=${sent} ready_target=${PREMARKET_READY_TARGET} overdue=${!ready && clock.minutes >= 525} stage=${ready ? 'complete' : failed?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'complete'}`
 }
 
@@ -112,18 +114,19 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   }
   try {
     const result = await work(stage,input,guard)
-    if (result.next && !validStage(result.next)) throw new Error('premarket_successor_invalid')
+    const successors = [...new Set([...(result.next ? [result.next] : []), ...(result.followups ?? [])])]
+    if (successors.some(next => !validStage(next))) throw new Error('premarket_successor_invalid')
     await guard()
     const statements = [db.prepare(`UPDATE pipeline_stage_runs SET status='success',cursor_key=?,completed_at=CURRENT_TIMESTAMP,
       updated_at=CURRENT_TIMESTAMP,last_error=NULL WHERE business_date=? AND stage=? AND canonical_run_id=?
       AND lease_owner=? AND status='running' AND lease_expires_at>=CURRENT_TIMESTAMP`)
       .bind(JSON.stringify({input,output:result.receipt}),date,key,RUN(date),owner)]
-    if (result.next) statements.push(db.prepare(`INSERT INTO pipeline_stage_runs
+    for (const next of successors) statements.push(db.prepare(`INSERT INTO pipeline_stage_runs
       (business_date,stage,canonical_run_id,status,cursor_key,queued_at)
       SELECT ?,?,?,'queued',?,CURRENT_TIMESTAMP FROM pipeline_stage_runs
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status='success' AND lease_owner=?
       ON CONFLICT(business_date,stage) DO NOTHING`)
-      .bind(date,PREFIX+result.next,RUN(date),JSON.stringify(result.receipt),date,key,RUN(date),owner))
+      .bind(date,PREFIX+next,RUN(date),JSON.stringify(result.receipt),date,key,RUN(date),owner))
     // Completion and its successor intent commit together; a lost queue send is recoverable.
     await db.batch(statements)
     const committed = await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs WHERE business_date=? AND stage=?

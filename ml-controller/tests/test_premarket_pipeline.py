@@ -158,3 +158,27 @@ def test_premarket_snapshot_stays_deferred_even_if_global_mode_is_blocking(monke
     }))
     assert result['metrics']['dataset_snapshot_export']['status']=='deferred'
     assert result['metrics']['dataset_snapshot_export']['snapshot_enabled'] is False
+
+
+def test_resume_reuses_verified_cold_file_between_nodes(f):
+    from contextlib import contextmanager
+    from services.paired_nav_read_cache import cached_verified_file, _scope
+    import tempfile
+    from pathlib import Path
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI'];reads=[];directories=[]
+    @contextmanager
+    def acquire():
+        reads.append(1)
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'payload';p.write_bytes(b'verified compressed source');yield str(p)
+    async def first(value):
+        with cached_verified_file('verified-original',acquire) as p:assert Path(p).read_bytes()
+        directories.append(_scope.get().directory)
+        return {}
+    async def second(value):
+        with cached_verified_file('verified-original',acquire) as p:assert Path(p).read_bytes()
+        return {}
+    asyncio.run(m.resume(uri,nodes=[first,second],merge=lambda st,up:st.update(up),client=s))
+    assert reads==[1]
+    assert not Path(directories[0]).exists()

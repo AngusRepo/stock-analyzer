@@ -76,6 +76,7 @@ def packed(pieces):
     with tempfile.TemporaryDirectory(prefix='nav-cold-') as directory:
         path = os.path.join(directory, 'payload.gz')
         hasher, size, chars = hashlib.sha256(), 0, 0
+        started = time.monotonic()
         with open(path, 'wb') as output:
             with gzip.GzipFile(fileobj=output, mode='wb', mtime=0) as zipped:
                 for piece in pieces:
@@ -85,6 +86,7 @@ def packed(pieces):
                         raw = chunk.encode('utf-8')
                         hasher.update(raw); size += len(raw); chars += len(chunk)
                         zipped.write(raw)
+        logging.getLogger(__name__).info("[NavColdSeal] phase=encode_compress seconds=%.3f raw_bytes=%d compressed_bytes=%d", time.monotonic()-started,size,os.path.getsize(path))
         yield path, hasher.hexdigest(), size, max(1, (chars + 19999) // 20000)
 
 
@@ -92,7 +94,10 @@ def packed(pieces):
 def verified_file(store, key, checksum, byte_count):
     with tempfile.TemporaryDirectory(prefix='nav-read-') as directory:
         path = os.path.join(directory, 'payload.gz')
+        started = time.monotonic()
         store.download(key, path)
+        logging.getLogger(__name__).info("[NavColdRead] phase=download seconds=%.3f compressed_bytes=%d",time.monotonic()-started,os.path.getsize(path))
+        started = time.monotonic()
         hasher, size = hashlib.sha256(), 0
         with gzip.open(path, 'rb') as source:
             while raw := source.read(1024 * 1024):
@@ -102,6 +107,7 @@ def verified_file(store, key, checksum, byte_count):
                 hasher.update(raw)
         if size != byte_count or hasher.hexdigest() != checksum:
             raise RuntimeError('paired_nav_cold_checksum_mismatch')
+        logging.getLogger(__name__).info('[NavColdRead] phase=verify_hash seconds=%.3f',time.monotonic()-started)
         yield path
 
 
@@ -258,10 +264,10 @@ def load(query, manifest, store=None, *, materialize=True, prefixes=None):
     if store is None:
         raise RuntimeError('paired_nav_cold_store_unavailable')
     started = time.monotonic()
-    from services.paired_nav_read_cache import cached_verified_read, cached_verified_file
+    from services.paired_nav_read_cache import cached_verified_read, cached_verified_file, query_cache_identity
     # Both mutable metadata rows were freshly read above. File and projection
     # caches share one tmpfs budget and never survive the job.
-    source_key = (query, json.dumps(manifest, sort_keys=True), json.dumps(row, sort_keys=True))
+    source_key = (query_cache_identity(query), json.dumps(manifest, sort_keys=True), json.dumps(row, sort_keys=True))
     key = (*source_key, materialize, tuple(sorted(prefixes)) if prefixes is not None else None)
     def read():
         with cached_verified_file(source_key, lambda: verified_file(store, row['object_key'],
@@ -289,9 +295,12 @@ def seal(*, query, writer, snapshot_id, payload, store, stamp, packed_payload=No
         old = _row(query, snapshot_id)
         if old and old['payload_checksum'] != checksum:
             raise RuntimeError('paired_nav_cold_immutable_conflict')
+        started = time.monotonic()
         key = store.put(path, checksum)
+        logging.getLogger(__name__).info("[NavColdSeal] phase=upload_and_hold seconds=%.3f",time.monotonic()-started)
         with verified_file(store, key, checksum, size):
             pass
+        started = time.monotonic()
         chunks = [raw_view[i:i + 20000] for i in range(0, len(raw_view), 20000)]
         view_checksum = hashlib.sha256(raw_view.encode('utf-8')).hexdigest()
         for start in range(0, len(chunks), 10):
@@ -309,6 +318,7 @@ def seal(*, query, writer, snapshot_id, payload, store, stamp, packed_payload=No
         row = _row(query, snapshot_id)
         if not row or any(row[k] != v for k, v in zip(columns.split(',')[:8], values[:8])):
             raise RuntimeError('paired_nav_cold_receipt_readback_failed')
+        logging.getLogger(__name__).info("[NavColdSeal] phase=d1_view_receipt seconds=%.3f",time.monotonic()-started)
         return row
     if packed_payload is not None:
         return publish(packed_payload)
@@ -396,3 +406,26 @@ def release_hot_copy(*, query, writer, snapshot_id, expected_checksum, approval_
             raise RuntimeError('paired_nav_hot_release_readback_failed')
         removed += len(parts)
     return {'snapshot_id': snapshot_id, 'deleted_parts': removed, 'payload_checksum': expected_checksum}
+
+
+def remember_verified_projection(query, saved, fields):
+    """Seed only a subset of an already verified projection in this run scope.
+
+    The consumer still rereads manifest and locator before a cache hit. This
+    avoids retaining oversized raw files just to reread tiny configuration.
+    """
+    from services.paired_nav_read_cache import _scope, query_cache_identity
+    scope = _scope.get()
+    if scope is None or saved.get('read_projection') != 'validation_fields_v1':
+        return
+    manifest = saved['manifest']
+    rows = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [manifest['snapshot_id']])
+    row = _row(query, manifest['snapshot_id'])
+    if rows != [manifest] or not row or row['payload_checksum'] != manifest['payload_checksum']:
+        raise RuntimeError('paired_nav_projection_source_changed')
+    payload = saved['payload']
+    result = {k: payload[k] for k in ('schema_version','signal_date','snapshot_kind','source_run_id')}
+    result['content'] = {k: payload['content'][k] for k in fields if k in payload['content']}
+    prefixes = frozenset({'schema_version','signal_date','snapshot_kind','source_run_id'} | {'content.'+k for k in fields})
+    key = (query_cache_identity(query),json.dumps(manifest,sort_keys=True),json.dumps(row,sort_keys=True),True,tuple(sorted(prefixes)))
+    scope.save(key,result)

@@ -21,10 +21,10 @@ export interface SchedulerDependencySpec {
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
   'paired-native-execution': {
     task: 'paired-native-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',
-    currentFunction: 'Retired under the single-B policy; both physical roots are paused. Historical paired receipts remain readable.',
+    currentFunction: 'Retired under the single-B policy; both physical roots are deleted. Historical paired receipts remain readable.',
     replacementOwner: 'single-B formal Paper execution; paired research accounts retired',
-    upstream: [], downstream: [], requiredBeforeDisable: ['validated single-B Paper mode active', 'both physical roots PAUSED', 'historical paired receipts retained'], operatorRisk: 'low',
-    recommendation: 'Keep roots PAUSED. Single-B Worker returns a disabled receipt before waking Controller; formal Paper keeps its shared native engine.',
+    upstream: [], downstream: [], requiredBeforeDisable: ['validated single-B Paper mode active', 'both physical roots deleted after approved retirement', 'historical paired receipts retained'], operatorRisk: 'low',
+    recommendation: 'Keep retired roots absent. Single-B Worker returns a disabled receipt before waking Controller; formal Paper keeps its shared native engine.',
   },
   'daily-execution-paper-lineage': {
     task: 'daily-execution-paper-lineage', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
@@ -65,7 +65,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
   'data-domain-shadow-backfill-next': {
     task: 'data-domain-shadow-backfill-next', owner: 'gcp_scheduler', consolidationClass: 'disable_candidate',
     replacementOwner: 'Codex daily backfill retirement qualification monitor',
-    currentFunction: 'Requires the latest evening-chain closure, then queues the next incomplete domain or returns all_domains_caught_up.',
+    currentFunction: 'Checks post-cutover readiness first; returns all_domains_caught_up without waiting for evening closure when complete. Incomplete domains still require closure before queueing.',
     upstream: ['evening-chain', 'data-domain-shadow-backfill'], downstream: ['storage-health-check', 'storage-capacity-report'], requiredBeforeDisable: ['all domain cursors and parity receipts must remain caught up'], operatorRisk: 'medium',
     recommendation: 'Pause after caught-up readback; retire only after an observation window and explicit approval.',
   },

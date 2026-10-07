@@ -84,9 +84,10 @@ async function paperShadowSourceMutationProtected(env: any): Promise<boolean> {
   return Boolean(active) || ['shadow', 'read_cutover', 'write_cutover'].includes(cutoverStatus)
 }
 
-function inferIntradayRescoreCron(rawCron?: string | null): string {
+export function inferIntradayRescoreCron(rawCron?: string | null, scheduledAt?: string | null): string {
   if (rawCron && RESCORE_CRONS.has(rawCron)) return rawCron
-  const now = new Date()
+  const now = scheduledAt ? new Date(scheduledAt) : new Date()
+  if (!Number.isFinite(now.getTime())) throw new Error('rescore_schedule_time_invalid')
   const hour = now.getUTCHours()
   const minute = now.getUTCMinutes()
   if (hour === 2) return '0 2 * * 1-5'
@@ -820,14 +821,12 @@ export function buildAdminWorkerDomainTaskMap(
     warmup: () => deps.runMorningWarmup(),
     'ml-warmup': () => runMlControllerWarmup(c.env),
     'pre-market-warmup': async () => {
-      const { runPreMarketWarmup } = await import('./cronOrchestrator')
       const { ensurePremarketEventChain } = await import('./premarketEventChain')
-      const warmup = await runPreMarketWarmup(c.env)
-      return `${warmup}; ${await ensurePremarketEventChain(c.env,twToday())}`
+      return ensurePremarketEventChain(c.env,twToday())
     },
     'intraday-rescore': async () => {
       const { runIntradayRescore } = await import('./cronOrchestrator')
-      const cron = inferIntradayRescoreCron(c.req.query('cron'))
+      const cron = inferIntradayRescoreCron(c.req.query('cron'), c.req.header('X-CloudScheduler-ScheduleTime'))
       const slotTask = RESCORE_SLOT_TASK_BY_CRON[cron]
       const runDate = twToday()
       const startedAt = Date.now()

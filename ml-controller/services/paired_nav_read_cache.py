@@ -13,6 +13,18 @@ import json
 import os
 import pickle
 import tempfile
+import logging
+from functools import wraps
+
+def verified_reads_async(fn):
+    @wraps(fn)
+    async def wrapped(*args, **kwargs):
+        with reuse_verified_cold_reads():
+            return await fn(*args, **kwargs)
+    return wrapped
+
+def cache_event(event):
+    logging.getLogger(__name__).info("[NavReadCache] event=%s", event)
 
 _scope = ContextVar('paired_nav_cold_read_cache', default=None)
 
@@ -54,6 +66,7 @@ class _Cache:
     def save_file(self, key, source):
         size = os.path.getsize(source)
         if size > self.entry_bytes:
+            cache_event("file_oversize")
             return None
         while self.entries and self.bytes + size > self.max_bytes:
             _, (path, old_size) = self.entries.popitem(last=False)
@@ -107,10 +120,13 @@ def reuse_verified_cold_reads(*, max_bytes=128 * 1024 * 1024, entry_bytes=64 * 1
 def cached_verified_read(key, read):
     scope = _scope.get()
     if scope is None:
+        cache_event("projection_no_scope")
         return read()
     found, value = scope.read(key)
     if found:
+        cache_event("projection_hit")
         return value
+    cache_event("projection_miss")
     value = read()  # Only a successfully checksum-verified parse can be cached.
     scope.save(key, value)
     return value
@@ -180,12 +196,28 @@ def cached_verified_file(key, acquire):
     scope = _scope.get()
     entry = scope.entries.get(('file', key)) if scope is not None else None
     if entry is not None:
+        cache_event('file_hit')
         scope.entries.move_to_end(('file', key))
         yield entry[0]
         return
+    cache_event("file_no_scope" if scope is None else "file_miss")
     with acquire() as path:
         # Caller parses before publishing this path; an invalid parse never
         # becomes a cached source. A parsed projection can subsequently evict it.
         yield path
         if scope is not None:
             scope.save_file(('file', key), path)
+
+
+def query_cache_identity(query):
+    # Proxy and direct clients for the same DB share verified bytes, while every
+    # load still rereads both metadata rows. A routing change changes the key.
+    from services.d1_domain_client import DomainD1Client, DomainD1ClientProxy, database_id_for_domain
+    from services import d1_client
+    owner = getattr(query, '__self__', None)
+    fn = getattr(query, '__func__', None)
+    if (type(owner) in (DomainD1Client, DomainD1ClientProxy)
+            and fn in (DomainD1Client.query, DomainD1ClientProxy.query)):
+        database = database_id_for_domain(owner.domain, require_specific=getattr(owner, 'require_specific', False))
+        return ('domain-d1', d1_client.CF_ACCOUNT_ID, database, d1_client.STRATEGY_MINING_D1_WORKER_ONLY)
+    return query

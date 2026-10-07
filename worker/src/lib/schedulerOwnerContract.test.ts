@@ -81,7 +81,7 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['market-close-refresh', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-full-check', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['market-close-refresh', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-full-check', 'optuna-queue']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
@@ -102,7 +102,9 @@ const rescoreSlots = [
 ] as const
 for (const [id, cron, query] of rescoreSlots) {
   const job = manifest.jobs.find((candidate: any) => candidate.id === id)
-  assert(job?.task === 'intraday-rescore' && job?.schedule === cron && job?.query === query, `${id} must carry its exact slot identity into the shared re-score handler`)
+  if(id==='rescore-10') assert(job?.schedule==='0 2-4 * * 1-5' && job.query==='sync=1','hourly rescore owner')
+  else if(id==='rescore-1230') assert(job?.task==='intraday-rescore' && job.schedule===cron && job.query===query,'12:30 owner preserved')
+  else assert(!job && manifest.deleteJobIds.includes(id), `${id} physical root is retired; logical slot remains`)
   assert(schedulerStatus.includes(`id: '${id}'`) && schedulerRunLogger.includes(`'${id}':`), `${id} must have a first-class OBS definition and display name`)
   assert(workerTasks.includes(`'${cron}': '${id}'`), `${id} must map its cron to a slot-specific runtime log`)
 }
@@ -159,8 +161,6 @@ for (const critical of [
   'evening-chain',
   'market-close-refresh',
   'rescore-10',
-  'rescore-11',
-  'rescore-12',
   'rescore-1230',
   'alpha-quality',
   'sector-leaders',

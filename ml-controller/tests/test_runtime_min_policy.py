@@ -16,3 +16,20 @@ def test_tagged_revision_is_checked_and_resources_protected():
  with pytest.raises(RuntimeError,match='old'):m.verify(d,{'new':{},'old':{'metadata':{'annotations':{'autoscaling.knative.dev/minScale':'1'}}}},0)
  changed=copy.deepcopy(d);changed['spec']['template']['spec']['containers'][0]['resources']['limits']['memory']='256Mi'
  assert m.protected(changed)!=m.protected(d)
+
+
+def test_large_tag_history_uses_one_list_and_checks_every_floor(monkeypatch):
+ import json
+ d=doc();d['status']['traffic'] += [{'revisionName':f'old{i}','tag':f'tag{i}'} for i in range(142)]
+ rows=[{'metadata':{'name':x['revisionName'],'annotations':{}}} for x in d['status']['traffic']]
+ calls=[]
+ def gc(args):
+  calls.append(args)
+  return json.dumps(d if args[:3]==['run','services','describe'] else rows)
+ monkeypatch.setattr(m,'gcloud',gc)
+ assert m.run('svc','project','region')['status']=='verified'
+ assert len(calls)==2 and calls[1][:3]==['run','revisions','list']
+ rows[-1]['metadata']['annotations']['autoscaling.knative.dev/minScale']='1'
+ with pytest.raises(RuntimeError,match='active_revision_min_nonzero'):m.run('svc','project','region')
+ rows.pop()
+ with pytest.raises(RuntimeError,match='referenced_revision_not_observed'):m.run('svc','project','region')

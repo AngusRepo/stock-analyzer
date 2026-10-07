@@ -35,3 +35,10 @@ test('consolidated physical timers keep four logical UI cron slots',async()=>{
  const {SCHEDULER_STATUS_JOB_DEFS}=await import('./schedulerStatus')
  for(const [id,cron] of [['rescore-10','0 2 * * 1-5'],['rescore-11','0 3 * * 1-5'],['rescore-12','0 4 * * 1-5'],['rescore-1230','30 4 * * 1-5']]) assert.equal(SCHEDULER_STATUS_JOB_DEFS.find(x=>x.id===id)?.cron,cron)
 })
+
+
+test('premarket readiness no longer advertises a retired 08:50 cron',async()=>{
+ const {SCHEDULER_STATUS_JOB_DEFS}=await import('./schedulerStatus')
+ const row=SCHEDULER_STATUS_JOB_DEFS.find(x=>x.id==='pre-market-warmup')!
+ assert.equal(row.cron,'');assert.match(row.schedule,/Event-driven/);assert(!row.schedule.includes('08:50'))
+})

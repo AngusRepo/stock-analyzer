@@ -45,7 +45,7 @@ export type SchedulerDisplayStatus = {
 type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 
 const JOB_DEF_METADATA: JobDef[] = [
-  { id: 'pre-market-warmup', name: 'Pre-market Warmup', schedule: 'Weekdays 08:50', cron: '50 0 * * 1-5', group: 'pipeline_chain', chainIndex: 0 },
+  { id: 'pre-market-warmup', name: 'Pre-market Readiness', schedule: 'Event-driven; broker health from 08:30', cron: '', group: 'pipeline_chain', chainIndex: 0 },
   { id: 'market-close-refresh', name: 'Market Close Refresh', schedule: 'Weekdays 18:10', cron: '10 10 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
   { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:00', cron: '0 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'finlab-v4-backfill', name: 'FinLab V4 Backfill', schedule: 'Inside evening chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },

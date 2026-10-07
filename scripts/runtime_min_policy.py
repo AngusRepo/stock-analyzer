@@ -36,7 +36,14 @@ def verify(doc, revisions, desired):
 def run(service, project, region, desired=None, apply=False):
     common=['--project='+project,'--region='+region]
     def read(): return json.loads(gcloud(['run','services','describe',service,*common,'--format=json']))
-    def revisions(doc): return {n:json.loads(gcloud(['run','revisions','describe',n,*common,'--format=json'])) for n in active_revisions(doc)}
+    def revisions(doc):
+        # One paginated list replaces a separate gcloud process for each retained tag.
+        rows=json.loads(gcloud(['run','revisions','list','--service='+service,*common,
+                                '--format=json(metadata.name,metadata.annotations)']))
+        indexed={r['metadata']['name']:r for r in rows}
+        names=active_revisions(doc)
+        if not names.issubset(indexed): raise RuntimeError('referenced_revision_not_observed')
+        return {n:indexed[n] for n in names}
     before=read();old=revisions(before)
     existing=int(before.get('metadata',{}).get('annotations',{}).get('run.googleapis.com/minScale','0'))
     desired=existing if desired is None else desired

@@ -100,8 +100,6 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     terminal, _ = store.read(root + '/terminal')
     if terminal:
         return {'reason': terminal['status']}
-    if source_sha != reference.get('expected_source_sha') or not source_sha:
-        return {'reason': 'source_changed', 'error': 'pipeline_modal_recovery_source_changed'}
     driver, _ = store.read(root + '/driver')
     if driver and driver['until'] > clock():
         return {'reason': 'cpu_lease_active'}
@@ -116,6 +114,10 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
             result_generation = store.generation(PREFIX + gpu + '/result/' + claim['token'])
             if not result_generation and claim['until'] > clock():
                 return {'reason': 'gpu_lease_active'}
+    # Release drift prevents redispatch on this runtime; it does not prove
+    # that an already-dispatched immutable request failed. Preserve its callback.
+    if source_sha != reference.get('expected_source_sha') or not source_sha:
+        return {'reason': 'source_changed', 'recovery_blocked': True}
     if clock() - registered['created_at'] < 600:
         return {'reason': 'initial_dispatch_grace'}
     recovery, generation = store.read(key + '/dispatch')

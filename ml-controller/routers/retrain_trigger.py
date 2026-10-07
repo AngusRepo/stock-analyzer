@@ -162,7 +162,11 @@ class UniversalRetrainTriggerRequest(BaseModel):
     )
 
 
-def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str) -> dict[str, Any] | None:
+def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
+                                expected_producer_source_sha: str | None = None) -> dict[str, Any] | None:
+    # Default admission remains bound to the current runtime. Durable input
+    # callbacks pass the producer from their checksum-validated immutable stage.
+    expected_source = _runtime_source_sha() if expected_producer_source_sha is None else expected_producer_source_sha
     receipt_path = f"{prefix}/prep/immutable_receipt.json"
     receipt_blob = bucket.blob(receipt_path)
     if not receipt_blob.exists():
@@ -172,7 +176,7 @@ def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str) -> d
     actual_checksum = hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
     if (
         receipt.get("schema_version") != ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION
-        or not _prep_receipt_lineage_current(receipt)
+        or not _prep_receipt_lineage_matches(receipt, expected_producer_source_sha=expected_source)
         or receipt.get("status") != "ready"
         or receipt.get("business_date") != run_date
         or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != prefix

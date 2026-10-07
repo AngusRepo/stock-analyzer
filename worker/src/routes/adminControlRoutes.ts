@@ -1010,16 +1010,16 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  let acceptedPipelineL3Seal = false
   if(body.task==='pipeline' && body.status==='triggered' && body.l3_receipt) {
     if(c.env.PAPER_DAILY_PLAN_OWNER!=='premarket_once_v1')return c.json({error:'premarket_owner_mismatch'},409)
     const seal=body.l3_receipt as any
     if(seal.run_date!==callbackRunDate || seal.run_id!==callbackRunId || seal.schema_version!=='premarket-l3-seal-v1'
       || !/^[a-f0-9]{64}$/.test(seal.checksum??''))return c.json({error:'premarket_seal_invalid'},400)
-    const saved=await databaseForDataDomain(c.env,'ops').prepare(`UPDATE pipeline_stage_runs
-      SET status='waiting',last_error='awaiting_premarket',updated_at=CURRENT_TIMESTAMP
-      WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=? AND status IN ('running','waiting')
-      RETURNING canonical_run_id`).bind(callbackRunDate,callbackRunId).first()
+    const { acceptPipelineL3Seal } = await import('../lib/pipelineL3SealAcceptance')
+    const saved=await acceptPipelineL3Seal(databaseForDataDomain(c.env,'ops'),callbackRunDate,callbackRunId)
     if(!saved)return c.json({error:'stale_pipeline_l3_seal'},409)
+    acceptedPipelineL3Seal = true
   }
   const criticalTerminalCallback = ['pipeline', 'allocator-ev-feature-snapshot-backfill', 'verify-v2']
     .includes(String(body.task))
@@ -1107,6 +1107,7 @@ async function handleSchedulerCallback(c: any) {
   }
 
   const logAcceptedCallbackTask = () => logSchedulerResult(c.env.KV, String(body.task), {
+    supersedePrevious: acceptedPipelineL3Seal,
     status: body.status,
     summary: String(body.summary ?? ''),
     duration_ms: Number(body.duration_ms ?? 0),

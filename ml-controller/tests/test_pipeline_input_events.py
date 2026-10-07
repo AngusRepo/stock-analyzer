@@ -411,3 +411,43 @@ def test_modal_owner_observation_accepts_only_exact_terminal_wrapper(monkeypatch
     assert modal_prep_call_finished('fc-old') is expected
     graph.clear()
     assert modal_prep_call_finished('fc-old') is False
+
+
+def test_completed_prep_keeps_stage_producer_across_controller_release(store,monkeypatch):
+    from routers import retrain_trigger as trigger
+    path,stage=prep_stage(store,monkeypatch);jobs=Jobs()
+    for index in range(2):batch_result(store,path,stage,index)
+    monkeypatch.setenv('STOCKVISION_SOURCE_SHA','b'*40)
+    assert events.dispatch_ready(path,jobs_client=jobs,store=store)['status']=='dispatched'
+    prefix=stage['spec']['receipt_template']['output_gcs_prefix']
+    receipt=events.read(store,prefix+'/prep/immutable_receipt.json')
+    assert receipt['producer_source_sha']=='a'*40 and receipt['training_dispatched'] is False
+    # Generic training/prep admission still requires the current release source.
+    with pytest.raises(ValueError,match='sealed_receipt_invalid'):
+        trigger._verified_prep_only_receipt(store,prefix,stage['run_date'])
+    assert len(jobs.calls)==1
+
+
+@pytest.mark.parametrize('tamper',['producer','artifact'])
+def test_cross_release_receipt_still_rejects_wrong_producer_or_bytes(store,monkeypatch,tamper):
+    path,stage=prep_stage(store,monkeypatch)
+    for index in range(2):batch_result(store,path,stage,index)
+    assert events._complete_prep(store,stage,path)
+    prefix=stage['spec']['receipt_template']['output_gcs_prefix']
+    receipt_path=prefix+'/prep/immutable_receipt.json'
+    if tamper=='producer':
+        receipt=events.read(store,receipt_path)
+        receipt['producer_source_sha']='b'*40
+        unsigned={k:v for k,v in receipt.items() if k!='receipt_checksum'}
+        receipt['receipt_checksum']=hashlib.sha256(json.dumps(unsigned,sort_keys=True).encode()).hexdigest()
+        store.blob(receipt_path).raw=events.encoded(receipt)
+    else:
+        store.blob(prefix+'/prep/batch_0.npz').raw=b'tampered'
+    # Recreate an expired, interrupted sealing observation to exercise validation.
+    store.blob(path.replace('request.json','seal.json')).raw=events.encoded({
+        'status':'sealing','created_at':(datetime.now(timezone.utc)-timedelta(seconds=301)).isoformat()})
+    monkeypatch.setenv('STOCKVISION_SOURCE_SHA','b'*40)
+    jobs=Jobs()
+    with pytest.raises(ValueError,match='sealed_(receipt_invalid|checksum_mismatch)'):
+        events.dispatch_ready(path,jobs_client=jobs,store=store)
+    assert not jobs.calls

@@ -147,3 +147,23 @@ def test_actual_controller_spawn_persists_reference_before_uncertain_rpc(monkeyp
     assert result['status'] == 'dispatch_uncertain'
     assert result['request_generation'] == '7'
     assert 'callback_token' not in result
+
+
+def test_release_overlap_preserves_active_cpu_and_gpu_and_never_dispatches_wrong_source():
+    ref, store, now, queue, recover = fixture()
+    now[0] = 601
+    journal = stages.Journal(StageStore(store), ref, clock=lambda: now[0])
+    root = PREFIX + journal.root
+    store.put(root + '/driver', {'token': 'active', 'until': 1000})
+    assert recover(source_sha='c'*40) == {'reason': 'cpu_lease_active'}
+    now[0] = 1001
+    gpu = journal.root + '/gpu/fixture'
+    store.put(root + '/progress', {'gpu': gpu})
+    store.put(PREFIX + gpu + '/claim', {'token': 'gpu', 'until': 2000})
+    assert recover(source_sha='c'*40) == {'reason': 'gpu_lease_active'}
+    now[0] = 2001
+    assert recover(source_sha='c'*40) == {'reason': 'source_changed', 'recovery_blocked': True}
+    assert recover(source_sha='') == {'reason': 'source_changed', 'recovery_blocked': True}
+    assert not queue
+    store.put(root + '/terminal', {'status': 'callback_accepted'})
+    assert recover(source_sha='c'*40) == {'reason': 'callback_accepted'}

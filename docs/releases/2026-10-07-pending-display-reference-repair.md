@@ -1,6 +1,6 @@
 # 3004 漲跌顯示參考價漏接
 
-狀態：本地修補與驗證通過，Wei已明確批准本次commit＋僅Pages前端部署，發布進行中。Worker/Proxy/Controller/Research與交易規則不需變更。
+狀態：Wei已明確批准本次commit＋僅Pages前端部署，2026-10-07 12:00台北時間正式發布核對通過。Worker/Proxy/Controller/Research與交易規則未變更。
 
 ## Root cause / evidence
 
@@ -33,3 +33,12 @@ build log：output/atr-warmup-repair/display-reference-build.log。根目錄unre
 ## Release boundary
 
 Wei已明確批准本次commit＋Pages部署。只提交上述三個frontend檔與本報告，使用現有Pages來源驗證部署工具。發布前核對正式Pages仍為17d38068、remote main仍為53e7474b；候選HEAD的原frontend與正式來源一致。發布後核對production-provenance與正式bundle含此fallback，不發布Worker或更動送單邏輯。不要強迫成交或重置資料。
+
+## Production verification
+
+- 已發布source：e06698d1118d2c8cb4ef54f58a1e6187148ee4ce；部署URL：https://d2a6efe9.stockvision-frontend.pages.dev。
+- 正式https://stockvision-frontend.pages.dev/production-provenance.json於2026-10-07T04:00:14.857Z核對source、tree、branch與scheduler manifest全部一致。
+- 正式首頁與BotDashboard-e06698d1-BWKEX0Kg.js的SHA256與本地發布建置完全相同；bundle含當日基準昨收、daily_assessment、previous_close、assessed_at_ms、reference_source。
+- 發布建置TypeScript/Vite通過。Browser kernel ACL限制仍存在，未聲稱瀏覽器畫面實際render已驗證。
+- 收據：output/atr-warmup-repair/display-reference-release-verification.json；發布log：output/atr-warmup-repair/display-reference-deploy.log。
+- 本節為發布後文件紀錄，不需再次部署；未push、未操作交易。

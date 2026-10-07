@@ -56,6 +56,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'After indicators, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'strategy-learning-mature-evidence', name: 'Strategy Maturity Evidence', schedule: 'After same-date HMM, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6.5 },
   { id: 'screener', name: 'Screener', schedule: 'After same-date HMM regime', cron: '', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'strategy-learning-watchdog', name: 'Strategy Learning Recovery Watchdog', schedule: 'Inside Screener Callback Watchdog', cron: '', group: 'pipeline_chain', chainIndex: 24 },
@@ -160,6 +161,7 @@ const CHAIN_STEP_IDS = [
   'update',
   'indicator-queue',
   'regime-compute',
+  'strategy-learning-mature-evidence',
   'screener',
   'allocator-ev-readiness',
   'pipeline',
@@ -571,47 +573,35 @@ function getJobDisplayLog(logs: CronLogEntry[] | undefined, def: JobDef): CronLo
 }
 
 
-function inferPipelineChildLog(logs: CronLogEntry[] | undefined, taskId: string): CronLogEntry | undefined {
+export function inferPipelineChildLog(logs: CronLogEntry[] | undefined, taskId: string): CronLogEntry | undefined {
   if (!PIPELINE_CHILD_TASKS.has(taskId)) return undefined
-
   const pipelineLog = logs?.find((entry) => entry.task === 'pipeline')
   if (!pipelineLog || pipelineLog.status === 'skipped') return undefined
-
   const summary = pipelineLog.summary ?? ''
+  const terminal = pipelineLog.status === 'success' || pipelineLog.status === 'error'
+  const count = taskId === 'ml-predict'
+    ? summary.match(/ml-predict(?:-v2)?\((\d+)\s+predictions\)/i)
+      ?? summary.match(/\b(?:predictions(?:_written)?|preds)[=:]\s*(\d+)/i)
+    : summary.match(/\b(?:recommendations?_updated|recos_updated|recos)[=:]\s*(\d+)/i)
 
-  if (taskId === 'ml-predict') {
-    const predictionMatch =
-      summary.match(/ml-predict(?:-v2)?\((\d+)\s+predictions\)/i) ??
-      summary.match(/predictions(?:_written)?[=:](\d+)/i)
-
+  // Parent activity, input preparation and parent failure are not evidence
+  // that either child started. Prefer each child's own callback receipt.
+  if (terminal) {
+    if (pipelineLog.status !== 'success' || !count || Number(count[1]) <= 0) return undefined
     return {
       ...pipelineLog,
       task: taskId,
-      summary: predictionMatch
-        ? `derived from pipeline: ${predictionMatch[1]} predictions`
-        : `derived from pipeline: ${pipelineLog.status}`,
-      error: pipelineLog.status === 'error' ? (pipelineLog.error ?? pipelineLog.summary) : undefined,
+      run_scope: 'derived',
+      summary: `derived from pipeline: ${count[1]} ${taskId === 'ml-predict' ? 'predictions' : 'recommendations'}; duration is parent elapsed time`,
+      error: undefined,
     }
   }
-
-  if (taskId === 'recommendation') {
-    const recommendationDetected =
-      summary.includes('recommendation') ||
-      /recommendations?_updated[=:](\d+)/i.test(summary) ||
-      /recos_updated[=:](\d+)/i.test(summary) ||
-      /recos[=:](\d+)/i.test(summary)
-
-    if (!recommendationDetected && pipelineLog.status === 'success') return undefined
-
-    return {
-      ...pipelineLog,
-      task: taskId,
-      summary: `derived from pipeline: ${pipelineLog.status}`,
-      error: pipelineLog.status === 'error' ? (pipelineLog.error ?? pipelineLog.summary) : undefined,
-    }
-  }
-
-  return undefined
+  const activity = taskId === 'ml-predict'
+    ? /\bmodal_prediction=(?:triggered|running|spawned)\b/i.test(summary)
+    : /\brecommendation_status=(?:triggered|running)\b/i.test(summary)
+  if (!activity) return undefined
+  return { ...pipelineLog, task: taskId, run_scope: 'derived', status: 'running',
+    summary: `derived from pipeline: ${taskId} started; duration is parent elapsed time`, error: undefined }
 }
 
 function formatTimestamp(ts: string): string {

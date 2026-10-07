@@ -5,11 +5,13 @@
  * 讓使用者看到每個階段選了哪些股票、為什麼選
  */
 import { useQuery } from '@tanstack/react-query'
-import { dashboardV4Api, recommendationsApi, paperApi, type DailyPipelineView } from '@/lib/api'
+import { dashboardV4Api, recommendationsApi, paperApi, schedulerApi, type DailyPipelineView } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
+import SchedulerPipelineChain from '@/components/SchedulerPipelineChain'
+import { WorkstationPanel } from '@/components/workstation/WorkstationChrome'
 import {
   AlertTriangle, Filter, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react'
@@ -829,6 +831,14 @@ export default function PipelinePage() {
   const { isAuthenticated, login } = useAuth()
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
+  const scheduler = useQuery({
+    queryKey: ['scheduler', 'drilldown'],
+    queryFn: schedulerApi.status,
+    enabled: isAuthenticated,
+    staleTime: queryTtl.realtime,
+    refetchInterval: 60_000,
+  })
+
   // Stage 1+2+3: Daily recommendations (screener → ML → filtered)
   const {
     data: recData,
@@ -959,6 +969,10 @@ export default function PipelinePage() {
             </span>
           </div>
         </div>
+
+        <WorkstationPanel title="當日執行狀態" kicker="daily dependency chain">
+          <SchedulerPipelineChain jobs={scheduler.data?.jobs ?? []} loading={scheduler.isLoading} error={scheduler.error} />
+        </WorkstationPanel>
 
         <div className="grid gap-4 xl:grid-cols-4">
           {recIsError ? (

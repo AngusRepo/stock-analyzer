@@ -5,7 +5,8 @@ import './DailyReadinessBoard.css'
 
 export type ReadinessStageView = { label: string; status: string; statusLabel: string; date?: string | null }
 
-export default function DailyReadinessBoard({ stageView, renderStage }: {
+export default function DailyReadinessBoard({ stageView, renderStage, pipelineSummary }: {
+  pipelineSummary?: string;
   stageView: (id: string) => ReadinessStageView;
   renderStage: (id: string, ordinal: string) => ReactNode;
 }) {
@@ -28,10 +29,25 @@ export default function DailyReadinessBoard({ stageView, renderStage }: {
             </span>
           </header>
           <p className="daily-readiness-board__caption">{phase.caption}</p>
-          <div className="daily-readiness-board__stages">{views.map((view, stageIndex) =>
-            <div key={view.id} className="daily-readiness-board__stage">
-              {renderStage(view.id, String(stageIndex + 1).padStart(2, '0'))}
-            </div>)}</div>
+          <div className="daily-readiness-board__stages">{views.map((view, stageIndex) => {
+            if (view.id === 'ml-predict') return null
+            if (view.id === 'pipeline') return <section key={view.id} className="daily-readiness-board__pipeline" aria-label="Pipeline 流程容器">
+              <p className="daily-readiness-board__container-title">Pipeline 流程容器</p>
+              <div className="daily-readiness-board__stage">{renderStage('pipeline', '01')}</div>
+              <p className="daily-readiness-board__caption">{pipelineSummary}</p>
+              <div className="daily-readiness-board__child" data-pipeline-child="ml-predict">
+                <span>資料準備完成後接續</span>
+                <div className="daily-readiness-board__stage">{renderStage('ml-predict', '02')}</div>
+              </div>
+              <p className="daily-readiness-board__handoff">L3 封存 → 等待次交易日盤前資訊 → 盤前階段 L4 推薦。等待期間不代表持續運算。</p>
+            </section>
+            return <div key={view.id} className="daily-readiness-board__item">
+              {view.id === 'recommendation' && <p className="daily-readiness-board__handoff">Pipeline 子階段 · 盤前資訊就緒後接續 L4</p>}
+              <div className="daily-readiness-board__stage" data-pipeline-child={view.id === 'recommendation' ? view.id : undefined}>
+                {renderStage(view.id, String(stageIndex + 1).padStart(2, '0'))}
+              </div>
+            </div>
+          })}</div>
         </section>
       })}
     </div>

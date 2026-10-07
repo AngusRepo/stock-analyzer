@@ -562,7 +562,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   const cb = mergeIntradayPortfolioRisk(
     baseCb,
-    await readP9IntradayHalt(env.KV, today, {
+    await readP9IntradayHalt(paperDomainDatabase(env), env.KV, paperAccountId(), today, {
       defaults: baseCb,
       effectiveBuy: baseCb.buyConfThreshold,
       effectiveSell: baseCb.sellConfThreshold,
@@ -834,17 +834,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     netUnsettledSettlement: settlement.netUnsettledSettlement,
     corporateReceivablesValue: corporateBounds.lower,
   })
-  if (!corporateBounds.complete) {
-    // Parent shares may already be sold: the empty-holdings exit poll does not
-    // evaluate P9. Check retained rights here before ANY new entry or swap.
-    const risk = await checkP9IntradayDrawdown(env.KV, today, totalPortfolio, riskCfg,
+  {
+    // Seed/evaluate NAV before ANY new entry, including empty accounts and uncertain retained rights.
+    const risk = await checkP9IntradayDrawdown(paperDomainDatabase(env), env.KV, paperAccountId(), today, totalPortfolio, riskCfg,
       { defaults: cb, effectiveBuy: cb.buyConfThreshold, effectiveSell: cb.sellConfThreshold },
       totalPortfolio + corporateBounds.upper - corporateBounds.lower)
-    if (risk.evaluation.triggered) {
-      const reason = 'subscription_valuation_risk_bound'
+    if (risk.state?.halt) {
+      const reason = risk.evaluation ? 'p9_intraday_drawdown_halt' : 'p9_state_unavailable'
       const detail = JSON.stringify({ lower: totalPortfolio,
         upper: totalPortfolio + corporateBounds.upper - corporateBounds.lower,
-        uncertain_rights: corporateBounds.unpricedRights, drawdown_bound: risk.evaluation.drawdown })
+        uncertain_rights: corporateBounds.unpricedRights, drawdown_bound: risk.evaluation?.drawdown ?? null })
       const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, pendingBuys.map(item => ({
         symbol: item.symbol, status: 'checked_waiting' as const, reason, detail,
       })))

@@ -2,8 +2,7 @@ import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
-import { readMarketRegimeState } from './marketRegimeState'
-import { buildMarketRegimeFactorPacket, upsertMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
+import { recomputeDailyMarketRisk } from './marketRiskMaterialization'
 import {
   commitPipelineExecutionDispatch,
   failPipelineExecutionDispatch,
@@ -21,17 +20,6 @@ function resolvePipelineRunDate(runDate?: string | null): string {
 
 export interface PipelineTriggerOptions {
   prevalidatedEventChain?: boolean
-}
-
-const MARKET_RISK_LATEST_CACHE_KEYS = [
-  'market:risk:latest',
-  'market:risk:latest:v4-context',
-  'market:risk:latest:v19-finlab-risk-detail',
-  'market:risk:latest:v20-finlab-risk-detail-oi-delta',
-]
-
-async function clearMarketRiskLatestCaches(env: Bindings): Promise<void> {
-  await Promise.allSettled(MARKET_RISK_LATEST_CACHE_KEYS.map((key) => env.KV.delete(key)))
 }
 
 export async function runMLAndRiskV2(
@@ -67,75 +55,7 @@ export async function runMLAndRiskV2(
     }
 
     try {
-      const { calcMarketRisk } = await import('./marketRisk')
-      const shouldRecomputeRisk = twDate === twToday()
-      const existingRisk = shouldRecomputeRisk
-        ? null
-        : await databaseForDataDomain(env, 'core').prepare('SELECT * FROM market_risk WHERE date=? LIMIT 1').bind(twDate).first<any>()
-      const existingRiskComplete = existingRisk
-        && existingRisk.twii_close != null
-        && existingRisk.twii_ma20 != null
-        && existingRisk.twii_bias != null
-        && existingRisk.twii_vol20 != null
-      if (!shouldRecomputeRisk && existingRiskComplete) {
-        console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
-        const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
-        const packet = await buildMarketRegimeFactorPacket(marketDb, existingRisk, regimeState)
-        await upsertMarketRegimeFactorPacket(marketDb, packet)
-        await clearMarketRiskLatestCaches(env)
-        console.log(`[ML V2] Market regime factor packet refreshed from preserved row: ${packet.level} (${packet.score}/100) date=${packet.date}`)
-      } else {
-        const risk = await calcMarketRisk(
-          marketDb,
-          env.ML_CONTROLLER_URL,
-          env.ML_CONTROLLER_SECRET,
-          twDate,
-        )
-        await databaseForDataDomain(env, 'core').prepare(`
-          INSERT OR REPLACE INTO market_risk
-            (date, vix, vix_level, twii_close, twii_vol20, twii_ma20, twii_bias,
-             foreign_consecutive_sell, foreign_net_5d, margin_ratio,
-             limit_down_count, limit_down_pct, risk_score, risk_level, risk_summary)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        `).bind(
-          risk.date,
-          risk.vix,
-          risk.vixLevel,
-          risk.twiiClose,
-          risk.twiiVol20,
-          risk.twiiMa20,
-          risk.twiiBias,
-          risk.foreignConsecutiveSell,
-          risk.foreignNet5d,
-          risk.marginRatio,
-          risk.limitDownCount,
-          risk.limitDownPct,
-          risk.riskScore,
-          risk.riskLevel,
-          risk.riskSummary,
-        ).run()
-        const regimeState = await readMarketRegimeState(env.KV).catch(() => null)
-        const packet = await buildMarketRegimeFactorPacket(marketDb, {
-          date: risk.date,
-          vix: risk.vix,
-          vix_level: risk.vixLevel,
-          twii_close: risk.twiiClose,
-          twii_vol20: risk.twiiVol20,
-          twii_ma20: risk.twiiMa20,
-          twii_bias: risk.twiiBias,
-          foreign_consecutive_sell: risk.foreignConsecutiveSell,
-          foreign_net_5d: risk.foreignNet5d,
-          margin_ratio: risk.marginRatio,
-          limit_down_count: risk.limitDownCount,
-          limit_down_pct: risk.limitDownPct,
-          risk_score: risk.riskScore,
-          risk_level: risk.riskLevel,
-          risk_summary: risk.riskSummary,
-        }, regimeState)
-        await upsertMarketRegimeFactorPacket(marketDb, packet)
-        await clearMarketRiskLatestCaches(env)
-        console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
-      }
+      await recomputeDailyMarketRisk(env,twDate)
     } catch (e: any) {
       throw new Error(`market risk unavailable; pipeline blocked: ${e?.message ?? e}`)
     }

@@ -1,3 +1,4 @@
+import { fixtureQuality, fixtureProvenance } from './riskProtocol.testSupport'
 import fs from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { buildChampionTradingConfig } from './tradingConfig'
@@ -11,7 +12,7 @@ export function l4NativeFixture() {
   for(const domain of domains) {
     const sql=sqls[domain]=new DatabaseSync(':memory:')
     const dir=new URL(`../../domain-migrations/${domain}/`,import.meta.url)
-    for(const file of fs.readdirSync(dir).filter(f=>f.startsWith('0001_') || f==='0002_runtime_owned_tables.sql' || domain==='ops' && f==='0005_ops_artifact_compute_cost_runtime.sql' || domain==='market' && ['0004_legacy_schema_alignment.sql','0005_market_regime_state_history.sql'].includes(f) || domain==='paper' && ['0004_corporate_action_accounting.sql','0005_l4_distribution.sql','0006_p5_rearm.sql','0009_atr_once.sql'].includes(f)).sort()) sql.exec(fs.readFileSync(new URL(file,dir),'utf8'))
+    for(const file of fs.readdirSync(dir).filter(f=>f.startsWith('0001_') || f==='0002_runtime_owned_tables.sql' || domain==='core' && f==='0008_market_risk_quality.sql' || domain==='ops' && f==='0005_ops_artifact_compute_cost_runtime.sql' || domain==='market' && ['0004_legacy_schema_alignment.sql','0005_market_regime_state_history.sql'].includes(f) || domain==='paper' && ['0004_corporate_action_accounting.sql','0005_l4_distribution.sql','0006_p5_rearm.sql','0009_atr_once.sql','0010_intraday_nav_risk.sql'].includes(f)).sort()) sql.exec(fs.readFileSync(new URL(file,dir),'utf8'))
     const statement=(query:string,args:any[]=[]):any=>({bind:(...values:any[])=>statement(query,values),
       first:async()=>sql.prepare(frozenSql(query)).get(...args) ?? null,all:async()=>({success:true,results:sql.prepare(frozenSql(query)).all(...args)}),
       run:async()=>{const result=sql.prepare(frozenSql(query)).run(...args);return {success:true,meta:{changes:Number(result.changes)}}}})
@@ -29,5 +30,13 @@ export function l4NativeFixture() {
   const ports:any={environment:env,accountId:1,nowMs:Date.parse('2026-09-14T00:00:00Z'),databases:dbs,
     fetchFrozen:async()=>{throw new Error('unexpected_network_in_account_capture')},transaction:async(fn:()=>Promise<any>)=>fn()}
   clockPorts=ports
-  return {sqls,env,ports,cfg,kvs,artifacts,close:()=>Object.values(sqls).forEach(s=>s.close())}
+  const seedRiskQuality=(date:string,score=10)=>{
+    const q=fixtureQuality(date,score)
+    sqls.core.prepare('INSERT OR REPLACE INTO market_risk_quality_v1(date,schema_version,status,known_score,upper_score,json,checksum,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run(date,q.schema_version,q.status,score,score,q.json,q.checksum,date+'T14:00:00Z')
+    const state=JSON.parse(kvs.get('market_regime_state')!)
+    state.regime_evidence.hmm_provenance=fixtureProvenance(date)
+    kvs.set('market_regime_state',JSON.stringify(state))
+  }
+  return {sqls,env,ports,cfg,kvs,artifacts,seedRiskQuality,close:()=>Object.values(sqls).forEach(s=>s.close())}
 }

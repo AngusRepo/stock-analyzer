@@ -1,6 +1,8 @@
+import { verifiedFixture } from './riskProtocol.testSupport'
+const buildCanonicalMarketRiskContext=(input:any)=>originalBuild(verifiedFixture(input))
 import assert from 'node:assert/strict'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
-import { buildCanonicalMarketRiskContext } from './marketRiskRuntime'
+import { buildCanonicalMarketRiskContext as originalBuild } from './marketRiskRuntime'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
 import { checkP4Breadth } from './riskChecks/p4Breadth'
 import { DEFAULT_TRADING_CONFIG } from './tradingConfig'
@@ -47,7 +49,7 @@ const severeDrop = buildCanonicalMarketRiskContext({
     { date: '2026-07-16', twii_close: 45625, risk_score: 30, risk_level: 'yellow' },
   ],
   factorPacket: packet,
-  breadth: { date: '2026-07-17', advance_ratio: 0.24, bull_alignment_pct: 0.35 },
+  breadth: { date: '2026-07-17', advance_ratio: 0.24, bull_alignment_pct: 35 },
   regimeState: regime,
   policy: DEFAULT_RISK_CONFIG.portfolio,
 })
@@ -64,7 +66,7 @@ const mismatched = buildCanonicalMarketRiskContext({
     { date: '2026-07-16', twii_close: 45625, risk_score: 30, risk_level: 'yellow' },
   ],
   factorPacket: { ...packet, date: '2026-07-16' },
-  breadth: { date: '2026-07-17', advance_ratio: 0.24, bull_alignment_pct: 0.35 },
+  breadth: { date: '2026-07-17', advance_ratio: 0.24, bull_alignment_pct: 35 },
   regimeState: regime,
   policy: DEFAULT_RISK_CONFIG.portfolio,
 })

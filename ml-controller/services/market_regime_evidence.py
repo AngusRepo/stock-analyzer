@@ -302,7 +302,7 @@ def _global_risk(market_env: dict[str, Any], rows: list[dict[str, Any]]) -> dict
             "us_hy_spread_chg": hy_chg,
             "world_index_return_5d": world_index_5d,
         }, "global_risk_off")
-    if (vix is not None and vix <= 18) and (gspc is None or gspc >= 0) and (sox is None or sox >= 0):
+    if (vix is not None and vix <= 18) and (gspc is not None and gspc >= 0) and (sox is not None and sox >= 0):
         return _dimension("available", "bullish", {
             "us_vix": vix,
             "us_gspc_return": gspc,

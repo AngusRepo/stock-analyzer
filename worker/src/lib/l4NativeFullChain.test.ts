@@ -53,9 +53,10 @@ test('native full chain executes positive L4 target through real entry owner',as
     f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
     f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
     f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
-    f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES('2026-09-11',.6,.6)")
+    f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES('2026-09-11',.6,60)")
     f.sqls.market.exec("INSERT INTO market_regime_factor_packets(date,schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,generated_at) VALUES('2026-09-11','market-regime-factor-packet-v1',10,'green','[]','{}','{}','{}','{}','{}','2026-09-11T14:00:00Z')")
     f.kvs.set('market_regime_state',JSON.stringify(buildMarketRegimeState({label:'bull_market',runDate:'2026-09-11',computedAt:'2026-09-11T14:00:00Z'})))
+    f.seedRiskQuality('2026-09-11')
     f.sqls.learning.exec("CREATE TABLE active8_ensemble_pointer_v1(singleton_id INTEGER PRIMARY KEY,artifact_id TEXT,cohort_id TEXT,payload_checksum TEXT,base_artifact_set_checksum TEXT)")
     const l3={artifact_id:'l3-fixture',cohort_id:'cohort-fixture',payload_checksum:'a'.repeat(64),base_artifact_set_checksum:'b'.repeat(64)}
     f.sqls.learning.prepare('INSERT INTO active8_ensemble_pointer_v1(singleton_id,artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum) VALUES(1,?,?,?,?)').run(...Object.values(l3))
@@ -97,7 +98,7 @@ test('native full chain executes positive L4 target through real entry owner',as
     assert.equal(result.production_effect,false)
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
     assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
-    assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,20029)
+    assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,20028)
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
     const topupProgress={schema_version:'position-tp1-progress-v1',entry_date:'2026-09-14',target_shares:2000,filled_shares:1000}
     f.sqls.paper.prepare("UPDATE paper_positions SET trade_lifecycle_json=json_set(trade_lifecycle_json,'$.position_tp1_progress',json(?))").run(JSON.stringify(topupProgress))
@@ -110,7 +111,7 @@ test('native full chain executes positive L4 target through real entry owner',as
     f.sqls.paper.exec("UPDATE paper_positions SET trade_lifecycle_json=json_remove(trade_lifecycle_json,'$.position_tp1_progress')")
 
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,3)
-    assert.equal(f.sqls.paper.prepare('SELECT SUM(amount) n FROM paper_settlements').get()?.n,60087)
+    assert.equal(f.sqls.paper.prepare('SELECT SUM(amount) n FROM paper_settlements').get()?.n,60084)
     f.ports.nowMs+=60_000
     await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3999)
@@ -124,13 +125,14 @@ test('native full chain executes positive L4 target through real entry owner',as
     assert.equal(completed.pendingBuys.length,0)
     f.ports.nowMs=Date.parse('2026-09-14T06:00:00Z')
     const firstClose=(await withPaperExecutionScope(f.ports,()=>runDailySnapshot(f.env,{date:'2026-09-14'}))).result
-    assert.equal(firstClose.valuation.nav,999885)
+    assert.equal(firstClose.valuation.nav,999888)
     // Next session receives the same L3/L4 model and a tighter approved test risk arm.
     f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-14',30000,10,'green')")
     f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,open,high,low,close,avg_price,volume) VALUES(1,'2026-09-14',20,20.5,19.5,20,20,1000000)")
     f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) SELECT '2026-09-14',advance_ratio,bull_alignment_pct FROM market_breadth WHERE date='2026-09-11'")
     f.sqls.market.exec("INSERT INTO market_regime_factor_packets(date,schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,generated_at) SELECT '2026-09-14',schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,'2026-09-14T14:00:00Z' FROM market_regime_factor_packets WHERE date='2026-09-11'")
     f.kvs.set('market_regime_state',JSON.stringify(buildMarketRegimeState({label:'bull_market',runDate:'2026-09-14',computedAt:'2026-09-14T14:00:00Z'})))
+    f.seedRiskQuality('2026-09-14')
     f.sqls.core.exec("INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation) SELECT stock_id,symbol,name,'2026-09-14',rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation FROM daily_recommendations WHERE date='2026-09-11'")
     f.ports.nowMs=Date.parse('2026-09-15T00:00:00Z')
     const nextAccount=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-14'))).result
@@ -228,7 +230,7 @@ test('native full chain executes positive L4 target through real entry owner',as
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,1)
     f.ports.nowMs=Date.parse('2026-09-15T06:00:00Z')
     const close=(await withPaperExecutionScope(f.ports,()=>runDailySnapshot(f.env,{date:'2026-09-15'}))).result
-    assert.equal(close.valuation.nav,999664)
+    assert.equal(close.valuation.nav,999667)
     const reward=JSON.parse(String(f.sqls.paper.prepare('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date DESC LIMIT 1').get()?.payload_json))
     assert.equal(reward.complete,true)
     assert.equal(reward.includes_costs,true)
@@ -241,11 +243,11 @@ test('native full chain executes positive L4 target through real entry owner',as
       covered_symbols:['2330'],actions:[],blockers:{},tax_basis:'gross_before_personal_tax'}))
     await withPaperExecutionScope(f.ports,()=>settlePaperT2(f.env))
     await withPaperExecutionScope(f.ports,()=>settlePaperT2(f.env))
-    assert.equal(f.sqls.paper.prepare('SELECT cash FROM paper_accounts WHERE id=1').get()?.cash,969664)
+    assert.equal(f.sqls.paper.prepare('SELECT cash FROM paper_accounts WHERE id=1').get()?.cash,969667)
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_settlements WHERE settled=0').get()?.n,0)
     // The closed account receipt, with its original policy identity, reaches native OPB.
     // Unchanged price/risk input is synthetic; the reward itself comes from actual fills.
-    const learned=allocateNative({...nextAccount,signal_date:'2026-09-16',nav:999664,available_cash:969664,
+    const learned=allocateNative({...nextAccount,signal_date:'2026-09-16',nav:999667,available_cash:969667,
       holdings:[{symbol:'2330',shares:1500,market_value:30000,sector:'TECH'}]},.03001)
     assert.equal(learned.plan.opb.status,'learned_policy')
     assert.notEqual(learned.plan.opb.arm_id,'base')

@@ -3,9 +3,9 @@
  *
  * 指標來源：
  *   VIX          → Yahoo Finance ^VIX（免費）
- *   TWII 歷史    → Yahoo Finance ^TWII（免費）
+ *   TWII 歷史    → 單一 FinLab TAIEX／完整 TWSE 官方窗口（交易日驗證）
  *   外資籌碼     → D1 chip_data SUM（TWSE T86 每日寫入）
- *   融資使用率   → TWSE MI_MARGN selectType=MS（市場整體）
+ *   融資使用率   → TWSE MI_MARGN ALL（上市逐檔、同單位餘額／限額）
  *   ADL 騰落線  → D1 market_breadth（Wave2 每日寫入）
  *   多空排列    → D1 stock_prices MA5/MA20/MA60 計算
  *
@@ -32,31 +32,45 @@ export interface MarketRiskResult {
   limitDownCount: number | null
   limitDownPct: number | null
   // ── Phase 2: FinLab 大盤綜合指標強化 ────────────────────────────────────────
-  adlValue: number | null           // 騰落線（累積 上漲家數-下跌家數）
+  adlValue: number | null           // 最近五個交易日淨騰落家數；並非全歷史 ADL 累積值
   adlTrend: 'up' | 'down' | 'flat' | null  // ADL 5日趨勢
   bullAlignmentCount: number | null    // 多空排列家數（MA5>MA20>MA60）
   bullAlignmentPct: number | null      // 多空排列比例 %
   riskScore: number
   riskLevel: 'green' | 'yellow' | 'orange' | 'red' | 'black'
   riskSummary: string
+  quality: MarketRiskQuality
   triggers: string[]   // 觸發哪些警示條件
 }
 
+export interface MarketRiskQuality {
+  schema_version: 'market-risk-quality-v1'
+  date: string
+  status: 'complete' | 'bounded' | 'blocked'
+  known_score: number
+  upper_score: number
+  missing: string[]
+  critical_missing: string[]
+  sources: Record<string, unknown>
+  inputs: Record<string, unknown>
+}
+
 // ── 1. 抓 VIX ─────────────────────────────────────────────────────────────────
-async function fetchVIX(runDate?: string): Promise<number | null> {
+async function fetchVIX(runDate: string): Promise<{value:number|null;date:string|null}> {
   try {
-    const cutoff = runDate ? Date.parse(`${runDate}T00:00:00Z`) / 1000 : null
-    const url = cutoff == null
-      ? 'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=5d'
-      : `https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&period1=${cutoff - 10 * 86400}&period2=${cutoff}`
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+    const cutoff = Date.parse(`${runDate}T00:00:00Z`) / 1000
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&period1=${cutoff - 10 * 86400}&period2=${cutoff}`
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) })
+    if(!res.ok)return {value:null,date:null}
     const json = await res.json() as any
     const chart = json.chart?.result?.[0]
     const closes = chart?.indicators?.quote?.[0]?.close ?? []
-    const valid = closes.filter((v: any, i: number) =>
-      Number.isFinite(v) && v > 0 && (cutoff == null || Number(chart?.timestamp?.[i]) < cutoff))
-    return valid.length ? Math.round(valid[valid.length - 1] * 100) / 100 : null
-  } catch { return null }
+    const observations=closes.map((value:unknown,i:number)=>({value,time:Number(chart?.timestamp?.[i])}))
+      .filter((row:any)=>typeof row.value==='number'&&Number.isFinite(row.value)&&row.value>0&&row.time<cutoff&&row.time>=cutoff-5*86400)
+      .sort((a:any,b:any)=>a.time-b.time)
+    const latest=observations.at(-1)
+    return latest ? {value:Math.round(latest.value*100)/100,date:new Date(latest.time*1000).toISOString().slice(0,10)} : {value:null,date:null}
+  } catch { return {value:null,date:null} }
 }
 
 // ── 2. 抓 TWII 近 60 天收盤（計算波動率、均線、乖離率）────────────────────────
@@ -129,7 +143,7 @@ function twiiSourceRank(source: string): number {
   return 2
 }
 
-async function fetchTWIIHistory(db: D1Database, runDate: string): Promise<number[]> {
+async function fetchTWIIHistory(db: D1Database, runDate: string): Promise<TwiiHistoryRow[]> {
   try {
     const { results } = await db.prepare(`
       SELECT date, close, source
@@ -140,34 +154,28 @@ async function fetchTWIIHistory(db: D1Database, runDate: string): Promise<number
         AND close < 100000
         AND source != 'finlab.benchmark_return'
       ORDER BY date DESC
-      LIMIT 120
+      LIMIT 600
     `).bind(runDate).all<TwiiHistoryRow>()
 
+    const preferred=(results??[]).filter(row=>row.source==='finlab.taiex_total_index')
     const byDate = new Map<string, TwiiHistoryRow>()
-    for (const row of results ?? []) {
-      const date = String(row.date ?? '').slice(0, 10)
-      const close = Number(row.close)
-      const source = String(row.source ?? '')
-      if (!date || !Number.isFinite(close)) continue
-
-      const previous = byDate.get(date)
-      if (!previous || twiiSourceRank(source) < twiiSourceRank(previous.source)) {
-        byDate.set(date, { date, close, source })
-      }
+    for(const row of preferred){
+      const date=String(row.date),close=Number(row.close)
+      if(!Number.isFinite(close)||date>runDate)return []
+      if(byDate.has(date)&&byDate.get(date)!.close!==close)return []
+      byDate.set(date,{date,close,source:row.source})
     }
-
     if (byDate.size < 21) {
-      for (const row of await fetchTwseOfficialTwiiHistory(runDate)) {
-        const previous = byDate.get(row.date)
-        if (!previous || twiiSourceRank(row.source) < twiiSourceRank(previous.source)) {
-          byDate.set(row.date, row)
-        }
-      }
+      // Full official window only; never splice sources across a return/MA window.
+      byDate.clear()
+      for(const row of await fetchTwseOfficialTwiiHistory(runDate))byDate.set(row.date,row)
     }
-
-    return [...byDate.values()]
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .map((row) => row.close)
+    const rows=[...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date))
+    if(rows.length<21||rows.at(-1)?.date!==runDate)return []
+    const sessions=await db.prepare('SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 21').bind(runDate).all<{session_date:string}>()
+    const expected=(sessions.results??[]).map(row=>row.session_date).sort()
+    if(expected.length!==21||expected.join()!==rows.slice(-21).map(row=>row.date).join())return []
+    return rows
   } catch { return [] }
 }
 
@@ -181,12 +189,15 @@ async function fetchMarketForeignChip(db: D1Database, runDate: string): Promise<
       SELECT date, SUM(COALESCE(net_amount, 0)) / 1e8 AS daily_net
         FROM canonical_institutional_amount_daily
        WHERE investor = 'foreign'
+         AND source = 'finlab.institutional_investors_trading_all_market_summary'
+         AND net_amount IS NOT NULL
          AND date BETWEEN date(?, '-25 days') AND ?
+         AND date IN (SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 5)
        GROUP BY date
        ORDER BY date
-    `).bind(runDate, runDate).all<{ date: string; daily_net: number }>()
+    `).bind(runDate, runDate,runDate).all<{ date: string; daily_net: number }>()
 
-    if (!results?.length) return { net5d: null, consecutiveSell: 0 }
+    if (!results || results.length!==5 || results.at(-1)?.date!==runDate || results.some(row=>!Number.isFinite(Number(row.daily_net)))) return { net5d: null, consecutiveSell: 0 }
     const last5 = results.slice(-5)
     const net5d = last5.reduce((sum, row) => sum + Number(row.daily_net ?? 0), 0)
     let consecutive = 0
@@ -205,32 +216,28 @@ async function fetchMarketForeignChip(db: D1Database, runDate: string): Promise<
 }
 
 // ── 4/6. 融資統計（透過 Controller proxy 取 TWSE MI_MARGN）──────────────────
-let _marginCache: { balance: number; limit: number } | null = null
+async function fetchMarginRatio(db:D1Database,runDate:string,controllerUrl?:string,controllerSecret?:string):Promise<{value:number|null;source:unknown}> {
+  if(!controllerUrl)return {value:null,source:null}
+  try{
+    const headers:Record<string,string>={}
+    if(controllerSecret)headers['X-Controller-Token']=controllerSecret
+    const res=await fetch(`${controllerUrl}/twse/margin-summary?run_date=${runDate}`,{headers,signal:AbortSignal.timeout(35000)})
+    if(!res.ok)return {value:null,source:null}
+    const data=await res.json() as any
+    const {results}=await db.prepare('SELECT session_date FROM market_trading_sessions WHERE session_date<? ORDER BY session_date DESC LIMIT 1').bind(runDate).all<{session_date:string}>()
+    const previous=results?.[0]?.session_date
+    const balance=data.balance,limit=data.limit
+    const receiptValid=data.date===runDate&&data.limit_effective_date===runDate&&data.limit_publication_date===previous&&previous<runDate
+      &&data.unit==='1000_shares'&&data.source==='twse.mi_margn.all.listed'&&data.coverage>=1000
+      &&Number.isFinite(balance)&&balance>=0&&Number.isFinite(data.known_limit)&&data.known_limit>0
+      &&Number.isFinite(data.ratio_lower)&&Number.isFinite(data.ratio_upper)&&data.ratio_lower>=0&&data.ratio_upper>=data.ratio_lower
+      &&Math.abs(data.ratio_upper-balance/data.known_limit*100)<1e-8
+    if(!receiptValid)return {value:null,source:null}
+    const exact=data.status==='complete'&&Array.isArray(data.unknown_limit_symbols)&&data.unknown_limit_symbols.length===0
+      &&limit===data.known_limit&&data.ratio_lower===data.ratio_upper
+    return {value:exact ? data.ratio_upper : null,source:data}
 
-async function fetchTwseMarginSummary(controllerUrl?: string, controllerSecret?: string): Promise<{ balance: number; limit: number } | null> {
-  if (_marginCache) return _marginCache
-  if (!controllerUrl) return null
-  try {
-    const headers: Record<string, string> = {}
-    if (controllerSecret) headers['X-Controller-Token'] = controllerSecret
-    const res = await fetch(`${controllerUrl}/twse/margin-summary`, {
-      headers, signal: AbortSignal.timeout(15000),
-    })
-    if (!res.ok) return null
-    const data = await res.json() as any
-    if (data.balance && data.limit) {
-      _marginCache = { balance: data.balance, limit: data.limit }
-      return _marginCache
-    }
-    return null
-  } catch { return null }
-}
-
-// ── 4. 融資使用率 ─────────────────────────────────────────────────────────────
-async function fetchMarginRatio(controllerUrl?: string, controllerSecret?: string): Promise<number | null> {
-  const data = await fetchTwseMarginSummary(controllerUrl, controllerSecret)
-  if (!data) return null
-  return Math.round((data.balance / data.limit) * 10000) / 100
+  }catch{return {value:null,source:null}}
 }
 
 // ── 5. ADL 騰落線（D1 market_breadth table，Wave2 每日寫入）─────────────────
@@ -242,12 +249,12 @@ async function fetchADL(db: D1Database, runDate: string): Promise<{
     const { results } = await db.prepare(`
       SELECT date, advance_count, decline_count
       FROM market_breadth
-      WHERE date <= ?
+      WHERE date IN (SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 5)
       ORDER BY date DESC
-      LIMIT 15
+      LIMIT 5
     `).bind(runDate).all<{ date: string; advance_count: number; decline_count: number }>()
 
-    if (!results?.length || results.length < 2) return { adlValue: null, adlTrend: null }
+    if (!results?.length || results.length < 5 || results[0].date !== runDate || results.some(row=>row.advance_count==null||row.decline_count==null||!Number.isFinite(Number(row.advance_count))||!Number.isFinite(Number(row.decline_count)))) return { adlValue: null, adlTrend: null }
 
     const sorted = [...results].sort((a, b) => a.date.localeCompare(b.date))
 
@@ -271,43 +278,29 @@ async function fetchADL(db: D1Database, runDate: string): Promise<{
 }
 
 // ── 7. 多空排列家數（D1 stock_prices 計算 MA5/MA20/MA60）───────────────────
-async function fetchBullAlignmentCount(db: D1Database, runDate: string): Promise<{
-  count: number | null
-  pct: number | null
-}> {
-  try {
-    const { results } = await db.prepare(`
-      SELECT stock_id, date, close
-      FROM stock_prices
-      WHERE date BETWEEN date(?, '-120 days') AND ? AND close > 0
-      ORDER BY stock_id, date
-    `).bind(runDate, runDate).all<{ stock_id: number; date: string; close: number }>()
-
-    if (!results?.length) return { count: null, pct: null }
-
-    // group by stock_id
-    const byStock = new Map<number, number[]>()
-    for (const r of results) {
-      if (!byStock.has(r.stock_id)) byStock.set(r.stock_id, [])
-      byStock.get(r.stock_id)!.push(r.close)
-    }
-
-    let bullCount = 0
-    let total = 0
-    for (const closes of byStock.values()) {
-      if (closes.length < 60) continue
-      total++
-      const ma5  = closes.slice(-5).reduce((a, b) => a + b, 0) / 5
-      const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20
-      const ma60 = closes.slice(-60).reduce((a, b) => a + b, 0) / 60
-      if (ma5 > ma20 && ma20 > ma60) bullCount++
-    }
-
-    return {
-      count: bullCount,
-      pct: total > 0 ? Math.round((bullCount / total) * 10000) / 100 : null,
-    }
-  } catch { return { count: null, pct: null } }
+export async function fetchBullAlignmentCount(db:D1Database,runDate:string):Promise<{count:number|null;pct:number|null;eligible:number;universe:number}> {
+  try{
+    // D1 aggregates instead of returning hundreds of thousands of stock-price rows.
+    const {results}=await db.prepare(`
+      WITH sessions AS (SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 60),
+      ranked AS (
+        SELECT stock_id,date,close,ROW_NUMBER() OVER(PARTITION BY stock_id ORDER BY date DESC) rn
+        FROM canonical_market_daily
+        WHERE date BETWEEN date(?, '-120 days') AND ? AND close>0 AND source='finlab.price'
+          AND stock_id GLOB '[1-9][0-9][0-9][0-9]' AND date IN (SELECT session_date FROM sessions)
+      ), stats AS (
+        SELECT stock_id,COUNT(*) n,MAX(date) last_date,
+          AVG(CASE WHEN rn<=5 THEN close END) ma5,AVG(CASE WHEN rn<=20 THEN close END) ma20,AVG(close) ma60
+        FROM ranked GROUP BY stock_id
+      )
+      SELECT SUM(CASE WHEN n=60 AND ma5>ma20 AND ma20>ma60 THEN 1 ELSE 0 END) bull_count,
+        SUM(CASE WHEN n=60 THEN 1 ELSE 0 END) eligible,COUNT(*) universe
+      FROM stats WHERE last_date=?
+    `).bind(runDate,runDate,runDate,runDate).all<{bull_count:number;eligible:number;universe:number}>()
+    const row=results?.[0],eligible=Number(row?.eligible??0),universe=Number(row?.universe??0),count=Number(row?.bull_count??0)
+    if(eligible<1000||universe<=0||eligible/universe<.8||count<0||count>eligible)return {count:null,pct:null,eligible,universe}
+    return {count,pct:Math.round(count/eligible*10000)/100,eligible,universe}
+  }catch{return {count:null,pct:null,eligible:0,universe:0}}
 }
 
 // ── 計算輔助函式 ───────────────────────────────────────────────────────────────
@@ -336,7 +329,7 @@ function vixLevel(vix: number | null): string {
 }
 
 // ── 風險評分引擎（0-100）─────────────────────────────────────────────────────
-function calcRiskScore(data: Omit<MarketRiskResult, 'riskScore' | 'riskLevel' | 'riskSummary' | 'triggers'>): {
+export function calcRiskScore(data: Omit<MarketRiskResult, 'riskScore' | 'riskLevel' | 'riskSummary' | 'triggers' | 'quality'>): {
   score: number; triggers: string[]
 } {
   let score = 0
@@ -416,20 +409,19 @@ export async function calcMarketRisk(
   runDate?: string,
 ): Promise<MarketRiskResult> {
   const today = runDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const historical = today < new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  _marginCache = null  // 清除快取
+
 
   // 平行抓所有資料（Phase 2: 加入 ADL + 多空排列）
-  const [vix, twiiHistory, foreignChip, marginRatio, adlData, bullAlignment] = await Promise.all([
-    fetchVIX(historical ? today : undefined),
+  const [vixData, twiiRows, foreignChip, marginData, adlData, bullAlignment] = await Promise.all([
+    fetchVIX(today),
     fetchTWIIHistory(db, today),
     fetchMarketForeignChip(db, today),
-    // This proxy is latest-only. Never stamp today's margin ratio onto an old date.
-    historical ? Promise.resolve(null) : fetchMarginRatio(controllerUrl, controllerSecret),
+    fetchMarginRatio(db,today,controllerUrl,controllerSecret),
     fetchADL(db, today),
     fetchBullAlignmentCount(db, today),
   ])
 
+  const vix=vixData.value,marginRatio=marginData.value,twiiHistory=twiiRows.map(row=>row.close)
   const twiiClose  = twiiHistory.length ? twiiHistory[twiiHistory.length - 1] : null
   const twiiVol20  = annualizedVol(twiiHistory)
   const twiiMa20   = sma(twiiHistory, 20)
@@ -456,7 +448,14 @@ export async function calcMarketRisk(
     bullAlignmentPct: bullAlignment.pct,
   }
 
-  const { score, triggers } = calcRiskScore(partial)
+  const quality=buildMarketRiskQuality(partial,{vix:{source:'yahoo.vix.daily',date:vixData.date,cutoff:`${today}T00:00:00Z`},
+    benchmark:{source:twiiRows[0]?.source??null,date:twiiRows.at(-1)?.date??null,sessions:twiiRows.slice(-21)},
+    foreign:{source:'finlab.institutional_investors_trading_all_market_summary',date:foreignChip.net5d===null?null:today},
+    margin:marginData.source,breadth:{source:'market_breadth',date:adlData.adlTrend===null?null:today,window:5,method:'net_advances_last_5_sessions'},
+    alignment:{source:'finlab.price',date:today,eligible:bullAlignment.eligible,universe:bullAlignment.universe}})
+  const {triggers}=calcRiskScore(partial)
+  const score=quality.upper_score
+  if(quality.missing.length)triggers.push(`資料缺少：${quality.missing.join(',')}；已知分數 ${quality.known_score}，保守上界 ${score}`)
   const level = scoreToLevel(score)
 
   // 依同一風險分數與警示產生規則摘要
@@ -464,6 +463,7 @@ export async function calcMarketRisk(
 
   return {
     ...partial,
+    quality,
     riskScore: score,
     riskLevel: level,
     riskSummary: summary,
@@ -485,4 +485,27 @@ function generateRiskSummary(score: number, level: string, triggers: string[]): 
   if (triggers.length) parts.push(`主要警示：${triggers.slice(0, 3).join('、')}。`)
   else parts.push('目前各項指標正常，無重大警示。')
   return parts.join('')
+}
+
+export function buildMarketRiskQuality(data:Omit<MarketRiskResult,'riskScore'|'riskLevel'|'riskSummary'|'triggers'|'quality'>,sources:Record<string,unknown>={}):MarketRiskQuality {
+  const valid=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)
+  const missing:string[]=[]
+  let upper=0
+  const absent=(key:string,condition:boolean,max:number)=>{if(condition){missing.push(key);upper+=max}}
+  absent('vix',!valid(data.vix)||data.vix!<=0,35)
+  absent('twii_vol20',!valid(data.twiiVol20)||data.twiiVol20!<0,20)
+  absent('twii_bias',!valid(data.twiiBias),15)
+  absent('foreign_chip',!valid(data.foreignNet5d),28)
+  const margin=sources.margin as any
+  const marginPenalty=(ratio:number)=>ratio>=80?10:ratio>=65?5:0
+  const marginBoundValid=margin?.status==='bounded'&&valid(margin.ratio_lower)&&valid(margin.ratio_upper)&&margin.ratio_lower>=0&&margin.ratio_upper>=margin.ratio_lower
+  const missingMargin=!valid(data.marginRatio)||data.marginRatio!<0
+  if(missingMargin){missing.push('margin_ratio');upper+=marginBoundValid?marginPenalty(margin.ratio_upper):10}
+  absent('adl_trend',!['up','flat','down'].includes(data.adlTrend??''),8)
+  absent('bull_alignment_pct',!valid(data.bullAlignmentPct)||data.bullAlignmentPct!<0||data.bullAlignmentPct!>100,8)
+  const critical_missing=missing.filter(key=>['twii_vol20','twii_bias','adl_trend','bull_alignment_pct'].includes(key))
+  if(!valid(data.twiiClose)||data.twiiClose!<=0)critical_missing.push('twii_close')
+  const known_score=calcRiskScore(data).score+(missingMargin&&marginBoundValid?marginPenalty(margin.ratio_lower):0)
+  return {schema_version:'market-risk-quality-v1',date:data.date,status:critical_missing.length?'blocked':missing.length?'bounded':'complete',
+    known_score,upper_score:Math.min(100,known_score+upper-(missingMargin&&marginBoundValid?marginPenalty(margin.ratio_lower):0)),missing,critical_missing,sources,inputs:{...data}}
 }

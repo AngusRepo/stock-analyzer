@@ -72,7 +72,7 @@ export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
 }
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   core: new Set([
-    'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk',
+    'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk', 'market_risk_quality_v1',
     'chat_sessions', 'chat_messages', 'alert_notifications', 'daily_recommendations',
   ]),
   market: new Set([
@@ -156,7 +156,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
   ]),
   paper: new Set([
-    'paper_atr_once_v1', 'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_p5_rearms_v1',
+    'paper_intraday_nav_risk_v1', 'paper_atr_once_v1', 'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_p5_rearms_v1',
     'l4_portfolio_plans_v1', 'l4_policy_account_rewards_v1', 'paper_daily_plan_reviews_v1', 'paper_daily_plan_heads_v1', 'paper_rotation_outcomes_v1', 'l4_replan_requests_v1', 'l4_portfolio_head_v1', 'l4_replan_outbox_v1',
     'paper_daily_snapshots', 'paper_execution_events', 'paper_order_intents',
     'paper_exit_intents', 'paper_challenger_candidates',
@@ -239,6 +239,8 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'finlab_materialization_manifest', domain: 'ops', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'workers_ai_debate_budget_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'workers_ai_debate_calls_v2', domain: 'ops', disposition: 'active_window', route_ready: true, shadow_ready: false },
+  { table: 'workers_ai_debate_days_v2', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'finlab_materialization_receipts_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'sector_flow_pit_generations_v1', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ipo_shadow_candidates_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
@@ -336,6 +338,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
     'ga_optimizer_shadow_runs_v1',
     'strategy_evidence_gap_dispositions_v1',
   ]),
+  core: new Set(['market_risk_quality_v1']),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
     'canonical_revenue_observations_v2',
@@ -346,6 +349,8 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
     'pit_residual_funnel_enrichment_runs_v1',
   ]),
   paper: new Set([
+    'paper_intraday_nav_risk_v1',
+    'paper_atr_once_v1',
     'paper_p5_rearms_v1',
     'paper_kelly_calibration_runs_v1',
     'paper_kelly_calibration_artifacts_v1',

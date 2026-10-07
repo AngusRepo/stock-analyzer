@@ -157,7 +157,7 @@ async function produceUSLeading(env: Bindings, assertOwner: () => Promise<void>)
         gspc_close=excluded.gspc_close, gspc_return=excluded.gspc_return,
         dxy_close=excluded.dxy_close, dxy_return=excluded.dxy_return,
         hy_spread=excluded.hy_spread, hy_spread_chg=excluded.hy_spread_chg,
-        vix_close=excluded.vix_close, sentiment=excluded.sentiment
+        vix_close=excluded.vix_close, sentiment=excluded.sentiment, created_at=CURRENT_TIMESTAMP
     `).bind(today, signal.sox_close, signal.sox_return, signal.sox_ma5,
             signal.tsm_close, signal.tsm_return, signal.tsm_premium,
             signal.gspc_close, signal.gspc_return,

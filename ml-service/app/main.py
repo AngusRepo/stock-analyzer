@@ -797,54 +797,8 @@ class RegimeRequest(BaseModel):
 
 
 def _compute_regime_current(req: RegimeRequest) -> dict:
-    """Run synchronous GCS/HMM work outside the ASGI event loop."""
-    from datetime import datetime, timezone, timedelta
-    from .regime import (
-        RegimeDetector,
-        build_market_feature_matrix,
-        latest_market_feature_date,
-    )
-
-    TW_TZ = timezone(timedelta(hours=8))
-
-    detector = None if req.force_retrain else RegimeDetector.load_from_gcs()
-    if detector is None:
-        feat_mat = build_market_feature_matrix(req.market_env)
-        if feat_mat is None or len(feat_mat) < 20:
-            raise HTTPException(
-                status_code=400,
-                detail="insufficient market_env.history to train HMM (need >=20 days)",
-            )
-        detector = RegimeDetector().fit(feat_mat)
-        if detector._trained:
-            detector.save_to_gcs()
-
-    feature_sequence = build_market_feature_matrix(req.market_env)
-    if feature_sequence is None or not len(feature_sequence):
-        raise HTTPException(status_code=400, detail="market_env missing PIT feature sequence")
-
-    info = detector.predict_regime(feature_sequence)
-    if not info.get("regime_surface"):
-        raise HTTPException(status_code=503, detail="HMM posterior surface unavailable")
-    reg_idx = int(info.get("regime_index", 1))
-    label_en = _REGIME_INDEX_TO_EN.get(reg_idx, "sideways")
-
-    return {
-        "regime_label_en":     label_en,
-        "regime_index":        reg_idx,
-        "hmm_state":           info.get("hmm_state", -1),
-        "label_zh":            info.get("label", "盤整"),
-        "weight_multipliers":  info.get("weight_multipliers", {}),
-        "consensus_threshold": info.get("consensus_threshold", 0.60),
-        "regime_policies":     info.get("regime_policies", {}),
-        "regime_surface":      info.get("regime_surface", {}),
-        "state_probabilities": info.get("state_probabilities", {}),
-        "state_semantic_map": info.get("state_semantic_map", {}),
-        "semantic_mapping_version": info.get("semantic_mapping_version", "legacy_artifact_map_v1"),
-        "sequence_length":     info.get("sequence_length", 0),
-        "feature_date":        latest_market_feature_date(req.market_env),
-        "computed_at":         datetime.now(TW_TZ).isoformat(),
-    }
+    from .regime_inference import compute_regime_current
+    return compute_regime_current(req.market_env, req.force_retrain)
 
 
 @app.post("/regime/current")
@@ -878,7 +832,13 @@ async def regime_train_window(req: WalkForwardHMMTrainRequest, request: Request)
             detail=f"insufficient market_env.history (got {len(feat_mat) if feat_mat is not None else 0} days, need >=30)",
         )
 
-    detector = RegimeDetector().fit(feat_mat)
+    from .hmm_input_contract import CONTRACT_HASH
+    if req.train_end != req.market_env.get("requested_run_date"):
+        raise HTTPException(status_code=400, detail="HMM_TRAIN_END_MISMATCH")
+    if req.gcs_prefix != f"walk_forward/w{req.window_id}":
+        raise HTTPException(status_code=400, detail="HMM_PRODUCTION_OVERWRITE_FORBIDDEN")
+    detector = RegimeDetector().fit(feat_mat, input_contract=CONTRACT_HASH,
+                                   training_input_checksum=req.market_env["hmm_input_checksum"])
     if not detector._trained:
         raise HTTPException(status_code=500, detail="HMM fit did not converge")
 
@@ -888,6 +848,8 @@ async def regime_train_window(req: WalkForwardHMMTrainRequest, request: Request)
             "window_id": req.window_id,
             "train_end": req.train_end,
             "history_days": len(feat_mat),
+            "train_start": min(req.market_env["history"]),
+            "semantic_mapping_version": "emission_direction_vol_v2",
         },
     )
     return {

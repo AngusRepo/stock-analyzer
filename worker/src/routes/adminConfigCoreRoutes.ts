@@ -804,3 +804,18 @@ adminConfigCoreRoutes.get('/api/admin/kv-get', async (c) => {
   if (value === null) return c.json({ key, value: null, exists: false }, 404)
   return c.json({ key, value, exists: true })
 })
+
+adminConfigCoreRoutes.get('/api/admin/risk/daily-packet', async c=>{
+ const authError=await requireServiceToken(c);if(authError)return authError
+ const tradeDate=c.req.query('trade_date')??''
+ try {const {buildDailyMarketRiskPacket}=await import('../lib/dailyMarketRiskPacket');return c.json(await buildDailyMarketRiskPacket(c.env,tradeDate))}
+ catch {return c.json({error:'daily_risk_packet_unavailable'},409)}
+})
+
+adminConfigCoreRoutes.post('/api/admin/risk/recompute',async c=>{
+  const authError=await requireServiceToken(c);if(authError)return authError
+  const body=await c.req.json<{run_date?:string}>().catch(()=>null)
+  if(!body?.run_date)return c.json({error:'run_date_required'},400)
+  try{const {recomputeDailyMarketRisk}=await import('../lib/marketRiskMaterialization');return c.json(await recomputeDailyMarketRisk(c.env,body.run_date))}
+  catch{return c.json({error:'dated_market_risk_materialization_failed'},409)}
+})

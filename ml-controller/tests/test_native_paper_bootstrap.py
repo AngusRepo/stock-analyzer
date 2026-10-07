@@ -10,8 +10,8 @@ from test_native_paper_sandbox import native_runner, ROOT, frame
 def fixture():
     db = sqlite3.connect(':memory:')
     db.row_factory = sqlite3.Row
-    for path in ('core/0001_core_baseline.sql', 'paper/0001_paper_baseline.sql',
-                 'paper/0004_corporate_action_accounting.sql', 'paper/0006_p5_rearm.sql', 'market/0001_market_baseline.sql'):
+    for path in ('core/0001_core_baseline.sql', 'core/0008_market_risk_quality.sql', 'paper/0001_paper_baseline.sql',
+                 'paper/0004_corporate_action_accounting.sql', 'paper/0006_p5_rearm.sql', 'paper/0010_intraday_nav_risk.sql', 'market/0001_market_baseline.sql'):
         db.executescript((ROOT / 'worker/domain-migrations' / path).read_text(encoding='utf-8'))
     db.execute("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','TSMC','TWSE')")
     db.execute('INSERT INTO paper_accounts(id,cash,initial_cash) VALUES(1,100000,100000),(2,777,777)')
@@ -95,3 +95,25 @@ def test_bootstrap_missing_rearm_schema_is_incomplete(native_runner):
                 ownership=owners, account_id=1, signal_date='2026-09-07', frozen_kv={})
     finally:
         db.close()
+
+
+def test_bootstrap_missing_p9_authority_is_incomplete(native_runner):
+    db, query = fixture()
+    try:
+        db.execute('DROP TABLE paper_intraday_nav_risk_v1')
+        owners = native_runtime_manifest(native_runner)['tables']
+        with pytest.raises(ValueError, match='required_schema_missing:paper_intraday_nav_risk_v1'):
+            capture_native_bootstrap(domain_queries={domain: query for domain in set(owners.values())},
+                ownership=owners, account_id=1, signal_date='2026-09-07', frozen_kv={})
+    finally:
+        db.close()
+
+def test_bootstrap_missing_risk_quality_schema_is_incomplete(native_runner):
+    db,query=fixture()
+    try:
+        db.execute('DROP TABLE market_risk_quality_v1')
+        owners=native_runtime_manifest(native_runner)['tables']
+        with pytest.raises(ValueError,match='required_schema_missing:market_risk_quality_v1'):
+            capture_native_bootstrap(domain_queries={domain:query for domain in set(owners.values())},
+                ownership=owners,account_id=1,signal_date='2026-09-07',frozen_kv={})
+    finally:db.close()

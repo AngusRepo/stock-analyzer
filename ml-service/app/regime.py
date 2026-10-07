@@ -12,6 +12,8 @@ import numpy as np
 import json
 import io
 import logging
+import hashlib
+from .hmm_input_contract import CONTRACT_HASH, FEATURES, validate_environment
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -50,16 +52,22 @@ class RegimeDetector:
         self.feature_means  = None
         self.feature_stds   = None
         self._trained       = False
+        self.input_contract = None
+        self.training_input_checksum = None
+        self.artifact_identity = None
 
     # ── 訓練 ──────────────────────────────────────────────────────────────────
-    def fit(self, features_raw: np.ndarray) -> "RegimeDetector":
+    def fit(self, features_raw: np.ndarray, *, input_contract: str | None = None, training_input_checksum: str | None = None) -> "RegimeDetector":
         """
-        features_raw shape: (n_days, 4)
+        features_raw shape: (n_days, 6)
           col 0: market_return_1d
           col 1: market_return_5d
           col 2: risk_score (0-1)
           col 3: market_bias_20d
         """
+        if input_contract != CONTRACT_HASH or not isinstance(training_input_checksum, str) or len(training_input_checksum) != 64:
+            logger.warning("[Regime] verified input contract/checksum required; training skipped")
+            return self
         features_raw = np.asarray(features_raw, dtype=float)
         if features_raw.ndim != 2 or features_raw.shape[1] != REGIME_FEATURE_WIDTH:
             logger.warning(
@@ -113,6 +121,9 @@ class RegimeDetector:
         states = self.model.predict(features)
         self.regime_map = self._emission_semantic_regimes() or self._assign_semantic_regimes(features_raw, states)
         self._trained = True
+        self.input_contract = input_contract
+        self.training_input_checksum = training_input_checksum
+        self.training_feature_checksum = hashlib.sha256(features_raw.astype("<f8").tobytes()).hexdigest()
 
         labels = [REGIME_CONFIG[self.regime_map.get(s, 1)]["label"] for s in range(best_n)]
         logger.info(f"[Regime] 訓練完成: {best_n} states, BIC={best_bic:.1f}, labels={labels}")
@@ -196,6 +207,8 @@ class RegimeDetector:
                 return default
             if self.feature_means is None or self.feature_stds is None:
                 return default
+            if not np.isfinite(sequence).all() or not self.compatible():
+                return default
             if sequence.shape[1] != len(self.feature_means):
                 logger.warning(
                     "[Regime] feature width mismatch: got=%s expected=%s",
@@ -206,6 +219,8 @@ class RegimeDetector:
 
             normalized = (sequence - self.feature_means) / self.feature_stds
             state_probabilities = np.asarray(self.model.predict_proba(normalized)[-1], dtype=float)
+            if state_probabilities.ndim!=1 or not len(state_probabilities) or not np.isfinite(state_probabilities).all() or (state_probabilities<0).any() or state_probabilities.sum()<=0:
+                return default
             state = int(np.argmax(state_probabilities))
             semantic_map = self._emission_semantic_regimes()
             effective_map = semantic_map if semantic_map is not None else self.regime_map
@@ -257,6 +272,14 @@ class RegimeDetector:
         except Exception as exc:
             logger.warning("[Regime] predict_regime failed: %s", exc)
             return default
+    def compatible(self) -> bool:
+        if getattr(self, "input_contract", None) != CONTRACT_HASH:
+            return False
+        means, stds = self.feature_means, self.feature_stds
+        return bool(self._trained and self.model is not None and means is not None and stds is not None
+                    and np.shape(means) == (6,) and np.shape(stds) == (6,)
+                    and np.isfinite(means).all() and np.isfinite(stds).all() and (np.asarray(stds) > 0).all())
+
     def save_to_gcs(
         self,
         gcs_prefix: str = "market_regime",     # 2026-04-18 #32: walk-forward override
@@ -268,7 +291,7 @@ class RegimeDetector:
         Walk-forward: `walk_forward/w{id}/hmm_detector.joblib` (window snapshot)
         """
         from .model_store import _get_bucket
-        if not self._trained:
+        if not self.compatible():
             return False
         try:
             import joblib
@@ -278,15 +301,25 @@ class RegimeDetector:
             prefix = gcs_prefix.rstrip("/")
             buf = io.BytesIO()
             joblib.dump(self, buf); buf.seek(0)
-            bucket.blob(f"{prefix}/hmm_detector.joblib").upload_from_file(buf)
+            model_bytes = buf.getvalue()
+            model_blob = bucket.blob(f"{prefix}/hmm_detector.joblib")
+            model_blob.upload_from_file(buf)
+            model_blob.reload()
             meta = {
                 "n_components": self.n_components,
                 "regime_map":   {str(k): v for k, v in self.regime_map.items()},
                 "trained_at":   datetime.now(timezone.utc).isoformat(),
                 "gcs_prefix":   prefix,
+                "input_contract": CONTRACT_HASH,
+                "feature_order": list(FEATURES),
+                "training_input_checksum": self.training_input_checksum,
+                "training_feature_checksum": self.training_feature_checksum,
+                "training_parameters": {"random_state":42,"covariance_type":"full","max_components":5,"n_iter":300},
+                "artifact_sha256": hashlib.sha256(model_bytes).hexdigest(),
+                "artifact_generation": str(model_blob.generation),
             }
             if extra_metadata:
-                meta.update(extra_metadata)
+                meta.update({k: v for k, v in extra_metadata.items() if k not in meta})
             bucket.blob(f"{prefix}/metadata.json").upload_from_string(
                 json.dumps(meta), content_type="application/json")
             logger.info(f"[Regime] 模型已儲存至 GCS: {prefix}")
@@ -324,12 +357,28 @@ class RegimeDetector:
             ):
                 logger.info(f"[Regime] GCS 模型 ({prefix}) 已過期，需重訓")
                 return None
-            model_blob = bucket.blob(f"{prefix}/hmm_detector.joblib")
+            if meta.get("input_contract") != CONTRACT_HASH or meta.get("feature_order") != list(FEATURES):
+                logger.error("[Regime] HMM_MODEL_INPUT_CONTRACT_INCOMPATIBLE")
+                return None
+            trained_at=datetime.fromisoformat(str(meta.get("trained_at","")).replace("Z","+00:00"))
+            if trained_at.tzinfo is None or trained_at>datetime.now(timezone.utc):
+                return None
+            generation = meta.get("artifact_generation")
+            if not str(generation or "").isdigit():
+                return None
+            model_blob = bucket.blob(f"{prefix}/hmm_detector.joblib", generation=int(generation))
             if not model_blob.exists():
                 return None
             buf = io.BytesIO()
             model_blob.download_to_file(buf); buf.seek(0)
+            if hashlib.sha256(buf.getvalue()).hexdigest() != meta.get("artifact_sha256"):
+                logger.error("[Regime] HMM_MODEL_CHECKSUM_MISMATCH")
+                return None
             det = joblib.load(buf)
+            if not isinstance(det, cls) or not det.compatible() or getattr(det, "training_input_checksum", None) != meta.get("training_input_checksum"):
+                return None
+            det.artifact_identity = {"sha256": meta["artifact_sha256"], "generation": str(generation),
+                                     "trained_at": meta.get("trained_at"), "input_contract": CONTRACT_HASH}
             logger.info(f"[Regime] 已從 GCS ({prefix}) 載入 HMM detector")
             return det
         except Exception as e:
@@ -340,48 +389,17 @@ class RegimeDetector:
 # ── 特徵建構工具 ───────────────────────────────────────────────────────────────
 def build_market_feature_rows(market_env: dict | None) -> tuple[list[str], np.ndarray | None]:
     """Build one canonical PIT date vector and its HMM feature matrix."""
-    history = market_env.get("history", {}) if market_env else {}
-    if not isinstance(history, dict):
+    try:
+        history = validate_environment(market_env)
+    except (ValueError, TypeError, KeyError):
         return [], None
-
-    dated_returns: list[tuple[str, float, float, float, float]] = []
-    for raw_date in sorted(history):
-        row = history.get(raw_date)
-        if not isinstance(row, dict):
-            continue
-        required = (
-            row.get("market_return_1d"),
-            row.get("market_return_5d"),
-            row.get("risk_score"),
-            row.get("market_bias_20d"),
-        )
-        try:
-            values = tuple(float(value) for value in required)
-        except (TypeError, ValueError):
-            continue
-        if not all(np.isfinite(value) for value in values):
-            continue
-        dated_returns.append((str(raw_date)[:10], *values))
-
-    if len(dated_returns) < 20:
-        return [], None
-
-    dates: list[str] = []
-    rows: list[list[float]] = []
-    prior_returns: list[float] = []
-    for feature_date, ret_1d, ret_5d, risk_score, bias_20d in dated_returns:
-        prior_returns.append(ret_1d)
-        realized_window = prior_returns[-3:]
-        realized_vol = float(np.std(realized_window)) if len(realized_window) >= 3 else abs(ret_1d)
-        dates.append(feature_date)
-        rows.append([
-            ret_1d,
-            ret_5d,
-            risk_score / 100,
-            bias_20d,
-            abs(ret_1d),
-            realized_vol,
-        ])
+    dates = sorted(history)
+    rows = []
+    for day in dates:
+        row = history[day]
+        ret = float(row["market_return_1d"])
+        rows.append([ret, float(row["market_return_5d"]), float(row["risk_score"])/100,
+                     float(row["market_bias_20d"]), abs(ret), float(row["realized_vol_3d"])])
     return dates, np.asarray(rows, dtype=float)
 
 

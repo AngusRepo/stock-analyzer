@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from services.hmm_input_contract import CONTRACT_HASH,SOURCE,checksum
 
 from app.regime import (
     RegimeDetector,
@@ -15,19 +16,19 @@ def _market_row(ret: float) -> dict:
         "market_return_5d": ret * 3,
         "risk_score": 35,
         "market_bias_20d": ret * 2,
+        "realized_vol_3d": abs(ret),"benchmark_source":SOURCE,"risk_quality_status":"score_verified",
     }
 
 
 def test_feature_builder_excludes_non_taiwan_and_incomplete_dates():
     history = {f"2026-06-{day:02d}": _market_row(day / 10_000) for day in range(1, 21)}
-    history["2026-06-21"] = {"us_gspc_return": 0.01, "us_vix": 18}
-    history["2026-06-22"] = {**_market_row(0.0022), "risk_score": None}
-
-    matrix = build_market_feature_matrix({"history": history})
-
-    assert matrix is not None
-    assert matrix.shape == (20, 6)
-    assert latest_market_feature_date({"history": history}) == "2026-06-20"
+    env={"history":history,"requested_run_date":"2026-06-20","hmm_input_contract":CONTRACT_HASH,"hmm_input_checksum":checksum(history)}
+    matrix=build_market_feature_matrix(env)
+    assert matrix is not None and matrix.shape==(20,6)
+    assert latest_market_feature_date(env)=="2026-06-20"
+    history["2026-06-21"]={"us_vix":18}
+    env["hmm_input_checksum"]=checksum(history)
+    assert build_market_feature_matrix(env) is None
 
 
 class _PosteriorModel:
@@ -39,6 +40,7 @@ class _PosteriorModel:
 def test_predict_regime_uses_latest_sequence_posterior_surface():
     detector = RegimeDetector()
     detector._trained = True
+    detector.input_contract = CONTRACT_HASH
     detector.model = _PosteriorModel()
     detector.feature_means = np.zeros(6)
     detector.feature_stds = np.ones(6)
@@ -103,6 +105,7 @@ class _EmissionPosteriorModel(_PosteriorModel):
 def test_loaded_artifact_relabels_emissions_without_fitting():
     detector = RegimeDetector()
     detector._trained = True
+    detector.input_contract = CONTRACT_HASH
     detector.model = _EmissionPosteriorModel()
     detector.feature_means = np.asarray([0, 0, 0, 0, 0, 0.01])
     detector.feature_stds = np.asarray([1, 1, 1, 1, 1, 0.005])
@@ -117,6 +120,6 @@ def test_loaded_artifact_relabels_emissions_without_fitting():
 
 def test_fit_rejects_legacy_feature_width():
     detector = RegimeDetector()
-    detector.fit(np.ones((40, 4), dtype=float))
+    detector.fit(np.ones((40, 4), dtype=float),input_contract=CONTRACT_HASH,training_input_checksum="a"*64)
     assert detector._trained is False
     assert detector.model is None

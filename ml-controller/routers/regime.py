@@ -27,8 +27,8 @@ from pydantic import BaseModel
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.kv_pusher import push_optuna_result
 from services.market_regime_evidence import build_regime_evidence_pack
-from services.payload_builder import load_market_env
-from dataclasses import asdict
+from services.hmm_market_inputs import load_hmm_market_env, latest_hmm_input_date
+from services.hmm_input_contract import CONTRACT_HASH
 
 logger = logging.getLogger("regime")
 router = APIRouter()
@@ -235,17 +235,20 @@ def _enrich_market_env_with_finlab_macro_context(env_dict: dict[str, Any], run_d
 
 
 def _fetch_market_env_via_payload_builder(run_date: str | None = None) -> dict:
-    """Use payload_builder.load_market_env which already knows the canonical
-    D1 schema (market_risk + stock_prices TAIEX history + ETF 0050 fallback).
-    Saves re-implementing the query here.
-    """
-    effective_date = run_date or datetime.now(TW_TZ).strftime("%Y-%m-%d")
-    market_env, _, _, _, _ = load_market_env(
-        effective_date, include_pipeline_context=False
-    )
-    env_dict = asdict(market_env)
-    env_dict["requested_run_date"] = effective_date
+    """Use the dedicated single-benchmark HMM contract, separate from ML serving context."""
+    now=datetime.now(TW_TZ)
+    today=now.strftime("%Y-%m-%d")
+    effective_date=run_date or latest_hmm_input_date(today)
+    env_dict = load_hmm_market_env(effective_date)
+    # Live inference may use a newly approved model on the latest completed session.
+    # Explicit historical requests remain bound to that signal day's end.
+    env_dict["inference_as_of"]=now.isoformat() if run_date is None or effective_date==today else effective_date+"T23:59:59+08:00"
     _enrich_market_env_with_finlab_macro_context(env_dict, effective_date)
+    if run_date is None or effective_date==today:
+        env_dict["inference_as_of"]=datetime.now(TW_TZ).isoformat()
+    # Macro enrichment modifies history: refresh its checksum before inference.
+    from services.hmm_input_contract import checksum
+    env_dict["hmm_input_checksum"] = checksum(env_dict["history"])
     return env_dict
 
 
@@ -313,6 +316,8 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         "computed_at":     ISO8601,
       }
     """
+    if req.force_retrain:
+        raise HTTPException(status_code=409, detail="HMM_INFERENCE_CANNOT_RETRAIN; use an explicitly approved training job")
     if not ML_SERVICE_URL:
         raise HTTPException(status_code=500, detail="ML_SERVICE_URL not set")
 
@@ -358,7 +363,11 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
                 status_code=502,
                 detail=f"regime feature lineage mismatch: feature_date={feature_date} proxy_date={proxy_date}",
             )
+    provenance = info.get("hmm_provenance") or {}
+    if provenance.get("input_contract") != CONTRACT_HASH or provenance.get("input_checksum") != market_env.get("hmm_input_checksum") or provenance.get("risk_quality_checksum") != market_env.get("risk_quality_checksum") or provenance.get("inference_as_of") != market_env.get("inference_as_of"):
+        raise HTTPException(status_code=502, detail="HMM_PROVENANCE_MISMATCH")
     evidence_pack = build_regime_evidence_pack(market_env, raw_label=label_en)
+    evidence_pack["hmm_provenance"] = provenance
     evidence_pack["hmm_semantic_mapping_version"] = info.get("semantic_mapping_version", "legacy_artifact_map_v1")
     evidence_pack["hmm_state_semantic_map"] = info.get("state_semantic_map", {})
     evidence_pack["hmm_raw_regime_index"] = reg_idx

@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from routers import regime
+from services.hmm_input_contract import CONTRACT_HASH
 from routers.regime import _request_regime_current
 
 
@@ -85,6 +86,7 @@ def test_effective_regime_uses_its_own_policy_after_bear_guard(monkeypatch):
     monkeypatch.setattr(regime, "_fetch_market_env_via_payload_builder", lambda _date: {
         "history": {"2026-10-02": {}},
         "requested_run_date": "2026-10-02",
+        "hmm_input_checksum":"a"*64,
         "market_proxy_latest_date": "2026-10-02",
     })
 
@@ -94,6 +96,7 @@ def test_effective_regime_uses_its_own_policy_after_bear_guard(monkeypatch):
             "regime_index": 3,
             "hmm_state": 0,
             "feature_date": "2026-10-02",
+            "hmm_provenance":{"input_contract":CONTRACT_HASH,"input_checksum":"a"*64},
             "regime_surface": {"bull_market": 0.0, "volatile": 0.0, "sideways": 0.0, "bear_market": 1.0},
             "consensus_threshold": 0.72,
             "weight_multipliers": {"XGBoost": 0.75},

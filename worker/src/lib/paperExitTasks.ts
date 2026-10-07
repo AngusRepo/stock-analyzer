@@ -1823,7 +1823,7 @@ export async function pollIntradayStopLoss(
       effectiveBuy: effectivePortfolioRisk.buyConfThreshold,
       effectiveSell: effectivePortfolioRisk.sellConfThreshold,
     }
-    const p9 = await checkP9IntradayDrawdown(env.KV, intradayToday, totalPortfolio, riskConfig, p9Deps,
+    const p9 = await checkP9IntradayDrawdown(paperDomainDatabase(env), env.KV, paperAccountId(), intradayToday, totalPortfolio, riskConfig, p9Deps,
       totalPortfolio + corporateBounds.upper - corporateBounds.lower)
     p9Triggered = p9.state != null
     effectivePortfolioRisk = mergeIntradayPortfolioRisk(effectivePortfolioRisk, p9.state)

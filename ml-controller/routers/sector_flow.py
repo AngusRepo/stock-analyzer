@@ -484,33 +484,30 @@ async def proxy_twse_attention():
 
 
 @router.get("/twse/margin-summary")
-async def proxy_twse_margin_summary():
-    """融資融券市場統計（TWSE MI_MARGN selectType=MS）。"""
-    now_tw = datetime.utcnow() + timedelta(hours=8)
-    date_str = now_tw.strftime("%Y%m%d")
+async def proxy_twse_margin_summary(run_date: str | None = None):
+    """Dated LISTED market ratio from the official per-security balance and same-unit limit."""
+    from datetime import date
+    from services.twse_margin_contract import parse_margin_summary
+    effective=run_date or (datetime.utcnow()+timedelta(hours=8)).strftime("%Y-%m-%d")
     try:
-        async with httpx.AsyncClient(headers={"User-Agent": _USER_AGENT}, follow_redirects=True) as client:
-            resp = await client.get(
-                f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=MS&response=json",
-                timeout=30.0,
-            )
-            if resp.status_code != 200:
-                return {"balance": None, "limit": None}
-            body = resp.json()
-            if body.get("stat") != "OK" or not body.get("tables"):
-                return {"balance": None, "limit": None}
-            for table in body["tables"]:
-                if not table.get("data"):
-                    continue
-                for row in table["data"]:
-                    if not isinstance(row, list):
-                        continue
-                    if "融資" in str(row[0]):
-                        balance = int(str(row[5]).replace(",", "").strip() or "0") if len(row) > 5 else 0
-                        limit = int(str(row[6]).replace(",", "").strip() or "0") if len(row) > 6 else 0
-                        if balance > 0 and limit > 0:
-                            logger.info(f"margin: balance={balance}, limit={limit}")
-                            return {"balance": balance, "limit": limit}
-    except Exception as e:
-        logger.warning(f"margin-summary failed: {e}")
-    return {"balance": None, "limit": None}
+        date.fromisoformat(effective)
+    except ValueError:
+        raise HTTPException(status_code=400,detail="run_date must be YYYY-MM-DD")
+    missing=parse_margin_summary({},effective)
+    try:
+        from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+        market=client_proxy_for_domain(D1DataDomain.MARKET)
+        sessions=await asyncio.to_thread(market.query,
+            "SELECT session_date FROM market_trading_sessions WHERE session_date<? ORDER BY session_date DESC LIMIT 1",[effective])
+        if not sessions:
+            return missing
+        previous=sessions[0]["session_date"]
+        async with httpx.AsyncClient(headers={"User-Agent":_USER_AGENT},follow_redirects=True) as client:
+            responses=await asyncio.gather(*[client.get("https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN",
+                params={"date":day.replace("-",""),"selectType":"ALL","response":"json"},timeout=30)
+                for day in (effective,previous)])
+            if all(response.status_code==200 for response in responses):
+                return parse_margin_summary(responses[0].json(),effective,responses[1].json(),previous)
+    except Exception as exc:
+        logger.warning("dated margin-summary failed: %s",exc)
+    return missing

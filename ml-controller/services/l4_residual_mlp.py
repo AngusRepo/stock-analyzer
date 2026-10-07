@@ -14,6 +14,14 @@ from services.l4_distribution import design, digest, finite
 SCHEMA = 'l4-three-head-residual-mlp-v1'
 OUTPUTS = ['p_loss', 'gain', 'loss', 'expected_return_gross']
 
+def state(model):
+    from services import l4_mlp_weights as weights
+    if model.get('schema_version')==weights.SCHEMA:
+        if 'state' in model:raise ValueError('l4_mlp_multiple_weight_owners')
+        return weights.load(model['weights'])
+    if 'weights' in model:raise ValueError('l4_mlp_multiple_weight_owners')
+    return model['state']
+
 
 def _array(state, name, shape):
     value = np.asarray(state.get(name), dtype=np.float32)
@@ -23,7 +31,11 @@ def _array(state, name, shape):
 
 
 def validate(model, *, anchor_model, signal_date=None):
-    if (model.get('schema_version') != SCHEMA
+    from services.l4_mlp_median import SCHEMA as MEDIAN_SCHEMA, validate as validate_median
+    if model.get('schema_version') == MEDIAN_SCHEMA:
+        return validate_median(model, anchor_model=anchor_model, signal_date=signal_date)
+    from services.l4_mlp_weights import SCHEMA as WEIGHTS_SCHEMA
+    if (model.get('schema_version') not in (SCHEMA,WEIGHTS_SCHEMA)
             or model.get('inputs') != 34 or model.get('width') != 128
             or model.get('blocks') != 3 or model.get('output') != 'scalar_ev_correction'
             or model.get('anchor_model_checksum') != digest(anchor_model)
@@ -50,21 +62,25 @@ def validate(model, *, anchor_model, signal_date=None):
         shapes.update({prefix+'0.weight': (128,), prefix+'0.bias': (128,),
                        prefix+'1.weight': (128,128), prefix+'1.bias': (128,),
                        prefix+'4.weight': (128,128), prefix+'4.bias': (128,)})
-    if set(model['state']) != set(shapes):
+    values=state(model)
+    if set(values) != set(shapes):
         raise ValueError('l4_mlp_state_fields_invalid')
     for name, shape in shapes.items():
-        _array(model['state'], name, shape)
+        _array(values, name, shape)
 
 
 def apply(rows, outputs, model, *, anchor_model):
+    from services.l4_mlp_median import SCHEMA as MEDIAN_SCHEMA, apply as apply_median
+    if model.get('schema_version') == MEDIAN_SCHEMA:
+        return apply_median(rows, outputs, model, anchor_model=anchor_model)
     validate(model, anchor_model=anchor_model)
     native, _ = design(rows, model['recipe']['native'])
     raw = np.asarray([[row[key] for key in OUTPUTS] for row in outputs], float)
     recipe = model['recipe']
     x = np.asarray(np.column_stack([native, (raw-np.asarray(recipe['mean']))/np.asarray(recipe['scale'])]), np.float32)
-    state = {key: np.asarray(value, np.float32) for key,value in model['state'].items()}
+    values = {key: np.asarray(value, np.float32) for key,value in state(model).items()}
     def linear(value, prefix):
-        return value @ state[prefix+'.weight'].T + state[prefix+'.bias']
+        return value @ values[prefix+'.weight'].T + values[prefix+'.bias']
     def gelu(value):
         return value * np.float32(.5) * (np.float32(1) + erf(value / np.float32(np.sqrt(2))))
     x = gelu(linear(x, 'input'))
@@ -72,7 +88,7 @@ def apply(rows, outputs, model, *, anchor_model):
         prefix = f'blocks.{block}.transform.'
         centered = x-x.mean(axis=-1, keepdims=True)
         normalized = centered / np.sqrt((centered*centered).mean(axis=-1, keepdims=True)+np.float32(1e-5))
-        normalized = normalized*state[prefix+'0.weight']+state[prefix+'0.bias']
+        normalized = normalized*values[prefix+'0.weight']+values[prefix+'0.bias']
         x = x + linear(gelu(linear(normalized, prefix+'1')), prefix+'4')
     correction = linear(x, 'output').reshape(-1)*np.float32(model['residual_scale'])
     expected = np.asarray(raw[:,3], np.float32) + correction
@@ -81,5 +97,5 @@ def apply(rows, outputs, model, *, anchor_model):
     return [{**row, 'three_head_expected_return_gross': row['expected_return_gross'],
              'expected_return_gross': float(expected[index]),
              'residual_ev_correction': float(correction[index]),
-             'calibration_model': SCHEMA, 'calibration_checksum': model['payload_checksum']}
+             'calibration_model': model['schema_version'], 'calibration_checksum': model['payload_checksum']}
             for index,row in enumerate(outputs)]

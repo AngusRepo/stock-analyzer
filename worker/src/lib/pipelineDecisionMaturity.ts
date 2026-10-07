@@ -1,3 +1,4 @@
+import { isSingleBMode } from './paperStrategyMode'
 import { readActiveMlEnsembleVersion, type ActiveMlEnsembleVersion } from './pipelineCandidateVersions'
 import type { Bindings } from '../types'
 import { compareNavCandidateVersions, type CandidateVersionComparison } from './pipelineCandidateVersions'
@@ -495,8 +496,8 @@ export async function buildPipelineDecisionMaturityPacket(
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
 
-  const distributionConfig = await env.KV.get('trading:config', 'json') as { l4Distribution?: {operating_mode?: string; artifact?:{model?:{residual_tabpack?:unknown;residual_mlp?:unknown};release?:{efficacy_status?:string;acceptance_mode?:string}}} } | null
-  const singleB = distributionConfig?.l4Distribution?.operating_mode === 'single_b_tabpack_v1'
+  const distributionConfig = await env.KV.get('trading:config', 'json') as { l4Distribution?: {operating_mode?: string; artifact?:{model?:{residual_tabpack?:unknown;residual_mlp?:{schema_version?:string}};release?:{efficacy_status?:string;acceptance_mode?:string}}} } | null
+  const singleB = isSingleBMode(distributionConfig?.l4Distribution?.operating_mode)
   const pairedNavPromise = singleB ? Promise.resolve(undefined) : readPairedNav(learningDb, requestedDate)
   const marketDb = databaseForDataDomain(env, 'market')
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
@@ -1959,7 +1960,7 @@ export async function buildPipelineDecisionMaturityPacket(
     const release=distributionConfig?.l4Distribution?.artifact?.release
     distributionStatus.operating_mode=distributionConfig?.l4Distribution?.operating_mode
     const model=distributionConfig?.l4Distribution?.artifact?.model
-    distributionStatus.residual_model=model?.residual_tabpack ? 'TabPack' : model?.residual_mlp ? 'MLP' : 'none'
+    distributionStatus.residual_model=model?.residual_tabpack ? 'TabPack' : model?.residual_mlp ? (model.residual_mlp.schema_version==='l4-three-head-residual-mlp-median-v1' ? 'Full_MLP_median' : 'MLP') : 'none'
     distributionStatus.efficacy_status=release?.efficacy_status ?? 'unproven'
     distributionStatus.acceptance_mode=release?.acceptance_mode ?? 'unknown'
   }

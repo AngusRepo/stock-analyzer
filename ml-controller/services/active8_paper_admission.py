@@ -35,9 +35,12 @@ def validate_admission(admission, *, artifact, now=None):
         signal_date=admission['business_date'])
     tag=validate_tag(bundle.get('strategy_ab'))
     from services.paper_strategy_mode import single_b_policy
-    from services.strategy_ab import TABPACK_SCHEMA
+    from services.strategy_ab import TABPACK_SCHEMA, MLP_MEDIAN_SCHEMA
+    from services.paper_strategy_mode import MODE, MLP_MODE
     mode=single_b_policy(bundle['candidate_trading_config'],signal_date=admission['business_date'])
-    if tag['role']!='A' and not (mode and tag['role']=='B' and tag['schema_version']==TABPACK_SCHEMA):
+    matching_b=mode and tag['role']=='B' and ((mode['mode']==MODE and tag['schema_version']==TABPACK_SCHEMA)
+        or (mode['mode']==MLP_MODE and tag['schema_version']==MLP_MEDIAN_SCHEMA))
+    if tag['role']!='A' and not matching_b:
         raise ValueError('active8_paper_primary_A_required')
     if mode and tag['role']!='B':raise ValueError('active8_paper_single_B_identity_required')
     release = bundle['candidate_trading_config']['l4Distribution']['artifact']['release']
@@ -179,6 +182,9 @@ def validate_runtime_approval(approval, admission, *, now=None):
             or not _timestamp(admission['approved_at']) <= _timestamp(approval['approved_at']) <= clock
             or approval.get('approval_checksum') != digest({k:v for k,v in approval.items() if k!='approval_checksum'})):
         raise RuntimeError('active8_paper_runtime_approval_invalid')
+    if approval.get('approved_full_mlp_champion_cutover') is not None:
+        from services.l4_model_cutover import validate_cutover
+        return validate_cutover(approval,admission=admission,now=clock)
     before = runtime_configuration_identity(admission['configuration'])
     after = runtime_configuration_identity(approval['configuration'])
     # Only the two reviewed authority readers may change L3 source identity.

@@ -1,3 +1,4 @@
+import { isSingleBMode } from './paperStrategyMode'
 import { publishedAlphaModelOrder } from './alphaModelRoster'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS } from './active8OofContinuationPolicy'
 import type { Bindings } from '../types'
@@ -478,7 +479,7 @@ export async function runActive8OofLifecycle(
   // cannot skip that work. Prep/PIT checks still run inside the OOF owner;
   // singleton job collision handling and bounded continuation remain below.
   const trading = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?: string}} | null
-  const modelProfile = trading?.l4Distribution?.operating_mode === 'single_b_tabpack_v1'
+  const modelProfile = isSingleBMode(trading?.l4Distribution?.operating_mode)
     ? 'active8-release-model-profiles-v4-timexer-exo137'
     : 'active8-release-model-profiles-v4-timexer-price'
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
@@ -572,12 +573,12 @@ async function newL4Configured(env: Bindings): Promise<boolean> {
 export async function runL4DistributionRefresh(env: Bindings, _runDate: string, _cadence: 'weekly'|'monthly') {
   const config = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?: string; strategy_role?: string; scope?: string}} | null
   const policy = config?.l4Distribution
-  if (policy?.operating_mode !== 'single_b_tabpack_v1' || policy.strategy_role !== 'B' || policy.scope !== 'paper') {
+  if (!isSingleBMode(policy?.operating_mode) || policy.strategy_role !== 'B' || policy.scope !== 'paper') {
     throw new Error('l4_distribution_policy_invalid_independent_refresh_retired')
   }
   // Only canonical OOF completion owns the exact new L3 parent. Missing/old
   // configuration must never dispatch an independent training job.
-  return 'skipped single_b_tabpack_refresh_owned_by_canonical_oof_completion'
+  return 'skipped single_b_refresh_owned_by_canonical_oof_completion'
 }
 
 export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {

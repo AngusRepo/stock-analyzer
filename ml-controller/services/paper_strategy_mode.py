@@ -3,20 +3,43 @@ from datetime import datetime,timezone,timedelta
 from services.l4_distribution import validate_bundle,digest
 
 MODE='single_b_tabpack_v1'
+MLP_MODE='single_b_full_mlp_median_v1'
+MODES=(MODE,MLP_MODE)
 STATUS='disabled_by_single_b_policy'
+
+def refresh_family(config):
+    mode=((config or {}).get('l4Distribution') or {}).get('operating_mode')
+    return 'full_mlp_median' if mode==MLP_MODE else 'tabpack'
+
+def is_single_b(policy):
+    return (policy or {}).get('operating_mode') in MODES
+
+def validate_model_mode(policy):
+    model=((policy or {}).get('artifact') or {}).get('model') or {}
+    mode=(policy or {}).get('operating_mode')
+    if mode == MODE:
+        if model.get('residual_mlp') is not None or not model.get('residual_tabpack'):
+            raise ValueError('paper_single_b_tabpack_required')
+    elif mode == MLP_MODE:
+        from services.l4_mlp_median import SCHEMA
+        mlp=model.get('residual_mlp') or {}
+        if (model.get('residual_tabpack') is not None or mlp.get('schema_version') != SCHEMA
+                or mlp.get('residual_multiplier') != 1.0):
+            raise ValueError('paper_single_b_full_mlp_median_required')
+    else:
+        raise ValueError('paper_single_b_mode_invalid')
 
 def single_b_policy(config,*,signal_date=None):
     policy=(config or {}).get('l4Distribution') or {}
     mode=policy.get('operating_mode')
     if mode is None:return None
-    if mode!=MODE or policy.get('strategy_role')!='B' or policy.get('scope')!='paper':
+    if mode not in MODES or policy.get('strategy_role')!='B' or policy.get('scope')!='paper':
         raise ValueError('paper_single_b_mode_invalid')
     artifact=policy.get('artifact') or {};model=artifact.get('model') or {}
-    if model.get('residual_mlp') is not None or not model.get('residual_tabpack'):
-        raise ValueError('paper_single_b_tabpack_required')
+    validate_model_mode(policy)
     day=signal_date or datetime.now(timezone(timedelta(hours=8))).date().isoformat()
     validate_bundle(artifact,l3_identity=artifact.get('l3_identity'),signal_date=day)
-    return {'mode':MODE,'strategy_role':'B','model_checksum':artifact['model_checksum'],
+    return {'mode':mode,'strategy_role':'B','model_checksum':artifact['model_checksum'],
             'l3_identity':artifact['l3_identity'],'configuration_checksum':digest(config)}
 
 def from_manifest(manifest,*,signal_date):
@@ -25,7 +48,7 @@ def from_manifest(manifest,*,signal_date):
     return single_b_policy(config,signal_date=signal_date)
 
 def disabled_receipt(mode,*,signal_date,snapshot_id=None):
-    if mode.get('mode')!=MODE:raise ValueError('paper_single_b_receipt_mode_invalid')
+    if mode.get('mode') not in MODES:raise ValueError('paper_single_b_receipt_mode_invalid')
     result={'status':STATUS,'signal_date':signal_date,'paper_strategy':mode,
         'reason':'operator_selected_single_B_paper_strategy','retained_history':True,
         'paired_accounts_executed':0,'nav_maturity_credit':0,'promotion_allowed':False}
@@ -36,7 +59,7 @@ def disabled_receipt(mode,*,signal_date,snapshot_id=None):
 def valid_disabled_receipt(value):
     if not isinstance(value,dict) or value.get('status')!=STATUS:return False
     mode=value.get('paper_strategy') or {}
-    return (mode.get('mode')==MODE and mode.get('strategy_role')=='B'
+    return (mode.get('mode') in MODES and mode.get('strategy_role')=='B'
         and len(mode.get('model_checksum',''))==64 and len(mode.get('configuration_checksum',''))==64
         and value.get('paired_accounts_executed')==0 and value.get('retained_history') is True
         and value.get('nav_maturity_credit')==0 and value.get('promotion_allowed') is False

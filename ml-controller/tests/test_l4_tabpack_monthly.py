@@ -103,7 +103,8 @@ def test_monthly_lifecycle_rejects_explicit_price_profile_before_dispatch(monkey
 
 
 @pytest.mark.parametrize('status,expected,retry', [('pending','pending',True), ('failed','failed',False), ('validated','materialized',False)])
-def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected, retry):
+@pytest.mark.parametrize('family',[None,'full_mlp_median'])
+def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected, retry, family):
     import asyncio
     from services import l4_oof_lifecycle as native, active8_oof_cohort_materializer as materializer
     from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
@@ -125,16 +126,20 @@ def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected,
     calls = []
     monkeypatch.setattr(refresh, 'execute', lambda **kw: (calls.append(kw) or {'status':status, 'promoted':False, 'run_key':'a'*64, 'artifact_checksum':'b'*64}))
     result = asyncio.run(native.materialize_native_base(manifest_path='fixture', cohort_id='monthly', as_of='2026-10-04',
-        cadence='monthly', dry_run=False, dispatch_full_fit=True, poll_only=False, bucket=Bucket(), client=object()))
+        cadence='monthly', dry_run=False, dispatch_full_fit=True, poll_only=False, bucket=Bucket(), client=object(), model_family=family))
     assert result['status'] == expected and result['dependency_retry_required'] is retry
     assert calls[0]['strategy_role'] == 'B' and calls[0]['target_l3_artifact_id'] == 'new-B-L3'
+    if family is not None:assert calls[0]['model_family']==family
     assert result['promotion_allowed'] is False
 
 
-def test_causal_adapter_never_fits_on_validation_or_outer_test(monkeypatch):
+@pytest.mark.parametrize('family',['tabpack','full_mlp_median'])
+def test_causal_adapter_never_fits_on_validation_or_outer_test(monkeypatch,family):
     from datetime import date, timedelta
     from services import l4_distribution as native
     from app.l4_tabpack_data import prepare
+    if family=='full_mlp_median':
+        from app.l4_mlp_data import prepare
     from test_l4_distribution import constant_model, features
     model = constant_model()
     rows = [{'date':(date(2026, 1, 1)+timedelta(days=d)).isoformat(),
@@ -145,7 +150,7 @@ def test_causal_adapter_never_fits_on_validation_or_outer_test(monkeypatch):
     test_dates = sorted({r['date'] for r in rows})[-18:]
     train = [r for r in rows if r['label_known_date'] < min(test_dates)]
     anchor = {'model':model, 'l3_identity':{'artifact_id':'B'}, 'training_rows_checksum':digest(train),
-              'evaluation':{'dates':test_dates}}
+              'evaluation':{'dates':test_dates},'model_checksum':digest(model)}
     monkeypatch.setattr(native, 'validate_bundle', lambda *a, **kw: None)
     fits = []
     def fit(data, **kw):
@@ -159,10 +164,15 @@ def test_causal_adapter_never_fits_on_validation_or_outer_test(monkeypatch):
     second, recipe2, evidence2, _ = prepare(changed, anchor, as_of='2026-05-01')
     import numpy as np
     assert recipe == recipe2 and evidence['three_head_folds'] == evidence2['three_head_folds']
-    for part in ('train', 'val'):
+    for part in (('train','val') if family=='tabpack' else ('inner','valid','full')):
         for a, b in zip(arrays[part], second[part]): np.testing.assert_array_equal(a,b)
-    assert len(fits) > 0 and evidence['train_known_max'] < evidence['val_date_min']
-    assert evidence['val_known_max'] < evidence['test_date_min'] and len(held) == 54
+    if family=='tabpack':
+        assert len(fits) > 0 and evidence['train_known_max'] < evidence['val_date_min']
+        assert evidence['val_known_max'] < evidence['test_date_min'] and len(held) == 54
+    else:
+        assert evidence['inner_label_known_max']<evidence['validation_start']
+        assert evidence['training_label_known_max']<evidence['test_start'] and len(held)==54
+        assert evidence['refit_after_selection'] is True
 
 
 def test_modal_job_failure_and_duplicate_do_not_retrain(monkeypatch):

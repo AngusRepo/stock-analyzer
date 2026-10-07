@@ -8,17 +8,26 @@ SCHEMA = 'l4-monthly-training-closure-v1'
 PREFIX = 'l4_distribution/monthly_closures/'
 
 
-def completed_candidate(bucket, run_key, *, identity, manifest_checksum, as_of):
+def completed_candidate(bucket, run_key, *, identity, manifest_checksum, as_of, expected_family=None):
     """Explicit completed-run reuse cannot launch work or change training provenance."""
     from services.l4_tabpack_dispatch import dispatch
     if not re.fullmatch(r'[a-f0-9]{64}', run_key):
         raise ValueError('monthly_completed_run_key_invalid')
-    if not bucket.blob('l4_distribution/tabpack_runs/' + run_key + '/completed.json').exists():
+    tab_exists=bucket.blob('l4_distribution/tabpack_runs/' + run_key + '/completed.json').exists()
+    mlp_exists=bucket.blob('l4_distribution/mlp_median_runs/' + run_key + '/completed.json').exists()
+    if tab_exists and mlp_exists:
+        raise ValueError('monthly_completed_model_family_ambiguous')
+    if mlp_exists:
+        from services.l4_mlp_dispatch import dispatch
+    if not tab_exists and not mlp_exists:
         raise ValueError('monthly_completed_candidate_missing')
     def forbidden():
         raise ValueError('monthly_completed_candidate_cannot_train')
     result = dispatch(bucket, run_key, forbidden)
     candidate = json.loads(bucket.blob(result['artifact_path']).download_as_bytes())
+    family='full_mlp_median' if mlp_exists else 'tabpack'
+    if expected_family is not None and family!=expected_family:
+        raise ValueError('monthly_completed_model_family_mismatch')
     if (candidate.get('cadence') != 'monthly'
             or candidate.get('challenger_training_source', {}).get('as_of') != as_of
             or candidate.get('training_source', {}).get('source_manifest_checksum') != manifest_checksum):
@@ -83,7 +92,7 @@ def build(result, manifest, bucket, client):
         raise ValueError('monthly_parent_cohort_mismatch')
     refresh = result.get('l4_distribution_refresh') or {}
     candidate = completed_candidate(bucket, refresh.get('run_key', ''), identity=identity,
-        manifest_checksum=manifest['manifest_checksum'], as_of=as_of)
+        manifest_checksum=manifest['manifest_checksum'], as_of=as_of,expected_family=refresh.get('model_family'))
     if candidate['artifact_checksum'] != refresh.get('artifact_checksum'):
         raise ValueError('monthly_candidate_checksum_mismatch')
     return {'schema_version':SCHEMA, 'status':'complete', 'completion_scope':'monthly_training_candidate',

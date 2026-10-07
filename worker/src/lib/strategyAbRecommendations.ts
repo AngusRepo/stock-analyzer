@@ -1,3 +1,4 @@
+import { isSingleBMode, primaryModelLabel } from './paperStrategyMode'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
@@ -76,11 +77,12 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
     scope: 'daily_allocation', generated_at: new Date().toISOString(), production_effect: false, nav_maturity_credit: 0,
     A: unavailable('當日 A 配置尚未產生'), B: unavailable('當日 B 配置尚未產生；不代表 B 選擇持有現金') }
   const config = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?:string;strategy_role?:string}} | null
-  const singleB = config?.l4Distribution?.operating_mode === 'single_b_tabpack_v1'
+  const singleB = isSingleBMode(config?.l4Distribution?.operating_mode)
   if (singleB) {
     if (config?.l4Distribution?.strategy_role !== 'B') throw Error('strategy_ab_single_primary_mismatch')
-    result.operating_mode = 'single_b_tabpack_v1'
+    result.operating_mode = config!.l4Distribution!.operating_mode as import('./paperStrategyMode').SingleBMode
     result.primary_role = 'B'
+    result.primary_model = primaryModelLabel(result.operating_mode)
     result.B_account_status = 'primary'
     result.A = unavailable('A 策略已停用；歷史紀錄保留')
   }
@@ -94,11 +96,12 @@ export async function readStrategyAbRecommendations(env: Bindings, date: string)
     if (body.signal_date !== date || body.plan_id !== plan.plan_id) throw Error('strategy_ab_primary_date_mismatch')
     if (!body.weights || typeof body.weights !== 'object' || Array.isArray(body.weights)) throw Error('strategy_ab_primary_weights_missing')
     const view = allocationView(Object.entries(body.weights).map(([symbol, weight]) => ({ symbol, allocation_weight: weight })), plan.plan_id)
-    if (body.strategy_mode === 'single_b_tabpack_v1') {
+    if (isSingleBMode(body.strategy_mode)) {
       if (body.strategy_role !== 'B') throw Error('strategy_ab_single_primary_mismatch')
       result.B = view
+      result.primary_model = primaryModelLabel(body.strategy_mode)
       result.A = unavailable('A 策略已停用；歷史紀錄保留')
-      result.operating_mode = 'single_b_tabpack_v1'
+      result.operating_mode = body.strategy_mode
       result.primary_role = 'B'
       result.B_account_status = 'primary'
       return result

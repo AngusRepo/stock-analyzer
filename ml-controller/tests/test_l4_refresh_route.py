@@ -24,4 +24,4 @@ def test_B_candidate_bootstrap_uses_explicit_role_in_durable_job(monkeypatch):
     monkeypatch.setattr(cloud_run_jobs_client,'CloudRunJobsClient',Job)
     result=refresh_distribution(RefreshRequest(end_date='2026-09-21',cadence='manual',strategy_role='B',target_l3_artifact_id='frozen-exo-parent'))
     assert result['promoted'] is False
-    assert calls==[{'env_overrides':{'L4_REFRESH_DATE':'2026-09-21','L4_REFRESH_CADENCE':'manual','L4_STRATEGY_ROLE':'B','L4_PARENT_ARTIFACT_ID':'frozen-exo-parent'}}]
+    assert calls==[{'env_overrides':{'L4_REFRESH_DATE':'2026-09-21','L4_REFRESH_CADENCE':'manual','L4_STRATEGY_ROLE':'B','L4_MODEL_FAMILY':'tabpack','L4_PARENT_ARTIFACT_ID':'frozen-exo-parent'}}]

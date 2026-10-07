@@ -11,6 +11,18 @@ pred=policy['runtime']['predictions']['A'];identity=args['identity']
 pred['ensemble_v2'].update(artifact_id=identity['artifact_id'],cohort_id=identity['cohort_id'],
     artifact_checksum=identity['payload_checksum'],base_artifact_set_checksum=identity['base_artifact_set_checksum'])
 policy['scope']='private_research';policy['artifact'].pop('release');policy['artifact']['l3_identity']=identity
+if args.get('model_family')=='full_mlp_median':
+    from test_full_mlp_median import full_release
+    from services.paper_strategy_mode import MLP_MODE
+    policy['artifact']=full_release(policy['artifact'])
+    from services.l4_mlp_weights import compact_candidate
+    from services.l4_distribution_lifecycle import prepare_paper_release
+    compact,_=compact_candidate(policy['artifact'])
+    acceptance=compact['release']['validation_receipt']
+    acceptance['model_checksum']=compact['model_checksum']
+    acceptance['experiment_authorization']['model_checksum']=compact['model_checksum']
+    policy['artifact']=prepare_paper_release(compact,acceptance,signal_date='2026-09-21')
+    policy.update(scope='paper',operating_mode=MLP_MODE,strategy_role='B')
 policy['constraints'].update(args['constraints'])
 policy['runtime'].update(signal_date=args['account']['signal_date'],l3_identity=identity,account=args['account'],predictions={'2330':pred})
 policy['runtime']['account']['forbidden_buys']=args['account'].get('forbidden_buys',[])

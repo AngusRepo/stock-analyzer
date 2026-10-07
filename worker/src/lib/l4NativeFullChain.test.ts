@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
 import { pollIntradayStopLoss, runEODExit } from './paperExitTasks'
-import { getTradingConfig } from './tradingConfig'
+import { getTradingConfig, invalidateConfigCache } from './tradingConfig'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
 import assert from 'node:assert/strict'
@@ -18,7 +18,7 @@ import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 
-test('native full chain executes positive L4 target through real entry owner',async()=>{
+for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFamily} full chain executes positive L4 target through real entry owner`,async()=>{
   const f=l4NativeFixture()
   f.ports.allocateL4Private=async()=>{throw new Error('fixture_plan_already_supplied')}
   f.env.SHIOAJI_PROXY_URL='https://fixture.invalid'
@@ -61,7 +61,7 @@ test('native full chain executes positive L4 target through real entry owner',as
     const l3={artifact_id:'l3-fixture',cohort_id:'cohort-fixture',payload_checksum:'a'.repeat(64),base_artifact_set_checksum:'b'.repeat(64)}
     f.sqls.learning.prepare('INSERT INTO active8_ensemble_pointer_v1(singleton_id,artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum) VALUES(1,?,?,?,?)').run(...Object.values(l3))
     f.cfg.l4Distribution={scope:'private_research',constraints:{exposure_cap:.8,name_cap:.08,min_weight:.03,max_positions:5},artifact:{schema_version:'l4-distribution-v1',feature_schema:'full-l3-30-all-available-signals-v3',model_checksum:'c'.repeat(64),l3_identity:l3}} as any
-    f.kvs.set('trading:config',JSON.stringify(f.cfg))
+    f.kvs.set('trading:config',JSON.stringify(f.cfg)); invalidateConfigCache()
     const account=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-11'))).result
     assert.equal(account.risk_limits.buys_halted,false)
     f.sqls.core.exec("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','fixture','TWSE')")
@@ -71,13 +71,13 @@ test('native full chain executes positive L4 target through real entry owner',as
     const allocateNative=(context:any,cap=.08)=>{
       const python=process.env.NAV_TEST_PYTHON ?? fileURLToPath(new URL('../../../../../ml-service/.venv/Scripts/python.exe',import.meta.url))
       const script=fileURLToPath(new URL('../../../ml-controller/tests/l4_native_chain_allocator.py',import.meta.url))
-      const result=spawnSync(python,['-B',script],{input:JSON.stringify({account:context,identity:l3,
+      const result=spawnSync(python,['-B',script],{input:JSON.stringify({account:context,identity:l3,model_family:modelFamily,
         reward_ledger:f.sqls.paper.prepare('SELECT payload_json FROM l4_policy_account_rewards_v1 WHERE known_date < ?').all(context.signal_date).map(row=>JSON.parse(String(row.payload_json))),
-        constraints:{...f.cfg.l4Distribution!.constraints,buy_cost:.001425,sell_cost:.004425,name_cap:cap}}),encoding:'utf8'})
+        constraints:{...f.cfg.l4Distribution!.constraints,buy_cost:.001425,sell_cost:.004425,name_cap:cap}}),encoding:'utf8',maxBuffer:16*1024*1024})
       assert.equal(result.status,0,result.stderr)
       const parsed=JSON.parse(result.stdout.split('\n').find(line=>line.startsWith('{"policy"'))!)
       f.cfg.l4Distribution=parsed.policy
-      f.kvs.set('trading:config',JSON.stringify(f.cfg))
+      f.kvs.set('trading:config',JSON.stringify(f.cfg)); invalidateConfigCache()
       return parsed.envelope
     }
     const envelope=allocateNative(account),plan=envelope.plan
@@ -205,7 +205,7 @@ test('native full chain executes positive L4 target through real entry owner',as
       assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1999)
       assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,2)
       f.cfg.position.minPositionValue=1000
-      f.kvs.set('trading:config',JSON.stringify(f.cfg))
+      f.kvs.set('trading:config',JSON.stringify(f.cfg)); invalidateConfigCache()
       await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
       assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1500)
       assert.deepEqual(f.sqls.paper.prepare("SELECT shares FROM paper_orders WHERE side='sell' ORDER BY id").all().map(r=>r.shares),[1000,1000,499])
@@ -215,7 +215,7 @@ test('native full chain executes positive L4 target through real entry owner',as
       limitedExitDepth=false
       oddExitDepth=true
       f.cfg.position.minPositionValue=originalMinimumTrade
-      f.kvs.set('trading:config',JSON.stringify(f.cfg))
+      f.kvs.set('trading:config',JSON.stringify(f.cfg)); invalidateConfigCache()
       f.sqls.paper.exec('ROLLBACK TO multifill_exit_probe; RELEASE multifill_exit_probe')
     }
     f.sqls.paper.exec("CREATE TRIGGER fail_sell_receivable BEFORE INSERT ON paper_settlements WHEN NEW.side='sell' BEGIN SELECT RAISE(ABORT,'injected_settlement_failure'); END")
@@ -275,8 +275,13 @@ test('native full chain executes positive L4 target through real entry owner',as
     await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env))
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,exitCount)
     // A private candidate never receives or caches formal release authority.
-    assert.equal(f.cfg.l4Distribution.artifact.release,undefined)
-    await assert.rejects(getTradingConfig(f.env.KV),/validated Paper release/)
-    await assert.rejects(storeL4PortfolioPlan(f.env,{plan,canonical_payload,allocation_snapshot_id:'e'.repeat(64)}),/private_plan_cannot_publish/)
+    if (modelFamily==='anchor') {
+      assert.equal(f.cfg.l4Distribution.artifact.release,undefined)
+      await assert.rejects(getTradingConfig(f.env.KV),/validated Paper release/)
+      await assert.rejects(storeL4PortfolioPlan(f.env,{plan,canonical_payload,allocation_snapshot_id:'e'.repeat(64)}),/private_plan_cannot_publish/)
+    } else {
+      assert.equal((f.cfg.l4Distribution.artifact.release as any).efficacy_status,'unproven')
+      assert.equal((await getTradingConfig(f.env.KV)).l4Distribution?.operating_mode,'single_b_full_mlp_median_v1')
+    }
   } finally {f.close()}
 })

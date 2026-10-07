@@ -2030,12 +2030,14 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             detail="forward shadow coverage may only be recorded by the daily durable OOF lifecycle",
         )
     from services.trading_config_loader import load_merged_trading_config_with_contract
-    if load_merged_trading_config_with_contract().config.get('l4Distribution') is not None:
+    native_config=load_merged_trading_config_with_contract().config
+    if native_config.get('l4Distribution') is not None:
+        from services.paper_strategy_mode import refresh_family
         from services.l4_oof_lifecycle import materialize_native_base
         from services.walk_forward_retrain import _get_bucket
         return await materialize_native_base(manifest_path=req.manifest_path or f'walk_forward/oof_cohorts/{req.cohort_id}/manifest.json',
             cohort_id=req.cohort_id,as_of=req.knowledge_cutoff_date,cadence=req.lifecycle_cadence,dry_run=req.dry_run,
-            dispatch_full_fit=req.dispatch_full_fit,poll_only=req.full_fit_poll_only,bucket=_get_bucket(),client=LEARNING_D1_CLIENT)
+            dispatch_full_fit=req.dispatch_full_fit,poll_only=req.full_fit_poll_only,bucket=_get_bucket(),client=LEARNING_D1_CLIENT,model_family=refresh_family(native_config))
     from services.walk_forward_retrain import _get_bucket
     from services.active8_oof_cohort_materializer import (
         build_oof_snapshot_rows,
@@ -3603,7 +3605,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     model_profiles(schema_version=req.model_profile_schema_version)  # Validate before dispatch.
     config = load_merged_trading_config_with_contract().config
     new_distribution = config.get('l4Distribution') is not None
-    single_b = (config.get('l4Distribution') or {}).get('operating_mode') == 'single_b_tabpack_v1'
+    from services.paper_strategy_mode import is_single_b
+    single_b = is_single_b(config.get('l4Distribution'))
     from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
     if single_b and 'model_profile_schema_version' not in req.model_fields_set:
         req.model_profile_schema_version = TIMEXER_EXO_PROFILE_SCHEMA
@@ -4076,11 +4079,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.l4_oof_lifecycle import uses_native_l4
     if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base
+        from services.paper_strategy_mode import refresh_family
         if cadence == 'monthly':
             calendar_evidence['deferred_oof_dates'] = [d for d in dates if d > manifest['end_date']]
         return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,
             as_of=knowledge_cutoff_date,cadence=cadence,dry_run=req.dry_run,
-            dispatch_full_fit=req.dispatch_full_fit,poll_only=req.continuation_only,bucket=bucket,client=LEARNING_D1_CLIENT,calendar=calendar_evidence)
+            dispatch_full_fit=req.dispatch_full_fit,poll_only=req.continuation_only,bucket=bucket,client=LEARNING_D1_CLIENT,calendar=calendar_evidence,model_family=refresh_family(config))
     lifecycle_path = _oof_lifecycle_receipt_path(
         cohort_id,
         knowledge_cutoff_date,

@@ -16,7 +16,8 @@ def training_recipe_signature():
         'active8_score_semantics.py','active8_oof_cohort_materializer.py',
         'l4_distribution_runtime.py','l4_l3_baseline.py','recommendation_service.py','l4_alpha_ev_producer.py',
         'alpha_model_roster.py','l4_residual_mlp.py','l4_prediction_evaluation.py',
-        'l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_dispatch.py')
+        'l4_mlp_median.py','l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_dispatch.py',
+        'l4_mlp_export.py','l4_mlp_dispatch.py','l4_mlp_weights.py','paper_strategy_mode.py')
     sources={name:hashlib.sha256((services/name).read_bytes()).hexdigest() for name in names}
     sources['scripts/l4_distribution_refresh_job.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     return digest(sources)
@@ -39,11 +40,18 @@ def load_target_parent(artifact_id,client):
     return parent,identity
 
 
-def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",completed_run_key=None):
+def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",completed_run_key=None,model_family=None):
     if strategy_role not in ("A","B"):
         raise ValueError("l4_refresh_strategy_role_invalid")
     if strategy_role == 'B' and not target_l3_artifact_id:
         raise ValueError('l4_B_requires_explicit_exo_parent')
+    if model_family is None and strategy_role == 'B':
+        from services.trading_config_loader import load_merged_trading_config_with_contract
+        from services.paper_strategy_mode import MLP_MODE
+        policy=load_merged_trading_config_with_contract().config.get('l4Distribution') or {}
+        model_family='full_mlp_median' if policy.get('operating_mode')==MLP_MODE else 'tabpack'
+    if model_family not in (None,'tabpack','full_mlp_median') or (strategy_role!='B' and model_family is not None):
+        raise ValueError('l4_refresh_model_family_invalid')
     from graphs.daily_pipeline_v2 import _load_active8_serving_pool,_load_active8_ensemble_snapshot,_active8_action_authority
     from services.paired_nav_collection import baseline_model_identity
     from services.active8_oof_cohort_materializer import load_verified_oof_manifest,load_oof_prediction_rows
@@ -67,7 +75,7 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
             raise ValueError('completed_run_reuse_requires_monthly_B')
         from services.l4_monthly_closure import completed_candidate
         return completed_candidate(bucket, completed_run_key, identity=identity,
-            manifest_checksum=manifest['manifest_checksum'], as_of=as_of)
+            manifest_checksum=manifest['manifest_checksum'], as_of=as_of,expected_family=model_family)
     recipe=training_recipe_signature()
     if strategy_role == "B":
         from services.alpha_model_roster import TIMEXER_MODELS,validate_order
@@ -79,18 +87,24 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
         source_sha = os.environ.get('STOCKVISION_SOURCE_SHA','')
         if len(source_sha) != 40 or any(c not in '0123456789abcdef' for c in source_sha):
             raise ValueError('l4_tabpack_training_source_sha_missing')
-        from services.l4_tabpack_dispatch import RECIPE
+        if model_family=='full_mlp_median':
+            from services.l4_mlp_dispatch import RECIPE
+        else:
+            from services.l4_tabpack_dispatch import RECIPE
         recipe=digest({'anchor_recipe':recipe,'B_source_sha':source_sha,'recipe':RECIPE})
     run_key=digest({'source':manifest['manifest_checksum'],'identity':identity,'as_of':as_of,'cadence':cadence,'training_recipe':recipe,**({'strategy_role':'B'} if strategy_role=='B' else {})})
     if strategy_role == 'B':
-        from services.l4_tabpack_dispatch import dispatch
+        if model_family=='full_mlp_median':
+            from services.l4_mlp_dispatch import dispatch
+        else:
+            from services.l4_tabpack_dispatch import dispatch
         def make_payload():
             stored, candidate, receipt = prepare_anchor(manifest, bucket, parent, identity, as_of, cadence, source, recipe)
             return {'dataset_path':receipt['dataset_path'], 'rows_checksum':receipt['rows_checksum'],
                     'anchor_path':stored['artifact_path'], 'anchor_checksum':digest(candidate),
                     'as_of':as_of, 'expected_source_sha':source_sha}
         return {**dispatch(bucket, run_key, make_payload), 'as_of':as_of, 'cadence':cadence,
-                'training_recipe_signature':recipe}
+                'training_recipe_signature':recipe,'model_family':model_family}
     receipt_path=f'l4_distribution/refresh/{run_key}.json'
     receipt_blob=bucket.blob(receipt_path)
     if receipt_blob.exists():
@@ -122,4 +136,4 @@ def prepare_anchor(manifest, bucket, parent, identity, as_of, cadence, source, r
     return stored, candidate, receipt
 
 if __name__=='__main__':
-    print(json.dumps(execute(as_of=os.environ['L4_REFRESH_DATE'],cadence=os.environ['L4_REFRESH_CADENCE'],target_l3_artifact_id=os.environ.get('L4_PARENT_ARTIFACT_ID'),strategy_role=os.environ['L4_STRATEGY_ROLE']),sort_keys=True))
+    print(json.dumps(execute(as_of=os.environ['L4_REFRESH_DATE'],cadence=os.environ['L4_REFRESH_CADENCE'],target_l3_artifact_id=os.environ.get('L4_PARENT_ARTIFACT_ID'),strategy_role=os.environ['L4_STRATEGY_ROLE'],model_family=os.environ.get('L4_MODEL_FAMILY')),sort_keys=True))

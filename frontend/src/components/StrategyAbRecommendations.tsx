@@ -1,3 +1,4 @@
+import { isSingleBMode } from '../../../worker/src/lib/paperStrategyMode'
 import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { useQuery } from '@tanstack/react-query'
 import { apiGet } from '@/lib/apiClient'
@@ -24,7 +25,7 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
   </div>
   if (!comparison.data) return <p role="status" className="p-4 text-sm text-muted-foreground">讀取同日配置…</p>
   const data = comparison.data
-  const singleB = data.operating_mode === 'single_b_tabpack_v1'
+  const singleB = isSingleBMode(data.operating_mode)
   const roles: ('A' | 'B')[] = singleB ? ['B'] : ['A', 'B']
   return <section className="space-y-3" aria-label={singleB ? 'B 選股與配置權重' : 'A B 選股與配置權重'}>
     <div className="text-sm font-semibold">{data.date} · {singleB ? 'B 主策略' : 'A／B'} 選股與配置權重</div>
@@ -39,7 +40,7 @@ export default function StrategyAbRecommendations({ date, selectedSymbol, onSele
         const arm = data[role]
         return <div key={role} className="min-w-0 rounded-xl border border-muted/40 bg-background/40 p-4">
           <h3 className="font-semibold">{singleB ? 'B 主策略' : role === 'A' ? 'A 主方案' : 'B 挑戰方案'}</h3>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{singleB ? '外生 TimeXer＋L4 三頭＋TabPack 殘差校正' : role === 'A' ? '價格 TimeXer＋L4 三頭' : '外生 TimeXer＋L4 三頭＋EV 殘差 MLP'}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{singleB ? `外生 TimeXer＋L4 三頭＋${data.primary_model ?? '模型待確認'} 殘差校正` : role === 'A' ? '價格 TimeXer＋L4 三頭' : '外生 TimeXer＋L4 三頭＋EV 殘差 MLP'}</p>
           {role === 'B' && arm.status === 'available' && data.B_account_status === 'selection_only' &&
             <p className="mt-2 text-xs text-amber-200">B 已產生盤前配置；完整帳戶績效尚未註冊，本日不得計入 NAV。</p>}
           {arm.status !== 'available' ? <p role="status" className="mt-4 text-sm text-amber-200">{arm.reason}</p> : <>

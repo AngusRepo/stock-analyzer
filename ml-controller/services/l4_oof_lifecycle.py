@@ -49,7 +49,7 @@ def persist_base_index(*,manifest,predictions,client,dry_run):
     return {'status':'ready',**receipt}
 
 
-async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_run,dispatch_full_fit,poll_only,bucket,client,calendar=None):
+async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_run,dispatch_full_fit,poll_only,bucket,client,calendar=None,model_family=None):
     from services.active8_oof_cohort_materializer import load_verified_oof_manifest,load_oof_prediction_rows
     from routers.walk_forward import dispatch_oof_full_fit_training,_materialize_nav_with_reviews
     manifest,_=load_verified_oof_manifest(manifest_path,bucket=bucket,require_formal_lineage=True)
@@ -83,12 +83,19 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
         else:
             from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
             options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') == TIMEXER_EXO_PROFILE_SCHEMA else {}
+            family_binding={}
+            if options.get('strategy_role')=='B' and model_family is not None:
+                if model_family not in ('full_mlp_median','tabpack'):
+                    raise ValueError('l4_oof_model_family_invalid')
+                options['model_family']=model_family
+                if model_family=='full_mlp_median':
+                    family_binding={'model_family':model_family}
             binding = None
             if cadence == 'monthly' and options.get('strategy_role') == 'B':
                 import os
                 binding = bucket.blob('l4_distribution/monthly_candidate_bindings/' + digest({
                     'cohort_id':cohort_id, 'manifest_checksum':manifest['manifest_checksum'],
-                    'as_of':as_of, 'target_l3_artifact_id':target}) + '.json')
+                    'as_of':as_of, 'target_l3_artifact_id':target,**family_binding}) + '.json')
                 recovery_key = os.environ.get('OOF_COMPLETED_L4_RUN_KEY')
                 if binding.exists():
                     bound = json.loads(binding.download_as_bytes())

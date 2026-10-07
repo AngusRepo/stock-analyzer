@@ -4671,6 +4671,14 @@ def train_l4_tabpack_candidate(payload: dict) -> dict:
     return run(payload)
 
 
+@app.function(cpu=8, memory=16384, timeout=7200,
+              max_containers=1, scaledown_window=10, retries=0)
+def train_l4_mlp_median_candidate(payload: dict) -> dict:
+    _setup_env()
+    from app.l4_mlp_job import run
+    return run(payload)
+
+
 @app.function(cpu=4, memory=8192, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
 def rebuild_canonical_adjusted_prep_event(payload: dict) -> dict:
     _setup_env()

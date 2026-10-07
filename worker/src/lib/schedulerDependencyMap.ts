@@ -23,7 +23,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     task: 'paired-native-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',
     currentFunction: 'Retired under the single-B policy; both physical roots are paused. Historical paired receipts remain readable.',
     replacementOwner: 'single-B formal Paper execution; paired research accounts retired',
-    upstream: [], downstream: [], requiredBeforeDisable: ['single_b_tabpack_v1 active', 'both physical roots PAUSED', 'historical paired receipts retained'], operatorRisk: 'low',
+    upstream: [], downstream: [], requiredBeforeDisable: ['validated single-B Paper mode active', 'both physical roots PAUSED', 'historical paired receipts retained'], operatorRisk: 'low',
     recommendation: 'Keep roots PAUSED. Single-B Worker returns a disabled receipt before waking Controller; formal Paper keeps its shared native engine.',
   },
   'daily-execution-paper-lineage': {

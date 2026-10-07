@@ -12,7 +12,7 @@ export default function L4DistributionPanel({ data }: {
   return <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-5" aria-label="新 L4 與組合配置">
     <h2 className="text-lg font-semibold">L4 三頭模型 · 收益分布與組合配置</h2>
     <p className="mt-2 text-sm text-slate-400">完整可用 L3 訊號 → 虧損機率／獲利幅度／虧損幅度 → 保留 EV 正負號的 sparse＋OPB → 全池配置 → 成交回饋</p>
-    <p className="mt-2 text-sm text-slate-400">{data.residual_model === 'TabPack' ? 'TabPack 殘差校正已啟用；B 為唯一 Paper 主策略。' : data.residual_model === 'MLP' ? 'MLP 殘差校正已啟用。' : '目前未取得已啟用的殘差校正模型。'}</p>
+    <p className="mt-2 text-sm text-slate-400">{data.residual_model === 'TabPack' ? 'TabPack 殘差校正已啟用；B 為唯一 Paper 主策略。' : data.residual_model === 'Full_MLP_median' ? 'Full MLP median 已啟用：三個完整 seed 的殘差取 median，再加回 Anchor（λ=1）；Half／固定 TabPack 持續獨立前向。' : data.residual_model === 'MLP' ? 'MLP 殘差校正已啟用。' : '目前未取得已啟用的殘差校正模型。'}</p>
     <p role="status" className="mt-3 text-sm text-amber-200">{data.efficacy_status === 'paired_comparison_passed' ? '已通過對齊歷史帳戶比較；持續觀察 Paper 實際績效。' : 'Paper 試驗：績效優於原正式策略尚未證實。'}</p>
     {data.status === 'stale' && <p role="status" className="mt-4 text-amber-300">以下為歷史配置，日期與目前查詢日不同；不代表當日已完成配置。</p>}
     {!plan ? <p role="status" className="mt-5">{data.status === 'failed' ? '組合資料讀取失敗；請查看執行紀錄。' : '新 L4 已設定，等待第一份通過驗證的配置。'}</p> : <>

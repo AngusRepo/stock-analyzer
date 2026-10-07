@@ -8,6 +8,8 @@ from services.paired_nav_journal import digest, number
 SCHEMA = 'strategy-ab-price-threehead-exo-mlp-v1'
 TABPACK_SCHEMA = 'strategy-b-exo-tabpack-paper-v1'
 TABPACK_RECIPE = 'exo137_timexer_three_head_scalar_ev_tabpack'
+MLP_MEDIAN_SCHEMA = 'strategy-b-exo-full-mlp-median-paper-v1'
+MLP_MEDIAN_RECIPE = 'exo137_timexer_three_head_full_mlp_median_e0'
 RECIPES = {'A':'price_timexer_three_head', 'B':'exo137_timexer_three_head_scalar_ev_mlp'}
 FEE_TERMS = {'discount_factor':.25, 'minimum_net_commission':20.,
              'nominal_next_month_day':10, 'cash_credit':'confirmed_receipt_only',
@@ -16,8 +18,9 @@ FEE_TERMS = {'discount_factor':.25, 'minimum_net_commission':20.,
 
 def validate_tag(tag):
     tabpack=isinstance(tag,dict) and tag.get('schema_version')==TABPACK_SCHEMA
-    recipes={'B':TABPACK_RECIPE} if tabpack else RECIPES
-    if (not isinstance(tag,dict) or tag.get('schema_version') not in (SCHEMA,TABPACK_SCHEMA)
+    median=isinstance(tag,dict) and tag.get('schema_version')==MLP_MEDIAN_SCHEMA
+    recipes={'B':TABPACK_RECIPE} if tabpack else {'B':MLP_MEDIAN_RECIPE} if median else RECIPES
+    if (not isinstance(tag,dict) or tag.get('schema_version') not in (SCHEMA,TABPACK_SCHEMA,MLP_MEDIAN_SCHEMA)
             or tag.get('role') not in recipes
             or tag.get('recipe') != recipes[tag['role']]
             or not re.fullmatch('[a-f0-9]{64}',str(tag.get('experiment_id','')))
@@ -72,13 +75,17 @@ def bind(bundle, *, role, experiment_id, ensemble, timexer_metadata):
             or config['variant'] != ('price' if role == 'A' else 'exo137')):
         raise ValueError('strategy_ab_timexer_variant_or_identity_mismatch')
     model = bundle['candidate_trading_config']['l4Distribution']['artifact']['model']
+    from services.l4_mlp_median import SCHEMA as MEDIAN_MODEL_SCHEMA
+    median=(model.get('residual_mlp') or {}).get('schema_version')==MEDIAN_MODEL_SCHEMA
+    if median and model['residual_mlp']['residual_multiplier']!=1.0:
+        raise ValueError('strategy_ab_full_mlp_multiplier_invalid')
     tabpack=bool(model.get('residual_tabpack'))
     if (bool(model.get('residual_mlp') or tabpack) != (role == 'B')
             or (tabpack and model.get('residual_mlp'))):
         raise ValueError('strategy_ab_l4_recipe_mismatch')
     result = deepcopy(bundle)
-    result['strategy_ab'] = validate_tag({'schema_version':TABPACK_SCHEMA if tabpack else SCHEMA,'experiment_id':experiment_id,
-        'role':role,'recipe':TABPACK_RECIPE if tabpack else RECIPES[role],'fee_terms':deepcopy(FEE_TERMS)})
+    result['strategy_ab'] = validate_tag({'schema_version':TABPACK_SCHEMA if tabpack else MLP_MEDIAN_SCHEMA if median else SCHEMA,'experiment_id':experiment_id,
+        'role':role,'recipe':TABPACK_RECIPE if tabpack else MLP_MEDIAN_RECIPE if median else RECIPES[role],'fee_terms':deepcopy(FEE_TERMS)})
     result['bundle_checksum'] = digest({k:v for k,v in result.items() if k != 'bundle_checksum'})
     return validate_strategy_bundle(result,signal_date=result['declared_signal_date'])
 

@@ -51,6 +51,14 @@ def prepare_packet(*,current_config,candidate,acceptance,source_evidence,l3_iden
     choose_opb({'constraints':constraints,'opb':opb},[],identity,signal_date)
     config=deepcopy(current_config)
     config['l4Distribution']={'scope':'paper','artifact':release,'constraints':deepcopy(constraints),'opb':opb}
+    from services.l4_mlp_median import SCHEMA as MEDIAN_SCHEMA
+    from services.paper_strategy_mode import MLP_MODE, MODE, validate_model_mode
+    if release['model'].get('residual_mlp',{}).get('schema_version')==MEDIAN_SCHEMA:
+        config['l4Distribution'].update(operating_mode=MLP_MODE,strategy_role='B')
+        validate_model_mode(config['l4Distribution'])
+    elif (current_config.get('l4Distribution') or {}).get('operating_mode') is not None:
+        config['l4Distribution'].update(operating_mode=MODE,strategy_role='B')
+        validate_model_mode(config['l4Distribution'])
     for field in ('l4AlphaEv','allocatorEvFusion'):
         config.pop(field,None)
     return {'schema_version':'l4-local-cutover-packet-v1','signal_date':signal_date,

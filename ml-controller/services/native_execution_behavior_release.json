@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:644be1bbb2eb1d80882b6b1c77ed4563696e4ca8b4390574e93577c759ec502f",
+  "execution_owner_version": "native-paper-v1:bd5664cc7791ac18797c66f8c181709a18a2a3118badbecd19fb749433dbd1f5",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved Go after the reviewed 2026-10-07 release request: commit, push, migrations, Worker/Controller/Modal deployment, dated risk backfill, HMM-only retraining and verified admission, and an independent forward cohort. No Active8/MLP/TabPack retraining or live orders.",
-  "review": "docs/releases/2026-10-07-certified-hmm-dynamic-risk.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-07-certified-hmm-dynamic-risk"
+  "authorization": "Wei explicitly approved the reviewed 2026-10-07 Full MLP median Paper release: commit, push, Worker/Controller/Modal/frontend and dependent job deployment, Paper configuration/runtime grant, and both forward successors. Half and fixed TabPack remain shadows. No retraining or live orders are authorized.",
+  "review": "docs/releases/2026-10-07-full-mlp-median-paper-champion.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-07-full-mlp-median-champion"
 }

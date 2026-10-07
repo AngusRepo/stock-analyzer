@@ -116,6 +116,9 @@ def test_native_oof_completion_refreshes_matching_l4_role(profile,role,monkeypat
     async def full_fit(**kw): return {"status":"completed","retry_required":False,"release_registry":{"ensemble_candidate":{"artifact_id":"verified-"+role}}}
     monkeypatch.setattr(wf,"dispatch_oof_full_fit_training",full_fit)
     monkeypatch.setattr(wf,"_materialize_nav_with_reviews",lambda **kw:{"status":"unproven"})
+    from services import l4_oof_index_receipt
+    monkeypatch.setattr(l4_oof_index_receipt,'reuse_index',lambda *a:None)
+    monkeypatch.setattr(l4_oof_index_receipt,'seal_index',lambda *a:None)
     calls=[]
     def execute(**kw): calls.append(kw);return {"promoted":False}
     monkeypatch.setattr(refresh,"execute",execute)

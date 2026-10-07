@@ -58,3 +58,6 @@ uiux_gemini_package_*.zip
 /audits/ab-capacity-closure-20260922/
 
 /audits/closure-followup-20260922/
+
+# Private model cutover/config/runtime receipts. Never publish credentials or ledgers.
+/output/mlp-cutover/

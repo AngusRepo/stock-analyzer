@@ -1,3 +1,4 @@
+import { isSingleBMode } from '../../../worker/src/lib/paperStrategyMode'
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid, Legend } from 'recharts'
@@ -78,7 +79,7 @@ export default function NavTradingRoom() {
   const strategy = useQuery({ queryKey: ['strategy-ab-recommendations', today],
     queryFn: ({ signal }) => apiGet<StrategyAbRecommendations>(`/dashboard/v4/strategy-ab/recommendations?date=${today}`, { signal, timeoutMs: 15_000 }),
     staleTime: 30_000 })
-  const singleB = strategy.data?.operating_mode === 'single_b_tabpack_v1'
+  const singleB = isSingleBMode(strategy.data?.operating_mode)
   const query = useQuery({ queryKey: ['nav-comparisons', date], queryFn: () => navTradingRoomApi.comparisons(date || undefined),
     enabled: strategy.isSuccess && (!singleB || showHistory), staleTime: 30_000 })
   const data = query.data

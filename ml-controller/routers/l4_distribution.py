@@ -40,7 +40,8 @@ def refresh_distribution(request: RefreshRequest):
         raise HTTPException(409,'l4_distribution_requires_paired_paper_release')
     config=load_merged_trading_config_with_contract().config
     policy = config.get('l4Distribution') or {}
-    single_b = policy.get('operating_mode') == 'single_b_tabpack_v1'
+    from services.paper_strategy_mode import is_single_b
+    single_b = is_single_b(policy)
     role = request.strategy_role or ('B' if single_b else 'A')
     if single_b and role != 'B':
         raise HTTPException(409, 'single_b_refresh_cannot_train_A')
@@ -54,8 +55,11 @@ def refresh_distribution(request: RefreshRequest):
     if request.dry_run:
         return {'status':'dry_run','promoted':False,'training_dispatched':False}
     try:
+        from services.paper_strategy_mode import MLP_MODE
+        family='full_mlp_median' if policy.get('operating_mode')==MLP_MODE else 'tabpack'
         job=CloudRunJobsClient(job_name=os.environ.get('L4_DISTRIBUTION_JOB_NAME','l4-distribution-refresh')).run_job(
             env_overrides={'L4_REFRESH_DATE':request.end_date,'L4_REFRESH_CADENCE':request.cadence,'L4_STRATEGY_ROLE':role,
+                **({'L4_MODEL_FAMILY':family} if role=='B' else {}),
                 **({'L4_PARENT_ARTIFACT_ID':request.target_l3_artifact_id} if request.target_l3_artifact_id else {})})
     except JobAlreadyRunningError as exc:
         return {'status':'pending','execution_id':exc.execution.execution_id,'promoted':False}

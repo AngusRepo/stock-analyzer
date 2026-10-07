@@ -1,5 +1,6 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
+import { prepareIndicatorRegime } from './indicatorRegimePrerequisite'
 import { brokerDailyReadiness } from './finLabBrokerReadiness'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
 import type { Bindings, UpdateQueueMsg } from '../types'
@@ -1694,7 +1695,7 @@ async function ensureSameDateRegimeReady(
   })
   const startedAt = Date.now()
   try {
-    const summary = String(await runRegimeCompute(env, triggerTime))
+    const summary = await prepareIndicatorRegime(env, triggerTime, () => runRegimeCompute(env, triggerTime))
     await logSchedulerResult(env.KV, 'regime-compute', {
       status: 'success',
       summary: `pre-screener ${summary}; source=${source}`,
@@ -1880,11 +1881,12 @@ async function runFinalizeContinuation(
   }
   await checkAlerts(env)
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
-  const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
-  console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
-  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
+  // Produce certified day-t inputs before HMM; fail before expensive evidence work.
   const regimeSummary = await ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')
   console.log(`[Queue] Same-date regime ready before screener: ${regimeSummary}`)
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
+  const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
+  console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
 
   const runAsyncScreener = deps.runMarketScreenerAsync

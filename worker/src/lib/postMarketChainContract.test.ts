@@ -192,7 +192,7 @@ assert(
 assert(
   postScreenerContinuation.includes("type: 'post_screener_pipeline'") &&
     updateOrchestrator.includes("if (msg.type === 'post_screener_pipeline')") &&
-    updateOrchestrator.includes('continuePostScreenerPipeline(env, deps, triggerTime, runId)'),
+    /continuePostScreenerPipeline\(env, deps, triggerTime, runId(?:,|\))/.test(updateOrchestrator),
   'indicator-queue finalization must enqueue and consume post-screener continuation instead of requiring manual pipeline trigger',
 )
 const postScreenerPipelineCatch = postScreenerContinuationBlock.slice(

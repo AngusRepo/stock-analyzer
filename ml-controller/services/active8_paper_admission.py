@@ -310,8 +310,11 @@ def verify_active_approval(admission, *, now=None):
     release_key=SWING_RUNTIME_RELEASE_KEY if os.environ.get('PIPELINE_DAILY_PLAN_OWNER')=='premarket_once_v1' else RUNTIME_RELEASE_KEY
     # Stage this exact source release separately. The old production revision
     # keeps reading its old key until the candidate has passed admission.
-    runtime = (kv_client.get_json(ADVISORY_DEBATE_HMM_RUNTIME_RELEASE_KEY, default=None, strict=True)
-               if release_key == SWING_RUNTIME_RELEASE_KEY else None)
+    from pathlib import Path
+    behavior = json.loads(Path(__file__).with_name('native_execution_behavior_release.json').read_text())
+    runtime = kv_client.get_json(behavior['runtime_admission'], default=None, strict=True)
+    if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
+        runtime = kv_client.get_json(ADVISORY_DEBATE_HMM_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
         runtime = kv_client.get_json(ATR_ONCE_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:

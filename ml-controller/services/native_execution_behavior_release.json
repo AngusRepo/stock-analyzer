@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:46f923110d6a7b6323402d091d360f057e615b183c0c88c1d9f2508a34b80a74",
+  "execution_owner_version": "native-paper-v1:1bf2f15c1a3b3d3267f0a6786cd14cbd7b39e644dda02326115fdf8e12a7beb8",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized commit, push and deploy of advisory debate and HMM semantic repairs; exact supplemental KV approval pending. No retrain, model replacement or live orders.",
-  "review": "docs/releases/2026-10-05-advisory-debate-hmm.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-05-advisory-debate-hmm"
+  "authorization": "Wei explicitly approved Go after the reviewed 2026-10-07 release request: commit, push, migrations, Worker/Controller/Modal deployment, dated risk backfill, HMM-only retraining and verified admission, and an independent forward cohort. No Active8/MLP/TabPack retraining or live orders.",
+  "review": "docs/releases/2026-10-07-certified-hmm-dynamic-risk.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-07-certified-hmm-dynamic-risk"
 }

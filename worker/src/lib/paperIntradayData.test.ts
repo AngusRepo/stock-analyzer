@@ -1,4 +1,5 @@
 import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, normalizeShioajiSnapshot, prewarmOddLotOrderbooks } from './paperIntradayData'
+import { executionBookTimingAges } from './executionBookTiming'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -76,6 +77,43 @@ function assert(condition: unknown, message: string): void {
 }
 
 async function runAsyncTests(): Promise<void> {
+  for(const singleFallback of [false,true]) {
+    const originalFetch=globalThis.fetch, originalNow=Date.now
+    const requestMs=Date.parse('2026-10-07T03:00:25.050Z')
+    let nowMs=requestMs
+    Date.now=()=>nowMs
+    let quoteAge:unknown=0, sourceAge:unknown=6674
+    globalThis.fetch=(async(input:any)=>{
+      if(singleFallback && String(input).endsWith('/orderbooks'))return {ok:false,status:404} as Response
+      return {ok:true,json:async()=>{
+        nowMs=requestMs+80
+        const book={status:'ok',lot_type:'odd_lot',price:122,
+          bid_prices:[121.5],ask_prices:[122],bid_volumes:[339],ask_volumes:[31],
+          source_time:'2026-10-07T11:00:18.480298+08:00',confirmed_at:'2026-10-07T11:00:25.154894+08:00',
+          confirmation_mode:'quote_session_static_book',session_epoch:1,stream_heartbeat_age_ms:633,
+          quote_age_ms:quoteAge,source_age_ms:sourceAge,
+          timingReceipt:{requestStartedAtMs:0,responseReceivedAtMs:0,quoteAgeMs:0,sourceAgeMs:0}}
+        return singleFallback?book:{data:{'3004':book}}
+      }} as Response
+    }) as any
+    try {
+      const fetchBook=async()=>{
+        nowMs=requestMs
+        return (await batchGetExecutionOrderbooks(['3004'],{SHIOAJI_PROXY_URL:'https://shioaji.local',marketDataLotType:'odd_lot'})).get('3004')!
+      }
+      const book=await fetchBook()
+      assert(book.confirmationTime==='2026-10-07T11:00:25.154894+08:00','broker timestamp remains raw evidence')
+      assert(book.timingReceipt?.requestStartedAtMs===requestMs && book.timingReceipt.responseReceivedAtMs===requestMs+80,
+        'only locally measured request/response times mint a timing receipt, for batch and single paths')
+      assert(executionBookTimingAges(book.timingReceipt!,nowMs)?.quoteAgeMs===80,'full transport duration is charged')
+      for(const invalid of [null,undefined,-1,'0',NaN]) {
+        quoteAge=invalid
+        assert((await fetchBook()).timingReceipt==null,'missing or invalid remote age cannot mint timing authority')
+      }
+      quoteAge=0;sourceAge=null
+      assert((await fetchBook()).timingReceipt==null,'source-age evidence is mandatory')
+    } finally {globalThis.fetch=originalFetch;Date.now=originalNow}
+  }
   {
     const originalFetch = globalThis.fetch
     const calls: Array<{ url: string; body: any }> = []

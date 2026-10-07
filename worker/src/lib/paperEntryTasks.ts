@@ -14,6 +14,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { sendDiscordNotification } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
+import { executionBookTimingAges } from './executionBookTiming'
 import { INTRADAY_PRICE_DISPLAY_MAX_AGE_MS, putIntradayPrice } from './paperIntradayPriceCache'
 import { recordSellSettlement } from './paperMarketData'
 import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
@@ -489,6 +490,12 @@ function quoteAgeMs(quoteTime?: string): number | null {
   const ts = new Date(normalized).getTime()
   if (!Number.isFinite(ts)) return null
   return Math.max(0, paperExecutionNow() - ts)
+}
+
+function bookConfirmationAgeMs(quote: IntradayOHLC): number | null {
+  return quote.timingReceipt
+    ? executionBookTimingAges(quote.timingReceipt, paperExecutionNow())?.quoteAgeMs ?? null
+    : quoteAgeMs(quote.confirmationTime) ?? quote.quoteAgeMs ?? null
 }
 
 function pendingRunIdFromMeta(meta: Record<string, unknown> | undefined): number | null {
@@ -1479,12 +1486,18 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           && b.startMs<Date.parse(today+'T09:15:00+08:00')).map(b=>b.high))
         const reference=Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))
         const maxBuyPrice=normalizeTwLimitPrice(orHigh*(1+cfg.position.strongBreakoutMaxEntryChasePct),'buy')
+        const observedTiming=currentOhlc?.timingReceipt
+          ? executionBookTimingAges(currentOhlc.timingReceipt,paperExecutionNow()) : null
+        const observedAge=currentOhlc?.confirmationMode === 'quote_session_static_book'
+          ? observedTiming?.quoteAgeMs : observedTiming?.sourceAgeMs
         const swingInput={tradeDate:today,nowMs:paperExecutionNow(),label:'start' as const,bars:minute.bars,
           benchmarkBars:benchmark.bars.bars,previousClose:reference,
           benchmarkPreviousClose:Number(benchmark.closes.find(r=>r.date===previousSession)?.close),
           benchmarkPriorCloses:benchmark.closes.map(r=>({date:r.date,close:Number(r.close)})),previousSession,
-          quote:{price,observedAtMs:Date.parse(currentOhlc?.confirmationMode === 'quote_session_static_book'
-            ? currentOhlc.confirmationTime ?? '' : currentOhlc?.quoteTime ?? '')},
+          quote:{price,observedAtMs:currentOhlc?.timingReceipt
+            ? paperExecutionNow() - (observedAge ?? NaN)
+            : Date.parse(currentOhlc?.confirmationMode === 'quote_session_static_book'
+              ? currentOhlc.confirmationTime ?? '' : currentOhlc?.quoteTime ?? '')},
           limitUp:resolveTwEquityPriceBand(reference).limitUp ?? NaN,maxBuyPrice,
           boughtToday:false,alreadyHeld:false,planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),
           candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))}
@@ -1830,7 +1843,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         source_time: currentOhlc.quoteTime, received_at: currentOhlc.confirmationTime,
       }, paperExecutionDate())
       finLabL5Quote = streamBook ? { ...streamBook,
-        quoteAgeMs: quoteAgeMs(currentOhlc.confirmationTime) } : null
+        quoteAgeMs: bookConfirmationAgeMs(currentOhlc) } : null
     }
     const l5Thresholds={
         maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
@@ -1849,11 +1862,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL, PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
         marketDataLotType: 'odd_lot',
       })).get(pending.symbol)
-      const oddL5 = odd?.lotType === 'odd_lot' ? normalizeFinLabL5Quote(pending.symbol, {
+      const normalizedOddL5 = odd?.lotType === 'odd_lot' ? normalizeFinLabL5Quote(pending.symbol, {
         provider: 'shioaji_proxy_orderbook', lot_type: 'odd_lot', last_price: odd.last,
         bid_prices: odd.bidPrices, ask_prices: odd.askPrices, bid_volumes: odd.bidVolumes, ask_volumes: odd.askVolumes,
         source_time: odd.quoteTime, received_at: odd.confirmationTime,
       }, paperExecutionDate()) : null
+      const oddL5 = normalizedOddL5 && odd ? { ...normalizedOddL5, quoteAgeMs: bookConfirmationAgeMs(odd) } : null
       return { odd, oddL5, quality: quoteQualityFromL5(oddL5, l5Thresholds) }
     }
     let oddLotBookChecked = false
@@ -2386,10 +2400,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             volumeUnit: currentOhlc.volumeUnit,
             sourceTime: currentOhlc.quoteTime ?? null,
             receivedAt: currentOhlc.confirmationTime ?? null,
-            ageMs: quoteAgeMs(currentOhlc.confirmationTime) ?? currentOhlc.quoteAgeMs ?? null,
+            ageMs: bookConfirmationAgeMs(currentOhlc),
             sessionEpoch: currentOhlc.sessionEpoch ?? null,
             streamHeartbeatAgeMs: currentOhlc.streamHeartbeatAgeMs ?? null,
             confirmationMode: currentOhlc.confirmationMode ?? null,
+            timingReceipt: currentOhlc.timingReceipt,
           }
           : null,
         finLabL5Quote && finLabL5Quote.provider !== 'shioaji_proxy_live_stream_book'

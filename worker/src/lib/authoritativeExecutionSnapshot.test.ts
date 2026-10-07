@@ -1,4 +1,5 @@
 import { resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot } from './authoritativeExecutionSnapshot'
+import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -50,6 +51,47 @@ const wrongLot = resolveAuthoritativeBuyExecutionSnapshot({
 assert(wrongLot.status === 'blocked' && wrongLot.reason === 'execution_book_unavailable', 'board-lot book must not authorize odd-lot fills')
 
 console.log('authoritativeExecutionSnapshot tests passed')
+
+// Event170191: all strategy gates passed; the Proxy confirmation was 24ms
+// ahead of the Worker clock. Transport times below are explicit test inputs.
+for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot]) {
+  const nowMs = Date.parse('2026-10-07T03:00:25.130Z')
+  const book = {
+    source:'shioaji_hub' as const,lotType:'odd_lot' as const,bid:121.5,ask:122,
+    bidPrices:[121.5,121,120.5,120,119.5],askPrices:[122,122.5,123,123.5,124],
+    bidVolumes:[339,3023,2890,2749,182],askVolumes:[31,362,310,130,891],volumeUnit:'shares' as const,
+    sourceTime:'2026-10-07T11:00:18.480298+08:00',receivedAt:'2026-10-07T11:00:25.154894+08:00',
+    ageMs:0,sessionEpoch:1,streamHeartbeatAgeMs:633,confirmationMode:'quote_session_static_book',
+    timingReceipt:{requestStartedAtMs:nowMs-80,responseReceivedAtMs:nowMs,quoteAgeMs:0,sourceAgeMs:6674},
+  }
+  const resolve = (observation: typeof book, at=nowMs) => resolver({
+    limitPrice:resolver===resolveAuthoritativeBuyExecutionSnapshot?122:121.5,
+    lotType:'odd_lot',nowMs:at,maxAgeMs:1500,observations:[observation],
+  })
+  const fresh = resolve(book)
+  assert(fresh.status==='ready' && fresh.ageMs===80,'cross-clock confirmation must use broker age plus full transport time')
+  const match=matchPaperOrderAgainstAuthoritativeDepth({snapshot:fresh,requestedShares:100,limitPrice:fresh.normalizedLimitPrice})
+  assert(match.filledShares===(resolver===resolveAuthoritativeBuyExecutionSnapshot?31:100),
+    'clock-domain repair must still consume only visible depth at the limit')
+  assert(resolve(book,nowMs+1420).status==='ready','1500ms age boundary must remain inclusive')
+  assert(resolve(book,nowMs+1421).status==='blocked','waiting after receipt must age the book beyond the unchanged limit')
+  for (const observation of [
+    {...book,timingReceipt:{...book.timingReceipt,quoteAgeMs:2000}},
+    {...book,timingReceipt:{...book.timingReceipt,requestStartedAtMs:nowMs-1501}},
+    {...book,timingReceipt:{...book.timingReceipt,responseReceivedAtMs:nowMs+1}},
+    {...book,timingReceipt:{...book.timingReceipt,sourceAgeMs:NaN}},
+    {...book,streamHeartbeatAgeMs:10_001},
+    {...book,streamHeartbeatAgeMs:9950},
+    {...book,sessionEpoch:0},
+    {...book,sourceTime:'2026-10-07T11:00:26+08:00'},
+    {...book,receivedAt:'2026-10-08T11:00:25+08:00'},
+    {...book,receivedAt:'bad-time'},
+    {...book,confirmationMode:'symbol_event',timingReceipt:{...book.timingReceipt,sourceAgeMs:10_001}},
+    {...book,timingReceipt:undefined as unknown as typeof book.timingReceipt},
+    {...book,source:'finlab_l5' as unknown as typeof book.source},
+  ]) assert(resolve(observation).status==='blocked','invalid transport, dead stream, future broker event or stale source must fail closed')
+  assert(resolve({...book,confirmationMode:'symbol_event'}).status==='ready','fresh symbol callback uses its own source-age bound')
+}
 
 for (const resolver of [resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot]) {
   const base = { source: 'shioaji_hub' as const, lotType: 'board_lot' as const, bid: 100, ask: 100 }

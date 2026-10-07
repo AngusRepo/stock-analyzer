@@ -1,5 +1,6 @@
 import { paperExecutionNow } from './paperExecutionScope'
 import { getTwTickSize, normalizeTwLimitPrice, type TwOrderLotType } from './twMarketRules'
+import { executionBookTimingAges, twDateAt, type ExecutionBookTimingReceipt } from './executionBookTiming'
 
 export interface ExecutionBookObservation {
   source: 'shioaji_hub' | 'finlab_l5'
@@ -19,6 +20,7 @@ export interface ExecutionBookObservation {
   sessionEpoch?: number | null
   streamHeartbeatAgeMs?: number | null
   confirmationMode?: string | null
+  timingReceipt?: ExecutionBookTimingReceipt
 }
 
 export interface AuthoritativeExecutionSnapshot {
@@ -145,6 +147,19 @@ function normalizedAge(observation: ExecutionBookObservation, nowMs: number): nu
     const confirmedAt = Date.parse(observation.receivedAt)
     const sourceAge = nowMs - sourceTime
     const maxSourceAge = observation.lotType === 'odd_lot' ? 10_000 : 3_000
+    if (observation.timingReceipt) {
+      const timing = executionBookTimingAges(observation.timingReceipt, nowMs)
+      if (!timing || !Number.isFinite(sourceTime) || !Number.isFinite(confirmedAt)
+        || confirmedAt < sourceTime
+        || twDateAt(sourceTime) !== twDateAt(confirmedAt)
+        || twDateAt(confirmedAt) !== twDateAt(observation.timingReceipt.responseReceivedAtMs)
+        || (observation.confirmationMode === 'symbol_event' && timing.sourceAgeMs > maxSourceAge)
+        || (observation.confirmationMode === 'quote_session_static_book'
+          && (typeof observation.streamHeartbeatAgeMs !== 'number'
+            || !Number.isFinite(observation.streamHeartbeatAgeMs) || observation.streamHeartbeatAgeMs < 0
+            || observation.streamHeartbeatAgeMs + timing.elapsedUpperBoundMs > 10_000))) return null
+      return timing.quoteAgeMs
+    }
     if (!Number.isFinite(sourceTime) || !Number.isFinite(confirmedAt)
         || sourceAge < 0
         || (observation.confirmationMode === 'symbol_event' && sourceAge > maxSourceAge)

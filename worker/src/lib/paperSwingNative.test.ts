@@ -20,13 +20,13 @@ import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { buildMarketRegimeState } from './marketRegimeState'
 import { captureL4AccountContext } from './l4AccountContext'
 import { setupMorningPendingBuys } from './pendingBuyOrchestrator'
-import { withPaperExecutionScope } from './paperExecutionScope'
+import { withPaperExecutionScope, advancePaperExecutionClock } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStore'
 import { latchAtrOnce } from './paperAtrOnceState'
 import { ATR_ONCE_POLICY } from './paperAtrOnce'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing']) test(
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
@@ -47,8 +47,21 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
   let oddExitDepth=true
   let initialStaticBookMissing=true
   let warmupRequests=0
+  let l5Returned=false
+  const preparePaper=f.env.PAPER_DB.prepare.bind(f.env.PAPER_DB)
+  f.env.PAPER_DB.prepare=(query:string)=>{
+    if(scenario.startsWith('clock_domain') && l5Returned) {
+      // Account/risk work elapses AFTER L5 quality, BEFORE the final HTTP read.
+      // This is processing time, not six seconds of fresh-book transport.
+      f.ports.nowMs+=6_000
+      advancePaperExecutionClock(f.ports.nowMs)
+      l5Returned=false
+    }
+    return preparePaper(query)
+  }
   f.ports.fetchFrozen=async(input:RequestInfo|URL,init?:RequestInit)=>{
-    const url=String(input),time=new Date(f.ports.nowMs).toISOString()
+    const url=String(input)
+    const time=new Date(f.ports.nowMs).toISOString()
     if(url.includes('/atr-warmup/')) {
       warmupRequests++
       if(scenario==='atr_sparse_missing')return new Response('ticks unavailable',{status:504})
@@ -65,6 +78,13 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       source_time:new Date(f.ports.nowMs-20_000).toISOString(),confirmation_mode:'quote_session_static_book',
       stream_heartbeat_age_ms:200,session_epoch:7,
     })
+    if(scenario.startsWith('clock_domain'))Object.assign(quote,{
+      source_time:new Date(f.ports.nowMs-6_000).toISOString(),
+      confirmed_at:new Date(f.ports.nowMs+24).toISOString(),
+      source_age_ms:6_024,quote_age_ms:scenario==='clock_domain_stale'?2_000:0,
+      confirmation_mode:'quote_session_static_book',session_epoch:7,
+      stream_heartbeat_age_ms:scenario==='clock_domain_dead_heartbeat'?11_000:633,
+    })
     if(quotePrice!==20)Object.assign(quote,{last:quotePrice,price:quotePrice,bid:quotePrice,ask:quotePrice,bid_prices:[quotePrice,quotePrice-.05,quotePrice-.1,quotePrice-.15,quotePrice-.2]})
     const odd=url.includes('lot_type=odd_lot') || String(init?.body ?? '').includes('odd_lot')
     if(odd)Object.assign(quote,{lot_type:'odd_lot',volume_unit:'shares',bid_volume:10000,ask_volume:10000,bid_volumes:[10000,10000,10000,10000,10000],ask_volumes:[10000,10000,10000,10000,10000]})
@@ -80,8 +100,12 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     if(url.includes('/orderbook/'))return Response.json({data:quote})
     if(url.includes('trend'))return Response.json({slope_5min:.002})
     if(url.includes('/snapshot/'))return Response.json({data:quote})
-    if(url.includes('/l5-market-data'))return Response.json({status:'ok',quotes:scenario==='unchanged_stream_book'
-      ? {} : {'2330':{...quote,provider:'shioaji_proxy_orderbook',ask_volumes:[1,1,1,1,1]}}})
+    if(url.includes('/l5-market-data')) {
+      l5Returned=true
+      return Response.json({status:'ok',quotes:scenario==='unchanged_stream_book'
+      ? {} : {'2330':{...quote,source_time:scenario.startsWith('clock_domain')?new Date(f.ports.nowMs-80).toISOString():quote.source_time,
+        provider:'shioaji_proxy_orderbook',ask_volumes:[1,1,1,1,1]}}})
+    }
     if(url.includes('twse.com.tw'))return Response.json({stat:'OK',data:[]})
     if(url.includes('tpex.org.tw'))return Response.json([])
     if(url.includes('/kbars/')) {
@@ -159,11 +183,18 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       pendingBuys:[snapshot.pendingBuys[0],{...snapshot.pendingBuys[0],symbol:'0050',name:'benchmark'}],
     }))
     f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:25:00Z')
+    if(scenario.startsWith('clock_domain'))f.ports.nowMs+=10_000
     if(scenario.startsWith('atr_sparse'))await latchAtrOnce(f.env.PAPER_DB,1,'2026-09-14','2330',{
       policy:ATR_ONCE_POLICY,status:'unknown',reason:'swing_atr_warmup_missing',firstSignalMs:Date.parse('2026-09-14T09:20:00+08:00'),
     })
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
+    if(['clock_domain_stale','clock_domain_dead_heartbeat'].includes(scenario)) {
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+      assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE reason='execution_book_stale_or_incomplete' LIMIT 1").get()?.reason,'execution_book_stale_or_incomplete')
+      return
+    }
     if(scenario==='atr_sparse_missing') {
       assert.equal(warmupRequests,1)
       assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_atr_once_v1').get()?.status,'unknown')
@@ -216,7 +247,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(2,?,100)').run(day)
       f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(1,?,?)').run(day,scenario==='daily_orl'?19.8:20)
     }
-    quotePrice=['hard_stop','closing_auction'].includes(scenario)?18.3:20
+    quotePrice=['hard_stop','closing_auction','clock_domain'].includes(scenario)?18.3:20
     f.ports.nowMs=Date.parse(exitDay+(scenario==='20_sessions'?'T13:24:00+08:00':scenario==='closing_auction'?'T13:25:00+08:00':'T09:05:00+08:00'))
     await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env,{halt:false,forceLiquidate:false,targetExposurePct:1,maxPositionPct:.2} as any))
     if(scenario==='closing_auction') {
@@ -230,7 +261,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     }
     const exits:any[]=f.sqls.paper.prepare("SELECT * FROM paper_orders WHERE side='sell'").all()
     assert.equal(exits.length,1,JSON.stringify(f.sqls.paper.prepare("SELECT reason,detail_json FROM paper_execution_events WHERE side='sell'").all()))
-    assert.match(exits[0].note,new RegExp('swing_'+(scenario==='closing_auction'?'hard_stop':scenario)))
+    assert.match(exits[0].note,new RegExp('swing_'+(['closing_auction','clock_domain'].includes(scenario)?'hard_stop':scenario)))
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions WHERE shares>0').get()?.n,0)
   } finally {f.close()}
 })

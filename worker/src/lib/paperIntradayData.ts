@@ -1,5 +1,6 @@
-import { paperExecutionFetch } from './paperExecutionScope'
+import { paperExecutionFetch, paperExecutionNow } from './paperExecutionScope'
 import { isValidTwTickPrice } from './twMarketRules'
+import { nonNegativeAge, type ExecutionBookTimingReceipt } from './executionBookTiming'
 
 export interface IntradayOHLC {
   last: number
@@ -25,6 +26,7 @@ export interface IntradayOHLC {
   confirmationMode?: string
   quoteAgeMs?: number
   sourceAgeMs?: number
+  timingReceipt?: ExecutionBookTimingReceipt
   source?: 'shioaji' | 'yahoo'
   lotType?: 'board_lot' | 'odd_lot'
 }
@@ -191,7 +193,7 @@ function finiteVolumeList(value: unknown): number[] {
   return value.map((item) => firstFiniteNumber(item)).filter((item): item is number => item != null).slice(0, 5)
 }
 
-function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
+function normalizeShioajiOrderbook(payload: any, transport?: Pick<ExecutionBookTimingReceipt, 'requestStartedAtMs' | 'responseReceivedAtMs'>): IntradayOHLC | null {
   const status = String(payload?.status ?? 'ok').trim().toLowerCase()
   if (
     status.startsWith('stale') ||
@@ -244,8 +246,10 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
   const confirmationMode = typeof payload?.confirmation_mode === 'string' ? payload.confirmation_mode : undefined
   const lastTradeTime = typeof payload?.last_trade_source_time === 'string'
     ? payload.last_trade_source_time : undefined
-  const quoteAgeMs = Number.isFinite(Number(payload?.quote_age_ms)) ? Math.max(0, Number(payload.quote_age_ms)) : undefined
-  const sourceAgeMs = Number.isFinite(Number(payload?.source_age_ms)) ? Math.max(0, Number(payload.source_age_ms)) : undefined
+  const quoteAgeMs = nonNegativeAge(payload?.quote_age_ms)
+  const sourceAgeMs = nonNegativeAge(payload?.source_age_ms)
+  const timingReceipt = transport && quoteAgeMs != null && sourceAgeMs != null
+    ? { ...transport, quoteAgeMs, sourceAgeMs } : undefined
 
   const lotType = String(payload?.lot_type ?? '').toLowerCase() === 'odd_lot' ? 'odd_lot' : 'board_lot'
   const sessionEpoch = Number.isFinite(Number(payload?.session_epoch)) ? Number(payload.session_epoch) : undefined
@@ -258,7 +262,7 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
     bidVolumes: bidVolumes.length > 0 ? bidVolumes : bidVolume == null ? [] : [bidVolume],
     askVolumes: askVolumes.length > 0 ? askVolumes : askVolume == null ? [] : [askVolume],
     volumeUnit: lotType === 'board_lot' ? 'lots' : 'shares',
-    quoteTime, lastTradeTime, confirmationTime, confirmationMode, quoteAgeMs, sourceAgeMs,
+    quoteTime, lastTradeTime, confirmationTime, confirmationMode, quoteAgeMs, sourceAgeMs, timingReceipt,
     source: 'shioaji', lotType, sessionEpoch, streamHeartbeatAgeMs,
   }
 }
@@ -370,6 +374,7 @@ async function fetchSingleOrderbookQuotes(
   const lotType = env?.marketDataLotType ?? 'board_lot'
 
   const results = await Promise.allSettled(symbols.map(async (symbol) => {
+    const requestStartedAtMs = paperExecutionNow()
     const res = await paperExecutionFetch(`${proxyUrl}/orderbook/${symbol}?lot_type=${encodeURIComponent(lotType)}`, {
       headers: proxyHeaders(env),
       signal: AbortSignal.timeout(3000),
@@ -382,7 +387,7 @@ async function fetchSingleOrderbookQuotes(
     }
     const json = await res.json() as any
     const payload = json?.data ?? json
-    const normalized = normalizeShioajiOrderbook(payload)
+    const normalized = normalizeShioajiOrderbook(payload, { requestStartedAtMs, responseReceivedAtMs: paperExecutionNow() })
     if (!normalized) {
       const diagnostic = compactOrderbookDiagnostic(symbol, payload)
       env?.onOrderbookDiagnostic?.(symbol, diagnostic)
@@ -407,6 +412,7 @@ async function fetchFreshOrderbookQuotes(
   const lotType = env?.marketDataLotType ?? 'board_lot'
 
   try {
+    const requestStartedAtMs = paperExecutionNow()
     const res = await paperExecutionFetch(`${proxyUrl}/orderbooks`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
@@ -415,9 +421,10 @@ async function fetchFreshOrderbookQuotes(
     })
     if (res.ok) {
       const json = await res.json() as any
+      const responseReceivedAtMs = paperExecutionNow()
       const data = json?.data ?? {}
       for (const [symbol, payload] of Object.entries(data)) {
-        const normalized = normalizeShioajiOrderbook(payload)
+        const normalized = normalizeShioajiOrderbook(payload, { requestStartedAtMs, responseReceivedAtMs })
         if (normalized) map.set(symbol, normalized)
         else env?.onOrderbookDiagnostic?.(symbol, compactOrderbookDiagnostic(symbol, payload, 'invalid_book'))
       }

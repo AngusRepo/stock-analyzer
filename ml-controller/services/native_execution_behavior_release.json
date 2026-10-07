@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:bd5664cc7791ac18797c66f8c181709a18a2a3118badbecd19fb749433dbd1f5",
+  "execution_owner_version": "native-paper-v1:8f77122d01678fe7d17ed193570fc7a4ecaa9607f425ab1273ecd74deeb93fbd",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved the reviewed 2026-10-07 Full MLP median Paper release: commit, push, Worker/Controller/Modal/frontend and dependent job deployment, Paper configuration/runtime grant, and both forward successors. Half and fixed TabPack remain shadows. No retraining or live orders are authorized.",
-  "review": "docs/releases/2026-10-07-full-mlp-median-paper-champion.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-07-full-mlp-median-champion"
+  "authorization": "Wei authorized commit, push and deploy of scheduler/cold-cache repairs on 2026-10-08. This declaration does not grant KV authorization; the exact supplemental runtime record requires separate explicit approval. Current Full MLP model and trading policy remain unchanged.",
+  "review": "docs/releases/2026-10-08-scheduler-cost-repair.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:2026-10-08-scheduler-cost-repair"
 }

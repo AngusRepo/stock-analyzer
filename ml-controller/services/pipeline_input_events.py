@@ -200,23 +200,69 @@ def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
 
 def _launch_missing_prep(store, path, stage):
     import modal
+    from services.pipeline_prep_ownership import (
+        LEGACY_CLAIM_GRACE_SECONDS, MAX_PREP_ATTEMPTS, modal_prep_call_finished,
+    )
     fn = modal.Function.from_name('stockvision-ml', 'prep_universal_batch_event')
     for index, ref in enumerate(stage['spec']['batches']):
         if read(store, path.replace('request.json', f'batch-{index}.json')) is not None:
             continue
         dispatch_path = path.replace('request.json', f'batch-{index}-dispatch.json')
-        if read(store, dispatch_path) is not None:
+        dispatch_blob = store.blob(dispatch_path)
+        try:
+            dispatch_blob.reload()
+            generation = dispatch_blob.generation
+        except NotFound:
+            generation = 0
+        previous = read(store, dispatch_path)
+        claim_path = path.replace('request.json', f'batch-{index}-claim.json')
+        claim = read(store, claim_path)
+        if claim and claim.get('request_sha256') != ref['sha256']:
+            raise ValueError('pipeline_input_prep_claim_lineage_mismatch')
+        if previous and not modal_prep_call_finished(previous.get('function_call_id')):
             continue
-        # Lost spawn acknowledgement can resubmit this wrapper safely: the
-        # wrapper's create-only batch claim excludes duplicate prep writes.
+        if claim:
+            owner = claim.get('function_call_id')
+            if owner:
+                if not modal_prep_call_finished(owner):
+                    continue
+            else:
+                # Old claims did not record an owner. Only bind the old dispatch
+                # after its terminal result AND the original 1900s execution
+                # limit plus grace. Never reclaim an unidentified live writer.
+                if not previous or not claim.get('created_at'):
+                    continue
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(claim['created_at'])).total_seconds()
+                if age <= LEGACY_CLAIM_GRACE_SECONDS:
+                    continue
+                blob = store.blob(claim_path)
+                blob.reload()
+                claim_generation = blob.generation
+                if read(store, claim_path) != claim:
+                    continue
+                claim = {**claim, 'function_call_id': previous['function_call_id'],
+                         'legacy_owner_verified_after_timeout': True}
+                try:
+                    blob.upload_from_string(encoded(claim), content_type='application/json',
+                                            if_generation_match=claim_generation)
+                except PreconditionFailed:
+                    continue
+            if int(claim.get('attempt_count') or 1) >= MAX_PREP_ATTEMPTS:
+                raise ValueError('pipeline_input_prep_attempts_exhausted:' + str(index))
+        if previous and int(previous.get('dispatch_attempt') or 1) >= MAX_PREP_ATTEMPTS:
+            raise ValueError('pipeline_input_prep_dispatch_attempts_exhausted:' + str(index))
+        # At-least-once dispatch is safe: each wrapper records its actual Modal
+        # owner and uses a GCS generation fence before acquiring/writing results.
         call = fn.spawn({'bucket': store.name, 'stage_path': path, 'batch_index': index,
                          'request': ref, 'callback_url': stage['callback_url']})
+        value = {'function_call_id': call.object_id, 'created_at': datetime.now(timezone.utc).isoformat(),
+                 'dispatch_attempt': int((previous or {}).get('dispatch_attempt') or (1 if previous else 0)) + 1,
+                 'previous_function_call_id': (previous or {}).get('function_call_id')}
         try:
-            put_once(store, dispatch_path, {'function_call_id': call.object_id,
-                     'created_at': datetime.now(timezone.utc).isoformat()})
-        except ValueError:
-            if not read(store, dispatch_path):
-                raise
+            dispatch_blob.upload_from_string(encoded(value), content_type='application/json',
+                                             if_generation_match=generation)
+        except PreconditionFailed:
+            pass  # A concurrent dispatch receipt won; the actual claim owner remains authoritative.
 
 
 def record_snapshot_result(path, *, status, snapshot=None, error=None):
@@ -240,8 +286,12 @@ def _complete_prep(store, stage, path):
             raise ValueError('pipeline_input_prep_failed:' + str(result['error']))
         if result is None:
             claim = read(store, path.replace('request.json', f'batch-{idx}-claim.json'))
-            if claim and claim.get('created_at'):
-                age = (datetime.now(timezone.utc) - datetime.fromisoformat(claim['created_at'])).total_seconds()
+            dispatch = read(store, path.replace('request.json', f'batch-{idx}-dispatch.json'))
+            times = [datetime.fromisoformat(row['created_at']) for row in (claim, dispatch)
+                     if row and row.get('created_at')]
+            if times:
+                # A verified replacement may still be queued before it claims.
+                age = (datetime.now(timezone.utc) - max(times)).total_seconds()
                 if age > 2100:
                     raise ValueError('pipeline_input_prep_completion_timeout:' + str(idx))
     if any(result is None for result in results):

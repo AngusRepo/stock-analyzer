@@ -2441,7 +2441,8 @@ def prep_universal_batch_event(payload: dict) -> dict:
     from app.pipeline_input_prep import execute_event
     from app.use_cases import prep_universal_batch as prepare, UniversalPrepRequest
     return execute_event(payload, bucket=storage.Client().bucket(payload['bucket']),
-        prep=lambda request: prepare(UniversalPrepRequest(**request)), token=_controller_callback_token())
+        prep=lambda request: prepare(UniversalPrepRequest(**request)), token=_controller_callback_token(),
+        input_id=modal.current_input_id(), function_call_id=modal.current_function_call_id())
 
 
 @app.function(

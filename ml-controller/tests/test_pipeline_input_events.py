@@ -240,3 +240,174 @@ def test_running_continuation_waits_and_consumed_receipt_stops_observation(store
     events.finish_consumption(path, {'status':'deferred','deferred_reason':'modal_prediction_callback'})
     jobs.execution_state = lambda execution: pytest.fail('consumed execution need not be polled')
     assert events.reconcile_inputs(run_id='run-1', run_date='2026-10-02', jobs_client=jobs) is None
+
+
+def prep_wrapper():
+    import importlib.util
+    source=Path(__file__).resolve().parents[2]/'ml-service/app/pipeline_input_prep.py'
+    spec=importlib.util.spec_from_file_location('event_prep_recovery',source)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+
+def wrapper_payload(path,stage):
+    return {'stage_path':path,'batch_index':0,'request':stage['spec']['batches'][0],
+            'callback_url':stage['callback_url']}
+
+
+def claim_fixture(store,path,stage,**overrides):
+    value={'request_sha256':stage['spec']['batches'][0]['sha256'],
+           'created_at':(datetime.now(timezone.utc)-timedelta(seconds=2200)).isoformat(),
+           **overrides}
+    events.put_once(store,path.replace('request.json','batch-0-claim.json'),value)
+    return value
+
+
+def test_preempted_same_modal_input_resumes_claim_and_publishes_once(store,monkeypatch):
+    path,stage=prep_stage(store,monkeypatch)
+    module=prep_wrapper();calls=[]
+    class Preempted(BaseException):
+        pass
+    def interrupted(_):
+        raise Preempted('simulated container termination before result publication')
+    with pytest.raises(Preempted):
+        module.execute_event(wrapper_payload(path,stage),bucket=store,token='',
+            input_id='in-original',function_call_id='fc-original',prep=interrupted)
+    assert not store.blob(path.replace('request.json','batch-0.json')).exists()
+    for _ in range(2):
+        result=module.execute_event(wrapper_payload(path,stage),bucket=store,token='',
+            input_id='in-original',function_call_id='fc-original',
+            owner_finished=lambda _:pytest.fail('same input must not wait on itself'),
+            prep=lambda req:calls.append(req) or {'rows':6000})
+        assert result['rows']==6000
+    assert len(calls)==1
+    assert events.read(store,path.replace('request.json','batch-0-claim.json'))['attempt_count']==2
+    assert result['claim_generation']=='2'
+
+
+@pytest.mark.parametrize('owner_state',[False,None])
+def test_different_input_does_not_take_active_or_unknown_owner(store,monkeypatch,owner_state):
+    path,stage=prep_stage(store,monkeypatch)
+    claim_fixture(store,path,stage,input_id='in-old',function_call_id='fc-old')
+    result=prep_wrapper().execute_event(wrapper_payload(path,stage),bucket=store,token='',
+        input_id='in-new',function_call_id='fc-new',owner_finished=lambda _:owner_state,
+        prep=lambda _:pytest.fail('live or unknown owner must not be duplicated'))
+    assert result['status']=='waiting'
+    assert not store.blob(path.replace('request.json','batch-0.json')).exists()
+
+
+def test_verified_terminal_owner_can_be_replaced(store,monkeypatch):
+    path,stage=prep_stage(store,monkeypatch)
+    claim_fixture(store,path,stage,input_id='in-old',function_call_id='fc-old')
+    observed=[]
+    result=prep_wrapper().execute_event(wrapper_payload(path,stage),bucket=store,token='',
+        input_id='in-new',function_call_id='fc-new',owner_finished=lambda fc:observed.append(fc) or True,
+        prep=lambda _:{'rows':6000})
+    assert observed==['fc-old'] and result['function_call_id']=='fc-new'
+
+
+def test_takeover_cas_race_does_not_compute(store,monkeypatch):
+    path,stage=prep_stage(store,monkeypatch)
+    claim_fixture(store,path,stage,input_id='in-old',function_call_id='fc-old')
+    blob=store.blob(path.replace('request.json','batch-0-claim.json'))
+    def competing_owner(_):
+        blob.generation+=1
+        return True
+    result=prep_wrapper().execute_event(wrapper_payload(path,stage),bucket=store,token='',
+        input_id='in-new',function_call_id='fc-new',owner_finished=competing_owner,
+        prep=lambda _:pytest.fail('lost ownership race'))
+    assert result['reason']=='batch_claim_changed'
+
+
+def test_lost_claim_fences_completion_receipt(store,monkeypatch):
+    path,stage=prep_stage(store,monkeypatch)
+    blob=store.blob(path.replace('request.json','batch-0-claim.json'))
+    def prepare(_):
+        blob.generation+=1
+        return {'rows':6000}
+    with pytest.raises(ValueError,match='claim_lost_before_completion'):
+        prep_wrapper().execute_event(wrapper_payload(path,stage),bucket=store,token='',
+            input_id='in-new',function_call_id='fc-new',prep=prepare)
+    assert not store.blob(path.replace('request.json','batch-0.json')).exists()
+
+
+def test_repeated_preemption_stops_at_bounded_attempt_count(store,monkeypatch):
+    path,stage=prep_stage(store,monkeypatch)
+    claim_fixture(store,path,stage,input_id='in-original',function_call_id='fc-original',attempt_count=3)
+    with pytest.raises(ValueError,match='attempts_exhausted'):
+        prep_wrapper().execute_event(wrapper_payload(path,stage),bucket=store,token='',
+            input_id='in-original',function_call_id='fc-original',prep=lambda _:pytest.fail('exhausted'))
+
+
+def test_completed_receipt_with_wrong_lineage_is_rejected(store,monkeypatch):
+    path,stage=prep_stage(store,monkeypatch)
+    batch_result(store,path,stage,0,request_sha256='wrong')
+    with pytest.raises(ValueError,match='result_lineage_mismatch'):
+        prep_wrapper().execute_event(wrapper_payload(path,stage),bucket=store,token='',
+            prep=lambda _:pytest.fail('corrupt completion'))
+
+
+def recovery_launcher(store,monkeypatch):
+    # prep_stage temporarily suppresses the real launch; retain it beforehand.
+    launch=events._launch_missing_prep
+    path,stage=prep_stage(store,monkeypatch)
+    batch_result(store,path,stage,1)
+    import modal
+    calls=[]
+    fn=SimpleNamespace(spawn=lambda payload:calls.append(payload) or SimpleNamespace(object_id='fc-new'))
+    monkeypatch.setattr(modal.Function,'from_name',lambda *a,**kw:fn)
+    return path,stage,calls,launch
+
+
+@pytest.mark.parametrize('age,terminal,expected',[(2200,True,1),(60,True,0),(2200,False,0)])
+def test_legacy_claim_requires_terminal_dispatch_and_timeout_grace(store,monkeypatch,age,terminal,expected):
+    from services import pipeline_prep_ownership as ownership
+    path,stage,calls,launch=recovery_launcher(store,monkeypatch)
+    claim_fixture(store,path,stage,created_at=(datetime.now(timezone.utc)-timedelta(seconds=age)).isoformat())
+    events.put_once(store,path.replace('request.json','batch-0-dispatch.json'),
+                    {'function_call_id':'fc-old','created_at':'2026-10-01T00:00:00+00:00'})
+    monkeypatch.setattr(ownership,'modal_prep_call_finished',lambda _:terminal)
+    launch(store,path,stage)
+    assert len(calls)==expected
+    if expected:
+        assert events.read(store,path.replace('request.json','batch-0-claim.json'))['function_call_id']=='fc-old'
+        assert events.read(store,path.replace('request.json','batch-0-dispatch.json'))['dispatch_attempt']==2
+        # Do not immediately fail on the old claim while a verified replacement queues.
+        assert events._complete_prep(store,stage,path) is False
+
+
+def test_finished_duplicate_dispatch_does_not_replace_actual_active_owner(store,monkeypatch):
+    from services import pipeline_prep_ownership as ownership
+    path,stage,calls,launch=recovery_launcher(store,monkeypatch)
+    claim_fixture(store,path,stage,input_id='in-active',function_call_id='fc-active')
+    events.put_once(store,path.replace('request.json','batch-0-dispatch.json'),{'function_call_id':'fc-duplicate'})
+    monkeypatch.setattr(ownership,'modal_prep_call_finished',lambda fc:fc=='fc-duplicate')
+    launch(store,path,stage)
+    assert calls==[]
+
+
+def test_reconciler_bounded_dispatches_and_claim_lineage(store,monkeypatch):
+    from services import pipeline_prep_ownership as ownership
+    path,stage,calls,launch=recovery_launcher(store,monkeypatch)
+    claim=claim_fixture(store,path,stage,input_id='in-old',function_call_id='fc-old',attempt_count=3)
+    events.put_once(store,path.replace('request.json','batch-0-dispatch.json'),{'function_call_id':'fc-old'})
+    monkeypatch.setattr(ownership,'modal_prep_call_finished',lambda _:True)
+    with pytest.raises(ValueError,match='attempts_exhausted'):launch(store,path,stage)
+    assert not calls
+    claim['request_sha256']='different'
+    store.blob(path.replace('request.json','batch-0-claim.json')).raw=events.encoded(claim)
+    with pytest.raises(ValueError,match='claim_lineage_mismatch'):launch(store,path,stage)
+
+
+@pytest.mark.parametrize('status,fn,expected',[
+    ('SUCCESS','prep_universal_batch_event',True),('TIMEOUT','prep_universal_batch_event',True),
+    ('PENDING','prep_universal_batch_event',False),('SUCCESS','other_function',False),
+])
+def test_modal_owner_observation_accepts_only_exact_terminal_wrapper(monkeypatch,status,fn,expected):
+    import modal
+    from services.pipeline_prep_ownership import modal_prep_call_finished
+    graph=[SimpleNamespace(function_call_id='fc-old',function_name=fn,status=SimpleNamespace(name=status))]
+    monkeypatch.setattr(modal.FunctionCall,'from_id',lambda _:SimpleNamespace(get_call_graph=lambda:graph))
+    assert modal_prep_call_finished('fc-old') is expected
+    graph.clear()
+    assert modal_prep_call_finished('fc-old') is False

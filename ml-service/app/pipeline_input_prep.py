@@ -8,9 +8,18 @@ import os
 import time
 import urllib.request
 from google.api_core.exceptions import PreconditionFailed
+from services.pipeline_prep_ownership import MAX_PREP_ATTEMPTS, modal_prep_call_finished
 
 
-def execute_event(payload, *, bucket, prep, token, sleep=time.sleep):
+def _validate_result(result, stage_path, index, expected):
+    if (not isinstance(result, dict) or result.get('stage_path') != stage_path
+            or result.get('batch_index') != index or result.get('request_sha256') != expected['sha256']):
+        raise ValueError('input_prep_result_lineage_mismatch')
+    return result
+
+
+def execute_event(payload, *, bucket, prep, token, sleep=time.sleep,
+                  input_id=None, function_call_id=None, owner_finished=modal_prep_call_finished):
     stage_path = str(payload.get('stage_path') or '')
     index = payload.get('batch_index')
     if not stage_path.startswith('pipeline-v2/input-events/v1/') or not stage_path.endswith('/request.json') or not isinstance(index, int) or index < 0:
@@ -29,12 +38,42 @@ def execute_event(payload, *, bucket, prep, token, sleep=time.sleep):
         raise ValueError('input_prep_batch_scope_mismatch')
     result_path = stage_path.replace('request.json', f'batch-{index}.json')
     claim = bucket.blob(stage_path.replace('request.json', f'batch-{index}-claim.json'))
-    try:
-        claim.upload_from_string(json.dumps({'request_sha256': expected['sha256'], 'created_at': datetime.now(timezone.utc).isoformat()}), content_type='application/json', if_generation_match=0)
-        owned = True
-    except PreconditionFailed:
-        owned = False
     result_blob = bucket.blob(result_path)
+    if result_blob.exists():
+        result = _validate_result(json.loads(result_blob.download_as_bytes()), stage_path, index, expected)
+        owned = False
+    else:
+        value = {'request_sha256': expected['sha256'], 'created_at': datetime.now(timezone.utc).isoformat(),
+                 'input_id': input_id, 'function_call_id': function_call_id, 'attempt_count': 1}
+        try:
+            claim.upload_from_string(json.dumps(value), content_type='application/json', if_generation_match=0)
+            owned = True
+        except PreconditionFailed:
+            claim.reload()
+            generation = claim.generation
+            previous = json.loads(claim.download_as_bytes())
+            if result_blob.exists():
+                completed = _validate_result(json.loads(result_blob.download_as_bytes()), stage_path, index, expected)
+                return {**completed, 'callback': 'pending_reconciliation'}
+            if previous.get('request_sha256') != expected['sha256']:
+                raise ValueError('input_prep_claim_lineage_mismatch')
+            # Modal restarts a terminated input with the same input/call IDs.
+            # Another input may take over only after the recorded owner is terminal.
+            same_input = bool(input_id and function_call_id and previous.get('input_id') == input_id
+                              and previous.get('function_call_id') == function_call_id)
+            if not same_input and not owner_finished(previous.get('function_call_id')):
+                return {'status': 'waiting', 'reason': 'batch_claim_owner_unverified_or_active'}
+            attempt = int(previous.get('attempt_count') or 1) + 1
+            if attempt > MAX_PREP_ATTEMPTS:
+                raise ValueError('input_prep_attempts_exhausted')
+            value.update(attempt_count=attempt, previous_owner=previous.get('function_call_id'),
+                         previous_claim_generation=str(generation))
+            try:
+                claim.upload_from_string(json.dumps(value), content_type='application/json', if_generation_match=generation)
+                owned = True
+            except PreconditionFailed:
+                return {'status': 'waiting', 'reason': 'batch_claim_changed'}
+        owned_generation = claim.generation
     if owned:
         result = {}
         for attempt in range(3):
@@ -48,13 +87,14 @@ def execute_event(payload, *, bucket, prep, token, sleep=time.sleep):
                 result = {'error': f'{type(exc).__name__}: {exc}'}
             if attempt < 2:
                 sleep(2 ** attempt)
+        # Fence the durable completion if ownership changed during computation.
+        claim.reload()
+        if claim.generation != owned_generation:
+            raise ValueError('input_prep_claim_lost_before_completion')
         result = {**result, 'stage_path': stage_path, 'batch_index': index,
-                  'request_sha256': expected['sha256']}
+                  'request_sha256': expected['sha256'], 'function_call_id': function_call_id,
+                  'input_id': input_id, 'claim_generation': str(owned_generation)}
         result_blob.upload_from_string(json.dumps(result, sort_keys=True), content_type='application/json', if_generation_match=0)
-    elif not result_blob.exists():
-        return {'status': 'running', 'reason': 'batch_claim_exists'}
-    else:
-        result = json.loads(result_blob.download_as_bytes())
     if not token:
         return {**result, 'callback': 'missing_token_reconcile_required'}
     request = urllib.request.Request(stage['callback_url'], data=json.dumps({'stage_path': stage_path}).encode(),

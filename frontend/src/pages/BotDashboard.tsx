@@ -578,7 +578,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
           : formatPendingBuyExecutionBadge(b)
         const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
         const trade = buildPendingBuyTradeView(b)
-        const displayPrice = currentDisplayPrice(liveQuotes?.prices?.[b.symbol], b.market_price, displayNow)
+        const dailyReference = b.execution_preview?.daily_assessment ?? b.execution_preview?.last_or15_assessment ?? b.execution_preview?.or15
+        const displayPrice = currentDisplayPrice(liveQuotes?.prices?.[b.symbol], b.market_price, displayNow, dailyReference)
         const quotePrice = displayPrice?.price
         const quoteReference = displayPrice?.reference_price
         const priceChange = typeof quotePrice === 'number' && Number.isFinite(quotePrice) && quotePrice > 0
@@ -632,12 +633,16 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
                   {displayPrice?.price != null ? '$' + fmt(displayPrice.price, 2) : '報價待更新'}
                 </div>
                 <div className={`text-xs font-medium ${pctClass(priceChange)}`}
-                  title="相對券商當日昨收參考價；除權息等調整日依券商參考價計算">
+                  title={displayPrice?.reference_source === 'daily_assessment'
+                    ? '相對當日基準的昨收參考價；沿用今日進場檢查已確認的數值'
+                    : '相對券商當日昨收參考價；除權息等調整日依券商參考價計算'}>
                   {priceChange != null && priceChangePct != null
                     ? `${priceChange === 0 ? '平盤 ' : ''}${changeSign}${fmt(priceChange, 2)}（${changeSign}${fmt(priceChangePct, 2)}%）`
                     : '漲跌待更新'}
                 </div>
-                {priceChange != null && <div className="text-[11px] text-muted-foreground">昨收參考 ${fmt(quoteReference, 2)}</div>}
+                {priceChange != null && <div className="text-[11px] text-muted-foreground">
+                  {displayPrice?.reference_source === 'daily_assessment' ? '當日基準昨收' : '昨收參考'} ${fmt(quoteReference, 2)}
+                </div>}
                 <div className="text-[11px] text-muted-foreground">
                   {displayPrice?.as_of ? 'Shioaji · ' + formatTwDateTimeShort(displayPrice.as_of) : '僅顯示 90 秒內報價'}
                 </div>

@@ -1,9 +1,21 @@
 import type { TradingConfig } from './tradingConfig'
 import { resolveTwEquityPriceBand } from './twEquityMarketContract'
-import { getTwTickSize, normalizeTwLimitPrice, snapToTwPriceTick } from './twMarketRules'
+import { buildTwOrderLegs, getTwTickSize, normalizeTwLimitPrice, snapToTwPriceTick } from './twMarketRules'
 
-export function calcCommission(value: number, cfg: TradingConfig): number {
-  return Math.max(Math.round(value * cfg.fees.commission), cfg.fees.minCommission)
+/** Gross SinoPac commission, before monthly rebates. Each market leg has its own minimum. */
+export function calcCommission(value: number, cfg: TradingConfig, shares: number): number {
+  if (!Number.isFinite(value) || value <= 0 || !Number.isSafeInteger(shares) || shares <= 0
+    || !Number.isFinite(cfg.fees.commission) || cfg.fees.commission < 0
+    || !Number.isSafeInteger(cfg.fees.minCommission) || cfg.fees.minCommission < 0) {
+    throw new Error('paper_commission_input_invalid')
+  }
+  // Official odd-lot order page: 0.1425%, minimum NT$1. A configured zero-fee
+  // research fixture stays zero; do not apply a monthly discount to charged cash.
+  return buildTwOrderLegs(shares).reduce((total, leg) => {
+    const minimum = leg.lotType === 'odd_lot' ? Math.min(1, cfg.fees.minCommission) : cfg.fees.minCommission
+    const legCommission = value * (leg.shares / shares) * cfg.fees.commission
+    return total + Math.max(Math.floor(legCommission), minimum)
+  }, 0)
 }
 
 export function getTickSize(price: number): number {

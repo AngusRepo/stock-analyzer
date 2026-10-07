@@ -1092,7 +1092,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       console.log(`[Swap] Replacing ${weakest.symbol}(weakness=${weakest.score.toFixed(1)}) with ${pending.symbol}(rank=${replacementDecision.candidateRank ?? 'na'})`)
       const sellValue = sellPrice * weakPos.shares
       const sellTax = calcTax(sellValue, cfg)
-      const sellComm = calcCommission(sellValue, cfg)
+      const sellComm = calcCommission(sellValue, cfg, weakPos.shares)
       const sellProceeds = sellValue - sellTax - sellComm
       const sellNote = buildSellOrderNote({
         reason: 'auto_swap',
@@ -2810,7 +2810,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       console.log('[Intraday] txValue below minimum', pending.symbol, txValue, minPosVal)
       continue
     }
-    const commission = calcCommission(txValue, cfg)
+    const commission = calcCommission(txValue, cfg, shares)
     const totalCost = txValue + commission
     if (totalCost > acc.cash || dailyBuyTotal + totalCost > DAILY_BUY_LIMIT) continue
     const brokerReconciliation = buildPaperBrokerReconciliation({
@@ -2894,11 +2894,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         const legShares = split && target === effectiveTp1Price ? firstLeg
           : split && target === effectiveTp2Price ? shares - firstLeg : shares
         const value = conservativePrice * legShares
-        return (value - calcCommission(value, cfg) - calcTax(value, cfg)) * shares / legShares
+        return (value - calcCommission(value, cfg, legShares) - calcTax(value, cfg)) * shares / legShares
       }
       // Actual depth fill may improve entry, but may not move the plan's stop/targets.
       or15PricePlan = capOr15PlanByCosts({ ...or15PricePlan, entry: fillPrice }, {
-        buyCost: entry => entry * shares + calcCommission(entry * shares, cfg), netProceeds,
+        buyCost: entry => entry * shares + calcCommission(entry * shares, cfg, shares), netProceeds,
       })
       const rewardRisk = assessOr15NetRewardRisk({
         entry: fillPrice, stop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,

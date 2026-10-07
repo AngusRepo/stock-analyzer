@@ -26,7 +26,7 @@ import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStor
 import { latchAtrOnce } from './paperAtrOnceState'
 import { ATR_ONCE_POLICY } from './paperAtrOnce'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat']) test(
+for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
@@ -88,6 +88,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     if(quotePrice!==20)Object.assign(quote,{last:quotePrice,price:quotePrice,bid:quotePrice,ask:quotePrice,bid_prices:[quotePrice,quotePrice-.05,quotePrice-.1,quotePrice-.15,quotePrice-.2]})
     const odd=url.includes('lot_type=odd_lot') || String(init?.body ?? '').includes('odd_lot')
     if(odd)Object.assign(quote,{lot_type:'odd_lot',volume_unit:'shares',bid_volume:10000,ask_volume:10000,bid_volumes:[10000,10000,10000,10000,10000],ask_volumes:[10000,10000,10000,10000,10000]})
+    if(odd && scenario==='odd_lot_fee')Object.assign(quote,{ask_volume:31,ask_volumes:[31,0,0,0,0]})
     if(limitedExitDepth)Object.assign(quote,odd
       ? {bid_volume:oddExitDepth?10000:0,bid_volumes:oddExitDepth?[10000,0,0,0,0]:[0,0,0,0,0]}
       : {bid_volume:1,bid_volumes:[1,0,0,0,0]})
@@ -124,6 +125,10 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     throw new Error('unseeded_native_source:'+url)
   }
   try {
+    if(scenario==='odd_lot_fee') {
+      f.sqls.paper.exec('UPDATE paper_accounts SET cash=100000,initial_cash=100000 WHERE id=1')
+      f.cfg.position.minPositionValue=1000
+    }
     f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
     f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
     f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
@@ -223,9 +228,16 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE reason='swing_atr_day_veto' LIMIT 1").get()?.reason,'swing_atr_day_veto')
       return
     }
-    assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
+    const filledShares=scenario==='odd_lot_fee'?31:1000
+    assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,filledShares)
     assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
-    assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,20029)
+    assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,scenario==='odd_lot_fee'?621:20028)
+    if(scenario==='odd_lot_fee') {
+      const buy:any=f.sqls.paper.prepare("SELECT price,commission,total_cost FROM paper_orders WHERE side='buy'").get()
+      assert.equal(buy.price,20);assert.equal(buy.commission,1);assert.equal(buy.total_cost,621)
+      assert.equal(f.sqls.paper.prepare('SELECT cash FROM paper_accounts').get()?.cash,100000,'unsettled fee must not credit settled cash')
+      assert.equal(f.sqls.paper.prepare('SELECT avg_cost FROM paper_positions').get()?.avg_cost,621/31)
+    }
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
     const holding:any=f.sqls.paper.prepare('SELECT * FROM paper_positions').get()
     assert.equal(holding.tp1_price,null);assert.equal(holding.tp2_price,null)
@@ -236,7 +248,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     }
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
-    assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,1000)
+    assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,filledShares)
     if(scenario==='unchanged_stream_book' || scenario==='atr_sparse_warmup')return
     // Continue the very same account and actual filled lot across sessions.
     const sessions:string[]=[]
@@ -247,7 +259,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(2,?,100)').run(day)
       f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(1,?,?)').run(day,scenario==='daily_orl'?19.8:20)
     }
-    quotePrice=['hard_stop','closing_auction','clock_domain'].includes(scenario)?18.3:20
+    quotePrice=['hard_stop','closing_auction','clock_domain','odd_lot_fee'].includes(scenario)?18.3:20
     f.ports.nowMs=Date.parse(exitDay+(scenario==='20_sessions'?'T13:24:00+08:00':scenario==='closing_auction'?'T13:25:00+08:00':'T09:05:00+08:00'))
     await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env,{halt:false,forceLiquidate:false,targetExposurePct:1,maxPositionPct:.2} as any))
     if(scenario==='closing_auction') {
@@ -261,7 +273,8 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     }
     const exits:any[]=f.sqls.paper.prepare("SELECT * FROM paper_orders WHERE side='sell'").all()
     assert.equal(exits.length,1,JSON.stringify(f.sqls.paper.prepare("SELECT reason,detail_json FROM paper_execution_events WHERE side='sell'").all()))
-    assert.match(exits[0].note,new RegExp('swing_'+(['closing_auction','clock_domain'].includes(scenario)?'hard_stop':scenario)))
+    assert.match(exits[0].note,new RegExp('swing_'+(['closing_auction','clock_domain','odd_lot_fee'].includes(scenario)?'hard_stop':scenario)))
+    if(scenario==='odd_lot_fee')assert.equal(exits[0].commission,1,'odd-lot hard-stop sell uses the same NT$1 minimum')
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions WHERE shares>0').get()?.n,0)
   } finally {f.close()}
 })

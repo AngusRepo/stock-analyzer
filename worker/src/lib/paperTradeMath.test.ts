@@ -1,8 +1,30 @@
-import { applyPartialFill, isLimitDownLocked, resolveLimitBuyFill, resolveLimitSellFill, resolveMarketSellFill } from './paperTradeMath'
+import { applyPartialFill, calcCommission, isLimitDownLocked, resolveLimitBuyFill, resolveLimitSellFill, resolveMarketSellFill } from './paperTradeMath'
+import { DEFAULT_TRADING_CONFIG } from './tradingConfig'
 import { isValidTwTickPrice } from './twMarketRules'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  const cfg = DEFAULT_TRADING_CONFIG
+  assert(calcCommission(122 * 31, cfg, 31) === 5, '3004 gross commission is NT$5 before monthly rebates')
+  assert(calcCommission(122, cfg, 1) === 1, 'one-share order uses the NT$1 odd-lot minimum')
+  assert(calcCommission(10_000, cfg, 999) === 14, 'odd lots are not charged a fixed NT$1')
+  assert(calcCommission(10_000, cfg, 1000) === 20, 'board-lot minimum remains configured NT$20')
+  assert(calcCommission(20_000, cfg, 1000) === 28, 'gross commission truncates fractional dollars')
+  assert(calcCommission(10_010, cfg, 1001) === 21, 'mixed order charges board and odd legs separately')
+  assert(calcCommission(122 * 1331, cfg, 1331) === 230, 'mixed order truncates each market leg separately')
+  assert(calcCommission(620, cfg, 31) === 1, 'partial odd-lot fill uses actual filled shares')
+  assert(calcCommission(2 / cfg.fees.commission - 1e-9, cfg, 31) === 1,
+    'fractional commission just below two dollars must not round up')
+  assert(calcCommission(122, {...cfg, fees:{...cfg.fees,commission:0,minCommission:0}}, 1) === 0,
+    'explicit free-fee research fixture is preserved')
+  for (const [value, shares] of [[3782,0],[3782,31.5],[3782,NaN],[-1,31],[NaN,31]]) {
+    let rejected = false
+    try { calcCommission(value, cfg, shares) } catch { rejected = true }
+    assert(rejected, 'commission rejects invalid value/share inputs')
+  }
 }
 
 {

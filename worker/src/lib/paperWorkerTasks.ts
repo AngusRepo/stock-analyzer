@@ -285,7 +285,7 @@ export async function executeRescoreSell(env: Bindings, params: RescoreSellParam
 
   const sellPrice = fill.fillPrice
   const txValue = sellPrice * shares
-  const commission = calcCommission(txValue, cfg)
+  const commission = calcCommission(txValue, cfg, shares)
   const tax = calcTax(txValue, cfg, false)
   const proceeds = txValue - commission - tax
 

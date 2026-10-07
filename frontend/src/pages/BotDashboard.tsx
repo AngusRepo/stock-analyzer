@@ -960,7 +960,7 @@ function PositionsTable() {
             <tr className="text-muted-foreground text-xs normal-case border-b border-border">
               <th className="text-left p-2">股票</th>
               <th className="text-right p-2">張數</th>
-              <th className="text-right p-2">買入價</th>
+              <th className="text-right p-2" title="包含買進手續費的每股平均成本；各筆成交價請見交易紀錄">含費均成本</th>
               <th className="text-right p-2">現價</th>
               <th className="text-left p-2">L4 持倉判斷</th>
               <th className="text-right p-2">防守價</th>
@@ -1005,7 +1005,7 @@ function PositionsTable() {
                       </div>
                     </td>
                     <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
-                    <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 1)}</td>
+                    <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 2)}</td>
                     <td className="p-2 text-right">
                       <div className="sv-num text-foreground/80">${fmt(current, 1)}</div>
                       <div className={`mt-0.5 text-[10px] ${p.quote_status === 'fresh' ? 'text-emerald-300' : p.quote_status === 'stale' ? 'text-amber-300' : 'text-red-300'}`}>

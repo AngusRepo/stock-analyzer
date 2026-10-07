@@ -1438,7 +1438,7 @@ paper.post('/buy', async (c) => {
   }
 
   const txValue     = price * sharesRaw
-  const commission  = calcCommission(txValue, cfg)
+  const commission  = calcCommission(txValue, cfg, sharesRaw)
   const totalCost   = txValue + commission   // Buy orders do not include sell-side tax.
   const orderIntent = buildStockVisionOrderIntent({
     accountId: ACCOUNT_ID,
@@ -1638,7 +1638,7 @@ paper.post('/sell', async (c) => {
 
   const name       = pos.name || await getStockName(databaseForDataDomain(c.env, 'core'), symbol)
   const txValue    = price * sharesRaw
-  const commission = calcCommission(txValue, cfg)
+  const commission = calcCommission(txValue, cfg, sharesRaw)
   const tax        = calcTax(txValue, cfg)
   const proceeds   = txValue - commission - tax  // Net proceeds after fees and tax.
 

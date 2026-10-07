@@ -1271,7 +1271,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       strategyType: 'daytrade_force_close',
     })
     const txValue = fillPrice * shares
-    const commission = calcCommission(txValue, cfg)
+    const commission = calcCommission(txValue, cfg, shares)
     const tax = calcTax(txValue, cfg, true)
     const proceeds = txValue - commission - tax
     const entryPrice = pos.entry_price ?? pos.avg_cost
@@ -1551,7 +1551,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         strategyType: 'eod_exit',
       })
       const txValue = fillPrice * shares
-      const commission = calcCommission(txValue, cfg)
+      const commission = calcCommission(txValue, cfg, shares)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const entryPx = pos.entry_price ?? pos.avg_cost
@@ -1631,7 +1631,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         strategyType: 'eod_tp1',
       })
       const txValue = fillPrice * sellShares
-      const commission = calcCommission(txValue, cfg)
+      const commission = calcCommission(txValue, cfg, sellShares)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
@@ -2092,7 +2092,7 @@ export async function pollIntradayStopLoss(
       })
       if (executionShadow.guardBlocked) continue
       const txValue = sellFillPrice * shares
-      const commission = calcCommission(txValue, cfg)
+      const commission = calcCommission(txValue, cfg, shares)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const entryPx = pos.entry_price ?? pos.avg_cost
@@ -2234,7 +2234,7 @@ export async function pollIntradayStopLoss(
       })
       if (executionShadow.guardBlocked) continue
       const txValue = fillPrice * sellShares
-      const commission = calcCommission(txValue, cfg)
+      const commission = calcCommission(txValue, cfg, sellShares)
       const tax = calcTax(txValue, cfg, dayTradeSell)
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares

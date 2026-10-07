@@ -73,6 +73,7 @@ run(process.execPath, [
 // Reviewed retention code requires explicit schema application before code admission.
 for (const [database, query] of [
   ['stockvision-core-db','SELECT date,schema_version,status,known_score,upper_score,json,checksum FROM market_risk_quality_v1 LIMIT 0;'],
+  ['stockvision-market-db','SELECT run_date,state_checksum,state_json,computed_at,recorded_at FROM market_regime_state_revisions_v1 LIMIT 0;'],
   ['stockvision-paper-db','SELECT account_id,trade_date,peak_nav,last_nav,halted,updated_at FROM paper_intraday_nav_risk_v1 LIMIT 0;'],
   ['stockvision-ops-db', 'SELECT artifact_id,owner_id,lease_until,next_attempt_at,status FROM artifact_deletion_claims_v1 LIMIT 0;'],
   ['stockvision-learning-db', 'SELECT artifact_id,source_checksum,projection_checksum FROM s12_replay_cold_batches_v1 LIMIT 0; SELECT id,row_checksum,producer_checksum FROM s12_replay_cold_identities_v1 LIMIT 0; SELECT signal_date,outcome_known_date,cost_bps FROM s12_replay_cold_rewards_v1 JOIN s12_replay_cold_batches_v1 USING(artifact_id) LIMIT 0;'],

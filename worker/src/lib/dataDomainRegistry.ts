@@ -199,6 +199,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'margin_data', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'market_regime_factor_packets', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
   { table: 'market_regime_state_history_v1', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
+  { table: 'market_regime_state_revisions_v1', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'monthly_revenue', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'screener_momentum_snapshots', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },
   { table: 'screener_selection_history', domain: 'market', disposition: 'active_window', route_ready: true, shadow_ready: true },

@@ -167,70 +167,51 @@ async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-export async function readMarketRegimeStateHistory(
-  db: D1Database,
-  runDate: string,
-): Promise<MarketRegimeState | null> {
-  const row = await db.prepare(`
-    SELECT state_json, state_checksum
-      FROM market_regime_state_history_v1
-     WHERE run_date=?
-     LIMIT 1
-  `).bind(runDate).first<{ state_json: string; state_checksum: string }>()
-  if (!row) return null
-  if (await sha256Hex(row.state_json) !== row.state_checksum) {
-    throw new Error(`market_regime_history_checksum_mismatch:${runDate}`)
-  }
-  const parsed = parseMarketRegimeState(JSON.parse(row.state_json))
-  if (!parsed || parsed.run_date !== runDate) {
-    throw new Error(`market_regime_history_payload_invalid:${runDate}`)
-  }
+// Historical decisions see only publications already received by their as-of clock.
+async function readRegimeObservation(db:D1Database,runDate:string,latestBefore:boolean,asOf:string):Promise<MarketRegimeState|null> {
+  const comparison=latestBefore?'<= ?':'= ?'
+  const row=await db.prepare(`SELECT run_date,state_json,state_checksum FROM (
+    SELECT run_date,state_json,state_checksum,computed_at,recorded_at FROM market_regime_state_revisions_v1
+      WHERE run_date ${comparison} AND julianday(computed_at)<=julianday(?) AND julianday(recorded_at)<=julianday(?)
+    UNION ALL
+    SELECT run_date,state_json,state_checksum,computed_at,persisted_at AS recorded_at FROM market_regime_state_history_v1
+      WHERE run_date ${comparison} AND julianday(computed_at)<=julianday(?) AND julianday(persisted_at)<=julianday(?)
+  ) ORDER BY run_date DESC,julianday(computed_at) DESC,julianday(recorded_at) DESC,state_checksum DESC LIMIT 1`)
+    .bind(runDate,asOf,asOf,runDate,asOf,asOf).first<{run_date:string;state_json:string;state_checksum:string}>()
+  if(!row)return null
+  if(await sha256Hex(row.state_json)!==row.state_checksum)throw new Error('market_regime_history_checksum_mismatch:'+runDate)
+  const parsed=parseMarketRegimeState(JSON.parse(row.state_json))
+  if(!parsed||!parsed.run_date||(!latestBefore&&parsed.run_date!==runDate)||(latestBefore&&parsed.run_date>runDate)
+    ||!Number.isFinite(Date.parse(parsed.computed_at))||Date.parse(parsed.computed_at)>Date.parse(asOf))throw new Error('market_regime_history_payload_invalid:'+runDate)
   return parsed
 }
 
-export async function readLatestMarketRegimeStateOnOrBefore(
-  db: D1Database,
-  asOfDate: string,
-): Promise<MarketRegimeState | null> {
-  const row = await db.prepare(
-    'SELECT run_date, state_json, state_checksum ' +
-    'FROM market_regime_state_history_v1 ' +
-    'WHERE run_date<=? ORDER BY run_date DESC LIMIT 1',
-  ).bind(asOfDate).first<{ run_date: string; state_json: string; state_checksum: string }>()
-  if (!row) return null
-  if (await sha256Hex(row.state_json) !== row.state_checksum) {
-    throw new Error('market_regime_history_checksum_mismatch:' + row.run_date)
-  }
-  const parsed = parseMarketRegimeState(JSON.parse(row.state_json))
-  if (!parsed || parsed.run_date !== row.run_date) {
-    throw new Error('market_regime_history_payload_invalid:' + row.run_date)
-  }
-  return parsed
+export async function readMarketRegimeStateHistory(db:D1Database,runDate:string,asOf=paperExecutionDate().toISOString()):Promise<MarketRegimeState|null> {
+  return readRegimeObservation(db,runDate,false,asOf)
 }
 
-async function persistMarketRegimeStateHistory(
-  db: D1Database,
-  payload: MarketRegimeState,
-): Promise<void> {
-  if (!payload.run_date) throw new Error('market_regime_history_run_date_missing')
-  const stateJson = JSON.stringify(payload)
-  const checksum = await sha256Hex(stateJson)
-  await db.prepare(`
-    INSERT OR IGNORE INTO market_regime_state_history_v1 (
-      run_date, schema_version, effective_label, raw_label, family, source,
-      hmm_state, regime_index, state_json, state_checksum, computed_at, persisted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-  `).bind(
-    payload.run_date, payload.schema_version, payload.label, payload.raw_label,
-    payload.family, payload.source, payload.hmm_state, payload.regime_index,
-    stateJson, checksum, payload.computed_at,
-  ).run()
-  const stored = await db.prepare(`
-    SELECT state_checksum FROM market_regime_state_history_v1 WHERE run_date=?
-  `).bind(payload.run_date).first<{ state_checksum: string }>()
-  if (stored?.state_checksum !== checksum) {
-    throw new Error(`market_regime_history_immutable_conflict:${payload.run_date}`)
-  }
+export async function readLatestMarketRegimeStateOnOrBefore(db:D1Database,asOfDate:string,asOf=paperExecutionDate().toISOString()):Promise<MarketRegimeState|null> {
+  return readRegimeObservation(db,asOfDate,true,asOf)
+}
+
+async function persistMarketRegimeStateHistory(db:D1Database,payload:MarketRegimeState):Promise<void> {
+  if(!payload.run_date)throw new Error('market_regime_history_run_date_missing')
+  const recordedAt=payload.pushed_at??paperExecutionDate().toISOString()
+  if(!Number.isFinite(Date.parse(payload.computed_at))||Date.parse(payload.computed_at)>Date.parse(recordedAt))
+    throw new Error('market_regime_publication_clock_invalid')
+  const stateJson=JSON.stringify(payload),checksum=await sha256Hex(stateJson)
+  // Keep the legacy first observation unchanged, and atomically append the new publication.
+  await db.batch([
+    db.prepare(`INSERT OR IGNORE INTO market_regime_state_history_v1 (
+      run_date,schema_version,effective_label,raw_label,family,source,hmm_state,regime_index,state_json,state_checksum,computed_at,persisted_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).bind(payload.run_date,payload.schema_version,payload.label,payload.raw_label,
+      payload.family,payload.source,payload.hmm_state,payload.regime_index,stateJson,checksum,payload.computed_at,recordedAt),
+    db.prepare(`INSERT OR IGNORE INTO market_regime_state_revisions_v1(run_date,state_checksum,state_json,computed_at,recorded_at)
+      VALUES(?,?,?,?,?)`).bind(payload.run_date,checksum,stateJson,payload.computed_at,recordedAt),
+  ])
+  const row=await db.prepare('SELECT state_json,state_checksum FROM market_regime_state_revisions_v1 WHERE run_date=? AND state_checksum=?')
+    .bind(payload.run_date,checksum).first<{state_json:string;state_checksum:string}>()
+  if(row?.state_json!==stateJson||row?.state_checksum!==checksum)throw new Error('market_regime_revision_readback_failed:'+payload.run_date)
 }
 
 export async function readMarketRegimeState(kv: KVNamespace): Promise<MarketRegimeState | null> {
@@ -276,12 +257,14 @@ export async function readMarketRegimeStateForDate(
     if (historical) return historical
   }
   const archived = parseMarketRegimeState(await readJson(kv, marketRegimeStateArchiveKey(runDate)))
-  if (archived?.run_date === runDate) {
+  if (archived?.run_date === runDate && Date.parse(archived.computed_at)<=paperExecutionDate().getTime()
+      && (!archived.pushed_at||Date.parse(archived.pushed_at)<=paperExecutionDate().getTime())) {
     if (historyDb) await persistMarketRegimeStateHistory(historyDb, archived)
     return archived
   }
   const current = await readMarketRegimeState(kv)
-  if (current?.run_date === runDate) {
+  if (current?.run_date === runDate && Date.parse(current.computed_at)<=paperExecutionDate().getTime()
+      && (!current.pushed_at||Date.parse(current.pushed_at)<=paperExecutionDate().getTime())) {
     if (historyDb) await persistMarketRegimeStateHistory(historyDb, current)
     return current
   }

@@ -1,3 +1,4 @@
+import { describeOr15Reason } from './pendingBuyTradePreview'
 import type { PendingBuyExecutionPreview } from './pendingBuyTradePreview'
 
 export function checklistEvidence(preview?: PendingBuyExecutionPreview | null, nowMs = Date.now()) {
@@ -48,4 +49,14 @@ export function checklistNumbers(key:string,s:PendingBuyExecutionPreview['or15']
   if(key==='buy_limit') return `檢查價 ${price(s.quote_price)} ／ 漲停 ${price(s.limit_up)}`
   if(key==='window' && s.latest_bar_ms) return `訊號根 ${evidenceTime(s.latest_bar_ms-300000)}～${evidenceTime(s.latest_bar_ms)}；送單窗口 ${evidenceTime(s.latest_bar_ms)}～${evidenceTime(s.latest_bar_ms+60000)}（不含終點）`
   return ''
+}
+
+export function lastEntryBlocker(preview?: PendingBuyExecutionPreview | null): string | null {
+  const blocker=preview?.last_blocker
+  if(!blocker)return null
+  const reasons=(blocker.detail?.match(/(?:^|[;:])l5_reasons=([^;]*)/)?.[1]??'').split('|').filter(Boolean)
+  const labels:Record<string,string>={stale_l5_quote:'五檔時效未通過',wide_l5_spread:'買賣價差過大',
+    missing_l5_quote:'缺少有效五檔',thin_top_ask:'賣一深度不足',weak_l5_imbalance:'委託簿失衡',l5_depth_incomplete:'五檔深度不完整'}
+  const reason=reasons.length?reasons.map(r=>labels[r]??r).join('、'):describeOr15Reason(blocker.reason)
+  return `最近一次執行阻擋 ${evidenceTime(blocker.checked_at)}：${reason}（歷史紀錄，非目前送單授權）`
 }

@@ -1783,7 +1783,7 @@ export async function pollIntradayStopLoss(
   const atrMap = await batchGetAtrByDomain(env, symbols)
   if (quoteMap.size === 0) {
     await Promise.all(missingQuotePositions.map(recordMissingHoldingQuote))
-    throw new Error('holding_authoritative_market_data_unavailable_all_positions')
+    return {status:'partial',positions:positions.length,quoted:0,missing_symbols:missingQuotePositions.map((pos:any)=>String(pos.symbol))}
   }
 
   let applicableL4Plan: Awaited<ReturnType<typeof readL4PortfolioPlan>> = null

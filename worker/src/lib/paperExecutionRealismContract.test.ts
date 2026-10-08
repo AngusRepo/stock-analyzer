@@ -74,9 +74,9 @@ assert(
 )
 assert(
   entryTasks.indexOf('const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)') <
-    entryTasks.indexOf('const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, [pending.symbol])') &&
+    entryTasks.indexOf('const finLabL5MarketDataSnapshot = paperSwingOwner') &&
     entryTasks.indexOf("if (s12PrimaryOwnerEnabled && s12UnifiedDecision.action !== 'READY')") <
-      entryTasks.indexOf('const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, [pending.symbol])') &&
+      entryTasks.indexOf('const finLabL5MarketDataSnapshot = paperSwingOwner') &&
     entryTasks.indexOf('const executionBook = (await batchGetExecutionOrderbooks([pending.symbol]') <
       entryTasks.indexOf('const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({'),
   'Paper buys must gate on S12 before L5 and refresh the matching execution book before fill',

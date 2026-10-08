@@ -54,7 +54,7 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   if (signalStart < open+15*MIN) return wait('swing_entry_window_not_open')
   if (signalStart > open+(SWING_LAST_ENTRY_MINUTE_FROM_OPEN-5)*MIN) return wait('swing_entry_window_closed')
   // One minute for live scheduling/quote arrival, never catch up a stale prior bar.
-  if (input.nowMs-signalMs >= MIN) return wait('swing_next_bar_submission_missed',{signalMs})
+  if (input.nowMs-signalMs >= MIN) return wait('swing_waiting_next_bar',{signalMs})
   const closes=[...input.benchmarkPriorCloses].sort((a,b)=>a.date.localeCompare(b.date)).slice(-60)
   if (closes.length!==60 || new Set(closes.map(r=>r.date)).size!==60 || closes.some(r=>r.date>=input.tradeDate || !positive(r.close))
     || closes.at(-1)?.date!==input.previousSession || !positive(input.benchmarkPreviousClose)

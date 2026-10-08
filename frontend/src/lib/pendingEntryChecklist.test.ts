@@ -55,3 +55,14 @@ test('status-only legacy quote error keeps the last complete five-minute assessm
  assert.equal(evidence.conditions.window,false)
  assert.equal(evidence.conditions.quote,null)
 })
+
+
+test('normal waiting preserves a timestamped historical L5 blocker without granting execution checks',async()=>{
+ const {lastEntryBlocker}=await import('./pendingEntryChecklist')
+ const preview:any={or15:{reason:'swing_waiting_next_bar',conditions:{window:false}},
+   last_blocker:{reason:'l4_hard_risk_veto',detail:'l5_status=blocked;l5_reasons=stale_l5_quote|wide_l5_spread',checked_at:'2026-10-08 02:15:23'}}
+ assert.match(lastEntryBlocker(preview)??'',/10:15:23.*五檔時效未通過、買賣價差過大/)
+ assert.match(lastEntryBlocker(preview)??'',/歷史紀錄/)
+ assert.equal(checklistEvidence(preview).conditions.window,false)
+ assert.equal(lastEntryBlocker(null),null)
+})

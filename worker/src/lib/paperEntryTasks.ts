@@ -1,10 +1,9 @@
+import { createSwingEntryAssessor } from './paperSwingAssessment'
+import { shioajiBookObservation, validatedBookL5 } from './paperExecutionBook'
 import { getPrevTradingDay } from './paperMarketData'
-import { assessSwingEntry, SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
+import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
 import { executeContinuousPaperBatch } from './paperContinuousExecution'
 import { writeSwingState } from './paperSwingLifecycle'
-import { loadSwingMinuteBars, loadOr15ResearchSessionBars, loadAtrTickWarmupBars } from './s12RuntimeBars'
-import { assessAtrOnce, applyAtrOnce, previousAtrTR } from './paperAtrOnce'
-import { readAtrOnce, latchAtrOnce } from './paperAtrOnceState'
 import { dailyPlanOwner, readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
 import { requestL4Replan, flushL4Replans } from './l4Replan'
 import { getPrevTradingDay as getL4PreviousSession } from './paperMarketData'
@@ -643,43 +642,6 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       riskState: cb,
     })
   }
-  if (cb.halt) {
-    const detail = [
-      `status=${cb.marketRiskStatus ?? 'unknown'}`,
-      `date=${cb.marketRiskDate ?? 'missing'}`,
-      `level=${cb.marketRiskLevel ?? 'unknown'}`,
-      `blockers=${(cb.marketRiskBlockers ?? []).join('|') || 'none'}`,
-      `reason=${cb.reason ?? 'circuit_breaker'}`,
-    ].join(';')
-    const transition = applyPendingBuyExecutionStatusUpdates(
-      pendingBuys,
-      pendingBuys.map((item) => ({
-        symbol: item.symbol,
-        status: 'checked_waiting' as const,
-        reason: 'portfolio_risk_halt',
-        detail,
-      })),
-    )
-    await persistPendingBuyActiveState(
-      env,
-      today,
-      transition.activeItems as PendingBuy[],
-      { stage: 'intraday_risk_gate', reason: 'portfolio_risk_halt', detail },
-    )
-    await Promise.all(pendingBuys.map((item) => recordPaperExecutionEvent(env, {
-      tradeDate: today,
-      symbol: item.symbol,
-      side: 'buy',
-      eventType: 'paper_order',
-      status: 'blocked',
-      reason: 'portfolio_risk_halt',
-      detail: { circuit_breaker: cb },
-      pendingRunId,
-      source: 'canonical_market_risk_runtime_v1',
-    })))
-    return holdingPoll
-  }
-
   // Re-read the live stream book at the signal boundary after the initial quote pass.
   const sinceOpen = paperExecutionNow() - Date.parse(`${today}T09:00:00+08:00`)
   const signalWindowOpen = paperSwingOwner && sinceOpen >= 20 * 60_000
@@ -715,6 +677,80 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           : Promise.resolve()
       }))
     }
+  }
+
+  const swingSidecars = new Map<string,SwingEntryDecision>()
+  const or15Sidecars = new Map<string, Or15VwapDecision>()
+  const or15BarSources = new Map<string, string>()
+  const or15BarErrors = new Map<string, string>()
+  if (paperSwingOwner) {
+    const assess = createSwingEntryAssessor(env,today,cfg.position.strongBreakoutMaxEntryChasePct)
+    await Promise.all(pendingBuys.map(async pending => {
+      const receipt = await assess(pending,priceMap.get(pending.symbol) ?? NaN,ohlcMap.get(pending.symbol))
+      const a = receipt.assessment
+      swingSidecars.set(pending.symbol,a)
+      or15Sidecars.set(pending.symbol,{action:a.action,reason:a.reason,signalMs:a.signalMs??null,
+        orHigh:a.orHigh??null,orLow:a.orLow??null,vwap:a.vwap??null,latestBarMs:a.signalMs??null})
+      or15BarSources.set(pending.symbol,receipt.barSource)
+      if(receipt.barError)or15BarErrors.set(pending.symbol,receipt.barError)
+      await recordPaperExecutionEvent(env,{
+        tradeDate:today,symbol:pending.symbol,side:'buy',eventType:'intraday_technical_decision',
+        status:a.action,reason:a.reason,detail:{owner:SWING_POLICY_VERSION,signal:a,
+          bar_source:receipt.barSource,bar_error:receipt.barError,s12_role:'not_in_entry_path',paper_only:true},
+        pendingRunId,source:SWING_POLICY_VERSION,
+      })
+    }))
+  }
+  // Missing holding risk evidence blocks new exposure, never the independent signal receipt.
+  if (holdingPoll.status === 'partial' && holdingPoll.missing_symbols.length > 0) {
+    const reason = 'holding_risk_evidence_unavailable'
+    const detail = JSON.stringify({missing_symbols:holdingPoll.missing_symbols,quoted:holdingPoll.quoted,positions:holdingPoll.positions})
+    const transition=applyPendingBuyExecutionStatusUpdates(pendingBuys,pendingBuys.map(item=>({
+      symbol:item.symbol,status:'checked_waiting' as const,reason,detail,
+    })))
+    await persistPendingBuyActiveState(env,today,transition.activeItems as PendingBuy[],{stage:'holding_risk_gate',reason,detail})
+    await Promise.all(pendingBuys.map(item=>recordPaperExecutionEvent(env,{
+      tradeDate:today,symbol:item.symbol,side:'buy',eventType:'paper_order',status:'blocked',reason,
+      detail:{missing_symbols:holdingPoll.missing_symbols},pendingRunId,source:'holding_risk_gate',
+    })))
+    return holdingPoll
+  }
+
+  if (cb.halt) {
+    const detail = [
+      `status=${cb.marketRiskStatus ?? 'unknown'}`,
+      `date=${cb.marketRiskDate ?? 'missing'}`,
+      `level=${cb.marketRiskLevel ?? 'unknown'}`,
+      `blockers=${(cb.marketRiskBlockers ?? []).join('|') || 'none'}`,
+      `reason=${cb.reason ?? 'circuit_breaker'}`,
+    ].join(';')
+    const transition = applyPendingBuyExecutionStatusUpdates(
+      pendingBuys,
+      pendingBuys.map((item) => ({
+        symbol: item.symbol,
+        status: 'checked_waiting' as const,
+        reason: 'portfolio_risk_halt',
+        detail,
+      })),
+    )
+    await persistPendingBuyActiveState(
+      env,
+      today,
+      transition.activeItems as PendingBuy[],
+      { stage: 'intraday_risk_gate', reason: 'portfolio_risk_halt', detail },
+    )
+    await Promise.all(pendingBuys.map((item) => recordPaperExecutionEvent(env, {
+      tradeDate: today,
+      symbol: item.symbol,
+      side: 'buy',
+      eventType: 'paper_order',
+      status: 'blocked',
+      reason: 'portfolio_risk_halt',
+      detail: { circuit_breaker: cb },
+      pendingRunId,
+      source: 'canonical_market_risk_runtime_v1',
+    })))
+    return holdingPoll
   }
 
   const zeroPriceSymbols = pendingSymbols.filter((s) => !priceMap.has(s) || priceMap.get(s) === 0)
@@ -1413,6 +1449,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     detail?: string | null,
   ) => {
     recordExecutionNote(symbol, status, reason, detail)
+    if (paperSwingOwner && ['checked_waiting','quote_unavailable','submitted'].includes(status)
+      && !reason.startsWith('swing_waiting_') && !['swing_entry_window_not_open','swing_entry_window_closed'].includes(reason)) {
+      recordExecutionNote(symbol,'execution_blocked',reason,detail)
+    }
     if (['position_sector_cap', 'position_correlation_cap', 'paper_order_risk_blocked'].includes(reason)) l4HardVetoes.add(symbol)
     if (!shouldPersistActiveExecutionStatus(status)) return
     const transition = applyPendingBuyExecutionStatusUpdates(pendingBuys, [{ symbol, status, reason, detail }])
@@ -1447,15 +1487,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
   const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
   const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, false)
-  const swingSidecars = new Map<string,SwingEntryDecision>()
-  let swingBenchmark: Promise<{bars: Awaited<ReturnType<typeof loadSwingMinuteBars>>; closes: Awaited<ReturnType<typeof loadMarketPriceHistoryBySymbols>>}> | undefined
   const s12CalibrationArtifactsPromise = s12Enabled && !paperOr15Owner
     ? listApprovedS12TwCalibrationArtifacts(databaseForDataDomain(env, 'learning')).catch(() => [])
     : Promise.resolve([])
   const s12Sidecars = new Map<string, S12RuntimeSidecar>()
-  const or15Sidecars = new Map<string, Or15VwapDecision>()
-  const or15BarSources = new Map<string, string>()
-  const or15BarErrors = new Map<string, string>()
   const runS12Sidecar = async (
     pending: PendingBuy,
     price: number,
@@ -1465,86 +1500,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const existing = s12Sidecars.get(pending.symbol)
     if (existing) return existing
     try {
-      if (paperSwingOwner) {
-        const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
-        if(sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000) {
-          const reason=sinceOpen<20*60000?'swing_entry_window_not_open':sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_next_bar_submission_missed'
-          let assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION,conditions:{window:false}}
-          const atr=await readAtrOnce(paperDomainDatabase(env),paperAccountId(),today,pending.symbol)
-          if(atr) assessment=applyAtrOnce(assessment,atr)
-          swingSidecars.set(pending.symbol,assessment)
-          or15Sidecars.set(pending.symbol,{action:'defer',reason:assessment.reason,signalMs:null,orHigh:null,orLow:null,vwap:null,latestBarMs:null})
-          return null
-        }
-        swingBenchmark ??= Promise.all([loadSwingMinuteBars(env,'0050',today),
-          loadMarketPriceHistoryBySymbols(env,['0050'],{beforeDate:today,rowsPerSymbol:60,requireQuerySuccess:true})])
-          .then(([bars,closes])=>({bars,closes}))
-        const [minute,benchmark,previousSession]=await Promise.all([loadSwingMinuteBars(env,pending.symbol,today),
-          swingBenchmark,getPrevTradingDay(databaseForDataDomain(env,'core'),env.KV,today)])
-        const orHigh=Math.max(...minute.bars.filter(b=>b.startMs>=Date.parse(today+'T09:00:00+08:00')
-          && b.startMs<Date.parse(today+'T09:15:00+08:00')).map(b=>b.high))
-        const reference=Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))
-        const maxBuyPrice=normalizeTwLimitPrice(orHigh*(1+cfg.position.strongBreakoutMaxEntryChasePct),'buy')
-        const observedTiming=currentOhlc?.timingReceipt
-          ? executionBookTimingAges(currentOhlc.timingReceipt,paperExecutionNow()) : null
-        const observedAge=currentOhlc?.confirmationMode === 'quote_session_static_book'
-          ? observedTiming?.quoteAgeMs : observedTiming?.sourceAgeMs
-        const swingInput={tradeDate:today,nowMs:paperExecutionNow(),label:'start' as const,bars:minute.bars,
-          benchmarkBars:benchmark.bars.bars,previousClose:reference,
-          benchmarkPreviousClose:Number(benchmark.closes.find(r=>r.date===previousSession)?.close),
-          benchmarkPriorCloses:benchmark.closes.map(r=>({date:r.date,close:Number(r.close)})),previousSession,
-          quote:{price,observedAtMs:currentOhlc?.timingReceipt
-            ? paperExecutionNow() - (observedAge ?? NaN)
-            : Date.parse(currentOhlc?.confirmationMode === 'quote_session_static_book'
-              ? currentOhlc.confirmationTime ?? '' : currentOhlc?.quoteTime ?? '')},
-          limitUp:resolveTwEquityPriceBand(reference).limitUp ?? NaN,maxBuyPrice,
-          boughtToday:false,alreadyHeld:false,planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),
-          candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))}
-        let assessment=assessSwingEntry(swingInput)
-        const db=paperDomainDatabase(env), account=paperAccountId()
-        let atr=await readAtrOnce(db,account,today,pending.symbol)
-        if(!atr || atr.status==='unknown') {
-          let candidate=assessAtrOnce(swingInput)
-          if(candidate.reason==='swing_atr_warmup_missing') {
-            try {
-            // Immutable previous-session bars are cached by date, never re-fetched each minute.
-            const key=`paper:atr5-prior:v2:${previousSession}:${pending.symbol}`
-            let history:Awaited<ReturnType<typeof loadOr15ResearchSessionBars>>
-            const cached=await env.KV.get(key).catch(()=>null)
-            if(cached) history=JSON.parse(cached)
-            else {
-              history=await loadOr15ResearchSessionBars(env,pending.symbol,previousSession)
-            }
-            if(previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,1,1)==null)
-              history=await loadAtrTickWarmupBars(env,pending.symbol,previousSession)
-            if(previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,1,1)!=null)
-              await env.KV.put(key,JSON.stringify(history),{expirationTtl:86400}).catch(()=>{
-                console.warn('[ATR] prior-minute cache unavailable; using verified broker bars')
-              })
-            const prior=await loadMarketPriceHistoryBySymbols(env,[pending.symbol],{beforeDate:today,rowsPerSymbol:1,requireQuerySuccess:true})
-            const rawClose=Number(prior.find(r=>r.date===previousSession)?.close)
-            const tr=previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,rawClose,reference)
-            candidate=assessAtrOnce(swingInput,tr)
-            } catch(error) {
-              or15BarErrors.set(pending.symbol,'atr_warmup:'+String(error))
-              // Save the unknown FIRST signal even when the history provider is unavailable.
-            }
-          }
-          // An unknown first signal may only be repaired at the same timestamp.
-          if(atr?.firstSignalMs && candidate.firstSignalMs!==atr.firstSignalMs)
-            throw new Error('swing_atr_first_signal_conflict')
-          atr=await latchAtrOnce(db,account,today,pending.symbol,candidate)
-        }
-        assessment=applyAtrOnce(assessment,atr)
-        // This sidecar receives placeholders for position state; the allocator/intent gate owns that check.
-        if (assessment.conditions) assessment.conditions.position = null
-        swingSidecars.set(pending.symbol,assessment)
-        or15Sidecars.set(pending.symbol,{action:assessment.action,reason:assessment.reason,
-          signalMs:assessment.signalMs??null,orHigh:assessment.orHigh??null,orLow:assessment.orLow??null,
-          vwap:assessment.vwap??null,latestBarMs:assessment.signalMs??null})
-        or15BarSources.set(pending.symbol,minute.source)
-        return null
-      }
+      if (paperSwingOwner) return null
+
       if (paperOr15Owner) {
         const minute = await loadOr15AuthoritativeMinuteBars(env, pending.symbol, today)
         or15BarSources.set(pending.symbol, minute.source)
@@ -1726,29 +1683,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   for (const pending of [...pendingBuys]) {
     const price = priceMap.get(pending.symbol)
     if (!price) {
-      // A missing executable book must not suppress the independent 5-minute
-      // baseline assessment. Its absent quote keeps the entry gate closed.
-      if (paperSwingOwner) {
-        await runS12Sidecar(pending, Number.NaN, null)
-        const assessment = swingSidecars.get(pending.symbol)
-        if (assessment && typeof assessment.conditions?.ma60 === 'boolean'
-          && typeof assessment.conditions?.opening_limit === 'boolean') {
-          await recordPaperExecutionEvent(env, {
-            tradeDate: today,
-            symbol: pending.symbol,
-            side: 'buy',
-            eventType: 'intraday_technical_decision',
-            status: 'defer',
-            reason: assessment.reason,
-            detail: { owner: SWING_POLICY_VERSION, signal: assessment,
-              bar_source: or15BarSources.get(pending.symbol) ?? 'unavailable',
-              bar_error: or15BarErrors.get(pending.symbol) ?? null,
-              s12_role: 'not_in_entry_path', paper_only: true },
-            pendingRunId,
-            source: SWING_POLICY_VERSION,
-          })
-        }
-      }
+      // Swing signal evidence was already recorded independently of the executable book.
       continue
     }
     // L4 partials re-enter all risk/quote checks against the current signed target.
@@ -1794,7 +1729,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
     const or15Assessment = paperOr15Owner ? or15Sidecars.get(pending.symbol) ?? null : null
     if (paperOr15Owner) {
-      await recordPaperExecutionEvent(env, {
+      if (!paperSwingOwner) await recordPaperExecutionEvent(env, {
         tradeDate: today,
         symbol: pending.symbol,
         side: 'buy',
@@ -1831,18 +1766,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
     // S12 is the slow structure gate; fetch executable depth only after it is ready.
-    const finLabL5MarketDataSnapshot = await fetchFinLabL5MarketDataSnapshot(env as any, [pending.symbol])
+    const finLabL5MarketDataSnapshot = paperSwingOwner
+      ? {quotes:new Map<string,FinLabL5Quote>(),status:'direct_authoritative_book',blockedReasons:[],envMissing:[],liveSubmitEnabled:false,canSubmitRealOrder:false}
+      : await fetchFinLabL5MarketDataSnapshot(env as any, [pending.symbol])
     let finLabL5Quote = finLabL5MarketDataSnapshot.quotes.get(pending.symbol) ?? null
-    if (!finLabL5Quote && currentOhlc?.lotType === 'board_lot'
-        && currentOhlc.confirmationMode === 'quote_session_static_book') {
-      const streamBook = normalizeFinLabL5Quote(pending.symbol, {
-        provider: 'shioaji_proxy_live_stream_book', lot_type: 'board_lot', last_price: currentOhlc.last,
-        bid_prices: currentOhlc.bidPrices, ask_prices: currentOhlc.askPrices,
-        bid_volumes: currentOhlc.bidVolumes, ask_volumes: currentOhlc.askVolumes,
-        source_time: currentOhlc.quoteTime, received_at: currentOhlc.confirmationTime,
-      }, paperExecutionDate())
-      finLabL5Quote = streamBook ? { ...streamBook,
-        quoteAgeMs: bookConfirmationAgeMs(currentOhlc) } : null
+    if (paperSwingOwner || !finLabL5Quote) {
+      const book=(await batchGetExecutionOrderbooks([pending.symbol],{
+        SHIOAJI_PROXY_URL:env.SHIOAJI_PROXY_URL,PROXY_SERVICE_TOKEN:env.PROXY_SERVICE_TOKEN,marketDataLotType:'board_lot',
+      })).get(pending.symbol)
+      finLabL5Quote=validatedBookL5(pending.symbol,book,optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500))
+      if(book && finLabL5Quote)currentOhlc={...currentOhlc,...book}
     }
     const l5Thresholds={
         maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
@@ -1854,19 +1787,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
           : -0.7
     }
-    let finLabL5Quality = finLabL5Quote ? quoteQualityFromL5(finLabL5Quote,l5Thresholds) : null
+    let finLabL5Quality = quoteQualityFromL5(finLabL5Quote,l5Thresholds)
     const l4PlanId = planIdFromWatchPoints(pending.watch_points)
     const fetchOddLotL5 = async () => {
       const odd = (await batchGetExecutionOrderbooks([pending.symbol], {
         SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL, PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
         marketDataLotType: 'odd_lot',
       })).get(pending.symbol)
-      const normalizedOddL5 = odd?.lotType === 'odd_lot' ? normalizeFinLabL5Quote(pending.symbol, {
-        provider: 'shioaji_proxy_orderbook', lot_type: 'odd_lot', last_price: odd.last,
-        bid_prices: odd.bidPrices, ask_prices: odd.askPrices, bid_volumes: odd.bidVolumes, ask_volumes: odd.askVolumes,
-        source_time: odd.quoteTime, received_at: odd.confirmationTime,
-      }, paperExecutionDate()) : null
-      const oddL5 = normalizedOddL5 && odd ? { ...normalizedOddL5, quoteAgeMs: bookConfirmationAgeMs(odd) } : null
+      const oddL5 = odd?.lotType === 'odd_lot' ? validatedBookL5(pending.symbol,odd,optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500)) : null
       return { odd, oddL5, quality: quoteQualityFromL5(oddL5, l5Thresholds) }
     }
     let oddLotBookChecked = false
@@ -2279,6 +2207,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       paperOr15Owner ? 0 : s12AssistEntryOverlay?.maxEntryChasePct != null
         ? Math.max(adaptivePolicy.policy.strongBreakoutMaxEntryChasePct, s12AssistEntryOverlay.maxEntryChasePct)
         : adaptivePolicy.policy.strongBreakoutMaxEntryChasePct
+    if (paperSwingOwner && paperExecutionNow() >= (swingSidecars.get(pending.symbol)?.submitUntilMs ?? 0)) {
+      recordActiveExecutionStatus(pending.symbol,'checked_waiting','swing_next_bar_submission_missed')
+      continue
+    }
     const preTrade = evaluatePreTradeExecution({
       symbol: pending.symbol,
       currentPrice: price,
@@ -2288,7 +2220,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       originalEntry: paperOr15Owner ? executionEntryPrice : s12AssistEntryOverlay?.entryPrice ?? effectiveOhlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
       previousClose: currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol) ?? null,
-      quoteAgeMs: quoteAgeMs(currentOhlc?.confirmationTime) ?? currentOhlc?.quoteAgeMs ?? null,
+      quoteAgeMs: currentOhlc ? bookConfirmationAgeMs(currentOhlc) : null,
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
       momentum: paperOr15Owner ? null : {
@@ -2384,28 +2316,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       maxAgeMs: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS, 1500),
       maxDisagreementTicks: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_DISAGREEMENT_TICKS, 1),
       observations: [
-        currentOhlc
-          ? {
-            source: 'shioaji_hub',
-            lotType: currentOhlc.lotType ?? 'board_lot',
-            bid: currentOhlc.bid ?? null,
-            ask: currentOhlc.ask ?? null,
-            bidVolume: currentOhlc.bidVolume ?? null,
-            askVolume: currentOhlc.askVolume ?? null,
-            bidPrices: currentOhlc.bidPrices ?? [],
-            askPrices: currentOhlc.askPrices ?? [],
-            bidVolumes: currentOhlc.bidVolumes ?? [],
-            askVolumes: currentOhlc.askVolumes ?? [],
-            volumeUnit: currentOhlc.volumeUnit,
-            sourceTime: currentOhlc.quoteTime ?? null,
-            receivedAt: currentOhlc.confirmationTime ?? null,
-            ageMs: bookConfirmationAgeMs(currentOhlc),
-            sessionEpoch: currentOhlc.sessionEpoch ?? null,
-            streamHeartbeatAgeMs: currentOhlc.streamHeartbeatAgeMs ?? null,
-            confirmationMode: currentOhlc.confirmationMode ?? null,
-            timingReceipt: currentOhlc.timingReceipt,
-          }
-          : null,
+        currentOhlc ? shioajiBookObservation(currentOhlc) : null,
         finLabL5Quote && finLabL5Quote.provider !== 'shioaji_proxy_live_stream_book'
           ? {
             source: 'finlab_l5',

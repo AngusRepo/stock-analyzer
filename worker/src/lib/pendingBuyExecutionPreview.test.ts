@@ -106,3 +106,24 @@ test('missing broker book still advances the daily baseline without authorizing 
  assert.equal(result.or15?.action,'defer')
  assert.equal(result.or15?.quote_price,null)
 })
+
+
+test('D1 readback retains the actual blocker beyond five minutes alongside current waiting status',async()=>{
+ const {l4NativeFixture}=await import('./l4NativeFixture.testSupport')
+ const {withPaperExecutionScope}=await import('./paperExecutionScope')
+ const {loadPendingBuyExecutionPreviews}=await import('./pendingBuyExecutionPreview')
+ const f=l4NativeFixture()
+ try {
+   f.ports.nowMs=Date.parse('2026-09-14T01:26:00Z')
+   f.env.PAPER_INTRADAY_ENTRY_OWNER='or15-5m-orl8-20-v1'
+   const insert=f.sqls.paper.prepare(`INSERT INTO paper_execution_events
+     (account_id,trade_date,symbol,event_type,status,reason,detail_json,source,created_at) VALUES(1,'2026-09-14','3004',?,?,?,?,?,?)`)
+   insert.run('pending_buy','allocator_skip','l4_hard_risk_veto',JSON.stringify({detail:'l5_status=blocked;l5_reasons=stale_l5_quote'}),'intraday_check','2026-09-14 01:15:23')
+   insert.run('intraday_technical_decision','defer','swing_waiting_next_bar',JSON.stringify({signal:{conditions:{window:false}}}),'or15-5m-orl8-20-v1','2026-09-14 01:26:00')
+   const {result}=await withPaperExecutionScope(f.ports,()=>loadPendingBuyExecutionPreviews(f.env,'2026-09-14',['3004']))
+   assert.equal(result.get('3004')?.last_blocker?.reason,'l4_hard_risk_veto')
+   assert.match(result.get('3004')?.last_blocker?.detail??'',/stale_l5_quote/)
+   assert.equal(result.get('3004')?.or15?.reason,'swing_waiting_next_bar')
+   assert.equal(result.get('3004')?.allocator,null,'old allocation must not become current authorization')
+ } finally {f.close()}
+})

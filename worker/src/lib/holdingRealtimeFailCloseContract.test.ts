@@ -7,6 +7,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 const exitTasks = fs.readFileSync('src/lib/paperExitTasks.ts', 'utf8')
+const entryTasks=fs.readFileSync('src/lib/paperEntryTasks.ts','utf8')
 const paperRoute = fs.readFileSync('src/routes/paper.ts', 'utf8')
 
 assert(
@@ -14,8 +15,8 @@ assert(
   'holding defense must persist a diagnostic event when authoritative broker market data is missing',
 )
 assert(
-  exitTasks.includes("throw new Error('holding_authoritative_market_data_unavailable_all_positions')"),
-  'all-position quote failure must fail the intraday scheduler instead of returning green',
+  exitTasks.includes("return {status:'partial',positions:positions.length,quoted:0") && entryTasks.includes("const reason = 'holding_risk_evidence_unavailable'"),
+  'all-position quote failure must return partial coverage and block new exposure while keeping signal evidence',
 )
 assert(
   exitTasks.includes('partial holding quote coverage: missing=') &&

@@ -3,7 +3,7 @@ import { paperDomainDatabase } from './paperDomainDatabase'
 
 interface ExecutionPreviewRow {
   symbol: string
-  kind: 's12' | 'or15' | 'allocator'
+  kind: 's12' | 'or15' | 'allocator' | 'blocker'
   status: string
   reason: string | null
   detail_json: string | null
@@ -11,6 +11,7 @@ interface ExecutionPreviewRow {
 }
 
 export interface PendingBuyExecutionPreview {
+  last_blocker?: {reason:string;detail:string|null;checked_at:string} | null
   daily_assessment?: PendingBuyExecutionPreview['or15']
   last_or15_assessment?: PendingBuyExecutionPreview['or15']
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
@@ -85,7 +86,9 @@ export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], en
     const preview: PendingBuyExecutionPreview = previews.get(row.symbol) ?? { entry_owner: entryOwner, or15: null, s12: null, allocator: null }
     try {
       const payload = JSON.parse(row.detail_json ?? '{}') as Record<string, any>
-      if (row.kind === 'or15') {
+      if (row.kind === 'blocker') {
+        preview.last_blocker={reason:row.reason??'unknown',detail:typeof payload.detail==='string'?payload.detail:JSON.stringify(payload),checked_at:row.created_at}
+      } else if (row.kind === 'or15') {
         const signal = payload.signal ?? {}
         preview.or15 = {
           conditions: signal.conditions && typeof signal.conditions === 'object' ? Object.fromEntries(Object.entries(signal.conditions).map(([key, value]) => [key, typeof value === 'boolean' ? value : null])) : undefined,
@@ -171,6 +174,15 @@ export async function loadPendingBuyExecutionPreviews(
            OR (event_type = 'intraday_technical_decision' AND source IN ('or15_vwap_entry_v1','or15-5m-orl8-20-v1'))
            OR (event_type = 'pending_buy' AND source = 'intraday_check' AND status LIKE 'allocator_%')
          )
+      UNION ALL
+      SELECT symbol,status,reason,detail_json,created_at,id,'blocker' AS kind
+        FROM paper_execution_events
+       WHERE account_id=? AND trade_date=? AND symbol IN (${placeholders})
+         AND ((event_type='paper_order' AND status='blocked')
+           OR (event_type='pending_buy' AND source='intraday_check'
+             AND status IN ('allocator_skip','quote_unavailable','execution_blocked')
+             AND reason NOT IN ('swing_waiting_next_bar','swing_entry_window_not_open','swing_entry_window_closed')
+             AND reason NOT LIKE 'swing_waiting_%'))
     ), classified AS (
       SELECT *, CASE WHEN kind = 'or15' AND CASE WHEN json_valid(detail_json)
         THEN json_type(detail_json, '$.signal.conditions.plan') IN ('true','false') ELSE 0 END
@@ -186,10 +198,10 @@ export async function loadPendingBuyExecutionPreviews(
         FROM classified
     )
     SELECT symbol, kind, status, reason, detail_json, created_at
-      FROM ranked WHERE (rn = 1 AND (kind='or15' OR created_at >= datetime('now', '-5 minutes'))) OR (kind = 'or15' AND has_assessment = 1 AND assessment_rn = 1)
+      FROM ranked WHERE (rn = 1 AND (kind IN ('or15','blocker') OR created_at >= datetime('now', '-5 minutes'))) OR (kind = 'or15' AND has_assessment = 1 AND assessment_rn = 1)
         OR (kind = 'or15' AND has_daily = 1 AND daily_rn = 1)
       ORDER BY id ASC
-  `).bind(1, tradeDate, ...symbols).all<ExecutionPreviewRow>()
+  `).bind(1, tradeDate, ...symbols, 1, tradeDate, ...symbols).all<ExecutionPreviewRow>()
   const previews = buildPendingBuyExecutionPreviews(results ?? [], entryOwner)
   for (const symbol of symbols) {
     if (!previews.has(symbol)) previews.set(symbol, { entry_owner: entryOwner, or15: null, s12: null, allocator: null })

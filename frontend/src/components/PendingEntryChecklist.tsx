@@ -1,6 +1,6 @@
 import { Check, X } from 'lucide-react'
 import type { PendingBuyExecutionPreview } from '@/lib/pendingBuyTradePreview'
-import { checklistEvidence, checklistNumbers, checklistUnknownReason, evidenceTime } from '@/lib/pendingEntryChecklist'
+import { lastEntryBlocker, checklistEvidence, checklistNumbers, checklistUnknownReason, evidenceTime } from '@/lib/pendingEntryChecklist'
 
 const groups = [
   {title:'當日基準',note:'跨日重置；計畫修訂或資料更正時更新',rows:[
@@ -21,6 +21,7 @@ interface Props {
 }
 export function PendingEntryChecklist({preview,plannedAllocation,todayFills,liveQuote,nowMs=Date.now()}:Props) {
   const evidence=checklistEvidence(preview,nowMs)
+  const blocker=lastEntryBlocker(preview)
   const signal=evidence.signal
   const daily=preview?.daily_assessment??signal
   const conditions:Record<string,boolean|null>={...evidence.conditions}
@@ -33,6 +34,7 @@ export function PendingEntryChecklist({preview,plannedAllocation,todayFills,live
   const freshLive=liveQuote && quoteAge!=null && quoteAge>=0 && quoteAge<=90
   return <section className="mt-3 rounded-lg border border-border bg-background/45 p-3 text-sm">
     <div className="font-semibold text-base text-foreground">進場條件與實際數值</div>
+    {blocker&&<p className="mt-2 text-sm text-amber-400">{blocker}</p>}
     {groups.map(group=><div key={group.title} className="mt-3 border-t border-border pt-3">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1"><h4 className="text-base font-semibold text-foreground">{group.title}</h4><span className="text-sm text-muted-foreground">{group.note}</span></div>
       <div className="mt-2 grid gap-x-5 gap-y-3 sm:grid-cols-2">{group.rows.map(([key,label])=>{

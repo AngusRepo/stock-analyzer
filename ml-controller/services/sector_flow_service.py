@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import math
 from bisect import bisect_right
 from datetime import datetime, timezone
 from typing import Literal, Optional, TypedDict
@@ -39,10 +40,10 @@ SECTOR_FLOW_PIT_LINEAGE_VERSION = "sector-flow-pit-v1"
 
 
 class CashFlow(TypedDict):
-    foreign_net: float
-    trust_net: float
-    dealer_net: float
-    total_net: float
+    foreign_net: float | None
+    trust_net: float | None
+    dealer_net: float | None
+    total_net: float | None
 
 
 class SymbolSessionState(TypedDict):
@@ -94,21 +95,29 @@ def _load_member_returns_5d(as_of_date: str) -> dict[str, float]:
         """,
         [as_of_date, as_of_date],
     )
-    by_sym: dict[str, list[float]] = {}
+    # Use one market-session pair for every member; a missing issuer quote
+    # must not shift either endpoint to a different day.
+    sessions = sorted({str(row["date"]) for row in rows})
+    if len(sessions) < 6 or sessions[-1] != as_of_date:
+        return {}
+    anchor_date = sessions[-6]
+    endpoints: dict[str, dict[str, float]] = {}
     for row in rows:
+        session = str(row["date"])
+        if session not in (as_of_date, anchor_date):
+            continue
         symbol = id_to_symbol.get(str(row.get("stock_id")))
         close = row.get("close")
         if not symbol or close is None:
             continue
-        by_sym.setdefault(symbol, []).append(float(close))
+        close = float(close)
+        if math.isfinite(close) and close > 0:
+            endpoints.setdefault(symbol, {})[session] = close
 
     returns: dict[str, float] = {}
-    for symbol, closes in by_sym.items():
-        if len(closes) < 6:
-            continue
-        latest = closes[0]
-        ago5 = closes[5]
-        if ago5 > 0:
+    for symbol, quotes in endpoints.items():
+        if as_of_date in quotes and anchor_date in quotes:
+            latest, ago5 = quotes[as_of_date], quotes[anchor_date]
             returns[symbol] = (latest - ago5) / ago5
     return returns
 
@@ -133,12 +142,12 @@ def _load_symbol_session_state(as_of_date: str) -> dict[str, SymbolSessionState]
           FROM bounds b
           JOIN stock_prices cur ON cur.date=b.current_date
           JOIN stock_prices prev ON prev.stock_id=cur.stock_id AND prev.date=b.previous_date
-         WHERE b.current_date<>b.previous_date
+         WHERE b.current_date=? AND b.current_date<>b.previous_date
            AND cur.close>0 AND prev.close>0
            AND cur.volume IS NOT NULL AND cur.volume>=0
            AND prev.volume IS NOT NULL AND prev.volume>=0
         """,
-        [as_of_date],
+        [as_of_date, as_of_date],
     )
     output: dict[str, SymbolSessionState] = {}
     for row in rows:
@@ -183,27 +192,34 @@ def _aggregate_tag_session_stats(
 
 
 def _load_twii_return_5d(as_of_date: str) -> float:
-    """
-    TWII 5-day return from market_risk.twii_close.
-
-    V1 logic (dailyRecommendation.ts:159-167):
-      take last 6 rows by date DESC, latest=[0], prev5=[min(5,len-1)].
-      if both valid: return (latest-prev5)/prev5, else 0.
-    """
-    sql = """
-    SELECT twii_close FROM market_risk
-    WHERE date <= ?
-    ORDER BY date DESC LIMIT 6
-    """
-    rows = CORE_D1_CLIENT.query(sql, [as_of_date])
-    if not rows or len(rows) < 2:
-        return 0.0
-    latest = rows[0].get("twii_close")
-    idx = min(5, len(rows) - 1)
-    prev5 = rows[idx].get("twii_close")
-    if latest is None or prev5 is None or prev5 <= 0:
-        return 0.0
-    return (float(latest) - float(prev5)) / float(prev5)
+    """Use the same market-session endpoints as member five-session returns."""
+    sessions = MARKET_D1_CLIENT.query(
+        """
+        SELECT DISTINCT date FROM stock_prices
+         WHERE date <= ? AND date >= date(?, '-20 days')
+         ORDER BY date DESC LIMIT 6
+        """,
+        [as_of_date, as_of_date],
+    )
+    if len(sessions) != 6 or str(sessions[0]["date"]) != as_of_date:
+        raise RuntimeError(f"sector_benchmark_sessions_incomplete:{as_of_date}")
+    anchor_date = str(sessions[-1]["date"])
+    rows = CORE_D1_CLIENT.query(
+        "SELECT date, twii_close FROM market_risk WHERE date IN (?, ?)",
+        [as_of_date, anchor_date],
+    )
+    quotes: dict[str, float] = {}
+    for row in rows:
+        session = str(row["date"])
+        value = row.get("twii_close")
+        if session not in (as_of_date, anchor_date) or session in quotes:
+            raise RuntimeError(f"sector_benchmark_endpoint_ambiguous:{as_of_date}")
+        if value is None or not math.isfinite(float(value)) or float(value) <= 0:
+            raise RuntimeError(f"sector_benchmark_endpoint_invalid:{session}")
+        quotes[session] = float(value)
+    if set(quotes) != {as_of_date, anchor_date}:
+        raise RuntimeError(f"sector_benchmark_endpoint_missing:{as_of_date}:{anchor_date}")
+    return (quotes[as_of_date] - quotes[anchor_date]) / quotes[anchor_date]
 
 
 def _taxonomy_snapshot_identity(
@@ -462,29 +478,29 @@ def _accumulate_cash_flow(
 ) -> None:
     symbol = str(row.get("symbol") or "").strip()
     date = str(row.get("date") or "").strip()
-    close = float(row.get("close") or 0)
-    if not symbol or close <= 0:
-        return
     key = (symbol, date)
-    if date and key in seen_symbol_dates:
+    if not symbol or not date or key in seen_symbol_dates:
         return
-    if date:
-        seen_symbol_dates.add(key)
+    # Canonical owns the entire row, including unknown fields; legacy fills absent rows only.
+    seen_symbol_dates.add(key)
     entry = flows.setdefault(
         symbol,
         {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0},
     )
-    foreign_cash = float(row.get("foreign_net") or 0) * close / 1e8
-    trust_cash = float(row.get("trust_net") or 0) * close / 1e8
-    dealer_cash = float(row.get("dealer_net") or 0) * close / 1e8
-    entry["foreign_net"] += foreign_cash
-    entry["trust_net"] += trust_cash
-    entry["dealer_net"] += dealer_cash
-    entry["total_net"] += foreign_cash + trust_cash + dealer_cash
+    close = row.get("close")
+    price_valid = isinstance(close, (int, float)) and not isinstance(close, bool) and math.isfinite(close) and close > 0
+    daily = []
+    for field in ("foreign_net", "trust_net", "dealer_net"):
+        value = row.get(field)
+        valid = price_valid and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        cash = float(value) * close / 1e8 if valid else None
+        daily.append(cash)
+        entry[field] = entry[field] + cash if entry[field] is not None and cash is not None else None
+    entry["total_net"] = entry["total_net"] + sum(daily) if entry["total_net"] is not None and all(v is not None for v in daily) else None
 
 
 def _attach_market_closes(rows: list[dict]) -> None:
-    """Attach latest known Market close at or before each row date without a cross-D1 join."""
+    """Attach the exact row-date Market close without a cross-D1 join."""
     if not rows:
         return
     id_to_symbol, symbol_to_id = _load_stock_identities()
@@ -526,35 +542,23 @@ def _attach_market_closes(rows: list[dict]) -> None:
         history = prices_by_symbol.get(symbol) or []
         dates = [date for date, _ in history]
         index = bisect_right(dates, target_date) - 1
-        row["close"] = history[index][1] if index >= 0 else None
+        row["close"] = history[index][1] if index >= 0 and history[index][0] == target_date else None
 
 
 def _load_canonical_symbol_cash_flows_5d(
-    as_of_date: str,
-    lookback_days: int,
+    dates: list[str],
     flows: dict[str, CashFlow],
     seen_symbol_dates: set[tuple[str, str]],
 ) -> None:
-    date_rows = MARKET_D1_CLIENT.query(
-        """
-        SELECT DISTINCT date
-          FROM canonical_chip_daily
-         WHERE date <= ?
-         ORDER BY date DESC
-         LIMIT ?
-        """,
-        [as_of_date, lookback_days],
-    )
-    dates = [row.get("date") for row in date_rows if row.get("date")]
     if not dates:
         return
     placeholders = ",".join("?" for _ in dates)
     rows = MARKET_D1_CLIENT.query(
         f"""
         SELECT c.stock_id AS symbol, c.date,
-               COALESCE(c.foreign_net, 0) AS foreign_net,
-               COALESCE(c.trust_net, 0) AS trust_net,
-               COALESCE(c.dealer_net, 0) AS dealer_net
+               c.foreign_net AS foreign_net,
+               c.trust_net AS trust_net,
+               c.dealer_net AS dealer_net
           FROM canonical_chip_daily c
          WHERE c.date IN ({placeholders})
         """,
@@ -566,31 +570,19 @@ def _load_canonical_symbol_cash_flows_5d(
 
 
 def _load_legacy_symbol_cash_flows_5d(
-    as_of_date: str,
-    lookback_days: int,
+    dates: list[str],
     flows: dict[str, CashFlow],
     seen_symbol_dates: set[tuple[str, str]],
 ) -> None:
-    date_rows = MARKET_D1_CLIENT.query(
-        """
-        SELECT DISTINCT date
-          FROM chip_data
-         WHERE date <= ?
-         ORDER BY date DESC
-         LIMIT ?
-        """,
-        [as_of_date, lookback_days],
-    )
-    dates = [row.get("date") for row in date_rows if row.get("date")]
     if not dates:
         return
     placeholders = ",".join("?" for _ in dates)
     rows = MARKET_D1_CLIENT.query(
         f"""
         SELECT c.symbol, c.date,
-               COALESCE(c.foreign_net, 0) AS foreign_net,
-               COALESCE(c.trust_net, 0) AS trust_net,
-               COALESCE(c.dealer_net, 0) AS dealer_net
+               c.foreign_net AS foreign_net,
+               c.trust_net AS trust_net,
+               c.dealer_net AS dealer_net
           FROM chip_data c
          WHERE c.date IN ({placeholders})
         """,
@@ -605,12 +597,35 @@ def _load_symbol_cash_flows_5d(as_of_date: str, lookback_days: int = 5) -> dict[
     """Load per-symbol 5-day institutional cash flow in TWD billions.
 
     FinLab canonical rows are primary. Legacy TWSE/TPEX chip_data only fills
-    symbol-date gaps that canonical data has not materialized yet.
+    symbol-date gaps that canonical data has not materialized yet. Both sources
+    use the same observed Market session window ending on as_of_date.
     """
+    if isinstance(lookback_days, bool) or not isinstance(lookback_days, int) or lookback_days <= 0:
+        raise ValueError("cash_flow_lookback_must_be_positive_integer")
+    date_rows = MARKET_D1_CLIENT.query(
+        """
+        SELECT DISTINCT date
+          FROM stock_prices
+         WHERE date <= ?
+         ORDER BY date DESC
+         LIMIT ?
+        """,
+        [as_of_date, lookback_days],
+    )
+    dates = [str(row["date"]) for row in date_rows if row.get("date")]
+    if len(dates) != lookback_days or dates[0] != as_of_date:
+        raise RuntimeError("cash_flow_market_window_unavailable")
     flows: dict[str, CashFlow] = {}
     seen_symbol_dates: set[tuple[str, str]] = set()
-    _load_canonical_symbol_cash_flows_5d(as_of_date, lookback_days, flows, seen_symbol_dates)
-    _load_legacy_symbol_cash_flows_5d(as_of_date, lookback_days, flows, seen_symbol_dates)
+    _load_canonical_symbol_cash_flows_5d(dates, flows, seen_symbol_dates)
+    _load_legacy_symbol_cash_flows_5d(dates, flows, seen_symbol_dates)
+    observed_counts: dict[str, int] = {}
+    for symbol, _ in seen_symbol_dates:
+        observed_counts[symbol] = observed_counts.get(symbol, 0) + 1
+    for symbol, flow in flows.items():
+        if observed_counts[symbol] != len(dates):
+            for field in flow:
+                flow[field] = None
     return flows
 
 
@@ -621,14 +636,15 @@ def _aggregate_tag_cash_flows(
     tag_flows: dict[str, CashFlow] = {}
     for tag, members in tag_members.items():
         flow: CashFlow = {"foreign_net": 0.0, "trust_net": 0.0, "dealer_net": 0.0, "total_net": 0.0}
-        for symbol in members:
-            sf = symbol_flows.get(symbol)
-            if not sf:
-                continue
-            flow["foreign_net"] += sf["foreign_net"]
-            flow["trust_net"] += sf["trust_net"]
-            flow["dealer_net"] += sf["dealer_net"]
-            flow["total_net"] += sf["total_net"]
+        for field in flow:
+            if not members:
+                flow[field] = None
+            for symbol in members:
+                value = symbol_flows.get(symbol, {}).get(field)
+                if value is None:
+                    flow[field] = None
+                    break
+                flow[field] += value
         tag_flows[tag] = flow
     return tag_flows
 
@@ -678,9 +694,9 @@ def write_sector_flow_stock_details(
                     tag,
                     symbol,
                     stock_names.get(symbol, symbol),
-                    round(float(flow.get("total_net") or 0.0), 4),
-                    round(float(flow.get("foreign_net") or 0.0), 4),
-                    round(float(flow.get("trust_net") or 0.0), 4),
+                    round(flow["total_net"], 4) if flow.get("total_net") is not None else None,
+                    round(flow["foreign_net"], 4) if flow.get("foreign_net") is not None else None,
+                    round(flow["trust_net"], 4) if flow.get("trust_net") is not None else None,
                     None,
                     "top",
                 ],
@@ -715,6 +731,7 @@ def _load_prev_rs_ratios(
         WHERE classification = ?
           AND pit_lineage_version = ?
           AND rs_ratio IS NOT NULL AND date < ?
+        GROUP BY date
         ORDER BY date DESC LIMIT 1 OFFSET 4
       )
     ORDER BY sector
@@ -841,13 +858,8 @@ def write_sector_flow(
     Upsert sector_flow rows.
 
     UNIQUE constraint: (date, sector, classification) — use INSERT OR REPLACE.
-    Only writes rs_ratio / rs_momentum / quadrant (other chip-flow fields
-    stay as they were, or default to 0/NULL if row is new).
+    Cash-flow fields preserve unknown values as NULL; observed zero remains zero.
     """
-    # INSERT OR REPLACE preserves UNIQUE constraint semantics
-    # stock_count/up_count/foreign_net/trust_net/total_net are populated by
-    # chip-flow computation (separate path) — here we ONLY populate RRG fields.
-    # Use COALESCE via SELECT existing row, fallback to 0.
     # Replace the complete derived classification slice. Upsert-only semantics
     # leave sectors that disappeared from the active FinLab snapshot behind.
     statements: list[tuple[str, list]] = [
@@ -857,11 +869,7 @@ def write_sector_flow(
     for pt in points:
         if pt.rs_ratio is None:
             continue  # skip tags without enough members
-        flow = (cash_flows or {}).get(pt.sector) or {
-            "foreign_net": 0.0,
-            "trust_net": 0.0,
-            "total_net": 0.0,
-        }
+        flow = (cash_flows or {}).get(pt.sector) or {}
         stats = (session_stats or {}).get(pt.sector)
         if not stats or int(stats.get("stock_count") or 0) <= 0:
             logger.warning(
@@ -931,9 +939,9 @@ def write_sector_flow(
                 round(float(stats["turnover_value"]), 4),
                 round(float(stats["turnover_share"]), 8),
                 round(float(stats["turnover_share_delta"]), 8),
-                round(float(flow.get("foreign_net") or 0.0), 4),
-                round(float(flow.get("trust_net") or 0.0), 4),
-                round(float(flow.get("total_net") or 0.0), 4),
+                round(flow["foreign_net"], 4) if flow.get("foreign_net") is not None else None,
+                round(flow["trust_net"], 4) if flow.get("trust_net") is not None else None,
+                round(flow["total_net"], 4) if flow.get("total_net") is not None else None,
                 available_at,
                 SECTOR_FLOW_PIT_LINEAGE_VERSION,
                 taxonomy_snapshot_id,

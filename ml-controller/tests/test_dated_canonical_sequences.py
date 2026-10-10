@@ -126,6 +126,41 @@ def test_missing_current_adjusted_price_cannot_become_stale_or_raw_sequence(monk
     assert meta['unavailable_symbols'] == ['2330']
 
 
+def test_old_gap_keeps_only_verified_later_suffix_and_exact_model_thresholds(monkeypatch, canonical):
+    from graphs.daily_pipeline_v2 import _sequence_contract_subset
+    _prep(monkeypatch)
+    monkeypatch.setattr(series, 'load_dated_long_history_records', lambda **kw: (
+        {'2330': {'2026-09-02': 92, '2026-09-04': 96, '2026-09-05': 98}}, {'fixture': True}))
+    payload = [{'symbol': '2330', 'prices': [
+        {'date': f'2026-09-{d:02}', 'close': 200} for d in range(1,7)]}]
+    out, _ = _run(payload)
+    assert out[0]['dates'] == ['2026-09-04','2026-09-05','2026-09-06']
+    assert out[0]['prices'] == [96,98,100]
+    assert out[0]['missing_adjusted_dates'] == ['2026-09-01','2026-09-03']
+    assert out[0]['verified_suffix_gap_boundary'] == '2026-09-03'
+    assert _sequence_contract_subset(out,min_points=3)[0] == out
+    assert _sequence_contract_subset(out,min_points=4)[0] == []
+
+
+def test_invalid_old_raw_quote_cannot_enter_or_bridge_the_verified_suffix(monkeypatch, canonical):
+    _prep(monkeypatch)
+    payload = [{'symbol': '2330', 'prices': [
+        {'date': f'2026-09-{d:02}', 'close': 0 if d==3 else 200} for d in range(1,7)]}]
+    out, meta = _run(payload)
+    assert out[0]['dates'] == ['2026-09-04','2026-09-05','2026-09-06']
+    assert out[0]['invalid_payload_dates'] == ['2026-09-03']
+    assert meta['source_issues'][0]['reason'] == 'sequence_payload_price_invalid'
+
+
+def test_invalid_latest_raw_quote_remains_unavailable_even_if_adjusted_exists(monkeypatch, canonical):
+    _prep(monkeypatch)
+    payload = _payload()
+    payload[0]['prices'][-1]['close'] = 0
+    out, _ = _run(payload)
+    assert out[0]['prices'] == [] and out[0]['status'] == 'unavailable'
+    assert out[0]['reason'] == 'sequence_payload_price_invalid'
+
+
 @pytest.mark.parametrize('fault', ['manifest', 'batch', 'missing', 'raw-lane', 'undated', 'duplicate-day', 'nonfinite'])
 def test_corrupt_history_never_turns_into_a_partial_success_cache(monkeypatch, canonical, fault):
     import hashlib
@@ -205,10 +240,14 @@ def _l2_dispatch_state(monkeypatch, mode='ready'):
     # This test covers real source/node/dispatch wiring, not model promotion.
     manifest = {'schema_version': graph.PIPELINE_MODAL_SERVING_MANIFEST_SCHEMA,
                 'models': [], 'active8_shadow_candidates': []}
-    return {'run_date': '2026-09-06', 'producer_run_id': 'dated-sequence-fixture', 'payloads': _payload(),
+    state = {'run_date': '2026-09-06', 'producer_run_id': 'dated-sequence-fixture', 'payloads': _payload(),
         'pipeline_modal_serving_context': {'schema_version': 'pipeline-modal-serving-context-v1',
             'active_versions': {'TimesFM': 'fixture-v1'}, 'serving_pool': {}, 'model_status': {},
-            'serving_manifest': manifest, 'serving_manifest_digest': graph._pipeline_modal_canonical_digest(manifest)}}, calls
+            'serving_manifest': manifest, 'serving_manifest_digest': graph._pipeline_modal_canonical_digest(manifest)}}
+    from daily_capture_test_dependency import attach_frozen_capture_fixture
+    attach_frozen_capture_fixture(state,[{'symbol':'2330','dates':[f'2026-09-{d:02}' for d in range(1,7)],
+        'prices':[90,92,94,96,98,100],'price_basis':'finlab_adjusted_close'}])
+    return state,calls
 
 
 @pytest.mark.parametrize('mode', ['ready', 'blocked', 'error'])

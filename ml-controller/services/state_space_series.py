@@ -389,7 +389,7 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
     symbols = [p.get('symbol') for p in payloads]
     if any(not isinstance(s, str) or not s or s != s.strip() for s in symbols) or len(symbols) != len(set(symbols)):
         raise ValueError('sequence_symbols_invalid')
-    required, invalid_payload_symbols, issues = {}, set(), []
+    required, invalid_payload_dates, issues = {}, {}, []
     for payload in payloads:
         days = []
         for row in payload.get('prices') or []:
@@ -402,7 +402,7 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
                 except (TypeError, ValueError, OverflowError):
                     # A stock-specific bad quote must not abort the whole pool.
                     # Keep its date and provenance, but provide no usable series.
-                    invalid_payload_symbols.add(payload['symbol'])
+                    invalid_payload_dates.setdefault(payload['symbol'], set()).add(day)
                     issues.append({'symbol': payload['symbol'], 'date': day,
                                    'reason': 'sequence_payload_price_invalid'})
                 days.append(day)
@@ -456,17 +456,26 @@ def _enrich_daily_canonical_sequences(payloads, *, decision_date, target_points=
             older = {}
         combined = {**older, **base}
         missing = sorted(set(required[symbol]) - set(combined))
-        available_days = sorted(combined)[-target:]
+        blocked_dates = sorted(set(missing) | invalid_payload_dates.get(symbol, set()))
+        gap_boundary = blocked_dates[-1] if blocked_dates else None
+        # Do not bridge a known gap or discard a complete later model window.
+        # A smaller serving contract may use the verified contiguous suffix;
+        # the exact version-bound subset still enforces its required points.
+        available_days = [d for d in sorted(combined) if gap_boundary is None or d > gap_boundary][-target:]
         latest_mismatch = bool(required[symbol] and combined and max(combined) != required[symbol][-1])
-        invalid_payload = symbol in invalid_payload_symbols
-        unavailable = invalid_payload or bool(missing) or not required[symbol] or latest_mismatch
+        unavailable = not available_days or not required[symbol] or latest_mismatch
         days = [] if unavailable else available_days
         out.append({'symbol': symbol, 'prices': [combined[d] for d in days], 'dates': days,
             'sequence_source': 'finlab_canonical_and_verified_history' if older else 'finlab_canonical_adjusted',
             'price_basis': 'finlab_adjusted_close', 'history_points_available': len(combined),
             'status': 'unavailable' if unavailable else 'ready', 'missing_adjusted_dates': missing,
-            'reason': 'sequence_payload_price_invalid' if invalid_payload else 'canonical_adjusted_dates_missing' if missing else 'payload_market_dates_missing' if not required[symbol]
-                      else 'payload_canonical_latest_date_mismatch' if latest_mismatch else None})
+            'invalid_payload_dates': sorted(invalid_payload_dates.get(symbol, set())),
+            'verified_suffix_gap_boundary': gap_boundary,
+            'window_policy': 'verified-contiguous-suffix-after-known-gap-v1',
+            'reason': 'payload_market_dates_missing' if not required[symbol] else
+                      'payload_canonical_latest_date_mismatch' if latest_mismatch else
+                      'sequence_payload_price_invalid' if unavailable and invalid_payload_dates.get(symbol) else
+                      'canonical_adjusted_dates_missing' if unavailable and missing else None})
     return out, {'schema_version': 'state-space-dated-adjusted-enrichment-v1',
         'source': 'finlab_dated_adjusted_prices', 'decision_date': decision_date, 'target_points': target,
         'input_series': len(payloads), 'output_series': len(out),

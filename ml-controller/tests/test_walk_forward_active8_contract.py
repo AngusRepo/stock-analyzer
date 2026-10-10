@@ -2,6 +2,7 @@ from pathlib import Path
 import asyncio
 import os
 import sys
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -598,9 +599,12 @@ def test_full_fit_registry_reads_are_learning_domain_owned():
     assert "LEARNING_D1_CLIENT.query(" in dispatcher
     assert "d1_client.query(" not in dispatcher
 
-def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeypatch):
+@pytest.mark.parametrize("source_ready", [True, False])
+def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeypatch, source_ready):
     from routers import walk_forward
     import json
+
+    from test_training_source_preflight import Bucket as SourceBucket, manifests
 
     uploaded = []
 
@@ -611,9 +615,14 @@ def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeyp
         def upload_from_string(self, value, content_type=None):
             uploaded.append({"value": json.loads(value), "content_type": content_type})
 
-    class Bucket:
+    class Bucket(SourceBucket):
+        def __init__(self):
+            super().__init__(*manifests())
+            if not source_ready:
+                self.objects.clear()
+
         def blob(self, _path):
-            return Blob()
+            return super().blob(_path) if _path in self.objects else Blob()
 
         def list_blobs(self, prefix):
             return []
@@ -644,13 +653,20 @@ def test_full_fit_poll_only_bootstraps_first_receipt_without_replacement(monkeyp
     monkeypatch.setattr(retrain_trigger, "trigger_universal_retrain", fake_trigger)
 
     result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
-        manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
+        manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64,
+                  "prep_gcs_prefix": "prep", "sequence_gcs_prefix": "seq"},
         knowledge_cutoff_date="2026-07-17",
         bucket=Bucket(),
         lifecycle_cadence="weekly",
         allow_new_dispatch=False,
     ))
 
+    if not source_ready:
+        assert result["status"] == "blocked"
+        assert result["training_dispatched"] is False
+        assert "training_source_manifest_missing" in result["reason"]
+        assert not dispatched and not uploaded
+        return
     assert result["status"] == "dispatched"
     assert result["run_id"] == "universal-oof-owner"
     assert result["retry_required"] is True
@@ -1275,7 +1291,7 @@ def _retired_completed_oof_release_alias_keeps_valid_base_when_selection_pbo_fai
 def test_oof_lifecycle_uses_latest_prep_instead_of_stale_parent_contract():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
 
-    latest_lookup = '_latest_canonical_prep_prefix(bucket) or ""'
+    latest_lookup = '_latest_canonical_prep_prefix(bucket, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or ""'
     stale_parent_lookup = 'prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")'
     assert source.index(latest_lookup) < source.index(stale_parent_lookup)
     assert 'pinned_prep = bool(exact_producer_source_sha and cadence != "daily")' in source

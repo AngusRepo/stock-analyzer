@@ -81,7 +81,9 @@ def test_immutable_source_prep_keeps_unlabeled_features_without_fabricating_retu
     p=prices();p[31]['open']=None
     bucket=MemoryBucket();monkeypatch.setattr(universal_training,'_get_bucket',lambda:bucket)
     result=universal_training.prep_universal_batch(universal_training.UniversalPrepRequest(
-        payloads=[{'symbol':'TEST','prices':p}],gcs_prefix='source-only',retain_unlabeled_features=True))
+        payloads=[{'symbol':'TEST','prices':p,'indicators':[
+            {'date':r['date'],'plusDi14':20.,'minusDi14':10.,'adx14':25.,'parabolicSar':r['close']*.98}
+            for r in p[19:]]}],gcs_prefix='source-only',retain_unlabeled_features=True))
     with np.load(io.BytesIO(bucket.files['source-only/prep/batch_0.npz']),allow_pickle=True) as a:
         assert len(a['dates'])==100
         assert np.isnan(a['target_returns'][30])

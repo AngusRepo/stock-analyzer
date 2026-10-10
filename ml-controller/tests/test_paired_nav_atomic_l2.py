@@ -44,7 +44,7 @@ def test_daily_original_l2_uses_own_slate_and_frozen_context_with_retry(monkeypa
     monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 6)
     monkeypatch.setattr(graph, '_timesfm_l175_release_policy', lambda: {})
     monkeypatch.setattr(graph, '_load_model_pool_versions', lambda: ({'TimesFM': 'active'}, {'TimesFM': 'frozen-v'}, {}, True))
-    monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {}))
+    monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {'l2_feature_sidecars':{'TimesFM':{'checksum':'a'*64}}}))
     monkeypatch.setattr(graph, '_timesfm_sequence_contract_points', lambda pool: 2)
     calls = []
     def forbidden(*a, **kw):

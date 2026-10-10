@@ -241,3 +241,24 @@ const strategy0193 = {
   assert.equal(telemetry.skippedConstantExposureCount, 2)
   assert.equal(candidates[0].raw_signals.factorSignals.formal137UsSentimentScoreRank, undefined)
 }
+
+
+// Missing observations must not become zero or block a valid lower-priority source.
+{
+  for (const missing of [null, '', '   ', false, [], {}]) {
+    const candidates: any[] = [{ raw_signals: { return5d: 0.04, factorSignals: { return_5d: missing } } }]
+    materializeFormal137FeatureAliases(candidates)
+    assert.equal(candidates[0].raw_signals.factorSignals.return_5d, 0.04)
+  }
+  const zero: any[] = [{ raw_signals: { return5d: 0.04, factorSignals: { return_5d: 0 } } }]
+  materializeFormal137FeatureAliases(zero)
+  assert.equal(zero[0].raw_signals.factorSignals.return_5d, 0)
+  const missing: any[] = [{ raw_signals: { factorSignals: {
+    us_sentiment_score: null, sector_rs_ratio: null, sector_turnover_share_delta: null,
+  } } }]
+  const telemetry = materializeFormal137UsSentimentScoreRank(missing)
+  assert.equal(telemetry.sentimentCoverage, 0)
+  assert.equal(telemetry.componentCoverage.sector_rs_ratio, 0)
+  assert.equal(telemetry.componentCoverage.sector_turnover_share_delta, 0)
+  assert.equal(telemetry.materializedCount, 0)
+}

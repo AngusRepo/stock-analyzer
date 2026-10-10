@@ -303,17 +303,21 @@ def load_pit_sector_alpha_experts(
     experts: dict[str, dict[str, Any]] = {}
     for symbol in normalized_symbols:
         matched: list[dict[str, Any]] = []
+        missing_matched_cash_flow = False
         layer_metrics: dict[str, dict[str, list[float]]] = {}
         for membership in memberships_by_symbol[symbol]:
             key = (membership["classification"], membership["sector"])
             flow = flow_by_key.get(key)
             if flow is None:
                 continue
+            if key not in metric_ranks["total_net"]:
+                missing_matched_cash_flow = True
+                continue
             metric = {
                 "rs_rank": metric_ranks["rs_ratio"].get(key, 0.0),
                 "momentum_rank": metric_ranks["rs_momentum"].get(key, 0.0),
                 "rotation_rank": metric_ranks["rotation_score"].get(key, 0.0),
-                "flow_rank": metric_ranks["total_net"].get(key, 0.0),
+                "flow_rank": metric_ranks["total_net"][key],
             }
             stock_count = _finite(flow.get("stock_count"))
             up_count = _finite(flow.get("up_count"))
@@ -326,6 +330,10 @@ def load_pit_sector_alpha_experts(
             layer_metrics.setdefault(membership["classification"], defaultdict(list))
             for name, value in metric.items():
                 layer_metrics[membership["classification"]][name].append(float(value))
+
+        if missing_matched_cash_flow:
+            experts[symbol] = unavailable_sector_alpha(signal_day, "matched_sector_cash_flow_missing")
+            continue
 
         collapsed_layers: dict[str, dict[str, float]] = {
             layer: {name: _mean(values) for name, values in metrics.items()}

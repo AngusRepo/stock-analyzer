@@ -18,6 +18,8 @@ def digest(value):
 
 def materialize_inputs(bucket, payload, directory):
     """Verify identities before fitting; downloads one compressed shard at a time."""
+    from .formal_feature_contract import timexer_semantic, validate_feature_names
+    semantic = timexer_semantic(payload.get('settings') or {})
     snapshot = payload['dataset_snapshot']
     manifest = json.loads(bucket.blob(snapshot['manifest_path']).download_as_bytes())
     from .canonical_adjusted_prep import _manifest_checksum, _sequence_manifest_checksum
@@ -33,7 +35,8 @@ def materialize_inputs(bucket, payload, directory):
     if (hashlib.sha256(raw).hexdigest() != manifest['source_receipt_checksum']
             or receipt.get('receipt_checksum') != manifest['source_receipt_checksum']
             or receipt.get('output_checksums') != manifest['source_checksums']
-            or receipt.get('feature_semantic_version') != 'formal137-pit-asof-source-quality-v3'):
+            or receipt.get('feature_semantic_version') != semantic
+            or manifest.get('feature_semantic_version') != semantic):
         raise ValueError('timexer_training_feature_source_invalid')
     from .features import FEATURE_COLS
     names_path = feature_prefix+'/prep/feature_names.json'
@@ -41,8 +44,7 @@ def materialize_inputs(bucket, payload, directory):
     if hashlib.sha256(names_raw).hexdigest() != manifest['source_checksums'].get(names_path):
         raise ValueError('timexer_training_feature_names_changed')
     names = json.loads(names_raw)
-    if names != list(FEATURE_COLS) or len(names) != 137:
-        raise ValueError('timexer_training_feature_order_invalid')
+    validate_feature_names(names, semantic, FEATURE_COLS)
     sequence_prefix = manifest['sequence_gcs_prefix']
     sequence = json.loads(bucket.blob(sequence_prefix+'/prep/sequence_manifest.json').download_as_bytes())
     if (sequence.get('manifest_checksum') != _sequence_manifest_checksum(sequence)
@@ -132,7 +134,9 @@ def run(payload, *, bucket=None):
         'torch_float32_matmul_precision':report['torch_float32_matmul_precision'],
         'checkpoint_selection':report['checkpoint_selection']}
     attestation = build_model_training_config_attestation('TimeXer',payload,effective)
-    variant = 'exo137' if job['exogenous'] else 'price'
+    from .formal_feature_contract import timexer_semantic, FEATURE131_SEMANTIC, prep_feature_names
+    semantic = timexer_semantic(job['settings'])
+    variant = ('exo131' if job['exogenous'] else 'price131') if semantic == FEATURE131_SEMANTIC else ('exo137' if job['exogenous'] else 'price')
     from .features import FEATURE_COLS
     from .sequence_semantic_contract import RANK_IC_SEMANTIC_VERSION
     metadata = {**report, 'schema_version':SCHEMA+'-metadata', 'model_name':'TimeXer',
@@ -142,7 +146,7 @@ def run(payload, *, bucket=None):
         'raw_score_semantic_version':SCORE_SEMANTIC,
         'timexer':{'variant':variant,'official_commit':OFFICIAL_COMMIT,'architecture':ARCHITECTURE,
             'inference_device':'cuda','matmul_precision':'high',
-            'feature_history_schema':'formal137-pit-asof-source-quality-v3',
+            'feature_history_schema':semantic,
             'max_exogenous_staleness_sessions':1},
         'train_range':[job['train_start'],job['train_end']],
         'deployment_fit':{'performed':True,'method':'purged_inner_epoch_then_full_train_refit',
@@ -151,7 +155,7 @@ def run(payload, *, bucket=None):
         'source_manifest_checksum':manifest['manifest_checksum'],
         'model_training_config_attestation':attestation,
         'producer_source_sha':source_sha,
-        **build_model_feature_policy_metadata('TimeXer', [*FEATURE_COLS,'close'] if job['exogenous'] else ['close'],
+        **build_model_feature_policy_metadata('TimeXer', [*prep_feature_names(semantic, FEATURE_COLS),'close'] if job['exogenous'] else ['close'],
              feature_release_mode='timexer_'+variant),
         'elapsed_s':round(time.monotonic()-started,3)}
     buffer = io.BytesIO()
@@ -172,7 +176,7 @@ def run(payload, *, bucket=None):
         import numpy as np
         from .oof_lineage import save_oof_prediction_artifact
         rows = result['oof_rows']
-        oof_artifact = save_oof_prediction_artifact(bucket=bucket,gcs_prefix=payload['gcs_prefix'],
+        oof_artifact = save_oof_prediction_artifact(feature_semantic_version=semantic, bucket=bucket,gcs_prefix=payload['gcs_prefix'],
             cohort_id=payload['cohort_id'],fold_id=payload.get('fold_id') or payload['window_id'],
             model_name='TimeXer',artifact_version=version,raw_scores=result['oof_scores'],
             targets=np.asarray([r['target'] for r in rows]),dates=[r['date'] for r in rows],

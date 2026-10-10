@@ -2741,7 +2741,10 @@ def _load_verified_oof_resume_windows(
     if list(parent.get("model_set") or []) != list(models):
         raise ValueError("active8_oof_resume_model_set_mismatch")
     expected_target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
-    expected_feature_semantic = "formal137-pit-asof-source-quality-v3"
+    from app.formal_feature_contract import cohort_semantic
+    expected_feature_semantic = cohort_semantic(parent)
+    if cohort_semantic(payload) != expected_feature_semantic:
+        raise ValueError("active8_oof_resume_profile_mismatch")
     expected_imputation_semantic = "prior_252_row_median_then_zero_v2"
     producer_source_sha = str(os.environ.get("STOCKVISION_SOURCE_SHA") or "").strip().lower()
     if len(producer_source_sha) != 40 or any(char not in "0123456789abcdef" for char in producer_source_sha):
@@ -2943,6 +2946,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
     profile_schema = payload.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
+    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names
+    feature_semantic = semantic_for_profile(profile_schema)
     active8_models = list(model_order(model_profiles(schema_version=profile_schema),complete=True))
     full137 = "TimeXer" in active8_models
     native_retrain_models = list(active8_models)
@@ -3000,7 +3005,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         if (
             prep_manifest.get("schema_version") != "active8-canonical-adjusted-prep-v3"
             or prep_manifest.get("status") != "ready"
-            or prep_manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+            or prep_manifest.get("feature_semantic_version") != feature_semantic
             or prep_manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
             or prep_manifest.get("producer_source_sha") != producer_source_sha
             or prep_manifest.get("output_gcs_prefix") != prep_prefix
@@ -3197,8 +3202,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             }
             if full137:
                 from app.features import FEATURE_COLS
-                fs_result = {"selection_method": "predeclared_full137", "feature_pool": {
-                    "tree_active": sorted(FEATURE_COLS), "active": sorted(FEATURE_COLS)},
+                declared_features = prep_feature_names(feature_semantic, FEATURE_COLS)
+                fs_result = {"selection_method": "predeclared_full131" if feature_semantic == FEATURE131_SEMANTIC else "predeclared_full137", "feature_pool": {
+                    "tree_active": sorted(declared_features), "active": sorted(declared_features)},
                     "model_profile_schema_version": profile_schema}
             else:
                 fs_result = await feature_selection_per_window.remote.aio(fs_payload)
@@ -3240,7 +3246,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "test_end": window["test_end"],
             "batch_count": batch_count,
             "skip_feature_pool": full137,
-            "feature_release_mode": "accepted_ab_full137" if full137 else None,
+            "feature_release_mode": ("approved_full131_v1" if feature_semantic == FEATURE131_SEMANTIC else "accepted_ab_full137") if full137 else None,
+            "feature_semantic_version": feature_semantic,
             "generation_mode": generation_mode,
             "cohort_id": cohort_id,
             "fold_id": f"w{wid}",

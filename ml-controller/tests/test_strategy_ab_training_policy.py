@@ -107,7 +107,13 @@ def test_native_oof_completion_refreshes_matching_l4_role(profile,role,monkeypat
     from services import active8_oof_cohort_materializer as materializer
     from routers import walk_forward as wf
     from scripts import l4_distribution_refresh_job as refresh
-    manifest={"cohort_id":"test-pair", "model_profile_schema_version":profile, "end_date":"2026-09-11"}
+    from test_training_source_preflight import manifests, Bucket as SourceBucket
+    prep, sequence = manifests()
+    manifest={"cohort_id":"test-pair", "model_profile_schema_version":profile, "end_date":"2026-09-11",
+        "prep_gcs_prefix":"prep", "sequence_gcs_prefix":"seq", "prep_manifest":prep,
+        "windows":[{"source_prep_gcs_prefix":"prep", "source_sequence_gcs_prefix":"seq",
+                    "source_prep_manifest_checksum":prep["manifest_checksum"]}]}
+    source_bucket=SourceBucket(prep, sequence)
     assert native.uses_native_l4(manifest)
     assert not native.uses_native_l4({"model_profile_schema_version":"active8-release-model-profiles-v3"})
     monkeypatch.setattr(materializer,"load_verified_oof_manifest",lambda *a,**kw:(manifest,{}))
@@ -126,7 +132,9 @@ def test_native_oof_completion_refreshes_matching_l4_role(profile,role,monkeypat
         def exists(self): return False
         def upload_from_string(self,*a,**kw): pass
     class Bucket:
-        def blob(self,path): return Blob()
+        name=source_bucket.name
+        def blob(self,path):
+            return source_bucket.blob(path) if path in source_bucket.objects else Blob()
     result=asyncio.run(native.materialize_native_base(manifest_path="test",cohort_id="test-pair",as_of="2026-09-18",cadence="weekly",dry_run=False,dispatch_full_fit=True,poll_only=False,bucket=Bucket(),client=object()))
     assert calls[0].get("strategy_role","A")==role
     assert calls[0]["target_l3_artifact_id"]=="verified-"+role
@@ -138,9 +146,9 @@ def test_accepted_profiles_do_not_truncate_the_market_inventory(monkeypatch):
     import sqlite3
     from routers import retrain_trigger as rt
     db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
-    db.execute('CREATE TABLE stocks(id INTEGER,symbol TEXT,market TEXT)')
-    db.executemany('INSERT INTO stocks VALUES(?,?,?)',[(i,str(i),'TWSE') for i in range(1,2790)])
-    db.execute("INSERT INTO stocks VALUES(9999,'FOREIGN','USA')")
+    db.execute('CREATE TABLE stocks(id INTEGER,symbol TEXT,market TEXT,listing_market TEXT)')
+    db.executemany('INSERT INTO stocks VALUES(?,?,?,NULL)',[(i,str(i),'TWSE') for i in range(1,2790)])
+    db.execute("INSERT INTO stocks VALUES(9999,'FOREIGN','USA',NULL)")
     class Client:
         def query(self,sql,params): return [dict(r) for r in db.execute(sql,params)]
     monkeypatch.setattr(rt,'CORE_D1_CLIENT',Client())

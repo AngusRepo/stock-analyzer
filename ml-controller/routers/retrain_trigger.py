@@ -8,6 +8,7 @@ then calls Modal retrain_single_stock for each stock.
 Unlike /batch-retrain (which needs caller to supply payloads),
 this endpoint builds everything server-side from D1.
 """
+from services.formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, LEGACY_SEMANTIC, semantic_for_profile, feature_count
 import os
 import time
 import json
@@ -67,12 +68,13 @@ def _prep_receipt_lineage_matches(
     receipt: dict[str, Any],
     *,
     expected_producer_source_sha: str,
+    expected_feature_semantic: str = LEGACY_SEMANTIC,
 ) -> bool:
     expected_source = str(expected_producer_source_sha or "").strip().lower()
     return (
         len(expected_source) == 40
         and all(char in "0123456789abcdef" for char in expected_source)
-        and receipt.get("feature_semantic_version") == ACTIVE8_FEATURE_SEMANTIC_VERSION
+        and receipt.get("feature_semantic_version") == expected_feature_semantic
         and receipt.get("feature_imputation_semantic") == ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION
         and receipt.get("producer_source_sha") == expected_source
     )
@@ -163,7 +165,8 @@ class UniversalRetrainTriggerRequest(BaseModel):
 
 
 def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
-                                expected_producer_source_sha: str | None = None) -> dict[str, Any] | None:
+                                expected_producer_source_sha: str | None = None,
+                                expected_feature_semantic: str = LEGACY_SEMANTIC) -> dict[str, Any] | None:
     # Default admission remains bound to the current runtime. Durable input
     # callbacks pass the producer from their checksum-validated immutable stage.
     expected_source = _runtime_source_sha() if expected_producer_source_sha is None else expected_producer_source_sha
@@ -176,7 +179,7 @@ def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
     actual_checksum = hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
     if (
         receipt.get("schema_version") != ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION
-        or not _prep_receipt_lineage_matches(receipt, expected_producer_source_sha=expected_source)
+        or not _prep_receipt_lineage_matches(receipt, expected_producer_source_sha=expected_source, expected_feature_semantic=expected_feature_semantic)
         or receipt.get("status") != "ready"
         or receipt.get("business_date") != run_date
         or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != prefix
@@ -186,6 +189,14 @@ def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
     checksums = receipt.get("output_checksums") or {}
     if not isinstance(checksums, dict) or not checksums:
         raise ValueError("prep_only_sealed_inventory_missing")
+    batch_count = receipt.get("batch_count")
+    feature_names_path = str(receipt.get("feature_names_path") or "")
+    if not isinstance(batch_count, int) or isinstance(batch_count, bool) or batch_count < 1:
+        raise ValueError("prep_only_sealed_batch_inventory_invalid")
+    expected_paths = {f"{prefix}/prep/batch_{i}.npz" for i in range(batch_count)}
+    expected_paths.add(f"{prefix}/prep/feature_names.json")
+    if set(checksums) != expected_paths or feature_names_path != f"{prefix}/prep/feature_names.json":
+        raise ValueError("prep_only_sealed_batch_inventory_invalid")
     for path, expected in checksums.items():
         artifact = bucket.blob(str(path))
         if not artifact.exists() or hashlib.sha256(artifact.download_as_bytes()).hexdigest() != expected:
@@ -369,6 +380,7 @@ def _verify_prebuilt_canonical_prep(
     expected_manifest_checksum: str,
     expected_target_semantic_version: str,
     expected_producer_source_sha: str,
+    expected_feature_semantic: str = LEGACY_SEMANTIC,
 ) -> dict[str, object]:
     import hashlib
 
@@ -401,7 +413,7 @@ def _verify_prebuilt_canonical_prep(
         "output_gcs_prefix": normalized_prefix,
         "target_semantic_version": expected_target_semantic_version,
         "roundtrip_cost_bps": 18.0,
-        "feature_semantic_version": ACTIVE8_FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": expected_feature_semantic,
         "feature_imputation_semantic": ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "producer_source_sha": producer_source_sha,
     }
@@ -432,6 +444,9 @@ def _verify_prebuilt_canonical_prep(
     if not sequence_prefix:
         raise ValueError("prebuilt_canonical_prep_sequence_prefix_missing")
 
+    if expected_feature_semantic == FEATURE131_SEMANTIC:
+        from services.training_feature_admission import require_feature_source_observations
+        require_feature_source_observations(bucket, manifest)
     source_receipt_checksum = ""
     sequence_manifest_checksum = ""
     if schema_version == ACTIVE8_ADJUSTED_PREP_SCHEMA_VERSION:
@@ -460,6 +475,7 @@ def _verify_prebuilt_canonical_prep(
             or not _prep_receipt_lineage_matches(
                 receipt,
                 expected_producer_source_sha=producer_source_sha,
+                expected_feature_semantic=expected_feature_semantic,
             )
             or receipt.get("status") != "ready"
             or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != source_prefix
@@ -517,7 +533,7 @@ def _verify_prebuilt_feature_pool(
     import hashlib
 
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-    full137 = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    full137 = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}
     normalized_path = str(path or "").strip()
     raw = bucket.blob(normalized_path).download_as_bytes()
     feature_pool = json.loads(raw.decode("utf-8").lstrip("\ufeff"))
@@ -529,7 +545,7 @@ def _verify_prebuilt_feature_pool(
         "cohort_id": expected_cohort_id,
         "source_manifest_checksum": expected_source_manifest_checksum,
         "target_semantic_version": expected_target_semantic_version,
-        "selection_method": "predeclared_full137" if full137 else "outer_fold_majority_vote",
+        "selection_method": ("predeclared_full131" if model_profile_schema_version in PROFILES131 else "predeclared_full137") if full137 else "outer_fold_majority_vote",
     }
     for key, value in required.items():
         if feature_pool.get(key) != value:
@@ -545,7 +561,7 @@ def _verify_prebuilt_feature_pool(
     if min_votes <= int(feature_pool.get("fold_count") or 0) // 2:
         raise ValueError("prebuilt_feature_pool_majority_threshold_invalid")
     selected = sorted({str(name) for name in (feature_pool.get("tree_active") or []) if str(name)})
-    if full137 and (len(selected) != 137 or min_votes != feature_pool["fold_count"] or
+    if full137 and (len(selected) != feature_count(semantic_for_profile(model_profile_schema_version)) or min_votes != feature_pool["fold_count"] or
                     any(feature_pool.get("feature_votes", {}).get(name) != min_votes for name in selected)):
         raise ValueError("prebuilt_full137_evidence_invalid")
     if len(selected) < 10 or selected != list(feature_pool.get("tree_active") or []):
@@ -619,8 +635,24 @@ def _snapshot_component_uris(snapshot: dict) -> dict[str, str]:
 
 def _training_stock_rows(req: UniversalRetrainTriggerRequest) -> list[dict]:
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-    full_pool = req.model_profile_schema_version in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA)
-    sql = "SELECT id, symbol, market FROM stocks WHERE market IN ('TW','TWO','TWSE','OTC') ORDER BY id"
+    full_pool = req.model_profile_schema_version in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131)
+    if req.prep_only:
+        from services.dataset_snapshots import latest_dataset_snapshot
+        from services.training_snapshot_integrity import verify_snapshot_manifest
+        from services.training_stock_roster import select_training_stock_rows
+        snapshot = latest_dataset_snapshot(kind="backtest_dataset", access_tier="compute", business_date=req.run_date)
+        if not snapshot or snapshot.get("manifest_errors"):
+            raise ValueError("training_roster_exact_snapshot_missing")
+        components = verify_snapshot_manifest(snapshot, business_date=req.run_date)
+        if "stocks" not in components:
+            raise ValueError("training_roster_snapshot_component_missing")
+        metadata = json.loads(snapshot["metadata_json"])
+        rows = select_training_stock_rows(
+            _read_gcs_parquet_rows(components["stocks"]["gcs_uri"], integrity_meta=components["stocks"]),
+            start_date=metadata["start_date"], end_date=metadata["end_date"])
+        return rows if full_pool else rows[:req.limit]
+    # listing_market owns the venue; legacy OTC also contains emerging ROTC.
+    sql = "SELECT id, symbol, COALESCE(listing_market,market) AS market FROM stocks WHERE COALESCE(listing_market,market) IN ('TW','TWO','TWSE','OTC') ORDER BY id"
     # The accepted v4 policies use the complete market inventory. Bounded batch
     # transport owns memory limits; a stock-ID cutoff must not change the pool.
     rows = CORE_D1_CLIENT.query(sql if full_pool else sql + " LIMIT ?", [] if full_pool else [req.limit])
@@ -628,7 +660,7 @@ def _training_stock_rows(req: UniversalRetrainTriggerRequest) -> list[dict]:
     return rows
 
 
-def _read_gcs_parquet_rows(gcs_uri: str) -> Iterator[dict]:
+def _read_gcs_parquet_rows(gcs_uri: str, *, integrity_meta: dict | None = None) -> Iterator[dict]:
     import polars as pl
     from google.cloud import storage
 
@@ -638,7 +670,12 @@ def _read_gcs_parquet_rows(gcs_uri: str) -> Iterator[dict]:
         storage.Client().bucket(bucket_name).blob(blob_name).download_to_filename(str(local_path))
         # Keep one columnar component resident; never expand a whole snapshot
         # into Python dictionaries before the consumer projects its columns.
-        yield from pl.read_parquet(local_path).iter_rows(named=True)
+        if integrity_meta is not None:
+            from services.training_snapshot_integrity import verify_component_file
+            frame = verify_component_file(local_path, integrity_meta)
+        else:
+            frame = pl.read_parquet(local_path)
+        yield from frame.iter_rows(named=True)
 
 
 def _group_rows_by_key(
@@ -881,6 +918,8 @@ def _load_training_maps_from_snapshot(
     symbols: list[str],
     prices_lookback: int,
     as_of_business_date: str | None = None,
+    verify_source: bool = False,
+    require_full_stock_roster: bool = False,
 ) -> tuple[
     dict[int, list[dict]],
     dict[int, list[dict]],
@@ -898,27 +937,48 @@ def _load_training_maps_from_snapshot(
     )
     if not snapshot or snapshot.get("manifest_errors"):
         return None
+    integrity_meta = None
+    if verify_source:
+        from services.training_snapshot_integrity import verify_snapshot_manifest
+        integrity_meta = verify_snapshot_manifest(snapshot, business_date=as_of_business_date)
+    def read_component(name):
+        uri=component_uris[name]
+        return (_read_gcs_parquet_rows(uri, integrity_meta=integrity_meta[name])
+                if integrity_meta is not None else _read_gcs_parquet_rows(uri))
     component_uris = _snapshot_component_uris(snapshot)
     required = {"prices", "indicators", "chips"}
     if not required.issubset(component_uris):
         return None
 
+    if verify_source:
+        from services.training_stock_roster import select_training_stock_rows
+        if "stocks" not in integrity_meta:
+            raise ValueError("training_roster_snapshot_component_missing")
+        metadata = json.loads(snapshot["metadata_json"])
+        roster = select_training_stock_rows(read_component("stocks"),
+            start_date=metadata["start_date"], end_date=metadata["end_date"])
+        identities = {row["id"]: row["symbol"] for row in roster}
+        if (len(stock_ids) != len(symbols) or len(set(stock_ids)) != len(stock_ids)
+                or len(set(symbols)) != len(symbols)
+                or (require_full_stock_roster and set(stock_ids) != set(identities))
+                or any(identities.get(sid) != symbol for sid, symbol in zip(stock_ids, symbols))):
+            raise ValueError("training_roster_snapshot_identity_changed")
     stock_id_set = set(stock_ids)
     symbol_set = set(symbols)
-    prices_rows = _read_gcs_parquet_rows(component_uris["prices"])
-    indicators_rows = _read_gcs_parquet_rows(component_uris["indicators"])
-    chips_rows = _read_gcs_parquet_rows(component_uris["chips"])
-    sentiment_rows = _read_gcs_parquet_rows(component_uris["sentiment"]) if component_uris.get("sentiment") else []
+    prices_rows = read_component("prices")
+    indicators_rows = read_component("indicators")
+    chips_rows = read_component("chips")
+    sentiment_rows = read_component("sentiment") if component_uris.get("sentiment") else []
     monthly_revenue_rows = (
-        _read_gcs_parquet_rows(component_uris["monthly_revenue"]) if component_uris.get("monthly_revenue") else []
+        read_component("monthly_revenue") if component_uris.get("monthly_revenue") else []
     )
     canonical_fundamental_rows = (
-        _read_gcs_parquet_rows(component_uris["canonical_fundamentals"])
+        read_component("canonical_fundamentals")
         if component_uris.get("canonical_fundamentals") else []
     )
-    margin_rows = _read_gcs_parquet_rows(component_uris["margin_data"]) if component_uris.get("margin_data") else []
+    margin_rows = read_component("margin_data") if component_uris.get("margin_data") else []
     shareholding_rows = (
-        _read_gcs_parquet_rows(component_uris["shareholding"]) if component_uris.get("shareholding") else []
+        read_component("shareholding") if component_uris.get("shareholding") else []
     )
 
     prices_map = _group_rows_by_key(
@@ -977,7 +1037,7 @@ def _load_training_maps_from_snapshot(
         },
     )
     if component_uris.get("broker_flows"):
-        broker_rows = _read_gcs_parquet_rows(component_uris["broker_flows"])
+        broker_rows = read_component("broker_flows")
         by_symbol_date = {symbol: {row["date"]: row for row in rows} for symbol, rows in chips_map.items()}
         seen = set()
         for row in broker_rows:
@@ -1011,6 +1071,8 @@ def _load_training_maps_from_snapshot(
         "gcs_uri": snapshot.get("gcs_uri"),
         "producer_run_id": snapshot.get("producer_run_id"),
         "components": sorted(component_uris),
+        "source_integrity": {"status": "verified" if integrity_meta is not None else "not_requested",
+            "component_meta": integrity_meta, "snapshot_checksum": snapshot.get("checksum")},
     }
 
 
@@ -1169,7 +1231,11 @@ async def _dispatch_prebuilt_oof_full_fit(
         expected_manifest_checksum=str(req.prebuilt_prep_manifest_checksum or ""),
         expected_target_semantic_version=str(req.prebuilt_prep_target_semantic_version or ""),
         expected_producer_source_sha=str(req.prebuilt_prep_producer_source_sha or ""),
+        expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version),
     )
+    from services.training_source_preflight import require_single_adjustment_capture
+    require_single_adjustment_capture(bucket, prep_gcs_prefix=verified["gcs_prefix"],
+                                      sequence_gcs_prefix=verified["sequence_gcs_prefix"])
     sequence_verified = _verify_prebuilt_sequence_prep(
         bucket=bucket,
         prefix=str(req.sequence_gcs_prefix or ""),
@@ -1333,6 +1399,10 @@ async def trigger_universal_retrain(
             "error": "prep_only_immutable_output_prefix_required",
             "required_prefix": "universal/oof_forward_prep_v2/<run-id>",
         }
+    if req.prep_only and not req.sequence_gcs_prefix:
+        return {"status":"rejected", "error":"prep_only_single_price_capture_required"}
+    if not req.prep_only and not req.prebuilt_prep_gcs_prefix:
+        return {"status":"rejected", "error":"training_requires_verified_canonical_prep"}
     prep_bucket = None
     if req.prep_only:
         from google.cloud import storage as _prep_storage
@@ -1341,7 +1411,7 @@ async def trigger_universal_retrain(
             os.environ.get("GCS_BUCKET_NAME", "stockvision-models")
         )
         try:
-            sealed = _verified_prep_only_receipt(prep_bucket, prep_output_gcs_prefix, run_date)
+            sealed = _verified_prep_only_receipt(prep_bucket, prep_output_gcs_prefix, run_date, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version))
         except (ValueError, json.JSONDecodeError) as exc:
             return {
                 "status": "rejected",
@@ -1349,6 +1419,18 @@ async def trigger_universal_retrain(
                 "output_gcs_prefix": prep_output_gcs_prefix,
             }
         if sealed is not None:
+            if not sealed.get("global_capture"):
+                return {"status":"rejected", "error":"prep_only_global_capture_required"}
+            if not sealed.get("long_source_capture"):
+                return {"status":"rejected", "error":"prep_only_long_source_capture_required"}
+            if not sealed.get("auxiliary_capture"):
+                return {"status":"rejected", "error":"prep_only_auxiliary_capture_required"}
+            if not sealed.get("market_cap_capture"):
+                return {"status":"rejected", "error":"prep_only_market_cap_capture_required"}
+            from services.training_source_preflight import _sealed_manifest
+            sequence = _sealed_manifest(prep_bucket, req.sequence_gcs_prefix, "sequence_manifest.json", compact=True)
+            if (sealed.get("price_capture") or {}).get("sequence_manifest_checksum") != sequence["manifest_checksum"]:
+                return {"status":"rejected", "error":"prep_only_price_capture_binding_mismatch"}
             return {
                 **sealed,
                 "status": "idempotent_ready",
@@ -1432,7 +1514,15 @@ async def trigger_universal_retrain(
                 "run_id": run_id,
                 "lock_key": lock_key,
             }
-    stock_rows = _training_stock_rows(req)
+    try:
+        stock_rows = _training_stock_rows(req)
+    except Exception as exc:
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+        _upsert_retrain_status(run_id, status="prep_failed",
+            summary={"run_date": run_date, "reason": "training_roster_validation_failed",
+                     "error_type": type(exc).__name__},
+            downstream_notes="aborted_before_data_load")
+        return {"status": "rejected", "error": "training_roster_validation_failed", "run_id": run_id}
     if not stock_rows:
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
@@ -1490,13 +1580,15 @@ async def trigger_universal_retrain(
             symbols=symbols,
             prices_lookback=prices_lookback,
             as_of_business_date=run_date,
+            verify_source=req.prep_only,
+            require_full_stock_roster=req.model_profile_schema_version in (*PROFILES131, "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"),
         )
     except Exception as snapshot_err:  # noqa: BLE001 - D1 fallback keeps retrain available.
         logger.warning("[retrain/universal] GCS snapshot load failed, falling back to D1: %s", snapshot_err)
         snapshot_maps = None
 
     snapshot_rejection = _exact_dataset_snapshot_rejection(
-        require_exact=req.require_exact_dataset_snapshot,
+        require_exact=req.require_exact_dataset_snapshot or req.prep_only,
         run_date=run_date,
         snapshot_maps=snapshot_maps,
     )
@@ -1528,6 +1620,45 @@ async def trigger_universal_retrain(
             f"prices={len(prices_map)} indicators={len(indicators_map)} chips={len(chips_map)} "
             f"sentiment={len(sentiment_map)} per_stock_ts={len(per_stock_ts_map)}"
         )
+
+    price_capture = None
+    institutional_capture = None
+    market_cap_capture = None
+    auxiliary_capture = None
+    long_source_capture = None
+    global_capture = None
+    verified_market_history = None
+    if req.prep_only:
+        from services.training_price_capture import load_training_price_capture, load_training_institutional_capture, load_training_market_cap_capture
+        try:
+            prices_map, indicators_map, price_capture = load_training_price_capture(
+                prep_bucket, sequence_gcs_prefix=req.sequence_gcs_prefix, stock_rows=stock_rows,
+                prices_lookback=prices_lookback, run_date=run_date,
+                prior_prices=prices_map, prior_indicators=indicators_map)
+            chips_map, institutional_capture = load_training_institutional_capture(
+                prep_bucket, price_capture=price_capture, run_date=run_date,
+                stock_rows=stock_rows, prices_map=prices_map, prior_chips=chips_map)
+            per_stock_ts_map, market_cap_capture = load_training_market_cap_capture(
+                prep_bucket, price_capture=price_capture, stock_rows=stock_rows,
+                prices_map=prices_map, prior_ts=per_stock_ts_map)
+            from services.training_auxiliary_capture import load_training_auxiliary_capture
+            per_stock_ts_map, chips_map, auxiliary_capture = load_training_auxiliary_capture(
+                prep_bucket, price_capture=price_capture, stock_rows=stock_rows, prices_map=prices_map,
+                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date)
+            from services.training_long_sources import bind_long_sources
+            per_stock_ts_map, chips_map, long_source_capture = bind_long_sources(
+                prep_bucket, price_capture=price_capture, stock_rows=stock_rows, prices_map=prices_map,
+                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date)
+            from services.training_global_capture import read_market_history
+            verified_market_history, global_capture = read_market_history(prep_bucket,price_capture=price_capture,
+                us_component=dataset_snapshot_info["source_integrity"]["component_meta"]["us_market_signals"])
+        except Exception as exc:
+            retrain_lock.release(lock_key, expected_metadata={"run_id":run_id})
+            _upsert_retrain_status(run_id, status="prep_failed",
+                summary={"reason":"root_price_capture_rejected", "error":str(exc)},
+                downstream_notes="aborted_before_batch_prep")
+            return {"status":"rejected", "error":"root_price_capture_rejected", "detail":str(exc), "run_id":run_id}
+        dataset_snapshot_info = {**(dataset_snapshot_info or {}), "price_capture":price_capture, "institutional_capture":institutional_capture, "market_cap_capture":market_cap_capture, "auxiliary_capture":auxiliary_capture, "long_source_capture":long_source_capture, "global_capture":global_capture}
 
     snapshot_components = set((dataset_snapshot_info or {}).get("components") or [])
     for ci in range(0, len(stock_ids), D1_CHUNK):
@@ -1810,7 +1941,7 @@ async def trigger_universal_retrain(
     prep_results: list[dict] = []
 
     # Shared data: pass once per batch, not per stock (saves ~2.5GB memory)
-    shared_history = asdict(market_env).get("history", {})
+    shared_history = verified_market_history if verified_market_history is not None else asdict(market_env).get("history", {})
     # per_stock_ts: convert int keys to str for JSON serialization
     ps_ts_str = {str(k): v for k, v in per_stock_ts_map.items()} if per_stock_ts_map else {}
 
@@ -1835,6 +1966,7 @@ async def trigger_universal_retrain(
                 "per_stock_ts_map": batch_ps_ts,
                 "gcs_prefix": prep_output_gcs_prefix if req.prep_only else "universal",
                 "retain_unlabeled_features": req.prep_only,
+                "feature_semantic_version": semantic_for_profile(req.model_profile_schema_version),
             }
             if active_features:
                 prep_payload["active_features"] = active_features
@@ -1850,6 +1982,9 @@ async def trigger_universal_retrain(
             batch_index=idx,
         )
 
+    source_bindings={"price_capture":price_capture,"institutional_capture":institutional_capture,
+        "market_cap_capture":market_cap_capture,"auxiliary_capture":auxiliary_capture,
+        "long_source_capture":long_source_capture,"global_capture":global_capture}
     from services.pipeline_input_events import current_context, defer_prep
     if req.prep_only and current_context():
         event_payloads = []
@@ -1858,14 +1993,15 @@ async def trigger_universal_retrain(
             payload = {'payloads': batch_payloads, 'barrier_params': barrier_params,
                        'batch_index': idx, 'shared_market_history': shared_history,
                        'per_stock_ts_map': {key: value for key, value in ps_ts_str.items() if key in stock_ids},
-                       'gcs_prefix': prep_output_gcs_prefix, 'retain_unlabeled_features': True}
+                       'gcs_prefix': prep_output_gcs_prefix, 'retain_unlabeled_features': True,
+                       'feature_semantic_version': semantic_for_profile(req.model_profile_schema_version)}
             if active_features:
                 payload['active_features'] = active_features
             event_payloads.append(payload)
         defer_prep(payloads=event_payloads, lock_key=lock_key, lock_run_id=run_id,
-                   receipt_template={'schema_version': ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
+                   receipt_template={**source_bindings, 'schema_version': ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
                      'run_id': run_id, 'business_date': run_date, 'output_gcs_prefix': prep_output_gcs_prefix,
-                     'feature_semantic_version': ACTIVE8_FEATURE_SEMANTIC_VERSION,
+                     'feature_semantic_version': semantic_for_profile(req.model_profile_schema_version),
                      'feature_imputation_semantic': ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
                      'producer_source_sha': _runtime_source_sha()})
 
@@ -1957,7 +2093,7 @@ async def trigger_universal_retrain(
             }
         prep_checksums = {
             path: hashlib.sha256(prep_bucket.blob(path).download_as_bytes()).hexdigest()
-            for path in expected_paths
+            for path in [feature_names_path, *expected_paths]
         }
         receipt = {
             "schema_version": ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
@@ -1970,8 +2106,9 @@ async def trigger_universal_retrain(
             "batch_rows": [int(row.get("rows") or 0) for row in prep_results],
             "output_rows": total_rows,
             "output_checksums": prep_checksums,
+            **source_bindings,
             "feature_names_path": feature_names_path,
-            "feature_semantic_version": ACTIVE8_FEATURE_SEMANTIC_VERSION,
+            "feature_semantic_version": semantic_for_profile(req.model_profile_schema_version),
             "feature_imputation_semantic": ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION,
             "producer_source_sha": _runtime_source_sha(),
             "training_dispatched": False,

@@ -1,6 +1,7 @@
 """NeuralForecast-backed sequence artifact runtime for PatchTST/iTransformer."""
 
 from __future__ import annotations
+from .formal_feature_contract import payload_semantic
 
 from importlib.metadata import version as package_version
 
@@ -713,6 +714,7 @@ def _train_dense_purged_oof(
         from .oof_lineage import save_oof_prediction_artifact
 
         oof_artifact = save_oof_prediction_artifact(
+            feature_semantic_version=payload_semantic(payload),
             bucket=bucket,
             gcs_prefix=gcs_prefix,
             cohort_id=str(payload.get("cohort_id") or ""),
@@ -1451,6 +1453,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         from .oof_lineage import save_oof_prediction_artifact
 
         oof_artifact = save_oof_prediction_artifact(
+            feature_semantic_version=payload_semantic(payload),
             bucket=bucket,
             gcs_prefix=gcs_prefix,
             cohort_id=str(payload.get("cohort_id") or ""),

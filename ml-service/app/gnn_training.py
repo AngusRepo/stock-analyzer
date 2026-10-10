@@ -7,6 +7,7 @@ after the artifact has been written to GCS.
 """
 
 from __future__ import annotations
+from .formal_feature_contract import payload_semantic, FEATURE131_SEMANTIC, FEATURES131
 
 import hashlib
 import io
@@ -388,6 +389,9 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         flush=True,
     )
     feature_names = _load_feature_names(bucket, gcs_prefix=gcs_prefix, n_features=x_raw.shape[1])
+    feature_semantic = payload_semantic(payload)
+    if feature_semantic == FEATURE131_SEMANTIC and list(feature_names) != list(FEATURES131):
+        raise ValueError("formal131_training_inventory_mismatch")
     finite_mask = np.isfinite(y) & np.isfinite(target_returns)
     x_raw = x_raw[finite_mask]
     y = np.clip(y[finite_mask], 0.0, 1.0).astype(np.float32)
@@ -619,7 +623,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_type": "graphsage",
         "family": "cross_stock_graph",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
-        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": feature_semantic,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
         "trained_at": trained_at,
@@ -692,6 +696,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         from .oof_lineage import save_oof_prediction_artifact
 
         oof_artifact = save_oof_prediction_artifact(
+            feature_semantic_version=feature_semantic,
             bucket=bucket,
             gcs_prefix=gcs_prefix,
             cohort_id=str(payload.get("cohort_id") or ""),

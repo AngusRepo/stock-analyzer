@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from app.prep_input_validation import validate_tabular_batch, validate_prep_keys, validate_feature_names
 from app.target_rank_scope import recompute_global_cross_sectional_rank
 
 
@@ -188,12 +189,11 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     all_symbols: list[np.ndarray] = []
     all_markets: list[np.ndarray] = []
     all_label_known_dates: list[np.ndarray] = []
-    for _, raw in download_existing_blobs(bucket, keys, max_workers=4):
+    for key, raw in download_existing_blobs(bucket, keys, max_workers=4):
         if raw is None:
-            continue
+            raise ValueError(f"prep_batch_missing:{key}")
         npz = _load_npz_bytes(raw)
-        if "X" not in npz.files or "y" not in npz.files:
-            continue
+        validate_tabular_batch(npz, key=key)
         all_X.append(np.asarray(npz["X"], dtype=np.float32))
         all_y.append(np.asarray(npz["y"], dtype=np.float32).reshape(-1))
         all_target_returns.append(np.asarray(npz["target_returns"] if "target_returns" in npz.files else npz["y"], dtype=np.float32).reshape(-1))
@@ -202,6 +202,8 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
         all_symbols.append(np.asarray(npz["symbols"] if "symbols" in npz.files else [""] * len(all_y[-1]), dtype=object))
         all_markets.append(np.asarray(npz["markets"] if "markets" in npz.files else ["TW"] * len(all_y[-1]), dtype=object))
         all_label_known_dates.append(np.asarray(npz["label_known_dates"] if "label_known_dates" in npz.files else [""] * len(all_y[-1]), dtype=object))
+    if len(all_X) != batch_count:
+        raise ValueError("prep_batch_inventory_incomplete")
     if not all_X:
         raise RuntimeError(f"no tabular prep batches found under {gcs_prefix}/prep")
 
@@ -222,7 +224,9 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
 
         feature_names = [str(v) for v in json.loads(feature_blob.download_as_text())]
     else:
-        feature_names = [f"f{i}" for i in range(X.shape[1])]
+        raise ValueError("prep_feature_names_missing")
+    validate_feature_names(feature_names, X.shape[1])
+    validate_prep_keys(dates, symbols, markets)
     order = np.argsort(dates.astype(str))
     return TabularBenchmarkDataset(
         X=X[order],
@@ -263,9 +267,11 @@ def load_sequence_dataset(payload: dict[str, Any]) -> SequenceBenchmarkDataset:
     from app.gcs_batch_io import download_existing_blobs
 
     loaded: list[dict[str, Any]] = []
+    seen_batches = 0
     for key, raw in download_existing_blobs(bucket, keys, max_workers=4):
         if raw is None:
-            continue
+            raise ValueError(f"sequence_batch_missing:{key}")
+        seen_batches += 1
         npz = _load_npz_bytes(raw)
         if "sequence_records" in npz.files:
             for row in npz["sequence_records"].tolist():
@@ -276,6 +282,8 @@ def load_sequence_dataset(payload: dict[str, Any]) -> SequenceBenchmarkDataset:
             for idx, close in enumerate(npz["series_close"].tolist()):
                 if close:
                     loaded.append({"symbol": f"legacy_{key}_{idx}", "close": close, "dates": []})
+    if seen_batches != batch_count:
+        raise ValueError("sequence_batch_inventory_incomplete")
     if not loaded:
         raise RuntimeError(f"no sequence prep batches found under {gcs_prefix}/prep")
     return SequenceBenchmarkDataset(records=loaded, source=f"gs://*/{gcs_prefix}/prep/*.npz")

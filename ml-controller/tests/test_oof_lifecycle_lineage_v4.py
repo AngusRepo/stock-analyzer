@@ -110,7 +110,7 @@ def test_v4_manifest_requires_per_fold_immutable_input_lineage():
 def test_lifecycle_uses_latest_prep_as_maturity_owner():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text()
 
-    latest = source.index("_latest_canonical_prep_prefix(bucket) or")
+    latest = source.index("_latest_canonical_prep_prefix(bucket, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or")
     calendar = source.index("dates, calendar_evidence = _oof_lifecycle_calendar(")
     assert latest < calendar
     assert 'prep_gcs_prefix = "" if pinned_prep else' in source

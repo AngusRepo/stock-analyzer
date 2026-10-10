@@ -99,6 +99,7 @@ remote = true
 
 [vars]
 ENVIRONMENT = "production"
+ACTIVE8_FEATURE_SEMANTIC_VERSION = "formal131-without-unverified-daily-owners-v1"
 MULTI_D1_ACTIVE_DOMAINS = "learning,ops,core,market,execution,paper,research"
 MULTI_D1_STRICT = "true"
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"

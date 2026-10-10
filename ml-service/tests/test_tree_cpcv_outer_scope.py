@@ -1,5 +1,6 @@
 """Nested tree diagnostics must remain inside the purged outer training window."""
 import io
+import json
 import joblib
 import numpy as np
 import pytest
@@ -24,7 +25,7 @@ def panel():
 def test_real_tree_cpcv_scope_and_unchanged_saved_predictions(monkeypatch, outer_window):
     data=panel();raw=io.BytesIO()
     np.savez(raw,X=data.X,y=data.y,target_returns=data.target_returns,dates=data.dates,
-        symbols=data.symbols,markets=data.markets,label_known_dates=data.label_known_dates)
+        symbols=data.symbols,markets=data.markets,label_known_dates=data.label_known_dates, missingness_rates=np.zeros(len(data.feature_names)))
     class Bucket:
         def __init__(self):self.values={}
         def blob(self,name):
@@ -37,6 +38,7 @@ def test_real_tree_cpcv_scope_and_unchanged_saved_predictions(monkeypatch, outer
                 def upload_from_file(self,stream,**kw):owner.values[name]=stream.read()
             return Blob()
     bucket=Bucket()
+    bucket.values["universal/prep/feature_names.json"]=json.dumps(data.feature_names).encode()
     monkeypatch.setattr(ut,'_get_bucket',lambda:bucket)
     monkeypatch.setattr(ut,'download_existing_blobs',lambda *a,**k:[('fixture/prep/batch_0.npz',raw.getvalue())])
     monkeypatch.setattr(ut,'collect_prep_lineage',lambda *a,**k:{})

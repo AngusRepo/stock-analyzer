@@ -177,7 +177,7 @@ async function runBehaviorTests(): Promise<void> {
     failD1: true,
     kvValues: {
       'market:punished_stocks': ['1111'],
-      'market:attention_stocks': ['2222'],
+      'market:attention_stocks': ['2222', '009801', '00679B', '2887Z1', '07637U', '2026-10-08', 'https://example.test/2330', '1234567'],
       'market:tpex_punished_stocks': [{ symbol: '3333' }],
       'market:tpex_attention_stocks': [{ code: '4444' }],
       'market:delisting_risk': ['5555'],
@@ -190,9 +190,12 @@ async function runBehaviorTests(): Promise<void> {
   for (const symbol of ['1111', '3333', '5555']) {
     assert(liveBuckets.hardBlockedSymbols.has(symbol), `live D1 failure must hard-block KV safety symbol ${symbol}`)
   }
-  for (const symbol of ['2222', '4444']) {
+  for (const symbol of ['2222', '4444', '009801', '00679B', '2887Z1', '07637U']) {
     assert(liveBuckets.riskEvidenceSymbols.has(symbol), `live attention/notice ${symbol} must remain risk evidence`)
     assert(!liveBuckets.hardBlockedSymbols.has(symbol), `live attention/notice ${symbol} must remain soft`)
+  }
+  for (const symbol of ['2026', '2330', '9801', '1234567']) {
+    assert(!liveBuckets.riskEvidenceSymbols.has(symbol), `explicit owner parser must not fabricate ${symbol}`)
   }
   assert(
     liveBuckets.evidenceStatus.completeness === 'DEGRADED_KV_FALLBACK' && !liveBuckets.evidenceStatus.promotionEligible,

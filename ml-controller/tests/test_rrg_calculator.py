@@ -239,3 +239,46 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n{passed} passed, {failed} failed (of {len(tests)})")
     sys.exit(0 if failed == 0 else 1)
+
+
+def test_rotation_preserves_zero_prior_momentum_and_acceleration():
+    point = RrgPoint("zero", 102.0, 2.0, "Leading", 3, 0.02)
+    history = [
+        RrgHistoryPoint("2026-10-01", 100.0, 0.0, "Leading"),
+        RrgHistoryPoint("2026-10-02", 101.0, 1.0, "Leading"),
+        RrgHistoryPoint("2026-10-05", 102.0, 0.0, "Leading"),
+    ]
+    actual = build_rotation_model(point, history, as_of_date="2026-10-06")
+    assert actual.rotation_velocity == 2.0
+    assert actual.rotation_acceleration == 0.585786
+    assert actual.rotation_score == 1.0
+
+
+def test_rotation_preserves_zero_second_prior_momentum():
+    actual = build_rotation_model(
+        RrgPoint("zero", 102.0, 3.0, "Leading", 3, 0.02),
+        [RrgHistoryPoint("2026-10-02", 100.0, 0.0, "Leading"),
+         RrgHistoryPoint("2026-10-05", 101.0, 2.0, "Leading")],
+        as_of_date="2026-10-06")
+    assert actual.rotation_velocity == 1.414214
+    assert actual.rotation_acceleration == -0.821854
+
+
+def test_rotation_preserves_zero_rs_in_vector_and_score():
+    actual = build_rotation_model(
+        RrgPoint("zero", 0.0, -1.0, "Lagging", 3, -1.0),
+        [RrgHistoryPoint("2026-10-05", 0.0, 0.0, "Improving")],
+        as_of_date="2026-10-06")
+    assert actual.rotation_velocity == 1.0
+    assert actual.rotation_score == -1.0
+
+
+def test_rotation_excludes_missing_prior_but_keeps_zero_current():
+    actual = build_rotation_model(
+        RrgPoint("zero", 101.0, 0.0, "Leading", 3, 0.01),
+        [RrgHistoryPoint("2026-10-02", 100.0, None, "Leading"),
+         RrgHistoryPoint("2026-10-05", 100.0, -1.0, "Leading")],
+        as_of_date="2026-10-06")
+    assert actual.rotation_window == 2
+    assert actual.rotation_velocity == 1.414214
+    assert actual.rotation_acceleration == 1.414214

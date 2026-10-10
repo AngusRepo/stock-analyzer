@@ -204,7 +204,7 @@ def publication_configuration(configuration, *, signal_date):
 
 
 def capture_strategy_context(*, selection, recommendation_context, signal_date, query, writer,
-                             formal_risk_context=None):
+                             formal_risk_context=None, capture_source=None):
     """Freeze canonical risk for today's pool PLUS each private account's holdings."""
     from services.l4_distribution_context import worker_request
     from services.paired_nav_native_holdings import capture_native_holdings
@@ -242,7 +242,8 @@ def capture_strategy_context(*, selection, recommendation_context, signal_date, 
         replay_allocator_return_history(formal_risk_context, payloads=payloads, signal_date=signal_date)
         risk = formal_risk_context
     else:
-        canonical=load_canonical_risk_payloads(payloads=payloads,held_payloads=held,signal_date=signal_date,lookback=lookback)
+        canonical=load_canonical_risk_payloads(payloads=payloads,held_payloads=held,signal_date=signal_date,lookback=lookback,
+            capture_source=capture_source)
         risk=capture_allocator_return_history(payloads=payloads,signal_date=signal_date,
             held_payloads=held,canonical_risk_payloads=canonical)
     return {'strategy_bundle_account':account,'strategy_bundle_native_holdings':holdings,

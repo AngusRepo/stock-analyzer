@@ -23,8 +23,9 @@ def _frozen_loaders(monkeypatch):
                       'volume': 2_000_000} for d in range(1, 7)]
               for i, final in enumerate([110, 90, 130])}
 
-    def load_prices(ids, *, as_of_date):
+    def load_prices(ids, *, as_of_date, stock_symbols):
         assert as_of_date == '2026-09-06'
+        assert set(ids) <= set(stock_symbols)
         return {sid: deepcopy(prices[sid]) for sid in ids}
 
     def tags(sql, params):
@@ -190,6 +191,8 @@ def test_corrupt_or_incomplete_frozen_source_never_falls_back_to_live_or_zero(mo
 
 
 def test_actual_daily_node_and_compressed_state_roundtrip_reuse_observed_sources(monkeypatch):
+    from daily_capture_test_dependency import stub_daily_capture_dependency
+    stub_daily_capture_dependency(monkeypatch)
     from graphs import daily_pipeline_v2 as graph
     from google.cloud import storage
     stocks = _frozen_loaders(monkeypatch)

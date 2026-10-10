@@ -115,7 +115,7 @@ def test_batch_predict_reads_only_npz_shards(monkeypatch, names_in_inventory):
     )
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
     monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: None)
-    monkeypatch.setattr(timexer_inference, 'metadata_contract', lambda _: {'variant': 'price'})
+    monkeypatch.setattr(timexer_inference, 'metadata_contract', lambda _: {'variant': 'price', 'feature_history_schema': 'formal137-pit-asof-source-quality-v3'})
     monkeypatch.setattr(timexer_inference, 'load_checkpoint', lambda *a, **kw: (object(), {}))
     monkeypatch.setattr(timexer_inference, 'predict_asof', lambda *a, **kw: [
         {'symbol': '2330', 'raw_score': 0.1, 'available': True}

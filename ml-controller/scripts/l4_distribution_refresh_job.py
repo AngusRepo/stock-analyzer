@@ -70,6 +70,8 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
         raise ValueError('l4_refresh_bucket_missing')
     source=f"walk_forward/oof_cohorts/{parent['cohort_id']}/manifest.json"
     manifest,_=load_verified_oof_manifest(source,bucket=bucket,require_formal_lineage=True)
+    from services.training_source_preflight import require_oof_training_sources
+    require_oof_training_sources(bucket, manifest)
     if completed_run_key is not None:
         if strategy_role != 'B' or cadence != 'monthly':
             raise ValueError('completed_run_reuse_requires_monthly_B')

@@ -334,7 +334,8 @@ def _complete_prep(store, stage, path):
     from routers.retrain_trigger import _verified_prep_only_receipt, _upsert_retrain_status
     from services import retrain_lock
     sealed = _verified_prep_only_receipt(store, prefix, template['business_date'],
-                                         expected_producer_source_sha=template.get('producer_source_sha', ''))
+                                         expected_producer_source_sha=template.get('producer_source_sha', ''),
+                                         expected_feature_semantic=template.get('feature_semantic_version', ''))
     if not sealed or sealed['output_checksums'] != checksums:
         raise ValueError('pipeline_input_prep_seal_mismatch')
     retrain_lock.release(spec['lock_key'], expected_metadata={'run_id': spec['lock_run_id']})

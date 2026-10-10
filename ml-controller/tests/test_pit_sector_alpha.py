@@ -325,3 +325,33 @@ def test_sector_flow_lineage_schema_is_consistent_and_does_not_relabel_legacy_ro
         assert "updated_at" in schema
         assert "pit_lineage_version" in schema
         assert "idx_sector_flow_pit_lineage" in schema
+
+
+@pytest.mark.parametrize("missing", [None, float("nan"), float("inf")])
+@pytest.mark.parametrize("all_layers", [False, True])
+def test_unknown_matched_cash_flow_is_not_an_available_neutral_rank(missing, all_layers):
+    def query(sql, params):
+        rows = _query(sql, params)
+        if "SELECT date, sector, classification" in sql:
+            return [{**row, "total_net": missing} if all_layers or row["sector"] == "AI" else row for row in rows]
+        return rows
+    expert = load_pit_sector_alpha_experts(query, signal_date="2026-07-24", symbols=["2330"],
+                                          knowledge_cutoff=DECISION_CUTOFF)["2330"]
+    assert expert["status"] == "unavailable"
+    assert expert["features"]["sector_alpha_available"] == 0
+    assert expert["blockers"] == ["matched_sector_cash_flow_missing"]
+    values = sector_alpha_feature_values({"prediction_date": "2026-07-24",
+        "alpha_context": {"pit_sector_alpha_expert": expert}})
+    assert values["sector_alpha_available"] == 0
+
+@pytest.mark.parametrize("value", [0.0, -1.0, 1.0])
+def test_observed_cash_flow_including_zero_remains_available(value):
+    def query(sql, params):
+        rows = _query(sql, params)
+        if "SELECT date, sector, classification" in sql:
+            return [{**row, "total_net": value} for row in rows]
+        return rows
+    expert = load_pit_sector_alpha_experts(query, signal_date="2026-07-24", symbols=["2330"],
+                                          knowledge_cutoff=DECISION_CUTOFF)["2330"]
+    assert expert["status"] == "loaded" and expert["features"]["sector_alpha_available"] == 1
+    assert expert["features"]["sector_flow_consensus"] == 0  # genuine observed tied rank

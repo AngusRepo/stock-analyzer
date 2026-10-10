@@ -1,6 +1,7 @@
 """Canonical fail-closed contract for the eight-model canonical OOF/full-fit release train."""
 
 from __future__ import annotations
+from .formal_feature_contract import PROFILES131
 
 import hashlib
 import json
@@ -63,6 +64,11 @@ def _model_spec(name: str, schema: str) -> dict[str, str]:
     spec = dict(_MODEL_SPECS[name])
     if schema in {"active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"} and name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM"}:
         spec["feature_schema"] = "formal137_full_tabular_v1"
+    if schema in PROFILES131:
+        if name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
+            spec["feature_schema"] = "formal131_full_tabular_v1"
+        elif name == "TimeXer":
+            spec["feature_schema"] = "timexer_causal_price_or_exo131_v1"
     return spec
 
 

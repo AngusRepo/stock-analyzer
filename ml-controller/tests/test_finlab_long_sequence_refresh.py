@@ -45,7 +45,6 @@ def test_successful_daily_3y_callback_spawns_long_sequence_refresh(monkeypatch):
     assert captured["fire_and_forget"] is True
     assert captured["payload"] == {
         "source_gcs_prefixes": [
-            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-5y-base",
             "gs://stockvision-models/finlab/v4/backfill/finlab-v4-3y-20260611-1781186403489",
         ],
         "output_gcs_prefix": (
@@ -57,6 +56,8 @@ def test_successful_daily_3y_callback_spawns_long_sequence_refresh(monkeypatch):
         "trigger_source": "finlab_backfill_controller_callback",
         "trigger_run_id": "finlab-v4-3y-20260611-1781186403489",
         "run_date": "2026-06-11",
+        "end_date": "2026-06-11",
+        "require_single_adjustment_capture": True,
     }
 
 
@@ -95,7 +96,6 @@ def test_successful_daily_incremental_callback_spawns_long_sequence_refresh(monk
     assert captured["fire_and_forget"] is True
     assert captured["payload"] == {
         "source_gcs_prefixes": [
-            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-5y-base",
             "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-178298215995",
         ],
         "output_gcs_prefix": (
@@ -107,6 +107,8 @@ def test_successful_daily_incremental_callback_spawns_long_sequence_refresh(monk
         "trigger_source": "finlab_backfill_controller_callback",
         "trigger_run_id": "finlab-v4-daily-20260702-178298215995",
         "run_date": "2026-07-02",
+        "end_date": "2026-07-02",
+        "require_single_adjustment_capture": True,
     }
 
 
@@ -135,7 +137,7 @@ def test_long_sequence_refresh_skips_non_tail_backfill(monkeypatch):
     }
 
 
-def test_daily_refresh_carries_forward_verified_sequence_sources(monkeypatch):
+def test_daily_refresh_does_not_stitch_previous_vintages(monkeypatch):
     captured: dict = {}
 
     async def fake_build(payload: dict, fire_and_forget: bool = False) -> dict:
@@ -159,10 +161,9 @@ def test_daily_refresh_carries_forward_verified_sequence_sources(monkeypatch):
     }))
 
     assert captured["payload"]["source_gcs_prefixes"] == [
-        *previous,
         "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260724-tail",
     ]
-    assert result["prior_sequence_source_count"] == 2
+    assert result["prior_sequence_source_count"] == 0
 
 def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
     async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
@@ -189,12 +190,14 @@ def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
         "reason": "tail_daily_price_adjusted_ohlc_label_contract_missing",
         "run_id": "finlab-v4-daily-20260702-chip-only",
         "required_uris": [
-            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_close.parquet",
-            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_open.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price_full_vintage/adj_close.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price_full_vintage/adj_open.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price_full_vintage/manifest.json",
         ],
         "missing_uris": [
-            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_close.parquet",
-            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_open.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price_full_vintage/adj_close.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price_full_vintage/adj_open.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price_full_vintage/manifest.json",
         ],
     }
 
@@ -225,8 +228,8 @@ def test_long_sequence_refresh_excludes_legacy_base_without_adjusted_ohlc(monkey
 
     tail_prefix = "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260715-tail"
     assert captured["payload"]["source_gcs_prefixes"] == [tail_prefix]
-    assert result["base_source_status"] == "excluded_missing_adjusted_ohlc"
-    assert len(result["base_missing_uris"]) == 2
+    assert result["base_source_status"] == "excluded_single_capture_required"
+    assert result["base_missing_uris"] == []
 
 
 def test_long_sequence_refresh_can_be_disabled(monkeypatch):

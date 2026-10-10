@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .formal_feature_contract import metadata_feature_valid, FEATURE131_SEMANTIC, LEGACY_SEMANTIC
 
 import copy
 import hashlib
@@ -373,7 +374,7 @@ def build_pool_from_frozen_manifest(
         if (
             serving_eligible
             and model_name in FORMAL_FEATURE_MODELS
-            and feature_semantic_version != FORMAL_FEATURE_SEMANTIC_VERSION
+            and feature_semantic_version not in (LEGACY_SEMANTIC, FEATURE131_SEMANTIC)
         ):
             raise ServingPoolResolutionError(
                 "frozen_serving_manifest_feature_semantic_mismatch:"
@@ -555,7 +556,7 @@ def build_pool_from_frozen_manifest(
         if (
             model_name in FORMAL_FEATURE_MODELS
             and str(schema.get("feature_semantic_version") or "")
-            != FORMAL_FEATURE_SEMANTIC_VERSION
+            not in (LEGACY_SEMANTIC, FEATURE131_SEMANTIC)
         ):
             raise ServingPoolResolutionError(
                 f"frozen_serving_manifest_active8_shadow_feature_semantic_invalid:{model_name}"
@@ -865,7 +866,7 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str, 
             return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
         if model_name in FORMAL_FEATURE_MODELS:
             feature_semantic = str(metadata.get("feature_semantic_version") or "").strip()
-            if feature_semantic != FORMAL_FEATURE_SEMANTIC_VERSION:
+            if not metadata_feature_valid(metadata):
                 return (
                     f"artifact_feature_semantic_{feature_semantic or 'missing'}_"
                     f"expected_{FORMAL_FEATURE_SEMANTIC_VERSION}"

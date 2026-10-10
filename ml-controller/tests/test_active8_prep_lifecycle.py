@@ -104,6 +104,9 @@ def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-
 
 def _market_query(_sql, params):
     assert params == ["2026-07-25", "2026-07-25"]
+    if "canonical_market_index_daily" in _sql:
+        return [{"trading_date": date, "symbol":"TWOII", "source":"tpex.openapi.tpex_index"}
+                for date in ("2026-07-23","2026-07-24")]
     return [
         {"trading_date": "2026-07-23", "price_rows": 1900},
         {"trading_date": "2026-07-24", "price_rows": 1950},
@@ -154,7 +157,7 @@ def test_daily_prep_accepts_canonical_prefixed_snapshot_checksum(monkeypatch):
     ))
 
     assert result["snapshot_checksum"] == "a" * 64
-    assert result["source_gcs_prefix"].endswith(f"-aaaaaaaaaaaa-{TEST_SOURCE_SHA[:12]}")
+    assert result["source_gcs_prefix"].endswith(f"-aaaaaaaaaaaa-{TEST_SOURCE_SHA[:12]}-{result["sequence_manifest_checksum"][:12]}")
 
 
 def test_daily_prep_rejects_sequence_behind_snapshot(monkeypatch):
@@ -296,6 +299,7 @@ def test_only_inference_prepares_its_missing_current_input_snapshot(monkeypatch,
 def test_inference_rechecks_produced_snapshot_before_prep_without_training(monkeypatch, behind):
     from services import active8_snapshot_refresh
     bucket = _Bucket()
+    _seal_sequence(bucket)
     fresh = _snapshot(start_date='2023-01-01')
     monkeypatch.setattr(lifecycle, 'latest_dataset_snapshot', lambda **_: _snapshot(business_date='2026-07-23') if behind else fresh)
     monkeypatch.setattr(walk_forward_retrain, '_get_bucket', lambda: bucket)
@@ -361,3 +365,17 @@ def test_sequence_selection_rejects_future_and_corrupt_manifest(monkeypatch):
     bucket.store[f"{prefix}/prep/sequence_manifest.json"] = json.dumps(manifest).encode()
     with pytest.raises(lifecycle.Active8PrepDependencyPending):
         lifecycle._latest_immutable_sequence(bucket, "2026-07-25")
+
+
+@pytest.mark.parametrize("fault",["missing_entire_price_day","missing_independent_calendar","unconfirmed_price_day"])
+def test_independent_calendar_catches_globally_missing_day(fault):
+    def query(sql,params):
+        rows=_market_query(sql,params)
+        if fault=="missing_independent_calendar" and "canonical_market_index_daily" in sql:return []
+        if fault=="missing_entire_price_day" and "FROM stock_prices" in sql:return rows[:1]
+        if fault=="unconfirmed_price_day" and "canonical_market_index_daily" in sql:return rows[:1]
+        return rows
+    with pytest.raises(lifecycle.Active8PrepDependencyPending,match="independent_market_calendar") as error:
+        lifecycle._latest_market_session("2026-07-25",query_fn=query)
+    if fault=="missing_entire_price_day":
+        assert error.value.evidence["official_sessions_missing_prices"]==["2026-07-24"]

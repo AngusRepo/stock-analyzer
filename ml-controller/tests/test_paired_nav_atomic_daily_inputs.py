@@ -31,6 +31,8 @@ def _population():
 
 
 def _setup(monkeypatch):
+    from daily_capture_test_dependency import stub_daily_capture_dependency
+    stub_daily_capture_dependency(monkeypatch)
     from graphs import daily_pipeline_v2 as graph
     from test_paired_nav_journal import DB
     nav = DB(legacy_assessments=False)
@@ -255,6 +257,7 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     from test_pipeline_modal_handoff import StorageClient
     graph, inputs, reads = _setup(monkeypatch)
     memory = StorageClient()
+    memory.bucket("isolated-nav-handoff").name = "isolated-nav-handoff"
     monkeypatch.setenv('GCS_BUCKET_NAME', 'isolated-nav-handoff')
     monkeypatch.setattr(storage, 'Client', lambda: memory)
     async def load(state):

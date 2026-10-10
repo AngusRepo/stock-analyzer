@@ -116,6 +116,17 @@ def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected,
     from services import l4_monthly_closure
     monkeypatch.setattr(l4_monthly_closure, 'seal', lambda *a: {'status':'complete'})
     manifest = {'cohort_id':'monthly', 'manifest_checksum':'a'*64, 'model_profile_schema_version':TIMEXER_EXO_PROFILE_SCHEMA, 'end_date':'2026-09-30'}
+    from test_training_source_preflight import manifests, Bucket as SourceBucket
+    prep, seq = manifests()
+    source_bucket = SourceBucket(prep, seq)
+    bucket = Bucket()
+    bucket.name = source_bucket.name
+    bucket.saved = {key: value if isinstance(value, bytes) else json.dumps(value).encode()
+                    for key, value in source_bucket.objects.items()}
+    manifest.update(prep_gcs_prefix='prep', sequence_gcs_prefix='seq',
+        prep_manifest={'manifest_checksum': prep['manifest_checksum']},
+        windows=[{'window_id':0, 'source_prep_gcs_prefix':'prep', 'source_sequence_gcs_prefix':'seq',
+                  'source_prep_manifest_checksum':prep['manifest_checksum']}])
     monkeypatch.setattr(materializer, 'load_verified_oof_manifest', lambda *a, **kw: (manifest, {}))
     monkeypatch.setattr(materializer, 'load_oof_prediction_rows', lambda *a, **kw: [])
     monkeypatch.setattr(native, 'persist_base_index', lambda **kw: {'prediction_dates':20, 'min_date':'2026-09-01', 'max_date':'2026-09-30'})
@@ -126,7 +137,7 @@ def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected,
     calls = []
     monkeypatch.setattr(refresh, 'execute', lambda **kw: (calls.append(kw) or {'status':status, 'promoted':False, 'run_key':'a'*64, 'artifact_checksum':'b'*64}))
     result = asyncio.run(native.materialize_native_base(manifest_path='fixture', cohort_id='monthly', as_of='2026-10-04',
-        cadence='monthly', dry_run=False, dispatch_full_fit=True, poll_only=False, bucket=Bucket(), client=object(), model_family=family))
+        cadence='monthly', dry_run=False, dispatch_full_fit=True, poll_only=False, bucket=bucket, client=object(), model_family=family))
     assert result['status'] == expected and result['dependency_retry_required'] is retry
     assert calls[0]['strategy_role'] == 'B' and calls[0]['target_l3_artifact_id'] == 'new-B-L3'
     if family is not None:assert calls[0]['model_family']==family

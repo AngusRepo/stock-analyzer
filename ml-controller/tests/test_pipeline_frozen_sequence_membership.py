@@ -103,6 +103,8 @@ def dispatched(monkeypatch):
     monkeypatch.setattr(pipeline.LEARNING_D1_CLIENT, 'query', lambda *a, **k: [])
     monkeypatch.setattr(pipeline, '_pipeline_modal_prediction_callback_url', lambda: 'https://never.invalid')
     monkeypatch.setattr(pipeline, '_pipeline_modal_prediction_callback_token', lambda: 'test')
+    from daily_capture_test_dependency import attach_frozen_capture_fixture
+    attach_frozen_capture_fixture(state,series)
     request = asyncio.run(pipeline._build_pipeline_modal_prediction_payload(
         state, state_gcs_uri='gs://isolated-test/state.json'))
     bundle = {k: deepcopy(request[k]) for k in ('run_date', 'run_id', 'state_gcs_uri',

@@ -5,6 +5,7 @@ outer-fold artifacts and emits an explicitly counterfactual forward manifest.
 """
 
 from __future__ import annotations
+from .formal_feature_contract import LEGACY_SEMANTIC, cohort_semantic, FEATURE131_SEMANTIC, FEATURES131
 
 import hashlib
 import io
@@ -76,13 +77,13 @@ def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
     return manifest
 
 
-def _verify_prep_manifest(bucket: Any, prefix: str) -> dict[str, Any]:
+def _verify_prep_manifest(bucket: Any, prefix: str, expected_semantic: str = LEGACY_SEMANTIC) -> dict[str, Any]:
     manifest = _load_json(bucket, f"{prefix}/prep/manifest.json")
     if (
         manifest.get("schema_version") != "active8-canonical-adjusted-prep-v3"
         or manifest.get("status") != "ready"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
-        or manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or manifest.get("feature_semantic_version") != expected_semantic
         or manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
         or manifest.get("producer_source_sha") != _runtime_source_sha()
         or manifest.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION
@@ -115,6 +116,8 @@ def _load_forward_rows(
     feature_names = json.loads(
         bucket.blob(f"{prep_prefix}/prep/feature_names.json").download_as_text()
     )
+    if prep_manifest["feature_semantic_version"] == FEATURE131_SEMANTIC and feature_names != list(FEATURES131):
+        raise ValueError("formal131_forward_inventory_mismatch")
     staged: dict[str, list[np.ndarray]] = {
         key: [] for key in (
             "X", "target_returns", "dates", "symbols", "markets", "label_known_dates"
@@ -157,8 +160,14 @@ def _align_features(
     matrix: np.ndarray,
     serving_features: list[str],
     metadata: dict[str, Any] | None,
+    *, expected_feature_semantic: str | None = None,
 ) -> np.ndarray:
     training_features = [str(value) for value in ((metadata or {}).get("feature_names") or [])]
+    actual_semantic = (metadata or {}).get("feature_semantic_version", LEGACY_SEMANTIC)
+    if expected_feature_semantic is not None and FEATURE131_SEMANTIC in (expected_feature_semantic, actual_semantic):
+        if (actual_semantic != expected_feature_semantic or training_features != list(FEATURES131)
+                or serving_features != list(FEATURES131)):
+            raise ValueError("forward_extension_feature_version_mismatch")
     dtype = np.result_type(np.asarray(matrix).dtype, np.float32)
     if not training_features or training_features == serving_features:
         return np.asarray(matrix, dtype=dtype)
@@ -263,7 +272,7 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("forward_extension_date_or_sequence_contract_invalid")
 
     base = _verify_base_manifest(bucket, base_path)
-    prep = _verify_prep_manifest(bucket, prep_prefix)
+    prep = _verify_prep_manifest(bucket, prep_prefix, cohort_semantic(base))
     from .alpha_model_roster import model_order
     required_models = model_order(base.get("model_set") or (*CORE_MODELS, *OPTIONAL_MODELS), complete=True)
     latest = max(base["windows"], key=lambda row: int(row.get("window_id") or 0))
@@ -321,7 +330,7 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         if model is None or not metadata:
             raise ValueError(f"forward_extension_core_artifact_missing:{model_name}")
         _validate_training_cutoff(metadata, train_end, model_name)
-        aligned = _align_features(rows["X"], feature_names, metadata)
+        aligned = _align_features(rows["X"], feature_names, metadata, expected_feature_semantic=prep["feature_semantic_version"])
         values = np.asarray(model.predict(aligned), dtype=float).reshape(-1)
         if len(values) != len(rows["dates"]) or not np.isfinite(values).all():
             raise ValueError(f"forward_extension_prediction_invalid:{model_name}")
@@ -343,7 +352,7 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         "status": "active", "version": tabm_version, "gcs_path": tabm_path,
     }}})
     _validate_training_cutoff(tabm.metadata, train_end, "TabM")
-    tabm_x = _align_features(rows["X"], feature_names, tabm.metadata)
+    tabm_x = _align_features(rows["X"], feature_names, tabm.metadata, expected_feature_semantic=prep["feature_semantic_version"])
     scores_by_model["TabM"] = predict_tabm_scores(tabm, features=tabm_x)
     source_artifacts["TabM"] = {
         "version": tabm_version, "path": tabm_path, "training_cutoff": train_end,
@@ -361,7 +370,7 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
     gnn_scores = np.full(len(rows["dates"]), np.nan, dtype=float)
     for date in sorted(set(rows["dates"].astype(str).tolist())):
         indices = np.flatnonzero(rows["dates"].astype(str) == date)
-        aligned = _align_features(rows["X"][indices], feature_names, gnn.metadata)
+        aligned = _align_features(rows["X"][indices], feature_names, gnn.metadata, expected_feature_semantic=prep["feature_semantic_version"])
         price_series = [
             _prices_until(sequence.get(str(rows["symbols"][idx])), date)
             for idx in indices
@@ -453,6 +462,7 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         if not finite.any():
             continue
         artifact = save_oof_prediction_artifact(
+            feature_semantic_version=prep["feature_semantic_version"],
             bucket=bucket,
             gcs_prefix=f"walk_forward/oof_forward_extensions/{extension_id}",
             cohort_id=extension_id,

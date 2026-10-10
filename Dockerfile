@@ -47,6 +47,8 @@ RUN node -e "require('/app/worker-dist/src/lib/evidenceContracts.js'); require('
 
 # Application source.
 COPY ml-controller/ /app/
+# Exercise the default image path without a local test override.
+RUN node /app/scripts/training_indicators.cjs --check
 RUN test -f /app/scripts/repair_active8_source_and_evaluation.py
 RUN python -c "from scripts.repair_native_prestart import run"
 RUN python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"

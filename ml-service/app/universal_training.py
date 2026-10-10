@@ -5,6 +5,7 @@ This module owns the public surface for universal prep/train/audit flows.
 Callers should stop importing the FastAPI route module directly. Implementations
 can be moved here incrementally without changing Modal or controller call sites.
 """
+from .formal_feature_contract import payload_semantic, FEATURE131_SEMANTIC, FEATURES131
 
 import io
 import json
@@ -16,6 +17,7 @@ from importlib.metadata import version as package_version
 
 import numpy as np
 import polars as pl
+from .prep_input_validation import validate_tabular_batch, validate_prep_keys, validate_feature_names
 from joblib import load as joblib_load
 from pydantic import BaseModel
 
@@ -79,6 +81,7 @@ class UniversalPrepRequest(BaseModel):
     shared_market_history: dict = {}
     per_stock_ts_map: dict = {}
     active_features: list[str] | None = None
+    feature_semantic_version: str = "formal137-pit-asof-source-quality-v3"
     retain_unlabeled_features: bool = False  # Immutable source stage; canonical prep owns label eligibility.
     gcs_prefix: str = "universal"
 
@@ -86,6 +89,7 @@ class UniversalPrepRequest(BaseModel):
 class UniversalTrainRequest(BaseModel):
     """Universal training request."""
 
+    feature_semantic_version: str | None = None
     batch_count: int = 5
     models_filter: list[str] | None = None
     skip_feature_pool: bool = False
@@ -187,7 +191,7 @@ def validate_immutable_oof_snapshot_for_registration(
         errors.append("immutable_oof_snapshot_prefix_mismatch")
     if snapshot.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION:
         errors.append("immutable_oof_snapshot_target_semantic_mismatch")
-    if snapshot.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION:
+    if snapshot.get("feature_semantic_version") != payload_semantic({"release_training_contract": release_training_contract or {}, "dataset_snapshot": snapshot}):
         errors.append("immutable_oof_snapshot_feature_semantic_mismatch")
     if snapshot.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION:
         errors.append("immutable_oof_snapshot_imputation_semantic_mismatch")
@@ -644,6 +648,7 @@ def _save_oos_rank_artifact(
 
         for model_name in model_names:
             individual_artifacts.append(save_oof_prediction_artifact(
+                feature_semantic_version=payload_semantic(req.model_dump()),
                 bucket=bucket,
                 gcs_prefix=req.gcs_prefix or "universal",
                 cohort_id=str(req.cohort_id or ""),
@@ -737,6 +742,9 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 (pl.col("sector").cast(pl.String).fill_null("unknown") if "sector" in df.columns else pl.lit("unknown")).alias("_sector"),
                 pl.col("_date").shift(-5).alias("_label_known_date"),
             )
+            if req.retain_unlabeled_features and market in ("TW", "TWO", "TWSE", "OTC"):
+                from .feature_data_quality import require_technical_source_observations
+                require_technical_source_observations(df, symbol)
             all_dfs.append(df)
             seq_record = build_sequence_record(
                 symbol=str(payload.get("symbol") or payload.get("stock_id") or ""),
@@ -750,8 +758,8 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         except Exception as exc:
             if str(exc).startswith("feature_data_quality_"):
                 raise
-            skipped += 1
-            print(f"[PrepBatch] Skip stock: {exc}")
+            symbol=str(payload.get("symbol") or payload.get("stock_id") or "unknown")
+            raise ValueError(f"feature_data_quality_build_failed:{symbol}:{type(exc).__name__}") from exc
 
     if not all_dfs:
         return {"batch_index": req.batch_index, "rows": 0, "skipped": skipped, "error": "no valid stocks"}
@@ -763,6 +771,11 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         f"nulls={pooled['target_rank'].null_count()}"
     )
 
+    from .formal_feature_contract import prep_feature_names, FEATURE131_SEMANTIC
+    declared_names = prep_feature_names(req.feature_semantic_version, FEATURE_COLS)
+    if req.feature_semantic_version == FEATURE131_SEMANTIC and req.active_features is not None:
+        if req.active_features != declared_names:
+            raise ValueError("formal131_prep_feature_filter_forbidden")
     active_filter = req.active_features
     if active_filter:
         keep_cols = [c for c in active_filter if c in pooled.columns]
@@ -774,7 +787,11 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     candidate_feature_cols = list(FEATURE_COLS) + [
         c for c in TIMESFM_L175_FEATURE_COLS if c not in FEATURE_COLS
     ]
+    if req.feature_semantic_version == FEATURE131_SEMANTIC:
+        candidate_feature_cols = declared_names
     available = [c for c in candidate_feature_cols if c in pooled.columns]
+    if req.feature_semantic_version == FEATURE131_SEMANTIC and available != declared_names:
+        raise ValueError("formal131_prep_source_columns_missing")
     quality_cols = ["_source_missing__" + c for c in available if "_source_missing__" + c in pooled.columns]
     select_cols = available + quality_cols + [
         "_sector",
@@ -911,12 +928,12 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     batch_keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(req.batch_count)]
     for key, raw in download_existing_blobs(bucket, batch_keys, max_workers=4):
         if raw is None:
-            print(f"[TrainUniversal] {key.split('/')[-1]} not found, skipping")
-            continue
+            raise ValueError(f"prep_batch_missing:{key}")
         gcs_io["prep_objects"] += 1
         gcs_io["prep_bytes"] += len(raw)
         buf = io.BytesIO(raw)
         data = np.load(buf, allow_pickle=True)
+        validate_tabular_batch(data, key=key)
         all_X.append(data["X"])
         all_y.append(data["y"])
         if "target_returns" in data.files:
@@ -934,6 +951,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     gcs_io["download_elapsed_s"] = round(time.time() - gcs_t0, 3)
     gcs_io["cache"] = diff_gcs_batch_cache_stats(cache_before, get_gcs_batch_cache_stats())
 
+    if len(all_X) != req.batch_count:
+        raise ValueError("prep_batch_inventory_incomplete")
     if not all_X:
         raise ValueError("No prep batches found in GCS")
 
@@ -975,12 +994,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     )
 
     fn_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
-    feature_names = json.loads(fn_blob.download_as_text()) if fn_blob.exists() else [f"f{i}" for i in range(X.shape[1])]
-    prep_missingness_rates = (
-        np.nan_to_num(np.vstack(all_missingness_rates), nan=0.0, posinf=0.0, neginf=0.0).mean(axis=0)
-        if all_missingness_rates and all(len(r) == len(feature_names) for r in all_missingness_rates)
-        else np.zeros(len(feature_names), dtype=float)
-    )
+    if not fn_blob.exists():
+        raise ValueError("prep_feature_names_missing")
+    feature_names = json.loads(fn_blob.download_as_text())
+    validate_feature_names(feature_names, X.shape[1])
+    feature_semantic = payload_semantic(req.model_dump())
+    if feature_semantic == FEATURE131_SEMANTIC and feature_names != list(FEATURES131):
+        raise ValueError("formal131_training_inventory_mismatch")
+    validate_prep_keys(dates_arr, symbols_arr, markets_arr)
+    prep_missingness_rates = np.vstack(all_missingness_rates).mean(axis=0)
 
     feature_pool_selection_evidence: dict = {}
     feature_pool_model_policies: dict = {}
@@ -1623,7 +1645,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "deployment_fit": deployment_fit,
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "rank_ic_semantic_version": RANK_IC_SEMANTIC_VERSION,
-        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": feature_semantic,
         "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,

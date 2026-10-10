@@ -1,6 +1,7 @@
 """Training policy helpers for Modal-side ML orchestration."""
 
 from __future__ import annotations
+from .formal_feature_contract import PROFILES131, FEATURES131, FEATURE131_SEMANTIC, payload_semantic
 
 import hashlib
 import json
@@ -387,14 +388,14 @@ def active8_family_feature_contract(
     release = str(feature_release_mode or "").strip()
     if model in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
         timesfm_release = release == "timesfm_l175_l2_feature_release"
-        full137 = release == "accepted_ab_full137"
+        full137 = release in {"accepted_ab_full137", "approved_full131_v1"}
         return {
             "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
             "model": model,
             "family_schema": (
                 "formal137_plus_timesfm_l175_v1"
                 if timesfm_release
-                else ("formal137_full_tabular_v1" if full137 or model in {"TabM", "GNN"} else "formal137_selected_tabular_v1")
+                else (("formal131_full_tabular_v1" if release == "approved_full131_v1" else "formal137_full_tabular_v1") if full137 or model in {"TabM", "GNN"} else "formal137_selected_tabular_v1")
             ),
             "input_semantics": (
                 "graph_node_features_from_governed_tabular_universe"
@@ -407,11 +408,11 @@ def active8_family_feature_contract(
             "timesfm_l175_sidecar_required": timesfm_release,
         }
     if model == "TimeXer":
-        if release not in ("timexer_price", "timexer_exo137"):
+        if release not in ("timexer_price", "timexer_exo137", "timexer_price131", "timexer_exo131"):
             raise ValueError("timexer_feature_variant_required")
         return {"schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
-            "model": model, "family_schema": "timexer_causal_price_or_exo137_v1",
-            "input_semantics": "independent_close_series" if release == "timexer_price" else "point_in_time_137_exogenous_and_close_series",
+            "model": model, "family_schema": "timexer_causal_price_or_exo131_v1" if release.endswith("131") else "timexer_causal_price_or_exo137_v1",
+            "input_semantics": "independent_close_series" if release in ("timexer_price", "timexer_price131") else ("point_in_time_131_exogenous_and_close_series" if release == "timexer_exo131" else "point_in_time_137_exogenous_and_close_series"),
             "release_id": release, "release_cohort": [model],
             "atomic_cohort_required": False, "timesfm_l175_sidecar_required": False}
     sequence_schema = {
@@ -672,7 +673,7 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
         and str(group or "").strip().lower() == "tree"
     )
     payload["models_filter"] = list(policy.models)
-    full137 = base_payload.get("feature_release_mode") == "accepted_ab_full137"
+    full137 = base_payload.get("feature_release_mode") in {"accepted_ab_full137", "approved_full131_v1"}
     payload["skip_feature_pool"] = True if timesfm_l175_feature_release or full137 else policy.skip_feature_pool
     feature_policy = policy.to_dict()
     if timesfm_l175_feature_release:
@@ -687,6 +688,8 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
         feature_policy.update(feature_policy_type="formal137_full_tabular",
             feature_source="prep.full_formal137", selection_required=False,
             note="Predeclared full137 input for the accepted A/B profiles; no feature selection.")
+    if base_payload.get("feature_release_mode") == "approved_full131_v1":
+        feature_policy.update(feature_policy_type="formal131_full_tabular", feature_source="prep.full_formal131", selection_required=False, note="Explicit 131-column version; no feature selection.")
     payload["feature_policy"] = feature_policy
     return payload
 
@@ -736,6 +739,10 @@ def build_model_feature_policy_metadata(
         metadata.update(feature_policy_type="formal137_full_tabular",
             feature_source="prep.full_formal137", selection_required=False,
             note="Predeclared full137 input; no feature selection.")
+    if feature_release_mode == "approved_full131_v1":
+        if list(feature_names) != list(FEATURES131):
+            raise ValueError("approved_full131_feature_inventory_mismatch")
+        metadata.update(feature_policy_type="formal131_full_tabular", feature_source="prep.full_formal131", selection_required=False, note="Explicit 131-column version; legacy 137 artifacts remain separate.")
     return {
         "feature_policy": metadata,
         "feature_policy_schema_version": "model-feature-policy-v2",
@@ -786,9 +793,10 @@ def validate_release_training_dataset_binding(
         raise ValueError("release_training_contract_checksum_mismatch")
     if contract.get("model_profile_schema_version") not in (
         "active8-release-model-profiles-v1", "active8-release-model-profiles-v2", "active8-release-model-profiles-v3",
-        "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"
+        "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137", *PROFILES131
     ):
         raise ValueError("release_training_contract_profile_schema_mismatch")
+    payload_semantic({"release_training_contract": contract, "dataset_snapshot": dataset_snapshot or {}})
     snapshot = dict(dataset_snapshot or {})
     if not snapshot:
         raise ValueError("release_training_dataset_snapshot_missing")

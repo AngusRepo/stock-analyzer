@@ -1,6 +1,7 @@
 """Build immutable Active-8 prep with canonical adjusted net-return labels."""
 
 from __future__ import annotations
+from .formal_feature_contract import LEGACY_SEMANTIC, feature_count
 
 import hashlib
 import io
@@ -44,7 +45,8 @@ def _sequence_manifest_checksum(manifest: dict[str, Any]) -> str:
         json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
-def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict[str, Any]:
+def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int, expected_semantic: str = LEGACY_SEMANTIC) -> dict[str, Any]:
+    feature_count(expected_semantic)
     path = f"{prefix}/prep/immutable_receipt.json"
     blob = bucket.blob(path)
     if not blob.exists():
@@ -53,7 +55,7 @@ def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
     if (
         receipt.get("schema_version") != SOURCE_RECEIPT_SCHEMA_VERSION
-        or receipt.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or receipt.get("feature_semantic_version") != expected_semantic
         or receipt.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
         or receipt.get("producer_source_sha") != _runtime_source_sha()
         or receipt.get("status") != "ready"
@@ -73,6 +75,10 @@ def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict
         raw = bucket.blob(artifact_path).download_as_bytes()
         if hashlib.sha256(raw).hexdigest() != checksum:
             raise ValueError(f"canonical_adjusted_source_checksum_mismatch:{artifact_path}")
+    if expected_semantic != LEGACY_SEMANTIC:
+        from .formal_feature_contract import validate_feature_names
+        from .features import FEATURE_COLS
+        validate_feature_names(json.loads(bucket.blob(feature_names_path).download_as_bytes()), expected_semantic, FEATURE_COLS)
     return receipt
 
 
@@ -151,6 +157,20 @@ def _market_map(batches: list[dict[str, np.ndarray]]) -> dict[str, str]:
     }
 
 
+def _slice_feature_batch(source: dict[str, np.ndarray], mask: np.ndarray) -> dict[str, np.ndarray]:
+    # missingness_rates is indexed by feature, even when row count == feature width.
+    if "missingness_rates" not in source:
+        raise ValueError("canonical_source_missingness_required")
+    rates = np.asarray(source["missingness_rates"], dtype=float)
+    X = np.asarray(source["X"])
+    if (X.ndim != 2 or rates.shape != (X.shape[1],) or not np.isfinite(rates).all()
+            or np.any((rates < 0) | (rates > 1))):
+        raise ValueError("canonical_source_missingness_invalid")
+    return {name: (values[mask] if name != "missingness_rates" and values.ndim >= 1
+                   and values.shape[0] == len(mask) else values)
+            for name, values in source.items()}
+
+
 def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
     bucket = _get_bucket()
     if bucket is None:
@@ -165,8 +185,41 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
     if not output_prefix or output_prefix in {source_prefix, sequence_prefix}:
         raise ValueError("canonical_adjusted_output_prefix_must_be_new")
 
-    source_receipt = _verified_source_receipt(bucket, source_prefix, batch_count)
+    source_receipt = _verified_source_receipt(bucket, source_prefix, batch_count, payload.get("feature_semantic_version", LEGACY_SEMANTIC))
     sequence_manifest = _verified_sequence_manifest(bucket, sequence_prefix, sequence_batch_count)
+    price_capture = source_receipt.get("price_capture") or {}
+    daily = [row for row in sequence_manifest.get("lane_reports", []) if row.get("lane") == "daily_price"]
+    sequence_source = daily[0].get("source_uri", {}) if len(daily) == 1 else {}
+    if (not price_capture.get("actual_price_values_sha256")
+            or price_capture.get("capture_id") != sequence_source.get("capture_id")
+            or price_capture.get("sequence_manifest_checksum") != sequence_manifest["manifest_checksum"]
+            or any(price_capture.get("checksums", {}).get(k) != sequence_source.get("checksums", {}).get(k)
+                   for k in ("adj_close", "adj_open"))):
+        raise ValueError("canonical_root_sequence_price_capture_mismatch")
+    institutional_capture = source_receipt.get("institutional_capture") or {}
+    if (institutional_capture.get("schema_version") != "training-institutional-capture-binding-v1"
+            or institutional_capture.get("capture_id") != price_capture.get("capture_id")
+            or len(str(institutional_capture.get("actual_values_sha256") or "")) != 64
+            or any(len(str(institutional_capture.get("checksums", {}).get(k) or "")) != 64
+                   for k in ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"))):
+        raise ValueError("canonical_institutional_capture_binding_required")
+    auxiliary = source_receipt.get("auxiliary_capture") or {}
+    if (auxiliary.get("schema_version")!="training-auxiliary-capture-binding-v1"
+            or auxiliary.get("capture_id")!=price_capture.get("capture_id")
+            or len(str(auxiliary.get("capture_manifest_sha256") or ""))!=64):
+        raise ValueError("canonical_auxiliary_capture_binding_required")
+    long_source=source_receipt.get("long_source_capture") or {}
+    if (long_source.get("schema_version")!="training-long-source-binding-v1" or long_source.get("capture_id")!=price_capture.get("capture_id")
+            or any(len(str(long_source.get(name,{}).get("manifest_sha256") or ""))!=64 for name in ("broker","holding"))):
+        raise ValueError("canonical_long_source_capture_binding_required")
+    global_capture=source_receipt.get("global_capture") or {}
+    if (global_capture.get("schema_version")!="training-global-capture-binding-v1" or global_capture.get("capture_id")!=price_capture.get("capture_id")
+            or len(str(global_capture.get("history_sha256") or ""))!=64):
+        raise ValueError("canonical_global_capture_binding_required")
+    cap = source_receipt.get("market_cap_capture") or {}
+    if (cap.get("schema_version") != "training-market-cap-capture-binding-v1" or cap.get("capture_id") != price_capture.get("capture_id")
+            or any(len(str(cap.get(k) or "")) != 64 for k in ("market_value_sha256", "actual_values_sha256"))):
+        raise ValueError("canonical_market_cap_capture_binding_required")
     source_receipt_checksum = str(source_receipt["receipt_checksum"])
     sequence_manifest_checksum = str(sequence_manifest["manifest_checksum"])
 
@@ -185,7 +238,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             and manifest.get("source_receipt_checksum") == source_receipt_checksum
             and manifest.get("source_checksums") == source_receipt["output_checksums"]
             and manifest.get("sequence_manifest_checksum") == sequence_manifest_checksum
-            and manifest.get("feature_semantic_version") == FEATURE_SEMANTIC_VERSION
+            and manifest.get("feature_semantic_version") == source_receipt["feature_semantic_version"]
             and manifest.get("feature_imputation_semantic") == FEATURE_IMPUTATION_SEMANTIC_VERSION
             and manifest.get("producer_source_sha") == _runtime_source_sha()
             and manifest.get("manifest_checksum") == _manifest_checksum(manifest)
@@ -248,11 +301,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         source = row["source"]
         mask = row["mask"]
         count = int(mask.sum())
-        arrays = {
-            name: values[mask]
-            for name, values in source.items()
-            if len(values.shape) >= 1 and values.shape[0] == len(mask)
-        }
+        arrays = _slice_feature_batch(source, mask)
         arrays.update({
             "y": all_ranks[rank_offset:rank_offset + count],
             "target_returns": row["targets"],
@@ -295,6 +344,12 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         "output_gcs_prefix": output_prefix,
         "source_business_date": source_receipt.get("business_date"),
         "source_receipt_checksum": source_receipt_checksum,
+        "price_capture": price_capture,
+        "institutional_capture": source_receipt.get("institutional_capture"),
+        "market_cap_capture": source_receipt.get("market_cap_capture"),
+        "auxiliary_capture": source_receipt.get("auxiliary_capture"),
+        "long_source_capture": source_receipt.get("long_source_capture"),
+        "global_capture": source_receipt.get("global_capture"),
         "feature_semantic_version": source_receipt["feature_semantic_version"],
         "feature_imputation_semantic": source_receipt["feature_imputation_semantic"],
         "producer_source_sha": source_receipt["producer_source_sha"],

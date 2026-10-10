@@ -318,16 +318,11 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
     safe_run_id = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in run_id)
     output_prefix = f"{configured_root}/{safe_run_id}"
     tail_prefix = f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
-    base_prefix = _long_sequence_base_5y_prefix(bucket_name)
     source_prefixes = [tail_prefix]
-    base_missing_uris: list[str] = []
-    prior_source_prefixes: list[str] = []
     lanes = _csv_env("FINLAB_LONG_SEQUENCE_LANES", "daily_price")
     if "daily_price" in lanes:
-        required_uris = [
-            f"{tail_prefix}/raw/daily_price/adj_close.parquet",
-            f"{tail_prefix}/raw/daily_price/adj_open.parquet",
-        ]
+        required_uris = [f"{tail_prefix}/raw/daily_price_full_vintage/{name}"
+                         for name in ("adj_close.parquet", "adj_open.parquet", "manifest.json")]
         missing_uris = await asyncio.to_thread(
             lambda: [uri for uri in required_uris if not _gcs_object_exists(uri)]
         )
@@ -339,20 +334,6 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
                 "required_uris": required_uris,
                 "missing_uris": missing_uris,
             }
-        run_date = str(body.get("run_date") or "")[:10]
-        prior_source_prefixes = await asyncio.to_thread(
-            _latest_verified_sequence_sources, bucket_name, run_date
-        )
-        source_prefixes = list(dict.fromkeys([*prior_source_prefixes, tail_prefix]))
-        base_required_uris = [
-            f"{base_prefix}/raw/daily_price/adj_close.parquet",
-            f"{base_prefix}/raw/daily_price/adj_open.parquet",
-        ]
-        base_missing_uris = await asyncio.to_thread(
-            lambda: [uri for uri in base_required_uris if not _gcs_object_exists(uri)]
-        )
-        if not prior_source_prefixes and not base_missing_uris:
-            source_prefixes.insert(0, base_prefix)
 
     payload = {
         "source_gcs_prefixes": source_prefixes,
@@ -363,6 +344,8 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
         "trigger_source": "finlab_backfill_controller_callback",
         "trigger_run_id": run_id,
         "run_date": body.get("run_date"),
+        "end_date": body.get("run_date"),
+        "require_single_adjustment_capture": True,
     }
 
     from services import modal_client
@@ -373,9 +356,9 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
         "function": "build_finlab_long_sequence_prep",
         "output_gcs_prefix": output_prefix,
         "source_gcs_prefixes": payload["source_gcs_prefixes"],
-        "base_source_status": "included" if not base_missing_uris else "excluded_missing_adjusted_ohlc",
-        "base_missing_uris": base_missing_uris,
-        "prior_sequence_source_count": len(prior_source_prefixes),
+        "base_source_status": "excluded_single_capture_required",
+        "base_missing_uris": [],
+        "prior_sequence_source_count": 0,
         "trigger_run_id": run_id,
     }
 

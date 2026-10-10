@@ -1748,24 +1748,21 @@ async function loadStrategyRawSectorRotationSignals(
     const placeholders = chunk.map(() => '?').join(',')
     try {
       const { results } = await databaseForDataDomain(env, 'market').prepare(`
+        -- Daily sector evidence must belong to this decision session; missing is not zero.
         SELECT s.symbol,
-               MAX(COALESCE(s.net_amount, 0)) AS sector_net_amount,
-               MAX(CASE WHEN s.classification = 'top' THEN 1 ELSE 0 END) AS sector_flow_core,
-               MAX(COALESCE(s.volume_ratio, 0)) AS sector_volume_ratio,
-               MAX(COALESCE(f.rs_ratio, 0)) AS sector_rs_ratio,
-               MAX(COALESCE(f.rs_momentum, -999)) AS sector_rs_momentum,
-               MAX(COALESCE(f.turnover_share_delta, -999)) AS sector_turnover_share_delta
+               MAX(s.net_amount) AS sector_net_amount,
+               MAX(CASE WHEN s.classification IS NULL THEN NULL WHEN s.classification = 'top' THEN 1 ELSE 0 END) AS sector_flow_core,
+               MAX(s.volume_ratio) AS sector_volume_ratio,
+               MAX(f.rs_ratio) AS sector_rs_ratio,
+               MAX(f.rs_momentum) AS sector_rs_momentum,
+               MAX(f.turnover_share_delta) AS sector_turnover_share_delta
           FROM sector_flow_stocks s
           LEFT JOIN sector_flow f
             ON f.date = s.date
            AND f.sector = s.theme
            AND f.classification IN ('theme', 'industry_theme', 'industry', 'subindustry')
          WHERE s.symbol IN (${placeholders})
-           AND s.date = (
-             SELECT MAX(date)
-               FROM sector_flow_stocks
-              WHERE date <= ?
-           )
+           AND s.date = ?
          GROUP BY s.symbol
       `).bind(...chunk, endDate).all<{
         symbol: string

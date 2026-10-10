@@ -36,6 +36,8 @@ class Windows(Dataset):
 def load_windows(inputs, job):
     from .sequence_training import canonical_session_calendar
     validate_settings(job['settings'], job['exogenous'])
+    from .formal_feature_contract import feature_count, timexer_semantic
+    expected_columns = feature_count(timexer_semantic(job['settings']))
     features = {}
     for path in sorted((inputs / 'features-ready/prep').glob('batch_*.npz')):
         with np.load(path, allow_pickle=True) as values:
@@ -44,7 +46,7 @@ def load_windows(inputs, job):
             symbols = values['symbols'].astype(str)
             dates = values['dates'].astype(str)
             matrix = values['X'].astype(np.float32)
-            if matrix.shape != (len(dates),137) or len(symbols) != len(dates):
+            if matrix.shape != (len(dates), expected_columns) or len(symbols) != len(dates):
                 raise ValueError('timexer_training_feature_shape_invalid')
             if not np.isfinite(matrix).all():
                 raise ValueError('nonfinite_native_feature_matrix')

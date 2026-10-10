@@ -456,7 +456,11 @@ stocks.post('/:id/refresh', authMiddleware, adminMiddleware, async (c) => {
   if (!stock) return c.json({ error: '股票不存在' }, 404)
 
   // Fetch from Yahoo Finance
-  await fetchAndStoreStockData(databaseForDataDomain(c.env, 'market'), c.env.KV, stock, c.env.FINMIND_TOKEN)
+  try {
+    await fetchAndStoreStockData(databaseForDataDomain(c.env, 'market'), c.env.KV, stock, c.env.FINMIND_TOKEN)
+  } catch {
+    return c.json({ success: false, error: '股價更新失敗，請稍後再試' }, 502)
+  }
   return c.json({ success: true, message: `已更新 ${stock.symbol}` })
 })
 
@@ -474,17 +478,28 @@ export async function fetchAndStoreStockData(
 // ─── Yahoo Finance：美股（或 token 未設定時的 fallback）─────────────────────
 async function fetchAndStoreYahoo(db: D1Database, stock: any) {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(stock.symbol)}?interval=1d&range=1y`
+    const suffix = ['TWSE', 'TW'].includes(stock.market) ? '.TW'
+      : ['OTC', 'TWO'].includes(stock.market) ? '.TWO' : ''
+    const symbol = String(stock.symbol)
+    if (suffix && /\.TW(O)?$/.test(symbol) && !symbol.endsWith(suffix)) {
+      throw new Error('yahoo_request_market_owner_mismatch')
+    }
+    const yahooSymbol = suffix && !symbol.endsWith(suffix) ? symbol + suffix : symbol
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?interval=1d&range=1y`
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-    if (!res.ok) return
+    if (!res.ok) throw new Error(`yahoo_http_${res.status}`)
 
     const data  = await res.json() as any
     const result = data.chart?.result?.[0]
-    if (!result) return
+    if (!result) throw new Error('yahoo_missing_result')
+    // Bind returned prices to the exact requested security before preparing writes.
+    if (data.chart.result.length !== 1 || result.meta?.symbol !== yahooSymbol) {
+      throw new Error('yahoo_response_symbol_owner_mismatch')
+    }
 
     const timestamps: number[] = result.timestamp ?? []
     const q = result.indicators?.quote?.[0]
-    if (!q || !timestamps.length) return
+    if (!q || !timestamps.length) throw new Error('yahoo_missing_quotes')
 
     const batch: D1PreparedStatement[] = []
     for (let i = 0; i < timestamps.length; i++) {
@@ -500,10 +515,12 @@ async function fetchAndStoreYahoo(db: D1Database, stock: any) {
            close=excluded.close, volume=excluded.volume`
       ).bind(stock.id, date, o??null, h??null, l??null, cl, v??null))
     }
-    if (batch.length) await db.batch(batch)
+    if (!batch.length) throw new Error('yahoo_no_price_rows')
+    await db.batch(batch)
     // 指標計算已移至 computeAndStoreIndicators()，由 Queue consumer 呼叫（SRP）
   } catch (e) {
     console.error(`[Yahoo] Failed for ${stock.symbol}:`, e)
+    throw e
   }
 }
 

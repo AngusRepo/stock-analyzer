@@ -64,6 +64,8 @@ const EXPOSURE_COMPONENTS = [
 ] as const
 
 function finiteNumber(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && value.trim() === '') return null
   const num = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(num) ? num : null
 }

@@ -96,7 +96,8 @@ def test_source_receipt_inventory_uses_same_order_for_multi_digit_batches(monkey
         prep._verified_source_receipt(Bucket(), "features", batch_count)
 
 
-def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeypatch, tmp_path):
+@pytest.mark.parametrize("use131", [False, True])
+def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeypatch, tmp_path, use131):
     import hashlib
     import io
     import json
@@ -110,18 +111,21 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ml-controller"))
     from routers.retrain_trigger import _verify_prebuilt_canonical_prep
 
+    from app.formal_feature_contract import FEATURES131, FEATURE131_SEMANTIC, LEGACY_SEMANTIC
+    names = list(FEATURES131) if use131 else list(FEATURE_COLS)
+    semantic = FEATURE131_SEMANTIC if use131 else LEGACY_SEMANTIC
     sha = "a" * 40
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", sha)
     n = 10000
     buffer = io.BytesIO()
     np.savez_compressed(buffer, dates=np.array(["2026-01-01"] * n),
         symbols=np.array(["2330"] * n), markets=np.array(["LISTED"] * n),
-        X=np.zeros((n, 137), dtype=np.float32))
+        X=np.zeros((n, len(names)), dtype=np.float32), missingness_rates=np.zeros(len(names)))
     objects = {"features/prep/batch_0.npz": buffer.getvalue(),
-        "features/prep/feature_names.json": json.dumps(list(FEATURE_COLS)).encode(),
+        "features/prep/feature_names.json": json.dumps(names).encode(),
         "sequence/prep/batch_0.npz": b"verified-sequence"}
     receipt = {"schema_version": prep.SOURCE_RECEIPT_SCHEMA_VERSION,
-        "feature_semantic_version": prep.FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": semantic,
         "feature_imputation_semantic": prep.FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "producer_source_sha": sha, "business_date": "2026-01-07",
         "status": "ready", "output_gcs_prefix": "features", "batch_count": 1,
@@ -132,8 +136,24 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
     sequence = {"status": "ready", "contract": "sequence_records_v3", "output_gcs_prefix": "sequence",
         "batch_count": 1, "summary": {"date_min": "2026-01-01", "date_max": "2026-01-07"},
         "output_checksums": {"sequence/prep/batch_0.npz": hashlib.sha256(b"verified-sequence").hexdigest()}}
+    sequence["lane_reports"]=[{"lane":"daily_price","source_uri":{"capture_id":"capture-1",
+        "checksums":{"adj_close":"b"*64,"adj_open":"c"*64}}}]
     sequence["manifest_checksum"] = prep._sequence_manifest_checksum(sequence)
     objects["sequence/prep/sequence_manifest.json"] = json.dumps(sequence).encode()
+    receipt["price_capture"]={"schema_version":"training-price-capture-binding-v1","capture_id":"capture-1",
+        "actual_price_values_sha256":"d"*64,"sequence_manifest_checksum":sequence["manifest_checksum"],
+        "checksums":{"adj_close":"b"*64,"adj_open":"c"*64}}
+    receipt["institutional_capture"]={"schema_version":"training-institutional-capture-binding-v1","capture_id":"capture-1",
+        "actual_values_sha256":"e"*64,"checksums":{k:"f"*64 for k in ("foreign_net","trust_net","dealer_self_net","dealer_hedge_net")}}
+    receipt["market_cap_capture"]={"schema_version":"training-market-cap-capture-binding-v1","capture_id":"capture-1",
+        "market_value_sha256":"f"*64,"actual_values_sha256":"e"*64}
+    receipt["auxiliary_capture"]={"schema_version":"training-auxiliary-capture-binding-v1","capture_id":"capture-1","capture_manifest_sha256":"a"*64}
+    receipt["long_source_capture"]={"schema_version":"training-long-source-binding-v1","capture_id":"capture-1",**{k:{"manifest_sha256":"a"*64} for k in ("broker","holding")}}
+    receipt["global_capture"]={"schema_version":"training-global-capture-binding-v1","capture_id":"capture-1","history_sha256":"a"*64}
+    receipt.pop("receipt_checksum")
+    receipt["receipt_checksum"]=hashlib.sha256(json.dumps(receipt,sort_keys=True).encode()).hexdigest()
+    objects["features/prep/immutable_receipt.json"]=json.dumps(receipt).encode()
+
     class Bucket:
         def blob(self, name):
             class Blob:
@@ -148,17 +168,23 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
         "open": [100.] * 7, "close": [110.] * 7}]
     monkeypatch.setattr(prep, "load_sequence_dataset", lambda _: SimpleNamespace(records=records))
     payload = {"source_gcs_prefix": "features", "sequence_gcs_prefix": "sequence",
-        "output_gcs_prefix": "adjusted", "batch_count": 1, "sequence_batch_count": 1}
+        "output_gcs_prefix": "adjusted", "feature_semantic_version":semantic, "batch_count": 1, "sequence_batch_count": 1}
     manifest = prep.rebuild_canonical_adjusted_prep(payload)
     assert manifest["source_checksums"] == receipt["output_checksums"]
-    training = {"run_date": "2026-01-07", "dataset_snapshot": {
+    training = {"run_date": "2026-01-07", "settings":{"feature_history_schema":semantic}, "dataset_snapshot": {
         "manifest_path": "adjusted/prep/manifest.json", "manifest_checksum": manifest["manifest_checksum"]}}
     _, counts = materialize_inputs(bucket, training, tmp_path)
     assert counts == {"2026-01-01": n}
     full_fit = _verify_prebuilt_canonical_prep(bucket=bucket, prefix="adjusted",
         expected_manifest_checksum=manifest["manifest_checksum"],
-        expected_target_semantic_version=manifest["target_semantic_version"], expected_producer_source_sha=sha)
+        expected_target_semantic_version=manifest["target_semantic_version"], expected_producer_source_sha=sha, expected_feature_semantic=semantic)
     assert full_fit["total_rows"] == n
+    assert full_fit["feature_semantic_version"] == semantic
+    with pytest.raises(ValueError,match="feature_semantic|source_receipt"):
+        _verify_prebuilt_canonical_prep(bucket=bucket,prefix="adjusted",
+            expected_manifest_checksum=manifest["manifest_checksum"],
+            expected_target_semantic_version=manifest["target_semantic_version"],expected_producer_source_sha=sha,
+            expected_feature_semantic=LEGACY_SEMANTIC if use131 else FEATURE131_SEMANTIC)
     assert prep.rebuild_canonical_adjusted_prep(payload)["status"] == "idempotent_ready"
     # Even whitespace-only metadata mutation must fail exact-byte provenance.
     objects["features/prep/feature_names.json"] += b" "
@@ -166,3 +192,15 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
         materialize_inputs(bucket, training, tmp_path)
     with pytest.raises(ValueError, match="checksum_mismatch"):
         prep.rebuild_canonical_adjusted_prep(payload)
+
+
+def test_missingness_is_not_sliced_when_rows_equal_feature_width():
+    import numpy as np
+    from app.canonical_adjusted_prep import _slice_feature_batch
+    rates=np.linspace(0,1,137);mask=np.arange(137)<100
+    source={"X":np.zeros((137,137)),"dates":np.arange(137),"missingness_rates":rates}
+    result=_slice_feature_batch(source,mask)
+    assert result["X"].shape==(100,137) and result["dates"].shape==(100,)
+    np.testing.assert_array_equal(result["missingness_rates"],rates)
+    source.pop("missingness_rates")
+    with pytest.raises(ValueError,match="missingness_required"):_slice_feature_batch(source,mask)

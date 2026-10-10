@@ -947,7 +947,7 @@ def build_feature_matrix(
         ("tech_kd9_k", kd_k_expr),
         ("tech_kdj_j_9", 3.0 * kd_k_expr - 2.0 * kd_d_expr),
         ("tech_keltner_pos_20", _feature_col("keltner_position")),
-        ("tech_limit_down_count_10", _point_in_time_feature("limit_down_count")),
+        ("tech_limit_down_count_10", _point_in_time_feature("issuer_limit_down_count_10")),
         ("tech_limit_up_streak_10", (ret1_raw > 0.095).cast(pl.Float64).rolling_sum(10)),
         ("tech_locked_open_down_10", _point_in_time_feature("locked_open_down")),
         ("tech_locked_open_up_10", (open_expr >= close_expr.shift(1) * 1.095).cast(pl.Float64).rolling_sum(10)),

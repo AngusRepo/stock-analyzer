@@ -1,5 +1,6 @@
 """Native training cannot report success after a metadata write failed."""
 import io
+import json
 import numpy as np
 import pytest
 from app import universal_training as ut
@@ -10,8 +11,8 @@ def test_metadata_failure_is_fatal_after_weights_saved(monkeypatch):
     data = panel()
     raw = io.BytesIO()
     np.savez(raw, X=data.X, y=data.y, target_returns=data.target_returns, dates=data.dates,
-             symbols=data.symbols, markets=data.markets, label_known_dates=data.label_known_dates)
-    saved = {}
+             symbols=data.symbols, markets=data.markets, label_known_dates=data.label_known_dates, missingness_rates=np.zeros(len(data.feature_names)))
+    saved = {"universal/prep/feature_names.json": json.dumps(data.feature_names).encode()}
 
     class Bucket:
         def blob(self, name):

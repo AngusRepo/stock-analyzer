@@ -1,6 +1,7 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { prepareIndicatorRegime } from './indicatorRegimePrerequisite'
+import { materializeIndicatorSessions } from './indicatorSessionPrerequisite'
 import { brokerDailyReadiness } from './finLabBrokerReadiness'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } from './active8OofContinuationPolicy'
 import type { Bindings, UpdateQueueMsg } from '../types'
@@ -1695,6 +1696,7 @@ async function ensureSameDateRegimeReady(
   })
   const startedAt = Date.now()
   try {
+    await materializeIndicatorSessions(databaseForDataDomain(env, 'market'), triggerTime)
     const summary = await prepareIndicatorRegime(env, triggerTime, () => runRegimeCompute(env, triggerTime))
     await logSchedulerResult(env.KV, 'regime-compute', {
       status: 'success',
@@ -4862,6 +4864,7 @@ export async function processUpdateBatch(
     currentBatch.map((stock) => Number(stock.id)),
   )
   const watchlistNewsStocks: UpdateStockRow[] = []
+  const failedStockIds: number[] = []
 
   await runBounded(currentBatch, INDICATOR_BATCH_CONCURRENCY, async (stock) => {
     try {
@@ -4882,9 +4885,15 @@ export async function processUpdateBatch(
         })
       }
     } catch (e) {
+      failedStockIds.push(Number(stock.id))
       console.error(`[Queue] Failed ${stock.symbol}:`, e)
     }
   })
+
+  // Do not advance the shard past failed stocks; retain the existing message failure policy.
+  if (failedStockIds.length) {
+    throw new Error(`indicator_batch_failed:${failedStockIds.length}:stock_ids=${failedStockIds.sort((a, b) => a - b).join(',')}`)
+  }
 
   const lastId = currentBatch[currentBatch.length - 1].id
 

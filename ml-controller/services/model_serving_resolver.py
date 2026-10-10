@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .formal_feature_contract import metadata_feature_valid, FEATURE131_SEMANTIC, LEGACY_SEMANTIC
 
 import json
 from services.alpha_model_roster import model_order, SUPPORTED_MODELS
@@ -246,7 +247,7 @@ def _artifact_structure_block_reason(artifact, *, model_name, artifact_role):
             return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
         if model_name in FORMAL_FEATURE_MODELS:
             feature_semantic = str(metadata.get("feature_semantic_version") or "").strip()
-            if feature_semantic != FORMAL_FEATURE_SEMANTIC_VERSION:
+            if not metadata_feature_valid(metadata):
                 return (
                     f"artifact_feature_semantic_{feature_semantic or 'missing'}_"
                     f"expected_{FORMAL_FEATURE_SEMANTIC_VERSION}"

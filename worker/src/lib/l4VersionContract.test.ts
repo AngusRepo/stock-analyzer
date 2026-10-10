@@ -26,17 +26,17 @@ test('single B accepts official v2 while rejecting MLP and unknown residual sche
   a.model={residual_tabpack:{schema_version:'l4-three-head-residual-tabpack-official-v2'}}
   assert.deepEqual(validateTradingConfig(f.config),[])
   a.model.residual_tabpack.schema_version='unknown'
-  assert.ok(validateTradingConfig(f.config).includes('single B mode requires a Paper TabPack artifact'))
+  assert.ok(validateTradingConfig(f.config).includes('single B mode requires its matching complete Paper artifact'))
   a.model.residual_tabpack.schema_version='l4-three-head-residual-tabpack-v1'
   assert.deepEqual(validateTradingConfig(f.config),[])
   a.model.residual_mlp={}
-  assert.ok(validateTradingConfig(f.config).includes('single B mode requires a Paper TabPack artifact'))
+  assert.ok(validateTradingConfig(f.config).includes('single B mode requires its matching complete Paper artifact'))
 })
 
 test('independent monthly trigger cannot race the canonical B OOF parent', async () => {
-  const env:any={KV:{get:async()=>({l4Distribution:{operating_mode:'single_b_tabpack_v1'}})}}
+  const env:any={KV:{get:async()=>({l4Distribution:{operating_mode:'single_b_tabpack_v1',strategy_role:'B',scope:'paper'}})}}
   assert.equal(await runL4DistributionRefresh(env,'2026-10-04','monthly'),
-    'skipped single_b_tabpack_refresh_owned_by_canonical_oof_completion')
+    'skipped single_b_refresh_owned_by_canonical_oof_completion')
 })
 
 test('monthly scheduler sends exogenous B profile and candidate-only controls', async () => {
@@ -130,4 +130,33 @@ test('official restriction readiness accepts a completed historical refresh afte
   assert.equal(officialTradingRestrictionsRefreshComplete(receipt,checkedAt,'2026-09-24'),false)
   assert.equal(officialTradingRestrictionsRefreshComplete(receipt,'2026-09-23T16:28:00Z','2026-09-23'),false)
   assert.equal(officialTradingRestrictionsRefreshComplete({...receipt,status:'error'},checkedAt,'2026-09-23'),false)
+})
+
+
+test('explicit 131 monthly profile keeps candidate-only controls for both roles', async () => {
+  const original=globalThis.fetch, bodies:any[]=[]
+  globalThis.fetch=async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)))
+    return new Response(JSON.stringify({status:'spawned',execution_id:'synthetic'}),{status:200})
+  }
+  try {
+    for (const [mode,profile] of [
+      ['single_b_tabpack_v1','active8-release-model-profiles-v6-timexer-exo131'],
+      [undefined,'active8-release-model-profiles-v6-timexer-price131'],
+    ]) {
+      const env:any={ML_CONTROLLER_URL:'https://example.invalid',
+        ACTIVE8_FEATURE_SEMANTIC_VERSION:'formal131-without-unverified-daily-owners-v1',
+        KV:{get:async()=>({l4Distribution:{operating_mode:mode}})}}
+      await runActive8OofLifecycle(env,'2026-10-08','monthly')
+      const body=bodies.at(-1)
+      assert.equal(body.model_profile_schema_version,profile)
+      assert.equal(body.promote,false)
+      assert.equal(body.dispatch_full_fit,true)
+    }
+    const count=bodies.length
+    await assert.rejects(runActive8OofLifecycle({ML_CONTROLLER_URL:'https://example.invalid',
+      ACTIVE8_FEATURE_SEMANTIC_VERSION:'unknown',KV:{get:async()=>null}} as any,'2026-10-08','monthly'),
+      /active8_feature_semantic_unknown/)
+    assert.equal(bodies.length,count)
+  } finally {globalThis.fetch=original}
 })

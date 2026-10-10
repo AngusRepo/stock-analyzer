@@ -1,6 +1,7 @@
 """Configurable universal training policy."""
 
 from __future__ import annotations
+from .formal_feature_contract import PROFILES131
 
 import os
 from dataclasses import asdict, dataclass
@@ -64,7 +65,7 @@ class TrainingPolicy:
     def resolve_history(self, *, vix: float, twii_bias: float, model_profile_schema_version: str) -> tuple[str, int]:
         regime, lookback = self.resolve_regime(vix=vix, twii_bias=twii_bias)
         from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-        if model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}:
+        if model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}:
             return regime, 1280
         return regime, lookback
 

@@ -22,6 +22,33 @@ def _load_tool_module():
     return module
 
 
+def test_adjusted_vintage_keeps_history_separate_from_daily_canonical(monkeypatch, tmp_path):
+    import hashlib
+    tool = _load_tool_module()
+    monkeypatch.setattr(tool, "start_date_for_years", lambda _years: "2026-09-01")
+    dates = pd.to_datetime(["2026-09-24", "2026-09-29", "2026-09-30"])
+    frames = {field: tool.normalize_wide_index(pd.DataFrame({"3004": [16.619, 16.690, 99.0]}, index=dates))
+              for field in ("adj_close", "adj_open")}
+    canonical = tmp_path / "raw/daily_price/adj_close.parquet"
+    tool.write_parquet(canonical, frames["adj_close"].loc[[dates[1]]])
+    original = canonical.read_bytes()
+    tool.write_adjusted_price_vintage(frames, run_dir=tmp_path, years=3, end_date="2026-09-29")
+    root = tmp_path / "raw/daily_price_full_vintage"
+    receipt = json.loads((root / "manifest.json").read_text())
+    assert canonical.read_bytes() == original
+    assert receipt["end_date"] == "2026-09-29"
+    for field in frames:
+        path = root / f"{field}.parquet"
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == receipt["checksums"][field]
+        assert list(pd.read_parquet(path).index.strftime("%Y-%m-%d")) == ["2026-09-24", "2026-09-29"]
+
+
+def test_adjusted_vintage_missing_pair_never_seals_receipt(tmp_path):
+    tool = _load_tool_module()
+    tool.write_adjusted_price_vintage({"adj_close": pd.DataFrame()}, run_dir=tmp_path, years=3, end_date="2026-09-29")
+    assert not (tmp_path / "raw/daily_price_full_vintage/manifest.json").exists()
+
+
 def test_cleanup_finlab_trading_restrictions_tolerates_empty_d1_exec(monkeypatch):
     tool = _load_tool_module()
 
@@ -152,14 +179,17 @@ def test_finlab_fundamental_fields_require_deadline_alignment():
 
     raw = DeadlineFrame(
         {"2330": [66.2]},
-        index=pd.to_datetime(["2026-01-01"]),
+        index=["2025-Q4"],
     )
     aligned = tool.normalize_finlab_wide_field(
         raw,
         api_key_name="fundamental_features:gross_margin",
+        date_owners=(pd.DataFrame({"2330": pd.to_datetime(["2026-03-30"])}, index=["2025-Q4"]),
+                     pd.DataFrame({"2330": pd.to_datetime(["2026-03-31"])}, index=["2025-Q4"])),
+        sessions=pd.to_datetime(["2026-03-30", "2026-03-31"]),
     )
 
-    assert raw.deadline_called is True
+    assert not getattr(raw, "deadline_called", False)
     assert list(aligned.index) == [pd.Timestamp("2026-03-31")]
     assert aligned.index.name == "date"
 
@@ -944,3 +974,37 @@ def test_broker_raw_observation_distinguishes_provider_delay_from_normalized_emp
     assert not tool.broker_source_observation(raw.drop(columns=["buy"]), "2026-09-21")["required_columns_valid"]
     raw.loc[0, "date"] = "invalid"
     assert tool.broker_source_observation(raw, "2026-09-21")["valid_date_rows"] == 0
+
+
+
+def test_actual_daily_materialize_entry_seals_full_market_cap_history(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    tool=_load_tool_module()
+    days=pd.to_datetime(["2026-09-28","2026-09-29"])
+    source=pd.DataFrame({str(symbol):[100.,101.] for symbol in range(3000,3100)},index=days)
+    monkeypatch.setitem(sys.modules,"finlab",SimpleNamespace(data=SimpleNamespace(get=lambda key:source.copy()),login=lambda:None))
+    monkeypatch.setattr(tool,"login_finlab_sdk",lambda login:None)
+    monkeypatch.setattr(tool,"d1_counts",lambda start:{})
+    monkeypatch.setattr(tool,"start_date_for_years",lambda years:"2026-09-01")
+    from test_training_session_calendar import calendar_fixture
+    calendar,_=calendar_fixture()
+    def official(url,**kwargs):
+        if "type=MS" in url:
+            from urllib.parse import urlparse,parse_qs
+            day=parse_qs(urlparse(url).query)["date"][0]
+            return {"stat":"OK","date":day,"tables":[{"fields":["類型","整體市場","股票"],"data":[["上漲","90","60"],["下跌","90","40"]]}]}
+        market="TWSE" if "twse.com" in url else "TPEX"
+        return json.loads(calendar.data[f"capture/raw/daily_price_full_vintage/official_calendar/{market}-2026-09.json"])
+    monkeypatch.setattr(tool,"official_json_get",official)
+    from services import training_us_capture
+    monkeypatch.setattr(training_us_capture,"write_us_quote_capture",lambda **kw: None)
+    monkeypatch.setattr(tool.time,"sleep",lambda seconds:None)
+    tool.materialize_specs(years=4,run_dir=tmp_path,lanes=["daily_price"],
+        source_start_date="2026-09-29",source_end_date="2026-09-29")
+    manifest=json.loads((tmp_path/"raw/daily_price_full_vintage/manifest.json").read_text())
+    assert "market_value" in manifest["checksums"]
+    full=pd.read_parquet(tmp_path/"raw/daily_price_full_vintage/market_value.parquet")
+    daily=pd.read_parquet(tmp_path/"raw/daily_price/market_value.parquet")
+    assert list(full.index.strftime("%Y-%m-%d"))==["2026-09-28","2026-09-29"]
+    assert list(daily.index.strftime("%Y-%m-%d"))==["2026-09-29"]
+    assert full["3004"].tolist()==[100.,101.]

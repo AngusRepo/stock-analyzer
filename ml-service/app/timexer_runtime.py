@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+from .formal_feature_contract import feature_count, timexer_semantic, FEATURE131_SEMANTIC
 
 SCHEMA = "stockvision-official-timexer-v1"
 OFFICIAL_COMMIT = "76011909357972bd55a27adba2e1be994d81b327"
@@ -23,6 +24,7 @@ ARCHITECTURE = {
 
 
 def validate_settings(settings: dict, exogenous: bool) -> None:
+    timexer_semantic(settings)
     if type(exogenous) is not bool or settings.get("official_commit") != OFFICIAL_COMMIT:
         raise ValueError("timexer_source_or_variant_mismatch")
     if any(settings.get(key) != value for key, value in ARCHITECTURE.items()):
@@ -35,7 +37,7 @@ def official_model(settings: dict, exogenous: bool):
     from .vendor.timexer.models.TimeXer import Model
     validate_settings(settings, exogenous)
     return Model(SimpleNamespace(**ARCHITECTURE, features="MS" if exogenous else "M",
-        task_name="short_term_forecast", enc_in=138 if exogenous else 1,
+        task_name="short_term_forecast", enc_in=(feature_count(timexer_semantic(settings)) + 1) if exogenous else 1,
         factor=5, embed="timeF", freq="d", activation="gelu"))
 
 
@@ -46,7 +48,7 @@ def causal_input(history, features, calendar, day: str, *, settings: dict, exoge
     feature_dates, matrix = np.asarray(features[0], dtype=str), np.asarray(features[1], dtype=np.float32)
     calendar = np.asarray(calendar, dtype=str)
     if (dates.ndim != 1 or prices.shape != dates.shape or feature_dates.ndim != 1
-            or matrix.shape != (len(feature_dates), 137) or calendar.ndim != 1
+            or matrix.shape != (len(feature_dates), feature_count(timexer_semantic(settings))) or calendar.ndim != 1
             or any(np.any(values[1:] <= values[:-1]) for values in (dates, feature_dates, calendar))):
         raise ValueError("timexer_input_shape_or_order_invalid")
     end = int(np.searchsorted(dates, day, side="right"))
@@ -76,7 +78,7 @@ def causal_input(history, features, calendar, day: str, *, settings: dict, exoge
 def load_checkpoint(raw: bytes, *, expected_checksum: str, expected_variant: str, device="cpu"):
     """Explicit immutable identity; no latest pointer, refit or model fallback."""
     import torch
-    if expected_variant not in {"price", "exo137"}:
+    if expected_variant not in {"price", "exo137", "price131", "exo131"}:
         raise ValueError("timexer_unknown_variant")
     from .timexer_contract import canonical_checksum
     if canonical_checksum(hashlib.sha256(raw).hexdigest()) != canonical_checksum(expected_checksum):
@@ -86,7 +88,10 @@ def load_checkpoint(raw: bytes, *, expected_checksum: str, expected_variant: str
         raise ValueError("timexer_checkpoint_fields_invalid")
     settings, exogenous = checkpoint["settings"], checkpoint["exogenous"]
     validate_settings(settings, exogenous)
-    if exogenous != (expected_variant == "exo137"):
+    new_schema = timexer_semantic(settings) == FEATURE131_SEMANTIC
+    if new_schema != (expected_variant in {"price131", "exo131"}):
+        raise ValueError("timexer_artifact_feature_version_mismatch")
+    if exogenous != (expected_variant in {"exo137", "exo131"}):
         raise ValueError("timexer_artifact_variant_mismatch")
     model = official_model(settings, exogenous)
     model.load_state_dict(checkpoint["state_dict"], strict=True)

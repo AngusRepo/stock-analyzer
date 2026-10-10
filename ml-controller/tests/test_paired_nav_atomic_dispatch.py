@@ -53,6 +53,8 @@ def dispatched(monkeypatch):
     population['replacements'].extend([duplicate, empty])
     monkeypatch.setattr(daily, '_population', lambda: deepcopy(population))
     graph, state, _ = daily._setup(monkeypatch)
+    from daily_capture_test_dependency import stub_bound_capture_dependency
+    stub_bound_capture_dependency(monkeypatch)
     state['active_stocks'].extend(payload_builder.build_ml_universe([], [{
         'stock_id': 4, 'symbol': '1003', 'name': '1003', 'sector': 'Semiconductor',
         'market_segment': 'LISTED', 'recommendation_lane': 'tradable',
@@ -189,6 +191,13 @@ def test_bad_candidate_result_cannot_replace_formal_or_become_ready(dispatched, 
 
 def test_real_parent_engine_publishes_once_and_real_callback_preserves_atomic_results(monkeypatch, dispatched):
     graph, state, request = dispatched
+    from datetime import datetime, timezone
+    from services import pipeline_canonical_window
+    class SignalDay(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 6, tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(pipeline_canonical_window, 'datetime', SignalDay)
     import modal_app
     from app import batch_prediction, dlinear_universal, patchtst_universal, itransformer_universal, serving_resolver
     from services.pipeline_async_state_transport import encode_pipeline_state_envelope, decode_pipeline_state_envelope

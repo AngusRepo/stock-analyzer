@@ -1,6 +1,7 @@
 """Formal TabM artifact training and model_pool registration."""
 
 from __future__ import annotations
+from .formal_feature_contract import payload_semantic, FEATURE131_SEMANTIC, FEATURES131
 
 import hashlib
 import io
@@ -250,6 +251,9 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset = load_tabular_dataset(payload)
+    feature_semantic = payload_semantic(payload)
+    if feature_semantic == FEATURE131_SEMANTIC and list(dataset.feature_names) != list(FEATURES131):
+        raise ValueError("formal131_training_inventory_mismatch")
     dataset.y = recompute_global_cross_sectional_rank(
         dataset.target_returns,
         dataset.dates,
@@ -429,7 +433,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         "model_type": "tabular_neural_tabm",
         "family": "tabular_neural",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
-        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": feature_semantic,
         "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
@@ -480,6 +484,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         from .oof_lineage import save_oof_prediction_artifact
 
         oof_artifact = save_oof_prediction_artifact(
+            feature_semantic_version=feature_semantic,
             bucket=bucket,
             gcs_prefix=gcs_prefix,
             cohort_id=str(payload.get("cohort_id") or ""),

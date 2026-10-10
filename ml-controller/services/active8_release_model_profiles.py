@@ -1,6 +1,7 @@
 """Predeclared per-model profiles for the formal Active-8 canonical OOF/full-fit release train."""
 
 from __future__ import annotations
+from .formal_feature_contract import PRICE131_PROFILE, EXO131_PROFILE, PROFILES131, FEATURE131_SEMANTIC
 
 import copy
 import hashlib
@@ -14,7 +15,7 @@ MODEL_PROFILE_SCHEMA_VERSION = "active8-release-model-profiles-v3"
 TIMEXER_PRICE_PROFILE_SCHEMA = "active8-release-model-profiles-v4-timexer-price"
 TIMEXER_EXO_PROFILE_SCHEMA = "active8-release-model-profiles-v4-timexer-exo137"
 SUPPORTED_MODEL_PROFILE_SCHEMAS = {LEGACY_MODEL_PROFILE_SCHEMA_VERSION, FULL_POOL_MODEL_PROFILE_SCHEMA_VERSION,
-    MODEL_PROFILE_SCHEMA_VERSION, TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    MODEL_PROFILE_SCHEMA_VERSION, TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}
 TARGET_SEMANTIC = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SCORE_SEMANTIC = "same-market-same-date-average-tie-percentile-rank-v2"
 
@@ -314,6 +315,19 @@ def _timexer_profiles(exogenous: bool) -> dict:
     return profiles
 
 
+def _feature131_profiles(exogenous: bool) -> dict:
+    profiles = _timexer_profiles(exogenous)
+    for name, profile in profiles.items():
+        profile["payload_config"]["feature_semantic_version"] = FEATURE131_SEMANTIC
+        if name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
+            profile["payload_config"]["feature_release_mode"] = "approved_full131_v1"
+        if name in {"LightGBM", "XGBoost", "ExtraTrees"}:
+            profile["required_effective_config"].update(feature_count=131, feature_release_mode="approved_full131_v1")
+    profiles["TimeXer"]["payload_config"]["settings"]["feature_history_schema"] = FEATURE131_SEMANTIC
+    profiles["TimeXer"]["required_effective_config"]["settings"]["feature_history_schema"] = FEATURE131_SEMANTIC
+    return profiles
+
+
 def _canonical(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in value.items()}
@@ -351,6 +365,8 @@ def model_profiles(*, execution_profile: str | None = None,
         MODEL_PROFILE_SCHEMA_VERSION: ACTIVE8_RELEASE_MODEL_PROFILES,
         TIMEXER_PRICE_PROFILE_SCHEMA: _timexer_profiles(False),
         TIMEXER_EXO_PROFILE_SCHEMA: _timexer_profiles(True),
+        PRICE131_PROFILE: _feature131_profiles(False),
+        EXO131_PROFILE: _feature131_profiles(True),
     }[schema_version])
     if execution_profile is None:
         return profiles

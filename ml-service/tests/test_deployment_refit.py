@@ -115,7 +115,7 @@ def test_native_tree_artifact_is_refitted_with_same_capacity(monkeypatch):
     data=panel()
     raw=io.BytesIO()
     np.savez(raw, X=data.X, y=data.y, target_returns=data.target_returns, dates=data.dates,
-             symbols=data.symbols, markets=data.markets, label_known_dates=data.label_known_dates)
+             symbols=data.symbols, markets=data.markets, label_known_dates=data.label_known_dates, missingness_rates=np.zeros(len(data.feature_names)))
     class Bucket:
         def __init__(self): self.values={}
         def blob(self,name):
@@ -128,6 +128,7 @@ def test_native_tree_artifact_is_refitted_with_same_capacity(monkeypatch):
                 def upload_from_file(self,stream,**kwargs):parent.values[name]=stream.read()
             return Blob()
     bucket=Bucket()
+    bucket.values["universal/prep/feature_names.json"]=json.dumps(data.feature_names).encode()
     monkeypatch.setattr(ut,"_get_bucket",lambda:bucket)
     monkeypatch.setattr(ut,"download_existing_blobs",lambda *a,**k:[("universal/prep/batch_0.npz",raw.getvalue())])
     monkeypatch.setattr(ut,"collect_prep_lineage",lambda *a,**k:{})

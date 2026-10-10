@@ -11,6 +11,7 @@ in-memory. Reduces D1 round-trips from ~270 (33 stocks ? 8) to ~10.
 from __future__ import annotations
 import logging
 import json
+import math
 from dataclasses import dataclass, field, asdict
 from datetime import date, timedelta
 from typing import Any, Optional
@@ -585,6 +586,7 @@ def _bulk_load_prices(
     limit: int | None = None,
     *,
     as_of_date: str,
+    stock_symbols: dict[int, str] | None = None,
 ) -> dict[int, list[dict]]:
     """
     Load last `limit` rows of stock_prices for each stock_id.
@@ -620,6 +622,35 @@ def _bulk_load_prices(
                 "close": r["close"], "volume": r["volume"],
                 "adj_close": r.get("adj_close"), "avg_price": r.get("avg_price"),
             })
+    if stock_symbols:
+        # A legacy mirror can retain raw-close substitutes from older writes.
+        # Prefer the observable canonical adjustment without rebasing the series.
+        symbol_ids = {stock_symbols[sid]: sid for sid in stock_ids if sid in stock_symbols}
+        canonical = []
+        for chunk in _d1_bind_chunks(list(symbol_ids)):
+            placeholders = ",".join("?" * len(chunk))
+            canonical.extend(MARKET_D1_CLIENT.query(
+                f"SELECT stock_id AS symbol,date,close,adj_close,as_of_date FROM canonical_market_daily "
+                f"WHERE stock_id IN ({placeholders}) AND source='finlab.price' "
+                f"AND date >= date(?,'-{years} years') AND date <= date(?) "
+                f"AND date(as_of_date) <= date(?) ORDER BY stock_id,date",
+                [*chunk, as_of_date, as_of_date, as_of_date], timeout=120.0,
+            ))
+        by_key = {(r['symbol'], r['date']): r for r in canonical}
+        for symbol, sid in symbol_ids.items():
+            for row in grouped[sid]:
+                observed = by_key.get((symbol, row['date']))
+                row['adj_close_source'] = 'legacy.stock_prices'
+                if observed is None or observed.get('adj_close') is None:
+                    continue
+                adjusted = float(observed['adj_close'])
+                close = float(observed['close'])
+                if (not math.isfinite(adjusted) or adjusted <= 0
+                        or not math.isfinite(close) or close <= 0
+                        or not math.isclose(close, float(row['close']), rel_tol=1e-8, abs_tol=1e-8)):
+                    raise ValueError('payload_canonical_adjusted_price_basis_invalid')
+                row.update(adj_close=adjusted, adj_close_source='canonical_market_daily:finlab.price',
+                           adj_close_as_of_date=observed['as_of_date'])
     # Truncate to last `limit` per stock (oldest is dropped if > limit)
     for sid in grouped:
         if len(grouped[sid]) > row_limit:
@@ -737,17 +768,19 @@ def _bulk_load_chips(
                 [*chunk, as_of_date, date_modifier, as_of_date, as_of_date],
                 timeout=60.0,
             ))
-        for r in canonical_rows:
+        for r in sorted(canonical_rows, key=lambda value: (
+                value['symbol'], value['date'], str(value.get('as_of_date') or ''),
+                str(value.get('source') or ''))):
             sym = r["symbol"]
             if sym not in grouped_by_date:
                 continue
             current = grouped_by_date[sym].get(r["date"], {"date": r["date"]})
+            field_sources = current.setdefault('chip_field_sources', {})
+            for field in ('foreign_net', 'trust_net', 'dealer_net', 'margin_balance', 'short_balance'):
+                if r.get(field) is not None:
+                    current[field] = r[field]
+                    field_sources[field] = r.get('source') or 'canonical_chip_daily'
             current.update({
-                "foreign_net": r.get("foreign_net"),
-                "trust_net": r.get("trust_net"),
-                "dealer_net": r.get("dealer_net"),
-                "margin_balance": r.get("margin_balance"),
-                "short_balance": r.get("short_balance"),
                 "chip_source": r.get("source") or "canonical_chip_daily",
                 "market_segment": r.get("market_segment"),
                 "as_of_date": r.get("as_of_date"),
@@ -778,8 +811,8 @@ def _bulk_load_chips(
             net_shares = float(r.get("net_shares") or 0.0)
             if str(current.get("market_segment") or r.get("market_segment") or "").upper() == "EMERGING":
                 current["dealer_net"] = net_shares
-            else:
-                current["dealer_net"] = float(current.get("dealer_net") or 0.0) + net_shares
+                current.setdefault('chip_field_sources', {})['dealer_net'] = r.get('source') or 'finlab.rotc_broker_transactions'
+            # Listed/OTC broker flow is not institutional dealer flow.
             current["broker_net_shares"] = float(current.get("broker_net_shares") or 0.0) + net_shares
             current["broker_estimated_amount"] = float(current.get("broker_estimated_amount") or 0.0) + float(r.get("estimated_amount") or 0.0)
             current["broker_count"] = r.get("broker_count")
@@ -1211,10 +1244,11 @@ def capture_payload_sources(active_stocks: list[dict], decision_date: str) -> di
     else:
         stock_ids = [s["id"] for s in active_stocks]
         symbols = [s["symbol"] for s in active_stocks]
+        id_to_sym = {s['id']: s['symbol'] for s in active_stocks}
         logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
     
         # ?? Bulk load all per-stock data ????????????????????????????????????????
-        prices_by_id = _bulk_load_prices(stock_ids, as_of_date=decision_date)
+        prices_by_id = _bulk_load_prices(stock_ids, as_of_date=decision_date, stock_symbols=id_to_sym)
         indicators_by_id = _bulk_load_indicators(stock_ids, as_of_date=decision_date)
         chips_by_sym = _bulk_load_chips(symbols, as_of_date=decision_date)
         sentiment_by_id = _bulk_load_sentiment(stock_ids, as_of_date=decision_date)
@@ -1403,6 +1437,8 @@ def build_payloads(
             "retail_pct": misc.get("retail_pct"),
         }
 
+        if misc.get("per_stock_ts") is not None:
+            env_for_stock["per_stock_ts"] = misc["per_stock_ts"]
         latest_price = prices_by_id.get(sid, [])[-1] if prices_by_id.get(sid) else {}
         stock_meta = _build_stock_meta(symbol, sym_to_sector, sector_enc, sector_avg, stock_returns, prices_by_id.get(sid, []))
         stock_meta = build_stock_meta_with_segment(stock_meta, stock, latest_price)

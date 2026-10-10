@@ -7,14 +7,16 @@ ARCHITECTURE = {'seq_len':168, 'patch_len':24, 'pred_len':5, 'd_model':512,
 
 
 def metadata_contract(metadata):
+    from .formal_feature_contract import FEATURE131_SEMANTIC, LEGACY_SEMANTIC
     config = metadata.get('timexer') or {}
+    expected_semantic = FEATURE131_SEMANTIC if config.get('variant') in ('price131', 'exo131') else LEGACY_SEMANTIC
     if (metadata.get('schema_version') != SCHEMA+'-metadata'
-            or config.get('variant') not in ('price','exo137')
+            or config.get('variant') not in ('price','exo137','price131','exo131')
             or config.get('official_commit') != OFFICIAL_COMMIT
             or config.get('architecture') != ARCHITECTURE
             or config.get('inference_device') != 'cuda'
             or config.get('matmul_precision') != 'high'
-            or config.get('feature_history_schema') != 'formal137-pit-asof-source-quality-v3'
+            or config.get('feature_history_schema') != expected_semantic
             or config.get('max_exogenous_staleness_sessions') != 1
             or metadata.get('raw_score_semantic_version') != SCORE_SEMANTIC
             or metadata.get('seq_len') != 168 or metadata.get('pred_len') != 5):

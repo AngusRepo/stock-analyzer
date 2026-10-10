@@ -13,6 +13,7 @@ Real LangGraph this time:
   - Linear edges screener_load ??market_env ??payloads ??ml_predict ??recommend ??llm_reasons ??write_d1
 """
 from __future__ import annotations
+from services.formal_feature_contract import FEATURE131_SEMANTIC, LEGACY_SEMANTIC, PRICE131_PROFILE, metadata_feature_valid
 import asyncio
 import hashlib
 import json
@@ -654,6 +655,7 @@ class PipelineStateV2(TypedDict, total=False):
 
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
+    timexer_feature_source: dict           # sealed shared root/sequence/risk capture
     payload_source_observations: dict       # Original bulk-read observations; retained by existing async state artifact
     pipeline_sequence_observations: dict    # Dated adjusted prices shared by L2, formal L3 and Atomic slates
     paired_nav_atomic_inputs: dict          # Canonical full replacement population and own pre-L2 stock slates
@@ -848,6 +850,20 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
     sources = state.get('payload_source_observations')
     if sources is None:
         sources = capture_payload_sources(state['active_stocks'], state['run_date'])
+    capture_source = state.get("timexer_feature_source")
+    if sources.get("stocks"):
+        from services.active8_prep_lifecycle import ensure_active8_daily_prep
+        from services.daily_capture_sources import bind_daily_capture_sources
+        if capture_source is None:
+            if state.get("pipeline_sequence_observations") is not None:
+                raise ValueError("daily_capture_cannot_replace_frozen_sequence")
+            capture_source = await ensure_active8_daily_prep(end_date=state["run_date"], feature_only=True,
+                model_profile_schema_version="active8-release-model-profiles-v4-timexer-price")
+        sources = await asyncio.to_thread(bind_daily_capture_sources, sources,
+            capture_source=capture_source, decision_date=state["run_date"])
+    global_history=sources.get("global_market_history")
+    if global_history is not None:
+        market_env.history=global_history
     def build_slate(stocks):
         return build_payloads(
             active_stocks=stocks,
@@ -860,7 +876,8 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
             frozen_sources=sources,
         )
     payloads_dict = [_to_dict(p) for p in build_slate(state['active_stocks'])]
-    result = {"payloads": payloads_dict, "payload_source_observations": sources}
+    result = {"payloads": payloads_dict, "payload_source_observations": sources,
+              "timexer_feature_source": capture_source}
     atomic = state.get('paired_nav_atomic_inputs')
     if isinstance(atomic, dict) and atomic.get('status') == 'pre_l2_inputs_captured':
         from services.paired_nav_atomic_inputs import validate_daily_inputs
@@ -1501,8 +1518,16 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
         raw = list(union.values())
         # The dated canonical path reads payload dates and verified adjusted
         # prices itself; eagerly parsing an unused raw series can abort the pool.
-        series, metadata = enrich_state_space_series_with_long_history([],
-            target_points=daily_sequence_target_points(), payloads=raw, decision_date=state['run_date'])
+        source_packet = state.get("payload_source_observations") or {}
+        if source_packet.get("single_capture_binding"):
+            from services.daily_capture_sources import sequences_from_daily_capture
+            series, metadata = sequences_from_daily_capture(raw,
+                packet=source_packet, decision_date=state['run_date'], target_points=daily_sequence_target_points())
+        else:
+            # Historical diagnostic adapter only. New builds and dispatches
+            # require a bound source and cannot enter this legacy branch.
+            series, metadata = enrich_state_space_series_with_long_history([],
+                target_points=daily_sequence_target_points(), payloads=raw, decision_date=state['run_date'])
         body = _json_safe({'schema_version': 'pipeline-sequence-observations-v1', 'signal_date': state['run_date'],
             'input_fingerprints': fingerprints, 'series': series, 'metadata': metadata,
             'observed_at': datetime.now(timezone.utc).isoformat()})
@@ -2587,7 +2612,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             holdings=alpha_policy['l4Distribution']['runtime']['account']['holdings'],
             payloads=state['payloads'], signal_date=state['run_date'], lookback=gnn_return_history_lookback())
         canonical_risk_payloads = await asyncio.to_thread(load_canonical_risk_payloads,
-            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=gnn_return_history_lookback())
+            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=gnn_return_history_lookback(),
+            capture_source=state.get('timexer_feature_source'))
     allocator_history = capture_allocator_return_history(payloads=state['payloads'], signal_date=state['run_date'],
         saved=state.get('pipeline_allocator_history_context'), held_payloads=held_risk_payloads,canonical_risk_payloads=canonical_risk_payloads)
     if distribution_policy is not None and (allocator_history['schema_version'] != 'allocator-return-history-context-v3'
@@ -2622,6 +2648,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         formal_model_manifest=_pipeline_frozen_serving_manifest(state),
         recommendation_context=recommendation_context,
         allocator_history_context=allocator_history,
+        risk_capture_source=state.get("timexer_feature_source"),
         atomic_recommendation_inputs=atomic_prepared,
         atomic_recommendation_result=atomic_recommendation,
         query=LEARNING_D1_CLIENT.query,
@@ -3401,7 +3428,7 @@ def _pipeline_modal_active8_shadow_projection(
             ).strip()
             if (
                 model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
-                and feature_semantic != FORMAL_FEATURE_SEMANTIC_VERSION
+                and not metadata_feature_valid(metadata)
             ):
                 raise RuntimeError(
                     "candidate_feature_semantic_mismatch:"
@@ -4034,7 +4061,7 @@ def _build_pipeline_modal_serving_manifest(
         if (
             serving_eligible
             and model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
-            and feature_semantic_version != FORMAL_FEATURE_SEMANTIC_VERSION
+            and feature_semantic_version not in (LEGACY_SEMANTIC, FEATURE131_SEMANTIC)
         ):
             raise RuntimeError(
                 "pipeline_modal_serving_manifest:feature_semantic_mismatch:"
@@ -4303,6 +4330,17 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     ):
         raise RuntimeError("pipeline_modal_prediction_request:serving_manifest_invalid")
 
+    from services.paired_nav_journal import digest
+    binding=(state.get("payload_source_observations") or {}).get("single_capture_binding") or {}
+    if (binding.get("schema_version") != "daily-single-capture-binding-v1"
+            or binding.get("feature_source_digest") != digest(state.get("timexer_feature_source"))):
+        raise ValueError("pipeline_daily_single_capture_required")
+    source_packet=state["payload_source_observations"]
+    from services.payload_builder import _read_frozen_payload_sources
+    _read_frozen_payload_sources(source_packet, source_packet["stocks"], state["run_date"])
+    saved_sequence=state.get("pipeline_sequence_observations")
+    if saved_sequence is not None and (saved_sequence.get("metadata") or {}).get("source_packet_checksum") != source_packet["source_checksum"]:
+        raise ValueError("pipeline_daily_sequence_capture_mismatch")
     payloads = state.get("l3_payloads") or state.get("payloads") or []
     batch_ab_key = "|".join(sorted(
         str(p.get("symbol") or p.get("stock_id") or "")
@@ -4387,10 +4425,20 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     timexer_feature_source = state.get("timexer_feature_source")
     needs_timexer = ("TimeXer" in sequence_contracts or "TimeXer" in active8_shadow_sequence_contracts
         or any("TimeXer" in item.get("sequence_contracts", {}) for item in (nav_requests or [])))
-    if needs_timexer and timexer_feature_source is None:
+    if needs_timexer:
         from services.active8_prep_lifecycle import ensure_active8_daily_prep
-        timexer_feature_source = await ensure_active8_daily_prep(end_date=state["run_date"], feature_only=True, model_profile_schema_version="active8-release-model-profiles-v4-timexer-price")
-        state["timexer_feature_source"] = timexer_feature_source
+        contracts = [sequence_contracts, active8_shadow_sequence_contracts,
+                     *[item.get("sequence_contracts", {}) for item in (nav_requests or [])]]
+        semantics = {(item["TimeXer"].get("timexer") or {}).get("feature_history_schema", LEGACY_SEMANTIC)
+                     for item in contracts if "TimeXer" in item}
+        if not semantics <= {LEGACY_SEMANTIC, FEATURE131_SEMANTIC}:
+            raise ValueError("timexer_feature_history_schema_unknown")
+        if timexer_feature_source is None:
+            timexer_feature_source = await ensure_active8_daily_prep(end_date=state["run_date"],
+                feature_only=True, model_profile_schema_version="active8-release-model-profiles-v4-timexer-price")
+            state["timexer_feature_source"] = timexer_feature_source
+        from services.formal_feature_contract import inference_feature_sources
+        timexer_feature_source = inference_feature_sources(timexer_feature_source, semantics)
     recovery_lineage = state.get("snapshot_recovery_lineage") if isinstance(state.get("snapshot_recovery_lineage"), dict) else {}
     sequence_input_contract_core = {
         "schema_version": "pipeline-modal-sequence-input-contract-v2",

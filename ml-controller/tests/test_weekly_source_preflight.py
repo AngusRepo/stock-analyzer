@@ -72,7 +72,13 @@ def test_declared_zero_row_component_is_not_absence_or_content_certification(mon
 
 
 def test_present_component_retains_original_replay_arguments_and_provenance(monkeypatch):
-    snapshot, dataset, metrics, calls = manifest(), object(), object(), []
+    from types import SimpleNamespace
+    dataset = SimpleNamespace(
+        trading_days=['2026-08-21'],
+        get_universe_at=lambda day: ['2330'],
+        corporate_sources={'2026-08-21': {'actions': [], 'covered_symbols': ['2330'], 'blockers': {}}},
+    )
+    snapshot, metrics, calls = manifest(), object(), []
     monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: snapshot)
     def load(**kwargs):
         calls.append(('load', kwargs))

@@ -325,6 +325,8 @@ CORE_SPECS = [
     ),
 ]
 
+CORE_SPECS.append(DatasetSpec(lane="training_shareholding",kind="raw_frames",keys={"inventory":"inventory"}))
+
 for spec in CORE_SPECS:
     if spec.lane == "fundamental_factor_diversity":
         spec.keys.update({
@@ -680,15 +682,58 @@ def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
 PIT_DEADLINE_NAMESPACES = ("fundamental_features:", "financial_statement:")
 
 
-def normalize_finlab_wide_field(df: pd.DataFrame, *, api_key_name: str) -> pd.DataFrame:
+TRAINING_AUX_FIELDS = {
+    "chip_diversity": {"margin_balance":"margin_balance", "short_balance":"short_balance"},
+    "revenue": {"revenue":"revenue", "yoy":"revenue_yoy", "mom":"revenue_mom"},
+    "fundamental_factor_diversity": {"eps":"eps", "roe":"roe", "pe":"pe", "pb":"pb",
+        "dividend_yield":"dividend_yield", "revenue_growth_yoy":"revenue_growth_yoy"},
+}
+
+def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None):
+    """Preserve full vendor windows before daily-tail materialization clips them."""
+    required=TRAINING_AUX_FIELDS.get(lane,{})
+    if not required:return
+    missing=sorted(set(required)-set(frames))
+    if missing:raise ValueError("training_auxiliary_source_missing:"+lane+":"+",".join(missing))
+    root=run_dir/"raw"/"training_auxiliary_full_vintage";root.mkdir(parents=True,exist_ok=True)
+    path=root/"manifest.json"
+    manifest=json.loads(path.read_text(encoding="utf8")) if path.exists() else {
+        "schema_version":"finlab-training-auxiliary-single-capture-v1", "capture_id":run_dir.name,
+        "end_date":end_date, "fields":{}, "financial_value_vintage":"retrospective_vendor_not_original_revision_certified",
+        **sealed_raw_source_binding(run_dir)}
+    if manifest["capture_id"]!=run_dir.name or manifest["end_date"]!=end_date:
+        raise ValueError("training_auxiliary_capture_identity_mismatch")
+    for source,target in required.items():
+        requested_start=start_date or start_date_for_years(years)
+        persistent=target in {"eps","roe","revenue_growth_yoy","revenue","revenue_yoy","revenue_mom"}
+        # The reader needs the last already-published value before its first session.
+        # Keep observed availability dates; never manufacture a boundary observation.
+        frame=filter_date_range(frames[source],start_date=None if persistent else requested_start,end_date=end_date)
+        if frame.empty or not frame.notna().any().any():raise ValueError("training_auxiliary_empty:"+target)
+        output=root/(target+".parquet");write_parquet(output,frame)
+        manifest["fields"][target]={"sha256":hashlib.sha256(output.read_bytes()).hexdigest(),
+            "rows":len(frame),"columns":list(frame.columns),"start_date":str(frame.index.min())[:10],
+            "end_date":str(frame.index.max())[:10],"availability":"deadline_and_vendor_disclosure_next_session" if target in {"eps","roe","revenue_growth_yoy"} else "vendor_date_index",
+            "null_count":int(frame.isna().sum().sum()),
+            "requested_start_date":requested_start,
+            "history_policy":"available_history_through_end_for_persistent_boundary" if persistent else "explicit_daily_window",
+            "availability_proof":frames[source].attrs.get("financial_availability_proof"),
+            "monthly_availability_proof":frames[source].attrs.get("monthly_availability_proof")}
+        if manifest["fields"][target]["monthly_availability_proof"] is not None:
+            manifest["fields"][target]["availability"]="vendor_locked_key_date_next_observed_session"
+    path.write_text(json.dumps(manifest,ensure_ascii=False,sort_keys=True),encoding="utf8")
+
+
+def normalize_finlab_wide_field(df: pd.DataFrame, *, api_key_name: str, date_owners=None, sessions=None) -> pd.DataFrame:
     """Normalize one FinLab field after applying its point-in-time date owner."""
 
     requires_deadline = str(api_key_name or "").startswith(PIT_DEADLINE_NAMESPACES)
     if requires_deadline:
         deadline = getattr(df, "deadline", None)
-        if not callable(deadline):
+        if date_owners is None and not callable(deadline):
             raise ValueError(f"finlab_deadline_alignment_unavailable:{api_key_name}")
-        df = deadline()
+        from services.financial_availability import align_financial_availability
+        return align_financial_availability(df, date_owners, sessions)
     return normalize_wide_index(df)
 
 
@@ -1235,6 +1280,120 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str), encoding="utf-8")
 
 
+def sealed_raw_source_binding(run_dir: Path) -> dict[str, Any]:
+    path = run_dir / "sealed-raw-source.json"
+    if not path.exists():
+        return {}
+    raw = path.read_bytes()
+    return {"sealed_raw_source": json.loads(raw), "sealed_raw_source_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def write_adjusted_price_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Path,
+                                 years: int, end_date: str | None, start_date: str | None = None) -> None:
+    """Seal one complete SDK capture separately from canonical daily rows."""
+    required = ("adj_close", "adj_open")
+    if not all(field in frames for field in required):
+        return
+    fields = tuple(field for field in ("adj_close", "adj_open", "open", "high", "low", "close", "volume", "value", "market_value") if field in frames)
+    root = run_dir / "raw" / "daily_price_full_vintage"
+    checksums = {}
+    for field in fields:
+        frame = filter_date_range(frames[field], start_date=start_date or start_date_for_years(years), end_date=end_date)
+        path = root / f"{field}.parquet"
+        write_parquet(path, frame)
+        checksums[field] = hashlib.sha256(path.read_bytes()).hexdigest()
+    write_json(root / "manifest.json", {
+        "schema_version": "finlab-adjusted-price-single-capture-v1",
+        "capture_id": run_dir.name,
+        "end_date": end_date,
+        "checksums": checksums,
+        **sealed_raw_source_binding(run_dir),
+    })
+
+
+def write_official_training_calendar(*, run_dir: Path) -> None:
+    """Seal whole-history official sessions before publishing a new full capture."""
+    from services.training_session_calendar import official_month_sessions, price_session_dates, require_session_equality
+    root=run_dir/"raw/daily_price_full_vintage"
+    manifest_path=root/"manifest.json"
+    if not manifest_path.exists():return  # Scoped fetches cannot publish a full training capture.
+    manifest=json.loads(manifest_path.read_bytes())
+    close=root/"close.parquet"
+    if not close.exists():raise ValueError("training_calendar_close_required")
+    observed=price_session_dates(close.read_bytes())
+    if not observed:raise ValueError("training_calendar_prices_empty")
+    start,end=min(observed),manifest["end_date"]
+    sources=[];sessions={"TWSE":[],"TPEX":[]}
+    for year in range(int(start[:4]),int(end[:4])+1):
+        for month in range(1,13):
+            ym=f"{year:04}-{month:02}"
+            if not start[:7]<=ym<=end[:7]:continue
+            for market in sessions:
+                path=root/"official_calendar"/f"{market}-{ym}.json"
+                if not path.exists():
+                    url=(f"https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date={year:04}{month:02}01&response=json"
+                        if market=="TWSE" else f"https://www.tpex.org.tw/www/indexInfo/inx?date={year:04}/{month:02}/01&response=json")
+                    from services.official_history_cache import read_cached,write_cached
+                    # Closed months are immutable evidence. Current month is keyed
+                    # by decision date so yesterday's response cannot hide today.
+                    cache_key=f"calendar/{market}-{ym}"+(f"-{end}" if ym==end[:7] else "")+".json"
+                    cached=read_cached(cache_key)
+                    body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
+                    official_month_sessions(body,market,ym)
+                    write_json(path,body)
+                    if cached is None:
+                        write_cached(cache_key,path.read_bytes())
+                        time.sleep(2)
+                raw=path.read_bytes();body=json.loads(raw)
+                sessions[market].extend(official_month_sessions(body,market,ym))
+                sources.append({"market":market,"month":ym,"sha256":hashlib.sha256(raw).hexdigest()})
+    require_session_equality(observed,sessions,start=start,end=end)
+    receipt={"schema_version":"official-training-calendar-v1","capture_id":manifest["capture_id"],
+        "start":start,"end":end,"close_sha256":manifest["checksums"]["close"],"sources":sources}
+    path=root/"training_calendar.json";write_json(path,receipt)
+    manifest["official_calendar_sha256"]=hashlib.sha256(path.read_bytes()).hexdigest()
+    write_json(manifest_path,manifest)
+
+
+def write_training_breadth_capture(*,run_dir: Path) -> None:
+    from services.training_global_capture import parse_breadth
+    from services.training_session_calendar import price_session_dates
+    from services.official_history_cache import read_cached,write_cached
+    root=run_dir/"raw/daily_price_full_vintage"
+    if not (root/"manifest.json").exists():return
+    manifest=json.loads((root/"manifest.json").read_bytes())
+    days=price_session_dates((root/"close.parquet").read_bytes());sources=[]
+    for day in days:
+        path=root/"official_breadth"/(day+".json")
+        if not path.exists():
+            key="breadth/TWSE-"+day+".json";raw=read_cached(key)
+            body=json.loads(raw) if raw is not None else official_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
+            parse_breadth(body,day);write_json(path,body)
+            if raw is None:write_cached(key,path.read_bytes());time.sleep(4)
+        raw=path.read_bytes();parse_breadth(json.loads(raw),day)
+        sources.append({"date":day,"sha256":hashlib.sha256(raw).hexdigest()})
+    write_json(root/"training_breadth.json",{"schema_version":"training-breadth-capture-v1","capture_id":manifest["capture_id"],"end":manifest["end_date"],"sources":sources})
+
+
+def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Path,
+                                years: int, end_date: str | None, start_date: str | None = None) -> None:
+    fields = ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net")
+    if not all(field in frames for field in fields):
+        return
+    root = run_dir / "raw" / "chip_diversity_full_vintage"
+    checksums = {}
+    for field in fields:
+        frame = filter_date_range(frames[field], start_date=start_date or start_date_for_years(years), end_date=end_date)
+        path = root / f"{field}.parquet"
+        write_parquet(path, frame)
+        checksums[field] = hashlib.sha256(path.read_bytes()).hexdigest()
+    write_json(root / "manifest.json", {
+        "schema_version": "finlab-institutional-single-capture-v1", "capture_id": run_dir.name,
+        "end_date": end_date, "checksums": checksums,
+        **sealed_raw_source_binding(run_dir),
+    })
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
 
@@ -1601,18 +1760,22 @@ def _row_value(row: dict[str, Any], names: list[str]) -> Any:
 
 
 def _clean_symbol(value: Any, row: dict[str, Any] | None = None) -> str:
-    import re
-
-    text = str(value or "").strip()
-    match = re.search(r"\b(\d{4,6})\b", text)
-    if match:
-        return match.group(1)
+    """Read an explicit security-code field; never infer identity from prose."""
+    candidates = [value]
     if row:
-        joined = " ".join(str(v) for v in row.values() if pd.notna(v))
-        match = re.search(r"\b(\d{4,6})\b", joined)
-        if match:
-            return match.group(1)
-    return ""
+        candidates.extend(row.get(key) for key in
+                          ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號"))
+    symbols = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        # Keep leading zeroes and letter suffixes. Date strings, float IDs,
+        # lists, URLs and embedded numeric fragments are not stock identities.
+        match = re.fullmatch(r"(\d{4,6}(?:[A-Z][A-Z0-9]?)?)(?:[ \t]+[^\d].*)?", text)
+        if match and len(match.group(1)) <= 6:
+            symbols.add(match.group(1))
+    return next(iter(symbols)) if len(symbols) == 1 else ""
 
 
 def _clean_date(value: Any, fallback: str) -> str:
@@ -1807,18 +1970,34 @@ def materialize_specs(
     lanes: list[str] | None = None,
     source_start_date: str | None = None,
     source_end_date: str | None = None,
+    training_capture_start_date: str | None = None,
     require_official_market_summary: bool = False,
     generated_at: str | None = None,
     key_scope: dict[str, set[str]] | None = None,
     reuse_successful_artifacts: bool = False,
     gcs_bucket: str | None = None,
     gcs_prefix: str | None = None,
+    sealed_raw_root: str | Path | None = None,
+    sealed_raw_receipt_sha256: str | None = None,
+    financial_lifecycle_manifest: str | Path | None = None,
+    financial_lifecycle_sha256: str | None = None,
+    monthly_contract_manifest: str | Path | None = None,
+    monthly_contract_sha256: str | None = None,
+    price_venue_scope_manifest: str | Path | None = None,
+    price_venue_scope_sha256: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    from finlab import data, login
-
-    login_finlab_sdk(login)
     start = source_start_date or start_date_for_years(years)
-    counts = d1_counts(start)
+    if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
+        raise ValueError("price_venue_scope_pair_required")
+    if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
+        raise ValueError("price_venue_scope_requires_new_sealed_materialization")
+    if training_capture_start_date is not None:
+        try:
+            parsed = datetime.strptime(training_capture_start_date, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != training_capture_start_date or training_capture_start_date > start:
+                raise ValueError("training_capture_start_after_materialization_start")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("training_capture_start_invalid") from exc
     dataset_summaries: list[dict[str, Any]] = []
     diff_reports: list[dict[str, Any]] = []
     source_key_reports: list[dict[str, Any]] = []
@@ -1838,6 +2017,121 @@ def materialize_specs(
     specs = [spec for spec in CORE_SPECS if not requested_lanes or spec.lane in requested_lanes]
     if os.environ.get("INCLUDE_FINLAB_CNYES_NEWS", "0").lower() in {"1", "true", "yes"}:
         specs.extend(OPTIONAL_NEWS_SPECS)
+
+    financial_keys = {key for spec in specs for key in spec_keys_for_scope(spec, key_scope).values()
+                      if key.startswith(PIT_DEADLINE_NAMESPACES)}
+    # Old aligned artifacts do not preserve the native quarter/disclosure proof.
+    if financial_keys and reuse_successful_artifacts:
+        raise ValueError("financial_publication_artifact_reuse_unverified")
+    monthly_keys = {key for spec in specs for key in spec_keys_for_scope(spec, key_scope).values()
+                    if key.startswith("monthly_revenue:")}
+    if monthly_contract_manifest or monthly_contract_sha256:
+        if not (monthly_contract_manifest and monthly_contract_sha256 and sealed_raw_root and monthly_keys and source_end_date):
+            raise ValueError("monthly_contract_requires_sealed_source_and_explicit_end")
+    sealed_source = None
+    if bool(sealed_raw_root) != bool(sealed_raw_receipt_sha256):
+        raise ValueError("sealed_root_and_receipt_sha_required_together")
+    if sealed_raw_root:
+        if not requested_lanes or reuse_successful_artifacts:
+            raise ValueError("sealed_source_requires_explicit_scope_no_reuse")
+        if (run_dir / "raw").exists() or (run_dir / "sealed-raw-source.json").exists():
+            raise ValueError("sealed_source_requires_fresh_output")
+        selected = [spec for spec in specs if not key_scope or spec.lane in key_scope]
+        if any(key_scope.get(spec.lane, set()) - set(spec.keys) for spec in selected):
+            raise ValueError("sealed_source_unknown_scoped_field")
+        if any(spec.kind != "wide_fields" for spec in selected):
+            raise ValueError("sealed_source_cannot_mix_other_source_kinds")
+        requested = {key for spec in selected for key in spec_keys_for_scope(spec, key_scope).values()}
+        for spec in selected:
+            if spec.lane == "daily_price":
+                requested.add(spec.keys["close"])
+        from services.finlab_sealed_raw import SealedDailySource, SealedFinancialSource
+        if monthly_keys:
+            if not (monthly_contract_manifest and monthly_contract_sha256 and source_end_date):
+                raise ValueError("sealed_monthly_requires_explicit_contract_and_end")
+            from services.monthly_availability import SealedMonthlySource
+            sealed_source = SealedMonthlySource(sealed_raw_root, sealed_raw_receipt_sha256, requested,
+                contract_path=monthly_contract_manifest, contract_sha=monthly_contract_sha256,
+                start_date=start, end_date=source_end_date)
+        else:
+            source_class = SealedFinancialSource if financial_keys else SealedDailySource
+            sealed_source = source_class(sealed_raw_root, sealed_raw_receipt_sha256, requested)
+        data = sealed_source
+    else:
+        from finlab import data, login
+        login_finlab_sdk(login)
+    lifecycle = None
+    if financial_lifecycle_manifest or financial_lifecycle_sha256:
+        if not (financial_lifecycle_manifest and financial_lifecycle_sha256 and sealed_source is not None and financial_keys and source_end_date):
+            raise ValueError('financial_lifecycle_requires_pinned_financial_source_and_window')
+        from services.financial_lifecycle import verify_financial_lifecycle
+        lifecycle = verify_financial_lifecycle(financial_lifecycle_manifest, financial_lifecycle_sha256,
+            sealed_source, start_date=start, end_date=source_end_date)
+        sealed_source.binding['financial_lifecycle'] = lifecycle
+    # Preflight every requested financial field before D1 reads or any batch output.
+    # Preserve the deadline lower bound and resolve later vendor disclosure before output.
+    financial_frames = {}
+    if financial_keys:
+        date_owners = (data.get("etl:financial_statements_disclosure_dates"),
+                       data.get("etl:financial_statements_deadline"))
+        financial_sessions = data.get("price:收盤價").index
+        financial_native = {}
+        for key in sorted(financial_keys):
+            financial_native[key] = data.get(key)
+            selected_native = financial_native[key]
+            scope_proof = None
+            if sealed_source is not None:
+                from services.financial_scope import scope_financial_history
+                selected_native, scope_proof = scope_financial_history(
+                    selected_native, date_owners, financial_sessions,
+                    symbols=sealed_source.roster, start_date=start, lifecycle=lifecycle)
+            financial_frames[key] = normalize_finlab_wide_field(
+                selected_native, api_key_name=key, date_owners=date_owners, sessions=financial_sessions)
+            if scope_proof is not None:
+                financial_frames[key].attrs["financial_availability_proof"]["request_scope"] = scope_proof
+    counts = d1_counts(start)
+    if financial_keys:
+        owner_root = run_dir / "raw" / "financial_availability"
+        bindings = {}
+        for name, owner in zip(("disclosure", "deadline"), date_owners):
+            path = owner_root / (name + ".parquet")
+            write_parquet(path, owner)
+            bindings[name] = {"path": str(path.relative_to(run_dir)), "sha256": file_sha256(path)}
+        path = owner_root / "sessions.parquet"
+        write_parquet(path, pd.DataFrame(index=financial_sessions))
+        bindings["sessions"] = {"path": str(path.relative_to(run_dir)), "sha256": file_sha256(path)}
+        stems = {key: hashlib.sha256(key.encode("utf8")).hexdigest()[:16] for key in financial_frames}
+        if len(set(stems.values())) != len(stems):
+            raise ValueError("financial_availability_filename_collision")
+        for key, frame in financial_frames.items():
+            stem = stems[key]
+            native_path = owner_root / (stem + "-native.parquet")
+            events_path = owner_root / (stem + "-events.parquet")
+            write_parquet(native_path, financial_native[key])
+            frame.attrs["financial_availability_events"].write_parquet(events_path)
+            proof = {**frame.attrs["financial_availability_proof"], "date_owners": bindings,
+                     "dataset_sha256": hashlib.sha256(key.encode("utf8")).hexdigest(),
+                     "native_sha256": file_sha256(native_path), "events_sha256": file_sha256(events_path),
+                     "native_path": str(native_path.relative_to(run_dir)), "events_path": str(events_path.relative_to(run_dir))}
+            frame.attrs = {"financial_availability_proof": proof}
+            write_json(owner_root / (stem + ".json"), {"dataset": key, **proof})
+    if sealed_source is not None and monthly_keys:
+        owner_root = run_dir / "raw" / "monthly_availability"
+        owner_root.mkdir(parents=True, exist_ok=True)
+        for key in sorted(monthly_keys):
+            stem = hashlib.sha256(key.encode("utf8")).hexdigest()[:16]
+            native_path = owner_root / (stem + "-native.parquet")
+            events_path = owner_root / (stem + "-events.parquet")
+            sealed_source.monthly_native[key].write_parquet(native_path)
+            sealed_source.monthly_events[key].write_parquet(events_path)
+            write_json(owner_root / (stem + ".json"), {
+                **sealed_source.monthly_proofs[key], "dataset": key,
+                "native_sha256": file_sha256(native_path), "events_sha256": file_sha256(events_path),
+                "native_path": str(native_path.relative_to(run_dir)),
+                "events_path": str(events_path.relative_to(run_dir)),
+                "contract": sealed_source.binding["monthly_contract"]})
+    if sealed_source is not None:
+        write_json(run_dir / "sealed-raw-source.json", sealed_source.binding)
 
     for spec in specs:
         t0 = time.time()
@@ -1900,7 +2194,19 @@ def materialize_specs(
                 try:
                     source_frame = unsliced_frames.get(field)
                     if source_frame is None:
-                        source_frame = normalize_finlab_wide_field(data.get(api_key_name), api_key_name=api_key_name)
+                        if api_key_name in financial_frames:
+                            source_frame = financial_frames[api_key_name]
+                        else:
+                            source_frame = normalize_finlab_wide_field(data.get(api_key_name), api_key_name=api_key_name)
+                            if sealed_source is not None and api_key_name in monthly_keys:
+                                source_frame.attrs["monthly_availability_proof"] = {
+                                    **sealed_source.monthly_proofs[api_key_name],
+                                    "contract": sealed_source.binding["monthly_contract"]}
+                    if spec.lane == "daily_price" and field in {"adj_close", "adj_open", "open", "high", "low", "close", "volume", "value", "market_value"}:
+                        unsliced_frames[field] = source_frame
+                    if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
+                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})):
+                        unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
                         start_date=start,
@@ -1919,7 +2225,7 @@ def materialize_specs(
                         error=exc,
                         metadata={"kind": spec.kind},
                     ))
-                    if status == "quota_blocked":
+                    if sealed_source is not None or status == "quota_blocked":
                         raise
                     continue
                 field_frames[field] = frame
@@ -1949,13 +2255,31 @@ def materialize_specs(
                     metadata={
                         "kind": spec.kind,
                         "shape": list(frame.shape),
+                        "availability_proof": frame.attrs.get("financial_availability_proof"),
                         "date_alignment": (
-                            "finlab_deadline"
+                            "deadline_and_vendor_disclosure_next_session"
                             if api_key_name.startswith(PIT_DEADLINE_NAMESPACES)
                             else "source_observation_date"
                         ),
                     },
                 ))
+            if spec.lane == "daily_price":
+                write_adjusted_price_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
+                if price_venue_scope_manifest:
+                    from services.training_price_venue_scope import write_scope_manifest
+                    write_scope_manifest(run_dir, price_venue_scope_manifest, price_venue_scope_sha256)
+                write_official_training_calendar(run_dir=run_dir)
+                write_training_breadth_capture(run_dir=run_dir)
+                if (run_dir/"raw/daily_price_full_vintage/training_calendar.json").exists():
+                    from services.training_us_capture import write_us_quote_capture
+                    capture=json.loads((run_dir/"raw/daily_price_full_vintage/training_calendar.json").read_text(encoding="utf8"))
+                    write_us_quote_capture(run_dir=run_dir,start=capture["start"],end=capture["end"])
+            if spec.lane == "chip_diversity":
+                write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
+            if (spec.lane in TRAINING_AUX_FIELDS and (not key_scope or
+                    set(TRAINING_AUX_FIELDS[spec.lane]).issubset(spec_keys))):
+                write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
+                    years=years, end_date=source_end_date, start_date=start)
             field_errors = required_wide_field_errors(
                 spec.lane,
                 field_frames,
@@ -2005,8 +2329,12 @@ def materialize_specs(
                     continue
                 path = lane_dir / f"{field}.parquet"
                 try:
+                    source_frame = data.get(api_key_name)
+                    if spec.lane == "training_shareholding":
+                        from services.training_long_sources import write_holding_capture
+                        write_holding_capture(source_frame,run_dir=run_dir,start=start_date_for_years(years),end=target_date)
                     frame = filter_date_range(
-                        normalize_context_frame(data.get(api_key_name)),
+                        normalize_context_frame(source_frame),
                         start_date=start,
                         end_date=source_end_date,
                     )
@@ -2174,6 +2502,9 @@ def materialize_specs(
                 if status == "quota_blocked":
                     raise
                 frame = pd.DataFrame()
+            if not frame.empty and not key_scope:
+                from services.training_long_sources import write_broker_capture
+                write_broker_capture(frame,run_dir=run_dir,start=start_date_for_years(years),end=target_date)
             source_observation = broker_source_observation(frame, target_date)
             grouped = normalize_broker_transactions_daily(frame, start)
             rank_rows = grouped.attrs.get("broker_rank_daily")
@@ -2881,7 +3212,7 @@ def insert_finlab_trading_restrictions(
                 continue
             symbol = _clean_symbol(_row_value(row, ["stock_id", "symbol", "code"]), row)
             if not symbol:
-                continue
+                raise ValueError("finlab_restriction_symbol_missing_or_ambiguous")
             raw_type = str(_row_value(row, ["type", "restriction_type"]) or "attention")
             restriction_type = "disposition" if any(word in raw_type.lower() for word in ["punish", "disposition"]) else "attention"
             title = str(_row_value(row, ["title", "name", "reason", "注意交易資訊"]) or f"{restriction_type}:{symbol}")[:240]
@@ -3473,12 +3804,21 @@ def main() -> int:
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
     parser.add_argument("--key-scope-json", default="", help="JSON object/list limiting data.get calls to lane fields.")
     parser.add_argument("--reuse-successful-artifacts", action="store_true", help="Allow materializer repair to reuse previous successful key artifacts.")
+    parser.add_argument("--sealed-raw-root", default="", help="Explicit sealed daily numeric capture; no SDK fallback.")
+    parser.add_argument("--sealed-raw-receipt-sha256", default="", help="Exact SHA256 of the sealed capture.json.")
+    parser.add_argument("--financial-lifecycle-manifest", default="", help="Pinned official lifecycle evidence for this exact sealed financial window.")
+    parser.add_argument("--financial-lifecycle-sha256", default="", help="Exact SHA256 of the lifecycle manifest.")
+    parser.add_argument("--price-venue-scope-manifest", default="", help="Exact official ROTC-to-listed eligibility comparison contract.")
+    parser.add_argument("--price-venue-scope-sha256", default="", help="SHA256 of the exact price venue scope contract.")
+    parser.add_argument("--monthly-contract-manifest", default="", help="Pinned FinLab locked-monthly date contract for the sealed capture.")
+    parser.add_argument("--monthly-contract-sha256", default="", help="Exact SHA256 of the monthly source contract.")
     parser.add_argument("--source-start-date", default="", help="Inclusive source materialization start date. Defaults to --years lookback.")
+    parser.add_argument("--training-capture-start-date", default="", help="Optional full training-history start; must not follow the daily source start. Defaults to --years history.")
     parser.add_argument("--source-end-date", default="", help="Inclusive source materialization end date.")
     parser.add_argument("--require-official-market-summary", action="store_true", help="Fail daily refresh when TWSE/TPEX market summary rows are incomplete.")
     args = parser.parse_args()
 
-    required_env = ["FINLAB_API_KEY"]
+    required_env = [] if args.sealed_raw_root else ["FINLAB_API_KEY"]
     if not controller_d1_proxy_configured():
         required_env.extend(["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"])
     missing = [key for key in required_env if not os.environ.get(key)]
@@ -3505,6 +3845,7 @@ def main() -> int:
         run_dir=run_dir,
         lanes=requested_lanes,
         source_start_date=source_start_date,
+        training_capture_start_date=args.training_capture_start_date or None,
         source_end_date=source_end_date,
         require_official_market_summary=args.require_official_market_summary,
         generated_at=generated_at,
@@ -3512,6 +3853,14 @@ def main() -> int:
         reuse_successful_artifacts=effective_reuse_successful_artifacts,
         gcs_bucket=args.gcs_bucket,
         gcs_prefix=args.gcs_prefix.rstrip("/"),
+        sealed_raw_root=args.sealed_raw_root or None,
+        sealed_raw_receipt_sha256=args.sealed_raw_receipt_sha256 or None,
+        financial_lifecycle_manifest=args.financial_lifecycle_manifest or None,
+        financial_lifecycle_sha256=args.financial_lifecycle_sha256 or None,
+        price_venue_scope_manifest=args.price_venue_scope_manifest or None,
+        price_venue_scope_sha256=args.price_venue_scope_sha256 or None,
+        monthly_contract_manifest=args.monthly_contract_manifest or None,
+        monthly_contract_sha256=args.monthly_contract_sha256 or None,
     )
     summary = {
         "dataset_count": len(dataset_summaries),
@@ -3539,6 +3888,7 @@ def main() -> int:
         "source_key_reports": source_key_reports,
         "source_key_blockers": source_key_blockers,
         "backfill_status": "partial_failed" if source_key_blockers else "ready",
+        **sealed_raw_source_binding(run_dir),
     }
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)

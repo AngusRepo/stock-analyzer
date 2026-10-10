@@ -1,11 +1,12 @@
 """Retain native L3 OOF/full-fit cadence without old EV/Fusion materializers."""
+from .formal_feature_contract import PROFILES131, EXO131_PROFILE
 import json
 from services.l4_distribution import digest
 
 
 def uses_native_l4(manifest):
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-    return manifest.get('model_profile_schema_version') in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA)
+    return manifest.get('model_profile_schema_version') in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131)
 
 
 def persist_base_index(*,manifest,predictions,client,dry_run):
@@ -54,6 +55,9 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
     from routers.walk_forward import dispatch_oof_full_fit_training,_materialize_nav_with_reviews
     manifest,_=load_verified_oof_manifest(manifest_path,bucket=bucket,require_formal_lineage=True)
     if manifest['cohort_id']!=cohort_id:raise ValueError('l4_native_base_manifest_mismatch')
+    if cadence in ('weekly', 'monthly'):
+        from services.training_source_preflight import require_oof_training_sources
+        require_oof_training_sources(bucket, manifest)
     from services.l4_oof_index_receipt import reuse_index, seal_index
     index = None if dry_run else reuse_index(manifest, bucket, client)
     if index is None:
@@ -82,7 +86,7 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
             refresh={'status':'awaiting_l3_candidate','promoted':False,'reason':'full_fit_has_no_usable_ensemble_candidate'}
         else:
             from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
-            options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') == TIMEXER_EXO_PROFILE_SCHEMA else {}
+            options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE) else {}
             family_binding={}
             if options.get('strategy_role')=='B' and model_family is not None:
                 if model_family not in ('full_mlp_median','tabpack'):

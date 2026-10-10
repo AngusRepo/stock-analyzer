@@ -237,13 +237,13 @@ def build_rotation_model(
 
     previous = full_tail[-2] if len(full_tail) >= 2 else None
     prev_previous = full_tail[-3] if len(full_tail) >= 3 else None
-    delta_rs = (current.rs_ratio or 0.0) - (previous.rs_ratio or current.rs_ratio or 0.0) if previous else 0.0
-    delta_mom = (current.rs_momentum or 0.0) - (previous.rs_momentum or current.rs_momentum or 0.0) if previous else 0.0
+    delta_rs = current.rs_ratio - previous.rs_ratio if previous else 0.0
+    delta_mom = current.rs_momentum - previous.rs_momentum if previous else 0.0
     velocity = math.sqrt(delta_rs * delta_rs + delta_mom * delta_mom)
     prev_velocity = 0.0
     if previous and prev_previous:
-        prev_delta_rs = (previous.rs_ratio or 0.0) - (prev_previous.rs_ratio or previous.rs_ratio or 0.0)
-        prev_delta_mom = (previous.rs_momentum or 0.0) - (prev_previous.rs_momentum or previous.rs_momentum or 0.0)
+        prev_delta_rs = previous.rs_ratio - prev_previous.rs_ratio
+        prev_delta_mom = previous.rs_momentum - prev_previous.rs_momentum
         prev_velocity = math.sqrt(prev_delta_rs * prev_delta_rs + prev_delta_mom * prev_delta_mom)
 
     age = 0
@@ -255,8 +255,8 @@ def build_rotation_model(
         current=current.quadrant,
         previous=previous.quadrant if previous else None,
         quadrant_age=age,
-        rs_ratio=current.rs_ratio or 100.0,
-        rs_momentum=current.rs_momentum or 0.0,
+        rs_ratio=current.rs_ratio,
+        rs_momentum=current.rs_momentum,
         delta_rs=delta_rs,
         delta_momentum=delta_mom,
     )
@@ -275,8 +275,8 @@ def build_rotation_model(
     )
     point.rotation_score = _rotation_score(
         regime=regime,
-        rs_ratio=current.rs_ratio or 100.0,
-        rs_momentum=current.rs_momentum or 0.0,
+        rs_ratio=current.rs_ratio,
+        rs_momentum=current.rs_momentum,
         delta_rs=delta_rs,
         delta_momentum=delta_mom,
         quadrant_age=age,

@@ -479,9 +479,14 @@ export async function runActive8OofLifecycle(
   // cannot skip that work. Prep/PIT checks still run inside the OOF owner;
   // singleton job collision handling and bounded continuation remain below.
   const trading = await env.KV.get('trading:config', 'json') as {l4Distribution?: {operating_mode?: string}} | null
+  const featureSemantic = env.ACTIVE8_FEATURE_SEMANTIC_VERSION || 'formal137-pit-asof-source-quality-v3'
+  if (!['formal137-pit-asof-source-quality-v3', 'formal131-without-unverified-daily-owners-v1'].includes(featureSemantic)) {
+    throw new Error('active8_feature_semantic_unknown')
+  }
+  const feature131 = featureSemantic === 'formal131-without-unverified-daily-owners-v1'
   const modelProfile = isSingleBMode(trading?.l4Distribution?.operating_mode)
-    ? 'active8-release-model-profiles-v4-timexer-exo137'
-    : 'active8-release-model-profiles-v4-timexer-price'
+    ? (feature131 ? 'active8-release-model-profiles-v6-timexer-exo131' : 'active8-release-model-profiles-v4-timexer-exo137')
+    : (feature131 ? 'active8-release-model-profiles-v6-timexer-price131' : 'active8-release-model-profiles-v4-timexer-price')
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',
     jsonBody: {

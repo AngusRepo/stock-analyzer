@@ -127,6 +127,8 @@ def test_original_dispatch_modal_compute_and_controller_merge_use_same_nav_recei
         assert key == 'l4:nav_candidate_bundles:v1' and strict
         return None  # This fixture publishes an L3-only NAV strategy.
     monkeypatch.setattr(kv_client, 'get_json', frozen_declarations)
+    from daily_capture_test_dependency import attach_frozen_capture_fixture
+    attach_frozen_capture_fixture(state,series)
     request = asyncio.run(graph._build_pipeline_modal_prediction_payload(state, state_gcs_uri='gs://isolated/state.json'))
     assert state['paired_nav_l3_dispatch']['status'] != 'failed', json.dumps(state['paired_nav_l3_dispatch'],sort_keys=True)
     # Use the original request serializer and original generation/hash-fenced

@@ -1,6 +1,7 @@
 """Durable point-in-time feature/sequence prep owner for Active-8 OOF."""
 
 from __future__ import annotations
+from .formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, semantic_for_profile
 
 import hashlib
 import json
@@ -163,9 +164,34 @@ def _latest_market_session(
                 "coverage_threshold": threshold,
             },
         )
+    official_rows = query_fn(
+        """
+        SELECT substr(date, 1, 10) trading_date, symbol, source
+        FROM canonical_market_index_daily
+        WHERE substr(date, 1, 10) BETWEEN date(?, '-45 days') AND date(?)
+          AND close > 0
+          AND ((symbol = 'TWII' AND source = 'twse.mi_5mins_hist.official')
+            OR (symbol = 'TWOII' AND source IN ('tpex.openapi.tpex_index', 'TPEX OpenAPI tpex_index')))
+        ORDER BY trading_date, symbol
+        """, [cutoff, cutoff],
+    )
+    official_sessions = sorted({str(row.get("trading_date") or "")[:10] for row in official_rows
+                                if row.get("trading_date")})
+    if not official_sessions:
+        raise Active8PrepDependencyPending("independent_market_calendar_missing", {"cutoff": cutoff})
+    missing_prices = sorted(set(official_sessions) - set(sessions))
+    unmatched_prices = sorted(set(sessions) - set(official_sessions))
+    if missing_prices or unmatched_prices:
+        raise Active8PrepDependencyPending("independent_market_calendar_disagreement", {
+            "cutoff": cutoff, "official_sessions_missing_prices": missing_prices,
+            "price_sessions_without_official_confirmation": unmatched_prices,
+        })
     latest_row = next(row for row in reversed(rows) if str(row.get("trading_date") or "")[:10] == sessions[-1])
     return sessions[-1], {
         "market_session_dates": sessions,
+        "independent_session_sources": sorted({str(row["source"]) for row in official_rows}),
+        "independent_session_symbols": sorted({str(row["symbol"]) for row in official_rows}),
+        "calendar_verified_lookback_days": 45,
         "market_session_coverage_reference": reference,
         "market_session_coverage_threshold": threshold,
         "market_session_price_rows": int(latest_row.get("price_rows") or 0),
@@ -187,7 +213,8 @@ async def ensure_active8_daily_prep(
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, SUPPORTED_MODEL_PROFILE_SCHEMAS
     if model_profile_schema_version not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
         raise ValueError('active8_prep_profile_unknown')
-    expanded = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    expanded = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}
+    feature_semantic = semantic_for_profile(model_profile_schema_version)
     required_history = 1280 if expanded else ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS
     cutoff = end_date or (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
     expected_business_date, market_session_evidence = _latest_market_session(
@@ -265,29 +292,31 @@ async def ensure_active8_daily_prep(
     )
     snapshot_checksum = _normalize_sha256(snapshot.get("checksum"))
     sequence_prefix, sequence_checksum, sequence_date_max = "", "", ""
-    if not feature_only:
-        sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
-        sequence_date_max = str((sequence_manifest.get("summary") or {}).get("date_max") or "")[:10]
-        if sequence_date_max < business_date:
-            raise Active8PrepDependencyPending(
-                "immutable_sequence_behind_compute_snapshot",
-                {
-                    "business_date": business_date,
-                    "sequence_date_max": sequence_date_max,
-                    "sequence_gcs_prefix": sequence_prefix,
-                },
-            )
+    sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
+    sequence_date_max = str((sequence_manifest.get("summary") or {}).get("date_max") or "")[:10]
+    if sequence_date_max < business_date:
+        raise Active8PrepDependencyPending(
+            "immutable_sequence_behind_compute_snapshot",
+            {
+                "business_date": business_date,
+                "sequence_date_max": sequence_date_max,
+                "sequence_gcs_prefix": sequence_prefix,
+            },
+        )
 
-        sequence_checksum = str(sequence_manifest["manifest_checksum"])
+    sequence_checksum = str(sequence_manifest["manifest_checksum"])
     producer_source_sha = _runtime_source_sha()
     source_prefix = (
         f"{FEATURE_PREP_PREFIX}/{business_date}-{snapshot_checksum[:12]}-"
-        f"{producer_source_sha[:12]}"
+        f"{producer_source_sha[:12]}-{sequence_checksum[:12]}"
     )
     adjusted_prefix = (
         f"{ADJUSTED_PREP_PREFIX}/{business_date}-"
         f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}-{producer_source_sha[:12]}"
     )
+    if model_profile_schema_version in PROFILES131:
+        source_prefix += '-formal131'
+        adjusted_prefix += '-formal131'
     if expanded:
         source_prefix += '-expanded1280'
         adjusted_prefix += '-expanded1280'
@@ -301,7 +330,7 @@ async def ensure_active8_daily_prep(
         "snapshot_checksum": snapshot_checksum,
         "snapshot_start_date": snapshot_start_date,
         "snapshot_required_lookback_days": required_history,
-        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": feature_semantic,
         "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "producer_source_sha": producer_source_sha,
         "source_gcs_prefix": source_prefix,
@@ -319,6 +348,8 @@ async def ensure_active8_daily_prep(
             run_date=business_date,
             require_exact_dataset_snapshot=True,
             prep_only=True,
+            sequence_gcs_prefix=sequence_prefix,
+            sequence_batch_count=int(sequence_manifest.get("batch_count") or 0),
             model_profile_schema_version=model_profile_schema_version,
             prep_output_gcs_prefix=source_prefix,
             train_model_groups=[],
@@ -342,10 +373,13 @@ async def ensure_active8_daily_prep(
         return {"schema_version": "timexer-feature-source-v1", "status": "ready",
                 "signal_date": business_date, "source_gcs_prefix": source_prefix,
                 "source_receipt_checksum": prep_result["receipt_checksum"],
-                "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+                "sequence_gcs_prefix": sequence_prefix,
+                "sequence_manifest_checksum": sequence_checksum,
+                "feature_semantic_version": feature_semantic,
                 "training_dispatched": False}
 
     adjusted_request = {
+        "feature_semantic_version": feature_semantic,
         "source_gcs_prefix": source_prefix,
         "sequence_gcs_prefix": sequence_prefix,
         "output_gcs_prefix": adjusted_prefix,
@@ -362,7 +396,7 @@ async def ensure_active8_daily_prep(
         raise RuntimeError(f"canonical adjusted prep failed: {adjusted['error']}")
     if (
         adjusted.get("schema_version") != ADJUSTED_PREP_SCHEMA
-        or adjusted.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or adjusted.get("feature_semantic_version") != feature_semantic
         or adjusted.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
         or adjusted.get("producer_source_sha") != producer_source_sha
     ):
@@ -382,7 +416,7 @@ async def ensure_active8_daily_prep(
     receipt["receipt_checksum"] = _receipt_checksum(receipt)
     receipt_path = (
         f"walk_forward/prep_lifecycle/{business_date}/"
-        f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}.json"
+        f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}{'-formal131' if model_profile_schema_version in PROFILES131 else ''}.json"
     )
     bucket.blob(receipt_path).upload_from_string(
         json.dumps(receipt, sort_keys=True, indent=2),

@@ -236,7 +236,10 @@ def save_oof_prediction_artifact(
     split_metadata: dict[str, Any],
     target_semantic_version: str = OOF_TARGET_SEMANTIC_VERSION,
     generation_mode: str = "purged_oof",
+    feature_semantic_version: str = FEATURE_SEMANTIC_VERSION,
 ) -> dict[str, Any]:
+    from .formal_feature_contract import feature_count
+    feature_count(feature_semantic_version)
     raw = np.asarray(raw_scores, dtype=float).reshape(-1)
     target = np.asarray(targets, dtype=float).reshape(-1)
     if len(raw) != len(target) or not len(raw):
@@ -274,7 +277,7 @@ def save_oof_prediction_artifact(
         "model_name": model_name,
         "artifact_version": artifact_version,
         "target_semantic_version": target_semantic_version,
-        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "feature_semantic_version": feature_semantic_version,
         "feature_imputation_semantic": FEATURE_IMPUTATION_SEMANTIC_VERSION,
         "producer_source_sha": _runtime_source_sha(),
         "score_semantic": "same-market-same-date-average-tie-percentile-rank-v2",

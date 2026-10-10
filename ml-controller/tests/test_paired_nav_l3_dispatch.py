@@ -265,6 +265,8 @@ def test_actual_payload_builder_freezes_every_candidate_before_spawn(prepared, m
     monkeypatch.setattr(graph, 'enrich_state_space_series_with_long_history', lambda *a, **kw: (series, {}))
     monkeypatch.setattr(graph, '_pipeline_modal_prediction_callback_url', lambda: 'https://fixture.invalid')
     monkeypatch.setattr(graph, '_pipeline_modal_prediction_callback_token', lambda: 'fixture-not-real')
+    from daily_capture_test_dependency import attach_frozen_capture_fixture
+    attach_frozen_capture_fixture(state,series)
     result = asyncio.run(graph._build_pipeline_modal_prediction_payload(state, state_gcs_uri='gs://fixture/state'))
     assert len(result['paired_nav_l3_requests']) == 2
     assert state['paired_nav_l3_dispatch']['request_checksum'] == digest(result['paired_nav_l3_requests'])

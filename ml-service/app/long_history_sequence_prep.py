@@ -116,6 +116,36 @@ def _parse_source_gcs_prefixes(payload: dict[str, Any]) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _read_single_adjustment_capture(prefix: str, *, bucket: Any | None,
+                                    end_date: str | None) -> tuple[pl.DataFrame, pl.DataFrame, dict]:
+    bucket_name, object_prefix = _split_gcs_prefix(prefix)
+    if bucket is None:
+        bucket = _readonly_bucket(bucket_name)
+    root = f"{object_prefix}/raw/daily_price_full_vintage"
+    manifest_blob = bucket.blob(f"{root}/manifest.json")
+    if not manifest_blob.exists():
+        raise SequenceSourceMissingError("single adjustment capture missing; cross-vintage stitching forbidden")
+    receipt = json.loads(manifest_blob.download_as_bytes())
+    if (receipt.get("schema_version") != "finlab-adjusted-price-single-capture-v1"
+            or not receipt.get("capture_id") or not receipt.get("end_date")
+            or (end_date and receipt["end_date"] != end_date)):
+        raise SequenceSourceInvalidError("single adjustment capture date or schema mismatch")
+    frames, uris = [], {}
+    for field in ("adj_close", "adj_open"):
+        key = f"{root}/{field}.parquet"
+        raw = bucket.blob(key).download_as_bytes()
+        if hashlib.sha256(raw).hexdigest() != receipt.get("checksums", {}).get(field):
+            raise SequenceSourceInvalidError("single adjustment capture checksum mismatch")
+        uri = f"gs://{bucket_name or '*'}/{key}"
+        frame = _validate_price_source(pl.read_parquet(io.BytesIO(raw)), uri)
+        dates = frame.get_column("date").cast(pl.Utf8).str.slice(0, 10)
+        if dates.max() != receipt["end_date"]:
+            raise SequenceSourceInvalidError("single adjustment capture panel date mismatch")
+        frames.append(frame)
+        uris[field] = uri
+    return frames[0], frames[1], {"capture_id": receipt["capture_id"], "close": uris["adj_close"], "open": uris["adj_open"], "checksums": receipt["checksums"]}
+
+
 def _combine_wide_price_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
     valid = [frame for frame in frames if not frame.is_empty() and "date" in frame.columns]
     if not valid:
@@ -360,7 +390,17 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
         if lane not in LANE_PRICE_FIELDS:
             raise SequenceSourceInvalidError(f"unsupported sequence lane: {lane}")
         close_field, open_field = LANE_PRICE_FIELDS[lane]
-        if len(source_gcs_prefixes) > 1 and not source_artifact_root:
+        capture_prefix = source_gcs_prefix or (source_gcs_prefixes[-1] if source_gcs_prefixes else None)
+        single_capture = None
+        if lane == "daily_price" and capture_prefix and not source_artifact_root:
+            try:
+                single_capture = _read_single_adjustment_capture(capture_prefix, bucket=bucket, end_date=end_date)
+            except SequenceSourceMissingError:
+                if len(source_gcs_prefixes) > 1 or payload.get("require_single_adjustment_capture"):
+                    raise
+        if single_capture is not None:
+            close_frame, open_frame, source_uri = single_capture
+        elif len(source_gcs_prefixes) > 1 and not source_artifact_root:
             close_frames: list[pl.DataFrame] = []
             open_frames: list[pl.DataFrame] = []
             close_uris: list[str] = []

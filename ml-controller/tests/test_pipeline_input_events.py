@@ -164,6 +164,7 @@ def prep_stage(store, monkeypatch):
         'producer_source_sha':trigger._runtime_source_sha(),
         'feature_semantic_version':trigger.ACTIVE8_FEATURE_SEMANTIC_VERSION,
         'feature_imputation_semantic':trigger.ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION}
+    template.update({key: {'capture_id': 'same-capture', 'source_sha256': key + '-original'} for key in ('price_capture', 'institutional_capture', 'market_cap_capture', 'auxiliary_capture', 'long_source_capture', 'global_capture')})
     calls=[]
     monkeypatch.setattr(events,'_launch_missing_prep',lambda bucket,path,stage:calls.append((path,stage)))
     payloads=[{'batch_index':idx,'retain_unlabeled_features':True,'gcs_prefix':template['output_gcs_prefix']} for idx in range(2)]
@@ -191,6 +192,8 @@ def test_prep_waits_for_every_batch_then_seals_without_training(store,monkeypatc
     receipt=events.read(store,prefix+'/prep/immutable_receipt.json')
     assert receipt['training_dispatched'] is False and receipt['output_rows']==12000
     assert len(receipt['output_checksums'])==3
+    for key in ('price_capture', 'institutional_capture', 'market_cap_capture', 'auxiliary_capture', 'long_source_capture', 'global_capture'):
+        assert receipt[key] == stage['spec']['receipt_template'][key]
     assert len(jobs.calls)==1
 
 

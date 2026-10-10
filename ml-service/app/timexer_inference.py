@@ -19,7 +19,8 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def feature_receipt(bucket, reference, signal_date):
+def feature_receipt(bucket, reference, signal_date, *, expected_semantic="formal137-pit-asof-source-quality-v3"):
+    from .formal_feature_contract import validate_feature_names, FEATURE131_SEMANTIC
     if (reference.get('schema_version') != 'timexer-feature-source-v1'
             or reference.get('signal_date') != signal_date
             or reference.get('status') != 'ready'
@@ -37,7 +38,7 @@ def feature_receipt(bucket, reference, signal_date):
             or receipt.get('output_gcs_prefix') != prefix
             or receipt.get('status') != 'ready'
             or receipt.get('training_dispatched') is not False
-            or receipt.get('feature_semantic_version') != 'formal137-pit-asof-source-quality-v3'
+            or receipt.get('feature_semantic_version') != expected_semantic
             or receipt.get('feature_imputation_semantic') != 'prior_252_row_median_then_zero_v2'):
         raise ValueError('timexer_feature_receipt_mismatch')
     count = receipt.get('batch_count')
@@ -53,11 +54,12 @@ def feature_receipt(bucket, reference, signal_date):
         raise ValueError('timexer_feature_inventory_invalid')
     from .features import FEATURE_COLS
     names_raw = bucket.blob(names_path).download_as_bytes()
+    if expected_semantic == FEATURE131_SEMANTIC and names_path not in checksums:
+        raise ValueError("formal131_feature_names_checksum_required")
     if names_path in checksums and _sha(names_raw) != checksums[names_path]:
         raise ValueError('timexer_feature_names_checksum_mismatch')
     names = json.loads(names_raw)
-    if names != list(FEATURE_COLS) or len(names) != 137:
-        raise ValueError('timexer_feature_order_mismatch')
+    validate_feature_names(names, expected_semantic, FEATURE_COLS)
     return receipt
 
 
@@ -79,7 +81,25 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
     if (any(metadata.get(k) != identity[k] for k in ('version','artifact_path'))
             or canonical_checksum(metadata.get('checksum')) != canonical_checksum(identity['checksum'])):
         raise ValueError('timexer_metadata_identity_mismatch')
-    receipt = feature_receipt(bucket, feature_source, signal_date)
+    if feature_source.get('schema_version') == 'timexer-feature-source-set-v1':
+        feature_source = (feature_source.get('sources') or {}).get(config['feature_history_schema'])
+        if not isinstance(feature_source, dict):
+            raise ValueError('timexer_feature_version_source_missing')
+    from .formal_feature_contract import FEATURE131_SEMANTIC, LEGACY_SEMANTIC, FEATURES131, FEATURES131_SHA256
+    projection = None
+    expected_source_semantic = config['feature_history_schema']
+    if feature_source.get('schema_version') == 'timexer-feature-projection-v1':
+        projection = feature_source
+        if (config['feature_history_schema'] != FEATURE131_SEMANTIC
+                or projection.get('target_semantic') != FEATURE131_SEMANTIC
+                or projection.get('feature_names_sha256') != FEATURES131_SHA256
+                or not isinstance(projection.get('source'), dict)):
+            raise ValueError('timexer_feature_projection_invalid')
+        feature_source = projection['source']
+        expected_source_semantic = LEGACY_SEMANTIC
+    receipt = feature_receipt(bucket, feature_source, signal_date, expected_semantic=expected_source_semantic)
+    if projection and receipt['feature_names_path'] not in receipt['output_checksums']:
+        raise ValueError('timexer_projection_names_checksum_required')
     torch.set_float32_matmul_precision('high')
     model, settings = load_checkpoint(bucket.blob(identity['artifact_path']).download_as_bytes(),
         expected_checksum=identity['checksum'], expected_variant=config['variant'], device='cuda')
@@ -103,6 +123,11 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
             symbols = shard['symbols'].astype(str)
             dates = shard['dates'].astype(str)
             matrix = shard['X'].astype(np.float32)
+        if projection:
+            from .features import FEATURE_COLS
+            if matrix.ndim != 2 or matrix.shape[1] != len(FEATURE_COLS):
+                raise ValueError('timexer_projection_width_invalid')
+            matrix = matrix[:, [FEATURE_COLS.index(name) for name in FEATURES131]]
         del raw
         features = {}
         for symbol in set(symbols) & set(histories):
@@ -112,7 +137,7 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
             mask = (symbols == symbol) & (dates <= signal_date)
             order = np.argsort(dates[mask], kind='stable')
             features[symbol] = (dates[mask][order], matrix[mask][order])
-        predictions = predict_asof(model, settings=settings, exogenous=config['variant']=='exo137',
+        predictions = predict_asof(model, settings=settings, exogenous=config['variant'] in ('exo137','exo131'),
             histories=histories, feature_histories=features, calendar=calendar,
             symbols=sorted(features), signal_date=signal_date, device='cuda')
         outputs.update({row['symbol']: row for row in predictions})
@@ -125,6 +150,8 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
             'version':version, 'horizon_used':5, 'score_semantic_version':SCORE_SEMANTIC,
             'artifact_id':identity['artifact_id'], 'artifact_checksum':identity['checksum'],
             'feature_receipt_checksum':receipt['receipt_checksum'],
+            **({'feature_projection':{'source_semantic':LEGACY_SEMANTIC,
+                'target_semantic':FEATURE131_SEMANTIC,'feature_names_sha256':FEATURES131_SHA256}} if projection else {}),
             'inference_device':'cuda', 'matmul_precision':'high'})
     del model
     torch.cuda.empty_cache()

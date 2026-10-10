@@ -254,11 +254,13 @@ def test_capture_freezes_canonical_risk_for_candidate_own_holdings(monkeypatch):
             'source':'market.stock_prices.adj_close','as_of_date':day,'role':'held_only_risk_not_l3_candidate'}]
     monkeypatch.setattr(prices,'load_held_risk_payloads',held)
     def canonical(**kw):
+        assert kw["capture_source"] == {"source_receipt_checksum":"sealed-capture"}
         return [{**deepcopy(p),'source':'market.canonical_market_daily.adj_close',
             'role':'canonical_risk_only','as_of_date':day} for p in kw['payloads']+kw['held_payloads']]
     monkeypatch.setattr(prices,'load_canonical_risk_payloads',canonical)
     extra=strategy.capture_strategy_context(selection={'candidates':[{'artifact':{'payload_checksum':'a'*64},'strategy_bundle':{'bound':True}}]},
-        recommendation_context={'inputs':{'payloads':payloads}},signal_date=day,query=None,writer=None)
+        recommendation_context={'inputs':{'payloads':payloads}},signal_date=day,query=None,writer=None,
+        capture_source={'source_receipt_checksum':'sealed-capture'})
     context=extra['strategy_bundle_risk_context']
     assert {p['symbol'] for p in context['canonical_risk_payloads']}=={'POOL','HELD'}
     assert [p['symbol'] for p in payloads]==['POOL']

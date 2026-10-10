@@ -1,6 +1,7 @@
 """Verify and materialize immutable Active-8 OOF cohorts and EV snapshots."""
 
 from __future__ import annotations
+from .formal_feature_contract import cohort_semantic, feature_count
 
 import gzip
 import hashlib
@@ -625,7 +626,7 @@ def load_verified_oof_manifest(
         if (
             manifest.get("schema_version") != "active8-oof-cohort-manifest-v5"
             or prep.get("schema_version") != "active8-canonical-adjusted-prep-v3"
-            or prep.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+            or prep.get("feature_semantic_version") != cohort_semantic(manifest)
             or prep.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
             or not producer_valid
             or not expected_valid
@@ -757,7 +758,7 @@ def load_oof_prediction_rows(
                     else "active8-oof-predictions-v1"
                 ),
                 expected_feature_semantic=(
-                    FEATURE_SEMANTIC_VERSION if formal_lineage else None
+                    cohort_semantic(manifest) if formal_lineage else None
                 ),
                 expected_imputation_semantic=(
                     FEATURE_IMPUTATION_SEMANTIC_VERSION if formal_lineage else None
@@ -792,7 +793,7 @@ def load_verified_oof_forward_extension(
         or manifest.get("training_dispatched") is not False
         or manifest.get("counterfactual_reconstruction") is not True
         or manifest.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
-        or manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or manifest.get("feature_semantic_version") != cohort_semantic(base_manifest)
         or manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
         or not producer_source_attested
         or not prep_gcs_prefix
@@ -809,7 +810,7 @@ def load_verified_oof_forward_extension(
         or prep_manifest.get("manifest_checksum") != _manifest_checksum(prep_manifest)
         or prep_manifest.get("manifest_checksum") != prep_manifest_checksum
         or prep_manifest.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
-        or prep_manifest.get("feature_semantic_version") != FEATURE_SEMANTIC_VERSION
+        or prep_manifest.get("feature_semantic_version") != cohort_semantic(base_manifest)
         or prep_manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
         or str(prep_manifest.get("producer_source_sha") or "").strip().lower()
         != producer_source_sha
@@ -868,7 +869,7 @@ def load_oof_forward_prediction_rows(
             split=split,
             expected_generation_mode="frozen_forward_oos",
             expected_prediction_schema="active8-oof-predictions-v2",
-            expected_feature_semantic=FEATURE_SEMANTIC_VERSION,
+            expected_feature_semantic=manifest["feature_semantic_version"],
             expected_imputation_semantic=FEATURE_IMPUTATION_SEMANTIC_VERSION,
             expected_producer_source_sha=str(manifest.get("producer_source_sha") or ""),
         ))

@@ -98,8 +98,8 @@ export function finlabTradingRestrictionCutoff(tradeDate: string): string {
 }
 
 function cleanSymbol(value: unknown): string {
-  const m = String(value ?? '').match(/\b(\d{4,6})\b/)
-  return m?.[1] ?? ''
+  const m = String(value ?? '').trim().match(/^(\d{4,6}(?:[A-Z][A-Z0-9]?)?)(?:[ \t]+[^\d].*)?$/)
+  return m && m[1].length <= 6 ? m[1] : ''
 }
 
 async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {

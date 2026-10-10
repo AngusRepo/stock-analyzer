@@ -173,7 +173,7 @@ def test_build_finlab_long_history_sequence_prep_rejects_invalid_source_schema(t
         })
 
 
-def test_build_finlab_long_history_sequence_prep_stitches_multiple_gcs_prefixes(tmp_path):
+def test_build_finlab_long_history_sequence_prep_rejects_unattested_vintage_stitching(tmp_path):
     bucket = _Bucket()
     base = tmp_path / "base.parquet"
     tail = tmp_path / "tail.parquet"
@@ -200,31 +200,45 @@ def test_build_finlab_long_history_sequence_prep_stitches_multiple_gcs_prefixes(
     bucket.store["finlab/base/raw/daily_price/adj_open.parquet"] = base_open.read_bytes()
     bucket.store["finlab/tail/raw/daily_price/adj_open.parquet"] = tail_open.read_bytes()
 
-    result = build_finlab_long_history_sequence_prep({
-        "source_gcs_prefixes": [
-            "gs://stockvision-models/finlab/base",
-            "gs://stockvision-models/finlab/tail",
-        ],
-        "lanes": ["daily_price"],
-        "min_len": 5,
-        "dry_run": True,
-        "return_records": True,
-    }, bucket=bucket)
+    with pytest.raises(SequenceSourceMissingError, match="cross-vintage stitching forbidden"):
+        build_finlab_long_history_sequence_prep({
+            "source_gcs_prefixes": [
+                "gs://stockvision-models/finlab/base",
+                "gs://stockvision-models/finlab/tail",
+            ],
+            "lanes": ["daily_price"],
+            "min_len": 5,
+            "dry_run": True,
+            "return_records": True,
+        }, bucket=bucket)
 
-    assert result["status"] == "ok"
-    assert result["records"][0]["dates"] == [
-        "2024-01-01",
-        "2024-01-02",
-        "2024-01-03",
-        "2024-01-04",
-        "2024-01-05",
-    ]
-    assert result["records"][0]["close"] == [100.0, 101.0, 103.0, 104.0, 105.0]
-    assert result["records"][0]["open"] == [99.0, 100.0, 102.0, 103.0, 104.0]
-    assert result["manifest"]["source"]["source_gcs_prefixes"] == [
-        "gs://stockvision-models/finlab/base",
-        "gs://stockvision-models/finlab/tail",
-    ]
+
+def test_sequence_prep_uses_latest_sealed_capture_without_resurrecting_vendor_nulls(tmp_path):
+    bucket = _Bucket()
+    prefix = "finlab/tail/raw/daily_price_full_vintage"
+    checksums = {}
+    for field in ("adj_close", "adj_open"):
+        buf = io.BytesIO()
+        pl.DataFrame({"date": ["2026-09-24", "2026-09-29"],
+                      "3004": [16.619, 16.690], "noquote": [None, 1.0]}).write_parquet(buf)
+        raw = buf.getvalue()
+        bucket.store[f"{prefix}/{field}.parquet"] = raw
+        checksums[field] = hashlib.sha256(raw).hexdigest()
+    bucket.store[f"{prefix}/manifest.json"] = json.dumps({
+        "schema_version": "finlab-adjusted-price-single-capture-v1", "capture_id": "tail",
+        "end_date": "2026-09-29", "checksums": checksums}).encode()
+    payload = {"source_gcs_prefixes": ["finlab/base", "finlab/tail"], "min_len": 2,
+               "end_date": "2026-09-29", "dry_run": True, "return_records": True}
+    result = build_finlab_long_history_sequence_prep(payload, bucket=bucket)
+    assert [r["symbol"] for r in result["records"]] == ["3004"]
+    assert result["records"][0]["close"] == [16.619, 16.690]
+    assert result["manifest"]["lane_reports"][0]["source_uri"]["capture_id"] == "tail"
+    # The first refreshed run has one prefix; it must also prefer its full capture.
+    single = {**payload, "source_gcs_prefixes": ["finlab/tail"]}
+    assert build_finlab_long_history_sequence_prep(single, bucket=bucket)["records"][0]["close"] == [16.619, 16.690]
+    bucket.store[f"{prefix}/adj_close.parquet"] += b"tamper"
+    with pytest.raises(SequenceSourceInvalidError, match="checksum mismatch"):
+        build_finlab_long_history_sequence_prep(payload, bucket=bucket)
 
 
 def test_sequence_prep_seals_checksums_and_is_idempotent(tmp_path):

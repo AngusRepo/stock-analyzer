@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, metadata_feature_valid
 
 import hashlib
 import json
@@ -1808,9 +1809,11 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Regenerate the artifact and metadata together; promotion must verify bytes before deserialization.",
         )
 
+    if contract_required and metadata.get("feature_semantic_version") == FEATURE131_SEMANTIC and model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"} and not metadata_feature_valid(metadata):
+        add("formal131_artifact_inventory_mismatch", "131-column artifact lacks exact names/order/profile", "Register metadata from the explicitly versioned trainer.")
     feature_contract = _nested_dict(metadata.get("family_feature_contract"))
     feature_schema = str(feature_contract.get("schema_version") or "")
-    current_profile = _nested_dict(metadata.get("model_training_config_attestation")).get("model_profile_schema_version") in {"active8-release-model-profiles-v3", "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137"}
+    current_profile = _nested_dict(metadata.get("model_training_config_attestation")).get("model_profile_schema_version") in {"active8-release-model-profiles-v3", "active8-release-model-profiles-v4-timexer-price", "active8-release-model-profiles-v4-timexer-exo137", *PROFILES131}
     if contract_required and (feature_schema not in SUPPORTED_ACTIVE8_FAMILY_FEATURE_CONTRACTS
                               or (current_profile and feature_schema != ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION)):
         add(

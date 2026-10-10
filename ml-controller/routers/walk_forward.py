@@ -9,6 +9,7 @@ GET  /walk_forward/report/{start}/{end}  fetch persisted run
 All endpoints require X-Controller-Token via main.py verify_token dependency.
 """
 from __future__ import annotations
+from services.formal_feature_contract import PROFILES131, EXO131_PROFILE, FEATURE131_SEMANTIC, FEATURES131, LEGACY_SEMANTIC, cohort_semantic, semantic_for_profile, feature_count
 import asyncio
 import hashlib
 import json
@@ -180,7 +181,7 @@ def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
     from services.active8_oof_cohort_materializer import load_verified_oof_manifest
 
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-    expanding = req.model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    expanding = req.model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}
     history_start = req.start_date
     prefix = req.prep_gcs_prefix.strip().rstrip("/")
     if prefix and prefix != "universal":
@@ -191,6 +192,7 @@ def _walk_forward_calendar_and_windows(req: WalkForwardRequest):
             req.knowledge_cutoff_date or req.end_date,
             bucket=bucket, prep_gcs_prefix=prefix,
             expected_producer_source_sha=req.expected_producer_source_sha,
+            expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version),
         )
         if expanding:
             if not dates:
@@ -332,6 +334,21 @@ async def walk_forward_run(req: WalkForwardRequest):
     from services import modal_client
     from dataclasses import asdict
     from datetime import datetime, timezone, timedelta
+
+    from services.training_source_preflight import require_single_adjustment_capture
+    from services.walk_forward_retrain import _get_bucket
+    try:
+        source_bucket = _get_bucket()
+        require_single_adjustment_capture(source_bucket, prep_gcs_prefix=req.prep_gcs_prefix,
+                                          sequence_gcs_prefix=req.sequence_gcs_prefix)
+        if req.resume_manifest_path:
+            from services.active8_oof_cohort_materializer import load_verified_oof_manifest
+            from services.training_source_preflight import require_oof_training_sources
+            parent_manifest, _ = load_verified_oof_manifest(
+                req.resume_manifest_path, bucket=source_bucket, require_formal_lineage=True)
+            require_oof_training_sources(source_bucket, parent_manifest)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     trading_days, data_access, windows = _walk_forward_calendar_and_windows(req)
     if not windows:
@@ -500,7 +517,7 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
     """Build a deterministic majority-vote tree feature set from outer OOF folds."""
 
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-    full137 = manifest.get("model_profile_schema_version") in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA}
+    full137 = manifest.get("model_profile_schema_version") in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}
     aggregate = manifest.get("aggregate") if isinstance(manifest.get("aggregate"), dict) else {}
     expected_folds = int(aggregate.get("oof_ready_folds") or 0)
     fold_features: list[tuple[str, list[str]]] = []
@@ -514,7 +531,7 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
             else {}
         )
         active = sorted({str(name) for name in ((feature_pool or {}).get("tree_active") or []) if str(name)})
-        if full137 and (len(active) != 137 or (window.get("fs_result") or {}).get("selection_method") != "predeclared_full137"):
+        if full137 and (len(active) != feature_count(cohort_semantic(manifest)) or (window.get("fs_result") or {}).get("selection_method") != ("predeclared_full131" if cohort_semantic(manifest) == FEATURE131_SEMANTIC else "predeclared_full137")):
             return {"status": "blocked", "reason": "predeclared_full137_fold_evidence_invalid"}
         if active:
             fold_features.append((f"w{int(window.get('window_id') or 0)}", active))
@@ -526,6 +543,8 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
             "expected_folds": expected_folds,
             "observed_folds": len(fold_features),
         }
+    if cohort_semantic(manifest) == FEATURE131_SEMANTIC and any(features != sorted(FEATURES131) for _, features in fold_features):
+        return {"status": "blocked", "reason": "predeclared_full135_inventory_invalid"}
     if full137 and any(features != fold_features[0][1] for _, features in fold_features):
         return {"status": "blocked", "reason": "predeclared_full137_inventory_changed"}
     min_votes = len(fold_features) if full137 else len(fold_features) // 2 + 1
@@ -549,7 +568,7 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
         "cohort_id": str(manifest.get("cohort_id") or ""),
         "source_manifest_checksum": str(manifest.get("manifest_checksum") or ""),
         "target_semantic_version": str(manifest.get("target_semantic_version") or ""),
-        "selection_method": "predeclared_full137" if full137 else "outer_fold_majority_vote",
+        "selection_method": ("predeclared_full131" if cohort_semantic(manifest) == FEATURE131_SEMANTIC else "predeclared_full137") if full137 else "outer_fold_majority_vote",
         "fold_count": len(fold_features),
         "min_votes": min_votes,
         "fold_ids": [fold_id for fold_id, _ in fold_features],
@@ -665,7 +684,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         manifest.get("schema_version") == "active8-oof-cohort-manifest-v5"
         and prep.get("schema_version") == "active8-canonical-adjusted-prep-v3"
         and len(str(prep.get("manifest_checksum") or "")) == 64
-        and prep.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+        and prep.get("feature_semantic_version") == cohort_semantic(manifest)
         and prep.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
         and len(prep_producer_source_sha) == 40
         and all(char in "0123456789abcdef" for char in prep_producer_source_sha)
@@ -888,7 +907,7 @@ def _reconcile_tabm_oof_feature_semantic_metadata(
     current_imputation = str(reconciled.get("feature_imputation_semantic") or "").strip()
     if current_semantic or current_imputation:
         if (
-            current_semantic != OOF_FEATURE_SEMANTIC_VERSION
+            current_semantic != cohort_semantic(manifest)
             or current_imputation != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
         ):
             raise RuntimeError("TabM:oof_release_feature_semantic_mismatch")
@@ -916,7 +935,7 @@ def _reconcile_tabm_oof_feature_semantic_metadata(
     )
     expected_snapshot_id = f"oof_full_fit:{cohort_id}:{manifest_checksum}"
     valid = (
-        prep.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+        prep.get("feature_semantic_version") == cohort_semantic(manifest)
         and prep.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
         and len(manifest_checksum) == 64
         and len(prep_checksum) == 64
@@ -935,7 +954,7 @@ def _reconcile_tabm_oof_feature_semantic_metadata(
     if not valid:
         raise RuntimeError("TabM:oof_release_feature_semantic_attestation_invalid")
 
-    reconciled["feature_semantic_version"] = OOF_FEATURE_SEMANTIC_VERSION
+    reconciled["feature_semantic_version"] = cohort_semantic(manifest)
     reconciled["feature_imputation_semantic"] = OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
     reconciled["feature_semantic_attestation"] = {
         "schema_version": "active8-oof-feature-semantic-attestation-v1",
@@ -978,7 +997,7 @@ def _materialize_completed_oof_release_aliases(
         and len(checksum) == 64
         and bool(cohort_id)
         and target_semantic == ACTIVE8_TARGET_SEMANTIC_VERSION
-        and (manifest.get("prep_manifest") or {}).get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+        and (manifest.get("prep_manifest") or {}).get("feature_semantic_version") == cohort_semantic(manifest)
         and (manifest.get("prep_manifest") or {}).get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
         and len(str((manifest.get("prep_manifest") or {}).get("producer_source_sha") or "")) == 40
         and all(
@@ -1298,7 +1317,7 @@ async def dispatch_oof_full_fit_training(
         )
         if (
             tabm_row is not None
-            and str(tabm_metadata.get("feature_semantic_version") or "") != OOF_FEATURE_SEMANTIC_VERSION
+            and str(tabm_metadata.get("feature_semantic_version") or "") != cohort_semantic(manifest)
         ):
             release_registry = _materialize_completed_oof_release_aliases(
                 manifest=manifest,
@@ -1733,6 +1752,14 @@ async def dispatch_oof_full_fit_training(
             "retry_required": True,
             "receipt_path": receipt_path,
         }
+
+    from services.training_source_preflight import require_single_adjustment_capture
+    try:
+        require_single_adjustment_capture(bucket,
+            prep_gcs_prefix=str(manifest.get("prep_gcs_prefix") or ""),
+            sequence_gcs_prefix=str(manifest.get("sequence_gcs_prefix") or ""))
+    except ValueError as exc:
+        return {**plan, "status":"blocked", "reason":str(exc), "training_dispatched":False}
 
     from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
 
@@ -2782,7 +2809,7 @@ def _oof_training_min_folds(profile: str) -> int:
     # Seven leave 50 native L4 dates, preserving all three purge boundaries.
     # This is training support, NOT a change to the five-fold offline/NAV gate.
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
-    return 7 if profile in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA) else OOF_PROMOTION_MIN_FOLDS
+    return 7 if profile in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131) else OOF_PROMOTION_MIN_FOLDS
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
@@ -3120,7 +3147,7 @@ _OOF_TARGET_SEMANTIC_VERSION = (
 _OOF_PREP_SCHEMAS = {"active8-canonical-adjusted-prep-v3"}
 
 
-def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = False) -> str | None:
+def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = False, expected_feature_semantic: str = LEGACY_SEMANTIC) -> str | None:
     candidates: list[tuple[str, str, str]] = []
     for blob in bucket.list_blobs(prefix="universal/canonical_adjusted"):
         if not str(blob.name).endswith("/prep/manifest.json"):
@@ -3133,7 +3160,7 @@ def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = Fa
             manifest.get("schema_version") in _OOF_PREP_SCHEMAS
             and manifest.get("status") == "ready"
             and manifest.get("target_semantic_version") == _OOF_TARGET_SEMANTIC_VERSION
-            and manifest.get("feature_semantic_version") == OOF_FEATURE_SEMANTIC_VERSION
+            and manifest.get("feature_semantic_version") == expected_feature_semantic
             and manifest.get("feature_imputation_semantic") == OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
             and manifest.get("producer_source_sha") == _runtime_source_sha()
             and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
@@ -3159,6 +3186,7 @@ def _oof_lifecycle_calendar(
     bucket: object,
     prep_gcs_prefix: str,
     expected_producer_source_sha: str | None = None,
+    expected_feature_semantic: str = LEGACY_SEMANTIC,
 ) -> tuple[list[str], dict[str, object]]:
     import hashlib
     import io
@@ -3182,7 +3210,7 @@ def _oof_lifecycle_calendar(
         or manifest.get("status") != "ready"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
         or manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION
-        or manifest.get("feature_semantic_version") != OOF_FEATURE_SEMANTIC_VERSION
+        or manifest.get("feature_semantic_version") != expected_feature_semantic
         or manifest.get("feature_imputation_semantic") != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION
         or manifest.get("producer_source_sha")
         != str(expected_producer_source_sha or _runtime_source_sha()).strip().lower()
@@ -3324,7 +3352,7 @@ def _oof_forward_parent_contract(
     if manifest.get("score_semantic_version") != OOF_SCORE_SEMANTIC_VERSION:
         reasons.append("score_semantic_mismatch")
     prep_lineage = manifest.get("prep_manifest") or {}
-    if prep_lineage.get("feature_semantic_version") != OOF_FEATURE_SEMANTIC_VERSION:
+    if prep_lineage.get("feature_semantic_version") != cohort_semantic(manifest):
         reasons.append("feature_semantic_mismatch")
     if prep_lineage.get("feature_imputation_semantic") != OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION:
         reasons.append("feature_imputation_semantic_mismatch")
@@ -3536,7 +3564,7 @@ def _pre_dispatch_completed_oof_lifecycle(
         return None
     pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
     prep_gcs_prefix = (
-        "" if pinned_prep else (_latest_canonical_prep_prefix(bucket) or "")
+        "" if pinned_prep else (_latest_canonical_prep_prefix(bucket, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or "")
     )
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
@@ -3547,6 +3575,7 @@ def _pre_dispatch_completed_oof_lifecycle(
         bucket=bucket,
         prep_gcs_prefix=prep_gcs_prefix,
         expected_producer_source_sha=exact_producer_source_sha if pinned_prep else None,
+        expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version),
     )
     if len(dates) < OOF_LIFECYCLE_MIN_SESSIONS:
         return None
@@ -3610,7 +3639,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
     if single_b and 'model_profile_schema_version' not in req.model_fields_set:
         req.model_profile_schema_version = TIMEXER_EXO_PROFILE_SCHEMA
-    if single_b and req.model_profile_schema_version != TIMEXER_EXO_PROFILE_SCHEMA:
+    if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE):
         raise HTTPException(409, 'single_b_oof_requires_exogenous_profile')
     if (cadence == 'daily' and not req.dry_run and scheduler_ticket_id
             and os.environ.get('OOF_MATERIALIZE_JOB_EXECUTION', '').strip() != '1'):
@@ -3741,7 +3770,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         parent = (exact_path, exact_manifest)
         # An exact continuation keeps its immutable cohort's recipe.
         req.model_profile_schema_version = exact_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION)
-        if single_b and req.model_profile_schema_version != TIMEXER_EXO_PROFILE_SCHEMA:
+        if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE):
             raise HTTPException(409, 'single_b_oof_continuation_profile_mismatch')
     else:
         parent = (_latest_ready_oof_manifest(bucket) if req.model_profile_schema_version == MODEL_PROFILE_SCHEMA_VERSION
@@ -3755,9 +3784,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     # use the latest independently verified immutable prep.
     # Pin model lineage, not the daily maturity watermark, during release polling.
     pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
-    prep_gcs_prefix = "" if pinned_prep else (_latest_canonical_prep_prefix(bucket) or "")
+    prep_gcs_prefix = "" if pinned_prep else (_latest_canonical_prep_prefix(bucket, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or "")
     if not pinned_prep and req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
-        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket, expanded_history=True) or ""
+        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket, expanded_history=True, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or ""
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
     if not prep_gcs_prefix or prep_gcs_prefix == "universal":
@@ -3768,6 +3797,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             bucket=bucket,
             prep_gcs_prefix=prep_gcs_prefix,
             expected_producer_source_sha=exact_producer_source_sha if pinned_prep else None,
+        expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

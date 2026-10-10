@@ -191,6 +191,7 @@ def export_d1_cold_archive_snapshot(req: D1ColdArchiveExportRequest) -> dict[str
         or f"archives/d1_cold_archive/business_date={req.business_date}/run_id={run_id}"
     ).strip("/")
 
+    # Input-only snapshots also own the complete dated US feature history.
     components: dict[str, pl.DataFrame] = {}
     table_query_counts: dict[str, int] = {}
     for table in allowed_tables:
@@ -622,8 +623,12 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     if shareholding.is_empty():
         shareholding = _empty_frame(["stock_id", "date", "retail_pct"])
 
+    us_rows=MARKET_D1_CLIENT.query("SELECT * FROM us_market_signals WHERE date BETWEEN ? AND ? ORDER BY date",[req.start_date,req.end_date])
+    us_market_signals=_frame(us_rows) if us_rows else _empty_frame(["date"])
+
     components: dict[str, pl.DataFrame] = {
         "stocks": stocks,
+        "us_market_signals": us_market_signals,
         "prices": prices,
         "indicators": indicators,
         "chips": chips,
@@ -648,7 +653,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             [row['session_date'] for row in indexed])
         # Small dated state tables and outcome known-at times belong to the same
         # immutable research snapshot; replay must never re-read mutable live D1.
-        for name in ('market_breadth', 'us_market_signals'):
+        for name in ('market_breadth',):
             rows = MARKET_D1_CLIENT.query(f'SELECT * FROM {name} WHERE date BETWEEN ? AND ? ORDER BY date',
                 [req.start_date, req.end_date])
             components[name] = _frame(rows) if rows else _empty_frame(['date'])
@@ -701,6 +706,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             "market_risk": 1,
             "sentiment": sentiment_queries,
             "monthly_revenue": 1,
+            "us_market_signals": 1,
             "canonical_fundamentals": 1,
             "margin_data": margin_queries,
             "shareholding": shareholding_queries,

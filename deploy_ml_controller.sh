@@ -1295,13 +1295,22 @@ echo "=== Step 1/4: Deploy Service $SERVICE (CWD=$SCRIPT_DIR, Dockerfile=repo ro
 RELEASE_SUFFIX="sv-${SOURCE_SHA:0:12}-$(date -u +%Y%m%d%H%M%S)"
 RELEASE_REVISION="${SERVICE}-${RELEASE_SUFFIX}"
 RELEASE_TAG="release-${SOURCE_SHA:0:12}"
+RELEASE_IMAGE_ARGS=(--source . --build-service-account="projects/${GCP_PROJECT_ID}/serviceAccounts/${BUILD_SERVICE_ACCOUNT}")
+if [ -n "${PREBUILT_IMAGE:-}" ] || [ -n "${RELEASE_BUILD_ID:-}" ]; then
+  require_nonempty "PREBUILT_IMAGE" "Use the immutable digest of the bounded release build"
+  require_nonempty "RELEASE_BUILD_ID" "Pin the successful build and its exact Git provenance"
+  "$PYTHON_BIN" "$SCRIPT_DIR/tools/verify_prebuilt_release.py" \
+    --build-id "$RELEASE_BUILD_ID" --image "$PREBUILT_IMAGE" \
+    --source-sha "$SOURCE_SHA" --tree-sha "$SOURCE_TREE_SHA" \
+    --project "$GCP_PROJECT_ID" --service-account "$BUILD_SERVICE_ACCOUNT" >/dev/null
+  RELEASE_IMAGE_ARGS=(--image="$PREBUILT_IMAGE")
+fi
 if ! gcloud run deploy "$SERVICE" \
     --min-instances=0 \
     --revision-suffix="$RELEASE_SUFFIX" \
     --no-traffic \
     --tag="$RELEASE_TAG" \
-    --source . \
-    --build-service-account="projects/${GCP_PROJECT_ID}/serviceAccounts/${BUILD_SERVICE_ACCOUNT}" \
+    "${RELEASE_IMAGE_ARGS[@]}" \
     --region="$REGION" \
     --timeout=3600 \
     --service-account="$SERVICE_RUNTIME_SERVICE_ACCOUNT" \

@@ -2629,7 +2629,9 @@ def train_wf_tree_window(payload: dict) -> dict:
         # 2026-04-19 N2: default to per-window pool path; orchestrator now writes
         # {gcs_prefix}/feature_pool.json before calling this fn.
         feature_pool_path = payload.get("feature_pool_path") or f"{gcs_prefix}/feature_pool.json"
+        from app.formal_feature_contract import payload_semantic
         req = UniversalTrainRequest(
+            feature_semantic_version=payload_semantic(payload),
             batch_count=payload.get("batch_count", 5),
             models_filter=["XGBoost", "ExtraTrees", "LightGBM"],
             skip_feature_pool=payload.get("skip_feature_pool", False),

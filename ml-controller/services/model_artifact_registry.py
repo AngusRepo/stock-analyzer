@@ -1299,6 +1299,7 @@ def _offline_oof_full_fit_release_blockers(
     *,
     champion_artifact: dict[str, Any] | None,
     blockers: list[dict[str, Any]],
+    model_validation_publication: bool = False,
 ) -> list[dict[str, Any]]:
     filtered = [
         blocker
@@ -1338,7 +1339,7 @@ def _offline_oof_full_fit_release_blockers(
     champion_target = str(
         _artifact_registration_metadata(champion_artifact).get("target_semantic_version") or ""
     ).strip()
-    if champion_target == ACTIVE8_TARGET_SEMANTIC_VERSION:
+    if champion_target == ACTIVE8_TARGET_SEMANTIC_VERSION and not model_validation_publication:
         filtered.append({
             "code": "oof_release_requires_semantic_bootstrap",
             "label": "OOF offline bootstrap is only valid when no comparable target-semantic champion exists",
@@ -2521,6 +2522,7 @@ def build_promotion_queue(
     rows: list[dict[str, Any]],
     *,
     champion_versions: dict[str, str] | None = None,
+    model_validation_publication: bool = False,
 ) -> dict[str, Any]:
     """Build the canonical OOF/manual/feature promotion queue."""
 
@@ -2547,8 +2549,8 @@ def build_promotion_queue(
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
         live_evidence_ready = live_status in {"passed", "multi_evidence_passed", "rolling_ic_passed"}
-        offline_oof_candidate = _offline_oof_full_fit_release_candidate(row) and not live_evidence_ready
-        offline_oof_base_artifact = _offline_oof_full_fit_base_artifact(row) and not live_evidence_ready
+        offline_oof_candidate = _offline_oof_full_fit_release_candidate(row) and (model_validation_publication or not live_evidence_ready)
+        offline_oof_base_artifact = _offline_oof_full_fit_base_artifact(row) and (model_validation_publication or not live_evidence_ready)
         offline_timesfm_candidate = _offline_timesfm_l175_feature_release_candidate(row) and not live_evidence_ready
         if state in {"production", "archived", "rejected"}:
             continue
@@ -2589,6 +2591,7 @@ def build_promotion_queue(
                 row,
                 champion_artifact=champion_artifact,
                 blockers=blockers,
+                model_validation_publication=model_validation_publication,
             )
         blocker_codes = _blocker_codes(blockers)
         artifact_compare = _artifact_compare(
@@ -2623,6 +2626,7 @@ def build_promotion_queue(
 
         queue.append({
             "artifact_id": row.get("artifact_id"),
+            "training_run_id": row.get("training_run_id"),
             "model_name": model_name,
             "candidate_version": candidate_version,
             "candidate_type": candidate_type,
@@ -3380,13 +3384,14 @@ def run_active8_ensemble_bundle_promotion_controller(
     evaluation_business_date: str | None = None,
     paper_admission: dict[str, Any] | None = None,
     recovery_only: bool = False,
+    model_validation_publication: bool = False,
     confirm: bool = False,
     reason: str = "active8_ensemble_atomic_bundle",
 ) -> dict[str, Any]:
     """Atomically switch the validated selected subset and its learned ensemble owner."""
     if paper_admission is not None and (evaluation_business_date is None or recovery_only):
         raise ValueError("active8_paper_explicit_date_and_new_admission_required")
-    require_existing_commit = recovery_only or (confirm and evaluation_business_date is None)
+    require_existing_commit = recovery_only or (confirm and evaluation_business_date is None and not model_validation_publication)
     exact_identity = ensemble_artifact_id is not None or ensemble_payload_checksum is not None
     if exact_identity and (not ensemble_artifact_id or not ensemble_payload_checksum):
         return {"status": "blocked", "decision": "active8_ensemble_exact_identity_required",
@@ -3406,7 +3411,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         }
     ensemble_row = candidates[0]
     try:
-        if evaluation_business_date is not None:
+        if evaluation_business_date is not None and not model_validation_publication:
             from services.paired_nav_l3_candidate import _validate_payload_identity
             ensemble_payload = json.loads(ensemble_row['payload_json'])
             _validate_payload_identity(ensemble_row, ensemble_payload)
@@ -3471,13 +3476,13 @@ def run_active8_ensemble_bundle_promotion_controller(
                 model_name,
                 by_model[model_name],
                 expected_observation.get(model_name) or {},
-                require_individual_pass=model_name in selected_models and evaluation_business_date is None,
+                require_individual_pass=model_name in selected_models and (model_validation_publication or evaluation_business_date is None),
             )
         )
     ]
     from services.active8_bundle_transaction import prepare_bundle_transaction
     transaction, nav_adoption, paper_adoption = None, None, None
-    if not blockers and (evaluation_business_date is not None or require_existing_commit):
+    if not blockers and (evaluation_business_date is not None or require_existing_commit or (confirm and model_validation_publication)):
         transaction = prepare_bundle_transaction(query=d1_client.query, by_model=by_model,
             supplied_pointers=d1_pointers, ensemble_row=ensemble_row, selected_models=release_models)
         if require_existing_commit and not transaction['recovered_existing_commit']:
@@ -3509,7 +3514,7 @@ def run_active8_ensemble_bundle_promotion_controller(
             from services.active8_paper_admission import prepare_paper_adoption
             paper_adoption = prepare_paper_adoption(ensemble_row=ensemble_row, admission=paper_admission,
                 business_date=evaluation_business_date, query=d1_client.query)
-        elif not transaction['recovered_existing_commit']:
+        elif not transaction['recovered_existing_commit'] and not model_validation_publication:
             from services.active8_nav_adoption import prepare_nav_adoption
             nav_adoption = prepare_nav_adoption(ensemble_row=ensemble_row, business_date=evaluation_business_date,
                 query=d1_client.query)
@@ -3527,9 +3532,9 @@ def run_active8_ensemble_bundle_promotion_controller(
             transaction['guards'].extend(nav_adoption['guards'])
     if not confirm:
         return {
-            "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle" if evaluation_business_date
-                else "offline_diagnostic_only", "can_promote": evaluation_business_date is not None,
-            **({'offline_diagnostic_can_promote': True} if evaluation_business_date is None else {}),
+            "status": "dry_run", "decision": "promote_active8_ensemble_atomic_bundle" if (evaluation_business_date or model_validation_publication)
+                else "offline_diagnostic_only", "can_promote": evaluation_business_date is not None or model_validation_publication,
+            **({'offline_diagnostic_can_promote': True} if evaluation_business_date is None and not model_validation_publication else {}),
             "training_run_id": training_run_id, "release_models": release_models,
             "observation_models": sorted(expected_models),
             "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
@@ -3579,6 +3584,8 @@ def run_active8_ensemble_bundle_promotion_controller(
         "validation": ensemble_payload.get("validation"),
         "reason": reason,
     }
+    if model_validation_publication:
+        evidence['publication_basis'] = 'model_validation'
     if paper_adoption:
         evidence.update(paper_admission=paper_adoption['admission'], evaluation_business_date=evaluation_business_date)
     if nav_adoption:
@@ -3723,7 +3730,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         verify_current_configuration(paper_adoption['configuration'])
     return {
         "status": "ok", "decision": "promoted_active8_ensemble_atomic_bundle", "can_promote": True,
-        "promotion_scope": "paper_experiment" if paper_adoption else "paired_nav", "qualifications": assess_ensemble_qualifications(ensemble_payload),
+        "promotion_scope": "paper_experiment" if paper_adoption else "model_validation" if model_validation_publication else "paired_nav", "qualifications": assess_ensemble_qualifications(ensemble_payload),
         "training_run_id": training_run_id, "release_models": release_models,
         "observation_models": sorted(expected_models),
         "artifacts": [by_model[name] for name in release_models],

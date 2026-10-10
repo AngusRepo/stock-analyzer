@@ -1,4 +1,4 @@
-"""Original public routes must not turn offline PASS into new serving authority.
+"""Public ML routes publish qualified bundles; historic commits remain recoverable.
 
 Historical SQL fixtures and synthetic NAV fixtures use private SQLite only.
 """
@@ -20,7 +20,7 @@ from test_active8_ensemble_bundle_promotion import _fixture
 
 @pytest.fixture
 def offline_bundle(monkeypatch):
-    """Old offline-PASS candidate only; never grant it publication permission."""
+    """Qualified offline candidate in local SQLite; no NAV evidence available."""
     from services import model_artifact_registry as registry
     db = SQLiteBundle()
     rows, pointers, ensemble = _fixture()
@@ -36,6 +36,10 @@ def offline_bundle(monkeypatch):
     db.insert('active8_ensemble_artifacts_v1', ensemble)
     db.conn.commit()
     monkeypatch.setattr(registry, 'd1_client', db)
+    from services import trading_config_loader
+    from types import SimpleNamespace
+    monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
+                        lambda: SimpleNamespace(config={}))
     yield db, rows, pointers, ensemble
     db.conn.close()
 
@@ -47,15 +51,15 @@ def request(bundle, **kwargs):
         ensemble_payload_checksum=row['payload_checksum'], confirm=True, **kwargs)
 
 
-def test_public_offline_pass_cannot_publish_new_bundle_without_nav_date(offline_bundle, monkeypatch):
+def test_public_offline_pass_publishes_new_bundle_without_nav_date(offline_bundle, monkeypatch):
     bundle = offline_bundle
     db = bundle[0]
     monkeypatch.setattr(model_pool, 'LEARNING_D1_CLIENT', db)
     before = state(db)
     result = asyncio.run(model_pool.artifact_registry_active8_bundle_promotion_controller(request(bundle)))
-    assert result['can_promote'] is False, result
-    assert result['decision'] == 'active8_new_publication_requires_daily_nav'
-    assert db.batches == 0 and state(db) == before
+    assert result['can_promote'] is True and result['readback_verified'], result
+    assert result['promotion_scope'] == 'model_validation'
+    assert db.batches == 1 and state(db) != before
 
 
 def test_low_level_offline_pass_is_not_new_publication_authority(offline_bundle):
@@ -78,7 +82,7 @@ def test_existing_nav_commit_can_still_recover_without_requalification(bundle, m
     assert state(db) == before and db.batches == 1
 
 
-def test_generic_auto_promotion_delegates_ensemble_to_daily_owner(offline_bundle, monkeypatch):
+def test_generic_auto_promotion_empty_queue_does_not_delegate_to_nav(offline_bundle, monkeypatch):
     bundle = offline_bundle
     db, rows, *_ = bundle
     monkeypatch.setattr(model_pool, 'list_artifact_registry', lambda **kw: rows)
@@ -87,17 +91,17 @@ def test_generic_auto_promotion_delegates_ensemble_to_daily_owner(offline_bundle
     before = state(db)
     result = asyncio.run(model_pool.artifact_registry_auto_promote(model_pool.AutoPromotionRequest(confirm=True)))
     assert result['promoted'] == 0, result
-    assert any(item.get('publication_owner') == 'daily_paired_nav' for item in result['results'])
+    assert result['results'] == []
     assert db.batches == 0 and state(db) == before
 
 
-def test_offline_preview_is_diagnostic_not_publication_permission(offline_bundle, monkeypatch):
+def test_offline_preview_reports_model_eligibility_without_writing(offline_bundle, monkeypatch):
     bundle = offline_bundle
     monkeypatch.setattr(model_pool, 'LEARNING_D1_CLIENT', bundle[0])
     req = request(bundle).model_copy(update={'confirm': False})
     result = asyncio.run(model_pool.artifact_registry_active8_bundle_promotion_controller(req))
-    assert result['can_promote'] is False and result['offline_diagnostic_can_promote'] is True
-    assert result['completion_scope'] == 'offline_diagnostic_only'
+    assert result['can_promote'] is True
+    assert result['decision'] == 'promote_active8_ensemble_atomic_bundle'
     assert bundle[0].batches == 0
 
 

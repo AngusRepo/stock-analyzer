@@ -194,11 +194,15 @@ def test_joint_upgrade_packet_requires_prior_pair_and_preserves_head():
     with pytest.raises(ValueError,match='verified_current'):prepare_packet(**args)
     packet=prepare_packet(**args,current_l3_identity=prior,current_plan_id='d'*64)
     assert packet['release_kind']=='paired_upgrade' and packet['expected_initial_plan_parent']=='d'*64
-    assert packet['l3_publication_qualification']=='native_nav_required'
-    assert packet['pending_release_checks']==['native_l3_nav_adoption']
+    assert packet['l3_publication_qualification']=='model_validation_required'
+    assert packet['pending_release_checks']==['native_l3_model_validation']
     assert packet['l3_nav_gate_waived'] is False
     assert packet['expected_l3_identity']==prior and packet['next_l3_identity']==IDENTITY
     assert packet['reset_account'] is False and packet['cross_database_atomicity'] is False
+    strategy_packet=prepare_packet(**args,current_l3_identity=prior,current_plan_id='d'*64,nav_candidate=True)
+    assert strategy_packet['l3_publication_qualification']=='native_nav_required'
+    assert strategy_packet['pending_release_checks']==['native_l3_nav_adoption']
+    assert strategy_packet['can_publish'] is False
 
 
 def test_refresh_target_is_an_integrity_checked_candidate_not_serving_mutation():

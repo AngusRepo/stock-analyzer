@@ -377,7 +377,7 @@ def _artifact_registry_promotion_queue_snapshot(model_name: str | None = None, l
             for pointer in pointers
             if pointer.get("model_name") and pointer.get("champion_version")
         }
-        return build_promotion_queue(rows, champion_versions=champion_versions)
+        return build_promotion_queue(rows, champion_versions=champion_versions, model_validation_publication=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion queue failed: {e}")
 
@@ -442,22 +442,35 @@ async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromoti
             for pointer in pointers
             if pointer.get("model_name") and pointer.get("champion_version")
         }
-        queue = build_promotion_queue(rows, champion_versions=champion_versions)
-        eligible = [
+        queue = build_promotion_queue(rows, champion_versions=champion_versions, model_validation_publication=True)
+        all_eligible = [
             row for row in queue.get("queue") or []
             if row.get("promotion_decision") == "auto_promote_candidate"
             and row.get("approval_required") is not True
-        ][:max(1, min(int(req.max_candidates), 64))]
+        ]
+        eligible = all_eligible[:max(1, min(int(req.max_candidates), 64))]
         by_id = {str(row.get("artifact_id")): dict(row) for row in rows}
         results: list[dict] = []
         promoted_artifacts: list[dict] = []
 
-        # Weekly/monthly artifact creation is not publication authority. The
-        # existing daily NAV job selects from its frozen complete inventory;
-        # this generic endpoint must not select a second latest-N winner.
-        results.append({'status': 'delegated', 'can_promote': False,
-            'decision': 'active8_new_publication_owned_by_daily_nav',
-            'publication_owner': 'daily_paired_nav', 'training_dispatched': False})
+        # Model validation owns ML publication. Ambiguous cohorts require an
+        # exact bundle request; do not choose a winner using today's NAV.
+        run_ids = sorted({str(item.get("training_run_id") or "") for item in all_eligible
+                          if item.get("candidate_type") == "oof_full_fit_release"})
+        if len(run_ids) == 1 and run_ids[0]:
+            bundle_rows = LEARNING_D1_CLIENT.query(
+                "SELECT * FROM model_artifact_registry WHERE training_run_id=? AND candidate_type='oof_full_fit_release'",
+                [run_ids[0]])
+            bundle_result = run_active8_ensemble_bundle_promotion_controller(
+                training_run_id=run_ids[0], registry_rows=bundle_rows, d1_pointers=pointers,
+                model_validation_publication=True, confirm=True, reason=req.reason)
+            artifacts = bundle_result.pop('artifacts', [])
+            results.append(bundle_result)
+            if bundle_result.get('readback_verified') is True:
+                promoted_artifacts.extend(artifacts)
+        elif run_ids:
+            results.append({'status': 'blocked', 'can_promote': False,
+                'decision': 'active8_exact_training_run_required', 'training_run_ids': run_ids})
         seen_models: set[str] = set()
         for item in eligible:
             if str(item.get("candidate_type") or "") in {"timesfm_l175_l2_feature_release", "oof_full_fit_release"}:
@@ -531,11 +544,11 @@ async def artifact_registry_active8_bundle_promotion_controller(
         raise HTTPException(status_code=400, detail="training_run_id is required")
     try:
         evaluation_date = req.evaluation_business_date
-        recovery_only = req.confirm and evaluation_date is None
+        recovery_only = False
         if req.confirm and (not req.ensemble_artifact_id or not req.ensemble_payload_checksum):
             return {'status': 'blocked', 'can_promote': False,
                     'decision': 'active8_ensemble_exact_identity_required', 'readback_verified': False}
-        if recovery_only:
+        if req.confirm:
             committed = LEARNING_D1_CLIENT.query('''
                 SELECT p.*, e.training_run_id, e.state, e.production_effect
                 FROM active8_ensemble_pointer_v1 p
@@ -544,12 +557,11 @@ async def artifact_registry_active8_bundle_promotion_controller(
                   AND e.payload_checksum=p.payload_checksum AND e.training_run_id=?
                   AND e.state='production' AND e.production_effect=1
                 ''', [req.ensemble_artifact_id, req.ensemble_payload_checksum, req.training_run_id])
-            if len(committed) != 1:
-                return {'status': 'blocked', 'can_promote': False, 'readback_verified': False,
-                        'decision': 'active8_new_publication_requires_daily_nav',
-                        'publication_owner': 'daily_paired_nav'}
-            evidence = json.loads(committed[0].get('promotion_evidence_json') or '{}')
-            if 'nav_validation' in evidence:
+            if len(committed) > 1:
+                raise ValueError('active8_committed_pointer_cardinality')
+            recovery_only = len(committed) == 1
+            evidence = json.loads(committed[0].get('promotion_evidence_json') or '{}') if committed else {}
+            if recovery_only and 'nav_validation' in evidence:
                 evaluation_date = evidence['evaluation_business_date']
                 if not evaluation_date or evaluation_date != evidence['nav_validation']['as_of_date']:
                     raise ValueError('active8_recovery_original_nav_date_invalid')
@@ -568,14 +580,11 @@ async def artifact_registry_active8_bundle_promotion_controller(
             ensemble_payload_checksum=req.ensemble_payload_checksum,
             evaluation_business_date=evaluation_date,
             recovery_only=recovery_only,
+            model_validation_publication=not recovery_only,
             confirm=req.confirm,
             reason=req.reason,
         )
         artifacts = [dict(row) for row in result.pop("artifacts", [])]
-        if not req.confirm and evaluation_date is None:
-            result = {**result, 'offline_diagnostic_can_promote': result.get('offline_diagnostic_can_promote', result.get('can_promote')) is True,
-                      'can_promote': False, 'completion_scope': 'offline_diagnostic_only',
-                      'publication_owner': 'daily_paired_nav'}
         if req.confirm and result.get("can_promote") is True:
             readback = {
                 str(pointer.get("model_name") or ""): pointer

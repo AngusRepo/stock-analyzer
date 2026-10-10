@@ -68,9 +68,11 @@ def prepare_packet(*,current_config,candidate,acceptance,source_evidence,l3_iden
     return {'schema_version':'l4-local-cutover-packet-v1','signal_date':signal_date,
         'inherited_sparse_controls':inherited,'previous_config_checksum':digest(current_config),'next_config_checksum':digest(config),
         'expected_l3_identity':current_l3_identity,'next_l3_identity':l3_identity,
-        'l3_publication_qualification':('unchanged_incumbent' if current_l3_identity==l3_identity else 'native_nav_required'),
+        'l3_publication_qualification':('unchanged_incumbent' if current_l3_identity==l3_identity
+            else 'native_nav_required' if nav_candidate else 'model_validation_required'),
         'l3_nav_gate_waived':False,
-        'pending_release_checks':(['native_l3_nav_adoption'] if current_l3_identity!=l3_identity else []),
+        'pending_release_checks':(['native_l3_nav_adoption' if nav_candidate else 'native_l3_model_validation']
+            if current_l3_identity!=l3_identity else []),
         'release_kind':'nav_strategy_candidate' if nav_candidate else 'paired_upgrade' if upgrading else 'initial_cutover',
         'can_publish':False if nav_candidate else current_l3_identity==l3_identity,
         'execution_sequence':['verify_config_l3_and_plan_readbacks','drain_running_order_intents',

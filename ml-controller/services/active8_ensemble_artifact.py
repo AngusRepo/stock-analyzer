@@ -388,7 +388,8 @@ def build_active8_ensemble_artifact(
             "chronological_validation_daily_spread_lcb90_non_positive"
         )
     # Keep ranking/calibration/direction diagnostics separate. Executable
-    # candidates are retained even when ranking FAILs; NAV owns publication.
+    # Failed ranking candidates remain diagnostic artifacts. The model
+    # publication controller checks qualification before activating a bundle.
     validation["decision"] = "PASS" if not validation["failed_gates"] else "FAIL"
     x = np.asarray([row["stacker_features"] for row in resolved], dtype=float)
     y = np.asarray([row["target_return"] for row in resolved], dtype=float)

@@ -70,8 +70,8 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
     if dispatch_full_fit and not dry_run:
         full_fit=await dispatch_oof_full_fit_training(manifest=manifest,knowledge_cutoff_date=as_of,
             bucket=bucket,lifecycle_cadence=cadence,allow_new_dispatch=not poll_only)
-    # Training candidates do not consume execution-accounting evidence. The
-    # daily accounting/release owners retain all NAV and promotion gates.
+    # Training closure attests saved candidates. Model qualification and the
+    # paired L3/L4 release govern publication; daily NAV remains accounting.
     nav = ({'status': 'not_requested', 'owner': 'daily_nav',
             'reason': 'training_candidate_does_not_require_account_nav',
             'accounting_verified': False, 'promotion_allowed': False}

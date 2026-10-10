@@ -82,9 +82,10 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
     if strategy_role == "B":
         from services.alpha_model_roster import TIMEXER_MODELS,validate_order
         from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
+        from services.formal_feature_contract import EXO131_PROFILE
         if validate_order(parent["model_order"]) != TIMEXER_MODELS:
             raise ValueError("l4_tabpack_requires_timexer_roster")
-        if manifest.get('model_profile_schema_version') != TIMEXER_EXO_PROFILE_SCHEMA:
+        if manifest.get('model_profile_schema_version') not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE):
             raise ValueError('l4_tabpack_requires_exogenous_B_oof_profile')
         source_sha = os.environ.get('STOCKVISION_SOURCE_SHA','')
         if len(source_sha) != 40 or any(c not in '0123456789abcdef' for c in source_sha):

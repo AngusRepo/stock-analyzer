@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .l4_tabpack_protocol import SEED, UPSTREAM_COMMIT
+from services.l4_tabpack_budget_protocol import LEGACY_RECIPE, RECIPE, configure, validate_run
 
 
 def verify_source(root):
@@ -24,7 +25,8 @@ def verify_source(root):
     return hashlib.sha256((root / 'UPSTREAM.json').read_bytes()).hexdigest()
 
 
-def make_config(root, dataset):
+def make_config(root, dataset, *, recipe=LEGACY_RECIPE, seed=SEED):
+    validate_run(recipe, seed)
     import lib.config
     spec = importlib.util.spec_from_file_location('tabpack_official_config', Path(root) / 'experiments/tabpack/make.py')
     module = importlib.util.module_from_spec(spec)
@@ -35,7 +37,7 @@ def make_config(root, dataset):
         lib.config.make_data_config = lambda *a, **k: {'path': str(Path(dataset).resolve()),
             'extract_bin_from_num': False, 'num_policy': None, 'cache': False}
         lib.config.get_batch_size = lambda _: 1024
-        return module.make_config('stockvision', seed=SEED)
+        return configure(module.make_config('stockvision', seed=seed), recipe=recipe, seed=seed)
     finally:
         lib.config.make_data_config, lib.config.get_batch_size = data_fn, batch_fn
 
@@ -137,7 +139,7 @@ class SelectedWeights:
                                             'rtol': 2e-5, 'atol': 2e-6, 'reference': 'official_ModelPack_FP32'}
 
 
-def run(root, dataset, output):
+def run(root, dataset, output, *, recipe=LEGACY_RECIPE, seed=SEED):
     import numpy as np
     import lib.data
     import lib.experiment
@@ -145,7 +147,7 @@ def run(root, dataset, output):
     import project.tabpack as upstream
     root, output = Path(root).resolve(), Path(output).resolve()
     source_sha = verify_source(root)
-    config = make_config(root, dataset)
+    config = make_config(root, dataset, recipe=recipe, seed=seed)
     lib.utils.init()
     unprocessed = lib.data.load_data(dataset, ('default',))['x_num']['train']
     feature_indices = np.flatnonzero((unprocessed != unprocessed[0]).any(axis=0)).tolist()
@@ -166,7 +168,9 @@ def run(root, dataset, output):
     result = {'members': members, 'residual_mean': stats.mean, 'residual_scale': stats.std,
               'config': config, 'upstream_manifest_sha256': source_sha, 'report': report,
               'export_verification': parity, 'retained_feature_indices': feature_indices,
-              'seed': SEED, 'checkpoint_sha256': hashlib.sha256(raw).hexdigest()}
+              'seed': seed, 'training_recipe': recipe, 'training_completed': True,
+              'configuration_overrides': {'n_models': 16} if recipe == RECIPE else {},
+              'checkpoint_sha256': hashlib.sha256(raw).hexdigest()}
     (output / 'result.json').write_text(json.dumps(result, sort_keys=True, allow_nan=False), encoding='utf-8')
     return result
 
@@ -177,5 +181,7 @@ if __name__ == '__main__':
     parser.add_argument('--root', required=True)
     parser.add_argument('--dataset', required=True)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--recipe', default=LEGACY_RECIPE)
+    parser.add_argument('--seed', type=int, default=SEED)
     args = parser.parse_args()
-    run(args.root, args.dataset, args.output)
+    run(args.root, args.dataset, args.output, recipe=args.recipe, seed=args.seed)

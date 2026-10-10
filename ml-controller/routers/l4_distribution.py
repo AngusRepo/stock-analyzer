@@ -27,6 +27,7 @@ class RefreshRequest(BaseModel):
     cadence: str = Field(pattern=r'^(weekly|monthly|manual)$')
     target_l3_artifact_id: str | None = Field(default=None,max_length=400)
     strategy_role: Literal["A", "B"] | None = None
+    model_family: Literal['tabpack', 'tabpack_median16', 'full_mlp_median'] | None = None
     promote: bool = False
     dry_run: bool = False
 
@@ -43,6 +44,8 @@ def refresh_distribution(request: RefreshRequest):
     from services.paper_strategy_mode import is_single_b
     single_b = is_single_b(policy)
     role = request.strategy_role or ('B' if single_b else 'A')
+    if role != 'B' and request.model_family is not None:
+        raise HTTPException(409, 'l4_refresh_model_family_requires_B')
     if single_b and role != 'B':
         raise HTTPException(409, 'single_b_refresh_cannot_train_A')
     target = request.target_l3_artifact_id
@@ -55,8 +58,8 @@ def refresh_distribution(request: RefreshRequest):
     if request.dry_run:
         return {'status':'dry_run','promoted':False,'training_dispatched':False}
     try:
-        from services.paper_strategy_mode import MLP_MODE
-        family='full_mlp_median' if policy.get('operating_mode')==MLP_MODE else 'tabpack'
+        from services.paper_strategy_mode import refresh_family
+        family=request.model_family or refresh_family(config)
         job=CloudRunJobsClient(job_name=os.environ.get('L4_DISTRIBUTION_JOB_NAME','l4-distribution-refresh')).run_job(
             env_overrides={'L4_REFRESH_DATE':request.end_date,'L4_REFRESH_CADENCE':request.cadence,'L4_STRATEGY_ROLE':role,
                 **({'L4_MODEL_FAMILY':family} if role=='B' else {}),

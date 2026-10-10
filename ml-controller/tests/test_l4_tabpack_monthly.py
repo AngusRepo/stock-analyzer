@@ -103,7 +103,7 @@ def test_monthly_lifecycle_rejects_explicit_price_profile_before_dispatch(monkey
 
 
 @pytest.mark.parametrize('status,expected,retry', [('pending','pending',True), ('failed','failed',False), ('validated','materialized',False)])
-@pytest.mark.parametrize('family',[None,'full_mlp_median'])
+@pytest.mark.parametrize('family',[None,'full_mlp_median','tabpack_median16'])
 def test_native_monthly_closure_waits_for_tabpack(monkeypatch, status, expected, retry, family):
     import asyncio
     from services import l4_oof_lifecycle as native, active8_oof_cohort_materializer as materializer

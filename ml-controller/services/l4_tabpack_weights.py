@@ -37,7 +37,7 @@ def decode(raw, ref):
     return arrays
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _load(bucket_name, path, sha, size):
     from google.cloud import storage
     blob = storage.Client().bucket(bucket_name).blob(path)

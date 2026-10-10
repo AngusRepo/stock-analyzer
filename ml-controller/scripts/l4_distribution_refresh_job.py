@@ -17,7 +17,8 @@ def training_recipe_signature():
         'l4_distribution_runtime.py','l4_l3_baseline.py','recommendation_service.py','l4_alpha_ev_producer.py',
         'alpha_model_roster.py','l4_residual_mlp.py','l4_prediction_evaluation.py',
         'l4_mlp_median.py','l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_dispatch.py',
-        'l4_mlp_export.py','l4_mlp_dispatch.py','l4_mlp_weights.py','paper_strategy_mode.py')
+        'l4_mlp_export.py','l4_mlp_dispatch.py','l4_mlp_weights.py','paper_strategy_mode.py',
+        'l4_tabpack_budget_protocol.py','l4_tabpack_median.py','l4_tabpack_median_dispatch.py')
     sources={name:hashlib.sha256((services/name).read_bytes()).hexdigest() for name in names}
     sources['scripts/l4_distribution_refresh_job.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     return digest(sources)
@@ -47,10 +48,9 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
         raise ValueError('l4_B_requires_explicit_exo_parent')
     if model_family is None and strategy_role == 'B':
         from services.trading_config_loader import load_merged_trading_config_with_contract
-        from services.paper_strategy_mode import MLP_MODE
-        policy=load_merged_trading_config_with_contract().config.get('l4Distribution') or {}
-        model_family='full_mlp_median' if policy.get('operating_mode')==MLP_MODE else 'tabpack'
-    if model_family not in (None,'tabpack','full_mlp_median') or (strategy_role!='B' and model_family is not None):
+        from services.paper_strategy_mode import refresh_family
+        model_family=refresh_family(load_merged_trading_config_with_contract().config)
+    if model_family not in (None,'tabpack','tabpack_median16','full_mlp_median') or (strategy_role!='B' and model_family is not None):
         raise ValueError('l4_refresh_model_family_invalid')
     from graphs.daily_pipeline_v2 import _load_active8_serving_pool,_load_active8_ensemble_snapshot,_active8_action_authority
     from services.paired_nav_collection import baseline_model_identity
@@ -92,6 +92,8 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
             raise ValueError('l4_tabpack_training_source_sha_missing')
         if model_family=='full_mlp_median':
             from services.l4_mlp_dispatch import RECIPE
+        elif model_family=='tabpack_median16':
+            from services.l4_tabpack_median_dispatch import RECIPE
         else:
             from services.l4_tabpack_dispatch import RECIPE
         recipe=digest({'anchor_recipe':recipe,'B_source_sha':source_sha,'recipe':RECIPE})
@@ -99,6 +101,8 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
     if strategy_role == 'B':
         if model_family=='full_mlp_median':
             from services.l4_mlp_dispatch import dispatch
+        elif model_family=='tabpack_median16':
+            from services.l4_tabpack_median_dispatch import dispatch
         else:
             from services.l4_tabpack_dispatch import dispatch
         def make_payload():

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:4241c55141f250f6c74ca3e9f13828ebc11763d8982cb2282e14ce2437f16ffe",
+  "execution_owner_version": "native-paper-v1:0bdb089461bbbd859ad8eaef8107706ddf58c5b3adb257479d7193b7efbc0fb6",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
   "authorization": "Candidate validation only. No deployment or production runtime approval is granted.",
-  "review": "audits/formal-source-defense-20261008/current-native-identity-review-r115.json",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:source-defense-candidate-r115"
+  "review": "audits/formal-source-defense-20261008/core16-native-identity-review-r126.json",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:tabpack-core16-candidate-r126"
 }

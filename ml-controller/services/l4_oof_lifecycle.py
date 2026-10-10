@@ -89,10 +89,10 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
             options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE) else {}
             family_binding={}
             if options.get('strategy_role')=='B' and model_family is not None:
-                if model_family not in ('full_mlp_median','tabpack'):
+                if model_family not in ('full_mlp_median','tabpack','tabpack_median16'):
                     raise ValueError('l4_oof_model_family_invalid')
                 options['model_family']=model_family
-                if model_family=='full_mlp_median':
+                if model_family in ('full_mlp_median','tabpack_median16'):
                     family_binding={'model_family':model_family}
             binding = None
             if cadence == 'monthly' and options.get('strategy_role') == 'B':

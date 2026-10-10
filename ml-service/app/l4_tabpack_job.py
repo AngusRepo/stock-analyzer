@@ -11,6 +11,7 @@ from services.l4_distribution import digest, predict, validate_bundle
 from services.l4_distribution_lifecycle import persist_candidate
 from services import l4_tabpack_weights as weights
 from .l4_tabpack_protocol import RECIPE, UPSTREAM_COMMIT
+from services.l4_tabpack_budget_protocol import validate_run, validate_result
 
 
 def _write_once(bucket, path, raw, content_type):
@@ -21,7 +22,8 @@ def _write_once(bucket, path, raw, content_type):
         raise ValueError('l4_tabpack_immutable_readback_mismatch')
 
 
-def _train(dataset, output, *, timeout=3300):
+def _train(dataset, output, *, timeout=3300, recipe=RECIPE, seed=42):
+    validate_run(recipe, seed)
     root = Path(__file__).resolve().parents[1] / 'vendor' / 'tabpack'
     root = Path(os.environ.get('STOCKVISION_TABPACK_ROOT', str(root))).resolve()
     python = root / '.venv' / 'bin' / 'python'
@@ -30,7 +32,8 @@ def _train(dataset, output, *, timeout=3300):
     env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(root / 'src'), str(Path(__file__).resolve().parents[1]),
            str(Path(__file__).resolve().parents[2] / 'ml-controller'), '/root'])}
     subprocess.run([str(python), '-m', 'app.l4_tabpack_official', '--root', str(root),
-                    '--dataset', str(dataset), '--output', str(output)], cwd=root, env=env,
+                    '--dataset', str(dataset), '--output', str(output), '--recipe', recipe,
+                    '--seed', str(seed)], cwd=root, env=env,
                    check=True, timeout=timeout)
 
 
@@ -52,6 +55,7 @@ def build_candidate(payload, bucket):
         root = Path(temp)
         read_gpu_output(payload, bucket, root / 'output')
         result = json.loads((root / 'output/result.json').read_text())
+        validate_result(result, recipe=payload['training_recipe'], seed=payload.get('seed', 42))
         raw = (root / 'output/weights.npz').read_bytes()
         sha = hashlib.sha256(raw).hexdigest()
         if sha != result['checkpoint_sha256']:
@@ -61,7 +65,7 @@ def build_candidate(payload, bucket):
         weights.validate_members(result, decoded)
         _write_once(bucket, ref['path'], raw, 'application/octet-stream')
         # Keep official reports/config/history and causal evidence, not just weights.
-        manifest = {'recipe': RECIPE, 'upstream_commit': UPSTREAM_COMMIT, 'source': payload,
+        manifest = {'recipe': payload['training_recipe'], 'upstream_commit': UPSTREAM_COMMIT, 'source': payload,
                     'causal_evidence': evidence, 'official': result}
         manifest_sha = digest(manifest)
         manifest_path = 'l4_distribution/tabpack_training/' + manifest_sha + '.json'
@@ -79,6 +83,9 @@ def build_candidate(payload, bucket):
                 'members': result['members'], 'weights': ref,
                 'provenance': {'seed': result['seed'], 'selection_rule': 'official_online_greedy_validation_only',
                     'upstream_commit': UPSTREAM_COMMIT, 'checkpoint_sha256': sha,
+                    'training_recipe': payload['training_recipe'], 'n_models': result['config']['n_models'],
+                    'partition_checksum': digest(evidence['partitions']),
+                    'source_rows_checksum': evidence['source_rows_checksum'],
                     'training_manifest_sha256': manifest_sha, 'training_manifest_path': manifest_path}}
     residual['payload_checksum'] = digest(residual)
     candidate = deepcopy(anchor)
@@ -99,7 +106,7 @@ def build_candidate(payload, bucket):
         'portfolio_superiority': 'requires_same_account_execution_comparison'}
     candidate['candidate_id'] = 'l4_distribution:' + digest(candidate)
     return {**persist_candidate(candidate, bucket=bucket), 'model_schema': weights.SCHEMA,
-            'training_recipe': RECIPE, 'run_key': payload['run_key'], 'weights': ref}
+            'training_recipe': payload['training_recipe'], 'run_key': payload['run_key'], 'weights': ref}
 
 
 def run(payload, *, bucket=None):

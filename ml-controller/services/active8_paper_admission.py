@@ -36,9 +36,9 @@ def validate_admission(admission, *, artifact, now=None):
     tag=validate_tag(bundle.get('strategy_ab'))
     from services.paper_strategy_mode import single_b_policy
     from services.strategy_ab import TABPACK_SCHEMA, MLP_MEDIAN_SCHEMA
-    from services.paper_strategy_mode import MODE, MLP_MODE
+    from services.paper_strategy_mode import MODE, MLP_MODE, TABPACK_MEDIAN_MODE
     mode=single_b_policy(bundle['candidate_trading_config'],signal_date=admission['business_date'])
-    matching_b=mode and tag['role']=='B' and ((mode['mode']==MODE and tag['schema_version']==TABPACK_SCHEMA)
+    matching_b=mode and tag['role']=='B' and ((mode['mode'] in (MODE,TABPACK_MEDIAN_MODE) and tag['schema_version']==TABPACK_SCHEMA)
         or (mode['mode']==MLP_MODE and tag['schema_version']==MLP_MEDIAN_SCHEMA))
     if tag['role']!='A' and not matching_b:
         raise ValueError('active8_paper_primary_A_required')

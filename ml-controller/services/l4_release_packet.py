@@ -52,8 +52,12 @@ def prepare_packet(*,current_config,candidate,acceptance,source_evidence,l3_iden
     config=deepcopy(current_config)
     config['l4Distribution']={'scope':'paper','artifact':release,'constraints':deepcopy(constraints),'opb':opb}
     from services.l4_mlp_median import SCHEMA as MEDIAN_SCHEMA
-    from services.paper_strategy_mode import MLP_MODE, MODE, validate_model_mode
-    if release['model'].get('residual_mlp',{}).get('schema_version')==MEDIAN_SCHEMA:
+    from services.l4_tabpack_median import SCHEMA as TABPACK_MEDIAN_SCHEMA
+    from services.paper_strategy_mode import MLP_MODE, MODE, TABPACK_MEDIAN_MODE, validate_model_mode
+    if release['model'].get('residual_tabpack',{}).get('schema_version')==TABPACK_MEDIAN_SCHEMA:
+        config['l4Distribution'].update(operating_mode=TABPACK_MEDIAN_MODE,strategy_role='B')
+        validate_model_mode(config['l4Distribution'])
+    elif release['model'].get('residual_mlp',{}).get('schema_version')==MEDIAN_SCHEMA:
         config['l4Distribution'].update(operating_mode=MLP_MODE,strategy_role='B')
         validate_model_mode(config['l4Distribution'])
     elif (current_config.get('l4Distribution') or {}).get('operating_mode') is not None:

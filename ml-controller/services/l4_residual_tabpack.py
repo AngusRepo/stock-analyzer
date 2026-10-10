@@ -9,6 +9,9 @@ OUTPUTS=['p_loss','gain','loss','expected_return_gross']
 
 
 def validate(model,*,anchor_model,signal_date=None):
+    from services import l4_tabpack_median as median
+    if model.get('schema_version') == median.SCHEMA:
+        return median.validate(model, anchor_model=anchor_model, signal_date=signal_date)
     from services import l4_tabpack_weights as official
     is_official = model.get('schema_version') == official.SCHEMA
     if (model.get('schema_version') not in (SCHEMA, official.SCHEMA) or model.get('inputs')!=34
@@ -58,6 +61,9 @@ def validate(model,*,anchor_model,signal_date=None):
 
 
 def apply(rows,outputs,model,*,anchor_model):
+    from services import l4_tabpack_median as median
+    if model.get('schema_version') == median.SCHEMA:
+        return median.apply(rows, outputs, model, anchor_model=anchor_model)
     validate(model,anchor_model=anchor_model)
     if not rows:return []
     native,_=design(rows,model['recipe']['native'])

@@ -4,12 +4,18 @@ from services.l4_distribution import validate_bundle,digest
 
 MODE='single_b_tabpack_v1'
 MLP_MODE='single_b_full_mlp_median_v1'
-MODES=(MODE,MLP_MODE)
+TABPACK_MEDIAN_MODE='single_b_tabpack_core16_median_v1'
+MODES=(MODE,MLP_MODE,TABPACK_MEDIAN_MODE)
 STATUS='disabled_by_single_b_policy'
 
 def refresh_family(config):
+    override=((config or {}).get('l4Distribution') or {}).get('candidate_model_family')
+    if override is not None:
+        if override not in ('tabpack', 'tabpack_median16', 'full_mlp_median'):
+            raise ValueError('paper_candidate_model_family_invalid')
+        return override
     mode=((config or {}).get('l4Distribution') or {}).get('operating_mode')
-    return 'full_mlp_median' if mode==MLP_MODE else 'tabpack'
+    return {MLP_MODE:'full_mlp_median',TABPACK_MEDIAN_MODE:'tabpack_median16'}.get(mode,'tabpack')
 
 def is_single_b(policy):
     return (policy or {}).get('operating_mode') in MODES
@@ -20,6 +26,11 @@ def validate_model_mode(policy):
     if mode == MODE:
         if model.get('residual_mlp') is not None or not model.get('residual_tabpack'):
             raise ValueError('paper_single_b_tabpack_required')
+    elif mode == TABPACK_MEDIAN_MODE:
+        from services.l4_tabpack_median import SCHEMA
+        if (model.get('residual_mlp') is not None
+                or (model.get('residual_tabpack') or {}).get('schema_version') != SCHEMA):
+            raise ValueError('paper_single_b_tabpack_core16_median_required')
     elif mode == MLP_MODE:
         from services.l4_mlp_median import SCHEMA
         mlp=model.get('residual_mlp') or {}

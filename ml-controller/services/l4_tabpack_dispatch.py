@@ -8,26 +8,35 @@ from services.l4_tabpack_weights import SCHEMA
 RECIPE = 'three-head-oof-official-tabpack-v2'
 
 
-def dispatch(bucket, run_key, make_payload):
+def dispatch(bucket, run_key, make_payload, *, recipe=RECIPE, seed=42):
+    from services.l4_tabpack_budget_protocol import validate_run, RECIPE as BUDGET_RECIPE
+    validate_run(recipe, seed)
     prefix = 'l4_distribution/tabpack_runs/' + run_key
     completed = bucket.blob(prefix + '/completed.json')
     if completed.exists():
         result = json.loads(completed.download_as_bytes())
         candidate = json.loads(bucket.blob(result['artifact_path']).download_as_bytes())
         if (result.get('run_key') != run_key or result.get('model_schema') != SCHEMA
-                or result.get('training_recipe') != RECIPE or result.get('status') != 'validated'
+                or result.get('training_recipe') != recipe or result.get('status') != 'validated'
                 or result.get('promoted') is not False or digest(candidate) != result['artifact_checksum']
                 or candidate['model'].get('residual_mlp') is not None
                 or candidate['model'].get('residual_tabpack', {}).get('schema_version') != SCHEMA
                 or candidate.get('challenger_training_source', {}).get('run_key') != run_key):
             raise ValueError('l4_tabpack_completed_receipt_invalid')
+        if recipe == BUDGET_RECIPE:
+            p = candidate['model']['residual_tabpack'].get('provenance') or {}
+            if p.get('seed') != seed or p.get('training_recipe') != recipe or p.get('n_models') != 16:
+                raise ValueError('l4_tabpack_completed_recipe_mismatch')
+            from services.l4_distribution import validate_bundle
+            validate_bundle(candidate, l3_identity=candidate['l3_identity'],
+                signal_date=candidate['challenger_training_source']['as_of'], require_paper_release=False)
         return result
     failed = bucket.blob(prefix + '/failed.json')
     if failed.exists():
         return {**json.loads(failed.download_as_bytes()), 'dependency_retry_required': False}
     claim = bucket.blob(prefix + '/dispatch_claim.json')
     pending = {'status': 'pending', 'run_key': run_key, 'promoted': False,
-               'dependency_retry_required': True, 'training_recipe': RECIPE}
+               'dependency_retry_required': True, 'training_recipe': recipe}
     if claim.exists():
         from services.l4_tabpack_handoff import resume_stages
         stage = resume_stages(bucket, run_key)
@@ -46,7 +55,9 @@ def dispatch(bucket, run_key, make_payload):
     except PreconditionFailed:
         return {**pending, 'reason': 'dispatch_already_claimed'}
     try:
-        payload = {**make_payload(), 'run_key': run_key, 'training_recipe': RECIPE}
+        payload = {**make_payload(), 'run_key': run_key, 'training_recipe': recipe}
+        if recipe == BUDGET_RECIPE:
+            payload['seed'] = seed
     except Exception as exc:
         # Preparation has not touched Modal: report this failure immediately.
         failure = {'status': 'failed', 'run_key': run_key, 'promoted': False,

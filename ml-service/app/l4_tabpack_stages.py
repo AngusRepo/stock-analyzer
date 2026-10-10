@@ -13,6 +13,7 @@ from google.api_core.exceptions import PreconditionFailed
 from services.l4_distribution import digest
 from services.l4_tabpack_handoff import PREFIX, read, sealed, launch
 from app.l4_tabpack_protocol import RECIPE
+from services.l4_tabpack_budget_protocol import validate_run, RECIPE as BUDGET_RECIPE
 
 
 def _put(bucket, path, raw, content_type='application/json'):
@@ -60,6 +61,25 @@ def _object(bucket, root, name, raw):
 
 def prepare_stage(payload, bucket):
     from app.l4_tabpack_data import prepare
+    shared_key = payload.get('shared_prepared_run_key')
+    if shared_key is not None:
+        if (payload['training_recipe'] != BUDGET_RECIPE or payload.get('seed') not in (43,44)
+                or not re.fullmatch('[a-f0-9]{64}', str(shared_key)) or shared_key == payload['run_key']):
+            raise ValueError('tabpack_shared_preparation_identity_invalid')
+        shared_root = PREFIX + shared_key + '/'
+        shared = sealed(bucket, shared_root + 'prepared.json')
+        expected = {k:v for k,v in payload.items() if k != 'shared_prepared_run_key'}
+        expected.update(run_key=shared_key, seed=42)
+        if shared.get('payload') != expected:
+            raise ValueError('tabpack_shared_preparation_source_mismatch')
+        completed = read(bucket, shared_root + 'completed.json') or {}
+        if completed.get('status') != 'validated' or completed.get('run_key') != shared_key:
+            raise ValueError('tabpack_shared_preparation_seed42_incomplete')
+        raw = _bytes(bucket, shared['arrays'], shared_root)
+        ref = _object(bucket, _root(payload), 'prepared.npz', raw)
+        evidence = {**shared['evidence'], 'seed':payload['seed']}
+        return _seal(bucket, _root(payload) + 'prepared.json',
+            {'payload':payload, 'arrays':ref, 'recipe':shared['recipe'], 'evidence':evidence})
     if (payload['dataset_path'] != 'l4_distribution/native_datasets/' + payload['rows_checksum'] + '.json'
             or not payload['anchor_path'].startswith('l4_distribution/candidates/')
             or '..' in payload['anchor_path'].split('/')):
@@ -69,6 +89,8 @@ def prepare_stage(payload, bucket):
     if digest(rows) != payload['rows_checksum'] or digest(anchor) != payload['anchor_checksum']:
         raise ValueError('l4_tabpack_source_checksum_mismatch')
     arrays, recipe, evidence, _ = prepare(rows, anchor, as_of=payload['as_of'])
+    evidence['seed_selection'] = 'predeclared_seed_no_test_selection'
+    evidence['seed'] = payload.get('seed', 42)
     buffer = io.BytesIO()
     np.savez_compressed(buffer, **{name + '_' + suffix:value for name,pair in arrays.items()
                                   for suffix,value in zip(('x','y'),pair, strict=True)})
@@ -91,7 +113,8 @@ def gpu_stage(payload, bucket, *, started):
         remaining = min(3300, int(3600 - (time.monotonic() - started) - 120))
         if remaining <= 0:
             raise TimeoutError('tabpack_gpu_no_fit_budget')
-        _train(root / 'data', root / 'output', timeout=remaining)
+        _train(root / 'data', root / 'output', timeout=remaining,
+               recipe=payload['training_recipe'], seed=payload.get('seed', 42))
         names = ('result.json', 'weights.npz', 'experiment/experiments.json',
                  'experiment/online_ensemble_history.json', 'experiment/online_ensemble_predictions.npz')
         refs = {name:_object(bucket, _root(payload) + 'gpu/', name, (root/'output'/name).read_bytes()) for name in names}
@@ -119,10 +142,11 @@ def _stage_owner():
 
 def run_stage(payload, stage, *, bucket=None):
     started = time.monotonic()
+    validate_run(payload.get('training_recipe'), payload.get('seed', 42))
     if (stage not in ('prepare','gpu','finalize') or payload.get('expected_source_sha') != os.environ.get('STOCKVISION_SOURCE_SHA')
             or not re.fullmatch('[a-f0-9]{40}', str(payload.get('expected_source_sha','')))
             or not re.fullmatch('[a-f0-9]{64}', str(payload.get('run_key','')))
-            or payload.get('training_recipe') != RECIPE):
+            or payload.get('training_recipe') not in (RECIPE, BUDGET_RECIPE)):
         raise ValueError('l4_tabpack_runtime_or_recipe_mismatch')
     if bucket is None:
         from google.cloud import storage
@@ -147,6 +171,8 @@ def run_stage(payload, stage, *, bucket=None):
                 raise ValueError('tabpack_stage_claim_payload_mismatch')
             if owner is None or claim.get('owner') != owner:
                 return {'status':'pending', 'reason':'tabpack_' + stage + '_already_claimed'}
+            if stage == 'gpu' and payload['training_recipe'] == BUDGET_RECIPE:
+                raise ValueError('tabpack_budget_fit_interruption_requires_review')
             # Modal preemption restarts the same input after its old container
             # terminates. Only that exact provider owner may resume its claim.
             # Partial GPU exports need explicit reconciliation, never refitting

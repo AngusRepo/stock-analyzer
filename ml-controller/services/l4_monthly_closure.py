@@ -15,17 +15,20 @@ def completed_candidate(bucket, run_key, *, identity, manifest_checksum, as_of, 
         raise ValueError('monthly_completed_run_key_invalid')
     tab_exists=bucket.blob('l4_distribution/tabpack_runs/' + run_key + '/completed.json').exists()
     mlp_exists=bucket.blob('l4_distribution/mlp_median_runs/' + run_key + '/completed.json').exists()
-    if tab_exists and mlp_exists:
+    median_exists=bucket.blob('l4_distribution/tabpack_median16_runs/' + run_key + '/completed.json').exists()
+    if sum((tab_exists, mlp_exists, median_exists)) > 1:
         raise ValueError('monthly_completed_model_family_ambiguous')
     if mlp_exists:
         from services.l4_mlp_dispatch import dispatch
-    if not tab_exists and not mlp_exists:
+    if median_exists:
+        from services.l4_tabpack_median_dispatch import dispatch
+    if not tab_exists and not mlp_exists and not median_exists:
         raise ValueError('monthly_completed_candidate_missing')
     def forbidden():
         raise ValueError('monthly_completed_candidate_cannot_train')
     result = dispatch(bucket, run_key, forbidden)
     candidate = json.loads(bucket.blob(result['artifact_path']).download_as_bytes())
-    family='full_mlp_median' if mlp_exists else 'tabpack'
+    family='full_mlp_median' if mlp_exists else 'tabpack_median16' if median_exists else 'tabpack'
     if expected_family is not None and family!=expected_family:
         raise ValueError('monthly_completed_model_family_mismatch')
     if (candidate.get('cadence') != 'monthly'

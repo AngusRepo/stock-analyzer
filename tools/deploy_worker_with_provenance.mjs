@@ -11,11 +11,19 @@ const manifestPath = join(root, 'infra', 'gcp-scheduler-jobs.json')
 const wranglerCli = join(workerDir, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 
 function run(command, args, options = {}) {
+  // Controller D1 identity and Worker deployment OAuth have separate scopes.
+  // Keep the database token confined to D1 subprocesses.
+  const environment = { ...process.env }
+  delete environment.STOCKVISION_D1_API_TOKEN
+  if (args.includes('d1') && args.includes('execute') && process.env.STOCKVISION_D1_API_TOKEN) {
+    environment.CLOUDFLARE_API_TOKEN = process.env.STOCKVISION_D1_API_TOKEN
+  }
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? root,
     encoding: 'utf8',
     shell: options.shell ?? false,
     stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    env: environment,
   })
   if (result.error) throw result.error
   if (result.status !== 0) {

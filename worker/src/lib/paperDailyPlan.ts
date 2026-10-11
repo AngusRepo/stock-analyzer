@@ -1,4 +1,5 @@
 import { paperExecutionNow } from './paperExecutionScope'
+import { premarketPublicationCutoff } from './premarketPublicationWindow'
 /** A sealed daily execution view; never forges the original optimizer proof. */
 import { validateL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 
@@ -26,7 +27,7 @@ export function validateDailyReview(plan: L4PortfolioPlan, review: DailyPlanRevi
     || !Number.isSafeInteger(review.revision) || review.revision < 0
     || (review.revision === 0 ? review.previousHash !== null : !/^[a-f0-9]{64}$/.test(review.previousHash ?? ''))
     || !finite(review.finalizedAtMs) || review.finalizedAtMs < Date.parse(review.tradeDate+'T00:00:00+08:00')
-    || review.finalizedAtMs >= Date.parse(review.tradeDate+'T08:45:00+08:00')
+    || review.finalizedAtMs >= premarketPublicationCutoff(review.tradeDate)
     || !review.weights || !review.reasons || Object.keys(review.weights).length !== Object.keys(plan.weights).length)
     throw new Error('daily_plan_review_invalid')
   for (const [symbol, weight] of Object.entries(review.weights)) {
@@ -89,7 +90,7 @@ export async function persistDailyReview(db:D1Database,plan:L4PortfolioPlan,revi
       .bind(plan.account_id,review.tradeDate).first<{checksum:string}>()
     // An old sealed object cannot be first-published after the cutoff.
     if (existing?.checksum!==review.checksum && (!finite(nowMs) || nowMs<review.finalizedAtMs
-      || nowMs>=Date.parse(review.tradeDate+'T08:45:00+08:00'))) throw new Error('daily_plan_publication_cutoff')
+      || nowMs>=premarketPublicationCutoff(review.tradeDate))) throw new Error('daily_plan_publication_cutoff')
     await db.batch([
       db.prepare(`INSERT INTO paper_daily_plan_reviews_v1(account_id,trade_date,checksum,plan_id,previous_hash,revision,payload_json)
         VALUES(?,?,?,?,NULL,0,?) ON CONFLICT(account_id,trade_date,checksum) DO NOTHING`)

@@ -1,4 +1,5 @@
 import { paperExecutionNow } from './paperExecutionScope'
+import { premarketPublicationCutoff } from './premarketPublicationWindow'
 import { reviewedTarget, type DailyPlanReview } from './paperDailyPlan'
 import { l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { privateL4ResearchAllowed } from './paperExecutionScope'
@@ -103,7 +104,7 @@ export async function storeL4PortfolioPlan(env: Bindings, raw: unknown) {
     const now=paperExecutionNow(),date=new Date(now+8*3600_000).toISOString().slice(0,10)
     const same=await db.prepare('SELECT plan_id FROM l4_portfolio_plans_v1 WHERE account_id=1 AND signal_date=? AND activated=1 LIMIT 1')
       .bind(plan.signal_date).first<{plan_id:string}>()
-    if((same && same.plan_id!==plan.plan_id) || (!same && (date<=plan.signal_date || now>=Date.parse(date+'T08:45:00+08:00'))))
+    if((same && same.plan_id!==plan.plan_id) || (!same && (date<=plan.signal_date || now>=premarketPublicationCutoff(date))))
       throw new Error('daily_plan_optimizer_publication_forbidden')
   }
   const payload = JSON.stringify(plan)

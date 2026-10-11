@@ -10,6 +10,20 @@ function fixture() {
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
+test('2026-10-12 recovery dispatches after 08:45 and expires exactly at 09:00',async()=>{
+ const recoveryDate='2026-10-12',f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
+ try{
+  f.ports.nowMs=Date.parse(`${recoveryDate}T08:59:59+08:00`)
+  assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/ready_target=09:00 overdue=false/)
+  const msg=f.messages.shift()!
+  await processPremarketEvent(f.env,msg,async()=>{calls++;return {next:'setup',receipt:{}}},f.now())
+  assert.equal(calls,1)
+  f.ports.nowMs+=1000
+  await processPremarketEvent(f.env,f.messages.shift()!,async()=>{calls++;return {next:null,receipt:{}}},f.now())
+  assert.equal(calls,1)
+  assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/outside_window/)
+ }finally{f.close()}
+})
 test('atomic chain deduplicates signals and simultaneous deliveries',async()=>{
  const f=fixture(), ran:string[]=[]
  const work:PremarketWork=async(stage,input,guard)=>{await guard();ran.push(stage);return {next:stages[stages.indexOf(stage as any)+1] ?? null,receipt:{...input,ready:stage==='publish:0'}}}

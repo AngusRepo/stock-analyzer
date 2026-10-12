@@ -211,3 +211,32 @@ def test_phase_timing_identifies_io_without_private_payload(setup, monkeypatch, 
         'source_identity': 0.0, 'gcs_requested': 2.0, 'gcs_latest': 2.0,
         'gcs_prior': 2.0, 'd1_source_validation': 7.0}
     assert 'private-' not in message and 'SELECT' not in message and 'exact-code' not in message
+
+
+def test_single_b_pre_dispatch_probe_requires_current_source_checked_projection(setup):
+    client,store,builds=setup
+    assert not model.strategy_nav_display_is_current(business_date=DAY,client=client,store=store,now=NOW)
+    assert builds==[] and store.data=={}
+    build(client,store)
+    assert model.strategy_nav_display_is_current(business_date=DAY,client=client,store=store,now=NOW)
+    assert not model.strategy_nav_display_is_current(business_date='2026-09-29',client=client,store=store,now=NOW)
+    client.rows.append({'id':2})
+    assert not model.strategy_nav_display_is_current(business_date=DAY,client=client,store=store,now=NOW)
+    assert len(builds)==1
+
+
+def test_single_b_job_refreshes_display_without_running_nav_or_training(monkeypatch):
+    import asyncio
+    import oof_materialize_job_main as job
+    from services import single_b_daily_closure, trading_config_loader
+    monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={}))
+    original={'status':'native_l4_daily_accounted','paired_nav_maturity':{'signal_date':DAY,'promotion_allowed':False}}
+    monkeypatch.setattr(single_b_daily_closure,'single_b_daily_closure',lambda *a:deepcopy(original))
+    def forbidden(**kwargs):raise AssertionError('Single-B display must not execute old NAV owners')
+    monkeypatch.setattr(job,'_execute_daily_nav',forbidden)
+    calls=[]
+    monkeypatch.setattr(model,'refresh_strategy_nav_display',lambda day:calls.append(day) or {'status':'published','promotion_allowed':False})
+    result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date=DAY,promote=True,dispatch_full_fit=False,
+        expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
+    assert result['strategy_nav_read_model']['status']=='published' and calls==[DAY]
+    assert result['paired_nav_maturity']==original['paired_nav_maturity']

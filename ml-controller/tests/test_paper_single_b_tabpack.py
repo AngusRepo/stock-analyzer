@@ -184,6 +184,9 @@ def test_single_B_frozen_context_never_registers_comparison(monkeypatch):
 def test_nightly_single_B_closes_formal_plan_without_pair_review_or_training(monkeypatch):
     import asyncio
     import oof_materialize_job_main as job
+    from services import strategy_nav_read_model
+    monkeypatch.setattr(strategy_nav_read_model, 'refresh_strategy_nav_display',
+        lambda day: {'status':'published','promotion_allowed':False})
     from services import trading_config_loader, d1_domain_client
     from services.l4_distribution_runtime import run
     from test_l4_lifecycle_replan import Paper

@@ -135,6 +135,41 @@ def _read_strategy_nav_read_model(*, strategy_id, strategy_version, business_dat
     return result
 
 
+def strategy_nav_display_is_current(*, business_date, client=None, store=None, now=None):
+    """Bounded pre-dispatch probe; missing projections belong to the durable job.
+
+    Never rebuild originals inside an HTTP request or accept a prior date as
+    today's completed display publication. No writes and no promotion authority.
+    """
+    clock = _clock(business_date, now)
+    if client is None:
+        from services.d1_domain_client import client_for_domain
+        client = client_for_domain('learning')
+    if store is None:
+        store = production_read_store()
+    identity = code_identity()
+    receipt = store.read(_key(business_date, identity))
+    if receipt is None:
+        return False
+    try:
+        _valid(receipt, business_date, identity, clock)
+        return unchanged(client, receipt['reads'])
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
+def refresh_strategy_nav_display(business_date):
+    """Display-only producer, independent of the current Paper plan owner."""
+    from services.d1_domain_client import client_for_domain
+    try:
+        return refresh_strategy_nav_read_model(business_date=business_date,
+            client=client_for_domain('learning'), store=production_read_store())
+    except Exception as exc:
+        log.warning('[StrategyNavDisplay] refresh_failed error_type=%s', type(exc).__name__)
+        return {'status': 'unavailable', 'reason': 'strategy_nav_display_publication_failed',
+            'promotion_allowed': False}
+
+
 class DisplayRecordedClient(RecordedClient):
     """Refuse a projection whose dependency replay itself would be unbounded."""
     def query(self, sql, params=None, *args, **kwargs):

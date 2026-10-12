@@ -75,6 +75,12 @@ async def _execute_lifecycle(
     from services.single_b_daily_closure import single_b_daily_closure
     single_result = single_b_daily_closure(config, end_date)
     if single_result is not None:
+        # Single-B owns the Paper plan, not the strategy evidence display.
+        # This durable job may rebuild the read model without executing paired
+        # accounts, training, adopting a strategy or blocking today's plan.
+        from services.strategy_nav_read_model import refresh_strategy_nav_display
+        display_date = single_result['paired_nav_maturity']['signal_date']
+        single_result['strategy_nav_read_model'] = refresh_strategy_nav_display(display_date)
         return single_result
     new_distribution=config.get('l4Distribution') is not None
     nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution, publish_strategy_display=True)
@@ -796,6 +802,8 @@ async def _run() -> int:
             payload['metadata'].pop('oof_freshness',None)
         if isinstance(result.get("paired_nav_maturity"), dict):
             payload["metadata"]["paired_nav_maturity"] = _nav_callback_summary(result["paired_nav_maturity"])
+        if isinstance(result.get('strategy_nav_read_model'), dict):
+            payload['metadata']['strategy_nav_read_model'] = result['strategy_nav_read_model']
             payload["metadata"]["nav_retry_required"] = bool(result.get("nav_retry_required"))
             payload["metadata"]["oof_lifecycle_status"] = result.get("oof_lifecycle_status", result.get("status"))
         if result.get("dependency_retry_required"):

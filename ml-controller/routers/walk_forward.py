@@ -3665,6 +3665,16 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             return {'status':'blocked','reason':reason,'cadence':cadence,'run_date':run_date,
                     'run_id':run_id,'job_dispatched':False,'callback_delivered':True}
         if completed and completed.get('status') == 'native_l4_daily_accounted':
+            from services.strategy_nav_read_model import strategy_nav_display_is_current
+            display_date = completed['native_l4_daily_closure']['signal_date']
+            try:
+                display_current = await asyncio.to_thread(strategy_nav_display_is_current,
+                    business_date=display_date)
+            except Exception:
+                display_current = False  # The durable job owns repair and diagnostics.
+            if not display_current:
+                completed = None
+        if completed and completed.get('status') == 'native_l4_daily_accounted':
             from routers.pipeline import _callback_worker
             from oof_materialize_job_main import _summary, _nav_callback_summary
             run_date = completed['native_l4_daily_closure']['signal_date']

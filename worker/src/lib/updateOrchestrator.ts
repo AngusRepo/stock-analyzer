@@ -1734,7 +1734,9 @@ async function finalizeUpdateChain(
     return
   }
   if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
+  console.log(`[Queue] Finalizer source readiness started date=${triggerTime} run_id=${runId}`)
   const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
+  console.log(`[Queue] Finalizer source readiness completed date=${triggerTime} run_id=${runId} ok=${readiness.ok}`)
   if (!readiness.ok) {
     await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
     return

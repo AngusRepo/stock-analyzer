@@ -3,7 +3,8 @@ export interface StrategyAbTag {
   experiment_id: string
   baseline_primary?: { role: 'A'; recipe: 'price_timexer_three_head'; bundle_checksum: string; l3_checksum: string }
   role: 'A' | 'B'
-  recipe: 'price_timexer_three_head' | 'exo137_timexer_three_head_scalar_ev_mlp' | 'exo137_timexer_three_head_scalar_ev_tabpack' | 'exo137_timexer_three_head_full_mlp_median_e0'
+  timexer_variant?: 'exo131'
+  recipe: 'price_timexer_three_head' | 'exo137_timexer_three_head_scalar_ev_mlp' | 'exo137_timexer_three_head_scalar_ev_tabpack' | 'exo137_timexer_three_head_full_mlp_median_e0' | 'exo131_timexer_three_head_scalar_ev_tabpack'
   fee_terms: { discount_factor: 0.25; minimum_net_commission: 20; nominal_next_month_day: 10;
     cash_credit: 'confirmed_receipt_only'; tax_and_slippage_rebated: false }
 }
@@ -13,11 +14,13 @@ export function strategyAbTag(value: unknown): StrategyAbTag | undefined {
   const tag = typeof value === 'string' ? JSON.parse(value) : value
   const tabpack = tag.schema_version === 'strategy-b-exo-tabpack-paper-v1'
   const median = tag.schema_version === 'strategy-b-exo-full-mlp-median-paper-v1'
+  const exo131 = tabpack && tag.timexer_variant === 'exo131'
   if ((!tabpack && !median && tag.schema_version !== 'strategy-ab-price-threehead-exo-mlp-v1')
     || !/^[a-f0-9]{64}$/.test(tag.experiment_id)
     || !['A', 'B'].includes(tag.role)
     || ((tabpack || median) && tag.role !== 'B')
-    || tag.recipe !== (tabpack ? 'exo137_timexer_three_head_scalar_ev_tabpack' : median ? 'exo137_timexer_three_head_full_mlp_median_e0' : tag.role === 'A' ? 'price_timexer_three_head' : 'exo137_timexer_three_head_scalar_ev_mlp')
+    || (tag.timexer_variant != null && !exo131)
+    || tag.recipe !== (exo131 ? 'exo131_timexer_three_head_scalar_ev_tabpack' : tabpack ? 'exo137_timexer_three_head_scalar_ev_tabpack' : median ? 'exo137_timexer_three_head_full_mlp_median_e0' : tag.role === 'A' ? 'price_timexer_three_head' : 'exo137_timexer_three_head_scalar_ev_mlp')
     || tag.fee_terms?.discount_factor !== .25 || tag.fee_terms.minimum_net_commission !== 20
     || tag.fee_terms.nominal_next_month_day !== 10 || tag.fee_terms.cash_credit !== 'confirmed_receipt_only'
     || tag.fee_terms.tax_and_slippage_rebated !== false) throw Error('strategy_ab_identity_invalid')

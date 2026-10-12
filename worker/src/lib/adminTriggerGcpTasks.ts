@@ -46,7 +46,15 @@ export function buildAdminGcpTriggerTaskMap(
       return runFinLabBackfillWatchdog(c.env, requestedRunDate())
     },
     'indicator-queue-watchdog': async () => {
-      const { runIndicatorQueueRecoveryWatchdog } = await import('./indicatorQueueRecovery')
+      const { runIndicatorQueueRecoveryWatchdog, continueCompletedIndicatorFinalizer } = await import('./indicatorQueueRecovery')
+      const runId = c.req.query('continue_run_id')
+      if (runId) {
+        if (c.req.header('X-Confirm-Indicator-Continuation') !== 'true') {
+          throw Error('indicator_operator_confirmation_required')
+        }
+        return continueCompletedIndicatorFinalizer(c.env, requestedRunDate() || '', runId,
+          Number(c.req.query('expected_recoveries')))
+      }
       return runIndicatorQueueRecoveryWatchdog(c.env, requestedRunDate())
     },
     'active8-oof-lifecycle': async () => {

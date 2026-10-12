@@ -1,6 +1,7 @@
 import { indicatorFinalizeLeaseActive } from './indicatorFinalizeLease'
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { twToday } from './dateUtils'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
 
 export const INDICATOR_QUEUE_SHARD_COUNT = 4
@@ -10,6 +11,46 @@ export const INDICATOR_QUEUE_MAX_RECOVERIES = 6
 
 const INDICATOR_QUEUE_STATE_TTL_SECONDS = 7 * 86400
 const INDICATOR_QUEUE_WATCHDOG_LEASE_SECONDS = 7 * 60
+
+/** Explicit authenticated operator continuation, never called by cron.
+ * A permanent D1 claim makes ambiguous delivery fail closed. Automatic recovery
+ * counters and failure receipts remain unchanged, including after delivery fails.
+ */
+export async function continueCompletedIndicatorFinalizer(
+  env: Bindings, date: string, expectedRunId: string, expectedRecoveries: number,
+): Promise<string> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !expectedRunId
+    || !Number.isInteger(expectedRecoveries) || expectedRecoveries < INDICATOR_QUEUE_MAX_RECOVERIES) {
+    throw Error('indicator_operator_continuation_invalid_identity')
+  }
+  const entry = await env.KV.get(`scheduler:run:indicator-queue:${date}`, 'json') as SchedulerRunLogEntry | null
+  if (!entry || schedulerRunId(entry) !== expectedRunId) throw Error('indicator_operator_run_mismatch')
+  const prefix = runPrefix(date, expectedRunId)
+  if (await env.KV.get(`${prefix}:finalized`)) throw Error('indicator_operator_already_finalized')
+  if (await indicatorFinalizeLeaseActive(env, date, expectedRunId)
+    || await env.KV.get(`${prefix}:watchdog-lease`)) throw Error('indicator_operator_active_lease')
+  const recovery = await env.KV.get(`${prefix}:watchdog-recoveries`)
+  if (recovery !== String(expectedRecoveries)) throw Error('indicator_operator_recovery_count_changed')
+  const shardCount = schedulerShardCount(entry)
+  const done = await Promise.all(Array.from({ length: shardCount }, (_, i) => env.KV.get(`${prefix}:done:${i}`)))
+  if (done.some(value => value == null)) throw Error('indicator_operator_incomplete_shards')
+  const db = databaseForDataDomain(env, 'ops')
+  const handedOff = await db.prepare(`SELECT canonical_run_id FROM pipeline_stage_runs
+    WHERE business_date=? AND stage='screener_v2' AND cursor_key IS NOT NULL AND cursor_key<>''
+      AND status IN ('running','success','waiting')`).bind(date).first()
+  if (handedOff) throw Error('indicator_operator_already_handed_off')
+  const now = new Date().toISOString()
+  const claim = await db.prepare(`INSERT INTO scheduler_locks
+    (lock_key,owner,run_date,run_id,created_at,expires_at) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(lock_key) DO NOTHING`).bind(`indicator-operator-continuation:${date}:${expectedRunId}`,
+      `operator:recoveries=${expectedRecoveries}`, date, expectedRunId, now, '9999-12-31T23:59:59.000Z').run()
+  if (Number(claim.meta?.changes ?? 0) !== 1) throw Error('indicator_operator_continuation_already_claimed')
+  await env.KV.put(`${prefix}:operator-continuation`, JSON.stringify({run_id:expectedRunId,
+    run_date:date, original_recoveries:expectedRecoveries, claimed_at:now, automatic_retry:false}))
+  await env.UPDATE_QUEUE.send({type:'finalize_update', cursor:0, triggerTime:date,
+    runId:expectedRunId, shardCount, attempt:1, continuationAttempt:1})
+  return `operator finalizer continuation enqueued; run_id=${expectedRunId}; retained_recoveries=${expectedRecoveries}`
+}
 
 function runPrefix(triggerTime: string, runId: string): string {
   return `cron:indicator-queue:${triggerTime}:${runId}`

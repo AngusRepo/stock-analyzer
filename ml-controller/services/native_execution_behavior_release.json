@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:0bdb089461bbbd859ad8eaef8107706ddf58c5b3adb257479d7193b7efbc0fb6",
+  "execution_owner_version": "native-paper-v1:bdb430c8fad733ca0293c1b73a4b9756401d8c4a36a61cd4dbba6de310883d4e",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Candidate validation only. No deployment or production runtime approval is granted.",
-  "review": "audits/formal-source-defense-20261008/core16-native-identity-review-r126.json",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:tabpack-core16-candidate-r126"
+  "authorization": "Wei authorized completion of monthly/evening realtime paper workflow on 2026-10-12; no live broker orders.",
+  "review": "audits/formal-source-defense-20261008/native-paper-identity-r259.json",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:exo131-tabpack-r259"
 }

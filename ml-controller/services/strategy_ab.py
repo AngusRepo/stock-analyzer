@@ -8,6 +8,7 @@ from services.paired_nav_journal import digest, number
 SCHEMA = 'strategy-ab-price-threehead-exo-mlp-v1'
 TABPACK_SCHEMA = 'strategy-b-exo-tabpack-paper-v1'
 TABPACK_RECIPE = 'exo137_timexer_three_head_scalar_ev_tabpack'
+TABPACK_131_RECIPE = 'exo131_timexer_three_head_scalar_ev_tabpack'
 MLP_MEDIAN_SCHEMA = 'strategy-b-exo-full-mlp-median-paper-v1'
 MLP_MEDIAN_RECIPE = 'exo137_timexer_three_head_full_mlp_median_e0'
 RECIPES = {'A':'price_timexer_three_head', 'B':'exo137_timexer_three_head_scalar_ev_mlp'}
@@ -20,6 +21,11 @@ def validate_tag(tag):
     tabpack=isinstance(tag,dict) and tag.get('schema_version')==TABPACK_SCHEMA
     median=isinstance(tag,dict) and tag.get('schema_version')==MLP_MEDIAN_SCHEMA
     recipes={'B':TABPACK_RECIPE} if tabpack else {'B':MLP_MEDIAN_RECIPE} if median else RECIPES
+    variant = tag.get('timexer_variant') if isinstance(tag, dict) else None
+    if variant is not None:
+        if not tabpack or variant != 'exo131':
+            raise ValueError('strategy_ab_identity_invalid')
+        recipes = {'B': TABPACK_131_RECIPE}
     if (not isinstance(tag,dict) or tag.get('schema_version') not in (SCHEMA,TABPACK_SCHEMA,MLP_MEDIAN_SCHEMA)
             or tag.get('role') not in recipes
             or tag.get('recipe') != recipes[tag['role']]
@@ -72,7 +78,7 @@ def bind(bundle, *, role, experiment_id, ensemble, timexer_metadata):
     expected = ensemble['observation_artifacts']['TimeXer']
     if (canonical_checksum(expected['checksum']) != canonical_checksum(timexer_metadata.get('checksum'))
             or expected['version'] != timexer_metadata.get('version')
-            or config['variant'] != ('price' if role == 'A' else 'exo137')):
+            or config['variant'] not in (('price',) if role == 'A' else ('exo137', 'exo131'))):
         raise ValueError('strategy_ab_timexer_variant_or_identity_mismatch')
     model = bundle['candidate_trading_config']['l4Distribution']['artifact']['model']
     from services.l4_mlp_median import SCHEMA as MEDIAN_MODEL_SCHEMA
@@ -80,12 +86,17 @@ def bind(bundle, *, role, experiment_id, ensemble, timexer_metadata):
     if median and model['residual_mlp']['residual_multiplier']!=1.0:
         raise ValueError('strategy_ab_full_mlp_multiplier_invalid')
     tabpack=bool(model.get('residual_tabpack'))
+    if config['variant'] == 'exo131' and not tabpack:
+        raise ValueError('strategy_ab_exo131_tabpack_required')
     if (bool(model.get('residual_mlp') or tabpack) != (role == 'B')
             or (tabpack and model.get('residual_mlp'))):
         raise ValueError('strategy_ab_l4_recipe_mismatch')
     result = deepcopy(bundle)
-    result['strategy_ab'] = validate_tag({'schema_version':TABPACK_SCHEMA if tabpack else MLP_MEDIAN_SCHEMA if median else SCHEMA,'experiment_id':experiment_id,
-        'role':role,'recipe':TABPACK_RECIPE if tabpack else MLP_MEDIAN_RECIPE if median else RECIPES[role],'fee_terms':deepcopy(FEE_TERMS)})
+    tag = {'schema_version':TABPACK_SCHEMA if tabpack else MLP_MEDIAN_SCHEMA if median else SCHEMA,'experiment_id':experiment_id,
+        'role':role,'recipe':TABPACK_RECIPE if tabpack else MLP_MEDIAN_RECIPE if median else RECIPES[role],'fee_terms':deepcopy(FEE_TERMS)}
+    if config['variant'] == 'exo131':
+        tag.update(timexer_variant='exo131', recipe=TABPACK_131_RECIPE)
+    result['strategy_ab'] = validate_tag(tag)
     result['bundle_checksum'] = digest({k:v for k,v in result.items() if k != 'bundle_checksum'})
     return validate_strategy_bundle(result,signal_date=result['declared_signal_date'])
 

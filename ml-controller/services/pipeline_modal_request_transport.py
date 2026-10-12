@@ -12,7 +12,8 @@ REQUEST_SCHEMA = "pipeline-modal-prediction-request-v1"
 REQUEST_REF_SCHEMA = "pipeline-modal-prediction-request-ref-v1"
 DEFAULT_MAX_SYMBOLS = 2_000
 DEFAULT_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
-DEFAULT_MAX_COMPRESSED_BYTES = 96 * 1024 * 1024
+# Actual 627-symbol column transport is 106.9 MB; raw cap remains 512 MiB.
+DEFAULT_MAX_COMPRESSED_BYTES = 128 * 1024 * 1024
 
 
 def _positive_int_env(name: str, default: int) -> int:

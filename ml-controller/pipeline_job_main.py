@@ -224,6 +224,7 @@ async def _run() -> int:
         f"job-{int(time.time())}-{uuid.uuid4().hex[:8]}",
     )
     run_id = os.environ.get("PIPELINE_PARENT_RUN_ID", "").strip() or run_id
+    saved_l2_mode = _truthy_env('PIPELINE_SAVED_L2_RESUME_MODE')
     input_mode = _truthy_env('PIPELINE_INPUT_CONTINUATION_MODE')
     premarket_mode = _truthy_env('PIPELINE_PREMARKET_RESUME_MODE')
     continuation_mode = _truthy_env("PIPELINE_MODAL_CONTINUATION_MODE")
@@ -242,9 +243,12 @@ async def _run() -> int:
     emit_subtasks = True
 
     try:
-        if sum([continuation_mode,snapshot_recovery_mode,premarket_mode,input_mode])>1:
+        if sum([continuation_mode,snapshot_recovery_mode,premarket_mode,input_mode,saved_l2_mode])>1:
             raise ValueError("pipeline continuation and snapshot recovery modes are mutually exclusive")
-        if input_mode:
+        if saved_l2_mode:
+            from services.pipeline_saved_l2_resume import resume_saved_l2
+            result = await resume_saved_l2(run_date=run_date, run_id=run_id)
+        elif input_mode:
             from graphs.daily_pipeline_v2 import run_pipeline_v2_from_input_event
             result = await run_pipeline_v2_from_input_event(stage_path=os.environ.get('PIPELINE_INPUT_STAGE', ''),
                 run_date=run_date, producer_run_id=run_id)

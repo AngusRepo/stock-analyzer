@@ -1640,7 +1640,7 @@ def _hydrate_pipeline_prediction_request_reference(payload: dict) -> dict:
         or not callback_token
         or generation <= 0
         or compressed_bytes <= 0
-        or compressed_bytes > 96 * 1024 * 1024
+        or compressed_bytes > 128 * 1024 * 1024
         or uncompressed_bytes <= 0
         or uncompressed_bytes > 512 * 1024 * 1024
         or n_input <= 0

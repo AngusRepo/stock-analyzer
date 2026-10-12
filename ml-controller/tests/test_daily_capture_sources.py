@@ -8,6 +8,12 @@ from test_training_market_cap_capture import setup
 from test_training_price_capture import institutional_fixture
 
 DAY="2026-09-29"
+@pytest.fixture(autouse=True)
+def frozen_roster(monkeypatch):
+    from routers import retrain_trigger
+    monkeypatch.setattr(retrain_trigger,"_training_stock_rows",
+        lambda req:[{"id":1,"symbol":"3004","market":"TWSE"}])
+
 def fixture():
     bucket,prices,price=setup()
     from test_training_global_capture import attach_daily_calendar
@@ -134,4 +140,39 @@ def test_resealed_different_indicator_owner_rejected(field):
     source["source_receipt_checksum"]=r["receipt_checksum"]
     bucket.data["features/prep/immutable_receipt.json"]=json.dumps(r).encode()
     with pytest.raises(ValueError,match="daily_capture_indicator_owner_mismatch"):
+        bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)
+
+
+def test_daily_identity_only_packet_restores_verified_venue(monkeypatch):
+    from test_training_price_venue_scope import scope_fixture
+    from services.training_price_capture import load_training_price_capture
+    from services.training_price_venue_scope import digest as scope_digest
+    bucket,source,packet=fixture()
+    _,_,scope,_=scope_fixture()
+    path="capture/raw/daily_price_full_vintage/manifest.json"
+    manifest=json.loads(bucket.data[path])
+    scope.update(capture_id=manifest["capture_id"],end_date=manifest["end_date"],price_checksums=manifest["checksums"])
+    manifest.update(prior_venue_scope=scope,prior_venue_scope_sha256=scope_digest(scope))
+    bucket.data[path]=json.dumps(manifest).encode()
+    with pytest.raises(ValueError,match="price_venue_requested_owner_mismatch"):
+        load_training_price_capture(bucket,sequence_gcs_prefix="seq",stock_rows=packet["stocks"],
+            prices_lookback=1280,run_date=DAY,prior_prices={},prior_indicators={})
+    prices,_,price=load_training_price_capture(bucket,sequence_gcs_prefix="seq",
+        stock_rows=[{"id":1,"symbol":"3004","market":"TWSE"}],
+        prices_lookback=1280,run_date=DAY,prior_prices={},prior_indicators={})
+    receipt=json.loads(bucket.data["features/prep/immutable_receipt.json"])
+    receipt.pop("receipt_checksum");receipt["price_capture"]=price
+    _,receipt["market_cap_capture"]=load_training_market_cap_capture(bucket,price_capture=price,
+        stock_rows=packet["stocks"],prices_map=prices,prior_ts={})
+    receipt["receipt_checksum"]=hashlib.sha256(json.dumps(receipt,sort_keys=True).encode()).hexdigest()
+    bucket.data["features/prep/immutable_receipt.json"]=json.dumps(receipt).encode()
+    source["source_receipt_checksum"]=receipt["receipt_checksum"]
+    bound=bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)
+    assert bound["single_capture_binding"]["price_capture"]["prior_venue_comparisons"][0]["market"]=="TWSE"
+    from routers import retrain_trigger
+    monkeypatch.setattr(retrain_trigger,"_training_stock_rows",lambda req:[{"id":1,"symbol":"3004","market":"OTC"}])
+    with pytest.raises(ValueError,match="price_venue_requested_owner_mismatch"):
+        bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)
+    monkeypatch.setattr(retrain_trigger,"_training_stock_rows",lambda req:[{"id":1,"symbol":"9999","market":"TWSE"}])
+    with pytest.raises(ValueError,match="daily_capture_roster_identity_mismatch"):
         bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)

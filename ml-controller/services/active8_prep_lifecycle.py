@@ -232,6 +232,35 @@ def _latest_market_session(
     }
 
 
+def _registered_feature_source(bucket, plan, model_profile_schema_version):
+    """Reuse explicitly pinned inference inputs without rewriting their producer."""
+    from routers.retrain_trigger import _verified_prep_only_receipt
+    registry = json.loads(Path(__file__).with_name("active8_feature_sources.json").read_text())
+    pin = registry.get(plan["business_date"])
+    if pin is None:
+        return None
+    if (pin.get("model_profile_schema_version") != model_profile_schema_version
+            or any(pin.get(key) != plan[key] for key in (
+                "snapshot_checksum", "sequence_gcs_prefix", "sequence_manifest_checksum"))):
+        raise ValueError("daily_feature_registered_input_mismatch")
+    receipt = _verified_prep_only_receipt(
+        bucket, pin["source_gcs_prefix"], plan["business_date"],
+        expected_producer_source_sha=pin["producer_source_sha"],
+        expected_feature_semantic=plan["feature_semantic_version"])
+    if (receipt is None or receipt.get("receipt_checksum") != pin["receipt_checksum"]
+            or receipt.get("training_dispatched") is not False
+            or receipt.get("feature_imputation_semantic") != plan["feature_imputation_semantic"]
+            or (receipt.get("price_capture") or {}).get("sequence_manifest_checksum")
+                != plan["sequence_manifest_checksum"]):
+        raise ValueError("daily_feature_registered_receipt_mismatch")
+    return {"schema_version": "timexer-feature-source-v1", "status": "ready",
+            "signal_date": plan["business_date"], "source_gcs_prefix": pin["source_gcs_prefix"],
+            "source_receipt_checksum": pin["receipt_checksum"],
+            "sequence_gcs_prefix": plan["sequence_gcs_prefix"],
+            "sequence_manifest_checksum": plan["sequence_manifest_checksum"],
+            "feature_semantic_version": plan["feature_semantic_version"], "training_dispatched": False}
+
+
 async def ensure_active8_daily_prep(
     *,
     end_date: str | None,
@@ -375,6 +404,11 @@ async def ensure_active8_daily_prep(
     }
     if dry_run:
         return {"status": "dry_run", **plan}
+
+    if feature_only:
+        registered = _registered_feature_source(bucket, plan, model_profile_schema_version)
+        if registered is not None:
+            return registered
 
     prep_result = await trigger_universal_retrain(
         UniversalRetrainTriggerRequest(

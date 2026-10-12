@@ -7,6 +7,24 @@ from services.training_price_capture import (load_training_price_capture,
     load_training_institutional_capture,load_training_market_cap_capture)
 
 
+def _daily_stock_owners(stocks, decision_date):
+    """Restore venue from the exact immutable roster used by feature prep."""
+    from routers.retrain_trigger import UniversalRetrainTriggerRequest, _training_stock_rows
+    rows = _training_stock_rows(UniversalRetrainTriggerRequest(
+        run_date=decision_date, prep_only=True, require_exact_dataset_snapshot=True,
+        model_profile_schema_version="active8-release-model-profiles-v4-timexer-price"))
+    by_id = {row["id"]: row for row in rows}
+    if len(by_id) != len(rows):
+        raise ValueError("daily_capture_roster_duplicate")
+    owners = []
+    for stock in stocks:
+        owner = by_id.get(stock["id"])
+        if owner is None or owner["symbol"] != stock["symbol"]:
+            raise ValueError("daily_capture_roster_identity_mismatch")
+        owners.append(dict(owner))
+    return owners
+
+
 def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=None):
     stocks=packet.get("stocks") or []
     raw=_read_frozen_payload_sources(packet,stocks,decision_date)
@@ -31,8 +49,9 @@ def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=
             or receipt.get("output_gcs_prefix")!=prefix):
         raise ValueError("daily_capture_feature_receipt_mismatch")
     from services.active_model_policy import daily_price_history_limit
+    owners = _daily_stock_owners(stocks, decision_date)
     prices,indicators,price=load_training_price_capture(bucket,
-        sequence_gcs_prefix=capture_source.get("sequence_gcs_prefix"),stock_rows=stocks,
+        sequence_gcs_prefix=capture_source.get("sequence_gcs_prefix"),stock_rows=owners,
         prices_lookback=daily_price_history_limit(),run_date=decision_date,
         prior_prices=raw["prices_by_id"],prior_indicators=raw["indicators_by_id"])
     expected=receipt.get("price_capture") or {}
@@ -72,6 +91,7 @@ def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=
     for sid,misc in raw["misc_by_id"].items():misc["per_stock_ts"]=dated.get(sid,{})
     raw.update(prices_by_id=prices,indicators_by_id=indicators,chips_by_sym=chips)
     binding={"schema_version":"daily-single-capture-binding-v1","feature_source_digest":digest(capture_source),
+        "stock_owners":owners,"stock_owners_sha256":digest(owners),
         "price_capture":price,"institutional_capture":institutional,"market_cap_capture":cap,"auxiliary_capture":auxiliary,"long_source_capture":long_source,"global_capture":global_capture,
         "prior_source_checksum":packet["source_checksum"]}
     body={k:v for k,v in packet.items() if k!="source_checksum"}

@@ -1,0 +1,11 @@
+{
+  "2026-10-08": {
+    "model_profile_schema_version": "active8-release-model-profiles-v4-timexer-price",
+    "producer_source_sha": "955df4d3276b722604a6c1b2462fbda0dd77c5dd",
+    "receipt_checksum": "12f78870f92181a0e9329d75603981ed49931384f4995e3f1906ee2f9af522d0",
+    "sequence_gcs_prefix": "formal-monthly-r128-sequence",
+    "sequence_manifest_checksum": "911673b674974c0765aaac249491d4aeb990eb3eae1089eb0e3eae9446d7d7af",
+    "snapshot_checksum": "19be9b5b88271834db16a8253bd9d0bec3e5cb2202bba8d0f791574878357ef1",
+    "source_gcs_prefix": "universal/oof_forward_prep_v2/2026-10-08-19be9b5b8827-955df4d3276b-911673b67497-expanded1280"
+  }
+}

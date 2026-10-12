@@ -58,8 +58,8 @@ def require_single_adjustment_capture(bucket, *, prep_gcs_prefix: str, sequence_
         raw = bucket.blob(binding["capture_manifest_path"]).download_as_bytes()
         if hashlib.sha256(raw).hexdigest() != binding.get("capture_manifest_sha256"):
             raise ValueError("training_source_price_manifest_mismatch")
-        from services.training_price_venue_scope import scope_from_manifest
-        _, scope_sha = scope_from_manifest(json.loads(raw))
+        from services.training_price_venue_scope import resolve_scope
+        _, scope_sha = resolve_scope(json.loads(raw))
         if scope_sha != binding["prior_venue_scope_sha256"]:
             raise ValueError("training_source_price_venue_binding_mismatch")
     indicator=binding.get("indicator_capture") or {}

@@ -416,6 +416,7 @@ async def ensure_active8_daily_prep(
             run_date=business_date,
             require_exact_dataset_snapshot=True,
             prep_only=True,
+            inference_only=feature_only,
             sequence_gcs_prefix=sequence_prefix,
             sequence_batch_count=int(sequence_manifest.get("batch_count") or 0),
             model_profile_schema_version=model_profile_schema_version,
@@ -433,6 +434,7 @@ async def ensure_active8_daily_prep(
     if prep_status not in {"ready", "idempotent_ready"}:
         raise RuntimeError(
             f"immutable feature prep failed: {prep_result.get('error') or prep_status or 'unknown'}"
+            f"; detail={prep_result.get('detail') or 'not_provided'}"
         )
 
     if feature_only:

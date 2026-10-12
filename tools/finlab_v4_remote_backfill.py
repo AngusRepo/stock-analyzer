@@ -689,9 +689,14 @@ TRAINING_AUX_FIELDS = {
         "dividend_yield":"dividend_yield", "revenue_growth_yoy":"revenue_growth_yoy"},
 }
 
-def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None):
+def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None, requested_fields=None):
     """Preserve full vendor windows before daily-tail materialization clips them."""
     required=TRAINING_AUX_FIELDS.get(lane,{})
+    if requested_fields is not None:
+        selected=set(requested_fields)
+        if selected-set(required):
+            raise ValueError("training_auxiliary_requested_field_unknown:"+lane)
+        required={key:value for key,value in required.items() if key in selected}
     if not required:return
     missing=sorted(set(required)-set(frames))
     if missing:raise ValueError("training_auxiliary_source_missing:"+lane+":"+",".join(missing))
@@ -2278,6 +2283,9 @@ def materialize_specs(
                 if price_venue_scope_manifest:
                     from services.training_price_venue_scope import write_scope_manifest
                     write_scope_manifest(run_dir, price_venue_scope_manifest, price_venue_scope_sha256)
+                elif daily_refresh:
+                    from services.training_price_venue_scope import seal_daily_scope
+                    seal_daily_scope(run_dir)
                 write_official_training_calendar(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
                 write_training_breadth_capture(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
                 if (run_dir/"raw/daily_price_full_vintage/training_calendar.json").exists():
@@ -2286,10 +2294,10 @@ def materialize_specs(
                     write_us_quote_capture(run_dir=run_dir,start=capture["start"],end=capture["end"])
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
-            if (spec.lane in TRAINING_AUX_FIELDS and (not key_scope or
-                    set(TRAINING_AUX_FIELDS[spec.lane]).issubset(spec_keys))):
+            if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
-                    years=years, end_date=source_end_date, start_date=start)
+                    years=years, end_date=source_end_date, start_date=start,
+                    requested_fields=set(spec_keys)&set(TRAINING_AUX_FIELDS[spec.lane]))
             field_errors = required_wide_field_errors(
                 spec.lane,
                 field_frames,
@@ -2512,9 +2520,10 @@ def materialize_specs(
                 if status == "quota_blocked":
                     raise
                 frame = pd.DataFrame()
-            if not frame.empty and not key_scope:
+            if not frame.empty:
                 from services.training_long_sources import write_broker_capture
-                write_broker_capture(frame,run_dir=run_dir,start=start_date_for_years(years),end=target_date)
+                write_broker_capture(frame,run_dir=run_dir,
+                    start=start if daily_refresh else start_date_for_years(years),end=source_end_date or target_date)
             source_observation = broker_source_observation(frame, target_date)
             grouped = normalize_broker_transactions_daily(frame, start)
             rank_rows = grouped.attrs.get("broker_rank_daily")

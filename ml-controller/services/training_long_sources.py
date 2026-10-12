@@ -71,10 +71,19 @@ def inspect_long_capture(bucket, *,price_capture,name,run_date):
     return frame,{**meta,"manifest_path":root+"/"+name+".json","manifest_sha256":hashlib.sha256(raw).hexdigest()}
 
 
-def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,prior_chips,run_date):
+def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,prior_chips,run_date,inference_composition=None):
     """Keep dated evidence; a fresh capture cannot make old reports known earlier."""
-    broker,broker_proof=inspect_long_capture(bucket,price_capture=price_capture,name="broker",run_date=run_date)
-    holding,holding_proof=inspect_long_capture(bucket,price_capture=price_capture,name="holding",run_date=run_date)
+    if inference_composition is None:
+        broker,broker_proof=inspect_long_capture(bucket,price_capture=price_capture,name="broker",run_date=run_date)
+        holding,holding_proof=inspect_long_capture(bucket,price_capture=price_capture,name="holding",run_date=run_date)
+    else:
+        from services.daily_inference_composition import read_frame
+        broker=read_frame(bucket,inference_composition["long"]["broker"],run_date=run_date)
+        holding=read_frame(bucket,inference_composition["long"]["holding"],run_date=run_date)
+        proofs={name:{**inference_composition["long"][name],
+            "manifest_path":inference_composition["manifest_path"],
+            "manifest_sha256":inference_composition["manifest_sha256"]} for name in ("broker","holding")}
+        broker_proof,holding_proof=proofs["broker"],proofs["holding"]
     ids={str(r["symbol"]):r["id"] for r in stock_rows}
     prices={s:{r["date"]:r for r in prices_map.get(sid,[])} for s,sid in ids.items()}
     chips={s:[dict(r) for r in rows] for s,rows in prior_chips.items()}
@@ -92,7 +101,7 @@ def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,pri
         .sort("symbol","date").group_by("symbol",maintain_order=True).tail(1))
     for r in current_holding.iter_rows(named=True):
         dated.setdefault(ids[r["symbol"]],{}).setdefault(run_date,{})["retail_pct"]=r["retail_pct"]
-    proof={"schema_version":"training-long-source-binding-v1","capture_id":price_capture["capture_id"],
+    proof={"schema_version":"inference-long-source-composition-binding-v1" if inference_composition else "training-long-source-binding-v1","capture_id":price_capture["capture_id"],
         "broker":broker_proof,"holding":holding_proof,"current_broker_rows":current.height,"current_holding_rows":current_holding.height,
         "historical_availability_policy":"retain previously observed snapshot dates; newly captured historical reports are not backdated",
         "historical_broker_rows_without_publication_attestation":broker.filter(pl.col("date")<run_date).height,

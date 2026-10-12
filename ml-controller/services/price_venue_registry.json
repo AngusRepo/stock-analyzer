@@ -1,0 +1,68 @@
+{
+  "schema": "official-price-venue-registry-v1",
+  "effective_from": "2026-10-12",
+  "source_receipt": "price-venue-scope-contract-r117.json",
+  "source_receipt_sha256": "3598b444af11897c4bccd437a3e38e07b7c3f16a45188d4efe9863251421de95",
+  "entries": [
+    {
+      "symbol": "7855",
+      "market": "TWSE",
+      "listed_from": "2026-08-11",
+      "evidence": {
+        "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11508/11500690041.html\",\"date\":\"中華民國115年08月10日\",\"number\":\"證櫃審字第11500690041號\",\"subject\":\"公告自115年8月11日起終止與和運租車股份有限公司（股票代號：7855）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票192,527,928股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"和運租車股份有限公司因於臺灣證券交易所上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年8月11日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+        "sha256": "25bd021ec5cef6ab2cdc1e41242ca3186e045d5e027fb8c1cf8f18fa21ff0ac4",
+        "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA2OTAwNDEuaHRtbA%3D%3D&docId=MTE1MDA2OTAwNDE%3D&response=json"
+      }
+    },
+    {
+      "symbol": "7814",
+      "market": "OTC",
+      "listed_from": "2026-07-16",
+      "evidence": {
+        "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11507/11501012881.html\",\"date\":\"中華民國115年07月15日\",\"number\":\"證櫃審字第11501012881號\",\"subject\":\"公告海昌生化科技股份有限公司初次申請上櫃普通股股票40,000,000股及現金增資股款繳納憑證5,000,000股，合計45,000,000股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票40,000,000股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股40,000,000股暨股款繳納憑證5,000,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年7月16日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：生技醫療業。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7814。 <\\u002fp><p class='eb_level_2'>(二)簡稱：海昌生技。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7814。<\\u002fp><p class='eb_level_2'>(二)簡稱：海昌生技。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：Horien Biochemical Technology Co., Ltd.<\\u002fp><p class='eb_level_2'>(二)簡稱： HORIEN<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：28540318。<\\u002fp><p class='eb_level_1'>十、其他：海昌生化科技股份有限公司本次上櫃股票40,000,000股，原係以興櫃股票為櫃檯買賣(代號：7814，簡稱：海昌生技)，今訂於115年7月16日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+        "sha256": "6cac0a95b4887e158c80395e3211f10e503285386498be626ba64fb38c16a55f",
+        "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDEwMTI4ODEuaHRtbA%3D%3D&docId=MTE1MDEwMTI4ODE%3D&response=json"
+      }
+    },
+    {
+      "symbol": "7825",
+      "market": "OTC",
+      "listed_from": "2026-09-10",
+      "evidence": {
+        "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11509/11500720671.html\",\"date\":\"中華民國115年09月09日\",\"number\":\"證櫃審字第11500720671號\",\"subject\":\"公告和亞智慧科技股份有限公司初次申請上櫃普通股股票23,114,500股及現金增資股款繳納憑證2,500,000股，合計25,614,500股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票23,114,500股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股23,114,500股暨股款繳納憑證2,500,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年9月10日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：其他電子業。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7825。 <\\u002fp><p class='eb_level_2'>(二)簡稱：和亞智慧。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7825。<\\u002fp><p class='eb_level_2'>(二)簡稱：和亞智慧。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：New Smart Technology Co., Ltd. <\\u002fp><p class='eb_level_2'>(二)簡稱：NSTC<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：24972898。<\\u002fp><p class='eb_level_1'>十、其他：和亞智慧科技股份有限公司本次上櫃股票23,114,500股，原係以興櫃股票為櫃檯買賣(代號：7825，簡稱：和亞智慧)，今訂於115年9月10日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+        "sha256": "e892c0b594c942bc40d64d6cf654430b5c05a31c254ad0a810e7c4f844767e50",
+        "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3MjA2NzEuaHRtbA%3D%3D&docId=MTE1MDA3MjA2NzE%3D&response=json"
+      }
+    },
+    {
+      "symbol": "6947",
+      "market": "TWSE",
+      "listed_from": "2026-07-23",
+      "evidence": {
+        "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11507/11500671971.html\",\"date\":\"中華民國115年07月22日\",\"number\":\"證櫃審字第11500671971號\",\"subject\":\"公告自115年7月23日起終止與台鎔科技材料股份有限公司（股票代號：6947）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票94,333,334股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"台鎔科技材料股份有限公司因於臺灣證券交易所上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年7月23日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+        "sha256": "7d939d25ab2704fe8fa4239fda4d58107237e7d39f468e2f4cf6569d4b2d0266",
+        "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA2NzE5NzEuaHRtbA%3D%3D&docId=MTE1MDA2NzE5NzE%3D&response=json"
+      }
+    },
+    {
+      "symbol": "7689",
+      "market": "TWSE",
+      "listed_from": "2026-07-28",
+      "evidence": {
+        "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11507/11500673381.html\",\"date\":\"中華民國115年07月27日\",\"number\":\"證櫃審字第11500673381號\",\"subject\":\"公告自115年7月28日起終止與大鵬科技股份有限公司（股票代號：7689）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票53,164,250股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"大鵬科技股份有限公司因於臺灣證券交易所上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年7月28日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+        "sha256": "10d818b810a0e2e4552e7b25dd035bc0a9e70c540cdd12da3edba15191f0d0dc",
+        "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA2NzMzODEuaHRtbA%3D%3D&docId=MTE1MDA2NzMzODE%3D&response=json"
+      }
+    },
+    {
+      "symbol": "2237",
+      "market": "TWSE",
+      "listed_from": "2026-08-10",
+      "evidence": {
+        "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11508/11500692471.html\",\"date\":\"中華民國115年08月07日\",\"number\":\"證櫃審字第11500692471號\",\"subject\":\"公告自115年8月10日起終止與華德動能科技股份有限公司（股票代號：2237）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票121,772,901股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"華德動能科技股份有限公司因於臺灣證券交易所創新板上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年8月10日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+        "sha256": "e9c58e9a838367646c271730ba8e40fc7ecb1c40062c65fccf488bcc4600a66d",
+        "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA2OTI0NzEuaHRtbA%3D%3D&docId=MTE1MDA2OTI0NzE%3D&response=json"
+      }
+    }
+  ]
+}

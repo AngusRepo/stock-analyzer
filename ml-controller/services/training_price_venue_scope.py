@@ -120,3 +120,51 @@ def scope_from_manifest(manifest):
     if scope is None or digest(scope) != expected:
         raise ValueError("price_venue_scope_manifest_mismatch")
     return verify_scope(scope, manifest), expected
+
+
+# Reviewed official announcements are shared by daily captures; they contain
+# no prices and never certify pre-listing bars as current-market history.
+REGISTRY_SHA256 = "b25b23653875b896c6acf969298421ce721f091bb1f9b34589ad37be9c3b947e"
+
+
+def resolve_scope(manifest):
+    """Prefer capture-sealed scope, otherwise bind reviewed evidence to its bytes."""
+    entries, scope_sha = scope_from_manifest(manifest)
+    if scope_sha is not None:
+        return entries, scope_sha
+    raw = Path(__file__).with_name("price_venue_registry.json").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != REGISTRY_SHA256:
+        raise ValueError("price_venue_registry_checksum_mismatch")
+    registry = json.loads(raw)
+    if registry.get("schema") != "official-price-venue-registry-v1":
+        raise ValueError("price_venue_registry_schema_invalid")
+    end = _date(manifest["end_date"])
+    if end < _date(registry["effective_from"]):
+        return {}, None
+    selected = [e for e in registry["entries"] if _date(e["listed_from"]) <= end]
+    if not selected:
+        return {}, None
+    scope = {"schema": "price-prior-venue-scope-v1",
+             "capture_id": manifest["capture_id"], "end_date": end,
+             "price_checksums": manifest["checksums"], "entries": selected}
+    return verify_scope(scope, manifest), digest(scope)
+
+
+def seal_daily_scope(run_dir):
+    """Attach reviewed evidence only while producing a new daily capture."""
+    target = Path(run_dir) / "raw/daily_price_full_vintage/manifest.json"
+    if not target.exists():
+        return
+    manifest = json.loads(target.read_bytes())
+    if "prior_venue_scope" in manifest or "prior_venue_scope_sha256" in manifest:
+        scope_from_manifest(manifest)
+        return
+    entries, scope_sha = resolve_scope(manifest)
+    if scope_sha is None:
+        return
+    scope = {"schema": "price-prior-venue-scope-v1",
+             "capture_id": manifest["capture_id"], "end_date": manifest["end_date"],
+             "price_checksums": manifest["checksums"], "entries": list(entries.values())}
+    assert digest(scope) == scope_sha
+    manifest.update(prior_venue_scope=scope, prior_venue_scope_sha256=scope_sha)
+    target.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf8")

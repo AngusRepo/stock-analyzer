@@ -154,6 +154,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     dlinear_seq_len: int | None = Field(default=None, description="DLinear sequence context override.")
     patchtst_seq_len: int | None = Field(default=None, description="PatchTST sequence context override.")
     itransformer_seq_len: int | None = Field(default=None, description="iTransformer sequence context override.")
+    inference_only: bool = Field(default=False, description="Allow verified vendor baseline/delta composition only for no-fit inference prep.")
     prep_only: bool = Field(
         default=False,
         description="Build immutable universal feature prep and stop before any model training.",
@@ -1400,6 +1401,8 @@ async def trigger_universal_retrain(
     scheduler_date = tw_now.date().isoformat()
     run_date = req.run_date or scheduler_date
     prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
+    if req.inference_only and (not req.prep_only or req.train_model_groups):
+        return {"status":"rejected", "error":"inference_composition_cannot_train"}
     if req.prep_only and (
         not prep_output_gcs_prefix
         or not prep_output_gcs_prefix.startswith("universal/oof_forward_prep_v2/")
@@ -1435,6 +1438,8 @@ async def trigger_universal_retrain(
                 return {"status":"rejected", "error":"prep_only_long_source_capture_required"}
             if not sealed.get("auxiliary_capture"):
                 return {"status":"rejected", "error":"prep_only_auxiliary_capture_required"}
+            if not req.inference_only and sealed["auxiliary_capture"].get("schema_version") == "inference-auxiliary-composition-binding-v1":
+                return {"status":"rejected", "error":"inference_composition_cannot_train"}
             if not sealed.get("market_cap_capture"):
                 return {"status":"rejected", "error":"prep_only_market_cap_capture_required"}
             from services.training_source_preflight import _sealed_manifest
@@ -1446,6 +1451,18 @@ async def trigger_universal_retrain(
                 "status": "idempotent_ready",
                 "receipt_path": f"{prep_output_gcs_prefix}/prep/immutable_receipt.json",
             }
+    if req.prep_only:
+        from services.capture_inventory import inspect_capture_inventory
+        try:
+            inventory = inspect_capture_inventory(prep_bucket,
+                sequence_gcs_prefix=req.sequence_gcs_prefix, run_date=run_date, inference_only=req.inference_only)
+        except Exception as exc:
+            return {"status": "rejected", "error": "prep_source_inventory_unreadable",
+                    "detail": str(exc), "run_id": run_id}
+        if inventory["status"] != "inventory_ready":
+            return {"status": "rejected", "error": "prep_source_inventory_incomplete",
+                    "detail": json.dumps(inventory["issues"], sort_keys=True),
+                    "source_inventory": inventory, "run_id": run_id}
     lock_scope = hashlib.sha256(prep_output_gcs_prefix.encode("utf-8")).hexdigest()[:12]
     lock_key = f"prep-only:{run_date}:{lock_scope}" if req.prep_only else f"retrain:{run_date}"
     lock_ttl_seconds = _PREP_ONLY_LOCK_TTL_SECONDS if req.prep_only else _UNIVERSAL_LOCK_TTL_SECONDS
@@ -1652,13 +1669,15 @@ async def trigger_universal_retrain(
                 prep_bucket, price_capture=price_capture, stock_rows=stock_rows,
                 prices_map=prices_map, prior_ts=per_stock_ts_map)
             from services.training_auxiliary_capture import load_training_auxiliary_capture
+            from services.daily_inference_composition import load_composition
+            composition = load_composition(prep_bucket,price_capture=price_capture,run_date=run_date) if req.inference_only else None
             per_stock_ts_map, chips_map, auxiliary_capture = load_training_auxiliary_capture(
                 prep_bucket, price_capture=price_capture, stock_rows=stock_rows, prices_map=prices_map,
-                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date)
+                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date,inference_composition=composition)
             from services.training_long_sources import bind_long_sources
             per_stock_ts_map, chips_map, long_source_capture = bind_long_sources(
                 prep_bucket, price_capture=price_capture, stock_rows=stock_rows, prices_map=prices_map,
-                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date)
+                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date,inference_composition=composition)
             from services.training_global_capture import read_market_history
             verified_market_history, global_capture = read_market_history(prep_bucket,price_capture=price_capture,
                 us_component=dataset_snapshot_info["source_integrity"]["component_meta"]["us_market_signals"])

@@ -27,8 +27,8 @@ def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows:
         raise ValueError("root_price_capture_identity_or_date_mismatch")
     if any(manifest.get("checksums",{}).get(k)!=source.get("checksums",{}).get(k) for k in ("adj_close","adj_open")):
         raise ValueError("root_price_sequence_checksum_mismatch")
-    from services.training_price_venue_scope import scope_from_manifest, compare_prior_scope
-    venue_entries, venue_sha = scope_from_manifest(manifest)
+    from services.training_price_venue_scope import resolve_scope, compare_prior_scope
+    venue_entries, venue_sha = resolve_scope(manifest)
     stock_markets = {str(row["symbol"]): row.get("market") for row in stock_rows}
     venue_comparisons = []
     ids={str(row["symbol"]):row["id"] for row in stock_rows}

@@ -72,14 +72,16 @@ def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=
         keys=("capture_id","capture_manifest_sha256","checksums") if name=="institutional_capture" else ("capture_id","capture_manifest_sha256","market_value_sha256")
         if any(proof.get(k)!=expected.get(k) for k in keys):raise ValueError("daily_capture_root_feature_aux_mismatch:"+name)
     from services.training_auxiliary_capture import load_training_auxiliary_capture
+    from services.daily_inference_composition import load_composition
+    composition=load_composition(bucket,price_capture=price,run_date=decision_date)
     dated,chips,auxiliary=load_training_auxiliary_capture(bucket,price_capture=price,stock_rows=stocks,
-        prices_map=prices,prior_ts=dated,prior_chips=chips,run_date=decision_date)
+        prices_map=prices,prior_ts=dated,prior_chips=chips,run_date=decision_date,inference_composition=composition)
     expected=receipt.get("auxiliary_capture") or {}
     if any(auxiliary.get(k)!=expected.get(k) for k in ("capture_id","capture_manifest_sha256")):
         raise ValueError("daily_capture_root_feature_auxiliary_mismatch")
     from services.training_long_sources import bind_long_sources
     dated,chips,long_source=bind_long_sources(bucket,price_capture=price,stock_rows=stocks,
-        prices_map=prices,prior_ts=dated,prior_chips=chips,run_date=decision_date)
+        prices_map=prices,prior_ts=dated,prior_chips=chips,run_date=decision_date,inference_composition=composition)
     expected=receipt.get("long_source_capture") or {}
     if any(long_source.get(name,{}).get("manifest_sha256")!=expected.get(name,{}).get("manifest_sha256") for name in ("broker","holding")):
         raise ValueError("daily_capture_root_feature_long_source_mismatch")

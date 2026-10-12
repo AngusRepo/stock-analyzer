@@ -5,11 +5,16 @@ import polars as pl
 FIELDS=("margin_balance","short_balance","pe","pb","dividend_yield","revenue","revenue_yoy","revenue_mom","eps","roe","revenue_growth_yoy")
 DAILY_FIELDS=frozenset({"margin_balance","short_balance","pe","pb","dividend_yield"})
 
-def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices_map, prior_ts, prior_chips, run_date):
+def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices_map, prior_ts, prior_chips, run_date, inference_composition=None):
     root=price_capture["capture_manifest_path"].rsplit("/daily_price_full_vintage/",1)[0]+"/training_auxiliary_full_vintage"
-    raw=bucket.blob(root+"/manifest.json").download_as_bytes();manifest=json.loads(raw)
-    if (manifest.get("schema_version")!="finlab-training-auxiliary-single-capture-v1" or manifest.get("capture_id")!=price_capture["capture_id"] or manifest.get("end_date")!=run_date):
-        raise ValueError("root_auxiliary_capture_identity_mismatch")
+    if inference_composition is None:
+        raw=bucket.blob(root+"/manifest.json").download_as_bytes();manifest=json.loads(raw)
+        if (manifest.get("schema_version")!="finlab-training-auxiliary-single-capture-v1" or manifest.get("capture_id")!=price_capture["capture_id"] or manifest.get("end_date")!=run_date):
+            raise ValueError("root_auxiliary_capture_identity_mismatch")
+    else:
+        from services.daily_inference_composition import read_frame
+        manifest={"capture_id":price_capture["capture_id"],"fields":inference_composition["auxiliary"],
+                  "financial_value_vintage":"explicit_vendor_baseline_and_incremental_observations"}
     ids={str(r["symbol"]):r["id"] for r in stock_rows}
     # Clear stale source values first; keep unrelated point-in-time fields.
     dated={sid:{d:{k:v for k,v in row.items() if k not in (*FIELDS,"short_ratio")} for d,row in rows.items()} for sid,rows in prior_ts.items()}
@@ -21,13 +26,16 @@ def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices
     for field in FIELDS:
         meta=manifest.get("fields",{}).get(field)
         if not meta:raise ValueError("root_auxiliary_field_missing:"+field)
-        data=bucket.blob(root+"/"+field+".parquet").download_as_bytes()
-        if hashlib.sha256(data).hexdigest()!=meta.get("sha256"):raise ValueError("root_auxiliary_checksum_mismatch:"+field)
-        wide=pl.read_parquet(io.BytesIO(data))
+        if inference_composition is None:
+            data=bucket.blob(root+"/"+field+".parquet").download_as_bytes()
+            if hashlib.sha256(data).hexdigest()!=meta.get("sha256"):raise ValueError("root_auxiliary_checksum_mismatch:"+field)
+            wide=pl.read_parquet(io.BytesIO(data))
+        else:
+            wide=read_frame(bucket,meta,run_date=run_date)
         if "date" not in wide.columns:raise ValueError("root_auxiliary_date_missing:"+field)
         wide=wide.with_columns(pl.col("date").cast(pl.String).str.slice(0,10))
         if wide["date"].null_count() or wide["date"].is_duplicated().any():raise ValueError("root_auxiliary_dates_invalid:"+field)
-        if wide.height!=meta.get("rows") or set(wide.columns)-{"date"}!=set(meta.get("columns",[])):
+        if wide.height!=meta.get("rows") or set(wide.columns)-{"date"}!=set(meta.get("columns",[])) - ({"date"} if inference_composition else set()):
             raise ValueError("root_auxiliary_shape_mismatch:"+field)
         if field in DAILY_FIELDS and dates-set(wide["date"].to_list()):
             raise ValueError("root_auxiliary_market_dates_missing:"+field)
@@ -50,7 +58,8 @@ def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices
             margin,short=row.get("margin_balance"),row.get("short_balance")
             if "margin_balance" in row or "short_balance" in row:
                 row["short_ratio"]=short/margin if margin is not None and margin>0 and short is not None else None
-    proof={"schema_version":"training-auxiliary-capture-binding-v1","capture_id":manifest["capture_id"],
-        "capture_manifest_path":root+"/manifest.json","capture_manifest_sha256":hashlib.sha256(raw).hexdigest(),
+    proof={"schema_version":"inference-auxiliary-composition-binding-v1" if inference_composition else "training-auxiliary-capture-binding-v1","capture_id":manifest["capture_id"],
+        "capture_manifest_path":inference_composition["manifest_path"] if inference_composition else root+"/manifest.json",
+        "capture_manifest_sha256":inference_composition["manifest_sha256"] if inference_composition else hashlib.sha256(raw).hexdigest(),
         "fields":fields,"financial_value_vintage":manifest.get("financial_value_vintage"),"original_financial_revision_certified":False}
     return dated,chips,proof

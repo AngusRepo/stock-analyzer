@@ -138,9 +138,12 @@ def replay_allocator_return_history(context, *, payloads, signal_date):
             risk_payloads=context.get('canonical_risk_payloads')
             if risk_payloads is not None:
                 if (not isinstance(risk_payloads,list) or {p['symbol'] for p in risk_payloads}!={p['symbol'] for p in [*payloads,*held]}
-                        or any(p.get('source')!='market.canonical_market_daily.adj_close' or p.get('role')!='canonical_risk_only'
+                        or any(not _canonical_risk_provenance(p) or p.get('role')!='canonical_risk_only'
                             or p.get('as_of_date')!=signal_date for p in risk_payloads)):
                     raise ValueError('l4_risk_canonical_provenance_invalid')
+                captures = [p['price_capture'] for p in risk_payloads if 'price_capture' in p]
+                if captures and (len(captures) != len(risk_payloads) or any(p != captures[0] for p in captures)):
+                    raise ValueError('l4_risk_capture_identity_mismatch')
             result=build_dated_risk(risk_payloads if risk_payloads is not None else [*payloads,*held],signal_date=signal_date,lookback=context['lookback'])
         else:
             result, intervals = aligned_dated_history([*payloads, *held], signal_date=signal_date, lookback=context['lookback'])
@@ -151,6 +154,22 @@ def replay_allocator_return_history(context, *, payloads, signal_date):
     if result != context.get('return_history'):
         raise ValueError('paired_nav_allocator_history_replay_mismatch')
     return result
+
+
+def _canonical_risk_provenance(payload):
+    """Replay the actual canonical producer, including its sealed price capture."""
+    if payload.get('source') == 'market.canonical_market_daily.adj_close':
+        return 'price_capture' not in payload
+    if (payload.get('source') != 'finlab.full_adjustment_capture.adj_close'
+            or payload.get('legacy_price_fallback') is not False):
+        return False
+    proof = payload.get('price_capture')
+    hashes = {'capture_manifest_sha256', 'adj_close_sha256',
+              'sequence_manifest_checksum', 'feature_receipt_checksum'}
+    return (isinstance(proof, dict) and set(proof) == hashes | {'capture_id'}
+            and isinstance(proof['capture_id'], str) and bool(proof['capture_id'])
+            and all(isinstance(proof[key], str) and re.fullmatch('[0-9a-f]{64}', proof[key])
+                    for key in hashes))
 
 
 def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking_config: dict[str, Any],

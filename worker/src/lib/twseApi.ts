@@ -392,6 +392,16 @@ export async function fetchExDividendForecast(): Promise<ExDividendRow[]> {
 
 // ─── TWSE 處置股 + 注意股 ────────────────────────────────────────────────────
 
+export function parseTwseAttentionCodes(body: { stat?: string; fields?: unknown; data?: unknown }): string[] {
+  if (body.stat !== 'OK' || !Array.isArray(body.fields) || !Array.isArray(body.data)) return []
+  const codeIndex = body.fields.indexOf('證券代號')
+  if (codeIndex < 0) return []
+  return body.data
+    .filter((row): row is unknown[] => Array.isArray(row))
+    .map(row => String(row[codeIndex] ?? '').trim())
+    .filter(isStockCode)
+}
+
 export async function fetchAttentionStocks(): Promise<string[]> {
   try {
     const res = await paperExecutionFetch('https://www.twse.com.tw/rwd/zh/announcement/notice?response=json', {
@@ -400,11 +410,7 @@ export async function fetchAttentionStocks(): Promise<string[]> {
     })
     if (!res.ok) return []
     const body = await res.json() as any
-    if (body.stat !== 'OK' || !body.data) return []
-    // data: [序號, 日期, 代號, 名稱, ...]
-    return body.data
-      .map((r: any[]) => String(r[2]).trim())
-      .filter((s: string) => isStockCode(s))
+    return parseTwseAttentionCodes(body)
   } catch (e) {
     console.warn('[Attention] TWSE fetch failed:', e)
     return []

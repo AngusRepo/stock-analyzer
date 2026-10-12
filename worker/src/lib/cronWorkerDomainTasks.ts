@@ -74,8 +74,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
 
   if (cron === '20 6 * * 1-5') {
     runWithLog('daily-snapshot', async () => {
-      await runDailySnapshot(env)
-      return 'Daily snapshot done'
+      const snapshot = await runDailySnapshot(env)
+      return `Daily snapshot done; l4_reward=${snapshot?.l4Reward?.status ?? 'not_evaluated'}:${snapshot?.l4Reward?.reason ?? ''}`
     })
     return true
   }

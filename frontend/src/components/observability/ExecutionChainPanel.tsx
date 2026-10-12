@@ -36,7 +36,7 @@ import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import DailyReadinessBoard from './DailyReadinessBoard'
-import { pipelinePreparationLabel } from '../SchedulerPipelineChain'
+import { pipelinePreparationLabel, SchedulerStageCard } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
 import './ExecutionChainPanel.css'
 
@@ -708,22 +708,14 @@ export default function ExecutionChainPanel({
             pipelineSummary={pipelinePreparationLabel(scopedJobMap.get('pipeline'))}
             stageView={id => ({ label: STAGES[id]?.label ?? id, status: visualStatus(scopedJobMap.get(id)),
               statusLabel: statusLabel(scopedJobMap.get(id)), date: scopedJobMap.get(id)?.statusRunDate })}
-            renderStage={(id, ordinal) => {
+            renderStage={(id) => {
               const definition = STAGES[id] ?? { id, label: id, icon: Workflow }
               const job = scopedJobMap.get(id)
               const status = visualStatus(job)
-              const Icon = definition.icon
-              return <button type="button" data-chain-stage={id}
-                className={`obs-chain__stage is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
-                onClick={() => setSelectedId(id)} aria-label={`${definition.label}: ${statusLabel(job)}`}
-                aria-current={currentId === id ? 'step' : undefined}>
-                <span className="obs-chain__ordinal sv-num">{ordinal}</span>
-                <span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>
-                <span className="obs-chain__stage-copy"><strong>{definition.label}</strong><span>{job?.name ?? id}</span>
-                  <small className="sv-num">{runtimeEvidence(job)}{job?.lastDuration ? ` · ${job.lastDuration}` : ''}
-                    <span className="daily-readiness-board__date">{job?.statusRunDate ?? '尚無收據'}</span></small>
-                  <em title={definition.optional ? 'Optional job' : undefined}>{statusLabel(job)}</em></span>
-              </button>
+              return <SchedulerStageCard id={id} title={definition.label} job={job}
+                statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}
+                selected={selectedId === id} current={currentId === id} onSelect={() => setSelectedId(id)}
+                detail={`${runtimeEvidence(job)}${job?.lastDuration ? ` · ${job.lastDuration}` : ''}`} />
             }} /> : <div className="obs-chain__viewport" ref={viewportRef}>
         <div className={`obs-chain__sequence ${scope.columns.length >= 16 ? 'is-dense' : ''}`}>
           {scope.columns.map((column, index) => {

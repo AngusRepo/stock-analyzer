@@ -85,6 +85,9 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     assert.ok(plan.input_attribution.candidate_input_checksums['2330'])
     const canonical_payload=envelope.canonical_payload
     await withPaperExecutionScope(f.ports,()=>storeL4PortfolioPlan(f.env,envelope))
+    // SQLite DEFAULT timestamps bypass the fixture's statement clock.
+    f.sqls.paper.prepare('UPDATE l4_portfolio_plans_v1 SET created_at=? WHERE plan_id=?')
+      .run('2026-09-14 00:00:00',plan.plan_id)
     await withPaperExecutionScope(f.ports,()=>setupMorningPendingBuys(f.env))
     const snapshot=(await withPaperExecutionScope(f.ports,()=>loadPendingBuySnapshot(f.env,'2026-09-14',{allowFallbackRecent:false}))).result
     assert.equal(snapshot.pendingBuys.length,1)
@@ -138,6 +141,8 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     const nextAccount=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-14'))).result
     const reduced=allocateNative(nextAccount,.03001)
     await withPaperExecutionScope(f.ports,()=>storeL4PortfolioPlan(f.env,reduced))
+    f.sqls.paper.prepare('UPDATE l4_portfolio_plans_v1 SET created_at=? WHERE plan_id=?')
+      .run('2026-09-15 00:00:00',reduced.plan.plan_id)
     f.ports.nowMs=Date.parse('2026-09-15T01:45:00Z')
     // A simultaneous position-policy TP1 cannot hide a larger L4 reduction.
     // Use the real poll, sell transaction and evidence event, then restore this isolated fixture.

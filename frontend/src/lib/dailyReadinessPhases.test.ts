@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {DAILY_READINESS_PHASES, PREMARKET_READINESS_IDS, dailyPhaseForStage} from '../components/observability/dailyReadinessPhases'
+import {DAILY_READINESS_PHASES, READINESS_MAIN_STAGES, PREMARKET_READINESS_IDS, dailyPhaseForStage} from '../components/observability/dailyReadinessPhases'
 import {buildAttemptAwareJobMap} from '../components/observability/executionChainAttemptState'
 import type {SchedulerJob} from './api'
 const ids=DAILY_READINESS_PHASES.flatMap(p=>[...p.stages])
@@ -22,7 +22,7 @@ const projection=buildAttemptAwareJobMap(new Map([['pipeline',l4],['ml-predict',
 assert.strictEqual(projection.get('ml-predict'),l3,'L4 continuation must preserve the same-run sealed L3 success')
 const stale=buildAttemptAwareJobMap(new Map([['pipeline',l4],['ml-predict',{...l3,runId:'old-run'}]]),{columns:[['pipeline'],['ml-predict']]},()=>null)
 assert.equal(stale.get('ml-predict')?.lastStatus,'waiting','an unrelated L3 success must not be reused')
-const premarket=DAILY_READINESS_PHASES[3].stages as readonly string[]
+const premarket=DAILY_READINESS_PHASES.find(p=>p.id==='premarket')!.stages as readonly string[]
 assert.ok(premarket.indexOf('recommendation')>premarket.indexOf('morning-setup'))
 assert.ok(premarket.indexOf('recommendation')<premarket.indexOf('pre-market-warmup'))
 const source=readFileSync('src/components/observability/ExecutionChainPanel.tsx','utf8')
@@ -32,3 +32,9 @@ console.log('dailyReadinessPhases: unique coverage, morning ownership and replay
 
 assert.equal(dailyPhaseForStage('dataset-snapshot-export'),'models')
 for (const id of ['active8-oof-daily','allocator-ev-lifecycle-watchdog']) assert.equal(dailyPhaseForStage(id),'evidence')
+assert.deepEqual(DAILY_READINESS_PHASES.map(p=>p.id),['sources','models','premarket','evidence'])
+assert.equal(dailyPhaseForStage('post-pipeline-chain'),'evidence')
+for (const phase of DAILY_READINESS_PHASES) {
+  const members: readonly string[] = phase.stages
+  for (const id of READINESS_MAIN_STAGES[phase.id]) assert.ok(members.includes(id),id+' rendered under its receipt phase')
+}

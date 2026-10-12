@@ -22,7 +22,7 @@ export async function runPremarketEvidenceStage<T>(env: Bindings, date: string, 
     WHERE (pipeline_stage_runs.attempt_count < 3
       OR (pipeline_stage_runs.business_date='2026-10-12'
         AND pipeline_stage_runs.stage='premarket_v2:news-analyst'
-        AND pipeline_stage_runs.attempt_count=3
+        AND pipeline_stage_runs.attempt_count IN (3, 4)
         AND pipeline_stage_runs.status='error'
         AND pipeline_stage_runs.last_error='Error: premarket_wait:taifex-night'))
       AND pipeline_stage_runs.status != 'success'

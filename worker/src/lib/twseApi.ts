@@ -1551,7 +1551,7 @@ async function fetchTaifexNightViaController(
     method: 'POST',
     headers,
     body: JSON.stringify({ market_type: '1' }),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(35_000),
   })
   if (!response.ok) throw new Error(`Controller /taifex-quote HTTP ${response.status}`)
   const payload = await response.json() as any

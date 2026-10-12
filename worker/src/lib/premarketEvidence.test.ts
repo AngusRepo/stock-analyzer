@@ -77,7 +77,7 @@ test('MIS midnight trades use the next civil day without widening the 96-hour li
   assert.ok(isReadyNight({ ...night, time: '230000' }, Date.parse('2026-10-08T23:00:00+08:00')))
 })
 
-test('October 12 TAIFEX date correction permits exactly one exhausted news retry', async () => {
+test('October 12 TAIFEX date and proxy timeout corrections allow only the two authorized retries', async () => {
   for (const [date, reason, allowed] of [
     ['2026-10-12', 'Error: premarket_wait:taifex-night', true],
     ['2026-10-13', 'Error: premarket_wait:taifex-night', false],
@@ -90,7 +90,9 @@ test('October 12 TAIFEX date correction permits exactly one exhausted news retry
       for (let i=0; i<3; i++) { await assert.rejects(run()); f.ports.nowMs += 601_000 }
       await assert.rejects(run()); assert.equal(calls, allowed ? 4 : 3)
       f.ports.nowMs += 601_000
-      await assert.rejects(run()); assert.equal(calls, allowed ? 4 : 3)
+      await assert.rejects(run()); assert.equal(calls, allowed ? 5 : 3)
+      f.ports.nowMs += 601_000
+      await assert.rejects(run()); assert.equal(calls, allowed ? 5 : 3)
     } finally { f.close() }
   }
 })

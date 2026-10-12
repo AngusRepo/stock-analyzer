@@ -1,4 +1,5 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
+import { readOfficialRestrictionReadiness } from './tradingRestrictionReadiness'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { prepareIndicatorRegime } from './indicatorRegimePrerequisite'
 import { materializeIndicatorSessions } from './indicatorSessionPrerequisite'
@@ -392,7 +393,7 @@ async function tradingRestrictionsDailyReadinessCheck(
 ): Promise<ReadinessCheck> {
   const key = 'canonical_trading_restrictions:daily_micro_lane'
   try {
-    const [quality, canonical, checkedAt, officialRefresh] = await Promise.all([
+    const [quality, canonical, { checkedAt, refresh: officialRefresh }] = await Promise.all([
       databaseForDataDomain(env, 'market').prepare(`
         SELECT freshness_status, missing_rate, latest_materialization, metrics_json
           FROM source_quality_metrics
@@ -420,13 +421,7 @@ async function tradingRestrictionsDailyReadinessCheck(
         latest_source_date: string | null
         latest_materialization: string | null
       }>(),
-      env.KV.get('market:trading_restrictions:checked_at'),
-      env.KV.get('market:trading_restrictions:refresh_status', 'json') as Promise<{
-        status?: string
-        trade_date?: string
-        checked_at?: string
-        source_counts?: Record<string, number>
-      } | null>,
+      readOfficialRestrictionReadiness(env.KV, targetDate),
     ])
     const freshness = String(quality?.freshness_status ?? '').trim().toLowerCase()
     const finlabFresh = Boolean(quality) && !/empty|missing|failed|stale|disabled|error/i.test(freshness)

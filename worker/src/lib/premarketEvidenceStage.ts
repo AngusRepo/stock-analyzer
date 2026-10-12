@@ -19,7 +19,12 @@ export async function runPremarketEvidenceStage<T>(env: Bindings, date: string, 
       status='running', attempt_count=pipeline_stage_runs.attempt_count+1,
       lease_owner=excluded.lease_owner, lease_expires_at=excluded.lease_expires_at,
       started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-    WHERE pipeline_stage_runs.attempt_count < 3
+    WHERE (pipeline_stage_runs.attempt_count < 3
+      OR (pipeline_stage_runs.business_date='2026-10-12'
+        AND pipeline_stage_runs.stage='premarket_v2:news-analyst'
+        AND pipeline_stage_runs.attempt_count=3
+        AND pipeline_stage_runs.status='error'
+        AND pipeline_stage_runs.last_error='Error: premarket_wait:taifex-night'))
       AND pipeline_stage_runs.status != 'success'
       AND pipeline_stage_runs.lease_expires_at < CURRENT_TIMESTAMP
     RETURNING attempt_count

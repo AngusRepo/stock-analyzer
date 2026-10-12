@@ -63,8 +63,36 @@ test('US and night freshness rejects missing source times', () => {
   assert.ok(isReadyUSSignal(signal, signal.date, Date.parse(at)))
   assert.equal(isReadyUSSignal({ ...signal, source_times: {} }, signal.date, Date.parse(at)), false)
   assert.equal(isReadyUSSignal(signal, signal.date, Date.parse(at) + 97 * 3600_000), false)
-  assert.ok(isReadyNight({ lastPrice: 100, changePct: 0, changePoints: 0, date: '20261001', time: '050000' }, Date.parse(at)))
+  assert.ok(isReadyNight({ lastPrice: 100, changePct: 0, changePoints: 0, date: '20260930', time: '050000' }, Date.parse(at)))
   assert.equal(isReadyNight({ lastPrice: 100, changePct: 0, changePoints: 0, date: '20260901', time: '050000' }, Date.parse(at)), false)
+})
+test('MIS midnight trades use the next civil day without widening the 96-hour limit', () => {
+  const night = { lastPrice: 48705, changePct: -1.320987904451243, changePoints: -652,
+    date: '20261008', time: '045953' }
+  assert.ok(isReadyNight(night, Date.parse('2026-10-12T08:30:00+08:00')))
+  assert.equal(isReadyNight(night, Date.parse('2026-10-09T04:59:52+08:00')), false)
+  assert.ok(isReadyNight(night, Date.parse('2026-10-13T04:59:53+08:00')))
+  assert.equal(isReadyNight(night, Date.parse('2026-10-13T04:59:54+08:00')), false)
+  assert.equal(isReadyNight({ ...night, date: '20261007' }, Date.parse('2026-10-12T08:30:00+08:00')), false)
+  assert.ok(isReadyNight({ ...night, time: '230000' }, Date.parse('2026-10-08T23:00:00+08:00')))
+})
+
+test('October 12 TAIFEX date correction permits exactly one exhausted news retry', async () => {
+  for (const [date, reason, allowed] of [
+    ['2026-10-12', 'Error: premarket_wait:taifex-night', true],
+    ['2026-10-13', 'Error: premarket_wait:taifex-night', false],
+    ['2026-10-12', 'Error: bad JSON', false],
+  ] as const) {
+    const f = l4NativeFixture(); let calls = 0
+    try {
+      const run = () => runPremarketEvidenceStage(f.env, date, 'news-analyst', async () => null,
+        async () => { calls++; throw new Error(reason.replace(/^Error: /, '')) })
+      for (let i=0; i<3; i++) { await assert.rejects(run()); f.ports.nowMs += 601_000 }
+      await assert.rejects(run()); assert.equal(calls, allowed ? 4 : 3)
+      f.ports.nowMs += 601_000
+      await assert.rejects(run()); assert.equal(calls, allowed ? 4 : 3)
+    } finally { f.close() }
+  }
 })
 test('legacy parse-failed KV report is missing, never successful evidence', async () => {
   const kv = { get: async () => ({ date: '2026-10-01', bias: 'neutral', confidence: .3, source: 'tunnel:parse_failed' }) } as any

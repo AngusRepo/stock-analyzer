@@ -55,7 +55,10 @@ export function isReadyNight(night: GatheredContext['taifex_night'], now = paper
   if (!night || !Number.isFinite(night.lastPrice) || night.lastPrice <= 0 || !Number.isFinite(night.changePct)) return false
   const date = String(night.date).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')
   const time = String(night.time).replace(/^(\d{2})(\d{2})(\d{2})$/, '$1:$2:$3')
+  // MIS CDate is the night session's opening date. Trades after midnight
+  // belong to the following civil day (TAIFEX daily report: 15:00~次日05:00).
   const timestamp = Date.parse(`${date}T${time}+08:00`)
+    + (/^0[0-4]:[0-5]\d:[0-5]\d$|^05:00:00$/.test(time) ? 24 * 3600_000 : 0)
   return Number.isFinite(timestamp) && timestamp <= now && now - timestamp <= 96 * 3600_000
 }
 

@@ -182,6 +182,8 @@ def validate_runtime_approval(approval, admission, *, now=None):
             or not _timestamp(admission['approved_at']) <= _timestamp(approval['approved_at']) <= clock
             or approval.get('approval_checksum') != digest({k:v for k,v in approval.items() if k!='approval_checksum'})):
         raise RuntimeError('active8_paper_runtime_approval_invalid')
+    if approval.get('approved_capture_provenance_source_change') is not None:
+        return _validate_capture_source_reapproval(approval, admission, now=clock)
     if approval.get('approved_full_mlp_champion_cutover') is not None:
         from services.l4_model_cutover import validate_cutover
         return validate_cutover(approval,admission=admission,now=clock)
@@ -300,6 +302,44 @@ def validate_runtime_approval(approval, admission, *, now=None):
             after_sources[name] = transition['previous']
     if digest(before) != digest(after):
         raise RuntimeError('active8_paper_runtime_approval_policy_changed')
+    return deepcopy(approval)
+
+
+CAPTURE_PROVENANCE_SOURCE_CHANGE = {
+    'release': '2026-10-12-sealed-price-provenance-r333',
+    'scope': 'paper', 'maturity_transfer': False,
+    'previous': '6d9e8f303d02c91ab7475d4a717b5074275965de30be29a944b2fd2f5c9e31a6',
+    'approved': '4b4b50b695aae1b6c650e66fa4e1249fb7efae05c0a8bea6ef6ae50b17b4c44c',
+}
+
+
+def _validate_capture_source_reapproval(approval, admission, *, now):
+    """One reviewed replay fix; preserve the complete prior paper authority."""
+    import hashlib
+    from pathlib import Path
+    change = approval['approved_capture_provenance_source_change']
+    prior = approval.get('prior_runtime_approval')
+    if (change != CAPTURE_PROVENANCE_SOURCE_CHANGE or not isinstance(prior, dict)
+            or 'approved_capture_provenance_source_change' in prior
+            or _timestamp(prior['approved_at']) > _timestamp(approval['approved_at'])):
+        raise RuntimeError('active8_paper_capture_source_transition_invalid')
+    validate_runtime_approval(prior, admission, now=now)
+    before = runtime_configuration_identity(prior['configuration'])
+    after = runtime_configuration_identity(approval['configuration'])
+    base = Path(__file__).parent
+    transitions = (
+        ('allocator_source_identity', 'paired_nav_collection.py', change['previous'], change['approved']),
+        ('l3_inference_source_identity', 'active8_paper_admission.py',
+         'acb9ac8cf162cdbb26d6f94e2c3f4d38a94706ffde48addcde07363d988bc2b5',
+         hashlib.sha256(Path(__file__).read_bytes()).hexdigest()),
+    )
+    for section, name, old, new in transitions:
+        if (before[section].get(name) != old or after[section].get(name) != new
+                or hashlib.sha256((base / name).read_bytes()).hexdigest() != new):
+            raise RuntimeError('active8_paper_capture_source_transition_mismatch')
+        after[section][name] = old
+    if digest(before) != digest(after):
+        raise RuntimeError('active8_paper_capture_source_policy_changed')
     return deepcopy(approval)
 
 

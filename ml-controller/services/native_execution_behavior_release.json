@@ -7,5 +7,5 @@
   "efficacy_status": "unproven",
   "authorization": "Wei authorized completion of monthly/evening realtime paper workflow on 2026-10-12; no live broker orders.",
   "review": "audits/formal-source-defense-20261008/native-paper-identity-r259.json",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:exo131-tabpack-r259"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:sealed-price-provenance-r333"
 }

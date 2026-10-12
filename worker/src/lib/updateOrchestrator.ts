@@ -1350,6 +1350,17 @@ export async function syncMarketBreadthFromFinLabCanonical(
   return { rows: d1ChangeCount(result), sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
 }
 
+export async function ensureDailyMarketBreadth(env: Bindings, targetDate: string): Promise<void> {
+  const row = await databaseForDataDomain(env, 'market').prepare(
+    'SELECT advance_count,decline_count,unchanged_count,sample_size FROM market_breadth WHERE date=?',
+  ).bind(targetDate).first<{ advance_count: number | null; decline_count: number | null; unchanged_count: number | null; sample_size: number | null }>()
+  if (row && Number(row.sample_size) >= 1000
+      && [row.advance_count, row.decline_count, row.unchanged_count].every(n => n != null && Number.isFinite(n) && n >= 0)
+      && Number(row.advance_count) + Number(row.decline_count) + Number(row.unchanged_count) === row.sample_size) return
+  const result = await syncMarketBreadthFromFinLabCanonical(env, targetDate)
+  if (result.sampleSize < 1000 || result.rows < 1) throw new Error(`daily_market_breadth_incomplete:${targetDate}:${result.sampleSize}`)
+}
+
 export async function syncLegacyRevenueFromFinLabCanonical(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
@@ -1536,6 +1547,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   try {
     const mirror = await syncLegacyMarketDataFromFinLabCanonical(env, twDate)
+    await ensureDailyMarketBreadth(env, twDate)
     finlabMirrorSummary = mirror.summary
     if (supplementalMode !== 'always') {
       const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })
@@ -1692,6 +1704,7 @@ async function ensureSameDateRegimeReady(
   const startedAt = Date.now()
   try {
     await materializeIndicatorSessions(databaseForDataDomain(env, 'market'), triggerTime)
+    await ensureDailyMarketBreadth(env, triggerTime)
     const summary = await prepareIndicatorRegime(env, triggerTime, () => runRegimeCompute(env, triggerTime))
     await logSchedulerResult(env.KV, 'regime-compute', {
       status: 'success',

@@ -1,0 +1,7 @@
+{
+  "2026-10-08": {
+    "prefix": "formal-monthly-r128-sequence",
+    "manifest_sha256": "00582641d2596765515091e343195229f5b110886f23dc251bd9e8a63440ed0d",
+    "capture_id": "r25-full-materialization"
+  }
+}

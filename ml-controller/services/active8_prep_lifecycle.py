@@ -8,6 +8,7 @@ import json
 import os
 import statistics
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
@@ -57,6 +58,11 @@ def _manifest_checksum(manifest: dict[str, Any]) -> str:
 
 
 def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str, Any]]:
+    # Explicit dated sources can live outside the legacy daily-export namespace.
+    # A registered source must verify; never silently fall back to another vintage.
+    registered = json.loads(Path(__file__).with_name("active8_sequence_sources.json").read_text())
+    if cutoff in registered:
+        return _registered_sequence(bucket, cutoff, registered[cutoff])
     candidates: list[tuple[str, str, dict[str, Any]]] = []
     for blob in bucket.list_blobs(prefix=SEQUENCE_PREFIX):
         path = str(blob.name)
@@ -103,6 +109,34 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
         "immutable_sequence_v3_missing",
         {"prefix": SEQUENCE_PREFIX, "cutoff": cutoff},
     )
+
+
+def _registered_sequence(bucket: Any, cutoff: str, source: dict) -> tuple[str, dict]:
+    prefix = source["prefix"]
+    raw = bucket.blob(f"{prefix}/prep/sequence_manifest.json").download_as_bytes()
+    if _sha256(raw) != source["manifest_sha256"]:
+        raise ValueError("registered_sequence_manifest_checksum")
+    manifest = json.loads(raw)
+    if (manifest.get("status") != "ready" or manifest.get("contract") != "sequence_records_v3"
+            or manifest.get("output_gcs_prefix") != prefix
+            or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
+            or manifest.get("summary", {}).get("date_max") != cutoff):
+        raise ValueError("registered_sequence_identity_or_date")
+    daily = [r for r in manifest.get("lane_reports", []) if r.get("lane") == "daily_price"]
+    capture = daily[0].get("source_uri", {}) if len(daily) == 1 else {}
+    if (capture.get("capture_id") != source["capture_id"]
+            or not isinstance(capture.get("close"), str)
+            or not capture["close"].startswith(f"gs://{bucket.name}/")):
+        raise ValueError("registered_sequence_single_capture")
+    count = manifest.get("batch_count")
+    if type(count) is not int or count < 1:
+        raise ValueError("registered_sequence_batches_missing")
+    for index in range(count):
+        path = f"{prefix}/prep/batch_{index}.npz"
+        expected = manifest.get("output_checksums", {}).get(path)
+        if not expected or _sha256(bucket.blob(path).download_as_bytes()) != expected:
+            raise ValueError("registered_sequence_batch_checksum")
+    return prefix, manifest
 
 
 def _receipt_checksum(receipt: dict[str, Any]) -> str:

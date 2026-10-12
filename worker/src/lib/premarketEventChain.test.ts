@@ -10,15 +10,15 @@ function fixture() {
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
-test('2026-10-12 recovery dispatches after 08:45 and expires exactly at 09:00',async()=>{
+test('2026-10-12 paper recovery dispatches after 09:00 and expires at day end',async()=>{
  const recoveryDate='2026-10-12',f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
  try{
-  f.ports.nowMs=Date.parse(`${recoveryDate}T08:59:59+08:00`)
-  assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/ready_target=09:00 overdue=false/)
+  f.ports.nowMs=Date.parse(`${recoveryDate}T09:00:00+08:00`)
+  assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/ready_target=24:00 overdue=false/)
   const msg=f.messages.shift()!
   await processPremarketEvent(f.env,msg,async()=>{calls++;return {next:'setup',receipt:{}}},f.now())
   assert.equal(calls,1)
-  f.ports.nowMs+=1000
+  f.ports.nowMs=Date.parse(`${recoveryDate}T24:00:00+08:00`)
   await processPremarketEvent(f.env,f.messages.shift()!,async()=>{calls++;return {next:null,receipt:{}}},f.now())
   assert.equal(calls,1)
   assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/outside_window/)

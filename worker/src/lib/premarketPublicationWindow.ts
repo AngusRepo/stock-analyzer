@@ -1,6 +1,6 @@
-/** Wei-approved one-day recovery window; expires at the 2026-10-12 open. */
+/** Wei-approved paper-trading recovery for all of 2026-10-12; other dates are unchanged. */
 export function premarketPublicationTarget(tradeDate: string): string {
-  return tradeDate === '2026-10-12' ? '09:00' : '08:45'
+  return tradeDate === '2026-10-12' ? '24:00' : '08:45'
 }
 
 export function premarketPublicationCutoff(tradeDate: string): number {
@@ -8,5 +8,5 @@ export function premarketPublicationCutoff(tradeDate: string): number {
 }
 
 export function premarketPublicationMinutes(tradeDate: string): number {
-  return tradeDate === '2026-10-12' ? 540 : 525
+  return tradeDate === '2026-10-12' ? 1440 : 525
 }

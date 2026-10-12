@@ -8,9 +8,9 @@ import {l4NativeFixture} from './l4NativeFixture.testSupport'
 
 test('date-bound cutoff restores 08:45 on all other dates',()=>{
  for(const date of ['2026-10-09','2026-10-12','2026-10-13']){
-  const clock=date==='2026-10-12'?'09:00':'08:45'
+  const clock=date==='2026-10-12'?'24:00':'08:45'
   assert.equal(premarketPublicationCutoff(date),Date.parse(`${date}T${clock}:00+08:00`))
-  assert.equal(premarketPublicationMinutes(date),date==='2026-10-12'?540:525)
+  assert.equal(premarketPublicationMinutes(date),date==='2026-10-12'?1440:525)
  }
 })
 
@@ -29,7 +29,8 @@ test('optimizer publication honors the same date-bound cutoff before database wr
  let writes=0
  f.env.PAPER_DB.batch=async()=>{writes++;throw new Error('test_first_write')}
  try{
-  for(const [day,time,allowed] of [['2026-10-12','08:59:59',true],['2026-10-12','09:00:00',false],
+  for(const [day,time,allowed] of [['2026-10-12','08:59:59',true],['2026-10-12','09:00:00',true],
+    ['2026-10-12','13:00:00',true],['2026-10-12','23:59:59',true],
     ['2026-10-13','08:45:00',false]] as const){
    f.ports.nowMs=Date.parse(`${day}T${time}+08:00`)
    const before=writes

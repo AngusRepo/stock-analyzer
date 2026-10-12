@@ -9,6 +9,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from routers import retrain_trigger  # noqa: E402
 
 
+def test_expanded_prep_preserves_every_payload_and_bounds_serialization(monkeypatch):
+    monkeypatch.setenv("UNIVERSAL_PREP_CONCURRENCY", "5")
+    payloads = [{"stock_id": i, "prices": [{"date": "2026-10-08", "close": i + 1}]} for i in range(2238)]
+    batches, concurrency = retrain_trigger._universal_prep_batches(payloads, 1280)
+    assert len(batches) == 23 and max(map(len, batches)) == 100
+    assert concurrency == 1
+    flattened = [p for batch in batches for p in batch]
+    assert len(flattened) == len(payloads)
+    assert all(actual is original for actual, original in zip(flattened, payloads))
+
+
+def test_short_history_prep_keeps_existing_batching(monkeypatch):
+    monkeypatch.delenv("UNIVERSAL_PREP_CONCURRENCY", raising=False)
+    batches, concurrency = retrain_trigger._universal_prep_batches([{} for _ in range(2238)], 1279)
+    assert [len(batch) for batch in batches] == [500, 500, 500, 500, 238]
+    assert concurrency == 3
+    assert retrain_trigger._universal_prep_batches([], 1280) == ([], 1)
+
+
 def test_universal_prep_concurrency_defaults_to_bounded_parallelism(monkeypatch):
     monkeypatch.delenv("UNIVERSAL_PREP_CONCURRENCY", raising=False)
 

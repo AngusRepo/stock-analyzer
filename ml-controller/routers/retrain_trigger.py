@@ -257,6 +257,16 @@ def _universal_prep_concurrency() -> int:
     return max(1, min(_UNIVERSAL_PREP_CONCURRENCY_MAX, value))
 
 
+def _universal_prep_batches(payloads: list[dict], prices_lookback: int) -> tuple[list[list[dict]], int]:
+    # Expanded histories retain the same rows but must not serialize three
+    # 500-stock payloads concurrently in the Controller's 16 GiB container.
+    expanded = prices_lookback >= 1280
+    batch_size = 100 if expanded else 500
+    batches = [payloads[i:i + batch_size] for i in range(0, len(payloads), batch_size)]
+    concurrency = min(_universal_prep_concurrency(), max(1, len(batches)))
+    return batches, 1 if expanded else concurrency
+
+
 def _universal_prep_batch_max_attempts() -> int:
     raw = os.environ.get(
         "UNIVERSAL_PREP_BATCH_MAX_ATTEMPTS",
@@ -1925,11 +1935,7 @@ async def trigger_universal_retrain(
     )
 
     # ?? 6. Batch prep ?????Modal prep_universal_batch ????????????????????
-    BATCH_SIZE = 500
-    batches = [
-        per_stock_payloads[i:i + BATCH_SIZE]
-        for i in range(0, len(per_stock_payloads), BATCH_SIZE)
-    ]
+    batches, prep_concurrency = _universal_prep_batches(per_stock_payloads, prices_lookback)
     batch_count = len(batches)
     # P0-3: guard log ??batch_count < 2 is unexpected for full-market retrain (should be 4-5)
     if batch_count < 2:
@@ -1945,7 +1951,6 @@ async def trigger_universal_retrain(
     # per_stock_ts: convert int keys to str for JSON serialization
     ps_ts_str = {str(k): v for k, v in per_stock_ts_map.items()} if per_stock_ts_map else {}
 
-    prep_concurrency = min(_universal_prep_concurrency(), max(1, batch_count))
     prep_semaphore = asyncio.Semaphore(prep_concurrency)
 
     async def _run_prep_batch(idx: int, batch_payloads: list[dict]) -> dict:

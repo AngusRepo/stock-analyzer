@@ -184,3 +184,19 @@ test('published plan does not hide a terminal broker health failure',async()=>{
   assert.equal(receipt.status,'error');assert.match(receipt.summary,/market-health.*plan_published=true/)
  } finally {f.close()}
 })
+
+for (const fail of [false,true]) test(`October 12 setup allows one preserved fourth attempt; fail=${fail}`,async()=>{
+ const f=fixture(),day='2026-10-12';f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ f.ports.nowMs=Date.parse(day+'T16:00:00+08:00');let calls=0
+ try {
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count) VALUES(?,?,?,?,?,?)")
+    .run(day,'premarket_v3:setup',day+':premarket-v3','queued','{}',3)
+  const msg={type:'premarket_stage',cursor:0,triggerTime:day,runId:day+':premarket-v3',premarketStage:'setup'} as UpdateQueueMsg
+  const work:PremarketWork=async()=>{calls++;if(fail)throw new Error('recovery_failed');return {next:null,receipt:{}}}
+  if(fail)await assert.rejects(processPremarketEvent(f.env,msg,work,f.now()),/recovery_failed/)
+  else await processPremarketEvent(f.env,msg,work,f.now())
+  assert.equal(f.rows()[0].attempt_count,4)
+  assert.equal(f.rows()[0].status,fail?'error':'success')
+  await processPremarketEvent(f.env,msg,work,f.now());assert.equal(calls,1)
+ }finally{f.close()}
+})

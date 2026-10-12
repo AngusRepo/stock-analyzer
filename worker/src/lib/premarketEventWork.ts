@@ -6,7 +6,8 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { fetchAndStoreUSLeading, isReadyUSSignal } from './usLeading'
 import { readCurrentNewsReport, runDailyNewsAnalysis } from './newsAnalyst'
 import { getPrevTradingDay } from './paperMarketData'
-import { recoverPaperMorningSetup } from './paperMorningRecovery'
+import { recoverPaperMorningSetup, materializePaperPendingDecision } from './paperMorningRecovery'
+import { afterClosePaperRecovery } from './afterClosePaperRecovery'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { flushL4Replans } from './l4Replan'
@@ -27,7 +28,7 @@ const pending = (rows: Awaited<ReturnType<typeof loadPendingBuySnapshot>>['pendi
 const defaultDependencies = {
   singlePlanContext,dispatchSinglePlan,finalizeSinglePlan,ensurePaperCorporateSource,
   contextIdentity, fetchAndStoreUSLeading, runDailyNewsAnalysis, getPrevTradingDay,
-  recoverPaperMorningSetup, loadPendingBuySnapshot, reconcilePendingBuyDebates,
+  recoverPaperMorningSetup, materializePaperPendingDecision, afterClosePaperRecovery, loadPendingBuySnapshot, reconcilePendingBuyDebates,
   setupMorningPendingBuys, flushL4Replans, readL4PortfolioPlan, getTradingConfig,
   warmup: async (env: Bindings): Promise<unknown> => {
     const result = await (await import('./cronOrchestrator')).runPreMarketWarmup(env,'setup')
@@ -68,6 +69,10 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       const warmup = await deps.warmup(env)
       await guard()
       if(dailyPlanOwner(env)) {
+        if (deps.afterClosePaperRecovery(env,date,input)) {
+          return {next:'allocate',followups:['market-health'],receipt:{...input,warmup,
+            accounting_status:'deferred_after_close',execution_status:'outside_trading_window'}}
+        }
         await deps.ensurePaperCorporateSource(env,date); await deps.settle(env)
         return {next:'allocate',followups:['market-health'],receipt:{...input,warmup}}
       }
@@ -78,7 +83,11 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       if(!dailyPlanOwner(env))throw new Error('premarket_owner_mismatch')
       const planId=await deps.dispatchSinglePlan(env,input)
       await guard()
-      await deps.recoverPaperMorningSetup(env,date,deps.settle)
+      if (deps.afterClosePaperRecovery(env,date,input)) {
+        await deps.materializePaperPendingDecision(env,date)
+      } else {
+        await deps.recoverPaperMorningSetup(env,date,deps.settle)
+      }
       return {next:'publish:0',receipt:{...input,plan_id:planId}}
     }
     const round = Number(stage.split(':')[1])

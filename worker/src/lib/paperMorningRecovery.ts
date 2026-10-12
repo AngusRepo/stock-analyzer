@@ -13,12 +13,19 @@ export async function recoverPaperMorningSetup(
 ): Promise<string> {
   await dependencies.source(env, sessionDate)
   await settle(env)
+  return materializePaperPendingDecision(env, sessionDate, dependencies.setup)
+}
+
+/** Publication alone has no authority to settle cash or reconstruct opening ownership. */
+export async function materializePaperPendingDecision(
+  env: Bindings, sessionDate: string, setup = setupMorningPendingBuys,
+): Promise<string> {
   const run = await databaseForTable(env, 'pending_buy_runs').prepare(
     `SELECT status FROM pending_buy_runs WHERE trade_date=? AND status!='superseded' ORDER BY id DESC LIMIT 1`,
   ).bind(sessionDate).first<{ status: string }>()
   if (run && ['ready', 'empty', 'halted'].includes(run.status)) return 'preserved_existing_decision'
   if (run && run.status !== 'error') throw new Error('paper_morning_recovery_unknown_run_status')
-  await dependencies.setup(env)
+  await setup(env)
   const repaired = await databaseForTable(env, 'pending_buy_runs').prepare(
     `SELECT status FROM pending_buy_runs WHERE trade_date=? AND status!='superseded' ORDER BY id DESC LIMIT 1`,
   ).bind(sessionDate).first<{ status: string }>()

@@ -51,8 +51,13 @@ def source_records(us, news, *, captured_at):
             d=str(night['date']);t=str(night['time'])
             if len(d)==8:d=d[:4]+'-'+d[4:6]+'-'+d[6:]
             if len(t)==6:t=t[:2]+':'+t[2:4]+':'+t[4:]
+            # MIS CDate identifies the opening session, matching Worker
+            # isReadyNight: 00:00 through 05:00 occur on the next civil day.
+            observed=datetime.fromisoformat(d+'T'+t+'+08:00')
+            if '00:00:00' <= t <= '05:00:00':
+                observed+=timedelta(days=1)
             records.append(dict(source_key='taifex-night',version='taifex-night-v1',session=d,
-                observed_at=d+'T'+t+'+08:00',available_at=captured_at,
+                observed_at=observed.isoformat(),available_at=captured_at,
                 payload={k:night[k] for k in ('lastPrice','changePct','changePoints')}))
     return records
 

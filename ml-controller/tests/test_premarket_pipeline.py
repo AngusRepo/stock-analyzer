@@ -39,7 +39,7 @@ def f(monkeypatch):
     context={'trade_date':'2026-10-02','cutoff':'2026-10-02T00:00:00+00:00',
       'us':{'date':'2026-10-02','fetched_at':'2026-10-01T23:00:00+00:00','source_times':{'sox':'2026-10-01T20:00:00+00:00'},'sox_close':100},
       'news':{'date':'2026-10-02','cutoff':'2026-10-01T23:00:00+00:00','evidence_receipt':{'sha256':'f'*64},
-        'evidence':[],'macro_evidence':{'taifex_night':{'date':'20261002','time':'050000','lastPrice':100,'changePct':1,'changePoints':1}}}}
+        'evidence':[],'macro_evidence':{'taifex_night':{'date':'20261001','time':'050000','lastPrice':100,'changePct':1,'changePoints':1}}}}
     context['checksum']=m.digest(context)
     return s,state,context
 def test_l3_seal_is_immutable_and_checksum_verified(f):
@@ -182,3 +182,28 @@ def test_resume_reuses_verified_cold_file_between_nodes(f):
     asyncio.run(m.resume(uri,nodes=[first,second],merge=lambda st,up:st.update(up),client=s))
     assert reads==[1]
     assert not Path(directories[0]).exists()
+
+@pytest.mark.parametrize('clock,expected',[('150000','2026-10-08T15:00:00+08:00'),('235959','2026-10-08T23:59:59+08:00'),('000000','2026-10-09T00:00:00+08:00'),('045953','2026-10-09T04:59:53+08:00'),('050000','2026-10-09T05:00:00+08:00')])
+def test_night_opening_session_converts_to_civil_time(clock,expected):
+    news={'evidence_receipt':{'sha256':'a'*64},'macro_evidence':{'taifex_night':{
+        'date':'20261008','time':clock,'lastPrice':48705,'changePct':-1.32,'changePoints':-652}}}
+    row=m.source_records(None,news,captured_at='2026-10-12T08:40:18+00:00')[-1]
+    assert row['observed_at']==expected
+    assert row['session']=='2026-10-08'
+    assert row['available_at']=='2026-10-12T08:40:18+00:00'
+
+
+def test_actual_oct12_night_source_passes_original_96h_and_future_still_fails():
+    from services.premarket_information import build_information_delta
+    news={'evidence_receipt':{'sha256':'a'*64},'macro_evidence':{'taifex_night':{
+        'date':'20261008','time':'045953','lastPrice':48705,'changePct':-1.32,'changePoints':-652}}}
+    cutoff='2026-10-12T08:40:18+00:00'
+    records=m.source_records(None,news,captured_at=cutoff)
+    baseline={'signal_date':'2026-10-08','available_at':'2026-10-12T03:00:00+00:00','l3_snapshot_id':'sealed','sources':[]}
+    result=build_information_delta(baseline=baseline,current_records=records,cutoff=cutoff,
+        trade_date='2026-10-12',required_sources=('taifex-night',),max_age_seconds={'taifex-night':96*3600})
+    assert result['source_age_seconds']['taifex-night']==301225
+    news['macro_evidence']['taifex_night']['date']='20261012'
+    with pytest.raises(ValueError,match='future_information:taifex-night'):
+        build_information_delta(baseline=baseline,current_records=m.source_records(None,news,captured_at=cutoff),
+            cutoff=cutoff,trade_date='2026-10-12',required_sources=('taifex-night',),max_age_seconds={'taifex-night':96*3600})

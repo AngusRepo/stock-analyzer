@@ -1,4 +1,5 @@
 import { ArrowRight } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { SchedulerJob } from '@/lib/api'
 import { WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 
@@ -28,21 +29,29 @@ export function pipelinePreparationLabel(job?: SchedulerJob): string {
   if (/modal_prediction=(?:triggered|running|spawned)\b/.test(summary)) return '目前階段：ML 預測'
   return job?.lastStatus === 'success' ? '流程已完成；各子階段狀態依自己的收據呈現' : '各子階段狀態依自己的啟動與完成收據呈現'
 }
-export function SchedulerStageCard({ id, title, job, detail, onSelect, selected, current, statusText, statusTone }: {
+export function SchedulerStageCard({ id, title, job, detail, onSelect, selected, current, statusText, statusTone, leading, overview, visualState, justCompleted }: {
   id: string; title: string; job?: SchedulerJob; detail?: string;
   onSelect?: () => void; selected?: boolean; current?: boolean;
   statusText?: string; statusTone?: WorkstationTone;
+  leading?: ReactNode; overview?: boolean; visualState?: string; justCompleted?: boolean;
 }) {
   const Element = onSelect ? 'button' : 'div'
   return <Element data-stage={id} data-chain-stage={onSelect ? id : undefined}
-    className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-amber-300' : '')}
+    className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-amber-300' : '')}
     onClick={onSelect} aria-current={current ? 'step' : undefined}
     aria-label={onSelect ? `${title}: ${statusText || label(job?.lastStatus)}` : undefined}>
+    {overview ? <>
+      {leading}
+      <span className="readiness-task__copy"><strong>{title}</strong>
+        <span className="readiness-task__meta"><span className="readiness-task__status">{statusText || label(job?.lastStatus)}</span><span>{job?.statusRunDate || '尚無業務日'}</span></span>
+      </span>
+    </> : <>
     <p className="text-xs text-slate-100">{title}</p>
     <div className="mt-2"><WorkstationPill tone={statusTone ?? tone(job?.lastStatus)}>{statusText || label(job?.lastStatus)}</WorkstationPill></div>
     <p className="mt-2 text-[10px] text-[#8a92a6]">業務日 {job?.statusRunDate || '—'}</p>
     {detail && <p className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{detail}</p>}
     {job?.summary && <p className="mt-2 line-clamp-2 break-words text-[10px] leading-4 text-[#70809b]" title={job.summary}>{job.summary}</p>}
+    </>}
   </Element>
 }
 export default function SchedulerPipelineChain({ jobs, loading, error }: {

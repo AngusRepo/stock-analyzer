@@ -1,18 +1,26 @@
-import type { ReactNode } from 'react'
-import { ArrowDown, ChevronDown, LoaderCircle } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { ChevronDown, LoaderCircle } from 'lucide-react'
 import { DAILY_READINESS_PHASES, READINESS_MAIN_STAGES } from './dailyReadinessPhases'
 import './DailyReadinessBoard.css'
 
 export type ReadinessStageView = { label: string; status: string; statusLabel: string; date?: string | null }
+const PHASE_CONTEXT: Record<string, string> = {
+  sources: '收盤後 · 資料與風險就緒',
+  models: '夜間 · L3 封存後等待盤前',
+  premarket: '次交易日 · US / News 匯合後 07:15 接續',
+  evidence: 'L4 回傳後 · 驗證與全鏈收據',
+}
 export default function DailyReadinessBoard({ stageView, renderStage, pipelineSummary }: {
   pipelineSummary?: string;
   stageView: (id: string) => ReadinessStageView;
   renderStage: (id: string, ordinal: string) => ReactNode;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null)
   const renderNode = (id: string, index: number) => <div key={id} className="daily-readiness-board__stage"
     data-pipeline-child={['ml-predict', 'recommendation'].includes(id) ? id : undefined}>
     {renderStage(id, String(index + 1).padStart(2, '0'))}
   </div>
+  const expandedPhase = DAILY_READINESS_PHASES.find(phase => phase.id === expanded)
   return <div className="daily-readiness-board">
     <div className="daily-readiness-board__phases" aria-label="Daily readiness 跨日執行順序">
       {DAILY_READINESS_PHASES.map((phase, index) => {
@@ -20,38 +28,33 @@ export default function DailyReadinessBoard({ stageView, renderStage, pipelineSu
         const running = views.filter(view => view.status === 'running')
         const completed = views.filter(view => ['completed', 'noop'].includes(view.status)).length
         const main = READINESS_MAIN_STAGES[phase.id]
-        const supporting: readonly string[] = phase.stages.filter(id => !main.includes(id))
-        const attention = views.filter(view => supporting.includes(view.id) && ['running', 'blocked'].includes(view.status))
+        const supporting = views.filter(view => !main.includes(view.id))
+        const attention = supporting.filter(view => ['running', 'blocked'].includes(view.status))
         return <section key={phase.id} aria-labelledby={'daily-phase-' + phase.id}
-          className={'daily-readiness-board__phase is-' + phase.id}>
-          {phase.id === 'premarket' && <div className="daily-readiness-board__handoff" role="note">
-            <ArrowDown aria-hidden="true" /><div><strong>次交易日盤前接續</strong>
-              <p>{pipelineSummary || 'L3 封存後等待盤前資料；等待事件不代表持續運算。'}</p>
-            </div>
-          </div>}
-          <header className="daily-readiness-board__phase-title">
-            <small className="sv-num">0{index + 1}</small><h4 id={'daily-phase-' + phase.id}>{phase.title}</h4>
+          className={'daily-readiness-board__phase is-' + phase.id} title={phase.id === 'models' ? pipelineSummary : undefined}>
+          <div className="daily-readiness-board__phase-info"><header className="daily-readiness-board__phase-title">
+            <span className="daily-readiness-board__number">0{index + 1}</span><h4 id={'daily-phase-' + phase.id}>{phase.title}</h4>
             <span className="daily-readiness-board__phase-state">
-              {running.length > 0 && <span className="daily-readiness-board__running" role="status"
-                aria-label={running.length + ' 項執行中'}><LoaderCircle aria-hidden="true" /></span>}
-              <span className="sv-num">{completed}/{views.length}</span>
+              {running.length > 0 && <LoaderCircle className="daily-readiness-board__running" aria-label={running.length + ' 項執行中'} />}
+              <span>{completed}/{views.length}</span>
             </span>
           </header>
-          <p className="daily-readiness-board__caption">{phase.caption}</p>
-          {phase.id === 'premarket' ? <>
-            <div className="daily-readiness-board__stages">{main.slice(0, 2).map(renderNode)}</div>
-            <p className="daily-readiness-board__join"><ArrowDown aria-hidden="true" />兩路資料就緒且已到 07:15，接續整備與 L4</p>
-            <div className="daily-readiness-board__stages">{main.slice(2).map((id, i) => renderNode(id, i + 2))}</div>
-          </> : <div className="daily-readiness-board__stages">{main.map(renderNode)}</div>}
-          {phase.id === 'models' && <p className="daily-readiness-board__caption">{pipelineSummary}</p>}
-          {supporting.length > 0 && <details className="daily-readiness-board__supporting" open={attention.length > 0 || undefined}>
-            <summary><ChevronDown aria-hidden="true" /><span>相關產物與監測</span>
-              <span>{supporting.length} 項{attention.length ? ' · ' + attention.length + ' 項需關注' : ''}</span></summary>
-            <p className="daily-readiness-board__caption">各自依事件或排程執行，不表示彼此串行。</p>
-            <div className="daily-readiness-board__stages">{supporting.map(renderNode)}</div>
-          </details>}
+          <p className="daily-readiness-board__caption">{PHASE_CONTEXT[phase.id]}</p>
+
+
+          <button type="button" className={'daily-readiness-board__more' + (attention.length ? ' has-attention' : '')}
+            aria-expanded={expanded === phase.id} aria-controls="daily-readiness-supporting"
+            onClick={() => setExpanded(expanded === phase.id ? null : phase.id)}>
+            <span>相關產物與監測 · {supporting.length}</span><span>{attention.length ? `${attention.length} 項需關注` : '查看'}<ChevronDown aria-hidden="true" /></span>
+          </button></div>
+          <div className="daily-readiness-board__stages">{main.map(renderNode)}</div>
         </section>
       })}
     </div>
+    <section id="daily-readiness-supporting" className="daily-readiness-board__supporting" hidden={!expandedPhase}>
+      {expandedPhase && <><h4>{expandedPhase.title} · 相關產物與監測</h4>
+        <p className="daily-readiness-board__caption">各自依事件或排程執行，狀態保留各自業務日。</p>
+        <div className="daily-readiness-board__stages">{expandedPhase.stages.filter(id => !READINESS_MAIN_STAGES[expandedPhase.id].includes(id)).map(renderNode)}</div></>}
+    </section>
   </div>
 }

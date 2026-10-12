@@ -1,33 +1,66 @@
-/* Layout only. Cards are the same SchedulerStageCard used by SchedulerPage. */
-.daily-readiness-board { min-width: 0; padding: 16px; }
-.daily-readiness-board__phases { display: grid; gap: 24px; }
-.daily-readiness-board__phase { min-width: 0; }
-.daily-readiness-board__phase-title { display: flex; align-items: center; gap: 8px; }
-.daily-readiness-board__phase-title small { color: #8a92a6; font-size: 11px; }
-.daily-readiness-board__phase-title h4 { margin: 0; color: #f1f5f9; font-size: 14px; font-weight: 500; }
-.daily-readiness-board__phase-state { display: flex; align-items: center; gap: 7px; margin-left: auto; color: #8a92a6; font-size: 11px; }
-.daily-readiness-board__running { display: inline-flex; color: #ffd87f; }
-.daily-readiness-board__running svg { width: 14px; height: 14px; animation: readiness-spin 1s linear infinite; }
-.daily-readiness-board__caption { margin: 6px 0 12px; font-size: 11px; line-height: 1.6; color: #8a92a6; }
-.daily-readiness-board__stages { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; }
-.daily-readiness-board__phase.is-sources > .daily-readiness-board__stages { grid-template-columns: repeat(7,minmax(0,1fr)); }
+/* Existing home typography / Scheduler card surfaces. Receipts stay in the drilldown. */
+.daily-readiness-board { min-width: 0; padding: 16px; font-family: inherit; }
+.daily-readiness-board__phases { display: grid; gap: 14px; }
+.daily-readiness-board__phase { display: grid; grid-template-columns: 195px minmax(0,1fr); gap: 16px; align-items: start; min-width: 0; }
+.daily-readiness-board__phase + .daily-readiness-board__phase { padding-top: 14px; border-top: 1px solid var(--border); }
+.daily-readiness-board__phase-info { min-width: 0; }
+.daily-readiness-board__phase-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.daily-readiness-board__number { color: var(--muted-foreground); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.daily-readiness-board__phase-title h4, .daily-readiness-board__supporting h4 { margin: 0; color: var(--foreground); font-size: .9375rem; font-weight: 700; }
+.daily-readiness-board__phase-state { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted-foreground); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.daily-readiness-board__running { color: var(--primary); width: 16px; height: 16px; animation: obs-status-spin 1s linear infinite; }
+.daily-readiness-board__caption { margin: 6px 0; font-size: .8125rem; line-height: 1.4; color: var(--muted-foreground); }
+.daily-readiness-board__stages { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 8px; align-items: stretch; }
+.daily-readiness-board__phase:not(.is-sources) .daily-readiness-board__stages { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .daily-readiness-board__stage { display: grid; min-width: 0; }
-.daily-readiness-board__phase.is-models { padding: 12px; border: 1px solid #d6a85f59; border-radius: 12px; background: #d6a85f08; }
-.daily-readiness-board__phase.is-models h4 { color: #f1c16f; }
-.daily-readiness-board__handoff { display: flex; align-items: center; gap: 10px; padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid #263247; color: #8a92a6; font-size: 11px; }
-.daily-readiness-board__handoff strong { color: #b9b1a1; font-weight: 500; }
-.daily-readiness-board__handoff p { margin: 4px 0 0; line-height: 1.6; }
-.daily-readiness-board__handoff svg, .daily-readiness-board__join svg { width: 14px; height: 14px; flex-shrink: 0; color: #fcd34d; }
-.daily-readiness-board__join { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 11px; color: #8a92a6; }
-.daily-readiness-board__supporting { margin-top: 10px; }
-.daily-readiness-board__supporting summary { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 11px; color: #8a92a6; list-style: none; }
-.daily-readiness-board__supporting summary::-webkit-details-marker { display: none; }
-.daily-readiness-board__supporting summary > svg { width: 13px; height: 13px; transform: rotate(-90deg); }
-.daily-readiness-board__supporting[open] summary > svg { transform: rotate(0); }
-.daily-readiness-board__supporting summary > span:last-child { margin-left: auto; }
-.daily-readiness-board__supporting summary:focus-visible { outline: 2px solid #fcd34d; outline-offset: 4px; }
-@keyframes readiness-spin { to { transform: rotate(360deg); } }
-@media(max-width: 1250px) { .daily-readiness-board__phase.is-sources > .daily-readiness-board__stages { grid-template-columns: repeat(4,minmax(0,1fr)); } }
-@media(max-width: 800px) { .daily-readiness-board__stages, .daily-readiness-board__phase.is-sources > .daily-readiness-board__stages { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-@media(max-width: 540px) { .daily-readiness-board { padding: 10px; } .daily-readiness-board__stages, .daily-readiness-board__phase.is-sources > .daily-readiness-board__stages { grid-template-columns: minmax(0,1fr); } }
-@media(prefers-reduced-motion: reduce) { .daily-readiness-board__running svg { animation: none; } }
+.daily-readiness-board__more { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px; padding: 4px 0; width: 100%; color: var(--muted-foreground); font-size: .8125rem; text-align: left; cursor: pointer; }
+.daily-readiness-board__more > span:last-child { display: flex; align-items: center; gap: 4px; }
+.daily-readiness-board__more svg { width: 14px; height: 14px; }
+.daily-readiness-board__more[aria-expanded=true] svg { transform: rotate(180deg); }
+.daily-readiness-board__more.has-attention { color: var(--chart-2); }
+.daily-readiness-board__more:hover { color: var(--foreground); }
+.daily-readiness-board__more:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.daily-readiness-board__supporting { margin-top: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+.daily-readiness-board__supporting[hidden] { display: none; }
+.daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 12px; }
+.readiness-task { display: grid; grid-template-columns: 24px minmax(0,1fr); align-content: center; align-items: center; gap: 6px 12px; padding: 10px; min-height: 94px; color: var(--muted-foreground); }
+.readiness-task__copy { display: contents; }
+.readiness-task__copy strong { grid-column: 2; color: var(--foreground); font-size: .9375rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.readiness-task__meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 6px; font-size: .8125rem; line-height: 1.3; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
+.readiness-task__status { color: var(--muted-foreground); }
+.readiness-task .obs-chain__orb { width: 24px; height: 24px; margin-left: 2px; border-width: 1px; box-shadow: none; background: transparent; }
+.readiness-task .obs-chain__orb::before { inset: -4px; }
+.readiness-task .obs-chain__orb > svg { width: 15px; height: 15px; }
+.readiness-task .obs-chain__state-mark { width: 15px; height: 15px; right: -5px; bottom: -4px; }
+.readiness-task .obs-chain__state-mark > svg { width: 10px; height: 10px; }
+.readiness-task.is-completed, .readiness-task.is-noop { color: var(--chain-green); }
+.readiness-task.is-blocked { color: var(--chain-red); border-color: var(--chain-red); }
+.readiness-task.is-running { color: var(--chain-cyan); border-color: var(--primary); }
+.readiness-task.is-waiting { color: var(--chain-amber); }
+.readiness-task.is-completed .obs-chain__state-mark, .readiness-task.is-noop .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-green); }
+.readiness-task.is-running .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-cyan); }
+.readiness-task.is-blocked .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-red); }
+.readiness-task.is-waiting .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-amber); }
+.readiness-task.is-running .readiness-task__status, .readiness-task.is-blocked .readiness-task__status { color: inherit; }
+.readiness-task.is-running .obs-chain__orb { animation: obs-running-breathe 1.6s ease-in-out infinite; }
+.readiness-task.is-running .obs-chain__orb::before { border-style: dashed; opacity: .7; animation: obs-status-spin 2.4s linear infinite; }
+.readiness-task.is-running .obs-chain__state-mark > svg { animation: obs-status-spin .9s linear infinite; }
+.readiness-task.just-completed .obs-chain__orb { animation: obs-completed-burst 1.4s ease-out both; }
+.readiness-task:hover { background: var(--sv-bg-2); }
+/* Important declarations belong to the same layer as home's important surface overrides. */
+@layer base {
+  .sv-stockintelli-page .readiness-task.is-running { border-color: var(--primary) !important; }
+  .sv-stockintelli-page .readiness-task.is-blocked { border-color: var(--destructive) !important; }
+}
+.obs-chain.is-daily_readiness .obs-chain__kicker,
+.obs-chain.is-daily_readiness .obs-chain__heading p:last-child,
+.obs-chain.is-daily_readiness .obs-chain__phase { display: none; }
+.obs-chain.is-daily_readiness .obs-chain__header { align-items: center; }
+.obs-chain.is-daily_readiness .obs-chain__toolbar { gap: 8px; }
+.obs-chain.is-daily_readiness .obs-chain__toolbar-meta { flex-basis: auto; gap: 8px; }
+.obs-chain.is-daily_readiness .obs-chain__runtime { min-width: 200px; }
+.obs-chain.is-daily_readiness .obs-chain__orchestrator { min-width: 260px; }
+@media(max-width: 1250px) { .daily-readiness-board__phase { grid-template-columns: 165px minmax(0,1fr); gap: 12px; } .daily-readiness-board__stages { gap: 6px; } .readiness-task { padding: 8px; } }
+@media(max-width: 1000px) { .daily-readiness-board__phase { grid-template-columns: minmax(0,1fr); } .daily-readiness-board__phase-info { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; } .daily-readiness-board__more { grid-column: 2; grid-row: 1; } .daily-readiness-board__caption { grid-column: 1 / -1; } .daily-readiness-board__stages, .daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(4,minmax(0,1fr)); } }
+@media(max-width: 620px) { .daily-readiness-board__stages, .daily-readiness-board__phase:not(.is-sources) .daily-readiness-board__stages, .daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(2,minmax(0,1fr)); } .daily-readiness-board__phase-info { display: block; } }
+@media(prefers-reduced-motion: reduce) { .daily-readiness-board *, .daily-readiness-board *::before { animation: none !important; } }

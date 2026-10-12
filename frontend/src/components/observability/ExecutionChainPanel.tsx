@@ -622,7 +622,7 @@ export default function ExecutionChainPanel({
   }, [scopeId, currentId])
 
   return (
-    <section className="obs-chain" aria-labelledby="obs-chain-title">
+    <section className={`obs-chain is-${scope.id}`} aria-labelledby="obs-chain-title">
       <div className="obs-chain__header">
         <div className="obs-chain__heading">
           <div className="obs-chain__heading-icon"><Waypoints aria-hidden="true" /></div>
@@ -712,7 +712,10 @@ export default function ExecutionChainPanel({
               const definition = STAGES[id] ?? { id, label: id, icon: Workflow }
               const job = scopedJobMap.get(id)
               const status = visualStatus(job)
+              const Icon = definition.icon
               return <SchedulerStageCard id={id} title={definition.label} job={job}
+                overview visualState={status} justCompleted={justCompleted.has(id)}
+                leading={<span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>}
                 statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}
                 selected={selectedId === id} current={currentId === id} onSelect={() => setSelectedId(id)}
                 detail={`${runtimeEvidence(job)}${job?.lastDuration ? ` · ${job.lastDuration}` : ''}`} />

@@ -55,6 +55,7 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "Fail closed" in finlab_router
     assert "cancel_result = await modal_client.cancel_finlab_v4_backfill" in finlab_router
     assert "FinLab V4 backfill started" in modal_app
+    assert 'os.environ.setdefault("FINLAB_OFFICIAL_HISTORY_CACHE_PREFIX", "finlab/v4/official-history-cache/v1")' in modal_app
 
 
 def test_modal_deploy_packages_finlab_tool_and_controller_services() -> None:

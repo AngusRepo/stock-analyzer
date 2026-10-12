@@ -4516,6 +4516,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
         argv.extend(["--source-start-date", str(payload["source_start_date"])])
     if payload.get("source_end_date"):
         argv.extend(["--source-end-date", str(payload["source_end_date"])])
+    if payload.get("daily_refresh") or payload.get("continue_evening_chain"):
+        argv.append("--daily-refresh")
     if payload.get("require_official_market_summary"):
         argv.append("--require-official-market-summary")
     if payload.get("canonical_datasets"):
@@ -4546,6 +4548,11 @@ def finlab_v4_backfill(payload: dict) -> dict:
         ).strip()
         if not bucket_name:
             raise RuntimeError("finlab_v4_gcs_bucket_not_configured")
+        # Daily captures still validate the complete training history. Reuse
+        # immutable official responses across containers instead of fetching
+        # three years of per-session breadth on every evening run.
+        os.environ.setdefault("GCS_BUCKET_NAME", bucket_name)
+        os.environ.setdefault("FINLAB_OFFICIAL_HISTORY_CACHE_PREFIX", "finlab/v4/official-history-cache/v1")
         gcs_preflight = verify_gcs_object_lifecycle(
             storage.Client().bucket(bucket_name),
             workload="finlab-v4-backfill",

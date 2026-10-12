@@ -1311,7 +1311,7 @@ def write_adjusted_price_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pa
     })
 
 
-def write_official_training_calendar(*, run_dir: Path) -> None:
+def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: bool = True) -> None:
     """Seal whole-history official sessions before publishing a new full capture."""
     from services.training_session_calendar import official_month_sessions, price_session_dates, require_session_equality
     root=run_dir/"raw/daily_price_full_vintage"
@@ -1338,6 +1338,8 @@ def write_official_training_calendar(*, run_dir: Path) -> None:
                     # by decision date so yesterday's response cannot hide today.
                     cache_key=f"calendar/{market}-{ym}"+(f"-{end}" if ym==end[:7] else "")+".json"
                     cached=read_cached(cache_key)
+                    if cached is None and not allow_historical_fetch and ym != end[:7]:
+                        raise ValueError(f"daily_official_history_cache_missing:{cache_key}")
                     body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
                     official_month_sessions(body,market,ym)
                     write_json(path,body)
@@ -1355,7 +1357,7 @@ def write_official_training_calendar(*, run_dir: Path) -> None:
     write_json(manifest_path,manifest)
 
 
-def write_training_breadth_capture(*,run_dir: Path) -> None:
+def write_training_breadth_capture(*,run_dir: Path, allow_historical_fetch: bool = True) -> None:
     from services.training_global_capture import parse_breadth
     from services.training_session_calendar import price_session_dates
     from services.official_history_cache import read_cached,write_cached
@@ -1363,15 +1365,20 @@ def write_training_breadth_capture(*,run_dir: Path) -> None:
     if not (root/"manifest.json").exists():return
     manifest=json.loads((root/"manifest.json").read_bytes())
     days=price_session_dates((root/"close.parquet").read_bytes());sources=[]
-    for day in days:
+    print(f"[finlab-backfill] training_breadth start sessions={len(days)}", file=sys.stderr, flush=True)
+    for index, day in enumerate(days, 1):
         path=root/"official_breadth"/(day+".json")
         if not path.exists():
             key="breadth/TWSE-"+day+".json";raw=read_cached(key)
+            if raw is None and not allow_historical_fetch and day != manifest["end_date"]:
+                raise ValueError(f"daily_official_history_cache_missing:{key}")
             body=json.loads(raw) if raw is not None else official_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
             parse_breadth(body,day);write_json(path,body)
             if raw is None:write_cached(key,path.read_bytes());time.sleep(4)
         raw=path.read_bytes();parse_breadth(json.loads(raw),day)
         sources.append({"date":day,"sha256":hashlib.sha256(raw).hexdigest()})
+        if index == 1 or index % 25 == 0 or index == len(days):
+            print(f"[finlab-backfill] training_breadth progress={index}/{len(days)} date={day}", file=sys.stderr, flush=True)
     write_json(root/"training_breadth.json",{"schema_version":"training-breadth-capture-v1","capture_id":manifest["capture_id"],"end":manifest["end_date"],"sources":sources})
 
 
@@ -1971,6 +1978,7 @@ def materialize_specs(
     source_start_date: str | None = None,
     source_end_date: str | None = None,
     training_capture_start_date: str | None = None,
+    daily_refresh: bool = False,
     require_official_market_summary: bool = False,
     generated_at: str | None = None,
     key_scope: dict[str, set[str]] | None = None,
@@ -2135,7 +2143,7 @@ def materialize_specs(
 
     for spec in specs:
         t0 = time.time()
-        print(f"[finlab-backfill] start lane={spec.lane} kind={spec.kind}", flush=True)
+        print(f"[finlab-backfill] start lane={spec.lane} kind={spec.kind}", file=sys.stderr, flush=True)
         lane_dir = run_dir / "raw" / spec.lane
         spec_keys = spec_keys_for_scope(spec, key_scope)
         if key_scope and spec.lane not in key_scope:
@@ -2268,8 +2276,8 @@ def materialize_specs(
                 if price_venue_scope_manifest:
                     from services.training_price_venue_scope import write_scope_manifest
                     write_scope_manifest(run_dir, price_venue_scope_manifest, price_venue_scope_sha256)
-                write_official_training_calendar(run_dir=run_dir)
-                write_training_breadth_capture(run_dir=run_dir)
+                write_official_training_calendar(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
+                write_training_breadth_capture(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
                 if (run_dir/"raw/daily_price_full_vintage/training_calendar.json").exists():
                     from services.training_us_capture import write_us_quote_capture
                     capture=json.loads((run_dir/"raw/daily_price_full_vintage/training_calendar.json").read_text(encoding="utf8"))
@@ -3815,6 +3823,7 @@ def main() -> int:
     parser.add_argument("--source-start-date", default="", help="Inclusive source materialization start date. Defaults to --years lookback.")
     parser.add_argument("--training-capture-start-date", default="", help="Optional full training-history start; must not follow the daily source start. Defaults to --years history.")
     parser.add_argument("--source-end-date", default="", help="Inclusive source materialization end date.")
+    parser.add_argument("--daily-refresh", action="store_true", help="Reuse verified official history; never bootstrap missing historical sessions in the daily chain.")
     parser.add_argument("--require-official-market-summary", action="store_true", help="Fail daily refresh when TWSE/TPEX market summary rows are incomplete.")
     args = parser.parse_args()
 
@@ -3846,6 +3855,7 @@ def main() -> int:
         lanes=requested_lanes,
         source_start_date=source_start_date,
         training_capture_start_date=args.training_capture_start_date or None,
+        daily_refresh=args.daily_refresh,
         source_end_date=source_end_date,
         require_official_market_summary=args.require_official_market_summary,
         generated_at=generated_at,

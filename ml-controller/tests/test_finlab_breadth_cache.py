@@ -66,3 +66,42 @@ def test_daily_missing_history_never_starts_a_multi_year_download(monkeypatch, t
     monkeypatch.setattr(tool, 'official_json_get', lambda *a, **k: pytest.fail('daily history bootstrap forbidden'))
     with pytest.raises(ValueError, match='daily_official_history_cache_missing:breadth/TWSE-2026-10-08.json'):
         tool.write_training_breadth_capture(run_dir=tmp_path / 'daily', allow_historical_fetch=False)
+
+
+@pytest.mark.parametrize('missing_old', [False, True])
+def test_calendar_rollover_only_fetches_recent_months(monkeypatch, tmp_path, missing_old):
+    from services import official_history_cache as cache
+    tool = _load_tool_module()
+    days = ['2026-09-30', '2026-10-30', '2026-11-02']
+    root = tmp_path / 'rollover'
+    path = capture(root, days)
+    import hashlib
+    manifest = json.loads((path / 'manifest.json').read_text())
+    manifest['checksums'] = {'close': hashlib.sha256((path / 'close.parquet').read_bytes()).hexdigest()}
+    (path / 'manifest.json').write_text(json.dumps(manifest))
+    def body(market, month):
+        day = next(d for d in days if d.startswith(month))
+        rows = [[day.replace('-', '/'), '1', '1', '1', '100']]
+        return {'date': month.replace('-', '') + '01', 'stat': 'OK', 'data': rows,
+                'tables': [{'fields': ['日期'], 'data': rows, 'totalCount': 1}]}
+    store = {} if missing_old else {
+        'calendar/' + market + '-2026-09.json': json.dumps(body(market, '2026-09')).encode()
+        for market in ('TWSE', 'TPEX')}
+    monkeypatch.setattr(cache, 'read_cached', store.get)
+    monkeypatch.setattr(cache, 'write_cached', lambda key, raw: store.__setitem__(key, raw))
+    fetches = []
+    def fetch(url, *, label):
+        market, month = label.removeprefix('training_calendar_').split('_')
+        fetches.append((market, month))
+        return body(market, month)
+    monkeypatch.setattr(tool, 'official_json_get', fetch)
+    monkeypatch.setattr(tool.time, 'sleep', lambda seconds: None)
+    if missing_old:
+        with pytest.raises(ValueError, match='daily_official_history_cache_missing:calendar/TWSE-2026-09.json'):
+            tool.write_official_training_calendar(run_dir=root, allow_historical_fetch=False)
+        assert fetches == []
+    else:
+        tool.write_official_training_calendar(run_dir=root, allow_historical_fetch=False)
+        assert set(fetches) == {(market, month) for market in ('TWSE', 'TPEX') for month in ('2026-10', '2026-11')}
+        assert 'calendar/TWSE-2026-10.json' in store
+        assert 'calendar/TWSE-2026-11-2026-11-02.json' in store

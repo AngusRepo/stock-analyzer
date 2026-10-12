@@ -1323,6 +1323,8 @@ def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: b
     observed=price_session_dates(close.read_bytes())
     if not observed:raise ValueError("training_calendar_prices_empty")
     start,end=min(observed),manifest["end_date"]
+    # At month rollover the last month needs its first closed-month cache key.
+    previous_month = (pd.Timestamp(end).replace(day=1) - pd.Timedelta(days=1)).strftime("%Y-%m")
     sources=[];sessions={"TWSE":[],"TPEX":[]}
     for year in range(int(start[:4]),int(end[:4])+1):
         for month in range(1,13):
@@ -1338,7 +1340,7 @@ def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: b
                     # by decision date so yesterday's response cannot hide today.
                     cache_key=f"calendar/{market}-{ym}"+(f"-{end}" if ym==end[:7] else "")+".json"
                     cached=read_cached(cache_key)
-                    if cached is None and not allow_historical_fetch and ym != end[:7]:
+                    if cached is None and not allow_historical_fetch and ym not in {end[:7], previous_month}:
                         raise ValueError(f"daily_official_history_cache_missing:{cache_key}")
                     body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
                     official_month_sessions(body,market,ym)

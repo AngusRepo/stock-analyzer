@@ -207,3 +207,33 @@ def test_actual_oct12_night_source_passes_original_96h_and_future_still_fails():
     with pytest.raises(ValueError,match='future_information:taifex-night'):
         build_information_delta(baseline=baseline,current_records=m.source_records(None,news,captured_at=cutoff),
             cutoff=cutoff,trade_date='2026-10-12',required_sources=('taifex-night',),max_age_seconds={'taifex-night':96*3600})
+
+
+def test_authorized_after_close_recovery_retains_actual_capture(monkeypatch):
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',m.OWNER)
+    receipt={'run_date':'2026-10-08'}
+    context={'trade_date':'2026-10-12','cutoff':'2026-10-12T08:40:18.152Z'}
+    context['checksum']=m.digest(context)
+    original=json.dumps(context,sort_keys=True)
+    m.validate_context(receipt,context,now=datetime(2026,10,12,15,59,59,tzinfo=timezone.utc))
+    assert json.dumps(context,sort_keys=True)==original
+    with pytest.raises(ValueError,match='allocation_cutoff'):
+        m.validate_context(receipt,context,now=datetime(2026,10,12,16,0,tzinfo=timezone.utc))
+    context['checksum']='0'*64
+    with pytest.raises(ValueError,match='checksum'):
+        m.validate_context(receipt,context,now=datetime(2026,10,12,11,0,tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize('signal,trade,cutoff,owner,error',[
+    ('2026-10-09','2026-10-12','2026-10-12T08:40:18Z',m.OWNER,'allocation_cutoff'),
+    ('2026-10-08','2026-10-13','2026-10-13T08:40:18Z',m.OWNER,'allocation_cutoff'),
+    ('2026-10-08','2026-10-12','2026-10-12T05:29:59Z',m.OWNER,'context_stale'),
+    ('2026-10-08','2026-10-12','2026-10-11T08:40:18Z',m.OWNER,'context_stale'),
+    ('2026-10-08','2026-10-12','2026-10-12T12:00:00Z',m.OWNER,'context_stale'),
+    ('2026-10-08','2026-10-12','2026-10-12T08:40:18Z','other','allocation_cutoff'),
+])
+def test_after_close_recovery_cannot_expand_scope(monkeypatch,signal,trade,cutoff,owner,error):
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',owner)
+    context={'trade_date':trade,'cutoff':cutoff};context['checksum']=m.digest(context)
+    now=datetime.fromisoformat(trade+'T11:00:00+00:00')
+    with pytest.raises(ValueError,match=error):m.validate_context({'run_date':signal},context,now=now)

@@ -113,7 +113,14 @@ def validate_context(receipt, context, *, now=None):
         raise ValueError('premarket_allocation_cutoff')
     if receipt['run_date']>=context['trade_date']:raise ValueError('premarket_signal_date_invalid')
     cutoff=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))
-    if cutoff.tzinfo is None or cutoff>now or now-cutoff>timedelta(minutes=105):raise ValueError('premarket_context_stale')
+    if cutoff.tzinfo is None or cutoff>now:raise ValueError('premarket_context_stale')
+    captured_tw=cutoff.astimezone(timezone(timedelta(hours=8)))
+    # The explicitly authorized Oct 12 after-close paper backfill retains its
+    # original capture for this day. It cannot open another day's allocation,
+    # alter source freshness at capture, or grant an execution window.
+    after_close_recovery=(paper_recovery and captured_tw.date()==tw.date()
+        and (captured_tw.hour,captured_tw.minute)>=(13,30) and (tw.hour,tw.minute)>=(13,30))
+    if now-cutoff>timedelta(minutes=105) and not after_close_recovery:raise ValueError('premarket_context_stale')
     if context['checksum']!=digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
 
 def dispatch(receipt,context,*,jobs_client,client=None):

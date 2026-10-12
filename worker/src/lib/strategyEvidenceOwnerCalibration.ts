@@ -3,7 +3,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { listStrategyEvidenceProfiles } from './strategyEvidenceProfile'
 import { listStrategySpecsForLearning } from './strategyLearning'
-import { STRATEGY_FORMAL_LABELER_VERSIONS } from './strategySpec'
+import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceEvidence'
 
 export const STRATEGY_EVIDENCE_OWNER_CALIBRATION_VERSION = 'strategy-evidence-owner-calibration-v1' as const
 export const STRATEGY_EVIDENCE_OWNER_CHALLENGER_VERSION = 'strategy-evidence-owner-fusion-v2-oos-challenger' as const
@@ -13,7 +13,7 @@ export const STRATEGY_EVIDENCE_OWNER_PURGE_DATES = 2
 export const STRATEGY_EVIDENCE_OWNER_MIN_OOS_DATES = 3
 export const STRATEGY_EVIDENCE_OWNER_MIN_ACTIVE_STRATEGIES = 3
 export const STRATEGY_EVIDENCE_OWNER_MIN_COVERAGE = 0.20
-const REFERENCE_CONTRACT = 'selection-reference-snapshot-v3'
+const FORMAL_MATRIX_COMPATIBILITY = buildStrategyFormalMatureCompatibilitySql('mr')
 
 export type StrategyEvidenceCalibrationMetricRow = {
   strategy_id: string
@@ -322,7 +322,7 @@ async function canonicalRunIdsBefore(db: D1Database, cutoffDate: string): Promis
   ]))
 }
 
-async function loadDateReturns(
+export async function loadDateReturns(
   db: D1Database,
   profiles: readonly StrategyEvidenceCalibrationProfile[],
   cutoffDate: string,
@@ -338,11 +338,11 @@ async function loadDateReturns(
          AND EXISTS (
            SELECT 1 FROM selection_reference_snapshots_v1 r
             WHERE r.signal_date=v.signal_date AND r.symbol=v.symbol AND r.producer_run_id=v.producer_run_id
-              AND r.strategy_matrix_status='ready' AND r.feature_contract_version=?
-              AND r.strategy_labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
+              AND r.strategy_matrix_status='ready'
               AND EXISTS (
                 SELECT 1 FROM strategy_label_matrix_runs_v4 mr
                  WHERE mr.producer_run_id=v.producer_run_id AND mr.status='ready'
+                   AND ${FORMAL_MATRIX_COMPATIBILITY.sql}
                    AND mr.expected_cell_count>0 AND mr.persisted_cell_count=mr.expected_cell_count
                    AND mr.labeler_version=r.strategy_labeler_version
                    AND mr.strategy_registry_checksum=r.strategy_registry_checksum
@@ -356,8 +356,7 @@ async function loadDateReturns(
       profile.strategy_version,
       profile.primary_horizon_days,
       cutoffDate,
-      REFERENCE_CONTRACT,
-      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      ...FORMAL_MATRIX_COMPATIBILITY.binds,
       JSON.stringify(canonicalRunIds),
     ).all<{ signal_date: string; residual_return_net: number | string; sample_count: number | string }>()
     output.push(...(result.results ?? []).map((row) => ({

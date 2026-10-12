@@ -31,3 +31,26 @@ for (const mode of ['current','prior','missing-proof','future','mismatched-reque
     }else await assert.rejects(read(),/strategy_nav_original_evidence_invalid/)
   })
 }
+
+for (const reason of ['strategy_nav_read_model_missing', 'strategy_nav_read_model_source_changed', 'unknown_secret_error']) {
+  test('strategy NAV availability: ' + reason, async (t) => {
+    const db = new DatabaseSync(':memory:')
+    db.exec(`CREATE TABLE strategy_replacement_authority_v1(singleton_id INTEGER,owner TEXT);
+      INSERT INTO strategy_replacement_authority_v1 VALUES(1,'original_paired_daily_nav');
+      CREATE TABLE strategy_atomic_nav_adoptions_v1(artifact_checksum TEXT);`)
+    const adapter = {prepare(sql:string) {return {async first() {return db.prepare(sql).get() ?? null}}}}
+    const old = globalThis.fetch
+    t.after(() => {globalThis.fetch = old; db.close()})
+    globalThis.fetch = async () => Response.json({detail:reason}, {status:409})
+    const run = () => readStrategyNavEvidence({DB:adapter,ML_CONTROLLER_URL:'https://controller.invalid',
+      ML_CONTROLLER_SECRET:'fixture'} as any, {strategy_id:'s8',strategy_version:'v1',business_date:'2026-10-12'})
+    if (reason === 'unknown_secret_error') await assert.rejects(run(), /strategy_nav_controller_read_failed/)
+    else {
+      const result = await run()
+      assert.equal(result.status, 'display_unavailable')
+      assert.equal(result.entry_count, null) // Never invent zero comparisons/maturity.
+      assert.equal(result.promotion_allowed, false)
+      assert.equal(result.unavailable_reason, reason)
+    }
+  })
+}

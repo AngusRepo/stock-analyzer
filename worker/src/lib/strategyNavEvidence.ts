@@ -1,6 +1,6 @@
 /** Original Controller NAV decisions -> read-only strategy detail. No grants. */
 import type { Bindings } from '../types'
-import { controllerJson } from './controllerClient'
+import { controllerFetch } from './controllerClient'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { atomicNavCanonical, atomicNavDigest, navOwnsStrategyReplacement, readAtomicNavPublication } from './strategyAtomicNavReceipt'
 import { sha256Text } from './datasetSnapshots'
@@ -13,11 +13,29 @@ export async function readStrategyNavEvidence(env: Bindings, input: {
 }) {
   if (!env.ML_CONTROLLER_SECRET?.trim()) throw new Error('strategy_nav_controller_auth_missing')
   const db = databaseForDataDomain(env, 'learning')
-  const [response, navOwner] = await Promise.all([
-    controllerJson<any>(env, '/nav/strategy-evidence', { method: 'POST', jsonBody: input,
+  const [httpResponse, navOwner] = await Promise.all([
+    controllerFetch(env, '/nav/strategy-evidence', { method: 'POST', jsonBody: input,
       timeoutMs: transport.controller_read_timeout_seconds * 1000 }),
     navOwnsStrategyReplacement(db),
   ])
+  const response: any = await httpResponse.json()
+  if (!httpResponse.ok) {
+    // A missing display projection is distinct from zero NAV maturity or a
+    // rejected strategy. Only explicit Controller-owned availability codes
+    // may be shown as a structured unavailable state.
+    if (httpResponse.status === 409 && ['strategy_nav_read_model_missing',
+      'strategy_nav_read_model_source_changed'].includes(response?.detail)) {
+      if (await navOwnsStrategyReplacement(db) !== navOwner) throw new Error('strategy_nav_owner_changed_during_read')
+      return { schema_version: 'strategy-nav-evidence-v1',
+        strategy_id: input.strategy_id, strategy_version: input.strategy_version,
+        as_of_date: input.business_date, observed_at: new Date().toISOString(),
+        source: 'controller_read_model_availability', status: 'display_unavailable',
+        unavailable_reason: response.detail, entries: [], entry_count: null,
+        read_only: true, promotion_allowed: false,
+        current_replacement_owner: navOwner ? 'original_paired_daily_nav' : 'legacy_atomic_v7' }
+    }
+    throw new Error('strategy_nav_controller_read_failed')
+  }
   if (response?.schema_version !== 'strategy-nav-evidence-v1'
     || response.strategy_id !== input.strategy_id || response.strategy_version !== input.strategy_version
     || !/^\d{4}-\d{2}-\d{2}$/.test(response.as_of_date) || response.as_of_date > input.business_date

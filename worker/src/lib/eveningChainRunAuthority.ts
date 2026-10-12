@@ -67,13 +67,14 @@ export async function resolveEveningChainRunAuthority(
     input.businessDate,
   )
   const crossMidnightCarryover = queuedTaipeiDate !== input.businessDate
-    && boundary.reason === 'pre_next_session_open_historical_write_window'
+    && (boundary.reason === 'pre_next_session_open_historical_write_window'
+      || (boundary.reason === 'authorized_paper_recovery_20261012' && boundary.scope === 'paper'))
   const allowed = boundary.allowed
     && (queuedTaipeiDate === input.businessDate || crossMidnightCarryover)
   return {
     allowed,
     runScope: allowed ? 'live_canonical' : 'historical_replay',
-    reason: allowed && crossMidnightCarryover
+    reason: boundary.scope === 'paper' ? boundary.reason : allowed && crossMidnightCarryover
       ? 'canonical_stage_cross_midnight_before_next_session_open'
       : boundary.reason,
     queuedAt,

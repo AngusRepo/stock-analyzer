@@ -242,14 +242,15 @@ def test_after_close_recovery_cannot_expand_scope(monkeypatch,signal,trade,cutof
 @pytest.mark.parametrize('signal,trade,time,owner,allowed',[
     ('2026-10-12','2026-10-13','00:45:00',m.OWNER,True),
     ('2026-10-12','2026-10-13','00:59:59',m.OWNER,True),
-    ('2026-10-12','2026-10-13','01:00:00',m.OWNER,False),
+    ('2026-10-12','2026-10-13','01:00:00',m.OWNER,True),
+    ('2026-10-12','2026-10-13','15:59:59',m.OWNER,True),
     ('2026-10-08','2026-10-13','00:45:00',m.OWNER,False),
     ('2026-10-12','2026-10-13','00:45:00','other',False),
     ('2026-10-13','2026-10-14','00:45:00',m.OWNER,False),
 ])
-def test_oct13_recovery_is_date_owner_and_market_open_bound(monkeypatch,signal,trade,time,owner,allowed):
+def test_oct13_recovery_is_date_owner_and_freshness_bound(monkeypatch,signal,trade,time,owner,allowed):
     monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',owner)
-    context={'trade_date':trade,'cutoff':trade+'T00:00:00Z'}
+    context={'trade_date':trade,'cutoff':trade+'T'+time+'Z'}
     context['checksum']=m.digest(context)
     original=json.dumps(context,sort_keys=True)
     now=datetime.fromisoformat(trade+'T'+time+'+00:00')
@@ -258,6 +259,11 @@ def test_oct13_recovery_is_date_owner_and_market_open_bound(monkeypatch,signal,t
         assert json.dumps(context,sort_keys=True)==original
         context['checksum']='0'*64
         with pytest.raises(ValueError,match='checksum'):
+            m.validate_context({'run_date':signal},context,now=now)
+        from datetime import timedelta
+        context['cutoff']=(now-timedelta(minutes=106)).isoformat()
+        context['checksum']=m.digest({k:v for k,v in context.items() if k!='checksum'})
+        with pytest.raises(ValueError,match='context_stale'):
             m.validate_context({'run_date':signal},context,now=now)
     else:
         with pytest.raises(ValueError,match='allocation_cutoff'):

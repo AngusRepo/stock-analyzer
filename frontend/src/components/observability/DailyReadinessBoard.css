@@ -59,14 +59,15 @@
 .obs-chain.is-daily_readiness .obs-chain__orchestrator { min-width: 260px; }
 /* Related overnight and premarket phases share a row on wide screens. */
 @media(min-width: 1251px) {
-  .daily-readiness-board__phases { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+  /* Five equal card columns: two for 02, three for 03; four 8px gaps plus the 24px phase gap. */
+  .daily-readiness-board__phases { grid-template-columns: minmax(0, calc((100% - 48px) * 2 / 5 + 8px)) minmax(0, 1fr); column-gap: 24px; }
   .daily-readiness-board__phase.is-sources,
   .daily-readiness-board__phase.is-evidence { grid-column: 1 / -1; }
   .daily-readiness-board__phase.is-models,
   .daily-readiness-board__phase.is-premarket { grid-template-columns: minmax(0, 1fr); align-content: start; gap: 10px; }
-  .daily-readiness-board__phase:is(.is-models, .is-premarket) .daily-readiness-board__stages {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
-  }
+  .daily-readiness-board__phase.is-models .daily-readiness-board__stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .daily-readiness-board__phase.is-premarket .daily-readiness-board__stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .daily-readiness-board__phase:is(.is-models, .is-premarket) .readiness-task { min-height: 160px; }
 }
 @media(max-width: 1250px) { .daily-readiness-board__phase { grid-template-columns: 165px minmax(0,1fr); gap: 12px; } .daily-readiness-board__stages { gap: 6px; } .readiness-task { padding: 8px; } }
 @media(max-width: 1000px) { .daily-readiness-board__phase { grid-template-columns: minmax(0,1fr); } .daily-readiness-board__phase-info { display: block; } }

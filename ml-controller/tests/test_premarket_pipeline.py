@@ -237,3 +237,28 @@ def test_after_close_recovery_cannot_expand_scope(monkeypatch,signal,trade,cutof
     context={'trade_date':trade,'cutoff':cutoff};context['checksum']=m.digest(context)
     now=datetime.fromisoformat(trade+'T11:00:00+00:00')
     with pytest.raises(ValueError,match=error):m.validate_context({'run_date':signal},context,now=now)
+
+
+@pytest.mark.parametrize('signal,trade,time,owner,allowed',[
+    ('2026-10-12','2026-10-13','00:45:00',m.OWNER,True),
+    ('2026-10-12','2026-10-13','00:59:59',m.OWNER,True),
+    ('2026-10-12','2026-10-13','01:00:00',m.OWNER,False),
+    ('2026-10-08','2026-10-13','00:45:00',m.OWNER,False),
+    ('2026-10-12','2026-10-13','00:45:00','other',False),
+    ('2026-10-13','2026-10-14','00:45:00',m.OWNER,False),
+])
+def test_oct13_recovery_is_date_owner_and_market_open_bound(monkeypatch,signal,trade,time,owner,allowed):
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',owner)
+    context={'trade_date':trade,'cutoff':trade+'T00:00:00Z'}
+    context['checksum']=m.digest(context)
+    original=json.dumps(context,sort_keys=True)
+    now=datetime.fromisoformat(trade+'T'+time+'+00:00')
+    if allowed:
+        m.validate_context({'run_date':signal},context,now=now)
+        assert json.dumps(context,sort_keys=True)==original
+        context['checksum']='0'*64
+        with pytest.raises(ValueError,match='checksum'):
+            m.validate_context({'run_date':signal},context,now=now)
+    else:
+        with pytest.raises(ValueError,match='allocation_cutoff'):
+            m.validate_context({'run_date':signal},context,now=now)

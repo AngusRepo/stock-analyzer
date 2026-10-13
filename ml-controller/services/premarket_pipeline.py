@@ -109,7 +109,11 @@ def validate_context(receipt, context, *, now=None):
     # Wei's one-day realtime-paper recovery keeps the actual capture time.
     paper_recovery = (enabled() and receipt.get('run_date') == '2026-10-08'
         and context.get('trade_date') == tw.date().isoformat() == '2026-10-12')
-    if context.get('trade_date')!=tw.date().isoformat() or ((tw.hour,tw.minute)>=(8,45) and not paper_recovery):
+    # Wei-authorized Oct 13 paper continuation may allocate until market open.
+    opening_recovery = (enabled() and receipt.get('run_date') == '2026-10-12'
+        and context.get('trade_date') == tw.date().isoformat() == '2026-10-13')
+    allocation_cutoff = (9,0) if opening_recovery else (8,45)
+    if context.get('trade_date')!=tw.date().isoformat() or ((tw.hour,tw.minute)>=allocation_cutoff and not paper_recovery):
         raise ValueError('premarket_allocation_cutoff')
     if receipt['run_date']>=context['trade_date']:raise ValueError('premarket_signal_date_invalid')
     cutoff=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))

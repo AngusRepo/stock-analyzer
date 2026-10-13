@@ -91,7 +91,7 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   const db = databaseForDataDomain(env, 'ops')
   const key = PREFIX + stage
   // One Wei-authorized recovery after the three preserved preopen-only failures.
-  const attemptLimit = date === '2026-10-12' && stage === 'setup' ? MAX_ATTEMPTS + 1 : MAX_ATTEMPTS
+  const attemptLimit = ['2026-10-12','2026-10-13'].includes(date) && stage === 'setup' ? MAX_ATTEMPTS + 1 : MAX_ATTEMPTS
   const clock = premarketClock(now)
   const advisoryWindow = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && stage.startsWith('debate:') && clock.minutes < 960
   if (date !== clock.date || (!advisoryWindow && clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540))) {

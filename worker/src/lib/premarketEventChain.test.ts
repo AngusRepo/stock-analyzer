@@ -185,8 +185,8 @@ test('published plan does not hide a terminal broker health failure',async()=>{
  } finally {f.close()}
 })
 
-for (const fail of [false,true]) test(`October 12 setup allows one preserved fourth attempt; fail=${fail}`,async()=>{
- const f=fixture(),day='2026-10-12';f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+for (const day of ['2026-10-12','2026-10-13']) for (const fail of [false,true]) test(`${day} setup allows one preserved fourth attempt; fail=${fail}`,async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
  f.ports.nowMs=Date.parse(day+'T16:00:00+08:00');let calls=0
  try {
   f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count) VALUES(?,?,?,?,?,?)")

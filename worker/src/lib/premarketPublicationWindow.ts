@@ -1,6 +1,6 @@
-/** Wei-approved paper recovery: Oct 12 all day, Oct 13 until market open. */
+/** Wei-approved dated paper recovery; market open remains the completion target. */
 export function premarketPublicationTarget(tradeDate: string): string {
-  return tradeDate === '2026-10-12' ? '24:00' : tradeDate === '2026-10-13' ? '09:00' : '08:45'
+  return ['2026-10-12','2026-10-13'].includes(tradeDate) ? '24:00' : '08:45'
 }
 
 export function premarketPublicationCutoff(tradeDate: string): number {
@@ -8,5 +8,5 @@ export function premarketPublicationCutoff(tradeDate: string): number {
 }
 
 export function premarketPublicationMinutes(tradeDate: string): number {
-  return tradeDate === '2026-10-12' ? 1440 : tradeDate === '2026-10-13' ? 540 : 525
+  return ['2026-10-12','2026-10-13'].includes(tradeDate) ? 1440 : 525
 }

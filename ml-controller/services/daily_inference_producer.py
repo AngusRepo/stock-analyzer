@@ -87,6 +87,7 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
     """
     from services.daily_vendor_capture import DailyVendorCapture
     from services.financial_availability import align_financial_availability
+    from services.finlab_sealed_raw import quarterly_index
     from services.monthly_availability import LOCKED_NOTE, align_monthly
     from services.training_long_sources import write_holding_capture
 
@@ -167,7 +168,7 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
     result['input_manifests'].append(original('raw/training_auxiliary_full_vintage/manifest.json'))
     disclosure, disclosure_ref, _ = native('disclosure')
     deadline, deadline_ref, _ = native('deadline')
-    owners = [f.to_pandas().set_index('date') for f in (disclosure, deadline)]
+    owners = [quarterly_index(f).to_pandas().set_index('date') for f in (disclosure, deadline)]
     for field in FIELDS:
         prior = read_frame(bucket, old['auxiliary'][field], run_date=old_day)
         inputs = [{'path': old['auxiliary'][field]['path'], 'sha256': old['auxiliary'][field]['sha256']}]
@@ -193,7 +194,7 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
                              monthly_capture_receipt_sha256=raw_receipt_ref['sha256'])
                 availability = contract['policy']
             elif field in FINANCIAL_FIELDS:
-                aligned = align_financial_availability(delta.to_pandas().set_index('date'), owners,
+                aligned = align_financial_availability(quarterly_index(delta).to_pandas().set_index('date'), owners,
                                                        calendar['date'].to_pandas())
                 extra['financial_availability_proof'] = {k: v for k, v in aligned.attrs['financial_availability_proof'].items()}
                 events = aligned.attrs['financial_availability_events']

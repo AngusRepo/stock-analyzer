@@ -141,7 +141,7 @@ def current_capture(tmp_path, day, *, omit_session=False):
     return root, prices
 
 
-def vendor_factory(day, *, missing=False):
+def vendor_factory(day, *, missing=False, native_quarter_dates=False):
     class Vendor:
         def __init__(self, root, *, roster):
             self.root = root
@@ -150,6 +150,9 @@ def vendor_factory(day, *, missing=False):
             daily = pl.DataFrame({'date': sessions, '2330': [3.] * len(sessions), '0050': [0.] * len(sessions)}).with_columns(pl.col('date').str.to_date())
             quarterly = pl.DataFrame({'date': ['2026-Q3'], '2330': [7.], '0050': [0.]})
             owners = pl.DataFrame({'date': ['2026-Q3'], '2330': [day], '0050': [day]}).with_columns(pl.exclude('date').str.to_date())
+            if native_quarter_dates:
+                quarterly = quarterly.with_columns(pl.lit('2026-08-14').str.to_date().alias('date'))
+                owners = owners.with_columns(pl.lit('2026-Q2').alias('date'))
             self.frames = {'dividend_yield': daily, 'revenue': daily, 'revenue_yoy': daily,
                            'revenue_mom': daily, 'eps': quarterly, 'roe': quarterly,
                            'revenue_growth_yoy': quarterly, 'disclosure': owners, 'deadline': owners,
@@ -178,6 +181,20 @@ def upload(bucket, root, prefix=None):
 def produce(bucket, root, day, **kwargs):
     return produce_daily_inference_composition(run_dir=root, bucket=bucket, capture_prefix=root.name,
                                                vendor_factory=vendor_factory(day, **kwargs))
+
+
+def test_native_financial_dates_bind_to_quarter_owners_before_availability(tmp_path):
+    bucket = Bucket()
+    baseline(bucket)
+    root, _ = current_capture(tmp_path, '2026-10-13')
+    reference = produce(bucket, root, '2026-10-13', native_quarter_dates=True)
+    upload(bucket, root)
+    value = json.loads(bucket.files[reference['path']])
+    for field in ('eps', 'roe', 'revenue_growth_yoy'):
+        frame = read_frame(bucket, value['auxiliary'][field], run_date='2026-10-13')
+        assert frame.filter(pl.col('date') == '2026-10-13')['2330'].to_list() == [7.]
+        events = value['auxiliary'][field]['financial_events']
+        assert pl.read_parquet(io.BytesIO(bucket.files[events['path']]))['quarter'].to_list() == ['2026-Q2', '2026-Q2']
 
 
 def test_two_new_days_producer_to_consumer_and_real_auxiliary_reader_preserve_history(tmp_path):

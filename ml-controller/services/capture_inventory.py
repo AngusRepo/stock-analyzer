@@ -106,6 +106,7 @@ def inspect_capture_inventory(bucket, *, sequence_gcs_prefix: str, run_date: str
         from services.daily_inference_composition import load_composition, read_frame
         composition = load_composition(bucket, price_capture={
             "capture_id":source["capture_id"],
+            "capture_manifest_path":price_root+"/manifest.json",
             "capture_manifest_sha256":manifests.get(price_root+"/manifest.json")},run_date=run_date)
     if composition is not None:
         for group in ("auxiliary", "long"):

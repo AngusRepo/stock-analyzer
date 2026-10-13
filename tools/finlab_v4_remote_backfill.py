@@ -1688,7 +1688,9 @@ def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str) -> dict
     bucket = client.bucket(bucket_name)
     uploaded = 0
     bytes_total = 0
-    for path in local_dir.rglob("*"):
+    # Publish the ready consumer reference only after its original inputs and
+    # derived artifacts. A reader must never observe a half-uploaded ready set.
+    for path in sorted(local_dir.rglob("*"), key=lambda p: (p.relative_to(local_dir).as_posix() == "inference/reference.json", p.as_posix())):
         if not path.is_file():
             continue
         rel = path.relative_to(local_dir).as_posix()
@@ -2296,7 +2298,8 @@ def materialize_specs(
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
-                    years=years, end_date=source_end_date, start_date=start,
+                    years=years, end_date=source_end_date,
+                    start_date=training_capture_start_date if daily_refresh else start,
                     requested_fields=set(spec_keys)&set(TRAINING_AUX_FIELDS[spec.lane]))
             field_errors = required_wide_field_errors(
                 spec.lane,
@@ -3914,6 +3917,19 @@ def main() -> int:
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)
 
+    # A daily canonical success must also provide all inference inputs for the
+    # same capture; never leave the pipeline relying on a manually dated registry.
+    if args.daily_refresh and not source_key_blockers:
+        if not args.gcs_bucket:
+            raise ValueError("daily_inference_composition_requires_gcs_bucket")
+        from google.cloud import storage
+        from services.daily_inference_producer import produce_daily_inference_composition
+        manifest["inference_composition"] = produce_daily_inference_composition(
+            run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket),
+            capture_prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
+        )
+        write_json(run_dir / "manifest.json", manifest)
+
     if args.gcs_bucket:
         gcs = upload_dir_to_gcs(
             run_dir,
@@ -3980,6 +3996,10 @@ def main() -> int:
         manifest["gcs_upload"] = gcs
         write_json(run_dir / "manifest.json", manifest)
 
+        if manifest.get("backfill_status") == "ready" and manifest.get("inference_composition"):
+            from services.daily_inference_producer import publish_daily_inference_head
+            publish_daily_inference_head(storage.Client().bucket(args.gcs_bucket), manifest["inference_composition"])
+
     print(json.dumps({
         "run_id": run_id,
         "years": args.years,
@@ -3987,6 +4007,7 @@ def main() -> int:
         "source_end_date": source_end_date,
         "summary": summary,
         "backfill_status": manifest.get("backfill_status"),
+        "inference_composition": manifest.get("inference_composition"),
         "source_key_report_writeback": manifest.get("source_key_report_writeback"),
         "source_key_blockers": manifest.get("source_key_blockers"),
         "materialized_datasets": manifest.get("materialized_datasets"),

@@ -1008,3 +1008,22 @@ def test_actual_daily_materialize_entry_seals_full_market_cap_history(monkeypatc
     assert list(full.index.strftime("%Y-%m-%d"))==["2026-09-28","2026-09-29"]
     assert list(daily.index.strftime("%Y-%m-%d"))==["2026-09-29"]
     assert full["3004"].tolist()==[100.,101.]
+
+
+def test_daily_materialize_retains_auxiliary_history_before_daily_canonical_clip(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    tool = _load_tool_module()
+    days = pd.to_datetime(['2026-10-12', '2026-10-13'])
+    frame = pd.DataFrame({'2330': [0., 2.]}, index=days)
+    monkeypatch.setitem(sys.modules, 'finlab', SimpleNamespace(data=SimpleNamespace(get=lambda _: frame.copy()), login=lambda: None))
+    monkeypatch.setattr(tool, 'login_finlab_sdk', lambda _: None)
+    monkeypatch.setattr(tool, 'd1_counts', lambda _: {})
+    monkeypatch.setattr(tool, 'start_date_for_years', lambda _: '2023-10-13')
+    monkeypatch.setattr(tool, 'required_wide_field_errors', lambda *a, **kw: [])
+    tool.materialize_specs(years=3, run_dir=tmp_path, lanes=['fundamental_factor_diversity'],
+        source_start_date='2026-10-13', source_end_date='2026-10-13', daily_refresh=True,
+        key_scope={'fundamental_factor_diversity': {'pe', 'pb'}})
+    full = pd.read_parquet(tmp_path / 'raw/training_auxiliary_full_vintage/pe.parquet')
+    canonical = pd.read_parquet(tmp_path / 'raw/fundamental_factor_diversity/pe.parquet')
+    assert full['2330'].tolist() == [0., 2.]
+    assert canonical['2330'].tolist() == [2.]

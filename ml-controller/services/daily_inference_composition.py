@@ -24,13 +24,29 @@ def read_verified(bucket, item):
 
 
 def load_composition(bucket, *, price_capture, run_date):
-    """No fallback when an explicitly registered composition is corrupt."""
+    """Resolve the immutable reference sealed beside each daily price capture."""
+    price_path = price_capture.get("capture_manifest_path", "")
+    source = None
+    if price_path.endswith("/raw/daily_price_full_vintage/manifest.json"):
+        root = price_path.removesuffix("/raw/daily_price_full_vintage/manifest.json")
+        ref_blob = bucket.blob(root + "/inference/reference.json")
+        if ref_blob.exists():
+            reference = json.loads(ref_blob.download_as_bytes())
+            if (reference.get("capture_id") != price_capture["capture_id"]
+                    or reference.get("business_date") != run_date
+                    or reference.get("path") != root + "/inference/manifest.json"):
+                raise ValueError("daily_composition_reference_identity_mismatch")
+            source = reference
     registry = json.loads(Path(__file__).with_name("daily_inference_sources.json").read_bytes())
-    source = registry.get(price_capture["capture_id"])
+    source = source or registry.get(price_capture["capture_id"])
     if source is None:
         return None
     raw = read_verified(bucket, source)
     value = json.loads(raw)
+    return validate_composition(bucket, value, source=source, price_capture=price_capture, run_date=run_date)
+
+
+def validate_composition(bucket, value, *, source, price_capture, run_date):
     if (value.get("schema_version") != SCHEMA or value.get("business_date") != run_date
             or value.get("price_capture_id") != price_capture["capture_id"]
             or value.get("price_manifest_sha256") != price_capture["capture_manifest_sha256"]

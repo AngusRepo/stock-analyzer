@@ -94,12 +94,16 @@ def read_seal(day,run_id,*,client=None):
     try:return json.loads(bucket(client).blob(prefix(day,run_id)+'/l3-receipt.json').download_as_bytes())
     except NotFound:return None
 
-def load_state(receipt, *, client=None):
+def load_state(receipt, *, client=None, postwrite_only=False):
     b=bucket(client); expected=read_seal(receipt['run_date'],receipt['run_id'],client=client)
     if receipt != expected: raise ValueError('premarket_seal_mismatch')
     root='gs://'+b.name+'/'
     if not receipt['state_gcs_uri'].startswith(root): raise ValueError('premarket_bucket_mismatch')
-    raw=b.blob(receipt['state_gcs_uri'][len(root):]).download_as_bytes()
+    blob=b.blob(receipt['state_gcs_uri'][len(root):])
+    if postwrite_only:
+        from services.premarket_postwrite_state import read_postwrite_state
+        return read_postwrite_state(blob,receipt)
+    raw=blob.download_as_bytes()
     if hashlib.sha256(raw).hexdigest()!=receipt['checksum']:raise ValueError('premarket_state_checksum')
     return decode_pipeline_state_envelope(raw)['state']
 
@@ -180,7 +184,10 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
         validate_context(receipt,context,now=captured+timedelta(seconds=1))
     else:
         validate_context(receipt,context)
-    state=load_state(receipt,client=client)
+    if postwrite_only and any(node.__name__ not in ('node_compute_sector_flow','node_compute_pit_residual_shadow') for node in nodes):
+        raise ValueError('premarket_postwrite_phase_invalid')
+    state=load_state(receipt,client=client,postwrite_only=True) if postwrite_only else load_state(receipt,client=client)
+    payload_identity=state.get('pipeline_payload_identity')
     baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
     delta=build_information_delta(baseline=baseline,current_records=source_records(context['us'],context['news'],captured_at=context['cutoff']),cutoff=context['cutoff'],
         trade_date=context['trade_date'],required_sources=('us-leading','news','taifex-night'),
@@ -190,8 +197,6 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
     state.setdefault('metrics',{})['premarket_information']={k:v for k,v in delta.items() if k!='changes'}
     p=prefix(receipt['run_date'],receipt['run_id'])
     if postwrite_only:
-        if any(node.__name__ not in ('node_compute_sector_flow','node_compute_pit_residual_shadow') for node in nodes):
-            raise ValueError('premarket_postwrite_phase_invalid')
         for required in ('node_paired_nav_setup','node_export_dataset_snapshot'):
             if not b.blob(p+'/phases/'+required+'.json.gz').exists():
                 raise ValueError('premarket_postwrite_serving_not_sealed:'+required)
@@ -199,7 +204,12 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
         if not postwrite_only:validate_context(receipt,context)
         key=p+'/phases/'+node.__name__+'.json.gz'; blob=b.blob(key)
         try:
-            state=decode_pipeline_state_envelope(blob.download_as_bytes())['state']
+            if postwrite_only:
+                from services.premarket_postwrite_state import read_postwrite_state
+                state=read_postwrite_state(blob,receipt,phase=node.__name__,
+                    context_checksum=context['checksum'],payload_identity=payload_identity)
+            else:
+                state=decode_pipeline_state_envelope(blob.download_as_bytes())['state']
             continue
         except NotFound:pass
         # A phase has one producer. A lost completion receipt is an unknown
@@ -215,7 +225,11 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
             claim.upload_from_string(json_bytes({**identity,'status':'running'}),if_generation_match=claim.generation)
         try:
             merge(state,await node(state))
-            raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
+            if postwrite_only:
+                from services.premarket_postwrite_state import encode_postwrite_checkpoint
+                raw=encode_postwrite_checkpoint(state,receipt,phase=node.__name__,context_checksum=context['checksum'])
+            else:
+                raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
             immutable(blob,raw,'application/gzip')
         except Exception:
             claim.reload()

@@ -78,6 +78,33 @@ def append_holding_observations(prior, observed, *, run_date):
     return pl.concat([prior,delta],how='diagonal_relaxed').sort('symbol','date')
 
 
+def financial_observation_scope(frame, owners, *, roster, calendar_start):
+    """Keep the captured price universe and potentially available observations.
+
+    Earlier history is supplied by the immutable baseline, not reconstructed
+    from today's vendor revision. A late old quarter stays in scope whenever
+    either date owner places its observation inside the captured calendar.
+    Missing dates for an in-scope value still fail the original owner gate.
+    """
+    import pandas as pd
+    columns = [c for c in frame.columns if c in set(roster)]
+    selected = frame.loc[:, columns].copy()
+    start = pd.Timestamp(calendar_start)
+    floor = str(start.to_period('Q') - 1).replace('Q', '-Q')
+    recent = pd.DataFrame({c: selected.index >= floor for c in columns},index=selected.index)
+    for owner in owners:
+        dates = owner.reindex(index=selected.index,columns=columns).apply(
+            lambda c: pd.to_datetime(c,errors='coerce'))
+        recent |= dates >= start
+    excluded = int((selected.notna() & ~recent).to_numpy().sum())
+    selected = selected.where(recent)
+    return selected, {'price_universe_only':True,'quarter_floor':floor,
+                      'calendar_start':str(start.date()),
+                      'baseline_history_preserved':True,
+                      'out_of_calendar_cells_not_admitted':excluded,
+                      'vendor_columns_outside_price_universe':sorted(set(frame.columns)-set(columns))}
+
+
 def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
                                         vendor_factory=None):
     """Runs inside the existing daily FinLab producer, before its success callback.
@@ -194,7 +221,11 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
                              monthly_capture_receipt_sha256=raw_receipt_ref['sha256'])
                 availability = contract['policy']
             elif field in FINANCIAL_FIELDS:
-                aligned = align_financial_availability(quarterly_index(delta).to_pandas().set_index('date'), owners,
+                scoped, scope = financial_observation_scope(
+                    quarterly_index(delta).to_pandas().set_index('date'),owners,
+                    roster=roster,calendar_start=str(calendar['date'].min()))
+                extra['financial_input_scope'] = scope
+                aligned = align_financial_availability(scoped, owners,
                                                        calendar['date'].to_pandas())
                 extra['financial_availability_proof'] = {k: v for k, v in aligned.attrs['financial_availability_proof'].items()}
                 events = aligned.attrs['financial_availability_events']

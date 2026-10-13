@@ -197,6 +197,25 @@ def test_native_financial_dates_bind_to_quarter_owners_before_availability(tmp_p
         assert pl.read_parquet(io.BytesIO(bucket.files[events['path']]))['quarter'].to_list() == ['2026-Q2', '2026-Q2']
 
 
+def test_financial_scope_preserves_late_old_quarters_and_current_missing_date_gate():
+    import pandas as pd
+    from services.daily_inference_producer import financial_observation_scope
+    from services.financial_availability import align_financial_availability
+    frame = pd.DataFrame({'2330':[99.,7.,0.],'7947':[1.,1.,1.]},
+                         index=['2013-Q1','2026-Q2','2026-Q3'])
+    disclosure = pd.DataFrame({'2330':pd.to_datetime(['2013-05-15','2026-10-13','2026-10-13'])},index=frame.index)
+    deadline = pd.DataFrame({'2330':pd.to_datetime([None,'2026-08-14',None])},index=frame.index)
+    scoped, proof = financial_observation_scope(frame,[disclosure,deadline],
+        roster=['2330'],calendar_start='2026-10-08')
+    assert list(scoped.columns) == ['2330']
+    assert pd.isna(scoped.loc['2013-Q1','2330'])
+    assert scoped.loc['2026-Q2','2330'] == 7.
+    assert scoped.loc['2026-Q3','2330'] == 0.
+    assert proof['out_of_calendar_cells_not_admitted'] == 1
+    with pytest.raises(ValueError,match='financial_publication_owner_missing'):
+        align_financial_availability(scoped,[disclosure,deadline],pd.to_datetime(['2026-10-08','2026-10-13']))
+
+
 def test_two_new_days_producer_to_consumer_and_real_auxiliary_reader_preserve_history(tmp_path):
     bucket = Bucket()
     baseline(bucket)

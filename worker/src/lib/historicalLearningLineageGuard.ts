@@ -118,20 +118,24 @@ export async function historicalLearningLineageDecision(
     nextSessionDate,
     nowMs,
   })
-  // Explicit 10/12 paper recovery of the unfinished 10/8 chain. Preserve real
-  // timestamps and require the published paper admission with live execution off.
-  if (!decision.allowed && signalDate === '2026-10-08' && nextSessionDate === '2026-10-12'
-    && taipeiDate(nowMs) === '2026-10-12') {
+  // Dated paper recoveries keep real timestamps and the published admission.
+  // Oct13 only continues the pipeline; other historical writers stay closed.
+  const today = taipeiDate(nowMs)
+  const recoveryDate = signalDate === '2026-10-08' && nextSessionDate === '2026-10-12' && today === '2026-10-12'
+    ? '20261012'
+    : task === 'pipeline' && signalDate === '2026-10-12' && nextSessionDate === '2026-10-13' && today === '2026-10-13'
+      ? '20261013' : null
+  if (!decision.allowed && recoveryDate) {
     const admission = await kv.get('ml:active8:paper_admission:v1', 'json') as any
     const variables = admission?.configuration?.native_execution_policy?.variables
     const trading = await kv.get('trading:config', 'json') as any
-    if (admission?.approved === true && admission.scope === 'paper' && admission.business_date === signalDate
+    if (admission?.approved === true && admission.scope === 'paper' && admission.business_date === '2026-10-08'
       && variables?.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1'
       && variables.LIVE_EXECUTION_CLIENT_ENABLED === '0' && variables.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED === '0'
       && trading?.l4Distribution?.scope === 'paper'
       && /^[a-f0-9]{64}$/.test(String(trading.l4Distribution.artifact?.model_checksum ?? ''))
       && trading.l4Distribution.artifact?.model_checksum === admission.configuration.trading_config?.l4Distribution?.artifact?.model_checksum) {
-      return {...decision, allowed:true, scope:'paper', reason:'authorized_paper_recovery_20261012'}
+      return {...decision, allowed:true, scope:'paper', reason:`authorized_paper_recovery_${recoveryDate}`}
     }
   }
   return decision

@@ -3,8 +3,10 @@ import importlib
 import io
 from collections import OrderedDict
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pandas as pd
+import polars as pl
 import pytest
 
 from services import daily_vendor_capture as module
@@ -18,6 +20,7 @@ def test_daily_native_capture_keeps_wire_bytes_aliases_and_date_owners(monkeypat
         raise AssertionError('unexpected network')
     monkeypatch.setattr(requests.sessions.Session, 'request', blocked)
     monkeypatch.setattr('urllib.request.urlopen', blocked)
+    monkeypatch.setattr(module.shutil, 'disk_usage', lambda path: SimpleNamespace(free=10*1024**3))
     # Safely bootstrap SDK storage before installing its offline metadata adapter.
     FullRawCapture(tmp_path / 'bootstrap', roster=['2330'], required={'close': 'price:收盤價'}).make_sdk_storage()
     get_module = importlib.import_module('finlab.data.get')
@@ -28,8 +31,10 @@ def test_daily_native_capture_keeps_wire_bytes_aliases_and_date_owners(monkeypat
     payloads = {}
     for field, dataset in module.DATASETS.items():
         if field == 'holding':
-            frame = pd.DataFrame({'date': pd.to_datetime(['2026-10-13']), 'symbol': ['2330'],
-                                  '持股分級': [1], '占集保庫存數比例': [2.]})
+            # Exact live wire schema: categorical stock_id, not SDK-finalized symbol.
+            frame = pd.DataFrame({'date': pd.to_datetime(['2026-10-13']),
+                                  'stock_id': pd.Categorical(['2330']),
+                                  '持股分級': pd.Categorical(['1']), '占集保庫存數比例': [0.]})
         elif field in {'disclosure', 'deadline'}:
             frame = pd.DataFrame({'date': ['2026-Q3'], '2330 A': pd.to_datetime(['2026-10-13']),
                                   '2330 B': pd.to_datetime(['2026-10-13'])})
@@ -55,6 +60,10 @@ def test_daily_native_capture_keeps_wire_bytes_aliases_and_date_owners(monkeypat
         assert (capture.root / record['path']).read_bytes() == payloads[module.DATASETS[field]]
         frame, proof = capture.read(field)
         assert proof['raw_sha256'] == record['sha256']
+        if field == 'holding':
+            assert frame['symbol'].cast(pl.String).to_list() == ['2330']
+            assert frame['占集保庫存數比例'].to_list() == [0.]
+            assert record['inventory']['identity_column'] == 'stock_id'
         if field not in {'holding', 'deadline', 'disclosure'}:
             assert frame['2330'].to_list() == [0.]
     assert data._storage is previous_storage and get_module._finalize is previous_finalize

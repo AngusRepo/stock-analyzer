@@ -69,6 +69,15 @@ class _LocalArtifacts:
         return Blob()
 
 
+def append_holding_observations(prior, observed, *, run_date):
+    """Preserve known rows and admit unseen weekly observations through run_date."""
+    keys = ['date','symbol']
+    if observed.unique(keys).height != observed.height or prior.unique(keys).height != prior.height:
+        raise ValueError('daily_composition_holding_duplicate')
+    delta = observed.filter(pl.col('date') <= run_date).join(prior.select(keys),on=keys,how='anti')
+    return pl.concat([prior,delta],how='diagonal_relaxed').sort('symbol','date')
+
+
 def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
                                         vendor_factory=None):
     """Runs inside the existing daily FinLab producer, before its success callback.
@@ -220,8 +229,7 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
     holding_path = root / 'holding-observation/raw/training_long_full_vintage/holding.parquet'
     delta = pl.read_parquet(holding_path).with_columns(pl.col('date').cast(pl.String).str.slice(0, 10))
     prior = read_frame(bucket, old['long']['holding'], run_date=old_day)
-    delta = delta.filter(pl.col('date').is_between(pl.lit(old_day), pl.lit(run_date), closed='right'))
-    frame = pl.concat([prior, delta], how='diagonal_relaxed').sort('symbol', 'date')
+    frame = append_holding_observations(prior,delta,run_date=run_date)
     if frame.unique(['date', 'symbol']).height != frame.height:
         raise ValueError('daily_composition_holding_duplicate')
     result['long']['holding'] = frame_item('long/holding.parquet', frame,

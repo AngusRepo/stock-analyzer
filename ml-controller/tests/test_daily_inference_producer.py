@@ -8,6 +8,21 @@ import pytest
 from google.api_core.exceptions import PreconditionFailed
 
 from services.daily_inference_composition import SCHEMA, load_composition, read_frame
+
+
+def test_delayed_weekly_holding_observation_is_added_without_changing_known_cells():
+    from services.daily_inference_producer import append_holding_observations
+    prior = pl.DataFrame({'symbol':['2330','2317'],'date':['2026-10-02','2026-10-02'],
+                          'retail_pct':[0.,None]})
+    observed = pl.DataFrame({'symbol':['2330','2317','2330','2330'],
+                             'date':['2026-10-02','2026-10-02','2026-10-09','2026-10-16'],
+                             'retail_pct':[99.,99.,2.,3.]})
+    # The composition baseline is 10/12, while its last original holding capture
+    # was 10/02. A newly observed 10/09 row must not disappear behind that date.
+    actual = append_holding_observations(prior,observed,run_date='2026-10-13')
+    assert actual.filter(pl.col('date')=='2026-10-02').equals(prior.sort('symbol','date'))
+    assert actual.filter(pl.col('date')=='2026-10-09')['retail_pct'].to_list() == [2.]
+    assert '2026-10-16' not in actual['date'].to_list()
 from services.daily_inference_producer import (
     HEAD_PREFIX, _baseline, produce_daily_inference_composition, publish_daily_inference_head,
 )

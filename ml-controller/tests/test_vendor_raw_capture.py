@@ -7,6 +7,29 @@ import pytest
 from services.vendor_raw_capture import FullRawCapture, audit_wide_raw, sha
 
 
+@pytest.mark.parametrize('alias_values', [['2330', None], ['2317', None], ['2330', '2317']])
+def test_holding_identity_aliases_keep_raw_bytes_and_reject_conflicts(tmp_path, alias_values):
+    capture = FullRawCapture(tmp_path/'holding', roster=['2330'], required={'holding':'inventory'})
+    root = capture.root/'sdk'
+    frame = pd.DataFrame({'stock_id':pd.Categorical(['2330',None]),
+                          'symbol':pd.Categorical(alias_values),
+                          'date':pd.to_datetime(['2026-10-09','2026-10-09']),
+                          '持股分級':pd.Categorical(['1','2']), '占集保庫存數比例':[0.,None]})
+    stream = io.BytesIO()
+    frame.to_feather(stream)
+    wire = stream.getvalue()
+    (root/'inventory.feather').write_bytes(wire)
+    if alias_values == ['2330',None]:
+        record = capture.seal('holding')
+        assert record['status'] == 'raw_verified'
+        assert record['inventory']['identity_column'] == 'symbol'
+    else:
+        with pytest.raises(ValueError, match='raw_holding_identity_alias_conflict'):
+            capture.seal('holding')
+        assert capture.receipt['status'] == 'rejected'
+    assert (capture.root/'sealed/holding.feather').read_bytes() == wire
+
+
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
     import requests

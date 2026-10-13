@@ -10,7 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from services.finlab_sealed_raw import read_numeric_field
-from services.vendor_raw_capture import FullRawCapture
+from services.vendor_raw_capture import FullRawCapture, normalize_holding_raw, read_holding_raw
 from services.vendor_raw_resource_guard import capture_one, preflight, probe_quota
 
 DATASETS = {
@@ -56,7 +56,7 @@ class DailyVendorCapture:
             path = self.root / record['path']
             if hashlib.sha256(path.read_bytes()).hexdigest() != record['sha256']:
                 raise ValueError('daily_vendor_holding_checksum')
-            return pl.read_ipc(path, memory_map=False), {'raw_sha256': record['sha256']}
+            return normalize_holding_raw(read_holding_raw(path)), {'raw_sha256': record['sha256']}
         return read_numeric_field(self.root, receipt_sha256=self.receipt_sha256,
                                   field=field, expected_dataset=DATASETS[field],
                                   _date_owner=field in {'disclosure', 'deadline'})

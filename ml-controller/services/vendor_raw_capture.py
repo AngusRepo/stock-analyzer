@@ -9,6 +9,33 @@ import time
 import polars as pl
 
 
+def normalize_holding_raw(frame):
+    """Recognize the SDK's identity alias without changing sealed wire bytes."""
+    columns = set(frame.columns)
+    if (frame.is_empty() or not {'date','持股分級','占集保庫存數比例'} <= columns
+            or not columns & {'stock_id','symbol'}):
+        raise ValueError('raw_holding_schema_invalid:' + ','.join(frame.columns))
+    if {'stock_id','symbol'} <= columns:
+        different = frame.select((~pl.col('stock_id').cast(pl.String).eq_missing(
+            pl.col('symbol').cast(pl.String))).any()).item()
+        if different:
+            raise ValueError('raw_holding_identity_alias_conflict')
+    return frame if 'symbol' in columns else frame.rename({'stock_id':'symbol'})
+
+
+def read_holding_raw(path):
+    import pyarrow as pa
+    from pyarrow import feather
+    table = feather.read_table(path)
+    table.validate(full=True)
+    # Valid Arrow dictionaries may use -1 beneath a null bitmap. Decode only
+    # nullable dictionaries so Polars never treats that sentinel as a key.
+    for index,field in enumerate(table.schema):
+        if pa.types.is_dictionary(field.type) and table.column(index).null_count:
+            table = table.set_column(index,field.name,table.column(index).cast(pa.large_string()))
+    return pl.from_arrow(table,rechunk=False)
+
+
 def sha(path):
     with path.open('rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()
@@ -117,10 +144,11 @@ class FullRawCapture:
         try:
             if sha(source)!=record['sha256']:raise ValueError('source_changed_during_seal')
             if key == 'inventory':
-                frame = pl.read_ipc(dest, memory_map=False)
-                if not {'date','symbol','持股分級','占集保庫存數比例'} <= set(frame.columns) or frame.is_empty():
-                    raise ValueError('raw_holding_schema_invalid')
-                record['inventory'] = {'rows':frame.height,'columns':frame.columns,'conflicts':[]}
+                frame = read_holding_raw(dest)
+                record['raw_schema'] = {name:str(dtype) for name,dtype in pl.read_ipc_schema(dest).items()}
+                normalize_holding_raw(frame)
+                record['inventory'] = {'rows':frame.height,'columns':frame.columns,'conflicts':[],
+                                       'identity_column':'symbol' if 'symbol' in frame.columns else 'stock_id'}
             else:
                 record['inventory']=audit_wide_raw(dest,self.receipt['roster'],date_values=key in {'etl:financial_statements_disclosure_dates','etl:financial_statements_deadline'})
             if record['inventory']['conflicts']:raise ValueError('raw_alias_conflict')

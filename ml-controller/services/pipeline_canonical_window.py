@@ -45,9 +45,10 @@ def assert_canonical_window_open(
         or boundary.get("signalDate") != run_date
     ):
         raise RuntimeError("pipeline_canonical_window_worker_contract_invalid")
-    paper_recovery = (run_date == '2026-10-08' and current.isoformat() == '2026-10-12'
+    paper_recovery = ((run_date, current.isoformat()) in {
+            ('2026-10-08', '2026-10-12'), ('2026-10-12', '2026-10-13')}
         and os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == 'premarket_once_v1'
-        and boundary.get('scope') == 'paper' and boundary.get('nextSessionDate') == '2026-10-12'
-        and boundary.get('reason') == 'authorized_paper_recovery_20261012')
+        and boundary.get('scope') == 'paper' and boundary.get('nextSessionDate') == current.isoformat()
+        and boundary.get('reason') == 'authorized_paper_recovery_' + current.strftime('%Y%m%d'))
     if boundary.get("allowed") is not True or (boundary.get("reason") != "pre_next_session_open_historical_write_window" and not paper_recovery):
         raise RuntimeError(f"pipeline_canonical_window_closed:{boundary.get('reason') or 'unknown'}")

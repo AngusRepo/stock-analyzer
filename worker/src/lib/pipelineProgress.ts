@@ -42,7 +42,11 @@ export function pipelineProgressForDisplay(parent: { canonical_run_id: string; s
     // A finished producer can hand off without phase telemetry (older Jobs).
     // Do not let its earlier node hide a newer, same-run dependency receipt.
     if (handoff?.runId === parent.canonical_run_id && handoff.phase !== progress.phase
-      && Date.parse(handoff.observedAt) > Date.parse(progress.observed_at)) return null
+      && Date.parse(handoff.observedAt) > Date.parse(progress.observed_at)) {
+      return { ...progress, phase: handoff.phase, status: 'waiting' as const,
+        phase_started_at: handoff.observedAt, observed_at: handoff.observedAt,
+        execution_id: '', evidence_source: 'scheduler_handoff' }
+    }
     return progress
   } catch { return null }
 }

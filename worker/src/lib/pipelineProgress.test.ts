@@ -34,7 +34,9 @@ test('newer same-run handoff supersedes an old node but preserves matching or ne
     phase_started_at:'2026-10-14T17:45:00Z',observed_at:'2026-10-14T17:45:01Z',execution_id:'job-a',completed:[]}
   const row=(value:PipelineProgress)=>({canonical_run_id:'run-a',cursor_key:JSON.stringify(value)})
   const handoff={runId:'run-a',observedAt:'2026-10-14T17:58:13Z',phase:'modal_prediction'}
-  assert.equal(pipelineProgressForDisplay(parent,row(p),handoff),null)
+  assert.deepEqual(pipelineProgressForDisplay(parent,row(p),handoff),{
+    ...p,phase:'modal_prediction',status:'waiting',phase_started_at:handoff.observedAt,
+    observed_at:handoff.observedAt,execution_id:'',evidence_source:'scheduler_handoff'})
   assert.deepEqual(pipelineProgressForDisplay(parent,row(p),{...handoff,runId:'other'}),p)
   const matching={...p,phase:'modal_prediction',status:'waiting' as const}
   assert.deepEqual(pipelineProgressForDisplay(parent,row(matching),handoff),matching)

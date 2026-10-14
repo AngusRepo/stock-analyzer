@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:79424d10273c1e7b90a28f8851fb767e552da44f3ce0ffd0d5b74b3b738961c7",
+  "execution_owner_version": "native-paper-v1:f552546287efa1ae35b400d4747f5f004d216175bd8f3feac0e0b0b6913d7740",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved this NAV source release and formal-owner continuation on 2026-10-14; no live orders or maturity transfer.",
+  "authorization": "Wei approved NAV source release and continuation on 2026-10-14; preserve verified live Worker 51f869 P5/Swing behavior. No live orders or maturity transfer.",
   "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:strategy-nav-completion-20261014"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:strategy-nav-completion-20261014-live51f"
 }

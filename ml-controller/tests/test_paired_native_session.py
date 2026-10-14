@@ -74,7 +74,7 @@ def full_cash_state(config):
                      'learning/0031_s12_profit_continuation_serving_owner.sql',
                      'paper/0002_runtime_owned_tables.sql',
                      'paper/0003_paper_kelly_calibration.sql', 'paper/0005_l4_distribution.sql',
-                     'paper/0006_p5_rearm.sql', 'paper/0010_intraday_nav_risk.sql',
+                     'paper/0006_p5_rearm.sql', 'paper/0010_intraday_nav_risk.sql', 'paper/0011_second_breakout.sql',
                      'ops/0001_ops_baseline.sql', 'ops/0002_runtime_owned_tables.sql',
                      'ops/0005_ops_artifact_compute_cost_runtime.sql',
                      'execution/0001_execution_baseline.sql', 'execution/0002_runtime_owned_tables.sql'):

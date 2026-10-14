@@ -14,7 +14,8 @@ export type SwingEntryInput = {
   boughtToday: boolean; alreadyHeld: boolean; planReady: boolean; candidateAllowed: boolean;
 }
 export type SwingEntryDecision = {
-  atrOnce?: import('./paperAtrOnce').AtrOnceEvidence;
+  atrOnce?: import('./paperAtrOnce').AtrOnceEvidence | import('./paperSecondBreakout').SecondBreakoutEvidence;
+  recoveryPolicy?: typeof import('./paperSecondBreakout').SECOND_BREAKOUT_POLICY;
   action: 'pass' | 'defer'; reason: string; policy: typeof SWING_POLICY_VERSION;
   signalMs?: number; signalKey?: string; submitUntilMs?: number; orHigh?: number; orLow?: number;
   conditions?: Record<string, boolean | null>; signalHigh?: number; signalClose?: number; maxBuyPrice?: number; quotePrice?: number;

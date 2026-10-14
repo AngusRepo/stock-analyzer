@@ -4,7 +4,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "d39fe6038911d95d8ff001e21b0c8382c205241d",
+  "production_baseline_source": "cabab05af23ea534cd5dbcc36f4724941f363b52",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
   "prior_approval_checksum": "61b82a9da7c811c2c211143a023a7267ddbee330ad41304c4656e15b9889e06e",
   "prior_configuration_checksum": "063da754a8c8ff83e21f728730106e9134c67af8e7396d89ca42aced0ccc390e",
@@ -77,6 +77,7 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:79424d10273c1e7b90a28f8851fb767e552da44f3ce0ffd0d5b74b3b738961c7",
-  "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md"
+  "execution_owner_version": "native-paper-v1:f552546287efa1ae35b400d4747f5f004d216175bd8f3feac0e0b0b6913d7740",
+  "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md",
+  "native_worker_source": "51f869a8e2ea025aae962f78f63f9f1675dc922d"
 }

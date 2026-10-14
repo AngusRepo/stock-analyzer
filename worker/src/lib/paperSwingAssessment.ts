@@ -5,6 +5,8 @@ import { assessSwingEntry, SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OP
 import { loadSwingMinuteBars, loadOr15ResearchSessionBars, loadAtrTickWarmupBars } from './s12RuntimeBars'
 import { assessAtrOnce, applyAtrOnce, previousAtrTR } from './paperAtrOnce'
 import { readAtrOnce, latchAtrOnce } from './paperAtrOnceState'
+import { assessSecondBreakout, authorizeSecondBreakout, recoverSecondBreakout, secondBreakoutEnabled, SECOND_BREAKOUT_POLICY } from './paperSecondBreakout'
+import { readSecondBreakout, latchSecondBreakout } from './paperSecondBreakoutState'
 import { paperExecutionNow, paperAccountId } from './paperExecutionScope'
 import { executionBookTimingAges } from './executionBookTiming'
 import { getPrevTradingDay } from './paperMarketData'
@@ -24,11 +26,23 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
   return async (pending: PendingBuy, price: number, currentOhlc?: IntradayOHLC | null): Promise<SwingAssessmentReceipt> => {
     let barError: string | null = null
     try {
+        const useSecond=secondBreakoutEnabled(today)
+        const db=paperDomainDatabase(env), account=paperAccountId()
+        const savedSecond=useSecond?await readSecondBreakout(db,account,today,pending.symbol):null
+        if(savedSecond?.status==='passed') {
+          const timing=currentOhlc?.timingReceipt?executionBookTimingAges(currentOhlc.timingReceipt,paperExecutionNow()):null
+          const age=currentOhlc?.confirmationMode==='quote_session_static_book'?timing?.quoteAgeMs:timing?.sourceAgeMs
+          const observedAtMs=currentOhlc?.timingReceipt?paperExecutionNow()-(age??NaN):Date.parse(currentOhlc?.confirmationMode==='quote_session_static_book'?currentOhlc.confirmationTime??'':currentOhlc?.quoteTime??'')
+          const assessment=recoverSecondBreakout(savedSecond,{nowMs:paperExecutionNow(),price,observedAtMs,
+            planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))})
+            ?? {action:'defer' as const,reason:'swing_recovery_not_observed_live',policy:SWING_POLICY_VERSION,atrOnce:savedSecond}
+          return {assessment,barSource:'saved_signal',barError:null}
+        }
         const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
         if(sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000) {
           const reason=sinceOpen<20*60000?'swing_entry_window_not_open':sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_waiting_next_bar'
           let assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION,conditions:{window:false}}
-          const atr=await readAtrOnce(paperDomainDatabase(env),paperAccountId(),today,pending.symbol)
+          const atr=useSecond?savedSecond:await readAtrOnce(db,account,today,pending.symbol)
           if(atr) assessment=applyAtrOnce(assessment,atr)
           return {assessment,barSource:'unavailable',barError:null}
         }
@@ -57,10 +71,10 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
           boughtToday:false,alreadyHeld:false,planReady:dailyPlanOwner(env)&&Boolean((await readL4PortfolioPlan(env))?.execution_review),
           candidateAllowed:Boolean(planIdFromWatchPoints(pending.watch_points))}
         let assessment=assessSwingEntry(swingInput)
-        const db=paperDomainDatabase(env), account=paperAccountId()
-        let atr=await readAtrOnce(db,account,today,pending.symbol)
-        if(!atr || atr.status==='unknown') {
-          let candidate=assessAtrOnce(swingInput)
+        let atr=useSecond?savedSecond:await readAtrOnce(db,account,today,pending.symbol)
+        if(!atr || atr.status==='unknown' || atr.status==='weak_waiting') {
+          const evaluate=(prior?:number)=>useSecond?assessSecondBreakout(swingInput,prior):assessAtrOnce(swingInput,prior)
+          let candidate=evaluate()
           if(candidate.reason==='swing_atr_warmup_missing') {
             try {
             // Immutable previous-session bars are cached by date, never re-fetched each minute.
@@ -80,7 +94,7 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
             const prior=await loadMarketPriceHistoryBySymbols(env,[pending.symbol],{beforeDate:today,rowsPerSymbol:1,requireQuerySuccess:true})
             const rawClose=Number(prior.find(r=>r.date===previousSession)?.close)
             const tr=previousAtrTR(history.map(b=>({...b,startMs:b.startMs-60000})),previousSession,rawClose,reference)
-            candidate=assessAtrOnce(swingInput,tr)
+            candidate=evaluate(tr)
             } catch(error) {
               barError='atr_warmup:'+String(error)
               // Save the unknown FIRST signal even when the history provider is unavailable.
@@ -89,9 +103,15 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
           // An unknown first signal may only be repaired at the same timestamp.
           if(atr?.firstSignalMs && candidate.firstSignalMs!==atr.firstSignalMs)
             throw new Error('swing_atr_first_signal_conflict')
-          atr=await latchAtrOnce(db,account,today,pending.symbol,candidate)
+          atr=candidate.policy===SECOND_BREAKOUT_POLICY
+            ? await latchSecondBreakout(db,account,today,pending.symbol,authorizeSecondBreakout(swingInput,candidate))
+            : await latchAtrOnce(db,account,today,pending.symbol,candidate)
         }
         assessment=applyAtrOnce(assessment,atr)
+        if(atr.policy===SECOND_BREAKOUT_POLICY && atr.status==='passed') {
+          assessment=recoverSecondBreakout(atr,{nowMs:swingInput.nowMs,price,observedAtMs:swingInput.quote.observedAtMs,planReady:swingInput.planReady,candidateAllowed:swingInput.candidateAllowed})
+            ?? {...assessment,action:'defer',reason:'swing_recovery_not_observed_live'}
+        }
         // This sidecar receives placeholders for position state; the allocator/intent gate owns that check.
         if (assessment.conditions) assessment.conditions.position = null
         return {assessment,barSource:minute.source,barError}

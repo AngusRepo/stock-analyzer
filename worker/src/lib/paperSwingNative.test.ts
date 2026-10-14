@@ -26,11 +26,12 @@ import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStor
 import { latchAtrOnce } from './paperAtrOnceState'
 import { ATR_ONCE_POLICY } from './paperAtrOnce'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
+for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price_622','owner_price_626','owner_limit_changed','p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
   const f=l4NativeFixture()
+  const ownerPriceCase=scenario.startsWith('owner_')
   f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
   f.env.PAPER_INTRADAY_ENTRY_OWNER=SWING_POLICY_VERSION
   f.sqls.paper.exec(fs.readFileSync(new URL('../../domain-migrations/paper/0007_daily_plan_reviews.sql',import.meta.url),'utf8'))
@@ -90,6 +91,12 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     if(quotePrice!==20)Object.assign(quote,{last:quotePrice,price:quotePrice,bid:quotePrice,ask:quotePrice,bid_prices:[quotePrice,quotePrice-.05,quotePrice-.1,quotePrice-.15,quotePrice-.2]})
     const odd=url.includes('lot_type=odd_lot') || String(init?.body ?? '').includes('odd_lot')
     if(odd)Object.assign(quote,{lot_type:'odd_lot',volume_unit:'shares',bid_volume:10000,ask_volume:10000,bid_volumes:[10000,10000,10000,10000,10000],ask_volumes:[10000,10000,10000,10000,10000]})
+    if(ownerPriceCase) {
+      const refresh=url.includes('orderbook') && !url.includes('watchlist') && boardReads>=1
+      const px=scenario==='owner_price_626' && refresh?626:622
+      Object.assign(quote,{last:px,price:px,open:599,high:Math.max(625,px),low:593,reference_price:scenario==='owner_limit_changed' && refresh?560:599,
+        bid:px-1,ask:px,bid_prices:[px-1,px-2,px-3,px-4,px-5],ask_prices:[px,px+1,px+2,px+3,px+4]})
+    }
     if(odd && ['odd_lot_fee','holding_503_recovery'].includes(scenario))Object.assign(quote,{ask_volume:31,ask_volumes:[31,0,0,0,0]})
     if(scenario==='wide_live_book')Object.assign(quote,{ask:20.5,ask_prices:[20.5,20.55,20.6,20.65,20.7]})
     if(holdingUnavailable && odd && url.includes('orderbook'))return new Response('odd lot unavailable',{status:503})
@@ -127,6 +134,12 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       ]})
       const px=url.includes('/0050')?100:20
       const open=Date.parse('2026-09-14T09:00:00+08:00')
+      if(ownerPriceCase)return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
+        data:Array.from({length:95},(_,i)=>{
+          const b=Math.floor(i/5)
+          const [high,low,close]=px===100?[100,100,100]:b<3?[614,593,605]:b<5?[606,604,605]:b<8?[607,603,605]:b===8?[614,610,614]:[625,621,622]
+          return {ts:new Date(open+i*60000).toISOString(),open:close,high,low,close,volume:100}
+        })})
       if(scenario.startsWith('atr_sparse'))return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
         data:Array.from({length:25},(_,i)=>({ts:new Date(open+i*60000).toISOString(),open:px+(px===20&&i>=15?.1:0),high:px+(px===20&&i>=15?.1:0),low:px+(px===20&&i>=15?.1:0),close:px+(px===20&&i>=15?.1:0),volume:100}))})
       return Response.json({status:'ok',source:'streaming_tick_accumulator',completed_only:true,
@@ -152,6 +165,12 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     f.sqls.learning.prepare('INSERT INTO active8_ensemble_pointer_v1(singleton_id,artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum) VALUES(1,?,?,?,?)').run(...Object.values(l3))
     f.cfg.l4Distribution={scope:'private_research',constraints:{exposure_cap:.8,name_cap:.08,min_weight:.03,max_positions:5},artifact:{schema_version:'l4-distribution-v1',feature_schema:'full-l3-30-all-available-signals-v3',model_checksum:'c'.repeat(64),l3_identity:l3}} as any
     f.kvs.set('trading:config',JSON.stringify(f.cfg))
+    if (scenario==='p5_small_trial') {
+      for (const pnl of [-2884,-93,-1852]) f.sqls.paper.prepare(`
+        INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note,created_at)
+        VALUES(1,'3374','sell',1,20,20,?,'2026-09-11')`).run(JSON.stringify({realized_pnl:pnl}))
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
+    }
     const account=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-11'))).result
     assert.equal(account.risk_limits.buys_halted,false)
     f.sqls.core.exec("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','fixture','TWSE'),(2,'0050','benchmark','TWSE')")
@@ -160,6 +179,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       if(![0,6].includes(new Date(ms).getUTCDay()))dates.unshift(new Date(ms).toISOString().slice(0,10))
     for(const d of dates)f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(2,?,?)').run(d,d===dates.at(-1)?100:98)
     f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,open,high,low,close,avg_price,volume) VALUES(1,'2026-09-11',20,20.5,19.5,20,20,1000000)")
+    if(ownerPriceCase)f.sqls.market.exec("UPDATE stock_prices SET open=599,high=610,low=590,close=599,avg_price=599 WHERE stock_id=1")
     f.sqls.core.prepare(`INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation)
       VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false}))
     const allocateNative=(context:any,cap=.08)=>{
@@ -183,7 +203,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     const snapshot=(await withPaperExecutionScope(f.ports,()=>loadPendingBuySnapshot(f.env,'2026-09-14',{allowFallbackRecent:false}))).result
     assert.equal(snapshot.pendingBuys.length,1)
     assert.equal(snapshot.pendingBuys[0].symbol,'2330')
-    assert.equal(snapshot.pendingBuys[0].ml_entry_price,20)
+    assert.equal(snapshot.pendingBuys[0].ml_entry_price,ownerPriceCase?599:20)
     assert.ok(snapshot.pendingBuys[0].watch_points.includes('l4_execution_reference:canonical_signal_close'))
     assert.equal(snapshot.pendingBuys[0].debate_verdict,'PENDING')
     // Publication and entry must work while the advisory debate is pending.
@@ -200,6 +220,7 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       pendingBuys:[snapshot.pendingBuys[0],{...snapshot.pendingBuys[0],symbol:'0050',name:'benchmark'}],
     }))
     f.ports.nowMs=Date.parse(scenario==='closing_auction'?'2026-09-14T13:20:00+08:00':'2026-09-14T01:25:00Z')
+    if(ownerPriceCase)f.ports.nowMs=Date.parse('2026-09-14T10:35:00+08:00')
     if(scenario.startsWith('clock_domain'))f.ports.nowMs+=10_000
     if(scenario.startsWith('atr_sparse'))await latchAtrOnce(f.env.PAPER_DB,1,'2026-09-14','2330',{
       policy:ATR_ONCE_POLICY,status:'unknown',reason:'swing_atr_warmup_missing',firstSignalMs:Date.parse('2026-09-14T09:20:00+08:00'),
@@ -214,6 +235,12 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     }
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
+    if(['owner_price_626','owner_limit_changed'].includes(scenario)) {
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+      const events=JSON.stringify(f.sqls.paper.prepare('SELECT reason,detail_json FROM paper_execution_events').all())
+      assert.match(events,scenario==='owner_price_626'?/swing_chase_limit/:/limit_up_chase/)
+      return
+    }
     if(['clock_domain_stale','clock_domain_dead_heartbeat'].includes(scenario)) {
       assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
       assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
@@ -257,10 +284,11 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE reason='swing_atr_day_veto' LIMIT 1").get()?.reason,'swing_atr_day_veto')
       return
     }
-    const filledShares=['odd_lot_fee','holding_503_recovery'].includes(scenario)?31:1000
+    const filledShares=ownerPriceCase?Number(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares):['odd_lot_fee','holding_503_recovery'].includes(scenario)?31:1000
+    assert.ok(filledShares>0)
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,filledShares)
-    assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
-    assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,['odd_lot_fee','holding_503_recovery'].includes(scenario)?621:20028)
+    if(!ownerPriceCase)assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
+    if(!ownerPriceCase)assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,['odd_lot_fee','holding_503_recovery'].includes(scenario)?621:20028)
     if(scenario==='odd_lot_fee') {
       const buy:any=f.sqls.paper.prepare("SELECT price,commission,total_cost FROM paper_orders WHERE side='buy'").get()
       assert.equal(buy.price,20);assert.equal(buy.commission,1);assert.equal(buy.total_cost,621)
@@ -271,7 +299,61 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     const holding:any=f.sqls.paper.prepare('SELECT * FROM paper_positions').get()
     assert.equal(holding.tp1_price,null);assert.equal(holding.tp2_price,null)
     assert.equal(holding.initial_stop,holding.entry_price*.92)
-    assert.equal(JSON.parse(holding.trade_lifecycle_json).swing.entryOrLow,20)
+    const lifecycle=JSON.parse(holding.trade_lifecycle_json)
+    assert.equal(lifecycle.swing.entryOrLow,ownerPriceCase?593:20)
+    const buyNote=JSON.parse(String(f.sqls.paper.prepare("SELECT note FROM paper_orders WHERE side='buy'").get()?.note))
+    const fillEvent=JSON.parse(String(f.sqls.paper.prepare("SELECT detail_json FROM paper_execution_events WHERE event_type='paper_order' AND status IN ('filled','partial') ORDER BY id DESC LIMIT 1").get()?.detail_json))
+    const fillDetail=JSON.parse(f.artifacts.get(fillEvent.evidence_pointer.r2_key)!).payload.detail
+    for(const contract of [buyNote,fillDetail]) {
+      assert.equal(contract.exit_owner,lifecycle.owners.exit)
+      assert.equal(contract.fallback_exit_owner,lifecycle.owners.fallbackExit)
+      assert.equal(contract.effective_initial_stop,holding.initial_stop)
+      assert.equal(contract.effective_tp1,holding.tp1_price)
+      assert.equal(contract.effective_tp2,holding.tp2_price)
+      assert.equal(contract.exit_input_source,'swing_hard_stop_8')
+    }
+    assert.equal(buyNote.order_intent.strategyType,SWING_POLICY_VERSION)
+    assert.equal(buyNote.order_intent.executionConstraints.swingAuthorization.policy,SWING_POLICY_VERSION)
+    assert.equal(buyNote.order_intent.executionConstraints.minVolumeRatio,null)
+    assert.equal(buyNote.order_intent.executionConstraints.minRangePosition,null)
+    assert.deepEqual(fillDetail.swing_authorization,buyNote.order_intent.executionConstraints.swingAuthorization)
+    assert.match(JSON.stringify(result.notifications),new RegExp(SWING_POLICY_VERSION))
+    assert.doesNotMatch(JSON.stringify(result.notifications),/TP1|TP2/)
+    if(scenario.startsWith('hold_owner_')) {
+      if(scenario==='hold_owner_repair') {
+        // Reproduce the exact owner corruption observed after the production hold poll.
+        lifecycle.owners.exit='tw_equity_exit_fusion_v2'
+        lifecycle.owners.fallbackExit='paper_sltp_atr_trailing_v1'
+        lifecycle.exit.fallbackOwner='paper_sltp_atr_trailing_v1'
+        lifecycle.entry.s12={structureStop:holding.initial_stop,exitPlan:{trailingInitial:holding.initial_stop}}
+        f.sqls.paper.prepare('UPDATE paper_positions SET trade_lifecycle_json=? WHERE symbol=?')
+          .run(JSON.stringify(lifecycle),'2330')
+      }
+      for(let i=0;i<3;i++) {
+        f.ports.nowMs+=60_000
+        await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env,{halt:false,forceLiquidate:false,targetExposurePct:1,maxPositionPct:.2} as any))
+        const stored:any=f.sqls.paper.prepare('SELECT * FROM paper_positions WHERE symbol=?').get('2330')
+        const after=JSON.parse(stored.trade_lifecycle_json)
+        assert.equal(after.owners.entry,SWING_POLICY_VERSION)
+        assert.equal(after.owners.exit,SWING_POLICY_VERSION)
+        assert.equal(after.owners.fallbackExit,SWING_POLICY_VERSION)
+        assert.equal(after.exit.fallbackOwner,SWING_POLICY_VERSION)
+        assert.equal(after.exit.initialStop,holding.initial_stop)
+        assert.equal(after.exit.tp1,null);assert.equal(after.exit.tp2,null)
+        assert.equal(stored.shares,filledShares)
+        assert.equal(stored.tp1_price,null);assert.equal(stored.tp2_price,null)
+        assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,0)
+      }
+      return
+    }
+    if(ownerPriceCase) {
+      assert.equal(holding.entry_price,622)
+      assert.equal(buyNote.order_intent.executionConstraints.swingAuthorization.maxBuyPrice,625)
+      const atr:any=f.sqls.paper.prepare('SELECT status,first_signal_ms FROM paper_atr_once_v1').get()
+      assert.equal(atr.status,'passed')
+      assert.equal(atr.first_signal_ms,Date.parse('2026-09-14T09:45:00+08:00'))
+      return
+    }
     if(scenario==='holding_503_recovery') {
       holdingUnavailable=true
       f.ports.nowMs=Date.parse('2026-09-14T01:30:00Z')
@@ -292,6 +374,13 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       assert.equal(JSON.parse(recoveredSignal.detail_json).signal.signalMs,f.ports.nowMs)
       assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE status='allocator_skip' ORDER BY id DESC LIMIT 1").get()?.reason,'daily_plan_existing_position')
       assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
+      return
+    }
+    if(scenario==='p5_small_trial') {
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,3)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_p5_rearms_v1').get()?.n,0)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_execution_events WHERE reason='portfolio_risk_halt'").get()?.n,0)
+      assert.ok(Number(holding.shares)*Number(holding.entry_price)<=1_000_000*.04)
       return
     }
     if(['controller_static_book'].includes(scenario))return

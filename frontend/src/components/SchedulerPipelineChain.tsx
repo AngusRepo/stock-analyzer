@@ -27,7 +27,7 @@ export function pipelinePreparationLabel(job?: SchedulerJob): string {
   if (/awaiting_premarket|L3 已封存/.test(summary)) return 'L3 預測已封存；等待下一交易日盤前資訊後接續 L4 推薦'
   if (job?.pipelineProgress && ['running','waiting'].includes(job.lastStatus)) {
     const p = job.pipelineProgress
-    return `${p.status === 'waiting' ? '等待依賴' : '目前階段'}：${pipelinePhaseName(p.phase)}`
+    return `${p.status === 'waiting' ? '等待依賴' : p.status === 'blocked' ? '輸入條件未滿足' : p.status === 'failed' ? '階段失敗' : p.status === 'completed' ? '階段結束' : '目前階段'}：${pipelinePhaseName(p.phase)}`
   }
   if (/dependency=input_prep|stage=prep\b/.test(summary)) return '目前階段：特徵資料準備；等待批次完成收據'
   if (/dependency=input_snapshot|stage=snapshot\b/.test(summary)) return '目前階段：輸入快照準備'
@@ -39,6 +39,7 @@ export function pipelinePhaseName(phase: string): string {
     awaiting_premarket: '次交易日盤前資訊', modal_prediction: '模型預測結果', input_prep: '特徵批次結果', input_adjusted: '還原股價',
     node_capture_atomic_inputs: 'Atomic 輸入重播', input_snapshot: '輸入快照匯出',
     feature_preparation: '特徵資料準備', node_build_payloads: '特徵與推論輸入',
+    seal_l2_inputs: '封存 L2 輸入', prepare_prediction_request: '準備 L3 請求', dispatch_prediction: '派送 L3 模型',
     node_l2_timesfm_enrich: 'L2 時序特徵', node_l3_formal_predict: 'L3 模型預測',
     node_compute_personas: '推薦特徵', node_recommend: 'L4 配置', node_llm_reasons: '推薦說明',
     node_write_d1: '寫入結果', node_paired_nav_setup: '配對證據', node_compute_sector_flow: '產業資金流',
@@ -53,7 +54,7 @@ export function PipelinePhaseDetails({ job }: { job?: SchedulerJob }) {
     <ol className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
       {p.completed.map((row,index) => <li key={`${index}-${row.phase}`} className="rounded border border-[#263247] p-2 text-xs">
         <span>{pipelinePhaseName(row.phase)}</span>
-        <span className="mt-1 block text-slate-400">{row.status === 'failed' ? '失敗' : '結束'} · {Math.floor(row.elapsed_ms/60000)}分 {Math.floor(row.elapsed_ms%60000/1000)}秒</span>
+        <span className="mt-1 block text-slate-400">{row.status === 'failed' ? '失敗' : row.status === 'blocked' ? '輸入條件未滿足' : '結束'} · {Math.floor(row.elapsed_ms/60000)}分 {Math.floor(row.elapsed_ms%60000/1000)}秒</span>
       </li>)}
     </ol>
   </div>

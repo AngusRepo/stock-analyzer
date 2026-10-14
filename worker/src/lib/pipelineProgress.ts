@@ -1,20 +1,20 @@
 /** Observability only: no dispatch lease, continuation, or terminal mutation. */
 export type PipelineProgress = {
-  phase: string; status: 'running' | 'waiting' | 'completed' | 'failed'
+  phase: string; status: 'running' | 'waiting' | 'completed' | 'failed' | 'blocked'
   started_at: string; phase_started_at: string; observed_at: string; execution_id: string
-  completed: Array<{ phase: string; elapsed_ms: number; status: 'completed' | 'failed' }>
+  completed: Array<{ phase: string; elapsed_ms: number; status: 'completed' | 'failed' | 'blocked' }>
 }
 
 export function validPipelineProgress(value: unknown): value is PipelineProgress {
   const p = value as PipelineProgress
   const phase = (v: unknown) => typeof v === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(v)
   const stamp = (v: unknown) => typeof v === 'string' && /(Z|[+-]\d{2}:\d{2})$/.test(v) && Number.isFinite(Date.parse(v))
-  return Boolean(p && phase(p.phase) && ['running','waiting','completed','failed'].includes(p.status)
+  return Boolean(p && phase(p.phase) && ['running','waiting','completed','failed','blocked'].includes(p.status)
     && stamp(p.started_at) && stamp(p.phase_started_at) && stamp(p.observed_at)
     && Date.parse(p.started_at) <= Date.parse(p.phase_started_at) && Date.parse(p.phase_started_at) <= Date.parse(p.observed_at)
     && typeof p.execution_id === 'string' && p.execution_id.length <= 200
     && Array.isArray(p.completed) && p.completed.length <= 32 && p.completed.every(row => row && phase(row.phase)
-      && Number.isSafeInteger(row.elapsed_ms) && row.elapsed_ms >= 0 && ['completed','failed'].includes(row.status)))
+      && Number.isSafeInteger(row.elapsed_ms) && row.elapsed_ms >= 0 && ['completed','failed','blocked'].includes(row.status)))
 }
 
 export async function recordPipelineProgress(db: D1Database, runDate: string, runId: string, progress: PipelineProgress) {

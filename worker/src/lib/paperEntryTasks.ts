@@ -3,7 +3,8 @@ import { shioajiBookObservation, validatedBookL5 } from './paperExecutionBook'
 import { getPrevTradingDay } from './paperMarketData'
 import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
 import { executeContinuousPaperBatch } from './paperContinuousExecution'
-import { writeSwingState } from './paperSwingLifecycle'
+import { writeSwingState, readSwingFillExit } from './paperSwingLifecycle'
+import { swingExecutionAuthorization, swingExecutionRejection } from './paperSwingExecution'
 import { dailyPlanOwner, readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
 import { requestL4Replan, flushL4Replans } from './l4Replan'
 import { getPrevTradingDay as getL4PreviousSession } from './paperMarketData'
@@ -2024,9 +2025,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     })
     recordExecutionNote(
       pending.symbol,
-      'adaptive_gate_live',
-      'adaptive_execution_policy',
+      paperSwingOwner ? 'advisory' : 'adaptive_gate_live',
+      paperSwingOwner ? 'legacy_adaptive_policy_advisory' : 'adaptive_execution_policy',
       [
+        paperSwingOwner ? `execution_owner=${SWING_POLICY_VERSION};applied=false;chase_source=swing_assessment` : null,
         `volume_min=${adaptivePolicy.momentum.minVolumeRatio}`,
         `range_min=${adaptivePolicy.momentum.minRangePosition}`,
         `chase_max=${adaptivePolicy.policy.maxEntryChasePct}`,
@@ -2126,8 +2128,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       recordExecutionNote(pending.symbol, 'or15_price_plan', 'or15_unified_execution_plan', JSON.stringify(or15PricePlan))
     }
     const swingAssessment = swingSidecars.get(pending.symbol)
-    const swingMaxBuyPrice = paperSwingOwner && or15Assessment?.orHigh
-      ? normalizeTwLimitPrice(or15Assessment.orHigh*(1+Math.min(cfg.position.strongBreakoutMaxEntryChasePct,adaptivePolicy.policy.strongBreakoutMaxEntryChasePct)),'buy') : null
+    const swingAuthorization = paperSwingOwner ? swingExecutionAuthorization(swingAssessment) : null
+    const swingMaxBuyPrice = swingAuthorization?.maxBuyPrice ?? null
     const or15QuoteAboveStructure = paperSwingOwner ? swingAssessment?.action === 'pass' : or15Assessment?.action === 'pass' &&
       or15Assessment.orHigh != null && or15Assessment.vwap != null &&
       price > or15Assessment.orHigh && price > or15Assessment.vwap
@@ -2295,6 +2297,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const rawLimitPrice = preTrade.limitPrice ?? executionEntryPrice
     const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
+    if (paperSwingOwner && swingMaxBuyPrice != null && limitPrice > swingMaxBuyPrice) {
+      recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'swing_chase_limit',
+        `limit=${limitPrice};max_buy=${swingMaxBuyPrice};submit_until=${swingAuthorization?.submitUntilMs}`)
+      continue
+    }
     if (paperOr15Owner && or15PricePlan?.maxBuyPrice != null && limitPrice > or15PricePlan.maxBuyPrice) {
       recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_limit_above_structure_max_buy',
         `limit=${limitPrice};max_buy=${or15PricePlan.maxBuyPrice}`)
@@ -2631,7 +2638,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       currentPrice: price,
       budget,
       shares: requestedShares,
-      strategyMode: effectivePreTradePlan?.mode ?? null,
+      strategyMode: paperSwingOwner ? SWING_POLICY_VERSION : effectivePreTradePlan?.mode ?? null,
+      swingAuthorization,
       marketRiskLevel: marketRisk.risk_level,
       quote: {
         bestAsk: authoritativeSnapshot.ask,
@@ -2641,8 +2649,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       },
       adaptivePolicy: {
         maxEntryChasePct: effectiveMaxEntryChasePct,
-        minVolumeRatio: effectiveMomentumMinVolumeRatio,
-        minRangePosition: adaptivePolicy.momentum.minRangePosition,
+        minVolumeRatio: paperSwingOwner ? null : effectiveMomentumMinVolumeRatio,
+        minRangePosition: paperSwingOwner ? null : adaptivePolicy.momentum.minRangePosition,
       },
       sizingAuthorization: {
         owner: 'sparse_allocator',
@@ -2838,7 +2846,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       allocationReason: allocatorDecision.reason,
       entryPrice: fillPrice,
       stopLoss: executionStopLoss ?? effectiveInitialStop,
-      chaseCeiling: or15PricePlan?.maxBuyPrice ?? s12AssistEntryOverlay?.chaseCeiling ?? null,
+      chaseCeiling: swingMaxBuyPrice ?? or15PricePlan?.maxBuyPrice ?? s12AssistEntryOverlay?.chaseCeiling ?? null,
       s12Assessment: paperOr15Owner ? null : s12Assessment,
       s12AssistApplied: s12AssistEntryOverlay != null,
       or15Entry: paperOr15Owner && or15Assessment?.action === 'pass' &&
@@ -2880,19 +2888,22 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       entryFusionTargets,
     ) ?? serializeCanonicalTradeLifecycle(canonicalTradeLifecycle)
 
-    if(paperSwingOwner && (swingAssessment?.action!=='pass' || !swingAssessment.orLow
-      || paperExecutionNow()>=(swingAssessment.submitUntilMs ?? 0) || !swingMaxBuyPrice || fillPrice>swingMaxBuyPrice
-      || fillPrice >= (resolveTwEquityPriceBand(Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))).limitUp ?? 0))) {
-      const reason = paperExecutionNow()>=(swingAssessment?.submitUntilMs ?? 0) ? 'swing_next_bar_submission_missed'
-        : swingMaxBuyPrice && fillPrice>swingMaxBuyPrice ? 'swing_chase_limit'
-        : fillPrice >= (resolveTwEquityPriceBand(Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))).limitUp ?? 0)
-          ? 'swing_buy_at_limit' : 'swing_execution_window_or_price_changed'
-      recordActiveExecutionStatus(pending.symbol,'checked_waiting',reason,
-        `fill=${fillPrice};limit=${limitPrice};max_buy=${swingMaxBuyPrice};submit_until=${swingAssessment?.submitUntilMs ?? 'missing'}`)
+    const swingRejection = paperSwingOwner ? swingExecutionRejection(swingAuthorization, {
+      nowMs: paperExecutionNow(), fillPrice, limitPrice,
+      limitUp: resolveTwEquityPriceBand(Number(currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol))).limitUp ?? 0,
+    }) : null
+    if (swingRejection) {
+      recordActiveExecutionStatus(pending.symbol,'checked_waiting',swingRejection,
+        `fill=${fillPrice};limit=${limitPrice};max_buy=${swingMaxBuyPrice};submit_until=${swingAuthorization?.submitUntilMs ?? 'missing'}`)
       continue
     }
     const canonicalTradeLifecycleJson=paperSwingOwner ? writeSwingState(legacyLifecycleJson,{policy:SWING_POLICY_VERSION,
-      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAssessment!.orLow!}) : legacyLifecycleJson
+      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAuthorization!.orLow}) : legacyLifecycleJson
+    const fillExit = readSwingFillExit(canonicalTradeLifecycleJson) ?? {
+      initialStop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,
+      owner: canonicalTradeLifecycle.owners.exit, fallbackOwner: canonicalTradeLifecycle.owners.fallbackExit,
+      inputSource: effectiveExitInputs.source,
+    }
 
     const existing = await paperDomainDatabase(env).prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
@@ -2946,12 +2957,12 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           updatedAvgCost,
           fillPrice,
           today,
-          effectiveInitialStop,
-          effectiveInitialStop,
+          fillExit.initialStop,
+          fillExit.initialStop,
           fillPrice,
           slMult,
-          paperSwingOwner ? null : effectiveTp1Price,
-          paperSwingOwner ? null : effectiveTp2Price,
+          fillExit.tp1,
+          fillExit.tp2,
           shares,
           canonicalTradeLifecycleJson,
         ),
@@ -3004,15 +3015,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             atr_initial_stop: initialStop,
             atr_tp1: tp1Price,
             atr_tp2: tp2Price,
-            effective_initial_stop: effectiveInitialStop,
+            effective_initial_stop: fillExit.initialStop,
             or15_execution_plan: or15PricePlan,
-            effective_tp1: paperSwingOwner ? null : effectiveTp1Price,
-            effective_tp2: paperSwingOwner ? null : effectiveTp2Price,
-            exit_input_source: effectiveExitInputs.source,
+            effective_tp1: fillExit.tp1,
+            effective_tp2: fillExit.tp2,
+            exit_input_source: fillExit.inputSource,
             l4_plan_id: targetPlanId,
             execution_policy: paperSwingOwner ? SWING_POLICY_VERSION : env.PAPER_INTRADAY_ENTRY_OWNER,
-            exit_owner: paperSwingOwner ? SWING_POLICY_VERSION : canonicalTradeLifecycle.owners.exit,
-            fallback_exit_owner: paperSwingOwner ? SWING_POLICY_VERSION : canonicalTradeLifecycle.owners.fallbackExit,
+            exit_owner: fillExit.owner,
+            fallback_exit_owner: fillExit.fallbackOwner,
             s12_exit_plan: s12Assessment?.exitPlan ?? null,
             s12_quality: s12Assessment?.quality ?? null,
             canonical_trade_lifecycle: JSON.parse(canonicalTradeLifecycleJson),
@@ -3054,7 +3065,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         // Publish shares, the order, T+2 liability and completion atomically.
         ...(targetPlanId ? l4BuySettlementStatements(env, {symbol:pending.symbol,totalCost,tradeDate:today,
           settlementDate:settleDate,intentKey:intent.intentKey,status:isPartialFill ? 'partial' : 'filled'}) : []),
-      ],paperSwingOwner ? swingAssessment?.submitUntilMs : undefined)
+      ],paperSwingOwner ? swingAuthorization?.submitUntilMs : undefined)
     } catch (error) {
       await completePaperBuyIntent(
         env,
@@ -3093,12 +3104,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         price_tick: getTwTickSize(limitPrice),
         fill_price: fillPrice,
         total_cost: totalCost,
-        effective_initial_stop: effectiveInitialStop,
-        effective_tp1: effectiveTp1Price,
-        effective_tp2: effectiveTp2Price,
-        exit_input_source: effectiveExitInputs.source,
-        exit_owner: canonicalTradeLifecycle.owners.exit,
-        fallback_exit_owner: canonicalTradeLifecycle.owners.fallbackExit,
+        effective_initial_stop: fillExit.initialStop,
+        effective_tp1: fillExit.tp1,
+        effective_tp2: fillExit.tp2,
+        exit_input_source: fillExit.inputSource,
+        exit_owner: fillExit.owner,
+        fallback_exit_owner: fillExit.fallbackOwner,
+        execution_policy: orderIntent.strategyType,
+        swing_authorization: swingAuthorization,
         sizing_mode: sizingMode,
         nav_slot_floor_ratio: allocatorDecision.slotFloorRatio,
         nav_slot_floor_budget: Math.round(allocatorDecision.slotFloorBudget),
@@ -3172,10 +3185,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
 
     const lotTag = isOddLot ? ' [odd-lot]' : ''
+    const exitNotification = paperSwingOwner
+      ? `SL $${fillExit.initialStop.toFixed(1)} | Swing ${fillExit.owner} | ORL $${swingAuthorization!.orLow} | 20 sessions`
+      : `SL $${fillExit.initialStop.toFixed(1)} | TP1 $${fillExit.tp1!.toFixed(1)} | TP2 $${fillExit.tp2!.toFixed(1)}`
     console.log(`[Intraday] filled ${pending.symbol} ${shares}${lotTag} @ ${fillPrice} (mkt ${price})`)
     void sendDiscordNotification(
       (env as any).DISCORD_WEBHOOK_URL,
-      `Auto buy filled: ${pending.symbol} ${pending.name}\n${shares}${lotTag} @ $${fillPrice} (mkt ${price})\nSL $${effectiveInitialStop.toFixed(1)} | TP1 $${effectiveTp1Price.toFixed(1)} | TP2 $${effectiveTp2Price.toFixed(1)}`,
+      `Auto buy filled: ${pending.symbol} ${pending.name}\n${shares}${lotTag} @ $${fillPrice} (mkt ${price})\n${exitNotification}`,
     )
 
     const postFillNav=totalPortfolio+shares*(price-fillPrice)-commission

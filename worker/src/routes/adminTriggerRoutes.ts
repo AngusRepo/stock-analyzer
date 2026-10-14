@@ -132,7 +132,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const requestedTask = c.req.param('task')
     const task = resolveSchedulerTaskAlias(requestedTask)
     const maintenanceBackfill = task === 'data-domain-shadow-backfill'
-    const minuteTask = task === 'intraday-check' || task === 'paired-native-execution'
+    const minuteTask = task === 'intraday-check' || task === 'paired-native-execution' || task === 'strategy-nav-execution'
     const rateLimitNamespace = maintenanceBackfill
       ? 'admin-maintenance:data-domain-shadow-backfill'
       : minuteTask ? `admin-minute:${task}` : 'admin'

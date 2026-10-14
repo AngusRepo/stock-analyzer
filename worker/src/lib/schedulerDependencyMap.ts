@@ -19,6 +19,12 @@ export interface SchedulerDependencySpec {
 }
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
+  'strategy-nav-execution': {
+    task: 'strategy-nav-execution', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
+    currentFunction: 'Collect only atomic_strategy native frames under the current released single-B model.',
+    upstream: ['pipeline'], downstream: ['active8-oof-daily'], requiredBeforeDisable: [], operatorRisk: 'high',
+    recommendation: 'Keep full session coverage. Missing frames prohibit NAV maturity; formal Paper and retired comparison roots stay independent.',
+  },
   'paired-native-execution': {
     task: 'paired-native-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',
     currentFunction: 'Retired under the single-B policy; both physical roots are deleted. Historical paired receipts remain readable.',

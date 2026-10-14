@@ -789,6 +789,10 @@ export function buildAdminWorkerDomainTaskMap(
       const { pairedNativeExecution } = await import('./pairedNativeExecution')
       return pairedNativeExecution(c.env)
     },
+    'strategy-nav-execution': async () => {
+      const { strategyNavExecution } = await import('./strategyNavExecution')
+      return strategyNavExecution(c.env)
+    },
     'morning-setup': async () => {
       const { ensurePremarketEventChain } = await import('./premarketEventChain')
       return ensurePremarketEventChain(c.env,twToday())

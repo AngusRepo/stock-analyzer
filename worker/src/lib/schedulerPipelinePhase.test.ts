@@ -13,6 +13,7 @@ test('overnight checkpoint separates completed L3 from pending L4 and root', () 
   const pending = sealedPremarketDisplay({ ...base, jobId: 'recommendation' })!
   assert.equal(pending.lastRunAt, null); assert.equal(pending.lastDuration, 'N/A')
   assert.equal(pending.nextRun, '等待盤前資訊')
+  assert.equal(sealedPremarketDisplay({ ...base, jobId: 'ml-predict' })?.runId, base.stage.canonical_run_id)
 })
 test('a summary alone, a stale run or a different business date cannot assert L3 success', () => {
   assert.equal(sealedPremarketDisplay({ ...base, jobId: 'ml-predict', stage: undefined }), null)

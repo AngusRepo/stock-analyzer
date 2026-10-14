@@ -891,7 +891,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
 
 {
   const durable = { business_date:'2026-10-14', stage:'pipeline_execution' as const,
-    canonical_run_id:'pipeline-dispatch:current', status:'waiting', attempt_count:0,
+    canonical_run_id:'pipeline-dispatch:current', status:'waiting' as const, attempt_count:0,
     updated_at:'2026-10-14 16:19:44', last_error:null }
   const base = { jobId:'pipeline', runDate:'2026-10-14', baseStatus:'running' as const,
     baseTimestamp:'2026-10-14T16:19:44.732Z', durable }

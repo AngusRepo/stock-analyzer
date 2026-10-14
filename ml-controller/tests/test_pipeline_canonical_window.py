@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pytest
 
@@ -59,20 +59,21 @@ def test_historical_pipeline_rejects_after_open_and_unverified_boundary(monkeypa
 
 
 @pytest.mark.parametrize('change', [None, 'scope', 'session', 'reason', 'allowed', 'owner', 'day', 'signal'])
-def test_oct13_paper_recovery_requires_exact_worker_boundary(monkeypatch, change):
+@pytest.mark.parametrize('signal,trade', [('2026-10-12','2026-10-13'),('2026-10-13','2026-10-14')])
+def test_dated_paper_recovery_requires_exact_worker_boundary(monkeypatch, change, signal, trade):
     monkeypatch.setenv('STOCKVISION_WORKER_URL', 'https://worker.example')
     monkeypatch.setenv('STOCKVISION_AUTH_TOKEN', 'test-token')
     monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'premarket_once_v1')
-    day = '2026-10-12'
-    now = datetime(2026, 10, 13, 15, 59, tzinfo=timezone.utc)
-    boundary = dict(signalDate=day, allowed=True, scope='paper', nextSessionDate='2026-10-13',
-                    reason='authorized_paper_recovery_20261013')
+    day = signal
+    now = datetime.fromisoformat(trade+'T23:59:00+08:00')
+    boundary = dict(signalDate=day, allowed=True, scope='paper', nextSessionDate=trade,
+                    reason='authorized_paper_recovery_'+trade.replace('-',''))
     if change == 'scope': boundary['scope'] = 'live'
-    if change == 'session': boundary['nextSessionDate'] = '2026-10-14'
+    if change == 'session': boundary['nextSessionDate'] = (now+timedelta(days=1)).date().isoformat()
     if change == 'reason': boundary['reason'] = 'authorized_paper_recovery_20261012'
     if change == 'allowed': boundary['allowed'] = False
     if change == 'owner': monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER', 'other')
-    if change == 'day': now = datetime(2026, 10, 14, 1, 0, tzinfo=timezone.utc)
+    if change == 'day': now += timedelta(days=1)
     if change == 'signal': day = boundary['signalDate'] = '2026-10-09'
     class WorkerResponse:
         status_code = 200

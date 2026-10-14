@@ -362,6 +362,17 @@ def verify_active_approval(admission, *, now=None):
     from pathlib import Path
     behavior = json.loads(Path(__file__).with_name('native_execution_behavior_release.json').read_text())
     runtime = kv_client.get_json(behavior['runtime_admission'], default=None, strict=True)
+    policy_key = behavior.get('policy_runtime_admission')
+    if policy_key:
+        candidate = kv_client.get_json(policy_key, default=None, strict=True)
+        if candidate is not None and candidate.get('approved_l4_execution_policy_change') is not None:
+            # A staged grant does not switch an in-flight/old configuration.
+            # Unknown drift still fails verify_serving_configuration below.
+            raw = kv_client.get_json('trading:config', default=None, strict=True)
+            current_policy = (raw or {}).get('l4Distribution')
+            target_policy = candidate.get('configuration', {}).get('trading_config', {}).get('l4Distribution')
+            if target_policy is not None and digest(current_policy) == digest(target_policy):
+                runtime = candidate
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
         runtime = kv_client.get_json(ADVISORY_DEBATE_HMM_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:

@@ -6,6 +6,7 @@
   "maturity_transfer": false,
   "efficacy_status": "unproven",
   "authorization": "Wei explicitly approved commit push deploy and tonight evening chain recovery; see authorization.txt; Paper scope only.",
-  "review": "audits/risk-review-20261014/RELEASE-READINESS.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:risk-sealed-release-20261014-r4"
+  "review": "audits/risk-review-20261014/ACTIVATION-20261015.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:risk-activation-20261015-source",
+  "policy_runtime_admission": "ml:active8:paper_runtime_approval:v1:risk-activation-20261015-policy"
 }

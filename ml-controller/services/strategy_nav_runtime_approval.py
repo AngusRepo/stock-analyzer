@@ -44,9 +44,57 @@ def validate_source_release(approval, admission, *, now):
             or after['native_execution_policy'].get('execution_owner_version') != owner):
         raise fail()
     after['native_execution_policy']['execution_owner_version'] = before['native_execution_policy']['execution_owner_version']
-    # All model, OPB, risk, frozen-KV, execution variables and costs stay exact.
+    change = approval.get('approved_l4_execution_policy_change')
+    if change is not None:
+        activation = manifest.get('policy_activation')
+        if (not isinstance(activation, dict)
+                or change != {'activation_checksum': digest(activation)}):
+            raise fail()
+        _validate_execution_policy_change(before, after, activation)
+    # Source-only releases cannot change economics. A separate exact policy
+    # grant may normalize only the reviewed horizon/rotation delta above.
     # Pin the complete already-verified baseline; do not recursively reinterpret
     # a historical source grant using today's different on-disk sources.
     if digest(after) != digest(before):
         raise RuntimeError('strategy_nav_runtime_economic_configuration_changed')
     return deepcopy(approval)
+
+
+def _validate_execution_policy_change(before, after, activation):
+    """Validate the first Paper activation, never arbitrary config migration."""
+    from services.l4_distribution_runtime import distribution_policy_identity
+    old = before['trading_config'].get('l4Distribution') or {}
+    new = after['trading_config'].get('l4Distribution') or {}
+    fail = lambda: RuntimeError('l4_execution_policy_activation_invalid')
+    if (activation.get('schema_version') != 'l4-execution-policy-activation-v1'
+            or activation.get('scope') != 'paper'
+            or activation.get('maturity_transfer') is not False
+            or activation.get('account_reset') is not False
+            or activation.get('previous_policy_checksum') != digest(old)
+            or activation.get('next_policy_checksum') != digest(new)
+            or not activation.get('engineering_receipt_checksum')
+            or not activation.get('source_reference')
+            or old.get('scope') != 'paper' or new.get('scope') != 'paper'
+            or old.get('sealedExecution') is not None
+            or old.get('constraints', {}).get('covariance_horizon_sessions') != 1):
+        raise fail()
+    expected = deepcopy(old)
+    expected['constraints']['covariance_horizon_sessions'] = 5
+    expected['sealedExecution'] = {
+        'schema_version': 'l4-sealed-execution-v1',
+        'rotation_mode': 'selected_ready_or_filled',
+        'expiry': 'retain_until_next_seal',
+        'require_matched_risk_horizon': True,
+        'minimum_covariance_windows': activation.get('minimum_covariance_windows'),
+    }
+    minimum = activation.get('minimum_covariance_windows')
+    if type(minimum) is not int or minimum < 2:
+        raise fail()
+    expected['opb']['approved_policy_identity'] = distribution_policy_identity(
+        expected, expected['artifact']['l3_identity'])
+    if digest(expected) != digest(new):
+        raise fail()
+    for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
+        if str(after['native_execution_policy']['variables'].get(flag, '')).lower() not in ('0', 'false', 'off', 'disabled'):
+            raise fail()
+    after['trading_config']['l4Distribution'] = deepcopy(old)

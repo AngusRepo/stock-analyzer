@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "aa9a1a43e56bc82e9c7f053a919551439e2781d9",
+  "production_baseline_source": "88e301a3d4c64120d66a169e7f56a26586492861",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "e67482cf6f3ad752c22e79a1efbe6e6bb43bcfb7df6cdd84c978abc9881ccf7e",
-  "prior_configuration_checksum": "049d38b6f31c8eda3a283cb2f8f9116a7bae224eb9f0fa26849539d261170e80",
+  "prior_approval_checksum": "b5d476c48cb1ea173a1c5172f5b2bbe96ba7eb309bdd8508aa05cd44a06a7ba3",
+  "prior_configuration_checksum": "0e669ae40ad1e6f8a33a8063a11c81cb540813ce9a7c891abfe306d47067dac1",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -51,8 +51,8 @@
       "paired_nav_l3_dispatch.py": "19bdfef7cff0231db33a76f76772bdded13ed8f96d35587bf6d0dbff76010f48",
       "paired_nav_strategy_bundle.py": "2cbeea5588b609b4ae9ec0850fd5b3956cf737bdcc01370be6fb1c34d2f261d0",
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
-      "active8_paper_admission.py": "4025d4d75994ad02fc6cd9316cc94fa0af8df6bb7a5dc67f357d9ceecacc80ca",
-      "strategy_nav_runtime_approval.py": "d13f78fa6b6b71ccf6e8d51e08e552e00442cfb73c89ded71ac951ddff21c4d5",
+      "active8_paper_admission.py": "30f5bd9608dcf09abaa13374f78bd7ab434b92f950f4cbf85aff41e02ee54f3c",
+      "strategy_nav_runtime_approval.py": "56902e4d2d803ddba6cb5b20e05f0dc8c3131da186cde9a4f9580e36fef23fe9",
       "active8_nav_adoption.py": "10d7944e05b338b2b6c7af205e830a1c4aca5c1061832d77b556b36d54ccde31",
       "active8_nav_inference.py": "52656274b2f87892871f23e5c1adb4edf05f727726b1674fd431954a772b5672",
       "strategy_ab.py": "7b0455efdd89fd0e8d793af45ed78f6a4c602538b367058ff655329f345586d9",
@@ -81,5 +81,16 @@
     }
   },
   "execution_owner_version": "native-paper-v1:23ebd5a4b39d6cfac92c3f1b1a7c7069026021be39299eb80f1bcb5f08eb83bc",
-  "review": "audits/risk-review-20261014/RELEASE-READINESS.md"
+  "policy_activation": {
+    "schema_version": "l4-execution-policy-activation-v1",
+    "scope": "paper",
+    "maturity_transfer": false,
+    "account_reset": false,
+    "minimum_covariance_windows": 20,
+    "previous_policy_checksum": "2678bc8f06100700fc8575dd5d281a6315905a667666558bbb64a0993ce6d60c",
+    "next_policy_checksum": "6b57659317774eac0cf1cd4a88c0dae7a13a189e11ed5dfa459b4ac21989d7f3",
+    "engineering_receipt_checksum": "5917627055cae0072b829492a72e30ce30b4cb28fcc221227ed68385dae225bf",
+    "source_reference": "audits/risk-review-20261014/ACTIVATION-20261015.md"
+  },
+  "review": "audits/risk-review-20261014/ACTIVATION-20261015.md"
 }

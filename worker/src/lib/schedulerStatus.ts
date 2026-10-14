@@ -3,6 +3,7 @@
  */
 
 import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
+import { indicatorQueueDurationMs } from './indicatorQueueTiming'
 import { sealedPremarketDisplay } from './schedulerPipelinePhase'
 import { loadPremarketProducerStates, premarketProducerDisplay } from './premarketProducerStatus'
 import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay } from './schedulerPremarketProgress'
@@ -1105,7 +1106,18 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       durable: ticketAuthority !== 'scheduler_kv',
       missing: accounting.ticketRequired && !ticketId,
     }
-    const lastDuration = formatDuration(displayLog?.duration_ms)
+    // Recover legacy zero placeholders from exact-run metadata without rewriting
+    // historical receipts. Missing/expired timing stays unknown, never '<1s'.
+    let displayDuration = displayLog?.duration_ms
+    if (def.id === 'indicator-queue' && displayDuration === 0) {
+      displayDuration = null
+      const date = displayLog?.run_date ?? resolvedDisplay.statusRunDate
+      if (displayLog?.status === 'success' && displayLog.run_id && date) {
+        const meta = await env.KV.get(`cron:indicator-queue:${date}:${displayLog.run_id}:meta`, 'json')
+        displayDuration = indicatorQueueDurationMs(meta, date, displayLog.run_id, Date.parse(displayLog.timestamp))
+      }
+    }
+    const lastDuration = formatDuration(displayDuration)
     const shortRun = inferShortRunConcern(def, displayLog)
 
     if (producerDisplay) history7d[history7d.length - 1] = producerDisplay.lastStatus === 'error' ? 'failed'

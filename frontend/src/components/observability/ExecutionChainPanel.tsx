@@ -408,6 +408,7 @@ function statusPriority(status: VisualStatus): number {
 }
 
 const ORCHESTRATOR_STAGE_HINTS: Array<[RegExp, string]> = [
+  [/strategy-learning-mature-evidence|mature evidence/i, 'strategy-learning-mature-evidence'],
   [/strategy-learning/i, 'strategy-learning'],
   [/meta(?:-| )learning/i, 'meta-learning-shadow'],
   [/obsidian/i, 'obsidian-sync'],
@@ -714,7 +715,7 @@ export default function ExecutionChainPanel({
               const job = scopedJobMap.get(id)
               const status = visualStatus(job)
               const Icon = definition.icon
-              return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={jobMap.get(id) ?? job}
+              return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={job?.lastStatus === 'running' ? job : jobMap.get(id) ?? job}
                 overview visualState={status} justCompleted={justCompleted.has(id)}
                 leading={<span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>}
                 statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}

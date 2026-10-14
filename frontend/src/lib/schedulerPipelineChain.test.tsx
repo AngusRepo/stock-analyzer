@@ -1,7 +1,7 @@
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import assert from 'node:assert/strict'
-import SchedulerPipelineChain, { pipelinePreparationLabel } from '../components/SchedulerPipelineChain'
+import SchedulerPipelineChain, { pipelinePreparationLabel, SchedulerStageCard } from '../components/SchedulerPipelineChain'
 import type { SchedulerJob } from './api'
 
 const job = (id: string, status: SchedulerJob['lastStatus'], summary = '') => ({
@@ -24,5 +24,10 @@ assert.ok(missing.includes('尚無收據'))
 assert.ok(!missing.includes('整體流程：完成'))
 assert.ok(renderToStaticMarkup(<SchedulerPipelineChain jobs={jobs} error={new Error('unavailable')} />).includes('流程狀態讀取失敗'))
 console.log('schedulerPipelineChain: passed')
+
+const mature = job('strategy-learning-mature-evidence', 'running', 'strategy-learning-mature-evidence phase=canonical_selection_labels')
+const progressCard = renderToStaticMarkup(<SchedulerStageCard id={mature.id} title="成熟策略證據" job={mature} overview />)
+assert.ok(progressCard.includes('更新成熟標籤'))
+assert.ok(!renderToStaticMarkup(<SchedulerStageCard id={mature.id} title="成熟策略證據" job={{...mature, lastStatus:'success'}} overview />).includes('更新成熟標籤'))
 
 assert.ok(pipelinePreparationLabel(job('pipeline', 'waiting', 'L3 已封存，等待下一交易日盤前接續')).includes('盤前資訊'))

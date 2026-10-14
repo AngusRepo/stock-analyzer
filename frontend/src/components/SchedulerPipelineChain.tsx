@@ -30,6 +30,12 @@ export function pipelinePreparationLabel(job?: SchedulerJob): string {
   if (/modal_prediction=(?:triggered|running|spawned)\b/.test(summary)) return '目前階段：ML 預測'
   return job?.lastStatus === 'success' ? '流程已完成；各子階段狀態依自己的收據呈現' : '各子階段狀態依自己的啟動與完成收據呈現'
 }
+export function matureEvidencePhaseLabel(job?: SchedulerJob): string | null {
+  if (job?.id !== 'strategy-learning-mature-evidence' || job.lastStatus !== 'running') return null
+  const phase = /\bphase=([a-z_]+)/.exec(job.summary ?? '')?.[1]
+  return ({ recover_mature_selection: '補齊成熟選股證據', canonical_selection_labels: '更新成熟標籤',
+    marginal_edge: '計算策略邊際效果', reward_ledger: '更新策略回饋紀錄' } as Record<string, string>)[phase ?? ''] ?? null
+}
 export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect, selected, current, statusText, statusTone, leading, overview, visualState, justCompleted }: {
   id: string; title: string; job?: SchedulerJob; detail?: string;
   timingJob?: SchedulerJob;
@@ -38,6 +44,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
   leading?: ReactNode; overview?: boolean; visualState?: string; justCompleted?: boolean;
 }) {
   const Element = onSelect ? 'button' : 'div'
+  const phaseLabel = matureEvidencePhaseLabel(job)
   return <Element data-stage={id} data-chain-stage={onSelect ? id : undefined}
     className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-amber-300' : '')}
     onClick={onSelect} aria-current={current ? 'step' : undefined}
@@ -46,6 +53,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
       {leading}
       <span className="readiness-task__copy"><strong>{title}</strong>
         <span className="readiness-task__meta"><span className="readiness-task__status" title={statusText}>{statusText?.replace(/^Historical replay · [^·]+ · /, '') || label(job?.lastStatus)}</span><span>業務日 {job?.statusRunDate || '—'}</span></span>
+        {phaseLabel && <span className="text-[10px] text-slate-400">{phaseLabel}</span>}
         <JobRunTiming job={timingJob ?? job} />
       </span>
     </> : <>

@@ -41,6 +41,9 @@ def test_original_atomic_nav_pass_native_publication(allocated, environment, mon
     for snapshot in (environment[2]['snapshot_id'], state['paired_nav_collection']['snapshot_id']):
         ev.collect_candidate_allocations(snapshot_id=snapshot, query=db.query, writer=db.writer, bucket=environment[1])
     route.collect_route_allocations(snapshot_id=state['paired_nav_collection']['snapshot_id'], query=db.query, writer=db.writer)
+    parent_dispatch = state.get('paired_nav_l3_dispatch')
+    assert parent_dispatch
+    assert parent_dispatch.get('status') != 'failed', parent_dispatch
     l3.collect_ensemble_allocations(snapshot_id=state['paired_nav_collection']['snapshot_id'], query=db.query, writer=db.writer)
     days = ['2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11', '2026-09-14',
         '2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18', '2026-09-21']
@@ -108,10 +111,34 @@ def test_original_atomic_nav_pass_native_publication(allocated, environment, mon
     assert missing['status'] == 'not_registered' and missing['entries'] == []
     assert {name: db.query(f'SELECT * FROM {name}', []) for name in names} == tables
     schema = [db.query("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [name])[0]['sql'] for name in names]
+    # A policy published after today's screener is available on the next date,
+    # not retroactively to today's canonical producer. Re-read the original
+    # decision owner without adding journals or reserving another review.
+    from datetime import date, timedelta
+    from services.paired_nav_policy_daily import read_policy_candidate_decision
+    next_day = (date.fromisoformat(days[-1]) + timedelta(days=1)).isoformat()
+    next_payloads = [read_policy_candidate_decision(owner='atomic_strategy',
+        candidate_artifact_id=item['artifact_id'], candidate_checksum=item['artifact_checksum'],
+        business_date=next_day, query=db.query, now=stamp(next_day)) for item in [p['payload'] for p in candidates]]
+    assert {name: db.query(f'SELECT * FROM {name}', []) for name in names} == tables
     fixture = tmp_path / 'atomic-nav-original-pass.json'
     fixture.write_text(json.dumps({'payload': payload, 'payloads': [item['payload'] for item in candidates], 'tables': tables, 'schema': schema,
         'strategy_evidence': evidence, 'read_seconds': read_seconds,
+        'next_payloads': next_payloads, 'next_now': stamp(next_day).isoformat(),
         'config': plan['configuration'], 'now': stamp(days[-1]).isoformat()}, ensure_ascii=False), encoding='utf-8')
+    _assert_original_atomic_publication(root, fixture, monkeypatch)
+
+
+def _assert_original_atomic_publication(root, fixture, monkeypatch):
+    """Reverify an exported original numerical packet through all real owners."""
+    packet = json.loads(fixture.read_text(encoding='utf-8'))
+    payload = packet['payload']
+    candidates = [{'owner': 'atomic_strategy', 'registry_state': 'candidate',
+        'registry_state_source': 'original_frozen_policy_contrast_not_model_registry',
+        'payload': p} for p in packet['payloads']]
+    days = [payload['evaluation_business_date']]
+    next_payloads = packet['next_payloads']
+    next_day = next_payloads[0]['evaluation_business_date']
     child_env = dict(os.environ)
     child_env.pop('NODE_TEST_CONTEXT', None)
     worker = subprocess.run(['node', '--import', 'tsx', '--test', '--test-reporter=tap',
@@ -138,13 +165,14 @@ def test_original_atomic_nav_pass_native_publication(allocated, environment, mon
     async def transport(path, **kwargs):
         calls.append(path)
         if path == '/api/admin/config/strategy-atomic/reconcile':
-            assert digest(kwargs['json_body']) == reconciled['before']['request_checksum']
+            assert digest(kwargs['json_body']) == reconciliation['request_checksum']
             return reconciliation
         assert path == '/api/admin/config/strategy-atomic/promote'
         assert kwargs['method'] == 'POST' and kwargs['json_body'] == payload
         return response
     monkeypatch.setattr(worker_config_client, 'worker_fetch', transport)
-    run = lambda: asyncio.run(run_daily_ev_adoption(candidates=candidates, business_date=days[-1]))
+    evaluation_day = days[-1]
+    run = lambda: asyncio.run(run_daily_ev_adoption(candidates=candidates, business_date=evaluation_day))
     adopted = run()
     assert adopted['status'] == 'completed', adopted
     assert adopted['atomic']['complete'] and adopted['atomic']['serving_activation_verified'] is False
@@ -255,6 +283,9 @@ def test_original_atomic_nav_pass_native_publication(allocated, environment, mon
         for line in (line.removeprefix('# ') for line in worker.stdout.splitlines())
         if line.startswith('NAV_ATOMIC_EXECUTION_RECONCILIATION=')]
     reconciliation = observed
+    evaluation_day = next_day
+    candidates = [{**item, 'payload': next(p for p in next_payloads
+        if p['artifact_id'] == item['payload']['artifact_id'])} for item in candidates]
     actual = run()
     assert actual['status'] == 'no_adoption_due'
     assert any(row.get('execution_observation', {}).get('executed') is True

@@ -2820,16 +2820,16 @@ OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-inventory-native-frontier"
 
 
-def _materialize_nav_with_reviews(*, business_date, learning_client, now=None):
+def _materialize_nav_with_reviews(*, business_date, learning_client, now=None, active_owners=None):
     """All daily/weekly callers share the same bounded verified-read scope."""
     from services.paired_nav_read_cache import reuse_verified_cold_reads
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     with reuse_verified_cold_reads(), reuse_verified_nav_evidence():
         return _materialize_nav_with_reviews_scoped(
-            business_date=business_date, learning_client=learning_client, now=now)
+            business_date=business_date, learning_client=learning_client, now=now, active_owners=active_owners)
 
 
-def _materialize_nav_with_reviews_scoped(*, business_date, learning_client, now=None):
+def _materialize_nav_with_reviews_scoped(*, business_date, learning_client, now=None, active_owners=None):
     """Accounting first, then owned daily reviews; never cache a verdict globally."""
     from services.paired_nav_journal import mature_staged_pairs
     from services.paired_nav_daily_review import run_daily_nav_reviews, NavDailyReviewIncomplete
@@ -2839,7 +2839,8 @@ def _materialize_nav_with_reviews_scoped(*, business_date, learning_client, now=
     if not callable(atomic_writer):
         raise RuntimeError('paired_nav_review_atomic_writer_missing')
     result['family_reviews'] = run_daily_nav_reviews(business_date=business_date,
-        query=learning_client.query, writer=atomic_writer, now=now)
+        query=learning_client.query, writer=atomic_writer, now=now,
+        **({'active_owners':active_owners} if active_owners is not None else {}))
     if result['family_reviews']['failures']:
         raise NavDailyReviewIncomplete(result)
     return result
@@ -3665,14 +3666,18 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             return {'status':'blocked','reason':reason,'cadence':cadence,'run_date':run_date,
                     'run_id':run_id,'job_dispatched':False,'callback_delivered':True}
         if completed and completed.get('status') == 'native_l4_daily_accounted':
-            from services.strategy_nav_read_model import strategy_nav_display_is_current
+            from services.strategy_nav_read_model import strategy_nav_display_is_current, strategy_nav_daily_is_current
             display_date = completed['native_l4_daily_closure']['signal_date']
             try:
                 display_current = await asyncio.to_thread(strategy_nav_display_is_current,
                     business_date=display_date)
+                nav_current = await asyncio.to_thread(strategy_nav_daily_is_current,
+                    business_date=display_date) if display_current else None
+                if nav_current is not None:
+                    completed['strategy_comparison_nav'] = nav_current
             except Exception:
                 display_current = False  # The durable job owns repair and diagnostics.
-            if not display_current:
+            if not display_current or nav_current is None:
                 completed = None
         if completed and completed.get('status') == 'native_l4_daily_accounted':
             from routers.pipeline import _callback_worker
@@ -3689,6 +3694,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     'lifecycle_status':'native_l4_daily_accounted',
                     'native_l4_daily_closure':completed['native_l4_daily_closure'],
                     'paired_nav_maturity':_nav_callback_summary(completed['paired_nav_maturity']),
+                    'strategy_comparison_nav':_nav_callback_summary(completed['strategy_comparison_nav']),
                     'nav_retry_required':False, 'pre_dispatch_verified':True}})
             # The callback, not the dispatch response, closes the original ticket.
             return {'status':'pending', 'reason':'verified_paper_plan_callback_delivered',
@@ -3732,6 +3738,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         try:
             execution = CloudRunJobsClient(job_name=job_name).run_job(
                 env_overrides=env_overrides,
+                expected_source_sha=os.environ.get('STOCKVISION_SOURCE_SHA', '') if cadence == 'daily' and single_b else None,
             )
         except JobAlreadyRunningError as exc:
             return {

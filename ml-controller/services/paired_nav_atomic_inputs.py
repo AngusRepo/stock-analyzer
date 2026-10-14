@@ -23,6 +23,9 @@ def distribution_atomic_wait(state):
     policy = (state.get('trading_config') or {}).get('l4Distribution')
     if policy is None:
         return None
+    from services.strategy_nav_distribution import enabled
+    if enabled(state.get('trading_config'), signal_date=state['run_date']):
+        return None
     if not isinstance(policy, dict) or not isinstance(policy.get('artifact'), dict) or not policy['artifact']:
         raise ValueError('paired_nav_atomic_distribution_policy_invalid')
     return {'status': 'awaiting_paired_l3_l4_release',

@@ -198,7 +198,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                      'l3_baseline':native_baseline(predictions[s],identity)} for s in modeled]
     outputs = dict(zip(modeled,
         [attach_baseline(output,row['l3_baseline']) for row,output in
-         zip(feature_rows,predict(feature_rows,bundle['model']),strict=True)],strict=True))
+         zip(feature_rows,predict(feature_rows,bundle['model']) if feature_rows else [],strict=True)],strict=True))
     policy_identity = distribution_policy_identity(policy,identity)
     constraints, opb = choose_opb(policy,reward_ledger,policy_identity,signal_date)
     hard=account.get('risk_limits') or {}
@@ -208,13 +208,13 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         constraints['max_positions']=min(constraints['max_positions'] or len(symbols),int(hard['max_positions']))
         constraints['min_weight']=max(constraints['min_weight'],finite(hard['min_trade_value'],'min_trade')/nav)
         constraints.update(account['fees'])
-    if not symbols:
-        raise ValueError('l4_distribution_empty_pool')
     from services.l4_dated_risk import is_dated_risk,estimate_risk
     dated_risk=None
     if is_dated_risk(return_history):
         if return_history['signal_date']!=signal_date:raise ValueError('l4_risk_packet_date_mismatch')
-        dated_risk=estimate_risk(return_history,symbols)
+        if return_history.get('checksum') != digest({k:v for k,v in return_history.items() if k!='checksum'}):
+            raise ValueError('l4_risk_packet_checksum_invalid')
+        dated_risk=estimate_risk(return_history,symbols) if symbols else None
         if any(dated_risk['coverage'][s]['observations']<20 for s in holdings):
             raise ValueError('l4_risk_held_observations_insufficient')
     else:
@@ -224,7 +224,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                 raise ValueError('l4_distribution_risk_history_missing:'+symbol)
     from services.l4_allocation_contract import risk_groups,full_l3_attribution
     constraints,groups,pressure,horizon,risk_evidence = risk_groups(symbols,return_history,by_symbol,holdings,constraints,dated_covariance_packet=dated_risk)
-    covariance = np.asarray((dated_risk or ledoit_wolf_covariance(symbols,return_history,daily_vol_floor=.01))['covariance'])*horizon
+    covariance = np.asarray((dated_risk or ledoit_wolf_covariance(symbols,return_history,daily_vol_floor=.01))['covariance']).reshape(len(symbols),len(symbols))*horizon
     if dated_risk is not None:
         risk_evidence['dated_history']={k:v for k,v in dated_risk.items() if k not in ('covariance','graph_correlation')}
 
@@ -232,7 +232,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     # A locked holding's utility is constant, so its alpha coefficient is inert.
     gross = [outputs[s]['expected_return_gross'] if s in outputs else 0. for s in symbols]
     capital = min(1.,sum(current)+available_cash/nav)
-    forbidden = set(account.get('forbidden_buys', [])) | set(unavailable)
+    forbidden = (set(account.get('forbidden_buys', [])) & set(symbols)) | set(unavailable)
     if dated_risk is not None:forbidden.update(dated_risk['forbidden_buys'])
     if hard.get('buys_halted'):
         forbidden.update(symbols)

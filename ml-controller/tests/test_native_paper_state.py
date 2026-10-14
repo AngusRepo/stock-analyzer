@@ -11,6 +11,7 @@ from test_native_paper_sandbox import ROOT, checksum
 def fixture():
     db = sqlite3.connect(':memory:')
     db.executescript((ROOT / 'worker/domain-migrations/core/0001_core_baseline.sql').read_text(encoding='utf-8'))
+    db.executescript((ROOT / 'worker/domain-migrations/core/0008_market_risk_quality.sql').read_text(encoding='utf-8'))
     db.executescript((ROOT / 'worker/domain-migrations/paper/0001_paper_baseline.sql').read_text(encoding='utf-8'))
     db.execute("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','TSMC','TWSE'),(2,'2317','Hon Hai','TWSE')")
     db.execute('INSERT INTO paper_accounts(id,cash,initial_cash) VALUES(2,100000,100000)')

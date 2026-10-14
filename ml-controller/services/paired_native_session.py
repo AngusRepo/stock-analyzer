@@ -230,7 +230,7 @@ def run_paired_session(*, snapshot_id: str, tapes: dict[str, Any], states: dict[
                 raise ValueError('paired_native_close_mark_mismatch')
         ledger = replay_session(previous=opening[arm], fills=receipts[arm]['fills'], marks=marks,
             corporate_actions=actions, session_date=packet['session_date'], fees=packet['fees'], allow_unpriced_rights=True,
-            cash_history=cash_history[arm])
+            cash_history=cash_history[arm], commission_contract=packet.get('commission_contract'))
         validate_native_account(valuation, ledger)
     receipt = {key: packet[key] for key in ('pair_id', 'candidate_checksum', 'baseline_checksum',
                'execution_owner_version', 'configuration_checksum', 'session_date')}

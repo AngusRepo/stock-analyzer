@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:bdb430c8fad733ca0293c1b73a4b9756401d8c4a36a61cd4dbba6de310883d4e",
+  "execution_owner_version": "native-paper-v1:79424d10273c1e7b90a28f8851fb767e552da44f3ce0ffd0d5b74b3b738961c7",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized completion of monthly/evening realtime paper workflow on 2026-10-12; no live broker orders.",
-  "review": "audits/formal-source-defense-20261008/native-paper-identity-r259.json",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:sealed-price-provenance-r333"
+  "authorization": "Wei explicitly approved this NAV source release and formal-owner continuation on 2026-10-14; no live orders or maturity transfer.",
+  "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:strategy-nav-completion-20261014"
 }

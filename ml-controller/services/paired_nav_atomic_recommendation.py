@@ -52,6 +52,16 @@ def prepare_atomic_recommendations(state):
             holding_predictions.append({**deepcopy(scope), 'prediction': deepcopy(output['predictions'][stock])})
         if source.get('native_holdings') is not None:
             definitions[key]['holding_predictions'] = holding_predictions
+        if (state.get('trading_config') or {}).get('l4Distribution') is not None:
+            # Risk-only holding payloads never enlarge this strategy's ML slate.
+            holding_payloads = {}
+            for scope_id, scope in source.get('holding_scopes', {}).items():
+                if scope['definition_checksum'] != key:
+                    continue
+                rows = state['paired_nav_atomic_l2']['holding_slates'][scope_id]['payloads']
+                target = next(p for p in rows if p['symbol'] == scope['target_symbol'])
+                holding_payloads.setdefault(target['symbol'], deepcopy(target))
+            definitions[key]['holding_risk_payloads'] = [holding_payloads[s] for s in sorted(holding_payloads)]
     body = dict(schema_version='paired-nav-atomic-recommendation-inputs-v1', signal_date=state['run_date'],
         policy_population={'source_checksum': source['population']['source_checksum'],
             'policy_context': deepcopy(source['population'].get('policy_context')),

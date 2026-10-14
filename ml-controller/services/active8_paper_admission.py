@@ -182,6 +182,9 @@ def validate_runtime_approval(approval, admission, *, now=None):
             or not _timestamp(admission['approved_at']) <= _timestamp(approval['approved_at']) <= clock
             or approval.get('approval_checksum') != digest({k:v for k,v in approval.items() if k!='approval_checksum'})):
         raise RuntimeError('active8_paper_runtime_approval_invalid')
+    if approval.get('approved_strategy_nav_source_change') is not None:
+        from services.strategy_nav_runtime_approval import validate_source_release
+        return validate_source_release(approval, admission, now=clock)
     if approval.get('approved_capture_provenance_source_change') is not None:
         return _validate_capture_source_reapproval(approval, admission, now=clock)
     if approval.get('approved_full_mlp_champion_cutover') is not None:

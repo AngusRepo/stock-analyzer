@@ -74,7 +74,7 @@ def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_rea
 
 
 def collect_due_execution_frames(*, session_date, query, writer, objects,
-                                 capture_factory, runner=None, clock=None):
+                                 capture_factory, runner=None, clock=None, owners=None):
     """Retry sealed frames, then close AND account each completed native pair.
 
     A missing expired frame is an explicit failure, never a backfilled day.
@@ -108,6 +108,13 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
                 continue
             saved = read_snapshot(query, snapshot_id)
             packet = saved['payload']['content']
+            if owners is not None and packet.get('owner') not in owners:
+                continue
+            if owners == frozenset({'atomic_strategy'}):
+                from services.strategy_nav_distribution import enabled
+                if not enabled((packet.get('configuration') or {}).get('trading_config'),
+                        signal_date=saved['manifest']['signal_date']):
+                    continue  # Retired legacy Atomic accounts have no new scheduler authority.
             if packet['session_date'] != session_date:
                 continue
             assert_collectible(saved, query=query)
@@ -186,6 +193,21 @@ def run_native_execution_tick(*, session_date):
         raise ValueError('native_tick_trading_config_unverified')
     mode=single_b_policy(loaded.config,signal_date=session_date)
     if mode:return disabled_receipt(mode,signal_date=session_date)
+    return _run_execution_tick(session_date=session_date)
+
+
+def run_strategy_execution_tick(*, session_date):
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    from services.strategy_nav_distribution import enabled
+    loaded = load_merged_trading_config_with_contract()
+    if loaded.contract.degraded or loaded.contract.malformed:
+        raise ValueError('native_tick_trading_config_unverified')
+    if not enabled(loaded.config, signal_date=session_date):
+        raise ValueError('paired_nav_strategy_tick_requires_single_b')
+    return _run_execution_tick(session_date=session_date, owners=frozenset({'atomic_strategy'}))
+
+
+def _run_execution_tick(*, session_date, owners=None):
     from services.paper_corporate_source import production_objects
     from services.d1_domain_client import D1DataDomain, client_for_domain
     from services.kv_client import get
@@ -199,8 +221,11 @@ def run_native_execution_tick(*, session_date):
             controller_token=os.environ.get('ML_CONTROLLER_SECRET', ''),
             shadow_hmac_secret=os.environ.get('LIVE_EXECUTION_HMAC_SECRET', ''),
             broker_token=os.environ.get('PROXY_SERVICE_TOKEN') or os.environ.get('SHIOAJI_PROXY_TOKEN', ''))
-    return collect_due_execution_frames(session_date=session_date, query=learning.query,
-        writer=learning.batch_execute, objects=objects, capture_factory=factory)
+    result = collect_due_execution_frames(session_date=session_date, query=learning.query,
+        writer=learning.batch_execute, objects=objects, capture_factory=factory, owners=owners)
+    if owners is not None and result['status'] == 'ok' and not result['pairs']:
+        result['status'] = 'awaiting_strategy_registration'
+    return result
 
 KV_READ_POLICY = {
     'source': ['market:', 'market_regime_state', 'ml:regime', 'holiday:', 'us:',

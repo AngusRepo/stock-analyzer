@@ -3,6 +3,7 @@ import { webcrypto } from 'node:crypto'
 import * as process from 'node:process'
 import { runSealedPaperFrames } from './sealedPaperBindings'
 import { DATA_DOMAINS, tablesForDataDomainRouteReady } from '../lib/dataDomainRegistry'
+import { PAPER_COMMISSION_CONTRACT } from '../lib/paperTradeMath'
 
 // Private parent-child protocol only. No argv URL, REST credentials, or network
 // adapter is accepted. Existing native log output must not corrupt the protocol.
@@ -25,7 +26,7 @@ lines.on('line', line => {
   if (!started) {
     started = true
     if (packet.type === 'manifest') {
-      emit({ type: 'manifest', tables: Object.fromEntries(DATA_DOMAINS.flatMap(domain =>
+      emit({ type: 'manifest', commission_contract: PAPER_COMMISSION_CONTRACT, tables: Object.fromEntries(DATA_DOMAINS.flatMap(domain =>
         tablesForDataDomainRouteReady(domain).map(table => [table, domain]))) })
       process.exit(0)
     }

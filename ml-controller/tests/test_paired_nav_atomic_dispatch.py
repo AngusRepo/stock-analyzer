@@ -7,6 +7,7 @@ import asyncio
 from copy import deepcopy
 from pathlib import Path
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,20 +66,22 @@ def dispatched(monkeypatch):
     def prices(ids, **kw):
         result = load_prices([i for i in ids if i != 4], **kw)
         if 4 in ids:
-            result[4] = [{'date': f'2026-09-{d:02}', 'close': 100, 'volume': 2_000_000} for d in range(1, 7)]
+            result[4] = [{'date': (date.fromisoformat(state['run_date'])-timedelta(days=6-d)).isoformat(),
+                'close': 100, 'adj_close':50, 'volume': 2_000_000} for d in range(1, 7)]
         return result
     monkeypatch.setattr(payload_builder, '_bulk_load_prices', prices)
     monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda *a, **kw:
         [{'symbol': str(s), 'tag': 'Semiconductor'} for s in range(1000, 1004)])
     state['producer_run_id'] = 'daily-atomic-ml-fixture'
-    state['decision_universe_frozen_at'] = '2026-09-06T12:00:00Z'
+    state['decision_universe_frozen_at'] = state['run_date']+'T12:00:00Z'
     state.update(asyncio.run(graph.node_capture_atomic_inputs(state)))
+    assert state['paired_nav_atomic_inputs']['status'] == 'pre_l2_inputs_captured', state['paired_nav_atomic_inputs'].get('reason')
     state.update(asyncio.run(graph.node_build_payloads(state)))
     canonical = []
     for sid, prices in state['payload_source_observations']['sources']['prices_by_id'].items():
         observed = {p['date']: p['close'] for p in prices}
         for age in reversed(range(512)):
-            day = (date(2026, 9, 6) - timedelta(days=age)).isoformat()
+            day = (date.fromisoformat(state['run_date']) - timedelta(days=age)).isoformat()
             canonical.append({'symbol': str(999 + int(sid)), 'date': day, 'as_of_date': day,
                 'adj_close': observed.get(day, 100), 'source': 'finlab.price'})
     monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda *a, **kw: deepcopy(canonical))
@@ -103,6 +106,10 @@ def dispatched(monkeypatch):
         'active_versions': {r['model']: r['version'] for r in manifest['models']},
         'pool_versions_loaded': True, 'expected_source_sha': 'a'*40}
     monkeypatch.setattr(graph.LEARNING_D1_CLIENT, 'query', lambda *a, **kw: [])
+    monkeypatch.setattr(graph, 'kv_client', SimpleNamespace(get=lambda *a, **kw: None,
+        get_json=lambda *a, **kw: None))
+    from services import kv_client as declaration_source
+    monkeypatch.setattr(declaration_source, 'get_json', lambda *a, **kw: None)
     monkeypatch.setattr(graph, '_pipeline_modal_prediction_callback_url', lambda: 'https://fixture.invalid')
     monkeypatch.setattr(graph, '_pipeline_modal_prediction_callback_token', lambda: 'fixture')
     request = asyncio.run(graph._build_pipeline_modal_prediction_payload(state, state_gcs_uri='gs://fixture/daily'))

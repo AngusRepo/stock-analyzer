@@ -39,7 +39,16 @@ def full_atomic(monkeypatch, request):
     from services.payload_builder import build_ml_universe
     original_setup = daily._setup
     def setup(mp):
+        if str(getattr(request, 'param', '')).startswith('native_policy_distribution_weekday'):
+            loader = daily._frozen_loaders
+            mp.setattr(daily, '_frozen_loaders', lambda mp: loader(mp, decision_date='2026-09-04'))
         graph, state, reads = original_setup(mp)
+        if str(getattr(request, 'param', '')).startswith('native_policy_distribution_weekday'):
+            state['run_date'] = '2026-09-04'
+            from services import paired_nav_native_holdings
+            capture_holdings = paired_nav_native_holdings.capture_native_holdings
+            mp.setattr(paired_nav_native_holdings, 'capture_native_holdings', lambda **kw:
+                capture_holdings(**{'now':datetime(2026,9,4,13,tzinfo=timezone.utc), **kw}))
         mp.setattr(graph, "_assert_pipeline_canonical_window", lambda state: None)
         if getattr(request, 'param', '') == 'native_policy_initial_unavailable':
             from services import paired_nav_native_holdings as holdings
@@ -55,7 +64,7 @@ def full_atomic(monkeypatch, request):
                 result['source_checksum']=digest({k:v for k,v in result.items() if k!='source_checksum'})
                 return result
             mp.setattr(holdings,'capture_native_holdings',missing_bootstrap)
-        if getattr(request, 'param', '') == 'native_policy_holdings':
+        if getattr(request, 'param', '') in {'native_policy_holdings', 'native_policy_distribution_weekday_holdings'}:
             graph.PAPER_D1_CLIENT.connection.execute("INSERT INTO paper_positions VALUES(1,'1001',100)")
             graph.PAPER_D1_CLIENT.connection.commit()
         from services import payload_builder
@@ -63,20 +72,25 @@ def full_atomic(monkeypatch, request):
         def adjusted_prices(ids,**kwargs):
             result=original_prices(ids,**kwargs)
             for sid, values in result.items():
-                older=[{'date':(date(2026,9,1)-timedelta(days=i)).isoformat(),
+                older=[{'date':(date.fromisoformat(values[0]['date'])-timedelta(days=i)).isoformat(),
                         'close':100.,'adj_close':50.,'volume':2_000_000} for i in reversed(range(1,65))]
-                result[sid]=older+[{**row,'adj_close':row['close']/2} for row in values]
+                result[sid]=[r for r in older+[{**row,'adj_close':row['close']/2} for row in values]
+                    if r['date'] <= kwargs.get('as_of_date', state['run_date'])]
             return result
         mp.setattr(payload_builder,'_bulk_load_prices',adjusted_prices)
         population = daily._population()
+        population['signal_date'] = state['run_date']
+        if str(getattr(request, 'param', '')).startswith('native_policy_distribution_weekday'):
+            for field in ('source_observed_at', 'artifact_created_at', 'decision_deadline'):
+                population[field] = population[field].replace('2026-09-06', state['run_date'])
         if str(getattr(request, 'param', '')).startswith('native_policy'):
             from test_paired_nav_atomic_candidate import attach_policy
-            if request.param in {'native_policy_complete', 'native_policy_weight_owner_complete'}:
+            if request.param in {'native_policy_complete', 'native_policy_weight_owner_complete', 'native_policy_distribution_weekday', 'native_policy_distribution_weekday_holdings'}:
                 for definition in population['replacements']:
                     if definition['candidate']['status'] != 'materialized':
                         definition['candidate'] = deepcopy(population['replacements'][0]['candidate'])
             population = attach_policy(population, daily_weight_owner=request.param in {
-                'native_policy_weight_owner', 'native_policy_weight_owner_complete'})
+                'native_policy_weight_owner', 'native_policy_weight_owner_complete', 'native_policy_distribution_weekday', 'native_policy_distribution_weekday_holdings'})
         before, sql, original_bind = sql_fixture()
         symbols = ['1000','1001','1002','1003']
         before.update(signal_date=state['run_date'], symbols=symbols,
@@ -101,12 +115,12 @@ def full_atomic(monkeypatch, request):
         formal_items = [item(s,i) for i,s in enumerate(formal_symbols,1)]
         raw = [dict(symbol=s,stage='scoring',decision='pass',rank=1,scoreAfter=41,
                     evidence={'score_components':_score_components()}) for s in symbols]
-        ops = [dict(screener_run_id=state['screener_run_id'],decision_universe_frozen_at='2026-09-06T12:00:00Z',
+        ops = [dict(screener_run_id=state['screener_run_id'],decision_universe_frozen_at=state['run_date']+'T12:00:00Z',
             symbol=r['symbol'],seed_name=r['name'],seed_stage=r['stage'],seed_reason_code=r['reasonCode'],
             seed_rank=r['rank'],seed_score=r['scoreAfter'],seed_evidence=r['evidence'],scoring_score=41,
             scoring_evidence=next(v['evidence'] for v in raw if v['symbol']==r['symbol']),l1_evidence=r['evidence']) for r in formal_items]
         bindings = [bind(s,i) for i,s in enumerate(formal_symbols,1)]
-        at = '2026-09-06T12:00:10Z'
+        at = state['run_date']+'T12:00:10Z'
         baseline = replay_core_upsert(before,sql,bindings,observed_at=at)
         stocks = [{**r,'stock_id':r['id']} for r in before['stock_rows']]
         rows = merge_screener_seed_domains(run_date=state['run_date'],ops_seed_rows=ops,daily_rows=baseline,stock_rows=stocks)
@@ -118,7 +132,7 @@ def full_atomic(monkeypatch, request):
         state['active_stocks'] = build_ml_universe([], [r for r in rows if r['symbol']!='1003'])
         population['screener_seed_source'] = dict(schema_version='atomic-screener-seed-source-v1',
             source_item_count=len(raw)+len(formal_items),items=raw+formal_items)
-        population['core_seed_persistence'] = [dict(status='captured',started_at='2026-09-06T12:00:01Z',
+        population['core_seed_persistence'] = [dict(status='captured',started_at=state['run_date']+'T12:00:01Z',
             completed_at=at,symbols=symbols,value=dict(before=before,upsert_sql=sql,baseline_bindings=bindings))]
         for definition in population['replacements']:
             if definition['candidate']['status'] != 'materialized': continue
@@ -131,7 +145,7 @@ def full_atomic(monkeypatch, request):
     monkeypatch.setattr(daily,'_setup',setup)
     graph,state,request_packet = request.getfixturevalue('dispatched')
     bundle,_ = _compute(request_packet)
-    if getattr(request, 'param', '') == 'native_policy_weight_owner_complete':
+    if getattr(request, 'param', '') in {'native_policy_weight_owner_complete', 'native_policy_distribution_weekday', 'native_policy_distribution_weekday_holdings'}:
         from app.paired_nav_inference import run_candidate_bundles
         from test_paired_nav_atomic_dispatch import _model_bundle
         bundle['paired_nav_l3_inference'] = run_candidate_bundles(request_packet, compute=_model_bundle)

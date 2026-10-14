@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -134,6 +135,7 @@ class CloudRunJobsClient:
         env_overrides: Mapping[str, str] | None = None,
         *,
         reject_if_running: bool = True,
+        expected_source_sha: str | None = None,
     ) -> JobExecution:
         """Start a new execution of the configured Job.
 
@@ -152,6 +154,9 @@ class CloudRunJobsClient:
             raise RuntimeError(
                 "Cloud Run Job config missing. Set GCP_PROJECT_ID, GCP_REGION, and a job name."
             )
+
+        if expected_source_sha is not None:
+            self.verify_source_alignment(expected_source_sha)
 
         if reject_if_running:
             active = self.get_active_execution()
@@ -185,3 +190,19 @@ class CloudRunJobsClient:
             dict(env_overrides or {}),
         )
         return JobExecution(execution_name=execution_name, execution_id=execution_id)
+
+    def verify_source_alignment(self, expected_source_sha: str) -> None:
+        """A read-model producer must run the consumer's exact published source.
+
+        Never mask an old image with an execution env override. Inspect the
+        immutable job template source declaration before allocating an execution.
+        """
+        if not re.fullmatch(r'[a-f0-9]{40}', expected_source_sha or ''):
+            raise ValueError('strategy_nav_consumer_source_identity_missing')
+        job = self._get_client().get_job(request=run_v2.GetJobRequest(name=self._parent), timeout=30)
+        containers = job.template.template.containers
+        if len(containers) != 1:
+            raise ValueError('strategy_nav_producer_container_contract_invalid')
+        declarations = [item.value for item in containers[0].env if item.name == 'STOCKVISION_SOURCE_SHA']
+        if declarations != [expected_source_sha]:
+            raise ValueError('strategy_nav_producer_consumer_source_mismatch')

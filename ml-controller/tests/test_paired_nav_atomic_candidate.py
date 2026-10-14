@@ -102,7 +102,8 @@ def allocated(full_atomic, environment, monkeypatch, native_runner, request):
         risk['system']['killSwitch'] = False
     monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract', lambda:
         SimpleNamespace(config=deepcopy(config),contract=SimpleNamespace(degraded=False)))
-    monkeypatch.setattr(graph, 'kv_client', SimpleNamespace(get_json=lambda key, **kw: deepcopy(risk) if key=='trading:risk_config' else 1))
+    monkeypatch.setattr(graph, 'kv_client', SimpleNamespace(get_json=lambda key, **kw:
+        deepcopy(risk) if key=='trading:risk_config' else 1 if key=='ml:persona_score_weight' else None))
     monkeypatch.setattr(graph, 'load_online_portfolio_bandit_reward_ledger', lambda: [])
     monkeypatch.setattr(service, 'load_inherited_paper_weights', lambda *a, **kw: {'status':'fixture','weights':{},'portfolio_value_twd':100000})
     monkeypatch.setattr(service, 'build_portfolio_ml_shadow_inputs', lambda *a, **kw: {})

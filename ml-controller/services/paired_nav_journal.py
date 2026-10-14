@@ -458,7 +458,7 @@ def _corporate_receivables(previous, actions, positions, session_date, *, cash_h
 def replay_session(*, previous: dict[str, Any], fills: list[dict[str, Any]],
                    marks: dict[str, Any], corporate_actions: list[dict[str, Any]],
                    session_date: str, fees: dict[str, Any], allow_unpriced_rights: bool = False,
-                   cash_history=None) -> dict[str, Any]:
+                   cash_history=None, commission_contract=None) -> dict[str, Any]:
     """Book immutable execution-owner fills, actual fees/taxes exactly once.
 
     Does not presume daily rebalance, liquidate positions, invent a fill from an
@@ -478,6 +478,8 @@ def replay_session(*, previous: dict[str, Any], fills: list[dict[str, Any]],
     tax_rate = number(fees.get('tax'), 'tax', minimum=0)
     if commission >= 1 or tax_rate >= 1:
         raise ValueError('paired_nav_fee_unit_invalid')
+    if commission_contract not in {None, 'tw-equity-per-leg-floor-v1'}:
+        raise ValueError('paired_nav_commission_contract_unknown')
     corrections = []
     delivered, receivables = _corporate_receivables(previous, corporate_actions, positions, session_date,
         cash_history=cash_history, corrections=corrections)
@@ -566,7 +568,16 @@ def replay_session(*, previous: dict[str, Any], fills: list[dict[str, Any]],
             raise ValueError('paired_nav_fill_quantity_or_price_invalid')
         notional = shares * price
         # JS Math.round parity for positive fees, matching paperTradeMath.
-        fee = max(math.floor(notional * commission + 0.5), minimum_fee)
+        if commission_contract == 'tw-equity-per-leg-floor-v1':
+            if not shares.is_integer() or shares > 2**53-1 or not minimum_fee.is_integer():
+                raise ValueError('paired_nav_commission_integer_contract_invalid')
+            board = int(shares) // 1000 * 1000
+            odd = int(shares) % 1000
+            fee = sum(max(math.floor(notional * (quantity / shares) * commission), minimum)
+                for quantity, minimum in ((board, minimum_fee), (odd, min(1, minimum_fee))) if quantity)
+        else:
+            # Immutable old registrations retain their original rounding owner.
+            fee = max(math.floor(notional * commission + 0.5), minimum_fee)
         day_trade = fill.get('is_day_trade', False)
         if type(day_trade) is not bool or day_trade and side != 'sell':
             raise ValueError('paired_nav_day_trade_flag_invalid')
@@ -720,7 +731,8 @@ def materialize_pair(*, snapshot_id: str, session_date: str, execution: dict[str
         arms[arm] = replay_session(previous=previous[arm], fills=receipt['fills'],
             marks=execution['marks'], corporate_actions=execution['corporate_actions'],
             session_date=session_date, fees=packet['fees'], allow_unpriced_rights=True,
-            cash_history=cash_history[arm] if cash_history is not None else None)
+            cash_history=cash_history[arm] if cash_history is not None else None,
+            commission_contract=packet.get('commission_contract'))
     result = {'schema_version': SCHEMA, 'pair_id': packet['pair_id'], 'session_date': session_date,
               'pair_identity': {k: packet[k] for k in ('pair_id', 'candidate_checksum', 'baseline_checksum', 'execution_owner_version', 'configuration_checksum')},
               'snapshot_id': snapshot_id, 'previous_checksum': previous_checksum,

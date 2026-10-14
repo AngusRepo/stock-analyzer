@@ -19,7 +19,7 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
              alpha_strength=1., turnover_penalty=0., turnover_pressure=None, l2_penalty=0.,
              tolerance=1e-8, time_limit=30.):
     n = len(symbols)
-    if n == 0 or len(set(symbols)) != n:
+    if len(set(symbols)) != n:
         raise ValueError('l4_portfolio_symbols_invalid')
     gross = np.asarray(expected_gross, float)
     pressure = np.zeros(n) if turnover_pressure is None else np.asarray(turnover_pressure, float)
@@ -30,12 +30,12 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
     risk_matrix = np.asarray(covariance, float) * float(risk_aversion)
     q = risk_matrix + l2_penalty * np.eye(n)
     current = np.asarray(current_weights, float)
-    if (mu.shape != (n,) or current.shape != (n,) or q.shape != (n, n)
+    if (gross.shape != (n,) or mu.shape != (n,) or current.shape != (n,) or risk_matrix.shape != (n, n) or q.shape != (n, n)
             or not np.isfinite(mu).all() or not np.isfinite(q).all()
             or not np.isfinite(current).all() or (current < 0).any()
-            or np.max(abs(q - q.T)) > 1e-10):
+            or (n and np.max(abs(q - q.T)) > 1e-10)):
         raise ValueError('l4_portfolio_numeric_contract_invalid')
-    eigen_floor=float(np.linalg.eigvalsh(q)[0])
+    eigen_floor=float(np.linalg.eigvalsh(q)[0]) if n else 0.
     if eigen_floor < -1e-10:
         raise ValueError('l4_portfolio_covariance_not_psd')
     if (not 0 <= exposure_cap <= 1 or not 0 <= name_cap <= 1
@@ -53,6 +53,20 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
     caps = name_caps or {}
     if set(caps)-set(symbols) or any(not math.isfinite(v) or not 0<=v<=name_cap for v in caps.values()):
         raise ValueError('l4_portfolio_name_caps_invalid')
+    if not n:
+        if exposure_groups:
+            raise ValueError('l4_portfolio_exposure_group_invalid')
+        # With no candidates OR holdings the feasible portfolio is exactly cash.
+        # This is an analytical zero-dimensional solution, not a synthetic fill.
+        return {'weights': {}, 'cash_weight': 1., 'expected_gross': 0., 'risk_penalty': 0.,
+            'l2_penalty': 0., 'turnover_pressure_penalty': 0., 'expected_trading_cost': 0.,
+            'utility_parameters': {'alpha_strength': alpha_strength, 'risk_aversion': risk_aversion,
+                'turnover_penalty': turnover_penalty, 'l2_penalty': l2_penalty},
+            'proof': {'evaluated_candidate_count': 0, 'preselection': False,
+                'objective_utility': 0., 'global_utility_upper_bound': 0., 'absolute_objective_gap': 0.,
+                'tolerance': tolerance, 'within_tolerance': True, 'rounds': 0, 'solution': 'empty_account_cash'},
+            'constraints': {'exposure_cap': exposure_cap, 'name_cap': name_cap,
+                'min_weight': min_weight, 'max_positions': max_positions, 'name_caps': caps, 'exposure_groups': {}}}
     # Variables: target weights, binary membership, positive trade, negative
     # trade, and an epigraph variable for w'Qw. Costs apply to trades once.
     identity = eye(n, format='csc')

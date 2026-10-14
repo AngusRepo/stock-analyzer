@@ -8,6 +8,7 @@ from services import single_b_daily_closure as closure, trading_config_loader, w
 def test_verified_single_b_skips_job_only_after_durable_callback(monkeypatch, callback_fails):
     from services import strategy_nav_read_model
     monkeypatch.setattr(strategy_nav_read_model,'strategy_nav_display_is_current',lambda **kw: True)
+    monkeypatch.setattr(strategy_nav_read_model,'strategy_nav_daily_is_current',lambda **kw: {'status':'materialized'})
     result={'status':'native_l4_daily_accounted','completion_scope':'verified_formal_paper_plan',
         'native_l4_daily_closure':{'schema_version':'l4-daily-plan-closure-v1','signal_date':'2026-09-21',
             'plan_id':'a'*64,'model_checksum':'b'*64,'training_dispatched':False,'promoted':False},

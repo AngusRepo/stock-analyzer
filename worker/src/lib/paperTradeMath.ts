@@ -2,6 +2,8 @@ import type { TradingConfig } from './tradingConfig'
 import { resolveTwEquityPriceBand } from './twEquityMarketContract'
 import { buildTwOrderLegs, getTwTickSize, normalizeTwLimitPrice, snapToTwPriceTick } from './twMarketRules'
 
+export const PAPER_COMMISSION_CONTRACT = 'tw-equity-per-leg-floor-v1' as const
+
 /** Gross SinoPac commission, before monthly rebates. Each market leg has its own minimum. */
 export function calcCommission(value: number, cfg: TradingConfig, shares: number): number {
   if (!Number.isFinite(value) || value <= 0 || !Number.isSafeInteger(shares) || shares <= 0

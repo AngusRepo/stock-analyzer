@@ -26,7 +26,9 @@ def collect_atomic_allocations(*, snapshot_id, query, writer):
     manifest, context = saved['manifest'], saved['payload']['content']
     empty = {'plans': [], 'lifecycle_transition_plan': [], 'production_effect': False,
              'promotion_allowed': False, 'nav_maturity_credit': 0}
-    if context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution') is not None:
+    from services.strategy_nav_distribution import enabled
+    distribution = context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution')
+    if distribution is not None and not enabled(context.get('trading_config'), signal_date=manifest['signal_date']):
         return {**empty, 'status': 'awaiting_paired_l3_l4_release'}
     if manifest['snapshot_kind'] != 'allocation_context':
         raise ValueError('paired_nav_atomic_allocation_parent_invalid')
@@ -54,6 +56,9 @@ def collect_atomic_allocations(*, snapshot_id, query, writer):
         pair_id = resolve_pair_id(root_pair_id, signal_date=manifest['signal_date'], query=query)
         native = definition['native_model_context']
         fields = {name: deepcopy(native[name]) for name in ('model_predictions', 'model_prediction_arms')}
+        if distribution is not None:
+            fields['atomic_distribution_input_arms'] = {'baseline': deepcopy(context['inputs']),
+                'candidate': deepcopy(definition['inputs'])}
         seeds = {'baseline': context['recommendation_context']['inputs']['screener_seed_context']['inputs']['daily_rows'],
                  'candidate': prepared['definitions'][key]['candidate_seed_inputs']['daily_rows']}
         contrast = {'definition_checksum': key, 'policy_checksum': baseline_checksum,
@@ -127,4 +132,9 @@ def verify_atomic_comparison(plan, parent, *, query):
              'candidate': prepared['definitions'][key]['candidate_seed_inputs']['daily_rows']}
     if content.get('atomic_native_seed_rows') != seeds or plan.get('atomic_native_seed_checksum') != digest(seeds):
         raise ValueError('paired_nav_atomic_comparison_seed_mismatch')
+    if original['inputs'].get('alpha_policy', {}).get('l4Distribution') is not None:
+        from services.strategy_nav_distribution import verify_input_arms
+        if content.get('atomic_distribution_history') != original.get('atomic_distribution_history'):
+            raise ValueError('paired_nav_atomic_comparison_history_changed')
+        verify_input_arms(plan, parent, query=query)
     return deepcopy(seeds)

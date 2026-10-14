@@ -13,7 +13,7 @@ import { buildStrategyProductionPolicyState } from '../src/lib/strategyProductio
 import { captureStrategyWeightSource } from '../src/lib/strategyProductionWeightReplay'
 import { persistStrategyProductionPolicy, resolveRuntimeStrategyWeights, loadStrategyProductionPolicyBefore } from '../src/lib/strategyProductionPolicyStore'
 import { sha256Text } from '../src/lib/datasetSnapshots'
-import { atomicNavOwnsRegistry, legacyAtomicPromotionGuard } from '../src/lib/strategyAtomicNavReceipt'
+import { navOwnsStrategyReplacement, legacyAtomicPromotionGuard } from '../src/lib/strategyAtomicNavReceipt'
 import { refreshStrategyMarginalEdgeV4 } from '../src/lib/strategyMarginalEdgeV4'
 import { adminConfigCoreRoutes } from '../src/routes/adminConfigCoreRoutes'
 import { reconcileAtomicNavCandidates as reconcileOriginalAtomic } from '../src/lib/strategyAtomicNavLifecycle'
@@ -36,10 +36,25 @@ const reconciliationRequest = { business_date: original.payload.evaluation_busin
   candidates: original.payloads.map((payload: any) => ({ artifact_id: payload.artifact_id,
     artifact_checksum: payload.artifact_checksum, baseline_checksum: payload.prospective_validation.nav_validation.baseline_checksum })) }
 async function fixture(run: (db: D1Database, refreshSource: () => Promise<void>) => Promise<void>,
-  controllerObservedAt = () => original.now, strategyResponse = (value: any) => value) {
+  controllerObservedAt = () => new Date(paperExecutionNow()).toISOString(), strategyResponse = (value: any) => value) {
   const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response("private") } }', d1Databases: ['LEARNING'] })
   try {
-    const db = await mf.getD1Database('LEARNING') as unknown as D1Database
+    const privateDb = await mf.getD1Database('LEARNING') as unknown as D1Database
+    let executing = false
+    // Miniflare's SQLite clock otherwise uses the host date, independently of
+    // the sealed Paper clock. Inject only this private database's insert time;
+    // keep the real policy writer, future guard, checksums and D1 transaction.
+    const db = new Proxy(privateDb, { get(target, key) {
+      if (key === 'prepare') return (sql: string) => {
+        const clock = executing ? new Date(paperExecutionNow()).toISOString() : '2026-09-20T12:00:00Z'
+        const timed = sql.replace(
+          /(INSERT(?: OR IGNORE)? INTO (?:strategy_production_policy_history_v1|strategy_atomic_nav_adoptions_v1)\s*\()([^)]*)(\)\s*VALUES\s*\()([^)]*)(\))/,
+          `$1$2,created_at$3$4,'${clock}'$5`)
+        return target.prepare(timed)
+      }
+      const value = Reflect.get(target, key)
+      return typeof value === 'function' ? value.bind(target) : value
+    } }) as D1Database
     for (const sql of original.schema) await db.prepare(sql).run()
     const inserts: D1PreparedStatement[] = []
     for (const [name, rows] of Object.entries(original.tables)) for (const row of rows as any[]) {
@@ -57,6 +72,15 @@ async function fixture(run: (db: D1Database, refreshSource: () => Promise<void>)
       const ddl = baselineSchema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))?.[0]
       assert(ddl)
       await db.prepare(ddl).run()
+    }
+    for (const table of ['strategy_marginal_edge_runs_v4', 'strategy_marginal_edge_head_v4']) {
+      const ddl = baselineSchema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))?.[0]
+      assert(ddl)
+      await db.prepare(ddl).run()
+    }
+    const authority = fs.readFileSync('domain-migrations/learning/0052_strategy_paper_nav_authority.sql', 'utf8')
+    for (const sql of authority.replace(/^--.*$/gm, '').match(/SELECT CASE[\s\S]*?END;|CREATE TABLE[\s\S]*?\n\);|INSERT OR IGNORE[\s\S]*?;|CREATE TRIGGER[\s\S]*?END;/g) ?? []) {
+      await db.prepare(sql).run()
     }
     for (const sql of [
       'CREATE TABLE model_champion_pointers(model_name TEXT,champion_artifact_id TEXT)',
@@ -113,24 +137,27 @@ async function fixture(run: (db: D1Database, refreshSource: () => Promise<void>)
     await db.prepare("INSERT INTO run_artifacts VALUES('current-artifact','current-source',?,?,'screener-funnel-evidence-v3','current-canonical',?,'screener_funnel','ready',?,NULL)")
       .bind(await sha256Text(raw), day + 'T08:01:00Z', day, day + 'T08:01:00Z').run()
     const refreshSource = async () => {
+      const nextDay = original.next_payloads[0].evaluation_business_date
+      advancePaperExecutionClock(Date.parse(original.next_now))
       const registry = (await db.prepare('SELECT * FROM strategy_spec_registry ORDER BY strategy_id').all<any>()).results!.map(registryRowToStrategySpec)
-      const policy = await loadStrategyProductionPolicyBefore(db, day, registry.map(spec => spec.id))
+      const policy = await loadStrategyProductionPolicyBefore(db, nextDay, registry.map(spec => spec.id))
       assert(policy && 'evidence_owner' in policy.state.evidence)
       const weights = resolveRuntimeStrategyWeights(registry.map(spec => spec.id), policy)
       const fresh = await buildLayer1WithAtomicSource({ universe: [], specs: registry,
-        signalDate: day, producerRunId: 'refreshed-canonical', observedAt: day + 'T08:10:00Z',
+        signalDate: nextDay, producerRunId: 'refreshed-canonical', observedAt: nextDay + 'T08:10:00Z',
         productionWeightSource: policy.state.evidence.evidence_owner?.weight_source,
         options: { ...original.config.atomic_policy_identity.options, strategyWeights: weights.evaluationWeights,
           productionStrategyWeights: weights.routingWeights, performanceWeightOwner: weights.performanceWeightOwner } })
-      const body = JSON.stringify({ domain: 'screener_funnel', business_date: day, schema_version: 'screener-funnel-evidence-v3',
+      const body = JSON.stringify({ domain: 'screener_funnel', business_date: nextDay, schema_version: 'screener-funnel-evidence-v3',
         payload: { atomic_strategy_source: fresh.source, items: [] } })
       objects.set('refreshed-source', body)
       await db.prepare("UPDATE pipeline_runs SET status='superseded' WHERE status='canonical'").run()
       await db.prepare("INSERT INTO pipeline_runs VALUES('refreshed-canonical',?,'screener','canonical',?,'refreshed-artifact')")
-        .bind(day, day + 'T08:12:00Z').run()
+        .bind(nextDay, nextDay + 'T08:12:00Z').run()
       await db.prepare("INSERT INTO run_artifacts VALUES('refreshed-artifact','refreshed-source',?,?,'screener-funnel-evidence-v3','refreshed-canonical',?,'screener_funnel','ready',?,NULL)")
-        .bind(await sha256Text(body), day + 'T08:11:00Z', day, day + 'T08:11:00Z').run()
+        .bind(await sha256Text(body), nextDay + 'T08:11:00Z', nextDay, nextDay + 'T08:11:00Z').run()
     }
+    executing = true
     await withPaperExecutionScope({ accountId: 1, nowMs: now.getTime(), environment: env,
       databases: { learning: db, ops: db, market: db }, fetchFrozen: async (url, init) => {
         if (String(url) === 'https://controller.invalid/nav/strategy-evidence') {
@@ -144,11 +171,12 @@ async function fixture(run: (db: D1Database, refreshSource: () => Promise<void>)
         assert.equal(String(url), 'https://controller.invalid/nav/policy-decision')
         assert.equal(new Headers(init?.headers).get('X-Controller-Token'), env.ML_CONTROLLER_SECRET)
         const request = JSON.parse(String(init?.body))
-        const selected = original.payloads.find((payload: any) => payload.artifact_id === request.candidate_artifact_id)
+        const selected = [...original.payloads, ...original.next_payloads].find((payload: any) =>
+          payload.artifact_id === request.candidate_artifact_id && payload.evaluation_business_date === request.business_date)
         assert(selected, 'only original frozen Python candidates may be read')
         assert.deepEqual(request, { owner: 'atomic_strategy',
           candidate_artifact_id: selected.artifact_id, candidate_checksum: selected.artifact_checksum,
-          business_date: original.payload.evaluation_business_date })
+          business_date: selected.evaluation_business_date })
         return Response.json({ schema_version: 'paired-nav-policy-decision-response-v1', owner: 'atomic_strategy',
           observed_at: controllerObservedAt(), payload: selected, source: 'original_frozen_policy_and_verified_nav', read_only: true })
       } }, () => run(db, refreshSource))
@@ -238,7 +266,7 @@ test('original numerical NAV PASS atomically publishes original registry, weight
     return displayed
   }))
   const shadow = await readEvidence()
-  assert(shadow.every(e => e.current_replacement_owner === 'legacy_atomic_v7'))
+  assert(shadow.every(e => e.current_replacement_owner === 'original_paired_daily_nav'))
   assert(shadow.every(e => e.entries.every((entry: any) => entry.publication === null)))
   assert.deepEqual(await state(db), before)
   const uncommitted = await reconcileAtomicNavCandidates(readOnly(db), env, reconciliationRequest, now)
@@ -339,8 +367,18 @@ test('caller PASS, altered live risk, and missing current canonical source canno
   assert.deepEqual(await state(db), before)
 }))
 
-test('Atomic cannot combine its old NAV comparison with a different serving Route before or during commit', async () => {
+test('Atomic rejects a corrupted legacy serving Route before or during commit', async () => {
   for (const moment of ['before', 'inside_batch']) await fixture(async db => {
+    // The real cutover rejects legacy publication before it reaches the head.
+    await assert.rejects(() => db.prepare(`INSERT INTO strategy_route_calibration_head_v1
+      (singleton_id,run_id,artifact_version,candidate_route_version,route_floor)
+      VALUES(1,'forbidden-legacy',?,?,30)`)
+      .bind(STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION).run(),
+      /strategy_route_nav_only_publication/)
+    // Deliberate private-database corruption tests the independent dependency
+    // guard as well; this is not a permitted production Route transition.
+    await db.prepare('DROP TRIGGER strategy_route_nav_only_head_insert_v1').run()
+    await db.prepare('DROP TRIGGER strategy_route_nav_only_head_update_v1').run()
     const changeRoute = async () => {
       await db.batch([
         db.prepare(`INSERT INTO strategy_route_calibration_runs_v1
@@ -374,11 +412,11 @@ test('Atomic cannot combine its old NAV comparison with a different serving Rout
 })
 
 test('NAV authority keeps legacy refresh diagnostic and rejects a racing legacy cutover', async () => fixture(async db => {
-  assert.equal(await atomicNavOwnsRegistry(db), false)
+  assert.equal(await navOwnsStrategyReplacement(db), true)
   const legacyStatements = [legacyAtomicPromotionGuard(db),
     db.prepare("UPDATE strategy_spec_registry SET thesis='legacy-overwrite'")]
   await publish(db)
-  assert.equal(await atomicNavOwnsRegistry(db), true)
+  assert.equal(await navOwnsStrategyReplacement(db), true)
   const before = await state(db)
   await assert.rejects(() => db.batch(legacyStatements), /malformed JSON/)
   assert.deepEqual(await state(db), before)
@@ -400,7 +438,9 @@ test('fresh canonical source preserves publication and exposes changed comparato
   await publish(db)
   const before = await state(db)
   await refreshSource()
-  const result = await reconcileAtomicNavCandidates(db, env, reconciliationRequest, now)
+  const nextRequest = { ...reconciliationRequest, business_date: original.next_payloads[0].evaluation_business_date }
+  const nextNow = new Date(original.next_now)
+  const result = await reconcileAtomicNavCandidates(db, env, nextRequest, nextNow)
   assert.equal(result.entries.filter(row => row.state === 'published').length, 1)
   const publishedEntry = result.entries.find(row => row.state === 'published')!
   assert.equal(publishedEntry.execution_observation?.executed, true)
@@ -411,10 +451,10 @@ test('fresh canonical source preserves publication and exposes changed comparato
   assert.deepEqual(await state(db), before)
   assert.equal((await publish(db)).recovered_existing_commit, true)
   // Caller cannot replace the comparator sealed by the original decision.
-  const changed = structuredClone(reconciliationRequest)
+  const changed = structuredClone(nextRequest)
   const other = changed.candidates.find((row: any) => row.artifact_id !== original.payload.artifact_id)!
   other.baseline_checksum = result.canonical_policy_checksum
-  await assert.rejects(() => reconcileAtomicNavCandidates(db, env, changed, now), /original_baseline_changed/)
+  await assert.rejects(() => reconcileAtomicNavCandidates(db, env, changed, nextNow), /original_baseline_changed/)
   assert.deepEqual(await state(db), before)
 }))
 

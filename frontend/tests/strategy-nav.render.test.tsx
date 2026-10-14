@@ -12,7 +12,12 @@ const render = (data: any, loading = false, error: Error | null = null) =>
 for (const owner of ['shadow', 'adopted']) for (const data of packets[owner]) {
   const html = render(data)
   assert.equal((html.match(/<article /g) ?? []).length, data.entry_count)
-  assert(html.includes(owner === 'shadow' ? 'NAV 仍獨立觀察' : '原始配對 NAV'))
+  assert.equal(data.current_replacement_owner, 'original_paired_daily_nav')
+  assert(html.includes('原始配對 NAV'))
+  if (owner === 'shadow') {
+    assert(data.entries.every((entry: any) => entry.publication === null))
+    assert(html.includes('沒有此 artifact 的已驗證歷史發布紀錄'))
+  }
   for (const entry of data.entries) {
     assert(html.includes(entry.nav.decision_checksum))
     assert(html.includes((entry.nav.mean_daily_nav_delta * 100).toFixed(4) + '%'))
@@ -28,4 +33,5 @@ assert(render(missing).includes('未知'))
 assert(render(missing).includes('UNAVAILABLE'))
 const empty = { ...missing, status: 'not_registered', entries: [], entry_count: 0 }
 assert(render(empty).includes('沒有把舊 Alpha 樣本換算成 NAV 成熟日'))
+assert(render({ ...empty, current_replacement_owner: 'legacy_atomic_v7' }).includes('NAV 仍獨立觀察'))
 console.log('Original Python NAV -> Worker -> React: all comparisons, owners, numeric precision, missing and stale data passed')

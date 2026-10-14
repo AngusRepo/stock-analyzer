@@ -103,9 +103,38 @@ def complete_pipeline_shadow(collection, *, query, writer, enforce_execution_win
             except Exception as exc:
                 return {**collection, **shadow_failure('allocation_context_readback', exc)}
             if mode:
+                if parent['payload']['content'].get('trading_config', {}).get('l4Distribution'):
+                    return _complete_strategy_shadow(collection, query=query, writer=writer)
                 return disabled_receipt(mode, signal_date=parent['manifest']['signal_date'], snapshot_id=snapshot_id)
         return _complete_pipeline_shadow(collection, query=query, writer=writer,
             enforce_execution_window=enforce_execution_window)
+
+
+def _complete_strategy_shadow(collection, *, query, writer):
+    """Single-B keeps its formal account; only canonical strategy pairs proceed."""
+    try:
+        from services.paired_nav_atomic_candidate import collect_atomic_allocations
+        parent = read_snapshot(query, collection['snapshot_id'])
+        if parent['payload']['content'].get('atomic_recommendation_inputs') is None:
+            raise ValueError('paired_nav_atomic_daily_inputs_missing')
+        atomic = collect_atomic_allocations(snapshot_id=collection['snapshot_id'], query=query, writer=writer)
+        if not atomic['plans']:
+            if atomic['status'] == 'no_structural_candidates':
+                return {**collection, 'status': 'awaiting_frozen_l4_candidate', 'atomic_collection': atomic}
+            return {**collection, 'atomic_collection': atomic,
+                **shadow_failure('atomic_candidate_setup', ValueError('paired_nav_atomic_no_executable_plans'))}
+        native, atomic, failures = _register_owner_groups(atomic,
+            signal_date=parent['manifest']['signal_date'], query=query, writer=writer)
+        atomic = {**atomic, 'native_execution': native,
+            'status': 'native_execution_pairs_registered' if atomic['selection_materialization_complete']
+                else 'atomic_partial_native_registration'}
+        result = {**collection, 'status': 'native_execution_pairs_registered',
+            'atomic_collection': atomic, 'native_execution': native}
+        if failures:
+            result.update(next(iter(failures.values())), owner_failures=failures)
+        return result
+    except Exception as exc:
+        return {**collection, **shadow_failure('atomic_candidate_setup', exc)}
 
 
 def _complete_pipeline_shadow(collection, *, query, writer, enforce_execution_window=False):

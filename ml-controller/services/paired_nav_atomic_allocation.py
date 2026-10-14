@@ -29,7 +29,9 @@ def run_atomic_allocations(*, snapshot_id, query, prepared=None, recommendations
     from services.recommendation_service import build_return_history_from_payloads
     parent = read_snapshot(query, snapshot_id)
     manifest, context = parent['manifest'], parent['payload']['content']
-    if context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution') is not None:
+    distribution = context.get('inputs', {}).get('alpha_policy', {}).get('l4Distribution')
+    from services.strategy_nav_distribution import enabled, allocation_inputs
+    if distribution is not None and not enabled(context.get('trading_config'), signal_date=manifest['signal_date']):
         raise ValueError('paired_nav_atomic_requires_compatible_l4_artifact')
     if 'atomic_recommendation_inputs' in context:
         if ((prepared is not None and prepared != context['atomic_recommendation_inputs'])
@@ -67,14 +69,18 @@ def run_atomic_allocations(*, snapshot_id, query, prepared=None, recommendations
             inputs = deepcopy(context['inputs'])
             inputs['recommendations'] = deepcopy(definition['result']['recommendations'])
             payloads = definition['inputs']['payloads']
-            own_history = build_return_history_from_payloads(payloads, lookback=history_context['lookback'])
-            shared = formal_symbols & {p['symbol'] for p in payloads}
-            if any(own_history.get(s) != history.get(s) for s in shared):
-                raise ValueError('paired_nav_atomic_shared_risk_history_changed')
-            inputs['return_history'] = own_history
-            result = run_isolated_allocation(inputs=inputs, inherited_state=inherited)
             from services.paired_native_models import atomic_model_context
             native_context = atomic_model_context(context=context, prepared=prepared, definition_checksum=key)
+            if distribution is not None:
+                inputs, native_context = allocation_inputs(context, prepared, key, definition['result']['recommendations'])
+                own_history = inputs['return_history']['returns']
+            else:
+                own_history = build_return_history_from_payloads(payloads, lookback=history_context['lookback'])
+                shared = formal_symbols & {p['symbol'] for p in payloads}
+                if any(own_history.get(s) != history.get(s) for s in shared):
+                    raise ValueError('paired_nav_atomic_shared_risk_history_changed')
+                inputs['return_history'] = own_history
+            result = run_isolated_allocation(inputs=inputs, inherited_state=inherited)
             definitions[key] = {'status': 'allocation_materialized', 'inputs': inputs, 'allocation': result,
                 'native_model_context': native_context,
                 'risk_history_symbols': sorted(own_history),

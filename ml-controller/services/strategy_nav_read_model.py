@@ -158,6 +158,13 @@ def strategy_nav_display_is_current(*, business_date, client=None, store=None, n
         return False
 
 
+def strategy_nav_daily_is_current(*, business_date):
+    from services.daily_nav_read_receipt import verified_daily_result
+    from services.d1_domain_client import client_for_domain
+    return verified_daily_result(business_date=business_date,
+        client=client_for_domain('learning'), store=production_read_store())
+
+
 def refresh_strategy_nav_display(business_date):
     """Display-only producer, independent of the current Paper plan owner."""
     from services.d1_domain_client import client_for_domain

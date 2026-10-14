@@ -209,7 +209,8 @@ def verify_journal_chain(*, business_date: str, query: Query, page_size: int = 5
                     fills=execution['arms'][name]['fills'], marks=execution['marks'],
                     corporate_actions=execution['corporate_actions'],
                     session_date=row['session_date'], fees=frozen['fees'], allow_unpriced_rights=True,
-                    cash_history=history[name] if cash_accounting_enabled(execution) else None)
+                    cash_history=history[name] if cash_accounting_enabled(execution) else None,
+                    commission_contract=frozen.get('commission_contract'))
                 if digest(arm) != digest(reconciled):
                     raise RuntimeError('paired_nav_chain_execution_accounting_mismatch:' + name)
             interval = paired_return_interval(previous, arms)

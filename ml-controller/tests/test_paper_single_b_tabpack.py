@@ -168,7 +168,7 @@ def test_new_B_publishes_through_original_atomic_paper_authority(approved, monke
     assert manifest['active8_action_authority']['live_buy_authorized'] is False
 
 
-def test_single_B_frozen_context_never_registers_comparison(monkeypatch):
+def test_single_B_frozen_context_only_dispatches_strategy_comparison(monkeypatch):
     from services import paired_nav_journal as journal,paired_nav_pipeline as pipeline
     cfg=single_config()
     parent={'manifest':{'signal_date':'2026-09-21'},
@@ -176,12 +176,15 @@ def test_single_B_frozen_context_never_registers_comparison(monkeypatch):
     monkeypatch.setattr(journal,'read_context_projection',lambda *a,**kw:parent)
     def forbidden(*a,**kw):raise AssertionError('retired comparison must not run')
     monkeypatch.setattr(pipeline,'_complete_pipeline_shadow',forbidden)
+    calls = []
+    expected = {'status': 'native_execution_pairs_registered', 'nav_maturity_credit': 0}
+    monkeypatch.setattr(pipeline, '_complete_strategy_shadow', lambda value, **kw: calls.append(value) or expected)
     result=pipeline.complete_pipeline_shadow({'status':'allocation_context_frozen','snapshot_id':'a'*64},
         query=forbidden,writer=forbidden,enforce_execution_window=True)
-    assert valid_disabled_receipt(result)
+    assert result == expected and len(calls) == 1
 
 
-def test_nightly_single_B_closes_formal_plan_without_pair_review_or_training(monkeypatch):
+def test_nightly_single_B_closes_formal_plan_and_independent_strategy_nav_without_training(monkeypatch):
     import asyncio
     import oof_materialize_job_main as job
     from services import strategy_nav_read_model
@@ -198,7 +201,16 @@ def test_nightly_single_B_closes_formal_plan_without_pair_review_or_training(mon
         lambda:SimpleNamespace(config={'l4Distribution':policy}))
     monkeypatch.setattr(d1_domain_client, 'client_proxy_for_domain', lambda _:Paper(plan))
     def forbidden(**kwargs):raise AssertionError('retired comparison or training must not run')
-    monkeypatch.setattr(job, '_execute_daily_nav', forbidden)
+    calls = []
+    def daily_nav(**kw):
+        calls.append(kw)
+        return {'status':'accounted', 'strategy_nav_read_model':{'status':'published'}, '_adoption_candidates':[]}
+    monkeypatch.setattr(job, '_execute_daily_nav', daily_nav)
+    from services import paired_nav_daily_adoption
+    async def adoption(**kw):
+        assert kw == {'candidates': [], 'business_date': '2026-09-11'}
+        return {'status': 'complete'}
+    monkeypatch.setattr(paired_nav_daily_adoption, 'run_daily_ev_adoption', adoption)
     monkeypatch.setattr(job, '_execute_oof_lifecycle', forbidden)
     result = asyncio.run(job._execute_lifecycle(cadence='daily', end_date='2026-09-11',
         promote=True, dispatch_full_fit=True, expected_cohort_id=None,
@@ -207,3 +219,5 @@ def test_nightly_single_B_closes_formal_plan_without_pair_review_or_training(mon
     assert result['native_l4_daily_closure']['plan_id']==plan['plan_id']
     assert result['completion_scope']=='verified_formal_paper_plan'
     assert valid_disabled_receipt(result['paired_nav_maturity']) and not result['promoted']
+    assert calls == [{'end_date':'2026-09-11', 'retire_legacy_owners':True, 'publish_strategy_display':True, 'strategy_only':True}]
+    assert result['strategy_comparison_nav']['status'] == 'accounted'

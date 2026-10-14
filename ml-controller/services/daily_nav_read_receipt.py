@@ -111,6 +111,22 @@ def reusable_result(result):
     return not unexpected(result)
 
 
+def verified_daily_result(*, business_date, client, store, now=None):
+    """A display projection alone cannot certify accounting/review completion."""
+    clock = now or datetime.now(timezone.utc)
+    if date.fromisoformat(business_date) >= clock.astimezone(timezone(timedelta(hours=8))).date():
+        return None
+    identity = code_identity()
+    key = 'daily-nav-read-receipts/v1/' + business_date + '/' + identity + '.json'
+    receipt = store.read(key)
+    if (receipt and receipt.get('business_date') == business_date and receipt.get('code_identity') == identity
+            and receipt.get('result_checksum') == _digest(receipt['result'])
+            and receipt['result'].get('status') != 'failed'
+            and reusable_result(receipt['result']) and unchanged(client, receipt['reads'])):
+        return deepcopy(receipt['result'])
+    return None
+
+
 def run_with_receipt(*, business_date, client, run, store, now=None):
     clock = now or datetime.now(timezone.utc)
     # Never freeze a result while that business session can still be open.

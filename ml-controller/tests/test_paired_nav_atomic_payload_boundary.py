@@ -5,6 +5,7 @@ All data readers are replaced locally; the real feature builder is executed.
 """
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import date, timedelta
 from pathlib import Path
 import asyncio
 import json
@@ -15,22 +16,22 @@ import pytest
 from services import payload_builder as builder
 
 
-def _frozen_loaders(monkeypatch):
+def _frozen_loaders(monkeypatch, *, decision_date='2026-09-06'):
     stocks = [{'id': i + 1, 'symbol': str(1000 + i), 'market': 'LISTED',
                'market_segment': 'LISTED', 'eligible_for_pending_buy': 1}
               for i in range(3)]
-    prices = {i + 1: [{'date': f'2026-09-{d:02d}', 'close': final if d == 6 else 100,
+    prices = {i + 1: [{'date': (date.fromisoformat(decision_date)-timedelta(days=6-d)).isoformat(), 'close': final if d == 6 else 100,
                       'volume': 2_000_000} for d in range(1, 7)]
               for i, final in enumerate([110, 90, 130])}
 
     def load_prices(ids, *, as_of_date, stock_symbols):
-        assert as_of_date == '2026-09-06'
+        assert as_of_date == decision_date
         assert set(ids) <= set(stock_symbols)
         return {sid: deepcopy(prices[sid]) for sid in ids}
 
     def tags(sql, params):
         assert 'finlab_taxonomy_tags' in sql
-        assert params == ['2026-09-06']
+        assert params == [decision_date]
         return [{'symbol': row['symbol'], 'tag': 'Semiconductor'} for row in stocks]
 
     monkeypatch.setattr(builder, '_bulk_load_prices', load_prices)

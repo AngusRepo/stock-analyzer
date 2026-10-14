@@ -75,12 +75,26 @@ async def _execute_lifecycle(
     from services.single_b_daily_closure import single_b_daily_closure
     single_result = single_b_daily_closure(config, end_date)
     if single_result is not None:
-        # Single-B owns the Paper plan, not the strategy evidence display.
-        # This durable job may rebuild the read model without executing paired
-        # accounts, training, adopting a strategy or blocking today's plan.
-        from services.strategy_nav_read_model import refresh_strategy_nav_display
+        # Formal Paper closure stays separate. Reconcile already-sealed strategy
+        # receipts, use the original review/adoption owners and publish display;
+        # this path never trains a model or executes a native frame.
         display_date = single_result['paired_nav_maturity']['signal_date']
-        single_result['strategy_nav_read_model'] = refresh_strategy_nav_display(display_date)
+        nav = _execute_daily_nav(end_date=display_date, retire_legacy_owners=True,
+            publish_strategy_display=True, strategy_only=True)
+        candidates = nav.pop('_adoption_candidates', [])
+        if promote and nav.get('status') != 'failed':
+            from services.paired_nav_daily_adoption import run_daily_ev_adoption
+            nav['adoption'] = await run_daily_ev_adoption(candidates=candidates, business_date=display_date)
+            if nav['adoption']['status'] == 'incomplete':
+                nav.update(status='failed', reason='paired_nav_daily_closure_incomplete')
+        else:
+            nav['adoption'] = {'status': 'blocked_by_nav_failure' if nav.get('status') == 'failed' else 'disabled_by_request'}
+        single_result['strategy_comparison_nav'] = nav
+        single_result['strategy_nav_read_model'] = nav.get('strategy_nav_read_model')
+        single_result['comparison_review_status'] = (nav.get('family_reviews') or {}).get('status', nav.get('status'))
+        if nav.get('status') == 'failed':
+            single_result.update(status='failed', dependency_retry_required=True, nav_retry_required=True,
+                reason='paired_nav_daily_closure_incomplete')
         return single_result
     new_distribution=config.get('l4Distribution') is not None
     nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution, publish_strategy_display=True)
@@ -130,7 +144,7 @@ async def _execute_lifecycle(
     return result
 
 
-def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False) -> dict[str, Any]:
+def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False, strategy_only=False) -> dict[str, Any]:
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     started = time.monotonic()
     from services.paired_nav_read_cache import reuse_verified_cold_reads
@@ -147,10 +161,10 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
             result = run_with_receipt(business_date=end_date,
                 client=client_for_domain(D1DataDomain.LEARNING), store=receipt_store,
                 run=lambda client: _execute_daily_nav_scoped(end_date=end_date,
-                    retire_legacy_owners=True, _client=client))
+                    retire_legacy_owners=True, strategy_only=strategy_only, _client=client))
         else:
             result = _execute_daily_nav_scoped(end_date=end_date, now=now,
-                retire_legacy_owners=retire_legacy_owners)
+                retire_legacy_owners=retire_legacy_owners, strategy_only=strategy_only)
         # Also run on an unchanged daily-accounting retry: a missing display
         # artifact must not stay missing merely because accounting was cached.
         if publish_strategy_display and result.get('as_of_date') and not result.get('error_type'):
@@ -168,7 +182,7 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
     return result
 
 
-def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None) -> dict[str, Any]:
+def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None, strategy_only=False) -> dict[str, Any]:
     from datetime import date, datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)
@@ -185,7 +199,8 @@ def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_o
         from services.paired_nav_daily_review import NavDailyReviewIncomplete
         review_incomplete = False
         try:
-            result = _materialize_nav_with_reviews(business_date=business_date, learning_client=client, now=clock)
+            result = _materialize_nav_with_reviews(business_date=business_date, learning_client=client, now=clock,
+                **({'active_owners': ('atomic_strategy',)} if strategy_only else {}))
         except NavDailyReviewIncomplete as exc:
             # Accounting already completed. Keep the review failure visible,
             # but do not strand candidate date/status projections behind it.
@@ -209,7 +224,8 @@ def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_o
             ('route_candidate_decisions', refresh_registered_route_nav_decisions, {}),
         )
         for component, refresh, extra in projections:
-            if retire_legacy_owners and component!='route_candidate_decisions':
+            active = {'atomic_candidate_decisions'} if strategy_only else {'route_candidate_decisions', 'atomic_candidate_decisions'}
+            if retire_legacy_owners and component not in active:
                 result[component]={'status':'retired_or_requires_paired_l3_l4_release','failures':[],
                     'promotion_allowed':False,'legacy_evidence_retained':True}
                 continue
@@ -502,7 +518,7 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if result.get('comparison_review_status'):
         parts.extend(['comparison_review=' + result['comparison_review_status'],
             'completion_scope=' + result['completion_scope']])
-    adoption = (result.get('paired_nav_maturity') or {}).get('adoption')
+    adoption = (result.get('strategy_comparison_nav') or result.get('paired_nav_maturity') or {}).get('adoption')
     if isinstance(adoption, dict):
         committed = dict((adoption.get('closure') or {}).get('promoted_by_owner') or {})
         for key, owner in (('ensemble', 'ensemble'), ('route', 'l15_route'),
@@ -802,10 +818,12 @@ async def _run() -> int:
             payload['metadata'].pop('oof_freshness',None)
         if isinstance(result.get("paired_nav_maturity"), dict):
             payload["metadata"]["paired_nav_maturity"] = _nav_callback_summary(result["paired_nav_maturity"])
-        if isinstance(result.get('strategy_nav_read_model'), dict):
-            payload['metadata']['strategy_nav_read_model'] = result['strategy_nav_read_model']
             payload["metadata"]["nav_retry_required"] = bool(result.get("nav_retry_required"))
             payload["metadata"]["oof_lifecycle_status"] = result.get("oof_lifecycle_status", result.get("status"))
+        if isinstance(result.get('strategy_comparison_nav'), dict):
+            payload['metadata']['strategy_comparison_nav'] = _nav_callback_summary(result['strategy_comparison_nav'])
+        if isinstance(result.get('strategy_nav_read_model'), dict):
+            payload['metadata']['strategy_nav_read_model'] = result['strategy_nav_read_model']
         if result.get("dependency_retry_required"):
             payload["metadata"]["dependency_retry_reason"] = _dependency_retry_reason(result)
         calendar = result.get("calendar")

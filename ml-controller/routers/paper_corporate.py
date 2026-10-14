@@ -20,6 +20,15 @@ async def native_execution_tick(request: NativeTickRequest):
     return {'status': 'disabled_by_single_b_policy', 'pairs': [], 'executed': 0}
 
 
+@router.post('/strategy-nav-execution-tick')
+async def strategy_nav_execution_tick(request: NativeTickRequest):
+    from services.paired_native_runtime import run_strategy_execution_tick
+    try:
+        return await asyncio.to_thread(run_strategy_execution_tick, session_date=request.session_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
 class CorporateSourceRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     session_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')

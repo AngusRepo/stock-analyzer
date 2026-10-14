@@ -16,7 +16,7 @@ from services.paired_nav_journal import Query, Writer, digest, encode, freeze_sn
 def shadow_failure(stage: str, exc: Exception) -> dict[str, Any]:
     # Provider exceptions can contain credentials/URLs. Only publish our codes.
     reason = str(exc)
-    if not re.fullmatch(r'(?:paired_nav_|native_|paired_native_)[a-z0-9_]+', reason):
+    if not re.fullmatch(r'(?:paired_nav_|native_|paired_native_|strategy_nav_|l4_)[a-z0-9_]+', reason):
         reason = 'paired_nav_source_or_capture_failed'
     return {'status': 'failed', 'stage': stage, 'reason': reason,
             'error_type': type(exc).__name__, 'production_effect': False,
@@ -50,7 +50,7 @@ def allocator_runtime_source_identity() -> dict[str, str]:
     base = Path(__file__).parent
     names = ('recommendation_service.py', 'portfolio_allocation.py', 'online_portfolio_bandit.py',
              'alpha_framework.py', 'l4_alpha_ev_producer.py', 'allocator_ev_fusion.py',
-             'paired_nav_intervention.py', 'expected_return_numeric.py', 'active_model_policy.py',
+             'paired_nav_intervention.py', 'strategy_nav_distribution.py', 'expected_return_numeric.py', 'active_model_policy.py',
              'paired_nav_collection.py', 'paired_nav_opb_prior.py', 'opb_nav_control.py',
              'opb_nav_serving_source.json', 'l4_distribution.py', 'l4_model_cutover.py','l4_mlp_weights.py','l4_mlp_median.py','l4_residual_mlp.py','l4_residual_tabpack.py', 'l4_tabpack_weights.py', 'l4_tabpack_budget_protocol.py', 'l4_tabpack_median.py', 'paper_strategy_mode.py', 'l4_portfolio.py',
              'l4_distribution_runtime.py', 'l4_distribution_context.py', 'l4_risk_history.py', 'l4_dated_risk.py', 'l4_allocation_contract.py', 'similarity_evidence.py')
@@ -296,6 +296,15 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
         if atomic_recommendation_inputs is not None:
             extra['atomic_recommendation_inputs'] = json.loads(encode(atomic_recommendation_inputs))
             extra['atomic_recommendation_result'] = json.loads(encode(atomic_recommendation_result))
+            if trading_config.get('l4Distribution') is not None:
+                from services.strategy_nav_distribution import enabled, capture_history
+                if enabled(trading_config, signal_date=signal_date):
+                    if previous is not None:
+                        extra['atomic_distribution_history'] = previous['atomic_distribution_history']
+                    else:
+                        extra['atomic_distribution_history'] = capture_history(atomic_recommendation_inputs,
+                            formal_payloads=recommendation_context['inputs']['payloads'],
+                            signal_date=signal_date, capture_source=risk_capture_source)
         if allocator_history_context is not None:
             extra['allocator_history_context'] = json.loads(encode(allocator_history_context))
         if execution_environment_reader is not None:

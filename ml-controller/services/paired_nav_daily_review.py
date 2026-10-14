@@ -97,7 +97,7 @@ def _introduced_families(evidence):
     return replace(evidence, population_json=encode(population))
 
 
-def run_daily_nav_reviews(*, business_date, query, writer, now=None):
+def run_daily_nav_reviews(*, business_date, query, writer, now=None, active_owners=None):
     """The daily owner supplies policy; callers cannot pick alpha or protocol ID.
 
     Catch-up uses the ORIGINAL checkpoint date, not all extra available outcomes.
@@ -105,6 +105,10 @@ def run_daily_nav_reviews(*, business_date, query, writer, now=None):
     trading. Recording still grants no promotion authority.
     """
     validate_review_store(query)
+    if active_owners is not None:
+        active_owners = frozenset(active_owners)
+        if not active_owners or active_owners - {'atomic_strategy', 'l15_route'}:
+            raise ValueError('nav_daily_review_owner_scope_invalid')
     clock = now or datetime.now(timezone.utc)
     policy = POLICY
     effect, budget = policy.parameters()
@@ -123,6 +127,8 @@ def run_daily_nav_reviews(*, business_date, query, writer, now=None):
     due = defaultdict(set)
     waiting = []
     for family in population['families']:
+        if active_owners is not None and family['owner'] not in active_owners:
+            continue
         for checkpoint in (policy.minimum_sessions, policy.final_sessions):
             dates = [series[key].observations[checkpoint-1].session_date
                 for key in family['pair_ids'] if key in series and len(series[key].observations) >= checkpoint]
@@ -133,14 +139,20 @@ def run_daily_nav_reviews(*, business_date, query, writer, now=None):
                 waiting.append({'family_id': family['family_id'], 'review_id': review_id,
                     'required_sessions': checkpoint, 'status': 'accumulating'})
     runs, failures = [], []
-    unresolved = {key: len(population[key]) for key in (
+    def relevant(rows):
+        # Unknown provenance remains critical. Only explicitly known retired
+        # owners are inactive; same-owner sibling failures cannot disappear.
+        return [r for r in rows if active_owners is None or not isinstance(r, dict)
+            or not r.get('owner') or r['owner'] in active_owners]
+    unresolved = {key: len(relevant(population[key])) for key in (
         'unmaterialized_selections', 'unresolved_selection_sources',
         'unresolved_legacy_allocation_snapshot_ids', 'unresolved_legacy_execution_snapshot_ids',
-        'unresolved_journal_pair_ids') if population[key]}
+        'unresolved_journal_pair_ids') if relevant(population[key])}
     if unresolved:
         failures.append({'reason': 'nav_daily_population_unresolved', 'counts': unresolved})
     missing_registered = [{'pair_id': p['pair_id'], 'session_dates': p['unaccounted_session_dates']}
-        for p in population['pairs'] if p['unaccounted_session_dates']]
+        for p in population['pairs'] if p['unaccounted_session_dates']
+            and (active_owners is None or p['owner'] in active_owners)]
     if missing_registered:
         failures.append({'reason': 'nav_daily_registered_evidence_missing', 'pairs': missing_registered})
     for (review_id, cutoff), family_ids in sorted(due.items(), key=lambda item: (item[0][1], item[0][0])):
@@ -166,6 +178,8 @@ def run_daily_nav_reviews(*, business_date, query, writer, now=None):
         'status': 'partial_daily_nav_reviews' if failures else 'daily_nav_reviews_current',
         'source_population_checksum': population['source_population_checksum'],
         'families': population['families'], 'runs': runs, 'waiting_checkpoints': waiting,
+        **({'active_owners': sorted(active_owners), 'retained_retired_owners': sorted({f['owner']
+            for f in population['families']} - active_owners)} if active_owners is not None else {}),
         **({'pending_dependencies': population['pending_dependencies']} if population.get('pending_dependencies') else {}),
         'failures': failures, 'promotion_allowed': False,
         'policy_provenance': 'code_owned_not_historically_predeclared'}

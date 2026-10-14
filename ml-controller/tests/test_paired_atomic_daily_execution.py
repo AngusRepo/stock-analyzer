@@ -52,7 +52,7 @@ def test_daily_atomic_original_complete_session_and_ledger(allocated, native_run
     for sid in range(1,5):
         symbol = str(sid+999)
         source.execute("INSERT INTO stocks(id,symbol,name,market,added_at,updated_at) VALUES(?,?,?,'TWSE','2026-09-01','2026-09-01')",(sid,symbol,symbol))
-        source.execute("INSERT INTO stock_prices(stock_id,date,close) VALUES(?,'2026-09-06',100)",(sid,))
+        source.execute("INSERT INTO stock_prices(stock_id,date,close) VALUES(?,?,100)",(sid,state['run_date']))
     held_symbol = '1001' if request.node.callspec.params['full_atomic']=='native_policy_holdings' else '1000'
     source.execute("INSERT INTO paper_positions(account_id,symbol,name,shares,avg_cost,entry_price,entry_date,initial_stop,trailing_stop) VALUES(1,?,?,100,100,100,'2026-09-01',101,101)",(held_symbol,held_symbol))
     source.commit()

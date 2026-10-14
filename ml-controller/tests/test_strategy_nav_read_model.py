@@ -225,18 +225,20 @@ def test_single_b_pre_dispatch_probe_requires_current_source_checked_projection(
     assert len(builds)==1
 
 
-def test_single_b_job_refreshes_display_without_running_nav_or_training(monkeypatch):
+def test_single_b_job_reconciles_strategy_nav_and_display_without_training(monkeypatch):
     import asyncio
     import oof_materialize_job_main as job
     from services import single_b_daily_closure, trading_config_loader
     monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={}))
     original={'status':'native_l4_daily_accounted','paired_nav_maturity':{'signal_date':DAY,'promotion_allowed':False}}
     monkeypatch.setattr(single_b_daily_closure,'single_b_daily_closure',lambda *a:deepcopy(original))
-    def forbidden(**kwargs):raise AssertionError('Single-B display must not execute old NAV owners')
-    monkeypatch.setattr(job,'_execute_daily_nav',forbidden)
     calls=[]
-    monkeypatch.setattr(model,'refresh_strategy_nav_display',lambda day:calls.append(day) or {'status':'published','promotion_allowed':False})
-    result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date=DAY,promote=True,dispatch_full_fit=False,
+    def reconcile(**kw):
+        assert kw == {'end_date':DAY, 'retire_legacy_owners':True, 'publish_strategy_display':True, 'strategy_only':True}
+        calls.append(DAY)
+        return {'status':'accounted', 'strategy_nav_read_model':{'status':'published'}, '_adoption_candidates':[]}
+    monkeypatch.setattr(job,'_execute_daily_nav',reconcile)
+    result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date=DAY,promote=False,dispatch_full_fit=False,
         expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
     assert result['strategy_nav_read_model']['status']=='published' and calls==[DAY]
     assert result['paired_nav_maturity']==original['paired_nav_maturity']

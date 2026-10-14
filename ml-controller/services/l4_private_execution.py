@@ -20,8 +20,14 @@ def allocate_private(store,account):
         raise ValueError('private_l4_account_head_changed')
     policy['runtime']['account']=account
     ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
-    rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,private_research=True)
-    plan=rows[0].pop('_l4_portfolio_plan')
+    captures = []
+    rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,
+        private_research=True, evidence_sink=captures.append)
+    if len(captures) != 1:
+        raise ValueError('private_l4_allocation_capture_missing')
+    plan=captures[0]['portfolio_plan']
+    if rows and rows[0].pop('_l4_portfolio_plan') != plan:
+        raise ValueError('private_l4_allocation_plan_changed')
     # The exact native serializer; no independent execution or fill approximation.
     for sql,args in build_recommendation_update_statements(rows,account['signal_date']):
         if store.db.execute(sql,args).rowcount!=1:

@@ -76,6 +76,7 @@ Use the immutable execution packet's close; do not invent another calendar.
     session_closes = {}
     context_ids, expected, materialized, ev_selections = set(), set(), set(), {}
     unresolved_sources = []
+    unavailable_allocations = {}
     pending_dependencies = []
     series_by_pair = {p.pair_id: p for p in series}
     for saved in manifests('allocation_context'):
@@ -157,7 +158,18 @@ Use the immutable execution packet's close; do not invent another calendar.
         root = context.get('upstream_allocation_context_snapshot_id') or parent['manifest']['snapshot_id']
         if root not in context_ids:
             raise ValueError('paired_nav_population_root_context_missing')
-        comparison = resolve_allocation_comparison(query=query, allocation=saved, parent=parent)
+        try:
+            comparison = resolve_allocation_comparison(query=query, allocation=saved, parent=parent)
+        except ValueError as exc:
+            from services.strategy_nav_retired_source import retired_source_comparison, execution_parent_identity
+            comparison = retired_source_comparison(exc, allocation=saved, parent=parent, clock=clock)
+            if comparison is None:
+                raise
+            unavailable_allocations[m['snapshot_id']] = execution_parent_identity(saved)
+            unresolved_sources.append({'allocation_context_snapshot_id': root,
+                'allocation_snapshot_id': m['snapshot_id'], 'owner': plan['owner'],
+                'status': 'unavailable', 'stage': 'retired_source_verification',
+                'reason': comparison['reason'], 'source_checksum': m['payload_checksum']})
         identity = {k: plan.get(k) for k in ('owner', 'candidate_checksum', 'baseline_checksum', 'configuration_checksum')}
         if (not isinstance(plan.get('pair_id'), str) or not plan['pair_id']
                 or any(not isinstance(identity[k], str) or re.fullmatch('[0-9a-f]{64}', identity[k]) is None
@@ -207,7 +219,12 @@ Use the immutable execution packet's close; do not invent another calendar.
         parent_id = packet['allocation_snapshot_id']
         if parent_id not in plans:
             raise ValueError('paired_nav_population_execution_parent_missing')
-        comparison = resolve_comparison(query=query, execution=saved)
+        if parent_id in unavailable_allocations:
+            from services.strategy_nav_retired_source import validate_unavailable_execution
+            validate_unavailable_execution(saved, unavailable_allocations[parent_id])
+            comparison = pairs[packet['pair_id']]['comparison']
+        else:
+            comparison = resolve_comparison(query=query, execution=saved)
         pair_id, session = packet['pair_id'], packet['session_date']
         if (pair_id not in pairs or pairs[pair_id]['comparison'] != comparison
                 or date.fromisoformat(session).isoformat() != session or session <= m['signal_date']):
@@ -229,6 +246,8 @@ Use the immutable execution packet's close; do not invent another calendar.
         validate_schema(query)
     for pair_id, info in pairs.items():
         evidence = series_by_pair.get(pair_id)
+        if info['comparison'].get('kind') == 'unavailable_retired_source' and evidence is not None:
+            raise ValueError('paired_nav_retired_source_journal_unverifiable')
         rows = {o.session_date: o.snapshot_id for o in evidence.observations} if evidence else {}
         registered = executions.get(pair_id, {})
         if any(registered.get(day) != snapshot for day, snapshot in rows.items()):

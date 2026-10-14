@@ -4,6 +4,7 @@ import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 import { failClosedRiskCheck } from './failClosed'
 import { estimateSellOrderRealizedPnl, parseSellOrderNote } from '../paperOrderAccounting'
 import { paperExecutionNow } from '../paperExecutionScope'
+import { sellReceiptExitCategory } from '../paperExitAttribution'
 
 export interface P5LossGuardPolicy {
   lookbackSessions:number; releaseAfterSessions:number; channel:'stopouts'|'net_pnl';
@@ -27,7 +28,7 @@ export function evaluateBoundedLosses(rows:any[],held:Array<{symbol:string;entry
     const pnl=estimateSellOrderRealizedPnl(row);if(pnl==null) continue
     const key=`${row.symbol}:${entryDate}`,previous=groups.get(key)
     groups.set(key,{pnl:(previous?.pnl??0)+pnl,date:previous && previous.date>date?previous.date:date,
-      stopout:previous?.stopout===true || ['hard_stop','structural_stop'].includes(String(note.exit_category))})
+      stopout:previous?.stopout===true || ['hard_stop','structural_stop'].includes(sellReceiptExitCategory(note))})
   }
   const closed=[...groups.values()].filter(t=>allowed.has(t.date)).sort((a,b)=>b.date.localeCompare(a.date))
     .filter(t=>policy.channel==='net_pnl' || t.stopout).slice(0,policy.maximumClosedTrades)

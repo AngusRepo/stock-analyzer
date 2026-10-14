@@ -8,7 +8,22 @@ import { DEFAULT_TRADING_CONFIG } from './tradingConfig'
 import { checkCanonicalMarketRestriction } from './riskChecks/canonicalMarketRestriction'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
 import { checkP4Breadth } from './riskChecks/p4Breadth'
+import { sellReceiptExitCategory } from './paperExitAttribution'
 const deps={defaults:{halt:false,maxPositionPct:.08,buyConfThreshold:.6,sellConfThreshold:.65},effectiveBuy:.6,effectiveSell:.65}
+test('P5 recognizes explicit legacy stop codes without treating L4 losses or unknown reasons as stops',()=>{
+  assert.equal(sellReceiptExitCategory({reason:'[intraday] swing_hard_stop_8 (mkt=30.3, -1 tick fill)'}),'hard_stop')
+  assert.equal(sellReceiptExitCategory({reason:'[intraday] swing_daily_orl (mkt=120, -1 tick fill)'}),'structural_stop')
+  assert.equal(sellReceiptExitCategory({reason:'[intraday] [L4Target] plan=abc;target=0 (mkt=471.5, -1 tick fill)'}),'model_rotation')
+  assert.equal(sellReceiptExitCategory({reason:'unknown',realized_pnl:-5000}),'unknown')
+  assert.equal(sellReceiptExitCategory({reason:'swing_hard_stop_8_extra'}),'unknown')
+  assert.equal(sellReceiptExitCategory({reason:'swing_hard_stop_8',exit_category:'model_rotation'}),'model_rotation')
+  const policy:P5LossGuardPolicy={lookbackSessions:5,releaseAfterSessions:2,channel:'stopouts',minimumLossValue:0,minimumClosedTrades:3,maximumClosedTrades:5,scale:.5}
+  const rows=['swing_hard_stop_8','swing_daily_orl','s12_position_structural_stop_full_exit','[L4Target] plan=x;target=0']
+    .map((reason,i)=>({symbol:String(i),created_at:'2026-10-14 01:00:00',note:JSON.stringify({reason,
+      entry_date:'2026-10-01',realized_pnl:-10})}))
+  const result=evaluateBoundedLosses(rows,[],['2026-10-14'],policy)
+  assert.equal(result.losses,3);assert.equal(result.total,3);assert.equal(result.triggered,true)
+})
 test('P7 ignores stale models, future labels, duplicate stocks and overlapping label windows',async()=>{
   const f=l4NativeFixture();f.ports.nowMs=Date.parse('2026-10-14T10:00:00+08:00')
   try {

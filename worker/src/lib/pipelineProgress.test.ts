@@ -27,3 +27,17 @@ test('progress is ordered, run-fenced, and cannot reopen a terminal pipeline or 
   assert.equal(validPipelineProgress({...p,completed:[{phase:'x',elapsed_ms:-1,status:'completed'}]}),false)
   sql.close()
 })
+
+test('newer same-run handoff supersedes an old node but preserves matching or newer telemetry', () => {
+  const parent={canonical_run_id:'run-a',status:'waiting'}
+  const p:PipelineProgress={phase:'node_l2_timesfm_enrich',status:'running',started_at:'2026-10-14T16:19:00Z',
+    phase_started_at:'2026-10-14T17:45:00Z',observed_at:'2026-10-14T17:45:01Z',execution_id:'job-a',completed:[]}
+  const row=(value:PipelineProgress)=>({canonical_run_id:'run-a',cursor_key:JSON.stringify(value)})
+  const handoff={runId:'run-a',observedAt:'2026-10-14T17:58:13Z',phase:'modal_prediction'}
+  assert.equal(pipelineProgressForDisplay(parent,row(p),handoff),null)
+  assert.deepEqual(pipelineProgressForDisplay(parent,row(p),{...handoff,runId:'other'}),p)
+  const matching={...p,phase:'modal_prediction',status:'waiting' as const}
+  assert.deepEqual(pipelineProgressForDisplay(parent,row(matching),handoff),matching)
+  const next={...p,phase:'node_l3_formal_predict',observed_at:'2026-10-14T18:00:00Z'}
+  assert.deepEqual(pipelineProgressForDisplay(parent,row(next),handoff),next)
+})

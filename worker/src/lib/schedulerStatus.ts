@@ -1062,8 +1062,12 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
         ? displayLog.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(displayLog.summary ?? '')?.[1] : null,
       durable: durableState,
     })
+    const handoffStage = displayLog?.status === 'triggered' && /cloud_compute_stopped=true/.test(displayLog.summary ?? '')
+      ? /(?:^|\s)stage=([a-z_]+)(?:\s|$)/.exec(displayLog.summary ?? '')?.[1] : undefined
     const pipelineProgress = def.id === 'pipeline' ? pipelineProgressForDisplay(durableState,
-      (await progressPromise).get(resolvedDisplay.statusRunDate ?? '')) : null
+      (await progressPromise).get(resolvedDisplay.statusRunDate ?? ''),
+      handoffStage && displayLog?.run_id ? { runId: displayLog.run_id, observedAt: displayLog.timestamp,
+        phase: handoffStage === 'modal_prediction' ? handoffStage : `input_${handoffStage}` } : undefined) : null
     const progressActive = pipelineProgress && durableState && ['running','waiting'].includes(durableState.status)
       && !['success','failed'].includes(resolvedDisplay.status)
     const progressStatus = progressActive ? (pipelineProgress.status === 'waiting' ? 'waiting' as const : 'running' as const) : null

@@ -33,10 +33,16 @@ export async function recordPipelineProgress(db: D1Database, runDate: string, ru
 }
 
 export function pipelineProgressForDisplay(parent: { canonical_run_id: string; status: string } | undefined,
-  row?: { canonical_run_id: string; cursor_key: string | null }) {
+  row?: { canonical_run_id: string; cursor_key: string | null },
+  handoff?: { runId: string; observedAt: string; phase: string }) {
   if (!parent || !row || row.canonical_run_id !== parent.canonical_run_id) return null
   try {
     const progress: unknown = JSON.parse(row.cursor_key ?? '')
-    return validPipelineProgress(progress) ? progress : null
+    if (!validPipelineProgress(progress)) return null
+    // A finished producer can hand off without phase telemetry (older Jobs).
+    // Do not let its earlier node hide a newer, same-run dependency receipt.
+    if (handoff?.runId === parent.canonical_run_id && handoff.phase !== progress.phase
+      && Date.parse(handoff.observedAt) > Date.parse(progress.observed_at)) return null
+    return progress
   } catch { return null }
 }

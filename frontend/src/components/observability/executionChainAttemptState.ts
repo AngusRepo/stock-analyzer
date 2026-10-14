@@ -36,6 +36,12 @@ export function buildAttemptAwareJobMap(
   const runtimeAuthority = derivedFromParent ? orchestrator : current
   if (!runtimeAuthority) return base
 
+  // Dispatch is not execution: an authoritative queued receipt for the run
+  // named by the parent must keep its waiting state until a worker claims it.
+  if (derivedFromParent && current?.lastStatus === 'waiting' && current.ticket?.durable
+    && current.runId && runtimeAuthority.summary?.includes(current.runId)
+    && current.statusRunDate === runtimeAuthority.statusRunDate) return base
+
   // A generic finalizer retry is weaker evidence than a terminal receipt from
   // this exact run. Do not restart the completed stage or hide its successors.
   if (derivedFromParent && current?.runId && current.runId === runtimeAuthority.runId

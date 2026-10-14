@@ -91,6 +91,14 @@ const inferStage = (summary?: string | null): string | null => (
 }
 
 {
+  const queued = job('pipeline', 'waiting', {runId:'pipeline-dispatch:current', statusRunDate:'2026-10-14'})
+  queued.ticket.durable = true
+  const parent = job('evening-chain', 'running', {statusRunDate:'2026-10-14', summary:'pipeline triggered run_id=pipeline-dispatch:current, callback expected'})
+  const base = new Map([['pipeline',queued],['evening-chain',parent]])
+  assert(buildAttemptAwareJobMap(base, {orchestratorId:'evening-chain',columns:[['pipeline']]}, ()=>'pipeline').get('pipeline')?.lastStatus === 'waiting', 'durable dispatch queue must not display computation running')
+}
+
+{
   const base = new Map<string, SchedulerJob>([
     ['evening-chain', job('evening-chain', 'waiting', {
       statusScope: 'schedule',

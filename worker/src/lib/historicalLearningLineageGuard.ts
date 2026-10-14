@@ -119,12 +119,14 @@ export async function historicalLearningLineageDecision(
     nowMs,
   })
   // Dated paper recoveries keep real timestamps and the published admission.
-  // Oct13 only continues the pipeline; other historical writers stay closed.
+  // Oct13/14 only continue the pipeline; other historical writers stay closed.
   const today = taipeiDate(nowMs)
   const recoveryDate = signalDate === '2026-10-08' && nextSessionDate === '2026-10-12' && today === '2026-10-12'
     ? '20261012'
     : task === 'pipeline' && signalDate === '2026-10-12' && nextSessionDate === '2026-10-13' && today === '2026-10-13'
-      ? '20261013' : null
+      ? '20261013'
+      : task === 'pipeline' && signalDate === '2026-10-13' && nextSessionDate === '2026-10-14' && today === '2026-10-14'
+        ? '20261014' : null
   if (!decision.allowed && recoveryDate) {
     const admission = await kv.get('ml:active8:paper_admission:v1', 'json') as any
     const variables = admission?.configuration?.native_execution_policy?.variables

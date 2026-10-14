@@ -11,6 +11,15 @@ _started = None
 _completed = []
 
 
+def node_result_status(name, update):
+    """Reflect explicit shadow/sidecar outcomes without changing graph control."""
+    key = {'node_capture_atomic_inputs': 'paired_nav_atomic_inputs',
+           'node_l2_timesfm_enrich': 'timesfm_l2_summary'}.get(name)
+    result = update.get(key) if key and isinstance(update, dict) else None
+    status = result.get('status') if isinstance(result, dict) else None
+    return 'blocked' if status == 'blocked' else 'failed' if status in ('failed', 'error') else 'completed'
+
+
 def completed(name, elapsed_ms, *, status='completed'):
     _completed.append({'phase': name, 'elapsed_ms': round(elapsed_ms), 'status': status})
 
@@ -40,16 +49,17 @@ async def report(phase, *, status='running', phase_started_at=None):
 
 
 @asynccontextmanager
-async def phase(name):
+async def phase(name, *, deferred_exception=()):
     started_at = datetime.now(timezone.utc).isoformat()
     await report(name, phase_started_at=started_at)
     started = time.monotonic()
-    status = 'completed'
+    outcome = {'status': 'completed'}
     try:
-        yield
-    except BaseException:
-        status = 'failed'
+        yield outcome
+    except BaseException as exc:
+        outcome['status'] = 'blocked' if isinstance(exc, deferred_exception) else 'failed'
         raise
     finally:
+        status = outcome['status']
         completed(name, (time.monotonic()-started)*1000, status=status)
         await report(name, status=status, phase_started_at=started_at)

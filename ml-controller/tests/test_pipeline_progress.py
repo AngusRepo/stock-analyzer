@@ -29,3 +29,32 @@ def test_outage_does_not_change_pipeline_result(monkeypatch):
         async def __aexit__(self,*args): pass
     monkeypatch.setattr(progress.httpx,'AsyncClient',Broken)
     asyncio.run(progress.report('startup'))
+
+
+def test_explicit_blocked_result_is_reported_without_failing_node(monkeypatch):
+    events=[]
+    async def report(name, **kwargs): events.append((name,kwargs))
+    monkeypatch.setattr(progress,'report',report)
+    monkeypatch.setattr(progress,'_completed',[])
+    async def run():
+        async with progress.phase('node_l2_timesfm_enrich') as outcome:
+            outcome['status']=progress.node_result_status('node_l2_timesfm_enrich',{'timesfm_l2_summary':{'status':'blocked'}})
+        return 'continues'
+    assert asyncio.run(run()) == 'continues'
+    assert events[-1][1]['status']=='blocked'
+    assert progress._completed[0]['status']=='blocked'
+    assert progress.node_result_status('node_capture_atomic_inputs',{'paired_nav_atomic_inputs':{'status':'failed'}})=='failed'
+    assert progress.node_result_status('node_recommend',{'status':'blocked'})=='completed'
+
+
+def test_expected_dependency_keeps_original_exception_and_blocked_telemetry(monkeypatch):
+    class DependencyPending(Exception): pass
+    async def report(*args,**kwargs): pass
+    monkeypatch.setattr(progress,'report',report)
+    monkeypatch.setattr(progress,'_completed',[])
+    async def run():
+        async with progress.phase('prepare_prediction_request',deferred_exception=DependencyPending):
+            raise DependencyPending('same dependency')
+    with pytest.raises(DependencyPending,match='same dependency'):
+        asyncio.run(run())
+    assert progress._completed[0]['status']=='blocked'

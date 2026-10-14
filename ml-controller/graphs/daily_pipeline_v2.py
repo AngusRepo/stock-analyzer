@@ -5075,12 +5075,14 @@ def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
 
 async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
     from services.runtime_phase_metrics import measured_phase
-    from services.pipeline_progress import phase
+    from services.pipeline_progress import phase, node_result_status
     for node in nodes:
         name = getattr(node, "__name__", type(node).__name__)
-        async with phase(name):
+        async with phase(name) as outcome:
             with measured_phase(name):
-                _merge_pipeline_state_update(state, await node(state))
+                update = await node(state)
+                outcome['status'] = node_result_status(name, update)
+                _merge_pipeline_state_update(state, update)
     return state
 
 
@@ -5235,24 +5237,28 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
 
 async def _continue_pipeline_after_l2(state: PipelineStateV2) -> dict:
     from services.pipeline_input_events import InputDeferred
+    from services.pipeline_progress import phase
     run_date = state['run_date']
     t0 = asyncio.get_event_loop().time()
     assert_canonical_window_open(run_date)
     try:
         # Seal observable L2 inputs before a detached dependency can complete.
         from services.pipeline_input_events import input_context, seal_checkpoint
-        original_uri = _write_pipeline_async_state_artifact(state)
-        from google.cloud import storage
-        bucket_name, key = original_uri[5:].split("/", 1)
-        raw = storage.Client().bucket(bucket_name).blob(key).download_as_bytes()
-        checkpoint_uri = seal_checkpoint(state, raw)
-        with input_context(state, checkpoint_uri):
-            modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
-        assert_canonical_window_open(run_date)
-        state_gcs_uri = _write_pipeline_async_state_artifact(state)
-        modal_payload["state_gcs_uri"] = state_gcs_uri
+        async with phase('seal_l2_inputs'):
+            original_uri = _write_pipeline_async_state_artifact(state)
+            from google.cloud import storage
+            bucket_name, key = original_uri[5:].split("/", 1)
+            raw = storage.Client().bucket(bucket_name).blob(key).download_as_bytes()
+            checkpoint_uri = seal_checkpoint(state, raw)
+        async with phase('prepare_prediction_request', deferred_exception=InputDeferred):
+            with input_context(state, checkpoint_uri):
+                modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri="")
+            assert_canonical_window_open(run_date)
+            state_gcs_uri = _write_pipeline_async_state_artifact(state)
+            modal_payload["state_gcs_uri"] = state_gcs_uri
 
-        spawn_info = await asyncio.to_thread(_spawn_pipeline_prediction_bundle_from_artifact, modal_payload)
+        async with phase('dispatch_prediction'):
+            spawn_info = await asyncio.to_thread(_spawn_pipeline_prediction_bundle_from_artifact, modal_payload)
         elapsed = asyncio.get_event_loop().time() - t0
         return {
             "status": "deferred",

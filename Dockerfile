@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python deps (ml-controller only; ml-service deps live on Modal cloud).
 COPY ml-controller/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -c "import numpy; import pyarrow; from finlab import data; import pandas as pd; import polars as pl; assert pl.from_pandas(pd.DataFrame({'probe': [1]})).to_dicts() == [{'probe': 1}]"
 
 # Worker screener job runtime. The Cloud Run Job compiles and runs the same
 # TypeScript screener code with D1/KV REST adapters instead of Worker bindings.

@@ -5,6 +5,8 @@ pydantic==2.10.3
 httpx==0.28.1
 modal==1.4.0
 numpy==1.26.4
+# Arrow 26 requires NumPy 2; FinLab imports Arrow lazily during morning setup.
+pyarrow==24.0.0
 scikit-learn==1.9.1
 networkx==3.6.1
 Jinja2==3.1.6

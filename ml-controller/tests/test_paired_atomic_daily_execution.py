@@ -61,6 +61,11 @@ def test_daily_atomic_original_complete_session_and_ledger(allocated, native_run
     objects = ImmutableNativeObjects(CompressedMemoryBucket())
     env = parent['native_execution_environment']
     frozen_at = datetime(2026,9,6,14,tzinfo=timezone.utc)
+    allocation = read_snapshot(db.query, plan['snapshot_id'])['payload']['content']
+    if allocation['configuration'].get('native_session_policy'):
+        # Actual premarket producer finishes after 07:15. Registration must
+        # still be prospective immediately before its declared 08:45 start.
+        frozen_at = datetime(2026,9,7,0,44,59,tzinfo=timezone.utc)
     def calendar(key):
         return json.dumps({'schemaVersion':'twse-holiday-schedule-v2','source':'twse.openapi.holidaySchedule',
             'loadedAt':frozen_at.isoformat(),'dates':[]}) if key.startswith('market:twse_holiday_schedule:') else None
@@ -70,6 +75,9 @@ def test_daily_atomic_original_complete_session_and_ledger(allocated, native_run
             domain_queries=domains,kv_read=calendar,objects=objects,account_id=1,variables=env['source_context']['variables'],
             kv_read_policy=env['kv_read_policy'],source_context=env['source_context'],runner=native_runner,now=frozen_at)
         packet = read_snapshot(db.query,registered['snapshot_id'])['payload']['content']
+        if allocation['configuration'].get('native_session_policy'):
+            assert packet['schedule'][0]['observed_at'] == '2026-09-07T08:45:00+08:00'
+            assert len(packet['schedule']) == 281
         if held_symbol == '1001':
             definition = parent['atomic_recommendation_inputs']['definitions'][key]
             assert '1001' not in {r['symbol'] for r in definition['screener_recs']}

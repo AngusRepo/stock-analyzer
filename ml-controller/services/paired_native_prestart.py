@@ -101,7 +101,7 @@ def _verified_source(query, snapshot_id):
     if query("SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind='execution_receipt' AND parent_snapshot_id=? LIMIT 1", [snapshot_id]):
         raise ValueError('paired_native_prestart_history_present')
     from services.paired_native_session import validate_schedule
-    validate_schedule(packet['schedule'], packet['session_date'])
+    validate_schedule(packet['schedule'], packet['session_date'], packet=packet)
     return old, allocation, comparison
 
 

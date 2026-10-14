@@ -56,7 +56,7 @@ def certify_unobserved_first_session(*, execution_snapshot_id: str, query, write
     from services.paired_native_prestart import succession
 
     schedule = packet['schedule']
-    validate_schedule(schedule, packet['session_date'])
+    validate_schedule(schedule, packet['session_date'], packet=packet)
     first = schedule[0]
     deadline = frame_capture_deadline(first)
     if clock < deadline or clock.astimezone(deadline.tzinfo).date().isoformat() <= packet['session_date']:

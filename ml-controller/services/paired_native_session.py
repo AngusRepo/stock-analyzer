@@ -19,15 +19,29 @@ from services.paired_nav_journal import (
 
 TW = timezone(timedelta(hours=8))
 ARMS = ('baseline', 'candidate')
+STRATEGY_SESSION_POLICY = 'single-b-strategy-full-session-0845-v1'
 
 
-def session_schedule(session_date: str) -> list[dict[str, str]]:
+def session_policy(packet):
+    configuration = packet['configuration']
+    policy = configuration.get('native_session_policy')
+    if policy is not None:
+        from services.strategy_nav_distribution import enabled
+        if (policy != STRATEGY_SESSION_POLICY or packet.get('owner') != 'atomic_strategy'
+                or not enabled(configuration.get('trading_config'), signal_date=packet['session_date'])):
+            raise ValueError('paired_native_session_policy_invalid')
+    return policy
+
+
+def session_schedule(session_date: str, *, policy=None) -> list[dict[str, str]]:
     """Explicit same-minute serialization, frozen before either arm executes.
 
     Intraday runs first, then the observe-only rescore / EOD phase. This is a
     paired execution policy, not a claim that independent production crons have
     historically run in that order. Both arms must use this identical policy.
     """
+    if policy not in (None, STRATEGY_SESSION_POLICY):
+        raise ValueError('paired_native_session_policy_invalid')
     day = date.fromisoformat(session_date)
     if day.weekday() > 4:
         raise ValueError('paired_native_nonweekday_session')
@@ -41,8 +55,9 @@ def session_schedule(session_date: str) -> list[dict[str, str]]:
         row['input_id'] = digest(row)
         schedule.append(row)
 
-    add('settlement', 435)
-    add('morning', 435)
+    start_minute = 525 if policy == STRATEGY_SESSION_POLICY else 435
+    add('settlement', start_minute)
+    add('morning', start_minute)
     add('preopen', 530)
     rescores = {600: '0 2 * * 1-5', 660: '0 3 * * 1-5',
                 720: '0 4 * * 1-5', 750: '30 4 * * 1-5'}
@@ -57,8 +72,9 @@ def session_schedule(session_date: str) -> list[dict[str, str]]:
     return schedule
 
 
-def validate_schedule(schedule: list[dict[str, Any]], session_date: str) -> None:
-    if schedule != session_schedule(session_date):
+def validate_schedule(schedule: list[dict[str, Any]], session_date: str, *, packet=None) -> None:
+    policy = session_policy(packet) if packet is not None else None
+    if schedule != session_schedule(session_date, policy=policy):
         raise ValueError('paired_native_full_schedule_mismatch')
 
 
@@ -137,7 +153,7 @@ def run_paired_session(*, snapshot_id: str, tapes: dict[str, Any], states: dict[
             or configuration.get('fees') != packet['fees']):
         raise ValueError('paired_native_configuration_mismatch')
     schedule = packet['schedule']
-    validate_schedule(schedule, packet['session_date'])
+    validate_schedule(schedule, packet['session_date'], packet=packet)
     if _timestamp(schedule[-1]['observed_at']) > clock:
         raise ValueError('paired_native_session_not_closed')
     if _timestamp(manifest['frozen_at']) >= _timestamp(schedule[0]['observed_at']):

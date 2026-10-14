@@ -14,6 +14,7 @@ def frame_capture_deadline(frame: dict) -> datetime:
     # deadline is preopen, not one minute after cron dispatch. Trading phases
     # retain their one-minute window; retries may only reuse sealed old reads.
     boundaries = {('settlement', 435): 530, ('morning', 435): 530,
+                  ('settlement', 525): 530, ('morning', 525): 530,
                   ('preopen', 530): 540, ('postclose', 820): 860}
     end = boundaries.get((frame['stage'], minute))
     if end is None:

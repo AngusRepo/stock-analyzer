@@ -118,7 +118,7 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
             if packet['session_date'] != session_date:
                 continue
             assert_collectible(saved, query=query)
-            validate_schedule(packet['schedule'], session_date)
+            validate_schedule(packet['schedule'], session_date, packet=packet)
             # Aliases locate the contiguous prefix without downloading a full
             # two-arm state at each binary-search probe. Verify the boundary
             # receipt before using it; collect_frame and close still verify

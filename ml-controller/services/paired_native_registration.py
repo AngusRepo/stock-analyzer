@@ -12,7 +12,7 @@ from pathlib import Path
 from services.native_paper_bootstrap import capture_native_bootstrap
 from services.native_paper_sandbox import native_runtime_manifest, PrivatePaperStore
 from services.native_paper_state import prepare_native_state
-from services.paired_native_session import ARMS, session_schedule
+from services.paired_native_session import ARMS, session_schedule, session_policy
 from services.paired_nav_journal import _timestamp, account_value, digest, freeze_snapshot, read_snapshot
 
 
@@ -112,7 +112,7 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
     if closure_for_pair(source_run_id, signal_date=signal_date, query=query):
         raise ValueError('paired_native_closed_pair_cannot_restart')
     session_date, calendar = next_session(signal_date, kv_read=kv_read, now=clock)
-    schedule = session_schedule(session_date)
+    schedule = session_schedule(session_date, policy=session_policy({**allocation, 'session_date': session_date}))
     if not clock < _timestamp(schedule[0]['observed_at']):
         raise ValueError('paired_native_registration_after_first_phase')
     configuration = allocation['configuration']

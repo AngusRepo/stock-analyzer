@@ -64,7 +64,7 @@ def build_source_receipt(*, snapshot_id, objects, query, now=None):
     """
     packet = read_snapshot(query, snapshot_id)['payload']['content']
     schedule = packet['schedule']
-    validate_schedule(schedule, packet['session_date'])
+    validate_schedule(schedule, packet['session_date'], packet=packet)
     clock = now or datetime.now(timezone.utc)
     if clock < _timestamp(schedule[-1]['observed_at']):
         raise ValueError('paired_native_session_not_closed')

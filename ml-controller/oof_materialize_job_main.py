@@ -167,7 +167,7 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
                 retire_legacy_owners=retire_legacy_owners, strategy_only=strategy_only)
         # Also run on an unchanged daily-accounting retry: a missing display
         # artifact must not stay missing merely because accounting was cached.
-        if publish_strategy_display and result.get('as_of_date') and not result.get('error_type'):
+        if publish_strategy_display and result.get('as_of_date'):
             try:
                 from services.strategy_nav_read_model import refresh_strategy_nav_read_model, production_read_store
                 from services.d1_domain_client import D1DataDomain, client_for_domain

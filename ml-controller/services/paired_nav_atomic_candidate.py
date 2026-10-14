@@ -11,12 +11,16 @@ def _configuration(saved, policy):
     from services.paired_nav_candidate_collection import allocation_policy_identity
     from services.paired_nav_execution_environment import configuration_environment
     context = saved['payload']['content']
+    from services.strategy_nav_distribution import enabled
+    from services.paired_native_session import STRATEGY_SESSION_POLICY
+    schedule = ({'native_session_policy': STRATEGY_SESSION_POLICY}
+        if enabled(context.get('trading_config'), signal_date=saved['manifest']['signal_date']) else {})
     return {**{key: deepcopy(context[key]) for key in ('trading_config', 'risk_config', 'allocator_source_identity')},
         'formal_baseline_identity': deepcopy(context['formal_baseline_identity']),
         'allocator_policies': allocation_policy_identity(context['inputs']),
         'atomic_policy_identity': deepcopy(policy['context']['identity']),
         'recommendation_source_identity': deepcopy(context['recommendation_context']['source_identity']),
-        **configuration_environment(saved)}
+        **configuration_environment(saved), **schedule}
 
 
 def collect_atomic_allocations(*, snapshot_id, query, writer):

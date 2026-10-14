@@ -2833,8 +2833,17 @@ def _materialize_nav_with_reviews_scoped(*, business_date, learning_client, now=
     """Accounting first, then owned daily reviews; never cache a verdict globally."""
     from services.paired_nav_journal import mature_staged_pairs
     from services.paired_nav_daily_review import run_daily_nav_reviews, NavDailyReviewIncomplete
+    scope = None
+    accounting_query = learning_client.query
+    if active_owners is not None:
+        from services.strategy_nav_accounting_scope import StrategyAccountingScope
+        scope = StrategyAccountingScope(accounting_query, active_owners)
+        accounting_query = scope.query
     result = mature_staged_pairs(business_date=business_date,
-        query=learning_client.query, writer=learning_client.batch_execute, now=now)
+        query=accounting_query, writer=learning_client.batch_execute, now=now)
+    if scope is not None:
+        result['accounting_active_owners'] = sorted(scope.active_owners)
+        result['retained_inactive_execution_snapshots'] = list(scope.retained.values())
     atomic_writer = getattr(learning_client, 'atomic_batch_execute', None)
     if not callable(atomic_writer):
         raise RuntimeError('paired_nav_review_atomic_writer_missing')

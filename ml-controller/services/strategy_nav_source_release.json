@@ -4,7 +4,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "cabab05af23ea534cd5dbcc36f4724941f363b52",
+  "production_baseline_source": "a242101a31b250b156c98438e9e745240a80636e",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
   "prior_approval_checksum": "61b82a9da7c811c2c211143a023a7267ddbee330ad41304c4656e15b9889e06e",
   "prior_configuration_checksum": "063da754a8c8ff83e21f728730106e9134c67af8e7396d89ca42aced0ccc390e",
@@ -71,13 +71,12 @@
       "paired_nav_atomic_recommendation.py": "c2d4254e2b32ddb323b83d554924e3d43988ca1079c5da715f22ddc429722023",
       "paired_nav_atomic_policy.py": "97c1c82915bd443de4c90d7e749fc000ad9b31b91997d51ae9735c7c2bf51d18",
       "paired_nav_atomic_allocation.py": "09d754c80eba2a0e279897293f4cd753c4823b2e5bb7be0244215b97bf480b6b",
-      "paired_nav_atomic_candidate.py": "fd568052ff3869f333291f7745998d91ceec586af3452bd6082d139060fd9360",
+      "paired_nav_atomic_candidate.py": "d27d4b277dfe1d5deae2b445784f1aad962b53db2e6e713d550a5a0f717e197e",
       "fundamental_quality.py": "6662c407e47448ce9a82ab9c2b47093ec508bd20b147125297e792c9df7213f7",
       "pit_sector_alpha.py": "919b06527e04c826ef9d8b38c13d84ba98eba1fbb19fc3508a4e2b3c39859f34",
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:f552546287efa1ae35b400d4747f5f004d216175bd8f3feac0e0b0b6913d7740",
-  "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md",
-  "native_worker_source": "51f869a8e2ea025aae962f78f63f9f1675dc922d"
+  "execution_owner_version": "native-paper-v1:8039106e7d4dd1dc77193ea198345ec4a571a17375559356fb0c73a4c9d51db9",
+  "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md"
 }

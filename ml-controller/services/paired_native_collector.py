@@ -28,7 +28,7 @@ def collect_frame(*, snapshot_id: str, frame_index: int, objects, query, capture
     if manifest['snapshot_kind'] != 'execution_pair' or manifest['prospective'] != 1:
         raise ValueError('paired_native_prospective_pair_required')
     schedule = packet['schedule']
-    validate_schedule(schedule, packet['session_date'])
+    validate_schedule(schedule, packet['session_date'], packet=packet)
     if type(frame_index) is not int or not 0 <= frame_index < len(schedule):
         raise ValueError('paired_native_frame_index_invalid')
     if _timestamp(manifest['frozen_at']) >= _timestamp(schedule[0]['observed_at']):
@@ -99,7 +99,7 @@ def close_collected_session(*, snapshot_id: str, objects, query, writer, source_
     assert_collectible(saved, query=query)
     packet = saved['payload']['content']
     schedule = packet['schedule']
-    validate_schedule(schedule, packet['session_date'])
+    validate_schedule(schedule, packet['session_date'], packet=packet)
     tapes = {arm: {'frames': {}, 'source_receipt': source_receipt} for arm in ARMS}
     previous_key = None
     for frame in schedule:

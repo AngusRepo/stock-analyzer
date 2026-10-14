@@ -1,6 +1,7 @@
 import { paperAccountId, paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { readL4EntryContinuation } from './l4EntryContinuation'
 
 
 function isMissingTableError(error: unknown): boolean {
@@ -56,15 +57,22 @@ export async function acquirePaperBuyIntent(
     throw new Error('l4_buy_intent_revision_invalid')
   if (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && !targetRevision?.dailyReview)
     throw new Error('daily_plan_buy_review_required')
-  if (targetRevision?.dailyReview && (!/^[a-f0-9]{64}$/.test(targetRevision.dailyReview) || targetRevision.currentShares!==0))
+  if (targetRevision?.dailyReview && !/^[a-f0-9]{64}$/.test(targetRevision.dailyReview))
     throw new Error('daily_plan_buy_revision_invalid')
+  let continuing=false
+  if(targetRevision?.dailyReview && targetRevision.currentShares>0) {
+    const original=await readL4EntryContinuation(env,tradeDate,symbol,targetRevision.planId,targetRevision.dailyReview)
+    if(!original || original.remainingShares<=0 || original.filledShares!==targetRevision.currentShares)
+      return {acquired:false,intentKey:buildPaperBuyIntentKey(tradeDate,symbol),fallback:false,reason:'daily_plan_no_original_remainder'}
+    continuing=true
+  }
   const intentKey = buildPaperBuyIntentKey(tradeDate, symbol) + (targetRevision ? `:l4:${targetRevision.planId}:from:${targetRevision.currentShares}` : '')
   let revisionGuard = targetRevision ? ` AND EXISTS(SELECT 1 FROM l4_portfolio_head_v1 WHERE account_id=? AND plan_id=?)
     AND COALESCE((SELECT shares FROM paper_positions WHERE account_id=? AND symbol=?),0)=?` : ''
   const revisionArgs = targetRevision ? [paperAccountId(),targetRevision.planId,paperAccountId(),symbol,targetRevision.currentShares] : []
   if (targetRevision?.dailyReview) {
     revisionGuard += ` AND EXISTS(SELECT 1 FROM paper_daily_plan_heads_v1 WHERE account_id=? AND trade_date=? AND checksum=? AND plan_id=?)
-      AND NOT EXISTS(SELECT 1 FROM paper_order_intents WHERE account_id=? AND trade_date=? AND symbol=? AND side='buy' AND status IN ('filled','partial'))`
+      AND NOT EXISTS(SELECT 1 FROM paper_order_intents WHERE account_id=? AND trade_date=? AND symbol=? AND side='buy' AND status IN (${continuing ? "'running'" : "'filled','partial'"}))`
     revisionArgs.push(paperAccountId(),tradeDate,targetRevision.dailyReview,targetRevision.planId,paperAccountId(),tradeDate,symbol)
   }
   try {

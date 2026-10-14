@@ -64,7 +64,6 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'us-leading': { kind: 'trading_day', holidayGated: true, description: 'pre-market US leading signal' },
   'news-analyst': { kind: 'trading_day', holidayGated: true, description: 'pre-market news analyst' },
   'morning-setup': { kind: 'trading_day', holidayGated: true, description: 'morning setup and debate' },
-  'morning-briefing': { kind: 'trading_day', holidayGated: true, description: 'morning briefing delivery' },
   'pre-market-warmup': { kind: 'trading_day', holidayGated: true, description: 'pre-market control-plane warmup' },
   'external-evidence': { kind: 'trading_day', holidayGated: true, description: 'daily formal-shadow GDELT and official evidence materialization' },
   'paper-trade': { kind: 'trading_day', holidayGated: true, description: 'paper trading execution' },

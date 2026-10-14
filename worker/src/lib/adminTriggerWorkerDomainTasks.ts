@@ -874,10 +874,6 @@ export function buildAdminWorkerDomainTaskMap(
       const { runPremarketEvidenceWatchdog } = await import('./premarketEvidenceWatchdog')
       return runPremarketEvidenceWatchdog(c.env)
     },
-    'morning-briefing': async () => {
-      const { generateMorningBriefing } = await import('./morningBriefing')
-      return generateMorningBriefing(c.env)
-    },
     'daily-report': async () => {
       const { generateDailyReport } = await import('./dailyReport')
       return generateDailyReport(c.env)

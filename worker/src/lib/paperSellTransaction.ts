@@ -20,7 +20,7 @@ export async function executePaperSellBatch(env: Bindings, statements: D1Prepare
     (account_id,order_id,symbol,side,amount,trade_date,settlement_date)
     VALUES (?,(SELECT id FROM paper_orders WHERE id=last_insert_rowid()
       AND account_id=? AND symbol=? AND side='sell' AND total_cost=?),?,'sell',?,?,?)`)
-    .bind(accountId,accountId,symbol,proceeds,symbol,proceeds,day,settlementDate)])
+    .bind(accountId,accountId,symbol,proceeds,symbol,proceeds,day,settlementDate)],notAfterMs)
   if (result.length!==statements.length+1 || result.some(row=>row.success!==true)
     || Number(result[result.length-1].meta?.changes)!==1) throw new Error('paper_sell_transaction_incomplete')
   const row=await db.prepare(`SELECT order_id FROM paper_settlements

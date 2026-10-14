@@ -1,5 +1,6 @@
 import { validSingleBModel } from './paperStrategyMode'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { evaluateBoundedLosses } from './riskChecks/p5Losses'
 import { paperExecutionNow, paperExecutionDate, privateL4ResearchAllowed } from './paperExecutionScope'
 /**
  * tradingConfig.ts — 統一交易參數管理
@@ -113,7 +114,7 @@ export interface AlphaFrameworkConfig {
 }
 
 export interface TradingConfig {
-  l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown>; operating_mode?: import('./paperStrategyMode').SingleBMode; strategy_role?: 'B' }
+  l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown>; operating_mode?: import('./paperStrategyMode').SingleBMode; strategy_role?: 'B';sealedExecution?:Record<string,unknown>;sealedExecutionCalibration?:Record<string,unknown> }
 
   fees: {
     commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
@@ -122,6 +123,8 @@ export interface TradingConfig {
     minCommission: number  // 最低手續費 NT$（預設 20）
   }
   circuit: {
+    /** New policy requires explicit locally validated windows; no guessed defaults. */
+    lossGuard?: import('./riskChecks/p5Losses').P5LossGuardPolicy
     maxPositionPct: number       // 正常最大單一部位佔比（預設 0.08）
     buyConfThreshold: number     // 正常買入信心門檻（預設 0.60）
     sellConfThreshold: number    // 正常賣出信心門檻（預設 0.65）
@@ -1617,13 +1620,31 @@ export async function restoreSnapshot(
 // ─── C4: Config Validation ──────────────────────────────────────────────────
 
 export function validateTradingConfig(config: TradingConfig, privateResearch = false): string[] {
+  // Optional v2 controls are deliberately unset until their calibration is reviewed.
   const errors: string[] = []
   const isFiniteNumber = (value: unknown): value is number =>
     typeof value === 'number' && Number.isFinite(value)
+  if(config.circuit.lossGuard) {
+    try {evaluateBoundedLosses([],[],[],config.circuit.lossGuard)} catch {errors.push('circuit.lossGuard requires valid explicit session windows and loss categories')}
+  }
   if (config.l4Distribution!=null) {
     const policy=config.l4Distribution
     const c=policy.constraints
     const a=policy.artifact as any
+    const execution=policy.sealedExecution
+    if(execution) {
+      const keys=new Set(['schema_version','rotation_mode','expiry','require_matched_risk_horizon','uncertainty_calibration_checksum',
+        'minimum_calibration_dates','execution_cost_calibration_checksum','minimum_cost_observations','minimum_covariance_windows'])
+      if(execution.schema_version!=='l4-sealed-execution-v1' || execution.rotation_mode!=='selected_ready_or_filled'
+        || execution.expiry!=='retain_until_next_seal' || Object.keys(execution).some(k=>!keys.has(k))
+        || execution.require_matched_risk_horizon!=null && typeof execution.require_matched_risk_horizon!=='boolean')
+        errors.push('l4Distribution.sealedExecution must preserve immutable selected legs and next-seal expiry')
+      if(execution.require_matched_risk_horizon===true && (!Number.isSafeInteger(execution.minimum_covariance_windows) || Number(execution.minimum_covariance_windows)<2 || c?.covariance_horizon_sessions!==5))
+        errors.push('l4Distribution.sealedExecution requires an explicit measured covariance window minimum')
+      for(const [checksum,minimum] of [['uncertainty_calibration_checksum','minimum_calibration_dates'],['execution_cost_calibration_checksum','minimum_cost_observations']])
+        if(execution[checksum]!=null && (!/^[a-f0-9]{64}$/.test(String(execution[checksum])) || !Number.isSafeInteger(execution[minimum]) || Number(execution[minimum])<1))
+          errors.push(`l4Distribution.sealedExecution requires measured ${checksum} and explicit sample minimum`)
+    }
     if (policy.operating_mode != null && !validSingleBModel(policy)) errors.push('single B mode requires its matching complete Paper artifact')
     if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'

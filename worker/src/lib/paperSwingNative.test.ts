@@ -25,8 +25,9 @@ import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStore'
 import { latchAtrOnce } from './paperAtrOnceState'
 import { ATR_ONCE_POLICY } from './paperAtrOnce'
+import { checkL4RotationGate } from './l4RotationGate'
 
-for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price_622','owner_price_626','owner_limit_changed','p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
+for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_sector_reservation','hold_owner_consistency','hold_owner_repair','owner_price_622','owner_price_626','owner_limit_changed','p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
@@ -51,6 +52,7 @@ for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price
   let l5Returned=false
   let boardReads=0
   let holdingUnavailable=false
+  let rotationBookMissing=false
   const preparePaper=f.env.PAPER_DB.prepare.bind(f.env.PAPER_DB)
   f.env.PAPER_DB.prepare=(query:string)=>{
     if((scenario.startsWith('clock_domain') || scenario==='submit_expired') && l5Returned) {
@@ -99,6 +101,7 @@ for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price
     }
     if(odd && ['odd_lot_fee','holding_503_recovery'].includes(scenario))Object.assign(quote,{ask_volume:31,ask_volumes:[31,0,0,0,0]})
     if(scenario==='wide_live_book')Object.assign(quote,{ask:20.5,ask_prices:[20.5,20.55,20.6,20.65,20.7]})
+    if(rotationBookMissing)Object.assign(quote,{ask:null,bid:null,ask_prices:[],bid_prices:[],ask_volumes:[],bid_volumes:[]})
     if(holdingUnavailable && odd && url.includes('orderbook'))return new Response('odd lot unavailable',{status:503})
     if(url.includes('orderbook') && !url.includes('watchlist') && !odd) {
       boardReads++
@@ -233,6 +236,32 @@ for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price
       assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
       return
     }
+    if(scenario.startsWith('rotation_')) {
+      const guarded=(await withPaperExecutionScope(f.ports,()=>readL4ExecutionPlan(f.env))).result!
+      guarded.sealed_execution={schema_version:'l4-sealed-execution-v1',rotation_mode:'selected_ready_or_filled',expiry:'retain_until_next_seal',
+        exit_rules:{'3374':{mode:'selected_ready_or_filled',reason:'synthetic_sealed_rotation',credits:[{symbol:'2330',credit_start:0,credit_end:5000}]}}}
+      if(scenario==='rotation_sector_reservation') {
+        f.sqls.core.exec("UPDATE stocks SET sector='X' WHERE symbol='2330';INSERT INTO stocks(id,symbol,name,market,sector) VALUES(3,'2337','second','TWSE','X')")
+        guarded.execution_review!.weights['2337']=.08
+        guarded.sealed_execution.exit_rules['3374'].credits!.push({symbol:'2337',credit_start:0,credit_end:5000})
+        f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,position:{...DEFAULT_RISK_CONFIG.position,maxPerSector:1}}))
+        await withPaperExecutionScope(f.ports,()=>replacePendingBuyState(f.env,{
+          tradeDate:'2026-09-14',sourceRecoDate:'2026-09-11',status:'ready',
+          pendingBuys:[snapshot.pendingBuys[0],{...snapshot.pendingBuys[0],symbol:'2337',name:'second'}]}))
+      }
+      const input={plan:guarded,symbol:'3374',reduceShares:30,positions:[{symbol:'3374',shares:30,entry_date:'2026-09-11'}],
+        prices:new Map([['3374',20]]),nav:1000000,cfg:f.cfg,
+        risk:{halt:false,maxPositionPct:f.cfg.circuit.maxPositionPct,buyConfThreshold:.6,sellConfThreshold:.65,targetExposurePct:.8}}
+      const checked=(await withPaperExecutionScope(f.ports,()=>checkL4RotationGate(f.env,input))).result
+      assert.ok(checked.evidence!['2330'].preparedGross>=5000,JSON.stringify(checked))
+      assert.equal(checked.satisfied,scenario==='rotation_readiness')
+      if(scenario==='rotation_sector_reservation')assert.equal(checked.evidence!['2337'].preparedGross,0)
+      rotationBookMissing=true
+      assert.equal((await withPaperExecutionScope(f.ports,()=>checkL4RotationGate(f.env,input))).result.satisfied,false)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_orders').get()?.n,0)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
+      return
+    }
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
     if(['owner_price_626','owner_limit_changed'].includes(scenario)) {
@@ -319,6 +348,34 @@ for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price
     assert.deepEqual(fillDetail.swing_authorization,buyNote.order_intent.executionConstraints.swingAuthorization)
     assert.match(JSON.stringify(result.notifications),new RegExp(SWING_POLICY_VERSION))
     assert.doesNotMatch(JSON.stringify(result.notifications),/TP1|TP2/)
+    if(scenario==='l4_partial_continuation') {
+      const original=buyNote.entry_authorization
+      assert.ok(original.requestedShares>filledShares)
+      for(let i=0;i<4;i++) {
+        f.ports.nowMs+=10_000
+        await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
+      }
+      const orders:any[]=f.sqls.paper.prepare("SELECT * FROM paper_orders WHERE side='buy' ORDER BY id").all()
+      const total=orders.reduce((n,o)=>n+o.shares,0)
+      // Fees reduce current NAV: the hard 8% name cap can legitimately leave
+      // one original share unfilled. Original authorization is a ceiling.
+      assert.equal(total,original.requestedShares-1)
+      assert.ok(orders.length>1)
+      for(const o of orders)assert.deepEqual(JSON.parse(o.note).entry_authorization,original)
+      const retained:any=f.sqls.paper.prepare('SELECT * FROM paper_positions').get()
+      assert.equal(retained.shares,total)
+      const cost=orders.reduce((n,o)=>n+o.total_cost,0)
+      assert.ok(Math.abs(retained.avg_cost-cost/total)<1e-8)
+      assert.equal(retained.entry_date,holding.entry_date)
+      f.ports.nowMs=original.expiresAtMs
+      await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
+      assert.equal(f.sqls.paper.prepare("SELECT SUM(shares) n FROM paper_orders WHERE side='buy'").get()?.n,total)
+      f.ports.nowMs=Date.parse('2026-09-14T13:35:00+08:00')
+      await withPaperExecutionScope(f.ports,()=>runDailySnapshot(f.env))
+      const snapshot:any=f.sqls.paper.prepare('SELECT * FROM paper_daily_snapshots ORDER BY date DESC LIMIT 1').get()
+      assert.ok(Math.abs(snapshot.total_value-(1_000_000-cost+total*20))<1e-6,JSON.stringify(snapshot))
+      return
+    }
     if(scenario.startsWith('hold_owner_')) {
       if(scenario==='hold_owner_repair') {
         // Reproduce the exact owner corruption observed after the production hold poll.

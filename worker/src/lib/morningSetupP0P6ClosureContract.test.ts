@@ -15,7 +15,6 @@ const recommendationContext = fs.readFileSync('src/lib/recommendationContext.ts'
 const recommendationCard = fs.readFileSync('../frontend/src/components/RecommendationCardClean.tsx', 'utf8')
 const recommendationService = fs.readFileSync('../ml-controller/services/recommendation_service.py', 'utf8')
 const timesfmL175Sidecar = fs.readFileSync('../ml-controller/services/timesfm_l175_sidecar.py', 'utf8')
-const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const rrgCalculator = fs.readFileSync('../ml-controller/services/_rrg_calculator.py', 'utf8')
 const sectorFlowService = fs.readFileSync('../ml-controller/services/sector_flow_service.py', 'utf8')
 const sectorFlowRotationMigration = fs.readFileSync('migration_sector_flow_rotation_model_2026_06_23.sql', 'utf8')
@@ -25,10 +24,10 @@ assert(
   pendingBuyOrchestrator.includes('withD1Retry') &&
     pendingBuyOrchestrator.includes('preserve_last_valid_state') &&
     !pendingBuyOrchestrator.includes("persistPendingBuys(env, pendingDate, [], { status: 'error'") &&
-    adminTriggerTasks.includes('morning_setup_repair') &&
-    adminTriggerTasks.includes('recoverPaperMorningSetup(c.env, tradeDate, settlePaperT2)') &&
+    adminTriggerTasks.includes('ensurePremarketEventChain(c.env,twToday())') &&
+    fs.readFileSync('src/lib/premarketEventWork.ts', 'utf8').includes('deps.recoverPaperMorningSetup(env,date,deps.settle)') &&
     fs.readFileSync('src/lib/paperMorningRecovery.ts', 'utf8').includes('recovered_missing_morning_decision'),
-  'Morning Setup transient failures must preserve the last valid state and pre-market warmup must self-heal the failed setup',
+  'Morning Setup transient failures must preserve the last valid state and event stages must recover setup',
 )
 
 assert(
@@ -87,16 +86,13 @@ assert(
 )
 
 assert(
-  morningBriefing.includes('not delivered: no_channel_configured') &&
-    !morningBriefing.includes('Morning briefing sent to ${channel}') &&
-    pendingBuyStateSummary.includes('empty_after_soft_risk') &&
+  pendingBuyStateSummary.includes('empty_after_soft_risk') &&
     pendingBuyStateSummary.includes('empty_after_hard_safety'),
-  'P5 must distinguish scheduler success from delivery status and expose meaningful empty Morning Setup states',
+  'P5 must expose meaningful empty Morning Setup states',
 )
 
 assert(
   fs.existsSync('src/lib/morningSetupP0P6ClosureContract.test.ts') &&
-    fs.existsSync('src/lib/pendingBuyFilterAuditMigrationContract.test.ts') &&
-    fs.existsSync('src/lib/morningBriefingDeliveryContract.test.ts'),
+    fs.existsSync('src/lib/pendingBuyFilterAuditMigrationContract.test.ts'),
   'P6 must have itemized local closure contracts for this Morning Setup/RRG/TimesFM/formal137 scope',
 )

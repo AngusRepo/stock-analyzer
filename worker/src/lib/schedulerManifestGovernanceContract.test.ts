@@ -41,28 +41,24 @@ for (const field of ['state', 'schedule', 'timeZone', 'description', 'attemptDea
 }
 
 const nativeJobs = manifest.jobs.filter(job => job.task === 'paired-native-execution')
-assert(JSON.stringify(nativeJobs.map(job => job.id).sort()) === JSON.stringify([
-  'paired-native-execution-day', 'paired-native-execution-morning',
-]), 'private native collection has exactly two UTC slots under one logical owner')
-assert(nativeJobs.every(job => job.query === 'sync=1'), 'native collector failures must reach the scheduler ticket')
+assert(nativeJobs.length === 0, 'retired native collectors must not be scheduled')
+assert(['paired-native-execution-day', 'paired-native-execution-morning', 'morning-briefing']
+  .every(id => manifest.deleteJobIds.includes(id)), 'retired jobs must be explicit deletion targets')
 const recoveryJobs = manifest.jobs.filter(job => job.task === 'premarket-evidence-watchdog')
 assert(recoveryJobs.length === 1 && recoveryJobs[0].timeZone === 'Asia/Taipei', 'one Taipei-time recovery scheduler replaces the briefing schedule')
-assert(schedulerManifestJobs().length - nativeJobs.length - recoveryJobs.length === 59, 'all pre-existing physical roots remain accounted')
-assert(manifestTasks.filter(task => task !== 'paired-native-execution' && task !== 'premarket-evidence-watchdog').length === 52, 'existing logical inventory remains 52')
-assert(summary.physicalRoots === 62, 'summary physical root count mismatch')
-assert(summary.uniqueLogicalTasks === 54 && summary.accountedLogicalTasks === 54, 'logical task accounting must be 54/54')
-assert(summary.reviewedDependencies === 37, 'reviewed dependency baseline includes the new private native owner')
+assert(schedulerManifestJobs().length - recoveryJobs.length === 55, 'physical roots preserve both strategy NAV collectors and exclude retired jobs')
+assert(manifestTasks.filter(task => task !== 'premarket-evidence-watchdog').length === 51, 'logical inventory preserves strategy NAV and excludes retired jobs')
+assert(summary.physicalRoots === 56, 'summary physical root count mismatch')
+assert(summary.uniqueLogicalTasks === 52 && summary.accountedLogicalTasks === 52, 'logical task accounting must be 52/52')
+assert(summary.reviewedDependencies === 35, 'reviewed dependencies include strategy NAV and exclude retired jobs')
 assert(summary.unmappedDependencies === 17 && summary.unmappedTasks.length === 17, 'unreviewed non-daily dependency debt must remain fail-visible')
-assert(summary.pausedPhysicalRoots === 4, 'exactly four manifest-owned physical roots should be paused')
+assert(summary.pausedPhysicalRoots === 1, 'only paper shadow backfill remains paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 
 const paused = manifest.jobs.filter((job) => 'desiredState' in job && job.desiredState === 'PAUSED')
 assert(
   JSON.stringify(paused.map((job) => job.id).sort()) === JSON.stringify([
-    'data-domain-shadow-backfill-execution',
-    'data-domain-shadow-backfill-ops',
     'data-domain-shadow-backfill-paper',
-    'morning-briefing',
   ]),
   'production PAUSED truth must be represented in manifest',
 )
@@ -76,7 +72,7 @@ for (const job of manifest.jobs) {
 assert(schedulerJobAccounting('post-pipeline-chain', 13).accountingClass === 'internal_chain', 'deployed chain child must be an internal logical ticket')
 assert(schedulerJobAccounting('intraday-check').accountingClass === 'unmapped_dependency', 'unreviewed task must fail visible as unmapped')
 for (const task of [
-  'us-leading', 'news-analyst', 'morning-setup', 'morning-briefing', 'daily-snapshot',
+  'us-leading', 'news-analyst', 'morning-setup', 'daily-snapshot',
   'daily-execution-paper-lineage', 'external-evidence', 'debate-memory-retention', 'artifact-reconcile',
   'retention-archive-only', 'retention-hot-window-drain', 'data-domain-shadow-backfill-next',
   'legacy-strategy-evidence-migration', 'legacy-hot-data-retirement', 'r2-retention-sweep',

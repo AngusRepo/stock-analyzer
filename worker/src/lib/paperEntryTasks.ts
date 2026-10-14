@@ -32,8 +32,10 @@ import {
 import type { PendingBuyExecutionEvent, PendingBuyTerminalExecutionStatus } from './pendingBuyExecutionState'
 import { checkCircuitBreakersForDomains } from './pendingBuyOrchestrator'
 import { mergeIntradayPortfolioRisk, readP9IntradayHalt, checkP9IntradayDrawdown } from './intradayPortfolioRisk'
+import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
 import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
 import { acquirePaperBuyIntent, completePaperBuyIntent, l4BuySettlementStatements } from './paperOrderIntent'
+import { readL4EntryContinuation, validateEntryAuthorization, type L4EntryAuthorization, type L4EntryContinuation } from './l4EntryContinuation'
 import { evaluatePreTradeExecution, type PreTradeMomentumContext, type PreTradeOhlcvTradePlan } from './preTradeExecutionPolicy'
 import { resolveAdaptiveExecutionPolicy } from './executionAdaptivePolicy'
 import {
@@ -871,6 +873,17 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     netUnsettledSettlement: settlement.netUnsettledSettlement,
     corporateReceivablesValue: corporateBounds.lower,
   })
+  const dailyLoss = await checkP8DailyPnl(paperDomainDatabase(env),riskCfg,
+    {defaults:cb,effectiveBuy:cb.buyConfThreshold,effectiveSell:cb.sellConfThreshold},
+    {tradeDate:today,previousSession:await getPrevTradingDay(databaseForDataDomain(env,'core'),env.KV,today),
+      currentNav:totalPortfolio,netExternalFlow:0})
+  if(dailyLoss?.halt) {
+    await persistPendingBuyActiveState(env,today,pendingBuys,{stage:'intraday_risk_gate',reason:'p8_daily_loss',detail:dailyLoss.reason})
+    await Promise.all(pendingBuys.map(item=>recordPaperExecutionEvent(env,{tradeDate:today,symbol:item.symbol,
+      side:'buy',eventType:'paper_order',status:'blocked',reason:'p8_daily_loss',detail:{risk:dailyLoss},pendingRunId,
+      source:'p8_daily_nav'})))
+    return holdingPoll
+  }
   {
     // Seed/evaluate NAV before ANY new entry, including empty accounts and uncertain retained rights.
     const risk = await checkP9IntradayDrawdown(paperDomainDatabase(env), env.KV, paperAccountId(), today, totalPortfolio, riskCfg,
@@ -1228,7 +1241,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
   const DAILY_BUY_LIMIT = cfg.position.dailyBuyLimit
   const todayBought = await paperDomainDatabase(env).prepare(
-    "SELECT COALESCE(SUM(total_cost), 0) as total, COUNT(*) as order_count FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?",
+    "SELECT COALESCE(SUM(total_cost), 0) as total, COUNT(DISTINCT COALESCE(CASE WHEN json_valid(note) THEN json_extract(note,'$.entry_authorization.id') END,'order:'||id)) as order_count FROM paper_orders WHERE account_id=? AND side='buy' AND created_at >= ?",
   ).bind(paperAccountId(), today).first<any>()
   let dailyBuyTotal = Number(todayBought?.total ?? 0)
   let dailyBuyOrderCount = Number(todayBought?.order_count ?? 0)
@@ -1339,12 +1352,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       throw new Error('l4_distribution_execution_plan_expired')
     }
     if (plan) await assertL4PlanCurrentPolicy(env,plan,cfg)
+    const continuation=plan?.execution_review ? await readL4EntryContinuation(env,today,pending.symbol,plan.plan_id,plan.execution_review.checksum) : null
     const decision = plan ? l4TargetExecutionDecision({
       plan, symbol: pending.symbol, holdings, nav: account.totalPortfolio, cash: account.cash,
       dailyRemaining: account.dailyRemaining, riskExposureCap: cb.targetExposurePct ?? 0,
       nameCap: effectiveMaxPositionPct, maxPositions: maxPos,
       hardVeto: s12HardVeto || (!l5GateForLotSizingOnly && l5Quality?.status !== 'pass'),
       feeRate: cfg.fees.commission, minCommission: cfg.fees.minCommission,
+      continuation,
     }) : buildFiveSlotExecutionDecision({ account, marketRiskLevel: marketRisk.risk_level,
       marketContext: allocatorMarketContext, config, holdings, candidate })
 
@@ -1352,6 +1367,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       decision,
       context: {
         daily_review_checksum: plan?.execution_review?.checksum ?? null,
+        l4_entry_continuation: continuation,
         settled_cash: Math.round(settledCash),
         available_cash: Math.round(account.cash),
         safe_buying_power: Math.round(account.cash),
@@ -2404,7 +2420,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'risk_kill_switch_active', 'trading:risk_config')
       continue
     }
-    if (dailyBuyOrderCount >= riskCfg.order.maxDailyBuyOrders) {
+    const entryContinuation=allocatorPlan.context.l4_entry_continuation as L4EntryContinuation|null
+    if (dailyBuyOrderCount >= riskCfg.order.maxDailyBuyOrders && !entryContinuation) {
       recordActiveExecutionStatus(
         pending.symbol,
         'checked_waiting',
@@ -2417,7 +2434,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     if (acc.cash < cfg.position.minCashToTrade) break
 
     const recSector = (await databaseForDataDomain(env, 'core').prepare('SELECT sector FROM stocks WHERE symbol=?').bind(pending.symbol).first<any>())?.sector ?? 'UNKNOWN'
-    if ((sectorCountMap.get(recSector) ?? 0) >= riskCfg.position.maxPerSector) {
+    if ((sectorCountMap.get(recSector) ?? 0) >= riskCfg.position.maxPerSector && allocatorDecision.action!=='add') {
       const detail = `sector=${recSector};holdings=${sectorCountMap.get(recSector) ?? 0};cap=${riskCfg.position.maxPerSector}`
       console.log(`[Intraday] ${pending.symbol}: sector cap reached, skip (${detail})`)
       recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'position_sector_cap', detail)
@@ -2512,8 +2529,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       budget = Math.min(budget, structuralRiskBudget)
     }
     const minPosVal = cfg.position.minPositionValue ?? 30_000
-    const l4TargetContinuation = Boolean(planIdFromWatchPoints(pending.watch_points)
-      && allocatorDecision.currentPositionValue > 0 && allocatorDecision.targetPositionValue >= minPosVal)
+    const l4TargetContinuation = Boolean(entryContinuation && entryContinuation.remainingShares>0)
+      || Boolean(!dailyPlanOwner(env) && planIdFromWatchPoints(pending.watch_points)
+        && allocatorDecision.currentPositionValue>0 && allocatorDecision.targetPositionValue>=minPosVal)
     if (budget < minPosVal && !l4TargetContinuation) {
       recordActiveExecutionStatus(
         pending.symbol,
@@ -2578,6 +2596,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         )
         continue
       }
+    }
+    if(entryContinuation) {
+      if(limitPrice>entryContinuation.authorization.maxPrice || paperExecutionNow()>=entryContinuation.authorization.expiresAtMs) {
+        recordActiveExecutionStatus(pending.symbol,'checked_waiting','l4_original_entry_price_or_deadline')
+        continue
+      }
+      shares=Math.min(shares,entryContinuation.remainingShares)
+      if(!isOddLot) shares=Math.floor(shares/1000)*1000
+      if(shares<1) continue
     }
     const requestedShares = shares
     const lotType = isOddLot ? 'odd_lot' : 'board_lot'
@@ -2899,21 +2926,31 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     }
     const canonicalTradeLifecycleJson=paperSwingOwner ? writeSwingState(legacyLifecycleJson,{policy:SWING_POLICY_VERSION,
       entryDate:today,entryPrice:fillPrice,entryOrLow:swingAuthorization!.orLow}) : legacyLifecycleJson
-    const fillExit = readSwingFillExit(canonicalTradeLifecycleJson) ?? {
+    let fillExit = readSwingFillExit(canonicalTradeLifecycleJson) ?? {
       initialStop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,
       owner: canonicalTradeLifecycle.owners.exit, fallbackOwner: canonicalTradeLifecycle.owners.fallbackExit,
       inputSource: effectiveExitInputs.source,
     }
 
     const existing = await paperDomainDatabase(env).prepare(
-      'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',
+      'SELECT shares, avg_cost, trade_lifecycle_json FROM paper_positions WHERE account_id=? AND symbol=?',
     ).bind(paperAccountId(), pending.symbol).first<any>()
     const oldShares = existing?.shares ?? 0
     const oldAvgCost = existing?.avg_cost ?? 0
     const updatedShares = oldShares + shares
     const updatedAvgCost = oldShares > 0 ? (oldShares * oldAvgCost + txValue + commission) / updatedShares : totalCost / shares
+    const executionLifecycleJson=entryContinuation ? String(existing.trade_lifecycle_json) : canonicalTradeLifecycleJson
+    if(entryContinuation) fillExit=readSwingFillExit(executionLifecycleJson) ?? fillExit
 
     const targetPlanId = planIdFromWatchPoints(pending.watch_points)
+    const review=String(allocatorPlan.context.daily_review_checksum ?? '')
+    const entryAuthorization:L4EntryAuthorization|null=targetPlanId && review ?
+      entryContinuation?.authorization ?? validateEntryAuthorization({schema:'l4-entry-authorization-v1',
+        id:`${targetPlanId}:${review}:${today}:${pending.symbol}`,planId:targetPlanId,review,tradeDate:today,
+        symbol:pending.symbol,requestedShares,maxPrice:limitPrice,grossBudget:budget,
+        expiresAtMs:swingAuthorization?.submitUntilMs ?? Math.min(paperExecutionNow()+60000,Date.parse(`${today}T13:20:00+08:00`))}) : null
+    if(entryAuthorization && (paperExecutionNow()>=entryAuthorization.expiresAtMs || fillPrice>entryAuthorization.maxPrice
+      || shares+(entryContinuation?.filledShares ?? 0)>entryAuthorization.requestedShares)) throw new Error('l4_entry_fill_outside_original_authorization')
     const currentTargetPosition = targetPlanId ? await paperDomainDatabase(env).prepare('SELECT shares FROM paper_positions WHERE account_id=? AND symbol=?')
       .bind(paperAccountId(),pending.symbol).first<{shares:number}>() : null
     const { getSettlementDate } = await import('./dateUtils')
@@ -2941,7 +2978,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           VALUES (?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
           ON CONFLICT(account_id, symbol) DO UPDATE SET
             shares=excluded.shares, avg_cost=excluded.avg_cost, name=excluded.name,
+            original_shares=CASE WHEN ?=1 THEN paper_positions.original_shares+excluded.original_shares ELSE paper_positions.original_shares END,
             trade_lifecycle_json=CASE
+              WHEN ?=1 THEN paper_positions.trade_lifecycle_json
               WHEN json_valid(paper_positions.trade_lifecycle_json) THEN
                 CASE WHEN json_type(paper_positions.trade_lifecycle_json, '$.position_tp1_progress')='object'
                   THEN json_set(excluded.trade_lifecycle_json, '$.position_tp1_progress',
@@ -2965,11 +3004,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
           fillExit.tp2,
           shares,
           canonicalTradeLifecycleJson,
+          entryContinuation ? 1 : 0,
+          entryContinuation ? 1 : 0,
         ),
         paperDomainDatabase(env).prepare(`
           INSERT INTO paper_orders
-            (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
-          VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, 'auto_ml', ?, ?, ?)
+            (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note, created_at)
+          VALUES (?, ?, ?, 'buy', ?, ?, ?, 0, ?, 'auto_ml', ?, ?, ?, CURRENT_TIMESTAMP)
         `).bind(
           paperAccountId(),
           pending.symbol,
@@ -3021,13 +3062,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             effective_tp2: fillExit.tp2,
             exit_input_source: fillExit.inputSource,
             l4_plan_id: targetPlanId,
+            entry_authorization: entryAuthorization,
+            // Native Paper depth matching is terminal: no broker ROD remains.
+            paper_child_terminal: true,
             execution_policy: paperSwingOwner ? SWING_POLICY_VERSION : env.PAPER_INTRADAY_ENTRY_OWNER,
             exit_owner: fillExit.owner,
             fallback_exit_owner: fillExit.fallbackOwner,
             s12_exit_plan: s12Assessment?.exitPlan ?? null,
             s12_quality: s12Assessment?.quality ?? null,
-            canonical_trade_lifecycle: JSON.parse(canonicalTradeLifecycleJson),
-            canonical_trade_lifecycle_json: canonicalTradeLifecycleJson,
+            canonical_trade_lifecycle: JSON.parse(executionLifecycleJson),
+            canonical_trade_lifecycle_json: executionLifecycleJson,
             budget: Math.round(budget),
             fill_type: 'limit_intraday',
             raw_limit_price: rawLimitPrice,
@@ -3133,8 +3177,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     ;(acc as any).cash -= totalCost
     dailyBuyTotal += totalCost
-    dailyBuyOrderCount += 1
-    sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
+    if(!entryContinuation) dailyBuyOrderCount += 1
+    if(oldShares===0) sectorCountMap.set(recSector, (sectorCountMap.get(recSector) ?? 0) + 1)
 
     try {
       const recRow = await databaseForDataDomain(env, 'core').prepare(
@@ -3195,15 +3239,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     )
 
     const postFillNav=totalPortfolio+shares*(price-fillPrice)-commission
-    const remainingL4Shares=targetPlanId ? Math.max(0,Math.floor((
-      allocatorDecision.targetPositionValue/totalPortfolio*postFillNav
-      -allocatorDecision.currentPositionValue-shares*price)/price)) : 0
+    const remainingL4Shares=entryAuthorization ? Math.max(0,entryAuthorization.requestedShares-(entryContinuation?.filledShares ?? 0)-shares)
+      : targetPlanId && !dailyPlanOwner(env) ? Math.max(0,Math.floor((allocatorDecision.targetPositionValue/totalPortfolio*postFillNav
+          -allocatorDecision.currentPositionValue-shares*price)/price)) : 0
     if (isPartialFill || remainingL4Shares>0) {
       recordActiveExecutionStatus(
         pending.symbol,
         'partially_filled',
         remainingL4Shares>0 ? 'l4_target_remaining' : 'paper_order_partial_fill',
-        `requested=${targetPlanId ? shares+remainingL4Shares : requestedShares};filled=${shares};remaining=${targetPlanId ? remainingL4Shares : requestedShares - shares}`,
+        `requested=${entryAuthorization?.requestedShares ?? requestedShares};filled=${(entryContinuation?.filledShares ?? 0)+shares};remaining=${targetPlanId ? remainingL4Shares : requestedShares - shares}`,
       )
     } else {
       recordExecutionEvent(pending.symbol, 'filled', 'paper_order_created')

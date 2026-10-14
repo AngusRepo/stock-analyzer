@@ -77,6 +77,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:8039106e7d4dd1dc77193ea198345ec4a571a17375559356fb0c73a4c9d51db9",
+  "execution_owner_version": "native-paper-v1:4e5db22842850adee7c3d9a5a9d056cf7529d9542f1e985596225e7e91c25ab2",
   "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md"
 }

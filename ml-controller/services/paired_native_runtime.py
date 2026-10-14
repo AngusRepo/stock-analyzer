@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 import os
 import re
 from urllib.parse import urlsplit
+from concurrent.futures import ThreadPoolExecutor
 
 from services.paired_nav_journal import digest, read_snapshot, reuse_frozen_snapshot, _timestamp
 from services.paired_native_registration import register_allocation_pair
@@ -74,7 +75,7 @@ def build_capture_source(*, snapshot_id, packet, objects, domain_queries, kv_rea
 
 
 def collect_due_execution_frames(*, session_date, query, writer, objects,
-                                 capture_factory, runner=None, clock=None, owners=None):
+                                 capture_factory, runner=None, clock=None, owners=None, parallelism=1):
     """Retry sealed frames, then close AND account each completed native pair.
 
     A missing expired frame is an explicit failure, never a backfilled day.
@@ -87,6 +88,8 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
     from services.paired_native_collector import collect_frame, close_collected_session, frame_identity
     from services.paired_native_sources import build_source_receipt
     clock = clock or (lambda: datetime.now(timezone.utc))
+    if type(parallelism) is not int or not 1 <= parallelism <= 4:
+        raise ValueError('native_tick_parallelism_invalid')
     now = clock()
     if now.astimezone(timezone(timedelta(hours=8))).date().isoformat() != session_date:
         raise ValueError('native_tick_current_session_required')
@@ -95,28 +98,26 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
     rows = query("SELECT snapshot_id FROM paired_nav_frozen_manifests_v1 "
                  "WHERE snapshot_kind='execution_pair' AND signal_date<? AND signal_date>=? ORDER BY snapshot_id",
                  [session_date, (now.date() - timedelta(days=16)).isoformat()])
-    results = []
-    for row in rows:
+    def collect_pair(row):
         snapshot_id = row['snapshot_id']
         completed, receipt_id, journal = 0, None, None
         try:
             from services.paired_native_prestart import succession, assert_collectible
             retired = succession(query, old_snapshot_id=snapshot_id)
             if retired:
-                results.append({'snapshot_id': snapshot_id, 'status': 'superseded',
-                    'successor_snapshot_id': retired['new_snapshot_id'], 'nav_maturity_credit': 0})
-                continue
+                return {'snapshot_id': snapshot_id, 'status': 'superseded',
+                    'successor_snapshot_id': retired['new_snapshot_id'], 'nav_maturity_credit': 0}
             saved = read_snapshot(query, snapshot_id)
             packet = saved['payload']['content']
             if owners is not None and packet.get('owner') not in owners:
-                continue
+                return None
             if owners == frozenset({'atomic_strategy'}):
                 from services.strategy_nav_distribution import enabled
                 if not enabled((packet.get('configuration') or {}).get('trading_config'),
                         signal_date=saved['manifest']['signal_date']):
-                    continue  # Retired legacy Atomic accounts have no new scheduler authority.
+                    return None  # Retired legacy Atomic accounts have no new scheduler authority.
             if packet['session_date'] != session_date:
-                continue
+                return None
             assert_collectible(saved, query=query)
             validate_schedule(packet['schedule'], session_date, packet=packet)
             # Aliases locate the contiguous prefix without downloading a full
@@ -166,19 +167,26 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
                 execution = read_snapshot(query, receipt_id)['payload']['content']
                 journal = materialize_pair(snapshot_id=snapshot_id, session_date=session_date,
                     execution=execution, query=query, writer=writer, now=clock())
-            results.append({'snapshot_id': snapshot_id, 'status': 'closed' if journal is not None else 'collecting',
+            return {'snapshot_id': snapshot_id, 'status': 'closed' if journal is not None else 'collecting',
                 'completed_frames': completed, 'total_frames': len(packet['schedule']), 'receipt_snapshot_id': receipt_id,
                 'accounting_status': 'materialized' if journal is not None else 'awaiting_execution_receipt',
-                'journal_checksum': digest(journal) if journal is not None else None})
+                'journal_checksum': digest(journal) if journal is not None else None}
         except Exception as exc:
             # Exceptions may carry provider URLs, bodies or credentials. Keep
             # only the exception type here; source receipts retain safe evidence.
-            results.append({'snapshot_id': snapshot_id, 'status': 'failed', 'completed_frames': completed,
+            return {'snapshot_id': snapshot_id, 'status': 'failed', 'completed_frames': completed,
                 'receipt_snapshot_id': receipt_id,
                 'accounting_status': 'unconfirmed' if receipt_id else 'awaiting_execution_receipt',
                 'error_type': type(exc).__name__, 'reason': str(exc) if re.fullmatch(
                     r'(?:native_|paired_native_|paired_nav_|corporate_|paper_corporate_)[a-z0-9_]+', str(exc))
-                    else 'native_tick_source_or_execution_failed'})
+                    else 'native_tick_source_or_execution_failed'}
+    if parallelism == 1:
+        results = [result for row in rows if (result := collect_pair(row)) is not None]
+    else:
+        # Independent immutable comparison chains; one pair never shares a
+        # private account with a sibling. Preserve census order and every failure.
+        with ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix='strategy-nav') as pool:
+            results = [result for result in pool.map(collect_pair, rows) if result is not None]
     return {'status': 'failed' if any(r['status'] == 'failed' for r in results) else 'ok',
         'session_date': session_date, 'pairs': results, 'production_effect': False,
         'promotion_allowed': False, 'ev_prediction_dates_added': 0}
@@ -222,7 +230,8 @@ def _run_execution_tick(*, session_date, owners=None):
             shadow_hmac_secret=os.environ.get('LIVE_EXECUTION_HMAC_SECRET', ''),
             broker_token=os.environ.get('PROXY_SERVICE_TOKEN') or os.environ.get('SHIOAJI_PROXY_TOKEN', ''))
     result = collect_due_execution_frames(session_date=session_date, query=learning.query,
-        writer=learning.batch_execute, objects=objects, capture_factory=factory, owners=owners)
+        writer=learning.batch_execute, objects=objects, capture_factory=factory, owners=owners,
+        parallelism=4 if owners == frozenset({'atomic_strategy'}) else 1)
     if owners is not None and result['status'] == 'ok' and not result['pairs']:
         result['status'] = 'awaiting_strategy_registration'
     return result

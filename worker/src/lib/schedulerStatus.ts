@@ -1,3 +1,4 @@
+import { pipelineProgressForDisplay } from './pipelineProgress'
 /**
  * schedulerStatus.ts - Scheduler dashboard status builder
  */
@@ -537,7 +538,7 @@ export type SchedulerRunDisplayTime = {
   basis: 'started' | 'updated'
 }
 
-const CALLBACK_CONTAINER_JOB_IDS = new Set(['post-pipeline-chain', 'post-verify-chain'])
+const CALLBACK_CONTAINER_JOB_IDS = new Set(['pipeline', 'post-pipeline-chain', 'post-verify-chain'])
 
 export function resolveSchedulerRunDisplayTime(input: {
   jobId: string
@@ -893,6 +894,11 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     console.warn('[schedulerStatus] premarket progress read failed:', error)
     return []
   })
+  const progressPromise = opsDb.prepare(`SELECT business_date,canonical_run_id,cursor_key
+    FROM pipeline_stage_runs WHERE stage='pipeline_progress' AND business_date IN (${dates.map(() => '?').join(',')})`)
+    .bind(...dates).all<{business_date:string;canonical_run_id:string;cursor_key:string|null}>()
+    .then(r => new Map((r.results ?? []).map(row => [row.business_date,row])))
+    .catch(() => new Map<string,{canonical_run_id:string;cursor_key:string|null}>())
   const durableStageStatesPromise = loadDurablePipelineStageStates(opsDb, dates).catch((error) => {
     console.warn('[schedulerStatus] durable pipeline stage read failed:', error)
     return new Map<string, DurablePipelineStageDisplayRow>()
@@ -1056,7 +1062,12 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
         ? displayLog.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(displayLog.summary ?? '')?.[1] : null,
       durable: durableState,
     })
-    const baseLastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
+    const pipelineProgress = def.id === 'pipeline' ? pipelineProgressForDisplay(durableState,
+      (await progressPromise).get(resolvedDisplay.statusRunDate ?? '')) : null
+    const progressActive = pipelineProgress && durableState && ['running','waiting'].includes(durableState.status)
+      && !['success','failed'].includes(resolvedDisplay.status)
+    const progressStatus = progressActive ? (pipelineProgress.status === 'waiting' ? 'waiting' as const : 'running' as const) : null
+    const baseLastStatus = progressStatus ?? durableOverride?.lastStatus ?? resolvedDisplay.status
     const baseTimestamp = durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null
     const executionTicketDate = resolvedDisplay.statusRunDate ?? today
     const executionTicket = selectSchedulerExecutionTicketForDisplay({
@@ -1161,7 +1172,9 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
-      summary: executionTicketOverride?.summary ?? durableOverride?.summary ?? displayLog?.summary ?? '',
+      pipelineProgress,
+      summary: progressActive ? `phase=${pipelineProgress.phase} phase_status=${pipelineProgress.status} execution=${pipelineProgress.execution_id}`
+        : executionTicketOverride?.summary ?? durableOverride?.summary ?? displayLog?.summary ?? '',
       details: displayLog?.details ?? [],
       runId: ticketRunId,
       attemptId: executionTicketOverride?.attemptId ?? displayLog?.attempt_id ?? null,

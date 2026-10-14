@@ -25,10 +25,38 @@ function label(status?: string) {
 export function pipelinePreparationLabel(job?: SchedulerJob): string {
   const summary = job?.summary ?? ''
   if (/awaiting_premarket|L3 已封存/.test(summary)) return 'L3 預測已封存；等待下一交易日盤前資訊後接續 L4 推薦'
+  if (job?.pipelineProgress && ['running','waiting'].includes(job.lastStatus)) {
+    const p = job.pipelineProgress
+    return `${p.status === 'waiting' ? '等待依賴' : '目前階段'}：${pipelinePhaseName(p.phase)}`
+  }
   if (/dependency=input_prep|stage=prep\b/.test(summary)) return '目前階段：特徵資料準備；等待批次完成收據'
   if (/dependency=input_snapshot|stage=snapshot\b/.test(summary)) return '目前階段：輸入快照準備'
   if (/modal_prediction=(?:triggered|running|spawned)\b/.test(summary)) return '目前階段：ML 預測'
   return job?.lastStatus === 'success' ? '流程已完成；各子階段狀態依自己的收據呈現' : '各子階段狀態依自己的啟動與完成收據呈現'
+}
+export function pipelinePhaseName(phase: string): string {
+  return ({ startup: '工作啟動', node_load_inputs: '讀取選股輸入', node_load_market_env: '市場環境',
+    awaiting_premarket: '次交易日盤前資訊', modal_prediction: '模型預測結果', input_prep: '特徵批次結果', input_adjusted: '還原股價',
+    node_capture_atomic_inputs: 'Atomic 輸入重播', input_snapshot: '輸入快照匯出',
+    feature_preparation: '特徵資料準備', node_build_payloads: '特徵與推論輸入',
+    node_l2_timesfm_enrich: 'L2 時序特徵', node_l3_formal_predict: 'L3 模型預測',
+    node_compute_personas: '推薦特徵', node_recommend: 'L4 配置', node_llm_reasons: '推薦說明',
+    node_write_d1: '寫入結果', node_paired_nav_setup: '配對證據', node_compute_sector_flow: '產業資金流',
+    node_compute_pit_residual_shadow: '殘差證據', node_export_dataset_snapshot: '研究快照',
+  } as Record<string,string>)[phase] ?? phase
+}
+export function PipelinePhaseDetails({ job }: { job?: SchedulerJob }) {
+  const p = job?.pipelineProgress
+  if (!p) return <p className="mt-2 text-[11px] text-slate-400">此執行尚無階段回報；不能由 waiting 判定 Job 尚未啟動。</p>
+  return <div className="mt-3 space-y-2" aria-label="Pipeline 階段紀錄">
+    <p className="text-[11px] text-slate-400">階段回報時間：{new Date(p.observed_at).toLocaleTimeString('zh-TW', {timeZone:'Asia/Taipei',hour12:false})}</p>
+    <ol className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
+      {p.completed.map((row,index) => <li key={`${index}-${row.phase}`} className="rounded border border-[#263247] p-2 text-xs">
+        <span>{pipelinePhaseName(row.phase)}</span>
+        <span className="mt-1 block text-slate-400">{row.status === 'failed' ? '失敗' : '結束'} · {Math.floor(row.elapsed_ms/60000)}分 {Math.floor(row.elapsed_ms%60000/1000)}秒</span>
+      </li>)}
+    </ol>
+  </div>
 }
 export function matureEvidencePhaseLabel(job?: SchedulerJob): string | null {
   if (job?.id !== 'strategy-learning-mature-evidence' || job.lastStatus !== 'running') return null
@@ -44,7 +72,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
   leading?: ReactNode; overview?: boolean; visualState?: string; justCompleted?: boolean;
 }) {
   const Element = onSelect ? 'button' : 'div'
-  const phaseLabel = matureEvidencePhaseLabel(job)
+  const phaseLabel = matureEvidencePhaseLabel(job) ?? (job?.id === 'pipeline' ? pipelinePreparationLabel(job) : null)
   return <Element data-stage={id} data-chain-stage={onSelect ? id : undefined}
     className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-amber-300' : '')}
     onClick={onSelect} aria-current={current ? 'step' : undefined}
@@ -90,6 +118,7 @@ export default function SchedulerPipelineChain({ jobs, loading, error }: {
         <WorkstationPill tone={tone(pipeline?.lastStatus)}>{label(pipeline?.lastStatus)}</WorkstationPill>
       </div>
       <p className="mt-2 text-xs text-[#b9b1a1]">{pipelinePreparationLabel(pipeline)}</p>
+      <PipelinePhaseDetails job={pipeline} />
       <p className="mt-1 text-[11px] leading-5 text-[#8a92a6]">資料準備 → ML Predict／L3 封存 → 次交易日盤前資訊 → Recommendation／L4。共用業務日與 run ID；等待上游的階段不表示正在計算。</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-start">
         <SchedulerStageCard id="ml-predict" title="ML Predict · 模型預測" job={byId.get('ml-predict')} />

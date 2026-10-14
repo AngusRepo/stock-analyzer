@@ -695,6 +695,13 @@ async function handleSchedulerCallback(c: any) {
       ? body.date
       : undefined
   const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
+  if (body.task === 'pipeline-progress') {
+    const { recordPipelineProgress, validPipelineProgress } = await import('../lib/pipelineProgress')
+    if (!callbackRunDate || !callbackRunId || !validPipelineProgress(body.progress))
+      return c.json({ error: 'invalid_pipeline_progress' }, 400)
+    const accepted = await recordPipelineProgress(databaseForDataDomain(c.env, 'ops'), callbackRunDate, callbackRunId, body.progress)
+    return c.json({ success: accepted, ignored: !accepted })
+  }
   const callbackAttemptId = typeof body.attempt_id === 'string' ? body.attempt_id : undefined
   const callbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
     ? body.metadata as Record<string, unknown>

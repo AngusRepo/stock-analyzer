@@ -330,7 +330,8 @@
 
 .obs-chain__stage-copy { display: grid; min-width: 0; width: 100%; margin-top: 10px; justify-items: center; }
 .obs-chain__stage-copy strong { max-width: 100%; color: var(--foreground); font-size: .8125rem; font-weight: 680; line-height: 1.25; text-wrap: balance; }
-.obs-chain__stage-copy > span { max-width: 100%; margin-top: 3px; overflow: hidden; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.obs-chain__stage-copy > span:not(.obs-job-timing) { max-width: 100%; margin-top: 3px; overflow: hidden; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.obs-chain__stage-copy > .obs-job-timing { margin-top: 6px; text-align: left; }
 .obs-chain__stage-copy small { margin-top: 5px; color: var(--muted-foreground); font-size: .8125rem; font-weight: 500; }
 .obs-chain__stage-copy em { margin-top: 3px; color: currentColor; font-size: .8125rem; font-style: normal; font-weight: 650; }
 
@@ -452,7 +453,7 @@
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__orb > svg { width: 17px; height: 17px; }
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy { margin: 0; justify-items: start; }
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy strong { font-size: .8125rem; }
-  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy > span { display: none; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy > span:not(.obs-job-timing) { display: none; }
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy small,
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy em { margin-top: 2px; font-size: .8125rem; }
 }

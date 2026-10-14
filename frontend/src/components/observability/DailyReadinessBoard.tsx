@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react'
-import { ChevronDown, LoaderCircle } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import { DAILY_READINESS_PHASES, READINESS_MAIN_STAGES } from './dailyReadinessPhases'
 import './DailyReadinessBoard.css'
 
@@ -15,12 +15,10 @@ export default function DailyReadinessBoard({ stageView, renderStage, pipelineSu
   stageView: (id: string) => ReadinessStageView;
   renderStage: (id: string, ordinal: string) => ReactNode;
 }) {
-  const [expanded, setExpanded] = useState<string | null>(null)
   const renderNode = (id: string, index: number) => <div key={id} className="daily-readiness-board__stage"
     data-pipeline-child={['ml-predict', 'recommendation'].includes(id) ? id : undefined}>
     {renderStage(id, String(index + 1).padStart(2, '0'))}
   </div>
-  const expandedPhase = DAILY_READINESS_PHASES.find(phase => phase.id === expanded)
   return <div className="daily-readiness-board">
     <div className="daily-readiness-board__phases" aria-label="Daily readiness 跨日執行順序">
       {DAILY_READINESS_PHASES.map((phase, index) => {
@@ -42,19 +40,18 @@ export default function DailyReadinessBoard({ stageView, renderStage, pipelineSu
           <p className="daily-readiness-board__caption">{PHASE_CONTEXT[phase.id]}</p>
 
 
-          <button type="button" className={'daily-readiness-board__more' + (attention.length ? ' has-attention' : '')}
-            aria-expanded={expanded === phase.id} aria-controls="daily-readiness-supporting"
-            onClick={() => setExpanded(expanded === phase.id ? null : phase.id)}>
-            <span>相關產物與監測 · {supporting.length}</span><span>{attention.length ? `${attention.length} 項需關注` : '查看'}<ChevronDown aria-hidden="true" /></span>
-          </button></div>
-          <div className="daily-readiness-board__stages">{main.map(renderNode)}</div>
+          </div>
+          <div className="daily-readiness-board__phase-content">
+            <div className="daily-readiness-board__stages" aria-label={`${phase.title} · 主流程`}>{main.map(renderNode)}</div>
+            {supporting.length > 0 && <section className="daily-readiness-board__supporting" aria-labelledby={`daily-supporting-${phase.id}`}>
+              <header><h5 id={`daily-supporting-${phase.id}`}>相關產物與監測 <span>{supporting.length}</span></h5>
+                {attention.length > 0 && <span className="daily-readiness-board__attention">{attention.length} 項需關注</span>}
+              </header>
+              <div className="daily-readiness-board__stages">{supporting.map((view, i) => renderNode(view.id, main.length + i))}</div>
+            </section>}
+          </div>
         </section>
       })}
     </div>
-    <section id="daily-readiness-supporting" className="daily-readiness-board__supporting" hidden={!expandedPhase}>
-      {expandedPhase && <><h4>{expandedPhase.title} · 相關產物與監測</h4>
-        <p className="daily-readiness-board__caption">各自依事件或排程執行，狀態保留各自業務日。</p>
-        <div className="daily-readiness-board__stages">{expandedPhase.stages.filter(id => !READINESS_MAIN_STAGES[expandedPhase.id].includes(id)).map(renderNode)}</div></>}
-    </section>
   </div>
 }

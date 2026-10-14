@@ -1,4 +1,5 @@
 import { summarizeSellOrderLosses, type SellOrderRowForPnl } from './paperOrderAccounting'
+import { P5_LOSS_POSITION_SCALE, P5_LOSS_POLICY } from './riskChecks/p5Losses'
 
 export interface P5RecoveryRequest {
   request_id: string
@@ -28,7 +29,14 @@ export async function previewP5Recovery(db: D1Database, accountId: number) {
     WHERE account_id=? AND side='sell' AND id>? AND id<=? ORDER BY id DESC LIMIT 5`)
     .bind(accountId, anchor.active_cutoff_sell_id, anchor.cutoff_sell_id).all<SellOrderRowForPnl>()
   const summary = summarizeSellOrderLosses(rows.results ?? [])
-  return { account_id: accountId, ...anchor, summary, p5_halted: summary.total >= 3 && summary.losses >= 3 }
+  const p5Triggered = summary.total >= 3 && summary.losses >= 3
+  return {
+    account_id: accountId, ...anchor, summary,
+    policy: P5_LOSS_POLICY,
+    p5_halted: false,
+    p5_triggered: p5Triggered,
+    position_scale: p5Triggered ? P5_LOSS_POSITION_SCALE : 1,
+  }
 }
 
 /** Operator attests reviewed repair evidence; this is not an automated NAV/model approval. */
@@ -54,7 +62,8 @@ export async function applyP5Recovery(db: D1Database, accountId: number, request
     return { written: false, receipt: existing }
   }
   const preview = await previewP5Recovery(db, accountId)
-  if (!preview.p5_halted) throw new Error('p5_recovery_not_halted')
+  // Optional operator acknowledgement can reset the sizing epoch, not a hard halt.
+  if (!preview.p5_triggered) throw new Error('p5_recovery_not_triggered')
   if (preview.last_order_id !== request.last_order_id || preview.cutoff_sell_id !== request.cutoff_sell_id
     || preview.previous_rearm_id !== request.previous_rearm_id) throw new Error('p5_recovery_stale_preview')
   // Single atomic conditional INSERT: intervening orders or another re-arm invalidate this approval.

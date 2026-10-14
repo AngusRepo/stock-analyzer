@@ -21,13 +21,15 @@ async function request(f: ReturnType<typeof l4NativeFixture>) {
     validation_sha256: 'a'.repeat(64), approved_by: 'test-operator' }
 }
 
-test('old losses persist indefinitely; explicit re-arm preserves account history; three new losses halt again', async () => {
+test('old losses scale without halting; explicit re-arm preserves history; three new losses scale again', async () => {
   const f = l4NativeFixture()
   try {
     for (let i=0;i<3;i++) sell(f)
     const orders = f.sqls.paper.prepare('SELECT * FROM paper_orders').all()
     const accounts = f.sqls.paper.prepare('SELECT * FROM paper_accounts').all()
-    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.halt, true)
+    const scaled = await checkP5Losses(f.env.PAPER_DB, deps)
+    assert.equal(scaled?.halt, false)
+    assert.equal(scaled?.maxPositionPct, .15)
     const body = await request(f)
     assert.equal((await applyP5Recovery(f.env.PAPER_DB, 1, body)).written, true)
     assert.equal(await checkP5Losses(f.env.PAPER_DB, deps), null)
@@ -40,10 +42,10 @@ test('old losses persist indefinitely; explicit re-arm preserves account history
     sell(f); sell(f)
     assert.equal(await checkP5Losses(f.env.PAPER_DB, deps), null)
     sell(f)
-    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.halt, true)
+    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.maxPositionPct, .15)
     // Retrying a completed old approval cannot forgive subsequent losses.
     assert.equal((await applyP5Recovery(f.env.PAPER_DB, 1, body)).written, false)
-    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.halt, true)
+    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.maxPositionPct, .15)
   } finally { f.close() }
 })
 
@@ -64,7 +66,7 @@ test('rejects missing repair evidence and stale previews; atomic INSERT catches 
     } } as D1Database
     await assert.rejects(applyP5Recovery(racing, 1, fresh), /stale_preview/)
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) AS n FROM paper_p5_rearms_v1').get()?.n, 0)
-    assert.equal((await checkP5Losses(base, deps))?.halt, true)
+    assert.equal((await checkP5Losses(base, deps))?.maxPositionPct, .15)
   } finally { f.close() }
 })
 
@@ -76,7 +78,8 @@ test('account isolation and all other loss/kill-switch controls survive P5 re-ar
     await applyP5Recovery(f.env.PAPER_DB, 1, await request(f))
     assert.equal(await checkP5Losses(f.env.PAPER_DB, deps), null)
     const other = await withPaperExecutionScope({ ...f.ports, accountId: 2 }, () => checkP5Losses(f.env.PAPER_DB, deps))
-    assert.equal(other.result?.halt, true)
+    assert.equal(other.result?.halt, false)
+    assert.equal(other.result?.maxPositionPct, .15)
     for (const [date,nav] of [['2026-09-01',1000000],['2026-09-02',900000],['2026-09-03',500000]]) {
       f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run(date,nav,nav)
     }
@@ -98,7 +101,10 @@ test('admin route requires service authentication, defaults to preview, and requ
     assert.equal((await adminConfigCoreRoutes.request(url, {method:'POST',headers,body:'null'}, f.env)).status,400)
     const preview = await adminConfigCoreRoutes.request(url, {method:'POST',headers,body:'{}'}, f.env)
     assert.equal(preview.status,200)
-    assert.equal(((await preview.json()) as any).p5_halted,true)
+    const previewBody = await preview.json() as any
+    assert.equal(previewBody.p5_halted,false)
+    assert.equal(previewBody.p5_triggered,true)
+    assert.equal(previewBody.position_scale,.5)
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) AS n FROM paper_p5_rearms_v1').get()?.n,0)
     const body={...await request(f),dry_run:false}
     assert.equal((await adminConfigCoreRoutes.request(url,{method:'POST',headers,body:JSON.stringify(body)},f.env)).status,400)
@@ -111,14 +117,16 @@ test('admin route requires service authentication, defaults to preview, and requ
 })
 
 
-test('frozen July five-sell PnLs reproduce 4/5 halt; re-arm neither expires nor forgives later losses', async () => {
+test('frozen July five-sell PnLs reproduce 4/5 scaling; re-arm preserves the original loss ledger', async () => {
   const f = l4NativeFixture()
   try {
     // Captured 2026-09-14 account, ascending IDs 89..93. Historical sample, not current production.
     for (const pnl of [-861, -19983, -10590, -5441, 16961]) sell(f, 1, pnl)
     const before = await previewP5Recovery(f.env.PAPER_DB, 1)
     assert.deepEqual(before.summary, { losses:4, total:5 })
-    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.halt, true)
+    assert.equal(before.p5_halted, false)
+    assert.equal(before.p5_triggered, true)
+    assert.equal((await checkP5Losses(f.env.PAPER_DB, deps))?.maxPositionPct, .15)
     const body = await request(f)
     await applyP5Recovery(f.env.PAPER_DB, 1, body)
     assert.equal(await checkP5Losses(f.env.PAPER_DB, deps), null)

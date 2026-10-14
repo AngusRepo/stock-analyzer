@@ -26,7 +26,7 @@ import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStor
 import { latchAtrOnce } from './paperAtrOnceState'
 import { ATR_ONCE_POLICY } from './paperAtrOnce'
 
-for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
+for(const scenario of ['p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
@@ -152,6 +152,12 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
     f.sqls.learning.prepare('INSERT INTO active8_ensemble_pointer_v1(singleton_id,artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum) VALUES(1,?,?,?,?)').run(...Object.values(l3))
     f.cfg.l4Distribution={scope:'private_research',constraints:{exposure_cap:.8,name_cap:.08,min_weight:.03,max_positions:5},artifact:{schema_version:'l4-distribution-v1',feature_schema:'full-l3-30-all-available-signals-v3',model_checksum:'c'.repeat(64),l3_identity:l3}} as any
     f.kvs.set('trading:config',JSON.stringify(f.cfg))
+    if (scenario==='p5_small_trial') {
+      for (const pnl of [-2884,-93,-1852]) f.sqls.paper.prepare(`
+        INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note,created_at)
+        VALUES(1,'3374','sell',1,20,20,?,'2026-09-11')`).run(JSON.stringify({realized_pnl:pnl}))
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
+    }
     const account=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-11'))).result
     assert.equal(account.risk_limits.buys_halted,false)
     f.sqls.core.exec("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','fixture','TWSE'),(2,'0050','benchmark','TWSE')")
@@ -292,6 +298,13 @@ for(const scenario of ['daily_orl','hard_stop','20_sessions','closing_auction','
       assert.equal(JSON.parse(recoveredSignal.detail_json).signal.signalMs,f.ports.nowMs)
       assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE status='allocator_skip' ORDER BY id DESC LIMIT 1").get()?.reason,'daily_plan_existing_position')
       assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
+      return
+    }
+    if(scenario==='p5_small_trial') {
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,3)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_p5_rearms_v1').get()?.n,0)
+      assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_execution_events WHERE reason='portfolio_risk_halt'").get()?.n,0)
+      assert.ok(Number(holding.shares)*Number(holding.entry_price)<=1_000_000*.04)
       return
     }
     if(['controller_static_book'].includes(scenario))return

@@ -1,5 +1,5 @@
 import { paperAccountId } from '../paperExecutionScope'
-import { summarizeSellOrderLosses } from '../paperOrderAccounting'
+import { summarizeSellOrderLosses, type SellOrderRowForPnl } from '../paperOrderAccounting'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 import { failClosedRiskCheck } from './failClosed'
 import { estimateSellOrderRealizedPnl, parseSellOrderNote } from '../paperOrderAccounting'
@@ -42,7 +42,14 @@ export function evaluateBoundedLosses(rows:any[],held:Array<{symbol:string;entry
 
 // Loss count reduces Paper sizing; monetary loss/drawdown gates own hard halts.
 export const P5_LOSS_POSITION_SCALE = 0.5
-export const P5_LOSS_POLICY = 'paper-loss-count-scale-v1'
+export const P5_LOSS_POLICY = 'paper-stopout-count-scale-v2'
+
+// Approved channel: count losing stops within the existing latest-five-sell
+// scope. Monetary losses from rotations remain owned by P1/P8/P9.
+export function summarizeP5Stopouts(rows:SellOrderRowForPnl[]) {
+  return summarizeSellOrderLosses(rows.filter(row=>
+    ['hard_stop','structural_stop'].includes(sellReceiptExitCategory(parseSellOrderNote(row.note)))))
+}
 
 export async function checkP5Losses(
   db: D1Database,
@@ -85,13 +92,13 @@ export async function checkP5Losses(
 
     if (!recentSells || recentSells.length < 3) return null
 
-    const summary = summarizeSellOrderLosses(recentSells)
+    const summary = summarizeP5Stopouts(recentSells)
     if (summary.total < 3 || summary.losses < 3) return null
 
-    console.warn(`[CircuitBreaker] Layer5 SCALE: ${summary.losses}/${summary.total} recent closed trades are losses; position cap × ${P5_LOSS_POSITION_SCALE}`)
+    console.warn(`[CircuitBreaker] Layer5 SCALE: ${summary.losses}/${summary.total} recent stops are losses; position cap × ${P5_LOSS_POSITION_SCALE}`)
     return {
       ...defaults,
-      reason: `近 ${summary.total} 筆已平倉交易中有 ${summary.losses} 筆虧損，部位上限降為原設定的 50%（虧損筆數不停止買入）`,
+      reason: `近五筆賣出中的 ${summary.total} 筆停損有 ${summary.losses} 筆虧損，部位上限降為原設定的 50%（停損筆數不停止買入）`,
       maxPositionPct: defaults.maxPositionPct * P5_LOSS_POSITION_SCALE,
     }
   } catch (e) {

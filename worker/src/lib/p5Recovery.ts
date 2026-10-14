@@ -1,5 +1,5 @@
-import { summarizeSellOrderLosses, type SellOrderRowForPnl } from './paperOrderAccounting'
-import { P5_LOSS_POSITION_SCALE, P5_LOSS_POLICY } from './riskChecks/p5Losses'
+import { type SellOrderRowForPnl } from './paperOrderAccounting'
+import { P5_LOSS_POSITION_SCALE, P5_LOSS_POLICY, summarizeP5Stopouts } from './riskChecks/p5Losses'
 
 export interface P5RecoveryRequest {
   request_id: string
@@ -28,7 +28,7 @@ export async function previewP5Recovery(db: D1Database, accountId: number) {
   const rows = await db.prepare(`SELECT price, shares, commission, tax, note FROM paper_orders
     WHERE account_id=? AND side='sell' AND id>? AND id<=? ORDER BY id DESC LIMIT 5`)
     .bind(accountId, anchor.active_cutoff_sell_id, anchor.cutoff_sell_id).all<SellOrderRowForPnl>()
-  const summary = summarizeSellOrderLosses(rows.results ?? [])
+  const summary = summarizeP5Stopouts(rows.results ?? [])
   const p5Triggered = summary.total >= 3 && summary.losses >= 3
   return {
     account_id: accountId, ...anchor, summary,

@@ -17,7 +17,7 @@ const deps = {
 }
 function sell(f: ReturnType<typeof l4NativeFixture>, pnl: number) {
   f.sqls.paper.prepare(`INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note)
-    VALUES(1,'2330','sell',1,20,20,?)`).run(JSON.stringify({realized_pnl:pnl}))
+    VALUES(1,'2330','sell',1,20,20,?)`).run(JSON.stringify({realized_pnl:pnl,exit_category:'hard_stop'}))
 }
 function seedRisk(f: ReturnType<typeof l4NativeFixture>) {
   f.sqls.learning.exec('CREATE TABLE IF NOT EXISTS active8_ensemble_pointer_v1(singleton_id INTEGER PRIMARY KEY,artifact_id TEXT,cohort_id TEXT,payload_checksum TEXT,base_artifact_set_checksum TEXT)')
@@ -32,6 +32,27 @@ function seedRisk(f: ReturnType<typeof l4NativeFixture>) {
 }
 const chain = (f: ReturnType<typeof l4NativeFixture>) => withPaperExecutionScope(f.ports, () =>
   runPortfolioChecks({paper:f.env.PAPER_DB,core:f.env.CORE_DB,market:f.env.MARKET_DB,learning:f.env.LEARNING_DB}, f.cfg, f.env.KV, deps))
+
+test('formal default excludes the observed L4 rotation loss without resetting the ledger',async()=>{
+  const f=l4NativeFixture()
+  try {
+    for(const [symbol,pnl,reason] of [['6994',-2884,'swing_hard_stop_8'],['3004',-93,'swing_daily_orl'],
+      ['3374',-1852,'[L4Target] plan=sealed;target=0']] as const) {
+      f.sqls.paper.prepare(`INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note)
+        VALUES(1,?,'sell',1,20,20,?)`).run(symbol,JSON.stringify({realized_pnl:pnl,reason:'[intraday] '+reason}))
+    }
+    const before=f.sqls.paper.prepare('SELECT * FROM paper_orders').all()
+    assert.equal(await checkP5Losses(f.env.PAPER_DB,deps),null)
+    const {previewP5Recovery}=await import('./p5Recovery')
+    const preview=await previewP5Recovery(f.env.PAPER_DB,1)
+    assert.equal(preview.p5_triggered,false);assert.equal(preview.summary.losses,2)
+    assert.equal(preview.policy,'paper-stopout-count-scale-v2')
+    sell(f,-100)
+    assert.equal((await checkP5Losses(f.env.PAPER_DB,deps))?.maxPositionPct,.04)
+    assert.deepEqual(f.sqls.paper.prepare('SELECT * FROM paper_orders ORDER BY id LIMIT 3').all(),before)
+    assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_p5_rearms_v1').get()?.n,0)
+  } finally {f.close()}
+})
 
 test('two losses do not scale; three nonconsecutive losses in five sells scale without halting', async () => {
   const f = l4NativeFixture()

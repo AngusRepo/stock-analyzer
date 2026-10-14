@@ -62,17 +62,17 @@ test('exception restores formal context, nesting is forbidden, native closed-ses
   assert.equal(paperAccountId(), 1)
 })
 
-test('actual P5 losing trades halt cannot be overwritten by defaults and selects only injected account', async () => {
+test('P5 stop losses scale the injected account without halting other accounts', async () => {
   const sqlite = new DatabaseSync(':memory:')
   sqlite.exec('CREATE TABLE paper_orders(id INTEGER PRIMARY KEY,account_id INTEGER,side TEXT,price REAL,shares REAL,commission REAL,tax REAL,note TEXT)')
   sqlite.exec(readFileSync(new URL('../../domain-migrations/paper/0006_p5_rearm.sql', import.meta.url), 'utf8'))
   for (let i = 0; i < 3; i++) sqlite.prepare('INSERT INTO paper_orders(account_id,side,price,shares,commission,tax,note) VALUES(2,\'sell\',90,100,20,27,?)')
-    .run(JSON.stringify({ entry_price: 100 }))
+    .run(JSON.stringify({ entry_price: 100, exit_category:'hard_stop' }))
   const db = { prepare(sql: string) { return { bind(...args: any[]) { return { async all() { return { results: sqlite.prepare(sql).all(...args) } } } } } } } as D1Database
   const p = ports()
   const result = await withPaperExecutionScope(p, () => checkP5Losses(db, { defaults, effectiveBuy: .6, effectiveSell: .4 }))
-  assert.equal(result.result?.halt, true)
-  assert.equal(result.result?.maxPositionPct, 0)
+  assert.equal(result.result?.halt, false)
+  assert.equal(result.result?.maxPositionPct, .15)
   assert.match(result.result?.reason ?? '', /3.*3/)
   assert.equal(await checkP5Losses(db, { defaults, effectiveBuy: .6, effectiveSell: .4 }), null)
   sqlite.close()

@@ -889,6 +889,18 @@ const logs: SchedulerDisplayLogCandidate[] = [
 }
 
 
+{
+  const durable = { business_date:'2026-10-14', stage:'pipeline_execution' as const,
+    canonical_run_id:'pipeline-dispatch:current', status:'waiting', attempt_count:0,
+    updated_at:'2026-10-14 16:19:44', last_error:null }
+  const base = { jobId:'pipeline', runDate:'2026-10-14', baseStatus:'running' as const,
+    baseTimestamp:'2026-10-14T16:19:44.732Z', durable }
+  assert(reconcileDurablePipelineStageStatus({...base,baseDispatchRunId:'pipeline-dispatch:current'})?.lastStatus === 'waiting',
+    'same-run durable queued receipt outranks later millisecond trigger acknowledgement')
+  assert(reconcileDurablePipelineStageStatus({...base,baseDispatchRunId:'pipeline-dispatch:other'}) === null,
+    'older unrelated durable row cannot override a new dispatch')
+}
+
 for (const status of ['triggered','skipped'] as const) {
   const waiting = resolveSchedulerLogStatus({ task:'active8-oof-daily',status,
     summary:'active8_oof_lifecycle status=pending reason=awaiting_premarket job_dispatched=false',

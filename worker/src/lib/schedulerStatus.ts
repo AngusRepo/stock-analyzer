@@ -375,6 +375,7 @@ export function reconcileDurablePipelineStageStatus(input: {
   runDate: string | null
   baseStatus: SchedulerLastStatus
   baseTimestamp?: string | null
+  baseDispatchRunId?: string | null
   durable?: DurablePipelineStageDisplayRow
 }): {
   lastStatus: SchedulerLastStatus
@@ -397,7 +398,10 @@ export function reconcileDurablePipelineStageStatus(input: {
   const durableTimestamp = sqliteUtcTimestamp(durable.updated_at)
   const durableMs = Date.parse(durableTimestamp)
   const baseMs = baseTimestamp ? Date.parse(baseTimestamp) : Number.NEGATIVE_INFINITY
-  if (!Number.isFinite(durableMs) || (Number.isFinite(baseMs) && durableMs <= baseMs)) return null
+  // A trigger acknowledgement can arrive after the durable enqueue write
+  // (SQLite seconds vs KV milliseconds). It cannot promote queued to running.
+  const sameRunDispatch = Boolean(input.baseDispatchRunId && input.baseDispatchRunId === durable.canonical_run_id)
+  if (!Number.isFinite(durableMs) || (!sameRunDispatch && Number.isFinite(baseMs) && durableMs <= baseMs)) return null
 
   const lastStatus: SchedulerLastStatus = durable.status === 'success'
     ? 'success'
@@ -1048,6 +1052,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       runDate: resolvedDisplay.statusRunDate,
       baseStatus: resolvedDisplay.status,
       baseTimestamp: displayLog?.timestamp,
+      baseDispatchRunId: displayLog?.status === 'triggered'
+        ? displayLog.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(displayLog.summary ?? '')?.[1] : null,
       durable: durableState,
     })
     const baseLastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status

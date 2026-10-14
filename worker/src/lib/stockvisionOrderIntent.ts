@@ -1,4 +1,5 @@
 import { buildTwOrderLegs, getTwTickSize, normalizeTwLimitPrice, type TwOrderLeg } from './twMarketRules'
+import type { SwingExecutionAuthorization } from './paperSwingExecution'
 
 export interface OrderIntentPendingBuy {
   symbol: string
@@ -37,6 +38,7 @@ export interface StockVisionOrderIntent {
     } | null
   }
   executionConstraints: {
+    swingAuthorization?: SwingExecutionAuthorization | null
     quoteSource: string
     quoteAgeMs?: number | null
     maxEntryChasePct: number
@@ -56,6 +58,7 @@ export interface BuildStockVisionOrderIntentInput {
   budget: number
   shares: number
   strategyMode?: string | null
+  swingAuthorization?: SwingExecutionAuthorization | null
   marketRiskLevel?: string | null
   quote: {
     bestBid?: number | null
@@ -129,6 +132,7 @@ export function buildStockVisionOrderIntent(input: BuildStockVisionOrderIntentIn
       sizingAuthorization: input.sizingAuthorization ?? null,
     },
     executionConstraints: {
+      ...(input.swingAuthorization ? { swingAuthorization: input.swingAuthorization } : {}),
       quoteSource: String(input.quote.source || 'none'),
       quoteAgeMs: input.quote.quoteAgeMs ?? null,
       maxEntryChasePct: Number(input.adaptivePolicy.maxEntryChasePct ?? 0),

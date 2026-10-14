@@ -50,8 +50,8 @@ export function previousAtrTR(bars:SwingMinute[],date:string,rawDailyClose:numbe
   if(high<low) return undefined
   return Math.max(high-low,Math.abs(high-prev),Math.abs(low-prev))*reference/rawDailyClose
 }
-export function applyAtrOnce(decision:SwingEntryDecision,evidence:AtrOnceEvidence):SwingEntryDecision {
-  const conditions={...decision.conditions,atr_once:evidence.status==='passed'?true:evidence.status==='veto'?false:null}
+export function applyAtrOnce(decision:SwingEntryDecision,evidence:AtrOnceEvidence | import('./paperSecondBreakout').SecondBreakoutEvidence):SwingEntryDecision {
+  const conditions={...decision.conditions,atr_once:evidence.status==='passed'?true:(evidence.status==='veto'||evidence.status==='weak_waiting')?false:null}
   return {...decision,conditions,atrOnce:evidence,
     ...(evidence.status==='passed'?{}:{action:'defer' as const,reason:evidence.reason})}
 }

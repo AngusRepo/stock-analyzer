@@ -1,4 +1,4 @@
-/* Existing home typography / Scheduler card surfaces. Receipts stay in the drilldown. */
+/* Main flow and supporting receipts remain visible within their owning phase. */
 .daily-readiness-board { min-width: 0; padding: 16px; font-family: inherit; }
 .daily-readiness-board__phases { display: grid; gap: 14px; }
 .daily-readiness-board__phase { display: grid; grid-template-columns: 195px minmax(0,1fr); gap: 16px; align-items: start; min-width: 0; }
@@ -10,24 +10,21 @@
 .daily-readiness-board__phase-state { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted-foreground); font-size: .8125rem; font-variant-numeric: tabular-nums; }
 .daily-readiness-board__running { color: var(--primary); width: 16px; height: 16px; animation: obs-status-spin 1s linear infinite; }
 .daily-readiness-board__caption { margin: 6px 0; font-size: .8125rem; line-height: 1.4; color: var(--muted-foreground); }
-.daily-readiness-board__stages { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 8px; align-items: stretch; }
-.daily-readiness-board__phase:not(.is-sources) .daily-readiness-board__stages { grid-template-columns: repeat(5,minmax(0,1fr)); }
+.daily-readiness-board__phase-content { min-width: 0; }
+.daily-readiness-board__stages { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,200px),1fr)); gap: 8px; align-items: stretch; }
 .daily-readiness-board__stage { display: grid; min-width: 0; }
-.daily-readiness-board__more { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px; padding: 4px 0; width: 100%; color: var(--muted-foreground); font-size: .8125rem; text-align: left; cursor: pointer; }
-.daily-readiness-board__more > span:last-child { display: flex; align-items: center; gap: 4px; }
-.daily-readiness-board__more svg { width: 14px; height: 14px; }
-.daily-readiness-board__more[aria-expanded=true] svg { transform: rotate(180deg); }
-.daily-readiness-board__more.has-attention { color: var(--chart-2); }
-.daily-readiness-board__more:hover { color: var(--foreground); }
-.daily-readiness-board__more:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
-.daily-readiness-board__supporting { margin-top: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
-.daily-readiness-board__supporting[hidden] { display: none; }
-.daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 12px; }
-.readiness-task { display: grid; grid-template-columns: 24px minmax(0,1fr); align-content: center; align-items: center; gap: 6px 12px; padding: 10px; min-height: 94px; color: var(--muted-foreground); }
+.daily-readiness-board__supporting { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.daily-readiness-board__supporting > header { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: .8125rem; color: var(--muted-foreground); }
+.daily-readiness-board__supporting h5 { margin: 0; font-size: inherit; font-weight: 500; }
+.daily-readiness-board__supporting h5 span { margin-left: 6px; font-variant-numeric: tabular-nums; }
+.daily-readiness-board__attention { color: var(--chart-2); }
+.daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(auto-fill,minmax(min(100%,200px),1fr)); }
+.readiness-task { display: grid; grid-template-columns: 24px minmax(0,1fr); align-content: start; align-items: center; gap: 8px 12px; padding: 12px; min-height: 150px; color: var(--muted-foreground); }
 .readiness-task__copy { display: contents; }
 .readiness-task__copy strong { grid-column: 2; color: var(--foreground); font-size: .9375rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
 .readiness-task__meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 6px; font-size: .8125rem; line-height: 1.3; font-variant-numeric: tabular-nums; color: var(--muted-foreground); }
 .readiness-task__status { color: var(--muted-foreground); }
+.readiness-task .obs-job-timing { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--border); }
 .readiness-task .obs-chain__orb { width: 24px; height: 24px; margin-left: 2px; border-width: 1px; box-shadow: none; background: transparent; }
 .readiness-task .obs-chain__orb::before { inset: -4px; }
 .readiness-task .obs-chain__orb > svg { width: 15px; height: 15px; }
@@ -60,7 +57,19 @@
 .obs-chain.is-daily_readiness .obs-chain__toolbar-meta { flex-basis: auto; gap: 8px; }
 .obs-chain.is-daily_readiness .obs-chain__runtime { min-width: 200px; }
 .obs-chain.is-daily_readiness .obs-chain__orchestrator { min-width: 260px; }
+/* Related overnight and premarket phases share a row on wide screens. */
+@media(min-width: 1251px) {
+  /* Five equal card columns: two for 02, three for 03; four 8px gaps plus the 24px phase gap. */
+  .daily-readiness-board__phases { grid-template-columns: minmax(0, calc((100% - 48px) * 2 / 5 + 8px)) minmax(0, 1fr); column-gap: 24px; }
+  .daily-readiness-board__phase.is-sources,
+  .daily-readiness-board__phase.is-evidence { grid-column: 1 / -1; }
+  .daily-readiness-board__phase.is-models,
+  .daily-readiness-board__phase.is-premarket { grid-template-columns: minmax(0, 1fr); align-content: start; gap: 10px; }
+  .daily-readiness-board__phase.is-models .daily-readiness-board__stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .daily-readiness-board__phase.is-premarket .daily-readiness-board__stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .daily-readiness-board__phase:is(.is-models, .is-premarket) .readiness-task { min-height: 160px; }
+}
 @media(max-width: 1250px) { .daily-readiness-board__phase { grid-template-columns: 165px minmax(0,1fr); gap: 12px; } .daily-readiness-board__stages { gap: 6px; } .readiness-task { padding: 8px; } }
-@media(max-width: 1000px) { .daily-readiness-board__phase { grid-template-columns: minmax(0,1fr); } .daily-readiness-board__phase-info { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; } .daily-readiness-board__more { grid-column: 2; grid-row: 1; } .daily-readiness-board__caption { grid-column: 1 / -1; } .daily-readiness-board__stages, .daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(4,minmax(0,1fr)); } }
-@media(max-width: 620px) { .daily-readiness-board__stages, .daily-readiness-board__phase:not(.is-sources) .daily-readiness-board__stages, .daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: repeat(2,minmax(0,1fr)); } .daily-readiness-board__phase-info { display: block; } }
+@media(max-width: 1000px) { .daily-readiness-board__phase { grid-template-columns: minmax(0,1fr); } .daily-readiness-board__phase-info { display: block; } }
+@media(max-width: 620px) { .daily-readiness-board__stages, .daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: minmax(0,1fr); } }
 @media(prefers-reduced-motion: reduce) { .daily-readiness-board *, .daily-readiness-board *::before { animation: none !important; } }

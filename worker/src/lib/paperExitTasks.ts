@@ -1,6 +1,6 @@
 import { rotationDecision } from './paperRotationAudit'
 import { swingExitEvaluator } from './paperSwingRuntime'
-import { readSwingState } from './paperSwingLifecycle'
+import { readSwingState, writeSwingState } from './paperSwingLifecycle'
 import { readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
 import { resolvePositionExit, preparePositionTakeProfit, recordPositionTakeProfitFill } from './positionExitArbiter'
 import { executePaperSellBatch } from './paperSellTransaction'
@@ -217,6 +217,8 @@ function updateLifecycleS12TrailingStop(
   nextTrailingStop: number | null,
   reason: string,
 ): string | null {
+  const swing = readSwingState(raw)
+  if (swing) return writeSwingState(raw, swing)
   const stop = positiveNumber(nextTrailingStop)
   if (stop == null) return typeof raw === 'string' ? raw : null
   const lifecycle = parseJsonObject(raw)

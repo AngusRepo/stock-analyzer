@@ -66,3 +66,15 @@ test('normal waiting preserves a timestamped historical L5 blocker without grant
  assert.equal(checklistEvidence(preview).conditions.window,false)
  assert.equal(lastEntryBlocker(null),null)
 })
+
+
+test('S weak/trigger cards show raw evidence and bounded recovery clock',async()=>{
+ const {checklistNumbers}=await import('./pendingEntryChecklist')
+ const atr={policy:'atr5-sma-second-breakout-s-v2',status:'weak_waiting',firstDelta:2.5,firstThreshold:6,priorHigh:489}
+ assert.match(checklistNumbers('atr_once',{atr_once:atr} as any),/delta 2.50 ≤ 門檻 6.00.*收盤 > 489.00/)
+ const passed={...atr,status:'passed',triggerKind:'second',triggerMs:100000,delta:5,threshold:3.9,authorization:{submitUntilMs:1900000}}
+ assert.match(checklistNumbers('atr_once',{atr_once:passed} as any),/二次突破.*delta 5.00.*3.90.*前高 489.00/)
+ const s={latest_bar_ms:100000,atr_once:passed,conditions:{window:true,quote:true}} as any
+ assert.equal(checklistEvidence({or15:s} as any,160000).conditions.window,true)
+ assert.equal(checklistEvidence({or15:s} as any,1900000).conditions.window,false)
+})

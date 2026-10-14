@@ -1,6 +1,7 @@
 import { ArrowRight } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { SchedulerJob } from '@/lib/api'
+import JobRunTiming from './observability/JobRunTiming'
 import { WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 
 const upstream = [
@@ -29,8 +30,9 @@ export function pipelinePreparationLabel(job?: SchedulerJob): string {
   if (/modal_prediction=(?:triggered|running|spawned)\b/.test(summary)) return '目前階段：ML 預測'
   return job?.lastStatus === 'success' ? '流程已完成；各子階段狀態依自己的收據呈現' : '各子階段狀態依自己的啟動與完成收據呈現'
 }
-export function SchedulerStageCard({ id, title, job, detail, onSelect, selected, current, statusText, statusTone, leading, overview, visualState, justCompleted }: {
+export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect, selected, current, statusText, statusTone, leading, overview, visualState, justCompleted }: {
   id: string; title: string; job?: SchedulerJob; detail?: string;
+  timingJob?: SchedulerJob;
   onSelect?: () => void; selected?: boolean; current?: boolean;
   statusText?: string; statusTone?: WorkstationTone;
   leading?: ReactNode; overview?: boolean; visualState?: string; justCompleted?: boolean;
@@ -43,7 +45,8 @@ export function SchedulerStageCard({ id, title, job, detail, onSelect, selected,
     {overview ? <>
       {leading}
       <span className="readiness-task__copy"><strong>{title}</strong>
-        <span className="readiness-task__meta"><span className="readiness-task__status">{statusText || label(job?.lastStatus)}</span><span>{job?.statusRunDate || '尚無業務日'}</span></span>
+        <span className="readiness-task__meta"><span className="readiness-task__status" title={statusText}>{statusText?.replace(/^Historical replay · [^·]+ · /, '') || label(job?.lastStatus)}</span><span>業務日 {job?.statusRunDate || '—'}</span></span>
+        <JobRunTiming job={timingJob ?? job} />
       </span>
     </> : <>
     <p className="text-xs text-slate-100">{title}</p>

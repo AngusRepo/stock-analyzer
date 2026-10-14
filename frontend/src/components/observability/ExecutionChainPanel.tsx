@@ -35,6 +35,7 @@ import {
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
+import JobRunTiming from './JobRunTiming'
 import DailyReadinessBoard from './DailyReadinessBoard'
 import { pipelinePreparationLabel, SchedulerStageCard } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
@@ -713,7 +714,7 @@ export default function ExecutionChainPanel({
               const job = scopedJobMap.get(id)
               const status = visualStatus(job)
               const Icon = definition.icon
-              return <SchedulerStageCard id={id} title={definition.label} job={job}
+              return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={jobMap.get(id) ?? job}
                 overview visualState={status} justCompleted={justCompleted.has(id)}
                 leading={<span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>}
                 statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}
@@ -754,7 +755,7 @@ export default function ExecutionChainPanel({
                         <span className="obs-chain__stage-copy">
                           <strong>{definition.label}</strong>
                           <span>{job?.name ?? id}</span>
-                          <small className="sv-num">{runtimeEvidence(job)}</small>
+                          <JobRunTiming job={jobMap.get(id) ?? job} />
                           <em>{statusLabel(job)}{definition.optional ? ' · optional' : ''}</em>
                         </span>
                       </button>
@@ -816,7 +817,7 @@ export default function ExecutionChainPanel({
                               <span className="obs-chain__stage-copy">
                                 <strong>{definition.label}</strong>
                                 <span>{job?.name ?? id}</span>
-                                <small className="sv-num">{runtimeEvidence(job)}</small>
+                                <JobRunTiming job={jobMap.get(id) ?? job} />
                                 <em>{statusLabel(job)}</em>
                               </span>
                             </button>

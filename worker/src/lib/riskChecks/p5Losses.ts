@@ -3,6 +3,9 @@ import { summarizeSellOrderLosses } from '../paperOrderAccounting'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 import { failClosedRiskCheck } from './failClosed'
 
+// Loss count reduces Paper sizing; monetary loss/drawdown gates own hard halts.
+export const P5_LOSS_POSITION_SCALE = 0.5
+export const P5_LOSS_POLICY = 'paper-loss-count-scale-v1'
 
 export async function checkP5Losses(
   db: D1Database,
@@ -25,12 +28,11 @@ export async function checkP5Losses(
     const summary = summarizeSellOrderLosses(recentSells)
     if (summary.total < 3 || summary.losses < 3) return null
 
-    console.warn(`[CircuitBreaker] Layer5 HALT: ${summary.losses}/${summary.total} recent closed trades are losses`)
+    console.warn(`[CircuitBreaker] Layer5 SCALE: ${summary.losses}/${summary.total} recent closed trades are losses; position cap × ${P5_LOSS_POSITION_SCALE}`)
     return {
       ...defaults,
-      halt: true,
-      reason: `近 ${summary.total} 筆已平倉交易中有 ${summary.losses} 筆虧損，啟動 SafetyMode`,
-      maxPositionPct: 0,
+      reason: `近 ${summary.total} 筆已平倉交易中有 ${summary.losses} 筆虧損，部位上限降為原設定的 50%（虧損筆數不停止買入）`,
+      maxPositionPct: defaults.maxPositionPct * P5_LOSS_POSITION_SCALE,
     }
   } catch (e) {
     console.error('[CircuitBreaker] Layer5 check failed; fail closed:', e)

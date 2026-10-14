@@ -1681,29 +1681,12 @@ def validate_official_market_summary_frames(
         raise RuntimeError("official_market_summary_missing: " + "; ".join(errors))
 
 
-def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str) -> dict[str, Any]:
+def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str,
+                      uploaded_files: dict | None = None) -> dict[str, Any]:
     from google.cloud import storage
-
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    uploaded = 0
-    bytes_total = 0
-    # Publish the ready consumer reference only after its original inputs and
-    # derived artifacts. A reader must never observe a half-uploaded ready set.
-    for path in sorted(local_dir.rglob("*"), key=lambda p: (p.relative_to(local_dir).as_posix() == "inference/reference.json", p.as_posix())):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(local_dir).as_posix()
-        blob = bucket.blob(f"{prefix.rstrip('/')}/{rel}")
-        blob.upload_from_filename(str(path))
-        uploaded += 1
-        bytes_total += path.stat().st_size
-    return {
-        "bucket": bucket_name,
-        "prefix": prefix.rstrip("/"),
-        "objects": uploaded,
-        "bytes": bytes_total,
-    }
+    from tools.finlab_gcs_upload import upload_capture
+    return upload_capture(local_dir, bucket=storage.Client().bucket(bucket_name), prefix=prefix,
+                          uploaded_files=uploaded_files if uploaded_files is not None else {})
 
 
 def d1_counts(start: str) -> dict[str, int]:
@@ -3930,11 +3913,13 @@ def main() -> int:
         )
         write_json(run_dir / "manifest.json", manifest)
 
+    uploaded_files: dict = {}
     if args.gcs_bucket:
         gcs = upload_dir_to_gcs(
             run_dir,
             bucket_name=args.gcs_bucket,
             prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
+            uploaded_files=uploaded_files,
         )
         manifest["gcs_upload_raw"] = gcs
         write_json(run_dir / "manifest.json", manifest)
@@ -3992,6 +3977,7 @@ def main() -> int:
             run_dir,
             bucket_name=args.gcs_bucket,
             prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
+            uploaded_files=uploaded_files,
         )
         manifest["gcs_upload"] = gcs
         write_json(run_dir / "manifest.json", manifest)

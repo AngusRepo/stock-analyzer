@@ -331,10 +331,10 @@ def test_upload_publishes_consumer_reference_after_all_files(monkeypatch, tmp_pa
     from google.cloud import storage
     tool = _load_tool_module()
     uploaded = []
-    class UploadBucket:
-        def blob(self, path):
-            return type('Blob', (), {'upload_from_filename': lambda self, _: uploaded.append(path)})()
-    monkeypatch.setattr(storage, 'Client', lambda: type('Client', (), {'bucket': lambda self, _: UploadBucket()})())
+    from test_finlab_gcs_upload import Bucket
+    bucket = Bucket()
+    uploaded = bucket.events
+    monkeypatch.setattr(storage, 'Client', lambda: type('Client', (), {'bucket': lambda self, _: bucket})())
     for name in ('inference/reference.json', 'inference/manifest.json', 'inference-native/capture.json', 'raw/input.parquet'):
         write(tmp_path / name, b'bytes')
     tool.upload_dir_to_gcs(tmp_path, bucket_name='test', prefix='daily')

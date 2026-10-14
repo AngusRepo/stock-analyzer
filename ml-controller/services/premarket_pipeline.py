@@ -224,7 +224,9 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'running'}),if_generation_match=claim.generation)
         try:
-            merge(state,await node(state))
+            from services.pipeline_progress import phase
+            async with phase(node.__name__):
+                merge(state,await node(state))
             raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
             immutable(blob,raw,'application/gzip')
         except Exception:

@@ -26,7 +26,7 @@ import { loadPendingBuySnapshot, replacePendingBuyState } from './pendingBuyStor
 import { latchAtrOnce } from './paperAtrOnceState'
 import { ATR_ONCE_POLICY } from './paperAtrOnce'
 
-for(const scenario of ['owner_price_622','owner_price_626','owner_limit_changed','p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
+for(const scenario of ['hold_owner_consistency','hold_owner_repair','owner_price_622','owner_price_626','owner_limit_changed','p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
       :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
@@ -319,6 +319,33 @@ for(const scenario of ['owner_price_622','owner_price_626','owner_limit_changed'
     assert.deepEqual(fillDetail.swing_authorization,buyNote.order_intent.executionConstraints.swingAuthorization)
     assert.match(JSON.stringify(result.notifications),new RegExp(SWING_POLICY_VERSION))
     assert.doesNotMatch(JSON.stringify(result.notifications),/TP1|TP2/)
+    if(scenario.startsWith('hold_owner_')) {
+      if(scenario==='hold_owner_repair') {
+        // Reproduce the exact owner corruption observed after the production hold poll.
+        lifecycle.owners.exit='tw_equity_exit_fusion_v2'
+        lifecycle.owners.fallbackExit='paper_sltp_atr_trailing_v1'
+        lifecycle.exit.fallbackOwner='paper_sltp_atr_trailing_v1'
+        lifecycle.entry.s12={structureStop:holding.initial_stop,exitPlan:{trailingInitial:holding.initial_stop}}
+        f.sqls.paper.prepare('UPDATE paper_positions SET trade_lifecycle_json=? WHERE symbol=?')
+          .run(JSON.stringify(lifecycle),'2330')
+      }
+      for(let i=0;i<3;i++) {
+        f.ports.nowMs+=60_000
+        await withPaperExecutionScope(f.ports,()=>pollIntradayStopLoss(f.env,{halt:false,forceLiquidate:false,targetExposurePct:1,maxPositionPct:.2} as any))
+        const stored:any=f.sqls.paper.prepare('SELECT * FROM paper_positions WHERE symbol=?').get('2330')
+        const after=JSON.parse(stored.trade_lifecycle_json)
+        assert.equal(after.owners.entry,SWING_POLICY_VERSION)
+        assert.equal(after.owners.exit,SWING_POLICY_VERSION)
+        assert.equal(after.owners.fallbackExit,SWING_POLICY_VERSION)
+        assert.equal(after.exit.fallbackOwner,SWING_POLICY_VERSION)
+        assert.equal(after.exit.initialStop,holding.initial_stop)
+        assert.equal(after.exit.tp1,null);assert.equal(after.exit.tp2,null)
+        assert.equal(stored.shares,filledShares)
+        assert.equal(stored.tp1_price,null);assert.equal(stored.tp2_price,null)
+        assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='sell'").get()?.n,0)
+      }
+      return
+    }
     if(ownerPriceCase) {
       assert.equal(holding.entry_price,622)
       assert.equal(buyNote.order_intent.executionConstraints.swingAuthorization.maxBuyPrice,625)

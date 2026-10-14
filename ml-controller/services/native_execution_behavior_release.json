@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:9c3aacd09a120a41ec26b20b9e9bdbd15302fc065174b8802b7f34c619a28cf6",
+  "execution_owner_version": "native-paper-v1:06ea6097e4fde2968efe226035af735d93d0da8584e8c872fda4a3d85e146659",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
   "authorization": "Wei explicitly approved commit push deploy and tonight evening chain recovery; see authorization.txt; Paper scope only.",
   "review": "audits/risk-review-20261014/RELEASE-READINESS.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:risk-sealed-release-20261014"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:risk-sealed-release-20261014-r2"
 }

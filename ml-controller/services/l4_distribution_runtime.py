@@ -254,7 +254,11 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         runtime={**runtime,'five_session_risk_evidence':measured_five_session_covariance(
             return_history,symbols,execution_config['minimum_covariance_windows'])}
     covariance,horizon_evidence=aligned_covariance(execution_config,runtime,symbols,signal_date,horizon,covariance)
-    if horizon_evidence is not None:risk_evidence['measured_covariance_horizon']=horizon_evidence
+    if horizon_evidence is not None:
+        horizon_forbidden=set(horizon_evidence.get('forbidden_buys',[]))
+        if horizon_forbidden & set(holdings):raise ValueError('l4_five_session_held_observations_insufficient')
+        forbidden.update(horizon_forbidden)
+        risk_evidence['measured_covariance_horizon']=horizon_evidence
     result = allocate(symbols=symbols,expected_gross=gross,covariance=covariance,
                       membership_groups=membership_groups,excluded_pairs=excluded_pairs,
                       trade_uncertainty=trade_uncertainty,

@@ -33,13 +33,63 @@ def test_missing_window_remains_explicit_and_insufficient_calendar_or_future_is_
     h=history();h['returns']['B'][0]=None
     h['checksum']=digest({k:v for k,v in h.items() if k!='checksum'})
     p=measured_five_session_covariance(h,['A','B'],5)
-    assert p['observed_windows']==5 and len(p['excluded_missing_windows'])==1
+    assert p['observed_windows']==5 and len(p['incomplete_windows'])==1
+    assert p['coverage']['A']['observed_windows']==6
+    assert p['coverage']['B']['observed_windows']==5
+    p=measured_five_session_covariance(h,['A','B'],6)
+    assert p['observed_windows']==6 and p['forbidden_buys']==['B']
+    assert p['symbols']==['A','B'] and np.linalg.eigvalsh(p['covariance'])[0]>=-1e-10
+    h['returns']['A'][0]=None;h['checksum']=digest({k:v for k,v in h.items() if k!='checksum'})
     with pytest.raises(ValueError,match='insufficient'):
         measured_five_session_covariance(h,['A','B'],6)
     h['intervals'][4][0]='2026-01-01'
     h['checksum']=digest({k:v for k,v in h.items() if k!='checksum'})
     with pytest.raises(ValueError,match='calendar'):
         measured_five_session_covariance(h,['A','B'],2)
+
+
+def test_pairwise_windows_preserve_available_names_and_conservatively_bound_unknown_pairs():
+    from services.l4_sealed_execution import aligned_covariance
+    h=history()
+    # Each name has four observations, but the pair only two. No imputation.
+    h['returns']['A'][:10]=[None]*10
+    h['returns']['B'][-10:]=[None]*10
+    h['checksum']=digest({k:v for k,v in h.items() if k!='checksum'})
+    p=measured_five_session_covariance(h,['A','B'],4)
+    assert p['pair_observation_counts']==[[4,2],[2,4]]
+    assert p['forbidden_buys']==[]
+    assert all(v>0 for v in p['unknown_pair_diagonal_loading'])
+    assert np.linalg.eigvalsh(p['covariance'])[0]>=-1e-10
+    config={'require_matched_risk_horizon':True,'minimum_covariance_windows':4}
+    aligned_covariance(config,{'five_session_risk_evidence':p},['A','B'],h['signal_date'],5,None)
+    p['coverage']['A']['observed_windows']=5
+    p['checksum']=digest({k:v for k,v in p.items() if k!='checksum'})
+    with pytest.raises(ValueError,match='coverage'):
+        aligned_covariance(config,{'five_session_risk_evidence':p},['A','B'],h['signal_date'],5,None)
+
+
+def test_runtime_forbids_sparse_name_buys_and_rejects_sparse_existing_holdings():
+    from test_l4_distribution_runtime import fixture
+    from services.l4_distribution_runtime import run
+    from services.l4_dated_risk import build_dated_risk
+    rows,policy,returns=fixture();end=date.fromisoformat(policy['runtime']['signal_date'])
+    payloads=[]
+    for symbol,rr in returns.items():
+        prices=100*np.cumprod([1.,*[1+r for r in rr]])
+        bars=[{'date':str(end-timedelta(days=30-i)),'adj_close':float(p)} for i,p in enumerate(prices)]
+        if symbol=='B':bars[0]['adj_close']=None
+        payloads.append({'symbol':symbol,'prices':bars})
+    h=build_dated_risk(payloads,signal_date=str(end),lookback=30)
+    policy['sealedExecution']={'schema_version':'l4-sealed-execution-v1',
+        'rotation_mode':'selected_ready_or_filled','expiry':'retain_until_next_seal',
+        'require_matched_risk_horizon':True,'minimum_covariance_windows':6}
+    policy['constraints']['covariance_horizon_sessions']=5
+    plan=run(rows,policy,return_history=h)[0]['_l4_portfolio_plan']
+    assert plan['weights']['B']==0 and 'B' in plan['forbidden_buys']
+    assert plan['proof']['evaluated_candidate_count']==3
+    policy['runtime']['account'].update(available_cash=900000,holdings=[{'symbol':'B','market_value':100000}])
+    with pytest.raises(ValueError,match='five_session_held_observations_insufficient'):
+        run(rows,policy,return_history=h)
 
 
 def test_calibration_binding_requires_exact_immutable_artifact_and_prior_known_date():

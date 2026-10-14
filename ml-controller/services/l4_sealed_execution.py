@@ -63,16 +63,29 @@ def aligned_covariance(config,runtime,symbols,signal_date,horizon,existing):
         or evidence.get('schema_version')!='l4-measured-horizon-covariance-v1' or evidence.get('horizon_sessions')!=5
         or evidence.get('symbols')!=symbols or evidence.get('signal_date')!=signal_date
         or evidence.get('known_date_max','9999-12-31')>signal_date or evidence.get('observed_windows',0)<minimum
-        or evidence.get('method') not in ['observed_nonoverlapping_five_session_returns','autocovariance_adjusted_five_session_returns']
+        or evidence.get('method') not in ['observed_nonoverlapping_five_session_returns','autocovariance_adjusted_five_session_returns',
+                                         'observed_pairwise_nonoverlapping_five_session_returns']
         or not evidence.get('source_reference')
         or evidence.get('checksum')!=digest({k:v for k,v in evidence.items() if k!='checksum'})):
         raise ValueError('l4_measured_five_session_covariance_missing')
     date.fromisoformat(evidence['known_date_max'])
+    if evidence['method']=='observed_pairwise_nonoverlapping_five_session_returns':
+        coverage=evidence.get('coverage') or {};counts=np.asarray(evidence.get('pair_observation_counts'))
+        if (evidence.get('minimum_windows')!=minimum or set(coverage)!=set(symbols)
+                or counts.shape!=(len(symbols),len(symbols)) or not np.issubdtype(counts.dtype,np.integer)
+                or (counts<0).any() or not np.array_equal(counts,counts.T)
+                or (counts>np.minimum.outer(np.diag(counts),np.diag(counts))).any()
+                or any(coverage[s].get('observed_windows')!=int(counts[i,i])
+                       or coverage[s].get('new_buys_allowed') is not bool(counts[i,i]>=minimum)
+                       for i,s in enumerate(symbols))
+                or evidence.get('forbidden_buys')!=[s for s in symbols if counts[symbols.index(s),symbols.index(s)]<minimum]
+                or not any(counts[i,i]>=minimum for i in range(len(symbols)))):
+            raise ValueError('l4_measured_covariance_coverage_invalid')
     matrix=np.asarray(evidence.get('covariance'),float)
     if matrix.shape!=(len(symbols),len(symbols)) or not np.isfinite(matrix).all() or (len(symbols) and (
         np.max(abs(matrix-matrix.T))>1e-10 or np.linalg.eigvalsh(matrix)[0]<-1e-10)):
         raise ValueError('l4_measured_covariance_invalid')
-    return matrix,{k:v for k,v in evidence.items() if k!='covariance'}
+    return matrix,{k:v for k,v in evidence.items() if k not in ('covariance','pair_observation_counts')}
 
 def seal_execution_evidence(config, symbols, current, gross, covariance, result, nav, uncertainty, locked_symbols=()):
     if config is None:return None

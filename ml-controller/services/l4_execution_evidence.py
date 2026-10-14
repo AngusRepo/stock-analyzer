@@ -6,10 +6,10 @@ from services.l4_dated_risk import is_dated_risk
 
 
 def measured_five_session_covariance(history, symbols, minimum_windows):
-    """Compound five actual consecutive sessions, using disjoint complete windows.
+    """Compound disjoint five-session windows, masking missing names individually.
 
-    The universe is unchanged. A missing observation excludes its whole window,
-    never a name. Insufficient complete windows block this optional policy.
+    The universe is unchanged. Insufficient per-name history prohibits new buys;
+    missing pair observations carry conservative risk, never zero-risk credit.
     """
     if (not is_dated_risk(history)
             or history.get('checksum') != digest({k:v for k,v in history.items() if k!='checksum'})
@@ -33,21 +33,53 @@ def measured_five_session_covariance(history, symbols, minimum_windows):
     for start in range(len(intervals)%5,len(intervals)-4,5):
         block=x[start:start+5]
         span=[intervals[start][0],intervals[start+4][1]]
-        if not np.isfinite(block).all():
-            missing.append(span);continue
+        if not np.isfinite(block).all():missing.append(span)
         samples.append(np.prod(1+block,axis=0)-1);windows.append(span)
     if len(samples)<minimum_windows:
         raise ValueError(f'l4_measured_risk_complete_windows_insufficient:{len(samples)}:{minimum_windows}')
-    # Ledoit-Wolf shrinks the observed five-session matrix, not daily covariance.
-    from sklearn.covariance import LedoitWolf
-    fit=LedoitWolf().fit(np.asarray(samples))
+    samples=np.asarray(samples);observed=np.isfinite(samples)
+    counts=observed.astype(float).T@observed.astype(float)
+    eligible=np.diag(counts)>=minimum_windows
+    if not eligible.any():raise ValueError('l4_measured_risk_per_name_windows_insufficient')
+    coverage={s:{'observed_windows':int(counts[i,i]),'missing_windows':len(windows)-int(counts[i,i]),
+        'new_buys_allowed':bool(eligible[i])} for i,s in enumerate(symbols)}
+    correction=0.;loading=np.zeros(len(symbols));negative=0
+    if observed.all():
+        # Shrink actual compounded observations, never a daily covariance proxy.
+        from sklearn.covariance import LedoitWolf
+        fit=LedoitWolf().fit(samples);covariance=fit.covariance_;shrinkage=float(fit.shrinkage_)
+        method='observed_nonoverlapping_five_session_returns'
+        estimator='ledoit_wolf_on_compounded_five_session_returns'
+    else:
+        # Zeros below are masked algebra, not synthetic return observations.
+        safe=np.where(observed,samples,0.);totals=safe.T@observed.astype(float)
+        supported=counts>=minimum_windows
+        covariance=np.divide(safe.T@safe-np.divide(totals*totals.T,counts,
+            out=np.zeros_like(counts),where=counts>0),counts-1,
+            out=np.zeros_like(counts),where=supported)
+        variance=np.maximum(np.diag(covariance),1e-8)
+        unknown=~supported;np.fill_diagonal(unknown,False)
+        # Cauchy-Schwarz bounds missing cross terms; forbidden names have zero
+        # feasible weight (runtime rejects insufficient-history holdings).
+        loading=(np.sqrt(np.outer(variance,variance))*unknown*np.outer(eligible,eligible)).sum(axis=1)
+        np.fill_diagonal(covariance,variance+loading)
+        values,vectors=np.linalg.eigh(covariance)
+        negative=int((values<0).sum());correction=float(np.linalg.norm(np.minimum(values,0.)))
+        if negative:covariance=(vectors*np.maximum(values,0.))@vectors.T
+        covariance=(covariance+covariance.T)*.5
+        shrinkage=None;method='observed_pairwise_nonoverlapping_five_session_returns'
+        estimator='pairwise_compounded_returns_conservative_unknown_pairs_psd_spectral'
     packet={'schema_version':'l4-measured-horizon-covariance-v1','horizon_sessions':5,
         'symbols':list(symbols),'signal_date':signal_date,'known_date_max':windows[-1][1],
-        'observed_windows':len(windows),'method':'observed_nonoverlapping_five_session_returns',
+        'observed_windows':int(np.diag(counts)[eligible].min()),'method':method,
         'source_reference':'l4-dated-risk-v1:'+history['checksum'],
-        'source_checksum':history['checksum'],'windows':windows,'excluded_missing_windows':missing,
-        'estimator':'ledoit_wolf_on_compounded_five_session_returns',
-        'shrinkage':float(fit.shrinkage_),'covariance':fit.covariance_.tolist()}
+        'source_checksum':history['checksum'],'windows':windows,'incomplete_windows':missing,
+        'total_windows':len(windows),'minimum_windows':minimum_windows,'coverage':coverage,
+        'forbidden_buys':[s for s in symbols if not coverage[s]['new_buys_allowed']],
+        'pair_observation_counts':counts.astype(int).tolist(),
+        'unknown_pair_diagonal_loading':loading.tolist(),'psd_correction_frobenius':correction,
+        'negative_eigenvalues':negative,'estimator':estimator,
+        'shrinkage':shrinkage,'covariance':covariance.tolist()}
     packet['checksum']=digest(packet)
     return packet
 

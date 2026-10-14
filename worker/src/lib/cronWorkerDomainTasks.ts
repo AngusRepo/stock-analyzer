@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { runPremarketProducerTask } from './premarketProducerStatus'
 import { runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { runEODExit } from './paperExitTasks'
@@ -102,13 +103,13 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   }
 
   if (cron === '45 22 * * SUN-THU') {
-    runWithLog('news-analyst', async () => {
+    runWithLog('news-analyst', () => runPremarketProducerTask('news-analyst', async () => {
       const { runDailyNewsAnalysis } = await import('./newsAnalyst')
       const report = await runDailyNewsAnalysis(env as any)
       const { ensurePremarketEventChain } = await import('./premarketEventChain')
       await ensurePremarketEventChain(env,twTodayStr)
       return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
-    })
+    }))
     return true
   }
 

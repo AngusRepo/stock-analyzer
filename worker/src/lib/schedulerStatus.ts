@@ -4,6 +4,7 @@
 
 import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import { sealedPremarketDisplay } from './schedulerPipelinePhase'
+import { loadPremarketProducerStates, premarketProducerDisplay } from './premarketProducerStatus'
 import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay } from './schedulerPremarketProgress'
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
@@ -924,13 +925,17 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     allLogs[date] = mergeDirectSchedulerLog(allLogs[date] ?? [], log)
   }
 
-  const [durableStageStates, schedulerExecutionTickets, premarketProgress] = await Promise.all([
+  const [durableStageStates, schedulerExecutionTickets, premarketProgress, producerStates] = await Promise.all([
     durableStageStatesPromise,
     loadSchedulerExecutionTickets(opsDb, dates).catch((error) => {
       console.warn('[schedulerStatus] scheduler execution ticket read failed:', error)
       return [] as SchedulerExecutionTicketRow[]
     }),
     premarketProgressPromise,
+    loadPremarketProducerStates(opsDb, today).catch((error) => {
+      console.warn('[schedulerStatus] premarket producer read failed:', error)
+      return []
+    }),
   ])
   const executionTicketsByJobDate = new Map<string, SchedulerExecutionTicketRow>()
   const executionTicketsByTaskDate = new Map<string, SchedulerExecutionTicketRow>()
@@ -1076,7 +1081,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ticketStatus: executionTicket?.status,
     })
     const watchdogDisplay = premarketWatchdogDisplay(def.id, displayLog, executionTicket?.status)
-    const lastStatus = watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
+    const producerDisplay = premarketProducerDisplay(def.id, today, producerStates)
+    const lastStatus = producerDisplay?.lastStatus ?? watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
     const displayTime = executionTicketOverride
       ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
       : resolveSchedulerRunDisplayTime({
@@ -1102,6 +1108,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     const lastDuration = formatDuration(displayLog?.duration_ms)
     const shortRun = inferShortRunConcern(def, displayLog)
 
+    if (producerDisplay) history7d[history7d.length - 1] = producerDisplay.lastStatus === 'error' ? 'failed'
+      : producerDisplay.lastStatus === 'success' ? 'success' : 'skip'
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => item !== 'skip').length
 
@@ -1144,15 +1152,21 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       statusAuthority: ticketAuthority,
       consolidation: getSchedulerDependencySpec(accounting.task) ?? null,
       accounting,
-      ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}) },
+      ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}),
+        ...(producerDisplay ? {ticketId: producerDisplay.runId, status: producerDisplay.lastStatus, runDate: today,
+          authority: producerDisplay.statusAuthority, durable: true, missing: false} : {}) },
       ...phaseDisplay,
       ...watchdogDisplay,
+      ...(producerDisplay ? {...producerDisplay, lastRun: formatTimestamp(producerDisplay.lastRunAt), lastRunBasis: 'updated' as const,
+        recoveredFromStatus: producerDisplay.lastStatus !== baseLastStatus ? baseLastStatus : null} : {}),
     }
   }))
 
   const failed24h = jobs.filter((job) => {
     const def = JOB_DEFS.find((row) => row.id === job.id)
     const todayLog = def ? getJobDisplayLog(allLogs[today], def) : undefined
+    if (job.statusAuthority === 'durable_pipeline_stage' && ['news-analyst','us-leading'].includes(job.id)
+      && job.statusRunDate === today) return job.lastStatus === 'error'
     return todayLog?.status === 'error'
   }).length
 

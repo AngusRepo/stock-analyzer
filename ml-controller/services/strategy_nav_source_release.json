@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "62f0c8cd9ce46b4e38cb0d2d13b1c21dec2429ff",
+  "production_baseline_source": "aa9a1a43e56bc82e9c7f053a919551439e2781d9",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "e16025947ef92fce19a63950607933d7e9ce7d18c564228649402e558fe37f22",
-  "prior_configuration_checksum": "f5013031fc2c893a0ae53d8a9b2153a3b713460a314f8d35e14acf171f69a204",
+  "prior_approval_checksum": "e67482cf6f3ad752c22e79a1efbe6e6bb43bcfb7df6cdd84c978abc9881ccf7e",
+  "prior_configuration_checksum": "049d38b6f31c8eda3a283cb2f8f9116a7bae224eb9f0fa26849539d261170e80",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -80,6 +80,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:13a2cf9ea0a768b4e9b0c3e432231445b562c5b3742602443c910db13244ae89",
+  "execution_owner_version": "native-paper-v1:23ebd5a4b39d6cfac92c3f1b1a7c7069026021be39299eb80f1bcb5f08eb83bc",
   "review": "audits/risk-review-20261014/RELEASE-READINESS.md"
 }

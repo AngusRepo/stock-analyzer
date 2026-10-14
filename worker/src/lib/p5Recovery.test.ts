@@ -13,7 +13,7 @@ import { withPaperExecutionScope } from './paperExecutionScope'
 const deps = { defaults: { halt: false, maxPositionPct: .3, buyConfThreshold: .6, sellConfThreshold: .4 }, effectiveBuy: .6, effectiveSell: .4 }
 function sell(f: ReturnType<typeof l4NativeFixture>, account = 1, pnl = -100) {
   f.sqls.paper.prepare(`INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note,created_at)
-    VALUES(?,'2330','sell',100,90,9000,?,'2026-07-17')`).run(account, JSON.stringify({ realized_pnl: pnl }))
+    VALUES(?,'2330','sell',100,90,9000,?,'2026-07-17')`).run(account, JSON.stringify({ realized_pnl: pnl, exit_category:'hard_stop' }))
 }
 async function request(f: ReturnType<typeof l4NativeFixture>) {
   return { ...await previewP5Recovery(f.env.PAPER_DB, 1), request_id: 'incident-july-rearm',
@@ -84,7 +84,8 @@ test('account isolation and all other loss/kill-switch controls survive P5 re-ar
       f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run(date,nav,nav)
     }
     assert.equal((await checkP1Mdd(f.env.PAPER_DB, f.cfg, deps))?.halt, true)
-    assert.equal((await checkP8DailyPnl(f.env.PAPER_DB, DEFAULT_RISK_CONFIG, deps))?.halt, true)
+    assert.equal((await checkP8DailyPnl(f.env.PAPER_DB, DEFAULT_RISK_CONFIG, deps,
+      {tradeDate:'2026-09-03',previousSession:'2026-09-02',currentNav:500000,netExternalFlow:0}))?.halt, true)
     f.kvs.set('trading:risk_config', JSON.stringify({ ...DEFAULT_RISK_CONFIG, system: { ...DEFAULT_RISK_CONFIG.system, killSwitch: true } }))
     assert.equal((await checkS1KillSwitch(f.env.KV, deps))?.halt, true)
   } finally { f.close() }

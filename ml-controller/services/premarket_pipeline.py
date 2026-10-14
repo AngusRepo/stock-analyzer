@@ -124,7 +124,8 @@ def validate_context(receipt, context, *, now=None):
     after_close_recovery=(paper_recovery and captured_tw.date()==tw.date()
         and (captured_tw.hour,captured_tw.minute)>=(13,30) and (tw.hour,tw.minute)>=(13,30))
     # Context can freeze at 06:45; the independent 08:45 cutoff remains strict.
-    if now-cutoff>timedelta(minutes=120) and not after_close_recovery:raise ValueError('premarket_context_stale')
+    max_age_minutes = 105 if (paper_recovery or opening_recovery) else 120
+    if now-cutoff>timedelta(minutes=max_age_minutes) and not after_close_recovery:raise ValueError('premarket_context_stale')
     if context['checksum']!=digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
 
 def dispatch(receipt,context,*,jobs_client,client=None):

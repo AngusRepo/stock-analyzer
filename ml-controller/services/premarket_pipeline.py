@@ -112,12 +112,20 @@ def validate_context(receipt, context, *, now=None):
     # Oct 13 paper recovery remains valid for this date; preopen is the target.
     opening_recovery = (enabled() and receipt.get('run_date') == '2026-10-12'
         and context.get('trade_date') == tw.date().isoformat() == '2026-10-13')
-    if context.get('trade_date')!=tw.date().isoformat() or ((tw.hour,tw.minute)>=(8,45) and not (paper_recovery or opening_recovery)):
+    # Wei explicitly approved Oct 14 publication after 08:45. Reuse only
+    # this day's frozen preopen capture; never grant another day's window.
+    late_recovery = (enabled() and receipt.get('run_date') == '2026-10-13'
+        and context.get('trade_date') == tw.date().isoformat() == '2026-10-14')
+    if context.get('trade_date')!=tw.date().isoformat() or ((tw.hour,tw.minute)>=(8,45) and not (paper_recovery or opening_recovery or late_recovery)):
         raise ValueError('premarket_allocation_cutoff')
     if receipt['run_date']>=context['trade_date']:raise ValueError('premarket_signal_date_invalid')
     cutoff=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))
     if cutoff.tzinfo is None or cutoff>now:raise ValueError('premarket_context_stale')
     captured_tw=cutoff.astimezone(timezone(timedelta(hours=8)))
+    late_recovery = (late_recovery and captured_tw.date()==tw.date()
+        and (6,45)<=(captured_tw.hour,captured_tw.minute)<(8,45))
+    if tw.date().isoformat()=='2026-10-14' and (tw.hour,tw.minute)>=(8,45) and not late_recovery:
+        raise ValueError('premarket_allocation_cutoff')
     # The explicitly authorized Oct 12 after-close paper backfill retains its
     # original capture for this day. It cannot open another day's allocation,
     # alter source freshness at capture, or grant an execution window.
@@ -125,7 +133,7 @@ def validate_context(receipt, context, *, now=None):
         and (captured_tw.hour,captured_tw.minute)>=(13,30) and (tw.hour,tw.minute)>=(13,30))
     # Context can freeze at 06:45; the independent 08:45 cutoff remains strict.
     max_age_minutes = 105 if (paper_recovery or opening_recovery) else 120
-    if now-cutoff>timedelta(minutes=max_age_minutes) and not after_close_recovery:raise ValueError('premarket_context_stale')
+    if now-cutoff>timedelta(minutes=max_age_minutes) and not (after_close_recovery or late_recovery):raise ValueError('premarket_context_stale')
     if context['checksum']!=digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
 
 def dispatch(receipt,context,*,jobs_client,client=None):

@@ -235,6 +235,9 @@ async def _run() -> int:
 
     logger.info("[JobEntry] Starting pipeline V2 run_id=%s date=%s", run_id, run_date or "today")
 
+    from services.pipeline_progress import report
+    await report("startup")
+
     t0 = time.time()
     status = "error"
     summary = ""
@@ -308,6 +311,7 @@ async def _run() -> int:
                 f"errors={error_count}"
             )
         elif isinstance(result,dict) and result.get('status')=='awaiting_premarket':
+            await report('awaiting_premarket', status='waiting')
             status='triggered'
             emit_subtasks=False
             summary='awaiting_premarket l3_sealed=true cloud_compute_stopped=true'
@@ -317,6 +321,7 @@ async def _run() -> int:
             metrics = result.get("metrics") or {}
             async_state = metrics.get("async_modal_prediction") or {}
             input_state = metrics.get('async_input_dependency') or {}
+            await report('input_' + str(input_state['stage']) if input_state.get('stage') else 'modal_prediction', status='waiting')
             summary = (
                 f"run_id={run_id} "
                 f"dependency={result.get('deferred_reason')} cloud_compute_stopped=true "

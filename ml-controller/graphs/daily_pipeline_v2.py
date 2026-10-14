@@ -831,6 +831,7 @@ async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
     except Exception as exc:
         # Candidate setup failure cannot suppress valid formal recommendations.
         # This explicit lane failure is retained for the terminal closure owner.
+        logger.error('[AtomicCapture] failed error_type=%s', type(exc).__name__)
         return {'paired_nav_atomic_inputs': shadow_failure('atomic_daily_inputs', exc)}
 
 
@@ -5074,9 +5075,12 @@ def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
 
 async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
     from services.runtime_phase_metrics import measured_phase
+    from services.pipeline_progress import phase
     for node in nodes:
-        with measured_phase(getattr(node, "__name__", type(node).__name__)):
-            _merge_pipeline_state_update(state, await node(state))
+        name = getattr(node, "__name__", type(node).__name__)
+        async with phase(name):
+            with measured_phase(name):
+                _merge_pipeline_state_update(state, await node(state))
     return state
 
 

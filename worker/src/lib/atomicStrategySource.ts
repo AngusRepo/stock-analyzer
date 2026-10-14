@@ -49,6 +49,15 @@ async function verifiedBody(env: Pick<Bindings, 'ARTIFACTS'>, key: string, check
   return JSON.parse(body)
 }
 
+/** Bounded reads preserve original order; every fragment still verifies its hash. */
+async function* orderedArtifactBodies(env: Pick<Bindings, 'ARTIFACTS'>, refs: any[]) {
+  for (let offset = 0; offset < refs.length; offset += 4) {
+    const window = refs.slice(offset, offset + 4)
+    const bodies = await Promise.all(window.map(ref => verifiedBody(env, ref.r2_key, ref.checksum)))
+    for (let i = 0; i < window.length; i++) yield { index: offset + i, ref: window[i], body: bodies[i] }
+  }
+}
+
 /** Also used by transport tests; the supplied parent must come from a verified
  * canonical run manifest, not from an untrusted caller's checksum assertion. */
 export async function readAtomicSourcePayload(env: Pick<Bindings, 'ARTIFACTS'>, row: SourceRow,
@@ -68,7 +77,7 @@ export async function readAtomicSourcePayload(env: Pick<Bindings, 'ARTIFACTS'>, 
     if (!Array.isArray(source.fragments) || !source.fragments.length) throw new Error('atomic_source_fragments_missing')
     const parts: string[] = []
     const ids = new Set<string>()
-    for (const [index, ref] of source.fragments.entries()) {
+    for await (const { index, ref, body: part } of orderedArtifactBodies(env, source.fragments)) {
       if (ref.status !== 'ready' || ref.domain !== 'screener_funnel_chunk'
         || ref.schema_version !== 'screener-funnel-evidence-chunk-v1'
         || ref.business_date !== row.business_date || ref.producer_run_id !== row.producer_run_id
@@ -77,7 +86,6 @@ export async function readAtomicSourcePayload(env: Pick<Bindings, 'ARTIFACTS'>, 
         throw new Error('atomic_source_fragment_identity_invalid')
       }
       ids.add(ref.artifact_id)
-      const part = await verifiedBody(env, ref.r2_key, ref.checksum)
       const payload = part.payload
       if (part.domain !== ref.domain || part.business_date !== row.business_date || part.schema_version !== ref.schema_version
         || payload?.collection !== 'atomic_strategy_source_json_v1' || payload.storage_mode !== 'chunked_r2_child_v1'
@@ -118,7 +126,7 @@ async function readVerifiedFunnelItems(env: Pick<Bindings, 'ARTIFACTS'>, row: So
       || !Array.isArray(payload.chunks) || !payload.chunks.length) throw new Error('atomic_funnel_manifest_invalid')
     items = []
     const ids = new Set<string>()
-    for (const [index, ref] of payload.chunks.entries()) {
+    for await (const { index, ref, body: child } of orderedArtifactBodies(env, payload.chunks)) {
       if (ref.chunk_index !== index || !ref.artifact_id || ids.has(ref.artifact_id)
         || ref.schema_version !== 'screener-funnel-evidence-chunk-v1'
         || !Number.isSafeInteger(ref.row_count) || ref.row_count < 0
@@ -127,7 +135,6 @@ async function readVerifiedFunnelItems(env: Pick<Bindings, 'ARTIFACTS'>, row: So
         throw new Error('atomic_funnel_chunk_reference_invalid')
       }
       ids.add(ref.artifact_id)
-      const child = await verifiedBody(env, ref.r2_key, ref.checksum)
       const body = child.payload
       if (child.domain !== 'screener_funnel_chunk' || child.business_date !== row.business_date
         || child.schema_version !== ref.schema_version || body?.storage_mode !== 'chunked_r2_child_v1'

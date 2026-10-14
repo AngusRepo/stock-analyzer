@@ -286,37 +286,51 @@ export async function replayAtomicStrategySource(source: AtomicStrategySource, r
   return replayValidatedAtomicStrategySource(source, replacement, continuationDefinitionChecksum, true)
 }
 
+type PopulationReplayCache = {
+  baseline?: ReturnType<typeof buildLayer1StrategyBreadthPlan>
+  postBaseline?: ReturnType<typeof replayFrozenPostRoute>
+  coreSeed?: Awaited<ReturnType<typeof replayFrozenCoreSeeds>>
+  baselineChecked?: boolean
+  postBaselineChecked?: boolean
+  weightBaselineChecked?: boolean
+}
+
 /** One private immutable source per full-population replay; no repeated 50MB
  * source hashing/cloning for every structural replacement. */
 export async function createAtomicPopulationReplayer(source: AtomicStrategySource,
   identity: { signalDate: string; producerRunId: string; artifactCreatedAt: string; decisionDeadline: string }) {
   const frozen = structuredClone(source)
   await validateAtomicStrategySource(frozen, identity)
+  const cache: PopulationReplayCache = {}
   return (replacement: AtomicShadowReplacement, continuationDefinitionChecksum?: string) =>
-    replayValidatedAtomicStrategySource(frozen, replacement, continuationDefinitionChecksum, false)
+    replayValidatedAtomicStrategySource(frozen, replacement, continuationDefinitionChecksum, false, cache)
 }
 
 async function replayValidatedAtomicStrategySource(source: AtomicStrategySource, replacement: AtomicShadowReplacement,
-  continuationDefinitionChecksum: string | undefined, includePostOverlay: boolean) {
+  continuationDefinitionChecksum: string | undefined, includePostOverlay: boolean, cache?: PopulationReplayCache) {
   const source_checksum = source.source_checksum
-  const result = await buildAtomicStrategyShadow({ ...source.inputs,
-    expectedUniverseSymbols: source.expected_universe_symbols, replacement, continuationDefinitionChecksum })
-  if (await checksum(result.baseline) !== source.baseline_checksum) {
+  const result = await buildAtomicStrategyShadowImpl({ ...source.inputs,
+    expectedUniverseSymbols: source.expected_universe_symbols, replacement, continuationDefinitionChecksum }, cache)
+  if (!cache?.baselineChecked && await checksum(result.baseline) !== source.baseline_checksum) {
     throw new Error('atomic_shadow_source_replay_mismatch')
   }
+  if (cache) cache.baselineChecked = true
   if (source.post_overlay) validateUniverse(source.post_overlay.formalSymbols, result.baseline_symbols)
   let postOverlayReplay: { status: 'unavailable'; reason: string } | {
     status: 'baseline_matched_candidate_replayed'; baseline: ReturnType<typeof replayFrozenPostRoute>;
     candidate: ReturnType<typeof replayFrozenPostRoute>;
   } = { status: 'unavailable', reason: 'post_overlay_not_captured' }
   if (source.post_overlay) {
-    const baseline = replayFrozenPostRoute({ packet: source.post_overlay, universe: source.inputs.universe,
-      plan: result.baseline, specs: result.baseline_policy.specs })
+    const baseline = cache?.postBaseline ? structuredClone(cache.postBaseline)
+      : replayFrozenPostRoute({ packet: source.post_overlay, universe: source.inputs.universe,
+          plan: result.baseline, specs: result.baseline_policy.specs })
+    if (cache && !cache.postBaseline) cache.postBaseline = structuredClone(baseline)
     if (baseline.status === 'replayed') {
-      if (sortedJson(canonicalPostOverlaySeed(baseline.finalSeed)) !== sortedJson(canonicalPostOverlaySeed(source.post_overlay.finalSeed))
-        || sortedJson([...baseline.safetyExcludedSymbols].sort()) !== sortedJson([...source.post_overlay.safetyExcludedSymbols].sort())) {
+      if (!cache?.postBaselineChecked && (sortedJson(canonicalPostOverlaySeed(baseline.finalSeed)) !== sortedJson(canonicalPostOverlaySeed(source.post_overlay.finalSeed))
+        || sortedJson([...baseline.safetyExcludedSymbols].sort()) !== sortedJson([...source.post_overlay.safetyExcludedSymbols].sort()))) {
         throw new Error('atomic_shadow_post_overlay_replay_mismatch')
       }
+      if (cache) cache.postBaselineChecked = true
       const candidate = replayFrozenPostRoute({ packet: source.post_overlay, universe: source.inputs.universe,
         plan: result.candidate, specs: result.candidate_policy.specs })
       postOverlayReplay = candidate.status === 'replayed'
@@ -324,7 +338,8 @@ async function replayValidatedAtomicStrategySource(source: AtomicStrategySource,
         : { status: 'unavailable', reason: candidate.reason }
     } else postOverlayReplay = baseline
   }
-  const coreSeedReplay = await replayFrozenCoreSeeds(source.post_overlay)
+  const coreSeedReplay = cache?.coreSeed ? structuredClone(cache.coreSeed) : await replayFrozenCoreSeeds(source.post_overlay)
+  if (cache && !cache.coreSeed) cache.coreSeed = structuredClone(coreSeedReplay)
   const candidateCoreReplay = coreSeedReplay.status === 'matched' && source.post_overlay
     && postOverlayReplay.status === 'baseline_matched_candidate_replayed' && postOverlayReplay.candidate.status === 'replayed'
     ? await replayFrozenCandidateCoreSeeds(source.post_overlay, postOverlayReplay.candidate.finalSeed, replacement)
@@ -334,7 +349,7 @@ async function replayValidatedAtomicStrategySource(source: AtomicStrategySource,
     ...(includePostOverlay && source.post_overlay ? { post_overlay: structuredClone(source.post_overlay) } : {}) }
 }
 
-export async function buildAtomicStrategyShadow<T extends StrategyCandidatePoolCandidate>(input: {
+type AtomicShadowInput<T extends StrategyCandidatePoolCandidate> = {
   universe: T[]
   expectedUniverseSymbols: string[]
   specs: StrategySpec[]
@@ -342,7 +357,11 @@ export async function buildAtomicStrategyShadow<T extends StrategyCandidatePoolC
   replacement: AtomicShadowReplacement
   continuationDefinitionChecksum?: string
   productionWeightSource?: StrategyProductionWeightSource
-}) {
+}
+export async function buildAtomicStrategyShadow<T extends StrategyCandidatePoolCandidate>(input: AtomicShadowInput<T>) {
+  return buildAtomicStrategyShadowImpl(input)
+}
+async function buildAtomicStrategyShadowImpl<T extends StrategyCandidatePoolCandidate>(input: AtomicShadowInput<T>, cache?: PopulationReplayCache) {
   const frozen = structuredClone(input)
   const symbols = frozen.universe.map(row => row.symbol)
   validateUniverse(symbols, frozen.expectedUniverseSymbols)
@@ -371,13 +390,16 @@ export async function buildAtomicStrategyShadow<T extends StrategyCandidatePoolC
   if (!admitted && !continued) {
     throw new Error('atomic_shadow_replacement_not_in_structural_population')
   }
-  const baseline = buildLayer1StrategyBreadthPlan(structuredClone(frozen.universe), structuredClone(specs), structuredClone(frozen.options))
+  const baseline = cache?.baseline ? structuredClone(cache.baseline)
+    : buildLayer1StrategyBreadthPlan(structuredClone(frozen.universe), structuredClone(specs), structuredClone(frozen.options))
+  if (cache && !cache.baseline) cache.baseline = structuredClone(baseline)
   const alternativeSpecs = specs.map(spec => spec.id === candidateId
     ? { ...spec, status: 'active' as const, promotionStatus: 'production' as const }
     : spec.id === incumbentId ? { ...spec, status: 'candidate' as const, promotionStatus: 'candidate' as const } : spec)
   const alternativeOptions = structuredClone(frozen.options)
   if (originalWeights) {
-    await verifyOriginalWeightBaseline(specs, frozen.options, frozen.productionWeightSource!)
+    if (!cache?.weightBaselineChecked) await verifyOriginalWeightBaseline(specs, frozen.options, frozen.productionWeightSource!)
+    if (cache) cache.weightBaselineChecked = true
     const replaced = await replayStrategyWeightSource(frozen.productionWeightSource!, frozen.replacement)
     alternativeOptions.productionStrategyWeights = replaced.weights.routingWeights
     alternativeOptions.strategyWeights = replaced.weights.evaluationWeights

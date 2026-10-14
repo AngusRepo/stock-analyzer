@@ -207,6 +207,9 @@ test('formal source capture equals the original kernel and freezes inputs before
   assert.deepEqual(replay.added_symbols, ['candidate-only'])
   const populationReplay = await createAtomicPopulationReplayer(captured.source, identity)
   assert.deepEqual(await populationReplay(originalInput.replacement), replay)
+  const returned = await populationReplay(originalInput.replacement)
+  returned.baseline.breadthPool[0].symbol = 'caller-mutation'
+  assert.deepEqual(await populationReplay(originalInput.replacement), replay)
   const outside = structuredClone(captured.source)
   const isolatedReplay = await createAtomicPopulationReplayer(outside, identity)
   outside.inputs.universe[0].symbol = 'changed-after-validation'

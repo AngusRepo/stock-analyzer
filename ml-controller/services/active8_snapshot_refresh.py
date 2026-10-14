@@ -97,17 +97,23 @@ async def produce_inference_snapshot(*, business_date: str, required_history: in
     logging.getLogger(__name__).info(
         "Inference snapshot dependency date=%s execution=%s", business_date, execution.execution_id,
     )
+    from services.pipeline_progress import report, completed
+    snapshot_started = time.monotonic()
+    await report('input_snapshot', status='waiting')
     deadline = time.monotonic() + 3600
     while time.monotonic() < deadline:
         state = await asyncio.to_thread(client.execution_state, execution)
         if state == "failed":
+            completed('input_snapshot', (time.monotonic()-snapshot_started)*1000, status='failed')
             raise Active8PrepDependencyPending("inference_snapshot_job_failed", {
                 "business_date": business_date, "execution_id": execution.execution_id,
             })
         if state == "succeeded":
+            completed('input_snapshot', (time.monotonic()-snapshot_started)*1000)
             snapshot = latest_dataset_snapshot(kind="backtest_dataset", access_tier="compute",
                                                business_date=business_date)
             if snapshot and not snapshot.get("manifest_errors"):
+                await report('feature_preparation')
                 return snapshot  # Caller still verifies date, history, checksum and actual price dates.
             raise Active8PrepDependencyPending("inference_snapshot_manifest_missing", {
                 "business_date": business_date, "execution_id": execution.execution_id,

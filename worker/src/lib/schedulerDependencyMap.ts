@@ -19,6 +19,12 @@ export interface SchedulerDependencySpec {
 }
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
+  'strategy-nav-execution': {
+    task: 'strategy-nav-execution', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
+    currentFunction: 'Collect only atomic_strategy native frames under the current released single-B model.',
+    upstream: ['pipeline'], downstream: ['active8-oof-daily'], requiredBeforeDisable: [], operatorRisk: 'high',
+    recommendation: 'Keep full session coverage. Missing frames prohibit NAV maturity; formal Paper and retired comparison roots stay independent.',
+  },
   'paired-native-execution': {
     task: 'paired-native-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',
     currentFunction: 'Retired under the single-B policy; both physical roots are deleted. Historical paired receipts remain readable.',
@@ -271,13 +277,6 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     operatorRisk: 'high',
     recommendation: 'Keep; this owns the morning pending-buy creation boundary.',
   },
-  'morning-briefing': {
-    task: 'morning-briefing', owner: 'manual_only', consolidationClass: 'disable_candidate',
-    currentFunction: 'Optional report reads evidence; scheduled delivery paused.',
-    replacementOwner: 'premarket-evidence-watchdog', upstream: ['us-leading', 'news-analyst'],
-    downstream: ['notification-report'], requiredBeforeDisable: ['deploy and verify evidence watchdog'],
-    operatorRisk: 'low', recommendation: 'Pause report schedule after replacement watchdog verification.',
-  },
   'premarket-evidence-watchdog': {
     task: 'premarket-evidence-watchdog', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
     currentFunction: 'Bounded date-fenced evidence recovery; resumes existing pending debates.',
@@ -323,7 +322,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     currentFunction: 'Fetches US/SOX/futures leading signal for pre-market context.',
     replacementOwner: 'premarket-evidence-watchdog',
     upstream: [],
-    downstream: ['morning-briefing', 'morning-setup-context'],
+    downstream: ['morning-setup-context'],
     requiredBeforeDisable: [
       'watchdog must fetch or read valid dated US-leading signal',
       'stale US-leading must remain deferred with bounded retry',
@@ -338,7 +337,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     currentFunction: 'Generates daily news bias/confidence/key factors.',
     replacementOwner: 'news queue / premarket-evidence-watchdog',
     upstream: ['news-ingestion'],
-    downstream: ['morning-briefing', 'recommendation-context'],
+    downstream: ['recommendation-context'],
     requiredBeforeDisable: [
       'canonical daily stage must own report generation',
       'recommendation must degrade clearly when news evidence is stale',

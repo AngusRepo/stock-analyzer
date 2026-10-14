@@ -7,8 +7,12 @@ import type { Bindings } from '../types'
 import type { FiveSlotDecision, FiveSlotHolding } from './fiveSlotCapitalAllocator'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { validateEntryAuthorization, type L4EntryContinuation } from './l4EntryContinuation'
 
 export interface L4PortfolioPlan {
+  sealed_execution?: {schema_version:'l4-sealed-execution-v1';rotation_mode:'selected_ready_or_filled';expiry:'retain_until_next_seal';
+    exit_rules:Record<string,{mode:'unconditional'|'selected_ready_or_filled'|'retain_until_next_seal';reason:string;expiry?:string;
+      credits?:Array<{symbol:string;credit_start:number;credit_end:number}>}>}
   /** Execution-only overlay. It is not part of the optimizer's sealed proof. */
   execution_review?: DailyPlanReview
   execution_scope?: 'paper' | 'private_research'
@@ -25,7 +29,8 @@ export interface L4PortfolioPlan {
   nav_at_decision: number
   weights: Record<string, number>
   targets: Record<string, { weight: number; current_weight: number; locked: boolean; expected_return_gross: number | null }>
-  constraints: { exposure_cap: number; name_cap: number; min_weight: number; max_positions: number | null; name_caps?: Record<string,number>; exposure_groups?: Record<string,{symbols:string[];cap:number;effective_cap:number;locked_inherited_weight:number}> }
+  constraints: { exposure_cap: number; name_cap: number; min_weight: number; max_positions: number | null; name_caps?: Record<string,number>; exposure_groups?: Record<string,{symbols:string[];cap:number;effective_cap:number;locked_inherited_weight:number}>;
+    membership_groups?:Record<string,{symbols:string[];max_count:number;effective_count:number;inherited_count:number}>;excluded_pairs?:string[][] }
   proof: { within_tolerance: boolean; absolute_objective_gap: number; tolerance: number; evaluated_candidate_count: number; preselection: boolean }
   opb: { enabled: boolean; status: string; arm_id: string }
 }
@@ -45,6 +50,28 @@ export function validateL4PortfolioPlan(raw: unknown): L4PortfolioPlan {
     || !amount(plan.proof.tolerance) || plan.proof.tolerance <= 0 || plan.proof.tolerance > 1e-8
     || plan.proof.absolute_objective_gap > plan.proof.tolerance) throw new Error('l4_plan_contract_invalid')
   const entries = Object.entries(plan.targets)
+  if(plan.sealed_execution) {
+    const policy=plan.sealed_execution
+    if(policy.schema_version!=='l4-sealed-execution-v1' || policy.rotation_mode!=='selected_ready_or_filled'
+      || policy.expiry!=='retain_until_next_seal') throw new Error('l4_sealed_execution_policy_invalid')
+    const credits=new Map<string,Array<[number,number]>>()
+    for(const [symbol,rule] of Object.entries(policy.exit_rules)) {
+      const held=plan.targets[symbol]
+      if(!held || held.locked || held.weight>=held.current_weight || !['unconditional','selected_ready_or_filled','retain_until_next_seal'].includes(rule.mode))
+        throw new Error('l4_exit_rule_invalid')
+      if(rule.mode==='selected_ready_or_filled' && (!rule.credits?.length || rule.expiry!=='retain_until_next_seal')) throw new Error('l4_rotation_credit_missing')
+      for(const credit of rule.credits ?? []) {
+        const target=plan.targets[credit.symbol]
+        const ceiling=target ? Math.max(0,target.weight-target.current_weight)*plan.nav_at_decision : 0
+        if(!target || target.locked || !amount(credit.credit_start) || !amount(credit.credit_end)
+          || credit.credit_start<0 || credit.credit_end<=credit.credit_start || credit.credit_end>ceiling+1e-6)
+          throw new Error('l4_rotation_credit_invalid')
+        const ranges=credits.get(credit.symbol) ?? []
+        if(ranges.some(([start,end])=>credit.credit_start<end && credit.credit_end>start)) throw new Error('l4_rotation_credit_reused')
+        ranges.push([credit.credit_start,credit.credit_end]);credits.set(credit.symbol,ranges)
+      }
+    }
+  }
   const c = plan.constraints
   if (!c || !amount(c.exposure_cap) || c.exposure_cap < 0 || c.exposure_cap > 1
     || !amount(c.name_cap) || c.name_cap < 0 || c.name_cap > 1
@@ -75,6 +102,21 @@ export function validateL4PortfolioPlan(raw: unknown): L4PortfolioPlan {
     if (Math.abs(group.locked_inherited_weight-locked)>1e-8
       || Math.abs(group.effective_cap-Math.max(group.cap,locked))>1e-8
       || exposure>group.effective_cap+1e-8) throw new Error('l4_plan_group_limit_exceeded')
+  }
+  for(const group of Object.values(c.membership_groups ?? {})) {
+    if(!Array.isArray(group.symbols) || !group.symbols.length || new Set(group.symbols).size!==group.symbols.length
+      || group.symbols.some(s=>!plan.targets[s]) || !Number.isSafeInteger(group.max_count) || group.max_count<1)
+      throw new Error('l4_membership_group_invalid')
+    const inherited=group.symbols.filter(s=>plan.targets[s].locked && plan.targets[s].current_weight>0).length
+    if(group.inherited_count!==inherited || group.effective_count!==Math.max(group.max_count,inherited)
+      || group.symbols.filter(s=>plan.weights[s]>1e-7).length>group.effective_count) throw new Error('l4_membership_limit_exceeded')
+  }
+  for(const pair of c.excluded_pairs ?? []) {
+    if(!Array.isArray(pair) || pair.length!==2 || pair[0]===pair[1] || pair.some(s=>!plan.targets[s]))
+      throw new Error('l4_excluded_pair_invalid')
+    const inherited=pair.every(s=>plan.targets[s].current_weight>0)
+    if(inherited ? pair.some(s=>plan.weights[s]>plan.targets[s].current_weight+1e-8) : pair.every(s=>plan.weights[s]>1e-7))
+      throw new Error('l4_pair_limit_exceeded')
   }
   if (sum > c.exposure_cap + 1e-8 || (c.max_positions !== null && count > c.max_positions))
     throw new Error('l4_plan_portfolio_limit_exceeded')
@@ -160,6 +202,7 @@ export function l4TargetExecutionDecision(input: {
   plan: L4PortfolioPlan; symbol: string; holdings: FiveSlotHolding[]; nav: number; cash: number;
   dailyRemaining: number; riskExposureCap: number; nameCap: number; maxPositions: number;
   hardVeto: boolean; reservedCash?: number; feeRate: number; minCommission: number;
+  continuation?: L4EntryContinuation | null;
 }): FiveSlotDecision {
   const p = validateL4PortfolioPlan(input.plan)
   const target = p.execution_review ? reviewedTarget(p,p.execution_review,input.symbol) : p.targets[input.symbol]
@@ -177,10 +220,19 @@ export function l4TargetExecutionDecision(input: {
   const free = Math.max(0, input.cash - (input.reservedCash ?? 0))
   const groupRemaining = Object.values(p.constraints.exposure_groups ?? {}).filter(group=>group.symbols.includes(input.symbol))
     .map(group=>group.effective_cap*input.nav-input.holdings.filter(h=>group.symbols.includes(h.symbol)).reduce((sum,h)=>sum+value(h),0))
-  const grossBudget = Math.max(0, Math.min(...groupRemaining,targetValue-current, exposure*input.nav-invested, input.dailyRemaining,
+  const continuation=input.continuation
+  if(continuation) {
+    const a=validateEntryAuthorization(continuation.authorization)
+    if(a.planId!==p.plan_id || a.review!==p.execution_review?.checksum || a.symbol!==input.symbol
+      || paperExecutionNow()>=a.expiresAtMs
+      || continuation.filledShares!==held?.shares || continuation.remainingShares!==a.requestedShares-continuation.filledShares)
+      throw new Error('l4_entry_continuation_identity_invalid')
+  }
+  const continuationBudget=continuation ? Math.max(0,continuation.authorization.grossBudget-continuation.grossSpent) : Infinity
+  const grossBudget = Math.max(0, Math.min(continuationBudget,...groupRemaining,targetValue-current, exposure*input.nav-invested, input.dailyRemaining,
     free/(1+input.feeRate), free-input.minCommission))
   const full = !held && input.holdings.filter(h => h.shares>0).length >= input.maxPositions
-  const existingDailyPosition = Boolean(p.execution_review && held && held.shares>0)
+  const existingDailyPosition = Boolean(p.execution_review && held && held.shares>0 && (!continuation || continuation.remainingShares<=0))
   const blocked = !target || target.locked || input.hardVeto || full || grossBudget<=0 || existingDailyPosition
   return { symbol: input.symbol, action: blocked ? 'skip' : held ? 'add' : 'buy',
     reason: !target ? 'l4_target_missing' : target.locked ? 'l4_target_locked' : input.hardVeto ? 'l4_hard_risk_veto'
@@ -200,10 +252,14 @@ export function planIdFromAllocation(raw: unknown): string | null {
 
 export function l4TargetExitShares(input: {
   plan: L4PortfolioPlan; symbol: string; shares: number; price: number; nav: number; minTradeValue: number; originalShares?:number;
+  rotationSatisfied?:boolean;
 }): number {
   const p = validateL4PortfolioPlan(input.plan)
   const target = p.execution_review ? reviewedTarget(p,p.execution_review,input.symbol) : p.targets[input.symbol]
   if (!target || target.locked) return 0
+  const exitRule=p.sealed_execution?.exit_rules[input.symbol]
+  const riskReduced=target.weight<p.targets[input.symbol].weight
+  if(exitRule && !riskReduced && exitRule.mode!=='unconditional' && !input.rotationSatisfied) return 0
   if (!Number.isSafeInteger(input.shares) || input.shares < 0 || !amount(input.price) || input.price <= 0
     || !amount(input.nav) || input.nav <= 0) throw new Error('l4_target_exit_units_invalid')
   if (target.weight === 0) return input.shares

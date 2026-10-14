@@ -13,6 +13,7 @@ export interface PortfolioDeRiskPlan {
   targetPositionsValue: number
   projectedPositionsValue: number
   fullExitSymbols: string[]
+  reductions: Record<string, number>
 }
 
 function finiteNonNegative(value: unknown): number {
@@ -39,6 +40,7 @@ export function buildPortfolioDeRiskPlan(params: {
   const targetPositionsValue = totalPortfolio * targetExposure
   let projectedPositionsValue = currentPositionsValue
   const fullExitSymbols: string[] = []
+  const reductions: Record<string, number> = {}
 
   if (totalPortfolio > 0 && currentPositionsValue > targetPositionsValue) {
     const weakestFirst = [...holdings].sort((a, b) => (
@@ -46,18 +48,22 @@ export function buildPortfolioDeRiskPlan(params: {
     ))
     for (const holding of weakestFirst) {
       if (projectedPositionsValue <= targetPositionsValue) break
-      projectedPositionsValue -= holding.shares * holding.price
-      fullExitSymbols.push(holding.symbol)
+      // Odd lots are legal. Sell only the excess, rounded up by one share.
+      const shares = Math.min(holding.shares, Math.ceil((projectedPositionsValue-targetPositionsValue)/holding.price))
+      projectedPositionsValue -= shares * holding.price
+      reductions[holding.symbol] = shares
+      if (shares === holding.shares) fullExitSymbols.push(holding.symbol)
     }
   }
 
   return {
-    required: fullExitSymbols.length > 0,
+    required: Object.keys(reductions).length > 0,
     currentExposure: totalPortfolio > 0 ? currentPositionsValue / totalPortfolio : 0,
     targetExposure,
     currentPositionsValue,
     targetPositionsValue,
     projectedPositionsValue: Math.max(0, projectedPositionsValue),
     fullExitSymbols,
+    reductions,
   }
 }

@@ -180,8 +180,10 @@ def test_actual_native_held_position_whole_session_exits_and_reconciles(native_r
             count = inspected.execute("SELECT COUNT(*) FROM paper_execution_events WHERE event_type='live_execution_shadow'").fetchone()[0]
         assert count > 0
     assert all(datetime.fromisoformat(fill['executed_at']).second == capture_delay_seconds for fill in fills)
+    from services.native_paper_sandbox import native_runtime_manifest
     ledger = replay_session(previous={'cash': 99000, 'positions': {'2330': 100}, 'nav': 109000},
-        fills=fills, marks={}, corporate_actions=[], session_date='2026-09-07', fees=config['trading']['fees'])
+        fills=fills, marks={}, corporate_actions=[], session_date='2026-09-07', fees=config['trading']['fees'],
+        commission_contract=native_runtime_manifest(native_runner)['commission_contract'])
     validate_native_account(result['frames'][-1]['result']['valuation'], ledger)
     replay = run_native_paper_frames(**kwargs, frame_inputs=result['captured_inputs'])
     assert replay['state_checksum'] == result['state_checksum']

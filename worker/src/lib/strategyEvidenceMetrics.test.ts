@@ -44,7 +44,7 @@ assert(metricSource.includes("r.strategy_matrix_status='ready'"))
 assert(metricSource.includes("mr.status='ready'"))
 assert(metricSource.includes('mr.persisted_cell_count=mr.expected_cell_count'))
 assert(metricSource.includes('FROM json_each(?) h'))
-assert(metricSource.includes('STRATEGY_FORMAL_LABELER_VERSIONS'))
+assert(metricSource.includes('buildStrategyFormalMatureCompatibilitySql'))
 assert(!metricSource.includes('FROM strategy_label_matrix_v4\n       WHERE strategy_hit=1 AND evaluable=1'))
 
 function observations(strategyId: string, strategyVersion: string, strategyStatus: string, alphaBucket: string): StrategyEvidenceObservation[] {

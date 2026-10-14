@@ -4,6 +4,7 @@
 
 import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import { sealedPremarketDisplay } from './schedulerPipelinePhase'
+import { loadPremarketProducerStates, premarketProducerDisplay } from './premarketProducerStatus'
 import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay } from './schedulerPremarketProgress'
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
@@ -83,7 +84,6 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'news-analyst', name: 'News Analyst', schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
   { id: 'morning-setup', name: 'Morning Setup / Debate', schedule: 'Mon-Fri 07:15', cron: '15 23 * * SUN-THU', group: 'daily' },
   { id: 'premarket-evidence-watchdog', name: 'Premarket Evidence Recovery', schedule: 'Mon-Fri 07:00-08:50', cron: '*/10 7-8 * * 1-5', timeZone: 'Asia/Taipei', group: 'daily' },
-  { id: 'morning-briefing', name: 'Morning Briefing (paused)', schedule: 'Paused / manual only', cron: '50 23 * * SUN-THU', group: 'daily' },
   { id: 'daily-snapshot', name: 'Daily Snapshot', schedule: 'Weekdays 14:20', cron: '20 6 * * 1-5', group: 'daily' },
   { id: 'daily-execution-paper-lineage', name: 'Daily Execution/Paper Lineage', schedule: 'Weekdays 14:35, 14:50', cron: '35,50 6 * * 1-5', group: 'daily' },
   { id: 'external-evidence', name: 'External Evidence', schedule: 'Weekdays 23:15', cron: '15 15 * * 1-5', group: 'daily' },
@@ -105,6 +105,7 @@ const JOB_DEF_METADATA: JobDef[] = [
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
   { id: 'paired-native-execution', name: 'Paired Native Shadow Execution（已停用）', schedule: 'PAUSED · single B; history retained', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
+  { id: 'strategy-nav-execution', name: '策略 NAV 獨立比較', schedule: 'Mon-Fri 07:15-14:59 per-min', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
   { id: 'rescore-10', name: 'Intraday Re-score 10:00', schedule: 'Weekdays 10:00', cron: '0 2 * * 1-5', group: 'intraday' },
   { id: 'rescore-11', name: 'Intraday Re-score 11:00', schedule: 'Weekdays 11:00', cron: '0 3 * * 1-5', group: 'intraday' },
   { id: 'rescore-12', name: 'Intraday Re-score 12:00', schedule: 'Weekdays 12:00', cron: '0 4 * * 1-5', group: 'intraday' },
@@ -924,13 +925,17 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     allLogs[date] = mergeDirectSchedulerLog(allLogs[date] ?? [], log)
   }
 
-  const [durableStageStates, schedulerExecutionTickets, premarketProgress] = await Promise.all([
+  const [durableStageStates, schedulerExecutionTickets, premarketProgress, producerStates] = await Promise.all([
     durableStageStatesPromise,
     loadSchedulerExecutionTickets(opsDb, dates).catch((error) => {
       console.warn('[schedulerStatus] scheduler execution ticket read failed:', error)
       return [] as SchedulerExecutionTicketRow[]
     }),
     premarketProgressPromise,
+    loadPremarketProducerStates(opsDb, today).catch((error) => {
+      console.warn('[schedulerStatus] premarket producer read failed:', error)
+      return []
+    }),
   ])
   const executionTicketsByJobDate = new Map<string, SchedulerExecutionTicketRow>()
   const executionTicketsByTaskDate = new Map<string, SchedulerExecutionTicketRow>()
@@ -1076,7 +1081,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ticketStatus: executionTicket?.status,
     })
     const watchdogDisplay = premarketWatchdogDisplay(def.id, displayLog, executionTicket?.status)
-    const lastStatus = watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
+    const producerDisplay = premarketProducerDisplay(def.id, today, producerStates)
+    const lastStatus = producerDisplay?.lastStatus ?? watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
     const displayTime = executionTicketOverride
       ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
       : resolveSchedulerRunDisplayTime({
@@ -1102,6 +1108,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     const lastDuration = formatDuration(displayLog?.duration_ms)
     const shortRun = inferShortRunConcern(def, displayLog)
 
+    if (producerDisplay) history7d[history7d.length - 1] = producerDisplay.lastStatus === 'error' ? 'failed'
+      : producerDisplay.lastStatus === 'success' ? 'success' : 'skip'
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => item !== 'skip').length
 
@@ -1144,15 +1152,21 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       statusAuthority: ticketAuthority,
       consolidation: getSchedulerDependencySpec(accounting.task) ?? null,
       accounting,
-      ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}) },
+      ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}),
+        ...(producerDisplay ? {ticketId: producerDisplay.runId, status: producerDisplay.lastStatus, runDate: today,
+          authority: producerDisplay.statusAuthority, durable: true, missing: false} : {}) },
       ...phaseDisplay,
       ...watchdogDisplay,
+      ...(producerDisplay ? {...producerDisplay, lastRun: formatTimestamp(producerDisplay.lastRunAt), lastRunBasis: 'updated' as const,
+        recoveredFromStatus: producerDisplay.lastStatus !== baseLastStatus ? baseLastStatus : null} : {}),
     }
   }))
 
   const failed24h = jobs.filter((job) => {
     const def = JOB_DEFS.find((row) => row.id === job.id)
     const todayLog = def ? getJobDisplayLog(allLogs[today], def) : undefined
+    if (job.statusAuthority === 'durable_pipeline_stage' && ['news-analyst','us-leading'].includes(job.id)
+      && job.statusRunDate === today) return job.lastStatus === 'error'
     return todayLog?.status === 'error'
   }).length
 

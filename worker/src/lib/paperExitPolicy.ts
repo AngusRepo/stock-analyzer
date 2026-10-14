@@ -32,6 +32,7 @@ export interface ExitDecision {
   newTp2Price?: number
   moveStopToEntry?: boolean
   tradeLifecycleJson?: string | null
+  authorizationExpiresAtMs?:number
 }
 
 export function categorizeExitReason(reason: string): string {

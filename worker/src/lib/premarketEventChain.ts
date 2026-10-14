@@ -90,6 +90,8 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   if (!validStage(stage) || msg.runId !== RUN(date)) throw new Error('premarket_message_invalid')
   const db = databaseForDataDomain(env, 'ops')
   const key = PREFIX + stage
+  // One Wei-authorized recovery after the three preserved preopen-only failures.
+  const attemptLimit = ['2026-10-12','2026-10-13'].includes(date) && stage === 'setup' ? MAX_ATTEMPTS + 1 : MAX_ATTEMPTS
   const clock = premarketClock(now)
   const advisoryWindow = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && stage.startsWith('debate:') && clock.minutes < 960
   if (date !== clock.date || (!advisoryWindow && clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540))) {
@@ -104,7 +106,7 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
     attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
     WHERE business_date=? AND stage=? AND canonical_run_id=?
       AND (status='queued' OR (status='waiting' AND lease_expires_at<=CURRENT_TIMESTAMP)) AND attempt_count<?
-    RETURNING cursor_key`).bind(owner,date,key,RUN(date),MAX_ATTEMPTS).first<{cursor_key:string}>()
+    RETURNING cursor_key`).bind(owner,date,key,RUN(date),attemptLimit).first<{cursor_key:string}>()
   if (!row) return
   const input = JSON.parse(row.cursor_key ?? '{}') as PremarketPayload
   const guard = async () => {
@@ -138,7 +140,7 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
     await db.prepare(`UPDATE pipeline_stage_runs SET attempt_count=attempt_count-?, status=CASE WHEN attempt_count>=? AND ?=0 THEN 'error' ELSE 'waiting' END,
       last_error=?,lease_expires_at=datetime('now','+120 seconds'),updated_at=CURRENT_TIMESTAMP
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND lease_owner=? AND status='running'`)
-      .bind(waiting ? 1 : 0,MAX_ATTEMPTS,waiting ? 1 : 0,String(error).slice(0,900),date,key,RUN(date),owner).run()
+      .bind(waiting ? 1 : 0,attemptLimit,waiting ? 1 : 0,String(error).slice(0,900),date,key,RUN(date),owner).run()
     // Retry the incomplete stage directly; the watchdog recovers a lost delayed send.
     const retry = await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs WHERE business_date=? AND stage=?
       AND canonical_run_id=? AND lease_owner=? AND status='waiting'`).bind(date,key,RUN(date),owner).first()

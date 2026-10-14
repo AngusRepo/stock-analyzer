@@ -1117,6 +1117,16 @@ async function handleSchedulerCallback(c: any) {
     run_date: callbackRunDate,
   })
   if (!criticalTerminalCallback) await logAcceptedCallbackTask()
+  if (acceptedPipelineL3Seal) {
+    const { acceptEveningRootL3Wait } = await import('../lib/pipelineL3SealAcceptance')
+    const rootAccepted = await acceptEveningRootL3Wait(databaseForDataDomain(c.env, 'ops'),
+      callbackRunDate!, callbackRunId!, String(body.l3_receipt.checksum))
+    if (rootAccepted) await logSchedulerResult(c.env.KV, 'evening-chain', {
+      status: 'triggered', supersedePrevious: true, strict: true,
+      summary: `awaiting_premarket l3_sealed=true cloud_compute_stopped=true run_id=${callbackRunId}`,
+      duration_ms: 0, run_id: callbackRunId, run_date: callbackRunDate,
+    })
+  }
   if (body.task === 'finlab-v4-backfill' && ['success', 'error', 'skipped'].includes(String(body.status)) && callbackRunDate) {
     const dispatchAttempt = Number(
       body.dispatch_attempt

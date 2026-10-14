@@ -48,6 +48,7 @@ export interface CircuitBreakerState {
   marketRiskBlockers?: string[]
   triggeredLayers?: string[]
   haltReasons?: string[]
+  marketRestrictionEvidence?: {owner:string;aggregation:string;components:Array<{id:string;halt:boolean;maxPositionPct:number;reason?:string}>}
 }
 
 /** R1 layer-check result: null = no trigger (continue), state = early-return. */

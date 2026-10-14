@@ -14,6 +14,7 @@ import { loadMarketPriceHistoryBySymbols } from './stockIdentityMarketBridge'
 import { computePaperTotalValue, getUnsettledSettlementSummary, requireCompletePaperPositionValue } from './paperAccountValue'
 import { corporateAccountRiskBounds } from './paperCorporateActions'
 import { getAvailableCash } from './dateUtils'
+import { dailyPlanOwner } from './paperDailyPlanRuntime'
 
 /** Use the same legal share, settlement and corporate-action owners as Paper. */
 export async function captureL4AccountContext(env: Bindings, signalDate: string) {
@@ -26,7 +27,8 @@ export async function captureL4AccountContext(env: Bindings, signalDate: string)
     configuredSingleNameCap:Math.min(cfg.position.maxPctOfPortfolio,risk.position.maxSingleNamePct),
     circuitBaselinePositionPct:cfg.circuit.maxPositionPct,circuitEffectivePositionPct:cb.maxPositionPct}),
     max_positions:cfg.position.maxPositions,min_trade_value:cfg.position.minPositionValue,
-    buys_halted:cb.halt || risk.system.killSwitch}
+    buys_halted:cb.halt || risk.system.killSwitch,max_per_sector:risk.position.maxPerSector,
+    correlation_threshold:risk.position.correlationThreshold,correlation_window:risk.position.correlationWindow}
   if (![riskLimits.exposure_cap,riskLimits.name_cap,riskLimits.max_positions,riskLimits.min_trade_value].every(v=>typeof v==='number' && Number.isFinite(v)))
     throw new Error('l4_account_risk_limits_incomplete')
   const db = paperDomainDatabase(env)
@@ -90,7 +92,7 @@ export async function captureL4AccountContext(env: Bindings, signalDate: string)
     complete: unchanged && currentPrices && corporate.complete && Number(pending?.n ?? 0) === 0 && Number(exitPending?.n ?? 0) === 0,
     holdings: positions.map(row => ({ symbol: row.symbol, sector:sectors.get(row.symbol) ?? null, shares: row.shares,
       price: marks.get(row.symbol)!, market_value: row.shares * marks.get(row.symbol)! })),
-    locked_symbols: [] as string[], forbidden_buys: vetoes, name_caps:nameCaps,
+    locked_symbols: [] as string[], forbidden_buys: [...new Set([...vetoes,...(dailyPlanOwner(env) ? positions.map(row=>row.symbol) : [])])], name_caps:nameCaps,
     risk_limits:riskLimits, fees:{buy_cost:cfg.fees.commission,sell_cost:cfg.fees.commission+cfg.fees.tax},
     account_anchor:{order_watermark:Number(finalOrder?.id ?? 0),cash:Number(account.cash),positions:finalPositions,settlement},
     valuation_source:intraday?'authoritative_intraday_quotes':'canonical_signal_close',

@@ -3,6 +3,7 @@ import { DATA_DOMAINS, databaseForDataDomain, databaseForTable, shadowDatabaseFo
 import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
+import { runPremarketProducerTask } from './premarketProducerStatus'
 import { runMorningWarmup } from './localMaintenance'
 import { runCadenceReadiness } from './cadenceReadiness'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
@@ -788,6 +789,10 @@ export function buildAdminWorkerDomainTaskMap(
       const { pairedNativeExecution } = await import('./pairedNativeExecution')
       return pairedNativeExecution(c.env)
     },
+    'strategy-nav-execution': async () => {
+      const { strategyNavExecution } = await import('./strategyNavExecution')
+      return strategyNavExecution(c.env)
+    },
     'morning-setup': async () => {
       const { ensurePremarketEventChain } = await import('./premarketEventChain')
       return ensurePremarketEventChain(c.env,twToday())
@@ -869,21 +874,17 @@ export function buildAdminWorkerDomainTaskMap(
       const { runPremarketEvidenceWatchdog } = await import('./premarketEvidenceWatchdog')
       return runPremarketEvidenceWatchdog(c.env)
     },
-    'morning-briefing': async () => {
-      const { generateMorningBriefing } = await import('./morningBriefing')
-      return generateMorningBriefing(c.env)
-    },
     'daily-report': async () => {
       const { generateDailyReport } = await import('./dailyReport')
       return generateDailyReport(c.env)
     },
-    'news-analyst': async () => {
+    'news-analyst': () => runPremarketProducerTask('news-analyst', async () => {
       const { runDailyNewsAnalysis } = await import('./newsAnalyst')
       const report = await runDailyNewsAnalysis(c.env as any)
       const { ensurePremarketEventChain } = await import('./premarketEventChain')
       await ensurePremarketEventChain(c.env,twToday())
       return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
-    },
+    }),
     'debate-memory-retention': async () => {
       const res = await databaseForTable(c.env, 'debate_memory').prepare(
         `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`,

@@ -10,8 +10,8 @@ function fixture() {
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
-test('2026-10-12 paper recovery dispatches after 09:00 and expires at day end',async()=>{
- const recoveryDate='2026-10-12',f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
+for (const recoveryDate of ['2026-10-12','2026-10-14']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
  try{
   f.ports.nowMs=Date.parse(`${recoveryDate}T09:00:00+08:00`)
   assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/ready_target=24:00 overdue=false/)
@@ -183,4 +183,20 @@ test('published plan does not hide a terminal broker health failure',async()=>{
   const receipt=JSON.parse(f.kvs.get(`scheduler:run:pre-market-warmup:${date}`)!)
   assert.equal(receipt.status,'error');assert.match(receipt.summary,/market-health.*plan_published=true/)
  } finally {f.close()}
+})
+
+for (const day of ['2026-10-12','2026-10-13']) for (const fail of [false,true]) test(`${day} setup allows one preserved fourth attempt; fail=${fail}`,async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ f.ports.nowMs=Date.parse(day+'T16:00:00+08:00');let calls=0
+ try {
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count) VALUES(?,?,?,?,?,?)")
+    .run(day,'premarket_v3:setup',day+':premarket-v3','queued','{}',3)
+  const msg={type:'premarket_stage',cursor:0,triggerTime:day,runId:day+':premarket-v3',premarketStage:'setup'} as UpdateQueueMsg
+  const work:PremarketWork=async()=>{calls++;if(fail)throw new Error('recovery_failed');return {next:null,receipt:{}}}
+  if(fail)await assert.rejects(processPremarketEvent(f.env,msg,work,f.now()),/recovery_failed/)
+  else await processPremarketEvent(f.env,msg,work,f.now())
+  assert.equal(f.rows()[0].attempt_count,4)
+  assert.equal(f.rows()[0].status,fail?'error':'success')
+  await processPremarketEvent(f.env,msg,work,f.now());assert.equal(calls,1)
+ }finally{f.close()}
 })

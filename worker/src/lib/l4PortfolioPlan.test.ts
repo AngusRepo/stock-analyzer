@@ -127,6 +127,8 @@ async function main() {
     assert.equal(sql.prepare('SELECT attempts FROM l4_replan_outbox_v1').get()?.attempts,2)
   } finally {globalThis.fetch=originalFetch}
   env.KV={get:async(key:string,type?:string)=>key==='trading:config'?{l4Distribution:{}}:null}
+  // These fixture plans were first published before the simulated session.
+  sql.exec("UPDATE l4_portfolio_plans_v1 SET created_at='2026-09-14 00:00:00'")
   await recordL4AccountReward(env,'2026-09-14',1010000)
   await recordL4AccountReward(env,'2026-09-14',1010000)
   const reward=JSON.parse(String(sql.prepare('SELECT payload_json FROM l4_policy_account_rewards_v1').get()?.payload_json))

@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "a242101a31b250b156c98438e9e745240a80636e",
+  "production_baseline_source": "9268644a92eb943201a06648807ff6533a51d207",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "61b82a9da7c811c2c211143a023a7267ddbee330ad41304c4656e15b9889e06e",
-  "prior_configuration_checksum": "063da754a8c8ff83e21f728730106e9134c67af8e7396d89ca42aced0ccc390e",
+  "prior_approval_checksum": "e9f4e5afabf248a2b87bd4929ae5ace8ec4a34a17dc34cbd5b6434b7ebbed7eb",
+  "prior_configuration_checksum": "df85f9950c637e0b8808a718629df574caf76d11b3d3a54b3d4abe8b95da63cb",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -20,7 +20,7 @@
       "strategy_nav_distribution.py": "30c0bc0962e84286b0e469ba89bcb0223b87369c4a2de7452c164ffa3672c4d8",
       "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
       "active_model_policy.py": "3d51ff740bbd312533379f43dc0e313941b9d7b647feaf8719e8498d0b21aeb6",
-      "paired_nav_collection.py": "94c36a7473d9f15a7420d4a398a7371ac1e3c5f83fbc8d1ba75cfc0ac832a1fa",
+      "paired_nav_collection.py": "d528b022a02aba63ae005b64b573b64daddffd5bd6b01c6b6ebfc492583bb5b1",
       "paired_nav_opb_prior.py": "1a562eff2121c4bab8d5cfb7b13db4ea0aa769ea239bc27d5a7004a3bc0ca590",
       "opb_nav_control.py": "6706a7441cac2fa56ec11690747d559f85894f8a0ec366ab3b41a0eb0df59204",
       "opb_nav_serving_source.json": "9bd8eda868edbafdb735af72d61ee27bb7f8db0913862717c3165be1e1231543",
@@ -34,13 +34,16 @@
       "l4_tabpack_budget_protocol.py": "232e57c94b413b8639f910813daeba193e997e3bed666a71418c5e5c4694005b",
       "l4_tabpack_median.py": "91917cb6185407027acdece3ed6173a59479a809828b6ec10072d3b59c27b925",
       "paper_strategy_mode.py": "a60e17ea1bd77e2f07a5d821b6adcf7987bb17c90c73a8d022149ee4edbffa99",
-      "l4_portfolio.py": "031c9d92be57e3ceec64755afb450ea4874daa2f66ef987c862699e0238d7963",
-      "l4_distribution_runtime.py": "9ae71b261a49fadb4135aad954e16b65f5ca6af133b8eceb93e9aa68015eb0a6",
-      "l4_distribution_context.py": "7bb742c3ec3cde5c173e1d37d04117c1f577c5f84369d36a7a9f5ef6dee0719f",
+      "l4_portfolio.py": "cd5f862359010bdb42ecd284a115658ff1efc3fce18aa7b9af5776e0c3e59129",
+      "l4_distribution_runtime.py": "86629472593e0be34365502062bd0e3d143e5486b190ef657fe460920ae8f491",
+      "l4_distribution_context.py": "970c4ad63419e0409baee74d7de174f213179cbe63e2b888351f88ee4e254fcc",
       "l4_risk_history.py": "036ab0a81d05931c0d48b59d1bff6177b71b8d4270d8cd85281466f38b0fede3",
       "l4_dated_risk.py": "d947faf7b99a6b94175b87d3c755c07a7a146d6ff876f543ae9690ca4f78b649",
       "l4_allocation_contract.py": "6f4adf508492892a68d6f93af244952aa26ab8b52cc2ba4376d40788bb522a62",
-      "similarity_evidence.py": "517936b9592085ebc418c2f23da06d47020c1ffbff2ac3e8e9262c3698728a40"
+      "similarity_evidence.py": "517936b9592085ebc418c2f23da06d47020c1ffbff2ac3e8e9262c3698728a40",
+      "l4_position_constraints.py": "237bad8de60fe518ac64b537c01026d82baf29b5f6c08b5e886c3fd9b4b4ad1e",
+      "l4_sealed_execution.py": "2464ea8840a12ccde5dc7eaa80cbf048821067d61b595e09d4f47e453b98e0fd",
+      "l4_execution_evidence.py": "635508e9b9e4a1c2715cb7ff40c4f577a9de01e7238d7713e9dba0cbb6a6072d"
     },
     "l3_inference_source_identity": {
       "paired_nav_recommendation_path.py": "9c6eb72b41cbe634d9f3e368217644b69fa7654077f5dc2a21c959985efa229e",
@@ -77,6 +80,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:4e5db22842850adee7c3d9a5a9d056cf7529d9542f1e985596225e7e91c25ab2",
-  "review": "audits/strategy-nav-completion-20261014/RELEASE-REVIEW.md"
+  "execution_owner_version": "native-paper-v1:9c3aacd09a120a41ec26b20b9e9bdbd15302fc065174b8802b7f34c619a28cf6",
+  "review": "audits/risk-review-20261014/RELEASE-READINESS.md"
 }

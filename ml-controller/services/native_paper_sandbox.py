@@ -326,7 +326,8 @@ def native_execution_identity(runner: Path | None = None) -> str:
                            'l4_private_execution.py','l4_distribution.py','l4_distribution_runtime.py',
                              'l4_distribution_lifecycle.py','l4_model_cutover.py','l4_mlp_weights.py','l4_mlp_median.py','l4_residual_mlp.py','l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_budget_protocol.py','l4_tabpack_median.py','paper_strategy_mode.py','l4_portfolio.py',
                            'l4_l3_baseline.py','l4_incremental_acceptance.py',
-                           'l4_prediction_evaluation.py','l4_allocation_contract.py')},
+                           'l4_prediction_evaluation.py','l4_allocation_contract.py',
+                           'l4_position_constraints.py','l4_sealed_execution.py','l4_execution_evidence.py')},
         'rescore': hashlib.sha256(Path(__file__).parent.parent.joinpath('routers/intraday.py').read_bytes()).hexdigest(),
     })
 

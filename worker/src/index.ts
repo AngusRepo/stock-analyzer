@@ -186,6 +186,10 @@ export default {
     void ctx
     for (const msg of batch.messages) {
       try {
+        console.log('[Queue] Delivery received', JSON.stringify({
+          messageId: msg.id, type: msg.body?.type, date: msg.body?.triggerTime,
+          runId: msg.body?.runId, attempts: msg.attempts,
+        }))
         if (msg.body.type === 'data_domain_shadow_backfill' && msg.body.dataDomain === 'ops') {
           console.warn('[Queue] OPS shadow backfill moved to HTTP-isolated scheduler; acknowledging legacy message')
           msg.ack()
@@ -196,6 +200,7 @@ export default {
           runMarketScreenerAsync: runScreenerV2,
           runMLAndRiskV2,
         })
+        console.log('[Queue] Delivery completed', msg.id)
         msg.ack()
       } catch (e) {
         const attempts = Math.max(1, Number(msg.attempts ?? 1))

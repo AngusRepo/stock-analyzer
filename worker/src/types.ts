@@ -41,6 +41,7 @@ export type Bindings = {
   EXECUTION_GATEWAY_SERVICE_TOKEN?: string
   LIVE_EXECUTION_HMAC_SECRET?: string
   LIVE_EXECUTION_CLIENT_ENABLED?: string
+  LIVE_EXECUTION_SUBMIT_GUARD_ENABLED?: string
   LIVE_TRADING_APPROVAL_SCOPE?: string
   // 管理員 Email（Bootstrap 第一個 admin，透過環境變數控制，不寫在 source code）
   ADMIN_EMAIL: string

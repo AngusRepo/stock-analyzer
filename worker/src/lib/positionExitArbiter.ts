@@ -39,9 +39,11 @@ export function resolvePositionExit(input: {
   }
   // Urgent full exits do not depend on optional allocation proposals.
   if (input.riskDecision) {
-    if (input.riskDecision.action !== 'full_sell' || input.riskDecision.exitIntentKind !== 'risk_stop')
+    if (!['full_sell','partial_sell'].includes(input.riskDecision.action) || input.riskDecision.exitIntentKind !== 'risk_stop')
       throw new Error('exit_arbiter_risk_contract_invalid')
     add('portfolio_risk', input.riskDecision)
+    // A partial cap reduction must never suppress a protective full exit.
+    if (input.riskDecision.action === 'partial_sell') add('position_policy', input.positionDecision)
   } else {
     add('position_policy', input.positionDecision)
     if (input.positionDecision.action !== 'full_sell' && input.l4Decision) add('l4_target', input.l4Decision)

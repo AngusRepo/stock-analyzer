@@ -211,7 +211,8 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   })
   await writeDailyExecutionPaperClosureArtifacts(env, today)
   const { recordL4AccountReward } = await import('./l4AccountReward')
-  await recordL4AccountReward(env, today, totalValue)
+  const l4Reward = await recordL4AccountReward(env, today, totalValue)
+  if (l4Reward.status === 'unavailable') console.warn('[Snapshot] L4 reward unavailable:', l4Reward.reason)
   const {updateRotationAudit}=await import('./paperRotationAudit')
   await updateRotationAudit(env,today)
 
@@ -225,7 +226,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     formatDailySummary(totalValue, pnlPct / 100, todayOrderCount?.cnt ?? 0, maxDrawdownToDate, sharpe30d),
   )
 
-  return { date: today, valuation }
+  return { date: today, valuation, l4Reward }
 }
 
 export async function runPaperAutoTrade(env: Bindings): Promise<void> {

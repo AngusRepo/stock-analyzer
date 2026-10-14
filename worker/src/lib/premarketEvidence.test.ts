@@ -142,8 +142,8 @@ test('Configured tunnel honors token bounds and rejects truncated output', async
     finish = 'max_tokens'; await assert.rejects(run(), /Configured LLM tunnel unavailable/)
   } finally { f.close() }
 })
-test('paused briefing, watchdog ownership and entry-only readiness gate', () => {
-  assert.equal(schedulerJobAccounting('morning-briefing').desiredState, 'PAUSED')
+test('watchdog ownership and entry-only readiness gate', () => {
+  assert.equal(schedulerJobAccounting('premarket-evidence-watchdog').desiredState, 'ENABLED')
   const source = readFileSync(new URL('./pendingBuyOrchestrator.ts', import.meta.url), 'utf8')
   assert.ok(source.indexOf('premarket_evidence_wait:') < source.indexOf('const candidates: BatchDebateCandidate[]'))
   const exits = readFileSync(new URL('./paperExitTasks.ts', import.meta.url), 'utf8')

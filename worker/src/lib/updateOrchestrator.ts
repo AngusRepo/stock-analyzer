@@ -1,4 +1,5 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
+import { readOfficialRestrictionReadiness } from './tradingRestrictionReadiness'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { prepareIndicatorRegime } from './indicatorRegimePrerequisite'
 import { materializeIndicatorSessions } from './indicatorSessionPrerequisite'
@@ -392,7 +393,7 @@ async function tradingRestrictionsDailyReadinessCheck(
 ): Promise<ReadinessCheck> {
   const key = 'canonical_trading_restrictions:daily_micro_lane'
   try {
-    const [quality, canonical, checkedAt, officialRefresh] = await Promise.all([
+    const [quality, canonical, { checkedAt, refresh: officialRefresh }] = await Promise.all([
       databaseForDataDomain(env, 'market').prepare(`
         SELECT freshness_status, missing_rate, latest_materialization, metrics_json
           FROM source_quality_metrics
@@ -420,13 +421,7 @@ async function tradingRestrictionsDailyReadinessCheck(
         latest_source_date: string | null
         latest_materialization: string | null
       }>(),
-      env.KV.get('market:trading_restrictions:checked_at'),
-      env.KV.get('market:trading_restrictions:refresh_status', 'json') as Promise<{
-        status?: string
-        trade_date?: string
-        checked_at?: string
-        source_counts?: Record<string, number>
-      } | null>,
+      readOfficialRestrictionReadiness(env.KV, targetDate),
     ])
     const freshness = String(quality?.freshness_status ?? '').trim().toLowerCase()
     const finlabFresh = Boolean(quality) && !/empty|missing|failed|stale|disabled|error/i.test(freshness)
@@ -1355,6 +1350,17 @@ export async function syncMarketBreadthFromFinLabCanonical(
   return { rows: d1ChangeCount(result), sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
 }
 
+export async function ensureDailyMarketBreadth(env: Bindings, targetDate: string): Promise<void> {
+  const row = await databaseForDataDomain(env, 'market').prepare(
+    'SELECT advance_count,decline_count,unchanged_count,sample_size FROM market_breadth WHERE date=?',
+  ).bind(targetDate).first<{ advance_count: number | null; decline_count: number | null; unchanged_count: number | null; sample_size: number | null }>()
+  if (row && Number(row.sample_size) >= 1000
+      && [row.advance_count, row.decline_count, row.unchanged_count].every(n => n != null && Number.isFinite(n) && n >= 0)
+      && Number(row.advance_count) + Number(row.decline_count) + Number(row.unchanged_count) === row.sample_size) return
+  const result = await syncMarketBreadthFromFinLabCanonical(env, targetDate)
+  if (result.sampleSize < 1000 || result.rows < 1) throw new Error(`daily_market_breadth_incomplete:${targetDate}:${result.sampleSize}`)
+}
+
 export async function syncLegacyRevenueFromFinLabCanonical(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   targetDate: string,
@@ -1541,6 +1547,7 @@ export async function runBulkFetch(env: Bindings, force = false, runDate?: strin
 
   try {
     const mirror = await syncLegacyMarketDataFromFinLabCanonical(env, twDate)
+    await ensureDailyMarketBreadth(env, twDate)
     finlabMirrorSummary = mirror.summary
     if (supplementalMode !== 'always') {
       const ready = await assertMarketDataReady(env, twDate, { requireIndicators: false, requireMargin: true })
@@ -1697,6 +1704,7 @@ async function ensureSameDateRegimeReady(
   const startedAt = Date.now()
   try {
     await materializeIndicatorSessions(databaseForDataDomain(env, 'market'), triggerTime)
+    await ensureDailyMarketBreadth(env, triggerTime)
     const summary = await prepareIndicatorRegime(env, triggerTime, () => runRegimeCompute(env, triggerTime))
     await logSchedulerResult(env.KV, 'regime-compute', {
       status: 'success',
@@ -1734,7 +1742,9 @@ async function finalizeUpdateChain(
     return
   }
   if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
+  console.log(`[Queue] Finalizer source readiness started date=${triggerTime} run_id=${runId}`)
   const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
+  console.log(`[Queue] Finalizer source readiness completed date=${triggerTime} run_id=${runId} ok=${readiness.ok}`)
   if (!readiness.ok) {
     await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
     return

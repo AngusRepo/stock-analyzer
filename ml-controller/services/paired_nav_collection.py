@@ -53,7 +53,8 @@ def allocator_runtime_source_identity() -> dict[str, str]:
              'paired_nav_intervention.py', 'strategy_nav_distribution.py', 'expected_return_numeric.py', 'active_model_policy.py',
              'paired_nav_collection.py', 'paired_nav_opb_prior.py', 'opb_nav_control.py',
              'opb_nav_serving_source.json', 'l4_distribution.py', 'l4_model_cutover.py','l4_mlp_weights.py','l4_mlp_median.py','l4_residual_mlp.py','l4_residual_tabpack.py', 'l4_tabpack_weights.py', 'l4_tabpack_budget_protocol.py', 'l4_tabpack_median.py', 'paper_strategy_mode.py', 'l4_portfolio.py',
-             'l4_distribution_runtime.py', 'l4_distribution_context.py', 'l4_risk_history.py', 'l4_dated_risk.py', 'l4_allocation_contract.py', 'similarity_evidence.py')
+             'l4_distribution_runtime.py', 'l4_distribution_context.py', 'l4_risk_history.py', 'l4_dated_risk.py', 'l4_allocation_contract.py', 'similarity_evidence.py',
+             'l4_position_constraints.py','l4_sealed_execution.py','l4_execution_evidence.py')
     return {name: hashlib.sha256((base / name).read_bytes()).hexdigest() for name in names}
 
 

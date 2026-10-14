@@ -35,6 +35,8 @@ import type { CircuitBreakerState, LegacyLayerDeps } from './riskTypes'
 import { getRiskConfig } from './riskConfig'
 import { checkP9IntradayDrawdown, mergeIntradayPortfolioRisk } from './intradayPortfolioRisk'
 import { buildPortfolioDeRiskPlan, type PortfolioDeRiskPlan } from './portfolioDeRisk'
+import { exitCategory } from './paperExitAttribution'
+import { checkL4RotationGate } from './l4RotationGate'
 import { fiveSlotHoldingWeaknessScore } from './fiveSlotCapitalAllocator'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { corporateAccountRiskBounds } from './paperCorporateActions'
@@ -1279,6 +1281,7 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     const entryPrice = pos.entry_price ?? pos.avg_cost
     const sellNote = buildSellOrderNote({
       reason: `[13:24 daytrade force close] ${decision.reason}`,
+      exit_intent_kind:decision.exitIntentKind,exit_category:exitCategory(decision),
       is_day_trade: true,
       entry_date: pos.entry_date,
       order_intent: sellOrderIntent,
@@ -1403,7 +1406,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       })
     }
   }
-  const eodDeRiskSymbols = new Set(eodDeRiskPlan?.fullExitSymbols ?? [])
+  const eodDeRiskSymbols = new Set(Object.keys(eodDeRiskPlan?.reductions ?? {}))
   {
     const { writeAuditEntry } = await import('./riskAudit')
     await writeAuditEntry(databaseForDataDomain(env, 'execution'), {
@@ -1470,9 +1473,11 @@ export async function runEODExit(env: Bindings): Promise<void> {
     decision = continuation.lifecycleJson == null
       ? continuation.decision
       : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
-    if (eodDeRiskSymbols.has(String(pos.symbol))) {
+    if (eodDeRiskSymbols.has(String(pos.symbol)) && decision.action !== 'full_sell') {
+      const sellShares = eodDeRiskPlan!.reductions[String(pos.symbol)]
       decision = {
-        action: 'full_sell',
+        action: sellShares === Number(pos.shares) ? 'full_sell' : 'partial_sell',
+        sellShares,
         exitIntentKind: 'risk_stop',
         reason: `[PortfolioRisk] ${cb.marketRiskLevel ?? 'unknown'} current=${((eodDeRiskPlan?.currentExposure ?? 0) * 100).toFixed(1)}% target=${((eodDeRiskPlan?.targetExposure ?? 0) * 100).toFixed(1)}% owner=canonical_market_risk_runtime_v1`,
       }
@@ -1563,6 +1568,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         days_held: daysHeld,
+        exit_intent_kind:decision.exitIntentKind,exit_category:exitCategory(decision),
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares, commission, tax })
@@ -1646,6 +1652,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         days_held: pos.entry_date ? Math.round((paperExecutionNow() - new Date(pos.entry_date).getTime()) / 86400000) : null,
+        exit_intent_kind:decision.exitIntentKind,exit_category:exitCategory(decision),
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
@@ -1860,7 +1867,7 @@ export async function pollIntradayStopLoss(
       })
     }
   }
-  const intradayDeRiskSymbols = new Set(intradayDeRiskPlan?.fullExitSymbols ?? [])
+  const intradayDeRiskSymbols = new Set(Object.keys(intradayDeRiskPlan?.reductions ?? {}))
 
   await Promise.allSettled(
     [...quoteMap].map(([symbol, quote]) => putIntradayPrice(env.KV, symbol, quote.last, undefined, {
@@ -1948,8 +1955,10 @@ export async function pollIntradayStopLoss(
       : { ...continuation.decision, tradeLifecycleJson: continuation.lifecycleJson }
     let riskDecision: ExitDecision | null = null
     if (intradayDeRiskSymbols.has(String(pos.symbol))) {
+      const sellShares = intradayDeRiskPlan!.reductions[String(pos.symbol)]
       riskDecision = {
-        action: 'full_sell',
+        action: sellShares === Number(pos.shares) ? 'full_sell' : 'partial_sell',
+        sellShares,
         exitIntentKind: 'risk_stop',
         reason: `[PortfolioRisk] ${effectivePortfolioRisk.marketRiskLevel ?? (p9Triggered ? 'p9' : 'unknown')} current=${((intradayDeRiskPlan?.currentExposure ?? 0) * 100).toFixed(1)}% target=${((intradayDeRiskPlan?.targetExposure ?? 0) * 100).toFixed(1)}% owner=${p9Triggered ? 'p9_intraday_drawdown' : 'canonical_market_risk_runtime_v1'}`,
       }
@@ -1963,11 +1972,24 @@ export async function pollIntradayStopLoss(
     let l4Decision: ExitDecision | null = null
     // Protective full exits never wait on allocator reconciliation.
     if (!riskDecision && decision.action !== 'full_sell' && applicableL4Plan && l4CurrentNav != null) {
-      const reduceShares = l4TargetExitShares({ plan: applicableL4Plan, symbol: pos.symbol,
+      const targetInput={ plan: applicableL4Plan, symbol: pos.symbol,
         shares: Number(pos.shares), originalShares:Number(pos.original_shares), price: currentPrice, nav: l4CurrentNav,
-        minTradeValue: cfg.position.minPositionValue ?? 30_000 })
+        minTradeValue: cfg.position.minPositionValue ?? 30_000 }
+      const requested=l4TargetExitShares({...targetInput,rotationSatisfied:true})
+      const gate=requested>0 && applicableL4Plan.sealed_execution?.exit_rules[pos.symbol]
+        ? await checkL4RotationGate(env,{plan:applicableL4Plan,symbol:pos.symbol,reduceShares:requested,
+            positions,prices:new Map([...quoteMap].map(([s,q])=>[s,q.last])),nav:l4CurrentNav,cfg,risk:effectivePortfolioRisk})
+          .catch(error=>{console.warn('[L4Rotation] readiness unavailable; defer soft rotation',error);return {satisfied:false,reason:'readiness_unavailable',validUntilMs:undefined}})
+        : {satisfied:true,reason:'legacy_unconditional',validUntilMs:undefined}
+      const reduceShares = l4TargetExitShares({...targetInput,rotationSatisfied:gate.satisfied})
+      if(requested>0 && applicableL4Plan.sealed_execution?.exit_rules[pos.symbol] && !gate.satisfied)
+        await recordPaperExecutionEvent(env,{tradeDate:intradayToday,symbol:pos.symbol,side:'sell',eventType:'paper_order',
+          status:'pending',reason:'l4_rotation_waiting_selected_leg',source:'l4_sealed_rotation_v1',
+          detail:{plan_id:applicableL4Plan.plan_id,rule:applicableL4Plan.sealed_execution.exit_rules[pos.symbol],
+            gate,weights_unchanged:true}}).catch(error=>console.warn('[L4Rotation] telemetry unavailable',error))
       if (reduceShares > 0) l4Decision = { action: reduceShares === pos.shares ? 'full_sell' : 'partial_sell',
         sellShares: reduceShares, exitIntentKind: 'model_exit',
+        authorizationExpiresAtMs:gate.validUntilMs,
         reason: `[L4Target] plan=${applicableL4Plan.plan_id};target=${applicableL4Plan.execution_review?.weights[pos.symbol] ?? applicableL4Plan.weights[pos.symbol]}` }
     }
     const exitResolution = resolvePositionExit({
@@ -2102,6 +2124,7 @@ export async function pollIntradayStopLoss(
         execution_policy:readSwingState(pos.trade_lifecycle_json)?.policy ?? 'legacy',
         l4_rotation:rotationDecision(decision.reason,pos,currentPrice),
         reason: `[intraday] ${decision.reason} (mkt=${currentPrice}, -1 tick fill)`,
+        exit_intent_kind:decision.exitIntentKind,exit_category:exitCategory(decision),
         is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         order_intent: sellOrderIntent,
@@ -2139,7 +2162,7 @@ export async function pollIntradayStopLoss(
           null,
           sellNote,
         ),
-      ],pos.symbol,proceeds,decision.reason==='swing_20_sessions'?Date.parse(intradayToday+'T13:25:00+08:00'):undefined)
+      ],pos.symbol,proceeds,decision.authorizationExpiresAtMs ?? (decision.reason==='swing_20_sessions'?Date.parse(intradayToday+'T13:25:00+08:00'):undefined))
 
       await recordPaperExecutionEvent(env, {
         tradeDate: intradayToday,
@@ -2252,6 +2275,7 @@ export async function pollIntradayStopLoss(
         execution_policy:readSwingState(pos.trade_lifecycle_json)?.policy ?? 'legacy',
         l4_rotation:rotationDecision(decision.reason,pos,currentPrice),
         reason: `[intraday] ${decision.reason}`,
+        exit_intent_kind:decision.exitIntentKind,exit_category:exitCategory(decision),
         is_day_trade: dayTradeSell,
         entry_date: pos.entry_date,
         order_intent: sellOrderIntent,
@@ -2284,7 +2308,7 @@ export async function pollIntradayStopLoss(
           null,
           sellNote,
         ),
-      ],pos.symbol,proceeds)
+      ],pos.symbol,proceeds,decision.authorizationExpiresAtMs)
 
       await recordPaperExecutionEvent(env, {
         tradeDate: intradayToday,

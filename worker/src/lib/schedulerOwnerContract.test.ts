@@ -58,7 +58,6 @@ const tradingDayTasks = [
   'us-leading',
   'news-analyst',
   'morning-setup',
-  'morning-briefing',
   'pre-market-warmup',
   'external-evidence',
 ]

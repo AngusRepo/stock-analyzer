@@ -11,18 +11,22 @@ const plan:any={account_anchor:{positions:[{symbol:'B',shares:2000},{symbol:'C',
   constraints:{name_cap:.3,min_weight:.03,max_positions:5,exposure_cap:.8},
   proof:{within_tolerance:true,preselection:false,absolute_objective_gap:0,tolerance:1e-8,evaluated_candidate_count:4}}
 const base={plan,tradeDate:date,contextHash:'e'.repeat(64),nowMs:clock('08:10'),restrictions:[]}
-test('2026-10-12 recovery permits first publication before 09:00 only',async()=>{
+test('dated recovery permits first publication before its deployed midnight cutoff only',async()=>{
   const tradeDate='2026-10-12', at=(time:string)=>Date.parse(`${tradeDate}T${time}+08:00`)
   const f=l4NativeFixture()
   f.sqls.paper.exec(readFileSync(new URL('../../domain-migrations/paper/0007_daily_plan_reviews.sql',import.meta.url),'utf8'))
   try {
-    const review=await sealDailyReview({...base,tradeDate,nowMs:at('08:59:59')})
-    await persistDailyReview(f.env.PAPER_DB,plan,review,at('08:59:59'))
-    await assert.rejects(sealDailyReview({...base,tradeDate,nowMs:at('09:00:00')}),/invalid/)
+    const review=await sealDailyReview({...base,tradeDate,nowMs:at('23:59:59')})
+    await persistDailyReview(f.env.PAPER_DB,plan,review,at('23:59:59'))
+    await assert.rejects(sealDailyReview({...base,tradeDate,nowMs:at('24:00:00')}),/invalid/)
     const competing={...plan,plan_id:'f'.repeat(64)}
     const unpublished=await sealDailyReview({...base,plan:competing,tradeDate,nowMs:at('08:55:00')})
-    await assert.rejects(persistDailyReview(f.env.PAPER_DB,competing,unpublished,at('09:00:00')),/publication_cutoff/)
-    for(const ordinary of ['2026-10-09','2026-10-13']) {
+    await assert.rejects(persistDailyReview(f.env.PAPER_DB,competing,unpublished,at('24:00:00')),/publication_cutoff/)
+    for(const recovery of ['2026-10-13','2026-10-14']) {
+      await sealDailyReview({...base,tradeDate:recovery,nowMs:Date.parse(`${recovery}T23:59:59+08:00`)})
+      await assert.rejects(sealDailyReview({...base,tradeDate:recovery,nowMs:Date.parse(`${recovery}T24:00:00+08:00`)}),/invalid/)
+    }
+    for(const ordinary of ['2026-10-09','2026-10-15']) {
       await assert.rejects(sealDailyReview({...base,tradeDate:ordinary,
         nowMs:Date.parse(`${ordinary}T08:45:00+08:00`)}),/invalid/)
     }

@@ -60,7 +60,6 @@ const TASK_NAMES: Record<string, string> = {
   'news-analyst': 'News Analyst',
   'morning-setup': 'Morning Setup',
   'premarket-evidence-watchdog': 'Premarket Evidence Recovery',
-  'morning-briefing': 'Morning Briefing',
   'daily-snapshot': 'Daily Snapshot',
   adapt: 'Adapt Params',
   'daily-report': 'Daily Report',

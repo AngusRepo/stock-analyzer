@@ -78,8 +78,10 @@ def missing_l3_evidence(prediction, identity, signal_date):
 
 def distribution_policy_identity(policy,identity):
     opb={k:v for k,v in (policy.get('opb') or {'enabled':False}).items() if k!='approved_policy_identity'}
-    return digest({'model':policy['artifact']['model_checksum'],'l3':identity,
-                   'constraints':policy['constraints'],'opb_policy':opb,'schema':PLAN_SCHEMA})
+    body={'model':policy['artifact']['model_checksum'],'l3':identity,
+          'constraints':policy['constraints'],'opb_policy':opb,'schema':PLAN_SCHEMA}
+    if policy.get('sealedExecution') is not None:body['sealed_execution']=policy['sealedExecution']
+    return digest(body)
 
 
 def choose_opb(policy, ledger, identity, signal_date):
@@ -243,7 +245,20 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                 or row.get('risk_skip') is True
                 or isinstance(overlay, dict) and overlay.get('skip') is True):
             forbidden.add(symbol)
+    from services.l4_position_constraints import position_constraints
+    membership_groups,excluded_pairs=position_constraints(symbols,by_symbol,holdings,return_history,hard)
+    from services.l4_sealed_execution import execution_inputs,seal_execution_evidence,aligned_covariance
+    execution_config,trade_uncertainty,buy_extra,sell_extra=execution_inputs(policy,runtime,symbols,bundle['model_checksum'],signal_date,horizon)
+    if execution_config and execution_config.get('require_matched_risk_horizon') and 'five_session_risk_evidence' not in runtime:
+        from services.l4_execution_evidence import measured_five_session_covariance
+        runtime={**runtime,'five_session_risk_evidence':measured_five_session_covariance(
+            return_history,symbols,execution_config['minimum_covariance_windows'])}
+    covariance,horizon_evidence=aligned_covariance(execution_config,runtime,symbols,signal_date,horizon,covariance)
+    if horizon_evidence is not None:risk_evidence['measured_covariance_horizon']=horizon_evidence
     result = allocate(symbols=symbols,expected_gross=gross,covariance=covariance,
+                      membership_groups=membership_groups,excluded_pairs=excluded_pairs,
+                      trade_uncertainty=trade_uncertainty,
+                      buy_cost_adjustments=buy_extra,sell_cost_adjustments=sell_extra,
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},
                       locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,**constraints)
     attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
@@ -261,6 +276,11 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                 'expected_return_gross':outputs[s]['expected_return_gross'] if s in outputs else None,
                 'distribution':outputs.get(s)}
                 for i,s in enumerate(symbols)}}
+    execution=seal_execution_evidence(execution_config,symbols,current,gross,covariance,
+        {**result,'_buy_cost':constraints['buy_cost'],'_sell_cost':constraints['sell_cost'],
+         '_buy_costs':constraints['buy_cost']+buy_extra,'_sell_costs':constraints['sell_cost']+sell_extra,
+         '_turnover_pressure':pressure},nav,trade_uncertainty,locked)
+    if execution is not None:plan['sealed_execution']=execution
     plan['plan_id']=digest(plan)
     if policy.get('operating_mode') is not None:
         from services.paper_strategy_mode import validate_model_mode

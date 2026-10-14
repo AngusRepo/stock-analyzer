@@ -20,6 +20,7 @@ function sell(f: ReturnType<typeof l4NativeFixture>, pnl: number) {
     VALUES(1,'2330','sell',1,20,20,?)`).run(JSON.stringify({realized_pnl:pnl}))
 }
 function seedRisk(f: ReturnType<typeof l4NativeFixture>) {
+  f.sqls.learning.exec('CREATE TABLE IF NOT EXISTS active8_ensemble_pointer_v1(singleton_id INTEGER PRIMARY KEY,artifact_id TEXT,cohort_id TEXT,payload_checksum TEXT,base_artifact_set_checksum TEXT)')
   f.kvs.set('trading:risk_config', JSON.stringify(DEFAULT_RISK_CONFIG))
   f.kvs.set('ml:adaptive_params', JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,
     recent_accuracy_30d:.6, provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
@@ -79,7 +80,7 @@ for(const hardGate of ['P1','P8','P9','S1','missing_market_evidence'])test(`P5 s
       const navs=hardGate==='P1'?[1000000,950000,800000]:[1000000,965000]
       for(const [i,nav] of navs.entries())f.sqls.paper.prepare(`INSERT INTO paper_daily_snapshots
         (account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)`)
-        .run(`2026-09-${10+i}`,nav,nav)
+        .run(hardGate==='P8' ? ['2026-09-11','2026-09-14'][i] : `2026-09-${10+i}`,nav,nav)
     }
     let result: CircuitBreakerState = (await chain(f)).result
     if(hardGate==='P9') {

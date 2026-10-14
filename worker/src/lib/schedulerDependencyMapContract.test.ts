@@ -11,6 +11,7 @@ function assert(condition: unknown, message: string): void {
 
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')) as {
   jobs: Array<{ id: string; task: string }>
+  deleteJobIds: string[]
 }
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
@@ -18,7 +19,6 @@ const cronWorker = fs.readFileSync('src/lib/cronWorkerDomainTasks.ts', 'utf8')
 const cronGcp = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
-const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const sectorCorrelation = fs.readFileSync('src/lib/sectorCorrelation.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
@@ -108,8 +108,6 @@ for (const task of ['news-analyst', 'us-leading', 'sector-leaders']) {
 const recovery = fs.readFileSync('src/lib/premarketEvidenceWatchdog.ts', 'utf8')
 assert(recovery.includes('return ensurePremarketEventChain(env,clock.date,now)'),
   'watchdog delegates dated evidence recovery and downstream continuation to the atomic premarket owner')
-assert(!morningBriefing.includes('runDailyNewsAnalysis') && !morningBriefing.includes('fetchAndStoreUSLeading'),
-  'manual briefing cannot own producer retries')
 
 assert(
   sectorCorrelation.includes('ensureSectorLeadersForScreener') &&
@@ -134,8 +132,9 @@ assert(
 for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   if (spec.owner === 'gcp_scheduler') {
     assert(
-      manifestTaskSet.has(spec.task),
-      `${spec.task} must stay in GCP manifest until the replacement chain/manual owner has been deployed and verified`,
+      manifestTaskSet.has(spec.task) || (manifest.deleteJobIds.includes(spec.task)
+        && spec.consolidationClass === 'merge_into_chain' && hasHandler(spec.task)),
+      `${spec.task} must have a physical root or an explicitly retired root with a retained chain handler`,
     )
   } else {
     assert(

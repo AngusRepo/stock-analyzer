@@ -8,12 +8,18 @@ import {
   type StrategyEvidenceProfile,
 } from './strategyEvidenceProfile'
 import { listStrategySpecsForLearning } from './strategyLearning'
-import { STRATEGY_FORMAL_LABELER_VERSIONS } from './strategySpec'
+import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceEvidence'
 
 export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v4'
 export const STRATEGY_EVIDENCE_MIN_SAMPLES = 20
 export const STRATEGY_EVIDENCE_MIN_MATURE_DATES = 5
-const STRATEGY_EVIDENCE_REFERENCE_CONTRACT = 'selection-reference-snapshot-v3'
+const FORMAL_MATRIX_COMPATIBILITY = buildStrategyFormalMatureCompatibilitySql('mr')
+export const STRATEGY_METRIC_READER_REVISION = 'formal-matrix-v3-v4-r1'
+export function strategyMetricPublicationScope(scope: string): string {
+  const revised = `${scope}:reader:${STRATEGY_METRIC_READER_REVISION}`
+  if (!scope.trim() || revised.length > 500) throw new Error('invalid_strategy_metric_publication_scope')
+  return revised
+}
 
 async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
@@ -617,7 +623,7 @@ export function computeStrategyEvidenceMetricRows(
   })
 }
 
-async function loadObservationsAcrossDatabases(
+export async function loadObservationsAcrossDatabases(
   matrixDb: D1Database,
   outcomeDb: D1Database,
   outcomeAsOfDate: string,
@@ -667,8 +673,8 @@ async function loadObservationsAcrossDatabases(
         JOIN strategy_label_matrix_runs_v4 mr
           ON mr.producer_run_id=m.producer_run_id
        WHERE m.strategy_hit=1 AND m.evaluable=1 AND m.rowid>?
-         AND m.reference_contract_version=?
-         AND m.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
+         AND ${FORMAL_MATRIX_COMPATIBILITY.sql}
+         AND r.feature_contract_version=m.reference_contract_version
          AND r.strategy_matrix_status='ready'
          AND r.strategy_labeler_version=m.labeler_version
          AND r.strategy_registry_checksum=m.strategy_registry_checksum
@@ -686,8 +692,7 @@ async function loadObservationsAcrossDatabases(
        LIMIT 2000
     `).bind(
       matrixRowId,
-      STRATEGY_EVIDENCE_REFERENCE_CONTRACT,
-      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      ...FORMAL_MATRIX_COMPATIBILITY.binds,
       JSON.stringify(canonicalRunIds),
     ).all<StrategyEvidenceMatrixRow & { source_row_id: number }>()
     const rows = page.results ?? []
@@ -698,7 +703,7 @@ async function loadObservationsAcrossDatabases(
   return observations
 }
 
-async function loadObservations(
+export async function loadObservations(
   db: D1Database,
   outcomeAsOfDate: string,
   canonicalRunIds: CanonicalScreenerRunIds,
@@ -734,11 +739,10 @@ async function loadObservations(
              FROM selection_reference_snapshots_v1 r
             WHERE r.signal_date=v.signal_date AND r.symbol=v.symbol AND r.producer_run_id=v.producer_run_id
               AND r.strategy_matrix_status='ready'
-              AND r.feature_contract_version=?
-              AND r.strategy_labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
               AND EXISTS (
                 SELECT 1 FROM strategy_label_matrix_runs_v4 mr
                  WHERE mr.producer_run_id=v.producer_run_id
+                   AND ${FORMAL_MATRIX_COMPATIBILITY.sql}
                    AND mr.status='ready'
                    AND mr.expected_cell_count>0
                    AND mr.persisted_cell_count=mr.expected_cell_count
@@ -757,8 +761,7 @@ async function loadObservations(
     `).bind(
       outcomeAsOfDate,
       ...profileParams,
-      STRATEGY_EVIDENCE_REFERENCE_CONTRACT,
-      ...STRATEGY_FORMAL_LABELER_VERSIONS,
+      ...FORMAL_MATRIX_COMPATIBILITY.binds,
       JSON.stringify(canonicalRunIds),
       matrixRowId,
       matrixRowId,
@@ -1017,8 +1020,9 @@ export async function materializeStrategyEvidenceMetrics(
     throw new Error('strategy_evidence_metric_learning_target_missing')
   }
   const sourceMode = options.sourceMode ?? 'authority_bridge'
-  const publicationScope = options.publicationScope ?? `daily:${options.outcomeAsOfDate}`
-  if (!publicationScope.trim() || publicationScope.length > 500) throw new Error('invalid_strategy_metric_publication_scope')
+  // Append-only reader revision: never reuse a v3-only receipt or backdate its
+  // corrected values. The snapshot publisher retains the real publication time.
+  const publicationScope = strategyMetricPublicationScope(options.publicationScope ?? `daily:${options.outcomeAsOfDate}`)
   const existing = await readMetricSnapshot(db, options.outcomeAsOfDate, STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION, sourceMode, publicationScope)
   if (existing) return existing
   const observationDb = targetJoinRequested ? learningTargetDb! : authorityDb
@@ -1157,18 +1161,16 @@ export async function backfillMissingStrategyEvidenceMetricSnapshots(
       FROM strategy_evidence_observations_v1 v
      WHERE v.outcome_known_date < ?
        AND NOT EXISTS (
-         SELECT 1 FROM (
-           SELECT outcome_as_of_date,definition_version,source_mode FROM strategy_evidence_metric_snapshot_runs_v1 WHERE status='ready'
-           UNION ALL
-           SELECT outcome_as_of_date,definition_version,source_mode FROM strategy_evidence_metric_snapshot_runs_v2 WHERE status='ready'
-         ) r
+         SELECT 1 FROM strategy_evidence_metric_snapshot_runs_v2 r
           WHERE r.outcome_as_of_date=v.outcome_known_date
+            AND r.status='ready'
             AND r.definition_version='strategy-evidence-metrics-v4'
             AND r.source_mode=?
+            AND r.publication_scope LIKE ?
        )
      ORDER BY v.outcome_known_date
      LIMIT ?
-  `).bind(options.knowledgeCutoffDate, sourceMode, maxDates).all<{ outcome_known_date: string }>()
+  `).bind(options.knowledgeCutoffDate, sourceMode, `%:reader:${STRATEGY_METRIC_READER_REVISION}`, maxDates).all<{ outcome_known_date: string }>()
   const processedDates: string[] = []
   let materializedRows = 0
   let readyRows = 0

@@ -28,8 +28,7 @@ import type {
 } from './riskTypes'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP2Accuracy } from './riskChecks/p2Accuracy'
-import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
-import { checkP4Breadth } from './riskChecks/p4Breadth'
+import { checkCanonicalMarketRestriction } from './riskChecks/canonicalMarketRestriction'
 import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP6Momentum } from './riskChecks/p6Momentum'
 import { checkP7Streak } from './riskChecks/p7Streak'
@@ -37,6 +36,8 @@ import { checkS1KillSwitch } from './riskChecks/s1KillSwitch'
 import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
 import { getRiskConfig } from './riskConfig'
 import { resolveCanonicalMarketRisk } from './marketRiskRuntime'
+import { getPrevTradingDay } from './paperMarketData'
+import { paperExecutionNow } from './paperExecutionScope'
 
 export interface AggregatedPortfolioState extends CircuitBreakerState {
   triggeredLayers: string[]
@@ -66,22 +67,27 @@ export async function runPortfolioChecks(
     core: databases.core,
     market: databases.market,
   }, kv, riskCfg)
+  const sessions=[new Date(paperExecutionNow()+8*3600000).toISOString().slice(0,10)]
+  if(cfg.circuit.lossGuard) {
+    const count=cfg.circuit.lossGuard.lookbackSessions
+    if(!Number.isSafeInteger(count) || count<1 || count>60) throw new Error('p5_window_policy_invalid')
+    while(sessions.length<count) sessions.push(await getPrevTradingDay(databases.core,kv,sessions.at(-1)!))
+  }
 
   // Run 9 checks in parallel — none depend on each other's output.
-  const [s1, p1, p2, p3, p4, p5, p6, p7, p8] = await Promise.all([
+  const [s1, p1, p2, marketRestriction, p5, p6, p7, p8] = await Promise.all([
     checkS1KillSwitch(kv, deps),
     checkP1Mdd(databases.paper, cfg, deps),
     checkP2Accuracy(databases.learning, kv, cfg, deps),
-    checkP3MarketRisk(marketRisk, cfg, deps),
-    checkP4Breadth(marketRisk, cfg, deps),
-    checkP5Losses(databases.paper, deps),
+    checkCanonicalMarketRestriction(marketRisk, cfg, deps),
+    checkP5Losses(databases.paper, deps,cfg.circuit.lossGuard ? {policy:cfg.circuit.lossGuard,sessions} : undefined),
     checkP6Momentum(databases.market, deps),
     checkP7Streak(databases.learning, cfg, deps),
     checkP8DailyPnl(databases.paper, riskCfg, deps),
   ])
 
   const entries: Array<[string, CircuitBreakerState | null]> = [
-    ['S1', s1], ['P1', p1], ['P2', p2], ['P3', p3], ['P4', p4],
+    ['S1', s1], ['P1', p1], ['P2', p2], ['P3', marketRestriction],
     ['P5', p5], ['P6', p6], ['P7', p7], ['P8', p8],
   ]
 
@@ -136,5 +142,6 @@ export async function runPortfolioChecks(
     marketRiskRegimeFamily: marketRisk.regimeFamily,
     marketRiskReasons: marketRisk.reasons,
     marketRiskBlockers: marketRisk.blockers,
+    marketRestrictionEvidence:marketRestriction?.marketRestrictionEvidence,
   }
 }

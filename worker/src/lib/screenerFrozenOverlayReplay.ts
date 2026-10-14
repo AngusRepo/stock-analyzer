@@ -4,6 +4,7 @@
 import type { AtomicPostOverlayInputs, OverlayObservation } from './screenerOverlayCapture'
 import type { StrategyCandidatePoolCandidate } from './strategyCandidatePool'
 import type { StrategySpec, StrategySpecEvaluationOptions } from './strategySpec'
+import { withStrategyRawSignalCache } from './strategySpec'
 import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk,
   applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety, type OverlayCandidate } from './screenerPostRouteOverlays'
 import { applyScreenerTechnicalOverlay, type ScreenerOverlayBar } from './screenerTechnicalOverlay'
@@ -26,6 +27,16 @@ function frozenMap<T>(value: unknown): Map<string, T> {
  * failures do not invalidate an otherwise covered slate.
  */
 export function replayFrozenPostRoute(input: {
+  packet: AtomicPostOverlayInputs; universe: StrategyCandidatePoolCandidate[];
+  plan: { breadthPool: StrategyCandidatePoolCandidate[]; coarseQueue: StrategyCandidatePoolCandidate[] };
+  specs: StrategySpec[];
+}) {
+  // Raw observations and spec definitions stay unchanged during this synchronous
+  // replay. Reuse validation/derived signals across strategies, never across slates.
+  return withStrategyRawSignalCache(() => replayFrozenPostRouteUncached(input))
+}
+
+function replayFrozenPostRouteUncached(input: {
   packet: AtomicPostOverlayInputs; universe: StrategyCandidatePoolCandidate[];
   plan: { breadthPool: StrategyCandidatePoolCandidate[]; coarseQueue: StrategyCandidatePoolCandidate[] };
   specs: StrategySpec[];

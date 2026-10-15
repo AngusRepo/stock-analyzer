@@ -98,13 +98,11 @@ def _retrain_followup_token() -> str:
         _controller_callback_token(),
     ])
 
-# Shared dependency image allows isolated research to add packages before mounts.
+# Reuse the verified production dependency image (Polars 1.44.2). Code releases
+# must not resolve unrelated package upgrades. Rebuild this immutable base from
+# requirements.txt only as an explicit dependency release.
 dependency_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("gcc", "g++", "libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
-    .pip_install("numpy==1.26.4", "Cython==0.29.37", "setuptools", "wheel")
-    .pip_install("scikit-learn-extra==0.3.0", extra_options="--no-build-isolation")
-    .pip_install_from_requirements(str(_LOCAL_REQ))
+    modal.Image.from_id("im-TzzLE4tqxokGP5VGtiiDC8")
     .env({
         "PYTHONHASHSEED": "42",
         "CUBLAS_WORKSPACE_CONFIG": ":4096:8",

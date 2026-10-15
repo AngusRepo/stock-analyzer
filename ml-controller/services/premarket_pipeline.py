@@ -94,6 +94,16 @@ def read_seal(day,run_id,*,client=None):
     try:return json.loads(bucket(client).blob(prefix(day,run_id)+'/l3-receipt.json').download_as_bytes())
     except NotFound:return None
 
+def l3_handoff_result(state, receipt):
+    """Prediction sealing and comparison-input readiness are separate facts."""
+    atomic = state.get('paired_nav_atomic_inputs') or {}
+    status = atomic.get('status', 'missing')
+    readiness = ('failed' if status in ('failed', 'error') else
+                 'ready' if status == 'pre_l2_inputs_captured' else 'waiting')
+    return {'status':'awaiting_premarket', 'run_date':state['run_date'],
+            'l3_receipt':receipt, 'metrics':state.get('metrics', {}),
+            'input_readiness':{'atomic_inputs':readiness}}
+
 def load_state(receipt, *, client=None):
     b=bucket(client); expected=read_seal(receipt['run_date'],receipt['run_id'],client=client)
     if receipt != expected: raise ValueError('premarket_seal_mismatch')

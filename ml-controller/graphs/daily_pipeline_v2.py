@@ -5214,12 +5214,12 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
     graph = get_graph()
     try:
         # No checkpointer ??no config needed
-        from services.premarket_pipeline import enabled as premarket_enabled, seal_l3
+        from services.premarket_pipeline import enabled as premarket_enabled, seal_l3, l3_handoff_result
         if premarket_enabled():
             await _run_pipeline_nodes(initial_state,[node_load_inputs,node_load_market_env,node_capture_atomic_inputs,
                 node_build_payloads,node_l2_timesfm_enrich,node_l3_formal_predict])
             receipt=await asyncio.to_thread(seal_l3,initial_state)
-            return {'status':'awaiting_premarket','run_date':run_date,'l3_receipt':receipt,'metrics':initial_state.get('metrics',{})}
+            return l3_handoff_result(initial_state,receipt)
         final_state = await graph.ainvoke(initial_state)
         elapsed = asyncio.get_event_loop().time() - t0
         logger.info(f"[Pipeline V2] Completed in {elapsed:.1f}s: {final_state.get('metrics', {})}")
@@ -5406,14 +5406,14 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
 
     t0 = asyncio.get_event_loop().time()
     try:
-        from services.premarket_pipeline import enabled as premarket_enabled, read_seal, digest
+        from services.premarket_pipeline import enabled as premarket_enabled, read_seal, digest, l3_handoff_result
         if premarket_enabled():
             state['modal_bundle_checksum']=digest(result)
             existing=await asyncio.to_thread(read_seal,state['run_date'],state['producer_run_id'])
             if existing:
                 if existing.get('modal_bundle_checksum')!=state['modal_bundle_checksum']:
                     raise ValueError('premarket_modal_callback_divergent')
-                return {'status':'awaiting_premarket','run_date':state['run_date'],'l3_receipt':existing,'metrics':state.get('metrics',{})}
+                return l3_handoff_result(state,existing)
         _assert_pipeline_canonical_window(state)
         _validate_pipeline_modal_feature_bundle_before_writes(state, result)
         state["modal_prediction_state_gcs_uri"] = state_gcs_uri
@@ -5438,10 +5438,10 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
             for prediction in (state.get("predictions") or {}).values():
                 if isinstance(prediction, dict):
                     prediction["pipeline_recovery_lineage"] = _json_safe(recovery_lineage)
-        from services.premarket_pipeline import enabled as premarket_enabled, seal_l3
+        from services.premarket_pipeline import enabled as premarket_enabled, seal_l3, l3_handoff_result
         if premarket_enabled():
             receipt=await asyncio.to_thread(seal_l3,state)
-            return {'status':'awaiting_premarket','run_date':state['run_date'],'l3_receipt':receipt,'metrics':state.get('metrics',{})}
+            return l3_handoff_result(state,receipt)
         # Paired NAV candidate selection in node_recommend still consumes the
         # immutable Modal inference. Keep it until that selection is frozen.
         await _run_pipeline_nodes(state, [node_compute_personas, node_recommend])

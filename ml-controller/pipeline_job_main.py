@@ -314,7 +314,9 @@ async def _run() -> int:
             await report('awaiting_premarket', status='waiting')
             status='triggered'
             emit_subtasks=False
-            summary='awaiting_premarket l3_sealed=true cloud_compute_stopped=true'
+            atomic_readiness=(result.get('input_readiness') or {}).get('atomic_inputs','waiting')
+            summary=('awaiting_premarket l3_sealed=true cloud_compute_stopped=true '
+                     f'atomic_inputs={atomic_readiness}')
         elif isinstance(result, dict) and result.get("status") == "deferred":
             status = "triggered"
             emit_subtasks = False

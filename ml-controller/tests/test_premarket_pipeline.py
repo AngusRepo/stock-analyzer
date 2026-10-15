@@ -50,6 +50,17 @@ def test_l3_seal_is_immutable_and_checksum_verified(f):
     with pytest.raises(ValueError,match='divergent'):m.seal_l3(state,client=s)
     r['checksum']='0'*64
     with pytest.raises(ValueError,match='seal_mismatch'):m.load_state(r,client=s)
+
+@pytest.mark.parametrize('status,expected', [('failed','failed'), ('error','failed'),
+    ('pre_l2_inputs_captured','ready'), ('awaiting_paired_l3_l4_release','waiting'), (None,'waiting')])
+def test_l3_handoff_preserves_seal_but_reports_input_readiness(f,status,expected):
+    s,state,_=f
+    if status:state['paired_nav_atomic_inputs']={'status':status}
+    receipt=m.seal_l3(state,client=s)
+    result=m.l3_handoff_result(state,receipt)
+    assert result['input_readiness']['atomic_inputs']==expected
+    assert result['l3_receipt']==m.read_seal(state['run_date'],state['producer_run_id'],client=s)
+    assert result['status']=='awaiting_premarket'
 def test_duplicate_dispatch_and_confirmed_failed_recovery(f):
     s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs()
     one=m.dispatch(r,c,jobs_client=j,client=s)

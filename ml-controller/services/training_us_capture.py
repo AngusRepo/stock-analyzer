@@ -19,11 +19,16 @@ def quote_series(body,symbol):
     if len(rows)<2:raise ValueError("training_us_quote_history_empty")
     return rows
 
-def write_us_quote_capture(*,run_dir,start,end,fetch=None):
+def write_us_quote_capture(*,run_dir,start,end,fetch=None,baseline=None):
     from urllib.parse import quote,urlencode
     from urllib.request import Request,urlopen
+    requested_start = date.fromisoformat(start)-timedelta(days=30)
+    if baseline is not None:
+        if baseline['end_date'] >= end:
+            raise ValueError('training_us_baseline_not_past')
+        requested_start = max(requested_start, date.fromisoformat(baseline['end_date'])-timedelta(days=30))
     def network(symbol):
-        params=urlencode({"period1":int(datetime.combine(date.fromisoformat(start)-timedelta(days=30),datetime.min.time(),timezone.utc).timestamp()),
+        params=urlencode({"period1":int(datetime.combine(requested_start,datetime.min.time(),timezone.utc).timestamp()),
             "period2":int(datetime.combine(date.fromisoformat(end)+timedelta(days=1),datetime.min.time(),timezone.utc).timestamp()),"interval":"1d"})
         req=Request("https://query1.finance.yahoo.com/v8/finance/chart/"+quote(symbol,safe="")+"?"+params,headers={"User-Agent":"Mozilla/5.0"})
         with urlopen(req,timeout=60) as response:payload=json.load(response)
@@ -33,11 +38,28 @@ def write_us_quote_capture(*,run_dir,start,end,fetch=None):
     sources={}
     for field,symbol in SYMBOLS.items():
         body=(fetch or network)(symbol);rows=quote_series(body,symbol)
+        if baseline is not None:
+            from services.daily_history_capture import unpack
+            prior = quote_series(json.loads(unpack(baseline['us_quotes'][field])),symbol)
+            if any(day >= requested_start.isoformat() and day <= baseline['end_date'] and day not in rows for day in prior):
+                raise ValueError('training_us_recent_window_gap:' + field)
+            if not set(prior) & set(rows):
+                raise ValueError('training_us_recent_window_no_overlap:' + field)
+            updates = root/'updates';updates.mkdir(exist_ok=True)
+            (updates/(field+'.json')).write_bytes(json.dumps(body,sort_keys=True,allow_nan=False).encode())
+            combined = {**prior, **rows}
+            days = sorted(d for d in combined if start <= d <= end or d < start and d >= (date.fromisoformat(start)-timedelta(days=30)).isoformat())
+            body = {'meta': {'symbol': symbol},
+                    'timestamp': [int(datetime.combine(date.fromisoformat(d),datetime.min.time(),timezone.utc).timestamp()) for d in days],
+                    'indicators': {'quote': [{'close': [combined[d] for d in days]}]}}
+            rows=quote_series(body,symbol)
         raw=json.dumps(body,sort_keys=True,allow_nan=False).encode();(root/(field+".json")).write_bytes(raw)
         sources[field]={"symbol":symbol,"sha256":hashlib.sha256(raw).hexdigest(),"rows":len(rows)}
     receipt={"schema_version":"training-us-quotes-v1","capture_id":Path(run_dir).name,"start":start,"end":end,"sources":sources,
         "availability":"US observation date strictly before TW business date; maximum seven calendar days stale",
-        "hy_policy":"optional unavailable branch; no historical release vintage is invented"}
+        "hy_policy":"optional unavailable branch; no historical release vintage is invented",
+        "download_start":requested_start.isoformat(),
+        "history_update_policy":"prior history plus refreshed 30-calendar-day overlap" if baseline else "full initial capture"}
     (root.parent/"training_us_quotes.json").write_text(json.dumps(receipt,sort_keys=True),encoding="utf8")
     return receipt
 

@@ -143,7 +143,7 @@ def current_capture(tmp_path, day, *, omit_session=False):
 
 def vendor_factory(day, *, missing=False, native_quarter_dates=False):
     class Vendor:
-        def __init__(self, root, *, roster):
+        def __init__(self, root, *, roster, bucket=None, baseline=None):
             self.root = root
             sessions = ['2026-10-08', '2026-10-12', '2026-10-13']
             if day == '2026-10-14': sessions.append(day)
@@ -312,6 +312,8 @@ def test_daily_cli_entry_builds_and_publishes_composition_before_ready_result(mo
     root, _ = current_capture(tmp_path, '2026-10-13')
     tool = _load_tool_module()
     monkeypatch.setattr(tool, 'materialize_specs', lambda **kwargs: ([], [], [], []))
+    from services import daily_history_capture
+    monkeypatch.setattr(daily_history_capture, 'load_daily_history', lambda *a, **k: {})
     monkeypatch.setattr(storage, 'Client', lambda: type('Client', (), {'bucket': lambda self, _: bucket})())
     monkeypatch.setattr(daily_vendor_capture, 'DailyVendorCapture', vendor_factory('2026-10-13'))
     monkeypatch.setattr(tool, 'upload_dir_to_gcs', lambda local_dir, **kwargs: upload(bucket, local_dir, kwargs['prefix']) or {'objects': len(bucket.files)})

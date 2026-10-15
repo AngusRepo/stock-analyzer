@@ -74,6 +74,8 @@ def verify_training_calendar(bucket, *, price_capture):
             or receipt.get("end") != manifest.get("end_date")
             or receipt.get("close_sha256") != manifest.get("checksums", {}).get("close")):
         raise ValueError("training_calendar_binding_mismatch")
+    from services.daily_history_capture import read_snapshot, unpack
+    snapshot = read_snapshot(bucket, root, manifest)
     sessions = {"TWSE": [], "TPEX": []}
     seen = set()
     for item in receipt.get("sources", []):
@@ -81,7 +83,8 @@ def verify_training_calendar(bucket, *, price_capture):
         if market not in sessions or (market, month) in seen: raise ValueError("training_calendar_source_duplicate")
         # Reconstruct the path; source data cannot redirect the reader elsewhere.
         date.fromisoformat(month + "-01")
-        data = bucket.blob(root + f"/official_calendar/{market}-{month}.json").download_as_bytes()
+        data = (unpack(snapshot['calendar'][market+'-'+month]) if snapshot is not None
+                else bucket.blob(root + f"/official_calendar/{market}-{month}.json").download_as_bytes())
         if hashlib.sha256(data).hexdigest() != item.get("sha256"): raise ValueError("training_calendar_source_changed")
         sessions[market].extend(official_month_sessions(json.loads(data), market, month))
         seen.add((market, month))

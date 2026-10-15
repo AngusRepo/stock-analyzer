@@ -1971,6 +1971,7 @@ def materialize_specs(
     source_end_date: str | None = None,
     training_capture_start_date: str | None = None,
     daily_refresh: bool = False,
+    daily_history: dict | None = None,
     require_official_market_summary: bool = False,
     generated_at: str | None = None,
     key_scope: dict[str, set[str]] | None = None,
@@ -2271,12 +2272,21 @@ def materialize_specs(
                 elif daily_refresh:
                     from services.training_price_venue_scope import seal_daily_scope
                     seal_daily_scope(run_dir)
-                write_official_training_calendar(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
-                write_training_breadth_capture(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
+                if daily_history is not None:
+                    from services.daily_history_capture import update_official_history
+                    updated_history = update_official_history(run_dir=run_dir, baseline=daily_history,
+                        fetch=official_json_get, pause=time.sleep)
+                else:
+                    write_official_training_calendar(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
+                    write_training_breadth_capture(run_dir=run_dir, allow_historical_fetch=not daily_refresh)
                 if (run_dir/"raw/daily_price_full_vintage/training_calendar.json").exists():
                     from services.training_us_capture import write_us_quote_capture
                     capture=json.loads((run_dir/"raw/daily_price_full_vintage/training_calendar.json").read_text(encoding="utf8"))
-                    write_us_quote_capture(run_dir=run_dir,start=capture["start"],end=capture["end"])
+                    write_us_quote_capture(run_dir=run_dir,start=capture["start"],end=capture["end"],
+                                           **({'baseline':daily_history} if daily_history is not None else {}))
+                    if daily_history is not None:
+                        from services.daily_history_capture import seal_daily_history
+                        seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
             if spec.lane in TRAINING_AUX_FIELDS:
@@ -3846,6 +3856,16 @@ def main() -> int:
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
     effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())
+    daily_history = None
+    if args.daily_refresh and not args.sealed_raw_root:
+        if not args.gcs_bucket or not source_end_date:
+            raise ValueError('daily_history_requires_bucket_and_date')
+        from google.cloud import storage
+        from services.daily_history_capture import load_daily_history
+        bootstrap = os.environ.get('FINLAB_DAILY_HISTORY_BOOTSTRAP_REF')
+        daily_history = load_daily_history(storage.Client().bucket(args.gcs_bucket),
+            run_date=source_end_date,capture_prefix=args.gcs_prefix,
+            bootstrap_ref=json.loads(bootstrap) if bootstrap else None)
     dataset_summaries, diff_reports, source_key_reports, source_key_blockers = materialize_specs(
         years=args.years,
         run_dir=run_dir,
@@ -3853,6 +3873,7 @@ def main() -> int:
         source_start_date=source_start_date,
         training_capture_start_date=args.training_capture_start_date or None,
         daily_refresh=args.daily_refresh,
+        daily_history=daily_history,
         source_end_date=source_end_date,
         require_official_market_summary=args.require_official_market_summary,
         generated_at=generated_at,

@@ -1,6 +1,8 @@
 """Exercise the real pinned SDK and raw writer with offline wire payloads."""
 import importlib
 import io
+import hashlib
+import json
 from collections import OrderedDict
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -68,6 +70,46 @@ def test_daily_native_capture_keeps_wire_bytes_aliases_and_date_owners(monkeypat
             assert frame['2330'].to_list() == [0.]
     assert data._storage is previous_storage and get_module._finalize is previous_finalize
     assert capture.receipt['formal_admission_passed'] is False
+
+    # Next business run asks the vendor for updates, then reuses exact sealed
+    # bytes. A genuine update still uses the real SDK's original raw path.
+    objects = {'prior/inference-native/' + str(path.relative_to(capture.root)).replace('\\', '/'):
+               path.read_bytes() for path in capture.root.rglob('*') if path.is_file()}
+    raw = objects['prior/inference-native/capture.json']
+    baseline = {'input_manifests': [{'path':'prior/inference-native/capture.json',
+                                    'sha256':hashlib.sha256(raw).hexdigest()}]}
+    bucket = SimpleNamespace(blob=lambda path: SimpleNamespace(download_as_bytes=lambda: objects[path]))
+    checks = []
+    def unchanged(items):
+        checks.append(items)
+        return {key: auth.FetchMetadata(expiry=datetime(2030, 1, 1, tzinfo=timezone.utc)) for key in items}
+    monkeypatch.setattr(auth, 'fetch_metadata_batch', unchanged)
+    calls.clear()
+    next_capture = module.DailyVendorCapture(tmp_path/'next', roster=['2330'],bucket=bucket,baseline=baseline)
+    assert calls == []
+    assert list(checks[0]) == [dataset+'.recent' for dataset in module.DATASETS.values()]
+    assert all(stamp.tzinfo is not None for stamp in checks[0].values())
+    for field in module.DATASETS:
+        assert next_capture.receipt['datasets'][field]['sha256'] == capture.receipt['datasets'][field]['sha256']
+        assert next_capture.receipt['datasets'][field]['source_status'] == 'vendor_confirmed_unchanged'
+    def changed(items):
+        result = unchanged(items)
+        result[module.DATASETS['holding']+'.recent'].url = 'changed-inventory'
+        result[module.DATASETS['revenue']+'.recent'].url = 'changed-revenue'
+        return result
+    monkeypatch.setattr(auth, 'fetch_metadata_batch', changed)
+    module.DailyVendorCapture(tmp_path/'changed', roster=['2330'],bucket=bucket,baseline=baseline)
+    assert calls == [module.DATASETS['revenue'], module.DATASETS['holding']]
+
+    calls.clear()
+    def denied(items):
+        result = unchanged(items)
+        result[next(iter(result))].error = 'permission denied'
+        return result
+    monkeypatch.setattr(auth, 'fetch_metadata_batch', denied)
+    with pytest.raises(ValueError, match='update_status_unavailable'):
+        module.DailyVendorCapture(tmp_path/'denied', roster=['2330'],bucket=bucket,baseline=baseline)
+    assert not calls
 
 
 def test_daily_quota_preflight_blocks_before_any_capture(monkeypatch, tmp_path):

@@ -171,7 +171,9 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
         raise ValueError('daily_composition_current_price_session_missing')
     # Use the exact captured columns as identities, including vendor-null symbols.
     roster = [c for c in pl.scan_parquet(files[close_ref['path']]).collect_schema().names() if c != 'date']
-    vendor = (vendor_factory or DailyVendorCapture)(run_dir / 'inference-native', roster=roster)
+    vendor = (vendor_factory(run_dir / 'inference-native', roster=roster) if vendor_factory
+              else DailyVendorCapture(run_dir / 'inference-native', roster=roster,
+                                      bucket=bucket, baseline=old))
     raw_receipt_ref = original('inference-native/capture.json')
     native_receipt = json.loads(files[raw_receipt_ref['path']].read_bytes())
 

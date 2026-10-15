@@ -20,11 +20,18 @@ def read_market_history(bucket, *,price_capture,us_component):
     from services.training_session_calendar import verify_training_calendar,official_month_sessions
     calendar=verify_training_calendar(bucket,price_capture=price_capture)
     root=price_capture["capture_manifest_path"].rsplit("/",1)[0]
+    from services.daily_history_capture import read_snapshot, unpack
+    manifest_raw=bucket.blob(price_capture['capture_manifest_path']).download_as_bytes()
+    if hashlib.sha256(manifest_raw).hexdigest()!=price_capture['capture_manifest_sha256']:
+        raise ValueError('training_calendar_capture_changed')
+    manifest=json.loads(manifest_raw)
+    snapshot=read_snapshot(bucket,root,manifest)
     calendar_receipt=json.loads(bucket.blob(root+"/training_calendar.json").download_as_bytes())
     closes={}
     for item in calendar_receipt["sources"]:
         if item["market"]!="TWSE":continue
-        raw=bucket.blob(root+"/official_calendar/TWSE-"+item["month"]+".json").download_as_bytes()
+        raw=(unpack(snapshot['calendar']['TWSE-'+item['month']]) if snapshot is not None
+             else bucket.blob(root+"/official_calendar/TWSE-"+item["month"]+".json").download_as_bytes())
         if hashlib.sha256(raw).hexdigest()!=item["sha256"]:raise ValueError("training_global_index_checksum_mismatch")
         body=json.loads(raw);official_month_sessions(body,"TWSE",item["month"])
         for row in body["data"]:
@@ -36,7 +43,9 @@ def read_market_history(bucket, *,price_capture,us_component):
         raise ValueError("training_global_breadth_identity_mismatch")
     counts={}
     for item in breadth.get("sources",[]):
-        day=item["date"];data=bucket.blob(root+"/official_breadth/"+day+".json").download_as_bytes()
+        day=item["date"]
+        data=(unpack(snapshot['breadth'][day]) if snapshot is not None
+              else bucket.blob(root+"/official_breadth/"+day+".json").download_as_bytes())
         if hashlib.sha256(data).hexdigest()!=item["sha256"]:raise ValueError("training_global_breadth_checksum_mismatch")
         if day in counts:raise ValueError("training_global_breadth_duplicate")
         counts[day]=parse_breadth(json.loads(data),day)

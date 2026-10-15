@@ -32,6 +32,18 @@ def test_failed_verification_is_never_cached_and_cleanup_on_error():
     assert not os.path.exists(directory)
 
 
+def test_oversize_projection_does_not_evict_verified_small_entry():
+    data=os.urandom(20000)
+    calls=[]
+    with reuse_verified_cold_reads(max_bytes=2000, entry_bytes=1000):
+        assert cached_verified_read('small',lambda: calls.append('small') or {'v':1})=={'v':1}
+        cached_verified_read('large',lambda:data)
+        assert cached_verified_read('small',lambda: calls.append('reread') or {'v':1})=={'v':1}
+        assert calls==['small']
+        assert sum(os.path.getsize(os.path.join(_scope.get().directory,p))
+                   for p in os.listdir(_scope.get().directory)) <= 2000
+
+
 def test_oversize_does_not_drop_evidence_and_storage_is_bounded():
     data = os.urandom(20000)
     reads = []

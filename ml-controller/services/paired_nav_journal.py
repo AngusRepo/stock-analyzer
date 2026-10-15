@@ -118,7 +118,7 @@ _INVENTORY_PREFIXES = frozenset({'schema_version', 'signal_date', 'snapshot_kind
      'content.recommendation_context.inputs.screener_recs'})
 
 
-def read_inventory_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
+def read_inventory_snapshot(query: Query, snapshot_id: str, *, owner: str | None = None) -> dict[str, Any]:
     """Verified selection/route census; never an allocator/execution input.
 
     Validate the complete cold checksum before projecting. Hot legacy snapshots
@@ -131,7 +131,11 @@ def read_inventory_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
     if manifest['snapshot_kind'] != 'allocation_context':
         return read_snapshot(query, snapshot_id)
     from services.paired_nav_cold import load
-    payload = load(query, manifest, prefixes=_INVENTORY_PREFIXES)
+    # Route inventory never consumes Atomic's full prepared input/hash. Keep
+    # that heavy validation for the Atomic owner, which still reads it intact.
+    prefixes = (_INVENTORY_PREFIXES - {'content.atomic_recommendation_inputs'}
+                if owner == 'l15_route' else _INVENTORY_PREFIXES)
+    payload = load(query, manifest, prefixes=prefixes)
     if payload is None:
         return read_snapshot(query, snapshot_id)
     if any(payload.get(key) != manifest[key] for key in ('signal_date', 'source_run_id', 'snapshot_kind')):

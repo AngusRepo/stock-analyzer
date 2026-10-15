@@ -114,13 +114,23 @@ class CloudRunJobsClient:
                 return "failed"
         return "running"
 
-    def get_active_execution(self) -> JobExecution | None:
+    def get_active_execution(self, *, deadline: float | None = None) -> JobExecution | None:
         """Return the newest in-flight execution for this Job, if any."""
         if not self._parent:
             return None
 
-        request = run_v2.ListExecutionsRequest(parent=self._parent, page_size=10)
-        for execution in self._get_executions_client().list_executions(request=request):
+        request = run_v2.ListExecutionsRequest(parent=self._parent, page_size=100)
+        options = {}
+        if deadline is not None:
+            import time
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('cloud_run_active_lookup_deadline')
+            options = {'timeout': min(8.0, remaining), 'retry': None}
+        pager = self._get_executions_client().list_executions(request=request, **options)
+        for execution in pager:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('cloud_run_active_lookup_deadline')
             if self._execution_completed(execution):
                 continue
             execution_name = getattr(execution, "name", "") or ""
@@ -136,6 +146,7 @@ class CloudRunJobsClient:
         *,
         reject_if_running: bool = True,
         expected_source_sha: str | None = None,
+        deadline_seconds: float | None = None,
     ) -> JobExecution:
         """Start a new execution of the configured Job.
 
@@ -155,11 +166,16 @@ class CloudRunJobsClient:
                 "Cloud Run Job config missing. Set GCP_PROJECT_ID, GCP_REGION, and a job name."
             )
 
+        import time
+        deadline = time.monotonic() + deadline_seconds if deadline_seconds is not None else None
+        if deadline_seconds is not None and deadline_seconds <= 0:
+            raise ValueError('cloud_run_dispatch_deadline_invalid')
         if expected_source_sha is not None:
             self.verify_source_alignment(expected_source_sha)
 
         if reject_if_running:
-            active = self.get_active_execution()
+            active = (self.get_active_execution(deadline=deadline) if deadline is not None
+                      else self.get_active_execution())
             if active is not None:
                 raise JobAlreadyRunningError(active)
 
@@ -175,7 +191,13 @@ class CloudRunJobsClient:
             )
 
         request = run_v2.RunJobRequest(name=self._parent, overrides=overrides)
-        operation = client.run_job(request=request)
+        options = {}
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('cloud_run_dispatch_deadline_before_rpc')
+            options = {'timeout': remaining, 'retry': None}
+        operation = client.run_job(request=request, **options)
 
         # operation.metadata.name is populated immediately; the long-running
         # operation itself tracks completion. We don't wait — the Job callback

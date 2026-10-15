@@ -6,6 +6,9 @@ import hashlib
 import json
 import sqlite3
 import tracemalloc
+import math
+import random
+import struct
 
 import pytest
 
@@ -38,6 +41,20 @@ def env(monkeypatch):
 def freeze(db, content=None, kind='allocation_context', run='fixture'):
     return freeze_snapshot(signal_date='2026-09-09', source_run_id=run, snapshot_kind=kind,
         content=content or {'value': 1}, query=db.query, writer=db.writer, now=NOW)
+
+
+def test_native_numeric_parser_keeps_exact_float_and_large_integer_semantics(tmp_path):
+    rng=random.Random(42)
+    values=[struct.unpack('d',rng.randbytes(8))[0] for _ in range(2000)]
+    values=[x for x in values if math.isfinite(x)]
+    for suffix, extra in [('native',[0,-0.0,2**63-1,1e-320]),
+                          ('fallback',[2**100,10**100,-2**100])]:
+        original={'content':{'numbers':values+extra},'unicode':'台股 α'}
+        path=tmp_path/(suffix+'.gz')
+        path.write_bytes(gzip.compress(json.dumps(original,ensure_ascii=False).encode()))
+        decoded=cold.parse_file(path)
+        assert digest(decoded)==digest(original)
+        assert cold.parse_file(path,prefixes={'content.numbers'})=={'content':original['content']}
 
 
 def test_cold_write_roundtrip_no_hot_payload_and_idempotent_clock(env):
@@ -357,6 +374,18 @@ def test_stream_decode_matches_json_numbers_and_shared_keys(tmp_path):
     assert type(result) is dict and type(result['rows'][0]) is dict
     first_key = next(iter(result['rows'][0]))
     assert next(iter(result['rows'][1])) is first_key
+
+
+def test_route_inventory_excludes_atomic_history_but_atomic_reader_preserves_it(env):
+    from services.paired_nav_journal import read_inventory_snapshot
+    db,_=env
+    content={'atomic_recommendation_inputs':{'definitions':{'d':{}},'history':list(range(10000))},
+             'recommendation_context':{'inputs':{'screener_recs':[{'symbol':'2330'}]}}}
+    manifest=freeze(db,content)
+    route=read_inventory_snapshot(db.query,manifest['snapshot_id'],owner='l15_route')
+    assert 'atomic_recommendation_inputs' not in route['payload']['content']
+    atomic=read_inventory_snapshot(db.query,manifest['snapshot_id'],owner='atomic_strategy')
+    assert atomic['payload']['content']['atomic_recommendation_inputs']==content['atomic_recommendation_inputs']
 
 
 def test_projection_shares_verified_bytes_but_not_values_or_mutable_locator(env,monkeypatch):

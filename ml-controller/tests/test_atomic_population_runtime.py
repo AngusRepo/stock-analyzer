@@ -66,3 +66,34 @@ def test_timeout_retry_is_bounded(tmp_path, monkeypatch):
     with pytest.raises(runtime.subprocess.TimeoutExpired):
         runtime.read_population({})
     assert len(calls) == 2
+
+
+def test_retry_shares_remaining_wall_budget_and_reserves_persistence(tmp_path,monkeypatch):
+    runner=tmp_path/'runner.cjs';runner.write_text('// fixture')
+    monkeypatch.setenv('ATOMIC_POPULATION_RUNNER',str(runner))
+    clock=[1000.0]
+    monkeypatch.setattr(runtime,'time',SimpleNamespace(monotonic=lambda:clock[0]))
+    timeouts=[]
+    def run(command,**kwargs):
+        timeouts.append(kwargs['timeout'])
+        if len(timeouts)==1:
+            clock[0]+=1800
+            raise runtime.subprocess.TimeoutExpired(command,1800)
+        kwargs['stdout'].write(b'{"schema_version":"atomic-canonical-population-v1","replacements":[]}')
+        return SimpleNamespace(returncode=0,stderr=b'')
+    monkeypatch.setattr(runtime.subprocess,'run',run)
+    runtime.read_population({})
+    assert timeouts==[1800,1740]
+
+
+def test_restore_cannot_consume_node_budget_then_reset_watchdog(tmp_path,monkeypatch):
+    from services import atomic_replay_checkpoints as checkpoints
+    runner=tmp_path/'runner.cjs';runner.write_text('// fixture')
+    monkeypatch.setenv('ATOMIC_POPULATION_RUNNER',str(runner))
+    clock=[1000.0]
+    monkeypatch.setattr(runtime,'time',SimpleNamespace(monotonic=lambda:clock[0]))
+    def enter(store):clock[0]+=3541;return store
+    monkeypatch.setattr(checkpoints.AtomicReplayCheckpoints,'__enter__',enter)
+    monkeypatch.setattr(runtime.subprocess,'run',lambda *a,**kw:pytest.fail('no remaining child budget'))
+    with pytest.raises(checkpoints.AtomicReplayDeadlineExceeded,match='before_node'):
+        runtime.read_population({})

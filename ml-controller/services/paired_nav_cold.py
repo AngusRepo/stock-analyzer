@@ -112,44 +112,10 @@ def verified_file(store, key, checksum, byte_count):
 
 
 def parse_file(path, *, prefixes=None):
-    """Decode once, sharing keys and converting numbers before retaining them.
-
-    ijson's root builder otherwise retains Decimal objects and a new copy of
-    every repeated key across all history rows until the entire object exists.
-    Optional prefixes are explicit inventory projections of verified raw bytes.
-    """
-    import ijson
-    from decimal import Decimal
-    keys = {}
-    builder = ijson.ObjectBuilder()
-    selected, depth = None, 0
-    result = {}
-    def assign(prefix, value):
-        parent = result
-        parts = prefix.split('.')
-        for part in parts[:-1]:
-            parent = parent.setdefault(part, {})
-        parent[parts[-1]] = value
+    """Decode verified bytes with shared keys and exact numeric fallback."""
+    from services.streaming_json_reader import load
     with gzip.open(path, 'rb') as source:
-        events = ijson.parse(source, use_float=False) if prefixes is not None else (
-            ('', event, value) for event, value in ijson.basic_parse(source, use_float=False))
-        for prefix, event, value in events:
-            if prefixes is not None and selected is None:
-                if prefix not in prefixes or event in ('map_key', 'end_map', 'end_array'):
-                    continue
-                selected, builder, depth = prefix, ijson.ObjectBuilder(), 0
-            if event == 'map_key':
-                value = keys.setdefault(value, value)
-            elif isinstance(value, Decimal):
-                value = float(value)
-            builder.event(event, value)
-            if prefixes is not None:
-                depth += int(event in ('start_map', 'start_array')) - int(event in ('end_map', 'end_array'))
-                if depth == 0:
-                    assign(selected, builder.value)
-                    selected = None
-    return result if prefixes is not None else builder.value
-
+        return load(source, prefixes=prefixes)
 
 
 def migration_payload(path, kind):

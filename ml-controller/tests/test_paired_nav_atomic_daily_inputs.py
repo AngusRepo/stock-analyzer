@@ -263,12 +263,17 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     async def load(state):
         return {key: deepcopy(value) for key, value in inputs.items() if key != 'run_date'}
     async def no_op(state): return {}
+    async def provenance(**kwargs): return {'status': 'verified'}
+    async def serving_context(state):
+        state['pipeline_modal_serving_context'] = {'expected_source_sha': 'a' * 40}
+    from services import pipeline_runtime_preflight
+    monkeypatch.setattr(pipeline_runtime_preflight, 'verify_pipeline_runtime', provenance)
     # Only model/policy/network primitives are replaced. Execute the real entry,
     # raw capture, stock/slate builder and state envelope writer/reader.
     monkeypatch.setattr(graph, 'node_load_inputs', load)
     monkeypatch.setattr(graph, 'node_load_market_env', no_op)
     monkeypatch.setattr(graph, 'node_l2_timesfm_enrich', no_op)
-    monkeypatch.setattr(graph, '_attach_pipeline_modal_serving_context', no_op)
+    monkeypatch.setattr(graph, '_attach_pipeline_modal_serving_context', serving_context)
     async def request(state, *, state_gcs_uri):
         assert state['paired_nav_atomic_pre_l2']['status'] == 'pre_l2_payloads_built'
         return {'payloads': deepcopy(state['payloads']), 'state_gcs_uri': state_gcs_uri}

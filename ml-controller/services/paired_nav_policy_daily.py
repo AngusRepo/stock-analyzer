@@ -52,7 +52,7 @@ def frozen_policy_inventory(*, owner, business_date, query, now):
     from services.paired_nav_read_cache import policy_definitions
     def read_definitions(query, snapshot_id):
         def verified():
-            saved = read_inventory_snapshot(query, snapshot_id)
+            saved = read_inventory_snapshot(query, snapshot_id, owner=owner)
             return {'manifest': saved['manifest'], 'definitions': _definitions(owner, saved)}
         return policy_definitions(query, snapshot_id, owner, verified)
     items = {}

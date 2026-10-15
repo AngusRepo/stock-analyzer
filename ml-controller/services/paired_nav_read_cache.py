@@ -46,6 +46,20 @@ class _LimitedWriter:
         self.output.flush()
 
 
+class _CountingWriter:
+    def __init__(self, limit):
+        self.size, self.limit = 0, limit
+
+    def write(self, data):
+        if self.size + len(data) > self.limit:
+            raise _BudgetExceeded()
+        self.size += len(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+
 class _Cache:
     def __init__(self, directory, max_bytes, entry_bytes):
         self.directory, self.max_bytes, self.entry_bytes = directory, max_bytes, entry_bytes
@@ -84,8 +98,17 @@ class _Cache:
         return path
 
     def save(self, key, value):
-        # Reserve enough space before writing, including the incomplete entry.
-        while self.entries and self.bytes + self.entry_bytes > self.max_bytes:
+        # An oversized attempted projection must not evict all useful entries.
+        # Count compressed bytes without retaining a document-sized buffer;
+        # reserve only the successfully measured size before any tmpfs write.
+        counter = _CountingWriter(self.entry_bytes)
+        try:
+            with gzip.GzipFile(filename='', fileobj=counter, mode='wb', compresslevel=1, mtime=0) as output:
+                pickle.dump(value, output, protocol=pickle.HIGHEST_PROTOCOL)
+        except _BudgetExceeded:
+            cache_event('projection_oversize')
+            return
+        while self.entries and self.bytes + counter.size > self.max_bytes:
             _, (path, size) = self.entries.popitem(last=False)
             os.unlink(path)
             self.bytes -= size
@@ -93,7 +116,7 @@ class _Cache:
         path = os.path.join(self.directory, str(self.serial))
         try:
             with open(path, 'wb') as raw:
-                with gzip.GzipFile(fileobj=_LimitedWriter(raw, self.entry_bytes), mode='wb', compresslevel=1) as output:
+                with gzip.GzipFile(filename='', fileobj=_LimitedWriter(raw, counter.size), mode='wb', compresslevel=1, mtime=0) as output:
                     pickle.dump(value, output, protocol=pickle.HIGHEST_PROTOCOL)
             size = os.path.getsize(path)
             self.entries[key] = (path, size)

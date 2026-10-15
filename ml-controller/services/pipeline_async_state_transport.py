@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+from io import BytesIO
 from typing import Any
 
 from services.pipeline_json_transport import compress_json
@@ -68,10 +69,19 @@ def encode_pipeline_state_envelope(payload: dict[str, Any]) -> bytes:
 
 
 def decode_pipeline_state_envelope(raw: bytes) -> dict[str, Any]:
-    # Decode before parsing: json.loads(bytes) otherwise keeps decompressed
-    # bytes alive alongside its Unicode copy and the entire restored pool.
-    decoded = (gzip.decompress(raw) if raw.startswith(b"\x1f\x8b") else raw).decode("utf-8-sig")
-    payload = json.loads(decoded)
+    from services.streaming_json_reader import load
+    from ijson.common import JSONError
+    legacy=False
+    try:
+        with (gzip.GzipFile(fileobj=BytesIO(raw)) if raw.startswith(b"\x1f\x8b") else BytesIO(raw)) as source:
+            payload=load(source)
+    except JSONError:
+        legacy=True
+    if legacy:
+        # Legacy envelopes accepted JSON NaN/Infinity. Preserve that contract;
+        # ordinary full states avoid the document-sized raw + Unicode copies.
+        decoded=(gzip.decompress(raw) if raw.startswith(b"\x1f\x8b") else raw).decode('utf-8-sig')
+        payload=json.loads(decoded)
     if payload.get("schema_version") not in {STATE_SCHEMA_V1, STATE_SCHEMA_V2}:
         raise ValueError("pipeline_async_state_schema_invalid")
     state = payload.get("state")

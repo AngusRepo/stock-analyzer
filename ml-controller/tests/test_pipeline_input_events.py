@@ -66,6 +66,82 @@ def snapshot_stage(store):
     return path, stage
 
 
+def test_pre_l2_checkpoint_preserves_raw_observations_and_resumes_before_l2(store):
+    state={'producer_run_id':'run-1','run_date':'2026-10-02',
+           'active_stocks':[{'id':1,'symbol':'2330'}],
+           'pipeline_modal_serving_context':{'expected_source_sha':'a'*40},
+           'payload_source_observations':{'stocks':{'2330':{'prices':[{'close':10.25}]}}}}
+    uri=events.seal_pre_l2_checkpoint(state)
+    with events.input_context(state,uri,resume_phase='pre_l2'):
+        _,path,stage=events.register('snapshot',{'business_date':'2026-10-02','required_history':1280})
+    events.record_snapshot_result(path,status='success',snapshot={'business_date':'2026-10-02','checksum':'abc'})
+    jobs=Jobs()
+    events.dispatch_ready(path,jobs_client=jobs,store=store)
+    restored=events.resume_state(path,run_id='run-1',run_date='2026-10-02')
+    assert restored['payload_source_observations']==state['payload_source_observations']
+    assert restored['_pipeline_input_resume_phase']=='pre_l2'
+    assert 'payloads' not in restored  # Not falsely admitted as an L2/L3 seal.
+    assert stage['resume_phase']=='pre_l2'
+
+
+def test_pre_l2_callback_keeps_consumption_fence_and_never_repeats_atomic(store,monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    state={'producer_run_id':'run-1','run_date':'2026-10-02',
+           'active_stocks':[{'id':1,'symbol':'2330'}],
+           'pipeline_modal_serving_context':{'expected_source_sha':'a'*40},
+           'payload_source_observations':{'stocks':{'2330':{}}}}
+    uri=events.seal_pre_l2_checkpoint(state)
+    with events.input_context(state,uri,resume_phase='pre_l2'):
+        _,path,_=events.register('snapshot',{'business_date':'2026-10-02','required_history':1280})
+    events.record_snapshot_result(path,status='success',snapshot={'business_date':'2026-10-02','checksum':'abc'})
+    events.dispatch_ready(path,jobs_client=Jobs(),store=store)
+    calls=[]
+    async def continuation(saved):
+        calls.append(saved)
+        assert saved['payload_source_observations']==state['payload_source_observations']
+        return {'status':'deferred','deferred_reason':'modal_prediction_callback'}
+    monkeypatch.setattr(graph,'_continue_pipeline_before_l2',continuation)
+    async def forbidden(*args,**kwargs):pytest.fail('repeated prior node or wrong resume phase')
+    monkeypatch.setattr(graph,'_continue_pipeline_after_l2',forbidden)
+    for _ in range(2):
+        result=asyncio.run(graph.run_pipeline_v2_from_input_event(stage_path=path,run_date='2026-10-02',producer_run_id='run-1'))
+        assert result['status']=='deferred'
+    assert len(calls)==1
+
+
+def test_pre_l2_helper_defers_without_polling_or_running_l2(store,monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    import services.pipeline_runtime_preflight as preflight
+    state={'producer_run_id':'run-1','run_date':'2026-10-02','metrics':{},
+           'active_stocks':[{'id':1,'symbol':'2330'}],
+           'pipeline_modal_serving_context':{'expected_source_sha':'a'*40},
+           'payload_source_observations':{'stocks':{'2330':{}}}}
+    async def verified(**kw):return {'status':'verified'}
+    monkeypatch.setattr(preflight,'verify_pipeline_runtime',verified)
+    monkeypatch.setattr(graph,'assert_canonical_window_open',lambda day:None)
+    async def nodes(saved,steps):
+        assert [n.__name__ for n in steps]==['node_build_payloads']
+        assert events.current_context()['resume_phase']=='pre_l2'
+        raise events.InputDeferred('fixture-stage','snapshot')
+    monkeypatch.setattr(graph,'_run_pipeline_nodes',nodes)
+    result=asyncio.run(graph._continue_pipeline_before_l2(state))
+    assert result['metrics']['async_input_dependency']['cloud_compute_stopped'] is True
+    assert result['deferred_reason']=='input_snapshot'
+
+
+def test_real_node_runner_keeps_expected_input_wait_blocked(monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    from services import pipeline_progress as progress
+    async def report(*args,**kwargs):pass
+    monkeypatch.setattr(progress,'report',report)
+    monkeypatch.setattr(progress,'_completed',[])
+    async def node_build_payloads(state):
+        raise events.InputDeferred('fixture-stage','snapshot')
+    with pytest.raises(events.InputDeferred):
+        asyncio.run(graph._run_pipeline_nodes({},[node_build_payloads]))
+    assert progress._completed[-1]['status']=='blocked'
+
+
 def test_snapshot_dispatch_is_nonblocking_and_join_does_not_poll(monkeypatch, store):
     from services import cloud_run_jobs_client as cloud
     calls = []

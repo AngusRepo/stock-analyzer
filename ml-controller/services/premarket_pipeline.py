@@ -153,6 +153,17 @@ def dispatch(receipt,context,*,jobs_client,client=None):
     b=bucket(client);p=prefix(receipt['run_date'],receipt['run_id'])
     body={'receipt':receipt,'context':context};raw=json_bytes(body)
     immutable(b.blob(p+'/morning-input.json'),raw)
+    try:
+        terminal=json.loads(b.blob(p+'/nonretryable-inputs.json').download_as_bytes())
+    except NotFound:
+        terminal=None
+    if terminal is not None:
+        expected={'schema_version':'premarket-nonretryable-inputs-v1',
+                  'run_id':receipt['run_id'],'run_date':receipt['run_date'],
+                  'l3_checksum':receipt['checksum'],'context_checksum':context['checksum']}
+        if any(terminal.get(k)!=v for k,v in expected.items()):
+            raise ValueError('premarket_nonretryable_receipt_identity_mismatch')
+        raise ValueError('premarket_nonretryable_frozen_atomic_inputs_requires_explicit_recovery')
     claim=b.blob(p+'/dispatch.json')
     identity={'input_checksum':hashlib.sha256(raw).hexdigest(),'run_id':receipt['run_id'],'run_date':receipt['run_date']}
     try:claim.upload_from_string(json_bytes({**identity,'status':'dispatching'}),if_generation_match=0)
@@ -186,6 +197,24 @@ def dispatch(receipt,context,*,jobs_client,client=None):
     claim.upload_from_string(json_bytes(result),if_generation_match=claim.generation)
     return result
 
+
+def record_nonretryable_inputs(state, result, *, client=None):
+    """A sealed missing Atomic source cannot improve by replaying the same state."""
+    atomic=state.get('paired_nav_atomic_inputs') or {}
+    if (result.get('status') != 'error' or atomic.get('status') not in ('failed','error')
+            or atomic.get('reason') != 'paired_nav_source_or_capture_failed'
+            or not any(str(e).startswith('paired_nav:atomic_') for e in result.get('critical_errors',[]))):
+        return
+    receipt=read_seal(state['run_date'],state['producer_run_id'],client=client)
+    context=state.get('premarket_context') or {}
+    if not receipt or not context.get('checksum'):
+        raise ValueError('premarket_nonretryable_receipt_scope_missing')
+    value={'schema_version':'premarket-nonretryable-inputs-v1','run_id':receipt['run_id'],
+           'run_date':receipt['run_date'],'l3_checksum':receipt['checksum'],
+           'context_checksum':context['checksum'],'reason':'frozen_atomic_inputs_failed'}
+    b=bucket(client)
+    immutable(b.blob(prefix(receipt['run_date'],receipt['run_id'])+'/nonretryable-inputs.json'),json_bytes(value))
+
 from services.paired_nav_read_cache import verified_reads_async
 
 @verified_reads_async
@@ -200,22 +229,62 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
         validate_context(receipt,context,now=captured+timedelta(seconds=1))
     else:
         validate_context(receipt,context)
-    state=load_state(receipt,client=client)
-    baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
-    delta=build_information_delta(baseline=baseline,current_records=source_records(context['us'],context['news'],captured_at=context['cutoff']),cutoff=context['cutoff'],
-        trade_date=context['trade_date'],required_sources=('us-leading','news','taifex-night'),
-        max_age_seconds={'us-leading':96*3600,'news':24*3600,'taifex-night':96*3600})
-    state['premarket_information']=delta
-    state['premarket_context']=context
-    state.setdefault('metrics',{})['premarket_information']={k:v for k,v in delta.items() if k!='changes'}
+    if receipt != read_seal(receipt['run_date'],receipt['run_id'],client=client):
+        raise ValueError('premarket_seal_mismatch')
+    # A full phase checkpoint already includes every preceding phase. Restore
+    # only the latest contiguous one; do not decode all prior large snapshots.
     p=prefix(receipt['run_date'],receipt['run_id'])
+    completed = 0
+    gap = False
+    for node in nodes:
+        present = b.blob(p+'/phases/'+node.__name__+'.json.gz').exists()
+        if present and gap:
+            raise ValueError('premarket_phase_checkpoint_gap')
+        if present:
+            completed += 1
+        else:
+            gap = True
+    if completed:
+        phase_key = p+'/phases/'+nodes[completed-1].__name__+'.json.gz'
+        state=decode_pipeline_state_envelope(b.blob(phase_key).download_as_bytes())['state']
+        if (state.get('run_date') != receipt['run_date']
+                or state.get('producer_run_id') != receipt['run_id']
+                or (state.get('premarket_context') or {}).get('checksum') != context.get('checksum')):
+            raise ValueError('premarket_phase_checkpoint_identity_mismatch')
+        source_hash=digest({'predictions':state['predictions'],
+            'payload_identity':build_pipeline_payload_identity(state['payloads']),
+            'baseline':state['premarket_baseline'],'modal_bundle_checksum':state.get('modal_bundle_checksum')})
+        if source_hash != receipt['source_hash'] and (
+                any(n.__name__=='node_recommend' for n in nodes[:completed])
+                or (postwrite_only and b.blob(p+'/phases/node_recommend.json.gz').exists())):
+            # Recommendation legitimately adds these L4-owned fields in place.
+            # Strip only those additions from the comparison, not the restored
+            # state; every original L3 field must still match its sealed hash.
+            downstream={'alpha_context','core_family_evidence','core_family_vote','alpha_allocation'}
+            original_predictions={symbol:{k:v for k,v in row.items() if k not in downstream}
+                                  for symbol,row in state['predictions'].items()}
+            source_hash=digest({'predictions':original_predictions,
+                'payload_identity':build_pipeline_payload_identity(state['payloads']),
+                'baseline':state['premarket_baseline'],'modal_bundle_checksum':state.get('modal_bundle_checksum')})
+        if source_hash != receipt['source_hash']:
+            raise ValueError('premarket_phase_checkpoint_source_changed')
+    else:
+        state=load_state(receipt,client=client)
+    if not completed:
+        baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
+        delta=build_information_delta(baseline=baseline,current_records=source_records(context['us'],context['news'],captured_at=context['cutoff']),cutoff=context['cutoff'],
+            trade_date=context['trade_date'],required_sources=('us-leading','news','taifex-night'),
+            max_age_seconds={'us-leading':96*3600,'news':24*3600,'taifex-night':96*3600})
+        state['premarket_information']=delta
+        state['premarket_context']=context
+        state.setdefault('metrics',{})['premarket_information']={k:v for k,v in delta.items() if k!='changes'}
     if postwrite_only:
         if any(node.__name__ not in ('node_compute_sector_flow','node_compute_pit_residual_shadow') for node in nodes):
             raise ValueError('premarket_postwrite_phase_invalid')
         for required in ('node_paired_nav_setup','node_export_dataset_snapshot'):
             if not b.blob(p+'/phases/'+required+'.json.gz').exists():
                 raise ValueError('premarket_postwrite_serving_not_sealed:'+required)
-    for node in nodes:
+    for node in nodes[completed:]:
         if not postwrite_only:validate_context(receipt,context)
         key=p+'/phases/'+node.__name__+'.json.gz'; blob=b.blob(key)
         try:

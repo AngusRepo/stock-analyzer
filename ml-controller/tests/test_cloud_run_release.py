@@ -5,6 +5,14 @@ from tools.verify_cloud_run_release import release_tag_url, verify_health, verif
 EXPECTED = {"sourceSha": "new", "sourceTreeSha": "tree", "sourceBranch": "main", "schedulerManifestSha256": "scheduler"}
 
 
+def test_release_gate_requires_exact_modal_source():
+    from tools.verify_cloud_run_release import verify_modal_runtime
+    payload = {'schema_version': 'stockvision-modal-deployment-provenance-v1', 'source_sha': 'a' * 40}
+    assert verify_modal_runtime(payload, 'a' * 40)['status'] == 'verified'
+    with pytest.raises(ValueError, match='source_sha_mismatch'):
+        verify_modal_runtime(payload, 'b' * 40)
+
+
 def test_tagged_candidate_does_not_claim_pinned_old_production_is_updated():
     service = {"status": {"traffic": [
         {"revisionName": "old", "percent": 100},

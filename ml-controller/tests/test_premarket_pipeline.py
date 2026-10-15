@@ -7,11 +7,12 @@ from google.api_core.exceptions import NotFound,PreconditionFailed
 from services import premarket_pipeline as m
 
 class Blob:
-    def __init__(self):self.raw=None;self.generation=0
+    def __init__(self):self.raw=None;self.generation=0;self.downloads=0
     def upload_from_string(self,data,**kw):
         if kw.get('if_generation_match',self.generation)!=self.generation:raise PreconditionFailed('CAS')
         self.raw=data.encode() if isinstance(data,str) else data;self.generation+=1
     def download_as_bytes(self):
+        self.downloads+=1
         if self.raw is None:raise NotFound('missing')
         return self.raw
     def reload(self):pass
@@ -91,6 +92,81 @@ def test_downstream_failure_resumes_receipts_without_second_l4(f):
     result=run();assert result['published'] is True
     assert calls==['l4','publish','publish']
     run();assert calls==['l4','publish','publish']
+
+def test_completed_phases_restore_only_latest_full_state(f,monkeypatch):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI'];calls=[]
+    async def first(st):calls.append('first');return {'first':True}
+    async def last(st):calls.append('last');return {'last':True}
+    def run():return asyncio.run(m.resume(uri,nodes=[first,last],merge=lambda st,up:st.update(up),client=s))
+    assert run()['last']
+    monkeypatch.setattr(m,'build_information_delta',lambda **kwargs:pytest.fail('rebuilding sealed morning delta'))
+    for blob in s.blobs.values():blob.downloads=0
+    assert run()['first'] and calls==['first','last']
+    assert s.blob(r['state_gcs_uri'].split(s.name+'/',1)[1]).downloads==0
+    root=m.prefix(r['run_date'],r['run_id'])
+    assert s.blob(root+'/phases/first.json.gz').downloads==0
+    assert s.blob(root+'/phases/last.json.gz').downloads==1
+
+def test_completed_phase_keeps_original_l3_identity_validation(f):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
+    async def first(st):return {'done':True}
+    run=lambda:asyncio.run(m.resume(uri,nodes=[first],merge=lambda st,up:st.update(up),client=s))
+    run()
+    key=m.prefix(r['run_date'],r['run_id'])+'/phases/first.json.gz'
+    saved=m.decode_pipeline_state_envelope(s.blob(key).raw)
+    saved['state']['predictions']['2330']['score']=.9
+    s.blob(key).raw=m.encode_pipeline_state_envelope(saved)
+    with pytest.raises(ValueError,match='checkpoint_source_changed'):run()
+
+def test_gap_in_completed_checkpoints_is_rejected(f):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
+    async def first(st):return {}
+    async def last(st):return {}
+    root=m.prefix(r['run_date'],r['run_id'])
+    s.blob(root+'/phases/last.json.gz').raw=b'exists-but-no-predecessor'
+    with pytest.raises(ValueError,match='checkpoint_gap'):
+        asyncio.run(m.resume(uri,nodes=[first,last],merge=lambda st,up:None,client=s))
+
+
+def test_recommendation_additions_keep_sealed_l3_source_and_full_restored_state(f):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
+    additions={key:{'test':key} for key in
+               ('alpha_context','core_family_evidence','core_family_vote','alpha_allocation')}
+    calls=[]
+    async def node_recommend(st):
+        calls.append('recommend');st['predictions']['2330'].update(additions);return {}
+    run=lambda:asyncio.run(m.resume(uri,nodes=[node_recommend],merge=lambda st,up:st.update(up),client=s))
+    run()
+    assert run()['predictions']['2330']=={'score':.5,**additions}
+    assert calls==['recommend']
+    key=m.prefix(r['run_date'],r['run_id'])+'/phases/node_recommend.json.gz'
+    saved=m.decode_pipeline_state_envelope(s.blob(key).raw)
+    saved['state']['predictions']['2330']['score']=.9
+    s.blob(key).raw=m.encode_pipeline_state_envelope(saved)
+    with pytest.raises(ValueError,match='checkpoint_source_changed'):run()
+
+def test_frozen_atomic_failure_blocks_expensive_redispatch_without_false_success(f):
+    s,state,c=f
+    state['paired_nav_atomic_inputs']={'status':'failed','reason':'paired_nav_source_or_capture_failed'}
+    r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    state['premarket_context']=c
+    result={'status':'error','critical_errors':['paired_nav:atomic_daily:paired_nav_source_or_capture_failed']}
+    m.record_nonretryable_inputs(state,result,client=s)
+    m.record_nonretryable_inputs(state,result,client=s)
+    j.state='failed'
+    with pytest.raises(ValueError,match='nonretryable_frozen_atomic_inputs'):
+        m.dispatch(r,c,jobs_client=j,client=s)
+    assert len(j.calls)==1 and result['status']=='error'
+
+def test_transient_downstream_failure_does_not_create_permanent_input_block(f):
+    s,state,c=f;r=m.seal_l3(state,client=s);state['premarket_context']=c
+    m.record_nonretryable_inputs(state,{'status':'error','critical_errors':['temporary callback error']},client=s)
+    key=m.prefix(r['run_date'],r['run_id'])+'/nonretryable-inputs.json'
+    assert not s.blob(key).exists()
 def test_cutoff_and_source_availability_fail_before_compute(f):
     s,state,c=f;r=m.seal_l3(state,client=s)
     m.validate_context(r,c,now=datetime(2026,10,2,0,44,59,tzinfo=timezone.utc))

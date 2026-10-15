@@ -43,9 +43,19 @@ def verify_paper_runtime(payload: dict[str, Any]) -> None:
         raise ValueError('candidate_paper_runtime_unverified')
 
 
+def verify_modal_runtime(payload: dict[str, Any], source_sha: str) -> dict:
+    import sys
+    from pathlib import Path
+    controller = str(Path(__file__).resolve().parents[1] / 'ml-controller')
+    if controller not in sys.path:
+        sys.path.insert(0, controller)
+    from services.pipeline_runtime_preflight import validate_modal_provenance
+    return validate_modal_provenance(payload, source_sha)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify actual Cloud Run release traffic and HTTP provenance")
-    parser.add_argument("mode", choices=["tag-url", "traffic", "health", "paper"])
+    parser.add_argument("mode", choices=["tag-url", "traffic", "health", "paper", "modal"])
     parser.add_argument("--service")
     parser.add_argument("--region", default="asia-east1")
     parser.add_argument("--revision")
@@ -57,6 +67,14 @@ def main() -> None:
     parser.add_argument("--scheduler-sha")
     parser.add_argument("--token-secret")
     args = parser.parse_args()
+    if args.mode == 'modal':
+        if not args.source_sha:
+            parser.error('modal verification requires the exact target --source-sha')
+        import modal
+        value = modal.Function.from_name('stockvision-ml', 'deployment_provenance').remote()
+        verify_modal_runtime(value, args.source_sha)
+        print('Modal runtime: exact pipeline source verified; no model invoked')
+        return
     if args.mode == 'paper':
         if not args.url or not args.token_secret or ':' not in args.token_secret:
             parser.error('paper URL and controller token secret name:version are required')

@@ -5,28 +5,33 @@ from pathlib import Path
 import subprocess
 import tempfile
 import logging
+import time
 
 
 def read_population(request):
     runner = Path(os.environ.get('ATOMIC_POPULATION_RUNNER', '/app/worker-dist/atomic-population.cjs'))
     if not runner.is_file():
         raise RuntimeError('atomic_population_runner_missing')
-    from services.atomic_replay_checkpoints import AtomicReplayCheckpoints
+    from services.atomic_replay_checkpoints import AtomicReplayCheckpoints, AtomicReplayDeadlineExceeded
+    deadline = time.monotonic() + 3600
     bucket = None
     if os.environ.get('GCS_BUCKET_NAME'):
         from google.cloud import storage
         bucket = storage.Client().bucket(os.environ['GCS_BUCKET_NAME'])
     # Do not retain both a giant stdout string and its parsed population.
     with tempfile.TemporaryDirectory(prefix='atomic-replay-') as directory, \
-            AtomicReplayCheckpoints(directory, runner, request, bucket), \
+            AtomicReplayCheckpoints(directory, runner, request, bucket, deadline=deadline, clock=time.monotonic), \
             tempfile.TemporaryFile(mode='w+b') as output:
         for attempt in range(2):
             output.seek(0)
             output.truncate()
+            remaining = deadline - time.monotonic() - 60  # Reserve checkpoint persistence/parse.
+            if remaining <= 0:
+                raise AtomicReplayDeadlineExceeded('atomic_replay_budget_exhausted_before_node')
             try:
                 result = subprocess.run([os.environ.get('NODE_BIN', 'node'), '--max-old-space-size=2048', str(runner)],
                     input=json.dumps(request).encode('utf-8'), stdout=output, stderr=subprocess.PIPE,
-                    env={**os.environ, 'ATOMIC_CHECKPOINT_DIR': directory}, timeout=1800, check=False)
+                    env={**os.environ, 'ATOMIC_CHECKPOINT_DIR': directory}, timeout=min(1800, remaining), check=False)
                 break
             except subprocess.TimeoutExpired:
                 if attempt:
@@ -37,6 +42,8 @@ def read_population(request):
             raise RuntimeError('atomic_population_node_failed:' + detail)
         output.seek(0)
         population = json.load(output)
+        if time.monotonic() >= deadline:
+            raise AtomicReplayDeadlineExceeded('atomic_replay_budget_exhausted_after_parse')
     if not isinstance(population, dict) or population.get('schema_version') != 'atomic-canonical-population-v1':
         raise ValueError('atomic_population_node_result_invalid')
     return population

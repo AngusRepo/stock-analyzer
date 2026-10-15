@@ -85,8 +85,13 @@ def seal_checkpoint(state, raw):
 
 
 @contextmanager
-def input_context(state, state_uri):
-    token = _CONTEXT.set({'run_id': state['producer_run_id'], 'run_date': state['run_date'], 'state_gcs_uri': state_uri})
+def input_context(state, state_uri, *, resume_phase=None):
+    if resume_phase not in (None, 'pre_l2'):
+        raise ValueError('pipeline_input_resume_phase_invalid')
+    context={'run_id': state['producer_run_id'], 'run_date': state['run_date'], 'state_gcs_uri': state_uri}
+    if resume_phase is not None:
+        context['resume_phase']=resume_phase
+    token = _CONTEXT.set(context)
     try:
         yield
     finally:
@@ -95,6 +100,23 @@ def input_context(state, state_uri):
 
 def current_context():
     return _CONTEXT.get()
+
+
+def _validate_pre_l2_state(state):
+    if (not isinstance(state, dict) or not state.get('producer_run_id')
+            or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(state.get('run_date', '')))
+            or not isinstance(state.get('active_stocks'), list) or not state['active_stocks']
+            or not isinstance(state.get('payload_source_observations'), dict)
+            or not re.fullmatch(r'[a-f0-9]{40}', str((state.get('pipeline_modal_serving_context') or {}).get('expected_source_sha', '')))):
+        raise ValueError('pipeline_pre_l2_checkpoint_invalid')
+
+
+def seal_pre_l2_checkpoint(state):
+    from services.pipeline_json_transport import compress_json
+    _validate_pre_l2_state(state)
+    raw, _, _=compress_json({'schema_version':'pipeline-pre-l2-state-v1','state':state},
+                           max_compressed_bytes=512*1024*1024, error_prefix='pipeline_pre_l2_state')
+    return seal_checkpoint(state, raw)
 
 
 class InputDeferred(Exception):
@@ -419,6 +441,19 @@ def resume_state(path, *, run_id, run_date):
     raw = store.blob(uri.removeprefix(f'gs://{store.name}/')).download_as_bytes()
     if uri != expected + digest(raw) + '.json.gz':
         raise ValueError('pipeline_input_checkpoint_checksum_mismatch')
+    resume_phase=stage.get('resume_phase')
+    if resume_phase == 'pre_l2':
+        envelope=json.loads(gzip.decompress(raw).decode('utf-8'))
+        if envelope.get('schema_version') != 'pipeline-pre-l2-state-v1':
+            raise ValueError('pipeline_pre_l2_checkpoint_schema_invalid')
+        state=envelope.get('state')
+        _validate_pre_l2_state(state)
+        if state['producer_run_id'] != run_id or state['run_date'] != run_date:
+            raise ValueError('pipeline_input_checkpoint_identity_mismatch')
+        state['_pipeline_input_resume_phase']='pre_l2'
+        return state
+    if resume_phase is not None:
+        raise ValueError('pipeline_input_resume_phase_invalid')
     from graphs.daily_pipeline_v2 import decode_pipeline_state_envelope, validate_pipeline_payload_identity
     state = decode_pipeline_state_envelope(raw)['state']
     if state.get('producer_run_id') != run_id or state.get('run_date') != run_date:

@@ -84,7 +84,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
         else:
             run_id = f"verify-{int(time.time())}-{uuid.uuid4().hex[:8]}"
         try:
-            execution = _verify_jobs_client.run_job(
+            execution = await asyncio.to_thread(_verify_jobs_client.run_job,
                 env_overrides={
                     "VERIFY_RUN_DATE": req.run_date or "",
                     "VERIFY_LOOKBACK_DAYS": str(req.lookback_days),
@@ -94,6 +94,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
                     "VERIFY_UPDATE_AGGREGATES": "1" if req.update_aggregates else "0",
                     "VERIFY_IDEMPOTENCY_KEY": req.idempotency_key or "",
                 },
+                deadline_seconds=20.0,
             )
         except JobAlreadyRunningError as e:
             raise HTTPException(

@@ -13,11 +13,18 @@ def memory_bytes():
         result['process_peak_bytes'] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == 'darwin' else 1024)
     except ImportError:
         pass
-    for key, filename in [('container_current_bytes','memory.current'), ('container_peak_bytes','memory.peak')]:
-        try:
-            result[key] = int(Path('/sys/fs/cgroup', filename).read_text().strip())
-        except (OSError, ValueError):
-            pass
+    for key, filenames in [
+        ('container_current_bytes', ('memory.current','memory/memory.usage_in_bytes','memory.usage_in_bytes')),
+        ('container_peak_bytes', ('memory.peak','memory/memory.max_usage_in_bytes','memory.max_usage_in_bytes')),
+    ]:
+        for filename in filenames:
+            try:
+                result[key] = int(Path('/sys/fs/cgroup', filename).read_text().strip())
+                break
+            except (OSError, ValueError):
+                continue
+    result['container_memory_status'] = ('available' if 'container_current_bytes' in result
+                                         else 'unavailable')
     return result
 
 

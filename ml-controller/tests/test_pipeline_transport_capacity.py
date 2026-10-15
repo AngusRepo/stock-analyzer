@@ -70,6 +70,33 @@ def test_pipeline_state_v2_is_gzipped_and_carries_one_payload_copy() -> None:
     assert len(gzip.decompress(encoded)) > len(encoded)
 
 
+@pytest.mark.parametrize('compressed',[False,True])
+@pytest.mark.parametrize('bom',[False,True])
+@pytest.mark.parametrize('nonfinite',[float('nan'),float('inf'),float('-inf')])
+def test_streamed_state_keeps_legacy_numeric_and_bom_contract(compressed,bom,nonfinite):
+    import math
+    rows=_rows()
+    state={'payloads':rows,'pipeline_payload_identity':build_pipeline_payload_identity(rows),
+           'edge':[2**100,1e-320,-0.0], 'legacy_nonfinite':[nonfinite]}
+    raw=json.dumps({'schema_version':STATE_SCHEMA_V2,'state':state},ensure_ascii=False).encode()
+    if bom:raw=b'\xef\xbb\xbf'+raw
+    if compressed:raw=gzip.compress(raw)
+    restored=decode_pipeline_state_envelope(raw)['state']
+    assert restored['edge']==state['edge']
+    assert (math.isnan(restored['legacy_nonfinite'][0]) if math.isnan(nonfinite)
+            else restored['legacy_nonfinite'][0]==nonfinite)
+    assert restored['payloads']==rows
+
+
+def test_ordinary_state_decode_never_materializes_whole_decompressed_document(monkeypatch):
+    from services import pipeline_async_state_transport as transport
+    rows=_rows()
+    raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,
+        'state':{'payloads':rows,'pipeline_payload_identity':build_pipeline_payload_identity(rows)}})
+    monkeypatch.setattr(transport.gzip,'decompress',lambda raw:pytest.fail('whole gzip decompression'))
+    assert decode_pipeline_state_envelope(raw)['state']['payloads']==rows
+
+
 def test_pipeline_payload_identity_rejects_tamper_without_duplicate_copy() -> None:
     rows = _rows()
     state = {

@@ -5083,9 +5083,10 @@ def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
 async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
     from services.runtime_phase_metrics import measured_phase
     from services.pipeline_progress import phase, node_result_status
+    from services.pipeline_input_events import InputDeferred
     for node in nodes:
         name = getattr(node, "__name__", type(node).__name__)
-        async with phase(name) as outcome:
+        async with phase(name, deferred_exception=InputDeferred) as outcome:
             with measured_phase(name):
                 update = await node(state)
                 outcome['status'] = node_result_status(name, update)
@@ -5303,9 +5304,35 @@ async def run_pipeline_v2_from_input_event(*, stage_path: str, run_date: str, pr
         return pending.result(run_date)
     if previous is not None:
         return previous
-    result = await _continue_pipeline_after_l2(state)
+    resume_phase=state.pop('_pipeline_input_resume_phase', None)
+    result = (await _continue_pipeline_before_l2(state) if resume_phase == 'pre_l2'
+              else await _continue_pipeline_after_l2(state))
     finish_consumption(stage_path, result)
     return result
+
+
+async def _continue_pipeline_before_l2(state: PipelineStateV2) -> dict:
+    """Resume the same frozen pre-L2 inputs after snapshot/prep completion."""
+    from services.pipeline_input_events import InputDeferred, input_context, seal_pre_l2_checkpoint
+    from services.pipeline_runtime_preflight import verify_pipeline_runtime
+    context=state.get('pipeline_modal_serving_context') or {}
+    await verify_pipeline_runtime(expected_source_sha=context.get('expected_source_sha'))
+    assert_canonical_window_open(state['run_date'])
+    # Freeze raw observations before a dependency can suspend this invocation.
+    # Otherwise a resumed build would capture newer observations for this run.
+    if state.get('payload_source_observations') is None:
+        from services.payload_builder import capture_payload_sources
+        state['payload_source_observations']=await asyncio.to_thread(
+            capture_payload_sources,state['active_stocks'],state['run_date'])
+    checkpoint_uri=await asyncio.to_thread(seal_pre_l2_checkpoint,state)
+    try:
+        with input_context(state,checkpoint_uri,resume_phase='pre_l2'):
+            await _run_pipeline_nodes(state,[node_build_payloads])
+        await _run_pipeline_nodes(state,[node_l2_timesfm_enrich])
+        state['pipeline_payload_identity']=build_pipeline_payload_identity(state.get('payloads') or [])
+        return await _continue_pipeline_after_l2(state)
+    except InputDeferred as deferred:
+        return deferred.result(state['run_date'])
 
 
 async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", producer_run_id: str = "") -> dict:
@@ -5322,6 +5349,8 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
     }
     t0 = asyncio.get_event_loop().time()
     try:
+        from services.pipeline_runtime_preflight import verify_pipeline_runtime
+        state['metrics']['runtime_preflight'] = await verify_pipeline_runtime()
         await _run_pipeline_nodes(state, [
             node_load_inputs,
             node_load_market_env,
@@ -5331,11 +5360,8 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         await _attach_pipeline_modal_serving_context(state)
         await _run_pipeline_nodes(state, [
             node_capture_atomic_inputs,
-            node_build_payloads,
-            node_l2_timesfm_enrich,
         ])
-        state["pipeline_payload_identity"] = build_pipeline_payload_identity(state.get("payloads") or [])
-        return await _continue_pipeline_after_l2(state)
+        return await _continue_pipeline_before_l2(state)
     except Exception as e:  # noqa: BLE001
         elapsed = asyncio.get_event_loop().time() - t0
         logger.exception("[Pipeline V2] async Modal prediction spawn failed after %.1fs", elapsed)
@@ -5489,4 +5515,7 @@ async def run_pipeline_v2_from_premarket(input_uri: str) -> dict:
     state=await resume(input_uri,nodes=[node_compute_personas,node_recommend,node_llm_reasons,node_write_d1,
         node_paired_nav_setup,node_export_dataset_snapshot],
         merge=_merge_pipeline_state_update)
-    return _pipeline_terminal_result(state,run_date=state['run_date'],elapsed=asyncio.get_event_loop().time()-t0)
+    result=_pipeline_terminal_result(state,run_date=state['run_date'],elapsed=asyncio.get_event_loop().time()-t0)
+    from services.premarket_pipeline import record_nonretryable_inputs
+    await asyncio.to_thread(record_nonretryable_inputs,state,result)
+    return result

@@ -43,6 +43,9 @@ def test_both_sides_reject_unsupported_oversize(value):
 
 
 def test_invalid_manifest_fails_before_feature_and_l2_cost(monkeypatch):
+    from services import pipeline_runtime_preflight
+    async def provenance(**kwargs): return {'status': 'verified'}
+    monkeypatch.setattr(pipeline_runtime_preflight,'verify_pipeline_runtime',provenance)
     reached=[]
     async def run_nodes(state,nodes): reached.extend(node.__name__ for node in nodes)
     async def reject(state): raise RuntimeError('manifest_budget_fixture')

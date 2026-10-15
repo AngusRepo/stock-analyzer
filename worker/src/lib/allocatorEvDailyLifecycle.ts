@@ -55,6 +55,7 @@ export async function inspectActive8ActionAuthorityState(
   learningDb: D1Database,
   coreDb: D1Database,
   businessDate: string,
+  verifiedPaperL3Identity?: Record<string, string>,
 ): Promise<Active8ActionAuthorityState> {
   const [pointer, recommendations] = await Promise.all([
     learningDb.prepare(`
@@ -64,14 +65,19 @@ export async function inspectActive8ActionAuthorityState(
                 AND a.cohort_id = p.cohort_id
                 AND a.payload_checksum = p.payload_checksum
                 AND a.base_artifact_set_checksum = p.base_artifact_set_checksum
-                AND a.validation_decision = 'PASS'
+                AND (a.validation_decision = 'PASS' OR (
+                  p.artifact_id=? AND p.cohort_id=? AND p.payload_checksum=?
+                  AND p.base_artifact_set_checksum=?
+                ))
                 AND a.state = 'production'
                 AND a.production_effect = 1
                THEN 1 ELSE 0 END), 0) AS valid_serving_rows
         FROM active8_ensemble_pointer_v1 p
         LEFT JOIN active8_ensemble_artifacts_v1 a ON a.artifact_id = p.artifact_id
        WHERE p.singleton_id = 1
-    `).first<{ pointer_rows?: number | string; valid_serving_rows?: number | string }>(),
+    `).bind(...['artifact_id','cohort_id','payload_checksum','base_artifact_set_checksum']
+      .map(key => verifiedPaperL3Identity?.[key] ?? null))
+      .first<{ pointer_rows?: number | string; valid_serving_rows?: number | string }>(),
     coreDb.prepare(`
       SELECT COUNT(*) AS recommendation_rows,
              COALESCE(SUM(CASE

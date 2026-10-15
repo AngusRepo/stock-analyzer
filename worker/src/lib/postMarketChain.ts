@@ -1,4 +1,5 @@
 import { inspectL4DistributionClosure } from './l4DistributionClosure'
+import { inspectPostPipelineActionAuthority } from './postPipelineActionAuthority'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
@@ -14,7 +15,6 @@ import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
 import {
   evidenceOnlySnapshotNotApplicable,
-  inspectActive8ActionAuthorityState,
   inspectAllocatorSnapshotClosure,
   readAllocatorEvLifecycle,
   recordAllocatorEvLifecycle,
@@ -472,11 +472,7 @@ export async function runPostPipelineCallbackChain(
   })
   if (newDistribution && !snapshotClosure.ready) throw new Error('l4_distribution_original_plan_closure_incomplete')
   await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_inspection')
-  const actionAuthority = await inspectActive8ActionAuthorityState(
-    databaseForDataDomain(env, 'learning'),
-    databaseForDataDomain(env, 'core'),
-    ctx.runDate,
-  )
+  const actionAuthority = await inspectPostPipelineActionAuthority(env, ctx.runDate)
   if (actionAuthority.pointerRows !== actionAuthority.validServingRows) {
     throw new Error(
       `active8_serving_pointer_integrity_invalid:pointer=${actionAuthority.pointerRows}:valid=${actionAuthority.validServingRows}`,

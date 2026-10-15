@@ -37,7 +37,7 @@ import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import JobRunTiming from './JobRunTiming'
 import DailyReadinessBoard from './DailyReadinessBoard'
-import { pipelinePreparationLabel, SchedulerStageCard } from '../SchedulerPipelineChain'
+import { pipelinePreparationLabel, PipelinePhaseDetails, SchedulerStageCard } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
 import './ExecutionChainPanel.css'
 
@@ -845,6 +845,16 @@ export default function ExecutionChainPanel({
           <div className={`obs-chain__progress-fill ${running ? 'is-running' : ''} ${progressBlocked ? 'is-blocked' : ''}`} style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
       </div>
+
+      {scope.id === 'daily_readiness' && (
+        <section className="obs-chain__details" aria-label="Pipeline 階段與耗時">
+          <article className="obs-chain__detail">
+            <h4>Pipeline 階段與耗時</h4>
+            <p className="mt-2 text-xs text-slate-400">{pipelinePreparationLabel(scopedJobMap.get('pipeline'))}</p>
+            <PipelinePhaseDetails job={scopedJobMap.get('pipeline')} />
+          </article>
+        </section>
+      )}
 
       <div className="obs-chain__details">
         <article className={`obs-chain__detail obs-chain__detail--selected ${selectedJob?.lastError && !isAllocatorSafeAbstention(selectedJob) ? 'has-error' : ''}`}>

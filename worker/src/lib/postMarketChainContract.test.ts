@@ -149,7 +149,7 @@ assert(
   'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
 )
 assert(
-  postMarketChain.includes('inspectActive8ActionAuthorityState') &&
+  postMarketChain.includes('inspectPostPipelineActionAuthority') &&
     postMarketChain.includes('active8_serving_pointer_integrity_invalid') &&
     postMarketChain.includes('active8_evidence_only_action_leak') &&
     postMarketChain.includes("task: 'active8-action-authority'") &&

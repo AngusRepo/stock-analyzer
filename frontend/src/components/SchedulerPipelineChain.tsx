@@ -119,7 +119,6 @@ export default function SchedulerPipelineChain({ jobs, loading, error }: {
         <WorkstationPill tone={tone(pipeline?.lastStatus)}>{label(pipeline?.lastStatus)}</WorkstationPill>
       </div>
       <p className="mt-2 text-xs text-[#b9b1a1]">{pipelinePreparationLabel(pipeline)}</p>
-      <PipelinePhaseDetails job={pipeline} />
       <p className="mt-1 text-[11px] leading-5 text-[#8a92a6]">資料準備 → ML Predict／L3 封存 → 次交易日盤前資訊 → Recommendation／L4。共用業務日與 run ID；等待上游的階段不表示正在計算。</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-start">
         <SchedulerStageCard id="ml-predict" title="ML Predict · 模型預測" job={byId.get('ml-predict')} />

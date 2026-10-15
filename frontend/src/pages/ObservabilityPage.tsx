@@ -1612,10 +1612,6 @@ export default function ObservabilityPage() {
           }
         />
 
-        <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
-          dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
-          governance={scheduler.data?.governance} />
-
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
           <OperationalReadinessDeck
             jobs={jobs}
@@ -1641,6 +1637,10 @@ export default function ObservabilityPage() {
             </div>
           </div>
         </WorkstationPanel>
+
+        <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
+          dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
+          governance={scheduler.data?.governance} />
 
         <section>
           <EvidenceClockPanel

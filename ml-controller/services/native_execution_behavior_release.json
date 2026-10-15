@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:cbf9d2ea5e61eb41dda1193061c791a216b65cef387112d68a9f14c87556b116",
+  "execution_owner_version": "native-paper-v1:7f9c987fb370d0a355122bc9ccd80d212e2df9722689b40122793b49c6e879b3",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly requested commit push deploy on 2026-10-15; preserve other sessions; Paper scope only.",
-  "review": "audits/l4-r2-implementation-20261015/READINESS.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r2-source-release-20261015"
+  "authorization": "Wei explicitly requested commit push deploy of the daily-chain performance patch on 2026-10-15; preserve R2 and existing Paper policy.",
+  "review": "audits/daily-chain-performance-20261015/ACCEPTANCE.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:daily-performance-release-20261015"
 }

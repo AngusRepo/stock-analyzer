@@ -49,7 +49,39 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return value
 
 
-async def _execute_lifecycle(
+async def _execute_lifecycle(**kwargs) -> dict[str, Any]:
+    """Mature data independently even when the day's Paper plan is absent."""
+    if kwargs['cadence'] != 'daily':
+        return await _execute_account_lifecycle(**kwargs)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    config = load_merged_trading_config_with_contract().config
+    if config.get('l4Distribution') is None:
+        return await _execute_account_lifecycle(**kwargs, _daily_config=config)
+    from services.l4_forward_refresh import attach_daily_result
+    business_date = kwargs.get('end_date') or datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
+    data_task = asyncio.create_task(asyncio.to_thread(attach_daily_result, {}, config, business_date))
+    try:
+        result = await _execute_account_lifecycle(**kwargs, _daily_config=config)
+    except Exception as exc:
+        logger.exception('[OofMaterializeJob] account closure failed; independent label refresh continues')
+        result = {'status': 'failed', 'reason': 'daily_account_closure_failed', 'error_type': type(exc).__name__}
+    data_result = await data_task
+    result['forward_learning_data'] = data_result['forward_learning_data']
+    if data_result.get('status') == 'failed':
+        result.update(accounting_status=result.get('status'), status='failed',
+                      dependency_retry_required=True, reason='l4_forward_refresh_failed')
+    elif data_result.get('status') == 'pending':
+        result['dependency_retry_required'] = True
+        if result.get('status') not in ('failed', 'blocked'):
+            result.update(accounting_status=result.get('status'), status='pending',
+                reason=data_result.get('reason','l4_native_inference_pending'),
+                external_compute_pending=data_result.get('external_compute_pending',False))
+    return result
+
+
+async def _execute_account_lifecycle(
     *,
     cadence: str,
     end_date: str | None,
@@ -58,6 +90,7 @@ async def _execute_lifecycle(
     expected_cohort_id: str | None,
     continuation_attempt: int,
     continuation_only: bool,
+    _daily_config: dict | None = None,
 ) -> dict[str, Any]:
     """Run independent NAV reconciliation before prep can block the OOF branch.
 
@@ -71,10 +104,14 @@ async def _execute_lifecycle(
     if cadence != "daily":
         return await _execute_oof_lifecycle(**kwargs)
     from services.trading_config_loader import load_merged_trading_config_with_contract
-    config=load_merged_trading_config_with_contract().config
+    config=_daily_config if _daily_config is not None else load_merged_trading_config_with_contract().config
     from services.single_b_daily_closure import single_b_daily_closure
     single_result = single_b_daily_closure(config, end_date)
     if single_result is not None:
+        if single_result.get('status') == 'blocked':
+            # Only data maturity may proceed without the morning plan. Preserve
+            # the original block on account adoption and strategy publication.
+            return single_result
         # Formal Paper closure stays separate. Reconcile already-sealed strategy
         # receipts, use the original review/adoption owners and publish display;
         # this path never trains a model or executes a native frame.
@@ -518,6 +555,12 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if result.get('comparison_review_status'):
         parts.extend(['comparison_review=' + result['comparison_review_status'],
             'completion_scope=' + result['completion_scope']])
+    forward = result.get('forward_learning_data')
+    if isinstance(forward, dict):
+        parts.extend([f"forward_data={forward.get('status', 'unknown')}",
+            f"forward_observed={forward.get('latest_observed_signal_date') or 'none'}",
+            f"forward_mature={forward.get('latest_mature_evaluation_date') or 'none'}",
+            f"forward_training_eligible={forward.get('latest_training_eligible_date') or 'none'}"])
     adoption = (result.get('strategy_comparison_nav') or result.get('paired_nav_maturity') or {}).get('adoption')
     if isinstance(adoption, dict):
         committed = dict((adoption.get('closure') or {}).get('promoted_by_owner') or {})
@@ -816,6 +859,9 @@ async def _run() -> int:
         if result.get('native_l4_daily_closure'):
             payload['metadata']['native_l4_daily_closure']=result['native_l4_daily_closure']
             payload['metadata'].pop('oof_freshness',None)
+        if isinstance(result.get('forward_learning_data'), dict):
+            from services.l4_forward_refresh import callback_summary
+            payload['metadata']['forward_learning_data'] = callback_summary(result['forward_learning_data'])
         if isinstance(result.get("paired_nav_maturity"), dict):
             payload["metadata"]["paired_nav_maturity"] = _nav_callback_summary(result["paired_nav_maturity"])
             payload["metadata"]["nav_retry_required"] = bool(result.get("nav_retry_required"))

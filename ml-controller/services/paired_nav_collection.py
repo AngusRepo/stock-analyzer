@@ -270,6 +270,10 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
         else:
             identity, existing, previous = control_parent
         if previous is None:
+            extra['l4_forward_capture_source'] = risk_capture_source
+        elif 'l4_forward_capture_source' in previous:
+            extra['l4_forward_capture_source'] = previous['l4_forward_capture_source']
+        if previous is None:
             extra['allocator_runtime_source_identity'] = allocator_runtime_source_identity()
         elif 'allocator_runtime_source_identity' in previous:
             extra['allocator_runtime_source_identity'] = previous['allocator_runtime_source_identity']

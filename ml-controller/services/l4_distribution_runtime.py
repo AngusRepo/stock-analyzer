@@ -160,12 +160,14 @@ def choose_opb(policy, ledger, identity, signal_date):
     return policies[selected], {**evidence,'status':'learned_policy','arm_id':selected}
 
 
-def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False):
+def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None):
     runtime = policy.get('runtime') or {}
     signal_date = runtime['signal_date']
     identity = runtime['l3_identity']
     bundle = policy['artifact']
     research = private_research and policy.get('scope') == 'private_research'
+    if r2_shadow is not None and not research:
+        raise ValueError('l4_r2_formal_promotion_not_admitted')
     if policy.get('scope') != 'paper' and not research:
         raise ValueError('l4_distribution_scope_invalid')
     validate_bundle(bundle,l3_identity=identity,signal_date=signal_date,require_paper_release=not research)
@@ -196,12 +198,25 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     # coefficient is inert because zero/new or existing/held weights are fixed.
     locked.update(set(unavailable) & set(holdings))
     modeled = sorted(set(by_symbol) - set(unavailable))
-    feature_rows = [{'symbol':s,'features':native_features(by_symbol[s],predictions[s],identity),
-                     'l3_baseline':native_baseline(predictions[s],identity)} for s in modeled]
-    outputs = dict(zip(modeled,
-        [attach_baseline(output,row['l3_baseline']) for row,output in
-         zip(feature_rows,predict(feature_rows,bundle['model']) if feature_rows else [],strict=True)],strict=True))
+    if r2_shadow is None:
+        feature_rows = [{'symbol':s,'features':native_features(by_symbol[s],predictions[s],identity),
+                         'l3_baseline':native_baseline(predictions[s],identity)} for s in modeled]
+        outputs = dict(zip(modeled,
+            [attach_baseline(output,row['l3_baseline']) for row,output in
+             zip(feature_rows,predict(feature_rows,bundle['model']) if feature_rows else [],strict=True)],strict=True))
+    else:
+        from services.l4_r2_allocation import inputs
+        feature_rows,outputs=inputs(r2_shadow,identity=identity,day=signal_date,baseline=bundle,policy=policy,symbols=modeled)
+    allocation_model_checksum=bundle['model_checksum'] if r2_shadow is None else r2_shadow['forecast']['model_checksum']
+    if r2_shadow is not None and r2_shadow.get('comparison_arm')=='baseline':
+        allocation_model_checksum=r2_shadow['forecast']['baseline_model_checksum']
     policy_identity = distribution_policy_identity(policy,identity)
+    if r2_shadow is not None:
+        policy_identity=digest(dict(base_policy_identity=policy_identity,r2_model=allocation_model_checksum,
+            evaluation_policy=r2_shadow['forecast']['policy_checksum'],comparison_arm=r2_shadow.get('comparison_arm','candidate')))
+        # The explicit private packet grants this isolated policy identity only;
+        # existing formal rewards do not acquire a new-model identity.
+        policy={**policy,'opb':{**(policy.get('opb') or {}),'approved_policy_identity':policy_identity}}
     constraints, opb = choose_opb(policy,reward_ledger,policy_identity,signal_date)
     hard=account.get('risk_limits') or {}
     if hard:
@@ -248,7 +263,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     from services.l4_position_constraints import position_constraints
     membership_groups,excluded_pairs=position_constraints(symbols,by_symbol,holdings,return_history,hard)
     from services.l4_sealed_execution import execution_inputs,seal_execution_evidence,aligned_covariance
-    execution_config,trade_uncertainty,buy_extra,sell_extra=execution_inputs(policy,runtime,symbols,bundle['model_checksum'],signal_date,horizon)
+    execution_config,trade_uncertainty,buy_extra,sell_extra=execution_inputs(policy,runtime,symbols,allocation_model_checksum,signal_date,horizon)
     if execution_config and execution_config.get('require_matched_risk_horizon') and 'five_session_risk_evidence' not in runtime:
         from services.l4_execution_evidence import measured_five_session_covariance
         runtime={**runtime,'five_session_risk_evidence':measured_five_session_covariance(
@@ -270,7 +285,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
             'execution_scope':'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
-            'model_checksum':bundle['model_checksum'],'l3_identity':identity,'nav_at_decision':nav,
+            'model_checksum':allocation_model_checksum,'l3_identity':identity,'nav_at_decision':nav,
             'opb':{**opb,'candidate_feature_summary':attribution['opb_candidate_summary']},
             'input_attribution':attribution,'risk_evidence':risk_evidence,
             'prediction_coverage':{'available':len(modeled),'candidate_count':len(by_symbol),
@@ -285,8 +300,16 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
          '_buy_costs':constraints['buy_cost']+buy_extra,'_sell_costs':constraints['sell_cost']+sell_extra,
          '_turnover_pressure':pressure},nav,trade_uncertainty,locked)
     if execution is not None:plan['sealed_execution']=execution
+    if r2_shadow is not None:
+        plan['r2_evidence']={'forecast_checksum':digest(r2_shadow['forecast']),
+            'policy_checksum':r2_shadow['forecast']['policy_checksum'],
+            'comparison_arm':r2_shadow.get('comparison_arm','candidate'),
+            'pool_mean_owner':'complete_native_pool_before_routing','promotion_allowed':False}
     plan['plan_id']=digest(plan)
-    if policy.get('operating_mode') is not None:
+    if r2_shadow is not None:
+        plan.update(strategy_role='B',strategy_mode='r2_shadow_private_v1')
+        plan['plan_id']=digest({k:v for k,v in plan.items() if k!='plan_id'})
+    elif policy.get('operating_mode') is not None:
         from services.paper_strategy_mode import validate_model_mode
         validate_model_mode(policy)
         if policy.get('strategy_role')!='B':
@@ -306,7 +329,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                    l4_distribution=output)
         row['alpha_allocation']={'engine':'sparse_tangent_inverse_risk','schema_version':PLAN_SCHEMA,
             'expected_return_owner':OWNER,'expected_return':expected,
-            'expected_return_semantic':'five_session_gross_decimal','expected_return_source':SCHEMA,
+            'expected_return_semantic':'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
+            'expected_return_source':SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
             'selected':selected,'allocation_weight':weight,'allocation_rank':rank[symbol],
             'selection_reason':'l3_evidence_unavailable' if symbol in unavailable else 'portfolio_target' if selected else 'portfolio_cash_or_other_assets',
             'prediction_blockers':unavailable.get(symbol,[]),

@@ -155,7 +155,7 @@ def test_daily_new_l4_closes_its_plan_without_legacy_oof_or_retraining(monkeypat
     monkeypatch.setattr(job,'_execute_daily_nav',nav)
     async def no_oof(**kwargs):pytest.fail('new L4 daily must not dispatch old EV OOF or full-fit training')
     monkeypatch.setattr(job,'_execute_oof_lifecycle',no_oof)
-    result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date='2026-09-11',promote=False,
+    result=asyncio.run(job._execute_account_lifecycle(cadence='daily',end_date='2026-09-11',promote=False,
         dispatch_full_fit=True,expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
     assert calls==[{'end_date':'2026-09-11','retire_legacy_owners':True,'publish_strategy_display':True}]
     assert result['status']=='native_l4_daily_accounted'

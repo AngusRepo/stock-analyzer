@@ -193,10 +193,45 @@ def test_real_callback_rejects_inconsistent_counts_before_downstream_writes(monk
     assert not downstream
 
 
-def test_original_controller_dispatch_modal_engine_and_merge_share_frozen_membership(monkeypatch, dispatched):
+def test_native_observer_reuses_merge_without_callback_or_account_receipt(monkeypatch,dispatched):
+    from services import cost_tracker,active8_nav_execution
+    state,_,bundle=dispatched
+    def forbidden(*a,**k):raise AssertionError('research observation reached publication boundary')
+    async def forbidden_async(*a,**k):forbidden()
+    for name in ('_pipeline_modal_prediction_callback_url','_pipeline_modal_prediction_callback_token'):
+        monkeypatch.setattr(pipeline,name,forbidden)
+    monkeypatch.setattr(pipeline.LEARNING_D1_CLIENT,'query',forbidden)
+    monkeypatch.setattr(pipeline.kv_client,'get_json',forbidden)
+    request=asyncio.run(pipeline._build_pipeline_modal_prediction_payload(state,state_gcs_uri='',research_only=True))
+    assert not {'callback_url','callback_token','paired_nav_l3_requests','paired_nav_atomic_slates'}&set(request)
+    state['modal_prediction_bundle']=bundle
+    monkeypatch.setattr(cost_tracker,'record_compute_profile_event',forbidden_async)
+    monkeypatch.setattr(active8_nav_execution,'attach_execution_receipt',forbidden)
+    result=asyncio.run(pipeline.node_ml_predict(state,research_only=True))
+    assert len(result['predictions'])==len(state['payloads'])
+    assert result['nav_inference_receipt'] is None
+
+
+@pytest.mark.parametrize('native_large', [False, True])
+def test_original_controller_dispatch_modal_engine_and_merge_share_frozen_membership(monkeypatch, dispatched, native_large):
     import modal_app
     from app import batch_prediction, dlinear_universal, patchtst_universal, itransformer_universal, serving_resolver
     state, request, _ = dispatched
+    if native_large:
+        # Exercise the real pure-compute and merge path above the formal 2,000
+        # transport limit; only individual model primitives remain synthetic.
+        extra = [{'symbol': str(10000 + i), 'stock_meta': {'market_segment': 'LISTED'}}
+                 for i in range(2202)]
+        request['payloads'].extend(deepcopy(extra))
+        state['payloads'] = deepcopy(request['payloads'])
+        state['l3_payloads'] = deepcopy(request['payloads'])
+        contract = deepcopy(request['sequence_input_contract'])
+        contract['sequence_point_counts'].update({r['symbol']: None for r in extra})
+        request['sequence_input_contract'] = seal(contract)
+        state['pipeline_modal_sequence_input_contract'] = seal(contract)
+        for key in ('callback_url', 'callback_token', 'paired_nav_l3_requests', 'paired_nav_atomic_slates'):
+            request.pop(key, None)
+        request.update(execution_scope='l4-native-pool-observation-v1', max_symbols=5000)
     original_request = deepcopy(request)
     monkeypatch.setenv('STOCKVISION_SOURCE_SHA', 'a' * 40)
     monkeypatch.setattr(modal_app, '_setup_env', lambda: None)
@@ -209,10 +244,10 @@ def test_original_controller_dispatch_modal_engine_and_merge_share_frozen_member
     def features(payloads, *, pool_snapshot, **kwargs):
         assert pool_snapshot['serving_manifest_digest'] == request['serving_manifest_digest']
         return {'results': [{'symbol': p['symbol'], 'rank_scores': {
-            name: (i + 1) / 6. for name in ('LightGBM', 'XGBoost', 'ExtraTrees', 'TabM')}}
+            name: (i + 1) / (len(payloads) + 1) for name in ('LightGBM', 'XGBoost', 'ExtraTrees', 'TabM')}}
             for i, p in enumerate(payloads)]}
     def graph(payloads, **kwargs):
-        return {'results': [{'symbol': p['symbol'], 'rank_score': (i + 1) / 6.}
+        return {'results': [{'symbol': p['symbol'], 'rank_score': (i + 1) / (len(payloads) + 1)}
                             for i, p in enumerate(payloads)]}
     def sequence(*, series_list, **kwargs):
         calls.append([r['symbol'] for r in series_list])
@@ -227,8 +262,14 @@ def test_original_controller_dispatch_modal_engine_and_merge_share_frozen_member
                         lambda req, result: published.append(deepcopy(result)) or {})
     monkeypatch.setattr(modal_app, '_post_pipeline_prediction_callback',
                         lambda req, result, elapsed: callbacks.append(deepcopy(result)) or {})
-    bundle = modal_app._pipeline_prediction_bundle_impl(request)
-    assert len(published) == len(callbacks) == 1
+    if native_large:
+        from app.l4_native_observation import run
+        bundle = run(request, compute=modal_app._compute_pipeline_prediction_bundle)
+        assert len(published) == len(callbacks) == 0
+        assert bundle['capacity_contract']['max_symbols'] == 5000
+    else:
+        bundle = modal_app._pipeline_prediction_bundle_impl(request)
+        assert len(published) == len(callbacks) == 1
     assert calls == [['2330', '2317']] * 3
     assert request == original_request
     pipeline._validate_pipeline_modal_feature_bundle_before_writes(state, bundle)
@@ -236,9 +277,11 @@ def test_original_controller_dispatch_modal_engine_and_merge_share_frozen_member
     monkeypatch.setattr(pipeline, 'build_state_space_series_from_payloads', forbidden)
     state['modal_prediction_bundle'] = bundle
     before = deepcopy(bundle)
-    merged = asyncio.run(pipeline.node_l3_formal_predict(state))
+    merged = asyncio.run(pipeline.node_ml_predict(state, research_only=True) if native_large
+                         else pipeline.node_l3_formal_predict(state))
     assert bundle == before
-    assert len(merged['predictions']) == 5
+    assert len(merged['predictions']) == (2207 if native_large else 5)
+    assert set(merged['predictions']) == {row['symbol'] for row in request['payloads']}
     assert merged['predictions']['2454']['l3_model_eligibility']['sequence_models']['DLinear'] == {
         'eligible': False, 'required_sequence_points': 512, 'available_sequence_points': 511,
         'reason': 'active8_sequence_history_contract_unmet_optional_masked'}

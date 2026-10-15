@@ -10,6 +10,7 @@ import time
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csc_matrix, eye, hstack, vstack
+from services.l4_quadratic_refinement import refine
 
 
 def allocate(*, symbols, expected_gross, covariance, current_weights,
@@ -151,6 +152,9 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
         matrix = vstack([matrix,csc_matrix(np.r_[vector,np.zeros(3*n+1)][None,:])],format='csc')
         lhs = np.r_[lhs,-np.inf]
         rhs = np.r_[rhs,effective]
+    # Keep the original feasible region for fixed-membership QP refinement.
+    # Quadratic epigraph cuts constrain the MILP bound, not this exact QP.
+    linear_matrix, linear_lhs, linear_rhs = matrix, lhs, rhs
     # q >= lambda_min*I. For binary membership z, w_i^2 >= 2*a_i*w_i-a_i^2*z_i.
     # These global perspective cuts remain valid for EVERY candidate subset;
     # unlike a tangent at one sparse portfolio they also bound unseen subsets.
@@ -179,6 +183,9 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
         if result.x is None:
             break
         candidate = result.x[:n]
+        candidate = refine(candidate, q=q, objective=objective, current=current,
+                           matrix=linear_matrix, lhs=linear_lhs, rhs=linear_rhs,
+                           bounds=bounds, deadline=deadline)
         positive, negative = np.maximum(candidate-current, 0), np.maximum(current-candidate, 0)
         value = float(candidate @ q @ candidate - mu @ candidate + buy_costs@positive + sell_costs@negative+uncertainty@(positive+negative))
         active = candidate > 1e-7

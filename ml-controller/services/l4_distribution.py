@@ -272,14 +272,17 @@ def head_loss(target, prediction, weights, name):
 
 
 def fit_candidate(rows: list[dict], *, l3_identity: dict, as_of: str,
-                  validation_dates: list[list[str]], lambdas=(.01, .1, 1., 10.)) -> dict:
+                  validation_dates: list[list[str]], lambdas=(.01, .1, 1., 10.), forward_receipts=None) -> dict:
     """Explicit offline training entry point, never invoked by inference.
 
-    All rows must be point-in-time OOF predictions with matured gross labels.
+    Rows are OOF or separately receipt-verified forward predictions with mature labels.
     A fitted candidate is not a serving release. No automatic promotion occurs.
     """
     if not rows or not validation_dates or not l3_identity:
         raise ValueError("l4_distribution_training_contract_missing")
+    if any(row.get('prediction_kind')=='forward' for row in rows):
+        from services.l4_forward_training import validate_forward_rows
+        validate_forward_rows(rows,forward_receipts,identity=l3_identity,as_of=as_of)
     schema = feature_schema(feature_order(rows[0]["features"]))
     keys = set()
     for row in rows:
@@ -287,7 +290,7 @@ def fit_candidate(rows: list[dict], *, l3_identity: dict, as_of: str,
         if key in keys:
             raise ValueError("l4_distribution_duplicate_training_row")
         keys.add(key)
-        if (row.get("feature_schema") != schema or row.get("prediction_kind") != "oof" or row.get("l3_identity") != l3_identity
+        if (row.get("feature_schema") != schema or row.get("prediction_kind") not in ("oof", "forward") or row.get("l3_identity") != l3_identity
                 or not row["l3_training_label_known_max"] < row["date"] < row["label_known_date"] < as_of):
             raise ValueError("l4_distribution_training_time_or_lineage_invalid")
         for key_date in (row["date"], row["label_known_date"], row["l3_training_label_known_max"], as_of):

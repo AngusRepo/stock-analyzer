@@ -212,7 +212,7 @@ def test_nightly_single_B_closes_formal_plan_and_independent_strategy_nav_withou
         return {'status': 'complete'}
     monkeypatch.setattr(paired_nav_daily_adoption, 'run_daily_ev_adoption', adoption)
     monkeypatch.setattr(job, '_execute_oof_lifecycle', forbidden)
-    result = asyncio.run(job._execute_lifecycle(cadence='daily', end_date='2026-09-11',
+    result = asyncio.run(job._execute_account_lifecycle(cadence='daily', end_date='2026-09-11',
         promote=True, dispatch_full_fit=True, expected_cohort_id=None,
         continuation_attempt=0, continuation_only=False))
     assert result['status']=='native_l4_daily_accounted'

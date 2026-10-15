@@ -897,7 +897,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
     return result
 
 
-async def node_ml_predict(state: PipelineStateV2) -> dict:
+async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False) -> dict:
     """
     Single batch_predict call ??modal.map() (or httpx parallel concurrency=20).
     No serial sub-batching: all stocks at once, controller-side parallel.
@@ -1034,7 +1034,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     try:
         from services.cost_tracker import record_compute_profile_event
 
-        await record_compute_profile_event({
+        profile_event = {
             "provider": "gcp_cloud_run",
             "job_name": "daily_pipeline_v2.ml_predict_wait",
             "source": "daily_pipeline_v2.node_ml_predict",
@@ -1047,7 +1047,9 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             "est_usd": 0.0,
             "symbols": n,
             "meta": wait_telemetry,
-        })
+        }
+        if not research_only:
+            await record_compute_profile_event(profile_event)
     except Exception as exc:  # noqa: BLE001 - telemetry must never break serving.
         logger.debug("[Pipeline V2] Modal wait telemetry write skipped: %s", exc)
 
@@ -1407,7 +1409,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         logger.info("[Pipeline V2] learned Active-8 ensemble attached: %s/%s", merged_count, len(pred_map))
 
     from services.active8_nav_execution import attach_execution_receipt
-    nav_execution = attach_execution_receipt(predictions=pred_map, manifest=serving_manifest,
+    nav_execution = None if research_only else attach_execution_receipt(predictions=pred_map, manifest=serving_manifest,
         pool_models=pool_models, run_id=state.get('producer_run_id') or state.get('run_id'),
         run_date=state['run_date'])
     dispersion = build_prediction_dispersion_report(pred_map)
@@ -4315,8 +4317,11 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
     return context
 
 
-async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str) -> dict:
+async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str,
+                                                  research_only: bool = False) -> dict:
     context = state.get("pipeline_modal_serving_context")
+    if research_only and not context:
+        raise ValueError('l4_native_pinned_serving_context_required')
     if not isinstance(context, dict) or context.get("schema_version") != "pipeline-modal-serving-context-v1":
         context = await _attach_pipeline_modal_serving_context(state)
     model_status = dict(context.get("model_status") or {})
@@ -4398,7 +4403,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
     nav_requests = None
     from services.paper_strategy_mode import from_manifest
     single_b = from_manifest(serving_manifest,signal_date=state['run_date'])
-    if isinstance(serving_manifest.get('active8_ensemble'), dict) and not single_b:
+    if isinstance(serving_manifest.get('active8_ensemble'), dict) and not single_b and not research_only:
         from services.paired_nav_l3_dispatch import prepare_candidate_requests, freeze_candidate_selection_context
         from services import kv_client
         from services.paired_nav_collection import shadow_failure
@@ -4522,11 +4527,13 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
             serving_only=True,
         ),
         "serving_coverage": _pipeline_modal_manifest_coverage(serving_manifest),
-        "callback_url": _pipeline_modal_prediction_callback_url(),
-        "callback_token": _pipeline_modal_prediction_callback_token(),
+        **({} if research_only else {
+            "callback_url": _pipeline_modal_prediction_callback_url(),
+            "callback_token": _pipeline_modal_prediction_callback_token(),
+        }),
         "snapshot_recovery_lineage": _json_safe(recovery_lineage) if recovery_lineage else None,
     }
-    if 'paired_nav_atomic_inputs' in state and state['paired_nav_atomic_inputs'].get('status') != 'awaiting_paired_l3_l4_release':
+    if not research_only and 'paired_nav_atomic_inputs' in state and state['paired_nav_atomic_inputs'].get('status') != 'awaiting_paired_l3_l4_release':
         from services.paired_nav_atomic_dispatch import prepare_atomic_request
         from services.paired_nav_collection import shadow_failure
         try:

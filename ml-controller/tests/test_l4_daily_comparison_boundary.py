@@ -57,7 +57,7 @@ def test_daily_branch_keeps_nav_failed_and_discloses_scope(source,monkeypatch):
     monkeypatch.setattr(job,'_execute_daily_nav',lambda **kwargs:deepcopy(nav))
     monkeypatch.setattr(l4_oof_lifecycle,'daily_plan_closure',lambda *args:closure)
     monkeypatch.setattr(d1_domain_client,'client_proxy_for_domain',clients)
-    result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date='2026-09-21',promote=True,
+    result=asyncio.run(job._execute_account_lifecycle(cadence='daily',end_date='2026-09-21',promote=True,
         dispatch_full_fit=False,expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
     assert result['status']=='native_l4_daily_accounted'
     assert result['paired_nav_maturity']['status']=='failed'
@@ -128,7 +128,7 @@ def test_daily_plan_pending_retries_without_promotion(source,monkeypatch):
         raise l4_oof_lifecycle.L4DailyPlanPending('l4_daily_plan_pending_for_signal_date')
     monkeypatch.setattr(l4_oof_lifecycle,'daily_plan_closure',pending)
     monkeypatch.setattr(d1_domain_client,'client_proxy_for_domain',clients)
-    result=asyncio.run(job._execute_lifecycle(
+    result=asyncio.run(job._execute_account_lifecycle(
         cadence='daily',end_date='2026-09-22',promote=False,dispatch_full_fit=False,
         expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
     assert result['status']=='pending'

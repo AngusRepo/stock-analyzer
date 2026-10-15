@@ -13,11 +13,24 @@ def completed_candidate(bucket, run_key, *, identity, manifest_checksum, as_of, 
     from services.l4_tabpack_dispatch import dispatch
     if not re.fullmatch(r'[a-f0-9]{64}', run_key):
         raise ValueError('monthly_completed_run_key_invalid')
+    from services.l4_r2_monthly import PREFIX as R2_PREFIX
+    r2_exists=bucket.blob(R2_PREFIX+run_key+'/completed.json').exists()
     tab_exists=bucket.blob('l4_distribution/tabpack_runs/' + run_key + '/completed.json').exists()
     mlp_exists=bucket.blob('l4_distribution/mlp_median_runs/' + run_key + '/completed.json').exists()
     median_exists=bucket.blob('l4_distribution/tabpack_median16_runs/' + run_key + '/completed.json').exists()
-    if sum((tab_exists, mlp_exists, median_exists)) > 1:
+    if sum((r2_exists,tab_exists,mlp_exists,median_exists))>1:
         raise ValueError('monthly_completed_model_family_ambiguous')
+    if r2_exists:
+        from services.l4_r2_dispatch import completed
+        from services.l4_r2_shadow import validate
+        if expected_family not in (None,'tabpack_r2'):raise ValueError('monthly_completed_model_family_mismatch')
+        result=completed(bucket,run_key)
+        candidate=json.loads(bucket.blob(result['artifact_path']).download_as_bytes())
+        if (candidate['cadence']!='monthly' or candidate['challenger_training_source']['as_of']!=as_of
+                or candidate['training_source']['source_manifest_checksum']!=manifest_checksum):
+            raise ValueError('monthly_candidate_source_mismatch')
+        validate(candidate,identity=identity,signal_date=as_of)
+        return result
     if mlp_exists:
         from services.l4_mlp_dispatch import dispatch
     if median_exists:

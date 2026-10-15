@@ -133,6 +133,7 @@ tabpack_image = (
     .add_local_dir(str(_LOCAL_SOURCE_ROOT / 'vendor' / 'tabpack'), remote_path='/opt/tabpack', copy=True,
                    ignore=lambda p: any(part in {'.venv', '__pycache__', '.cache'} or part.endswith('.egg-info') for part in p.parts))
     .run_commands('uv sync --frozen --no-dev --project /opt/tabpack')
+    .run_commands('uv pip install --python /opt/tabpack/.venv/bin/python polars==1.39.3 google-cloud-storage==2.18.2')
     .env({'STOCKVISION_TABPACK_ROOT': '/opt/tabpack'})
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path='/root/services')
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path='/root/app')
@@ -4716,3 +4717,23 @@ def finalize_l4_tabpack_candidate(payload: dict) -> dict:
     _setup_env()
     from app.l4_tabpack_stages import run_stage
     return run_stage(payload, 'finalize')
+
+
+@app.function(cpu=8, memory=16384, timeout=7200, max_containers=1,
+              scaledown_window=10, retries=0)
+def l4_native_prediction(payload: dict) -> dict:
+    _setup_env()
+    from google.cloud import storage
+    from app.l4_native_observation import run_reference
+    bucket=storage.Client().bucket(get_gcs_bucket_name())
+    return run_reference(payload, read=lambda path:bucket.blob(path).download_as_bytes(),
+                         compute=_compute_pipeline_prediction_bundle)
+
+
+@app.function(image=tabpack_image, gpu='L4', cpu=(8,8), memory=(16384,16384),
+              timeout=28800, max_containers=3, scaledown_window=2, retries=0)
+def fit_l4_r2_seed(payload: dict) -> dict:
+    """Six-hour fit budget plus two-hour independent checkpoint verification."""
+    _setup_env()
+    from app.l4_r2_job import run
+    return run(payload)

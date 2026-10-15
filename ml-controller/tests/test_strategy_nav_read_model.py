@@ -228,8 +228,9 @@ def test_single_b_pre_dispatch_probe_requires_current_source_checked_projection(
 def test_single_b_job_reconciles_strategy_nav_and_display_without_training(monkeypatch):
     import asyncio
     import oof_materialize_job_main as job
-    from services import single_b_daily_closure, trading_config_loader
-    monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={}))
+    from services import single_b_daily_closure, trading_config_loader, l4_forward_refresh
+    monkeypatch.setattr(l4_forward_refresh,'refresh_daily',lambda *a:{'status':'refreshed','training_dispatched':False})
+    monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={'l4Distribution':{}}))
     original={'status':'native_l4_daily_accounted','paired_nav_maturity':{'signal_date':DAY,'promotion_allowed':False}}
     monkeypatch.setattr(single_b_daily_closure,'single_b_daily_closure',lambda *a:deepcopy(original))
     calls=[]
@@ -242,3 +243,4 @@ def test_single_b_job_reconciles_strategy_nav_and_display_without_training(monke
         expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
     assert result['strategy_nav_read_model']['status']=='published' and calls==[DAY]
     assert result['paired_nav_maturity']==original['paired_nav_maturity']
+    assert result['forward_learning_data']['status']=='refreshed'

@@ -27,7 +27,7 @@ def session_policy(packet):
     policy = configuration.get('native_session_policy')
     if policy is not None:
         from services.strategy_nav_distribution import enabled
-        if (policy != STRATEGY_SESSION_POLICY or packet.get('owner') != 'atomic_strategy'
+        if (policy != STRATEGY_SESSION_POLICY or packet.get('owner') not in ('atomic_strategy','l4_r2')
                 or not enabled(configuration.get('trading_config'), signal_date=packet['session_date'])):
             raise ValueError('paired_native_session_policy_invalid')
     return policy

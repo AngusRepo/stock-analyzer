@@ -1,4 +1,5 @@
 import { validSingleBModel } from './paperStrategyMode'
+import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { evaluateBoundedLosses } from './riskChecks/p5Losses'
 import { paperExecutionNow, paperExecutionDate, privateL4ResearchAllowed } from './paperExecutionScope'
@@ -114,6 +115,7 @@ export interface AlphaFrameworkConfig {
 }
 
 export interface TradingConfig {
+  l4R2Learning?: import('./l4R2LearningConfig').L4R2LearningConfig
   l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown>; operating_mode?: import('./paperStrategyMode').SingleBMode; strategy_role?: 'B';sealedExecution?:Record<string,unknown>;sealedExecutionCalibration?:Record<string,unknown> }
 
   fees: {
@@ -1001,6 +1003,7 @@ function mergeConfig(partial: Partial<any>): TradingConfig {
   }
   return {
     ...(partial.l4Distribution ? { l4Distribution: partial.l4Distribution } : {}),
+    ...(partial.l4R2Learning ? { l4R2Learning: partial.l4R2Learning } : {}),
     fees: { ...d.fees, ...partial.fees },
     circuit: { ...d.circuit, ...partial.circuit },
     exit: { ...d.exit, ...partial.exit },
@@ -1622,6 +1625,7 @@ export async function restoreSnapshot(
 export function validateTradingConfig(config: TradingConfig, privateResearch = false): string[] {
   // Optional v2 controls are deliberately unset until their calibration is reviewed.
   const errors: string[] = []
+  errors.push(...validateR2Learning(config.l4R2Learning))
   const isFiniteNumber = (value: unknown): value is number =>
     typeof value === 'number' && Number.isFinite(value)
   if(config.circuit.lossGuard) {

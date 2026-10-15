@@ -111,7 +111,7 @@ def collect_due_execution_frames(*, session_date, query, writer, objects,
             packet = saved['payload']['content']
             if owners is not None and packet.get('owner') not in owners:
                 return None
-            if owners == frozenset({'atomic_strategy'}):
+            if owners is not None and packet.get('owner') in {'atomic_strategy','l4_r2'}:
                 from services.strategy_nav_distribution import enabled
                 if not enabled((packet.get('configuration') or {}).get('trading_config'),
                         signal_date=saved['manifest']['signal_date']):
@@ -212,7 +212,7 @@ def run_strategy_execution_tick(*, session_date):
         raise ValueError('native_tick_trading_config_unverified')
     if not enabled(loaded.config, signal_date=session_date):
         raise ValueError('paired_nav_strategy_tick_requires_single_b')
-    return _run_execution_tick(session_date=session_date, owners=frozenset({'atomic_strategy'}))
+    return _run_execution_tick(session_date=session_date, owners=frozenset({'atomic_strategy','l4_r2'}))
 
 
 def _run_execution_tick(*, session_date, owners=None):
@@ -231,7 +231,7 @@ def _run_execution_tick(*, session_date, owners=None):
             broker_token=os.environ.get('PROXY_SERVICE_TOKEN') or os.environ.get('SHIOAJI_PROXY_TOKEN', ''))
     result = collect_due_execution_frames(session_date=session_date, query=learning.query,
         writer=learning.batch_execute, objects=objects, capture_factory=factory, owners=owners,
-        parallelism=4 if owners == frozenset({'atomic_strategy'}) else 1)
+        parallelism=4 if owners is not None and 'atomic_strategy' in owners else 1)
     if owners is not None and result['status'] == 'ok' and not result['pairs']:
         result['status'] = 'awaiting_strategy_registration'
     return result

@@ -10,8 +10,18 @@ from test_native_paper_sandbox import ROOT,checksum
 from test_l4_distribution_runtime import fixture
 
 
-def test_private_frozen_full_pool_replans_and_serializer_rollback():
-    recs,policy,history=fixture()
+@pytest.mark.parametrize('r2',[False,'candidate','baseline'])
+def test_private_frozen_full_pool_replans_and_serializer_rollback(r2):
+    packet=None
+    if r2:
+        from test_l4_r2_allocation import fixture as r2_fixture
+        recs,policy,history,packet=r2_fixture()
+        packet['comparison_arm']=r2
+        if r2=='baseline':
+            from services.l4_distribution import digest
+            for row in packet['forecast']['forecasts']:row['baseline_gross']=row['relative_mu']
+            packet['forecast']['forecasts_checksum']=digest(packet['forecast']['forecasts'])
+    else:recs,policy,history=fixture()
     policy['scope']='private_research'
     policy['artifact'].pop('release')
     with sqlite3.connect(':memory:') as db:
@@ -25,6 +35,7 @@ def test_private_frozen_full_pool_replans_and_serializer_rollback():
             seeds.append({'stock_id':i,'symbol':r['symbol'],'name':r['symbol'],'date':'2026-09-11','rank':i,'score':50,'reason':'synthetic_seed','created_at':'2026-09-11 13:00:00'})
         raw='\n'.join(db.iterdump())
     inputs={'recommendations':recs,'alpha_policy':{'l4Distribution':policy},'return_history':history}
+    if packet is not None:inputs['r2_shadow']=packet
     prepared=prepare_native_state(base_state={'state_sql':raw,'state_checksum':checksum(raw)},seed_rows=seeds,
         recommendations=recs,signal_date='2026-09-11',trading_config={'l4Distribution':policy},risk_config={'system':{}},
         l4_allocation_inputs=inputs,allocation_snapshot_id='c'*64)
@@ -40,6 +51,9 @@ def test_private_frozen_full_pool_replans_and_serializer_rollback():
         assert result['plan']['execution_scope']=='private_research'
         assert result['plan']['proof']['evaluated_candidate_count']==3
         assert result['plan']['weights']['B']>0
+        if r2:
+            assert result['plan']['model_checksum']==packet['forecast']['baseline_model_checksum' if r2=='baseline' else 'model_checksum']
+            assert result['plan']['r2_evidence']['promotion_allowed'] is False
         saved=json.loads(store.db.execute("SELECT alpha_allocation FROM daily_recommendations WHERE symbol='B'").fetchone()[0])
         assert saved['plan_id']==result['plan']['plan_id']
         account['forbidden_buys']=['A','B']

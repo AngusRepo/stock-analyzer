@@ -238,7 +238,15 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
         cwd=Path(__file__).parents[2] / 'worker', env={**os.environ, 'NAV_ORIGINAL_FIXTURE': str(fixture)},
         capture_output=True, text=True, timeout=90, encoding='utf-8')
     assert checked_room.returncode == 0, checked_room.stdout + checked_room.stderr
-    checked_render = subprocess.run(['node', '--import', 'tsx', '--test', '../frontend/tests/nav-maturity.render.test.tsx'],
+    # The frontend imports a shared worker module across ESM/CJS package scopes.
+    # Bundle as the frontend build does instead of relying on tsx named-export interop.
+    render_bundle = tmp_path / 'nav-maturity.render.cjs'
+    compiled_render = subprocess.run(['node', '-e',
+        "require('esbuild').buildSync({entryPoints:[process.argv[1]],outfile:process.argv[2],bundle:true,platform:'node',format:'cjs',jsx:'automatic'})",
+        '../frontend/tests/nav-maturity.render.test.tsx', str(render_bundle)],
+        cwd=Path(__file__).parents[2] / 'worker', capture_output=True, text=True, timeout=90, encoding='utf-8')
+    assert compiled_render.returncode == 0, compiled_render.stdout + compiled_render.stderr
+    checked_render = subprocess.run(['node', '--test', str(render_bundle)],
         cwd=Path(__file__).parents[2] / 'worker', env={**os.environ, 'NAV_ORIGINAL_FIXTURE': str(fixture),
             'TSX_TSCONFIG_PATH': str(Path(__file__).parents[2] / 'frontend/tsconfig.json')},
         capture_output=True, text=True, timeout=90, encoding='utf-8')
@@ -324,7 +332,7 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
         raise RuntimeError('fixture_oof_unavailable_after_daily_adoption')
     monkeypatch.setattr(worker_config_client, 'worker_fetch', transport)
     monkeypatch.setattr(job, '_execute_oof_lifecycle', unavailable_oof)
-    executed = asyncio.run(job._execute_lifecycle(cadence='daily', end_date=day, promote=True,
+    executed = asyncio.run(job._execute_account_lifecycle(cadence='daily', end_date=day, promote=True,
         dispatch_full_fit=False, expected_cohort_id=None, continuation_attempt=0, continuation_only=False))
     assert order == ['adoption', 'register_opb', 'oof']
     assert executed['paired_nav_maturity']['adoption']['opb']['status'] == 'no_adoption_due'
@@ -345,7 +353,7 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
         return batch_wait
     monkeypatch.setattr(worker_config_client, 'worker_fetch', waiting_transport)
     order.clear()
-    waiting_job = asyncio.run(job._execute_lifecycle(cadence='daily', end_date=day, promote=True,
+    waiting_job = asyncio.run(job._execute_account_lifecycle(cadence='daily', end_date=day, promote=True,
         dispatch_full_fit=False, expected_cohort_id=None, continuation_attempt=0, continuation_only=False))
     adoption = waiting_job['paired_nav_maturity']['adoption']
     assert order == ['waiting_adoption', 'oof']
@@ -364,7 +372,7 @@ def test_real_ten_session_nav_gate_does_not_require_positive_cross_section_diagn
 
     waiting_outcomes['l4_alpha_ev']['comparison']['observation_checksum'] = '0' * 64
     order.clear()
-    corrupt_job = asyncio.run(job._execute_lifecycle(cadence='daily', end_date=day, promote=True,
+    corrupt_job = asyncio.run(job._execute_account_lifecycle(cadence='daily', end_date=day, promote=True,
         dispatch_full_fit=False, expected_cohort_id=None, continuation_attempt=0, continuation_only=False))
     corrupt_adoption = corrupt_job['paired_nav_maturity']['adoption']
     assert corrupt_adoption['status'] == 'incomplete'

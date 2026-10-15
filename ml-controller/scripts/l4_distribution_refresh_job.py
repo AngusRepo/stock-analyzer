@@ -18,7 +18,11 @@ def training_recipe_signature():
         'alpha_model_roster.py','l4_residual_mlp.py','l4_prediction_evaluation.py',
         'l4_mlp_median.py','l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_dispatch.py',
         'l4_mlp_export.py','l4_mlp_dispatch.py','l4_mlp_weights.py','paper_strategy_mode.py',
-        'l4_tabpack_budget_protocol.py','l4_tabpack_median.py','l4_tabpack_median_dispatch.py')
+        'l4_tabpack_budget_protocol.py','l4_tabpack_median.py','l4_tabpack_median_dispatch.py',
+        'l4_r2_monthly.py','l4_r2_dispatch.py','l4_r2_matrices.py','l4_r2_sources.py',
+        'l4_r2_selection.py','l4_r2_shadow.py','l4_r2_protocol.json')
+    names+=('l4_forward_training.py','l4_forward_materialization.py','l4_forward_refresh.py',
+        'l4_native_source_registry.py','l4_native_observation.py','l4_instrument_classification.py')
     sources={name:hashlib.sha256((services/name).read_bytes()).hexdigest() for name in names}
     sources['scripts/l4_distribution_refresh_job.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     return digest(sources)
@@ -50,8 +54,11 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
         from services.trading_config_loader import load_merged_trading_config_with_contract
         from services.paper_strategy_mode import refresh_family
         model_family=refresh_family(load_merged_trading_config_with_contract().config)
-    if model_family not in (None,'tabpack','tabpack_median16','full_mlp_median') or (strategy_role!='B' and model_family is not None):
+    if model_family not in (None,'tabpack','tabpack_median16','full_mlp_median','tabpack_r2') or (strategy_role!='B' and model_family is not None):
         raise ValueError('l4_refresh_model_family_invalid')
+    if model_family=='tabpack_r2' and cadence not in ('monthly','manual'):
+        return dict(status='not_requested',reason='l4_r2_neural_training_monthly_only',
+            model_family=model_family,cadence=cadence,training_dispatched=False,promoted=False)
     from graphs.daily_pipeline_v2 import _load_active8_serving_pool,_load_active8_ensemble_snapshot,_active8_action_authority
     from services.paired_nav_collection import baseline_model_identity
     from services.active8_oof_cohort_materializer import load_verified_oof_manifest,load_oof_prediction_rows
@@ -90,14 +97,32 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
         source_sha = os.environ.get('STOCKVISION_SOURCE_SHA','')
         if len(source_sha) != 40 or any(c not in '0123456789abcdef' for c in source_sha):
             raise ValueError('l4_tabpack_training_source_sha_missing')
-        if model_family=='full_mlp_median':
+        if model_family=='tabpack_r2':
+            from services.l4_r2_monthly import RECIPE
+        elif model_family=='full_mlp_median':
             from services.l4_mlp_dispatch import RECIPE
         elif model_family=='tabpack_median16':
             from services.l4_tabpack_median_dispatch import RECIPE
         else:
             from services.l4_tabpack_dispatch import RECIPE
         recipe=digest({'anchor_recipe':recipe,'B_source_sha':source_sha,'recipe':RECIPE})
+    if model_family=='tabpack_r2':
+        from services.trading_config_loader import load_merged_trading_config_with_contract
+        config=load_merged_trading_config_with_contract().config['l4R2Learning']['monthly']
+        recipe=digest({'source_recipe':recipe,'r2_preparation_config':config})
     run_key=digest({'source':manifest['manifest_checksum'],'identity':identity,'as_of':as_of,'cadence':cadence,'training_recipe':recipe,**({'strategy_role':'B'} if strategy_role=='B' else {})})
+    if model_family=='tabpack_r2':
+        from services.l4_r2_dispatch import dispatch
+        from services.l4_r2_monthly import prepare
+        def prepare_current():
+            # Register the current monthly L3 OOF source before dynamic discovery.
+            # This computes CPU Anchors only, never retrains any L3 base model.
+            _,_,receipt=prepare_anchor(manifest,bucket,parent,identity,as_of,cadence,source,recipe)
+            return prepare(bucket,identity=identity,feature_schema=receipt['feature_schema'],as_of=as_of,
+                config=config,provenance=dict(cadence=cadence,source_manifest_checksum=manifest['manifest_checksum'],
+                    training_recipe_signature=recipe,expected_source_sha=source_sha))
+        return {**dispatch(bucket,run_key,prepare_current),'as_of':as_of,'cadence':cadence,
+                'training_recipe_signature':recipe,'model_family':model_family}
     if strategy_role == 'B':
         if model_family=='full_mlp_median':
             from services.l4_mlp_dispatch import dispatch

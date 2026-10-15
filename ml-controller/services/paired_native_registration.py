@@ -210,6 +210,9 @@ def register_allocation_pair(*, snapshot_id: str, query, writer, domain_queries:
             store.db.close()
     from services.paired_nav_strategy_bundle import arm_configuration,verify_strategy_inputs
     strategy_inputs=verify_strategy_inputs(configuration,parent['payload']['content'],signal_date=signal_date)
+    if allocation.get('owner') == 'l4_r2':
+        from services.l4_r2_paired import verify_input_arms
+        strategy_inputs = verify_input_arms(allocation,parent,query=query)
     if allocation.get('owner') == 'atomic_strategy' and configuration['trading_config'].get('l4Distribution'):
         from services.strategy_nav_distribution import verify_input_arms
         strategy_inputs = verify_input_arms(allocation, parent, query=query)

@@ -27,7 +27,7 @@ class RefreshRequest(BaseModel):
     cadence: str = Field(pattern=r'^(weekly|monthly|manual)$')
     target_l3_artifact_id: str | None = Field(default=None,max_length=400)
     strategy_role: Literal["A", "B"] | None = None
-    model_family: Literal['tabpack', 'tabpack_median16', 'full_mlp_median'] | None = None
+    model_family: Literal['tabpack', 'tabpack_median16', 'full_mlp_median', 'tabpack_r2'] | None = None
     promote: bool = False
     dry_run: bool = False
 

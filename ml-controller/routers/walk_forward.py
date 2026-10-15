@@ -3651,64 +3651,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         req.model_profile_schema_version = TIMEXER_EXO_PROFILE_SCHEMA
     if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE):
         raise HTTPException(409, 'single_b_oof_requires_exogenous_profile')
-    if (cadence == 'daily' and not req.dry_run and scheduler_ticket_id
-            and os.environ.get('OOF_MATERIALIZE_JOB_EXECUTION', '').strip() != '1'):
-        # Validate the same active Paper plan as the job; never reuse an OOF-only
-        # receipt as NAV evidence. Preserve the durable scheduler callback owner.
-        import asyncio
-        from services.single_b_daily_closure import single_b_daily_closure
-        completed = await asyncio.to_thread(single_b_daily_closure, config, req.end_date)
-        if completed and completed.get('status') == 'blocked':
-            from routers.pipeline import _callback_worker
-            run_date = completed['expected_signal_date']
-            run_id = f'active8-oof-daily:{run_date}:resolve-after-prep'
-            reason = completed['reason']
-            await _callback_worker({
-                'task':'active8-oof-daily', 'status':'error',
-                'summary':f'active8_daily_blocked:{reason}:signal_date={run_date}:awaiting=paper_plan_activation:job_dispatched=false',
-                'error':reason, 'run_id':run_id, 'run_date':run_date,
-                'attempt_id':f'pre-dispatch:{scheduler_run_id}',
-                'scheduler_ticket_id':scheduler_ticket_id, 'scheduler_run_id':scheduler_run_id,
-                'metadata':{'cadence':'daily','mode':'oof_lifecycle','lifecycle_status':'blocked',
-                    'dependency_retry_required':False,'pre_dispatch_verified':True,
-                    'expected_signal_date':run_date,'resume_after':'paper_plan_activation'}})
-            return {'status':'blocked','reason':reason,'cadence':cadence,'run_date':run_date,
-                    'run_id':run_id,'job_dispatched':False,'callback_delivered':True}
-        if completed and completed.get('status') == 'native_l4_daily_accounted':
-            from services.strategy_nav_read_model import strategy_nav_display_is_current, strategy_nav_daily_is_current
-            display_date = completed['native_l4_daily_closure']['signal_date']
-            try:
-                display_current = await asyncio.to_thread(strategy_nav_display_is_current,
-                    business_date=display_date)
-                nav_current = await asyncio.to_thread(strategy_nav_daily_is_current,
-                    business_date=display_date) if display_current else None
-                if nav_current is not None:
-                    completed['strategy_comparison_nav'] = nav_current
-            except Exception:
-                display_current = False  # The durable job owns repair and diagnostics.
-            if not display_current or nav_current is None:
-                completed = None
-        if completed and completed.get('status') == 'native_l4_daily_accounted':
-            from routers.pipeline import _callback_worker
-            from oof_materialize_job_main import _summary, _nav_callback_summary
-            run_date = completed['native_l4_daily_closure']['signal_date']
-            run_id = f'active8-oof-daily:{run_date}:resolve-after-prep'
-            await _callback_worker({
-                'task':'active8-oof-daily', 'status':'success',
-                'summary':_summary(run_id, completed, mode='oof_lifecycle'),
-                'run_id':run_id, 'run_date':run_date,
-                'attempt_id':f'pre-dispatch:{scheduler_run_id}',
-                'scheduler_ticket_id':scheduler_ticket_id, 'scheduler_run_id':scheduler_run_id,
-                'metadata':{'cadence':'daily', 'mode':'oof_lifecycle',
-                    'lifecycle_status':'native_l4_daily_accounted',
-                    'native_l4_daily_closure':completed['native_l4_daily_closure'],
-                    'paired_nav_maturity':_nav_callback_summary(completed['paired_nav_maturity']),
-                    'strategy_comparison_nav':_nav_callback_summary(completed['strategy_comparison_nav']),
-                    'nav_retry_required':False, 'pre_dispatch_verified':True}})
-            # The callback, not the dispatch response, closes the original ticket.
-            return {'status':'pending', 'reason':'verified_paper_plan_callback_delivered',
-                    'cadence':cadence, 'run_date':run_date, 'run_id':run_id,
-                    'job_dispatched':False, 'callback_delivered':True}
+    # Daily data maturity is independent of Paper plan activation. The durable
+    # job owns both results; a pre-dispatch account check cannot skip data work.
     bucket = _get_bucket()
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
         try:

@@ -45,6 +45,7 @@ def test_index_rejects_db_loss_and_corrupt_receipt():
 
 def test_continuation_skips_ooF_load_and_writes_and_never_calls_nav(monkeypatch):
     from services import l4_oof_lifecycle as lifecycle, active8_oof_cohort_materializer as materializer
+    from services import training_source_preflight
     from routers import walk_forward
     manifest={'cohort_id':'c','manifest_checksum':'a'*64, 'end_date':'2026-01-02'}
     monkeypatch.setattr(materializer,'load_verified_oof_manifest',lambda *a,**k:(manifest,None))
@@ -54,10 +55,13 @@ def test_continuation_skips_ooF_load_and_writes_and_never_calls_nav(monkeypatch)
     monkeypatch.setattr(walk_forward,'_materialize_nav_with_reviews',lambda **k:pytest.fail('legacy NAV coupling'))
     async def waiting(**kwargs):return {'status':'pending','retry_required':True}
     monkeypatch.setattr(walk_forward,'dispatch_oof_full_fit_training',waiting)
+    preflight=[]
+    monkeypatch.setattr(training_source_preflight,'require_oof_training_sources',lambda bucket,value:preflight.append(value))
     result=asyncio.run(lifecycle.materialize_native_base(manifest_path='fixture',cohort_id='c',as_of='2026-01-10',
         cadence='monthly',dry_run=False,dispatch_full_fit=True,poll_only=True,bucket=Bucket(),client=None))
     assert result['status']=='pending' and result['promotion_allowed'] is False
     assert result['paired_nav_maturity']['accounting_verified'] is False
+    assert preflight==[manifest]
 
 
 @pytest.fixture
@@ -167,8 +171,9 @@ def test_gpu_does_not_build_heads_and_preserves_exact_arrays(monkeypatch):
     ref=stages._object(bucket,root,'prepared.npz',buffer.getvalue())
     stages._seal(bucket,root+'prepared.json',{'payload':payload,'arrays':ref})
     monkeypatch.setattr(l4_tabpack_data,'prepare',lambda *a,**k:pytest.fail('CPU work on GPU'))
-    def train(dataset,output,*,timeout):
+    def train(dataset,output,*,timeout,recipe,seed):
         assert 0<timeout<=3300
+        assert recipe==payload['training_recipe'] and seed==42
         np.testing.assert_array_equal(np.load(dataset/'x_num.npy'),np.concatenate([arrays[n+'_x'] for n in ('train','val','test')]))
         for name in ('result.json','weights.npz','experiment/experiments.json','experiment/online_ensemble_history.json','experiment/online_ensemble_predictions.npz'):
             path=output/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'fixture')

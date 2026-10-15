@@ -117,6 +117,10 @@ def _resolve_allocation_comparison(*, query, allocation, parent):
         from services.paired_nav_route_candidate import verify_route_comparison
         verify_route_comparison(plan, parent)
         kind, baseline_kind = 'route_policy_contrast', 'frozen_incumbent_route'
+    elif owner == 'l4_r2':
+        from services.l4_r2_paired import verify_input_arms
+        verify_input_arms(plan,parent,query=query)
+        kind,baseline_kind='same_l3_full_pool_l4_model_contrast','frozen_incumbent_on_shared_native_pool'
     elif owner == 'allocator_ev_fusion':
         if plan.get('exact_l4_checksum') != plan['baseline_checksum']:
             raise ValueError('paired_nav_comparison_l4_identity_mismatch')

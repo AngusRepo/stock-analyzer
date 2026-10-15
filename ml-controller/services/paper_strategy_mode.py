@@ -11,7 +11,7 @@ STATUS='disabled_by_single_b_policy'
 def refresh_family(config):
     override=((config or {}).get('l4Distribution') or {}).get('candidate_model_family')
     if override is not None:
-        if override not in ('tabpack', 'tabpack_median16', 'full_mlp_median'):
+        if override not in ('tabpack', 'tabpack_median16', 'full_mlp_median', 'tabpack_r2'):
             raise ValueError('paper_candidate_model_family_invalid')
         return override
     mode=((config or {}).get('l4Distribution') or {}).get('operating_mode')

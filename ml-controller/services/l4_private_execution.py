@@ -21,8 +21,14 @@ def allocate_private(store,account):
     policy['runtime']['account']=account
     ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
     captures = []
+    shadow=inputs.get('r2_shadow')
+    if shadow is not None:
+        # This store is the isolated native Paper host. Production callers have
+        # no packet parameter and cannot activate the research scope through KV.
+        policy['scope']='private_research'
     rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,
-        private_research=True, evidence_sink=captures.append)
+        private_research=True, evidence_sink=captures.append,
+        **({'r2_shadow':shadow} if shadow is not None else {}))
     if len(captures) != 1:
         raise ValueError('private_l4_allocation_capture_missing')
     plan=captures[0]['portfolio_plan']

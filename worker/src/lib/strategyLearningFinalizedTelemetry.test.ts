@@ -267,9 +267,9 @@ async function main(): Promise<void> {
     { attemptId: 'attempt-historical-retry' },
   ), 'reconciled')
   assert.equal(readStatus(historicalKv, 'strategy-learning'), 'success')
-  assert.equal(readStatus(historicalKv, 'post-verify-chain'), null)
+  assert.equal(readStatus(historicalKv, 'post-verify-chain'), 'success')
   assert.equal(readStatus(historicalKv, 'evening-chain'), null)
-  assert.equal(historicalDb.postVerifyCloseCheckCount, 0)
+  assert.equal(historicalDb.postVerifyCloseCheckCount, 1)
   assert.equal(historicalDb.releaseCount, 1)
   assert.equal(historicalDb.leaseOwner, null)
 

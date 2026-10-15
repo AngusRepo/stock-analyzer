@@ -38,12 +38,12 @@ async function reconcileStrategyLearningFinalizedTelemetry(
     ...common,
     summary: durableSummary,
   })
-  if (input.runScope === 'historical_replay') return
-
   await logSchedulerResult(kv, 'post-verify-chain', {
     ...common,
     summary: `strategy-learning durable finalize closed; ${durableSummary}`,
   })
+  // Historical evidence can finish this stage without granting root/live credit.
+  if (input.runScope === 'historical_replay') return
   const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
   const closure = await closeEveningChainRootIfComplete(db, {
     businessDate: input.runDate,
@@ -68,10 +68,7 @@ export async function reconcileAndReleaseStrategyLearningFinalizedTelemetry(
     || await reclaimStrategyLearningFinalizedLease(db, identity)
   if (!renewed) return false
 
-  if (
-    input.runScope !== 'historical_replay'
-    && !(await closeStrategyLearningPostVerifyStage(db, identity))
-  ) return false
+  if (!(await closeStrategyLearningPostVerifyStage(db, identity))) return false
 
   await reconcileStrategyLearningFinalizedTelemetry(db, kv, input)
 

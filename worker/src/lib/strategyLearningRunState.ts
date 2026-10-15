@@ -546,7 +546,9 @@ export async function closeStrategyLearningPostVerifyStage(
   input: Pick<StrategyLearningLeaseIdentity, 'businessDate' | 'canonicalRunId'>,
 ): Promise<boolean> {
   // Evidence-only recovery closes execution bookkeeping, never policy promotion.
-  // It must belong to the current successful pipeline and a physical evening root.
+  // A recovered downstream chain may finish despite its parent's Atomic failure.
+  // Verify and post-pipeline must then have independently succeeded for this owner;
+  // the root closure still requires pipeline_execution itself to succeed.
   const policyClosureFence = `(
               (strategy_learning.production_authority_intent=1
                 AND strategy_learning.policy_closure_status='materialized')
@@ -564,7 +566,17 @@ export async function closeStrategyLearningPostVerifyStage(
                    WHERE execution.business_date=pipeline_stage_runs.business_date
                      AND execution.stage='pipeline_execution'
                      AND execution.canonical_run_id=pipeline_stage_runs.canonical_run_id
-                     AND execution.status='success'
+                     AND (execution.status='success' OR (
+                       execution.status='error'
+                       AND (
+                         SELECT COUNT(*) FROM pipeline_stage_runs upstream
+                          WHERE upstream.business_date=pipeline_stage_runs.business_date
+                            AND upstream.canonical_run_id=pipeline_stage_runs.canonical_run_id
+                            AND upstream.stage IN ('post_pipeline_chain','verify_v2')
+                            AND upstream.status='success'
+                            AND upstream.completed_at IS NOT NULL
+                       )=2
+                     ))
                 )
                 AND EXISTS (
                   SELECT 1 FROM scheduler_execution_tickets_v1 root

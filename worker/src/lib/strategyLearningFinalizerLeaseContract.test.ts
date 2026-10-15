@@ -165,7 +165,9 @@ assert.ok(
 
 assert.match(finalizedTelemetry, /strict: true/)
 assert.match(finalizedTelemetry, /if \(input\.runScope === 'historical_replay'\) return/)
-assert.match(finalizedTelemetry, /input\.runScope !== 'historical_replay'[\s\S]*closeStrategyLearningPostVerifyStage/)
+assert.match(finalizedTelemetry, /if \(!\(await closeStrategyLearningPostVerifyStage\(db, identity\)\)\) return false/)
+assert.ok(finalizedTelemetry.indexOf("'post-verify-chain'") < finalizedTelemetry.indexOf("if (input.runScope === 'historical_replay') return"))
+assert.ok(finalizedTelemetry.indexOf("if (input.runScope === 'historical_replay') return") < finalizedTelemetry.indexOf("await import('./eveningChainRootClosure')"))
 assert.doesNotMatch(
   finalizedTelemetry, /export async function reconcileStrategyLearningFinalizedTelemetry/,
 )

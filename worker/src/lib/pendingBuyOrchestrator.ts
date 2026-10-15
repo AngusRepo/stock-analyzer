@@ -637,16 +637,27 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   try {
     const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV))
     const sourceRecoDate = prevDay
-    // A recommendation is actionable only after its own canonical evening pipeline succeeds.
-    // The async callback may otherwise write recommendations after that pipeline has failed.
+    // Require complete formal outputs; an independently failed Atomic NAV capture
+    // is eligible only after exact-run, plan and row verification.
     const sourceStage = await withD1Retry('source_pipeline_execution', () =>
       databaseForDataDomain(env, 'ops').prepare(`
-        SELECT status FROM pipeline_stage_runs
+        SELECT status,last_error,canonical_run_id FROM pipeline_stage_runs
          WHERE business_date=? AND stage='pipeline_execution'
-      `).bind(sourceRecoDate).first<{ status: string }>())
-    if (sourceStage?.status !== 'success') {
+      `).bind(sourceRecoDate).first<{ status: string;last_error:string|null;canonical_run_id:string }>())
+    let formalServingReady = sourceStage?.status === 'success'
+    if (!formalServingReady && sourceStage?.status === 'error' && cfg.l4Distribution) {
+      const { atomicInputFailureOnly,verifyStoredFormalServing } = await import('./premarketServingClosure')
+      if (atomicInputFailureOnly(sourceStage.last_error)) {
+        const plan=await readL4PortfolioPlan(env)
+        if (!plan) throw new Error('premarket_formal_plan_missing')
+        await verifyStoredFormalServing(env,{runId:sourceStage.canonical_run_id,
+          signalDate:sourceRecoDate,error:sourceStage.last_error!,plan})
+        formalServingReady=true
+      }
+    }
+    if (!formalServingReady) {
       await persistPendingBuys(env, pendingDate, [], {
-        status: 'halted',
+        status: 'error',
         reason: `source_pipeline_execution_${sourceStage?.status ?? 'missing'}`,
         prev_day: sourceRecoDate,
       })

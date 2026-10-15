@@ -54,7 +54,7 @@ test('native morning admits L3 HOLD with a positive L4 target and canonical exec
     await withPaperExecutionScope(f.ports,()=>setupMorningPendingBuys(f.env))
     const invalidSource=(await withPaperExecutionScope(f.ports,()=>loadPendingBuySnapshot(f.env,'2026-09-14',{allowFallbackRecent:false}))).result
     assert.equal(invalidSource.pendingBuys.length,0)
-    assert.equal(invalidSource.meta?.status,'halted')
+    assert.equal(invalidSource.meta?.status,'error')
     assert.equal(invalidSource.meta?.error_message,'source_pipeline_execution_error')
     // A private candidate never receives or caches formal release authority.
     assert.equal(f.cfg.l4Distribution.artifact.release,undefined)

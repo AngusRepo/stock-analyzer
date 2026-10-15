@@ -4435,11 +4435,15 @@ def gcs_writer_canary(payload: dict | None = None) -> dict:
     ).strip()
     if not bucket_name:
         raise RuntimeError("modal_gcs_writer_canary_bucket_not_configured")
-    return verify_gcs_object_lifecycle(
+    result = verify_gcs_object_lifecycle(
         storage.Client().bucket(bucket_name),
         workload="modal-gcs-writer",
         run_id=str(payload.get("run_id") or "manual"),
     )
+    if payload.get("finlab_capture_upload"):
+        from tools.finlab_gcs_upload import verify_capture_upload
+        result["capture_upload"] = verify_capture_upload(storage.Client().bucket(bucket_name))
+    return result
 
 
 @app.function(
@@ -4559,6 +4563,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
             workload="finlab-v4-backfill",
             run_id=run_id,
         )
+        from tools.finlab_gcs_upload import verify_capture_upload
+        gcs_preflight["capture_upload"] = verify_capture_upload(storage.Client().bucket(bucket_name))
 
         sys.argv = argv
         with contextlib.redirect_stdout(stdout):

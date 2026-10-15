@@ -27,7 +27,7 @@ class Bucket:
         class Blob:
             generation = None
             def upload_from_filename(self, path, *, if_generation_match, checksum):
-                assert checksum == 'auto'
+                assert checksum in {'md5', 'crc32c'}
                 with bucket.lock:
                     bucket.active += 1
                     bucket.peak = max(bucket.peak, bucket.active)
@@ -100,3 +100,38 @@ def test_failed_input_does_not_publish_metadata_or_reusable_state(tmp_path):
     assert 'run/manifest.json' not in bucket.files
     assert 'run/inference/reference.json' not in bucket.files
     assert state == {}
+
+
+def test_real_storage_sdk_builds_checksummed_upload_without_network(tmp_path):
+    """Exercise the installed SDK request path; only the HTTP transport is fake."""
+    import base64
+    import json
+    from unittest.mock import Mock
+    import google_crc32c
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud import storage
+    import requests
+
+    content = b'captured finlab data'
+    (tmp_path / 'raw.parquet').write_bytes(content)
+    crc = base64.b64encode(google_crc32c.Checksum(content).digest()).decode()
+    requests_seen = []
+
+    def request(method, url, **kwargs):
+        requests_seen.append((method, url, kwargs))
+        assert method == 'POST' and 'ifGenerationMatch=0' in url
+        assert b'"crc32c": "' + crc.encode() + b'"' in kwargs['data']
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps({'name': 'run/raw.parquet', 'generation': '1',
+                                        'size': str(len(content)), 'crc32c': crc}).encode()
+        response.headers['content-type'] = 'application/json'
+        return response
+
+    transport = Mock()
+    transport.request.side_effect = request
+    client = storage.Client(project='offline-test', credentials=AnonymousCredentials(), _http=transport)
+    real_bucket = client.bucket('offline-test')
+    bucket = SimpleNamespace(name=real_bucket.name, list_blobs=lambda **kw: [], blob=real_bucket.blob)
+    result = upload_capture(tmp_path, bucket=bucket, prefix='run', uploaded_files={})
+    assert result['objects'] == 1 and len(requests_seen) == 1

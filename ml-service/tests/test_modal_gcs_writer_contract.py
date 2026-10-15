@@ -34,6 +34,9 @@ def test_finlab_modal_workload_runs_object_lifecycle_preflight_first():
     assert function.index("verify_gcs_object_lifecycle(") < function.index(
         "finlab_v4_remote_backfill.main()"
     )
+    assert function.index("verify_capture_upload(storage.Client().bucket(bucket_name))") < function.index(
+        "finlab_v4_remote_backfill.main()"
+    )
 
 
 def test_modal_exposes_bounded_gcs_writer_canary():

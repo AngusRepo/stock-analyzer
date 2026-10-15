@@ -1,6 +1,7 @@
 """Durable deterministic replay cache, isolated from immutable pipeline evidence."""
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import gzip
 import json
 import re
 from pathlib import Path
@@ -22,10 +23,10 @@ class AtomicReplayCheckpoints:
 
     @staticmethod
     def validate(name, raw):
-        if not re.fullmatch(r'[a-f0-9]{64}\.json', name):
+        if not re.fullmatch(r'[a-f0-9]{64}\.json\.gz', name):
             raise ValueError('atomic_checkpoint_name_invalid')
-        value = json.loads(raw)
-        if (value.get('key') != name[:-5] or not isinstance(value.get('body'), str)
+        value = json.loads(gzip.decompress(raw))
+        if (value.get('key') != name[:-8] or not isinstance(value.get('body'), str)
                 or hashlib.sha256(value['body'].encode()).hexdigest() != value.get('sha256')):
             raise ValueError('atomic_checkpoint_checksum_invalid')
 
@@ -46,7 +47,7 @@ class AtomicReplayCheckpoints:
         if self.bucket is None:
             return
         from google.api_core.exceptions import PreconditionFailed
-        for path in self.directory.glob('*.json'):
+        for path in self.directory.glob('*.json.gz'):
             if path.name in self.uploaded:
                 continue
             raw = path.read_bytes()

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import gzip
 import pytest
 from services.atomic_replay_checkpoints import AtomicReplayCheckpoints
 
@@ -22,8 +23,8 @@ def test_durable_cache_survives_new_process_directory_and_isolates_kernel(tmp_pa
     a=tmp_path/'a';a.mkdir();b=tmp_path/'b';b.mkdir()
     bucket=Bucket();request={'signalDate':'2026-10-14','producerRunId':'exact-original'}
     body=json.dumps({'replacement':1,'candidate':{'status':'materialized'}})
-    name='a'*64+'.json'
-    raw=json.dumps({'key':'a'*64,'body':body,'sha256':hashlib.sha256(body.encode()).hexdigest()}).encode()
+    name='a'*64+'.json.gz'
+    raw=gzip.compress(json.dumps({'key':'a'*64,'body':body,'sha256':hashlib.sha256(body.encode()).hexdigest()}).encode())
     with AtomicReplayCheckpoints(a,runner,request,bucket):
         (a/name).write_bytes(raw)
     with AtomicReplayCheckpoints(b,runner,request,bucket):
@@ -36,5 +37,5 @@ def test_corrupt_cloud_checkpoint_fails_closed(tmp_path):
     runner=tmp_path/'runner.cjs';runner.write_text('kernel')
     directory=tmp_path/'cache';directory.mkdir();bucket=Bucket()
     store=AtomicReplayCheckpoints(directory,runner,{},bucket)
-    bucket.objects[store.prefix+'a'*64+'.json']=b'{}'
+    bucket.objects[store.prefix+'a'*64+'.json.gz']=gzip.compress(b'{}')
     with pytest.raises(ValueError,match='checksum_invalid'):store.restore()

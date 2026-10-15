@@ -4,6 +4,7 @@ import { webcrypto } from 'node:crypto'
 import { replayCanonicalAtomicPopulation } from '../lib/atomicStrategySource'
 import { RestAtomicArtifactReader, RestD1Database } from './cloudflareRestBindings'
 import type { Bindings } from '../types'
+import { atomicReplayCheckpoint } from './atomicReplayCheckpoint'
 
 if (!globalThis.crypto) Object.defineProperty(globalThis, 'crypto', { value: webcrypto })
 console.log = console.warn = () => undefined
@@ -20,7 +21,9 @@ async function main() {
   const env = { DB: readOnly, OPS_DB: readOnly, MULTI_D1_ACTIVE_DOMAINS: 'ops', MULTI_D1_STRICT: 'true',
     ARTIFACTS: { async get(key: string) { const body = await reader.read(key)
       return body == null ? null : { text: async () => body } } } } as unknown as Bindings
-  const result = await replayCanonicalAtomicPopulation(env, input)
+  const checkpoint = process.env.ATOMIC_CHECKPOINT_DIR
+    ? atomicReplayCheckpoint(process.env.ATOMIC_CHECKPOINT_DIR, readFileSync(process.argv[1])) : undefined
+  const result = await replayCanonicalAtomicPopulation(env, input, checkpoint)
   // Bound stdout buffering and V8's maximum single-string length. The wire
   // value remains exactly JSON.stringify(result), including every replacement.
   async function write(text: string) {

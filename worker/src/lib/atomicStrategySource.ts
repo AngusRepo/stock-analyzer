@@ -219,7 +219,8 @@ export async function replayCanonicalAtomicSource(env: Pick<Bindings, 'DB' | 'OP
 /** Load the canonical artifact once, retaining the complete structural population.
  * No return-based selection, new market reads, semantic execution or writes. */
 export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' | 'OPS_DB' | 'ARTIFACTS'>,
-  input: { signalDate: string; producerRunId: string; decisionDeadline: string; continuations?: AtomicContinuationRequest[] }) {
+  input: { signalDate: string; producerRunId: string; decisionDeadline: string; continuations?: AtomicContinuationRequest[] },
+  checkpoint?: { run<T>(identity: unknown, compute: () => Promise<T>): Promise<T> }) {
   const continuations = input.continuations ?? []
   if (!validAtomicContinuations(continuations)) throw new Error('atomic_source_continuations_invalid')
   const { source, identity, funnel_items, ...artifact } = await readCanonicalSource(env, input, true)
@@ -233,11 +234,10 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
   ]
   const completed = new Set<string>()
   for (const { replacement, definitionChecksum } of jobs) {
+    const compute = async () => {
     const replay = await replaySource(replacement, definitionChecksum)
-    if (completed.has(replay.replacement_definition_checksum)) continue
-    completed.add(replay.replacement_definition_checksum)
     const post = replay.post_overlay_replay
-    replacements.push({ replacement, definition_checksum: replay.replacement_definition_checksum,
+    return { replacement, definition_checksum: replay.replacement_definition_checksum,
       ...(replay.weight_policy_version ? { weight_policy_version: replay.weight_policy_version } : {}),
       runtime_context_checksum: replay.runtime_context_checksum, candidate: replay.candidate_core_replay,
       core_upsert_bindings: replay.candidate_core_replay.status === 'materialized'
@@ -249,7 +249,16 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
           final_seed: post.candidate.finalSeed.map(({ symbol }) => ({ symbol })),
           merge_items: post.candidate.finalSeed.map((row, index) => buildScreenerL1MergeItem(row,
             replay.candidate.coarseQueue.find(route => route.symbol === row.symbol), index + 1)) }
-        : { status: 'unavailable' as const, reason: 'requires_candidate_post_route_replay' } })
+        : { status: 'unavailable' as const, reason: 'requires_candidate_post_route_replay' } }
+    }
+    // Source and canonical identity are revalidated on every invocation. Only
+    // deterministic replay output is reusable; no observation/session credit.
+    const row = checkpoint ? await checkpoint.run({ source: source.source_checksum,
+      artifact, signalDate: source.signal_date, producerRunId: source.producer_run_id,
+      replacement, definitionChecksum: definitionChecksum ?? null }, compute) : await compute()
+    if (completed.has(row.definition_checksum)) continue
+    completed.add(row.definition_checksum)
+    replacements.push(row)
   }
   return { schema_version: 'atomic-canonical-population-v1' as const,
     signal_date: source.signal_date, producer_run_id: source.producer_run_id,

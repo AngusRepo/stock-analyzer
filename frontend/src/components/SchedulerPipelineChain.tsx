@@ -82,7 +82,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
       {leading}
       <span className="readiness-task__copy"><strong>{title}</strong>
         <span className="readiness-task__meta"><span className="readiness-task__status" title={statusText}>{statusText?.replace(/^Historical replay · [^·]+ · /, '') || label(job?.lastStatus)}</span><span>業務日 {job?.statusRunDate || '—'}</span></span>
-        {phaseLabel && <span className="text-[10px] text-slate-400">{phaseLabel}</span>}
+        {phaseLabel && <span className="readiness-task__phase text-[10px] text-slate-400">{phaseLabel}</span>}
         <JobRunTiming job={timingJob ?? job} />
       </span>
     </> : <>

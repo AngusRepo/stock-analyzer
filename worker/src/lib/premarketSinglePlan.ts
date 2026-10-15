@@ -10,6 +10,7 @@ import { readCurrentNewsReport } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import type { PremarketPayload } from './premarketEventChain'
+import { atomicInputFailureOnly,verifyStoredFormalServing } from './premarketServingClosure'
 function stable(value:any):string {
   if(Array.isArray(value))return '['+value.map(stable).join(',')+']'
   if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}'
@@ -33,8 +34,16 @@ export async function singlePlanContext(env:Bindings,date:string,signalDate:stri
 }
 export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
  const receipt=input.l3_receipt as {run_id:string;run_date:string}
- const row=await databaseForDataDomain(env,'ops').prepare("SELECT status FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
-   .bind(receipt.run_date,receipt.run_id).first<{status:string}>()
+ const row=await databaseForDataDomain(env,'ops').prepare("SELECT status,last_error FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
+   .bind(receipt.run_date,receipt.run_id).first<{status:string;last_error:string|null}>()
+ if(row?.status==='error' && atomicInputFailureOnly(row.last_error)) {
+   const plan=await readL4PortfolioPlan(env)
+   if(!plan)throw new Error('premarket_wait:l4_publication')
+   await verifyStoredFormalServing(env,{runId:receipt.run_id,signalDate:receipt.run_date,error:row.last_error!,plan})
+   // Only the existing optimizer plan may proceed through the original pending,
+   // daily-review and execution risk gates. The parent/NAV failure remains intact.
+   return plan.plan_id
+ }
  if(row?.status!=='success') {
  const status=await controllerJson<{status:string;reason?:string}>(env,'/pipeline/v2/premarket-resume',{
    method:'POST',jsonBody:{receipt:input.l3_receipt,context:input.morning_context},timeoutMs:60_000})

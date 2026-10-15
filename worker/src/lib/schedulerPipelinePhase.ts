@@ -4,7 +4,7 @@ type PipelineLog = { run_date?: string; run_id?: string; status: string; summary
 export function sealedPremarketDisplay(input: {
   jobId: string; businessDate: string | null; stage?: PipelineRow; log?: PipelineLog;
   ticketStatus?: string;
-}): { lastStatus: 'waiting' | 'success'; summary: string; lastError: undefined;
+}): { lastStatus: 'waiting' | 'success' | 'failed'; summary: string; lastError: string | undefined;
   statusAuthority: 'durable_pipeline_stage'; recoveredFromStatus: null; runId: string;
   lastRun?: string; lastRunAt?: null; lastDuration?: string; nextRun?: string } | null {
   const { jobId, businessDate, stage, log, ticketStatus } = input
@@ -16,13 +16,15 @@ export function sealedPremarketDisplay(input: {
     || !/\bl3_sealed=true\b/.test(log.summary ?? '')
     || !/\bcloud_compute_stopped=true\b/.test(log.summary ?? '')
     || ['error', 'blocked', 'skipped', 'success'].includes(ticketStatus ?? '')) return null
-  const lastStatus = jobId === 'ml-predict' ? 'success' : 'waiting'
+  const atomicFailed = /\batomic_inputs=failed\b/.test(log.summary ?? '')
+  const lastStatus = jobId === 'ml-predict' ? (atomicFailed ? 'failed' : 'success') : 'waiting'
   const summary = jobId === 'ml-predict'
     ? 'L3 預測已完成並封存；未重新執行模型'
     : jobId === 'recommendation'
       ? '等待下一交易日盤前資訊，再執行一次 L4 推薦'
       : 'L3 已封存，等待下一交易日盤前接續；Cloud Run 已停止運算'
-  return { lastStatus, summary, lastError: undefined,
+  return { lastStatus, summary: atomicFailed ? summary + '；Atomic 輸入準備失敗，驗證未通過' : summary,
+    lastError: atomicFailed ? 'paired_nav_atomic_inputs_failed' : undefined,
     runId: stage.canonical_run_id,
     statusAuthority: 'durable_pipeline_stage', recoveredFromStatus: null,
     ...(['ml-predict', 'recommendation'].includes(jobId) ? { lastDuration: 'N/A' } : {}),

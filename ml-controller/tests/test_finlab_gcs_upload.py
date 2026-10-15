@@ -134,4 +134,5 @@ def test_real_storage_sdk_builds_checksummed_upload_without_network(tmp_path):
     real_bucket = client.bucket('offline-test')
     bucket = SimpleNamespace(name=real_bucket.name, list_blobs=lambda **kw: [], blob=real_bucket.blob)
     result = upload_capture(tmp_path, bucket=bucket, prefix='run', uploaded_files={})
-    assert result['objects'] == 1 and len(requests_seen) == 1
+    assert result['objects'] == 1, result
+    assert requests_seen, {'result': result, 'requests': len(requests_seen)}

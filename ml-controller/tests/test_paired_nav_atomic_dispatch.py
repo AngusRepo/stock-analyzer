@@ -297,3 +297,41 @@ def test_no_executable_slate_is_not_no_candidate_or_zero_return(dispatched):
     assert all(r['status'] == 'unavailable' for r in result['definitions'].values())
     state['paired_nav_atomic_ml'] = result
     assert daily_setup_status(state)['ml_unavailable_definition_count'] == 4
+
+
+def test_repeated_reference_prepares_once_without_merging_definition_receipts(dispatched, monkeypatch):
+    from services import paired_nav_atomic_dispatch as dispatch
+    from services.pipeline_slate_artifacts import is_ref
+    _, state, request = dispatched
+    expected = deepcopy(state['paired_nav_atomic_dispatch'])
+    original_load = dispatch.load
+    reads = []
+    def tracked(reference, *args, **kwargs):
+        if is_ref(reference):
+            reads.append(digest(reference))
+        return original_load(reference, *args, **kwargs)
+    monkeypatch.setattr(dispatch, 'load', tracked)
+    result = dispatch.prepare_atomic_request(state, request)
+    assert result == expected
+    assert reads and len(reads) == len(set(reads))
+    contrasts = {row['definition_checksum']: row for row in result['request']['contrasts']}
+    assert contrasts['c'*64]['candidate_key'] == contrasts['e'*64]['candidate_key']
+    assert {'c'*64, 'e'*64, 'f'*64} == set(contrasts)
+
+
+def test_cached_reference_still_checks_each_definition_membership(dispatched, monkeypatch):
+    from services import paired_nav_atomic_dispatch as dispatch
+    _, original, request = dispatched
+    state = deepcopy(original)
+    state.pop('paired_nav_atomic_dispatch')
+    # Isolate this consumer's check: upstream validation has its own contract tests.
+    validated = dispatch.validate_daily_inputs(state['paired_nav_atomic_inputs'],
+        signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
+        formal_stocks=state['active_stocks'])
+    changed = deepcopy(validated)
+    changed['candidate_stocks']['e'*64] = list(reversed(changed['candidate_stocks']['e'*64]))
+    monkeypatch.setattr(dispatch, 'validate_daily_inputs', lambda *args, **kwargs: changed)
+    result = dispatch.prepare_atomic_request(state, request)
+    assert 'e'*64 in result['unavailable']
+    assert 'c'*64 not in result['unavailable']
+    assert {row['definition_checksum'] for row in result['request']['contrasts']} == {'c'*64, 'f'*64}

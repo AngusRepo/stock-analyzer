@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 from services.paired_nav_collection import shadow_failure
 from services.paired_nav_journal import digest, _timestamp
-from services.pipeline_slate_artifacts import load, keep, content_digest, load_inputs
+from services.pipeline_slate_artifacts import load, keep, content_digest, load_inputs, is_ref
 from services.state_space_series import read_frozen_sequence_inputs, VerifiedSequenceInputs
 
 
@@ -48,13 +48,28 @@ def prepare_atomic_request(state, parent):
         raise ValueError('paired_nav_atomic_dispatch_formal_sequence_mismatch')
     slates, contrasts, unavailable, holding_evaluations = {}, [], {}, []
 
-    def add(reference):
+    prepared_refs = {}
+
+    def add(reference, expected_symbols=None):
+        # Cache only a verified reference's small result, never decoded histories.
+        # Include the full reference/scope; every definition still checks membership.
+        reference_key = digest(reference) if is_ref(reference) else None
+        if reference_key is not None and reference_key in prepared_refs:
+            key, symbols = prepared_refs[reference_key]
+            if expected_symbols is not None and symbols != expected_symbols:
+                raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')
+            return key
         payloads = load(reference, state.get('pipeline_slate_scope'))
+        symbols = [p['symbol'] for p in payloads]
+        if expected_symbols is not None and symbols != expected_symbols:
+            raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')
         history, _ = sequence_reader.read(payloads)
-        inputs = {'symbols': [p['symbol'] for p in payloads], 'payloads': payloads, 'sequence_series': history}
+        inputs = {'symbols': symbols, 'payloads': payloads, 'sequence_series': history}
         key = digest(inputs)
         if key not in slates:
             slates[key] = keep({**inputs, 'payloads': keep(payloads, state)}, state)
+        if reference_key is not None:
+            prepared_refs[reference_key] = (key, symbols)
         return key
 
     baseline_key = None
@@ -77,12 +92,11 @@ def prepare_atomic_request(state, parent):
                         or held.get('input_payload_checksum') != content_digest(pre['holding_slates'][scope_id])
                         or [p['symbol'] for p in load(held['payloads'], state.get('pipeline_slate_scope'))] != [p['symbol'] for p in scope['stocks']]):
                     raise ValueError('paired_nav_atomic_holding_l2_unavailable')
-            if ([p['symbol'] for p in load(output['payloads'], state.get('pipeline_slate_scope'))] != [p['symbol'] for p in source['candidate_stocks'][key]]
-                    or output['input_payload_checksum'] != content_digest(pre['slates'][key])):
+            if output['input_payload_checksum'] != content_digest(pre['slates'][key]):
                 raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')
             # The formal input was verified above. A candidate-only raw source
             # failure stays attached to that definition, not to valid peers.
-            candidate_key = add(output['payloads'])
+            candidate_key = add(output['payloads'], [p['symbol'] for p in source['candidate_stocks'][key]])
             baseline_key = baseline_key or add(parent['payloads'])
             supplementary = [{'scope_checksum': scope_id, 'definition_checksum': key, 'arm': scope['arm'],
                 'reference_key': baseline_key if scope['arm'] == 'baseline' else candidate_key,

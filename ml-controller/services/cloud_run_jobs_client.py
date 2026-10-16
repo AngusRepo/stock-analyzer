@@ -53,7 +53,9 @@ class CloudRunJobsClient:
         project_id: str = _PROJECT_ID,
         region: str = _REGION,
         job_name: str = _JOB_NAME,
+        require_source_alignment: bool = False,
     ) -> None:
+        self._require_source_alignment = require_source_alignment
         self._project_id = project_id.strip()
         self._region = region.strip()
         self._job_name = job_name.strip()
@@ -170,6 +172,8 @@ class CloudRunJobsClient:
         deadline = time.monotonic() + deadline_seconds if deadline_seconds is not None else None
         if deadline_seconds is not None and deadline_seconds <= 0:
             raise ValueError('cloud_run_dispatch_deadline_invalid')
+        if self._require_source_alignment and expected_source_sha is None:
+            expected_source_sha = os.environ.get('STOCKVISION_SOURCE_SHA', '').strip()
         if expected_source_sha is not None:
             if deadline is None:
                 self.verify_source_alignment(expected_source_sha)

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/screener", tags=["screener"])
 
 SCREENER_JOB_NAME = os.environ.get("SCREENER_JOB_NAME", "screener-v2").strip() or "screener-v2"
-_screener_jobs_client = CloudRunJobsClient(job_name=SCREENER_JOB_NAME)
+_screener_jobs_client = CloudRunJobsClient(job_name=SCREENER_JOB_NAME, require_source_alignment=True)
 
 
 class ScreenerRunRequest(BaseModel):

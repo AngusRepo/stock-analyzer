@@ -5478,7 +5478,9 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
                     prediction["pipeline_recovery_lineage"] = _json_safe(recovery_lineage)
         from services.premarket_pipeline import enabled as premarket_enabled, seal_l3, l3_handoff_result
         if premarket_enabled():
-            receipt=await asyncio.to_thread(seal_l3,state)
+            from services.pipeline_progress import phase
+            async with phase('seal_l3_results'):
+                receipt=await asyncio.to_thread(seal_l3,state)
             return l3_handoff_result(state,receipt)
         # Paired NAV candidate selection in node_recommend still consumes the
         # immutable Modal inference. Keep it until that selection is frozen.

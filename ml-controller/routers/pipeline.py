@@ -270,6 +270,14 @@ async def pipeline_modal_prediction_callback(request: Request) -> JSONResponse:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="callback payload must be an object")
     callback_status = str(payload.get("status") or "").strip().lower()
+    if callback_status == 'progress':
+        progress = payload.get('progress') or {}
+        if not isinstance(progress, dict) or progress.get('phase') != 'modal_inference' or not payload.get('run_id') or not payload.get('run_date'):
+            raise HTTPException(400, 'invalid_modal_progress')
+        async with httpx.AsyncClient(timeout=3) as client:
+            await _callback_worker({'task':'pipeline-progress','status':'running','run_id':payload['run_id'],
+                'run_date':payload['run_date'],'progress':progress}, client=client)
+        return JSONResponse({'status':'observed'})
     if callback_status == "error":
         run_id = str(payload.get("run_id") or "").strip()
         run_date = str(payload.get("run_date") or "")[:10]

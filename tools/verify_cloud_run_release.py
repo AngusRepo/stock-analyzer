@@ -55,7 +55,8 @@ def verify_modal_runtime(payload: dict[str, Any], source_sha: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify actual Cloud Run release traffic and HTTP provenance")
-    parser.add_argument("mode", choices=["tag-url", "traffic", "health", "paper", "modal"])
+    parser.add_argument("mode", choices=["tag-url", "traffic", "health", "paper", "modal", "inventory"])
+    parser.add_argument('--image')
     parser.add_argument("--service")
     parser.add_argument("--region", default="asia-east1")
     parser.add_argument("--revision")
@@ -67,6 +68,17 @@ def main() -> None:
     parser.add_argument("--scheduler-sha")
     parser.add_argument("--token-secret")
     args = parser.parse_args()
+    if args.mode == 'inventory':
+        if not args.image or not args.source_sha or not args.service:
+            parser.error('inventory requires --image, --source-sha and --service')
+        from application_job_inventory import read_live_inventory, verify_inventory
+        gcloud=shutil.which('gcloud.cmd') or shutil.which('gcloud')
+        def gc(*argv):
+            return subprocess.check_output([gcloud,*argv],timeout=60)
+        env,jobs=read_live_inventory(gc,region=args.region,service=args.service)
+        verified=verify_inventory(controller_env=env,live_jobs=jobs,expected_image=args.image,expected_sha=args.source_sha)
+        print(json.dumps({'status':'verified','jobs':verified}))
+        return
     if args.mode == 'modal':
         if not args.source_sha:
             parser.error('modal verification requires the exact target --source-sha')

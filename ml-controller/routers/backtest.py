@@ -123,7 +123,7 @@ async def trigger_weekly_backtest_research_bundle(
     }
     from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
     try:
-        execution = CloudRunJobsClient(job_name=BACKTEST_RESEARCH_JOB_NAME).run_job(
+        execution = CloudRunJobsClient(job_name=BACKTEST_RESEARCH_JOB_NAME, require_source_alignment=True).run_job(
             env_overrides=env_overrides,
             reject_if_running=True,
         )

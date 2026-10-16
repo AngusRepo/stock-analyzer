@@ -490,7 +490,7 @@ def trigger_parameter_candidates_validation_chain_job(
         ) from e
 
     try:
-        execution = CloudRunJobsClient(job_name=PARAMETER_VALIDATION_JOB_NAME).run_job(
+        execution = CloudRunJobsClient(job_name=PARAMETER_VALIDATION_JOB_NAME, require_source_alignment=True).run_job(
             env_overrides=env_overrides,
             reject_if_running=False,
         )

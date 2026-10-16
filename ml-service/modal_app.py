@@ -2301,12 +2301,14 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         hydrated_payload = _hydrate_pipeline_prediction_request_reference(callback_payload)
         callback_payload = hydrated_payload
         from app.pipeline_prediction_stages import Journal, GCSStore, Suspended, REF_SCHEMA
+        from app.pipeline_stage_telemetry import observe_prediction
         if payload.get('schema_version') != REF_SCHEMA:
-            return _pipeline_prediction_bundle_impl(hydrated_payload)
+            with observe_prediction(hydrated_payload):
+                return _pipeline_prediction_bundle_impl(hydrated_payload)
         from google.cloud import storage
         journal = Journal(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload)
         try:
-            with journal.driver():
+            with journal.driver(), observe_prediction(hydrated_payload):
                 result = _pipeline_prediction_bundle_impl(hydrated_payload)
                 if result.get('callback_status', {}).get('status') == 'ok':
                     journal.store.put(journal.root + '/terminal', {'status': 'callback_accepted'})

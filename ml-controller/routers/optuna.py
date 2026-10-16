@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/optuna", tags=["optuna"])
 OPTUNA_D1_READ_CHUNK_SIZE = 80
 OPTUNA_JOB_NAME = os.environ.get("OPTUNA_JOB_NAME", "optuna-research-sweep").strip() or "optuna-research-sweep"
-_optuna_jobs_client = CloudRunJobsClient(job_name=OPTUNA_JOB_NAME)
+_optuna_jobs_client = CloudRunJobsClient(job_name=OPTUNA_JOB_NAME, require_source_alignment=True)
 
 
 class OptunaReq(BaseModel):

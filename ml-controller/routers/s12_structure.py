@@ -20,7 +20,7 @@ router = APIRouter(prefix="/s12-structure", tags=["s12-structure"])
 S12_STRUCTURE_JOB_NAME = os.environ.get(
     "S12_STRUCTURE_JOB_NAME", "s12-structure-batch",
 ).strip() or "s12-structure-batch"
-_jobs = CloudRunJobsClient(job_name=S12_STRUCTURE_JOB_NAME)
+_jobs = CloudRunJobsClient(job_name=S12_STRUCTURE_JOB_NAME, require_source_alignment=True)
 
 
 class S12StructureRunRequest(BaseModel):

@@ -133,7 +133,7 @@ def _preflight_packet(req: MonthlyPymooRunReq) -> dict[str, Any]:
 
 def _strategy_mining_job_client() -> CloudRunJobsClient:
     job_name = os.environ.get("STRATEGY_MINING_JOB_NAME", "").strip()
-    return CloudRunJobsClient(job_name=job_name)
+    return CloudRunJobsClient(job_name=job_name, require_source_alignment=True)
 
 
 @router.post("/monthly_pymoo/run")

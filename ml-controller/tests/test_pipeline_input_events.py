@@ -129,7 +129,7 @@ def test_pre_l2_helper_defers_without_polling_or_running_l2(store,monkeypatch):
     assert result['deferred_reason']=='input_snapshot'
 
 
-def test_real_node_runner_keeps_expected_input_wait_blocked(monkeypatch):
+def test_real_node_runner_reports_expected_dependency_as_waiting(monkeypatch):
     from graphs import daily_pipeline_v2 as graph
     from services import pipeline_progress as progress
     async def report(*args,**kwargs):pass
@@ -139,7 +139,7 @@ def test_real_node_runner_keeps_expected_input_wait_blocked(monkeypatch):
         raise events.InputDeferred('fixture-stage','snapshot')
     with pytest.raises(events.InputDeferred):
         asyncio.run(graph._run_pipeline_nodes({},[node_build_payloads]))
-    assert progress._completed[-1]['status']=='blocked'
+    assert progress._completed[-1]['status']=='waiting'
 
 
 def test_snapshot_dispatch_is_nonblocking_and_join_does_not_poll(monkeypatch, store):

@@ -72,7 +72,7 @@ def trigger_weekly_operations(req: WeeklyOperationsRequest):
         raise HTTPException(422, 'weekly_operations_date_invalid') from exc
     if bool(req.scheduler_ticket_id) != bool(req.scheduler_run_id):
         raise HTTPException(422, 'weekly_operations_ticket_identity_incomplete')
-    execution = CloudRunJobsClient(job_name=os.environ.get('OPTUNA_RESEARCH_JOB_NAME', 'optuna-research-sweep')).run_job(
+    execution = CloudRunJobsClient(job_name=os.environ.get('OPTUNA_RESEARCH_JOB_NAME', 'optuna-research-sweep'), require_source_alignment=True).run_job(
         env_overrides={'OPTUNA_JOB_MODE':'weekly_operations', 'OPTUNA_RUN_DATE':req.run_date,
             'OPTUNA_RUN_ID':req.run_id, 'OPTUNA_CALLBACK_TASK':req.task,
             'OPTUNA_SCHEDULER_TICKET_ID':req.scheduler_ticket_id or '',

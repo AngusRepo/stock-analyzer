@@ -47,7 +47,7 @@ def test_explicit_blocked_result_is_reported_without_failing_node(monkeypatch):
     assert progress.node_result_status('node_recommend',{'status':'blocked'})=='completed'
 
 
-def test_expected_dependency_keeps_original_exception_and_blocked_telemetry(monkeypatch):
+def test_expected_dependency_keeps_original_exception_and_waiting_telemetry(monkeypatch):
     class DependencyPending(Exception): pass
     async def report(*args,**kwargs): pass
     monkeypatch.setattr(progress,'report',report)
@@ -57,4 +57,4 @@ def test_expected_dependency_keeps_original_exception_and_blocked_telemetry(monk
             raise DependencyPending('same dependency')
     with pytest.raises(DependencyPending,match='same dependency'):
         asyncio.run(run())
-    assert progress._completed[0]['status']=='blocked'
+    assert progress._completed[0]['status']=='waiting'

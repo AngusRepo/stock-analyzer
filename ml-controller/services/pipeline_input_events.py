@@ -316,6 +316,8 @@ def _complete_prep(store, stage, path):
                 age = (datetime.now(timezone.utc) - max(times)).total_seconds()
                 if age > 2100:
                     raise ValueError('pipeline_input_prep_completion_timeout:' + str(idx))
+    from services.pipeline_progress import report_batches
+    report_batches(stage, path, results)
     if any(result is None for result in results):
         return False
     # Only one callback reads the large outputs. Other batch callbacks wait for

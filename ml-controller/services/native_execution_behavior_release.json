@@ -5,7 +5,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved repair commit push deploy and resume failed stage before shutdown after L3",
-  "review": "audits/chain-improvement-20261016/release-20261017-reconcile/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:pipeline-l3-reconcile-20261017"
+  "authorization": "Wei explicitly approved repair commit push deploy resume failed stage and shutdown after full L3 completion",
+  "review": "audits/chain-improvement-20261016/release-20261017-atomic-resume/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:pipeline-atomic-resume-20261017"
 }

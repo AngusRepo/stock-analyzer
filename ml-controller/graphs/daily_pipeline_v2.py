@@ -5515,6 +5515,13 @@ async def run_pipeline_v2_from_premarket(input_uri: str) -> dict:
     state=await resume(input_uri,nodes=[node_compute_personas,node_recommend,node_llm_reasons,node_write_d1,
         node_paired_nav_setup,node_export_dataset_snapshot],
         merge=_merge_pipeline_state_update)
+    from services.historical_atomic_exclusion import reconcile
+    collection=await asyncio.to_thread(reconcile,state,query=LEARNING_D1_CLIENT.query)
+    if isinstance(collection,dict) and collection.get('historical_exclusion'):
+        from services.premarket_pipeline import save_historical_exclusion
+        await asyncio.to_thread(save_historical_exclusion,state,collection['historical_exclusion'])
+        state['paired_nav_collection']=collection
+        state.setdefault('metrics',{})['historical_atomic_exclusion']=collection['historical_exclusion']
     result=_pipeline_terminal_result(state,run_date=state['run_date'],elapsed=asyncio.get_event_loop().time()-t0)
     from services.premarket_pipeline import record_nonretryable_inputs
     await asyncio.to_thread(record_nonretryable_inputs,state,result)

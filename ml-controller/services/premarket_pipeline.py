@@ -11,6 +11,8 @@ from services.pipeline_async_state_transport import (STATE_SCHEMA_V2, build_pipe
 from services.premarket_information import build_information_delta
 
 OWNER = 'premarket_once_v1'
+SERVING_PHASES=('node_compute_personas','node_recommend','node_llm_reasons','node_write_d1',
+    'node_paired_nav_setup','node_export_dataset_snapshot')
 def enabled():
     return os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == OWNER
 def digest(value):
@@ -217,6 +219,52 @@ def record_nonretryable_inputs(state, result, *, client=None):
     b=bucket(client)
     immutable(b.blob(prefix(receipt['run_date'],receipt['run_id'])+'/nonretryable-inputs.json'),json_bytes(value))
 
+def save_historical_exclusion(state, receipt, *, client=None):
+    from services.historical_atomic_exclusion import valid
+    collection={**state['paired_nav_collection'],'status':'historical_not_prospective','historical_exclusion':receipt}
+    if not valid(collection):raise ValueError('paired_nav_invalid_historical_exclusion')
+    immutable(bucket(client).blob(prefix(state['run_date'],state['producer_run_id'])+'/historical-atomic-exclusion.json'),json_bytes(receipt))
+
+def dispatch_terminal_reconciliation(receipt,context,*,jobs_client,client=None):
+    """One explicit receipt-only continuation; normal failure fence stays held."""
+    now=datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+    if not enabled() or (receipt['run_date'],context.get('trade_date'),now.date().isoformat())!=('2026-10-15','2026-10-16','2026-10-16'):
+        raise ValueError('premarket_terminal_reconciliation_scope_invalid')
+    b=bucket(client);p=prefix(receipt['run_date'],receipt['run_id'])
+    if receipt!=read_seal(receipt['run_date'],receipt['run_id'],client=client):raise ValueError('premarket_seal_mismatch')
+    raw=json_bytes({'receipt':receipt,'context':context})
+    if b.blob(p+'/morning-input.json').download_as_bytes()!=raw:raise ValueError('premarket_terminal_reconciliation_input_changed')
+    for name in SERVING_PHASES:
+        if not b.blob(p+'/phases/'+name+'.json.gz').exists():raise ValueError('premarket_terminal_reconciliation_incomplete')
+    fence=json.loads(b.blob(p+'/nonretryable-inputs.json').download_as_bytes())
+    from services.historical_atomic_exclusion import ERRORS
+    if (fence.get('run_id')!=receipt['run_id'] or fence.get('l3_checksum')!=receipt['checksum']
+        or fence.get('context_checksum')!=context['checksum'] or set(fence.get('original_error','').split('; '))!=ERRORS
+        or fence.get('reason')!='frozen_historical_atomic_comparison_not_retryable'):
+        raise ValueError('premarket_terminal_reconciliation_fence_invalid')
+    # Check the original context at its capture clock; no phase may execute.
+    validate_context(receipt,context,now=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))+timedelta(seconds=1))
+    claim=b.blob(p+'/terminal-reconciliation.json')
+    identity={'input_checksum':hashlib.sha256(raw).hexdigest(),'run_id':receipt['run_id'],'run_date':receipt['run_date']}
+    required={'PIPELINE_PREMARKET_COMPLETED_ONLY':'1','PIPELINE_PREMARKET_INPUT_GCS_URI':f'gs://{b.name}/{p}/morning-input.json'}
+    try:claim.upload_from_string(json_bytes({**identity,'status':'dispatching'}),if_generation_match=0)
+    except PreconditionFailed:
+        old=json.loads(claim.download_as_bytes())
+        if any(old.get(k)!=v for k,v in identity.items()):raise ValueError('premarket_terminal_reconciliation_identity_changed')
+        observed=jobs_client.pipeline_execution_status(run_date=receipt['run_date'],run_id=receipt['run_id'],
+            execution_name=old.get('execution_name',''),required_env=required)
+        if old.get('execution_name'):return {**old,'observed_state':observed.get('state')}
+        if not observed.get('execution_name'):return {**old,'status':'reconciliation_required','reason':'premarket_dispatch_outcome_unknown'}
+        result={**identity,'status':'dispatched','execution_name':observed['execution_name']}
+        claim.reload();claim.upload_from_string(json_bytes(result),if_generation_match=claim.generation);return result
+    execution=jobs_client.run_job(env_overrides={**required,'PIPELINE_PREMARKET_RESUME_MODE':'1',
+        'PIPELINE_MODAL_CONTINUATION_MODE':'0','PIPELINE_SNAPSHOT_RECOVERY_MODE':'0',
+        'PIPELINE_INPUT_CONTINUATION_MODE':'0','PIPELINE_SAVED_L2_RESUME_MODE':'0',
+        'PIPELINE_RUN_DATE':receipt['run_date'],'PIPELINE_PARENT_RUN_ID':receipt['run_id']},
+        reject_if_running=True,expected_source_sha=os.environ.get('STOCKVISION_SOURCE_SHA'))
+    result={**identity,'status':'dispatched','execution_name':execution.execution_name}
+    claim.reload();claim.upload_from_string(json_bytes(result),if_generation_match=claim.generation);return result
+
 from services.paired_nav_read_cache import verified_reads_async
 
 @verified_reads_async
@@ -224,7 +272,14 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
     b=bucket(client);root='gs://'+b.name+'/'
     if not input_uri.startswith(root):raise ValueError('premarket_input_bucket_mismatch')
     body=json.loads(b.blob(input_uri[len(root):]).download_as_bytes());receipt,context=body['receipt'],body['context']
-    if postwrite_only:
+    completed_only=os.environ.get('PIPELINE_PREMARKET_COMPLETED_ONLY')=='1'
+    if completed_only:
+        if postwrite_only or tuple(n.__name__ for n in nodes)!=SERVING_PHASES:
+            raise ValueError('premarket_terminal_reconciliation_phases_invalid')
+        p=prefix(receipt['run_date'],receipt['run_id'])
+        if not all(b.blob(p+'/phases/'+name+'.json.gz').exists() for name in SERVING_PHASES):
+            raise ValueError('premarket_terminal_reconciliation_incomplete')
+    if postwrite_only or completed_only:
         # Research cannot open a second allocation window. Validate the sealed
         # capture time, then require both serving phase receipts before work.
         captured=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))

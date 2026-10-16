@@ -323,6 +323,9 @@ def pipeline_shadow_errors(collection):
     """Terminal truth: WAIT/explicit abstention can close, absent setup cannot."""
     if not isinstance(collection, dict):
         return ['paired_nav:collection_missing']
+    if 'historical_exclusion' in collection:
+        from services.historical_atomic_exclusion import valid
+        return [] if valid(collection) else ['paired_nav:invalid_historical_exclusion']
     from services.paper_strategy_mode import STATUS,valid_disabled_receipt
     if collection.get('status')==STATUS:
         return [] if valid_disabled_receipt(collection) else ['paired_nav:invalid_single_strategy_receipt']

@@ -496,3 +496,11 @@ async def oof_input_dependency_callback(request: Request):
         return await asyncio.to_thread(dispatch_ready, str(payload.get('stage_path') or ''))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+@router.post('/v2/premarket-terminal-reconcile')
+async def premarket_terminal_reconcile(request:Request):
+    _check_service_token(request)
+    from services.premarket_pipeline import dispatch_terminal_reconciliation
+    body=await request.json()
+    try:return await asyncio.to_thread(dispatch_terminal_reconciliation,body['receipt'],body['context'],jobs_client=_jobs_client)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc

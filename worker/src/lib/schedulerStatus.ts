@@ -900,6 +900,11 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     .bind(...dates).all<{business_date:string;cursor_key:string|null}>()
     .then(r => new Map((r.results ?? []).map(row => [row.business_date,row])))
     .catch(() => new Map<string,{cursor_key:string|null}>())
+  const batchProgressPromise = opsDb.prepare(`SELECT business_date,canonical_run_id,cursor_key
+    FROM pipeline_stage_runs WHERE stage IN ('pipeline_batches:input_prep','pipeline_batches:prepare_prediction_request')
+      AND business_date IN (${dates.map(() => '?').join(',')})`)
+    .bind(...dates).all<{business_date:string;canonical_run_id:string;cursor_key:string|null}>()
+    .then(r=>r.results??[]).catch(()=>[])
   const progressPromise = opsDb.prepare(`SELECT business_date,canonical_run_id,cursor_key
     FROM pipeline_stage_runs WHERE stage='pipeline_progress' AND business_date IN (${dates.map(() => '?').join(',')})`)
     .bind(...dates).all<{business_date:string;canonical_run_id:string;cursor_key:string|null}>()
@@ -1182,7 +1187,10 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
-      pipelineProgress,
+      pipelineProgress: pipelineProgress ? { ...pipelineProgress, run_id: durableState?.canonical_run_id, run_date: resolvedDisplay.statusRunDate } : null,
+      pipelineBatches: def.id === 'pipeline' ? (await batchProgressPromise)
+        .filter(row=>row.business_date===resolvedDisplay.statusRunDate && row.canonical_run_id===durableState?.canonical_run_id)
+        .flatMap(row=>{try { return [JSON.parse(row.cursor_key??'')] } catch { return [] }}) : undefined,
       finlabProgress: def.id === 'finlab-v4-backfill' ? finlabProgressForDisplay(displayLog,
         (await finlabProgressPromise).get(resolvedDisplay.statusRunDate ?? '')) : null,
       summary: progressActive ? `phase=${pipelineProgress.phase} phase_status=${pipelineProgress.status} execution=${pipelineProgress.execution_id}`

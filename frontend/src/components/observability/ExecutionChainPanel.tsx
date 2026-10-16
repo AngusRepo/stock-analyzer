@@ -40,9 +40,10 @@ import DailyReadinessBoard from './DailyReadinessBoard'
 import { pipelinePreparationLabel, PipelinePhaseDetails, SchedulerStageCard } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
 import { FINLAB_STAGE_CARDS, expandFinlabStages, finlabStageCards } from '@/lib/finlabStageCards'
+import { PIPELINE_STAGE_CARDS, expandPipelineStages, pipelineStageCards, pipelineRunSummary } from '@/lib/pipelineStageCards'
 import './ExecutionChainPanel.css'
 
-type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped'
+type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped' | 'stale'
 
 type StageDefinition = {
   id: string
@@ -84,6 +85,7 @@ const STAGES: Record<string, StageDefinition> = {
   'regime-compute': { id: 'regime-compute', label: 'HMM regime', icon: Activity },
   'allocator-ev-readiness': { id: 'allocator-ev-readiness', label: 'Allocator EV', icon: CircleGauge },
   'strategy-learning-mature-evidence': { id: 'strategy-learning-mature-evidence', label: '成熟策略證據', icon: BookOpenCheck },
+  ...Object.fromEntries(PIPELINE_STAGE_CARDS.map(card => [card.id, { id: card.id, label: card.label, icon: card.id === 'pipeline-l3' ? BrainCircuit : Layers3 }])),
   pipeline: { id: 'pipeline', label: 'Pipeline · 整體進度', icon: Workflow },
   'ml-predict': { id: 'ml-predict', label: 'ML Predict · L3 預測', icon: BrainCircuit },
   recommendation: { id: 'recommendation', label: 'Recommendation · L4 推薦', icon: Target },
@@ -306,6 +308,7 @@ if (DUPLICATE_SCOPE_JOB_IDS.length > 0) {
 }
 
 const STATUS_LABEL: Record<VisualStatus, string> = {
+  stale: '待確認',
   completed: 'Completed',
   noop: 'Checked · no action',
   running: 'Running',
@@ -317,6 +320,7 @@ const STATUS_LABEL: Record<VisualStatus, string> = {
 }
 
 const STATUS_ICON: Record<VisualStatus, LucideIcon> = {
+  stale: CircleHelp,
   completed: Check,
   noop: Check,
   running: LoaderCircle,
@@ -351,6 +355,7 @@ function isExpectedEvidenceNoop(job?: SchedulerJob): boolean {
 
 function visualStatus(job?: SchedulerJob): VisualStatus {
   if (!job) return 'not_started'
+  if (job.stageVisualStatus) return job.stageVisualStatus
   if (job.lastStatus === 'success') return 'completed'
   if (isAllocatorSafeAbstention(job)) return 'noop'
   if (isExpectedEvidenceNoop(job)) return 'noop'
@@ -523,6 +528,7 @@ export default function ExecutionChainPanel({
     const next = new Map(attemptAware)
     if (scope.id === 'daily_readiness') {
       finlabStageCards(next.get('finlab-v4-backfill')).forEach(job => next.set(job.id, job))
+      pipelineStageCards(jobMap.get('pipeline')).forEach(job => next.set(job.id, job))
       const rootClosure = next.get('evening-chain')
       if (rootClosure) {
         next.set('evening-closure', eveningClosureDisplay(rootClosure))
@@ -544,7 +550,7 @@ export default function ExecutionChainPanel({
     })
     return next
   }, [jobMap, scope])
-  const stageIds = scope.id === 'daily_readiness' ? scopeExecutionStageIds(scope).flatMap(expandFinlabStages) : scopeExecutionStageIds(scope)
+  const stageIds = scope.id === 'daily_readiness' ? scopeExecutionStageIds(scope).flatMap(expandFinlabStages).flatMap(expandPipelineStages) : scopeExecutionStageIds(scope)
   const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
   const orchestratorStatus = visualStatus(orchestratorJob)
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
@@ -571,7 +577,7 @@ export default function ExecutionChainPanel({
     job && visualStatus(job) !== 'skipped' && !STAGES[job.id]?.optional,
   ))
   // Missing receipts count as incomplete; do not silently shrink the daily denominator.
-  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().flatMap(expandFinlabStages).map(id=>scopedJobMap.get(id))
+  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().flatMap(expandFinlabStages).flatMap(expandPipelineStages).map(id=>scopedJobMap.get(id))
     : expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0
@@ -711,7 +717,7 @@ export default function ExecutionChainPanel({
             </div>
           )}
           {scope.id === 'daily_readiness' ? <DailyReadinessBoard
-            pipelineSummary={pipelinePreparationLabel(scopedJobMap.get('pipeline'))}
+            pipelineSummary={pipelineRunSummary(jobMap.get('pipeline'))}
             stageView={id => ({ label: STAGES[id]?.label ?? id, status: visualStatus(scopedJobMap.get(id)),
               statusLabel: statusLabel(scopedJobMap.get(id)), date: scopedJobMap.get(id)?.statusRunDate })}
             renderStage={(id) => {
@@ -719,7 +725,7 @@ export default function ExecutionChainPanel({
               const job = scopedJobMap.get(id)
               const status = visualStatus(job)
               const Icon = definition.icon
-              return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={job?.lastStatus === 'running' ? job : jobMap.get(id) ?? job}
+              return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={job?.stageCard || job?.finlabPhase || job?.lastStatus === 'running' ? job : jobMap.get(id) ?? job}
                 overview visualState={status} justCompleted={justCompleted.has(id)}
                 leading={<span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>}
                 statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}

@@ -75,3 +75,10 @@
 @media(max-width: 1000px) { .daily-readiness-board__phase { grid-template-columns: minmax(0,1fr); } .daily-readiness-board__phase-info { display: block; } }
 @media(max-width: 620px) { .daily-readiness-board__stages, .daily-readiness-board__supporting .daily-readiness-board__stages { grid-template-columns: minmax(0,1fr); } }
 @media(prefers-reduced-motion: reduce) { .daily-readiness-board *, .daily-readiness-board *::before { animation: none !important; } }
+
+@media(min-width: 1001px) {
+  .daily-readiness-board__phase.is-models { grid-column: 1 / -1; grid-template-columns: minmax(0,1fr); }
+  .daily-readiness-board__phase.is-models .daily-readiness-board__stages { grid-template-columns: repeat(4,minmax(0,1fr)); }
+  .daily-readiness-board__phase.is-premarket { grid-column: 1 / -1; }
+}
+.readiness-task.is-not_started, .readiness-task.is-stale { color: var(--muted-foreground); }

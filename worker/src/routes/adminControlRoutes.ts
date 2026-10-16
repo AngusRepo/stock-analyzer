@@ -716,6 +716,13 @@ async function handleSchedulerCallback(c: any) {
     const accepted = await recordFinLabStageProgress(databaseForDataDomain(c.env, 'ops'), progress)
     return c.json({ success: accepted, ignored: !accepted })
   }
+  if (body.task === 'pipeline-batch-progress') {
+    const { validPipelineBatchProgress, recordPipelineBatchProgress } = await import('../lib/pipelineBatchProgress')
+    if (!callbackRunDate || !callbackRunId || !validPipelineBatchProgress(body.progress))
+      return c.json({ error: 'invalid_pipeline_batch_progress' }, 400)
+    const accepted = await recordPipelineBatchProgress(databaseForDataDomain(c.env,'ops'),callbackRunDate,callbackRunId,body.progress)
+    return c.json({ success: accepted, ignored: !accepted })
+  }
   if (body.task === 'pipeline-progress') {
     const { recordPipelineProgress, validPipelineProgress } = await import('../lib/pipelineProgress')
     if (!callbackRunDate || !callbackRunId || !validPipelineProgress(body.progress))
@@ -1131,6 +1138,40 @@ async function handleSchedulerCallback(c: any) {
           detail: message,
         }, 503)
       }
+    }
+  }
+
+  if (
+    ['weekly-optuna', 'monthly-optuna', 'weekly-audit', 'model-ic-full-check'].includes(String(body.task))
+    && ['success', 'error', 'skipped'].includes(String(body.status))
+  ) {
+    if (!callbackSchedulerTicketId || !callbackSchedulerRunId) {
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'optuna_callback_missing_scheduler_ticket_identity',
+      }, 400)
+    }
+    try {
+      const { settleResearchCallback } = await import('../lib/researchCallbackSettlement')
+      await settleResearchCallback(databaseForDataDomain(c.env, 'ops'), {
+        task: String(body.task), date: callbackRunDate ?? '',
+        ticketId: callbackSchedulerTicketId,
+        runId: callbackSchedulerRunId,
+        status: body.status as 'success' | 'error' | 'skipped',
+        summary: String(body.summary ?? body.status),
+        error: body.status === 'error' ? String(body.error ?? body.summary ?? body.status) : undefined,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message === 'research_callback_ticket_identity_mismatch')
+        return c.json({ ok: false, ignored: true, error: message }, 409)
+      return c.json({
+        ok: false,
+        retryable: true,
+        error: 'optuna_scheduler_ticket_settlement_failed',
+        detail: message,
+      }, 503)
     }
   }
 
@@ -1699,38 +1740,6 @@ async function handleSchedulerCallback(c: any) {
       run_id: verifyCallbackCanonicalRunId,
       run_date: callbackRunDate,
     }, c.env as any)
-  }
-
-  if (
-    ['weekly-optuna', 'monthly-optuna'].includes(String(body.task))
-    && ['success', 'error', 'skipped'].includes(String(body.status))
-  ) {
-    if (!callbackSchedulerTicketId || !callbackSchedulerRunId) {
-      return c.json({
-        ok: false,
-        retryable: true,
-        error: 'optuna_callback_missing_scheduler_ticket_identity',
-      }, 400)
-    }
-    try {
-      const { updateSchedulerExecutionTicket } = await import('../lib/schedulerExecutionTickets')
-      await updateSchedulerExecutionTicket(databaseForDataDomain(c.env, 'ops'), {
-        ticketId: callbackSchedulerTicketId,
-        runId: callbackSchedulerRunId,
-        status: body.status as 'success' | 'error' | 'skipped',
-        authority: 'scheduler_http',
-        summary: String(body.summary ?? body.status),
-        error: body.status === 'error' ? String(body.error ?? body.summary ?? body.status) : undefined,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      return c.json({
-        ok: false,
-        retryable: true,
-        error: 'optuna_scheduler_ticket_settlement_failed',
-        detail: message,
-      }, 503)
-    }
   }
 
   if (body.task === 'weekly-audit' && body.status === 'success'

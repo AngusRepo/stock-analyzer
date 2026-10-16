@@ -24,7 +24,6 @@ export default function DailyReadinessBoard({ stageView, renderStage, pipelineSu
       {DAILY_READINESS_PHASES.map((phase, index) => {
         const views = phase.stages.map(id => ({ id, ...stageView(id) }))
         const running = views.filter(view => view.status === 'running')
-        const completed = views.filter(view => ['completed', 'noop'].includes(view.status)).length
         const main = READINESS_MAIN_STAGES[phase.id]
         const supporting = views.filter(view => !main.includes(view.id))
         const attention = supporting.filter(view => ['running', 'blocked'].includes(view.status))
@@ -34,10 +33,11 @@ export default function DailyReadinessBoard({ stageView, renderStage, pipelineSu
             <span className="daily-readiness-board__number">0{index + 1}</span><h4 id={'daily-phase-' + phase.id}>{phase.title}</h4>
             <span className="daily-readiness-board__phase-state">
               {running.length > 0 && <LoaderCircle className="daily-readiness-board__running" aria-label={running.length + ' 項執行中'} />}
-              <span>{completed}/{views.length}</span>
+              <span>{views.filter(v => READINESS_MAIN_STAGES[phase.id].includes(v.id) && ['completed','noop'].includes(v.status)).length}/{READINESS_MAIN_STAGES[phase.id].length}</span>
             </span>
           </header>
           <p className="daily-readiness-board__caption">{PHASE_CONTEXT[phase.id]}</p>
+          {phase.id === 'models' && <p className="daily-readiness-board__caption" aria-label="Pipeline 本輪摘要">{pipelineSummary}</p>}
 
 
           </div>

@@ -18,7 +18,19 @@ test('progress is ordered, run-fenced, and cannot reopen a terminal pipeline or 
   const parent=()=>sql.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='pipeline_execution'").get() as any
   const progress=()=>sql.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='pipeline_progress'").get() as any
   assert.equal(parent().status,'waiting');assert.equal(parent().cursor_key,'execution-a');assert.equal(parent().lease_owner,'original-owner')
-  assert.deepEqual(pipelineProgressForDisplay(parent(),progress()),p)
+  assert.deepEqual(pipelineProgressForDisplay(parent(),progress()),{...p,phase_rank:20,executions:{'execution-a':[]}})
+  const atomic={phase:'node_capture_atomic_inputs',elapsed_ms:1780000,status:'completed' as const}
+  await recordPipelineProgress(db,'2026-10-14','run-a',{...p,completed:[atomic],observed_at:'2026-10-14T16:55:00Z'})
+  await recordPipelineProgress(db,'2026-10-14','run-a',{...p,execution_id:'execution-b',started_at:'2026-10-14T17:00:00Z',
+    phase_started_at:'2026-10-14T17:00:00Z',observed_at:'2026-10-14T17:00:01Z'})
+  const resumed=pipelineProgressForDisplay(parent(),progress())!
+  assert.equal(resumed.started_at,p.started_at)
+  assert.deepEqual(resumed.executions,{'execution-a':[atomic],'execution-b':[]})
+  await recordPipelineProgress(db,'2026-10-14','run-a',{...p,phase:'modal_inference',status:'running',execution_id:'modal-one',
+    phase_started_at:'2026-10-14T17:02:00Z',observed_at:'2026-10-14T17:02:01Z'})
+  await recordPipelineProgress(db,'2026-10-14','run-a',{...p,phase:'dispatch_prediction',status:'completed',execution_id:'execution-b',
+    phase_started_at:'2026-10-14T17:01:00Z',observed_at:'2026-10-14T17:03:00Z'})
+  assert.equal(pipelineProgressForDisplay(parent(),progress())!.phase,'modal_inference','late dispatch acknowledgement cannot replace actual computation')
   sql.exec("UPDATE pipeline_stage_runs SET status='success' WHERE stage='pipeline_execution'")
   assert.equal(await recordPipelineProgress(db,'2026-10-14','run-a',{...p,observed_at:'2026-10-14T17:00:00Z'}),false)
   sql.exec("UPDATE pipeline_stage_runs SET canonical_run_id='run-b',status='waiting' WHERE stage='pipeline_execution'")

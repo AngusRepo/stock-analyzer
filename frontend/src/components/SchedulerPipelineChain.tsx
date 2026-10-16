@@ -73,9 +73,9 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
   leading?: ReactNode; overview?: boolean; visualState?: string; justCompleted?: boolean;
 }) {
   const Element = onSelect ? 'button' : 'div'
-  const phaseLabel = matureEvidencePhaseLabel(job) ?? (job?.id === 'pipeline' ? pipelinePreparationLabel(job) : null)
+  const phaseLabel = (job?.stageCard ? job.summary : null) ?? matureEvidencePhaseLabel(job) ?? (job?.id === 'pipeline' ? pipelinePreparationLabel(job) : null)
   return <Element data-stage={id} data-chain-stage={onSelect ? id : undefined}
-    className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-amber-300' : '')}
+    className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-slate-400' : '')}
     onClick={onSelect} aria-current={current ? 'step' : undefined}
     aria-label={onSelect ? `${title}: ${statusText || label(job?.lastStatus)}` : undefined}>
     {overview ? <>

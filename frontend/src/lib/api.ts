@@ -287,14 +287,18 @@ export const cronApi = {
 
 // 2026-04-21 Scheduler Dashboard API
 export type SchedulerJob = {
+  stageCard?: boolean
+  stageElapsed?: string
+  pipelineBatches?: Array<{stage_id:string;phase:string;completed:number;total:number;observed_at:string}>
+  stageVisualStatus?: 'completed'|'blocked'|'running'|'waiting'|'not_started'|'stale'
   finlabPhase?: 'acquire'|'validate'|'publish'
   finlabProgress?: {run_id:string;run_date:string;dispatch_attempt:number;sequence:number;observed_at:string;
     phases:Array<{phase:'acquire'|'validate'|'publish';status:'running'|'completed'|'failed'|'waiting';
       started_at:string;completed_at?:string;elapsed_ms?:number}>} | null
   pipelinePhase?: 'premarket_l4'
-  pipelineProgress?: { phase: string; status: 'running'|'waiting'|'completed'|'failed'|'blocked'; started_at: string;
+  pipelineProgress?: { run_id?: string; run_date?: string; executions?: Record<string, Array<{phase:string;elapsed_ms:number;status:'completed'|'failed'|'blocked'|'waiting';started_at?:string|null;completed_at?:string}>>; phase: string; status: 'running'|'waiting'|'completed'|'failed'|'blocked'; started_at: string;
     phase_started_at: string; observed_at: string; execution_id: string;
-    completed: Array<{phase:string;elapsed_ms:number;status:'completed'|'failed'|'blocked'}> } | null
+    completed: Array<{phase:string;elapsed_ms:number;status:'completed'|'failed'|'blocked'|'waiting';started_at?:string|null;completed_at?:string}> } | null
   id: string
   name: string
   schedule: string

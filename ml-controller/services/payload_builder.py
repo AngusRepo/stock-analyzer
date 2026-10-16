@@ -1296,7 +1296,7 @@ def capture_payload_sources(active_stocks: list[dict], decision_date: str) -> di
     return {**body, 'source_checksum': digest(body)}
 
 
-def _read_frozen_payload_sources(packet: dict, active_stocks: list[dict], decision_date: str) -> dict:
+def _read_frozen_payload_sources(packet: dict, active_stocks: list[dict], decision_date: str, *, copy_data=True) -> dict:
     from copy import deepcopy
     from services.paired_nav_journal import digest, _timestamp
     if not isinstance(packet, dict):
@@ -1346,7 +1346,23 @@ def _read_frozen_payload_sources(packet: dict, active_stocks: list[dict], decisi
                 or row['date'][:10] > decision_date for row in rows):
             raise ValueError('payload_source_future_or_invalid_rows')
     # Returned lists/dicts must not alias the state artifact or another slate.
-    return deepcopy(result)
+    return deepcopy(result) if copy_data else result
+
+
+class VerifiedPayloadSources:
+    """Synchronous read-only builder view; never hand its rows to a mutating owner."""
+    def __init__(self, packet, decision_date):
+        self.packet, self.decision_date = packet, decision_date
+        self.raw = _read_frozen_payload_sources(packet, packet['stocks'], decision_date, copy_data=False)
+        self.identities = {r['symbol']: r['id'] for r in packet['stocks']}
+
+    def read(self, packet, stocks, decision_date):
+        if packet is not self.packet or decision_date != self.decision_date:
+            raise ValueError('payload_source_verified_view_changed')
+        if (len({r['symbol'] for r in stocks}) != len(stocks)
+                or any(self.identities.get(r['symbol']) != r['id'] for r in stocks)):
+            raise ValueError('payload_source_slate_not_covered')
+        return self.raw
 
 
 def build_payloads(
@@ -1357,7 +1373,7 @@ def build_payloads(
     lifecycle_weights: dict[str, float],
     decision_date: str,
     trading_config: dict | None = None,
-    *, frozen_sources: dict | None = None,
+    *, frozen_sources: dict | None = None, verified_sources: VerifiedPayloadSources | None = None,
 ) -> list[PredictPayload]:
     """
     Build PredictPayload list for all active stocks.
@@ -1374,7 +1390,8 @@ def build_payloads(
         raise ValueError("build_payloads requires an ISO decision_date") from exc
 
     source_packet = frozen_sources if frozen_sources is not None else capture_payload_sources(active_stocks, decision_date)
-    raw = _read_frozen_payload_sources(source_packet, active_stocks, decision_date)
+    raw = (verified_sources.read(source_packet, active_stocks, decision_date) if verified_sources
+           else _read_frozen_payload_sources(source_packet, active_stocks, decision_date))
     prices_by_id, indicators_by_id = raw['prices_by_id'], raw['indicators_by_id']
     chips_by_sym, sentiment_by_id = raw['chips_by_sym'], raw['sentiment_by_id']
     real_acc_by_id, model_stats_by_id = raw['real_acc_by_id'], raw['model_stats_by_id']

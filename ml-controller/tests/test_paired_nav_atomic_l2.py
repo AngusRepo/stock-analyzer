@@ -1,6 +1,7 @@
 """Actual daily capture -> own-slate L2, with isolated prices/model primitives."""
 import asyncio
 from copy import deepcopy
+from services.pipeline_slate_artifacts import load
 import sqlite3
 
 import pytest
@@ -74,15 +75,15 @@ def test_daily_original_l2_uses_own_slate_and_frozen_context_with_retry(monkeypa
         assert [r['symbol'] for r in calls[0 if formal_empty else 1]] == ['1000', '1002']
         first_calls = 1 if formal_empty else 2
         assert len(calls) == first_calls
-        assert packet['slates']['f'*64]['payloads'] == []
+        assert load(packet['slates']['f'*64]['payloads']) == []
         assert 'd'*64 not in packet['slates'], 'unobserved semantic evidence is not empty admission'
         if candidate_fails:
             assert packet['status'] == 'incomplete'
             assert packet['slates']['c'*64]['status'] == packet['slates']['e'*64]['status'] == 'failed'
         else:
             assert packet['status'] == 'l2_payloads_built'
-            assert packet['slates']['c'*64]['payloads'][0]['stock_meta']['sector_peer_return_1d'] == .2
-            assert packet['slates']['c'*64]['payloads'][0]['stock_meta']['timesfm_l175_sidecar']['features']['forecast_return'] == .02
+            assert load(packet['slates']['c'*64]['payloads'])[0]['stock_meta']['sector_peer_return_1d'] == .2
+            assert load(packet['slates']['c'*64]['payloads'])[0]['stock_meta']['timesfm_l175_sidecar']['features']['forecast_return'] == .02
         assert packet['nav_maturity_credit'] == 0 and packet['promotion_allowed'] is False
         state['paired_nav_atomic_l2'] = deepcopy(packet)
         # A persisted retry calls the original L2 only for previously failed
@@ -91,7 +92,7 @@ def test_daily_original_l2_uses_own_slate_and_frozen_context_with_retry(monkeypa
         assert retry['status'] == 'l2_payloads_built'
         assert len(calls) == first_calls + int(candidate_fails)
         assert retry['slates']['f'*64] == packet['slates']['f'*64]
-        assert retry['slates']['c'*64]['payloads'][0]['stock_meta']['sector_peer_return_1d'] == .2
+        assert load(retry['slates']['c'*64]['payloads'])[0]['stock_meta']['sector_peer_return_1d'] == .2
         state['paired_nav_atomic_l2'] = retry
         status = daily_setup_status(state)
         assert status['status'] == 'incomplete' and status['reason'] == 'requires_ml_and_native_execution'
@@ -100,8 +101,9 @@ def test_daily_original_l2_uses_own_slate_and_frozen_context_with_retry(monkeypa
         whole_retry = asyncio.run(graph.node_l2_timesfm_enrich(state))
         assert whole_retry['paired_nav_atomic_l2']['status'] == 'l2_payloads_built'
         assert whole_retry['paired_nav_atomic_l2']['slates'] == retry['slates']
-        assert len(calls) == first_calls + int(candidate_fails) + int(not formal_empty)
+        assert len(calls) == first_calls + int(candidate_fails)
         before = deepcopy(retry)
+        state['paired_nav_atomic_pre_l2']['slates']['c'*64] = load(state['paired_nav_atomic_pre_l2']['slates']['c'*64])
         state['paired_nav_atomic_pre_l2']['slates']['c'*64][0]['stock_meta']['sector_peer_return_1d'] = .9
         with pytest.raises(ValueError, match='retry_inputs_changed'):
             asyncio.run(prepare_atomic_l2(state, result, enrich=graph._node_l2_timesfm_enrich))

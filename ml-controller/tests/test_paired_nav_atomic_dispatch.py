@@ -5,6 +5,7 @@ Fixture rank/peer values are not investment performance.
 """
 import asyncio
 from copy import deepcopy
+from services.pipeline_slate_artifacts import load
 from pathlib import Path
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ def _model_bundle(request):
 
 @pytest.fixture
 def dispatched(monkeypatch):
+    monkeypatch.setenv('STOCKVISION_SOURCE_SHA', 'a'*40)
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / 'ml-service'))
     population = daily._population()
     common = deepcopy(population['baseline']['rows'][0])
@@ -262,6 +264,7 @@ def test_dispatch_rejects_changed_frozen_request_and_keeps_unavailable_populatio
     assert list(saved['unavailable']) == ['d'*64]
     changed = deepcopy(state)
     l2 = changed['paired_nav_atomic_l2']
+    l2['slates']['c'*64]['payloads'] = load(l2['slates']['c'*64]['payloads'])
     l2['slates']['c'*64]['payloads'][0]['prices'][0]['close'] = 999
     l2['output_checksum'] = digest({k: v for k, v in l2.items() if k != 'output_checksum'})
     with pytest.raises(ValueError, match='frozen_request_changed'):

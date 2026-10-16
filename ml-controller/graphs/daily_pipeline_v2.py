@@ -15,6 +15,7 @@ Real LangGraph this time:
 from __future__ import annotations
 from services.formal_feature_contract import FEATURE131_SEMANTIC, LEGACY_SEMANTIC, PRICE131_PROFILE, metadata_feature_valid
 import asyncio
+from services.pipeline_slate_artifacts import artifact_reads
 import hashlib
 import json
 import logging
@@ -660,6 +661,9 @@ class PipelineStateV2(TypedDict, total=False):
     pipeline_sequence_observations: dict    # Dated adjusted prices shared by L2, formal L3 and Atomic slates
     paired_nav_atomic_inputs: dict          # Canonical full replacement population and own pre-L2 stock slates
     paired_nav_atomic_pre_l2: dict           # Original payload builder output per candidate; not inference/NAV
+    pipeline_slate_scope: dict             # Immutable per-slate objects, same run/source only
+    pipeline_formal_payload_ref: dict      # Original pre-L2 formal payload identity
+    pipeline_shared_payload_ref: dict      # Shared raw arrays, never shared peer features
     paired_nav_atomic_l2: dict              # Own-slate original L2 outputs, no native NAV credit
     paired_nav_atomic_dispatch: dict        # Frozen v2 request plus every unavailable definition
     paired_nav_atomic_ml: dict              # Own-slate original prediction merge, not allocation/NAV
@@ -835,6 +839,7 @@ async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
         return {'paired_nav_atomic_inputs': shadow_failure('atomic_daily_inputs', exc)}
 
 
+@artifact_reads
 async def node_build_payloads(state: PipelineStateV2) -> dict:
     """
     Build PredictPayload list for all active stocks (bulk D1 reads).
@@ -860,11 +865,24 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
                 raise ValueError("daily_capture_cannot_replace_frozen_sequence")
             capture_source = await ensure_active8_daily_prep(end_date=state["run_date"], feature_only=True,
                 model_profile_schema_version="active8-release-model-profiles-v4-timexer-price")
-        sources = await asyncio.to_thread(bind_daily_capture_sources, sources,
-            capture_source=capture_source, decision_date=state["run_date"])
+        from services.pipeline_slate_artifacts import scope_for, checkpoint_async, load
+        capture_scope = scope_for({**state, 'payload_source_observations': sources})
+        async def bind_sources():
+            return await asyncio.to_thread(bind_daily_capture_sources, sources,
+                capture_source=capture_source, decision_date=state["run_date"])
+        binding_ref = await checkpoint_async(capture_scope, ['bind-source', capture_source], bind_sources)
+        sources = load(binding_ref, capture_scope)
     global_history=sources.get("global_market_history")
     if global_history is not None:
         market_env.history=global_history
+    from services.payload_builder import VerifiedPayloadSources
+    from services.pipeline_slate_artifacts import scope_for, checkpoint, load
+    view = VerifiedPayloadSources(sources, state['run_date'])
+    scope = scope_for({**state, 'payload_source_observations': sources})
+    from services.paired_nav_journal import digest
+    build_context = digest([market_env.__dict__, *[state.get(k) or {} for k in
+        ('adaptive_params', 'barrier_params', 'lifecycle_weights', 'trading_config')]])
+
     def build_slate(stocks):
         return build_payloads(
             active_stocks=stocks,
@@ -875,10 +893,27 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
             decision_date=state["run_date"],
             trading_config=state.get("trading_config") or {},
             frozen_sources=sources,
+            verified_sources=view,
         )
-    payloads_dict = [_to_dict(p) for p in build_slate(state['active_stocks'])]
+    from services.pipeline_slate_artifacts import shared_payload_pool, put_payloads
+    # This union supplies RAW fields only. Its stock_meta/runtime_options are
+    # discarded; every real slate still computes its own peer features below.
+    shared_ref = checkpoint(scope, ['shared-payloads', build_context],
+        lambda: shared_payload_pool([dict(vars(p)) for p in build_slate(sources['stocks'])]))
+    shared = load(shared_ref, scope)
+
+    def save_slate(stocks):
+        # The builder only reads the verified source. Serialize immediately;
+        # never pass these shared nested rows to a mutable consumer.
+        return checkpoint(scope, ['pre-l2', build_context, stocks],
+            lambda: [dict(vars(p)) for p in build_slate(stocks)],
+            store=lambda rows, target_scope: put_payloads(rows, target_scope, shared_ref, shared))
+
+    formal_reference = save_slate(state['active_stocks'])
+    payloads_dict = load(formal_reference, scope)
     result = {"payloads": payloads_dict, "payload_source_observations": sources,
-              "timexer_feature_source": capture_source}
+              "timexer_feature_source": capture_source, 'pipeline_slate_scope': scope,
+              'pipeline_formal_payload_ref': formal_reference, 'pipeline_shared_payload_ref': shared_ref}
     atomic = state.get('paired_nav_atomic_inputs')
     if isinstance(atomic, dict) and atomic.get('status') == 'pre_l2_inputs_captured':
         from services.paired_nav_atomic_inputs import validate_daily_inputs
@@ -888,9 +923,9 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
                                            formal_stocks=state['active_stocks'])
             result['paired_nav_atomic_pre_l2'] = {'status': 'pre_l2_payloads_built',
                 'input_checksum': packet['input_checksum'], 'source_checksum': sources['source_checksum'],
-                'slates': {key: [_to_dict(p) for p in build_slate(stocks)] for key, stocks in packet['candidate_stocks'].items()},
-                'holding_slates': {key: [_to_dict(p) for p in build_slate(scope['stocks'])]
-                    for key, scope in packet.get('holding_scopes', {}).items()},
+                'slates': {key: save_slate(stocks) for key, stocks in packet['candidate_stocks'].items()},
+                'holding_slates': {key: save_slate(holding['stocks'])
+                    for key, holding in packet.get('holding_scopes', {}).items()},
                 'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}
         except Exception as exc:
             result['paired_nav_atomic_pre_l2'] = shadow_failure('atomic_pre_l2_payloads', exc)
@@ -1510,7 +1545,10 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
         fingerprints = sequence_input_fingerprints(payloads)
         atomic = state.get('paired_nav_atomic_pre_l2') or {}
         if atomic.get('status') == 'pre_l2_payloads_built':
-            for rows in [*atomic['slates'].values(), *atomic.get('holding_slates', {}).values()]:
+            from itertools import chain
+            from services.pipeline_slate_artifacts import load
+            for reference in chain(atomic['slates'].values(), atomic.get('holding_slates', {}).values()):
+                rows = load(reference, state.get('pipeline_slate_scope'))
                 for row in rows:
                     symbol = row['symbol']
                     fingerprint = sequence_input_fingerprints([row])[symbol]
@@ -1546,8 +1584,37 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
     return read_frozen_sequence_inputs(saved, decision_date=state['run_date'], payloads=payloads)
 
 
+@artifact_reads
 async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
-    result = await _node_l2_timesfm_enrich(state)
+    async def formal():
+        if state.get('pipeline_slate_scope'):
+            from services.pipeline_slate_artifacts import content_digest
+            from services.paired_nav_journal import digest
+            if digest(state['payloads']) != content_digest(state['pipeline_formal_payload_ref']):
+                raise ValueError('paired_nav_atomic_l2_retry_inputs_changed')
+        result = await _node_l2_timesfm_enrich(state)
+        for key in ('pipeline_sequence_observations', 'pipeline_timesfm_context'):
+            if state.get(key) is not None:
+                result[key] = state[key]
+        return result
+
+    if state.get('pipeline_slate_scope'):
+        from services.pipeline_slate_artifacts import checkpoint_async, load, content_digest
+        from services.paired_nav_journal import digest
+        original_hash = content_digest(state['pipeline_formal_payload_ref'])
+        reference = await checkpoint_async(state['pipeline_slate_scope'],
+            ['formal-l2', original_hash, state.get('paired_nav_atomic_pre_l2')], formal,
+            cacheable=lambda r: r.get('timesfm_l2_summary', {}).get('status') in {'ready', 'blocked', 'skipped'})
+        result = load(reference, state['pipeline_slate_scope'])
+        if digest(state['payloads']) not in {original_hash, digest(result.get('payloads', state['payloads']))}:
+            raise ValueError('paired_nav_atomic_l2_retry_inputs_changed')
+        for key in ('pipeline_sequence_observations', 'pipeline_timesfm_context'):
+            if result.get(key) is not None:
+                if state.get(key) is not None and state[key] != result[key]:
+                    raise ValueError('paired_nav_atomic_l2_retry_context_changed')
+                state[key] = result[key]
+    else:
+        result = await formal()
     # LangGraph persists returned updates, not arbitrary input-dict mutations.
     if state.get('pipeline_sequence_observations') is not None:
         result['pipeline_sequence_observations'] = state['pipeline_sequence_observations']
@@ -1737,6 +1804,7 @@ async def _node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
         }
 
 
+@artifact_reads
 async def node_l3_formal_predict(state: PipelineStateV2) -> dict:
     result = await _node_l3_formal_predict(state)
     if 'paired_nav_atomic_dispatch' in state:
@@ -2144,6 +2212,7 @@ def _attach_ensemble_v2(
     else:
         attach_ensemble_v2(pred, artifact, pool_models, nav_authority=nav_authority)
 
+@artifact_reads
 async def node_compute_personas(state: PipelineStateV2) -> dict:
     """Same calculator for formal/candidate slates; persist only formal rows."""
     _assert_pipeline_canonical_window(state)
@@ -2157,7 +2226,9 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
         try:
             from services.paired_nav_atomic_personas import atomic_persona_slates
             prepared = atomic_persona_slates(state)
-            extra_payloads = [p for rows in prepared['slates'].values() for p in rows]
+            from services.pipeline_slate_artifacts import load
+            extra_payloads = (p for reference in prepared['slates'].values()
+                              for p in load(reference, state.get('pipeline_slate_scope')))
         except Exception as exc:
             atomic_failure = shadow_failure('atomic_persona_inputs', exc)
     context = capture_persona_context(run_date=run_date, formal_payloads=payloads,
@@ -2348,6 +2419,7 @@ def _require_frozen_allocation_context(collection: dict | None) -> str:
     raise RuntimeError(f'paired_nav_allocation_context_unavailable:{stage}:{reason}')
 
 
+@artifact_reads
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
     Preserve ML advice, compute Score V2, then let L4 own sparse allocation.
@@ -4322,6 +4394,7 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
     return context
 
 
+@artifact_reads
 async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str,
                                                   research_only: bool = False) -> dict:
     context = state.get("pipeline_modal_serving_context")

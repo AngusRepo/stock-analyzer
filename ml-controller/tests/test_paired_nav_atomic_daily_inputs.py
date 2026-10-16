@@ -1,6 +1,7 @@
 """Real daily capture/build nodes, with all external reads replaced locally."""
 import asyncio
 from copy import deepcopy
+from services.pipeline_slate_artifacts import load as load_slate
 import sqlite3
 from types import SimpleNamespace
 
@@ -85,7 +86,7 @@ def test_actual_daily_capture_and_own_slate_builder_keep_formal_and_retry_inputs
     assert [r[0] for r in reads] == ['node', 'identities']
     state.update(captured)
     output = asyncio.run(graph.node_build_payloads(state))
-    candidate = output['paired_nav_atomic_pre_l2']['slates']['c' * 64]
+    candidate = load_slate(output['paired_nav_atomic_pre_l2']['slates']['c' * 64])
     assert [p['symbol'] for p in output['payloads']] == ['1000', '1001']
     assert [p['symbol'] for p in candidate] == ['1000', '1002']
     assert output['payloads'][0]['stock_meta']['sector_peer_return_1d'] == 0
@@ -121,8 +122,8 @@ def test_held_stock_gets_separate_payload_not_a_recommendation(monkeypatch):
     assert scope['arm'] == 'candidate' and scope['target_symbol'] == '1001'
     output = asyncio.run(graph.node_build_payloads(state))
     assert output['payloads'][0]['stock_meta']['sector_peer_return_1d'] == 0
-    assert output['paired_nav_atomic_pre_l2']['slates']['c'*64][0]['stock_meta']['sector_peer_return_1d'] == .2
-    auxiliary = output['paired_nav_atomic_pre_l2']['holding_slates'][scope_id]
+    assert load_slate(output['paired_nav_atomic_pre_l2']['slates']['c'*64])[0]['stock_meta']['sector_peer_return_1d'] == .2
+    auxiliary = load_slate(output['paired_nav_atomic_pre_l2']['holding_slates'][scope_id])
     assert [r['symbol'] for r in auxiliary] == ['1000','1001','1002']
     assert auxiliary[1]['stock_meta']['sector_peer_return_1d'] == .1
     assert auxiliary[1]['stock_meta']['eligible_for_pending_buy'] is False
@@ -290,7 +291,7 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     assert len(received) == 1 and [r[0] for r in reads] == ['node', 'identities']
     restored = received[0]
     assert len(restored['paired_nav_atomic_inputs']['population']['replacements']) == 2
-    assert restored['paired_nav_atomic_pre_l2']['slates']['c' * 64][0]['stock_meta']['sector_peer_return_1d'] == .2
+    assert load_slate(restored['paired_nav_atomic_pre_l2']['slates']['c' * 64])[0]['stock_meta']['sector_peer_return_1d'] == .2
     assert restored['payloads'][0]['stock_meta']['sector_peer_return_1d'] == 0
     atomic.validate_daily_inputs(restored['paired_nav_atomic_inputs'], signal_date=restored['run_date'],
         producer_run_id=restored['screener_run_id'], formal_stocks=restored['active_stocks'])

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 from services.paired_nav_collection import shadow_failure
 from services.paired_nav_journal import digest, _timestamp
+from services.pipeline_slate_artifacts import load, keep, content_digest, load_inputs
 from services.state_space_series import read_frozen_sequence_inputs, VerifiedSequenceInputs
 
 
@@ -47,11 +48,13 @@ def prepare_atomic_request(state, parent):
         raise ValueError('paired_nav_atomic_dispatch_formal_sequence_mismatch')
     slates, contrasts, unavailable, holding_evaluations = {}, [], {}, []
 
-    def add(payloads):
+    def add(reference):
+        payloads = load(reference, state.get('pipeline_slate_scope'))
         history, _ = sequence_reader.read(payloads)
-        inputs = {'symbols': [p['symbol'] for p in payloads], 'payloads': deepcopy(payloads), 'sequence_series': history}
+        inputs = {'symbols': [p['symbol'] for p in payloads], 'payloads': payloads, 'sequence_series': history}
         key = digest(inputs)
-        slates[key] = inputs
+        if key not in slates:
+            slates[key] = keep({**inputs, 'payloads': keep(payloads, state)}, state)
         return key
 
     baseline_key = None
@@ -71,11 +74,11 @@ def prepare_atomic_request(state, parent):
             for scope_id, scope in scopes.items():
                 held = l2['holding_slates'][scope_id]
                 if (held.get('status') != 'ready'
-                        or held.get('input_payload_checksum') != digest(pre['holding_slates'][scope_id])
-                        or [p['symbol'] for p in held['payloads']] != [p['symbol'] for p in scope['stocks']]):
+                        or held.get('input_payload_checksum') != content_digest(pre['holding_slates'][scope_id])
+                        or [p['symbol'] for p in load(held['payloads'], state.get('pipeline_slate_scope'))] != [p['symbol'] for p in scope['stocks']]):
                     raise ValueError('paired_nav_atomic_holding_l2_unavailable')
-            if ([p['symbol'] for p in output['payloads']] != [p['symbol'] for p in source['candidate_stocks'][key]]
-                    or output['input_payload_checksum'] != digest(pre['slates'][key])):
+            if ([p['symbol'] for p in load(output['payloads'], state.get('pipeline_slate_scope'))] != [p['symbol'] for p in source['candidate_stocks'][key]]
+                    or output['input_payload_checksum'] != content_digest(pre['slates'][key])):
                 raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')
             # The formal input was verified above. A candidate-only raw source
             # failure stays attached to that definition, not to valid peers.
@@ -167,8 +170,9 @@ async def consume_atomic_results(state, formal_result, *, validate, merge):
     formal_inputs = {'symbols': [p['symbol'] for p in state['payloads']], 'payloads': state['payloads'],
                      'sequence_series': frozen_formal_series}
     formal_key = digest(formal_inputs)
-    for key, inputs in packet['slates'].items():
+    for key, reference in packet['slates'].items():
         try:
+            inputs = load_inputs(reference, state.get('pipeline_slate_scope'))
             if key != digest(inputs):
                 raise ValueError('paired_nav_atomic_callback_inputs_changed')
             record = response['slates'].get(key) or {}

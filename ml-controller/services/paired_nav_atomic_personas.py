@@ -4,6 +4,7 @@ from copy import deepcopy
 from services.paired_nav_atomic_dispatch import _checked, prepare_atomic_request
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 from services.paired_nav_journal import digest
+from services.pipeline_slate_artifacts import load, keep, load_inputs
 from services.pipeline_persona_context import persona_inputs, compute_payload_personas
 from services.state_space_series import read_frozen_sequence_inputs
 
@@ -33,7 +34,7 @@ def atomic_persona_slates(state):
         if not contrast or any(definition.get(k) != contrast[k] for k in contrast):
             raise ValueError('paired_nav_atomic_persona_definition_mismatch')
         candidate_key = contrast['candidate_key']
-        inputs = packet['slates'][candidate_key]
+        inputs = load_inputs(packet['slates'][candidate_key], state.get('pipeline_slate_scope'))
         output = ml['slates'][candidate_key]
         if (digest(inputs) != candidate_key or output.get('input_checksum') != candidate_key
                 or output.get('status') != 'ready' or set(output['predictions']) != set(inputs['symbols'])):
@@ -41,7 +42,7 @@ def atomic_persona_slates(state):
         raw = persona_inputs(inputs['payloads'])
         if any(formal_raw[s] != raw[s] for s in set(raw) & set(formal_raw)):
             raise ValueError('paired_nav_atomic_persona_shared_raw_changed')
-        slates[key] = deepcopy(inputs['payloads'])
+        slates[key] = keep(inputs['payloads'], state)
     return {'slates': slates, 'unavailable': unavailable, 'input_checksum': digest([
         source['input_checksum'], dispatch['dispatch_checksum'], ml['output_checksum']])}
 
@@ -50,7 +51,8 @@ def compute_atomic_personas(*, prepared, run_date, context):
     definitions = {k: {'status': 'unavailable', 'evidence': deepcopy(v)}
                    for k, v in prepared['unavailable'].items()}
     cache = {}
-    for key, payloads in prepared['slates'].items():
+    for key, reference in prepared['slates'].items():
+        payloads = load(reference)
         identity = digest(persona_inputs(payloads))
         if identity not in cache:
             _, cache[identity] = compute_payload_personas(payloads=payloads, run_date=run_date, context=context)

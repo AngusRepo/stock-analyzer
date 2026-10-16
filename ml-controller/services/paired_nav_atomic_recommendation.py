@@ -2,6 +2,7 @@
 from copy import deepcopy
 
 from services.paired_nav_journal import digest
+from services.pipeline_slate_artifacts import load, keep
 from services.paired_nav_atomic_personas import atomic_persona_slates, compute_atomic_personas
 from services.screener_core_replay import materialize_atomic_core_domains
 from services.screener_candidate_merge import materialize_candidate_screener_seeds
@@ -23,7 +24,8 @@ def prepare_atomic_recommendations(state):
     if personas != state.get('paired_nav_atomic_personas'):
         raise ValueError('atomic_recommendation_persona_source_changed')
     definitions = {k: {'status': 'unavailable', 'evidence': deepcopy(v)} for k, v in prepared['unavailable'].items()}
-    for key, payloads in prepared['slates'].items():
+    for key, reference in prepared['slates'].items():
+        payloads = load(reference, state.get('pipeline_slate_scope'))
         seed = seeds.get('definitions', {}).get(key, {})
         persona = personas['definitions'][key]
         if seed.get('status') != 'materialized' or persona.get('status') != 'ready':
@@ -38,7 +40,7 @@ def prepare_atomic_recommendations(state):
         definitions[key] = dict(status='ready', screener_recs=deepcopy(rows),
             inference_lineage={k: deepcopy(ml['definitions'][key][k]) for k in ('baseline_key', 'candidate_key')},
             candidate_seed_inputs=deepcopy(seed['inputs']), predictions=deepcopy(predictions),
-            payloads=deepcopy(payloads), persona_opinions=deepcopy(persona['opinions']),
+            payloads=keep(payloads, state), persona_opinions=deepcopy(persona['opinions']),
             l2_summary=deepcopy(state['paired_nav_atomic_l2']['slates'][key]['summary']))
         definitions[key]['inference_lineage']['serving_manifest_digest'] = state['pipeline_modal_serving_context']['serving_manifest_digest']
         holding_predictions = []
@@ -58,7 +60,7 @@ def prepare_atomic_recommendations(state):
             for scope_id, scope in source.get('holding_scopes', {}).items():
                 if scope['definition_checksum'] != key:
                     continue
-                rows = state['paired_nav_atomic_l2']['holding_slates'][scope_id]['payloads']
+                rows = load(state['paired_nav_atomic_l2']['holding_slates'][scope_id]['payloads'], state.get('pipeline_slate_scope'))
                 target = next(p for p in rows if p['symbol'] == scope['target_symbol'])
                 holding_payloads.setdefault(target['symbol'], deepcopy(target))
             definitions[key]['holding_risk_payloads'] = [holding_payloads[s] for s in sorted(holding_payloads)]
@@ -115,11 +117,12 @@ def run_atomic_recommendations(*, prepared, formal_context, source_context):
             inputs = deepcopy({k:v for k,v in formal_context['inputs'].items()
                                if k not in {'screener_seed_context', 'recommendation_source_context', *own_fields}})
             for field in own_fields:
-                inputs[field] = deepcopy(definition[field])
+                inputs[field] = deepcopy(load(definition[field]))
             inputs['filter_options']['persona_opinions'] = deepcopy(definition['persona_opinions'])
             for field in ('fundamental_quality_by_symbol', 'pit_sector_alpha_by_symbol'):
                 inputs['filter_options'][field] = deepcopy(evidence[field])
-            before = deepcopy(inputs)
+            before = deepcopy({k: v for k, v in inputs.items() if k != 'payloads'})
+            before['payloads'] = deepcopy(definition['payloads'])
             result = run_recommendation_path(inputs=inputs)
             definitions[key] = dict(status='recommendations_materialized', inputs=before, result=result,
                                     post_predictions=deepcopy(inputs['predictions']))

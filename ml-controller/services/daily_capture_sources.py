@@ -27,7 +27,7 @@ def _daily_stock_owners(stocks, decision_date):
 
 def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=None):
     stocks=packet.get("stocks") or []
-    raw=_read_frozen_payload_sources(packet,stocks,decision_date)
+    raw=_read_frozen_payload_sources(packet,stocks,decision_date,copy_data=False)
     if (not isinstance(capture_source,dict) or capture_source.get("status")!="ready"
             or capture_source.get("signal_date")!=decision_date):
         raise ValueError("daily_capture_feature_source_required")
@@ -36,6 +36,10 @@ def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=
         if existing.get("feature_source_digest")!=digest(capture_source):
             raise ValueError("daily_capture_frozen_source_changed")
         return packet
+    # Only the new binding mutates the raw maps. A verified existing binding
+    # needs no full copy merely to return the same immutable source packet.
+    from copy import deepcopy
+    raw=deepcopy(raw)
     if bucket is None:
         from services.walk_forward_retrain import _get_bucket
         bucket=_get_bucket()
@@ -100,7 +104,7 @@ def bind_daily_capture_sources(packet, *, capture_source, decision_date, bucket=
     body.update(sources=raw,global_market_history=history,single_capture_binding=binding,observed_at=datetime.now(timezone.utc).isoformat())
     body=json.loads(json.dumps(body,allow_nan=False))
     result={**body,"source_checksum":digest(body)}
-    _read_frozen_payload_sources(result,stocks,decision_date)
+    _read_frozen_payload_sources(result,stocks,decision_date,copy_data=False)
     return result
 
 
@@ -110,7 +114,7 @@ def sequences_from_daily_capture(payloads, *, packet, decision_date, target_poin
     binding=packet.get("single_capture_binding") or {}
     if binding.get("schema_version")!="daily-single-capture-binding-v1":raise ValueError("daily_capture_sequence_binding_required")
     stocks=[{"id":p["stock_id"],"symbol":p["symbol"]} for p in payloads]
-    raw=_read_frozen_payload_sources(packet,stocks,decision_date)
+    raw=_read_frozen_payload_sources(packet,stocks,decision_date,copy_data=False)
     out=[]
     for p in payloads:
         prices=raw["prices_by_id"][p["stock_id"]]

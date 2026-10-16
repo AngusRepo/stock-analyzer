@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from services.paired_nav_journal import digest
 from services.paired_nav_collection import shadow_failure
+from services.pipeline_slate_artifacts import load, keep, content_digest, checkpoint_async
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 
 
@@ -50,30 +51,54 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
     # They are not L2 slate outputs: copying them here only to discard them below
     # duplicates the whole observation pool. Keep the same isolated copies of
     # the only two fields consumed from each cached result.
-    cache = {formal_input_checksum: deepcopy({key: formal_result[key]
-        for key in ('payloads', 'timesfm_l2_summary') if key in formal_result})}
+    scope = state.get('pipeline_slate_scope')
+    # Cache references, not all completed payload lists. Inline legacy input
+    # keeps its compatibility behavior; new production state always has a scope.
+    cache = {formal_input_checksum: {
+        'payloads': keep(formal_payloads, state),
+        'timesfm_l2_summary': deepcopy(formal_result['timesfm_l2_summary'])}}
+    policy_key = digest([context, sequence])
+
+    failures = {}
+
     async def enrich_group(group):
         outputs = {}
-        for definition, payloads in pre.get(group, {}).items():
+        for definition, reference in pre.get(group, {}).items():
+            key = None
             prior = (saved.get(group) or {}).get(definition)
             if prior and prior.get('status') == 'ready':
+                load(prior['payloads'], scope)
                 outputs[definition] = deepcopy(prior)
                 continue
             try:
-                key = digest(payloads)
+                key = content_digest(reference)
+                if key in failures:
+                    outputs[definition] = deepcopy(failures[key])
+                    continue
                 if key not in cache:
-                    child = {'run_date': state['run_date'], 'payloads': deepcopy(payloads),
-                        'pipeline_timesfm_context': deepcopy(context),
-                        'pipeline_sequence_observations': deepcopy(sequence)}
-                    cache[key] = await enrich(child)
+                    async def compute():
+                        payloads = load(reference, scope)
+                        child = {'run_date': state['run_date'], 'payloads': deepcopy(payloads),
+                            'pipeline_timesfm_context': deepcopy(context),
+                            'pipeline_sequence_observations': deepcopy(sequence)}
+                        result = await enrich(child)
+                        status = (result.get('timesfm_l2_summary') or {}).get('status')
+                        if status not in {'ready', 'blocked', 'skipped'}:
+                            raise ValueError('paired_nav_atomic_l2_inference_failed')
+                        return {'payloads': keep(result.get('payloads', payloads), state),
+                                'timesfm_l2_summary': deepcopy(result['timesfm_l2_summary'])}
+                    if scope:
+                        record = await checkpoint_async(scope, ['l2', policy_key, key], compute)
+                        cache[key] = load(record, scope)
+                    else:
+                        cache[key] = await compute()
                 result = cache[key]
-                status = (result.get('timesfm_l2_summary') or {}).get('status')
-                if status not in {'ready', 'blocked', 'skipped'}:
-                    raise ValueError('paired_nav_atomic_l2_inference_failed')
-                outputs[definition] = {'status': 'ready', 'payloads': deepcopy(result.get('payloads', payloads)),
+                outputs[definition] = {'status': 'ready', 'payloads': deepcopy(result['payloads']),
                     'summary': deepcopy(result['timesfm_l2_summary']), 'input_payload_checksum': key}
             except Exception as exc:
                 outputs[definition] = shadow_failure('atomic_l2_slate', exc)
+                if key is not None:
+                    failures[key] = outputs[definition]
         return outputs
     outputs = await enrich_group('slates')
     holding_outputs = await enrich_group('holding_slates')

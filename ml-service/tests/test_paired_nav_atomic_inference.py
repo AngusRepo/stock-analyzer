@@ -93,6 +93,46 @@ def stub_bundle(child):
         'predict_batch_v2_results': [{'symbol': p['symbol']} for p in child['payloads']]}
 
 
+@pytest.mark.parametrize('mismatch', [None, 'run', 'date', 'code'])
+def test_durable_slate_refs_preserve_compute_inputs_and_reject_other_execution(tmp_path, mismatch):
+    from services import pipeline_slate_artifacts as artifacts
+    original = request()
+    expected_calls = []
+    expected = run_atomic_slates(original,
+        compute=lambda child: expected_calls.append(deepcopy(child)) or stub_bundle(child),
+        formal_bundle=stub_bundle(original))
+    parent = deepcopy(original)
+    scope = {'date': parent['run_date'], 'run': parent['run_id'],
+             'code': parent['expected_source_sha'], 'source': checksum('frozen')}
+    if mismatch:
+        scope[mismatch] = {'run': 'other', 'date': '2026-09-08', 'code': 'b' * 40}[mismatch]
+    with artifacts.local_store(tmp_path):
+        packet = parent['paired_nav_atomic_slates']
+        union = {row['symbol']: row for inputs in packet['slates'].values() for row in inputs['payloads']}
+        shared = artifacts.put(artifacts.shared_payload_pool(union.values()), scope)
+        packet['slates'] = {key: artifacts.put({**inputs,
+            'payloads': artifacts.put_payloads(inputs['payloads'], scope, shared)}, scope)
+            for key, inputs in packet['slates'].items()}
+        reseal(parent)
+        calls = []
+        compute = lambda child: calls.append(deepcopy(child)) or stub_bundle(child)
+        if mismatch:
+            with pytest.raises(ValueError, match='reference_source_mismatch'):
+                run_atomic_slates(parent, compute=compute, formal_bundle=stub_bundle(parent))
+            assert calls == []
+        else:
+            actual = run_atomic_slates(parent, compute=compute, formal_bundle=stub_bundle(parent))
+            # Transport hashes change with references; decoded model inputs do not.
+            for call in calls:
+                assert call['sequence_dataset_meta'].pop('source_checksum') == packet['packet_checksum']
+            for call in expected_calls:
+                assert call['sequence_dataset_meta'].pop('source_checksum') == original['paired_nav_atomic_slates']['packet_checksum']
+            assert calls == expected_calls
+            actual.pop('request_checksum', None)
+            expected.pop('request_checksum', None)
+            assert actual == expected
+
+
 def test_distinct_slate_compute_and_shared_slate_reuse_preserve_frozen_formal_inputs():
     parent = request()
     before, calls = deepcopy(parent), []

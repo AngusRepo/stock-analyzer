@@ -1,5 +1,6 @@
 """Same released L3/L4, separate strategy inputs; no publication authority."""
 from copy import deepcopy
+from services.pipeline_slate_artifacts import load
 
 from services.paired_nav_journal import digest
 
@@ -17,11 +18,12 @@ def capture_history(prepared, *, formal_payloads, signal_date, capture_source):
     for definition in prepared['definitions'].values():
         if definition.get('status') != 'ready':
             continue
-        for p in [*definition['payloads'], *definition.get('holding_risk_payloads', [])]:
+        for p in [*load(definition['payloads']), *definition.get('holding_risk_payloads', [])]:
             previous = payloads.get(p['symbol'])
             if previous is not None and previous.get('prices') != p.get('prices'):
                 raise ValueError('strategy_nav_shared_price_capture_changed')
-            payloads.setdefault(p['symbol'], deepcopy(p))
+            if previous is None:
+                payloads[p['symbol']] = deepcopy(p)
     rows = [payloads[s] for s in sorted(payloads)]
     canonical = load_canonical_risk_payloads(payloads=rows, held_payloads=[],
         signal_date=signal_date, lookback=gnn_return_history_lookback(), capture_source=capture_source)

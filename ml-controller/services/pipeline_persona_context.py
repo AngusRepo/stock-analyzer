@@ -4,6 +4,7 @@ Captures are observations made now, not historical as-of attestations. Only
 the caller may persist formal opinions; candidate computations have no writes.
 """
 from copy import deepcopy
+from itertools import chain
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone, timedelta
 import math
@@ -77,7 +78,7 @@ query with a later value. Every successful empty source is recorded explicitly.
 """
     date.fromisoformat(run_date)
     formal = persona_inputs(formal_payloads)
-    wanted = persona_inputs([*formal_payloads, *extra_payloads])
+    wanted = persona_inputs(chain(formal_payloads, extra_payloads))
     observations = {}
     if saved is not None:
         if (saved.get('schema_version') != 'pipeline-persona-context-v1'

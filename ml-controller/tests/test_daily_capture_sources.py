@@ -87,7 +87,7 @@ def test_actual_graph_builds_from_capture_then_sequence_without_d1(monkeypatch):
     monkeypatch.setattr(prep,"ensure_active8_daily_prep",ensure)
     original=capture.bind_daily_capture_sources
     monkeypatch.setattr(capture,"bind_daily_capture_sources",lambda p,**kw:original(p,bucket=bucket,**kw))
-    state={"run_date":DAY,"market_env":{},"active_stocks":[{"id":1,"symbol":"3004"}],"payload_source_observations":packet}
+    state={"run_date":DAY,"producer_run_id":"daily-capture-test","market_env":{},"active_stocks":[{"id":1,"symbol":"3004"}],"payload_source_observations":packet}
     update=asyncio.run(graph.node_build_payloads(state));state.update(update)
     assert state["timexer_feature_source"]==source
     payload=state["payloads"][0]
@@ -107,7 +107,7 @@ def test_actual_dispatch_rejects_old_sources_and_accepts_bound_graph(monkeypatch
     bucket,source,packet=fixture()
     artifact=_artifact();pool,registry=_pool_and_rows(artifact)
     manifest,sha=graph._build_pipeline_modal_serving_manifest(pool,registry_rows=registry,active8_ensemble=artifact)
-    state={"run_date":DAY,"market_env":{},"active_stocks":[{"id":1,"symbol":"3004"}],"payload_source_observations":packet,
+    state={"run_date":DAY,"producer_run_id":"daily-dispatch-test","market_env":{},"active_stocks":[{"id":1,"symbol":"3004"}],"payload_source_observations":packet,
         "decision_universe_frozen_at":"2026-09-29T10:00:00Z","pipeline_modal_serving_context":{
         "schema_version":"pipeline-modal-serving-context-v1","serving_pool":graph._pipeline_modal_runtime_pool_from_manifest(pool,manifest),
         "serving_manifest":manifest,"serving_manifest_digest":sha,"model_status":{r['model']:r['effective_status'] for r in manifest['models']},

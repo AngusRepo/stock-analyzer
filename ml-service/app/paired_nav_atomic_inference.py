@@ -1,8 +1,8 @@
 """Compute each frozen Atomic slate with the original serving model engine.
 
 Share only IDENTICAL complete frozen inputs, not per-symbol union payloads or
-graph/rank predictions across different stock universes. This module has no I/O
-or promotion/accounting authority. The upstream
+graph/rank predictions across different stock universes. This module may read
+immutable input artifacts, with no publication or promotion/accounting authority. The upstream
 producer must seal complete post-overlay/L2 inputs; a breadth-only source is not
 accepted as a substitute for the formal baseline slate.
 """
@@ -10,7 +10,9 @@ from copy import deepcopy
 import math
 import re
 
-from app.paired_nav_inference import checksum
+# Same strict canonical bytes, without an entire slate-sized JSON string.
+from services.paired_nav_journal import digest as checksum
+from services.pipeline_slate_artifacts import load_inputs, is_ref, artifact_reads
 
 ATOMIC_RESULT_SCHEMA = 'paired-nav-atomic-inference-v2'
 # An Atomic intervention changes strategy admission/derived slate features,
@@ -106,11 +108,12 @@ def _validate_result(child, bundle):
         raise ValueError('atomic_inference_result_coverage_invalid')
 
 
+@artifact_reads
 def run_atomic_slates(parent, *, compute, formal_bundle):
     raw = parent.get('paired_nav_atomic_slates')
     if raw is None:
         return None
-    packet = deepcopy(raw)
+    packet = raw  # Validated read-only; copying an inline packet duplicates every slate.
     # The previous local-only prototype cannot prove candidate-specific peer
     # features/eligibility. Do not reinterpret its union as verified slate data.
     if isinstance(packet, dict) and packet.get('schema_version') == 'paired-nav-atomic-slates-v1':
@@ -131,21 +134,27 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
     formal_key = checksum(formal_inputs)
     if not isinstance(packet['slates'], dict):
         raise ValueError('atomic_inference_slates_missing')
-    raw_by_symbol, history_by_symbol = {}, {}
-    for key, inputs in packet['slates'].items():
-        _slate(inputs)
+    raw_by_symbol, history_by_symbol, symbols_by_key = {}, {}, {}
+    for key, reference in packet['slates'].items():
+        if is_ref(reference) and (reference['scope']['date'] != parent['run_date']
+                or reference['scope']['code'] != parent['expected_source_sha']
+                or reference['scope']['run'] != parent['run_id']):
+            raise ValueError('atomic_inference_reference_source_mismatch')
+        inputs = load_inputs(reference)
+        symbols_by_key[key] = _slate(inputs)
         if key != checksum(inputs):
             raise ValueError('atomic_inference_slate_input_checksum_mismatch')
         history = {row['symbol']: row for row in inputs['sequence_series']}
         for row in inputs['payloads']:
             symbol = row['symbol']
-            raw_source = {field: row[field] for field in _SHARED_SOURCE_FIELDS if field in row}
+            raw_source = checksum({field: row[field] for field in _SHARED_SOURCE_FIELDS if field in row})
+            history_hash = checksum(history.get(symbol))
             if symbol in raw_by_symbol and raw_by_symbol[symbol] != raw_source:
                 raise ValueError('atomic_inference_shared_raw_source_changed')
-            if symbol in history_by_symbol and history_by_symbol[symbol] != history.get(symbol):
+            if symbol in history_by_symbol and history_by_symbol[symbol] != history_hash:
                 raise ValueError('atomic_inference_shared_history_changed')
             raw_by_symbol[symbol] = raw_source
-            history_by_symbol[symbol] = history.get(symbol)
+            history_by_symbol[symbol] = history_hash
     if not isinstance(packet['contrasts'], list):
         raise ValueError('atomic_inference_contrasts_missing')
     required, definitions, contrasts = set(), set(), []
@@ -180,10 +189,10 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
             raise ValueError('atomic_inference_holding_scope_identity_invalid')
         target = item.get('target_symbol')
         identity = (item['definition_checksum'], item['arm'], target)
-        reference_symbols = packet['slates'][item['reference_key']]['symbols']
+        reference_symbols = symbols_by_key[item['reference_key']]
         if (not isinstance(target, str) or not target.strip() or target != target.strip()
                 or identity in scope_targets or target in reference_symbols
-                or set(packet['slates'][item['slate_key']]['symbols']) != set(reference_symbols) | {target}):
+                or set(symbols_by_key[item['slate_key']]) != set(reference_symbols) | {target}):
             raise ValueError('atomic_inference_holding_target_invalid')
         scope_ids.add(item['scope_checksum'])
         scope_targets.add(identity)
@@ -207,8 +216,9 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
         'production_effect': False, 'nav_maturity_credit': 0, 'promotion_allowed': False}
     if 'holding_evaluations' in packet:
         result['holding_evaluations'] = deepcopy(holding_evaluations)
-    for key, inputs in packet['slates'].items():
+    for key, reference in packet['slates'].items():
         try:
+            inputs = load_inputs(reference)
             child = _child(parent, packet, inputs)
             if not child['payloads']:
                 # An explicitly empty slate is NOT a batch of zero forecasts.

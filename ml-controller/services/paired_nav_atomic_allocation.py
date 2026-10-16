@@ -1,5 +1,6 @@
 """Own Atomic recommendation -> original sparse/OPB, no native-account authority."""
 from copy import deepcopy
+from services.pipeline_slate_artifacts import load
 
 from services.paired_nav_journal import digest, read_snapshot
 from services.paired_nav_collection import (
@@ -68,7 +69,7 @@ def run_atomic_allocations(*, snapshot_id, query, prepared=None, recommendations
         try:
             inputs = deepcopy(context['inputs'])
             inputs['recommendations'] = deepcopy(definition['result']['recommendations'])
-            payloads = definition['inputs']['payloads']
+            payloads = load(definition['inputs']['payloads'])
             from services.paired_native_models import atomic_model_context
             native_context = atomic_model_context(context=context, prepared=prepared, definition_checksum=key)
             if distribution is not None:

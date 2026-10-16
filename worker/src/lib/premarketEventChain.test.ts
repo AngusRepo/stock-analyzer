@@ -249,3 +249,25 @@ for(const scenario of ['repaired','other_parent_error','fourth_failure','live_en
   }
  }finally{f.close()}
 })
+for(const success of [true,false])test(`publication retry requires actual reconciled pipeline success: ${success}`,async()=>{
+ const f=fixture(),day='2026-10-16',run='sealed-root';f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ f.env.LIVE_EXECUTION_CLIENT_ENABLED='0';f.env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED='0'
+ f.ports.nowMs=Date.parse(day+'T16:00:00+08:00')
+ try{
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count) VALUES(?,?,?,?,?,?)")
+   .run('2026-10-15','pipeline_execution',run,success?'success':'error','{}',2)
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+   .run(day,'premarket_v3:allocate',day+':premarket-v3','error',JSON.stringify({signal_date:'2026-10-15',morning_context:{trade_date:day},l3_receipt:{run_id:run}}),4,'Error: paper_morning_recovery_setup_not_materialized')
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const row=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
+  assert.equal(row.status,success?'queued':'error');assert.equal(row.attempt_count,4)
+  if(success){
+   const msg={type:'premarket_stage',cursor:0,triggerTime:day,runId:day+':premarket-v3',premarketStage:'allocate'} as UpdateQueueMsg
+   let calls=0
+   const work:PremarketWork=async()=>{calls++;return {next:null,receipt:{ready:true}}}
+   await processPremarketEvent(f.env,msg,work,f.now());await processPremarketEvent(f.env,msg,work,f.now())
+   const done=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
+   assert.equal(calls,1);assert.equal(done.status,'success');assert.equal(done.attempt_count,5)
+  }
+ }finally{f.close()}
+})

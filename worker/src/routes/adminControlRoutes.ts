@@ -675,6 +675,15 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
   return c.json({ success: true, params: merged })
 })
 
+adminControlRoutes.post('/api/admin/pipeline-terminal-reconcile',async(c)=>{
+  const authError=await requireAdminOrServiceToken(c)
+  if(authError)return authError
+  const input=await c.req.json().catch(()=>null)
+  if(!input)return c.json({error:'Invalid JSON'},400)
+  const {reconcileHistoricalPipeline}=await import('../lib/historicalPipelineReconcile')
+  return c.json(await reconcileHistoricalPipeline(c.env,input))
+})
+
 async function handleSchedulerCallback(c: any) {
   const authError = await requireServiceToken(c)
   if (authError) return authError

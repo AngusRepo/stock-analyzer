@@ -10,7 +10,7 @@ function fixture() {
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
-for (const recoveryDate of ['2026-10-12','2026-10-14']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
+for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
  const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
  try{
   f.ports.nowMs=Date.parse(`${recoveryDate}T09:00:00+08:00`)

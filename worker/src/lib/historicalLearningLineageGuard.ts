@@ -126,7 +126,9 @@ export async function historicalLearningLineageDecision(
     : task === 'pipeline' && signalDate === '2026-10-12' && nextSessionDate === '2026-10-13' && today === '2026-10-13'
       ? '20261013'
       : task === 'pipeline' && signalDate === '2026-10-13' && nextSessionDate === '2026-10-14' && today === '2026-10-14'
-        ? '20261014' : null
+        ? '20261014'
+        : signalDate === '2026-10-15' && nextSessionDate === '2026-10-16' && today === '2026-10-16'
+          ? '20261016' : null
   if (!decision.allowed && recoveryDate) {
     const admission = await kv.get('ml:active8:paper_admission:v1', 'json') as any
     const variables = admission?.configuration?.native_execution_policy?.variables

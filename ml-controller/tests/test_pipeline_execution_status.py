@@ -86,13 +86,35 @@ async def test_real_reconcile_route_uses_existing_callback_only_for_verified_fai
     exec(compile(ast.Module(body=[fn],type_ignores=[]),'pipeline.py','exec'),ns)
     result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
     assert result['failure_callback_sent'] is True and len(sent)==1 and auth
-    from services import pipeline_prediction_recovery
+    from services import pipeline_prediction_recovery, pipeline_input_events
+    input_calls=[]
+    def old_failed_input(**kwargs):
+        input_calls.append(kwargs)
+        raise ValueError('pipeline_input_continuation_unfinished:failed')
+    monkeypatch.setattr(pipeline_input_events, 'reconcile_inputs', old_failed_input)
     monkeypatch.setattr(pipeline_prediction_recovery, 'reconcile_modal_request',
         lambda **kw: {'reason': 'same_request_resumed'})
     current=lookup([execution(state=4)])
     result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
     assert result['failure_callback_sent'] is False and len(sent)==1
     assert result['modal_recovery']['reason'] == 'same_request_resumed'
+    assert not input_calls
+    for reason in ('cpu_lease_active', 'gpu_lease_active', 'callback_accepted', 'source_changed'):
+        monkeypatch.setattr(pipeline_prediction_recovery, 'reconcile_modal_request',
+            lambda **kw: {'reason': reason})
+        result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
+        assert result['reason']==reason and not result['failure_callback_sent']
+        assert not input_calls and len(sent)==1
+    monkeypatch.setattr(pipeline_prediction_recovery, 'reconcile_modal_request',
+        lambda **kw: {'reason': 'attempts_exhausted', 'error': 'pipeline_modal_recovery_attempts_exhausted'})
+    result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
+    assert result['failure_callback_sent'] and sent[-1]['error']=='pipeline_modal_recovery_attempts_exhausted'
+    assert not input_calls
+    monkeypatch.setattr(pipeline_prediction_recovery, 'reconcile_modal_request',
+        lambda **kw: {'reason': 'no_registered_modal_request'})
+    result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
+    assert result['failure_callback_sent'] and len(input_calls)==1
+    assert sent[-1]['error']=='pipeline_input_continuation_unfinished:failed'
 
 
 def test_old_job_history_does_not_block_recent_exact_run():

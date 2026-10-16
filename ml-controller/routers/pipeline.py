@@ -365,6 +365,17 @@ async def reconcile_pipeline_execution(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     callback = failure_callback(snapshot)
     if snapshot.get('state') == 'succeeded':
+        from services.pipeline_prediction_recovery import reconcile_modal_request
+        recovery = await asyncio.to_thread(reconcile_modal_request, run_date=date, run_id=run_id)
+        if recovery['reason'] != 'no_registered_modal_request':
+            # A validated immutable L3 request owns progress after input recovery.
+            # Earlier failed input attempts cannot fail its active successor.
+            if recovery.get('error'):
+                await _callback_worker({'task': 'pipeline', 'status': 'error', 'run_id': run_id,
+                    'run_date': date, 'duration_ms': 0, 'error': recovery['error'],
+                    'summary': recovery['error']})
+            return {**snapshot, 'modal_recovery': recovery, 'reason': recovery['reason'],
+                    'failure_callback_sent': bool(recovery.get('error'))}
         from services.pipeline_input_events import reconcile_inputs
         try:
             dependency = await asyncio.to_thread(reconcile_inputs, run_date=date, run_id=run_id, jobs_client=_jobs_client)
@@ -376,8 +387,6 @@ async def reconcile_pipeline_execution(
                     'run_date': date, 'duration_ms': 0, 'error': dependency['error'], 'summary': dependency['error']})
             return {**snapshot, 'input_recovery': dependency, 'reason': dependency['reason'],
                     'failure_callback_sent': bool(dependency.get('error'))}
-        from services.pipeline_prediction_recovery import reconcile_modal_request
-        recovery = await asyncio.to_thread(reconcile_modal_request, run_date=date, run_id=run_id)
         snapshot = {**snapshot, 'modal_recovery': recovery, 'reason': recovery['reason']}
         if recovery.get('error'):
             callback = {'task': 'pipeline', 'status': 'error', 'run_id': run_id,

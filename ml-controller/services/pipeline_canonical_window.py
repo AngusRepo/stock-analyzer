@@ -47,7 +47,7 @@ def assert_canonical_window_open(
         raise RuntimeError("pipeline_canonical_window_worker_contract_invalid")
     paper_recovery = ((run_date, current.isoformat()) in {
             ('2026-10-08', '2026-10-12'), ('2026-10-12', '2026-10-13'),
-            ('2026-10-13', '2026-10-14')}
+            ('2026-10-13', '2026-10-14'), ('2026-10-15', '2026-10-16')}
         and os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == 'premarket_once_v1'
         and boundary.get('scope') == 'paper' and boundary.get('nextSessionDate') == current.isoformat()
         and boundary.get('reason') == 'authorized_paper_recovery_' + current.strftime('%Y%m%d'))

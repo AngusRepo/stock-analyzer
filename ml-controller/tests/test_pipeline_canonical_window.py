@@ -59,7 +59,7 @@ def test_historical_pipeline_rejects_after_open_and_unverified_boundary(monkeypa
 
 
 @pytest.mark.parametrize('change', [None, 'scope', 'session', 'reason', 'allowed', 'owner', 'day', 'signal'])
-@pytest.mark.parametrize('signal,trade', [('2026-10-12','2026-10-13'),('2026-10-13','2026-10-14')])
+@pytest.mark.parametrize('signal,trade', [('2026-10-12','2026-10-13'),('2026-10-13','2026-10-14'),('2026-10-15','2026-10-16')])
 def test_dated_paper_recovery_requires_exact_worker_boundary(monkeypatch, change, signal, trade):
     monkeypatch.setenv('STOCKVISION_WORKER_URL', 'https://worker.example')
     monkeypatch.setenv('STOCKVISION_AUTH_TOKEN', 'test-token')

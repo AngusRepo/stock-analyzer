@@ -122,10 +122,11 @@ def validate_context(receipt, context, *, now=None):
     # Oct 13 paper recovery remains valid for this date; preopen is the target.
     opening_recovery = (enabled() and receipt.get('run_date') == '2026-10-12'
         and context.get('trade_date') == tw.date().isoformat() == '2026-10-13')
-    # Wei explicitly approved Oct 14 publication after 08:45. Reuse only
-    # this day's frozen preopen capture; never grant another day's window.
-    late_recovery = (enabled() and receipt.get('run_date') == '2026-10-13'
-        and context.get('trade_date') == tw.date().isoformat() == '2026-10-14')
+    # Dated Paper recoveries preserve the actual context clock. Oct 16 also
+    # permits a fresh same-day context after 08:45, as explicitly authorized.
+    late_recovery = (enabled() and (receipt.get('run_date'), context.get('trade_date')) in {
+        ('2026-10-13', '2026-10-14'), ('2026-10-15', '2026-10-16')}
+        and context.get('trade_date') == tw.date().isoformat())
     if context.get('trade_date')!=tw.date().isoformat() or ((tw.hour,tw.minute)>=(8,45) and not (paper_recovery or opening_recovery or late_recovery)):
         raise ValueError('premarket_allocation_cutoff')
     if receipt['run_date']>=context['trade_date']:raise ValueError('premarket_signal_date_invalid')
@@ -133,8 +134,9 @@ def validate_context(receipt, context, *, now=None):
     if cutoff.tzinfo is None or cutoff>now:raise ValueError('premarket_context_stale')
     captured_tw=cutoff.astimezone(timezone(timedelta(hours=8)))
     late_recovery = (late_recovery and captured_tw.date()==tw.date()
-        and (6,45)<=(captured_tw.hour,captured_tw.minute)<(8,45))
-    if tw.date().isoformat()=='2026-10-14' and (tw.hour,tw.minute)>=(8,45) and not late_recovery:
+        and ((6,45)<=(captured_tw.hour,captured_tw.minute)<(8,45)
+             or (tw.date().isoformat()=='2026-10-16' and now-cutoff<=timedelta(minutes=120))))
+    if tw.date().isoformat() in {'2026-10-14','2026-10-16'} and (tw.hour,tw.minute)>=(8,45) and not late_recovery:
         raise ValueError('premarket_allocation_cutoff')
     # The explicitly authorized Oct 12 after-close paper backfill retains its
     # original capture for this day. It cannot open another day's allocation,

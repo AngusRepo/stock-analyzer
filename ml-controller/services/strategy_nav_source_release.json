@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "e084938ef727c4ec01142dd6a201efa9430560be",
+  "production_baseline_source": "c339616077716006ea0750b94e32fcb3d0013f56",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "0e107b83587ec42355a109cb9a22728cb11d02cfc6d8a84d9496cef6859762ee",
-  "prior_configuration_checksum": "3fc8fba3e266796a8f972589ac1ba5d8b073453df04214ada176cc20064a67e4",
+  "prior_approval_checksum": "e1df9373478122f26495a373ad5da950ecfb713d307c82d201811f67a8952b04",
+  "prior_configuration_checksum": "8c2a11f1e946e1504ecdd4cff9d1ff802cce98af83b29b1565bba09a68c8afb6",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -80,6 +80,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:7f9c987fb370d0a355122bc9ccd80d212e2df9722689b40122793b49c6e879b3",
-  "review": "audits/daily-chain-performance-20261015/ACCEPTANCE.md"
+  "execution_owner_version": "native-paper-v1:9508feaaf237607d1c672be09581fcbc8f56150cef1ddecb5bd57475752a6945",
+  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/CANONICAL-CODEC-RELEASE.md"
 }

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:7f9c987fb370d0a355122bc9ccd80d212e2df9722689b40122793b49c6e879b3",
+  "execution_owner_version": "native-paper-v1:9508feaaf237607d1c672be09581fcbc8f56150cef1ddecb5bd57475752a6945",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly requested commit push deploy of the daily-chain performance patch on 2026-10-15; preserve R2 and existing Paper policy.",
-  "review": "audits/daily-chain-performance-20261015/ACCEPTANCE.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:daily-performance-release-20261015"
+  "authorization": "Wei explicitly authorized necessary recovery fixes, validation, commit, push and deploy on 2026-10-16 and confirmed continuing the original full-chain recovery after close. Preserve all existing Paper economics; no real orders or retraining.",
+  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/CANONICAL-CODEC-RELEASE.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:canonical-codec-recovery-20261016"
 }

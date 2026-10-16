@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:9508feaaf237607d1c672be09581fcbc8f56150cef1ddecb5bd57475752a6945",
+  "execution_owner_version": "native-paper-v1:11d4730db0d4284136831bb4ef2b8b143239e680b7ae1220d4f36f593e6dfddc",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
   "authorization": "Wei explicitly authorized necessary recovery fixes, validation, commit, push and deploy on 2026-10-16 and confirmed continuing the original full-chain recovery after close. Preserve all existing Paper economics; no real orders or retraining.",
-  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/CANONICAL-CODEC-RELEASE.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:canonical-codec-recovery-20261016"
+  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/NAV-CACHE-ALIAS-RELEASE.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:nav-cache-alias-recovery-20261016"
 }

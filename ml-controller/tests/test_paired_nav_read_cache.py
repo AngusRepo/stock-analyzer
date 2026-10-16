@@ -102,3 +102,69 @@ def test_proxy_and_direct_query_keys_reuse_only_same_actual_database(monkeypatch
     assert query_cache_identity(proxy.query)==key
     monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-b')
     assert query_cache_identity(proxy.query)!=key
+
+
+def test_exact_recorded_clients_share_reads_without_expanding_budget(monkeypatch):
+    from services.paired_nav_read_cache import query_cache_identity
+    from services.daily_nav_read_receipt import RecordedClient
+    from services.d1_domain_client import DomainD1Client,D1DataDomain
+    import services.d1_domain_client as d
+    monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-a')
+    direct=DomainD1Client(D1DataDomain.LEARNING);recorded=RecordedClient(direct)
+    keys=[query_cache_identity(c.query) for c in (direct,recorded,RecordedClient(recorded))]
+    assert keys[0]==keys[1]==keys[2]
+    calls=[]
+    with reuse_verified_cold_reads(max_bytes=4096,entry_bytes=2048):
+        for key in keys:
+            value=cached_verified_read((key,'source'),lambda:calls.append(1) or {'rows':[1]})
+            value['rows'].append(2)
+        assert calls==[1]
+        assert _scope.get().bytes<=4096
+
+
+def test_recorded_policy_reuse_still_rereads_manifest_and_rejects_change(monkeypatch):
+    from services.paired_nav_read_cache import policy_definitions,remember_policy_definitions
+    from services.daily_nav_read_receipt import RecordedClient
+    from services.d1_domain_client import DomainD1Client,D1DataDomain
+    import services.d1_domain_client as d
+    monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-a')
+    manifest={'snapshot_id':'original','payload_checksum':'sealed'};reads=[]
+    def query(self,sql,params=None):reads.append(1);return [dict(manifest)]
+    monkeypatch.setattr(DomainD1Client,'query',query)
+    direct=DomainD1Client(D1DataDomain.LEARNING);recorded=RecordedClient(direct)
+    def no_reparse():pytest.fail('reparsed identical source')
+    with reuse_verified_cold_reads():
+        remember_policy_definitions(recorded.query,manifest,'atomic_strategy',{'candidate':{'v':1}})
+        result=policy_definitions(direct.query,'original','atomic_strategy',no_reparse)
+        result['definitions'].clear()
+        assert policy_definitions(recorded.query,'original','atomic_strategy',no_reparse)['definitions']
+        assert len(reads)==2 and recorded.reads
+        manifest['payload_checksum']='changed'
+        with pytest.raises(RuntimeError,match='policy_source_changed'):
+            policy_definitions(direct.query,'original','atomic_strategy',no_reparse)
+
+
+def test_unknown_recorded_subclass_and_cycle_do_not_claim_domain_identity(monkeypatch):
+    from services.paired_nav_read_cache import query_cache_identity
+    from services.daily_nav_read_receipt import RecordedClient
+    from services.d1_domain_client import DomainD1Client,D1DataDomain
+    import services.d1_domain_client as d
+    monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-a')
+    direct=DomainD1Client(D1DataDomain.LEARNING)
+    class FilteredRecorder(RecordedClient):pass
+    assert query_cache_identity(FilteredRecorder(direct).query)!=query_cache_identity(direct.query)
+    cycle=RecordedClient(direct);cycle.client=cycle
+    assert query_cache_identity(cycle.query)==cycle.query
+
+
+def test_aliases_do_not_make_atomic_comparisons_cacheable(monkeypatch):
+    from services.paired_nav_read_cache import remember_comparison,reusable_comparison
+    from services.daily_nav_read_receipt import RecordedClient
+    from services.d1_domain_client import DomainD1Client,D1DataDomain
+    import services.d1_domain_client as d
+    monkeypatch.setattr(d,'database_id_for_domain',lambda *a,**kw:'db-a')
+    direct=DomainD1Client(D1DataDomain.LEARNING);recorded=RecordedClient(direct)
+    allocation={'payload':{'content':{'owner':'atomic_strategy'}}}
+    with reuse_verified_cold_reads():
+        remember_comparison(recorded.query,allocation,{'manifest':{'snapshot_id':'source'}},{'value':1})
+        assert reusable_comparison(direct.query,allocation) is None

@@ -160,7 +160,7 @@ def reusable_comparison(query, allocation):
     scope = _scope.get()
     if scope is None:
         return None
-    key = (query, digest(allocation))
+    key = (query_cache_identity(query), digest(allocation))
     cached = scope.comparisons.get(key)
     if cached is None:
         return None
@@ -182,7 +182,7 @@ def remember_comparison(query, allocation, parent, result):
         return
     if len(json.dumps([parent['manifest'], result], ensure_ascii=False).encode()) > 64 * 1024:
         return
-    key = (query, digest(allocation))
+    key = (query_cache_identity(query), digest(allocation))
     scope.comparisons[key] = (deepcopy(parent['manifest']), deepcopy(result))
     if len(scope.comparisons) > 256:
         scope.comparisons.popitem(last=False)
@@ -193,7 +193,7 @@ def remember_policy_definitions(query, manifest, owner, definitions):
     scope = _scope.get()
     if scope is None or len(json.dumps([manifest, definitions], ensure_ascii=False).encode()) > 64 * 1024:
         return
-    scope.definitions[(query, manifest['snapshot_id'], owner)] = (deepcopy(manifest), deepcopy(definitions))
+    scope.definitions[(query_cache_identity(query), manifest['snapshot_id'], owner)] = (deepcopy(manifest), deepcopy(definitions))
     if len(scope.definitions) > 256:
         scope.definitions.popitem(last=False)
 
@@ -201,7 +201,7 @@ def remember_policy_definitions(query, manifest, owner, definitions):
 def policy_definitions(query, snapshot_id, owner, read):
     from copy import deepcopy
     scope = _scope.get()
-    cached = scope.definitions.get((query, snapshot_id, owner)) if scope is not None else None
+    cached = scope.definitions.get((query_cache_identity(query), snapshot_id, owner)) if scope is not None else None
     if cached is not None:
         manifest, definitions = cached
         current = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
@@ -236,7 +236,19 @@ def query_cache_identity(query):
     # Proxy and direct clients for the same DB share verified bytes, while every
     # load still rereads both metadata rows. A routing change changes the key.
     from services.d1_domain_client import DomainD1Client, DomainD1ClientProxy, database_id_for_domain
+    from services.daily_nav_read_receipt import RecordedClient
     from services import d1_client
+    original, seen = query, set()
+    # This exact wrapper returns the underlying rows unchanged and only records
+    # read checksums. Keep all actual metadata reads through the caller. Unknown
+    # wrappers/subclasses may filter rows and must remain separate identities.
+    while (type(getattr(query, '__self__', None)) is RecordedClient
+            and getattr(query, '__func__', None) is RecordedClient.query):
+        recorder = query.__self__
+        if id(recorder) in seen:
+            return original
+        seen.add(id(recorder))
+        query = recorder.client.query
     owner = getattr(query, '__self__', None)
     fn = getattr(query, '__func__', None)
     if (type(owner) in (DomainD1Client, DomainD1ClientProxy)

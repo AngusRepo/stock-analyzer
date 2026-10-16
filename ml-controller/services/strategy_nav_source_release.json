@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "c339616077716006ea0750b94e32fcb3d0013f56",
+  "production_baseline_source": "7899f93d437f6e9b7c956daa0533e1a9d9a78ba6",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "e1df9373478122f26495a373ad5da950ecfb713d307c82d201811f67a8952b04",
-  "prior_configuration_checksum": "8c2a11f1e946e1504ecdd4cff9d1ff802cce98af83b29b1565bba09a68c8afb6",
+  "prior_approval_checksum": "83f443313149b00dd08575426ed779cf3570cd39a71289ff31e5bdba653663b1",
+  "prior_configuration_checksum": "280660755e7ee018150748ae3224e53ba1d841c9bd8b2f7758a17b37b84552fe",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -80,6 +80,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:9508feaaf237607d1c672be09581fcbc8f56150cef1ddecb5bd57475752a6945",
-  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/CANONICAL-CODEC-RELEASE.md"
+  "execution_owner_version": "native-paper-v1:11d4730db0d4284136831bb4ef2b8b143239e680b7ae1220d4f36f593e6dfddc",
+  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/NAV-CACHE-ALIAS-RELEASE.md"
 }

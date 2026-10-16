@@ -10,6 +10,10 @@ export type PremarketWork = (stage: PremarketStage, input: PremarketPayload, gua
 const PREFIX = 'premarket_v3:'
 const RUN = (date: string) => `${date}:premarket-v3`
 const MAX_ATTEMPTS = 3
+function october16PublicationRecovery(env: Bindings, date: string): boolean {
+  return date === '2026-10-16' && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1'
+    && env.LIVE_EXECUTION_CLIENT_ENABLED === '0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED === '0'
+}
 export const PREMARKET_READY_TARGET = '08:45'
 function validStage(stage: string): stage is PremarketStage {
   return /^(context|setup|allocate|market-health|(debate|replan|publish):[0-2])$/.test(stage)
@@ -63,6 +67,13 @@ export async function ensurePremarketEventChain(env: Bindings, date: string, now
   const day = new Date(`${date}T12:00:00+08:00`).getUTCDay()
   if (day === 0 || day === 6 || await env.KV.get(`holiday:${date}`)) return 'status=skipped premarket_non_trading_day'
   const db = databaseForDataDomain(env, 'ops')
+  // Source repair grants one continuation of the exact preserved setup. It
+  // neither resets attempts nor revives unrelated failures or a fourth failure.
+  if (october16PublicationRecovery(env,date)) await db.prepare(`UPDATE pipeline_stage_runs
+    SET status='queued',lease_owner=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
+    WHERE business_date=? AND canonical_run_id=? AND stage=? AND status='error'
+      AND attempt_count=3 AND instr(last_error,'corporate_source_live_preopen_required')>0`)
+    .bind(date,RUN(date),PREFIX+'setup').run()
   await db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key,queued_at)
     VALUES (?,? ,?,'queued','{}',CURRENT_TIMESTAMP) ON CONFLICT(business_date,stage) DO NOTHING`)
     .bind(date, PREFIX + 'context', RUN(date)).run()
@@ -91,7 +102,8 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   const db = databaseForDataDomain(env, 'ops')
   const key = PREFIX + stage
   // One Wei-authorized recovery after the three preserved preopen-only failures.
-  const attemptLimit = ['2026-10-12','2026-10-13'].includes(date) && stage === 'setup' ? MAX_ATTEMPTS + 1 : MAX_ATTEMPTS
+  const attemptLimit = (['2026-10-12','2026-10-13'].includes(date) || october16PublicationRecovery(env,date))
+    && stage === 'setup' ? MAX_ATTEMPTS + 1 : MAX_ATTEMPTS
   const clock = premarketClock(now)
   const advisoryWindow = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && stage.startsWith('debate:') && clock.minutes < 960
   if (date !== clock.date || (!advisoryWindow && clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540))) {

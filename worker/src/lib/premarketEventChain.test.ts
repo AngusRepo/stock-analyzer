@@ -185,8 +185,9 @@ test('published plan does not hide a terminal broker health failure',async()=>{
  } finally {f.close()}
 })
 
-for (const day of ['2026-10-12','2026-10-13']) for (const fail of [false,true]) test(`${day} setup allows one preserved fourth attempt; fail=${fail}`,async()=>{
+for (const day of ['2026-10-12','2026-10-13','2026-10-16']) for (const fail of [false,true]) test(`${day} setup allows one preserved fourth attempt; fail=${fail}`,async()=>{
  const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ f.env.LIVE_EXECUTION_CLIENT_ENABLED='0';f.env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED='0'
  f.ports.nowMs=Date.parse(day+'T16:00:00+08:00');let calls=0
  try {
   f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count) VALUES(?,?,?,?,?,?)")
@@ -199,4 +200,25 @@ for (const day of ['2026-10-12','2026-10-13']) for (const fail of [false,true]) 
   assert.equal(f.rows()[0].status,fail?'error':'success')
   await processPremarketEvent(f.env,msg,work,f.now());assert.equal(calls,1)
  }finally{f.close()}
+})
+
+for (const scenario of ['repaired','other_error','fourth_failure','live_enabled']) test(`October 16 recovery preserves failed attempt evidence and only requeues repaired setup: ${scenario}`,async()=>{
+ const f=fixture();const day='2026-10-16'
+ f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';f.env.LIVE_EXECUTION_CLIENT_ENABLED='0'
+ f.env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=scenario==='live_enabled'?'1':'0'
+ f.ports.nowMs=Date.parse(day+'T12:50:00+08:00')
+ const reason=scenario==='other_error'?'unrelated_fault':'Error: corporate_source_live_preopen_required'
+ const attempts=scenario==='fourth_failure'?4:3
+ const cursor=JSON.stringify({signal_date:'2026-10-15',context_hash:'preserved'})
+ try {
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+   .run(day,'premarket_v3:setup',day+':premarket-v3','error',cursor,attempts,reason)
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const row=f.rows().find(r=>r.stage==='premarket_v3:setup')!
+  assert.equal(row.status,scenario==='repaired'?'queued':'error')
+  assert.equal(row.attempt_count,attempts)
+  const saved=f.sqls.ops.prepare("SELECT last_error,cursor_key FROM pipeline_stage_runs WHERE stage='premarket_v3:setup'").get() as {last_error:string;cursor_key:string}
+  assert.equal(saved.cursor_key,cursor)
+  assert.equal(saved.last_error,reason)
+ } finally {f.close()}
 })

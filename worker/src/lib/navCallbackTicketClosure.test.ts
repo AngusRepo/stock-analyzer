@@ -224,6 +224,41 @@ test('continuation verifies the original ticket date, task and run before dispat
   } finally { globalThis.fetch = originalFetch }
 }))
 
+test('failed-day fence settles different watchdog owners as blocked without redispatch or false success', async () => fixture(async f => {
+  const { active8DailyFailureFenceKey } = await import('./active8DailyFailureFence')
+  await f.kv.put(active8DailyFailureFenceKey(f.day), JSON.stringify({
+    schema_version: 'active8-daily-failure-fence-v1', business_date: f.day,
+    status: 'blocked', reason: 'verified_cloud_run_terminal_failure',
+    evidence_sha256: 'a'.repeat(64), failed_executions: ['active8-oof-materialize-timeout'] }))
+  const previous = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => { calls++; throw new Error('must not dispatch') }
+  f.env.ML_CONTROLLER_URL = 'https://isolated-controller.test'
+  try {
+    for (const minute of ['25', '55']) {
+      const admitted = await admitSchedulerExecutionTicket(f.ops as any, {
+        identity: schedulerDeliveryIdentity(new Headers({
+          'X-CloudScheduler-JobName': 'projects/local/locations/asia-east1/jobs/active8-oof-daily-watchdog',
+          'X-CloudScheduler-ScheduleTime': `${f.day}T18:${minute}:00Z`, })),
+        task: 'active8-oof-daily', requestedRunDate: f.day, proposedRunId: `watchdog-${minute}` })
+      await updateSchedulerExecutionTicket(f.ops as any, { ticketId: admitted.ticket.ticket_id,
+        runId: admitted.ticket.run_id, status: 'triggered', authority: 'scheduler_http' })
+      await assert.rejects(updateSchedulerExecutionTicket(f.ops as any, { ticketId: admitted.ticket.ticket_id,
+        runId: admitted.ticket.run_id, status: 'blocked', authority: 'scheduler_http' }), /transition rejected/)
+      const message = { type: 'active8_oof_continuation' as const, cursor: 0, triggerTime: f.day,
+        oofCadence: 'daily' as const, oofContinuationAttempt: 12,
+        schedulerTicketId: admitted.ticket.ticket_id, schedulerRunId: admitted.ticket.run_id }
+      await processUpdateBatch(message, f.env, {} as any)
+      const settled = await f.row(admitted.ticket.ticket_id)
+      assert.equal(settled.status, 'blocked')
+      assert.match(settled.last_error, /verified_cloud_run_failure_requires_repair/)
+      await processUpdateBatch(message, f.env, {} as any)
+    }
+    assert.equal(calls, 0)
+    assert.equal((await f.row(f.root.ticket_id)).status, 'triggered', 'a circuit breaker cannot certify chain success')
+  } finally { globalThis.fetch = previous }
+}))
+
 for (const status of ['pending', 'spawned']) {
   test(`snapshot child retains scheduler identity through ${status} controller dispatch`, async () => fixture(async f => {
     const sent: any[] = []

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:e34347189c3fadf8fa9c2858c8ed95c7a2b2b980b532c10d005517fee8ed4184",
+  "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved commit, push and deploy of the reviewed evening-chain performance repairs in this chat on 2026-10-16. Scope is source-only Paper runtime performance; recovery remains stopped; no real orders, retraining or maturity transfer.",
-  "review": "audits/evening-performance-local-20261016/full-chain/v3/release-20261016/controller-modal-preflight.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:evening-performance-v3-20261016"
+  "authorization": "Wei explicitly approved commit push deploy, resume the failed 2026-10-16 stage, shutdown after full L3 completion",
+  "review": "audits/chain-improvement-20261016/OOM-REPAIR-RESULT.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:pipeline-oom-chain-cards-20261017"
 }

@@ -43,6 +43,7 @@ def atomic_persona_slates(state):
         if any(formal_raw[s] != raw[s] for s in set(raw) & set(formal_raw)):
             raise ValueError('paired_nav_atomic_persona_shared_raw_changed')
         slates[key] = keep(inputs['payloads'], state)
+        inputs = raw = None
     return {'slates': slates, 'unavailable': unavailable, 'input_checksum': digest([
         source['input_checksum'], dispatch['dispatch_checksum'], ml['output_checksum']])}
 
@@ -59,6 +60,7 @@ def compute_atomic_personas(*, prepared, run_date, context):
         result = deepcopy(cache[identity])
         definitions[key] = {**result, 'status': 'ready' if not result['errors'] else 'incomplete',
             'payload_checksum': digest(payloads)}
+        payloads = None
     body = {'schema_version': 'paired-nav-atomic-personas-v1', 'signal_date': run_date,
         'input_checksum': prepared['input_checksum'], 'context_checksum': context['source_checksum'],
         'definitions': definitions,

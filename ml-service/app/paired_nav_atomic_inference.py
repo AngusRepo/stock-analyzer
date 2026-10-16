@@ -66,15 +66,15 @@ def _series_for(contracts, source, symbols):
     return result
 
 
-def _child(parent, packet, inputs):
+def _child(parent, packet, inputs, *, copy_inputs=True):
     replaced = {'paired_nav_atomic_slates', 'paired_nav_l3_requests', 'callback_url', 'callback_token',
                 'payloads', 'sequence_series', 'sequence_model_series_by_model',
                 'active8_shadow_sequence_series_by_model', 'sequence_dataset_meta'}
     child = deepcopy({k: v for k, v in parent.items() if k not in replaced})
     symbols = _symbols(inputs['payloads'])
     source = {row['symbol']: row for row in inputs['sequence_series']}
-    child['payloads'] = deepcopy(inputs['payloads'])
-    child['sequence_series'] = deepcopy(inputs['sequence_series'])
+    child['payloads'] = deepcopy(inputs['payloads']) if copy_inputs else inputs['payloads']
+    child['sequence_series'] = deepcopy(inputs['sequence_series']) if copy_inputs else inputs['sequence_series']
     for field, contracts in (('sequence_model_series_by_model', 'sequence_model_contracts'),
                              ('active8_shadow_sequence_series_by_model', 'active8_shadow_sequence_contracts')):
         child[field] = _series_for(parent.get(contracts) or {}, source, symbols)
@@ -155,6 +155,7 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
                 raise ValueError('atomic_inference_shared_history_changed')
             raw_by_symbol[symbol] = raw_source
             history_by_symbol[symbol] = history_hash
+        inputs = history = row = None
     if not isinstance(packet['contrasts'], list):
         raise ValueError('atomic_inference_contrasts_missing')
     required, definitions, contrasts = set(), set(), []
@@ -206,7 +207,7 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
         raise ValueError('atomic_inference_parent_sequence_contract_invalid')
     # Verify the baseline history contracts before any candidate compute. One
     # stored slate may serve multiple definitions only if ALL inputs are equal.
-    formal_child = _child(parent, packet, formal_inputs)
+    formal_child = _child(parent, packet, formal_inputs, copy_inputs=False)
     if any(formal_child[field] != parent.get(field, {}) for field in ('sequence_input_contract',
             'sequence_model_series_by_model', 'active8_shadow_sequence_series_by_model')):
         raise ValueError('atomic_inference_formal_sequence_contract_mismatch')
@@ -219,7 +220,7 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
     for key, reference in packet['slates'].items():
         try:
             inputs = load_inputs(reference)
-            child = _child(parent, packet, inputs)
+            child = _child(parent, packet, inputs, copy_inputs=False)
             if not child['payloads']:
                 # An explicitly empty slate is NOT a batch of zero forecasts.
                 result['slates'][key] = {'status': 'empty_universe', 'symbols': []}
@@ -231,5 +232,7 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
                                      'reused_formal': reused, 'result': bundle}
         except Exception as exc:
             result['slates'][key] = atomic_inference_failure(exc)
+        finally:
+            inputs = child = None
     result['status'] = 'failed' if any(x['status'] == 'failed' for x in result['slates'].values()) else 'complete'
     return result

@@ -51,6 +51,25 @@ def reseal(parent):
     packet['packet_checksum'] = checksum({k: v for k, v in packet.items() if k != 'packet_checksum'})
 
 
+def test_private_consumer_does_not_copy_the_entire_slate_again():
+    from app.paired_nav_atomic_inference import _child
+    from services.pipeline_slate_artifacts import load_inputs
+    parent = request()
+    packet = parent['paired_nav_atomic_slates']
+    original = next(iter(packet['slates'].values()))
+    inputs = load_inputs(original)
+    class OwnedList(list):
+        def __deepcopy__(self, memo):
+            pytest.fail('private_slate_copied_again')
+    inputs['payloads'] = OwnedList(inputs['payloads'])
+    inputs['sequence_series'] = OwnedList(inputs['sequence_series'])
+    child = _child(parent, packet, inputs, copy_inputs=False)
+    assert child['payloads'] is inputs['payloads']
+    assert child['sequence_series'] is inputs['sequence_series']
+    child['payloads'][0]['signal'] = 999
+    assert original['payloads'][0]['signal'] != 999
+
+
 def rekey(parent):
     packet = parent['paired_nav_atomic_slates']
     keys = {key: checksum(value) for key, value in packet['slates'].items()}

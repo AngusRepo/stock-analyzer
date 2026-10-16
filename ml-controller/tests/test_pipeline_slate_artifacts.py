@@ -43,6 +43,20 @@ def test_checkpoint_survives_interruption_without_rebuilding_completed_groups(tm
         assert artifacts.checkpoint(scope, ['changed-policy', 1], lambda: [{'v': 3}]) != a
 
 
+def test_owned_consumer_preserves_inline_and_artifact_sources(tmp_path, scope):
+    original = {'symbols': ['A'], 'payloads': [{'symbol': 'A', 'prices': [{'close': 1}]}],
+                'sequence_series': [{'symbol': 'A', 'prices': [1]}]}
+    with artifacts.local_store(tmp_path):
+        for source in (original, artifacts.put(original, scope)):
+            value = artifacts.load_inputs(source, scope)
+            value['payloads'][0]['prices'][0]['close'] = 999
+            value['sequence_series'][0]['prices'][0] = 999
+            assert artifacts.load_inputs(source, scope) == original
+        rows = artifacts.load_owned(original['payloads'])
+        rows[0]['prices'][0]['close'] = 999
+        assert original['payloads'][0]['prices'][0]['close'] == 1
+
+
 def test_verified_builder_view_preserves_own_peer_features_without_source_mutation(monkeypatch, tmp_path, scope):
     from test_paired_nav_atomic_payload_boundary import _frozen_loaders, _from_sources
     from services import payload_builder as builder

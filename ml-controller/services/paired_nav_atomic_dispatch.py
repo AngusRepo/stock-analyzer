@@ -187,8 +187,10 @@ async def consume_atomic_results(state, formal_result, *, validate, merge):
             if (any(bundle.get(k) != parent.get(k) for k in ('run_id', 'run_date', 'state_gcs_uri'))
                     or bundle.get('n_input') != len(inputs['symbols'])):
                 raise ValueError('paired_nav_atomic_callback_run_identity_mismatch')
+            # load_inputs returns one private consumer. Both validators and the
+            # merger read payloads; no second l3_payloads copy is necessary.
             child = {'run_date': state['run_date'], 'producer_run_id': state['producer_run_id'],
-                'payloads': deepcopy(inputs['payloads']), 'l3_payloads': deepcopy(inputs['payloads']),
+                'payloads': inputs['payloads'],
                 'pipeline_modal_serving_context': deepcopy(context), 'modal_prediction_bundle': deepcopy(bundle),
                 'pipeline_modal_sequence_input_contract': _child_contract(state['pipeline_modal_sequence_input_contract'], inputs)}
             validate(child, bundle)
@@ -206,6 +208,8 @@ async def consume_atomic_results(state, formal_result, *, validate, merge):
             outputs[key] = {'status': 'ready', 'predictions': deepcopy(predictions), 'input_checksum': key}
         except Exception as exc:
             outputs[key] = shadow_failure('atomic_ml_slate', exc)
+        finally:
+            inputs = child = None
     definitions = {k: {'status': 'unavailable', 'evidence': deepcopy(v)} for k, v in dispatch['unavailable'].items()}
     for item in packet['contrasts']:
         ready = all(outputs[item[arm + '_key']]['status'] == 'ready' for arm in ('baseline', 'candidate'))

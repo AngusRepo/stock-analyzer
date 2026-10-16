@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from services.paired_nav_journal import digest
 from services.paired_nav_collection import shadow_failure
-from services.pipeline_slate_artifacts import load, keep, content_digest, checkpoint_async
+from services.pipeline_slate_artifacts import load, load_owned, verify, is_ref, keep, content_digest, checkpoint_async
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 
 
@@ -67,7 +67,8 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
             key = None
             prior = (saved.get(group) or {}).get(definition)
             if prior and prior.get('status') == 'ready':
-                load(prior['payloads'], scope)
+                if is_ref(prior['payloads']):
+                    verify(prior['payloads'], scope)
                 outputs[definition] = deepcopy(prior)
                 continue
             try:
@@ -77,15 +78,18 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
                     continue
                 if key not in cache:
                     async def compute():
-                        payloads = load(reference, scope)
-                        child = {'run_date': state['run_date'], 'payloads': deepcopy(payloads),
+                        payloads = load_owned(reference, scope)
+                        child = {'run_date': state['run_date'], 'payloads': payloads,
                             'pipeline_timesfm_context': deepcopy(context),
                             'pipeline_sequence_observations': deepcopy(sequence)}
                         result = await enrich(child)
                         status = (result.get('timesfm_l2_summary') or {}).get('status')
                         if status not in {'ready', 'blocked', 'skipped'}:
                             raise ValueError('paired_nav_atomic_l2_inference_failed')
-                        return {'payloads': keep(result.get('payloads', payloads), state),
+                        # A no-output result must retain the original input even
+                        # if an injected/legacy enrichment mutated its private copy.
+                        output_payloads = result['payloads'] if 'payloads' in result else load(reference, scope)
+                        return {'payloads': keep(output_payloads, state),
                                 'timesfm_l2_summary': deepcopy(result['timesfm_l2_summary'])}
                     if scope:
                         record = await checkpoint_async(scope, ['l2', policy_key, key], compute)

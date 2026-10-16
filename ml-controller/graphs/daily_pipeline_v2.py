@@ -1549,8 +1549,12 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
         atomic = state.get('paired_nav_atomic_pre_l2') or {}
         if atomic.get('status') == 'pre_l2_payloads_built':
             from itertools import chain
-            from services.pipeline_slate_artifacts import load
+            from services.pipeline_slate_artifacts import load, is_ref
+            checked_refs = set()
             for reference in chain(atomic['slates'].values(), atomic.get('holding_slates', {}).values()):
+                identity = digest(reference) if is_ref(reference) else None
+                if identity is not None and identity in checked_refs:
+                    continue
                 rows = load(reference, state.get('pipeline_slate_scope'))
                 for row in rows:
                     symbol = row['symbol']
@@ -1559,6 +1563,9 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
                         raise ValueError('sequence_snapshot_shared_raw_inputs_changed')
                     fingerprints[symbol] = fingerprint
                     union.setdefault(symbol, row)
+                rows = row = None
+                if identity is not None:
+                    checked_refs.add(identity)
         raw = list(union.values())
         # The dated canonical path reads payload dates and verified adjusted
         # prices itself; eagerly parsing an unused raw series can abort the pool.

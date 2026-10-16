@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 from services.paired_nav_journal import digest
-from services.pipeline_slate_artifacts import load, keep
+from services.pipeline_slate_artifacts import load, load_owned, keep
 from services.paired_nav_atomic_personas import atomic_persona_slates, compute_atomic_personas
 from services.screener_core_replay import materialize_atomic_core_domains
 from services.screener_candidate_merge import materialize_candidate_screener_seeds
@@ -30,6 +30,7 @@ def prepare_atomic_recommendations(state):
         persona = personas['definitions'][key]
         if seed.get('status') != 'materialized' or persona.get('status') != 'ready':
             definitions[key] = {'status': 'unavailable', 'seed': deepcopy(seed), 'persona': deepcopy(persona)}
+            payloads = None
             continue
         ml = state['paired_nav_atomic_ml']
         slate_key = ml['definitions'][key]['candidate_key']
@@ -63,7 +64,9 @@ def prepare_atomic_recommendations(state):
                 rows = load(state['paired_nav_atomic_l2']['holding_slates'][scope_id]['payloads'], state.get('pipeline_slate_scope'))
                 target = next(p for p in rows if p['symbol'] == scope['target_symbol'])
                 holding_payloads.setdefault(target['symbol'], deepcopy(target))
+                rows = target = None
             definitions[key]['holding_risk_payloads'] = [holding_payloads[s] for s in sorted(holding_payloads)]
+        payloads = None
     body = dict(schema_version='paired-nav-atomic-recommendation-inputs-v1', signal_date=state['run_date'],
         policy_population={'source_checksum': source['population']['source_checksum'],
             'policy_context': deepcopy(source['population'].get('policy_context')),
@@ -117,7 +120,7 @@ def run_atomic_recommendations(*, prepared, formal_context, source_context):
             inputs = deepcopy({k:v for k,v in formal_context['inputs'].items()
                                if k not in {'screener_seed_context', 'recommendation_source_context', *own_fields}})
             for field in own_fields:
-                inputs[field] = deepcopy(load(definition[field]))
+                inputs[field] = load_owned(definition[field])
             inputs['filter_options']['persona_opinions'] = deepcopy(definition['persona_opinions'])
             for field in ('fundamental_quality_by_symbol', 'pit_sector_alpha_by_symbol'):
                 inputs['filter_options'][field] = deepcopy(evidence[field])
@@ -128,6 +131,8 @@ def run_atomic_recommendations(*, prepared, formal_context, source_context):
                                     post_predictions=deepcopy(inputs['predictions']))
         except Exception as exc:
             definitions[key] = {'status': 'unavailable', 'reason': f'{type(exc).__name__}:{exc}'}
+        finally:
+            inputs = None
     body = dict(schema_version='paired-nav-atomic-recommendation-v1', signal_date=prepared['signal_date'],
         input_hash=prepared['input_hash'], formal_context_checksum=formal_context['content_checksum'],
         source_checksum=source_context['source_checksum'], definitions=definitions,

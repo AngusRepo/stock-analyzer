@@ -225,6 +225,11 @@ def load(value, scope=None):
     return _load(value, scope)
 
 
+def load_owned(value, scope=None):
+    """One mutable consumer: decoded refs already own their memory."""
+    return load(value, scope) if is_ref(value) else deepcopy(value)
+
+
 def verify(value, scope=None):
     """Check stored and logical hashes without copying every shared history."""
     _validate_ref(value, scope)
@@ -305,7 +310,8 @@ def load_inputs(reference, scope=None):
     if is_ref(reference):
         _validate_ref(reference, scope)
         scope = reference['scope']
-    value = load(reference, scope)
+    # Inline compatibility needs a copy; an outer artifact is already private.
+    value = load_owned(reference, scope)
     return {**value, 'payloads': load(value['payloads'], scope)}
 
 

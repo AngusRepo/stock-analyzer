@@ -109,8 +109,8 @@ assert.match(domainTasks, /manual-finalize/)
 assert.match(domainTasks, /root chain blocked by strategy-learning evidence audit/)
 
 const strategyEnqueue = postMarketChain.slice(
-  postMarketChain.indexOf("results.push(await logChainedTask(env, ctx, 'strategy-learning'"),
-  postMarketChain.indexOf('await logChainSummary', postMarketChain.indexOf("results.push(await logChainedTask(env, ctx, 'strategy-learning'")),
+  postMarketChain.indexOf("results.push(await runTask('strategy-learning'"),
+  postMarketChain.indexOf('await logChainSummary', postMarketChain.indexOf("results.push(await runTask('strategy-learning'")),
 )
 assert.match(strategyEnqueue, /critical: true/)
 assert.match(postMarketChain, /waitingForQueuedStrategyLearning/)

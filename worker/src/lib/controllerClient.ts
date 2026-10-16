@@ -1,5 +1,6 @@
 import { paperExecutionFetch } from './paperExecutionScope'
 import type { Bindings } from '../types'
+import { assertPostVerifyEffectAllowed, recordPostVerifyOwnerAck, isPostVerifyTaskScope } from './postVerifyTaskCheckpoint'
 
 type ControllerMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -43,12 +44,30 @@ export async function controllerFetch(
     headers = {},
   } = options
 
-  return paperExecutionFetch(`${getControllerBaseUrl(env)}${path}`, {
+  if (method !== 'GET') await assertPostVerifyEffectAllowed(env)
+
+  const response = await paperExecutionFetch(`${getControllerBaseUrl(env)}${path}`, {
     method,
     headers: buildControllerHeaders(env, headers, jsonBody !== undefined),
     body: jsonBody !== undefined ? JSON.stringify(jsonBody) : undefined,
     signal: timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined,
   })
+  if (method !== 'GET' && response.ok && isPostVerifyTaskScope(env)) {
+    const body = await response.clone().json().catch(() => null) as Record<string, any> | null
+    const contract = path === '/model_pool/compute_weekly_ic' ? Boolean(body && Number.isFinite(body.n_rows_total) && body.per_model_ic && typeof body.per_model_ic === 'object')
+      : path === '/model_pool/artifact_registry/auto_promote' ? body?.readback_verified === true
+      : path === '/obsidian/daily' ? body?.status === 'ok' && body?.date === (jsonBody as any)?.date
+        && body?.vault_pushed === true && body?.progress_synced === true && Number.isSafeInteger(body?.files_generated)
+        && body!.files_generated>0 && Array.isArray(body?.details) && body!.details.length===body!.files_generated
+      : path === '/paper_challenger/postmarket_report' ? Boolean(body && Number.isFinite(body.candidate_count) && Number.isFinite(body.evaluated_count))
+      : false
+    await recordPostVerifyOwnerAck(env, 'controller', path, jsonBody, body,
+      { owner_contract_verified: contract, response_status: response.status,
+        ...(path==='/obsidian/daily'?{date:body?.date,files_generated:body?.files_generated,paths:body?.details,
+          vault_pushed:body?.vault_pushed,progress_synced:body?.progress_synced}:{}),
+      })
+  }
+  return response
 }
 
 export async function controllerJson<T>(

@@ -13,6 +13,7 @@ import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { capturePaperNotification, paperExecutionDate, paperExecutionFetch } from './paperExecutionScope'
+import { assertPostVerifyEffectAllowed, recordPostVerifyOwnerAck, isPostVerifyTaskScope } from './postVerifyTaskCheckpoint'
 
 type Env = Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>
 
@@ -176,13 +177,14 @@ export async function sendDiscordEmbeds(
   webhookUrl: string | undefined,
   embeds: DiscordEmbed[],
   content?: string,
+  strict = false,
 ): Promise<void> {
   if (!webhookUrl) return
   try {
     // Discord 一次最多 10 embeds，超過分批
     for (let i = 0; i < embeds.length; i += 10) {
       const batch = embeds.slice(i, i + 10)
-      await paperExecutionFetch(webhookUrl, {
+      const response = await paperExecutionFetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -190,9 +192,11 @@ export async function sendDiscordEmbeds(
           embeds: batch,
         }),
       })
+      if (strict && !response.ok) throw new Error(`post_verify_delivery_HTTP${response.status}`)
       if (i + 10 < embeds.length) await new Promise(r => setTimeout(r, 500))
     }
   } catch (e) {
+    if (strict) throw e
     console.warn(`[Discord] embed webhook failed: ${e}`)
   }
 }
@@ -208,6 +212,7 @@ export async function sendEmailReport(
   to: string,
   subject: string,
   embeds: DiscordEmbed[],
+  strict = false,
 ): Promise<void> {
   if (!resendApiKey || !to) return
   try {
@@ -233,7 +238,7 @@ export async function sendEmailReport(
     }
     html += `</div>`
 
-    await paperExecutionFetch('https://api.resend.com/emails', {
+    const response = await paperExecutionFetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${resendApiKey}` },
       body: JSON.stringify({
@@ -243,7 +248,9 @@ export async function sendEmailReport(
         html,
       }),
     })
+    if (strict && !response.ok) throw new Error(`post_verify_delivery_HTTP${response.status}`)
   } catch (e) {
+    if (strict) throw e
     console.warn(`[Email] report send failed: ${e}`)
   }
 }
@@ -264,25 +271,32 @@ export async function sendReportToChannels(
   emailSubject: string,
 ): Promise<string> {
   // P0 資安：webhook URL 只從 Worker secret 讀取，不存 KV（防洩漏後被推送假消息）
+  await assertPostVerifyEffectAllowed(env)
   const channel = resolveReportDeliveryChannel(env)
   if (channel === 'line' && env.LINE_CHANNEL_ACCESS_TOKEN && env.LINE_USER_ID) {
     const text = embeds.map((embed) => {
       const fields = embed.fields?.map((field) => `${field.name}: ${field.value}`).join('\n') ?? ''
       return [embed.title, embed.description, fields].filter(Boolean).join('\n')
     }).join('\n\n')
-    await sendLinePush(env.LINE_CHANNEL_ACCESS_TOKEN, env.LINE_USER_ID, text || emailSubject)
+    const delivered = await sendLinePush(env.LINE_CHANNEL_ACCESS_TOKEN, env.LINE_USER_ID, text || emailSubject)
+    if (isPostVerifyTaskScope(env) && !delivered) throw new Error('post_verify_delivery_unacknowledged')
+    await recordPostVerifyOwnerAck(env, 'delivery', 'line', {embeds,emailSubject}, {acknowledged:true}, {delivery_acknowledged:true})
     return 'line'
   }
   const webhookUrl = env.DISCORD_WEBHOOK_URL
   if (channel === 'discord' && webhookUrl) {
-    await sendDiscordEmbeds(webhookUrl, embeds)
+    await sendDiscordEmbeds(webhookUrl, embeds, undefined, isPostVerifyTaskScope(env))
+    await recordPostVerifyOwnerAck(env, 'delivery', 'discord', {embeds,emailSubject}, {acknowledged:true}, {delivery_acknowledged:true})
     return 'discord'
   }
   // Fallback: email
   if (channel === 'email' && env.RESEND_API_KEY && env.ADMIN_EMAIL) {
-    await sendEmailReport(env.RESEND_API_KEY, env.ADMIN_EMAIL, emailSubject, embeds)
+    await sendEmailReport(env.RESEND_API_KEY, env.ADMIN_EMAIL, emailSubject, embeds, isPostVerifyTaskScope(env))
+    await recordPostVerifyOwnerAck(env, 'delivery', 'email', {embeds,emailSubject}, {acknowledged:true}, {delivery_acknowledged:true})
     return 'email'
   }
+  await recordPostVerifyOwnerAck(env, 'delivery', 'not_configured', {emailSubject,embeds},
+    {status:'not_configured'}, {delivery_not_configured:true})
   console.warn('[Report] No Discord webhook AND no email config — report not sent')
   return channel
 }

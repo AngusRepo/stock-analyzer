@@ -267,6 +267,8 @@ export async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, end
       sourceRows,
       dryRun: false,
     })
+    const { recordPostVerifyLinUcbOutput } = await import('./postVerifyAdaptiveEvidence')
+    await recordPostVerifyLinUcbOutput(env, report.ledger_rows)
     const totalSamples = report.ledger_rows.reduce((sum, row) => sum + row.samples, 0)
     const armCount = new Set(report.ledger_rows.map((row) => row.arm_id)).size
     return {
@@ -317,6 +319,8 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
+  const { assertPostVerifyEffectAllowed } = await import('./postVerifyTaskCheckpoint')
+  await assertPostVerifyEffectAllowed(env)
   const res = await fetch(`${env.ML_CONTROLLER_URL}/risk-assess`, {
     method: 'POST',
     headers,

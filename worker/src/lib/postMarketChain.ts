@@ -37,6 +37,12 @@ import {
 import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
 import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
+import { createPostVerifyTaskCheckpoints, postVerifyControllerResponse, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
+import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
+import { capturePostVerifyMetricEvidence, verifyPostVerifyMetricEvidence } from './postVerifyMetricEvidence'
+import { enablePostVerifyAdaptiveEvidence, capturePostVerifyAdaptiveEvidence, verifyPostVerifyAdaptiveEvidence } from './postVerifyAdaptiveEvidence'
+import { capturePostVerifyOwnerEvidence, verifyPostVerifyOwnerEvidence } from './postVerifyOwnerEvidence'
+import { capturePostVerifyControllerEvidence, verifyPostVerifyControllerEvidence } from './postVerifyControllerEvidence'
 
 export type ChainContext = {
   runDate?: string
@@ -741,20 +747,73 @@ export async function runPostPipelineCallbackChain(
 export async function runPostVerifyCallbackChain(
   env: Bindings,
   ctx: ChainContext,
+  dependencies: {
+    productionAuthority?: typeof resolveEveningChainRunAuthority
+    taskRunner?: (task: string, scoped: Bindings) => Promise<PostVerifyTaskResult>
+    taskTimeoutMs?: number
+  } = {},
 ): Promise<'waiting' | 'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
   await assertChainStageAuthority(ctx, 'post-verify:entry')
-  const productionAuthority = await resolveEveningChainRunAuthority(env, {
+  const productionAuthority = await (dependencies.productionAuthority ?? resolveEveningChainRunAuthority)(env, {
     businessDate: String(ctx.runDate ?? ''),
     canonicalRunId: String(ctx.upstreamRunId ?? ''),
   })
   const productionEligible = productionAuthority.allowed
   ctx = { ...ctx, runScope: productionAuthority.runScope }
+  if (!ctx.assertStageLease) throw new Error('post_verify_checkpoint_stage_guard_missing')
+  const checkpoints = await createPostVerifyTaskCheckpoints(env, {
+    businessDate: String(ctx.runDate ?? ''), canonicalRunId: String(ctx.upstreamRunId ?? ''),
+    leaseOwner: String(ctx.stageLeaseOwner ?? ''), productionEligible,
+    assertStageLease: ctx.assertStageLease,
+  })
+  const runTask = async (task: string, fn: (scoped: Bindings) => Promise<unknown>,
+    options: { critical?: boolean; timeoutMs?: number } = {}) => {
+    const taskStarted = Date.now()
+    const result = await checkpoints.run(task, async scoped => {
+      if (dependencies.taskRunner) return { ...await dependencies.taskRunner(task, scoped), critical: options.critical !== false }
+      // Capture the original producer terminal return before observability or
+      // a later lease check. A timeout is not cancellation; a late original
+      // return must remain available to the next canonical attempt.
+      try {
+        const adaptiveTask=task==='linucb-reward-ledger'||task==='adapt'
+        if(adaptiveTask)enablePostVerifyAdaptiveEvidence(scoped,task)
+        const raw=await fn(scoped)
+        const structured=raw&&typeof raw==='object'&&'summary' in raw&&'evidence' in raw?raw as {summary:string;evidence:Record<string,unknown>}:null
+        const summary = structured?.summary??normalizeSummary(raw)
+        const result:PostVerifyTaskResult={ task, summary, status: classifySchedulerSummary(summary), critical: options.critical !== false }
+        const registryTask=task==='model-ic-rolling'||task==='artifact-auto-promotion'
+        if(result.status!=='error')result.evidence=structured?.evidence??(registryTask
+          ? await capturePostVerifyControllerEvidence(scoped,task,String(ctx.runDate),postVerifyControllerResponse(scoped,
+            task==='model-ic-rolling'?'/model_pool/compute_weekly_ic':'/model_pool/artifact_registry/auto_promote')) as unknown as Record<string,unknown>
+          : adaptiveTask
+          ? await capturePostVerifyAdaptiveEvidence(scoped,task,String(ctx.runDate)) as unknown as Record<string,unknown>
+          : await capturePostVerifyOwnerEvidence(scoped,task,String(ctx.runDate),result))
+        return result
+      } catch (error) {
+        return { task, summary: error instanceof Error ? error.message : String(error),
+          status: 'error', critical: options.critical !== false }
+      }
+    }, { timeoutMs: dependencies.taskTimeoutMs ?? options.timeoutMs ?? 180_000,
+      critical:options.critical,
+      retrySafe: ['price-horizon-projection', 'strategy-multi-horizon-outcomes', 'linucb-reward-ledger'].includes(task),
+      verifyResult:dependencies.taskRunner?undefined:async result=>{
+        if(['price-horizon-projection','strategy-multi-horizon-outcomes'].includes(task))return verifyPostVerifyLabelEvidence(env,result.evidence as any)
+        if(['strategy-evidence-current','strategy-evidence-metric-backfill'].includes(task))return verifyPostVerifyMetricEvidence(env,result.evidence as any)
+        if(task==='linucb-reward-ledger'||task==='adapt')return verifyPostVerifyAdaptiveEvidence(env,task,String(ctx.runDate),result.evidence as any)
+        if(task==='model-ic-rolling'||task==='artifact-auto-promotion')return verifyPostVerifyControllerEvidence(env,result.evidence as any)
+        return verifyPostVerifyOwnerEvidence(env,task,String(ctx.runDate),result)
+      } })
+    await assertChainStageAuthority(ctx, `${task}:after_checkpoint`)
+    if (!dependencies.taskRunner) await emitChainedTaskObservability(env, ctx, task, result.status,
+      result.summary, Date.now() - taskStarted, result.status === 'error' ? result.summary : undefined)
+    return result
+  }
 
   const outcomeAsOfDate = String(ctx.runDate ?? '')
   if (!/^\d{4}-\d{2}-\d{2}$/.test(outcomeAsOfDate)) throw new Error('post_verify_business_date_missing')
-  const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
+  const projectionTask = await runTask('price-horizon-projection', async env => {
     const stageMs: Record<string, number> = {}
     let stageStartedAt = Date.now()
     const canonical = await materializePriceHorizonLabels(env, {
@@ -772,7 +831,9 @@ export async function runPostVerifyCallbackChain(
       maxProcessDates: 3,
     })
     stageMs.multi_horizon_labels = Date.now() - stageStartedAt
-    return `${canonical.summary} | ${multiHorizon.summary} | stage_ms=${JSON.stringify(stageMs)}`
+    const evidence=await capturePostVerifyLabelEvidence(env,{task:'price-horizon-projection',businessDate:ctx.runDate!,
+      canonicalRunId:ctx.upstreamRunId!,projectionRunId:canonical.runId,producerResult:{canonical,multiHorizon}})
+    return {summary:`${canonical.summary} | ${multiHorizon.summary} | stage_ms=${JSON.stringify(stageMs)}`,evidence}
   }, { timeoutMs: 240_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {
@@ -780,13 +841,15 @@ export async function runPostVerifyCallbackChain(
     throw new Error(`post_verify_chain_failed:price-horizon-projection:${projectionTask.summary}`)
   }
 
-  const outcomesTask = await logChainedTask(env, ctx, 'strategy-multi-horizon-outcomes', async () => {
+  const outcomesTask = await runTask('strategy-multi-horizon-outcomes', async env => {
     const startedAt = Date.now()
     const outcomes = await materializeStrategyMultiHorizonOutcomes(env, {
       asOfDate: outcomeAsOfDate,
       endDate: ctx.runDate,
     })
-    return `${outcomes.summary} | stage_ms=${JSON.stringify({ multi_horizon_outcomes: Date.now() - startedAt })}`
+    const evidence=await capturePostVerifyLabelEvidence(env,{task:'strategy-multi-horizon-outcomes',businessDate:ctx.runDate!,
+      canonicalRunId:ctx.upstreamRunId!,producerResult:{outcomes}})
+    return {summary:`${outcomes.summary} | stage_ms=${JSON.stringify({ multi_horizon_outcomes: Date.now() - startedAt })}`,evidence}
   }, { timeoutMs: 240_000 })
   results.push(outcomesTask)
   if (outcomesTask.status === 'error') {
@@ -794,7 +857,7 @@ export async function runPostVerifyCallbackChain(
     throw new Error(`post_verify_chain_failed:strategy-multi-horizon-outcomes:${outcomesTask.summary}`)
   }
 
-  const currentEvidenceTask = await logChainedTask(env, ctx, 'strategy-evidence-current', async () => {
+  const currentEvidenceTask = await runTask('strategy-evidence-current', async env => {
     const stageMs: Record<string, number> = {}
     let stageStartedAt = Date.now()
     const metrics = await materializeStrategyEvidenceMetrics(env, { outcomeAsOfDate, publicationScope: `canonical:${ctx.upstreamRunId}` })
@@ -806,7 +869,9 @@ export async function runPostVerifyCallbackChain(
       allowPromotion: productionEligible,
     })
     stageMs.strategy_evidence_owner_calibration = Date.now() - stageStartedAt
-    return `${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`
+    const evidence=await capturePostVerifyMetricEvidence(env,{task:'strategy-evidence-current',businessDate:ctx.runDate!,
+      canonicalRunId:ctx.upstreamRunId!,metrics,calibration})
+    return {summary:`${metrics.summary} | strategy_evidence_owner_calibration=${calibration.result.status}:${calibration.runId} | stage_ms=${JSON.stringify(stageMs)}`,evidence}
   }, { timeoutMs: 240_000 })
   results.push(currentEvidenceTask)
   if (currentEvidenceTask.status === 'error') {
@@ -814,40 +879,42 @@ export async function runPostVerifyCallbackChain(
     throw new Error(`post_verify_chain_failed:strategy-evidence-current:${currentEvidenceTask.summary}`)
   }
 
-  results.push(await logChainedTask(env, ctx, 'strategy-evidence-metric-backfill', async () => {
+  results.push(await runTask('strategy-evidence-metric-backfill', async env => {
     const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots(env, {
       knowledgeCutoffDate: ctx.runDate!,
       maxDates: 1,
     })
-    return metricBackfill.summary
+    const evidence=await capturePostVerifyMetricEvidence(env,{task:'strategy-evidence-metric-backfill',businessDate:ctx.runDate!,
+      canonicalRunId:ctx.upstreamRunId!,metrics:metricBackfill})
+    return {summary:metricBackfill.summary,evidence}
   }, { critical: false, timeoutMs: 180_000 }))
 
-  results.push(await logChainedTask(env, ctx, 'model-ic-rolling', () => runModelIcRollingRefresh(env, ctx.runDate)))
+  results.push(await runTask('model-ic-rolling', env => runModelIcRollingRefresh(env, ctx.runDate)))
   if (productionEligible) {
-    results.push(await logChainedTask(env, ctx, 'artifact-auto-promotion', () => runArtifactAutoPromotion(env), { critical: false }))
+    results.push(await runTask('artifact-auto-promotion', env => runArtifactAutoPromotion(env), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'artifact-auto-promotion'))
   }
-  results.push(await logChainedTask(env, ctx, 's12-replay-backfill', () => enqueueS12ReplayBackfillTask(env, ctx), {
+  results.push(await runTask('s12-replay-backfill', env => enqueueS12ReplayBackfillTask(env, ctx), {
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))
 
   if (productionEligible) {
-    results.push(await logChainedTask(env, ctx, 'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache(env), { critical: false }))
-    results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
-    results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
-    results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
-    results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
-    results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!), {
+    results.push(await runTask('paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache(env), { critical: false }))
+    results.push(await runTask('linucb-reward-ledger', env => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
+    results.push(await runTask('adapt', env => runAdaptiveUpdate(env, { refreshLedger: false })))
+    results.push(await runTask('daily-report', env => generateDailyReport(env)))
+    results.push(await runTask('paper-active-postmarket', env => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
+    results.push(await runTask('obsidian-sync', env => runObsidianDaily(env, ctx.runDate!), {
       critical: false,
       // Allow the inner 60s request to finish or abort before the chain records its result.
       timeoutMs: 65_000,
     }))
-    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
+    results.push(await runTask('meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
       critical: false,
       timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
     }))
-    results.push(await logChainedTask(env, ctx, 'ga-shadow-daily', () => enqueueGaOptimizerShadowClosureTask(env, ctx, productionEligible), {
+    results.push(await runTask('ga-shadow-daily', env => enqueueGaOptimizerShadowClosureTask(env, ctx, productionEligible), {
       critical: false,
       timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
     }))
@@ -865,7 +932,7 @@ export async function runPostVerifyCallbackChain(
   // Strategy learning is evidence materialization, not a live trading mutation.
   // Historical reruns need it so strategy_decision_log can explain family/variant
   // ownership for the replayed business date.
-  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => enqueueStrategyLearningClosureTask(env, ctx, productionEligible), {
+  results.push(await runTask('strategy-learning', env => enqueueStrategyLearningClosureTask(env, ctx, productionEligible), {
     critical: true,
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))

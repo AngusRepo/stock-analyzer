@@ -140,7 +140,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'artifact_cleanup_cursors', 'artifact_cleanup_dlq',
     'compute_profile_events', 'compute_efficiency_reports', 'cost_events',
     'strategy_learning_runs', 'maintenance_task_leases',
-    'legacy_migration_cursors', 'scheduler_locks', 'artifact_hard_references',
+    'legacy_migration_cursors', 'scheduler_locks', 'post_verify_task_receipts_v1', 'artifact_hard_references',
     'domain_projection_outbox', 'domain_projection_inbox', 'data_domain_cutovers',
     'data_domain_writer_epochs', 'data_domain_table_writer_epochs',
     'data_domain_cutover_probe_receipts', 'data_domain_cutover_probe_canary',
@@ -346,6 +346,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
   ]),
   ops: new Set([
     'maintenance_task_leases',
+    'post_verify_task_receipts_v1',
     'price_horizon_projection_status_v2',
     'pit_residual_funnel_enrichment_runs_v1',
   ]),

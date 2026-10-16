@@ -67,6 +67,7 @@ export type PriceHorizonProjectionResult = {
   breadthMaterializedCount: number
   status: 'success' | 'complete_with_rejections'
   summary: string
+  processedHorizonKeys?: Array<{ signalDate: string; horizonDays: number }>
 }
 
 export type StrategyMultiHorizonProjectionResult = {
@@ -80,6 +81,7 @@ export type StrategyMultiHorizonProjectionResult = {
   rejectedCount: number
   status: 'success' | 'complete_with_rejections'
   summary: string
+  processedHorizonKeys?: Array<{ signalDate: string; horizonDays: number }>
 }
 
 type ObservedSession = { session_date: string; sample_size: number }
@@ -621,6 +623,7 @@ export async function materializePriceHorizonLabels(
     let candidateCount = 0
     let materializedCount = 0
     let rejectedCount = 0
+    const processedHorizonKeys: Array<{ signalDate: string; horizonDays: number }> = []
 
     for (const horizon of plan.work) {
       const candidateCoverage = await loadCandidateStockIds(learningDb, horizon.signal_date)
@@ -685,6 +688,7 @@ export async function materializePriceHorizonLabels(
         PRICE_HORIZON_SOURCE, PRICE_HORIZON_PROJECTION_VERSION,
       ).run()
       processedSignalDates += 1
+      processedHorizonKeys.push({ signalDate: horizon.signal_date, horizonDays: 5 })
       candidateCount += candidates.length
       materializedCount += observations.labels.length
       rejectedCount += observations.rejections.length
@@ -725,6 +729,7 @@ export async function materializePriceHorizonLabels(
       breadthMaterializedCount,
       status,
       summary,
+      processedHorizonKeys,
     }
   } catch (error) {
     await opsDb.prepare(`
@@ -849,6 +854,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
   let candidateCount = 0
   let materializedCount = 0
   let rejectedCount = 0
+  const processedHorizonKeys: Array<{ signalDate: string; horizonDays: number }> = []
 
   for (const horizonDays of STRATEGY_EVIDENCE_HORIZON_DAYS) {
     const exitOffset = horizonDays - 1
@@ -923,6 +929,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
         PRICE_HORIZON_SOURCE, STRATEGY_MULTI_HORIZON_PROJECTION_VERSION,
       ).run()
       processedSignalDates += 1
+      processedHorizonKeys.push({ signalDate: horizon.signal_date, horizonDays })
       candidateCount += coverage.stockIds.length
       materializedCount += observations.labels.length
       rejectedCount += observations.rejections.length
@@ -931,5 +938,6 @@ export async function materializeStrategyMultiHorizonPriceLabels(
   const status = rejectedCount > 0 ? 'complete_with_rejections' : 'success'
   const summary = `strategy_multi_horizon horizons=3,5,10 eligible=${eligibleSignalDates} processed=${processedSignalDates} skipped=${skippedCompleteDates} deferred=${deferredSignalDates} candidates=${candidateCount} materialized=${materializedCount} rejected=${rejectedCount} status=${status}`
   return { horizons: [...STRATEGY_EVIDENCE_HORIZON_DAYS], eligibleSignalDates, processedSignalDates,
-    skippedCompleteDates, deferredSignalDates, candidateCount, materializedCount, rejectedCount, status, summary }
+    skippedCompleteDates, deferredSignalDates, candidateCount, materializedCount, rejectedCount, status, summary,
+    processedHorizonKeys }
 }

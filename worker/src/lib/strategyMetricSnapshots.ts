@@ -45,7 +45,10 @@ export async function readMetricSnapshot(
     SELECT row_json FROM strategy_evidence_metric_snapshot_rows_v2
      WHERE snapshot_run_id=? ORDER BY row_index
   `).bind(receipt.snapshot_run_id).all<{ row_json: string }>()
-  const rows: StrategyEvidenceMetricRow[] = (stored.results ?? []).map(row => JSON.parse(row.row_json))
+  if (stored?.success === false || !Array.isArray(stored?.results)) {
+    throw new Error(`strategy_metric_snapshot_read_failure:${receipt.snapshot_run_id}`)
+  }
+  const rows: StrategyEvidenceMetricRow[] = stored.results.map(row => JSON.parse(row.row_json))
   if (receipt.status !== 'ready'
     || rows.length !== Number(receipt.metric_row_count)
     || rows.filter(row => row.metric_status === 'ready').length !== Number(receipt.ready_row_count)

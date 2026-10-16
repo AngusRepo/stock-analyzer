@@ -6,11 +6,22 @@ import type { L4PortfolioPlan } from './l4PortfolioPlan'
 import type { SchedulerRunLogEntry } from './schedulerRunLogger'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { paperExecutionNow } from './paperExecutionScope'
 
 const ATOMIC_INPUT_ERRORS = new Set([
   'paired_nav:atomic_daily:paired_nav_source_or_capture_failed',
   'paired_nav:atomic_candidate_setup:paired_nav_atomic_daily_inputs_missing',
 ])
+const HISTORICAL_ATOMIC_ERRORS = new Set([
+  'paired_nav:atomic_collection:historical_not_prospective',
+  'paired_nav:atomic_daily:requires_allocation_and_native_execution',
+  'paired_nav:atomic_candidate_setup:paired_nav_atomic_no_executable_plans',
+])
+export function historicalAtomicFailureOnly(error: string | null | undefined): boolean {
+  const errors=(error ?? '').split(';').map(s=>s.trim()).filter(Boolean)
+  return errors.length===HISTORICAL_ATOMIC_ERRORS.size && new Set(errors).size===errors.length
+    && errors.every(e=>HISTORICAL_ATOMIC_ERRORS.has(e))
+}
 export function atomicInputFailureOnly(error: string | null | undefined): boolean {
   const errors = (error ?? '').split(';').map(s=>s.trim()).filter(Boolean)
   return errors.length > 0 && errors.every(e=>ATOMIC_INPUT_ERRORS.has(e))
@@ -21,17 +32,26 @@ export function verifyFormalServingClosure(input: {
   runId:string; signalDate:string; error:string; plan:L4PortfolioPlan;
   prediction:SchedulerRunLogEntry | null; recommendation:SchedulerRunLogEntry | null;
   rows:PublishedRow[];
-  manifest:{source_run_id:string;signal_date:string;snapshot_kind:string}|null;
+  manifest:{source_run_id:string;signal_date:string;snapshot_kind:string;prospective?:number;frozen_at?:string}|null;
+  historicalRecoveryTradeDate?:string;
+  nowMs?:number;
 }): void {
   const {runId,signalDate,plan,prediction,recommendation,rows} = input
-  if (!atomicInputFailureOnly(input.error) || plan.execution_scope !== 'paper'
+  const historical=historicalAtomicFailureOnly(input.error) && signalDate==='2026-10-15'
+    && input.historicalRecoveryTradeDate==='2026-10-16' && input.manifest?.prospective===0
+    && Number.isFinite(Date.parse(input.manifest.frozen_at ?? ''))
+    && Date.parse(input.manifest!.frozen_at!)>=Date.parse('2026-10-16T09:00:00+08:00')
+    && Date.parse(input.manifest!.frozen_at!)<=(input.nowMs ?? paperExecutionNow())
+  const admittedError=(error:string|null|undefined)=>atomicInputFailureOnly(error)
+    || (historical && error===input.error)
+  if (!admittedError(input.error) || plan.execution_scope !== 'paper'
     || plan.signal_date !== signalDate || !/^[a-f0-9]{64}$/.test(plan.plan_id))
     throw new Error('premarket_formal_publication_not_eligible')
   if(input.manifest?.source_run_id!==runId || input.manifest.signal_date!==signalDate
     || input.manifest.snapshot_kind!=='allocation_context')throw new Error('premarket_formal_snapshot_identity_mismatch')
   for (const [task,log] of [['ml-predict',prediction],['recommendation',recommendation]] as const) {
     if (!log || log.task!==task || log.run_id!==runId || log.run_date!==signalDate
-      || log.status!=='error' || !atomicInputFailureOnly(log.error)
+      || log.status!=='error' || !admittedError(log.error)
       || !log.summary.startsWith(`run_id=${runId} `))
       throw new Error('premarket_formal_callback_identity_missing')
   }
@@ -52,12 +72,15 @@ export function verifyFormalServingClosure(input: {
   }
 }
 
-export async function verifyStoredFormalServing(env:Bindings, input:{runId:string;signalDate:string;error:string;plan:L4PortfolioPlan}) {
+export async function verifyStoredFormalServing(env:Bindings, input:{runId:string;signalDate:string;error:string;plan:L4PortfolioPlan;historicalRecoveryTradeDate?:string}) {
+  if(input.historicalRecoveryTradeDate && (input.historicalRecoveryTradeDate!=='2026-10-16'
+    || env.PAPER_DAILY_PLAN_OWNER!=='premarket_once_v1' || env.LIVE_EXECUTION_CLIENT_ENABLED!=='0'
+    || env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED!=='0'))throw new Error('premarket_historical_publication_scope_invalid')
   const stored=await paperDomainDatabase(env).prepare('SELECT allocation_snapshot_id FROM l4_portfolio_plans_v1 WHERE plan_id=? AND account_id=1 AND activated=1')
     .bind(input.plan.plan_id).first<{allocation_snapshot_id:string}>()
   if(!stored)throw new Error('premarket_formal_plan_missing')
-  const manifest=await databaseForDataDomain(env,'learning').prepare('SELECT source_run_id,signal_date,snapshot_kind FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?')
-    .bind(stored.allocation_snapshot_id).first<{source_run_id:string;signal_date:string;snapshot_kind:string}>()
+  const manifest=await databaseForDataDomain(env,'learning').prepare('SELECT source_run_id,signal_date,snapshot_kind,prospective,frozen_at FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?')
+    .bind(stored.allocation_snapshot_id).first<{source_run_id:string;signal_date:string;snapshot_kind:string;prospective:number;frozen_at:string}>()
   const [prediction,recommendation,result] = await Promise.all([
     env.KV.get(`scheduler:run:ml-predict:${input.signalDate}`,'json') as Promise<SchedulerRunLogEntry|null>,
     env.KV.get(`scheduler:run:recommendation:${input.signalDate}`,'json') as Promise<SchedulerRunLogEntry|null>,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {atomicInputFailureOnly,verifyFormalServingClosure} from './premarketServingClosure'
+import {atomicInputFailureOnly,historicalAtomicFailureOnly,verifyFormalServingClosure} from './premarketServingClosure'
 
 const error='paired_nav:atomic_daily:paired_nav_source_or_capture_failed; paired_nav:atomic_candidate_setup:paired_nav_atomic_daily_inputs_missing'
 function fixture(): Parameters<typeof verifyFormalServingClosure>[0] {
@@ -18,6 +18,32 @@ test('complete formal Paper outputs admit the same plan while original research 
   verifyFormalServingClosure(f)
   assert.equal(JSON.stringify(f),before)
   assert.ok(atomicInputFailureOnly(error))
+})
+const historicalError='paired_nav:atomic_collection:historical_not_prospective; paired_nav:atomic_daily:requires_allocation_and_native_execution; paired_nav:atomic_candidate_setup:paired_nav_atomic_no_executable_plans'
+function historicalFixture(){
+  const f=fixture();f.signalDate='2026-10-15';f.plan.signal_date=f.signalDate;f.error=historicalError
+  f.historicalRecoveryTradeDate='2026-10-16'
+  f.nowMs=Date.parse('2026-10-16T14:00:00+08:00')
+  Object.assign(f.manifest!,{signal_date:f.signalDate,prospective:0,frozen_at:'2026-10-16T13:33:25+08:00'})
+  for(const log of [f.prediction!,f.recommendation!]){log.run_date=f.signalDate;log.error=historicalError}
+  return f
+}
+test('exact historical recovery publishes verified formal plan without changing failed NAV evidence',()=>{
+  const f=historicalFixture(),before=JSON.stringify(f)
+  verifyFormalServingClosure(f);assert.equal(JSON.stringify(f),before)
+  assert.ok(historicalAtomicFailureOnly(historicalError));assert.equal(atomicInputFailureOnly(historicalError),false)
+})
+test('historical recovery rejects other dates, prospective claims and partial or extra failures',()=>{
+  for(const change of [
+    (f:ReturnType<typeof historicalFixture>)=>{delete f.historicalRecoveryTradeDate},
+    (f:ReturnType<typeof historicalFixture>)=>{f.historicalRecoveryTradeDate='2026-10-19'},
+    (f:ReturnType<typeof historicalFixture>)=>{f.manifest!.prospective=1},
+    (f:ReturnType<typeof historicalFixture>)=>{f.manifest!.frozen_at='2026-10-16T08:00:00+08:00'},
+    (f:ReturnType<typeof historicalFixture>)=>{f.manifest!.frozen_at='2026-10-16T15:00:00+08:00'},
+    (f:ReturnType<typeof historicalFixture>)=>{f.prediction!.error='prediction_failed'},
+    (f:ReturnType<typeof historicalFixture>)=>{f.error+='; d1_write:failed'},
+  ]){const f=historicalFixture();change(f);assert.throws(()=>verifyFormalServingClosure(f))}
+  for(const e of ['',historicalError.split(';')[0],historicalError+'; paired_nav:unknown_corruption'])assert.equal(historicalAtomicFailureOnly(e),false)
 })
 test('serving errors, live scope, stale identities and incomplete outputs fail closed',()=>{
   const mutations:Array<(f:ReturnType<typeof fixture>)=>void>=[

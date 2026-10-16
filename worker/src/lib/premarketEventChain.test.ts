@@ -222,3 +222,30 @@ for (const scenario of ['repaired','other_error','fourth_failure','live_enabled'
   assert.equal(saved.last_error,reason)
  } finally {f.close()}
 })
+for(const scenario of ['repaired','other_parent_error','fourth_failure','live_enabled','wrong_lineage'])test(`historical allocation continuation preserves evidence and is bounded: ${scenario}`,async()=>{
+ const f=fixture(),day='2026-10-16',run='sealed-run'
+ f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';f.env.LIVE_EXECUTION_CLIENT_ENABLED='0'
+ f.env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=scenario==='live_enabled'?'1':'0'
+ f.ports.nowMs=Date.parse(day+'T14:30:00+08:00')
+ const error='Error: Controller /pipeline/v2/premarket-resume HTTP 500: Internal Server Error'
+ const upstream=scenario==='other_parent_error'?'d1_write:failed':'paired_nav:atomic_collection:historical_not_prospective; paired_nav:atomic_daily:requires_allocation_and_native_execution; paired_nav:atomic_candidate_setup:paired_nav_atomic_no_executable_plans'
+ const cursor=JSON.stringify({signal_date:'2026-10-15',morning_context:{trade_date:day},l3_receipt:{run_id:scenario==='wrong_lineage'?'other':run}})
+ const attempts=scenario==='fourth_failure'?4:3
+ try{
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+   .run('2026-10-15','pipeline_execution',run,'error','{}',1,upstream)
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+   .run(day,'premarket_v3:allocate',day+':premarket-v3','error',cursor,attempts,error)
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const before=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE business_date=? AND stage='premarket_v3:allocate'").get(day) as any
+  assert.equal(before.status,scenario==='repaired'?'queued':'error');assert.equal(before.attempt_count,attempts)
+  assert.equal(before.cursor_key,cursor);assert.equal(before.last_error,error)
+  if(scenario==='repaired'){
+   let calls=0;const msg={type:'premarket_stage',cursor:0,triggerTime:day,runId:day+':premarket-v3',premarketStage:'allocate'} as UpdateQueueMsg
+   await processPremarketEvent(f.env,msg,async()=>{calls++;return {next:null,receipt:{verified:true}}},f.now())
+   await processPremarketEvent(f.env,msg,async()=>{calls++;throw new Error('duplicate')},f.now())
+   const after=f.sqls.ops.prepare("SELECT status,attempt_count FROM pipeline_stage_runs WHERE business_date=? AND stage='premarket_v3:allocate'").get(day) as any
+   assert.equal(calls,1);assert.equal(after.status,'success');assert.equal(after.attempt_count,4)
+  }
+ }finally{f.close()}
+})

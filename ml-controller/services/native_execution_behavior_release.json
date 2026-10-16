@@ -5,7 +5,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved commit push deploy, resume the failed 2026-10-16 stage, shutdown after full L3 completion",
-  "review": "audits/chain-improvement-20261016/OOM-REPAIR-RESULT.md",
+  "authorization": "Wei explicitly approved repair commit push deploy and resume failed 2026-10-16 stage; shutdown after full L3 completion",
+  "review": "audits/chain-improvement-20261016/OOM-PLAN.md",
   "runtime_admission": "ml:active8:paper_runtime_approval:v1:pipeline-oom-chain-cards-20261017"
 }

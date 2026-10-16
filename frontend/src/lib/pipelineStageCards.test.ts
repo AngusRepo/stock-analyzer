@@ -57,3 +57,13 @@ test('a newer successful enrichment clears the earlier blocked outcome',()=>{
     {...row('prepare_prediction_request'),completed_at:'2026-10-16T14:02:00Z'}] as any
   assert.equal(pipelineStageCards(p,Date.parse(progress.observed_at))[2].stageVisualStatus,'completed')
 })
+
+test('an active enrichment retry cannot inherit the earlier request completion',()=>{
+  const p=parent();const progress=p.pipelineProgress!
+  progress.phase='node_l2_timesfm_enrich';progress.status='running'
+  progress.executions!.b=[row('node_l2_timesfm_enrich','blocked'),
+    {...row('prepare_prediction_request'),completed_at:'2026-10-16T14:01:00Z'}] as any
+  const cards=pipelineStageCards(p,Date.parse(progress.observed_at))
+  assert.equal(cards[2].stageVisualStatus,'running')
+  assert.equal(cards[3].stageVisualStatus,'not_started')
+})

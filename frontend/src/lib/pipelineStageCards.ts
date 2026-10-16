@@ -35,7 +35,9 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     // Only a newer successful enrichment receipt clears its prior limitation.
     const enrichmentIssue=card.id==='pipeline-l2' && ['failed','blocked'].includes(enrichment?.status??'')
       && !(active && progress!.phase==='node_l2_timesfm_enrich' && progress!.status==='running')
-    const complete=!enrichmentIssue && (end?.status==='completed' || (card.id==='pipeline-l3' && sealed))
+    const newerAttempt=active && progress!.status==='running' && Boolean(end?.completed_at)
+      && Date.parse(progress!.phase_started_at)>Date.parse(end!.completed_at!)
+    const complete=(card.id==='pipeline-l3' && sealed) || (!newerAttempt && !enrichmentIssue && end?.status==='completed')
     const failed=!complete && (enrichmentIssue || (active ? ['failed','blocked'].includes(progress!.status) : ['failed','blocked'].includes(latest?.status??'')))
     const queued=active && (progress!.status==='waiting' || ['dispatch_prediction','modal_prediction'].includes(progress!.phase))
     const started=rows.map(r=>r.started_at).filter((v):v is string=>Boolean(v)).sort()[0]

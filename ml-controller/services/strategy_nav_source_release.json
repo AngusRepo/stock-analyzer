@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "178a0d36b0abf5836a892e5351f51bb4b5781ab6",
+  "production_baseline_source": "0871a4bc443494625001d5d15f65b1e1939c965a",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "9c3abaef3fae1bea4ae167777f113cb0fbcc5b980afa445d439ceda87f571926",
-  "prior_configuration_checksum": "d9cc9d718976a25aae6fbb18aec73094e711ffe1f4d388dbfd937439f60cefc8",
+  "prior_approval_checksum": "247923dbb49b355b25200e0422f4680cd63453d8c4cbd99a366be5d8b17f4bf1",
+  "prior_configuration_checksum": "f40389d18c313f41f272ddd1396f84e0ea3773ccf56066685898babc070bf409",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -82,5 +82,5 @@
     }
   },
   "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
-  "review": "audits/chain-improvement-20261016/OOM-PLAN.md"
+  "review": "audits/chain-improvement-20261016/release-20261017-request-dedup/review.md"
 }

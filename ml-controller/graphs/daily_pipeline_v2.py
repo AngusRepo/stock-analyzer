@@ -910,8 +910,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
             store=lambda rows, target_scope: put_payloads(rows, target_scope, shared_ref, shared))
 
     formal_reference = save_slate(state['active_stocks'])
-    payloads_dict = load(formal_reference, scope)
-    result = {"payloads": payloads_dict, "payload_source_observations": sources,
+    result = {"payload_source_observations": sources,
               "timexer_feature_source": capture_source, 'pipeline_slate_scope': scope,
               'pipeline_formal_payload_ref': formal_reference, 'pipeline_shared_payload_ref': shared_ref}
     atomic = state.get('paired_nav_atomic_inputs')
@@ -929,6 +928,10 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
                 'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}
         except Exception as exc:
             result['paired_nav_atomic_pre_l2'] = shadow_failure('atomic_pre_l2_payloads', exc)
+    # Candidate checkpoints need the shared pool, not a decoded formal slate.
+    # Release that pool before hydrating the one formal consumer.
+    del shared, view
+    result['payloads'] = load(formal_reference, scope)
     return result
 
 

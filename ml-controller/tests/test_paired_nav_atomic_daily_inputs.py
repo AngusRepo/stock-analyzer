@@ -301,6 +301,29 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     assert restored == before
 
 
+def test_formal_consumer_is_not_retained_while_candidate_slates_build(monkeypatch):
+    from services import pipeline_slate_artifacts as artifacts
+    graph, state, _ = _setup(monkeypatch)
+    state.update(asyncio.run(graph.node_capture_atomic_inputs(state)))
+    original_build, original_load = graph.build_payloads, artifacts.load
+    formal_hydrated = False
+    builds = []
+    def build(**kwargs):
+        assert not formal_hydrated, 'formal_history_retained_during_candidate_build'
+        builds.append(kwargs['active_stocks'])
+        return original_build(**kwargs)
+    def load(ref, scope=None):
+        nonlocal formal_hydrated
+        if isinstance(ref, dict) and 'logical_sha256' in ref:
+            formal_hydrated = True
+        return original_load(ref, scope)
+    monkeypatch.setattr(graph, 'build_payloads', build)
+    monkeypatch.setattr(artifacts, 'load', load)
+    output = asyncio.run(graph.node_build_payloads(state))
+    assert formal_hydrated and len(builds) >= 3
+    assert output['paired_nav_atomic_pre_l2']['status'] == 'pre_l2_payloads_built'
+
+
 def test_distribution_wait_mirrors_existing_collector_without_running_legacy_population(monkeypatch):
     graph, state, reads = _setup(monkeypatch)
     state['trading_config'] = {'l4Distribution': {'artifact': {'schema_version': 'test-bound-artifact'}}}

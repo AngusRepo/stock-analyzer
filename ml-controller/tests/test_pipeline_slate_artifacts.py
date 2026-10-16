@@ -83,6 +83,23 @@ def test_shared_arrays_are_stored_once_but_each_loaded_payload_is_isolated(tmp_p
         assert restored['payloads'] == rows
 
 
+def test_checkpoint_verification_checks_logical_hash_without_copying_histories(monkeypatch, tmp_path, scope):
+    rows = [{'symbol': 'A', 'prices': [{'close': 1}],
+             'market_env': {'history': [{'close': 2}]}, 'stock_meta': {'peer': 3}}]
+    with artifacts.local_store(tmp_path):
+        pool = artifacts.shared_payload_pool(rows)
+        shared = artifacts.put(pool, scope)
+        ref = artifacts.checkpoint(scope, ['pre', 'A'], lambda: rows,
+            store=lambda value, target: artifacts.put_payloads(value, target, shared, pool))
+        monkeypatch.setattr(artifacts, 'deepcopy', lambda value: pytest.fail('verification_copied_consumer'))
+        assert artifacts.checkpoint(scope, ['pre', 'A'], lambda: pytest.fail('rebuild')) == ref
+        artifacts.verify(ref, scope)
+        with pytest.raises(ValueError, match='logical_checksum'):
+            artifacts.verify({**ref, 'logical_sha256': '0' * 64}, scope)
+        with pytest.raises(ValueError, match='identity'):
+            artifacts.verify(ref, {**scope, 'run': 'wrong'})
+
+
 def test_reference_read_cache_is_scoped_to_owner_and_does_not_keep_decoded_rows(monkeypatch, tmp_path, scope):
     with artifacts.local_store(tmp_path):
         ref = artifacts.put([{'value': 1}], scope)
@@ -102,6 +119,27 @@ def test_reference_read_cache_is_scoped_to_owner_and_does_not_keep_decoded_rows(
         owner()
         assert len(reads) == 2
         assert artifacts._reads.get() is None
+
+
+def test_identical_checkpoint_verification_is_reused_only_within_owner(monkeypatch, tmp_path, scope):
+    with artifacts.local_store(tmp_path):
+        ref = artifacts.put([{'value': 1}], scope)
+        actual = artifacts._load
+        reads = []
+        def read(*args, **kwargs):
+            reads.append(args[0]['sha256'])
+            return actual(*args, **kwargs)
+        monkeypatch.setattr(artifacts, '_load', read)
+        @artifacts.artifact_reads
+        def owner():
+            artifacts.verify(ref, scope)
+            artifacts.verify(ref, scope)
+            with pytest.raises(ValueError, match='identity'):
+                artifacts.verify(ref, {**scope, 'run': 'wrong'})
+        owner()
+        assert len(reads) == 1
+        owner()
+        assert len(reads) == 2 and artifacts._verified.get() is None
 
 
 def test_nested_payload_reference_cannot_cross_run(tmp_path, scope):

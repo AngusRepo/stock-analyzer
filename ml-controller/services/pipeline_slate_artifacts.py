@@ -25,6 +25,7 @@ PREFIX = 'pipeline-v2/slates/v1/'
 SCHEMA = 'pipeline-slate-ref-v1'
 _local = ContextVar('pipeline_slate_test_store', default=None)
 _reads = ContextVar('pipeline_slate_read_files', default=None)
+_verified = ContextVar('pipeline_slate_verified_refs', default=None)
 
 
 @contextmanager
@@ -34,9 +35,11 @@ def _read_files():
         return
     with tempfile.TemporaryDirectory(prefix='slate-read-cache-') as folder:
         token = _reads.set(Path(folder))
+        checked = _verified.set(set())
         try:
             yield
         finally:
+            _verified.reset(checked)
             _reads.reset(token)
 
 
@@ -183,7 +186,7 @@ def put(value, scope):
     return ref
 
 
-def load(value, scope=None):
+def _load(value, scope=None, *, materialize=True):
     if not is_ref(value):
         return value
     _validate_ref(value, scope)
@@ -205,7 +208,9 @@ def load(value, scope=None):
             shared = _pool_rows(load(decoded['shared'], value['scope']))
             rows = []
             for item in decoded['rows']:
-                row = deepcopy(shared[item['symbol']])
+                # Verification never mutates nested values. Only a consumer
+                # needs independent mutable histories for each payload.
+                row = deepcopy(shared[item['symbol']]) if materialize else dict(shared[item['symbol']])
                 for key in item['removed']:
                     del row[key]
                 row.update(item['overrides'])
@@ -214,6 +219,22 @@ def load(value, scope=None):
                 raise ValueError('pipeline_slate_logical_checksum_mismatch')
             return rows
         return decoded
+
+
+def load(value, scope=None):
+    return _load(value, scope)
+
+
+def verify(value, scope=None):
+    """Check stored and logical hashes without copying every shared history."""
+    _validate_ref(value, scope)
+    checked = _verified.get()
+    key = digest(value)
+    if checked is not None and key in checked:
+        return
+    _load(value, scope, materialize=False)
+    if checked is not None:
+        checked.add(key)
 
 
 def content_digest(value):
@@ -298,7 +319,7 @@ def checkpoint(scope, identity, build, *, store=put):
             ref = json.loads(Path(path).read_text(encoding='utf8'))
             _validate_ref(ref, scope)
             # Validate a completed artifact before skipping work, without retaining it.
-            load(ref, scope)
+            verify(ref, scope)
             return ref
         ref = store(build(), scope)
         Path(path).write_text(json.dumps(ref, sort_keys=True), encoding='utf8')
@@ -318,7 +339,7 @@ async def checkpoint_async(scope, identity, build, *, cacheable=None):
         if _download(key, path):
             ref = json.loads(Path(path).read_text(encoding='utf8'))
             _validate_ref(ref, scope)
-            load(ref, scope)
+            verify(ref, scope)
             return ref
         value = await build()
         if cacheable is not None and not cacheable(value):

@@ -108,12 +108,7 @@ def _validate_result(child, bundle):
         raise ValueError('atomic_inference_result_coverage_invalid')
 
 
-@artifact_reads
-def run_atomic_slates(parent, *, compute, formal_bundle):
-    raw = parent.get('paired_nav_atomic_slates')
-    if raw is None:
-        return None
-    packet = raw  # Validated read-only; copying an inline packet duplicates every slate.
+def _validate_packet(parent, packet):
     # The previous local-only prototype cannot prove candidate-specific peer
     # features/eligibility. Do not reinterpret its union as verified slate data.
     if isinstance(packet, dict) and packet.get('schema_version') == 'paired-nav-atomic-slates-v1':
@@ -127,6 +122,11 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
             or not re.fullmatch('[a-f0-9]{64}', str(packet.get('source_checksum')))
             or checksum({k: v for k, v in packet.items() if k != 'packet_checksum'}) != packet['packet_checksum']):
         raise ValueError('atomic_inference_packet_invalid')
+    if not isinstance(packet['slates'], dict):
+        raise ValueError('atomic_inference_slates_missing')
+
+
+def _validate_inputs(parent, packet):
     parent_symbols = _symbols(parent['payloads'])
     parent_series = parent.get('sequence_series') or []
     _symbols(parent_series)
@@ -212,27 +212,65 @@ def run_atomic_slates(parent, *, compute, formal_bundle):
             'sequence_model_series_by_model', 'active8_shadow_sequence_series_by_model')):
         raise ValueError('atomic_inference_formal_sequence_contract_mismatch')
     del formal_child
+    return formal_key
+
+
+def _checkpoint_owner(parent, packet):
+    from app.pipeline_prediction_stages import SCOPE
+    journal = SCOPE.get()
+    if journal is None or not all(is_ref(ref) for ref in packet['slates'].values()):
+        return None
+    # Only the production generation-verified request can reuse this validation.
+    # Mutable inline calls continue through full validation on every invocation.
+    transport = parent.get('request_transport') or {}
+    fields = ('schema_version', 'request_gcs_uri', 'request_generation',
+              'request_sha256', 'request_compressed_sha256',
+              'request_uncompressed_bytes', 'request_compressed_bytes', 'n_input', 'max_symbols')
+    if (any(key not in transport or transport[key] != journal.reference.get(key) for key in fields)
+            or any(parent.get(key) != journal.reference.get(key)
+                   for key in ('run_date', 'run_id', 'expected_source_sha'))
+            or transport['n_input'] != len(parent['payloads'])):
+        raise ValueError('atomic_inference_checkpoint_request_mismatch')
+    return journal
+
+
+@artifact_reads
+def run_atomic_slates(parent, *, compute, formal_bundle):
+    packet = parent.get('paired_nav_atomic_slates')
+    if packet is None:
+        return None
+    _validate_packet(parent, packet)
+    journal = _checkpoint_owner(parent, packet)
+    namespace = 'atomic-v1-' + packet['packet_checksum']
+    validate = lambda: _validate_inputs(parent, packet)
+    formal_key = journal.cpu(namespace, 'validated-inputs', validate) if journal else validate()
     result = {'schema_version': ATOMIC_RESULT_SCHEMA, 'request_checksum': packet['packet_checksum'],
-        'source_checksum': packet['source_checksum'], 'contrasts': contrasts, 'slates': {},
+        'source_checksum': packet['source_checksum'], 'contrasts': deepcopy(packet['contrasts']), 'slates': {},
         'production_effect': False, 'nav_maturity_credit': 0, 'promotion_allowed': False}
     if 'holding_evaluations' in packet:
-        result['holding_evaluations'] = deepcopy(holding_evaluations)
-    for key, reference in packet['slates'].items():
-        try:
+        result['holding_evaluations'] = deepcopy(packet['holding_evaluations'])
+
+    def run_one(key, reference):
+        if journal and key == formal_key:
+            # Full equality and sequence contracts were verified before this receipt.
+            child, reused = parent, True
+        else:
             inputs = load_inputs(reference)
             child = _child(parent, packet, inputs, copy_inputs=False)
-            if not child['payloads']:
-                # An explicitly empty slate is NOT a batch of zero forecasts.
-                result['slates'][key] = {'status': 'empty_universe', 'symbols': []}
-                continue
-            reused = child['payloads'] == parent['payloads'] and child['sequence_series'] == parent_series
-            bundle = deepcopy({k: v for k, v in formal_bundle.items() if not k.startswith('paired_nav_')}) if reused else compute(child)
-            _validate_result(child, bundle)
-            result['slates'][key] = {'status': 'complete', 'symbols': _symbols(child['payloads']),
-                                     'reused_formal': reused, 'result': bundle}
+            reused = child['payloads'] == parent['payloads'] and child['sequence_series'] == (parent.get('sequence_series') or [])
+        if not child['payloads']:
+            return {'status': 'empty_universe', 'symbols': []}
+        bundle = deepcopy({k: v for k, v in formal_bundle.items() if not k.startswith('paired_nav_')}) if reused else compute(child)
+        _validate_result(child, bundle)
+        return {'status': 'complete', 'symbols': _symbols(child['payloads']),
+                'reused_formal': reused, 'result': bundle}
+
+    for key, reference in packet['slates'].items():
+        try:
+            run = lambda: run_one(key, reference)
+            result['slates'][key] = journal.cpu(namespace, key, run) if journal else run()
         except Exception as exc:
+            # Suspended bypasses this handler; incomplete work is never checkpointed.
             result['slates'][key] = atomic_inference_failure(exc)
-        finally:
-            inputs = child = None
     result['status'] = 'failed' if any(x['status'] == 'failed' for x in result['slates'].values()) else 'complete'
     return result

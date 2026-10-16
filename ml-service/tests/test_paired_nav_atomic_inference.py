@@ -376,3 +376,105 @@ def test_candidate_can_change_derived_features_but_not_shared_market_facts_or_mo
     rekey(parent)
     with pytest.raises(ValueError, match='shared_(raw_source|history)_changed'):
         run_atomic_slates(parent, compute=lambda _: pytest.fail('inconsistent source'), formal_bundle=stub_bundle(parent))
+
+
+def _checkpoint_request():
+    from services import pipeline_slate_artifacts as artifacts
+    parent = request()
+    packet = parent['paired_nav_atomic_slates']
+    scope = {'date': parent['run_date'], 'run': parent['run_id'],
+             'code': parent['expected_source_sha'], 'source': checksum('frozen')}
+    packet['slates'] = {key: artifacts.put(inputs, scope) for key, inputs in packet['slates'].items()}
+    reseal(parent)
+    transport = dict(schema_version='pipeline-modal-prediction-request-ref-v1',
+        request_gcs_uri='gs://isolated-test/request.json.gz', request_generation='7',
+        request_sha256=checksum(parent), request_compressed_sha256='c' * 64,
+        request_uncompressed_bytes=1234, request_compressed_bytes=456,
+        n_input=len(parent['payloads']), max_symbols=2000)
+    parent['request_transport'] = transport
+    reference = {**transport, **{k: parent[k] for k in ('run_date','run_id','expected_source_sha')}}
+    return parent, reference
+
+
+def test_atomic_gpu_resume_reuses_validation_and_complete_slates_without_raw_history_cache(tmp_path, monkeypatch):
+    from services import pipeline_slate_artifacts as artifacts
+    from app import paired_nav_atomic_inference as engine
+    from app.pipeline_prediction_stages import Journal, Suspended, SCOPE, run_gpu_stage
+    from tests.test_pipeline_prediction_stages import Store
+    with artifacts.local_store(tmp_path):
+        parent, reference = _checkpoint_request()
+        before = deepcopy(parent)
+        expected = run_atomic_slates(parent, compute=stub_bundle, formal_bundle=stub_bundle(parent))
+        calls = {'validate': 0, 'read': 0, 'gpu': 0}
+        original_validate, original_read = engine._validate_inputs, engine.load_inputs
+        def validate(*args):
+            calls['validate'] += 1
+            return original_validate(*args)
+        def read(*args):
+            calls['read'] += 1
+            return original_read(*args)
+        monkeypatch.setattr(engine, '_validate_inputs', validate)
+        monkeypatch.setattr(engine, 'load_inputs', read)
+        store = Store()
+        def compute(child):
+            SCOPE.get().gpu({'symbols': [row['symbol'] for row in child['payloads']]})
+            return stub_bundle(child)
+        def driver():
+            with Journal(store, reference, clock=lambda: 100).driver():
+                return run_atomic_slates(parent, compute=compute, formal_bundle=stub_bundle(parent))
+        with pytest.raises(Suspended) as pending:
+            driver()
+        first_reads = calls['read']
+        assert calls['validate'] == 1 and first_reads == len(parent['paired_nav_atomic_slates']['slates']) + 1
+        def gpu(_):
+            calls['gpu'] += 1
+            return {'ok': True}
+        run_gpu_stage(store, pending.value.dispatch, predict=gpu, resume=lambda _: None, clock=lambda: 100)
+        assert driver() == expected
+        second_reads = calls['read']
+        assert second_reads == first_reads + 2  # unfinished candidate and empty slate only
+        assert driver() == expected
+        assert calls == {'validate': 1, 'read': second_reads, 'gpu': 1}
+        assert parent == before
+        saved = [row[0]['value'] for key,row in store.rows.items() if key.endswith('/validated-inputs')]
+        assert len(saved) == 1 and isinstance(saved[0], str) and len(saved[0]) == 64
+        assert 'callback_token' not in str(store.rows) and "'prices':" not in str(store.rows)
+
+        parent['request_transport']['request_generation'] = '8'
+        with pytest.raises(ValueError, match='checkpoint_request_mismatch'):
+            driver()
+        parent['request_transport']['request_generation'] = '7'
+        parent['paired_nav_atomic_slates']['contrasts'][0]['definition_checksum'] = 'f' * 64
+        with pytest.raises(ValueError, match='packet_invalid'):
+            driver()
+        assert calls['validate'] == 1
+        parent = deepcopy(before)
+        parent['request_transport']['request_generation'] = '8'
+        newer = {**reference, 'request_generation': '8'}
+        with pytest.raises(Suspended):
+            with Journal(store, newer, clock=lambda: 100).driver():
+                run_atomic_slates(parent, compute=compute, formal_bundle=stub_bundle(parent))
+        assert calls['validate'] == 2  # Another immutable generation never borrows this receipt.
+
+
+def test_atomic_checkpoint_cannot_hide_tampered_unfinished_slate(tmp_path):
+    from services import pipeline_slate_artifacts as artifacts
+    from app.pipeline_prediction_stages import Journal, Suspended
+    from tests.test_pipeline_prediction_stages import Store
+    with artifacts.local_store(tmp_path):
+        parent, reference = _checkpoint_request()
+        packet = parent['paired_nav_atomic_slates']
+        candidate = packet['contrasts'][0]['candidate_key']
+        store = Store()
+        with pytest.raises(Suspended):
+            with Journal(store, reference, clock=lambda: 100).driver():
+                run_atomic_slates(parent, compute=lambda _: (_ for _ in ()).throw(Suspended()),
+                                  formal_bundle=stub_bundle(parent))
+        import hashlib
+        path = hashlib.sha256(packet['slates'][candidate]['path'].encode()).hexdigest()
+        (tmp_path / path).write_bytes(b'tampered')
+        with Journal(store, reference, clock=lambda: 100).driver():
+            result = run_atomic_slates(parent, compute=lambda _: pytest.fail('unverified compute'),
+                                       formal_bundle=stub_bundle(parent))
+        assert result['status'] == result['slates'][candidate]['status'] == 'failed'
+        assert 'result' not in result['slates'][candidate]

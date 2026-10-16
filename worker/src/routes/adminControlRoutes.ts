@@ -704,6 +704,18 @@ async function handleSchedulerCallback(c: any) {
       ? body.date
       : undefined
   const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
+  if (body.task === 'finlab-progress') {
+    const { validFinLabStageProgress, matchesFinLabParent, recordFinLabStageProgress } = await import('../lib/finlabStageProgress')
+    const progress = body.metadata?.stage_progress
+    if (!validFinLabStageProgress(progress) || progress.run_id !== callbackRunId || progress.run_date !== callbackRunDate)
+      return c.json({ error: 'invalid_finlab_progress' }, 400)
+    const parent = await c.env.KV.get(`scheduler:run:finlab-v4-backfill:${callbackRunDate}`, 'json')
+    if (!matchesFinLabParent(progress, parent)
+      || (['success','error','skipped'].includes(parent?.status) && progress.phases.some(p => p.status === 'running')))
+      return c.json({ success: false, ignored: true, reason: 'stale_finlab_progress' })
+    const accepted = await recordFinLabStageProgress(databaseForDataDomain(c.env, 'ops'), progress)
+    return c.json({ success: accepted, ignored: !accepted })
+  }
   if (body.task === 'pipeline-progress') {
     const { recordPipelineProgress, validPipelineProgress } = await import('../lib/pipelineProgress')
     if (!callbackRunDate || !callbackRunId || !validPipelineProgress(body.progress))

@@ -1,4 +1,5 @@
 import { pipelineProgressForDisplay } from './pipelineProgress'
+import { finlabProgressForDisplay } from './finlabStageProgress'
 /**
  * schedulerStatus.ts - Scheduler dashboard status builder
  */
@@ -894,6 +895,11 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     console.warn('[schedulerStatus] premarket progress read failed:', error)
     return []
   })
+  const finlabProgressPromise = opsDb.prepare(`SELECT business_date,cursor_key
+    FROM pipeline_stage_runs WHERE stage='finlab_progress' AND business_date IN (${dates.map(() => '?').join(',')})`)
+    .bind(...dates).all<{business_date:string;cursor_key:string|null}>()
+    .then(r => new Map((r.results ?? []).map(row => [row.business_date,row])))
+    .catch(() => new Map<string,{cursor_key:string|null}>())
   const progressPromise = opsDb.prepare(`SELECT business_date,canonical_run_id,cursor_key
     FROM pipeline_stage_runs WHERE stage='pipeline_progress' AND business_date IN (${dates.map(() => '?').join(',')})`)
     .bind(...dates).all<{business_date:string;canonical_run_id:string;cursor_key:string|null}>()
@@ -1177,6 +1183,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
       pipelineProgress,
+      finlabProgress: def.id === 'finlab-v4-backfill' ? finlabProgressForDisplay(displayLog,
+        (await finlabProgressPromise).get(resolvedDisplay.statusRunDate ?? '')) : null,
       summary: progressActive ? `phase=${pipelineProgress.phase} phase_status=${pipelineProgress.status} execution=${pipelineProgress.execution_id}`
         : executionTicketOverride?.summary ?? durableOverride?.summary ?? displayLog?.summary ?? '',
       details: displayLog?.details ?? [],

@@ -4,6 +4,7 @@
 .daily-readiness-board__phase { display: grid; grid-template-columns: 195px minmax(0,1fr); gap: 16px; align-items: start; min-width: 0; }
 .daily-readiness-board__phase + .daily-readiness-board__phase { padding-top: 14px; border-top: 1px solid var(--border); }
 .daily-readiness-board__phase-info { min-width: 0; }
+.daily-readiness-board__phase.is-sources { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .daily-readiness-board__phase-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .daily-readiness-board__number { color: var(--muted-foreground); font-size: .8125rem; font-variant-numeric: tabular-nums; }
 .daily-readiness-board__phase-title h4, .daily-readiness-board__supporting h4 { margin: 0; color: var(--foreground); font-size: .9375rem; font-weight: 700; }

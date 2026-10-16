@@ -287,6 +287,10 @@ export const cronApi = {
 
 // 2026-04-21 Scheduler Dashboard API
 export type SchedulerJob = {
+  finlabPhase?: 'acquire'|'validate'|'publish'
+  finlabProgress?: {run_id:string;run_date:string;dispatch_attempt:number;sequence:number;observed_at:string;
+    phases:Array<{phase:'acquire'|'validate'|'publish';status:'running'|'completed'|'failed'|'waiting';
+      started_at:string;completed_at?:string;elapsed_ms?:number}>} | null
   pipelinePhase?: 'premarket_l4'
   pipelineProgress?: { phase: string; status: 'running'|'waiting'|'completed'|'failed'|'blocked'; started_at: string;
     phase_started_at: string; observed_at: string; execution_id: string;

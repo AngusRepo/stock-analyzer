@@ -39,6 +39,7 @@ import JobRunTiming from './JobRunTiming'
 import DailyReadinessBoard from './DailyReadinessBoard'
 import { pipelinePreparationLabel, PipelinePhaseDetails, SchedulerStageCard } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
+import { FINLAB_STAGE_CARDS, expandFinlabStages, finlabStageCards } from '@/lib/finlabStageCards'
 import './ExecutionChainPanel.css'
 
 type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped'
@@ -72,6 +73,7 @@ type ChainScope = {
 }
 
 const STAGES: Record<string, StageDefinition> = {
+  ...Object.fromEntries(FINLAB_STAGE_CARDS.map(card => [card.id, { id: card.id, label: card.label, icon: Database }])),
   'market-close-refresh': { id: 'market-close-refresh', label: 'Close refresh', icon: RefreshCw },
   'evening-chain': { id: 'evening-chain', label: 'Evening root', icon: Link2 },
   'finlab-v4-backfill': { id: 'finlab-v4-backfill', label: 'FinLab canonical', icon: Database },
@@ -369,6 +371,7 @@ function formatReplayDate(runDate?: string | null): string {
 }
 
 function statusLabel(job?: SchedulerJob): string {
+  if (job?.finlabPhase && job.summary.startsWith('無階段紀錄')) return '無階段紀錄'
   const label = STATUS_LABEL[visualStatus(job)]
   if (isAllocatorSafeAbstention(job)) return 'Checked · safe abstention'
   if (isExpectedEvidenceNoop(job)) {
@@ -519,6 +522,7 @@ export default function ExecutionChainPanel({
     const attemptAware = buildAttemptAwareJobMap(jobMap, attemptScope, inferOrchestratorStage)
     const next = new Map(attemptAware)
     if (scope.id === 'daily_readiness') {
+      finlabStageCards(next.get('finlab-v4-backfill')).forEach(job => next.set(job.id, job))
       const rootClosure = next.get('evening-chain')
       if (rootClosure) {
         next.set('evening-closure', eveningClosureDisplay(rootClosure))
@@ -540,7 +544,7 @@ export default function ExecutionChainPanel({
     })
     return next
   }, [jobMap, scope])
-  const stageIds = scopeExecutionStageIds(scope)
+  const stageIds = scope.id === 'daily_readiness' ? scopeExecutionStageIds(scope).flatMap(expandFinlabStages) : scopeExecutionStageIds(scope)
   const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
   const orchestratorStatus = visualStatus(orchestratorJob)
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
@@ -567,7 +571,7 @@ export default function ExecutionChainPanel({
     job && visualStatus(job) !== 'skipped' && !STAGES[job.id]?.optional,
   ))
   // Missing receipts count as incomplete; do not silently shrink the daily denominator.
-  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().map(id=>scopedJobMap.get(id))
+  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().flatMap(expandFinlabStages).map(id=>scopedJobMap.get(id))
     : expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0

@@ -18,8 +18,10 @@ from typing import Any, Iterator
 # Match this runtime's gzip header, including Python-version OS-byte behavior.
 _GZIP_HEADER = gzip.compress(b"", compresslevel=6, mtime=0)[:10]
 
-def iter_json_bytes(value: Any, *, sort_keys: bool = False) -> Iterator[bytes]:
-    options = dict(ensure_ascii=False, sort_keys=sort_keys, separators=(",", ":"), default=str)
+def iter_json_bytes(value: Any, *, sort_keys: bool = False,
+                    allow_nan: bool = True, default=str) -> Iterator[bytes]:
+    options = dict(ensure_ascii=False, sort_keys=sort_keys, separators=(",", ":"),
+                   allow_nan=allow_nan, default=default)
     active: set[int] = set()
 
     def encode(item: Any) -> Iterator[bytes]:

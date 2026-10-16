@@ -37,12 +37,12 @@ def encode(value: Any) -> str:
 
 
 def digest(value: Any) -> str:
-    # Hash the same canonical bytes without retaining full JSON + UTF-8 copies.
+    # Keep exact strict canonical bytes, using C-encoded record batches rather
+    # than a Python callback and gzip/hash write for every scalar token.
+    from services.pipeline_json_transport import iter_json_bytes
     hasher = hashlib.sha256()
-    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
-    for piece in encoder.iterencode(value):
-        for start in range(0, len(piece), 20000):
-            hasher.update(piece[start:start + 20000].encode('utf-8'))
+    for piece in iter_json_bytes(value, sort_keys=True, allow_nan=False, default=None):
+        hasher.update(piece)
     return hasher.hexdigest()
 
 

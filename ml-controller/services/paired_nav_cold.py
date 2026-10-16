@@ -67,7 +67,9 @@ class ColdObjects:
 
 
 def _canonical(value):
-    return json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).iterencode(value)
+    from services.pipeline_json_transport import iter_json_bytes
+    return (piece.decode('utf-8') for piece in
+            iter_json_bytes(value, sort_keys=True, allow_nan=False, default=None))
 
 
 @contextmanager

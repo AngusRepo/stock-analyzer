@@ -37,3 +37,23 @@ test('missing previous telemetry is unknown, and an explicit blocked Atomic rece
   p.pipelineProgress!.executions!.a=[row('node_capture_atomic_inputs','blocked') as any]
   assert.equal(pipelineStageCards(p,Date.parse('2026-10-16T14:06:00Z'))[0].stageVisualStatus,'blocked')
 })
+
+test('L3 request preparation cannot turn blocked TimesFM enrichment green',()=>{
+  const p=parent();const progress=p.pipelineProgress!
+  progress.phase='modal_inference';progress.status='running'
+  progress.executions!.b=[row('node_l2_timesfm_enrich','blocked'),
+    {...row('prepare_prediction_request'),completed_at:'2026-10-16T14:01:00Z'}] as any
+  const cards=pipelineStageCards(p,Date.parse(progress.observed_at))
+  assert.equal(cards[2].stageVisualStatus,'blocked')
+  assert.match(cards[2].summary,/TimesFM 條件未滿足/)
+  assert.equal(cards[3].stageVisualStatus,'running')
+})
+
+test('a newer successful enrichment clears the earlier blocked outcome',()=>{
+  const p=parent();const progress=p.pipelineProgress!
+  progress.phase='modal_inference';progress.status='running'
+  progress.executions!.b=[row('node_l2_timesfm_enrich','blocked')] as any
+  progress.executions!.c=[{...row('node_l2_timesfm_enrich'),completed_at:'2026-10-16T14:01:00Z'},
+    {...row('prepare_prediction_request'),completed_at:'2026-10-16T14:02:00Z'}] as any
+  assert.equal(pipelineStageCards(p,Date.parse(progress.observed_at))[2].stageVisualStatus,'completed')
+})

@@ -29,8 +29,14 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     const latest=[...rows].sort((a,b)=>Date.parse(b.completed_at??'')-Date.parse(a.completed_at??''))[0]
     const active=Boolean(progress && belongs(progress.phase))
     const end=[...rows].reverse().find(row=>row.phase===card.end)
-    const complete=end?.status==='completed' || (card.id==='pipeline-l3' && sealed)
-    const failed=!complete && (active ? ['failed','blocked'].includes(progress!.status) : ['failed','blocked'].includes(latest?.status??''))
+    const enrichment=[...rows].filter(row=>row.phase==='node_l2_timesfm_enrich')
+      .sort((a,b)=>Date.parse(b.completed_at??'')-Date.parse(a.completed_at??''))[0]
+    // Preparing a downstream request does not prove the optional sidecar ran.
+    // Only a newer successful enrichment receipt clears its prior limitation.
+    const enrichmentIssue=card.id==='pipeline-l2' && ['failed','blocked'].includes(enrichment?.status??'')
+      && !(active && progress!.phase==='node_l2_timesfm_enrich' && progress!.status==='running')
+    const complete=!enrichmentIssue && (end?.status==='completed' || (card.id==='pipeline-l3' && sealed))
+    const failed=!complete && (enrichmentIssue || (active ? ['failed','blocked'].includes(progress!.status) : ['failed','blocked'].includes(latest?.status??'')))
     const queued=active && (progress!.status==='waiting' || ['dispatch_prediction','modal_prediction'].includes(progress!.phase))
     const started=rows.map(r=>r.started_at).filter((v):v is string=>Boolean(v)).sort()[0]
       ?? (active ? progress!.phase_started_at : null)
@@ -40,11 +46,11 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     const missingEarlier=rows.length===0 && progress && PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase))>index
     const visual: NonNullable<SchedulerJob['stageVisualStatus']>=complete?'completed':failed?'blocked':stale||missingEarlier?'stale'
       :queued?'waiting':active && progress!.status==='running'?'running':rows.length?'waiting':'not_started'
-    const summary=(complete?'階段已完成':failed?'階段失敗／條件未滿足':missingEarlier?'缺少本輪階段紀錄':stale?'觀測超過 15 分鐘，待確認'
+    const summary=(enrichmentIssue?`TimesFM ${enrichment.status==='blocked'?'條件未滿足':'執行失敗'}；流程已接續`:complete?'階段已完成':failed?'階段失敗／條件未滿足':missingEarlier?'缺少本輪階段紀錄':stale?'觀測超過 15 分鐘，待確認'
       :active?(names[progress!.phase]??progress!.phase):rows.length?'等待接續回報':'本輪尚未開始'
       )+(batches?` · 特徵批次 ${batches.completed}/${batches.total}`:'')
     const elapsed=rows.reduce((n,r)=>n+r.elapsed_ms,0) + (visual==='running' ? Math.max(0,now-Date.parse(progress!.phase_started_at)) : 0)
-    const ended=complete?end?.completed_at:failed?latest?.completed_at:undefined
+    const ended=complete || (enrichmentIssue && end?.status==='completed')?end?.completed_at:failed?latest?.completed_at:undefined
     const wall=started && (!complete || ended) ? duration(Math.max(0,(ended?Date.parse(ended):now)-Date.parse(started))) : undefined
     return {...parent,id:card.id,name:card.label,stageVisualStatus:visual,stageCard:true,
       stageElapsed:wall,

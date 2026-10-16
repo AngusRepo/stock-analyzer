@@ -46,7 +46,8 @@
       "l4_execution_evidence.py": "46346b4c003e822b5dff719ccebfd8bcfe1577fafa00f6bf758d021559f5578d"
     },
     "l3_inference_source_identity": {
-      "paired_nav_recommendation_path.py": "9c6eb72b41cbe634d9f3e368217644b69fa7654077f5dc2a21c959985efa229e",
+      "paired_nav_recommendation_path.py": "26ad584a8bbe685419c3155fc673cdab604b734a9ccfcae6476d7c05c7dde2bd",
+      "strict_json_clone.py": "0eae919d581b4f57fa4950224c72e901ec04a244354d5ec252a3c6ff4d383466",
       "paired_nav_l3_candidate.py": "1208aa957b6e6fb6cb6192f71d1274d34b78e4010ac2f7ba995c534178dd0a62",
       "paired_nav_l3_dispatch.py": "19bdfef7cff0231db33a76f76772bdded13ed8f96d35587bf6d0dbff76010f48",
       "paired_nav_strategy_bundle.py": "2cbeea5588b609b4ae9ec0850fd5b3956cf737bdcc01370be6fb1c34d2f261d0",
@@ -67,11 +68,11 @@
       "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
       "persona_service.py": "f07758b9ee3fc80e12c846ba42076d5fdc92196a0db0c269344d0af238460056",
       "pipeline_persona_context.py": "f078912208b086c275b2e30fade66e919ae481c58c40cb5c62d20ed821e346ef",
-      "paired_nav_atomic_personas.py": "4f08c2fa5554deffd930c7595d913f29cddf763f6dcc59008ef21e25f84e462f",
+      "paired_nav_atomic_personas.py": "1b14e86cfcfd083dbbbc4c4fc29ac618e3da6c9d016d96268fefb181b53cf4a6",
       "screener_seed_domain_merge.py": "3c111952cddb69cc71ce36da29a3f332e157a3ffa3e197bb90eae3b57c6510cf",
       "screener_seed_domain_shadow.py": "4c848e8ab913708467a31bb5e0a0e131f78f68239afd5933c4dff876d10079cb",
       "recommendation_source_context.py": "4b7f5ae1ef6d1a86a9ca62696da73c2eae9f0558f5b05b7665dbbc0be32c38b7",
-      "paired_nav_atomic_recommendation.py": "c2d4254e2b32ddb323b83d554924e3d43988ca1079c5da715f22ddc429722023",
+      "paired_nav_atomic_recommendation.py": "daca765b63848c808274f543fe0f382d555140118b76275f55b65052ddd03616",
       "paired_nav_atomic_policy.py": "97c1c82915bd443de4c90d7e749fc000ad9b31b91997d51ae9735c7c2bf51d18",
       "paired_nav_atomic_allocation.py": "09d754c80eba2a0e279897293f4cd753c4823b2e5bb7be0244215b97bf480b6b",
       "paired_nav_atomic_candidate.py": "d27d4b277dfe1d5deae2b445784f1aad962b53db2e6e713d550a5a0f717e197e",
@@ -80,6 +81,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:11d4730db0d4284136831bb4ef2b8b143239e680b7ae1220d4f36f593e6dfddc",
-  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/NAV-CACHE-ALIAS-RELEASE.md"
+  "execution_owner_version": "native-paper-v1:e34347189c3fadf8fa9c2858c8ed95c7a2b2b980b532c10d005517fee8ed4184",
+  "review": "audits/evening-performance-local-20261016/full-chain/v3/release-20261016/controller-modal-preflight.md"
 }

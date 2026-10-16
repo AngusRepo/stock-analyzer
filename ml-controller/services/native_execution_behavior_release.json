@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:11d4730db0d4284136831bb4ef2b8b143239e680b7ae1220d4f36f593e6dfddc",
+  "execution_owner_version": "native-paper-v1:e34347189c3fadf8fa9c2858c8ed95c7a2b2b980b532c10d005517fee8ed4184",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly authorized necessary recovery fixes, validation, commit, push and deploy on 2026-10-16 and confirmed continuing the original full-chain recovery after close. Preserve all existing Paper economics; no real orders or retraining.",
-  "review": "audits/evening-recovery-20261015/recovery-20261016-0800/NAV-CACHE-ALIAS-RELEASE.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:nav-cache-alias-recovery-20261016"
+  "authorization": "Wei approved commit, push and deploy of the reviewed evening-chain performance repairs in this chat on 2026-10-16. Scope is source-only Paper runtime performance; recovery remains stopped; no real orders, retraining or maturity transfer.",
+  "review": "audits/evening-performance-local-20261016/full-chain/v3/release-20261016/controller-modal-preflight.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:evening-performance-v3-20261016"
 }

@@ -11,7 +11,87 @@ from services.pipeline_json_transport import compress_json
 
 STATE_SCHEMA_V1 = "pipeline-async-state-v1"
 STATE_SCHEMA_V2 = "pipeline-async-state-v2"
+STATE_SCHEMA_V3 = "pipeline-async-state-v3"
 PAYLOAD_IDENTITY_SCHEMA = "pipeline-payload-identity-v1"
+_COMMON_FIELDS = ('market_env', 'trading_config', 'adaptive_params',
+                  'lifecycle_weights', 'barrier_params')
+
+
+def _shared_context_wire(payload):
+    """Reference identical producer objects; never drop or coalesce unequal values."""
+    if payload.get('schema_version') not in (STATE_SCHEMA_V1, STATE_SCHEMA_V2):
+        return payload
+    state = payload.get('state') or {}
+    rows = state.get('payloads')
+    if not isinstance(rows, list):
+        return payload
+    refs, compact = [], []
+    common_market = state.get('market_env')
+    common_market = common_market if isinstance(common_market, dict) else {}
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return payload  # Original validator retains its error contract.
+        fields = [key for key in _COMMON_FIELDS if isinstance(state.get(key), (dict, list))
+                  and row.get(key) is state[key]]
+        market = row.get('market_env')
+        nested = ([key for key, value in common_market.items()
+                   if isinstance(value, (dict, list)) and market.get(key) is value]
+                  if isinstance(market, dict) and 'market_env' not in fields else [])
+        if not fields and not nested:
+            compact.append(row)
+            continue
+        value = {key: value for key, value in row.items() if key not in fields}
+        if nested:
+            value['market_env'] = {key: value for key, value in market.items() if key not in nested}
+        compact.append(value)
+        refs.append({'index': index, 'fields': fields, 'market_fields': nested})
+    if not refs:
+        return payload
+    if 'source_schema' in payload or 'payload_context_refs' in payload:
+        raise ValueError('pipeline_shared_context_reserved_metadata')
+    return {**payload, 'schema_version': STATE_SCHEMA_V3,
+            'source_schema': payload['schema_version'], 'payload_context_refs': refs,
+            'state': {**state, 'payloads': compact}}
+
+
+def _restore_shared_context(payload):
+    if payload.get('schema_version') != STATE_SCHEMA_V3:
+        return payload
+    state, refs = payload.get('state'), payload.get('payload_context_refs')
+    source = payload.get('source_schema')
+    if source not in (STATE_SCHEMA_V1, STATE_SCHEMA_V2) or not isinstance(state, dict) or not isinstance(refs, list):
+        raise ValueError('pipeline_shared_context_metadata_invalid')
+    rows, seen = state.get('payloads'), set()
+    if not isinstance(rows, list):
+        raise ValueError('pipeline_shared_context_rows_invalid')
+    for ref in refs:
+        if not isinstance(ref, dict) or set(ref) != {'index', 'fields', 'market_fields'}:
+            raise ValueError('pipeline_shared_context_reference_invalid')
+        index, fields, nested = ref['index'], ref['fields'], ref['market_fields']
+        if (type(index) is not int or not 0 <= index < len(rows) or index in seen
+                or not isinstance(fields, list) or not isinstance(nested, list)
+                or any(not isinstance(key, str) for key in fields + nested)
+                or len(fields) != len(set(fields)) or len(nested) != len(set(nested))
+                or any(key not in _COMMON_FIELDS for key in fields)
+                or not isinstance(rows[index], dict)):
+            raise ValueError('pipeline_shared_context_reference_invalid')
+        seen.add(index)
+        row = rows[index]
+        for key in fields:
+            if key in row or not isinstance(state.get(key), (dict, list)):
+                raise ValueError('pipeline_shared_context_conflict')
+            row[key] = state[key]
+        if nested:
+            market, common = row.get('market_env'), state.get('market_env')
+            if 'market_env' in fields or not isinstance(market, dict) or not isinstance(common, dict):
+                raise ValueError('pipeline_shared_context_conflict')
+            for key in nested:
+                if key in market or not isinstance(common.get(key), (dict, list)):
+                    raise ValueError('pipeline_shared_context_conflict')
+                market[key] = common[key]
+    payload.pop('source_schema');payload.pop('payload_context_refs')
+    payload['schema_version'] = source
+    return payload
 
 
 def _ordered_symbols(payloads: list[dict[str, Any]]) -> list[str]:
@@ -64,7 +144,7 @@ def validate_pipeline_payload_identity(state: dict[str, Any]) -> list[dict[str, 
 
 
 def encode_pipeline_state_envelope(payload: dict[str, Any]) -> bytes:
-    compressed, _, _ = compress_json(payload)
+    compressed, _, _ = compress_json(_shared_context_wire(payload))
     return compressed
 
 
@@ -82,6 +162,7 @@ def decode_pipeline_state_envelope(raw: bytes) -> dict[str, Any]:
         # ordinary full states avoid the document-sized raw + Unicode copies.
         decoded=(gzip.decompress(raw) if raw.startswith(b"\x1f\x8b") else raw).decode('utf-8-sig')
         payload=json.loads(decoded)
+    payload = _restore_shared_context(payload)
     if payload.get("schema_version") not in {STATE_SCHEMA_V1, STATE_SCHEMA_V2}:
         raise ValueError("pipeline_async_state_schema_invalid")
     state = payload.get("state")
@@ -94,7 +175,7 @@ def decode_pipeline_state_envelope(raw: bytes) -> dict[str, Any]:
         for key in ('market_env', 'trading_config', 'adaptive_params',
                     'lifecycle_weights', 'barrier_params'):
             common = state.get(key)
-            if isinstance(common, dict) and row.get(key) == common:
+            if isinstance(common, dict) and (row.get(key) is common or row.get(key) == common):
                 row[key] = common
         # Individual revenue/margin overrides keep their own outer mapping.
         # Only identical nested market-wide structures regain producer sharing.
@@ -102,6 +183,6 @@ def decode_pipeline_state_envelope(raw: bytes) -> dict[str, Any]:
         common_market = state.get('market_env') or {}
         if isinstance(market, dict):
             for key, common in common_market.items():
-                if isinstance(common, (dict, list)) and market.get(key) == common:
+                if isinstance(common, (dict, list)) and (market.get(key) is common or market.get(key) == common):
                     market[key] = common
     return payload

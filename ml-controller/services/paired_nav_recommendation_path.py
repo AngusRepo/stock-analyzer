@@ -8,16 +8,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 import hashlib
-import json
 from pathlib import Path
 
-from services.paired_nav_journal import digest, encode, read_snapshot
+from services.paired_nav_journal import digest, read_snapshot
+from services.strict_json_clone import strict_json_clone
 
 
 def recommendation_source_identity() -> dict[str, str]:
     base = Path(__file__).parent
     return {name: hashlib.sha256((base / name).read_bytes()).hexdigest() for name in (
-        'paired_nav_recommendation_path.py', 'paired_nav_l3_candidate.py', 'paired_nav_l3_dispatch.py',
+        'paired_nav_recommendation_path.py', 'strict_json_clone.py', 'paired_nav_l3_candidate.py', 'paired_nav_l3_dispatch.py',
         'paired_nav_strategy_bundle.py', 'recommendation_service.py',
         'active8_paper_admission.py', 'strategy_nav_runtime_approval.py', 'active8_nav_adoption.py', 'active8_nav_inference.py', 'strategy_ab.py',
         'model_serving_resolver.py', 'worker_config_client.py', 'timesfm_evidence_contract.py', 'timesfm_l175_sidecar.py',
@@ -83,12 +83,12 @@ def run_and_capture_recommendation_path(*, inputs: dict, candidate_reader=None, 
     failure, selection = None, None
     try:
         verify_screener_recommendation_source(inputs)
-        before = json.loads(encode(inputs))
+        before = strict_json_clone(inputs)
     except Exception as exc:
         failure = shadow_failure('recommendation_context_inputs', exc)
     if candidate_reader is not None:
         try:
-            selection = json.loads(encode(candidate_reader()))
+            selection = strict_json_clone(candidate_reader())
         except Exception as exc:
             # An independent L3 challenger failure cannot discard the verified
             # incumbent context used by Atomic/L4/fusion. Retain its failure;
@@ -99,8 +99,8 @@ def run_and_capture_recommendation_path(*, inputs: dict, candidate_reader=None, 
     if failure is not None:
         return result, failure
     try:
-        expected = json.loads(encode(result))
-        post_predictions = json.loads(encode(inputs['predictions']))
+        expected = strict_json_clone(result)
+        post_predictions = strict_json_clone(inputs['predictions'])
         packet = {'status': 'recommendation_context_captured',
                   'schema_version': 'paired-nav-recommendation-context-v1',
                   'source_identity': recommendation_source_identity(),

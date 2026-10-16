@@ -132,7 +132,7 @@ def validate_snapshot_recovery_source(
     if state.get('pipeline_sequence_observations') is not None:
         from services.state_space_series import read_frozen_sequence_inputs
         read_frozen_sequence_inputs(state['pipeline_sequence_observations'], decision_date=run_date,
-            payloads=payloads, observed_before=source_created_at.isoformat())
+            payloads=payloads, observed_before=source_created_at.isoformat(), include_metadata=False)
     if state.get("modal_prediction_bundle") or state.get("modal_prediction_state_gcs_uri"):
         raise ValueError("pipeline_snapshot_recovery_source_already_continued")
 

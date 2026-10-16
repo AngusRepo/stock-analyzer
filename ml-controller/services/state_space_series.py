@@ -12,11 +12,13 @@ import hashlib
 import json
 import os
 import math
+import pickle
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from types import MappingProxyType
 
 from services.active_model_policy import (
     daily_sequence_target_points,
@@ -496,7 +498,52 @@ def sequence_input_fingerprints(payloads):
     return fingerprints
 
 
-def read_frozen_sequence_inputs(packet, *, decision_date, payloads, observed_before=None):
+@dataclass(frozen=True, init=False)
+class VerifiedSequenceInputs:
+    """Detached sealed view for one synchronous owner operation, never an id cache.
+
+    Capture verifies the complete packet once. Internal row bytes and immutable
+    fingerprints cannot be changed through the original packet or read results.
+    Public read_frozen_sequence_inputs still validates its packet on EVERY call.
+    """
+    _fingerprints: Any
+    _rows: Any
+    _metadata: bytes | None
+    source_checksum: str
+    observed_at: Any
+
+    def __init__(self, packet, *, decision_date, observed_before=None, include_metadata=True):
+        rows, observed, _ = _validated_frozen_sequence_rows(packet, decision_date=decision_date,
+            observed_before=observed_before)
+        object.__setattr__(self, '_fingerprints', MappingProxyType(dict(packet['input_fingerprints'])))
+        # Pickles are produced only here from checksum-verified JSON data, never
+        # accepted from storage/callers. Immutable bytes retain exact Python
+        # values and yield independently mutable result containers on each read.
+        object.__setattr__(self, '_rows', MappingProxyType({s: pickle.dumps(row,
+            protocol=pickle.HIGHEST_PROTOCOL) for s, row in rows.items()}))
+        object.__setattr__(self, '_metadata', pickle.dumps(packet.get('metadata') or {},
+            protocol=pickle.HIGHEST_PROTOCOL) if include_metadata else None)
+        object.__setattr__(self, 'source_checksum', packet['source_checksum'])
+        object.__setattr__(self, 'observed_at', observed)
+
+    def validate_inputs(self, payloads, *, observed_before=None):
+        from services.paired_nav_journal import _timestamp
+        if observed_before is not None and self.observed_at > _timestamp(observed_before):
+            raise ValueError('sequence_snapshot_observed_after_parent')
+        inputs = sequence_input_fingerprints(payloads)
+        if any(self._fingerprints.get(s) != value for s, value in inputs.items()):
+            raise ValueError('sequence_snapshot_raw_inputs_changed')
+        return inputs
+
+    def read(self, payloads, *, observed_before=None):
+        inputs = self.validate_inputs(payloads, observed_before=observed_before)
+        selected = [pickle.loads(self._rows[s]) for s in inputs if s in self._rows]
+        metadata = pickle.loads(self._metadata) if self._metadata is not None else {}
+        return selected, {**metadata, 'frozen_source_checksum': self.source_checksum,
+                          'input_series': len(payloads), 'output_series': len(selected)}
+
+
+def _validated_frozen_sequence_rows(packet, *, decision_date, observed_before=None, payloads=None):
     from services.paired_nav_journal import digest, _timestamp
     if (not isinstance(packet, dict) or packet.get('schema_version') != 'pipeline-sequence-observations-v1'
             or packet.get('signal_date') != decision_date
@@ -506,8 +553,8 @@ def read_frozen_sequence_inputs(packet, *, decision_date, payloads, observed_bef
     observed = _timestamp(packet['observed_at'])
     if observed_before is not None and observed > _timestamp(observed_before):
         raise ValueError('sequence_snapshot_observed_after_parent')
-    inputs = sequence_input_fingerprints(payloads)
-    if any(packet['input_fingerprints'].get(s) != value for s, value in inputs.items()):
+    inputs = sequence_input_fingerprints(payloads) if payloads is not None else None
+    if inputs is not None and any(packet['input_fingerprints'].get(s) != value for s, value in inputs.items()):
         raise ValueError('sequence_snapshot_raw_inputs_changed')
     rows = {}
     for row in packet['series']:
@@ -521,9 +568,18 @@ def read_frozen_sequence_inputs(packet, *, decision_date, payloads, observed_bef
             if len(days) != len(row['prices']) or days != sorted(set(days)) or any(d > decision_date for d in days):
                 raise ValueError('sequence_snapshot_dates_invalid')
         rows[s] = row
+    return rows, observed, inputs
+
+
+def read_frozen_sequence_inputs(packet, *, decision_date, payloads, observed_before=None,
+                                include_metadata=True):
+    # No cross-call reuse: any mutation of the public packet is revalidated.
+    rows, _, inputs = _validated_frozen_sequence_rows(packet, decision_date=decision_date,
+        observed_before=observed_before, payloads=payloads)
     selected = [deepcopy(rows[s]) for s in inputs if s in rows]
-    return selected, {**deepcopy(packet.get('metadata') or {}), 'frozen_source_checksum': packet['source_checksum'],
-                       'input_series': len(payloads), 'output_series': len(selected)}
+    metadata = deepcopy(packet.get('metadata') or {}) if include_metadata else {}
+    return selected, {**metadata, 'frozen_source_checksum': packet['source_checksum'],
+                      'input_series': len(payloads), 'output_series': len(selected)}
 
 
 def build_state_space_series_export(

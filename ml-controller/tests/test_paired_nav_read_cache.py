@@ -3,6 +3,35 @@ import pytest
 from services.paired_nav_read_cache import reuse_verified_cold_reads, cached_verified_read, _scope
 
 
+def test_repeated_projection_replacement_releases_files_and_preserves_budget():
+    with reuse_verified_cold_reads(max_bytes=2000, entry_bytes=1000):
+        cache = _scope.get()
+        cache.save('other', {'retained': 1})
+        for sequence in range(40):
+            cache.save('same', {'sequence': sequence, 'data': os.urandom(500)})
+            files = [os.path.join(cache.directory, name) for name in os.listdir(cache.directory)]
+            assert len(files) == len(cache.entries) == 2
+            assert cache.bytes == sum(os.path.getsize(path) for path in files) <= 2000
+        assert cache.read('same')[1]['sequence'] == 39
+        assert cache.read('other') == (True, {'retained': 1})
+
+
+def test_repeated_file_replacement_releases_links_without_losing_source(tmp_path):
+    source = tmp_path / 'verified.bin'
+    source.write_bytes(os.urandom(500))
+    with reuse_verified_cold_reads(max_bytes=2000, entry_bytes=1000):
+        cache = _scope.get()
+        path = cache.save_file('same', source)
+        if path is None:
+            pytest.skip('filesystem has no hard links')
+        for _ in range(40):
+            path = cache.save_file('same', path)
+            assert path is not None and os.path.exists(path)
+            assert os.listdir(cache.directory) == [os.path.basename(path)]
+            assert cache.bytes == os.path.getsize(path) == 500
+        assert source.read_bytes() == open(path, 'rb').read()
+
+
 def test_success_reused_but_mutation_does_not_escape_and_scope_expires():
     reads = []
     def read():

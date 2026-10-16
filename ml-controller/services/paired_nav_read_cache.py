@@ -29,6 +29,28 @@ def cache_event(event):
 _scope = ContextVar('paired_nav_cold_read_cache', default=None)
 
 
+class ComparisonReads:
+    """Exact pass-through; capture all successful read dependencies, including empty pages."""
+    def __init__(self, original):
+        self.original, self.reads, self.stable = original, {}, True
+
+    def __call__(self, sql, params=None):
+        from services.paired_nav_journal import digest
+        from services.daily_nav_read_receipt import _readonly
+        rows = self.original(sql, params)
+        if self.stable:
+            if not _readonly(sql) or len(self.reads) >= 512:
+                self.stable = False
+            else:
+                item = {'sql': sql, 'params': params, 'checksum': digest(rows)}
+                key = digest([sql, params])
+                old = self.reads.get(key)
+                if old is not None and old != item:
+                    self.stable = False
+                self.reads[key] = item
+        return rows
+
+
 class _BudgetExceeded(Exception):
     pass
 
@@ -77,15 +99,23 @@ class _Cache:
         with gzip.open(entry[0], 'rb') as source:
             return True, pickle.load(source)
 
+    def _reserve(self, key, size):
+        # Replacing a projection must release its former tmpfs file as well as
+        # its accounting entry. Otherwise repeated seeds leave unreachable files.
+        previous = self.entries.pop(key, None)
+        if previous is not None:
+            os.unlink(previous[0])
+            self.bytes -= previous[1]
+        while self.entries and self.bytes + size > self.max_bytes:
+            _, (path, old_size) = self.entries.popitem(last=False)
+            os.unlink(path)
+            self.bytes -= old_size
+
     def save_file(self, key, source):
         size = os.path.getsize(source)
         if size > self.entry_bytes:
             cache_event("file_oversize")
             return None
-        while self.entries and self.bytes + size > self.max_bytes:
-            _, (path, old_size) = self.entries.popitem(last=False)
-            os.unlink(path)
-            self.bytes -= old_size
         self.serial += 1
         path = os.path.join(self.directory, str(self.serial))
         # Hard-link the already verified file: no second tmpfs allocation.
@@ -93,6 +123,8 @@ class _Cache:
             os.link(source, path)
         except OSError:
             return None  # Filesystem without hard links: retain uncached reader.
+        # Link first, so replacing a key also works if source is its old link.
+        self._reserve(key, size)
         self.entries[key] = (path, size)
         self.bytes += size
         return path
@@ -108,10 +140,7 @@ class _Cache:
         except _BudgetExceeded:
             cache_event('projection_oversize')
             return
-        while self.entries and self.bytes + counter.size > self.max_bytes:
-            _, (path, size) = self.entries.popitem(last=False)
-            os.unlink(path)
-            self.bytes -= size
+        self._reserve(key, counter.size)
         self.serial += 1
         path = os.path.join(self.directory, str(self.serial))
         try:
@@ -155,7 +184,7 @@ def cached_verified_read(key, read):
     return value
 
 
-def reusable_comparison(query, allocation):
+def reusable_comparison(query, allocation, *, parent_manifest=None):
     from services.paired_nav_journal import digest
     scope = _scope.get()
     if scope is None:
@@ -164,26 +193,37 @@ def reusable_comparison(query, allocation):
     cached = scope.comparisons.get(key)
     if cached is None:
         return None
-    manifest, result = cached
+    manifest, result, dependencies = cached
+    if parent_manifest is not None and parent_manifest != manifest:
+        return None
     current = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [manifest['snapshot_id']])
     if current != [manifest]:
         raise RuntimeError('paired_nav_comparison_parent_changed')
+    for item in dependencies:
+        if digest(query(item['sql'], item['params'])) != item['checksum']:
+            # Re-run the original verifier on the changed source. Never reuse
+            # yesterday's success or omit a newly introduced dependency row.
+            scope.comparisons.pop(key, None)
+            return None
     from copy import deepcopy
     return deepcopy(result)
 
 
-def remember_comparison(query, allocation, parent, result):
+def remember_comparison(query, allocation, parent, result, *, dependencies=None):
     from services.paired_nav_journal import digest
     from copy import deepcopy
     scope = _scope.get()
-    # These owners verify only the supplied immutable plan/parent. Atomic and
-    # fusion have additional query dependencies and deliberately never reuse.
-    if scope is None or allocation['payload']['content']['owner'] not in {'ensemble', 'l4_alpha_ev', 'l15_route'}:
+    # Atomic/fusion reuse requires the complete additional query read set.
+    if scope is None:
         return
-    if len(json.dumps([parent['manifest'], result], ensure_ascii=False).encode()) > 64 * 1024:
+    owner = allocation['payload']['content']['owner']
+    if owner not in {'ensemble', 'l4_alpha_ev', 'l15_route'} and dependencies is None:
+        return  # Additional dependencies must be captured, never assumed.
+    dependencies = dependencies or []
+    if len(json.dumps([parent['manifest'], result, dependencies], ensure_ascii=False).encode()) > 64 * 1024:
         return
     key = (query_cache_identity(query), digest(allocation))
-    scope.comparisons[key] = (deepcopy(parent['manifest']), deepcopy(result))
+    scope.comparisons[key] = (deepcopy(parent['manifest']), deepcopy(result), deepcopy(dependencies))
     if len(scope.comparisons) > 256:
         scope.comparisons.popitem(last=False)
 
@@ -237,18 +277,28 @@ def query_cache_identity(query):
     # load still rereads both metadata rows. A routing change changes the key.
     from services.d1_domain_client import DomainD1Client, DomainD1ClientProxy, database_id_for_domain
     from services.daily_nav_read_receipt import RecordedClient
+    from services.strategy_nav_read_model import DisplayRecordedClient
+    from services.strategy_nav_accounting_scope import StrategyAccountingScope
     from services import d1_client
     original, seen = query, set()
-    # This exact wrapper returns the underlying rows unchanged and only records
-    # read checksums. Keep all actual metadata reads through the caller. Unknown
-    # wrappers/subclasses may filter rows and must remain separate identities.
-    while (type(getattr(query, '__self__', None)) is RecordedClient
-            and getattr(query, '__func__', None) is RecordedClient.query):
-        recorder = query.__self__
-        if id(recorder) in seen:
+    # Only exact known adapters share bytes. Scope filters apply exclusively
+    # to pending execution pages; manifest/locator reads pass through unchanged.
+    # Comparison reuse separately replays ALL queries through the actual caller.
+    while True:
+        owner, fn = getattr(query, '__self__', None), getattr(query, '__func__', None)
+        if type(query) is ComparisonReads:
+            wrapper, next_query = query, query.original
+        elif (type(owner), fn) in ((RecordedClient, RecordedClient.query),
+                                  (DisplayRecordedClient, DisplayRecordedClient.query)):
+            wrapper, next_query = owner, owner.client.query
+        elif type(owner) is StrategyAccountingScope and fn is StrategyAccountingScope.query:
+            wrapper, next_query = owner, owner.original
+        else:
+            break
+        if id(wrapper) in seen:
             return original
-        seen.add(id(recorder))
-        query = recorder.client.query
+        seen.add(id(wrapper))
+        query = next_query
     owner = getattr(query, '__self__', None)
     fn = getattr(query, '__func__', None)
     if (type(owner) in (DomainD1Client, DomainD1ClientProxy)

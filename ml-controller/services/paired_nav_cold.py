@@ -93,12 +93,18 @@ def packed(pieces):
 
 
 @contextmanager
-def verified_file(store, key, checksum, byte_count):
+def _downloaded_file(store, key):
     with tempfile.TemporaryDirectory(prefix='nav-read-') as directory:
         path = os.path.join(directory, 'payload.gz')
         started = time.monotonic()
         store.download(key, path)
         logging.getLogger(__name__).info("[NavColdRead] phase=download seconds=%.3f compressed_bytes=%d",time.monotonic()-started,os.path.getsize(path))
+        yield path
+
+
+@contextmanager
+def verified_file(store, key, checksum, byte_count):
+    with _downloaded_file(store, key) as path:
         started = time.monotonic()
         hasher, size = hashlib.sha256(), 0
         with gzip.open(path, 'rb') as source:
@@ -113,11 +119,69 @@ def verified_file(store, key, checksum, byte_count):
         yield path
 
 
-def parse_file(path, *, prefixes=None):
+class _VerifiedJsonSource:
+    """Hash the parser's actual raw bytes, including BOM and numeric replay.
+
+    The JSON reader rewinds only to byte zero or immediately after its BOM.
+    A replay starts a new hash; partial/failed parses never publish a verdict.
+    """
+    def __init__(self, source, checksum, byte_count):
+        self.source, self.checksum, self.limit = source, checksum, byte_count
+        self.hasher, self.size = hashlib.sha256(), 0
+
+    def tell(self):
+        return self.size
+
+    def read(self, size=-1):
+        raw = self.source.read(size)
+        self.size += len(raw)
+        if self.size > self.limit:
+            raise RuntimeError('paired_nav_cold_size_mismatch')
+        self.hasher.update(raw)
+        return raw
+
+    def readinto(self, target):
+        raw = self.read(len(target))
+        target[:len(raw)] = raw
+        return len(raw)
+
+    def seek(self, offset, whence=0):
+        if whence != 0 or offset not in (0, 3, self.size):
+            raise ValueError('paired_nav_cold_parser_seek_invalid')
+        if offset != self.size:
+            self.source.seek(0)
+            self.hasher, self.size = hashlib.sha256(), 0
+            if offset:
+                self.read(offset)
+        return self.size
+
+    def verify(self):
+        # Explicitly exhaust even if a future decoder returns after its prefix.
+        while self.read(1024 * 1024):
+            pass
+        if self.size != self.limit or self.hasher.hexdigest() != self.checksum:
+            raise RuntimeError('paired_nav_cold_checksum_mismatch')
+
+
+def parse_file(path, *, prefixes=None, checksum=None, byte_count=None):
     """Decode verified bytes with shared keys and exact numeric fallback."""
     from services.streaming_json_reader import load
+    from ijson.common import JSONError
     with gzip.open(path, 'rb') as source:
-        return load(source, prefixes=prefixes)
+        if checksum is None and byte_count is None:
+            return load(source, prefixes=prefixes)
+        if checksum is None or byte_count is None:
+            raise ValueError('paired_nav_cold_verification_identity_incomplete')
+        verified = _VerifiedJsonSource(source, checksum, byte_count)
+        try:
+            value = load(verified, prefixes=prefixes)
+        except (JSONError, StopIteration):
+            # Preserve checksum failure precedence for corrupted objects. A
+            # valid-hash but invalid JSON object still raises its parser error.
+            verified.verify()
+            raise
+        verified.verify()
+        return value
 
 
 def migration_payload(path, kind):
@@ -238,9 +302,23 @@ def load(query, manifest, store=None, *, materialize=True, prefixes=None):
     source_key = (query_cache_identity(query), json.dumps(manifest, sort_keys=True), json.dumps(row, sort_keys=True))
     key = (*source_key, materialize, tuple(sorted(prefixes)) if prefixes is not None else None)
     def read():
-        with cached_verified_file(source_key, lambda: verified_file(store, row['object_key'],
-                row['payload_checksum'], row['payload_bytes'])) as path:
-            return parse_file(path, prefixes=prefixes) if materialize else True
+        parsed = []
+        @contextmanager
+        def acquire():
+            if not materialize:
+                with verified_file(store, row['object_key'], row['payload_checksum'], row['payload_bytes']) as path:
+                    yield path
+                return
+            with _downloaded_file(store, row['object_key']) as path:
+                # First acquisition parses and verifies one decompression pass.
+                # The file cache sees this path only AFTER complete validation.
+                parsed.append(parse_file(path, prefixes=prefixes,
+                    checksum=row['payload_checksum'], byte_count=row['payload_bytes']))
+                yield path
+        with cached_verified_file(source_key, acquire) as path:
+            if not materialize:
+                return True
+            return parsed[0] if parsed else parse_file(path, prefixes=prefixes)
     # Never serialize giant complete histories merely to discover a cache miss.
     cacheable = (prefixes is not None or row['payload_bytes'] <= 16 * 1024 * 1024
                  or (manifest['snapshot_kind'] != 'allocation_context' and row['payload_bytes'] <= 128 * 1024 * 1024))
@@ -384,7 +462,9 @@ def remember_verified_projection(query, saved, fields):
     """
     from services.paired_nav_read_cache import _scope, query_cache_identity
     scope = _scope.get()
-    if scope is None or saved.get('read_projection') != 'validation_fields_v1':
+    if scope is None or saved.get('read_projection') not in (None, 'validation_fields_v1'):
+        return
+    if not available(query):
         return
     manifest = saved['manifest']
     rows = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [manifest['snapshot_id']])

@@ -14,7 +14,7 @@ def atomic_persona_slates(state):
     dispatch = _checked(state.get('paired_nav_atomic_dispatch'), 'paired-nav-atomic-dispatch-v1', 'dispatch_checksum')
     ml = _checked(state.get('paired_nav_atomic_ml'), 'paired-nav-atomic-ml-v1', 'output_checksum')
     series, _ = read_frozen_sequence_inputs(state['pipeline_sequence_observations'],
-        decision_date=state['run_date'], payloads=state['payloads'])
+        decision_date=state['run_date'], payloads=state['payloads'], include_metadata=False)
     expected = prepare_atomic_request(state, {'payloads': state['payloads'], 'sequence_series': series,
         'serving_manifest_digest': state['pipeline_modal_serving_context']['serving_manifest_digest']})
     if (expected != dispatch or ml.get('dispatch_checksum') != dispatch['dispatch_checksum']

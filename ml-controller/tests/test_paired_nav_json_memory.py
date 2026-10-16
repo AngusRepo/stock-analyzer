@@ -16,7 +16,7 @@ def test_restore_shares_only_equal_common_context_preserving_per_stock_values():
 def test_journal_transport_pages_all_rows_without_changing_order(monkeypatch):
     from services import d1_domain_client as module
     from services import d1_client
-    monkeypatch.setattr(module, 'database_id_for_domain', lambda domain:'fixture-learning')
+    monkeypatch.setattr(module, 'database_id_for_domain', lambda domain, **kwargs:'fixture-learning')
     monkeypatch.setattr(d1_client,'STRATEGY_MINING_D1_WORKER_ONLY',False)
     source=[{'part_no':i,'payload_text':'資料'*20000} for i in range(127)]
     calls=[]

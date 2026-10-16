@@ -46,7 +46,12 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
         raise ValueError('paired_nav_atomic_l2_retry_inputs_changed')
     # Identical complete inputs can share computation. Symbols alone cannot:
     # eligibility, peer features and per-slate sidecar context may differ.
-    cache = {formal_input_checksum: deepcopy(formal_result)}
+    # The wrapper also returns the full frozen sequence/context for persistence.
+    # They are not L2 slate outputs: copying them here only to discard them below
+    # duplicates the whole observation pool. Keep the same isolated copies of
+    # the only two fields consumed from each cached result.
+    cache = {formal_input_checksum: deepcopy({key: formal_result[key]
+        for key in ('payloads', 'timesfm_l2_summary') if key in formal_result})}
     async def enrich_group(group):
         outputs = {}
         for definition, payloads in pre.get(group, {}).items():

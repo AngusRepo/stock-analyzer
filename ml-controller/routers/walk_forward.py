@@ -3689,10 +3689,20 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             env_overrides["OOF_MATERIALIZE_SCHEDULER_RUN_ID"] = scheduler_run_id
         job_name = os.environ.get("OOF_MATERIALIZE_JOB_NAME", "active8-oof-materialize").strip()
         try:
-            execution = CloudRunJobsClient(job_name=job_name).run_job(
-                env_overrides=env_overrides,
-                expected_source_sha=os.environ.get('STOCKVISION_SOURCE_SHA', '') if cadence == 'daily' and single_b else None,
-            )
+            job_client = CloudRunJobsClient(job_name=job_name)
+            if cadence == 'daily':
+                from services.active8_daily_dispatch_guard import dispatch_daily_guarded, DailyDispatchBlocked
+                try:
+                    execution = dispatch_daily_guarded(
+                        job_client, bucket, env_overrides=env_overrides,
+                        expected_source_sha=os.environ.get('STOCKVISION_SOURCE_SHA', '') if single_b else None,
+                    )
+                except DailyDispatchBlocked as exc:
+                    return {"status": "blocked", "job_dispatched": False,
+                            "reason": f"active8_daily_dispatch_guard:{exc}",
+                            "cadence": cadence, "run_date": run_date}
+            else:
+                execution = job_client.run_job(env_overrides=env_overrides)
         except JobAlreadyRunningError as exc:
             return {
                 "status": "pending",

@@ -417,7 +417,9 @@ def test_oof_materialize_job_contract_is_durable_and_deployed():
     ]
     assert "non-dry OOF materialization must run in the durable Cloud Run Job" in endpoint
     assert 'os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1"' in endpoint
-    assert "CloudRunJobsClient(job_name=job_name).run_job" in router
+    assert "job_client = CloudRunJobsClient(job_name=job_name)" in router
+    assert "execution = dispatch_daily_guarded(" in router
+    assert "execution = job_client.run_job(env_overrides=env_overrides)" in router
     assert '"status": "spawned"' in router
     assert "The controller only dispatches a durable Cloud Run Job" in worker
     assert "OOF_MATERIALIZE_JOB_NAME" in deploy

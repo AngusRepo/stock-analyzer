@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 from services.paired_nav_collection import shadow_failure
 from services.paired_nav_journal import digest, _timestamp
-from services.state_space_series import read_frozen_sequence_inputs
+from services.state_space_series import read_frozen_sequence_inputs, VerifiedSequenceInputs
 
 
 def _checked(record, schema, checksum_key):
@@ -40,15 +40,15 @@ def prepare_atomic_request(state, parent):
     observed_at = datetime.now(timezone.utc).isoformat()
     if _timestamp(context['observed_at']) > _timestamp(observed_at):
         raise ValueError('paired_nav_atomic_dispatch_policy_observed_late')
-    series, _ = read_frozen_sequence_inputs(sequence, decision_date=state['run_date'],
-        payloads=parent['payloads'], observed_before=observed_at)
+    sequence_reader = VerifiedSequenceInputs(sequence, decision_date=state['run_date'],
+        observed_before=observed_at, include_metadata=False)
+    series, _ = sequence_reader.read(parent['payloads'])
     if series != parent['sequence_series']:
         raise ValueError('paired_nav_atomic_dispatch_formal_sequence_mismatch')
     slates, contrasts, unavailable, holding_evaluations = {}, [], {}, []
 
     def add(payloads):
-        history, _ = read_frozen_sequence_inputs(sequence, decision_date=state['run_date'],
-            payloads=payloads, observed_before=observed_at)
+        history, _ = sequence_reader.read(payloads)
         inputs = {'symbols': [p['symbol'] for p in payloads], 'payloads': deepcopy(payloads), 'sequence_series': history}
         key = digest(inputs)
         slates[key] = inputs
@@ -139,7 +139,7 @@ async def consume_atomic_results(state, formal_result, *, validate, merge):
         raise ValueError('paired_nav_atomic_callback_context_mismatch')
     parent = state['modal_prediction_bundle']
     frozen_formal_series, _ = read_frozen_sequence_inputs(state['pipeline_sequence_observations'],
-        decision_date=state['run_date'], payloads=state['payloads'])
+        decision_date=state['run_date'], payloads=state['payloads'], include_metadata=False)
     expected_dispatch = prepare_atomic_request(state, {'payloads': state['payloads'],
         'sequence_series': frozen_formal_series, 'serving_manifest_digest': context['serving_manifest_digest']})
     if expected_dispatch != dispatch:

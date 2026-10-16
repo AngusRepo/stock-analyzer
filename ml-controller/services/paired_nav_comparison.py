@@ -34,26 +34,58 @@ def resolve_comparison(*, query, execution):
         from services.paired_native_prestart import validate_successor_execution
         _, _, comparison = validate_successor_execution(execution, allocation=allocation, query=query)
         return comparison
-    parent = _comparison_parent(query, plan, include_environment=True)
+    from services.paired_nav_read_cache import reusable_comparison, remember_comparison, ComparisonReads
+    reused = reusable_comparison(query, allocation)
+    recorded = ComparisonReads(query)
+    # Cached comparison still checks the exact execution environment afresh.
+    parent = (read_context_projection(query, plan['allocation_context_snapshot_id'],
+                                     ('native_execution_environment',)) if reused is not None
+              else _comparison_parent(recorded, plan, include_environment=True))
     from services.paired_nav_execution_environment import validate_registered_environment
     validate_registered_environment(parent=parent, allocation=plan,
         runtime={'execution_owner_version': packet.get('execution_owner_version')},
         account_id=packet.get('account_id'), variables=packet.get('variables'),
         kv_read_policy=packet.get('kv_read_policy'), source_context=packet.get('source_context'))
-    return resolve_allocation_comparison(query=query, allocation=allocation, parent=parent)
+    if reused is not None:
+        return reused
+    # This parent was obtained by the verified owner reader above. Capture its
+    # source queries and the verifier's dependencies without encoding its full
+    # history again just to prove the read_snapshot checksum a second time.
+    result = _resolve_allocation_comparison(query=recorded, allocation=allocation, parent=parent)
+    if recorded.stable:
+        remember_comparison(query, allocation, parent, result, dependencies=list(recorded.reads.values()))
+    from services.paired_nav_cold import remember_verified_projection
+    remember_verified_projection(query, parent, ('native_execution_environment',))
+    return result
 
 
 def resolve_allocation_comparison(*, query, allocation, parent=None):
     """The same contrast validation, including plans with no execution yet."""
-    from services.paired_nav_read_cache import reusable_comparison, remember_comparison
-    if parent is None:
+    from services.paired_nav_read_cache import reusable_comparison, remember_comparison, ComparisonReads
+    supplied_parent = parent is not None
+    if not supplied_parent:
         reused = reusable_comparison(query, allocation)
         if reused is not None:
             return reused
     am, plan = allocation['manifest'], allocation['payload']['content']
-    parent = parent if parent is not None else _comparison_parent(query, plan)
-    result = _resolve_allocation_comparison(query=query, allocation=allocation, parent=parent)
-    remember_comparison(query, allocation, parent, result)
+    recorded = ComparisonReads(query)
+    if parent is not None:
+        # A caller-supplied, already verified parent was read outside this
+        # recorder. Bind its locator too, not just its immutable manifest.
+        from services.paired_nav_cold import available, _row
+        if recorded('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?',
+                    [parent['manifest']['snapshot_id']]) != [parent['manifest']]:
+            raise RuntimeError('paired_nav_comparison_parent_changed')
+        if available(recorded):
+            _row(recorded, parent['manifest']['snapshot_id'])
+    else:
+        parent = _comparison_parent(recorded, plan)
+    result = _resolve_allocation_comparison(query=recorded, allocation=allocation, parent=parent)
+    # A caller can mutate a supplied dictionary. Always run its original
+    # verifier, and never seed a reusable verdict from that mutable input.
+    # Only parents obtained here by the verified reader can seed the memo.
+    if recorded.stable and not supplied_parent:
+        remember_comparison(query, allocation, parent, result, dependencies=list(recorded.reads.values()))
     return result
 
 

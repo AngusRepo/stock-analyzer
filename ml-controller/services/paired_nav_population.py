@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import re
 
-from services.paired_nav_journal import digest, read_snapshot, read_inventory_snapshot, _timestamp
+from services.paired_nav_journal import digest, read_snapshot, read_inventory_snapshot, read_context_projection, _timestamp
 from services.paired_nav_comparison import resolve_allocation_comparison, resolve_comparison
 
 
@@ -75,6 +75,7 @@ Use the immutable execution packet's close; do not invent another calendar.
     plans, pairs, executions, legacy_plans, legacy_executions = set(), {}, {}, [], []
     session_closes = {}
     context_ids, expected, materialized, ev_selections = set(), set(), set(), {}
+    context_roots = {}  # Only this census's checksum-verified inventory roots.
     unresolved_sources = []
     unavailable_allocations = {}
     pending_dependencies = []
@@ -84,6 +85,8 @@ Use the immutable execution packet's close; do not invent another calendar.
         if _timestamp(m['frozen_at']) > clock:
             raise ValueError('paired_nav_population_snapshot_not_available')
         context_ids.add(m['snapshot_id'])
+        context_roots[m['snapshot_id']] = (dict(m),
+            context.get('upstream_allocation_context_snapshot_id') or m['snapshot_id'])
         from services.paired_nav_read_cache import remember_policy_definitions
         if context.get('upstream_allocation_context_snapshot_id'):
             remember_policy_definitions(query, m, 'l15_route', {})
@@ -153,15 +156,31 @@ Use the immutable execution packet's close; do not invent another calendar.
         if 'allocation_context_snapshot_id' not in plan:
             legacy_plans.append(m['snapshot_id'])
             continue
-        parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
-        context = parent['payload']['content']
-        root = context.get('upstream_allocation_context_snapshot_id') or parent['manifest']['snapshot_id']
+        # Inventory already checksum-verified this root pointer. Refresh the
+        # manifest without scanning the same large JSON for one more field set.
+        # A pinned census can omit a derived parent while retaining its root;
+        # preserve the original verified projection fallback in that case.
+        parent, context = None, None
+        source = context_roots.get(plan['allocation_context_snapshot_id'])
+        if source is not None:
+            manifest, root = source
+            if query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?',
+                    [manifest['snapshot_id']]) != [manifest]:
+                raise RuntimeError('paired_nav_comparison_parent_changed')
+        else:
+            parent = read_context_projection(query, plan['allocation_context_snapshot_id'],
+                ('upstream_allocation_context_snapshot_id',))
+            context = parent['payload']['content']
+            root = context.get('upstream_allocation_context_snapshot_id') or parent['manifest']['snapshot_id']
         if root not in context_ids:
             raise ValueError('paired_nav_population_root_context_missing')
         try:
-            comparison = resolve_allocation_comparison(query=query, allocation=saved, parent=parent)
+            comparison = resolve_allocation_comparison(query=query, allocation=saved)
         except ValueError as exc:
             from services.strategy_nav_retired_source import retired_source_comparison, execution_parent_identity
+            # Retired-source adjudication retains its full original checks;
+            # the bounded census projection is never substituted as evidence.
+            parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
             comparison = retired_source_comparison(exc, allocation=saved, parent=parent, clock=clock)
             if comparison is None:
                 raise

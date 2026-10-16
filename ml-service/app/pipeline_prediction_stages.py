@@ -17,10 +17,12 @@ GPU_SCHEMA = 'pipeline-gpu-stage-v1'
 
 
 def digest(value):
+    # Modal already ships the controller services directory. Reuse its bounded
+    # C-backed canonical writer, preserving the existing request/receipt SHA.
+    from services.pipeline_json_transport import iter_json_bytes
     hasher = hashlib.sha256()
-    for part in json.JSONEncoder(sort_keys=True, ensure_ascii=False,
-            separators=(',', ':'), allow_nan=False).iterencode(value):
-        hasher.update(part.encode('utf-8'))
+    for part in iter_json_bytes(value, sort_keys=True, allow_nan=False, default=None):
+        hasher.update(part)
     return hasher.hexdigest()
 
 

@@ -171,7 +171,10 @@ class CloudRunJobsClient:
         if deadline_seconds is not None and deadline_seconds <= 0:
             raise ValueError('cloud_run_dispatch_deadline_invalid')
         if expected_source_sha is not None:
-            self.verify_source_alignment(expected_source_sha)
+            if deadline is None:
+                self.verify_source_alignment(expected_source_sha)
+            else:
+                self.verify_source_alignment(expected_source_sha, deadline=deadline)
 
         if reject_if_running:
             active = (self.get_active_execution(deadline=deadline) if deadline is not None
@@ -196,7 +199,7 @@ class CloudRunJobsClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('cloud_run_dispatch_deadline_before_rpc')
-            options = {'timeout': remaining, 'retry': None}
+            options = {'timeout': min(8.0, remaining), 'retry': None}
         operation = client.run_job(request=request, **options)
 
         # operation.metadata.name is populated immediately; the long-running
@@ -213,7 +216,7 @@ class CloudRunJobsClient:
         )
         return JobExecution(execution_name=execution_name, execution_id=execution_id)
 
-    def verify_source_alignment(self, expected_source_sha: str) -> None:
+    def verify_source_alignment(self, expected_source_sha: str, *, deadline: float | None = None) -> None:
         """A read-model producer must run the consumer's exact published source.
 
         Never mask an old image with an execution env override. Inspect the
@@ -221,7 +224,14 @@ class CloudRunJobsClient:
         """
         if not re.fullmatch(r'[a-f0-9]{40}', expected_source_sha or ''):
             raise ValueError('strategy_nav_consumer_source_identity_missing')
-        job = self._get_client().get_job(request=run_v2.GetJobRequest(name=self._parent), timeout=30)
+        options = {'timeout': 30}
+        if deadline is not None:
+            import time
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('cloud_run_source_lookup_deadline')
+            options = {'timeout': min(8.0, remaining), 'retry': None}
+        job = self._get_client().get_job(request=run_v2.GetJobRequest(name=self._parent), **options)
         containers = job.template.template.containers
         if len(containers) != 1:
             raise ValueError('strategy_nav_producer_container_contract_invalid')

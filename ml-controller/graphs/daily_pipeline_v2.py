@@ -1501,7 +1501,7 @@ def _payload_with_timesfm_l175_sidecar(payload: dict, sidecar: dict[str, Any]) -
 
 def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
     from services.paired_nav_journal import digest
-    from services.state_space_series import sequence_input_fingerprints, read_frozen_sequence_inputs
+    from services.state_space_series import sequence_input_fingerprints, read_frozen_sequence_inputs, VerifiedSequenceInputs
     saved = state.get('pipeline_sequence_observations')
     if saved is None:
         # A price-only union is safe for a univariate source read, NOT for peer
@@ -1535,9 +1535,14 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
             'input_fingerprints': fingerprints, 'series': series, 'metadata': metadata,
             'observed_at': datetime.now(timezone.utc).isoformat()})
         saved = {**body, 'source_checksum': digest(body)}
-        # Validate before publishing into the shared state.
-        read_frozen_sequence_inputs(saved, decision_date=state['run_date'], payloads=raw)
+        # Validate the complete union before publication, without constructing
+        # a discarded union result and hashing the packet a third time. This
+        # sealed view exists only in this synchronous new-capture block.
+        verified = VerifiedSequenceInputs(saved, decision_date=state['run_date'])
+        verified.validate_inputs(raw)
+        result = verified.read(payloads)
         state['pipeline_sequence_observations'] = saved
+        return result
     return read_frozen_sequence_inputs(saved, decision_date=state['run_date'], payloads=payloads)
 
 

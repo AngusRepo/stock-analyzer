@@ -262,9 +262,12 @@ def test_actual_daily_node_runs_own_candidates_without_formal_writes(full_atomic
     assert own['nav_maturity_credit']==0 and own['production_effect'] is False
     allocated=allocation['definitions']['c'*64]
     assert allocated['status']=='allocation_materialized', str(allocated)
-    assert set(allocated['inputs']['return_history'])=={'1000','1002'}
-    assert set(parent['inputs']['return_history'])=={'1000','1001'}
-    assert allocated['risk_history_missing_symbols']==['1003']
+    # full_atomic supplies 64 additional historical rows to every own-slate
+    # symbol, including 1003. Preserve that risk history instead of expecting
+    # the pre-extension fixture's missing-symbol behavior.
+    assert set(allocated['inputs']['return_history'])=={'1000','1002','1003'}
+    assert set(parent['inputs']['return_history'])=={'1000','1001','1003'}
+    assert allocated['risk_history_missing_symbols']==[]
     assert allocated['allocation']['capture']['allocation_contract']['controller_requested']==controller
     assert allocated['allocation']['capture']['allocation_contract']['controller_effective']==controller, str(allocated['allocation']['capture']['opb_packet'])
     assert sum(allocated['allocation']['capture']['effective_weights'].values())>0, str(allocated['allocation']['output'])

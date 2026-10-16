@@ -109,9 +109,12 @@ def run_atomic_recommendations(*, prepared, formal_context, source_context):
             if rows != definition['screener_recs']:
                 raise ValueError('atomic_recommendation_original_merge_mismatch')
             # Formal seed/source contexts cannot attest a different candidate.
+            own_fields = ('screener_recs', 'predictions', 'payloads', 'l2_summary')
+            # These four formal fields are replaced by the candidate below.
+            # Do not first clone their full histories and then throw them away.
             inputs = deepcopy({k:v for k,v in formal_context['inputs'].items()
-                               if k not in {'screener_seed_context', 'recommendation_source_context'}})
-            for field in ('screener_recs', 'predictions', 'payloads', 'l2_summary'):
+                               if k not in {'screener_seed_context', 'recommendation_source_context', *own_fields}})
+            for field in own_fields:
                 inputs[field] = deepcopy(definition[field])
             inputs['filter_options']['persona_opinions'] = deepcopy(definition['persona_opinions'])
             for field in ('fundamental_quality_by_symbol', 'pit_sector_alpha_by_symbol'):

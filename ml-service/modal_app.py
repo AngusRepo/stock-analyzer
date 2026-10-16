@@ -4260,7 +4260,7 @@ def update_arf_reward(payload: dict) -> dict:
         return {"error": str(e)}
 
 
-def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, summary: str, duration_ms: int, error: str | None = None) -> dict:
+def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, summary: str, duration_ms: int, error: str | None = None, *, timeout: int = 30, max_attempts: int = 3) -> dict:
     import json
     import os
     import time
@@ -4312,6 +4312,8 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
     }
     if error:
         body["error"] = error
+    if result.get("stage_progress"):
+        body["metadata"]["stage_progress"] = result["stage_progress"]
     req = urllib.request.Request(
         callback_url,
         data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
@@ -4329,9 +4331,9 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
         method="POST",
     )
     last_error: dict | None = None
-    for attempt in range(1, 4):
+    for attempt in range(1, max_attempts + 1):
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
                 return {"status": "ok", "code": resp.status, "attempt": attempt, "text": text[:500]}
         except urllib.error.HTTPError as exc:
@@ -4342,7 +4344,8 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
                 "attempt": attempt,
                 "error": sanitize_callback_error(exc, callback_token, controller_token),
             }
-        time.sleep(min(attempt * 2, 5))
+        if attempt < max_attempts:
+            time.sleep(min(attempt * 2, 5))
     return last_error or {"status": "error", "error": "unknown_callback_failure"}
 
 
@@ -4539,7 +4542,17 @@ def finlab_v4_backfill(payload: dict) -> dict:
 
     old_argv = sys.argv
     stdout = io.StringIO()
+    from tools.finlab_stage_progress import StageProgress, install, reset
+    def emit_stage(value):
+        response = _post_worker_scheduler_callback(
+            {**payload, 'callback_task': 'finlab-progress'}, {'stage_progress': value},
+            'running', 'FinLab stage progress', 0, timeout=3, max_attempts=1)
+        if response.get('status') != 'ok':
+            print('[finlab-stage] telemetry_delivery_failed', file=sys.stderr, flush=True)
+    stage_progress = StageProgress(run_id, payload.get('run_date'), dispatch_attempt, emit_stage)
+    stage_token = install(stage_progress)
     try:
+        stage_progress.start('acquire')
         from tools import finlab_v4_remote_backfill
         from google.cloud import storage
         from app.gcs_preflight import verify_gcs_object_lifecycle
@@ -4614,6 +4627,9 @@ def finlab_v4_backfill(payload: dict) -> dict:
         )
         callback = _post_worker_scheduler_callback(payload, result, status, summary, duration_ms)
         result["callback"] = callback
+        stage_progress.finish('completed' if status == 'success' and callback.get('status') == 'ok'
+                              else 'failed' if status == 'error' else 'waiting')
+        result['stage_progress'] = stage_progress.snapshot()
         result["status"] = status
         result["duration_ms"] = duration_ms
         return result
@@ -4632,8 +4648,11 @@ def finlab_v4_backfill(payload: dict) -> dict:
             "start_callback": start_callback,
         }
         result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error)
+        stage_progress.finish('failed')
+        result['stage_progress'] = stage_progress.snapshot()
         return result
     finally:
+        reset(stage_token)
         sys.argv = old_argv
 
 

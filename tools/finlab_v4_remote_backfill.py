@@ -3890,6 +3890,8 @@ def main() -> int:
         monthly_contract_manifest=args.monthly_contract_manifest or None,
         monthly_contract_sha256=args.monthly_contract_sha256 or None,
     )
+    from tools.finlab_stage_progress import start_phase
+    start_phase('validate')
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
@@ -3934,6 +3936,7 @@ def main() -> int:
         )
         write_json(run_dir / "manifest.json", manifest)
 
+    start_phase('publish', previous_status='failed' if source_key_blockers else 'completed')
     uploaded_files: dict = {}
     if args.gcs_bucket:
         gcs = upload_dir_to_gcs(

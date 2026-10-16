@@ -18,7 +18,7 @@ function fixture(t: any) {
     async first() { return sql.prepare(this.text).get(...this.values) ?? null }
   }
   const db = { prepare: (text: string) => new Statement(text) } as unknown as D1Database
-  return { sql, check: () => brokerDailyReadiness(db, '2026-09-23') }
+  return { sql, check: (observedDate = '2026-09-23') => brokerDailyReadiness(db, '2026-09-23', observedDate) }
 }
 
 test('previous-session broker data blocks evening selection', async t => {
@@ -48,4 +48,20 @@ test('one incomplete broker table blocks evening selection', async t => {
   assert.equal(checks[0].ok, true)
   assert.equal(checks[1].ok, false)
   assert(checks[1].summary.includes('target_rows=1/1000'))
+})
+
+test('post-midnight capture keeps vendor date and real materialization date', async t => {
+  const { sql, check } = fixture(t)
+  for (const table of ['canonical_broker_flow_daily', 'canonical_broker_rank_daily']) {
+    sql.exec(`UPDATE ${table} SET date='2026-09-23', as_of_date='2026-09-24'`)
+  }
+  assert((await check('2026-09-24')).every(row => row.ok))
+  assert((await check('2026-09-23')).every(row => !row.ok), 'future capture cannot satisfy readiness')
+  assert.equal(sql.prepare('SELECT DISTINCT date,as_of_date FROM canonical_broker_flow_daily').get()?.as_of_date,'2026-09-24')
+})
+
+test('wrong source or market does not satisfy target-session coverage', async t => {
+  const { sql, check } = fixture(t)
+  sql.exec("UPDATE canonical_broker_flow_daily SET date='2026-09-23',as_of_date='2026-09-24',source='finlab.rotc_broker_transactions'; UPDATE canonical_broker_rank_daily SET date='2026-09-23',as_of_date='2026-09-24',market_segment='EMERGING'")
+  assert((await check('2026-09-24')).every(row => !row.ok))
 })

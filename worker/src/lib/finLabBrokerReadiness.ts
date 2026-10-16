@@ -1,11 +1,17 @@
 /** Require complete target-session broker data before the evening selection chain. */
-export async function brokerDailyReadiness(market: D1Database, targetDate: string) {
+export async function brokerDailyReadiness(
+  market: D1Database,
+  targetDate: string,
+  observedDate = new Date().toISOString().slice(0, 10),
+) {
   const tables = ['canonical_broker_flow_daily', 'canonical_broker_rank_daily'] as const
   return Promise.all(tables.map(async (table) => {
     const row = await market.prepare(`SELECT COUNT(DISTINCT stock_id) AS count FROM ${table}
-      WHERE date = ? AND as_of_date = ? AND source = 'finlab.broker_transactions'
+      WHERE date = ? AND as_of_date BETWEEN ? AND ? AND source = 'finlab.broker_transactions'
         AND market_segment = 'LISTED_OTC'`)
-      .bind(targetDate, targetDate).first<{ count: number }>()
+      // date is the vendor session; as_of_date is the materializer's real UTC
+      // capture date. A post-midnight capture must not be relabelled backwards.
+      .bind(targetDate, targetDate, observedDate).first<{ count: number }>()
     const count = Number(row?.count ?? 0)
     return {
       key: `${table}:listed_otc`,

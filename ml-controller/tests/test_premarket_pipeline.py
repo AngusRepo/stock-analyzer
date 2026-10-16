@@ -1,5 +1,6 @@
 import asyncio
 import json
+import io
 from datetime import datetime,timezone
 from types import SimpleNamespace
 import pytest
@@ -15,7 +16,12 @@ class Blob:
         self.downloads+=1
         if self.raw is None:raise NotFound('missing')
         return self.raw
-    def reload(self):pass
+    def reload(self):
+        if self.raw is None:raise NotFound('missing')
+    def open(self, mode, **kw):
+        assert mode=='rb' and kw['if_generation_match']==self.generation
+        if self.raw is None:raise NotFound('missing')
+        return io.BytesIO(self.raw)
     def exists(self):return self.raw is not None
 class Storage:
     name='local-fixture'
@@ -216,6 +222,136 @@ def test_postwrite_requires_serving_receipts_and_can_finish_after_allocation_cut
     assert run([node_compute_sector_flow],True)['research']=='complete'
     with pytest.raises(ValueError,match='allocation_cutoff'):run([node_compute_sector_flow])
     with pytest.raises(ValueError,match='phase_invalid'):run([node_paired_nav_setup],True)
+
+
+def _research_input(f):
+    s,state,c=f;r=m.seal_l3(state,client=s)
+    path=m.prefix(r['run_date'],r['run_id'])
+    s.blob(path+'/morning-input.json').upload_from_string(m.json_bytes({'receipt':r,'context':c}))
+    # Serving receipts are preconditions only; postwrite must not load them.
+    for name in ('node_paired_nav_setup','node_export_dataset_snapshot'):
+        s.blob(path+'/phases/'+name+'.json.gz').upload_from_string(b'serving sealed')
+    return s,state,c,r,path,'gs://'+s.name+'/'+path+'/morning-input.json'
+
+
+def test_postwrite_keeps_full_history_seal_and_serving_reader(f,monkeypatch):
+    import hashlib
+    from services.premarket_postwrite_state import POSTWRITE_SCHEMA
+    row=f[1]['payloads'][0]
+    row.update(prices=[{'date':str(i),'close':i+.25} for i in range(728)],
+        indicators=[{str(k):i+k+.5 for k in range(29)} for i in range(709)],
+        chips=[{'foreign_net':i-100} for i in range(728)])
+    f[1]['payload_source_observations']={'2330':{'history':list(range(728))}}
+    s,original,c,r,path,uri=_research_input(f)
+    source=s.blob(r['state_gcs_uri'].split('/'+s.name+'/')[1])
+    raw=source.raw
+    serving=m.load_state(r,client=s)
+    monkeypatch.setattr(source,'download_as_bytes',lambda:pytest.fail('full download in postwrite'))
+    calls=[]
+    async def node_compute_sector_flow(st):
+        calls.append('sector')
+        assert 'payloads' not in st and 'payload_source_observations' not in st
+        assert st['pipeline_payload_identity']['count']==1
+        return {'sector_flow_summary':{'status':'complete'}}
+    async def node_compute_pit_residual_shadow(st):
+        calls.append('pit');assert st['sector_flow_summary']['status']=='complete'
+        return {'pit_residual_shadow_summary':{'status':'complete'}}
+    def run():return asyncio.run(m.resume(uri,nodes=[node_compute_sector_flow,node_compute_pit_residual_shadow],
+        merge=lambda st,up:st.update(up),client=s,postwrite_only=True))
+    assert run()['pit_residual_shadow_summary']['status']=='complete'
+    assert run()['pit_residual_shadow_summary']['status']=='complete'
+    assert calls==['sector','pit']
+    import gzip
+    checkpoint=json.loads(gzip.decompress(s.blob(path+'/phases/node_compute_sector_flow.json.gz').raw))
+    assert checkpoint['schema_version']==POSTWRITE_SCHEMA and checkpoint['source_receipt']==r
+    assert len(s.blob(path+'/phases/node_compute_sector_flow.json.gz').raw)<4096
+    assert source.raw==raw and hashlib.sha256(raw).hexdigest()==r['checksum']
+    assert serving['payloads'][0]==row
+    assert len(serving['payloads'][0]['prices'])==728
+    assert len(serving['payloads'][0]['indicators'])==709
+    assert len(serving['payloads'][0]['indicators'][-1])==29
+    assert len(serving['payloads'][0]['chips'])==728
+    assert m.decode_pipeline_state_envelope(raw)['state']==serving
+    with pytest.raises(ValueError,match='schema_invalid'):
+        m.decode_pipeline_state_envelope(s.blob(path+'/phases/node_compute_sector_flow.json.gz').raw)
+
+
+def test_postwrite_resumes_old_full_checkpoint_then_retries_only_failed_node(f,monkeypatch):
+    from services.pipeline_async_state_transport import STATE_SCHEMA_V2
+    s,state,c,r,path,uri=_research_input(f)
+    sealed=m.load_state(r,client=s)
+    sealed.update(premarket_context=c,sector_flow_summary={'status':'old-complete'})
+    old=s.blob(path+'/phases/node_compute_sector_flow.json.gz')
+    old.upload_from_string(m.encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':sealed}))
+    monkeypatch.setattr(old,'download_as_bytes',lambda:pytest.fail('old checkpoint full download'))
+    calls=[]
+    async def node_compute_sector_flow(st):pytest.fail('completed sector replayed')
+    async def node_compute_pit_residual_shadow(st):
+        assert 'payloads' not in st
+        assert st['sector_flow_summary']['status']=='old-complete'
+        calls.append('pit')
+        if len(calls)==1:raise RuntimeError('injected research fault')
+        return {'pit_residual_shadow_summary':{'status':'complete'}}
+    def run():return asyncio.run(m.resume(uri,nodes=[node_compute_sector_flow,node_compute_pit_residual_shadow],
+        merge=lambda st,up:st.update(up),client=s,postwrite_only=True))
+    with pytest.raises(RuntimeError,match='injected'):run()
+    assert run()['pit_residual_shadow_summary']['status']=='complete'
+    run();assert calls==['pit','pit']
+
+
+@pytest.mark.parametrize('damage',['checksum','gzip','identity','context','phase','source','run','checkpoint_roster'])
+def test_postwrite_bad_seal_or_checkpoint_never_computes(f,damage):
+    import gzip
+    from services.premarket_postwrite_state import encode_postwrite_checkpoint
+    s,state,c,r,path,uri=_research_input(f)
+    source=s.blob(r['state_gcs_uri'].split('/'+s.name+'/')[1])
+    projected=m.load_state(r,client=s,postwrite_only=True)
+    projected['premarket_context']=c
+    if damage=='checksum':source.raw+=b'\x00'
+    elif damage=='gzip':source.raw=source.raw[:-8]
+    elif damage=='identity':
+        envelope=json.loads(gzip.decompress(source.raw));envelope['state']['payloads'][0]['symbol']='wrong'
+        source.raw=m.encode_pipeline_state_envelope(envelope)
+        import hashlib
+        r['checksum']=hashlib.sha256(source.raw).hexdigest()
+        s.blob(path+'/l3-receipt.json').raw=m.json_bytes(r)
+        s.blob(path+'/morning-input.json').raw=m.json_bytes({'receipt':r,'context':c})
+    else:
+        envelope=json.loads(gzip.decompress(encode_postwrite_checkpoint(projected,r,
+            phase='node_compute_sector_flow',context_checksum=c['checksum'])))
+        if damage=='context':envelope['context_checksum']='wrong'
+        if damage=='phase':envelope['phase']='node_compute_pit_residual_shadow'
+        if damage=='source':envelope['source_receipt']['checksum']='wrong'
+        if damage=='run':envelope['state']['run_date']='2026-01-01'
+        if damage=='checkpoint_roster':envelope['state']['pipeline_payload_identity']['count']=999
+        s.blob(path+'/phases/node_compute_sector_flow.json.gz').raw=m.encode_pipeline_state_envelope(envelope)
+    async def node_compute_sector_flow(st):pytest.fail('corrupt input reached computation')
+    with pytest.raises((ValueError,EOFError,gzip.BadGzipFile)):
+        asyncio.run(m.resume(uri,nodes=[node_compute_sector_flow],merge=lambda st,up:st.update(up),
+            client=s,postwrite_only=True))
+
+
+def test_postwrite_legacy_v1_and_checkpoint_capacity_fail_closed(f):
+    from services.premarket_postwrite_state import encode_postwrite_checkpoint,PROJECTION_LIMIT
+    from services.pipeline_async_state_transport import STATE_SCHEMA_V1
+    s,state,c,r,path,uri=_research_input(f)
+    source=s.blob(r['state_gcs_uri'].split('/'+s.name+'/')[1])
+    legacy={**state,'l3_payloads':state['payloads']}
+    source.raw=m.encode_pipeline_state_envelope({'state':legacy,'schema_version':STATE_SCHEMA_V1})
+    import hashlib
+    r['checksum']=hashlib.sha256(source.raw).hexdigest()
+    s.blob(path+'/l3-receipt.json').raw=m.json_bytes(r)
+    projected=m.load_state(r,client=s,postwrite_only=True)
+    assert projected['pipeline_payload_identity']['count']==1 and 'payloads' not in projected
+    legacy['l3_payloads']=[{'symbol':'different'}]
+    source.raw=m.encode_pipeline_state_envelope({'state':legacy,'schema_version':STATE_SCHEMA_V1})
+    r['checksum']=hashlib.sha256(source.raw).hexdigest();s.blob(path+'/l3-receipt.json').raw=m.json_bytes(r)
+    with pytest.raises(ValueError,match='legacy_mismatch'):m.load_state(r,client=s,postwrite_only=True)
+    with pytest.raises(ValueError,match='history_forbidden'):
+        encode_postwrite_checkpoint(state,r,phase='node_compute_sector_flow',context_checksum=c['checksum'])
+    with pytest.raises(ValueError,match='bytes_exceeded'):
+        encode_postwrite_checkpoint({**projected,'sector_flow_summary':{'large':'x'*(PROJECTION_LIMIT+1)}},
+            r,phase='node_compute_sector_flow',context_checksum=c['checksum'])
 
 def test_premarket_serving_callback_does_not_wait_for_next_session_research(monkeypatch):
     from graphs import daily_pipeline_v2 as graph

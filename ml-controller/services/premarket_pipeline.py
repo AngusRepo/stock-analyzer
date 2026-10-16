@@ -106,12 +106,16 @@ def l3_handoff_result(state, receipt):
             'l3_receipt':receipt, 'metrics':state.get('metrics', {}),
             'input_readiness':{'atomic_inputs':readiness}}
 
-def load_state(receipt, *, client=None):
+def load_state(receipt, *, client=None, postwrite_only=False):
     b=bucket(client); expected=read_seal(receipt['run_date'],receipt['run_id'],client=client)
     if receipt != expected: raise ValueError('premarket_seal_mismatch')
     root='gs://'+b.name+'/'
     if not receipt['state_gcs_uri'].startswith(root): raise ValueError('premarket_bucket_mismatch')
-    raw=b.blob(receipt['state_gcs_uri'][len(root):]).download_as_bytes()
+    blob=b.blob(receipt['state_gcs_uri'][len(root):])
+    if postwrite_only:
+        from services.premarket_postwrite_state import read_postwrite_state
+        return read_postwrite_state(blob,receipt)
+    raw=blob.download_as_bytes()
     if hashlib.sha256(raw).hexdigest()!=receipt['checksum']:raise ValueError('premarket_state_checksum')
     return decode_pipeline_state_envelope(raw)['state']
 
@@ -288,6 +292,14 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
         validate_context(receipt,context)
     if receipt != read_seal(receipt['run_date'],receipt['run_id'],client=client):
         raise ValueError('premarket_seal_mismatch')
+    if postwrite_only:
+        if any(node.__name__ not in ('node_compute_sector_flow','node_compute_pit_residual_shadow') for node in nodes):
+            raise ValueError('premarket_postwrite_phase_invalid')
+        for required in ('node_paired_nav_setup','node_export_dataset_snapshot'):
+            if not b.blob(prefix(receipt['run_date'],receipt['run_id'])+'/phases/'+required+'.json.gz').exists():
+                raise ValueError('premarket_postwrite_serving_not_sealed:'+required)
+        state=load_state(receipt,client=client,postwrite_only=True)
+        payload_identity=state.get('pipeline_payload_identity')
     # A full phase checkpoint already includes every preceding phase. Restore
     # only the latest contiguous one; do not decode all prior large snapshots.
     p=prefix(receipt['run_date'],receipt['run_id'])
@@ -303,12 +315,17 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
             gap = True
     if completed:
         phase_key = p+'/phases/'+nodes[completed-1].__name__+'.json.gz'
-        state=decode_pipeline_state_envelope(b.blob(phase_key).download_as_bytes())['state']
+        if postwrite_only:
+            from services.premarket_postwrite_state import read_postwrite_state
+            state=read_postwrite_state(b.blob(phase_key),receipt,phase=nodes[completed-1].__name__,
+                context_checksum=context['checksum'],payload_identity=payload_identity)
+        else:
+            state=decode_pipeline_state_envelope(b.blob(phase_key).download_as_bytes())['state']
         if (state.get('run_date') != receipt['run_date']
                 or state.get('producer_run_id') != receipt['run_id']
                 or (state.get('premarket_context') or {}).get('checksum') != context.get('checksum')):
             raise ValueError('premarket_phase_checkpoint_identity_mismatch')
-        source_hash=digest({'predictions':state['predictions'],
+        source_hash=receipt['source_hash'] if postwrite_only else digest({'predictions':state['predictions'],
             'payload_identity':build_pipeline_payload_identity(state['payloads']),
             'baseline':state['premarket_baseline'],'modal_bundle_checksum':state.get('modal_bundle_checksum')})
         if source_hash != receipt['source_hash'] and (
@@ -325,7 +342,7 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
                 'baseline':state['premarket_baseline'],'modal_bundle_checksum':state.get('modal_bundle_checksum')})
         if source_hash != receipt['source_hash']:
             raise ValueError('premarket_phase_checkpoint_source_changed')
-    else:
+    elif not postwrite_only:
         state=load_state(receipt,client=client)
     if not completed:
         baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
@@ -345,7 +362,12 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
         if not postwrite_only:validate_context(receipt,context)
         key=p+'/phases/'+node.__name__+'.json.gz'; blob=b.blob(key)
         try:
-            state=decode_pipeline_state_envelope(blob.download_as_bytes())['state']
+            if postwrite_only:
+                from services.premarket_postwrite_state import read_postwrite_state
+                state=read_postwrite_state(blob,receipt,phase=node.__name__,
+                    context_checksum=context['checksum'],payload_identity=payload_identity)
+            else:
+                state=decode_pipeline_state_envelope(blob.download_as_bytes())['state']
             continue
         except NotFound:pass
         # A phase has one producer. A lost completion receipt is an unknown
@@ -363,7 +385,11 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
             from services.pipeline_progress import phase
             async with phase(node.__name__):
                 merge(state,await node(state))
-            raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
+            if postwrite_only:
+                from services.premarket_postwrite_state import encode_postwrite_checkpoint
+                raw=encode_postwrite_checkpoint(state,receipt,phase=node.__name__,context_checksum=context['checksum'])
+            else:
+                raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
             immutable(blob,raw,'application/gzip')
         except Exception:
             claim.reload()

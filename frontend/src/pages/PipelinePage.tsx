@@ -17,6 +17,7 @@ import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 import PipelineMaturityContribution from '@/components/PipelineMaturityContribution'
+import L4DistributionPanel from '@/components/L4DistributionPanel'
 import type { PipelineDecisionMaturityPacket } from '@/lib/pipelineMaturityContract'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
@@ -582,7 +583,11 @@ function PipelineColumnError({
     </PipelineColumn>
   )
 }
-function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbackCount: number }) {
+function FunnelSummaryColumn({ summary, fallbackCount, l4Distribution }: {
+  summary: any
+  fallbackCount: number
+  l4Distribution?: PipelineDecisionMaturityPacket['l4_distribution']
+}) {
   const layers = Array.isArray(summary?.layers) ? summary.layers : []
   return (
     <PipelineColumn
@@ -616,6 +621,12 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
             </div>
           )
         })}
+        <details className="rounded-xl border border-white/10 p-3">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-200">L4 · 配置詳情</summary>
+          <div className="mt-3 min-w-0">
+            {l4Distribution ? <L4DistributionPanel data={l4Distribution} /> : <p role="status" className="text-xs text-slate-400">尚未取得 L4 配置資料。</p>}
+          </div>
+        </details>
       </div>
     </PipelineColumn>
   )
@@ -975,7 +986,7 @@ export default function PipelinePage() {
             </>
           ) : (
             <>
-              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} />
+              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} l4Distribution={maturityData?.l4_distribution} />
               <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
             </>
           )}

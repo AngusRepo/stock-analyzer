@@ -4,9 +4,9 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "a88c7143d86c1ada30e35b421456de48de68b213",
+  "production_baseline_source": "b73409351f84ce90dec1057612d6ed0dd4563ab5",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "41430b4fee95347ffa7f601d55457e33d311e07ab72de94a885e408ccdcce18b",
+  "prior_approval_checksum": "b64b9d28ddbf1723ad8ef6ce74f57be639780bc599d00e94c971857ed49dc7e6",
   "prior_configuration_checksum": "c6c630a7674f048bba00c24ef4e0e116945aefe06a81718fa539e3dd25a0f2e1",
   "approved_sources": {
     "allocator_source_identity": {
@@ -35,7 +35,7 @@
       "l4_tabpack_median.py": "91917cb6185407027acdece3ed6173a59479a809828b6ec10072d3b59c27b925",
       "paper_strategy_mode.py": "685ac349e2c9caec8d7bcf88d91a5f84d05b47b7948d3cd11c7a0ca0bc064389",
       "l4_portfolio.py": "4e62ec42faeabf186d63bfcbebc4b41927c5ed2f16d66942f0bb5795a5e285fe",
-      "l4_distribution_runtime.py": "dcaa0c8499eaa2868c8cd8f564d0b827ec28fdb87ac781297a8cd75788051eb7",
+      "l4_distribution_runtime.py": "73bb9f3303829f4ead69cd235c5b74b0ca6f1f7b0626138f8aeb694ca8747fb9",
       "l4_distribution_context.py": "970c4ad63419e0409baee74d7de174f213179cbe63e2b888351f88ee4e254fcc",
       "l4_risk_history.py": "036ab0a81d05931c0d48b59d1bff6177b71b8d4270d8cd85281466f38b0fede3",
       "l4_dated_risk.py": "d947faf7b99a6b94175b87d3c755c07a7a146d6ff876f543ae9690ca4f78b649",
@@ -81,6 +81,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
-  "review": "audits/l4-chain-performance-20261019/formal-write-release/review.md"
+  "execution_owner_version": "native-paper-v1:2303663c055550150a50354d1039d9ff54c79ee1e7054339322af32aa4817eff",
+  "review": "audits/r17-p4-20261019/release-review.md"
 }

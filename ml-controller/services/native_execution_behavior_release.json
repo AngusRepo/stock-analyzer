@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
+  "execution_owner_version": "native-paper-v1:2303663c055550150a50354d1039d9ff54c79ee1e7054339322af32aa4817eff",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved immediate exact October 19 formal publication repair and pending buys continuation",
-  "review": "audits/l4-chain-performance-20261019/formal-write-release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-formal-write-window-20261019"
+  "authorization": "Wei authorized the R16/R17 P4 shadow flow on 2026-10-19 and commit/push/deploy in this session; source-only release preserves c53e1d53 and all economic settings, no early model switch.",
+  "review": "audits/r17-p4-20261019/release-review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r17-p4-engineering-20261019"
 }

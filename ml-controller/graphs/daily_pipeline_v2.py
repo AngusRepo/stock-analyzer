@@ -697,6 +697,7 @@ class PipelineStateV2(TypedDict, total=False):
     expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
     pit_sector_alpha_coverage: dict          # prior completed PIT sector expert coverage
     l4_pending_plan: dict
+    dated_formal_publication: dict          # exact dated deferral; never NAV evidence
     paired_nav_collection: dict             # sealed allocation context; separate from EV/NAV maturity
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
@@ -2563,7 +2564,13 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     from services.recommendation_source_context import capture_recommendation_sources
     from services.paired_nav_collection import shadow_failure
     atomic_prepared, atomic_recommendation, candidate_recs = None, None, {}
-    if state.get('paired_nav_atomic_inputs') and state['paired_nav_atomic_inputs'].get('status') != 'awaiting_paired_l3_l4_release':
+    from services.dated_formal_publication import publication_deferral
+    publication_recovery = publication_deferral(state, trading_cfg)
+    if publication_recovery is not None:
+        if publication_recovery['paper_strategy'] != single_b:
+            raise ValueError('dated_publication_validated_model_changed')
+        logger.warning('[Pipeline V2] dated formal publication: comparison deferred; nav_credit=0')
+    if publication_recovery is None and state.get('paired_nav_atomic_inputs') and state['paired_nav_atomic_inputs'].get('status') != 'awaiting_paired_l3_l4_release':
         try:
             from services.paired_nav_atomic_recommendation import prepare_atomic_recommendations
             atomic_prepared = prepare_atomic_recommendations(state)
@@ -2872,12 +2879,27 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "pipeline_allocator_history_context": allocator_history,
         "paired_nav_atomic_allocation": atomic_allocation,
         "l4_pending_plan": l4_pending_plan,
+        "dated_formal_publication": publication_recovery,
     }
 
 
 async def node_paired_nav_setup(state: PipelineStateV2) -> dict:
     """After formal D1 writes, before terminal closure; never an advisory error."""
     _assert_pipeline_canonical_window(state)
+    if state.get('dated_formal_publication') is not None:
+        from services.dated_formal_publication import publication_deferral
+        from services.paper_strategy_mode import disabled_receipt
+        from services.paired_nav_journal import digest
+        config = state.get('trading_config') or {}
+        recovery = publication_deferral(state, config)
+        if recovery is None or recovery != state['dated_formal_publication']:
+            raise ValueError('dated_publication_deferral_changed')
+        snapshot_id = _require_frozen_allocation_context(state.get('paired_nav_collection'))
+        receipt = disabled_receipt(recovery['paper_strategy'],
+            signal_date=state['run_date'], snapshot_id=snapshot_id)
+        receipt.update(reason='dated_formal_publication_comparison_deferred', publication_recovery=recovery)
+        receipt['receipt_checksum'] = digest({k: v for k, v in receipt.items() if k != 'receipt_checksum'})
+        return {'paired_nav_collection': receipt}
     from services.paired_nav_pipeline import complete_pipeline_shadow
     collection = await asyncio.to_thread(complete_pipeline_shadow,
         state.get('paired_nav_collection'), query=LEARNING_D1_CLIENT.query,

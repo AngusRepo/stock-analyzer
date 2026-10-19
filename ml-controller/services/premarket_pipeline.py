@@ -133,6 +133,14 @@ def validate_context(receipt, context, *, now=None):
     late_recovery = (enabled() and (receipt.get('run_date'), context.get('trade_date')) in {
         ('2026-10-13', '2026-10-14'), ('2026-10-15', '2026-10-16')}
         and context.get('trade_date') == tw.date().isoformat())
+    # Wei authorized this exact frozen Paper run beyond 08:45 on Oct 19.
+    # Preserve its real context clock; do not grant prospective NAV credit.
+    if (enabled() and receipt.get('run_date') == '2026-10-16'
+            and receipt.get('run_id') == 'pipeline-dispatch:2026-10-16:5c19f0c8-ef02-4969-bd23-a00b8a36ee1d'
+            and receipt.get('checksum') == 'b615a618a7c12d5a91680600f686c177dd699d9f54b07590ca3b48df9863cb70'
+            and context.get('checksum') == '3f3e593d6ccfef26deae8b32ab346f7f2b2da8f87c3b9a78dfd0c7145c93fc34'
+            and context.get('trade_date') == tw.date().isoformat() == '2026-10-19'):
+        late_recovery = True
     if context.get('trade_date')!=tw.date().isoformat() or ((tw.hour,tw.minute)>=(8,45) and not (paper_recovery or opening_recovery or late_recovery)):
         raise ValueError('premarket_allocation_cutoff')
     if receipt['run_date']>=context['trade_date']:raise ValueError('premarket_signal_date_invalid')

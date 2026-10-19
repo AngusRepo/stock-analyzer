@@ -353,7 +353,7 @@ class RegimeDetector:
                 return None
             meta = json.loads(meta_blob.download_as_text())
             if not skip_freshness_check and not is_model_fresh(
-                {"trained_at": meta.get("trained_at", "")}, max_age_days=9
+                {"trained_at": meta.get("trained_at", "")}, max_age_days=9, exact_age=True
             ):
                 logger.info(f"[Regime] GCS 模型 ({prefix}) 已過期，需重訓")
                 return None
@@ -366,7 +366,12 @@ class RegimeDetector:
             generation = meta.get("artifact_generation")
             if not str(generation or "").isdigit():
                 return None
-            model_blob = bucket.blob(f"{prefix}/hmm_detector.joblib", generation=int(generation))
+            artifact_path = meta.get('artifact_path', f'{prefix}/hmm_detector.joblib')
+            if (artifact_path != f'{prefix}/hmm_detector.joblib'
+                    and (not isinstance(artifact_path, str) or not artifact_path.startswith(f'{prefix}/versions/')
+                         or '..' in artifact_path or not artifact_path.endswith('/hmm_detector.joblib'))):
+                return None
+            model_blob = bucket.blob(artifact_path, generation=int(generation))
             if not model_blob.exists():
                 return None
             buf = io.BytesIO()

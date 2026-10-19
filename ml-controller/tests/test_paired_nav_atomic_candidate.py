@@ -1,4 +1,5 @@
 """Actual daily allocation -> immutable Atomic/native plans. No real ROI data."""
+from hmm_test_support import certified_contract as _hmm_contract
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -89,7 +90,7 @@ def allocated(full_atomic, environment, monkeypatch, native_runner, request):
     from test_paired_nav_execution_environment import patch_graph_environment
     monkeypatch.setattr(graph, 'LEARNING_D1_CLIENT', SimpleNamespace(query=db.query, batch_execute=db.writer))
     monkeypatch.setattr(graph, 'MARKET_D1_CLIENT', SimpleNamespace(query=lambda *a, **kw: []))
-    monkeypatch.setattr(graph, '_resolve_runtime_regime_contract', lambda *a, **kw: {'alpha_regime':'bull','regime_surface':{'bull':1.}})
+    monkeypatch.setattr(graph, '_resolve_runtime_regime_contract', lambda *a, **kw: _hmm_contract(a[0]['run_date'], **{'alpha_regime':'bull','regime_surface':{'bull':1.}}))
     config = {'ranking': {'enabled': True}, 'fees': FEES, 'alphaFramework': {
         'l4_alpha_ev': _artifact(intercept=.05), 'allocation': {'controller': 'OnlinePortfolioBandit',
             'method': 'sparse_tangent_inverse_risk', 'opb_arm_prior': _validated_l4_prior()}}}

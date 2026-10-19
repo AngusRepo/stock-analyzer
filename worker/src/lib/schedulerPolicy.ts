@@ -57,6 +57,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'obsidian-sync': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'obsidian-daily': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'regime-compute': { kind: 'trading_day', holidayGated: true, description: 'daily market regime compute' },
+  'hmm-maintenance': { kind: 'maintenance', holidayGated: false, description: 'bounded HMM refresh outside market hours, including holidays' },
   'allocator-ev-readiness': { kind: 'trading_day', holidayGated: true, description: 'in-chain L4 alpha and allocator EV readiness before pipeline allocation' },
   'opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'event-driven immutable OPB candidate registration; daily NAV owns adoption' },
   'allocator-ev-feature-snapshot-backfill': { kind: 'trading_day', holidayGated: true, description: 'post-pipeline point-in-time allocator feature snapshot before verify' },

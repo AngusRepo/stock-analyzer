@@ -1,4 +1,5 @@
 import { runWithMaintenanceLease, isMaintenanceLeaseBusy } from './maintenanceLease'
+import { sameHmmLineage } from './hmmLifecycle'
 import { requestL4Replan } from './l4Replan'
 import { l4HasTargetBuyGap, assertL4PlanCurrentPolicy, planIdFromAllocation, readL4PortfolioPlan, type L4PortfolioPlan } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow } from './paperExecutionScope'
@@ -661,6 +662,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     })
     const activeL4Plan = cfg.l4Distribution ? await readL4PortfolioPlan(env) : null
     if (activeL4Plan) await assertL4PlanCurrentPolicy(env,activeL4Plan,cfg)
+    if (activeL4Plan && !sameHmmLineage(activeL4Plan.hmm_lineage, cb.marketRiskHmmLineage)) {
+      throw new Error('HMM_PENDING_PLAN_LINEAGE_CHANGED:recompute_hmm_dependent_allocation')
+    }
     if (cfg.l4Distribution && (!activeL4Plan || activeL4Plan.signal_date !== sourceRecoDate)) {
       throw new Error('l4_distribution_pending_plan_unavailable')
     }
@@ -695,6 +699,12 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
         ORDER BY CAST(json_extract(dr.alpha_allocation, '$.allocation_rank') AS INTEGER), dr.symbol
     `).bind(sourceRecoDate, activeL4Plan ? 1 : 0, activeL4Plan ? 1 : 0).all<BuyRecommendationRow>())
+    for (const row of coreRecommendationRows ?? []) {
+      const allocation = typeof row.alpha_allocation === 'string' ? JSON.parse(row.alpha_allocation) : row.alpha_allocation
+      if (!sameHmmLineage(allocation?.hmm_lineage, cb.marketRiskHmmLineage)) {
+        throw new Error(`HMM_PENDING_RECOMMENDATION_LINEAGE_CHANGED:${row.symbol}`)
+      }
+    }
     const marketPriceRows = await loadMarketPriceHistoryBySymbols(
       env,
       (coreRecommendationRows ?? []).map((row) => row.symbol),

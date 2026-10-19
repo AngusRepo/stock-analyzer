@@ -47,8 +47,63 @@ FINLAB_MACRO_CONTEXT_DATASETS = (
 
 
 class RegimeComputeRequest(BaseModel):
-    force_retrain: bool = False       # retrain HMM from history before predict
+    force_retrain: bool = False       # Rejected: maintenance owns training.
     run_date: str | None = None       # business date from Worker chain; do not infer during backfills
+    live: bool = False                # Explicit live decisions may use a newly admitted model.
+
+
+class RegimePreflightRequest(BaseModel):
+    run_date: str | None = None
+    required_until: str
+    maintenance_only: bool = False
+
+
+@router.post('/regime/preflight')
+async def regime_preflight(req: RegimePreflightRequest):
+    from services.hmm_maintenance_dispatch import (
+        stamp, model_coverage, read_maintenance_state, read_maintenance_attempt, dispatch_maintenance, policy_enabled,
+    )
+    now = datetime.now(timezone.utc)
+    try:
+        required_until = stamp(req.required_until)
+    except (ValueError, TypeError):
+        raise HTTPException(400, 'HMM_DECISION_COVERAGE_INVALID')
+    if required_until < now or required_until > now + timedelta(days=9):
+        raise HTTPException(400, 'HMM_DECISION_COVERAGE_INVALID')
+    latest = await asyncio.to_thread(latest_hmm_input_date, now.astimezone(TW_TZ).date().isoformat())
+    if req.run_date is not None and req.run_date != latest:
+        raise HTTPException(409, 'HMM_LIVE_REQUIRES_LATEST_QUALIFIED_SESSION')
+    metadata, policy, lease = await asyncio.to_thread(read_maintenance_state)
+    result = model_coverage(metadata, now, required_until)
+    result.update(run_date=latest, required_until=required_until.isoformat(), maintenance='not_due')
+    if req.maintenance_only and (not result['refresh_due'] or not policy_enabled(policy)):
+        result['maintenance'] = 'not_due' if not result['refresh_due'] else 'not_approved'
+        return result
+    market_env = await asyncio.to_thread(_fetch_market_env_via_payload_builder, latest)
+    market_env['inference_as_of'] = datetime.now(TW_TZ).isoformat()
+    result.update(input_checksum=market_env['hmm_input_checksum'],
+                  risk_quality_checksum=market_env.get('risk_quality_checksum'))
+    if result['refresh_due']:
+        if not policy_enabled(policy):
+            result['maintenance'] = 'not_approved'
+        elif lease and stamp(lease['expires_at']) > now:
+            result['maintenance'] = 'running'
+        else:
+            from services.hmm_input_contract import training_input_key
+            previous = await asyncio.to_thread(read_maintenance_attempt, training_input_key(market_env))
+            if previous and int(previous.get('attempts', 0)) >= 2:
+                result.update(maintenance='attempt_limit', maintenance_attempts=previous['attempts'],
+                              maintenance_error=previous.get('error_type'))
+                return result
+            try:
+                call_id = await asyncio.wait_for(dispatch_maintenance({
+                    'mode': 'live', 'market_env': market_env, 'required_until': required_until.isoformat(),
+                }), timeout=15)
+                result.update(maintenance='dispatched', maintenance_call_id=call_id)
+            except Exception:
+                logger.exception('[Regime] maintenance_dispatch_failed')
+                result['maintenance'] = 'dispatch_failed'
+    return result
 
 
 def _extract_regime_surface(info: dict) -> dict:
@@ -329,6 +384,12 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
     except Exception as e:
         logger.error("[Regime] load_market_env_failed request_id=%s detail=%s", request_id, e)
         raise HTTPException(status_code=502, detail=f"load_market_env failed: {e}")
+
+    if req.live:
+        latest = await asyncio.to_thread(latest_hmm_input_date, datetime.now(TW_TZ).date().isoformat())
+        if market_env.get('requested_run_date') != latest:
+            raise HTTPException(409, 'HMM_LIVE_REQUIRES_LATEST_QUALIFIED_SESSION')
+        market_env['inference_as_of'] = datetime.now(TW_TZ).isoformat()
 
     if not market_env.get("history"):
         raise HTTPException(status_code=404, detail="market_env has empty history")

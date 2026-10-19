@@ -1,4 +1,5 @@
 """Synthetic full-policy wiring checks; never production NAV or efficacy evidence."""
+from hmm_test_support import certified_contract as _hmm_contract
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -79,7 +80,7 @@ def distribution_day(full_atomic, environment, native_runner, monkeypatch, reque
     monkeypatch.setattr(graph, 'LEARNING_D1_CLIENT', SimpleNamespace(query=db.query, batch_execute=db.writer))
     monkeypatch.setattr(graph, 'MARKET_D1_CLIENT', SimpleNamespace(query=lambda *a, **kw: []))
     monkeypatch.setattr(graph, '_resolve_runtime_regime_contract', lambda *a, **kw:
-        {'alpha_regime': 'bull', 'regime_surface': {'bull': 1.}})
+        _hmm_contract(a[0]['run_date'], **{'alpha_regime': 'bull', 'regime_surface': {'bull': 1.}}))
     monkeypatch.setattr(graph, 'kv_client', SimpleNamespace(get_json=lambda key, **kw:
         deepcopy(risk) if key == 'trading:risk_config' else 1))
     monkeypatch.setattr(paired_nav_collection, 'freeze_snapshot', lambda **kw: freeze_snapshot(**kw, now=frozen_clock))

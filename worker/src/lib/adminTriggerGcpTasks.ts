@@ -7,6 +7,7 @@ import {
   runPaperActivePostmarketPromotion,
   runFinLabV4Backfill,
   runRegimeCompute,
+  runHmmMaintenance,
   runVerifyV2Repair,
   runMonthlyStrategyMining,
   runExternalEvidenceMaterialize,
@@ -34,6 +35,7 @@ export function buildAdminGcpTriggerTaskMap(
     'obsidian-daily': async () => runObsidianDaily(c.env, twToday()),
     'obsidian-sync': async () => runObsidianDaily(c.env, twToday()),
     'regime-compute': async () => runRegimeCompute(c.env, requestedRunDate()),
+    'hmm-maintenance': async () => runHmmMaintenance(c.env),
     'model-ic-full-check': async () => runModelIcFullCheck(c.env, requestedRunDate(), schedulerContext),
     'finlab-v4-backfill': async () => runFinLabV4Backfill(
       c.env,

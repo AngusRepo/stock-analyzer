@@ -2,6 +2,7 @@
 
 No training, production access or financial performance assertions.
 """
+from hmm_test_support import certified_contract as _hmm_contract
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -316,7 +317,7 @@ def test_actual_daily_node_freezes_matching_model_and_collects_l3_plan(prepared,
     db.conn.row_factory = sqlite3.Row
     monkeypatch.setattr(graph, 'LEARNING_D1_CLIENT', SimpleNamespace(query=db.query, batch_execute=db.writer))
     monkeypatch.setattr(graph, '_resolve_runtime_regime_contract', lambda *a, **k:
-        {'alpha_regime': 'bull', 'regime_surface': {'bull': 1.0}})
+        _hmm_contract(a[0]['run_date'], **{'alpha_regime': 'bull', 'regime_surface': {'bull': 1.0}}))
     monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract', lambda:
         SimpleNamespace(config={'ranking': {'enabled': True}, 'fees': FEES}, contract=SimpleNamespace(degraded=False)))
     monkeypatch.setattr(graph, 'kv_client', SimpleNamespace(get_json=lambda key, **kw:

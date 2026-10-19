@@ -672,6 +672,7 @@ class PipelineStateV2(TypedDict, total=False):
     pipeline_recommendation_source_context: dict  # Original fundamental/sector observations, shared across arms
     paired_nav_atomic_recommendation: dict  # Own recommendation execution, not native NAV completion
     pipeline_allocator_history_context: dict  # Original risk lookback and adjusted return history
+    pipeline_hmm_contract: dict  # Frozen HMM version and certified input for this decision.
     paired_nav_atomic_allocation: dict      # Original sparse/OPB outputs; no native/ledger authority
     pipeline_screener_seed_context: dict    # Actual OPS/Core inputs and original merge, no historical PIT credit
     persona_computation: dict               # Explicit missing/failed source diagnostics
@@ -777,6 +778,7 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
     logger.info("[Pipeline V2] node_load_market_env")
     run_date = state["run_date"]
     market_env, _adaptive, barrier, lifecycle, trading_cfg = await _load_market_env_with_backoff(run_date)
+    hmm_contract = _resolve_runtime_regime_contract(state, scope='pipeline_preflight')
     adaptive = load_effective_adaptive_params(run_date=run_date)
     adaptive_provenance = adaptive.get("provenance") if isinstance(adaptive, dict) else {}
     logger.info(
@@ -789,6 +791,7 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
         "premarket_baseline": __import__('services.premarket_pipeline',fromlist=['capture_baseline']).capture_baseline(run_date,kv_client.get_json)
             if __import__('services.premarket_pipeline',fromlist=['enabled']).enabled() else {},
         "market_env": _to_dict(market_env),
+        "pipeline_hmm_contract": hmm_contract,
         "adaptive_params": adaptive,
         "barrier_params": barrier,
         "lifecycle_weights": lifecycle,
@@ -2183,6 +2186,13 @@ def _resolve_runtime_regime_contract(state: dict[str, Any], *, scope: str) -> di
         raise RuntimeError(
             f"market_regime_state missing before {scope}; run regime-compute before pipeline"
         )
+    from services.hmm_decision_lineage import decision_lineage
+    current = decision_lineage(regime_contract, state['run_date'])
+    frozen = state.get('pipeline_hmm_contract')
+    if frozen is not None:
+        if decision_lineage(frozen, state['run_date']) != current:
+            raise RuntimeError(f'HMM_CHANGED_AFTER_PIPELINE_PREFLIGHT:{scope}:resume_recommendation_with_new_hmm')
+        return frozen
     return regime_contract
 
 
@@ -2449,6 +2459,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     regime_contract = _resolve_runtime_regime_contract(state, scope="recommendation")
     regime_label = str(regime_contract.get("alpha_regime") or "unknown")
     regime_surface = regime_contract.get("regime_surface") if isinstance(regime_contract.get("regime_surface"), dict) else {}
+    from services.hmm_decision_lineage import decision_lineage
+    hmm_lineage = decision_lineage(regime_contract, state['run_date'])
 
     from services.trading_config_loader import load_merged_trading_config_with_contract
     cfg_result = load_merged_trading_config_with_contract()
@@ -2719,6 +2731,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     return_history = allocator_history['return_history']
     logger.info('[Pipeline V2] recommend_l4_context seconds=%.3f', time.perf_counter() - l4_phase_started)
 
+    if distribution_policy is not None:
+        alpha_policy['l4Distribution']['runtime']['hmm_lineage'] = hmm_lineage
     from services.paired_nav_collection import run_and_capture_allocation
     from services.paired_nav_execution_environment import capture_pipeline_execution_environment
     paired_nav_source_run_id = str(state.get("producer_run_id") or f"daily:{state['run_date']}")
@@ -2778,6 +2792,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             atomic_allocation = shadow_failure('atomic_allocation_execution', exc)
     for row in final:
         allocation = row.get("alpha_allocation")
+        if isinstance(allocation, dict):
+            allocation['hmm_lineage'] = hmm_lineage
         symbol = row.get("symbol")
         if symbol in state["predictions"]:
             if allocation:
@@ -2866,6 +2882,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     )
     return {
         "final_recommendations": final,
+        "pipeline_hmm_contract": regime_contract,
         "layer2_recommendation_symbols": layer2_symbols,
         "layer3_formal_gate_target_size": core_family_target_size,
         "sell_filtered_symbols": filtered_syms,
@@ -2971,6 +2988,10 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     """
     if state.get('l4_pending_plan') is not None:
         _require_frozen_allocation_context(state.get('paired_nav_collection'))
+        contract = _resolve_runtime_regime_contract(state, scope='publication')
+        from services.hmm_decision_lineage import decision_lineage
+        if state['l4_pending_plan'].get('hmm_lineage') != decision_lineage(contract, state['run_date']):
+            raise ValueError('HMM_PLAN_PUBLICATION_LINEAGE_CHANGED')
     _assert_pipeline_canonical_window(state)
     logger.info("[Pipeline V2] node_write_d1")
     run_date = state["run_date"]

@@ -1,4 +1,5 @@
 """Real recommendation/sparse code, synthetic signals; never performance data."""
+from hmm_test_support import certified_contract as _hmm_contract
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -254,7 +255,7 @@ def test_actual_recommend_node_persists_pre_filter_context_and_replays(monkeypat
     db.conn.row_factory = sqlite3.Row
     monkeypatch.setattr(graph, 'LEARNING_D1_CLIENT', SimpleNamespace(query=db.query, batch_execute=db.writer))
     monkeypatch.setattr(graph, '_resolve_runtime_regime_contract', lambda *a, **k:
-        {'alpha_regime': 'bull', 'regime_surface': {'bull': 1.0}})
+        _hmm_contract(a[0]['run_date'], **{'alpha_regime': 'bull', 'regime_surface': {'bull': 1.0}}))
     config = {'ranking': {'enabled': True}, 'fees': FEES,
               'alphaFramework': deepcopy(source['filter_options']['alpha_policy'])}
     monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract', lambda:

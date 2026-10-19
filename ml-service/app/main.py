@@ -793,7 +793,7 @@ _REGIME_INDEX_TO_EN = {
 
 class RegimeRequest(BaseModel):
     market_env: dict | None = None  # same structure used by /predict /predict/v2
-    force_retrain: bool = False     # if True, retrain HMM from history
+    force_retrain: bool = False     # Rejected; the independent HMM maintainer owns fitting.
 
 
 def _compute_regime_current(req: RegimeRequest) -> dict:

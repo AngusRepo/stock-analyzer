@@ -292,13 +292,14 @@ export async function restoreMarketRegimeStateFromHistory(
   kv: KVNamespace,
   historyDb: D1Database,
   runDate: string,
-  options: { expirationTtl?: number; archiveExpirationTtl?: number } = {},
+  options: { expirationTtl?: number; archiveExpirationTtl?: number; accept?: (state: MarketRegimeState) => boolean } = {},
 ): Promise<MarketRegimeState | null> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(runDate)) {
     throw new Error(`market_regime_history_restore_date_invalid:${runDate}`)
   }
   const payload = await readMarketRegimeStateHistory(historyDb, runDate)
   if (!payload) return null
+  if (options.accept && !options.accept(payload)) return null
   const ttl = options.expirationTtl ?? 2 * 86400
   const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
   const serialized = JSON.stringify(payload)

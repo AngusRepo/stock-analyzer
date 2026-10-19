@@ -1,4 +1,7 @@
 import type { Bindings } from '../types'
+import { paperExecutionNow } from './paperExecutionScope'
+import { nextTwTradingDate } from './schedulerPolicy'
+import { reusableHmmState } from './hmmLifecycle'
 import { controllerFetch, controllerJson } from './controllerClient'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
@@ -69,8 +72,9 @@ export function assertRegimeComputeClosure(data: any, runDate?: string): void {
   }
 }
 
-export async function runRegimeCompute(env: Bindings, runDate?: string) {
-  if (runDate) {
+export async function runRegimeCompute(env: Bindings, runDate?: string, options: { mode?: 'live' | 'historical' } = {}) {
+  const live = options.mode !== 'historical'
+  if (!live && runDate) {
     const restored = await restoreMarketRegimeStateFromHistory(
       env.KV,
       databaseForDataDomain(env, 'market'),
@@ -82,10 +86,39 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
   }
   requireController(env)
 
+  let preflight: any = null
+  if (live) {
+    const now = paperExecutionNow()
+    const today = new Date(now + 8 * 3600_000).toISOString().slice(0, 10)
+    // Cover the entire next buy session, including weekends and official holidays.
+    let nextSession = await nextTwTradingDate(env.KV, runDate ?? today, undefined,
+      { requireOfficialFutureCalendar: true, nowMs: now })
+    if (Date.parse(nextSession + 'T13:30:00+08:00') < now) {
+      nextSession = await nextTwTradingDate(env.KV, today, undefined,
+        { requireOfficialFutureCalendar: true, nowMs: now })
+    }
+    const check = await controllerFetch(env, '/regime/preflight', {
+      method: 'POST', jsonBody: { run_date: runDate, required_until: nextSession + 'T13:30:00+08:00' }, timeoutMs: 45_000,
+    })
+    if (!check.ok) throw new Error(`HMM_PREFLIGHT_HTTP_${check.status}:${(await check.text()).slice(0, 200)}`)
+    preflight = await check.json()
+    if (!preflight?.ready) throw new Error(`HMM_MODEL_UPDATE_REQUIRED:${preflight?.maintenance ?? 'unknown'}`)
+    const current = await readMarketRegimeState(env.KV)
+    if (reusableHmmState(current, preflight, paperExecutionNow())) {
+      return `regime=${current!.label} idx=${current!.regime_index} kv=verified source=matching_hmm_version`
+    }
+    // D1 recovery is valid only if it matches the active model AND current input.
+    const restored = await restoreMarketRegimeStateFromHistory(env.KV, databaseForDataDomain(env, 'market'), preflight.run_date,
+      {accept: state => reusableHmmState(state, preflight, paperExecutionNow())})
+    if (reusableHmmState(restored, preflight, paperExecutionNow())) {
+      return `regime=${restored!.label} idx=${restored!.regime_index} kv=restored source=matching_hmm_version`
+    }
+  }
+
   const prevLabel = await readCurrentLegacyRegimeLabel(env.KV)
   const res = await controllerFetch(env, '/regime/compute', {
     method: 'POST',
-    jsonBody: { force_retrain: false, history_days: 180, run_date: runDate },
+    jsonBody: { force_retrain: false, history_days: 180, run_date: runDate, live },
     timeoutMs: 180_000,
   })
   if (!res.ok) {
@@ -117,6 +150,9 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
     run_date: persisted.run_date,
     regime_surface: persisted.regime_surface,
   }, expectedRunDate)
+  if (preflight && !reusableHmmState(persisted, preflight, paperExecutionNow())) {
+    throw new Error('HMM_PUBLICATION_VERSION_OR_INPUT_CHANGED_RETRY_PREFLIGHT')
+  }
 
   const newLabel = persisted.label
   let shiftSummary = 'n/a'
@@ -128,6 +164,26 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
   }
 
   return `regime=${newLabel} idx=${persisted.regime_index} kv=verified shift=${shiftSummary}`
+}
+/** Model maintenance is detached from L4 and also runs on non-trading days. */
+export async function runHmmMaintenance(env: Bindings): Promise<string> {
+  requireController(env)
+  const now = paperExecutionNow()
+  const today = new Date(now + 8 * 3600_000).toISOString().slice(0, 10)
+  const next = await nextTwTradingDate(env.KV, today, undefined,
+    {requireOfficialFutureCalendar: true, nowMs: now})
+  const requiredUntil = next + 'T13:30:00+08:00'
+  if (Date.parse(requiredUntil) - now > 9 * 86400_000) return 'hmm=deferred next_session_beyond_9_day_horizon'
+  const response = await controllerFetch(env, '/regime/preflight', {
+    method: 'POST', jsonBody: {required_until: requiredUntil, maintenance_only: true}, timeoutMs: 45_000,
+  })
+  if (!response.ok) throw new Error(`HMM_MAINTENANCE_HTTP_${response.status}:${(await response.text()).slice(0, 200)}`)
+  const result = await response.json() as any
+  if (['not_approved', 'dispatch_failed', 'attempt_limit'].includes(result.maintenance)) {
+    throw new Error(`HMM_MAINTENANCE_${result.maintenance}`)
+  }
+  const status = result.maintenance === 'dispatched' ? 'triggered' : result.maintenance === 'running' ? 'running' : 'success'
+  return `status=${status} hmm=${result.maintenance} coverage=${result.ready} call=${result.maintenance_call_id ?? 'none'}`
 }
 export async function runModelIcFullCheck(env: Bindings, runDate?: string,
   context: {schedulerTicketId?: string; schedulerRunId?: string} = {}) {

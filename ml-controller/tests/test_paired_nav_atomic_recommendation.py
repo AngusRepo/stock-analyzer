@@ -2,6 +2,7 @@
 
 Forecasts and provider data are synthetic/local. No investment ROI claims.
 """
+from hmm_test_support import certified_contract as _hmm_contract
 import asyncio
 import gzip
 import json
@@ -203,7 +204,7 @@ def test_actual_daily_node_runs_own_candidates_without_formal_writes(full_atomic
             raise ValueError('paired_nav_test_provider_unavailable')
         return source_db[2](sql,params,**kwargs)
     monkeypatch.setattr(graph,'MARKET_D1_CLIENT',SimpleNamespace(query=market_query))
-    monkeypatch.setattr(graph,'_resolve_runtime_regime_contract',lambda *a,**kw:{'alpha_regime':'bull','regime_surface':{'bull':1.}})
+    monkeypatch.setattr(graph,'_resolve_runtime_regime_contract',lambda *a,**kw:_hmm_contract(a[0]['run_date'], **{'alpha_regime':'bull','regime_surface':{'bull':1.}}))
     from test_l4_alpha_ev_producer import _artifact
     from test_allocator_direction_authority import _validated_l4_prior
     configuration={'ranking':{'enabled':True},'fees':FEES,

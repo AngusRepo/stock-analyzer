@@ -305,6 +305,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
             'policy_checksum':r2_shadow['forecast']['policy_checksum'],
             'comparison_arm':r2_shadow.get('comparison_arm','candidate'),
             'pool_mean_owner':'complete_native_pool_before_routing','promotion_allowed':False}
+    if runtime.get('hmm_lineage') is not None:
+        plan['hmm_lineage'] = dict(runtime['hmm_lineage'])
     plan['plan_id']=digest(plan)
     if r2_shadow is not None:
         plan.update(strategy_role='B',strategy_mode='r2_shadow_private_v1')
@@ -336,6 +338,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
             'prediction_blockers':unavailable.get(symbol,[]),
             'plan_id':plan['plan_id'],'policy_identity':policy_identity,'opb_controller':opb,
             'l4_distribution':output}
+        if runtime.get('hmm_lineage') is not None:
+            row['alpha_allocation']['hmm_lineage'] = dict(runtime['hmm_lineage'])
         row.setdefault('score_components',{})['mlAdvisory']=old_advice
     if rows:
         rows[0]['_l4_portfolio_plan']=plan

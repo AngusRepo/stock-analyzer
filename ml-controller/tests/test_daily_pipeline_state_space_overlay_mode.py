@@ -1,4 +1,5 @@
 from __future__ import annotations
+from hmm_test_support import certified_contract as _hmm_contract
 
 import sys
 import asyncio
@@ -189,7 +190,7 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_
     monkeypatch.setattr(
         daily_pipeline_v2,
         "_resolve_runtime_regime_contract",
-        lambda *_args, **_kwargs: {"regime": "sideways", "source": "test"},
+        lambda *_args, **_kwargs: _hmm_contract(_args[0]["run_date"], regime="sideways", source="test"),
     )
     monkeypatch.setattr(
         daily_pipeline_v2,

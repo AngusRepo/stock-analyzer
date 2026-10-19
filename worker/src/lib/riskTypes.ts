@@ -46,6 +46,7 @@ export interface CircuitBreakerState {
   marketRiskRegimeFamily?: string | null
   marketRiskReasons?: string[]
   marketRiskBlockers?: string[]
+  marketRiskHmmLineage?: import('./hmmLifecycle').HmmLineage | null
   triggeredLayers?: string[]
   haltReasons?: string[]
   marketRestrictionEvidence?: {owner:string;aggregation:string;components:Array<{id:string;halt:boolean;maxPositionPct:number;reason?:string}>}

@@ -53,6 +53,19 @@ def fixture():
     return recs,policy,history
 
 
+def test_hmm_lineage_is_sealed_into_plan_and_allocation_rows():
+    rows,policy,history=fixture()
+    lineage={'modelSha256':'a'*64,'modelGeneration':'1','inputChecksum':'b'*64,'qualityChecksum':'c'*64}
+    policy['runtime']['hmm_lineage']=lineage
+    output=run(deepcopy(rows),deepcopy(policy),return_history=history)
+    plan=output[0]['_l4_portfolio_plan']
+    assert plan['hmm_lineage']==lineage
+    assert all(row['alpha_allocation']['hmm_lineage']==lineage for row in output)
+    policy['runtime']['hmm_lineage']={**lineage,'modelGeneration':'2'}
+    revised=run(deepcopy(rows),deepcopy(policy),return_history=history)[0]['_l4_portfolio_plan']
+    assert revised['plan_id']!=plan['plan_id']
+
+
 def test_native_semantic_and_lineage_are_not_rank_aliases():
     recs,policy,_=fixture();p=prediction()
     assert native_features(recs[0],p,IDENTITY)['ml_edge_norm']==.5

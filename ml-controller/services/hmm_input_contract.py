@@ -38,3 +38,17 @@ def validate_environment(env):
         if any(abs(float(values[i])) > 1 for i in (0, 1, 3, 4)):
             raise ValueError("HMM_INPUT_FRACTION_UNIT_INVALID")
     return history
+
+
+def training_input_key(env):
+    """Retry identity ignores macro annotations that are not HMM training features."""
+    import struct
+    history = validate_environment(env)
+    digest = hashlib.sha256()
+    for day in sorted(history):
+        row = history[day]
+        ret = float(row['market_return_1d'])
+        digest.update(day.encode('ascii'))
+        digest.update(struct.pack('<6d', ret, float(row['market_return_5d']), float(row['risk_score'])/100,
+            float(row['market_bias_20d']), abs(ret), float(row['realized_vol_3d'])))
+    return digest.hexdigest()

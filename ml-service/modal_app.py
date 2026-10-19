@@ -199,6 +199,14 @@ def _setup_env():
     return setup_modal_container_env()
 
 
+@app.function(cpu=1, memory=2048, timeout=300, max_containers=1, retries=0)
+def maintain_production_hmm(payload: dict) -> dict:
+    """The GCS operator policy, lease, and input receipt gate every HMM fit."""
+    _setup_env()
+    from app.hmm_maintenance import maintain_hmm
+    return maintain_hmm(payload)
+
+
 def _get_gcs_bucket_name() -> str | None:
     return get_gcs_bucket_name()
 

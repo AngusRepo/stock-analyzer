@@ -57,7 +57,7 @@ void (async () => {
     MULTI_D1_STRICT: 'true',
   } as unknown as Bindings
 
-  const summary = await runRegimeCompute(env, '2026-08-26')
+  const summary = await runRegimeCompute(env, '2026-08-26', {mode: 'historical'})
 
   assert.match(summary, /kv=restored source=immutable_market_d1_history/)
   assert.equal(kv.store.get(MARKET_REGIME_STATE_KEY), stateJson)

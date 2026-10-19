@@ -1,3 +1,4 @@
+from hmm_test_support import certified_contract as _hmm_contract
 from copy import deepcopy
 from datetime import datetime
 import json
@@ -141,7 +142,7 @@ def test_actual_recommend_node_reaches_unchanged_formal_sources_without_atomic(f
     original = deepcopy(state)
     configuration = {'alphaFramework': {'l4_alpha_ev': _artifact(intercept=.05)}}
     monkeypatch.setattr(graph, '_resolve_runtime_regime_contract', lambda *a, **kw:
-        {'alpha_regime': 'bull', 'regime_surface': {'bull': 1.}})
+        _hmm_contract(a[0]['run_date'], **{'alpha_regime': 'bull', 'regime_surface': {'bull': 1.}}))
     monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract', lambda:
         SimpleNamespace(config=configuration, contract=SimpleNamespace(degraded=False)))
     # Scope/dependency checks are covered separately; this fixture isolates

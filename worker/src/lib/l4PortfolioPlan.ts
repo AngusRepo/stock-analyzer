@@ -10,6 +10,7 @@ import { paperDomainDatabase } from './paperDomainDatabase'
 import { validateEntryAuthorization, type L4EntryContinuation } from './l4EntryContinuation'
 
 export interface L4PortfolioPlan {
+  hmm_lineage?: import('./hmmLifecycle').HmmLineage
   sealed_execution?: {schema_version:'l4-sealed-execution-v1';rotation_mode:'selected_ready_or_filled';expiry:'retain_until_next_seal';
     exit_rules:Record<string,{mode:'unconditional'|'selected_ready_or_filled'|'retain_until_next_seal';reason:string;expiry?:string;
       credits?:Array<{symbol:string;credit_start:number;credit_end:number}>}>}

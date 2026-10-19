@@ -1,4 +1,5 @@
 import { riskPacketChecksum } from './riskPacketCodec'
+import { HMM_MAX_AGE_MS } from './hmmLifecycle'
 import { getPrevTradingDay } from './paperMarketData'
 import { paperExecutionNow } from './paperExecutionScope'
 import type { RiskConfig } from './riskConfig'
@@ -37,6 +38,7 @@ export interface CanonicalMarketRiskContext {
     breadthDate: string | null
     qualityChecksum?: string | null
     hmmModelSha256?: string | null
+    hmmModelGeneration?: string | null
     hmmInputChecksum?: string | null
     regimeDate: string | null
   }
@@ -205,7 +207,7 @@ export function buildCanonicalMarketRiskContext(input: CanonicalMarketRiskInputs
 
   if(input.decisionAsOfMs!==undefined){
     const computed=Date.parse(input.regimeState?.computed_at??''),asof=Date.parse(provenance?.inference_as_of??''),trained=Date.parse(model?.trained_at??'')
-    if(!Number.isFinite(computed)||!Number.isFinite(asof)||!Number.isFinite(trained)||trained>asof||asof>computed||computed>input.decisionAsOfMs||input.decisionAsOfMs-trained>9*86400000)blockers.push('hmm_inference_clock_unverified')
+    if(!Number.isFinite(computed)||!Number.isFinite(asof)||!Number.isFinite(trained)||trained>asof||asof>computed||computed>input.decisionAsOfMs||input.decisionAsOfMs-trained>HMM_MAX_AGE_MS)blockers.push('hmm_inference_clock_unverified')
   }
 
   const dailyChangePct = currentClose != null && previousClose != null && previousClose > 0
@@ -257,6 +259,7 @@ export function buildCanonicalMarketRiskContext(input: CanonicalMarketRiskInputs
       owner: 'canonical_market_risk_runtime_v3',
       qualityChecksum:quality?.checksum??null,
       hmmModelSha256:model?.sha256??null,
+      hmmModelGeneration:model?.generation??null,
       hmmInputChecksum:provenance?.input_checksum??null,
       policyVersion: MARKET_RISK_POLICY_VERSION,
       expectedSession: input.expectedSession ?? null,

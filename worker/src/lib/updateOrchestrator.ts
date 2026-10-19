@@ -1679,19 +1679,6 @@ async function ensureSameDateRegimeReady(
   runId: string | undefined,
   source: string,
 ): Promise<string> {
-  const current = await readMarketRegimeState(env.KV)
-  if (current?.source === 'hmm' && current.run_date === triggerTime) {
-    return `regime=${current.label} idx=${current.regime_index} kv=verified source=existing`
-  }
-  const restored = await restoreMarketRegimeStateFromHistory(
-    env.KV,
-    databaseForDataDomain(env, 'market'),
-    triggerTime,
-  )
-  if (restored?.source === 'hmm' && restored.run_date === triggerTime) {
-    return `regime=${restored.label} idx=${restored.regime_index} kv=restored source=immutable_market_d1_history`
-  }
-
   const attemptId = `${source}:${Date.now().toString(36)}:${crypto.randomUUID()}`
   await logSchedulerResult(env.KV, 'regime-compute', {
     status: 'running',

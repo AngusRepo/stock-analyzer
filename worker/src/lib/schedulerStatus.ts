@@ -57,6 +57,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'After indicators, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6 },
+  { id: 'hmm-maintenance', name: 'HMM Model Maintenance', schedule: 'Daily 14:00 / 20:00', cron: '0 6,12 * * *', group: 'pipeline_chain' },
   { id: 'strategy-learning-mature-evidence', name: 'Strategy Maturity Evidence', schedule: 'After same-date HMM, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6.5 },
   { id: 'screener', name: 'Screener', schedule: 'After same-date HMM regime', cron: '', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 7 },

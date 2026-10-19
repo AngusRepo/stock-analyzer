@@ -142,6 +142,12 @@ export async function runPortfolioChecks(
     marketRiskRegimeFamily: marketRisk.regimeFamily,
     marketRiskReasons: marketRisk.reasons,
     marketRiskBlockers: marketRisk.blockers,
+    marketRiskHmmLineage: marketRisk.status === 'ready' ? {
+      modelSha256: marketRisk.lineage.hmmModelSha256 ?? '',
+      modelGeneration: marketRisk.lineage.hmmModelGeneration ?? '',
+      inputChecksum: marketRisk.lineage.hmmInputChecksum ?? '',
+      qualityChecksum: marketRisk.lineage.qualityChecksum ?? '',
+    } : null,
     marketRestrictionEvidence:marketRestriction?.marketRestrictionEvidence,
   }
 }

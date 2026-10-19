@@ -433,7 +433,7 @@ def load_model(
         return None, None
 
 
-def is_model_fresh(metadata: dict | None, max_age_days: int = 8) -> bool:
+def is_model_fresh(metadata: dict | None, max_age_days: int = 8, *, exact_age: bool = False) -> bool:
     """
     ?斗璅∪??臬憭嚗?閮?8 憭抬?蝣箔?瘥梢?閮?銝??刻?璅∪?嚗?
     """
@@ -444,7 +444,10 @@ def is_model_fresh(metadata: dict | None, max_age_days: int = 8) -> bool:
         return False
     try:
         trained_at = datetime.fromisoformat(trained_at_str)
-        age = (datetime.now(timezone.utc) - trained_at).days
+        elapsed = datetime.now(timezone.utc) - trained_at
+        if exact_age:
+            return 0 <= elapsed.total_seconds() <= max_age_days * 86400
+        age = elapsed.days
         return age <= max_age_days
     except Exception:
         return False

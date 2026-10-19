@@ -160,12 +160,14 @@ def choose_opb(policy, ledger, identity, signal_date):
     return policies[selected], {**evidence,'status':'learned_policy','arm_id':selected}
 
 
-def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None):
+def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None, r16_shadow=None):
     runtime = policy.get('runtime') or {}
     signal_date = runtime['signal_date']
     identity = runtime['l3_identity']
     bundle = policy['artifact']
     research = private_research and policy.get('scope') == 'private_research'
+    if r16_shadow is not None and (not research or r2_shadow is not None):
+        raise ValueError('l4_r16_private_exclusive_scope_required')
     if r2_shadow is not None and not research:
         raise ValueError('l4_r2_formal_promotion_not_admitted')
     if policy.get('scope') != 'paper' and not research:
@@ -198,7 +200,15 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     # coefficient is inert because zero/new or existing/held weights are fixed.
     locked.update(set(unavailable) & set(holdings))
     modeled = sorted(set(by_symbol) - set(unavailable))
-    if r2_shadow is None:
+    if r16_shadow is not None:
+        from services.l4_r16_allocation import inputs
+        feature_rows,outputs,allocation_model_checksum=inputs(r16_shadow,identity=identity,day=signal_date,
+            baseline=bundle,policy=policy,symbols=modeled)
+        for row in feature_rows:
+            symbol=row['symbol']
+            if digest({k:v for k,v in row['features'].items() if k!='p_loss'})!=digest(native_features(by_symbol[symbol],predictions[symbol],identity)):
+                raise ValueError('l4_r16_native_features_changed')
+    elif r2_shadow is None:
         feature_rows = [{'symbol':s,'features':native_features(by_symbol[s],predictions[s],identity),
                          'l3_baseline':native_baseline(predictions[s],identity)} for s in modeled]
         outputs = dict(zip(modeled,
@@ -207,10 +217,15 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     else:
         from services.l4_r2_allocation import inputs
         feature_rows,outputs=inputs(r2_shadow,identity=identity,day=signal_date,baseline=bundle,policy=policy,symbols=modeled)
-    allocation_model_checksum=bundle['model_checksum'] if r2_shadow is None else r2_shadow['forecast']['model_checksum']
+    if r16_shadow is None:
+        allocation_model_checksum=bundle['model_checksum'] if r2_shadow is None else r2_shadow['forecast']['model_checksum']
     if r2_shadow is not None and r2_shadow.get('comparison_arm')=='baseline':
         allocation_model_checksum=r2_shadow['forecast']['baseline_model_checksum']
     policy_identity = distribution_policy_identity(policy,identity)
+    if r16_shadow is not None:
+        policy_identity=digest(dict(base_policy_identity=policy_identity,r16_model=allocation_model_checksum,
+            frozen_binding=policy['r16_binding'],comparison_arm=r16_shadow['arm']))
+        policy={**policy,'opb':{**(policy.get('opb') or {}),'approved_policy_identity':policy_identity}}
     if r2_shadow is not None:
         policy_identity=digest(dict(base_policy_identity=policy_identity,r2_model=allocation_model_checksum,
             evaluation_policy=r2_shadow['forecast']['policy_checksum'],comparison_arm=r2_shadow.get('comparison_arm','candidate')))
@@ -280,8 +295,10 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                       buy_cost_adjustments=buy_extra,sell_cost_adjustments=sell_extra,
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},
                       locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,**constraints)
+    attribution_names=list(bundle['model']['recipe']['names'])
+    if r16_shadow is not None and r16_shadow['arm']!='incumbent': attribution_names.append('p_loss')
     attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
-        model_feature_names=bundle['model']['recipe']['names'],unavailable=unavailable)
+        model_feature_names=attribution_names,unavailable=unavailable)
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
             'execution_scope':'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
@@ -300,13 +317,21 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
          '_buy_costs':constraints['buy_cost']+buy_extra,'_sell_costs':constraints['sell_cost']+sell_extra,
          '_turnover_pressure':pressure},nav,trade_uncertainty,locked)
     if execution is not None:plan['sealed_execution']=execution
+    if r16_shadow is not None:
+        plan['r16_evidence']={'forecast_checksum':r16_shadow['forecast']['checksum'],
+            'comparison_arm':r16_shadow['arm'],'frozen_binding':policy['r16_binding'],
+            'pool_mean_owner':'complete_native_pool_before_routing','online_switch_allowed':False,
+            'outer_acceptance_credit':0}
     if r2_shadow is not None:
         plan['r2_evidence']={'forecast_checksum':digest(r2_shadow['forecast']),
             'policy_checksum':r2_shadow['forecast']['policy_checksum'],
             'comparison_arm':r2_shadow.get('comparison_arm','candidate'),
             'pool_mean_owner':'complete_native_pool_before_routing','promotion_allowed':False}
     plan['plan_id']=digest(plan)
-    if r2_shadow is not None:
+    if r16_shadow is not None:
+        plan.update(strategy_role='B',strategy_mode='r16_shadow_private_v1')
+        plan['plan_id']=digest({k:v for k,v in plan.items() if k!='plan_id'})
+    elif r2_shadow is not None:
         plan.update(strategy_role='B',strategy_mode='r2_shadow_private_v1')
         plan['plan_id']=digest({k:v for k,v in plan.items() if k!='plan_id'})
     elif policy.get('operating_mode') is not None:
@@ -336,6 +361,9 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
             'prediction_blockers':unavailable.get(symbol,[]),
             'plan_id':plan['plan_id'],'policy_identity':policy_identity,'opb_controller':opb,
             'l4_distribution':output}
+        if r16_shadow is not None:
+            row['alpha_allocation'].update(expected_return_source='r16-four-arm-forecast-v1',
+                expected_return_semantic='five_session_gross_decimal' if r16_shadow['arm']=='incumbent' else 'five_session_relative_pool_decimal')
         row.setdefault('score_components',{})['mlAdvisory']=old_advice
     if rows:
         rows[0]['_l4_portfolio_plan']=plan

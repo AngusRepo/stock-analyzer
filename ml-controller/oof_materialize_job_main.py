@@ -69,6 +69,8 @@ async def _execute_lifecycle(**kwargs) -> dict[str, Any]:
         result = {'status': 'failed', 'reason': 'daily_account_closure_failed', 'error_type': type(exc).__name__}
     data_result = await data_task
     result['forward_learning_data'] = data_result['forward_learning_data']
+    if 'r17_p4' in data_result:
+        result['r17_p4'] = data_result['r17_p4']
     if data_result.get('status') == 'failed':
         result.update(accounting_status=result.get('status'), status='failed',
                       dependency_retry_required=True, reason='l4_forward_refresh_failed')
@@ -862,6 +864,15 @@ async def _run() -> int:
         if isinstance(result.get('forward_learning_data'), dict):
             from services.l4_forward_refresh import callback_summary
             payload['metadata']['forward_learning_data'] = callback_summary(result['forward_learning_data'])
+        if isinstance(result.get('r17_p4'), dict):
+            shadow=result['r17_p4']
+            acceptance=shadow.get('maturity',{}).get('acceptance',{})
+            registration=shadow.get('registration',{})
+            payload['metadata']['r17_p4']={
+                'status':shadow['status'],'registration_status':registration.get('status'),
+                'registration_ref':registration.get('registration_ref'),
+                'mature_outer_days':acceptance.get('count',0),'acceptance_status':acceptance.get('status'),
+                'online_switch_allowed':False}
         if isinstance(result.get("paired_nav_maturity"), dict):
             payload["metadata"]["paired_nav_maturity"] = _nav_callback_summary(result["paired_nav_maturity"])
             payload["metadata"]["nav_retry_required"] = bool(result.get("nav_retry_required"))

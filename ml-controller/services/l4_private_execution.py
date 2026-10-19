@@ -1,5 +1,6 @@
 """Pure new-L4 evaluation inside the same transactional private Paper host."""
 import json
+import time
 from copy import deepcopy
 from services.l4_distribution import digest
 from services.l4_distribution_runtime import run
@@ -22,16 +23,27 @@ def allocate_private(store,account):
     ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
     captures = []
     shadow=inputs.get('r2_shadow')
-    if shadow is not None:
+    r16=inputs.get('r16_shadow')
+    if shadow is not None and r16 is not None:
+        raise ValueError('private_l4_multiple_shadow_packets')
+    if shadow is not None or r16 is not None:
         # This store is the isolated native Paper host. Production callers have
         # no packet parameter and cannot activate the research scope through KV.
         policy['scope']='private_research'
+    solve_started=time.perf_counter()
     rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,
         private_research=True, evidence_sink=captures.append,
-        **({'r2_shadow':shadow} if shadow is not None else {}))
+        **({'r2_shadow':shadow} if shadow is not None else {}),
+        **({'r16_shadow':r16} if r16 is not None else {}))
     if len(captures) != 1:
         raise ValueError('private_l4_allocation_capture_missing')
     plan=captures[0]['portfolio_plan']
+    # Timing is diagnostic output, never part of deterministic state/plan hashes.
+    if r16 is not None:
+        store.execution_metrics.append({'kind':'r17_allocation','plan_id':plan['plan_id'],
+            'arm':r16['arm'],'signal_date':account['signal_date'],
+            'solve_seconds':time.perf_counter()-solve_started,
+            'status':'optimal' if plan.get('proof',{}).get('within_tolerance') is True else 'uncertified'})
     if rows and rows[0].pop('_l4_portfolio_plan') != plan:
         raise ValueError('private_l4_allocation_plan_changed')
     # The exact native serializer; no independent execution or fill approximation.

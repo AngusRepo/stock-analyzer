@@ -246,6 +246,14 @@ def component_failure(result,component,exc):
 
 def attach_daily_result(result,config,business_date,*,runner=None):
     """Keep account closure independent, but never turn data failure into passed."""
+    # R17 uses its own frozen forecast/activation and never the R2 daily fitted
+    # Anchor. Always attempt it even if the legacy forward refresh fails.
+    r17=None
+    import os
+    if os.environ.get('R17_P4_ACTIVATION_REF','').strip():
+        from services.l4_r17_runtime import run_daily,safe_failure
+        try:r17=run_daily(business_date)
+        except Exception as exc:r17=safe_failure(exc)
     try:
         data=(runner or refresh_daily)(config,business_date)
     except Exception as exc:
@@ -259,6 +267,13 @@ def attach_daily_result(result,config,business_date,*,runner=None):
     elif data['status']=='pending':
         result.update(status='pending',dependency_retry_required=True,reason=data.get('reason','l4_native_inference_pending'),
             external_compute_pending=data.get('external_compute_pending',False))
+    if r17 is not None:
+        result['r17_p4']=r17
+        if r17['status']=='failed':
+            result.update(status='failed',dependency_retry_required=True,reason='r17_p4_daily_failed')
+        elif r17['status']=='pending' and result.get('status')!='failed':
+            result.update(status='pending',dependency_retry_required=True,reason='r17_p4_daily_pending',
+                          external_compute_pending=r17.get('external_compute_pending',False))
     return result
 
 

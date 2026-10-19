@@ -55,7 +55,7 @@ def clock_sql(sql: str) -> str:
 
 
 class PrivatePaperStore:
-    def __init__(self, state_sql: str, state_checksum: str, inputs: dict[str, Any], *, capture_source=None):
+    def __init__(self, state_sql: str, state_checksum: str, inputs: dict[str, Any], *, capture_source=None, clock_normalized=False):
         if hashlib.sha256(state_sql.encode()).hexdigest() != state_checksum:
             raise ValueError('native_paper_state_checksum_mismatch')
         self.db = sqlite3.connect(':memory:', isolation_level=None)
@@ -65,10 +65,11 @@ class PrivatePaperStore:
         self.inputs = json.loads(encode(inputs))
         self.capture_source = capture_source
         self.in_frame = False
+        self.execution_metrics = []
         self.db.create_function('native_now', 0, self._clock)
         self.db.set_authorizer(self._authorize)
         try:
-            self.db.executescript(clock_sql(state_sql))
+            self.db.executescript(state_sql if clock_normalized else clock_sql(state_sql))
             self.db.executescript('''
                 CREATE TABLE IF NOT EXISTS _native_private_kv(key TEXT PRIMARY KEY,value TEXT NOT NULL,expires_ms REAL,metadata TEXT);
                 CREATE TABLE IF NOT EXISTS _native_private_artifacts(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -325,6 +326,11 @@ def native_execution_identity(runner: Path | None = None) -> str:
                            'capital_corporate_source.py', 'subscription_rights.py',
                            'l4_private_execution.py','l4_distribution.py','l4_distribution_runtime.py',
                            'l4_r2_allocation.py','l4_r2_paired.py','l4_r2_forward_evaluation.py','l4_quadratic_refinement.py',
+                           'l4_r16_allocation.py',
+                           'l4_r17_session.py','l4_r17_configuration.py','l4_r17_sources.py',
+                           'l4_r17_registration.py','l4_r17_events.py','l4_r17_objects.py',
+                           'l4_r17_acceptance.py','l4_r17_reporting.py',
+                           'l4_r17_forecast.py','l4_r17_forecast_core.py','l4_r17_state_storage.py',
                              'l4_distribution_lifecycle.py','l4_model_cutover.py','l4_mlp_weights.py','l4_mlp_median.py','l4_residual_mlp.py','l4_residual_tabpack.py','l4_tabpack_weights.py','l4_tabpack_budget_protocol.py','l4_tabpack_median.py','paper_strategy_mode.py','l4_portfolio.py',
                            'l4_l3_baseline.py','l4_incremental_acceptance.py',
                            'l4_prediction_evaluation.py','l4_allocation_contract.py',
@@ -352,7 +358,7 @@ def run_native_paper_frames(*, state_sql: str, state_checksum: str, frame_inputs
                             frames: list[dict[str, Any]], account_id: int, variables: dict[str, str],
                             runner: Path | None = None, node_binary: str | None = None,
                             expected_execution_owner_version: str | None = None,
-                            capture_source=None,
+                            capture_source=None, clock_normalized=False,
                             timeout_seconds: float = 120) -> dict[str, Any]:
     """One private account, real native functions, no externally visible writes.
 
@@ -371,7 +377,8 @@ def run_native_paper_frames(*, state_sql: str, state_checksum: str, frame_inputs
     owner_version = native_execution_identity(entry)
     if expected_execution_owner_version is not None and owner_version != expected_execution_owner_version:
         raise ValueError('native_paper_execution_owner_changed')
-    store = PrivatePaperStore(state_sql, state_checksum, frame_inputs, capture_source=capture_source)
+    store = PrivatePaperStore(state_sql, state_checksum, frame_inputs, capture_source=capture_source,
+                             clock_normalized=clock_normalized)
     child = None
     inbox: queue.Queue = queue.Queue()
     failure_codes: list[str] = []
@@ -408,6 +415,7 @@ def run_native_paper_frames(*, state_sql: str, state_checksum: str, frame_inputs
                 if child.wait(timeout=max(.001, deadline - time.monotonic())) != 0:
                     raise RuntimeError('native_paper_child_exit_failed')
                 return {**message['result'], **store.export(), 'input_checksum': digest(store.inputs),
+                        'execution_metrics': store.execution_metrics,
                         'captured_inputs': store.inputs,
                         'execution_owner_version': owner_version, 'initial_state_checksum': state_checksum,
                         'production_effect': False, 'session_complete': False, 'nav_maturity_credit': 0}

@@ -237,6 +237,7 @@ async def collect(*,bucket,config,day,spawn=None,poll=None):
     projected=projection(merged['predictions'],identity=identity,day=day,roster=roster,
         classification=classification,known_max=known)
     original=publish(bucket,'native_originals',dict(scope=SCOPE,projection=projected,
+        model_predictions=merged['predictions'],
         request=request_ref,raw_bundle_reference=dispatched['reference'],classification=envelope['catalog_reference'],
         risk_reference=envelope['risk_reference'],
         roster_checksum=digest(roster),roster_proof=envelope['roster_proof'],training_cutoffs=config['training_cutoffs']))

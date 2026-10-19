@@ -23,8 +23,21 @@ async def native_execution_tick(request: NativeTickRequest):
 @router.post('/strategy-nav-execution-tick')
 async def strategy_nav_execution_tick(request: NativeTickRequest):
     from services.paired_native_runtime import run_strategy_execution_tick
+    from services.l4_r17_runtime import run_execution_tick as r17_tick, safe_failure
+    # Independent shadow accounts: a legacy strategy failure must not starve
+    # R17, and R17 failure must not suppress the original strategy invocation.
+    results=await asyncio.gather(
+        asyncio.to_thread(run_strategy_execution_tick,session_date=request.session_date),
+        asyncio.to_thread(r17_tick,request.session_date),return_exceptions=True)
+    legacy,shadow=results
+    if isinstance(shadow,Exception):shadow=safe_failure(shadow)
+    if shadow.get('status')!='not_activated':
+        if isinstance(legacy,Exception):legacy=safe_failure(legacy)
+        failure=legacy.get('status')=='failed' or shadow.get('status') in ('failed','execution_gap')
+        return {**legacy,'r17':shadow,'status':'failed' if failure else legacy.get('status','ok')}
     try:
-        return await asyncio.to_thread(run_strategy_execution_tick, session_date=request.session_date)
+        if isinstance(legacy,Exception):raise legacy
+        return legacy
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
 

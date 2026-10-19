@@ -15,6 +15,9 @@ let started = false
 let hostClock = NaN
 const lines = createInterface({ input: process.stdin })
 const emit = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n')
+// Linux pipes are asynchronous: exit only after the entire terminal JSON drains.
+const finish = (value: unknown, code: number) =>
+  process.stdout.write(JSON.stringify(value) + '\n', () => process.exit(code))
 const bridge = (op: string, payload: Record<string, unknown>) => new Promise((resolve, reject) => {
   const id = ++sequence
   pending.set(id, { resolve, reject })
@@ -26,19 +29,18 @@ lines.on('line', line => {
   if (!started) {
     started = true
     if (packet.type === 'manifest') {
-      emit({ type: 'manifest', commission_contract: PAPER_COMMISSION_CONTRACT, tables: Object.fromEntries(DATA_DOMAINS.flatMap(domain =>
-        tablesForDataDomainRouteReady(domain).map(table => [table, domain]))) })
-      process.exit(0)
+      finish({ type: 'manifest', commission_contract: PAPER_COMMISSION_CONTRACT, tables: Object.fromEntries(DATA_DOMAINS.flatMap(domain =>
+        tablesForDataDomainRouteReady(domain).map(table => [table, domain]))) }, 0)
     }
     runSealedPaperFrames(bridge, packet, () => hostClock).then(result => {
-      emit({ type: 'complete', result }); process.exit(0)
+      finish({ type: 'complete', result }, 0)
     }, error => {
-      emit({ type: 'failed', error: String(error?.message ?? error) }); process.exit(1)
+      finish({ type: 'failed', error: String(error?.message ?? error) }, 1)
     })
     return
   }
   const waiter = pending.get(packet.id)
-  if (!waiter) { emit({ type: 'failed', error: 'sealed_paper_unmatched_reply' }); process.exit(2) }
+  if (!waiter) { finish({ type: 'failed', error: 'sealed_paper_unmatched_reply' }, 2); return }
   pending.delete(packet.id)
   if (packet.error) waiter.reject(new Error(packet.error))
   else {

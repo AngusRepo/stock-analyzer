@@ -362,6 +362,7 @@ function visualStatus(job?: SchedulerJob): VisualStatus {
   if (job.id === 'intraday-check' && job.lastStatus === 'skip') return 'noop'
   if (job.lastStatus === 'running') return 'running'
   if (job.lastStatus === 'waiting') return 'waiting'
+  if (job.lastStatus === 'blocked') return 'blocked'
   if (job.lastStatus === 'failed') return 'blocked'
   if (job.lastStatus === 'sleep') return 'out_of_window'
   if (job.lastStatus === 'skip') return 'skipped'
@@ -377,6 +378,7 @@ function formatReplayDate(runDate?: string | null): string {
 
 function statusLabel(job?: SchedulerJob): string {
   if (job?.finlabPhase && job.summary.startsWith('無階段紀錄')) return '無階段紀錄'
+  if (job?.lastStatus === 'blocked') return job.id === 'evening-closure' ? '全鏈中止' : '上游阻擋 · 未執行'
   const label = STATUS_LABEL[visualStatus(job)]
   if (isAllocatorSafeAbstention(job)) return 'Checked · safe abstention'
   if (isExpectedEvidenceNoop(job)) {

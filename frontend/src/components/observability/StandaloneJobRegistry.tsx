@@ -22,6 +22,7 @@ export function isRetiredRegistryJob(job: SchedulerJob): boolean {
 const STATUS_LABEL: Record<SchedulerJob['lastStatus'], string> = {
   success: 'Completed',
   failed: 'Failed',
+  blocked: 'Blocked by upstream',
   running: 'Running',
   waiting: 'Waiting',
   sleep: 'Not in window',
@@ -30,6 +31,7 @@ const STATUS_LABEL: Record<SchedulerJob['lastStatus'], string> = {
 
 const STATUS_ORDER: Record<SchedulerJob['lastStatus'], number> = {
   failed: 0,
+  blocked: 0,
   running: 1,
   waiting: 2,
   success: 3,

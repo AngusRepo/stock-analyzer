@@ -312,7 +312,7 @@ export type SchedulerJob = {
   lastAttemptStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
   lastEffectiveRunAt?: string | null
   lastEffectiveStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
-  lastStatus: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
+  lastStatus: 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep'
   statusScope?: 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle' | 'durable_event'
   statusRunDate?: string | null
   lastDuration: string
@@ -322,7 +322,7 @@ export type SchedulerJob = {
   runId?: string | null
   attemptId?: string | null
   attemptCount?: number | null
-  recoveredFromStatus?: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep' | null
+  recoveredFromStatus?: 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep' | null
   statusAuthority?: 'scheduler_kv' | 'durable_pipeline_stage' | 'scheduler_execution_ticket'
   displayNote?: string | null
   nextRun: string

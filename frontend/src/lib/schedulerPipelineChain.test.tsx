@@ -22,6 +22,9 @@ assert.ok(pipelinePreparationLabel(job('pipeline', 'running', 'modal_prediction=
 const missing = renderToStaticMarkup(<SchedulerPipelineChain jobs={[job('pipeline', 'running')]} />)
 assert.ok(missing.includes('尚無收據'))
 assert.ok(!missing.includes('整體流程：完成'))
+const blocked = renderToStaticMarkup(<SchedulerPipelineChain jobs={[job('update','blocked','FinLab 驗證未完成')]} />)
+assert.ok(blocked.includes('上游阻擋'))
+assert.ok(!blocked.includes('失敗'))
 assert.ok(renderToStaticMarkup(<SchedulerPipelineChain jobs={jobs} error={new Error('unavailable')} />).includes('流程狀態讀取失敗'))
 console.log('schedulerPipelineChain: passed')
 

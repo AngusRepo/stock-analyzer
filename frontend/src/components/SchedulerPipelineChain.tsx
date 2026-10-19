@@ -14,10 +14,12 @@ const upstream = [
   ['allocator-ev-readiness', '配置前置檢查'],
 ]
 function tone(status?: string): WorkstationTone {
+  if (status === 'blocked') return 'warn'
   return status === 'success' ? 'ok' : status === 'failed' ? 'error'
     : status === 'running' ? 'warn' : status === 'waiting' ? 'info' : 'neutral'
 }
 function label(status?: string) {
+  if (status === 'blocked') return '上游阻擋'
   return status === 'success' ? '完成' : status === 'failed' ? '失敗'
     : status === 'running' ? '執行中' : status === 'waiting' ? '等待上游'
       : status === 'sleep' ? '非本日排程' : status === 'skip' ? '略過' : '尚無收據'

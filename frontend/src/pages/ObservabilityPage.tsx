@@ -51,6 +51,7 @@ function statusTone(status?: string | null): WorkstationTone {
 
 function schedulerStatusLabel(status?: string | null) {
   const value = String(status ?? '').toLowerCase()
+  if (value === 'blocked') return '上游阻擋'
   if (value === 'waiting') return 'WAITING'
   if (value === 'sleep') return 'NOT TODAY'
   if (value === 'skip' || value === 'skipped') return 'SKIPPED'
@@ -720,6 +721,7 @@ function SchedulerShortcutDeck({ jobs, schedulerApiError }: { jobs: SchedulerJob
 
 function schedulerJobTone(job: SchedulerJob): WorkstationTone {
   const status = String(job.lastStatus ?? '').toLowerCase()
+  if (status === 'blocked') return 'warn'
   if (status === 'failed' || status === 'error') return 'error'
   if (status === 'running') return 'info'
   if (status === 'waiting') return 'warn'
@@ -730,6 +732,7 @@ function schedulerJobTone(job: SchedulerJob): WorkstationTone {
 
 function schedulerJobPriority(job: SchedulerJob) {
   const status = String(job.lastStatus ?? '').toLowerCase()
+  if (status === 'blocked') return 0
   if (status === 'failed' || status === 'error') return 0
   if (status === 'running') return 1
   if (status === 'waiting') return 2
@@ -1520,6 +1523,7 @@ function schedulerRootCause(job: SchedulerJob) {
 }
 
 function schedulerImpact(job: SchedulerJob) {
+  if (job.lastStatus === 'blocked') return '上游未完成，此階段尚未執行；請先處理原始阻擋原因。'
   if (job.lastStatus === 'success') return '下游可使用此階段產物。'
   if (job.lastStatus === 'running') return '下游仍在等待；若超過 SLA，推薦、驗證或報表可能延遲。'
   if (job.lastStatus === 'waiting') return '目前等待前序 callback，不應手動跳階段。'

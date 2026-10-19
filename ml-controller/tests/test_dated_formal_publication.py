@@ -34,6 +34,34 @@ def grant(frozen, **kwargs):
         seal_reader=lambda day, parent: deepcopy(seal), **kwargs)
 
 
+def test_exact_dated_publication_survives_the_write_boundary(frozen, monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    from services import premarket_pipeline
+    state, _, seal = frozen
+    state['dated_formal_publication'] = grant(frozen)
+    monkeypatch.setattr(recovery, 'datetime', type('Clock', (), {'now': staticmethod(lambda tz: NOW)}))
+    monkeypatch.setattr(premarket_pipeline, 'read_seal', lambda *a: deepcopy(seal))
+    def closed(*args): raise RuntimeError('worker_next_session_opened')
+    monkeypatch.setattr(graph, 'assert_canonical_window_open', closed)
+    graph._assert_pipeline_canonical_window(state)
+    state['dated_formal_publication']['nav_maturity_credit'] = 1
+    with pytest.raises(ValueError, match='dated_publication_write_scope_changed'):
+        graph._assert_pipeline_canonical_window(state)
+    state.pop('dated_formal_publication')
+    with pytest.raises(RuntimeError, match='worker_next_session_opened'):
+        graph._assert_pipeline_canonical_window(state)
+
+
+def test_expired_dated_publication_cannot_reopen_writes(frozen, monkeypatch):
+    from graphs import daily_pipeline_v2 as graph
+    state, _, _ = frozen
+    state['dated_formal_publication'] = grant(frozen)
+    tomorrow = datetime.fromisoformat('2026-10-20T00:00:00+08:00')
+    monkeypatch.setattr(recovery, 'datetime', type('Clock', (), {'now': staticmethod(lambda tz: tomorrow)}))
+    with pytest.raises(ValueError, match='dated_publication_write_scope_changed'):
+        graph._assert_pipeline_canonical_window(state)
+
+
 def test_actual_frozen_input_and_configuration_are_bound_without_mutation(frozen):
     before = deepcopy(frozen)
     receipt = grant(frozen)

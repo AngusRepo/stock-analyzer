@@ -5180,6 +5180,13 @@ def _pipeline_terminal_result(state: PipelineStateV2, *, run_date: str, elapsed:
 
 
 def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
+    dated = state.get('dated_formal_publication')
+    if dated is not None:
+        from services.dated_formal_publication import publication_deferral
+        verified = publication_deferral(state, state.get('trading_config') or {})
+        if verified is None or dated != verified:
+            raise ValueError('dated_publication_write_scope_changed')
+        return
     recovery = state.get("snapshot_recovery_lineage")
     if isinstance(recovery, dict) and (
         recovery.get("schema_version") == "pipeline-snapshot-recovery-lineage-v1"

@@ -101,6 +101,7 @@ class RegimeDetector:
             try:
                 m = hmm.GaussianHMM(
                     n_components=n, covariance_type="full",
+                    covars_prior=np.eye(features.shape[1]) * 1e-2,
                     n_iter=100, random_state=42,
                 )
                 m.fit(features)
@@ -113,6 +114,7 @@ class RegimeDetector:
         self.n_components = best_n
         self.model = hmm.GaussianHMM(
             n_components=best_n, covariance_type="full",
+            covars_prior=np.eye(features.shape[1]) * 1e-2,
             n_iter=300, random_state=42,
         )
         self.model.fit(features)

@@ -5,7 +5,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei explicitly approved repair commit push deploy resume failed stage and shutdown after full L3 completion",
-  "review": "audits/chain-improvement-20261016/release-20261017-atomic-resume/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:pipeline-atomic-resume-20261017"
+  "authorization": "Wei approved October 19 exception publication commit push deploy and continuation; preserve configuration and missing NAV state",
+  "review": "audits/l4-chain-performance-20261019/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-cutoff-recovery-20261019"
 }

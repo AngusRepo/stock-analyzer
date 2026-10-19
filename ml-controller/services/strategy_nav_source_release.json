@@ -4,9 +4,9 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "0871a4bc443494625001d5d15f65b1e1939c965a",
+  "production_baseline_source": "2faa14daf3e2a157ff04955f812de398141aeecf",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "247923dbb49b355b25200e0422f4680cd63453d8c4cbd99a366be5d8b17f4bf1",
+  "prior_approval_checksum": "2c9a2512fe15db242c946dbb8a8a11998c3fcfe95ecffe4e2d8b3e37e3833f71",
   "prior_configuration_checksum": "f40389d18c313f41f272ddd1396f84e0ea3773ccf56066685898babc070bf409",
   "approved_sources": {
     "allocator_source_identity": {
@@ -82,5 +82,5 @@
     }
   },
   "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
-  "review": "audits/chain-improvement-20261016/release-20261017-atomic-resume/review.md"
+  "review": "audits/l4-chain-performance-20261019/release/review.md"
 }

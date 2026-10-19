@@ -257,7 +257,7 @@ const ALLOWED_PREVIOUS: Record<SchedulerExecutionTicketStatus, readonly Schedule
   success: ['accepted', 'queued', 'running', 'triggered', 'success'],
   error: ['accepted', 'queued', 'running', 'triggered', 'error'],
   skipped: ['accepted', 'queued', 'running', 'triggered', 'skipped'],
-  blocked: ['accepted', 'blocked'],
+  blocked: ['accepted', 'queued', 'running', 'triggered', 'blocked'],
 }
 
 export async function updateSchedulerExecutionTicket(
@@ -527,7 +527,7 @@ export async function loadLatestSchedulerRootTickets(
   return result.results ?? []
 }
 export function schedulerTicketStatusForRunLog(
-  status: 'success' | 'error' | 'skipped' | 'triggered' | 'running',
+  status: 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running',
 ): SchedulerExecutionTicketStatus {
   return status
 }

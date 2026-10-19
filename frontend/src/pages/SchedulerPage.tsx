@@ -18,6 +18,7 @@ const LazySchedulerCadenceChart = lazy(() => import('@/components/charts/Schedul
 function statusTone(status?: string): WorkstationTone {
   if (status === 'success') return 'ok'
   if (status === 'failed') return 'error'
+  if (status === 'blocked') return 'warn'
   if (status === 'running') return 'warn'
   if (status === 'waiting') return 'info'
   if (status === 'sleep' || status === 'skip' || status === 'skipped') return 'neutral'
@@ -25,11 +26,12 @@ function statusTone(status?: string): WorkstationTone {
 }
 
 function suspiciousDuration(job: SchedulerJob) {
-  if (job.lastStatus === 'waiting' || job.lastStatus === 'sleep' || job.lastStatus === 'skip') return false
+  if (['blocked', 'waiting', 'sleep', 'skip'].includes(job.lastStatus)) return false
   return job.durationConcern === 'suspicious_short' || job.lastDuration === '--' || job.lastDuration === 'N/A'
 }
 
 function statusLabel(status?: string) {
+  if (status === 'blocked') return 'BLOCKED'
   if (status === 'waiting') return 'WAITING'
   if (status === 'sleep') return 'NOT TODAY'
   if (status === 'skip') return 'SKIPPED'

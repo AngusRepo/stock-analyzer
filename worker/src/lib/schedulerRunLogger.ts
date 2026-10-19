@@ -2,7 +2,7 @@
  * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
 
-export type SchedulerRunStatus = 'success' | 'error' | 'skipped' | 'triggered' | 'running'
+export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running'
 
 export interface SchedulerRunLogEntry {
   task: string
@@ -143,6 +143,7 @@ export function isSchedulerRunStatus(status: unknown): status is SchedulerRunSta
   return (
     status === 'success' ||
     status === 'error' ||
+    status === 'blocked' ||
     status === 'skipped' ||
     status === 'triggered' ||
     status === 'running'
@@ -152,6 +153,7 @@ export function isSchedulerRunStatus(status: unknown): status is SchedulerRunSta
 export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus {
   const normalized = summary.trim().toLowerCase()
   if (normalized.includes('not delivered:') || normalized.includes('not_sent:')) return 'skipped'
+  if (/\bstatus=blocked\b/.test(normalized)) return 'blocked'
   if (/\bstatus=(?:failed|error)\b/.test(normalized)) return 'error'
   if (/\bstatus=skipped\b/.test(normalized)) return 'skipped'
   if (/\bstatus=(?:pending|spawned|triggered)\b/.test(normalized)) return 'triggered'

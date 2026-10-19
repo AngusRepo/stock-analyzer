@@ -696,7 +696,7 @@ async function handleSchedulerCallback(c: any) {
   }
   const { classifySchedulerSummary, isSchedulerStatus, logSchedulerResult } = await import('../lib/schedulerRunLogger')
   if (!isSchedulerStatus(body.status)) {
-    return c.json({ error: 'status must be one of success/skipped/error/triggered/running' }, 400)
+    return c.json({ error: 'status must be one of success/skipped/error/blocked/triggered/running' }, 400)
   }
   const callbackRunDate = typeof body.run_date === 'string'
     ? body.run_date
@@ -1332,8 +1332,8 @@ async function handleSchedulerCallback(c: any) {
       await queueFinLabCompletion(c.env, callbackRunDate, callbackRunId, forceContinuation, false)
     } else if (body.status !== 'success' && continueEveningChain) {
       await logSchedulerResult(c.env.KV, 'update', {
-        status: body.status === 'skipped' ? 'skipped' : 'error',
-        summary: `FinLab canonical backfill blocked market data continuation: ${String(body.summary ?? body.status)}`,
+        status: 'blocked',
+        summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${String(body.summary ?? body.status)}`,
         duration_ms: 0,
         error: body.error != null ? String(body.error) : undefined,
         run_id: callbackRunId,

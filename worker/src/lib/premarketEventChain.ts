@@ -1,6 +1,7 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { logSchedulerResult } from './schedulerRunLogger'
+import { settlePremarketReadinessTickets } from './premarketReadinessTickets'
 import { premarketPublicationMinutes, premarketPublicationTarget } from './premarketPublicationWindow'
 
 export type PremarketStage = 'context' | 'setup' | 'allocate' | 'market-health' | `debate:${number}` | `replan:${number}` | `publish:${number}`
@@ -75,6 +76,9 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
     ...common,status:health?.status === 'error' ? 'error' : published ? 'success' : 'error',
     summary:health?.status === 'error' ? 'status=error event_stage=market-health plan_published=' + Boolean(published) : published ? `status=success event_driven_ready market_health=${health?.status ?? 'not_scheduled'} ${published.cursor_key}` : `status=error event_stage=${failed?.stage}`,
   })
+  if (published && health?.status === 'success') {
+    await settlePremarketReadinessTickets(databaseForDataDomain(env,'ops'), date)
+  }
 }
 
 /** All signals converge on one daily root; watchdog never resets successful stages. */

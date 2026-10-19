@@ -8,7 +8,7 @@ import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import { indicatorQueueDurationMs } from './indicatorQueueTiming'
 import { sealedPremarketDisplay } from './schedulerPipelinePhase'
 import { loadPremarketProducerStates, premarketProducerDisplay } from './premarketProducerStatus'
-import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay } from './schedulerPremarketProgress'
+import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay, premarketReadinessDisplay } from './schedulerPremarketProgress'
 import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
@@ -33,7 +33,7 @@ interface JobDef {
   legacyLogIds?: string[]
 }
 
-type SchedulerLastStatus = 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
+type SchedulerLastStatus = 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep'
 type SchedulerResolvedStatus = {
   status: SchedulerLastStatus | null
   staleRunning: boolean
@@ -193,7 +193,7 @@ const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
 
 export function estimateSchedulerStatusKvReads(): number {
-  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length + 1
+  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length + 2
 }
 
 export interface SchedulerDisplayLogCandidate {
@@ -454,7 +454,8 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
   if (!Number.isFinite(ticketMs) || (!closureDefect && Number.isFinite(baseMs) && ticketMs < baseMs)) return null
   const lastStatus: SchedulerLastStatus = closureDefect ? 'failed' : ticket.status === 'success'
     ? 'success'
-    : ticket.status === 'error' || ticket.status === 'blocked'
+    : ticket.status === 'blocked' ? 'blocked'
+    : ticket.status === 'error'
       ? 'failed'
       : ticket.status === 'skipped'
         ? 'skip'
@@ -465,7 +466,7 @@ export function reconcileSchedulerExecutionTicketStatus(input: {
     summary: closureDefect
       ? `${closureDefect}; historical record is not current-cycle completion; ${ticket.last_summary ?? ''}`
       : ticket.last_summary || `${ticket.status}; durable scheduler execution ticket`,
-    lastError: closureDefect || (lastStatus === 'failed' ? (ticket.last_error || ticket.last_summary || undefined) : undefined),
+    lastError: closureDefect || (['failed','blocked'].includes(lastStatus) ? (ticket.last_error || ticket.last_summary || undefined) : undefined),
     statusAuthority: 'scheduler_execution_ticket',
     runId: ticket.run_id,
     attemptId: ticket.attempt_id,
@@ -505,7 +506,8 @@ export function resolveDurableEventDisplay(input: {
 
   const status: SchedulerLastStatus = input.ticket.status === 'success'
     ? 'success'
-    : input.ticket.status === 'error' || input.ticket.status === 'blocked'
+    : input.ticket.status === 'blocked' ? 'blocked'
+    : input.ticket.status === 'error'
       ? 'failed'
       : input.ticket.status === 'skipped'
         ? 'skip'
@@ -705,6 +707,12 @@ export function resolveSchedulerLogStatus(
     return { status: 'waiting', staleRunning: false }
   }
   if (log.status === 'success') return { status: 'success', staleRunning: false }
+  if (log.status === 'blocked') return { status: 'blocked', staleRunning: false }
+  // Read old callbacks correctly without rewriting their historical evidence.
+  if (def?.id === 'update' && log.status === 'error' && log.duration_ms === 0
+    && log.summary?.startsWith('FinLab canonical backfill blocked market data continuation:')) {
+    return { status: 'blocked', staleRunning: false }
+  }
   if (log.status === 'error') return { status: 'failed', staleRunning: false }
   if (log.status === 'skipped') return { status: 'skip', staleRunning: false }
   if (log.status === 'triggered' || log.status === 'running') {
@@ -917,7 +925,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
   })
   await Promise.all(
     dates.map(async (date, index) => {
-      const [aggregateLogs, directRootLog, directTodayCloseLog] = await Promise.all([
+      const [aggregateLogs, directRootLog, directTodayCloseLog, directPremarketLog] = await Promise.all([
         getCronLogs(env.KV, date, {
           legacyFallback: index < SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS,
           directFallback: false,
@@ -926,10 +934,14 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
         index === 0
           ? env.KV.get(`scheduler:run:market-close-refresh:${date}`, 'json') as Promise<CronLogEntry | null>
           : Promise.resolve(null),
+        index === 0
+          ? env.KV.get(`scheduler:run:pre-market-warmup:${date}`, 'json') as Promise<CronLogEntry | null>
+          : Promise.resolve(null),
       ])
       allLogs[date] = mergeDirectSchedulerLog(
-        mergeDirectSchedulerLog(aggregateLogs, directRootLog),
-        directTodayCloseLog,
+        mergeDirectSchedulerLog(
+          mergeDirectSchedulerLog(aggregateLogs, directRootLog), directTodayCloseLog,
+        ), directPremarketLog,
       )
     }),
   )
@@ -1027,7 +1039,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
 
     const history7d = displayDates.map((date) => {
       const log = getJobDisplayLog(allLogs[date], def)
-      if (!log || log.status === 'skipped' || log.status === 'triggered' || log.status === 'running') return 'skip'
+      if (!log || ['skipped','blocked','triggered','running'].includes(log.status)
+        || resolveSchedulerLogStatus(log, def).status === 'blocked') return 'skip'
       return log.status === 'success' ? 'success' : 'failed'
     }).reverse()
 
@@ -1101,19 +1114,22 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ticket: executionTicket,
       expectedRunDate: resolvedDisplay.statusRunDate,
     })
+    const readinessDisplay = premarketReadinessDisplay(def.id, today, premarketProgress, executionTicket?.updated_at)
     const activePremarket = premarketExecutionDisplay({
       jobId: def.id, today, businessDate: resolvedDisplay.statusRunDate, rows: premarketProgress,
       pipeline: durableStageStates.get(`${resolvedDisplay.statusRunDate}:pipeline`),
       ticketStatus: executionTicket?.status,
     })
-    const phaseDisplay = activePremarket
+    const phaseDisplay = readinessDisplay
+      ? { ...readinessDisplay, lastRun: formatTimestamp(readinessDisplay.lastRunAt) }
+      : (activePremarket
       ? { ...activePremarket, lastRun: formatTimestamp(activePremarket.lastRunAt) }
       : sealedPremarketDisplay({
       jobId: def.id, businessDate: resolvedDisplay.statusRunDate,
       stage: durableStageStates.get(`${resolvedDisplay.statusRunDate}:pipeline`),
       log: allLogs[resolvedDisplay.statusRunDate ?? '']?.find(row => row.task === 'pipeline'),
       ticketStatus: executionTicket?.status,
-    })
+    }))
     const watchdogDisplay = premarketWatchdogDisplay(def.id, displayLog, executionTicket?.status)
     const producerDisplay = premarketProducerDisplay(def.id, today, producerStates)
     const lastStatus = producerDisplay?.lastStatus ?? watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
@@ -1142,6 +1158,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     // Recover legacy zero placeholders from exact-run metadata without rewriting
     // historical receipts. Missing/expired timing stays unknown, never '<1s'.
     let displayDuration = displayLog?.duration_ms
+    if (lastStatus === 'blocked') displayDuration = null
     if (def.id === 'indicator-queue' && displayDuration === 0) {
       displayDuration = null
       const date = displayLog?.run_date ?? resolvedDisplay.statusRunDate
@@ -1205,6 +1222,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       consolidation: getSchedulerDependencySpec(accounting.task) ?? null,
       accounting,
       ticket: { ...ticket, ...(phaseDisplay ? { status: phaseDisplay.lastStatus, authority: phaseDisplay.statusAuthority, durable: true } : {}),
+        ...(readinessDisplay ? { ticketId: readinessDisplay.runId, runDate: today, missing: false } : {}),
         ...(producerDisplay ? {ticketId: producerDisplay.runId, status: producerDisplay.lastStatus, runDate: today,
           authority: producerDisplay.statusAuthority, durable: true, missing: false} : {}) },
       ...phaseDisplay,
@@ -1215,6 +1233,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
   }))
 
   const failed24h = jobs.filter((job) => {
+    if (job.lastStatus === 'blocked') return false
     const def = JOB_DEFS.find((row) => row.id === job.id)
     const todayLog = def ? getJobDisplayLog(allLogs[today], def) : undefined
     if (job.statusAuthority === 'durable_pipeline_stage' && ['news-analyst','us-leading'].includes(job.id)

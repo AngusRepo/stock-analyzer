@@ -14,9 +14,14 @@ test('L3 wait and historical SLA timeout cannot become a failed closure', () => 
   assert.equal(eveningClosureDisplay({ ...root, lastStatus: 'waiting' }).lastStatus, 'waiting')
   assert.equal(eveningClosureDisplay({ ...root, lastStatus: 'failed', lastError: 'stale triggered: no final callback' }).lastStatus, 'waiting')
 })
-test('real terminal receipts and errors remain visible', () => {
-  for (const lastStatus of ['success', 'failed'] as const) {
-    const view = eveningClosureDisplay({ ...root, lastStatus, lastError: lastStatus === 'failed' ? 'checksum mismatch' : undefined })
-    assert.equal(view.lastStatus, lastStatus); assert.equal(view.lastRunAt, root.lastRunAt)
+test('successful closure remains complete while upstream failure blocks an unproduced receipt', () => {
+  assert.equal(eveningClosureDisplay({...root,lastStatus:'success'}).lastStatus,'success')
+  for (const lastStatus of ['failed','blocked'] as const) {
+    const view = eveningClosureDisplay({...root,lastStatus,summary:'FinLab margin dates missing',lastError:'margin missing'})
+    assert.equal(view.lastStatus,'blocked')
+    assert.equal(view.lastRunAt,null)
+    assert.equal(view.lastError,'margin missing')
+    assert.match(view.summary,/全鏈中止.*FinLab margin/)
+    assert.equal(view.ticket.status,'blocked')
   }
 })

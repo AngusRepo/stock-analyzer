@@ -23,9 +23,36 @@ export async function loadPremarketProgress(db: D1Database, date: string): Promi
     json_extract(cursor_key,'$.output.ready') AS publication_ready,
     json_extract(cursor_key,'$.output.pending_status') AS pending_status
     FROM pipeline_stage_runs WHERE business_date=? AND canonical_run_id=?
-      AND stage IN ('premarket_v3:allocate','premarket_v3:publish:0')`)
+      AND stage IN ('premarket_v3:allocate','premarket_v3:publish:0','premarket_v3:market-health')`)
     .bind(date,`${date}:premarket-v3`).all<PremarketProgressRow>()
   return result.results ?? []
+}
+
+/** Terminal business receipts outrank unclosed dispatch acknowledgements. */
+export function premarketReadinessDisplay(jobId: string, date: string, rows: PremarketProgressRow[], dispatchUpdatedAt?: string) {
+  if (jobId !== 'pre-market-warmup') return null
+  const exact = rows.filter(row => row.business_date === date && row.canonical_run_id === `${date}:premarket-v3`)
+  const published = exact.find(row => row.stage === 'premarket_v3:publish:0' && row.status === 'success'
+    && row.publication_ready === 1 && ['ready','empty','halted'].includes(row.pending_status ?? '')
+    && row.signal_date && row.l3_run_id && /^[a-f0-9]{64}$/.test(row.l3_checksum ?? ''))
+  const health = exact.find(row => row.stage === 'premarket_v3:market-health')
+  const allocate = exact.find(row => row.stage === 'premarket_v3:allocate')
+  if (!published || health?.status !== 'success' || allocate?.status !== 'success'
+    || allocate.l3_run_id !== published.l3_run_id || allocate.l3_checksum !== published.l3_checksum
+    || allocate.signal_date !== published.signal_date) return null
+  const utc = (value: string) => value.includes('T') ? value : value.replace(' ', 'T') + 'Z'
+  const times = [allocate.updated_at, published.updated_at, health.updated_at].map(value => Date.parse(utc(value)))
+  if (!times.every(Number.isFinite) || times[0] > times[1]) return null
+  const completedMs = Math.max(times[1], times[2])
+  if (dispatchUpdatedAt && Date.parse(utc(dispatchUpdatedAt)) > completedMs) return null
+  const completedAt = new Date(completedMs).toISOString()
+  return {
+    lastStatus: 'success' as const, lastRunAt: completedAt, lastError: undefined,
+    summary: `盤前發布與健康檢查已完成；pending=${published.pending_status}`,
+    lastDuration: 'N/A', nextRun: '下一交易日盤前', statusScope: 'today' as const,
+    statusRunDate: date, statusAuthority: 'durable_pipeline_stage' as const,
+    runId: `${date}:premarket-v3`, recoveredFromStatus: null,
+  }
 }
 
 export function premarketExecutionDisplay(input: {

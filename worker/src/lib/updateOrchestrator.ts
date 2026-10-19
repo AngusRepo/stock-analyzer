@@ -1,6 +1,7 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
 import { readOfficialRestrictionReadiness } from './tradingRestrictionReadiness'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
+import { indicatorQueueDurationMs } from './indicatorQueueTiming'
 import { prepareIndicatorRegime } from './indicatorRegimePrerequisite'
 import { materializeIndicatorSessions } from './indicatorSessionPrerequisite'
 import { brokerDailyReadiness } from './finLabBrokerReadiness'
@@ -1791,6 +1792,11 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
 ): Promise<string> {
   const startedAt = Date.now()
   try {
+    const progress = async (phase: string) => logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
+      status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
+      duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
+    }, env)
+    await progress('recover_mature_selection')
     const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
     const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
@@ -1801,9 +1807,12 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
       maxBatches: 3,
     })
     const learningDb = databaseForDataDomain(env, 'learning')
+    await progress('canonical_selection_labels')
     const canonicalRunIds = await loadCanonicalScreenerRunIds(env, asOfDate)
     const labels = await materializeCanonicalSelectionLabelsV4(learningDb, { asOfDate, canonicalRunIds })
+    await progress('marginal_edge')
     const marginalEdge = await refreshStrategyMarginalEdgeV4(learningDb, asOfDate, { canonicalRunIds })
+    await progress('reward_ledger')
     const rewards = await refreshStrategyRewardLedger(learningDb, { endDate: asOfDate, dryRun: false, canonicalRunIds })
     const summary = [
       `mature_recovery=${recovery.summary}`,
@@ -1853,10 +1862,13 @@ async function runFinalizeContinuation(
   // A finalizer retry must not turn the indicator completion time into its retry time.
   const indicatorReceipt = await env.KV.get(`scheduler:run:indicator-queue:${triggerTime}`, 'json') as { status?: string; run_id?: string } | null
   if (indicatorReceipt?.status !== 'success' || indicatorReceipt.run_id !== runId) {
+    const meta = await env.KV.get(`cron:indicator-queue:${triggerTime}:${runId}:meta`, 'json')
+    const elapsed = indicatorQueueDurationMs(meta, triggerTime, runId, Date.now())
     await logSchedulerResult(env.KV, 'indicator-queue', {
       status: 'success',
       summary: `indicator queue complete for ${triggerTime}; run_id=${runId}; shards=${shardCount}; source=${source}`,
-      duration_ms: 0,
+      duration_ms: elapsed ?? 0,
+      details: [elapsed == null ? 'duration_basis=unavailable' : 'duration_basis=dispatch_to_shards_complete'],
       run_id: runId,
       run_date: triggerTime,
     })

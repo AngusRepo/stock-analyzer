@@ -33,6 +33,9 @@ test('L3 seal supersedes only same-run release-drift false failure; other termin
     for (const [status, error, accepted] of [
       ['running', null, true], ['waiting', null, true],
       ['error', 'pipeline_modal_recovery_source_changed', true],
+      ['error', 'pipeline_input_continuation_unfinished:failed', true],
+      ['error', 'pipeline_input_continuation_unfinished:succeeded', true],
+      ['error', 'pipeline_input_continuation_unfinished:unknown', false],
       ['error', 'model_artifact_checksum_mismatch', false],
       ['error', null, false], ['success', null, false],
     ] as const) {
@@ -61,9 +64,9 @@ test('authenticated L3 callback repairs canonical and KV together; stale or malf
     const day='2026-10-07', run='pipeline:current'
     await seedEveningRoot(db,day)
     await db.prepare(`INSERT INTO pipeline_stage_runs VALUES(?,'pipeline_execution',?,'error',
-      'pipeline_modal_recovery_source_changed',NULL)`).bind(day,run).run()
+      'pipeline_input_continuation_unfinished:failed',NULL)`).bind(day,run).run()
     await kv.put('scheduler:run:pipeline:'+day,JSON.stringify({task:'pipeline',status:'error',
-      summary:'pipeline_modal_recovery_source_changed',run_id:run,run_date:day}))
+      summary:'pipeline_input_continuation_unfinished:failed',run_id:run,run_date:day}))
     const env={DB:db,OPS_DB:db,KV:kv,MULTI_D1_ACTIVE_DOMAINS:'ops',MULTI_D1_STRICT:'true',
       STOCKVISION_AUTH_TOKEN:'isolated-l3-token',PAPER_DAILY_PLAN_OWNER:'premarket_once_v1'} as any
     const seal={run_date:day,run_id:run,schema_version:'premarket-l3-seal-v1',checksum:'a'.repeat(64)}

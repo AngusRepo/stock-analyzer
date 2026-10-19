@@ -71,8 +71,8 @@ export function premarketWork(env: Bindings, date: string, overrides: Partial<ty
       if(dailyPlanOwner(env)) {
         if (deps.afterClosePaperRecovery(env,date,input)) {
           return {next:'allocate',followups:['market-health'],receipt:{...input,warmup,
-            accounting_status:date==='2026-10-13'?'deferred_missing_preopen_source':'deferred_after_close',
-            execution_status:date==='2026-10-13'?'requires_accounting_reconciliation':'outside_trading_window'}}
+            accounting_status:date==='2026-10-12'?'deferred_after_close':'deferred_missing_preopen_source',
+            execution_status:date==='2026-10-12'?'outside_trading_window':'requires_accounting_reconciliation'}}
         }
         await deps.ensurePaperCorporateSource(env,date); await deps.settle(env)
         return {next:'allocate',followups:['market-health'],receipt:{...input,warmup}}

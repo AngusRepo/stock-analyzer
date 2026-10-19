@@ -276,7 +276,9 @@ export async function updateSchedulerExecutionTicket(
   if (input.recoverTerminalFailure === true && input.status !== 'success') {
     throw new Error('scheduler ticket terminal recovery may only target success')
   }
-  const allowed = input.recoverTerminalFailure === true
+  const allowed = input.status === 'blocked' && input.authority === 'durable_queue'
+    ? ['accepted', 'queued', 'running', 'triggered', 'blocked']
+    : input.recoverTerminalFailure === true
     ? [...ALLOWED_PREVIOUS[input.status], 'error', 'blocked']
     : ALLOWED_PREVIOUS[input.status]
   const terminal = TERMINAL_STATUSES.has(input.status)

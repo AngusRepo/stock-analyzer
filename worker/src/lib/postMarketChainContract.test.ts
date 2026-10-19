@@ -39,8 +39,8 @@ const postVerifyQueueBlock = updateOrchestrator.slice(
   updateOrchestrator.indexOf("if (msg.type === 'allocator_ev_lifecycle_recovery')"),
 )
 const metaShadowBlock = postMarketChain.slice(
-  postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask"),
-  postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
+  postMarketChain.indexOf("'meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask"),
+  postMarketChain.indexOf("'strategy-learning', env => enqueueStrategyLearningClosureTask"),
 )
 const metaShadowClosureBlock = postMarketChain.slice(
   postMarketChain.indexOf('async function runMetaLearningShadowClosure'),
@@ -149,7 +149,7 @@ assert(
   'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
 )
 assert(
-  postMarketChain.includes('inspectActive8ActionAuthorityState') &&
+  postMarketChain.includes('inspectPostPipelineActionAuthority') &&
     postMarketChain.includes('active8_serving_pointer_integrity_invalid') &&
     postMarketChain.includes('active8_evidence_only_action_leak') &&
     postMarketChain.includes("task: 'active8-action-authority'") &&
@@ -214,7 +214,7 @@ assert(
 )
 assert(
   postMarketChain.includes("type: 's12_replay_backfill_chunk'") &&
-    postMarketChain.includes("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") &&
+    postMarketChain.includes("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") &&
     postMarketChain.includes('statusRunDate: runDate') &&
     updateOrchestrator.includes('run_date: statusRunDate'),
   'post-verify chain must enqueue S12 replay backfill after daily recommendations are available',
@@ -233,30 +233,30 @@ assert(
   'post-pipeline and post-verify chains must stay separate owners',
 )
 assert(
-  postMarketChain.indexOf("'model-ic-rolling', () => runModelIcRollingRefresh") <
-    postMarketChain.indexOf("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") &&
-    postMarketChain.indexOf("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") <
-    postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache"),
+  postMarketChain.indexOf("'model-ic-rolling', env => runModelIcRollingRefresh") <
+    postMarketChain.indexOf("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") &&
+    postMarketChain.indexOf("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") <
+    postMarketChain.indexOf("'paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache"),
   'post-verify chain must enqueue S12 replay after model IC and before current-date report tasks',
 )
 assert(
-  postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache") <
-    postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh"),
+  postMarketChain.indexOf("'paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache") <
+    postMarketChain.indexOf("'linucb-reward-ledger', env => runLinUcbRewardLedgerRefresh"),
   'LinUCB reward ledger must run after rolling IC evidence refresh',
 )
 assert(
-  postMarketChain.indexOf("'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh") <
-    postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
+  postMarketChain.indexOf("'linucb-reward-ledger', env => runLinUcbRewardLedgerRefresh") <
+    postMarketChain.indexOf("'adapt', env => runAdaptiveUpdate"),
   'adaptive params must run after LinUCB reward ledger is refreshed',
 )
 assert(
-  postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily") <
-    postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask"),
+  postMarketChain.indexOf("'obsidian-sync', env => runObsidianDaily") <
+    postMarketChain.indexOf("'meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask"),
   'Neural meta-learning shadow evidence must not block adaptive params, report, or obsidian sync',
 )
 assert(
-  postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask") <
-    postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
+  postMarketChain.indexOf("'meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask") <
+    postMarketChain.indexOf("'strategy-learning', env => enqueueStrategyLearningClosureTask"),
   'Meta-learning evidence must be durably enqueued before strategy-learning closure',
 )
 assert(
@@ -281,13 +281,13 @@ assert(
   'post-verify chain must include paper-active postmarket promotion closure',
 )
 assert(
-  postMarketChain.indexOf("'daily-report', () => generateDailyReport") <
-    postMarketChain.indexOf("'paper-active-postmarket', () => runPaperActivePostmarketPromotion"),
+  postMarketChain.indexOf("'daily-report', env => generateDailyReport") <
+    postMarketChain.indexOf("'paper-active-postmarket', env => runPaperActivePostmarketPromotion"),
   'paper-active postmarket promotion should run after daily report source metrics are available',
 )
 assert(
-  postMarketChain.indexOf("'paper-active-postmarket', () => runPaperActivePostmarketPromotion") <
-    postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily"),
+  postMarketChain.indexOf("'paper-active-postmarket', env => runPaperActivePostmarketPromotion") <
+    postMarketChain.indexOf("'obsidian-sync', env => runObsidianDaily"),
   'paper-active postmarket summary should be available before obsidian sync',
 )
 assert(
@@ -295,7 +295,7 @@ assert(
   'Neural meta-learning shadow evidence must be non-critical for the production post-verify closure',
 )
 assert(
-  metaShadowBlock.includes("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask") &&
+  metaShadowBlock.includes("'meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask") &&
     metaShadowBlock.includes('timeoutMs: TASK_EXECUTION_TIMEOUT_MS'),
   'Neural meta-learning shadow enqueue must be timeout-bounded so it cannot leave post-verify/evening-chain triggered',
 )
@@ -305,7 +305,7 @@ assert(
   'Neural meta-learning shadow must run as a durable queue continuation with final scheduler status',
 )
 assert(
-  postMarketChain.includes("'ga-shadow-daily', () => enqueueGaOptimizerShadowClosureTask") &&
+  postMarketChain.includes("'ga-shadow-daily', env => enqueueGaOptimizerShadowClosureTask") &&
     postMarketChain.includes("type: 'ga_optimizer_shadow_closure'") &&
     updateOrchestrator.includes("if (msg.type === 'ga_optimizer_shadow_closure')") &&
     updateOrchestrator.includes('ensureLatestGaShadowEnrolled'),

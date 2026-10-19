@@ -58,6 +58,25 @@ async function main() {
     assert.deepEqual(sql.prepare('SELECT * FROM pipeline_stage_runs').all(), before, mutation)
   }
   reset()
+  function recoverFailedParent() {
+    sql.exec(`UPDATE pipeline_stage_runs SET status='error' WHERE stage='pipeline_execution';
+      INSERT INTO pipeline_stage_runs VALUES('2026-09-21','post_pipeline_chain','canonical','success',NULL,'done',NULL,NULL);
+      INSERT INTO pipeline_stage_runs VALUES('2026-09-21','verify_v2','canonical','success',NULL,'done',NULL,NULL);`)
+  }
+  recoverFailedParent()
+  assert.equal(await closeStrategyLearningPostVerifyStage(db, identity), true, 'actual downstream recovery closes independently')
+  assert.equal(sql.prepare("SELECT status FROM pipeline_stage_runs WHERE stage='pipeline_execution'").get()?.status, 'error', 'parent failure retained')
+  for (const mutation of [
+    "UPDATE pipeline_stage_runs SET status='error' WHERE stage='verify_v2'",
+    "UPDATE pipeline_stage_runs SET status='waiting' WHERE stage='post_pipeline_chain'",
+    "UPDATE pipeline_stage_runs SET canonical_run_id='stale' WHERE stage='verify_v2'",
+    "UPDATE pipeline_stage_runs SET completed_at=NULL WHERE stage='post_pipeline_chain'",
+    "UPDATE pipeline_stage_runs SET status='running' WHERE stage='pipeline_execution'",
+  ]) {
+    reset(); recoverFailedParent(); sql.exec(mutation)
+    assert.equal(await closeStrategyLearningPostVerifyStage(db, identity), false, mutation)
+  }
+  reset()
   sql.exec("UPDATE strategy_learning_runs SET production_authority_intent=1,policy_closure_status='materialized'")
   assert.equal(await closeStrategyLearningPostVerifyStage(db, identity), true, 'original live policy closure retained')
   sql.close()

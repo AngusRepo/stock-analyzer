@@ -13,11 +13,13 @@ export function afterClosePaperRecovery(env: Bindings, date: string, input: Prem
   const tw = new Date(now + 8 * 3600_000)
   const october13 = date === '2026-10-13' && input.signal_date === '2026-10-12'
     && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED === '0'
-  const allowed = october13 || (date === '2026-10-12' && input.signal_date === '2026-10-08')
+  const october16 = date === '2026-10-16' && input.signal_date === '2026-10-15'
+    && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED === '0'
+  const allowed = october13 || october16 || (date === '2026-10-12' && input.signal_date === '2026-10-08')
   return scopedPaperAccountId() === null && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1'
     && env.LIVE_EXECUTION_CLIENT_ENABLED === '0'
     && allowed && tw.toISOString().slice(0,10) === date
-    && tw.getUTCHours() * 60 + tw.getUTCMinutes() >= (october13 ? 540 : 810)
+    && tw.getUTCHours() * 60 + tw.getUTCMinutes() >= (october13 || october16 ? 540 : 810)
     && seal?.run_date === input.signal_date
     && context?.trade_date === date
 }

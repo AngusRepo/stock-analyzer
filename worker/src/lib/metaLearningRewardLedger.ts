@@ -562,13 +562,25 @@ export async function refreshLinUcbRewardLedger(
   }
 
   let persisted = 0
-  for (const row of ledgerRows) {
-    await db.prepare(`
+  let statements: D1PreparedStatement[] = [], pendingRows = 0
+  const flush = async () => {
+    if (!statements.length) return
+    const results = await db.batch(statements)
+    if (results.length !== statements.length || results.some(result => result.success !== true)) {
+      throw new Error('linucb_reward_ledger_batch_write_failed')
+    }
+    persisted += pendingRows
+    statements = []
+    pendingRows = 0
+  }
+  for (let offset = 0; offset < ledgerRows.length; offset += 10) {
+    const rows = ledgerRows.slice(offset, offset + 10)
+    statements.push(db.prepare(`
       INSERT INTO meta_reward_ledger (
         policy_id, arm_id, context_hash, samples, reward_sum, reward_mean,
         last_reward_at, updated_at, evidence_json
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES ${rows.map(() => '(?,?,?,?,?,?,?,?,?)').join(',')}
       ON CONFLICT(policy_id, arm_id, context_hash) DO UPDATE SET
         samples = excluded.samples,
         reward_sum = excluded.reward_sum,
@@ -576,19 +588,14 @@ export async function refreshLinUcbRewardLedger(
         last_reward_at = excluded.last_reward_at,
         updated_at = excluded.updated_at,
         evidence_json = excluded.evidence_json
-    `).bind(
-      row.policy_id,
-      row.arm_id,
-      row.context_hash,
-      row.samples,
-      row.reward_sum,
-      row.reward_mean,
-      row.last_reward_at,
-      row.updated_at,
-      row.evidence_json,
-    ).run()
-    persisted += 1
+    `).bind(...rows.flatMap(row => [row.policy_id, row.arm_id, row.context_hash,
+      row.samples, row.reward_sum, row.reward_mean, row.last_reward_at, row.updated_at, row.evidence_json])))
+    pendingRows += rows.length
+    // At most 90 bindings per statement, 50 statements / 500 rows per RPC.
+    // The post-verify effect fence runs once per batch, never once per row.
+    if (statements.length === 50) await flush()
   }
+  await flush()
 
   return {
     success: true,

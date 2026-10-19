@@ -441,6 +441,10 @@ export async function runActive8OofLifecycle(
   } = {},
 ) {
   requireController(env)
+  if (cadence === 'daily' && runDate) {
+    const { assertActive8DailyFailureFenceOpen } = await import('./active8DailyFailureFence')
+    await assertActive8DailyFailureFenceOpen(env.KV, runDate)
+  }
   if (cadence === 'daily' && runDate && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1') {
     const stage = await databaseForDataDomain(env, 'ops').prepare(`
       SELECT status, last_error FROM pipeline_stage_runs

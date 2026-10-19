@@ -13,6 +13,7 @@ test('overnight checkpoint separates completed L3 from pending L4 and root', () 
   const pending = sealedPremarketDisplay({ ...base, jobId: 'recommendation' })!
   assert.equal(pending.lastRunAt, null); assert.equal(pending.lastDuration, 'N/A')
   assert.equal(pending.nextRun, '等待盤前資訊')
+  assert.equal(sealedPremarketDisplay({ ...base, jobId: 'ml-predict' })?.runId, base.stage.canonical_run_id)
 })
 test('a summary alone, a stale run or a different business date cannot assert L3 success', () => {
   assert.equal(sealedPremarketDisplay({ ...base, jobId: 'ml-predict', stage: undefined }), null)
@@ -25,4 +26,13 @@ test('actual error and resumed/completed stages retain authority', () => {
     assert.equal(sealedPremarketDisplay({ ...base, jobId: 'evening-chain', ticketStatus }), null)
   for (const status of ['running', 'error', 'success'])
     assert.equal(sealedPremarketDisplay({ ...base, jobId: 'pipeline', stage: { ...base.stage, status } }), null)
+})
+
+test('sealed predictions never imply failed Atomic input validation passed', () => {
+  const log={...base.log,summary:base.log.summary+' atomic_inputs=failed'}
+  const result=sealedPremarketDisplay({...base,jobId:'ml-predict',log})!
+  assert.equal(result.lastStatus,'failed')
+  assert.equal(result.lastError,'paired_nav_atomic_inputs_failed')
+  assert.match(result.summary,/已完成並封存/)
+  assert.match(result.summary,/驗證未通過/)
 })

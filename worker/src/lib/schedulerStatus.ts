@@ -1,8 +1,11 @@
+import { pipelineProgressForDisplay } from './pipelineProgress'
+import { finlabProgressForDisplay } from './finlabStageProgress'
 /**
  * schedulerStatus.ts - Scheduler dashboard status builder
  */
 
 import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
+import { indicatorQueueDurationMs } from './indicatorQueueTiming'
 import { sealedPremarketDisplay } from './schedulerPipelinePhase'
 import { loadPremarketProducerStates, premarketProducerDisplay } from './premarketProducerStatus'
 import { loadPremarketProgress, premarketExecutionDisplay, premarketWatchdogDisplay } from './schedulerPremarketProgress'
@@ -375,6 +378,7 @@ export function reconcileDurablePipelineStageStatus(input: {
   runDate: string | null
   baseStatus: SchedulerLastStatus
   baseTimestamp?: string | null
+  baseDispatchRunId?: string | null
   durable?: DurablePipelineStageDisplayRow
 }): {
   lastStatus: SchedulerLastStatus
@@ -397,7 +401,10 @@ export function reconcileDurablePipelineStageStatus(input: {
   const durableTimestamp = sqliteUtcTimestamp(durable.updated_at)
   const durableMs = Date.parse(durableTimestamp)
   const baseMs = baseTimestamp ? Date.parse(baseTimestamp) : Number.NEGATIVE_INFINITY
-  if (!Number.isFinite(durableMs) || (Number.isFinite(baseMs) && durableMs <= baseMs)) return null
+  // A trigger acknowledgement can arrive after the durable enqueue write
+  // (SQLite seconds vs KV milliseconds). It cannot promote queued to running.
+  const sameRunDispatch = Boolean(input.baseDispatchRunId && input.baseDispatchRunId === durable.canonical_run_id)
+  if (!Number.isFinite(durableMs) || (!sameRunDispatch && Number.isFinite(baseMs) && durableMs <= baseMs)) return null
 
   const lastStatus: SchedulerLastStatus = durable.status === 'success'
     ? 'success'
@@ -533,7 +540,7 @@ export type SchedulerRunDisplayTime = {
   basis: 'started' | 'updated'
 }
 
-const CALLBACK_CONTAINER_JOB_IDS = new Set(['post-pipeline-chain', 'post-verify-chain'])
+const CALLBACK_CONTAINER_JOB_IDS = new Set(['pipeline', 'post-pipeline-chain', 'post-verify-chain'])
 
 export function resolveSchedulerRunDisplayTime(input: {
   jobId: string
@@ -889,6 +896,21 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     console.warn('[schedulerStatus] premarket progress read failed:', error)
     return []
   })
+  const finlabProgressPromise = opsDb.prepare(`SELECT business_date,cursor_key
+    FROM pipeline_stage_runs WHERE stage='finlab_progress' AND business_date IN (${dates.map(() => '?').join(',')})`)
+    .bind(...dates).all<{business_date:string;cursor_key:string|null}>()
+    .then(r => new Map((r.results ?? []).map(row => [row.business_date,row])))
+    .catch(() => new Map<string,{cursor_key:string|null}>())
+  const batchProgressPromise = opsDb.prepare(`SELECT business_date,canonical_run_id,cursor_key
+    FROM pipeline_stage_runs WHERE stage IN ('pipeline_batches:input_prep','pipeline_batches:prepare_prediction_request')
+      AND business_date IN (${dates.map(() => '?').join(',')})`)
+    .bind(...dates).all<{business_date:string;canonical_run_id:string;cursor_key:string|null}>()
+    .then(r=>r.results??[]).catch(()=>[])
+  const progressPromise = opsDb.prepare(`SELECT business_date,canonical_run_id,cursor_key
+    FROM pipeline_stage_runs WHERE stage='pipeline_progress' AND business_date IN (${dates.map(() => '?').join(',')})`)
+    .bind(...dates).all<{business_date:string;canonical_run_id:string;cursor_key:string|null}>()
+    .then(r => new Map((r.results ?? []).map(row => [row.business_date,row])))
+    .catch(() => new Map<string,{canonical_run_id:string;cursor_key:string|null}>())
   const durableStageStatesPromise = loadDurablePipelineStageStates(opsDb, dates).catch((error) => {
     console.warn('[schedulerStatus] durable pipeline stage read failed:', error)
     return new Map<string, DurablePipelineStageDisplayRow>()
@@ -1048,9 +1070,20 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       runDate: resolvedDisplay.statusRunDate,
       baseStatus: resolvedDisplay.status,
       baseTimestamp: displayLog?.timestamp,
+      baseDispatchRunId: displayLog?.status === 'triggered'
+        ? displayLog.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(displayLog.summary ?? '')?.[1] : null,
       durable: durableState,
     })
-    const baseLastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
+    const handoffStage = displayLog?.status === 'triggered' && /cloud_compute_stopped=true/.test(displayLog.summary ?? '')
+      ? /(?:^|\s)stage=([a-z_]+)(?:\s|$)/.exec(displayLog.summary ?? '')?.[1] : undefined
+    const pipelineProgress = def.id === 'pipeline' ? pipelineProgressForDisplay(durableState,
+      (await progressPromise).get(resolvedDisplay.statusRunDate ?? ''),
+      handoffStage && displayLog?.run_id ? { runId: displayLog.run_id, observedAt: displayLog.timestamp,
+        phase: handoffStage === 'modal_prediction' ? handoffStage : `input_${handoffStage}` } : undefined) : null
+    const progressActive = pipelineProgress && durableState && ['running','waiting'].includes(durableState.status)
+      && !['success','failed'].includes(resolvedDisplay.status)
+    const progressStatus = progressActive ? (pipelineProgress.status === 'waiting' ? 'waiting' as const : 'running' as const) : null
+    const baseLastStatus = progressStatus ?? durableOverride?.lastStatus ?? resolvedDisplay.status
     const baseTimestamp = durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null
     const executionTicketDate = resolvedDisplay.statusRunDate ?? today
     const executionTicket = selectSchedulerExecutionTicketForDisplay({
@@ -1106,7 +1139,18 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       durable: ticketAuthority !== 'scheduler_kv',
       missing: accounting.ticketRequired && !ticketId,
     }
-    const lastDuration = formatDuration(displayLog?.duration_ms)
+    // Recover legacy zero placeholders from exact-run metadata without rewriting
+    // historical receipts. Missing/expired timing stays unknown, never '<1s'.
+    let displayDuration = displayLog?.duration_ms
+    if (def.id === 'indicator-queue' && displayDuration === 0) {
+      displayDuration = null
+      const date = displayLog?.run_date ?? resolvedDisplay.statusRunDate
+      if (displayLog?.status === 'success' && displayLog.run_id && date) {
+        const meta = await env.KV.get(`cron:indicator-queue:${date}:${displayLog.run_id}:meta`, 'json')
+        displayDuration = indicatorQueueDurationMs(meta, date, displayLog.run_id, Date.parse(displayLog.timestamp))
+      }
+    }
+    const lastDuration = formatDuration(displayDuration)
     const shortRun = inferShortRunConcern(def, displayLog)
 
     if (producerDisplay) history7d[history7d.length - 1] = producerDisplay.lastStatus === 'error' ? 'failed'
@@ -1144,7 +1188,14 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
-      summary: executionTicketOverride?.summary ?? durableOverride?.summary ?? displayLog?.summary ?? '',
+      pipelineProgress: pipelineProgress ? { ...pipelineProgress, run_id: durableState?.canonical_run_id, run_date: resolvedDisplay.statusRunDate } : null,
+      pipelineBatches: def.id === 'pipeline' ? (await batchProgressPromise)
+        .filter(row=>row.business_date===resolvedDisplay.statusRunDate && row.canonical_run_id===durableState?.canonical_run_id)
+        .flatMap(row=>{try { return [JSON.parse(row.cursor_key??'')] } catch { return [] }}) : undefined,
+      finlabProgress: def.id === 'finlab-v4-backfill' ? finlabProgressForDisplay(displayLog,
+        (await finlabProgressPromise).get(resolvedDisplay.statusRunDate ?? '')) : null,
+      summary: progressActive ? `phase=${pipelineProgress.phase} phase_status=${pipelineProgress.status} execution=${pipelineProgress.execution_id}`
+        : executionTicketOverride?.summary ?? durableOverride?.summary ?? displayLog?.summary ?? '',
       details: displayLog?.details ?? [],
       runId: ticketRunId,
       attemptId: executionTicketOverride?.attemptId ?? displayLog?.attempt_id ?? null,

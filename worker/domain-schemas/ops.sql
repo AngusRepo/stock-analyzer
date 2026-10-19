@@ -1035,3 +1035,15 @@ INSERT INTO artifact_deletion_claims_v1
   COALESCE(a.payload_deleted_at,a.updated_at),COALESCE(a.payload_deleted_at,a.updated_at),COALESCE(a.payload_deleted_at,a.updated_at)
  FROM run_artifacts a WHERE (a.status='payload_deleted' OR a.payload_deleted_at IS NOT NULL)
   AND NOT EXISTS(SELECT 1 FROM artifact_deletion_claims_v1 c WHERE c.artifact_id=a.artifact_id);
+
+-- Durable post-verify task receipts; not subject to scheduler lock TTL cleanup.
+CREATE TABLE IF NOT EXISTS post_verify_task_receipts_v1 (
+  receipt_key TEXT PRIMARY KEY,
+  state TEXT NOT NULL CHECK(state IN ('post_verify_task_v1:running','post_verify_task_v1:success','post_verify_task_v1:error','post_verify_task_v1:uncertain')),
+  business_date TEXT NOT NULL,
+  receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json) AND length(CAST(receipt_json AS BLOB)) <= 32768),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_post_verify_task_receipts_state_date
+  ON post_verify_task_receipts_v1(state,business_date);

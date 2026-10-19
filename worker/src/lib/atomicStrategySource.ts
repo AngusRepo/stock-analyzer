@@ -49,15 +49,6 @@ async function verifiedBody(env: Pick<Bindings, 'ARTIFACTS'>, key: string, check
   return JSON.parse(body)
 }
 
-/** Bounded reads preserve original order; every fragment still verifies its hash. */
-async function* orderedArtifactBodies(env: Pick<Bindings, 'ARTIFACTS'>, refs: any[]) {
-  for (let offset = 0; offset < refs.length; offset += 4) {
-    const window = refs.slice(offset, offset + 4)
-    const bodies = await Promise.all(window.map(ref => verifiedBody(env, ref.r2_key, ref.checksum)))
-    for (let i = 0; i < window.length; i++) yield { index: offset + i, ref: window[i], body: bodies[i] }
-  }
-}
-
 /** Also used by transport tests; the supplied parent must come from a verified
  * canonical run manifest, not from an untrusted caller's checksum assertion. */
 export async function readAtomicSourcePayload(env: Pick<Bindings, 'ARTIFACTS'>, row: SourceRow,
@@ -77,7 +68,7 @@ export async function readAtomicSourcePayload(env: Pick<Bindings, 'ARTIFACTS'>, 
     if (!Array.isArray(source.fragments) || !source.fragments.length) throw new Error('atomic_source_fragments_missing')
     const parts: string[] = []
     const ids = new Set<string>()
-    for await (const { index, ref, body: part } of orderedArtifactBodies(env, source.fragments)) {
+    for (const [index, ref] of source.fragments.entries()) {
       if (ref.status !== 'ready' || ref.domain !== 'screener_funnel_chunk'
         || ref.schema_version !== 'screener-funnel-evidence-chunk-v1'
         || ref.business_date !== row.business_date || ref.producer_run_id !== row.producer_run_id
@@ -86,6 +77,7 @@ export async function readAtomicSourcePayload(env: Pick<Bindings, 'ARTIFACTS'>, 
         throw new Error('atomic_source_fragment_identity_invalid')
       }
       ids.add(ref.artifact_id)
+      const part = await verifiedBody(env, ref.r2_key, ref.checksum)
       const payload = part.payload
       if (part.domain !== ref.domain || part.business_date !== row.business_date || part.schema_version !== ref.schema_version
         || payload?.collection !== 'atomic_strategy_source_json_v1' || payload.storage_mode !== 'chunked_r2_child_v1'
@@ -126,7 +118,7 @@ async function readVerifiedFunnelItems(env: Pick<Bindings, 'ARTIFACTS'>, row: So
       || !Array.isArray(payload.chunks) || !payload.chunks.length) throw new Error('atomic_funnel_manifest_invalid')
     items = []
     const ids = new Set<string>()
-    for await (const { index, ref, body: child } of orderedArtifactBodies(env, payload.chunks)) {
+    for (const [index, ref] of payload.chunks.entries()) {
       if (ref.chunk_index !== index || !ref.artifact_id || ids.has(ref.artifact_id)
         || ref.schema_version !== 'screener-funnel-evidence-chunk-v1'
         || !Number.isSafeInteger(ref.row_count) || ref.row_count < 0
@@ -135,6 +127,7 @@ async function readVerifiedFunnelItems(env: Pick<Bindings, 'ARTIFACTS'>, row: So
         throw new Error('atomic_funnel_chunk_reference_invalid')
       }
       ids.add(ref.artifact_id)
+      const child = await verifiedBody(env, ref.r2_key, ref.checksum)
       const body = child.payload
       if (child.domain !== 'screener_funnel_chunk' || child.business_date !== row.business_date
         || child.schema_version !== ref.schema_version || body?.storage_mode !== 'chunked_r2_child_v1'
@@ -219,8 +212,7 @@ export async function replayCanonicalAtomicSource(env: Pick<Bindings, 'DB' | 'OP
 /** Load the canonical artifact once, retaining the complete structural population.
  * No return-based selection, new market reads, semantic execution or writes. */
 export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' | 'OPS_DB' | 'ARTIFACTS'>,
-  input: { signalDate: string; producerRunId: string; decisionDeadline: string; continuations?: AtomicContinuationRequest[] },
-  checkpoint?: { run<T>(identity: unknown, compute: () => Promise<T>): Promise<T> }) {
+  input: { signalDate: string; producerRunId: string; decisionDeadline: string; continuations?: AtomicContinuationRequest[] }) {
   const continuations = input.continuations ?? []
   if (!validAtomicContinuations(continuations)) throw new Error('atomic_source_continuations_invalid')
   const { source, identity, funnel_items, ...artifact } = await readCanonicalSource(env, input, true)
@@ -234,10 +226,11 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
   ]
   const completed = new Set<string>()
   for (const { replacement, definitionChecksum } of jobs) {
-    const compute = async () => {
     const replay = await replaySource(replacement, definitionChecksum)
+    if (completed.has(replay.replacement_definition_checksum)) continue
+    completed.add(replay.replacement_definition_checksum)
     const post = replay.post_overlay_replay
-    return { replacement, definition_checksum: replay.replacement_definition_checksum,
+    replacements.push({ replacement, definition_checksum: replay.replacement_definition_checksum,
       ...(replay.weight_policy_version ? { weight_policy_version: replay.weight_policy_version } : {}),
       runtime_context_checksum: replay.runtime_context_checksum, candidate: replay.candidate_core_replay,
       core_upsert_bindings: replay.candidate_core_replay.status === 'materialized'
@@ -249,16 +242,7 @@ export async function replayCanonicalAtomicPopulation(env: Pick<Bindings, 'DB' |
           final_seed: post.candidate.finalSeed.map(({ symbol }) => ({ symbol })),
           merge_items: post.candidate.finalSeed.map((row, index) => buildScreenerL1MergeItem(row,
             replay.candidate.coarseQueue.find(route => route.symbol === row.symbol), index + 1)) }
-        : { status: 'unavailable' as const, reason: 'requires_candidate_post_route_replay' } }
-    }
-    // Source and canonical identity are revalidated on every invocation. Only
-    // deterministic replay output is reusable; no observation/session credit.
-    const row = checkpoint ? await checkpoint.run({ source: source.source_checksum,
-      artifact, signalDate: source.signal_date, producerRunId: source.producer_run_id,
-      replacement, definitionChecksum: definitionChecksum ?? null }, compute) : await compute()
-    if (completed.has(row.definition_checksum)) continue
-    completed.add(row.definition_checksum)
-    replacements.push(row)
+        : { status: 'unavailable' as const, reason: 'requires_candidate_post_route_replay' } })
   }
   return { schema_version: 'atomic-canonical-population-v1' as const,
     signal_date: source.signal_date, producer_run_id: source.producer_run_id,

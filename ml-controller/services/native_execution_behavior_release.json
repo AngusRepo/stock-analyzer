@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
+  "execution_owner_version": "native-paper-v1:c2503b8583325c161b788a94ba919cbcd98d3479f2c93e535c46927250c754e1",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved immediate exact October 19 formal publication repair and pending buys continuation",
-  "review": "audits/l4-chain-performance-20261019/formal-write-release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-formal-write-window-20261019"
+  "authorization": "audits/hmm-maintenance-20261019/authorization.json",
+  "review": "audits/hmm-maintenance-20261019/REVIEW.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:hmm-maintenance-20261019"
 }

@@ -17,6 +17,7 @@ import tempfile
 import shutil
 import inspect
 from functools import wraps, lru_cache
+from collections import OrderedDict
 
 from services.paired_nav_journal import digest
 from services.pipeline_json_transport import iter_json_bytes
@@ -26,6 +27,12 @@ SCHEMA = 'pipeline-slate-ref-v1'
 _local = ContextVar('pipeline_slate_test_store', default=None)
 _reads = ContextVar('pipeline_slate_read_files', default=None)
 _verified = ContextVar('pipeline_slate_verified_refs', default=None)
+_projections = ContextVar('pipeline_slate_field_projections', default=None)
+_read_sizes = ContextVar('pipeline_slate_read_sizes', default=None)
+_preparations = ContextVar('pipeline_slate_verified_preparations', default=None)
+READ_CACHE_BYTES = 128 * 1024 * 1024
+PROJECTION_CACHE_BYTES = 16 * 1024 * 1024
+PREPARATION_CACHE_BYTES = 8 * 1024 * 1024
 
 
 @contextmanager
@@ -36,9 +43,15 @@ def _read_files():
     with tempfile.TemporaryDirectory(prefix='slate-read-cache-') as folder:
         token = _reads.set(Path(folder))
         checked = _verified.set(set())
+        projections = _projections.set(OrderedDict())
+        sizes = _read_sizes.set({})
+        preparations = _preparations.set(OrderedDict())
         try:
             yield
         finally:
+            _preparations.reset(preparations)
+            _read_sizes.reset(sizes)
+            _projections.reset(projections)
             _verified.reset(checked)
             _reads.reset(token)
 
@@ -128,7 +141,11 @@ def _download(key, filename):
         return True
     found = _download_uncached(key, filename)
     if found and cached is not None:
-        shutil.copyfile(filename, cached)
+        sizes = _read_sizes.get()
+        size = os.path.getsize(filename)
+        if sizes is not None and size + sum(sizes.values()) <= READ_CACHE_BYTES:
+            shutil.copyfile(filename, cached)
+            sizes[key] = size
     return found
 
 
@@ -200,8 +217,11 @@ def _load(value, scope=None, *, materialize=True):
                 sha.update(chunk)
         if sha.hexdigest() != value['sha256']:
             raise ValueError('pipeline_slate_artifact_checksum_mismatch')
-        with gzip.open(path, 'rt', encoding='utf8') as stream:
-            decoded = json.load(stream)
+        with gzip.open(path, 'rb') as stream:
+            # A full-document Unicode buffer doubles the peak for large pools.
+            # Use the existing native streaming decoder after byte verification.
+            from services.streaming_json_reader import load as read_json
+            decoded = read_json(stream)
         if 'logical_sha256' in value:
             if not isinstance(decoded, dict) or decoded.get('schema_version') != 'pipeline-payload-delta-v1':
                 raise ValueError('pipeline_slate_delta_invalid')
@@ -223,6 +243,75 @@ def _load(value, scope=None, *, materialize=True):
 
 def load(value, scope=None):
     return _load(value, scope)
+
+
+def load_readonly(value, scope=None):
+    """Verified transient view for readers; nested histories may share memory.
+
+    Never pass this view to a model, merger or other mutable consumer. The same
+    stored and logical hashes are checked as load(), without per-stock copies
+    of common market histories. Nothing decoded is retained between reads.
+    """
+    return _load(value, scope, materialize=False)
+
+
+def load_fields(value, fields, scope=None):
+    """Read a small per-stock projection after complete artifact verification.
+
+    Cache only serialized projections of immutable references, scoped to one
+    owner. Inline inputs are always reread, and every returned row owns its
+    nested values. A changed ref/scope cannot reuse an earlier projection.
+    """
+    fields = tuple(fields)
+    if not fields or any(not isinstance(k, str) for k in fields) or len(set(fields)) != len(fields):
+        raise ValueError('pipeline_slate_projection_fields_invalid')
+    cache, key = _projections.get(), None
+    if is_ref(value):
+        _validate_ref(value, scope)
+        key = digest([value, fields])
+        if cache is not None and key in cache:
+            cache.move_to_end(key)
+            return json.loads(cache[key])
+    rows = load_readonly(value, scope)
+    result = [{k: deepcopy(row[k]) for k in fields if k in row} for row in rows]
+    if key is not None and cache is not None:
+        chunks, size = [], 0
+        for chunk in iter_json_bytes(result, allow_nan=False, default=None):
+            size += len(chunk)
+            if size > PROJECTION_CACHE_BYTES:
+                return result
+            chunks.append(chunk)
+        while cache and size + sum(map(len, cache.values())) > PROJECTION_CACHE_BYTES:
+            cache.popitem(last=False)
+        cache[key] = b''.join(chunks)
+    return result
+
+
+def verified_preparation(identity, build):
+    """Job-local reuse after a successful original verifier, never a saved verdict.
+
+    Callers must fingerprint ALL original verifier inputs afresh. Only small
+    serialized outputs are retained, with independent objects on every hit.
+    A failed verification publishes nothing; scope expiry drops every verdict.
+    """
+    cache = _preparations.get()
+    if cache is None:
+        return build()
+    key = digest(identity)
+    if key in cache:
+        cache.move_to_end(key)
+        return json.loads(cache[key])
+    result = build()
+    chunks, size = [], 0
+    for chunk in iter_json_bytes(result, allow_nan=False, default=None):
+        size += len(chunk)
+        if size > PREPARATION_CACHE_BYTES:
+            return result
+        chunks.append(chunk)
+    while cache and size + sum(map(len, cache.values())) > PREPARATION_CACHE_BYTES:
+        cache.popitem(last=False)
+    cache[key] = b''.join(chunks)
+    return result
 
 
 def load_owned(value, scope=None):
@@ -305,14 +394,15 @@ def _pool_rows(pool):
     return rows
 
 
-def load_inputs(reference, scope=None):
+def load_inputs(reference, scope=None, *, readonly=False):
     """Hydrate exactly one L3 slate, retaining the original model input contract."""
     if is_ref(reference):
         _validate_ref(reference, scope)
         scope = reference['scope']
     # Inline compatibility needs a copy; an outer artifact is already private.
-    value = load_owned(reference, scope)
-    return {**value, 'payloads': load(value['payloads'], scope)}
+    value = load_readonly(reference, scope) if readonly else load_owned(reference, scope)
+    read = load_readonly if readonly else load
+    return {**value, 'payloads': read(value['payloads'], scope)}
 
 
 def checkpoint(scope, identity, build, *, store=put):

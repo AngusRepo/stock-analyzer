@@ -9,6 +9,7 @@ from google.api_core.exceptions import NotFound, PreconditionFailed
 from services.pipeline_async_state_transport import (STATE_SCHEMA_V2, build_pipeline_payload_identity,
     encode_pipeline_state_envelope, decode_pipeline_state_envelope)
 from services.premarket_information import build_information_delta
+from services.pipeline_slate_artifacts import artifact_reads
 
 OWNER = 'premarket_once_v1'
 SERVING_PHASES=('node_compute_personas','node_recommend','node_llm_reasons','node_write_d1',
@@ -280,6 +281,7 @@ def dispatch_terminal_reconciliation(receipt,context,*,jobs_client,client=None):
 from services.paired_nav_read_cache import verified_reads_async
 
 @verified_reads_async
+@artifact_reads
 async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
     b=bucket(client);root='gs://'+b.name+'/'
     if not input_uri.startswith(root):raise ValueError('premarket_input_bucket_mismatch')
@@ -391,14 +393,19 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
             claim.upload_from_string(json_bytes({**identity,'status':'running'}),if_generation_match=claim.generation)
         try:
             from services.pipeline_progress import phase
+            from services.runtime_phase_metrics import measured_phase
             async with phase(node.__name__):
-                merge(state,await node(state))
-            if postwrite_only:
-                from services.premarket_postwrite_state import encode_postwrite_checkpoint
-                raw=encode_postwrite_checkpoint(state,receipt,phase=node.__name__,context_checksum=context['checksum'])
-            else:
-                raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
-            immutable(blob,raw,'application/gzip')
+                with measured_phase(node.__name__):
+                    merge(state,await node(state))
+                # Completion is durable only after its checkpoint is sealed.
+                # Measure serialization independently from the node's work.
+                with measured_phase(node.__name__+'.checkpoint'):
+                    if postwrite_only:
+                        from services.premarket_postwrite_state import encode_postwrite_checkpoint
+                        raw=encode_postwrite_checkpoint(state,receipt,phase=node.__name__,context_checksum=context['checksum'])
+                    else:
+                        raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
+                    immutable(blob,raw,'application/gzip')
         except Exception:
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'ambiguous' if node.__name__=='node_recommend' else 'failed'}),

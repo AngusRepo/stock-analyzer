@@ -174,13 +174,13 @@ def prepare_daily_inputs(population, *, signal_date, producer_run_id, formal_sto
     return {**body, 'input_checksum': digest(body)}
 
 
-def validate_daily_inputs(packet, *, signal_date, producer_run_id, formal_stocks):
+def validate_daily_inputs(packet, *, signal_date, producer_run_id, formal_stocks, readonly=False):
     if (not isinstance(packet, dict) or packet.get('schema_version') != 'paired-nav-atomic-daily-inputs-v1'
             or packet.get('signal_date') != signal_date or packet.get('producer_run_id') != producer_run_id
             or packet.get('formal_stocks') != formal_stocks
             or packet.get('input_checksum') != digest({k: v for k, v in packet.items() if k != 'input_checksum'})):
         raise ValueError('paired_nav_atomic_frozen_inputs_invalid')
-    return deepcopy(packet)
+    return packet if readonly else deepcopy(packet)
 
 
 def daily_setup_status(state):
@@ -195,7 +195,7 @@ def daily_setup_status(state):
                 raise ValueError('paired_nav_atomic_distribution_wait_changed')
             return deepcopy(saved)
         packet = validate_daily_inputs(saved, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
-                                       formal_stocks=state['active_stocks'])
+                                       formal_stocks=state['active_stocks'], readonly=True)
         count = len(packet['population']['replacements'])
         summary = {'input_checksum': packet['input_checksum'], 'replacement_count': count,
             'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}

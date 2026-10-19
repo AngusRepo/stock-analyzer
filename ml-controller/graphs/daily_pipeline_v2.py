@@ -808,7 +808,7 @@ async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
             return {'paired_nav_atomic_inputs': waiting}
         if isinstance(saved, dict) and saved.get('status') == 'pre_l2_inputs_captured':
             validate_daily_inputs(saved, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
-                                  formal_stocks=state['active_stocks'])
+                                  formal_stocks=state['active_stocks'], readonly=True)
             if state.get('pipeline_screener_seed_context') is not None:
                 from services.screener_seed_domain_merge import verify_canonical_seed_boundary
                 boundary = verify_canonical_seed_boundary(saved['population'], state['pipeline_screener_seed_context'])
@@ -919,7 +919,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
         from services.paired_nav_collection import shadow_failure
         try:
             packet = validate_daily_inputs(atomic, signal_date=state['run_date'], producer_run_id=state['screener_run_id'],
-                                           formal_stocks=state['active_stocks'])
+                                           formal_stocks=state['active_stocks'], readonly=True)
             result['paired_nav_atomic_pre_l2'] = {'status': 'pre_l2_payloads_built',
                 'input_checksum': packet['input_checksum'], 'source_checksum': sources['source_checksum'],
                 'slates': {key: save_slate(stocks) for key, stocks in packet['candidate_stocks'].items()},
@@ -2236,9 +2236,9 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
         try:
             from services.paired_nav_atomic_personas import atomic_persona_slates
             prepared = atomic_persona_slates(state)
-            from services.pipeline_slate_artifacts import load
+            from services.pipeline_slate_artifacts import load_fields
             extra_payloads = (p for reference in prepared['slates'].values()
-                              for p in load(reference, state.get('pipeline_slate_scope')))
+                              for p in load_fields(reference, ('symbol', 'chips'), state.get('pipeline_slate_scope')))
         except Exception as exc:
             atomic_failure = shadow_failure('atomic_persona_inputs', exc)
     context = capture_persona_context(run_date=run_date, formal_payloads=payloads,

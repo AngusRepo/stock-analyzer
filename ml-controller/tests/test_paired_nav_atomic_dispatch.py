@@ -304,13 +304,13 @@ def test_repeated_reference_prepares_once_without_merging_definition_receipts(di
     from services.pipeline_slate_artifacts import is_ref
     _, state, request = dispatched
     expected = deepcopy(state['paired_nav_atomic_dispatch'])
-    original_load = dispatch.load
+    original_load = dispatch.load_readonly
     reads = []
     def tracked(reference, *args, **kwargs):
         if is_ref(reference):
             reads.append(digest(reference))
         return original_load(reference, *args, **kwargs)
-    monkeypatch.setattr(dispatch, 'load', tracked)
+    monkeypatch.setattr(dispatch, 'load_readonly', tracked)
     result = dispatch.prepare_atomic_request(state, request)
     assert result == expected
     assert reads and len(reads) == len(set(reads))
@@ -335,3 +335,32 @@ def test_cached_reference_still_checks_each_definition_membership(dispatched, mo
     assert 'e'*64 in result['unavailable']
     assert 'c'*64 not in result['unavailable']
     assert {row['definition_checksum'] for row in result['request']['contrasts']} == {'c'*64, 'f'*64}
+
+
+def test_owner_reuses_verified_dispatch_but_rechecks_changed_state_and_saved_receipt(dispatched, monkeypatch):
+    from services import paired_nav_atomic_dispatch as dispatch
+    from services.pipeline_slate_artifacts import artifact_reads
+    _,state,request=dispatched
+    expected=deepcopy(state['paired_nav_atomic_dispatch'])
+    original=dispatch._prepare_atomic_request
+    calls=[]
+    def tracked(*args,**kwargs):calls.append(1);return original(*args,**kwargs)
+    monkeypatch.setattr(dispatch,'_prepare_atomic_request',tracked)
+    @artifact_reads
+    def owner():
+        first=dispatch.prepare_atomic_request(state,request)
+        first['status']='mutated_consumer'
+        assert dispatch.prepare_atomic_request(state,request)==expected
+        assert len(calls)==1
+        bad=deepcopy(state)
+        bad['paired_nav_atomic_dispatch']['signal_date']='2000-01-01'
+        saved=bad['paired_nav_atomic_dispatch']
+        saved['dispatch_checksum']=digest({k:v for k,v in saved.items() if k!='dispatch_checksum'})
+        with pytest.raises(ValueError,match='frozen_request_changed'):
+            dispatch.prepare_atomic_request(bad,request)
+        assert len(calls)==1
+        changed=deepcopy(state)
+        changed['active_stocks']=list(reversed(changed['active_stocks']))
+        with pytest.raises(ValueError):dispatch.prepare_atomic_request(changed,request)
+        assert len(calls)==2
+    owner()

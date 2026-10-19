@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from services.paired_nav_atomic_inputs import validate_daily_inputs
 from services.paired_nav_collection import shadow_failure
 from services.paired_nav_journal import digest, _timestamp
-from services.pipeline_slate_artifacts import load, keep, content_digest, load_inputs, is_ref
+from services.pipeline_slate_artifacts import load, load_readonly, keep, content_digest, load_inputs, is_ref, verified_preparation
 from services.state_space_series import read_frozen_sequence_inputs, VerifiedSequenceInputs
 
 
@@ -21,22 +21,41 @@ def _checked(record, schema, checksum_key):
 
 
 def prepare_atomic_request(state, parent):
+    # Exact values, not object IDs or self-reported checksums, bind reuse. The
+    # original verifier still executes on every changed input and outside an
+    # owner scope. Do not include the saved output in its own dependency key.
+    keys = ('run_date', 'screener_run_id', 'active_stocks', 'paired_nav_atomic_inputs',
+            'paired_nav_atomic_l2', 'paired_nav_atomic_pre_l2', 'pipeline_timesfm_context',
+            'pipeline_sequence_observations', 'pipeline_slate_scope', 'pipeline_shared_payload_ref')
+    identity = ['atomic-dispatch', {k: state.get(k) for k in keys},
+                (state.get('payload_source_observations') or {}).get('source_checksum'), parent]
+    dispatch = verified_preparation(identity, lambda: _prepare_atomic_request(state, parent))
+    saved = state.get('paired_nav_atomic_dispatch')
+    if saved and saved.get('request') is not None:
+        _checked(saved, 'paired-nav-atomic-dispatch-v1', 'dispatch_checksum')
+        if saved != dispatch:
+            raise ValueError('paired_nav_atomic_dispatch_frozen_request_changed')
+    return dispatch
+
+
+def _prepare_atomic_request(state, parent):
     source = validate_daily_inputs(state.get('paired_nav_atomic_inputs'), signal_date=state['run_date'],
-        producer_run_id=state['screener_run_id'], formal_stocks=state['active_stocks'])
+        producer_run_id=state['screener_run_id'], formal_stocks=state['active_stocks'], readonly=True)
     definitions = source['population']['replacements']
     l2 = _checked(state.get('paired_nav_atomic_l2'), 'paired-nav-atomic-l2-v1', 'output_checksum')
     pre = state.get('paired_nav_atomic_pre_l2') or {}
     context = _checked(state.get('pipeline_timesfm_context'), 'pipeline-timesfm-context-v1', 'source_checksum')
     sequence = state['pipeline_sequence_observations']
+    formal_checksum = digest(parent['payloads'])
     if (l2.get('status') not in {'l2_payloads_built', 'incomplete'} or l2.get('signal_date') != state['run_date']
             or pre.get('input_checksum') != source['input_checksum']
             or pre.get('source_checksum') != state['payload_source_observations']['source_checksum']
             or set(l2['slates']) != set(pre['slates']) or set(pre['slates']) != set(source['candidate_stocks'])
             or set(l2.get('holding_slates', {})) != set(source.get('holding_scopes', {}))
             or set(pre.get('holding_slates', {})) != set(source.get('holding_scopes', {}))
-            or l2['formal_payload_checksum'] != digest(parent['payloads'])
+            or l2['formal_payload_checksum'] != formal_checksum
             or l2['input_checksum'] != digest([pre, context, sequence,
-                l2['formal_input_payload_checksum'], digest(parent['payloads'])])):
+                l2['formal_input_payload_checksum'], formal_checksum])):
         raise ValueError('paired_nav_atomic_dispatch_l2_mismatch')
     observed_at = datetime.now(timezone.utc).isoformat()
     if _timestamp(context['observed_at']) > _timestamp(observed_at):
@@ -59,7 +78,7 @@ def prepare_atomic_request(state, parent):
             if expected_symbols is not None and symbols != expected_symbols:
                 raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')
             return key
-        payloads = load(reference, state.get('pipeline_slate_scope'))
+        payloads = load_readonly(reference, state.get('pipeline_slate_scope'))
         symbols = [p['symbol'] for p in payloads]
         if expected_symbols is not None and symbols != expected_symbols:
             raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')
@@ -90,7 +109,7 @@ def prepare_atomic_request(state, parent):
                 held = l2['holding_slates'][scope_id]
                 if (held.get('status') != 'ready'
                         or held.get('input_payload_checksum') != content_digest(pre['holding_slates'][scope_id])
-                        or [p['symbol'] for p in load(held['payloads'], state.get('pipeline_slate_scope'))] != [p['symbol'] for p in scope['stocks']]):
+                        or [p['symbol'] for p in load_readonly(held['payloads'], state.get('pipeline_slate_scope'))] != [p['symbol'] for p in scope['stocks']]):
                     raise ValueError('paired_nav_atomic_holding_l2_unavailable')
             if output['input_payload_checksum'] != content_digest(pre['slates'][key]):
                 raise ValueError('paired_nav_atomic_dispatch_slate_identity_mismatch')

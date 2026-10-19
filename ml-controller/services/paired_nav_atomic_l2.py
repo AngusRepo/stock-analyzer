@@ -16,7 +16,7 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
     if pre.get('status') != 'pre_l2_payloads_built':
         raise ValueError('paired_nav_atomic_pre_l2_missing')
     source = validate_daily_inputs(state.get('paired_nav_atomic_inputs'), signal_date=state['run_date'],
-        producer_run_id=state['screener_run_id'], formal_stocks=state['active_stocks'])
+        producer_run_id=state['screener_run_id'], formal_stocks=state['active_stocks'], readonly=True)
     if (pre.get('input_checksum') != source.get('input_checksum')
             or pre.get('source_checksum') != (state.get('payload_source_observations') or {}).get('source_checksum')):
         raise ValueError('paired_nav_atomic_l2_source_mismatch')

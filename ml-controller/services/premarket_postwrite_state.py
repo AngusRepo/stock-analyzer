@@ -14,7 +14,7 @@ from decimal import Decimal
 import ijson
 
 from services.pipeline_async_state_transport import (
-    STATE_SCHEMA_V1, STATE_SCHEMA_V2, STATE_SCHEMA_V3, build_pipeline_payload_identity,
+    STATE_SCHEMA_V1, STATE_SCHEMA_V2, STATE_SCHEMA_V3, STATE_SCHEMA_V4, build_pipeline_payload_identity,
 )
 from services.pipeline_json_transport import compress_json
 
@@ -111,7 +111,7 @@ def read_postwrite_state(blob, receipt, *, phase=None, context_checksum=None,
         raise ValueError('premarket_state_checksum')
     schema = envelope.get('schema_version')
     state = envelope['state']
-    if schema in (STATE_SCHEMA_V1, STATE_SCHEMA_V2, STATE_SCHEMA_V3):
+    if schema in (STATE_SCHEMA_V1, STATE_SCHEMA_V2, STATE_SCHEMA_V3, STATE_SCHEMA_V4):
         identity = build_pipeline_payload_identity(rows['payloads'])
         contract = state.get('pipeline_payload_identity')
         if isinstance(contract, dict):

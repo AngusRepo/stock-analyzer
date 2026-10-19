@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:2303663c055550150a50354d1039d9ff54c79ee1e7054339322af32aa4817eff",
+  "execution_owner_version": "native-paper-v1:55b9a403f5117038b650caf08878ab785359fa518ee3e2613087c1b5cfcef700",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei authorized the R16/R17 P4 shadow flow on 2026-10-19 and commit/push/deploy in this session; source-only release preserves c53e1d53 and all economic settings, no early model switch.",
+  "authorization": "Wei authorized R16/R17 shadow execution and commit/push/deploy in this session; includes the Linux-proven terminal IPC flush fix, preserves c53e1d53 and all economic policies, no early online model switch.",
   "review": "audits/r17-p4-20261019/release-review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r17-p4-engineering-20261019"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r17-p4-native-flush-20261019"
 }

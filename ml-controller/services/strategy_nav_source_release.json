@@ -81,6 +81,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:2303663c055550150a50354d1039d9ff54c79ee1e7054339322af32aa4817eff",
+  "execution_owner_version": "native-paper-v1:55b9a403f5117038b650caf08878ab785359fa518ee3e2613087c1b5cfcef700",
   "review": "audits/r17-p4-20261019/release-review.md"
 }

@@ -4,9 +4,9 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "2faa14daf3e2a157ff04955f812de398141aeecf",
+  "production_baseline_source": "b021ed245a7885aedf5b6c658d805f4c1173894e",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "2c9a2512fe15db242c946dbb8a8a11998c3fcfe95ecffe4e2d8b3e37e3833f71",
+  "prior_approval_checksum": "e6ac5b511a41047907a8595aa07cbb05cc862c5e65dbb41993608cf36349e5c5",
   "prior_configuration_checksum": "f40389d18c313f41f272ddd1396f84e0ea3773ccf56066685898babc070bf409",
   "approved_sources": {
     "allocator_source_identity": {
@@ -68,11 +68,11 @@
       "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
       "persona_service.py": "f07758b9ee3fc80e12c846ba42076d5fdc92196a0db0c269344d0af238460056",
       "pipeline_persona_context.py": "a9bc09ee59c4ce98bf141873fcda134d09173c2b4436f21e9d31ebba173cb137",
-      "paired_nav_atomic_personas.py": "c7ea0501e027397848185643c9f91ef8361df74cd65d162d41780a4a8f0227e7",
+      "paired_nav_atomic_personas.py": "0b9b38527a038426b86127c37af66cd2e418500ef8d68de3a1a90bc7a154a2fe",
       "screener_seed_domain_merge.py": "3c111952cddb69cc71ce36da29a3f332e157a3ffa3e197bb90eae3b57c6510cf",
       "screener_seed_domain_shadow.py": "4c848e8ab913708467a31bb5e0a0e131f78f68239afd5933c4dff876d10079cb",
       "recommendation_source_context.py": "4b7f5ae1ef6d1a86a9ca62696da73c2eae9f0558f5b05b7665dbbc0be32c38b7",
-      "paired_nav_atomic_recommendation.py": "27c5be1d92bd1a05923a1c98824d6a4b329ca1c53dc56caa160f25111fd80531",
+      "paired_nav_atomic_recommendation.py": "01f190d0a9d77e9eb160c332e9b76d941e642c42011f43918cb6ffabe37400ca",
       "paired_nav_atomic_policy.py": "97c1c82915bd443de4c90d7e749fc000ad9b31b91997d51ae9735c7c2bf51d18",
       "paired_nav_atomic_allocation.py": "c984ee2ac1d00035007259f138fc15f3097484c26ee035f8eeae54ee5d5c04d9",
       "paired_nav_atomic_candidate.py": "d27d4b277dfe1d5deae2b445784f1aad962b53db2e6e713d550a5a0f717e197e",
@@ -82,5 +82,5 @@
     }
   },
   "execution_owner_version": "native-paper-v1:d92a5ab5f14a714afc55fa2b54e014263ad200a54e0286b007b69c455d46355d",
-  "review": "audits/l4-chain-performance-20261019/release/review.md"
+  "review": "audits/l4-chain-performance-20261019/performance-release/review.md"
 }

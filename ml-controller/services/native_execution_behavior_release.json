@@ -5,7 +5,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei approved October 19 exception publication commit push deploy and continuation; preserve configuration and missing NAV state",
-  "review": "audits/l4-chain-performance-20261019/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-cutoff-recovery-20261019"
+  "authorization": "Wei approved L4 bounded performance commit push deploy after today pipeline-v2-xg9tv ends; preserve economics configuration and missing NAV state",
+  "review": "audits/l4-chain-performance-20261019/performance-release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-bounded-performance-20261019"
 }

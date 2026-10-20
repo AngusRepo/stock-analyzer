@@ -227,6 +227,8 @@ C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scrip
 main = production。唯一進入 main 的方式是 PR；部署只從 main 出發，且由 Wei 在 GitHub `production` environment 核准。
 
 - **分支前綴**：`claude/`、`codex/`、`cursor/`、`grok/`。疊在別人分支上的 PR，base 指向那條分支，不要指向 main。
+- **開分支一律從最新的 origin/main**：先 `git fetch origin main`，再 `git switch -c <prefix>/<topic> origin/main`；每個任務一個新 worktree。不要從本機 `main`、其他 worktree 的 HEAD 或舊分支開，因為本機 checkout 可能落後上千個 commit。唯一例外是明確疊在另一個 open PR 上的分支。
+- **一條分支只屬於一個 agent**：不 push、不 rebase 別人的分支。要接手別人的工作，就從那條分支開自己的新分支，再開 PR。
 - **Agent 只開 PR**：不 merge、不 push main、不 force push、不刪別人的分支。
 - **Agent 不部署**：不執行 `wrangler deploy`、`gcloud run deploy`、`gcloud run jobs update`、`modal deploy`，不寫 production KV／D1，不使用 `ALLOW_NON_MAIN_PRODUCTION_DEPLOY`。
 - **Release manifest 不手改**：`ml-controller/services/native_execution_behavior_release.json`、`strategy_nav_source_release.json` 和 Paper admission 由 release 工具產生。

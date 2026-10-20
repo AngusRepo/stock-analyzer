@@ -14,7 +14,10 @@ def capture_history(prepared, *, formal_payloads, signal_date, capture_source):
     from services.l4_risk_history import load_canonical_risk_payloads
     from services.recommendation_service import gnn_return_history_lookback
     from services.paired_nav_collection import capture_allocator_return_history
-    payloads = {p['symbol']: deepcopy(p) for p in formal_payloads}
+    # Formal payloads are already sealed in recommendation_context; store only
+    # the extra candidate symbols and rebuild the full rows on read.
+    payloads = {p['symbol']: p for p in formal_payloads}
+    extra = {}
     for definition in prepared['definitions'].values():
         if definition.get('status') != 'ready':
             continue
@@ -23,13 +26,35 @@ def capture_history(prepared, *, formal_payloads, signal_date, capture_source):
             if previous is not None and previous.get('prices') != p.get('prices'):
                 raise ValueError('strategy_nav_shared_price_capture_changed')
             if previous is None:
-                payloads[p['symbol']] = deepcopy(p)
+                payloads[p['symbol']] = extra[p['symbol']] = deepcopy(p)
     rows = [payloads[s] for s in sorted(payloads)]
     canonical = load_canonical_risk_payloads(payloads=rows, held_payloads=[],
         signal_date=signal_date, lookback=gnn_return_history_lookback(), capture_source=capture_source)
     context = capture_allocator_return_history(payloads=rows, signal_date=signal_date,
         held_payloads=[], canonical_risk_payloads=canonical)
-    return {'payloads': rows, 'context': context, 'prepared_input_checksum': prepared['input_hash']}
+    return {'payload_layout': FORMAL_PLUS_EXTRA, 'extra_payloads': [extra[s] for s in sorted(extra)],
+            'payloads_checksum': context['payload_checksum'], 'context': context,
+            'prepared_input_checksum': prepared['input_hash']}
+
+
+FORMAL_PLUS_EXTRA = 'formal-plus-extra-v1'
+
+
+def history_payloads(frozen, formal_payloads):
+    """Full risk rows: legacy inline copy, or sealed formal rows plus extras."""
+    if 'payloads' in frozen:
+        return frozen['payloads']
+    if frozen.get('payload_layout') != FORMAL_PLUS_EXTRA:
+        raise ValueError('strategy_nav_distribution_history_layout_unknown')
+    payloads = {p['symbol']: p for p in formal_payloads}
+    for p in frozen['extra_payloads']:
+        if p['symbol'] in payloads:
+            raise ValueError('strategy_nav_distribution_history_extra_overlaps_formal')
+        payloads[p['symbol']] = p
+    rows = [payloads[s] for s in sorted(payloads)]
+    if digest(rows) != frozen['payloads_checksum']:
+        raise ValueError('strategy_nav_distribution_history_payloads_changed')
+    return rows
 
 
 def allocation_inputs(context, prepared, definition_checksum, recommendations):
@@ -43,7 +68,8 @@ def allocation_inputs(context, prepared, definition_checksum, recommendations):
     frozen = context.get('atomic_distribution_history')
     if not isinstance(frozen, dict) or frozen.get('prepared_input_checksum') != prepared['input_hash']:
         raise ValueError('strategy_nav_distribution_history_missing')
-    history = replay_allocator_return_history(frozen['context'], payloads=frozen['payloads'],
+    payloads = history_payloads(frozen, context['recommendation_context']['inputs']['payloads'])
+    history = replay_allocator_return_history(frozen['context'], payloads=payloads,
         signal_date=prepared['signal_date'])
     inputs = deepcopy(context['inputs'])
     native = atomic_model_context(context=context, prepared=prepared, definition_checksum=definition_checksum)

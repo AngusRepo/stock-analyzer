@@ -108,15 +108,23 @@ def distribution_day(full_atomic, environment, native_runner, monkeypatch, reque
 
 @pytest.mark.parametrize('full_atomic', ['native_policy_weight_owner_complete'], indirect=True)
 @pytest.mark.parametrize('parent_storage', ['cold'])
-def test_cold_formal_node_completes_atomic_comparison_without_second_parent_decode(distribution_day,parent_storage):
+def test_cold_formal_node_defers_atomic_comparison_without_parent_decode(distribution_day,parent_storage):
+    from services.paired_nav_atomic_allocation import run_atomic_allocations
     db,_,state=distribution_day
+    # The L4 phase seals and publishes only; atomic allocations run post-write.
     assert db.full_parent_decodes==[]
-    assert state['paired_nav_atomic_allocation']['status']=='allocations_materialized'
-    assert state['paired_nav_atomic_allocation']['baseline_economic_replay']=='PASS'
+    assert 'paired_nav_atomic_allocation' not in state
     saved=read_snapshot(db.query,state['paired_nav_collection']['snapshot_id'])
     assert len(db.full_parent_decodes)==1
-    assert saved['payload']['content']['formal_output']==state['paired_nav_atomic_allocation']['baseline']['output']
     assert state['l4_pending_plan']==saved['payload']['content']['capture']['portfolio_plan']
+    history=saved['payload']['content']['atomic_distribution_history']
+    assert 'payloads' not in history and history['payload_layout']=='formal-plus-extra-v1'
+    formal={p['symbol'] for p in saved['payload']['content']['recommendation_context']['inputs']['payloads']}
+    assert not formal & {p['symbol'] for p in history['extra_payloads']}
+    allocation=run_atomic_allocations(snapshot_id=state['paired_nav_collection']['snapshot_id'],query=db.query)
+    assert allocation['status']=='allocations_materialized'
+    assert allocation['baseline_economic_replay']=='PASS'
+    assert saved['payload']['content']['formal_output']==allocation['baseline']['output']
 
 
 @pytest.mark.parametrize('full_atomic', ['native_policy_weight_owner_complete'], indirect=True)
@@ -136,6 +144,12 @@ def test_real_candidate_slates_use_same_median_and_seal_distinct_native_inputs(d
     for saved in pairs:
         plan = saved['payload']['content']
         parent = read_snapshot(db.query, plan['allocation_context_snapshot_id'])
+        # The child seals only its own fields and references the root.
+        assert parent['payload']['content']['context_layout'] == 'atomic-child-delta-v1'
+        assert parent['payload']['content']['upstream_payload_checksum'] == root['manifest']['payload_checksum']
+        assert parent['manifest']['part_count'] < root['manifest']['part_count']
+        assert all(parent['payload']['content'][k] == formal[k] for k in
+                   ('recommendation_context', 'inputs', 'capture', 'atomic_distribution_history'))
         verify_atomic_comparison(plan, parent, query=db.query)
         arms = verify_input_arms(plan, parent, query=db.query)
         assert arms['baseline'] == formal['inputs']

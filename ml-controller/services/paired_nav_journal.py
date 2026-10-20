@@ -153,10 +153,45 @@ def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
             or payload['source_run_id'] != manifest['source_run_id']
             or payload['snapshot_kind'] != manifest['snapshot_kind']):
         raise RuntimeError('paired_nav_manifest_identity_mismatch')
+    payload = _resolve_atomic_child(query, payload, lambda root_id: read_snapshot(query, root_id))
     saved = {'manifest': manifest, 'payload': payload}
     if scope is not None and scope['snapshot_id'] == snapshot_id:
         scope['saved'] = saved
     return saved
+
+
+ATOMIC_CHILD_DELTA = 'atomic-child-delta-v1'
+_DELTA_KEYS = ('context_layout', 'upstream_allocation_context_snapshot_id', 'upstream_payload_checksum')
+
+
+def _delta_prefixes(manifest):
+    # Only atomic children can be deltas; root/legacy projections keep their
+    # exact prefixes (and verified-projection cache keys).
+    if str(manifest.get('source_run_id') or '').startswith('atomic:'):
+        return frozenset('content.' + k for k in _DELTA_KEYS)
+    return frozenset()
+
+
+def atomic_child_content(*, root_manifest, delta):
+    """Seal only the per-definition fields; the root is referenced, not copied."""
+    if root_manifest['snapshot_kind'] != 'allocation_context' or any(k in delta for k in _DELTA_KEYS):
+        raise ValueError('paired_nav_atomic_child_delta_invalid')
+    return {'context_layout': ATOMIC_CHILD_DELTA,
+            'upstream_allocation_context_snapshot_id': root_manifest['snapshot_id'],
+            'upstream_payload_checksum': root_manifest['payload_checksum'], **delta}
+
+
+def _resolve_atomic_child(query, payload, read_root):
+    """Readers see the same merged content a full copy used to hold."""
+    content = payload.get('content') or {}
+    if content.get('context_layout') != ATOMIC_CHILD_DELTA:
+        return payload
+    root = read_root(content['upstream_allocation_context_snapshot_id'])
+    if (root['manifest']['snapshot_kind'] != 'allocation_context'
+            or root['manifest']['payload_checksum'] != content['upstream_payload_checksum']
+            or root['payload']['content'].get('context_layout') is not None):
+        raise RuntimeError('paired_nav_atomic_child_root_mismatch')
+    return {**payload, 'content': {**root['payload']['content'], **content}}
 
 
 
@@ -184,13 +219,14 @@ def read_inventory_snapshot(query: Query, snapshot_id: str, *, owner: str | None
     # that heavy validation for the Atomic owner, which still reads it intact.
     prefixes = (_INVENTORY_PREFIXES - {'content.atomic_recommendation_inputs'}
                 if owner == 'l15_route' else _INVENTORY_PREFIXES)
-    payload = load(query, manifest, prefixes=prefixes)
+    payload = load(query, manifest, prefixes=prefixes | _delta_prefixes(manifest))
     if payload is None:
         return read_snapshot(query, snapshot_id)
     if any(payload.get(key) != manifest[key] for key in ('signal_date', 'source_run_id', 'snapshot_kind')):
         raise RuntimeError('paired_nav_manifest_identity_mismatch')
     payload.setdefault('content', {})
-    payload.setdefault('content', {})
+    payload = _resolve_atomic_child(query, payload,
+        lambda root_id: read_inventory_snapshot(query, root_id, owner=owner))
     return {'manifest': manifest, 'payload': payload, 'read_projection': 'selection_inventory_v1'}
 
 def read_context_projection(query, snapshot_id, fields):
@@ -207,13 +243,20 @@ def read_context_projection(query, snapshot_id, fields):
         return read_snapshot(query, snapshot_id)
     from services.paired_nav_cold import load
     prefixes = frozenset({'schema_version', 'signal_date', 'snapshot_kind', 'source_run_id'}
-        | {'content.' + field for field in fields})
+        | {'content.' + field for field in fields} | _delta_prefixes(manifest))
     payload = load(query, manifest, prefixes=prefixes)
+    projected = payload is not None
     if payload is None:
         payload = _hot_payload(query, manifest)
     if any(payload.get(key) != manifest[key] for key in ('signal_date', 'source_run_id', 'snapshot_kind')):
         raise RuntimeError('paired_nav_manifest_identity_mismatch')
     payload.setdefault('content', {})
+    delta = payload['content'].get('context_layout') == ATOMIC_CHILD_DELTA
+    payload = _resolve_atomic_child(query, payload,
+        lambda root_id: read_context_projection(query, root_id, fields))
+    if projected or delta:
+        # Keep the original projection shape: only requested fields are returned.
+        payload['content'] = {k: v for k, v in payload['content'].items() if k in fields}
     return {'manifest': manifest, 'payload': payload, 'read_projection': 'validation_fields_v1'}
 
 

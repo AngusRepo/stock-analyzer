@@ -71,8 +71,33 @@ def sequence_records(payload, records, *, horizon):
                 raise ValueError("full_fit_scope_sequence_alignment_invalid")
             item[name] = [value[i] for i in indices] if isinstance(value, list) and len(value) == len(days) else value
         output.append(item)
-    return output, {**scope, "actual_signal_date_max": calendar[last_signal],
-                    "actual_label_known_at_max": last_observation,
+    # This bounds the input archive, not the learner's windows. NeuralForecast
+    # can admit partial horizons after this signal unless its window mask also
+    # requires every target. The trainer certifies actual bounds separately.
+    return output, {**scope, "complete_horizon_signal_date_max": calendar[last_signal],
+                    "admitted_observation_date_max": last_observation,
                     "archive_observation_max": calendar[-1],
                     "archive_rows": original_rows,
                     "admitted_rows": sum(len(r["dates"]) for r in output)}
+
+
+def complete_nf_window_scope(scope, panel, *, horizon):
+    """Bind a complete-horizon window policy to the actual aligned panel."""
+    if (not scope or not panel or not isinstance(horizon, int) or horizon <= 0
+            or panel.get("last_complete_training_signal_date") != scope.get("complete_horizon_signal_date_max")
+            or panel.get("calendar_end") != scope.get("admitted_observation_date_max")
+            or panel["last_complete_training_signal_date"] > scope["signal_date_max"]
+            or panel["calendar_end"] > scope["label_known_at_max"]
+            or panel.get("unique_training_windows", 0) <= 0):
+        raise ValueError("full_fit_nf_window_scope_mismatch")
+    return {**scope,
+            "actual_signal_date_max": panel["last_complete_training_signal_date"],
+            "actual_label_known_at_max": panel["calendar_end"],
+            "window_admission": {
+                "policy": "complete_horizon_only",
+                "horizon": horizon,
+                "minimum_outsample_fraction": 1.0,
+                "start_padding_enabled": False,
+                "eligible_symbol_windows": panel["unique_training_windows"],
+                "support_kind": "possible_windows_not_sampled_window_ids",
+            }}

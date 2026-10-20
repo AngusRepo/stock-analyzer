@@ -1,7 +1,7 @@
 import copy
 import numpy as np
 import pytest
-from app.full_fit_scope import bounds, row_mask, sequence_records
+from app.full_fit_scope import bounds, row_mask, sequence_records, complete_nf_window_scope
 from app.deployment_refit import validate_full_history
 
 
@@ -40,8 +40,9 @@ def test_sequence_uses_exchange_sessions_and_future_poison_never_reaches_panel()
     clean,receipt=sequence_records(payload(),records,horizon=5)
     assert records==before
     assert clean[0]['dates'][-1]=='2026-10-01'
-    assert receipt['actual_signal_date_max']=='2026-09-22'
-    assert receipt['actual_label_known_at_max']=='2026-10-01'
+    assert receipt['complete_horizon_signal_date_max']=='2026-09-22'
+    assert receipt['admitted_observation_date_max']=='2026-10-01'
+    assert 'actual_signal_date_max' not in receipt
     assert receipt['archive_observation_max']=='2026-10-06'
     assert not receipt['point_in_time_vintage_certified']
     records[0]['open'][7:]=[-999]*3;records[0]['close'][7:]=[99999]*3
@@ -49,7 +50,23 @@ def test_sequence_uses_exchange_sessions_and_future_poison_never_reaches_panel()
     # A stricter signal cutoff also limits target history even if known date is unchanged.
     earlier,receipt=sequence_records({**payload(),'signal_date_max':'2026-09-21'},records,horizon=5)
     assert earlier[0]['dates'][-1]=='2026-09-30'
-    assert receipt['actual_signal_date_max']=='2026-09-21'
+    assert receipt['complete_horizon_signal_date_max']=='2026-09-21'
+
+
+def test_complete_horizon_receipt_requires_the_actual_panel_bounds():
+    scope = {**bounds(payload()), 'complete_horizon_signal_date_max':'2026-09-22',
+             'admitted_observation_date_max':'2026-10-01'}
+    panel = dict(last_complete_training_signal_date='2026-09-22',
+                 calendar_end='2026-10-01', unique_training_windows=100)
+    proof = complete_nf_window_scope(scope, panel, horizon=5)
+    assert proof['actual_signal_date_max']=='2026-09-22'
+    assert proof['actual_label_known_at_max']=='2026-10-01'
+    assert proof['window_admission']['policy']=='complete_horizon_only'
+    assert proof['window_admission']['eligible_symbol_windows']==100
+    for change in ({'last_complete_training_signal_date':'2026-09-30'},
+                   {'calendar_end':'2026-10-02'}, {'unique_training_windows':0}):
+        with pytest.raises(ValueError, match='window_scope_mismatch'):
+            complete_nf_window_scope(scope, {**panel, **change}, horizon=5)
 
 
 def test_timeXer_full_fit_does_not_relax_oof_validation():

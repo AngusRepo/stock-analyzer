@@ -26,9 +26,10 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
   const currentIndex=progress ? PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase)) : -1
   const chainActive=Boolean(progress && ['running','waiting'].includes(parent.lastStatus) && !sealed)
   const candidate=parent.pipelineWork
+  // The Worker already enforces 30s server-clock freshness; here allow one 60s poll plus browser clock skew.
+  const workAge=now-Date.parse(candidate?.observed_at??'')
   const work=candidate && progress && candidate.run_id===parent.runId && candidate.run_date===parent.statusRunDate
-    && candidate.phase===progress.phase && now-Date.parse(candidate.observed_at)>=-5_000
-    && now-Date.parse(candidate.observed_at)<=30_000 ? candidate : undefined
+    && candidate.phase===progress.phase && workAge>=-60_000 && workAge<=90_000 ? candidate : undefined
   return PIPELINE_STAGE_CARDS.map((card,index) => {
     const belongs=(phase:string)=>(card.phases as readonly string[]).includes(phase)
     const rows=history.filter(row=>belongs(row.phase))

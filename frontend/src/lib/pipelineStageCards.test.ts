@@ -109,9 +109,16 @@ test('claimed feature batches run; preparation after L2 belongs to the L2 card',
 
 test('wrong run/date/phase and expired child observations cannot manufacture running',()=>{
   for(const override of [{run_id:'old'},{run_date:'2026-10-15'},{phase:'prepare_prediction_request'},
-    {observed_at:'2026-10-16T14:05:00Z'},{observed_at:'2026-10-16T14:07:00Z'}]) {
+    {observed_at:'2026-10-16T14:04:00Z'},{observed_at:'2026-10-16T14:08:00Z'},{observed_at:'bad'}]) {
     const p=parent();p.pipelineWork={...work(p),...override}
     assert.equal(pipelineStageCards(p,at)[1].stageVisualStatus,'waiting')
+  }
+})
+
+test('a running child stays blue across one poll and modest browser clock skew',()=>{
+  for(const skew of [-45_000,75_000]) {
+    const p=parent();p.pipelineWork=work(p)
+    assert.equal(pipelineStageCards(p,at+skew)[1].stageVisualStatus,'running')
   }
 })
 

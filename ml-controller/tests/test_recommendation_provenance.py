@@ -2191,7 +2191,7 @@ def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
     assert signal["vote_weight"] == 0.0
 
 
-def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeypatch):
+def test_write_predictions_to_d1_does_not_publish_retired_timesfm(monkeypatch):
 
     captured = {}
 
@@ -2233,13 +2233,8 @@ def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeyp
 
     assert written == 1
     assert timesfm_rows == []
-    assert ensemble_payload["timesfm"]["forecast_pct"] == -0.0123
-    assert ensemble_payload["timesfm"]["n_used"] == 1024
-    assert ensemble_payload["timesfm_sidecar"]["schema_version"] == "timesfm-l1-75-sidecar-v1"
-    assert ensemble_payload["timesfm_sidecar"]["direct_alpha_blocked"] is True
-    assert ensemble_payload["timesfm_sidecar"]["l2_feature_input_active"] is False
-    assert ensemble_payload["timesfm_sidecar"]["l2_feature_input_blocked_reason"] == "requires_formal137_registry_retrain_release"
-    assert ensemble_payload["timesfm_sidecar"]["features"]["forecast_return"] == -0.0123
+    assert "timesfm" not in ensemble_payload
+    assert "timesfm_sidecar" not in ensemble_payload
 
 
 def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):

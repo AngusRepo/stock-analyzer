@@ -590,11 +590,10 @@ void (async () => {
       }, env)
       const statusBody = await statusRes.json() as any
       const candidateIds = new Set(statusBody.candidates.map((row: any) => row.candidate_id))
-      for (const id of ['ResidualMLP', 'DLinear', 'PatchTST', 'GNN', 'TabM', 'iTransformer', 'TimesFM', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
+      for (const id of ['ResidualMLP', 'DLinear', 'PatchTST', 'GNN', 'TabM', 'iTransformer', 'GAOptimizer', 'KalmanFilter', 'MarkovSwitching']) {
         assert(candidateIds.has(id), `model upgrade status should include full P7 track candidate ${id}`)
       }
-      const timesFmRow = statusBody.candidates.find((row: any) => row.candidate_id === 'TimesFM')
-      assert(timesFmRow?.stage === 'l2_feature_sidecar_member', 'TimesFM should remain the single active L2 sidecar slot for the 2.5 runtime')
+      assert(!candidateIds.has('TimesFM'), 'Retired TimesFM must not reappear as an active model-upgrade candidate')
       assert(!candidateIds.has('TimesFM25'), 'TimesFM25 migration benchmark must not appear as a tenth active model-upgrade candidate')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'track_only' && row.requires_experiment_registry === false), 'non-experiment tracks should be visible as track_only')
       assert(statusBody.candidates.some((row: any) => row.registry_status === 'ready_for_review'), 'model upgrade status should surface review-ready evidence after batch run')

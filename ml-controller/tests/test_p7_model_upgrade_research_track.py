@@ -21,7 +21,6 @@ def test_p7_benchmark_manifest_separates_production_slots_from_benchmarks():
         "TabM",
         "GNN",
         "iTransformer",
-        "TimesFM",
     }
 
     for name in ("LightGBM", "XGBoost", "ExtraTrees", "DLinear", "PatchTST", "TabM", "GNN", "iTransformer"):
@@ -35,11 +34,4 @@ def test_p7_benchmark_manifest_separates_production_slots_from_benchmarks():
         assert "production_artifact" in entry["evidence_required"], name
         assert "active production slot member" in entry["note"], name
 
-    assert manifest["TimesFM"]["model_type"] == "foundation_time_series_timesfm25"
-    assert manifest["TimesFM"]["status"] == "l2_feature_sidecar_member"
-    assert manifest["TimesFM"]["direct_prediction"] is False
-    assert manifest["TimesFM"]["vote_weight"] == 0.0
-    assert manifest["TimesFM"]["promotion_state"] == "timesfm_l175_l2_feature_release"
-    assert manifest["TimesFM"]["approval_gate"] == "timesfm_l175_l2_feature_release_required"
-    assert "cannot vote as direct alpha" in manifest["TimesFM"]["note"]
-    assert "timesfm_2p5_config" in manifest["TimesFM"]["evidence_required"]
+    assert "TimesFM" not in manifest

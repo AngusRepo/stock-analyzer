@@ -457,6 +457,7 @@ def test_completed_observation_remerges_raw_bundle_without_dispatch(monkeypatch,
         merged = asyncio.run(producer.collect_completed_prediction_state(
             bucket=bucket, observation=observation, identity=identity, day=day))
         assert merged['predictions'] == state['predictions']
+        assert merged['p6_native_pool'] == original['projection']
         assert 'feature_rows' not in merged
     assert calls == ['context', 'bundle', 'merge']
     assert bucket.writes == []

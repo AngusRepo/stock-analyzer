@@ -114,6 +114,7 @@ async def collect_completed_prediction_state(*, bucket, observation, identity, d
                          known_max=known) != original['projection']:
         raise ValueError('shadow_native_original_projection_changed')
     validate_prediction_state(state, identity)
+    state['p6_native_pool'] = deepcopy(original['projection'])
     return state
 
 
@@ -190,13 +191,14 @@ def build_source(*, entry, state, recommendation_context, day_inputs, observed_a
     return source_from_packet(seal(packet), entry, observed_at=observed_at, now=now)
 
 
-async def produce_directory(registry, directory, *, session_date, now):
+async def produce_directory(registry, directory, *, session_date, now, assemble=False):
     """Cloud Job entry: original capture references per registry entry.
 
     <entry_id>.json contains entry_checksum, day_inputs_reference, observed_at,
     exactly one of recommendation_context_reference / recommendation_inputs_reference,
-    and exactly one of state_reference / completed_observation. New contexts are
-    captured by their existing owner and frozen only after every entry validates.
+    and one of state_reference / completed_observation / native_config_reference.
+    Assemble mode reuses verified source facts with each entry's own completed
+    predictions and policy. New captures freeze only after every entry validates.
     """
     current, _ = registry.current()
     root = Path(directory)
@@ -210,9 +212,11 @@ async def produce_directory(registry, directory, *, session_date, now):
         try:
             spec = json.loads(files[key].read_bytes())
             if (spec.get('entry_checksum') != entry['checksum']
-                    or ('state_reference' in spec) == ('completed_observation' in spec)
+                    or sum(k in spec for k in ('state_reference', 'completed_observation',
+                                              'native_config_reference')) != 1
                     or ('recommendation_context_reference' in spec)
-                    == ('recommendation_inputs_reference' in spec)):
+                    == ('recommendation_inputs_reference' in spec)
+                    or assemble and 'recommendation_context_reference' not in spec):
                 raise ValueError('shadow_native_producer_binding_invalid')
             day_inputs = read_reference(registry.bucket, spec['day_inputs_reference'])
             if day_inputs.get('session_date') != session_date:
@@ -225,14 +229,26 @@ async def produce_directory(registry, directory, *, session_date, now):
                 state = read_reference(registry.bucket, spec['state_reference'])
                 receipts.append(spec['state_reference']['sha256'])
             else:
-                observation = spec['completed_observation']
+                identity = day_inputs['l4_allocation_inputs']['alpha_policy']['l4Distribution']['artifact']['l3_identity']
+                if 'native_config_reference' in spec:
+                    from services.l4_shadow_daily_assembly import resolve_completed_observation
+                    observation, references = resolve_completed_observation(
+                        bucket=registry.bucket, config_reference=spec['native_config_reference'],
+                        identity=identity, day=day_inputs['signal_date'])
+                    receipts.extend(references)
+                else:
+                    observation = spec['completed_observation']
                 state = await collect_completed_prediction_state(bucket=registry.bucket,
-                    observation=observation,
-                    identity=day_inputs['l4_allocation_inputs']['alpha_policy']['l4Distribution']['artifact']['l3_identity'],
+                    observation=observation, identity=identity,
                     day=day_inputs['signal_date'])
                 receipts.extend(observation[k]['sha256'] for k in ('projection', 'envelope'))
             recommendation = read_reference(registry.bucket, spec[recommendation_key])
-            if recommendation_key == 'recommendation_inputs_reference':
+            if assemble:
+                from services.l4_shadow_daily_assembly import assemble_recommendation_inputs
+                recommendation = assemble_recommendation_inputs(entry=entry, state=state,
+                    environment_context=recommendation, day_inputs=day_inputs,
+                    completed_observation='state_reference' not in spec)
+            if assemble or recommendation_key == 'recommendation_inputs_reference':
                 context = capture_recommendation_context(entry=entry, state=state,
                     recommendation_inputs=recommendation, day_inputs=day_inputs)
                 new_contexts[key] = context

@@ -1,4 +1,4 @@
-"""Private shadow Cloud Run Job: explicit source export, bootstrap, daily or tick."""
+"""Private shadow Cloud Run Job: assembly, export, bootstrap, daily or tick."""
 from datetime import datetime,timezone,timedelta
 import json
 import os
@@ -12,7 +12,7 @@ def run(*,operation=None,session_date=None,accounts=None,now=None,source_index=N
     now=now or datetime.now(timezone.utc)
     day=session_date or os.environ.get('L4_SHADOW_SESSION_DATE') or now.astimezone(
         timezone(timedelta(hours=8))).date().isoformat()
-    if operation not in ('produce','export','bootstrap','daily','tick'):
+    if operation not in ('assemble','produce','export','bootstrap','daily','tick'):
         raise ValueError('shadow_job_operation_invalid')
     if operation=='tick':
         from services.l4_shadow_sources import run_tick
@@ -46,12 +46,13 @@ def run(*,operation=None,session_date=None,accounts=None,now=None,source_index=N
         directory=native_source_directory or os.environ.get('L4_SHADOW_NATIVE_SOURCE_DIRECTORY')
         if not directory:raise ValueError('shadow_native_source_directory_missing')
         return publish_directory(accounts.registry,directory,session_date=day,now=now)
-    if operation=='produce':
+    if operation in ('assemble','produce'):
         import asyncio
         from services.l4_shadow_native_producer import produce_directory
         directory=native_input_directory or os.environ.get('L4_SHADOW_NATIVE_INPUT_DIRECTORY')
         if not directory:raise ValueError('shadow_native_input_directory_missing')
-        return asyncio.run(produce_directory(accounts.registry,directory,session_date=day,now=now))
+        return asyncio.run(produce_directory(accounts.registry,directory,session_date=day,now=now,
+                                            assemble=operation=='assemble'))
     if source_index is None:
         blob=accounts.bucket.blob(DAILY_PREFIX+day+'/index.json');blob.reload()
         source_index=json.loads(blob.download_as_bytes(if_generation_match=blob.generation))

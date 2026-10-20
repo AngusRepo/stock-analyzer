@@ -52,3 +52,17 @@ covers only its research full-fit outputs, not these account namespaces.
   credentials/environment and the precise run approval remain separate.
 - Nine-day full-chain TimesFM parity, all-archive solver metrics, live recorder
   connection and premarket timing acceptance remain explicit gates, not waived by PR.
+
+## P9 baseline result
+
+The stale admin-route assertion requiring retired TimesFM has been corrected;
+the original main case and the updated branch case both pass. Local P9 then stops
+at `worker/src/lib/artifactLifecycle.test.ts:265`. The identical main test also
+fails: its mock supplies 29 Paper tables while main requires 36; this branch
+requires 39 including the three counterfactual recorder tables. This is mock
+coverage evidence, not an observation of production D1 schema.
+
+Claude's D/CI work should reconcile that fixture and the release migration
+inventory. Do not lower required-table admission or waive schema validation.
+Full P9 has not passed and tests after this stopping point have not been run by
+the local P9 invocation. CI/CD definitions remain unchanged.

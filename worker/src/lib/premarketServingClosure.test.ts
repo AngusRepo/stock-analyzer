@@ -19,6 +19,32 @@ test('complete formal Paper outputs admit the same plan while original research 
   assert.equal(JSON.stringify(f),before)
   assert.ok(atomicInputFailureOnly(error))
 })
+
+test('Oct 20 sealed OOM recovery requires the exact frozen plan, parent and complete formal readback',()=>{
+ const make=()=>{
+  const f=fixture();f.signalDate='2026-10-19';f.plan.signal_date=f.signalDate
+  f.runId='pipeline-dispatch:2026-10-19:8393bb2a-8c49-43c5-b5a8-e0f8581a0d79'
+  f.error='ValueError: premarket_phase_outcome_requires_reconciliation:node_recommend'
+  f.nowMs=Date.parse('2026-10-20T09:15:00+08:00')
+  const old=f.plan.plan_id;f.plan.plan_id='12b665a6cf992ac82111a93d1c6e4fe1e50c81a38f156282ed800aea8ccf23ba'
+  Object.assign(f.manifest!,{source_run_id:f.runId,signal_date:f.signalDate,prospective:1,
+   payload_checksum:'db9e0089bcbe007128e66cd0471b5a605d9ede353dd50b7cb12bf34594fee589'})
+  for(const log of [f.prediction!,f.recommendation!]){log.run_id=f.runId;log.run_date=f.signalDate;log.error=f.error;log.summary=log.summary.replace('run_id=run ',`run_id=${f.runId} `)}
+  for(const row of f.rows)row.alpha_allocation=row.alpha_allocation!.replace(old,f.plan.plan_id)
+  return f
+ }
+ const f=make(),before=JSON.stringify(f);verifyFormalServingClosure(f);assert.equal(JSON.stringify(f),before)
+ for(const change of [
+  (v:ReturnType<typeof make>)=>{v.manifest!.payload_checksum='a'.repeat(64)},
+  (v:ReturnType<typeof make>)=>{v.manifest!.prospective=0},
+  (v:ReturnType<typeof make>)=>{v.runId+='other'},
+  (v:ReturnType<typeof make>)=>{v.plan.plan_id='b'.repeat(64)},
+  (v:ReturnType<typeof make>)=>{v.nowMs=Date.parse('2026-10-21T08:00:00+08:00')},
+  (v:ReturnType<typeof make>)=>{v.rows.pop()},
+  (v:ReturnType<typeof make>)=>{v.prediction!.status='running'},
+  (v:ReturnType<typeof make>)=>{v.error+='; d1_write:failed'},
+ ]){const v=make();change(v);assert.throws(()=>verifyFormalServingClosure(v))}
+})
 const historicalError='paired_nav:atomic_collection:historical_not_prospective; paired_nav:atomic_daily:requires_allocation_and_native_execution; paired_nav:atomic_candidate_setup:paired_nav_atomic_no_executable_plans'
 function historicalFixture(){
   const f=fixture();f.signalDate='2026-10-15';f.plan.signal_date=f.signalDate;f.error=historicalError

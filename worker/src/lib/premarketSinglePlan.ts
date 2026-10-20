@@ -10,7 +10,7 @@ import { readCurrentNewsReport } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import type { PremarketPayload } from './premarketEventChain'
-import { atomicInputFailureOnly,historicalAtomicFailureOnly,verifyStoredFormalServing } from './premarketServingClosure'
+import { atomicInputFailureOnly,historicalAtomicFailureOnly,sealedAllocationRecoveryOnly,verifyStoredFormalServing } from './premarketServingClosure'
 import { afterClosePaperRecovery } from './afterClosePaperRecovery'
 function stable(value:any):string {
   if(Array.isArray(value))return '['+value.map(stable).join(',')+']'
@@ -40,7 +40,11 @@ export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
  const tradeDate=(input.morning_context as {trade_date?:string}|undefined)?.trade_date
  const historical=tradeDate==='2026-10-16' && afterClosePaperRecovery(env,tradeDate,input)
    && historicalAtomicFailureOnly(row?.last_error)
- if(row?.status==='error' && (atomicInputFailureOnly(row.last_error) || historical)) {
+ const sealed=tradeDate==='2026-10-20' && env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'
+   && env.LIVE_EXECUTION_CLIENT_ENABLED==='0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED==='0'
+   && (input.morning_context as {checksum?:string}|undefined)?.checksum==='c45c12df7e514c8e58c58575781aeb6811084c5f475c0e9c6ef1341c3898b555'
+   && sealedAllocationRecoveryOnly(row?.last_error)
+ if(row?.status==='error' && (atomicInputFailureOnly(row.last_error) || historical || sealed)) {
    const plan=await readL4PortfolioPlan(env)
    if(!plan)throw new Error('premarket_wait:l4_publication')
    await verifyStoredFormalServing(env,{runId:receipt.run_id,signalDate:receipt.run_date,error:row.last_error!,plan,

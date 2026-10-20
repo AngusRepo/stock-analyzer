@@ -27,23 +27,37 @@ export function atomicInputFailureOnly(error: string | null | undefined): boolea
   return errors.length > 0 && errors.every(e=>ATOMIC_INPUT_ERRORS.has(e))
 }
 
+/** Oct 20: publish the already sealed optimizer output after its producer OOM.
+ * The ambiguous producer claim and failed parent remain unchanged.
+ */
+export function sealedAllocationRecoveryOnly(error: string | null | undefined): boolean {
+  return error === 'ValueError: premarket_phase_outcome_requires_reconciliation:node_recommend'
+}
+
 type PublishedRow = {symbol:string; alpha_allocation:string | null}
 export function verifyFormalServingClosure(input: {
   runId:string; signalDate:string; error:string; plan:L4PortfolioPlan;
   prediction:SchedulerRunLogEntry | null; recommendation:SchedulerRunLogEntry | null;
   rows:PublishedRow[];
-  manifest:{source_run_id:string;signal_date:string;snapshot_kind:string;prospective?:number;frozen_at?:string}|null;
+  manifest:{source_run_id:string;signal_date:string;snapshot_kind:string;prospective?:number;frozen_at?:string;payload_checksum?:string}|null;
   historicalRecoveryTradeDate?:string;
   nowMs?:number;
 }): void {
   const {runId,signalDate,plan,prediction,recommendation,rows} = input
+  const now=input.nowMs ?? paperExecutionNow()
+  const sealed=sealedAllocationRecoveryOnly(input.error)
+    && runId==='pipeline-dispatch:2026-10-19:8393bb2a-8c49-43c5-b5a8-e0f8581a0d79'
+    && signalDate==='2026-10-19' && plan.plan_id==='12b665a6cf992ac82111a93d1c6e4fe1e50c81a38f156282ed800aea8ccf23ba'
+    && input.manifest?.payload_checksum==='db9e0089bcbe007128e66cd0471b5a605d9ede353dd50b7cb12bf34594fee589'
+    && input.manifest.prospective===1
+    && now>=Date.parse('2026-10-20T00:00:00+08:00') && now<Date.parse('2026-10-21T00:00:00+08:00')
   const historical=historicalAtomicFailureOnly(input.error) && signalDate==='2026-10-15'
     && input.historicalRecoveryTradeDate==='2026-10-16' && input.manifest?.prospective===0
     && Number.isFinite(Date.parse(input.manifest.frozen_at ?? ''))
     && Date.parse(input.manifest!.frozen_at!)>=Date.parse('2026-10-16T09:00:00+08:00')
     && Date.parse(input.manifest!.frozen_at!)<=(input.nowMs ?? paperExecutionNow())
   const admittedError=(error:string|null|undefined)=>atomicInputFailureOnly(error)
-    || (historical && error===input.error)
+    || ((historical || sealed) && error===input.error)
   if (!admittedError(input.error) || plan.execution_scope !== 'paper'
     || plan.signal_date !== signalDate || !/^[a-f0-9]{64}$/.test(plan.plan_id))
     throw new Error('premarket_formal_publication_not_eligible')
@@ -79,8 +93,8 @@ export async function verifyStoredFormalServing(env:Bindings, input:{runId:strin
   const stored=await paperDomainDatabase(env).prepare('SELECT allocation_snapshot_id FROM l4_portfolio_plans_v1 WHERE plan_id=? AND account_id=1 AND activated=1')
     .bind(input.plan.plan_id).first<{allocation_snapshot_id:string}>()
   if(!stored)throw new Error('premarket_formal_plan_missing')
-  const manifest=await databaseForDataDomain(env,'learning').prepare('SELECT source_run_id,signal_date,snapshot_kind,prospective,frozen_at FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?')
-    .bind(stored.allocation_snapshot_id).first<{source_run_id:string;signal_date:string;snapshot_kind:string;prospective:number;frozen_at:string}>()
+  const manifest=await databaseForDataDomain(env,'learning').prepare('SELECT source_run_id,signal_date,snapshot_kind,prospective,frozen_at,payload_checksum FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?')
+    .bind(stored.allocation_snapshot_id).first<{source_run_id:string;signal_date:string;snapshot_kind:string;prospective:number;frozen_at:string;payload_checksum:string}>()
   const [prediction,recommendation,result] = await Promise.all([
     env.KV.get(`scheduler:run:ml-predict:${input.signalDate}`,'json') as Promise<SchedulerRunLogEntry|null>,
     env.KV.get(`scheduler:run:recommendation:${input.signalDate}`,'json') as Promise<SchedulerRunLogEntry|null>,

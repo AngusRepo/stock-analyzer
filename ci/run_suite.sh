@@ -28,7 +28,9 @@ case "$suite" in
     cd ml-controller
     python -m pip install -q -r requirements.txt pytest==9.0.3 pytest-asyncio==1.4.0 pytest-timeout==2.4.0 \
       || { fail "controller: pip install"; exit 0; }
-    python -m pytest tests -q -p no:cacheprovider --timeout=300 --junitxml="$RUNNER_TEMP/junit.xml" || true
+    # Tests import both repo-root `tools` and `tests.*`; a broken module must not hide the rest.
+    PYTHONPATH="$(cd .. && pwd):$PWD" python -m pytest tests -q -p no:cacheprovider --timeout=300 \
+      --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
     python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller: pytest produced no report"
     ;;
   frontend)

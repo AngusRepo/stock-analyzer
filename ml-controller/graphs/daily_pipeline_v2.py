@@ -2440,7 +2440,11 @@ def _require_frozen_allocation_context(collection: dict | None) -> str:
     raise RuntimeError(f'paired_nav_allocation_context_unavailable:{stage}:{reason}')
 
 
+from services.paired_nav_journal import reuse_published_allocation
+
+
 @artifact_reads
+@reuse_published_allocation
 async def node_recommend(state: PipelineStateV2) -> dict:
     """
     Preserve ML advice, compute Score V2, then let L4 own sparse allocation.

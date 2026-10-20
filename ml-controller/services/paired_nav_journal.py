@@ -15,11 +15,48 @@ from contextvars import ContextVar
 from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
+from functools import wraps
 
 Query = Callable[[str, list[Any]], list[dict[str, Any]]]
 Writer = Callable[..., dict[str, Any]]
 SCHEMA = 'paired-nav-journal-v1'
 _read_scope: ContextVar[dict[str, Any] | None] = ContextVar('paired_nav_read_scope', default=None)
+_published_scope: ContextVar[dict[str, Any] | None] = ContextVar('paired_nav_published_scope', default=None)
+
+
+def reuse_published_allocation(function):
+    """Reuse this producer's verified seal without decoding a second giant parent.
+
+    Scope never survives the node. Reads still verify the current manifest,
+    complete cold bytes and producer-owned canonical contents before reuse.
+    """
+    @wraps(function)
+    async def wrapped(state):
+        snapshot_id = digest(['allocation_context', state['run_date'],
+            state.get('producer_run_id') or f"daily:{state['run_date']}"])
+        token = _published_scope.set({'snapshot_id': snapshot_id, 'saved': None})
+        try:
+            return await function(state)
+        finally:
+            _published_scope.reset(token)
+    return wrapped
+
+
+def _remember_published(manifest, payload):
+    scope = _published_scope.get()
+    if scope is None or scope['snapshot_id'] != manifest['snapshot_id']:
+        return manifest
+    # JSON decoding coerces keys/tuples. Reuse only already-normalized inputs;
+    # other producers keep the original full reader and its normalization.
+    def normalized(value):
+        if isinstance(value, dict):
+            return all(type(k) is str and normalized(v) for k, v in value.items())
+        if isinstance(value, list):
+            return all(normalized(v) for v in value)
+        return value is None or type(value) in (str, int, float, bool)
+    if normalized(payload):
+        scope['saved'] = {'manifest': dict(manifest), 'payload': payload}
+    return manifest
 
 
 @contextmanager
@@ -89,6 +126,18 @@ def _hot_payload(query, manifest):
 
 
 def read_snapshot(query: Query, snapshot_id: str) -> dict[str, Any]:
+    published = _published_scope.get()
+    saved = published.get('saved') if published and published['snapshot_id'] == snapshot_id else None
+    if saved is not None:
+        current = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
+        if current != [saved['manifest']]:
+            raise RuntimeError('paired_nav_manifest_readback_conflict')
+        if digest(saved['payload']) != saved['manifest']['payload_checksum']:
+            raise RuntimeError('paired_nav_published_inputs_changed')
+        from services.paired_nav_cold import load
+        if load(query, saved['manifest'], materialize=False) is not None:
+            return saved
+        # Hot legacy storage retains its original full readback.
     scope = _read_scope.get()
     if scope is not None and scope['snapshot_id'] == snapshot_id and scope['saved'] is not None:
         return scope['saved']
@@ -214,7 +263,7 @@ def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,
             # allocating another complete Python copy on an idempotent retry.
             if load(query, manifest, store, materialize=False) is None:
                 read_snapshot(query, snapshot_id)
-            return manifest
+            return _remember_published(manifest, payload)
         from services.paired_nav_schema import validate_paired_nav_schema
         validate_paired_nav_schema(query)
         prospective = day == taipei.date() or (taipei.hour < 9 and day == taipei.date() - timedelta(days=1))
@@ -252,7 +301,7 @@ def freeze_snapshot(*, signal_date: str, source_run_id: str, snapshot_kind: str,
             manifests = query('SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_id=?', [snapshot_id])
             if len(manifests) != 1 or manifests[0]['payload_checksum'] != checksum:
                 raise RuntimeError('paired_nav_manifest_readback_conflict')
-            return manifests[0]
+            return _remember_published(manifests[0], payload)
         # <= 80 KB even for four-byte Unicode; bounded well below D1's value limit.
         chunks = [raw[start:start + 20000] for start in range(0, len(raw), 20000)]
         for start in range(0, len(chunks), 10):

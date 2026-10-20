@@ -82,6 +82,38 @@ def test_changed_morning_information_cannot_launch_second_plan(f):
     c['us']['sox_close']=101;c['checksum']=m.digest({k:v for k,v in c.items() if k!='checksum'})
     with pytest.raises(ValueError,match='immutable'):m.dispatch(r,c,jobs_client=j,client=s)
     assert len(j.calls)==1
+@pytest.mark.parametrize('status', ['running', 'ambiguous'])
+def test_failed_process_with_unresolved_recommendation_is_parked_before_dispatch(f,status):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs()
+    first=m.dispatch(r,c,jobs_client=j,client=s)
+    root=m.prefix(r['run_date'],r['run_id'])
+    s.blob(root+'/phases/node_compute_personas.json.gz').raw=b'already sealed'
+    claim=s.blob(root+'/phases/node_recommend.claim.json')
+    claim.upload_from_string(m.json_bytes({'input_checksum':c['checksum'],
+        'phase':'node_recommend','status':status}))
+    original=claim.raw;generation=claim.generation
+    j.state='failed'
+    for _ in range(2):
+        result=m.dispatch(r,c,jobs_client=j,client=s)
+        assert result['status']=='reconciliation_required'
+        assert result['reason']=='premarket_phase_outcome_requires_reconciliation:node_recommend'
+        assert result['execution_name']==first['execution_name']
+    assert len(j.calls)==1 and claim.raw==original and claim.generation==generation
+
+def test_failed_phase_can_retry_but_changed_phase_identity_cannot(f):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    root=m.prefix(r['run_date'],r['run_id'])
+    claim=s.blob(root+'/phases/node_compute_personas.claim.json')
+    claim.upload_from_string(m.json_bytes({'input_checksum':'wrong',
+        'phase':'node_compute_personas','status':'failed'}))
+    j.state='failed'
+    with pytest.raises(ValueError,match='premarket_phase_identity_changed'):
+        m.dispatch(r,c,jobs_client=j,client=s)
+    assert len(j.calls)==1
+    claim.raw=m.json_bytes({'input_checksum':c['checksum'],
+        'phase':'node_compute_personas','status':'failed'})
+    assert m.dispatch(r,c,jobs_client=j,client=s)['status']=='dispatched'
+    assert len(j.calls)==2
 def test_downstream_failure_resumes_receipts_without_second_l4(f):
     s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
     uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI'];calls=[];fail=[True]

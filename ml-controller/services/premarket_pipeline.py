@@ -192,6 +192,23 @@ def dispatch(receipt,context,*,jobs_client,client=None):
             execution_name=old.get('execution_name',''),
             required_env={'PIPELINE_PREMARKET_RESUME_MODE':'1','PIPELINE_PREMARKET_INPUT_GCS_URI':f'gs://{b.name}/{p}/morning-input.json'})
         if old.get('execution_name') and observed.get('execution_name')==old['execution_name'] and observed.get('state')=='failed':
+            # A terminal process may have sealed an allocation before losing its
+            # checkpoint. Resume would reject that phase claim too; park here
+            # instead of repeatedly launching doomed, expensive Jobs.
+            for name in SERVING_PHASES:
+                if b.blob(p+'/phases/'+name+'.json.gz').exists():
+                    continue
+                try:
+                    phase_claim=json.loads(b.blob(p+'/phases/'+name+'.claim.json').download_as_bytes())
+                except NotFound:
+                    break
+                expected={'input_checksum':context['checksum'],'phase':name}
+                if any(phase_claim.get(k)!=v for k,v in expected.items()):
+                    raise ValueError('premarket_phase_identity_changed')
+                if phase_claim.get('status')!='failed':
+                    return {**old,'status':'reconciliation_required',
+                        'reason':'premarket_phase_outcome_requires_reconciliation:'+name}
+                break
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'dispatching','recovery_of':old['execution_name']}),
                 if_generation_match=claim.generation)

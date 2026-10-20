@@ -25,6 +25,20 @@ def distribution_day(full_atomic, environment, native_runner, monkeypatch, reque
     from services import trading_config_loader, paired_nav_collection, l4_distribution_context, l4_risk_history
     graph, state = full_atomic
     db, _, *_ = environment
+    if request.node.callspec.params.get('parent_storage') == 'cold':
+        from pathlib import Path
+        from services import paired_nav_cold as cold
+        from test_paired_nav_cold import Objects
+        migration=Path(__file__).parents[2]/'worker/domain-migrations/learning/0048_paired_nav_cold_storage.sql'
+        db.conn.executescript(migration.read_text(encoding='utf-8'))
+        objects=Objects()
+        monkeypatch.setattr(cold,'production_store',lambda:objects)
+        original_parse=cold.parse_file
+        db.full_parent_decodes=[]
+        def parse(path,**kwargs):
+            if kwargs.get('prefixes') is None:db.full_parent_decodes.append(path)
+            return original_parse(path,**kwargs)
+        monkeypatch.setattr(cold,'parse_file',parse)
     frozen_clock = datetime.fromisoformat(state['run_date']+'T14:00:00+00:00')
     config = native_config()['trading']
     risk = native_config()['risk']
@@ -90,6 +104,19 @@ def distribution_day(full_atomic, environment, native_runner, monkeypatch, reque
     state.update(asyncio.run(graph.node_recommend(state)))
     assert state['paired_nav_collection']['status'] == 'allocation_context_frozen', state['paired_nav_collection']
     return db, graph, state
+
+
+@pytest.mark.parametrize('full_atomic', ['native_policy_weight_owner_complete'], indirect=True)
+@pytest.mark.parametrize('parent_storage', ['cold'])
+def test_cold_formal_node_completes_atomic_comparison_without_second_parent_decode(distribution_day,parent_storage):
+    db,_,state=distribution_day
+    assert db.full_parent_decodes==[]
+    assert state['paired_nav_atomic_allocation']['status']=='allocations_materialized'
+    assert state['paired_nav_atomic_allocation']['baseline_economic_replay']=='PASS'
+    saved=read_snapshot(db.query,state['paired_nav_collection']['snapshot_id'])
+    assert len(db.full_parent_decodes)==1
+    assert saved['payload']['content']['formal_output']==state['paired_nav_atomic_allocation']['baseline']['output']
+    assert state['l4_pending_plan']==saved['payload']['content']['capture']['portfolio_plan']
 
 
 @pytest.mark.parametrize('full_atomic', ['native_policy_weight_owner_complete'], indirect=True)

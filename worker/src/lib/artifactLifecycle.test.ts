@@ -232,10 +232,11 @@ function readyDomainDb(baseline: string, tables: string[]): MockDb {
   return db
 }
 
-const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', [
+const executionDomainTables = [
   'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events', 'risk_audit_log',
-  'execution_retention_releases_v1',
-])
+  'execution_retention_releases_v1', 'live_submission_pause',
+]
+const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', executionDomainTables)
 const paperDomainTables = [
   'debate_memory', 'decision_logs', 'exit_shadow_log', 'paper_accounts', 'paper_orders',
   'paper_positions', 'paper_settlements', 'paper_daily_snapshots', 'paper_execution_events',
@@ -274,6 +275,10 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   assert.equal(healthy.artifact_active_references, 1998)
   assert.equal(healthy.artifact_true_orphan_references, 0)
   assert.equal(healthy.domain_schema.every((row) => row.ready), true)
+  const missingSubmissionControl = await runStorageHealthCheck({ DB: healthyDb as any, ...splitBindings,
+    EXECUTION_DB: readyDomainDb('0001_execution_baseline.sql', executionDomainTables.filter(name => name !== 'live_submission_pause')) as any })
+  assert.equal(missingSubmissionControl.healthy, false)
+  assert(missingSubmissionControl.domain_schema.some(row => row.domain === 'execution' && row.missing_tables.includes('live_submission_pause')))
   for (const missing of [
     'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
     'paper_counterfactual_lots_v1', 'paper_counterfactual_events_v1', 'paper_counterfactual_signals_v1',

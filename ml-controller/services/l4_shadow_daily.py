@@ -4,7 +4,7 @@ from datetime import date
 from services.l4_challenger_comparison import digest,verify,instant
 from services.l4_distribution import validate_bundle
 from services.l4_distribution_runtime import native_features
-from services.l4_private_execution import frozen_p6_loader
+from services.l4_private_execution import frozen_p6_loader, frozen_legacy_loader
 
 
 def configuration_checksum(trading_config,risk_config):
@@ -40,7 +40,9 @@ def validate(packet,entry):
         raise ValueError('shadow_daily_model_or_input_mismatch')
     if configuration_checksum(packet['trading_config'],packet['risk_config'])!=entry['components']['allocator_policy']:
         raise ValueError('shadow_daily_execution_policy_changed')
-    validate_bundle(bundle,l3_identity=l3,signal_date=day,require_paper_release=False)
+    from services.l4_tabpack_weights import private_weight_reader
+    with private_weight_reader(frozen_legacy_loader(inputs,bundle)):
+        validate_bundle(bundle,l3_identity=l3,signal_date=day,require_paper_release=False)
     # Check actual native predictions, not just the caller's model label.
     for row in packet['recommendations']:
         native_features(row,runtime['predictions'][row['symbol']],l3)

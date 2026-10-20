@@ -7,6 +7,52 @@ from services.l4_distribution import digest
 from services.l4_distribution_runtime import run
 
 
+def legacy_weight_references(bundle):
+    """External legacy TabPack objects only; inline and P6 models have none."""
+    from services.l4_tabpack_median import SCHEMA as MEDIAN_SCHEMA
+    from services.l4_tabpack_weights import SCHEMA, validate_reference
+    model = bundle.get('model', {}).get('residual_tabpack') or {}
+    packs = ([member['model'] for member in model['members']]
+             if model.get('schema_version') == MEDIAN_SCHEMA else [model])
+    refs = {}
+    for pack in packs:
+        if pack.get('schema_version') != SCHEMA:
+            continue
+        ref = pack['weights']
+        validate_reference(ref)
+        if ref['path'] in refs and refs[ref['path']] != ref:
+            raise ValueError('private_legacy_weight_reference_changed')
+        refs[ref['path']] = ref
+    return refs
+
+
+def frozen_legacy_loader(inputs, bundle):
+    """Require every legacy weight locally, without permitting a live fallback."""
+    refs = legacy_weight_references(bundle)
+    objects = inputs.get('legacy_weight_objects') or {}
+    if set(objects) != set(refs):
+        raise ValueError('private_legacy_weight_inventory_missing')
+    decoded = {}
+    for path, ref in refs.items():
+        obj = objects[path]
+        if obj.get('reference') != ref:
+            raise ValueError('private_legacy_weight_reference_changed')
+        try:
+            raw = base64.b64decode(obj['base64'], validate=True)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValueError('private_legacy_weight_encoding_invalid') from exc
+        if len(raw) != ref['bytes'] or hashlib.sha256(raw).hexdigest() != ref['sha256']:
+            raise ValueError('private_legacy_weight_checksum_mismatch')
+        decoded[path] = raw
+
+    def load(ref):
+        if refs.get(ref.get('path')) != ref:
+            raise ValueError('private_legacy_weight_reference_changed')
+        return decoded[ref['path']]
+    # Even a no-weight private model must never fall through to live storage.
+    return load
+
+
 def frozen_p6_loader(inputs, bundle):
     """Private replay must carry the exact three weight objects, never read live storage."""
     from services.l4_p6_bundle import is_p6
@@ -50,16 +96,19 @@ def allocate_private(store,account):
     policy['runtime']['account']=account
     ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
     weight_loader=frozen_p6_loader(inputs,policy['artifact'])
+    legacy_loader=frozen_legacy_loader(inputs,policy['artifact'])
     captures = []
     shadow=inputs.get('r2_shadow')
     if shadow is not None:
         # This store is the isolated native Paper host. Production callers have
         # no packet parameter and cannot activate the research scope through KV.
         policy['scope']='private_research'
-    rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,
-        private_research=True, evidence_sink=captures.append,
-        **({'r2_shadow':shadow} if shadow is not None else {}),
-        **({'p6_weight_loader':weight_loader} if weight_loader is not None else {}))
+    from services.l4_tabpack_weights import private_weight_reader
+    with private_weight_reader(legacy_loader):
+        rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,
+            private_research=True, evidence_sink=captures.append,
+            **({'r2_shadow':shadow} if shadow is not None else {}),
+            **({'p6_weight_loader':weight_loader} if weight_loader is not None else {}))
     if len(captures) != 1:
         raise ValueError('private_l4_allocation_capture_missing')
     plan=captures[0]['portfolio_plan']

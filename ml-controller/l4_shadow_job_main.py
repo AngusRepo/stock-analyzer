@@ -6,13 +6,13 @@ from pathlib import Path
 
 
 def run(*,operation=None,session_date=None,accounts=None,now=None,source_index=None,bootstrap=None,
-        native_source_directory=None):
+        native_source_directory=None,native_input_directory=None):
     from services.l4_shadow_producer import initialize,produce_day,DAILY_PREFIX
     operation=operation or os.environ.get('L4_SHADOW_OPERATION','tick')
     now=now or datetime.now(timezone.utc)
     day=session_date or os.environ.get('L4_SHADOW_SESSION_DATE') or now.astimezone(
         timezone(timedelta(hours=8))).date().isoformat()
-    if operation not in ('export','bootstrap','daily','tick'):
+    if operation not in ('produce','export','bootstrap','daily','tick'):
         raise ValueError('shadow_job_operation_invalid')
     if operation=='tick':
         from services.l4_shadow_sources import run_tick
@@ -46,6 +46,12 @@ def run(*,operation=None,session_date=None,accounts=None,now=None,source_index=N
         directory=native_source_directory or os.environ.get('L4_SHADOW_NATIVE_SOURCE_DIRECTORY')
         if not directory:raise ValueError('shadow_native_source_directory_missing')
         return publish_directory(accounts.registry,directory,session_date=day,now=now)
+    if operation=='produce':
+        import asyncio
+        from services.l4_shadow_native_producer import produce_directory
+        directory=native_input_directory or os.environ.get('L4_SHADOW_NATIVE_INPUT_DIRECTORY')
+        if not directory:raise ValueError('shadow_native_input_directory_missing')
+        return asyncio.run(produce_directory(accounts.registry,directory,session_date=day,now=now))
     if source_index is None:
         blob=accounts.bucket.blob(DAILY_PREFIX+day+'/index.json');blob.reload()
         source_index=json.loads(blob.download_as_bytes(if_generation_match=blob.generation))
@@ -53,4 +59,7 @@ def run(*,operation=None,session_date=None,accounts=None,now=None,source_index=N
 
 
 if __name__=='__main__':
-    print(json.dumps(run(),sort_keys=True))
+    result=run()
+    print(json.dumps(result,sort_keys=True))
+    if result.get('status')=='not_ready':
+        raise SystemExit(2)

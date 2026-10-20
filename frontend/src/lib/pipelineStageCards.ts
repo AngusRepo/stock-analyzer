@@ -23,6 +23,12 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
   const progress=p?.run_id === parent.runId && p?.run_date === parent.statusRunDate ? p : null
   const history=progress ? Object.values(progress.executions ?? {legacy:progress.completed}).flat() : []
   const sealed=/\bawaiting_premarket\b/.test(parent.summary) && /\bl3_sealed=true\b/.test(parent.summary)
+  const currentIndex=progress ? PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase)) : -1
+  const chainActive=Boolean(progress && ['running','waiting'].includes(parent.lastStatus) && !sealed)
+  const candidate=parent.pipelineWork
+  const work=candidate && progress && candidate.run_id===parent.runId && candidate.run_date===parent.statusRunDate
+    && candidate.phase===progress.phase && now-Date.parse(candidate.observed_at)>=-5_000
+    && now-Date.parse(candidate.observed_at)<=30_000 ? candidate : undefined
   return PIPELINE_STAGE_CARDS.map((card,index) => {
     const belongs=(phase:string)=>(card.phases as readonly string[]).includes(phase)
     const rows=history.filter(row=>belongs(row.phase))
@@ -38,25 +44,31 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     const newerAttempt=active && progress!.status==='running' && Boolean(end?.completed_at)
       && Date.parse(progress!.phase_started_at)>Date.parse(end!.completed_at!)
     const complete=(card.id==='pipeline-l3' && sealed) || (!newerAttempt && !enrichmentIssue && end?.status==='completed')
-    const failed=!complete && (enrichmentIssue || (active ? ['failed','blocked'].includes(progress!.status) : ['failed','blocked'].includes(latest?.status??'')))
-    const queued=active && (progress!.status==='waiting' || ['dispatch_prediction','modal_prediction'].includes(progress!.phase))
+    const childRunning=active && chainActive && work?.status==='running' && work.active>0
+    const failed=!complete && (enrichmentIssue || (active && work?.status==='failed') || (active ? ['failed','blocked'].includes(progress!.status) : ['failed','blocked'].includes(latest?.status??'')))
+    const queued=active && !childRunning && (progress!.status==='waiting' || ['dispatch_prediction','modal_prediction'].includes(progress!.phase))
     const started=rows.map(r=>r.started_at).filter((v):v is string=>Boolean(v)).sort()[0]
       ?? (active ? progress!.phase_started_at : null)
     const batches=progress ? parent.pipelineBatches?.find(b=>belongs(b.phase)) : undefined
-    const observed=Math.max(Date.parse(progress?.observed_at??'')||0,Date.parse(batches?.observed_at??'')||0)
+    const observed=Math.max(Date.parse(progress?.observed_at??'')||0,Date.parse(batches?.observed_at??'')||0,
+      active && work?.status!=='unknown' ? Date.parse(work?.observed_at??'')||0 : 0)
     const stale=active && !complete && !failed && now-observed>15*60_000
     const missingEarlier=rows.length===0 && progress && PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase))>index
-    const visual: NonNullable<SchedulerJob['stageVisualStatus']>=complete?'completed':failed?'blocked':stale||missingEarlier?'stale'
-      :queued?'waiting':active && progress!.status==='running'?'running':rows.length?'waiting':'not_started'
-    const summary=(enrichmentIssue?`TimesFM ${enrichment.status==='blocked'?'條件未滿足':'執行失敗'}；流程已接續`:complete?'階段已完成':failed?'階段失敗／條件未滿足':missingEarlier?'缺少本輪階段紀錄':stale?'觀測超過 15 分鐘，待確認'
-      :active?(names[progress!.phase]??progress!.phase):rows.length?'等待接續回報':'本輪尚未開始'
-      )+(batches?` · 特徵批次 ${batches.completed}/${batches.total}`:'')
+    const downstream=chainActive && currentIndex>=0 && index>currentIndex
+    const upstreamBlocked=currentIndex>=0 && index>currentIndex && (['failed','blocked'].includes(parent.lastStatus)
+      || ['failed','blocked'].includes(progress?.status??'') || work?.status==='failed')
+    const visual: NonNullable<SchedulerJob['stageVisualStatus']>=complete?'completed':failed||upstreamBlocked?'blocked':stale||missingEarlier?'stale'
+      :childRunning?'running':queued||downstream?'waiting':active && progress!.status==='running'?'running':rows.length?'waiting':'not_started'
+    const summary=(enrichmentIssue?`TimesFM ${enrichment.status==='blocked'?'條件未滿足':'執行失敗'}；流程已接續`:complete?'階段已完成':failed?'階段失敗／條件未滿足':upstreamBlocked?'上游失敗／條件未滿足，尚未執行':missingEarlier?'缺少本輪階段紀錄':stale?'觀測超過 15 分鐘，待確認'
+      :childRunning?(progress!.phase==='input_snapshot'?'快照匯出中':'特徵批次執行中')
+      :active?(names[progress!.phase]??progress!.phase):downstream?`等待${PIPELINE_STAGE_CARDS[index-1].label}完成`:rows.length?'等待接續回報':'本輪尚未開始'
+      )+(active && work && work.total>1?` · 已完成 ${work.completed}/${work.total} · 執行中 ${work.active}`:batches?` · 特徵批次 ${batches.completed}/${batches.total}`:'')
     const elapsed=rows.reduce((n,r)=>n+r.elapsed_ms,0) + (visual==='running' ? Math.max(0,now-Date.parse(progress!.phase_started_at)) : 0)
     const ended=complete || (enrichmentIssue && end?.status==='completed')?end?.completed_at:failed?latest?.completed_at:undefined
     const wall=started && (!complete || ended) ? duration(Math.max(0,(ended?Date.parse(ended):now)-Date.parse(started))) : undefined
     return {...parent,id:card.id,name:card.label,stageVisualStatus:visual,stageCard:true,
       stageElapsed:wall,
-      lastStatus:visual==='completed'?'success':visual==='blocked'?'failed':visual==='running'?'running':'waiting',
+      lastStatus:visual==='completed'?'success':upstreamBlocked?'blocked':visual==='blocked'?'failed':visual==='running'?'running':'waiting',
       summary,details:[summary],displayNote:summary,lastError:failed?parent.lastError:undefined,
       lastRunAt:started,lastRun:started??'N/A',lastRunBasis:'started',lastAttemptAt:null,lastEffectiveRunAt:null,
       lastAttemptStatus:undefined,lastEffectiveStatus:undefined,recoveredFromStatus:null,

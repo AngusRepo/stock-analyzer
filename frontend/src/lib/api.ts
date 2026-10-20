@@ -287,6 +287,9 @@ export const cronApi = {
 
 // 2026-04-21 Scheduler Dashboard API
 export type SchedulerJob = {
+  pipelineWork?: {run_id:string;run_date:string;phase:string;stage_id:string;
+    status:'running'|'waiting'|'failed'|'unknown';active:number;completed:number;total:number;
+    observed_at:string;execution_id?:string;started_at?:string|null}
   stageCard?: boolean
   stageElapsed?: string
   pipelineBatches?: Array<{stage_id:string;phase:string;completed:number;total:number;observed_at:string}>

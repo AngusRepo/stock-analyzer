@@ -221,3 +221,15 @@ C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scrip
 - 涉及 production / cron / ML / risk 時，查最近 commit 與實際 call path。
 - 若 working tree 有 unrelated changes，不 revert。
 - 測試範圍跟風險成比例；能跑就跑，不能跑要說明。
+
+## PR Workflow（2026-10-20 起，所有 agent 適用）
+
+main = production。唯一進入 main 的方式是 PR；部署只從 main 出發，且由 Wei 在 GitHub `production` environment 核准。
+
+- **分支前綴**：`claude/`、`codex/`、`cursor/`、`grok/`。疊在別人分支上的 PR，base 指向那條分支，不要指向 main。
+- **Agent 只開 PR**：不 merge、不 push main、不 force push、不刪別人的分支。
+- **Agent 不部署**：不執行 `wrangler deploy`、`gcloud run deploy`、`gcloud run jobs update`、`modal deploy`，不寫 production KV／D1，不使用 `ALLOW_NON_MAIN_PRODUCTION_DEPLOY`。
+- **Release manifest 不手改**：`ml-controller/services/native_execution_behavior_release.json`、`strategy_nav_source_release.json` 和 Paper admission 由 release 工具產生。
+- **PR 內容**：照 `.github/pull_request_template.md` 填寫，包含 production effect、測試、release 影響、回滾，並寫明請 Wei 核准的 head SHA。
+- **CI gate**：`gate` check 會把 PR head 和 base 跑同一批測試，只擋新增的失敗；既有失敗不用修，但不可以增加。不要為了讓 gate 通過而刪除或跳過測試。
+- **合併方式**：只用 merge commit（保留 SHA，疊加的 PR 才不會衝突）。

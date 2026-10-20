@@ -1,12 +1,8 @@
 name: P9 Gate
 
 on:
+  # Superseded by ci.yml (gate). Kept for manual runs of the full Windows p9 script.
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - main
-      - feature/**
 
 jobs:
   p9-gate:

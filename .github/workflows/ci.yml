@@ -1,0 +1,95 @@
+name: ci
+
+# PR gate: run every suite on the PR head and on its base, then fail only on
+# failures the base does not have. No secrets are used by this workflow.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  suite:
+    name: ${{ matrix.suite }} (${{ matrix.side }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, head]
+        suite: [worker, controller, frontend, hygiene]
+    steps:
+      - name: Resolve commit
+        id: ref
+        shell: bash
+        run: |
+          set -e
+          # head = the commit under test; base = what it is compared against
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            head='${{ github.event.pull_request.head.sha }}'; base='${{ github.event.pull_request.base.sha }}'
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            head='${{ github.sha }}'; base='${{ github.event.before }}'
+          else
+            head='${{ github.sha }}'; base='${{ github.sha }}'
+          fi
+          [ "${{ matrix.side }}" = head ] && echo "sha=$head" >> "$GITHUB_OUTPUT" || echo "sha=$base" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.sha }}
+          fetch-depth: 1
+
+      # The comparison tooling always comes from the head commit's ci/ folder.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: .ci-tools
+          sparse-checkout: ci
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        if: matrix.suite == 'worker' || matrix.suite == 'frontend'
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run suite
+        shell: bash
+        run: bash .ci-tools/ci/run_suite.sh "${{ matrix.suite }}" "$RUNNER_TEMP/failures.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: failures-${{ matrix.suite }}-${{ matrix.side }}
+          path: ${{ runner.temp }}/failures.txt
+          if-no-files-found: error
+
+  gate:
+    name: gate
+    if: always()
+    needs: suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: failures
+      - name: Compare head against base
+        run: python ci/compare_failures.py failures

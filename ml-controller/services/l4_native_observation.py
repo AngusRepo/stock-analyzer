@@ -147,8 +147,15 @@ def discover(bucket,*,start,end,cutoff):
     return found
 
 
-async def prepare(*,bucket,config,day,context,key):
+async def prepare(*,bucket,config,day,context,key,frozen_day_source_reference=None,prepared_day_source=None):
     """Freeze inputs once; a lost acknowledgement requires explicit recovery."""
+    if frozen_day_source_reference is not None:
+        from services.l4_native_day_source import prepare_day_source,validate_prepared,publish_prepared
+        prepared=prepared_day_source or await prepare_day_source(bucket=bucket,
+            reference=frozen_day_source_reference,config=config,context=context,day=day)
+        validate_prepared(prepared,reference=frozen_day_source_reference,config=config,context=context,day=day)
+        if prepared['key']!=key:raise ValueError('l4_native_frozen_preparation_changed')
+        return publish_prepared(bucket,prepared=prepared)
     import asyncio
     from google.api_core.exceptions import PreconditionFailed
     from graphs import daily_pipeline_v2 as pipeline
@@ -200,7 +207,7 @@ async def prepare(*,bucket,config,day,context,key):
     return envelope
 
 
-async def collect(*,bucket,config,day,spawn=None,poll=None):
+async def collect(*,bucket,config,day,spawn=None,poll=None,frozen_day_source_reference=None,prepared_day_source=None):
     """Resume the same frozen inference across bounded Cloud Run invocations."""
     from graphs import daily_pipeline_v2 as pipeline
     from services.l4_native_dispatch import advance
@@ -210,11 +217,20 @@ async def collect(*,bucket,config,day,spawn=None,poll=None):
     records={r['model']:read_reference(bucket,r['reference']) for r in cutoffs.get('source_references',[])}
     known=validate_context(context,identity,cutoffs,day,records)
     key=digest(dict(day=day,identity=identity,policy=config))
+    if frozen_day_source_reference is not None:
+        from services.l4_native_day_source import validate_resume,validate_prepared
+        validate_resume(bucket,config=config,day=day,source_reference=frozen_day_source_reference,
+                        prepared=prepared_day_source)
+        if prepared_day_source is not None:
+            validate_prepared(prepared_day_source,reference=frozen_day_source_reference,
+                              config=config,context=context,day=day)
     index=bucket.blob(PREFIX+'index/'+key+'.json')
     if index.exists():return dict(status='captured',projection=json.loads(index.download_as_bytes()),reused=True)
     request_index=bucket.blob(PREFIX+'requests/'+key+'.json')
     envelope_ref=(json.loads(request_index.download_as_bytes()) if request_index.exists() else
-        await prepare(bucket=bucket,config=config,day=day,context=context,key=key))
+        await prepare(bucket=bucket,config=config,day=day,context=context,key=key,**(
+            dict(frozen_day_source_reference=frozen_day_source_reference,prepared_day_source=prepared_day_source)
+            if frozen_day_source_reference is not None else {})))
     envelope=read_reference(bucket,envelope_ref)
     request_ref=envelope['request'];request=read_reference(bucket,request_ref)
     dispatched=await advance(bucket,key,envelope_ref,request,request_ref=request_ref,spawn=spawn,poll=poll)

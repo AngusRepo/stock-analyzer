@@ -269,6 +269,7 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
       assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
       return
     }
+    const accountBeforeEntry=f.sqls.paper.prepare('SELECT * FROM paper_accounts').all()
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(result.production_effect,false)
     assert.ok(recorderLeaseObservations.length>0)
@@ -322,9 +323,18 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
       assert.equal(f.sqls.paper.prepare("SELECT reason FROM paper_execution_events WHERE reason='swing_atr_day_veto' LIMIT 1").get()?.reason,'swing_atr_day_veto')
       const recorder=f.sqls.paper.prepare('SELECT reason,evidence_json FROM paper_counterfactual_signals_v1').all()
       assert.equal(recorder.length,1)
-      assert.equal(recorder[0].reason,'quantity_not_reached_before_block')
-      assert.equal(JSON.parse(String(recorder[0].evidence_json)).blocked_reason,'swing_atr_day_veto')
-      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_counterfactual_lots_v1').get()?.n,0)
+      assert.equal(recorder[0].reason,'visible_depth_partial_fill_remaining_resting')
+      const evidence=JSON.parse(String(recorder[0].evidence_json))
+      assert.equal(evidence.input.source.blockedReason,'swing_atr_day_veto')
+      assert.equal(evidence.input.source.quantitySource,'paper_allocator_counterfactual_snapshot')
+      assert.equal(evidence.input.source.sizingEvidence.order_risk_validation,'not_reached')
+      assert.equal(evidence.input.requestedShares%1000,0)
+      assert.ok(evidence.input.requestedShares>1000)
+      assert.equal(evidence.fill.filledShares,1000)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_counterfactual_lots_v1').get()?.n,1)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_order_intents').get()?.n,0)
+      assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
+      assert.deepEqual(f.sqls.paper.prepare('SELECT * FROM paper_accounts').all(),accountBeforeEntry)
       return
     }
     const filledShares=ownerPriceCase?Number(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares):['odd_lot_fee','holding_503_recovery'].includes(scenario)?31:1000

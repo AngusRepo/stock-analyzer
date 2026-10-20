@@ -1,8 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { createCounterfactualRecorder, counterfactualZ, pollPaperCounterfactualLots } from './paperCounterfactualRuntime'
-import { listOpenCounterfactualLots } from './paperCounterfactualStore'
+import { createCounterfactualRecorder, counterfactualZ, counterfactualSizing, counterfactualTarget,
+  counterfactualCorporateCoverage, pollPaperCounterfactualLots } from './paperCounterfactualRuntime'
+import { sealDailyReview } from './paperDailyPlan'
+import type { FiveSlotDecision } from './fiveSlotCapitalAllocator'
+import type { IntradayOHLC } from './paperIntradayData'
+import type { CorporateActionSnapshot } from './paperCorporateActions'
+import { openCounterfactualLot, type CounterfactualLot } from './paperCounterfactual'
+import { listOpenCounterfactualLots, readCounterfactualLot } from './paperCounterfactualStore'
 import { resolveAuthoritativeBuyExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { withPaperExecutionScope } from './paperExecutionScope'
@@ -121,10 +127,20 @@ test('runtime resumes an unheld research lot next day using observed depth; all 
         lot_type:'odd_lot',volume_unit:'shares',bid_prices:[94],ask_prices:[94],bid_volumes:[100],ask_volumes:[100]}}})
     }
     const before=f.sqls.paper.prepare('SELECT * FROM paper_accounts').all()
+    const blocked=await withPaperExecutionScope(f.ports,()=>pollPaperCounterfactualLots(f.env,next))
+    assert.deepEqual(blocked.result,{observed:1,errors:[]});assert.equal(calls,1)
+    assert.equal((await listOpenCounterfactualLots(f.env.PAPER_DB,1)).length,1)
+    const unknown=JSON.parse(String(f.sqls.paper.prepare('SELECT evidence_json FROM paper_counterfactual_events_v1 WHERE version=1').get()?.evidence_json)).events
+    assert.ok(unknown.every((event:any)=>event.status==='unknown'&&event.reason==='corporate_snapshot_missing:'+next))
+    f.kvs.set('market:corporate_actions:v1:'+next,JSON.stringify(corporateSnapshot(next)))
+    f.ports.nowMs+=1000
     const result=await withPaperExecutionScope(f.ports,()=>pollPaperCounterfactualLots(f.env,next))
-    assert.deepEqual(result.result,{observed:1,errors:[]});assert.equal(calls,1)
+    assert.deepEqual(result.result,{observed:1,errors:[]});assert.equal(calls,2)
     assert.equal((await listOpenCounterfactualLots(f.env.PAPER_DB,1)).length,0)
-    const events=JSON.parse(String(f.sqls.paper.prepare('SELECT evidence_json FROM paper_counterfactual_events_v1 WHERE version=1').get()?.evidence_json)).events
+    const persisted=JSON.parse(String(f.sqls.paper.prepare('SELECT evidence_json FROM paper_counterfactual_events_v1 WHERE version=2').get()?.evidence_json))
+    const events=persisted.events
+    assert.equal(persisted.input.corporateEvidence[0].source_checksum,'8'.repeat(64))
+    assert.equal((await readCounterfactualLot(f.env.PAPER_DB,1,`${date}:2337:${now}`))?.lot.corporateThroughDate,next)
     assert.equal(events.length,3)
     assert.ok(events.every((event:any)=>event.status==='closed'&&event.reason==='swing_daily_orl'&&event.z===null))
     assert.deepEqual(f.sqls.paper.prepare('SELECT * FROM paper_accounts').all(),before)
@@ -132,4 +148,80 @@ test('runtime resumes an unheld research lot next day using observed depth; all 
     assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_orders').get()?.n,0)
     assert.deepEqual((await withPaperExecutionScope(f.ports,()=>pollPaperCounterfactualLots(f.env,next))).result,{observed:0,errors:[]})
   } finally {f.close()}
+})
+
+function corporateSnapshot(day: string): CorporateActionSnapshot {
+  return {schema_version:'paper-corporate-source-v1',session_date:day,observed_at:day+'T08:00:00+08:00',
+    source_checksum:'8'.repeat(64),covered_symbols:['2337'],actions:[],blockers:{},tax_basis:'gross_before_personal_tax'}
+}
+test('research sizing uses the allocator cap and observed lot book; veto, stale, wrong lot and late data stay missing',async()=>{
+  const quote:IntradayOHLC={last:100,low:99,high:101,referencePrice:100,bid:100,ask:100,source:'shioaji',
+    lotType:'odd_lot',volumeUnit:'shares',bidPrices:[100],askPrices:[100],bidVolumes:[100],askVolumes:[100],
+    quoteTime:new Date(now).toISOString(),confirmationTime:new Date(now).toISOString()}
+  const input={nowMs:now,signal,quote,decision:{action:'buy',budgetCap:10_000,reason:'l4_target'} as FiveSlotDecision,
+    context:{exact_cash:20_000,exact_nav:100_000},minPositionValue:10_000,slippageTicks:1,maxBookAgeMs:1500,maxDisagreementTicks:1,
+    preTrade:{symbol:'2337',currentPrice:100,entryPrice:100,bestAsk:100,previousClose:100,quoteAgeMs:0,
+      quoteSource:'shioaji' as const,marketRiskLevel:'normal',technical:{action:'defer',reason:'swing_atr_day_veto'},
+      policy:{limitUpPct:.1,requoteDeviationMax:.1,requoteDiscount:.01,requoteStopFallback:.08}}}
+  const before=JSON.stringify(input),result=counterfactualSizing(input)
+  assert.equal(result.sizing?.shares,100)
+  assert.equal(result.sizing?.quantitySource,'paper_allocator_counterfactual_snapshot')
+  assert.equal(JSON.stringify(input),before)
+  assert.equal(counterfactualSizing({...input,decision:{...input.decision,action:'skip',reason:'risk_cap'}}).reason,'counterfactual_allocator:risk_cap')
+  assert.equal(counterfactualSizing({...input,decision:{...input.decision,budgetCap:100_000}}).reason,'execution_lot_type_mismatch')
+  assert.equal(counterfactualSizing({...input,nowMs:now+60_000}).reason,'signal_observation_window_missed')
+  assert.equal(counterfactualSizing({...input,nowMs:now+2000}).sizing,null)
+  const f=fixture()
+  try {
+    const recorder=f.recorder()
+    recorder.observe(pending,{...signal,action:'defer',reason:'swing_atr_day_veto'})
+    recorder.sized('2337',result.sizing!)
+    await recorder.flush()
+    const lot=(await listOpenCounterfactualLots(f.env.PAPER_DB,1))[0].lot
+    assert.equal(lot.entryShares,100)
+    assert.equal(lot.source.sizingEvidence?.sizing_fill_price,100)
+    assert.equal(lot.source.quantitySource,'paper_allocator_counterfactual_snapshot')
+    assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_orders').get()?.n,0)
+  } finally {f.close()}
+})
+test('explicit zero target binds signed review, known time and model; absent/conditional/positive targets do not liquidate',async()=>{
+  const p:L4PortfolioPlan={...plan,schema_version:'l4-portfolio-plan-v1',owner:'l4_distribution',account_id:1,parent_plan_id:null,
+    policy_identity:'c'.repeat(64),nav_at_decision:100_000,
+    account_anchor:{order_watermark:0,cash:100_000,positions:[],settlement:{unsettledBuyAmount:0,unsettledSellAmount:0}},
+    weights:{2337:0},targets:{2337:{weight:0,current_weight:.1,locked:false,expected_return_gross:null}},
+    constraints:{exposure_cap:.8,name_cap:.3,min_weight:.03,max_positions:5},
+    proof:{within_tolerance:true,preselection:false,absolute_objective_gap:0,tolerance:1e-8,evaluated_candidate_count:1},
+    opb:{enabled:false,status:'fixed',arm_id:'base'},
+    sealed_execution:{schema_version:'l4-sealed-execution-v1',rotation_mode:'selected_ready_or_filled',expiry:'retain_until_next_seal',
+      exit_rules:{2337:{mode:'unconditional',reason:'explicit_zero'}}}}
+  p.execution_review=await sealDailyReview({plan:p,tradeDate:date,nowMs:Date.parse(date+'T08:00:00+08:00'),contextHash:'d'.repeat(64),restrictions:[]})
+  const lot=openCounterfactualLot({lotId:'target',accountId:1,symbol:'2337',date,signalMs:now,nowMs:now,
+    observableUntilMs:now+60_000,requestedShares:100,limitPrice:100,entryOrLow:95,snapshot:book(),
+    source:{signalSha:'3'.repeat(64),planId:plan.plan_id,modelSha:plan.model_checksum,l3Identity:identity}}).lot!
+  const target=await counterfactualTarget(p,lot,date,now,100)
+  assert.equal(target.targetExit?.shares,100)
+  assert.ok(target.targetExit?.decisionId.includes(p.execution_review.checksum))
+  assert.equal((await counterfactualTarget(p,{...lot,symbol:'2330'},date,now,100)).reason,'target_symbol_not_explicit')
+  assert.equal((await counterfactualTarget(p,lot,next,now,100)).targetExit,null)
+  assert.equal((await counterfactualTarget(p,lot,date,Date.parse(date+'T07:59:00+08:00'),100)).targetExit,null)
+  assert.equal((await counterfactualTarget({...p,model_checksum:'9'.repeat(64)},lot,date,now,100)).targetExit,null)
+  assert.equal((await counterfactualTarget({...p,execution_review:{...p.execution_review,checksum:'0'.repeat(64)}},lot,date,now,100)).reason,'target_review_invalid')
+  assert.equal((await counterfactualTarget({...p,sealed_execution:undefined},lot,date,now,100)).reason,'target_rotation_readiness_missing')
+  const positive:L4PortfolioPlan={...p,sealed_execution:undefined,execution_review:undefined,weights:{2337:.1},
+    targets:{2337:{...p.targets['2337'],weight:.1}}}
+  positive.execution_review=await sealDailyReview({plan:positive,tradeDate:date,nowMs:Date.parse(date+'T08:00:00+08:00'),contextHash:'d'.repeat(64),restrictions:[]})
+  assert.equal((await counterfactualTarget(positive,lot,date,now,100)).reason,'target_reduction_requires_research_account_anchor')
+})
+test('corporate coverage cannot infer missing data is zero or apply a later snapshot retroactively',async()=>{
+  const lot={symbol:'2337',swing:{entryDate:date}} as CounterfactualLot
+  const input={lot,date:next,nowMs:Date.parse(next+'T09:05:00+08:00'),calendar:[date,next],
+    read:async()=>corporateSnapshot(next)}
+  assert.equal((await counterfactualCorporateCoverage(input)).throughDate,next)
+  assert.equal((await counterfactualCorporateCoverage({...input,read:async()=>null})).reason,'corporate_snapshot_missing:'+next)
+  assert.equal((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),covered_symbols:[]})})).reason,'corporate_symbol_not_covered:'+next)
+  const action={action_id:'cash-1',symbol:'2337',kind:'cash' as const,ex_date:next,payable_date:null,cash_per_share:2,stock_per_share:0}
+  assert.equal((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),actions:[action]})})).reason,'corporate_research_adjustment_required:'+next+':cash-1')
+  assert.equal((await counterfactualCorporateCoverage({...input,lot:{...lot,corporateThroughDate:next},
+    read:async()=>({...corporateSnapshot(next),actions:[action]})})).reason,'corporate_research_adjustment_required:'+next+':cash-1')
+  assert.ok((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),observed_at:next+'T10:00:00+08:00'})})).reason?.startsWith('corporate_snapshot_invalid:'))
 })

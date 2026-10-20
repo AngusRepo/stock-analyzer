@@ -1,8 +1,8 @@
 """Frozen native predictions and recommendation capture -> private daily source.
 
-This consumer never dispatches inference or calls node_recommend. Each entry
-must supply its own completed chain and complete recommendation capture. A
-projection, current config, or another entry's prediction cannot fill a gap.
+This producer never dispatches inference or calls node_recommend. Each entry
+supplies its own completed chain and either complete recommendation inputs or
+an existing capture. A projection or another entry's prediction cannot fill a gap.
 """
 from copy import deepcopy
 import hashlib
@@ -10,8 +10,8 @@ import json
 from pathlib import Path
 
 from services.l4_challenger_comparison import digest, seal
-from services.l4_shadow_input_export import publish_day, source_from_packet
-from services.l4_shadow_producer import read_reference
+from services.l4_shadow_input_export import _put, publish_day, source_from_packet
+from services.l4_shadow_producer import DAILY_PREFIX, read_reference
 
 
 def validate_prediction_state(state, identity):
@@ -117,12 +117,7 @@ async def collect_completed_prediction_state(*, bucket, observation, identity, d
     return state
 
 
-def build_source(*, entry, state, recommendation_context, day_inputs, observed_at, now):
-    """Run the captured recommendation path, then serialize its private packet."""
-    from services.l4_private_execution import frozen_legacy_loader, frozen_p6_loader
-    from services.l4_tabpack_weights import private_weight_reader
-    from services.paired_nav_recommendation_path import replay_recommendation_context
-
+def _validate_recommendation_inputs(entry, state, captured, day_inputs):
     day = day_inputs['signal_date']
     inputs = deepcopy(day_inputs['l4_allocation_inputs'])
     policy = inputs['alpha_policy']['l4Distribution']
@@ -131,7 +126,6 @@ def build_source(*, entry, state, recommendation_context, day_inputs, observed_a
             or policy['artifact']['model_checksum'] != entry['components']['L4']):
         raise ValueError('shadow_native_entry_chain_mismatch')
     validate_prediction_state(state, identity)
-    captured = recommendation_context.get('inputs') or {}
     options = captured.get('filter_options') or {}
     required_options = {'persona_opinions', 'persona_weight', 'regime_label', 'regime_surface',
                         'alpha_policy', 'fundamental_quality_by_symbol',
@@ -151,6 +145,31 @@ def build_source(*, entry, state, recommendation_context, day_inputs, observed_a
             key in inputs and inputs[key] != options[source]
             for key, source in (('regime_label', 'regime_label'), ('surface', 'regime_surface'))):
         raise ValueError('shadow_native_recommendation_policy_mismatch')
+    return inputs, policy, identity
+
+
+def capture_recommendation_context(*, entry, state, recommendation_inputs, day_inputs):
+    """Use the existing strict capture owner for this entry's completed chain."""
+    from services.paired_nav_recommendation_path import run_and_capture_recommendation_path
+
+    _validate_recommendation_inputs(entry, state, recommendation_inputs, day_inputs)
+    _, context = run_and_capture_recommendation_path(inputs=deepcopy(recommendation_inputs))
+    if context.get('status') != 'recommendation_context_captured':
+        # The original owner can return a failed source/persona capture while
+        # retaining a serving result. Such a result must not become shadow-ready.
+        raise ValueError('shadow_native_recommendation_capture_failed')
+    return context
+
+
+def build_source(*, entry, state, recommendation_context, day_inputs, observed_at, now):
+    """Run the captured recommendation path, then serialize its private packet."""
+    from services.l4_private_execution import frozen_legacy_loader, frozen_p6_loader
+    from services.l4_tabpack_weights import private_weight_reader
+    from services.paired_nav_recommendation_path import replay_recommendation_context
+
+    inputs, policy, identity = _validate_recommendation_inputs(
+        entry, state, recommendation_context.get('inputs') or {}, day_inputs)
+    day = day_inputs['signal_date']
     # Every private execution uses pinned bytes; integrity checks are unchanged.
     frozen_p6_loader(inputs, policy['artifact'])
     with private_weight_reader(frozen_legacy_loader(inputs, policy['artifact'])):
@@ -174,10 +193,10 @@ def build_source(*, entry, state, recommendation_context, day_inputs, observed_a
 async def produce_directory(registry, directory, *, session_date, now):
     """Cloud Job entry: original capture references per registry entry.
 
-    <entry_id>.json contains entry_checksum, day_inputs_reference,
-    recommendation_context_reference, observed_at, and exactly one of
-    state_reference / completed_observation. References retain their existing
-    owners' schemas. All entries are ready before publish_day writes anything.
+    <entry_id>.json contains entry_checksum, day_inputs_reference, observed_at,
+    exactly one of recommendation_context_reference / recommendation_inputs_reference,
+    and exactly one of state_reference / completed_observation. New contexts are
+    captured by their existing owner and frozen only after every entry validates.
     """
     current, _ = registry.current()
     root = Path(directory)
@@ -186,20 +205,22 @@ async def produce_directory(registry, directory, *, session_date, now):
     files = {p.stem: p for p in root.glob('*.json') if p.is_file()}
     if set(files) != set(current['entries']):
         raise ValueError('shadow_native_producer_inventory_invalid')
-    sources, failures = {}, {}
+    sources, failures, new_contexts = {}, {}, {}
     for key, entry in current['entries'].items():
         try:
             spec = json.loads(files[key].read_bytes())
             if (spec.get('entry_checksum') != entry['checksum']
-                    or ('state_reference' in spec) == ('completed_observation' in spec)):
+                    or ('state_reference' in spec) == ('completed_observation' in spec)
+                    or ('recommendation_context_reference' in spec)
+                    == ('recommendation_inputs_reference' in spec)):
                 raise ValueError('shadow_native_producer_binding_invalid')
             day_inputs = read_reference(registry.bucket, spec['day_inputs_reference'])
-            context = read_reference(registry.bucket, spec['recommendation_context_reference'])
             if day_inputs.get('session_date') != session_date:
                 raise ValueError('shadow_native_producer_session_mismatch')
             receipts = list(day_inputs.get('source_receipt_shas') or [])
-            receipts.extend(spec[k]['sha256'] for k in
-                            ('day_inputs_reference', 'recommendation_context_reference'))
+            recommendation_key = ('recommendation_inputs_reference' if 'recommendation_inputs_reference' in spec
+                                  else 'recommendation_context_reference')
+            receipts.extend(spec[k]['sha256'] for k in ('day_inputs_reference', recommendation_key))
             if 'state_reference' in spec:
                 state = read_reference(registry.bucket, spec['state_reference'])
                 receipts.append(spec['state_reference']['sha256'])
@@ -210,6 +231,13 @@ async def produce_directory(registry, directory, *, session_date, now):
                     identity=day_inputs['l4_allocation_inputs']['alpha_policy']['l4Distribution']['artifact']['l3_identity'],
                     day=day_inputs['signal_date'])
                 receipts.extend(observation[k]['sha256'] for k in ('projection', 'envelope'))
+            recommendation = read_reference(registry.bucket, spec[recommendation_key])
+            if recommendation_key == 'recommendation_inputs_reference':
+                context = capture_recommendation_context(entry=entry, state=state,
+                    recommendation_inputs=recommendation, day_inputs=day_inputs)
+                new_contexts[key] = context
+            else:
+                context = recommendation
             day_inputs['source_receipt_shas'] = sorted(set(receipts))
             sources[key] = build_source(entry=entry, state=state, recommendation_context=context,
                 day_inputs=day_inputs, observed_at=spec['observed_at'], now=now)
@@ -223,4 +251,14 @@ async def produce_directory(registry, directory, *, session_date, now):
     latest, _ = registry.current()
     if latest != current:
         raise ValueError('shadow_native_producer_registry_changed')
+    # Preserve the complete newly generated evidence under its own immutable
+    # reference; a checksum with no recoverable capture is not sufficient.
+    for key, context in new_contexts.items():
+        path = (DAILY_PREFIX + session_date + '/recommendation-contexts/'
+                + context['content_checksum'] + '.json')
+        reference = _put(registry.bucket, path, context)
+        sources[key] = seal({**{k: v for k, v in sources[key].items() if k != 'checksum'},
+                             'recommendation_context_reference': reference,
+                             'source_receipt_shas': sorted(set(
+                                 sources[key]['source_receipt_shas'] + [reference['sha256']]))})
     return publish_day(registry, sources, session_date=session_date, now=now)

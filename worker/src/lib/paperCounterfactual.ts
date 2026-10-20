@@ -13,7 +13,9 @@ export type CounterfactualLot = {
   schemaVersion: typeof COUNTERFACTUAL_POLICY; lotId: string; accountId: number; symbol: string;
   signalMs: number; lastObservedMs: number; lotType: 'board_lot' | 'odd_lot'; entryShares: number; entry: PaperDepthMatch;
   source: { signalSha: string; modelSha: string; planId: string; l3Identity: Record<string, string>;
-    blockedReason?: string; quantitySource?: 'paper_entry_same_snapshot' };
+    blockedReason?: string; quantitySource?: 'paper_entry_same_snapshot' | 'paper_allocator_counterfactual_snapshot';
+    sizingEvidence?: Record<string, unknown> };
+  corporateThroughDate?: string;
   swing: SwingPositionState; arms: Record<ExitArm, ShadowExitState>;
 }
 export type CounterfactualExitEvent = {
@@ -77,6 +79,8 @@ export function advanceCounterfactualLot(previous: CounterfactualLot, input: {
   targetExit: { decisionId: string; shares: number; reason: string } | null; z: number | null;
   closes: Array<{ date: string; close: number; observedAtMs: number; nextSession: string }>;
   snapshot: AuthoritativeExecutionSnapshot | null; limitPrice: number | null;
+  observationBlockedReason?: string | null; corporateThroughDate?: string;
+  corporateEvidence?: unknown; targetMissingReason?: string | null;
 }): { lot: CounterfactualLot; events: CounterfactualExitEvent[] } {
   if (previous.schemaVersion !== COUNTERFACTUAL_POLICY || !Number.isFinite(input.nowMs)
     || input.nowMs <= previous.lastObservedMs
@@ -86,6 +90,11 @@ export function advanceCounterfactualLot(previous: CounterfactualLot, input: {
     throw new Error('counterfactual_observation_contract_invalid')
   const lot = structuredClone(previous)
   lot.lastObservedMs = input.nowMs
+  // Missing corporate coverage must not consume closes, targets, depth or pending exits.
+  if (input.observationBlockedReason) return { lot, events: EXIT_ARMS.filter(arm => lot.arms[arm].shares > 0)
+    .map(arm => ({ arm, status: 'unknown' as const, reason: input.observationBlockedReason!,
+      z: input.z, requestedShares: 0, fill: null })) }
+  if (input.corporateThroughDate) lot.corporateThroughDate = input.corporateThroughDate
   for (const close of [...input.closes].sort((a, b) => a.date.localeCompare(b.date))) {
     if (close.date < lot.swing.entryDate || close.date <= (lot.swing.lastEvaluatedCloseDate ?? '')) continue
     if (close.observedAtMs > input.nowMs) throw new Error('counterfactual_future_close')
@@ -118,7 +127,7 @@ export function advanceCounterfactualLot(previous: CounterfactualLot, input: {
     }
     if (!state.pending) {
       const missing = sharedError ?? (arm === 'z_hysteresis' && input.z === null ? 'z_missing' :
-        arm === 'current_target' && input.targetExit === null ? 'target_decision_missing' : null)
+        arm === 'current_target' && input.targetExit === null ? input.targetMissingReason ?? 'target_decision_missing' : null)
       emit(missing ? 'unknown' : 'hold', missing ?? shared?.reason ?? 'hold')
       continue
     }

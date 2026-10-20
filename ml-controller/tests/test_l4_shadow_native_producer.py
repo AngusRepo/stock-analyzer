@@ -2,6 +2,7 @@
 from copy import deepcopy
 import asyncio
 import base64
+from datetime import datetime
 import hashlib
 import io
 import json
@@ -22,6 +23,7 @@ from services.paired_nav_recommendation_path import run_and_capture_recommendati
 from services.l4_shadow_daily import configuration_checksum
 from test_l4_shadow_input_export import native_source, DAY, NOW
 from test_l4_challenger_registry import Bucket
+from test_native_paper_sandbox import native_runner, frame
 
 
 def example(monkeypatch):
@@ -186,6 +188,206 @@ def test_incomplete_real_style_projection_is_not_ready_and_writes_nothing(monkey
     assert result['status'] == 'not_ready'
     assert result['entries'] == {'old-chain': 'shadow_native_recommendation_context_incomplete'}
     assert registry.bucket.writes == []
+
+
+def input_directory(monkeypatch, tmp_path, fault=None):
+    registry, spec = directory(monkeypatch, tmp_path)
+    context_ref = spec.pop('recommendation_context_reference')
+    captured = json.loads(registry.bucket.objects[context_ref['path']][1])['inputs']
+    if fault == 'source':
+        captured['recommendation_source_context'] = {'invalid': True}
+    elif fault == 'prediction':
+        captured['predictions']['A']['ensemble_v2']['artifact_checksum'] = 'c' * 64
+    spec['recommendation_inputs_reference'] = put(registry.bucket, 'recommendation-inputs', captured)
+    if fault == 'ambiguous':
+        spec['recommendation_context_reference'] = context_ref
+    (tmp_path / 'old-chain.json').write_text(json.dumps(spec), encoding='utf-8')
+    return registry, spec
+
+
+def test_daily_inputs_use_original_capture_owner_and_archive_complete_context(monkeypatch, tmp_path):
+    registry, spec = input_directory(monkeypatch, tmp_path)
+    result = job.run(operation='produce', session_date=DAY, now=NOW,
+                     accounts=SimpleNamespace(registry=registry), native_input_directory=tmp_path)
+    assert result['status'] == 'published'
+    assert len(registry.bucket.writes) == 3
+    capture_path, source_path, index_path = registry.bucket.writes
+    assert '/recommendation-contexts/' in capture_path
+    context = json.loads(registry.bucket.objects[capture_path][1])
+    from services.paired_nav_recommendation_path import replay_recommendation_context
+    assert replay_recommendation_context(context) == context['expected']
+    source = json.loads(registry.bucket.objects[source_path][1])
+    ref = source['recommendation_context_reference']
+    assert ref['path'] == capture_path
+    assert hashlib.sha256(registry.bucket.objects[capture_path][1]).hexdigest() == ref['sha256']
+    assert ref['sha256'] in source['source_receipt_shas']
+    assert spec['recommendation_inputs_reference']['sha256'] in source['source_receipt_shas']
+    assert index_path.endswith('/index.json')
+    assert result['outer_acceptance_credit'] == 0
+
+
+@pytest.mark.parametrize('fault', ['source', 'prediction', 'ambiguous'])
+def test_fresh_capture_rejects_invalid_original_boundary_without_any_write(monkeypatch, tmp_path, fault):
+    registry, _ = input_directory(monkeypatch, tmp_path, fault)
+    result = asyncio.run(producer.produce_directory(registry, tmp_path, session_date=DAY, now=NOW))
+    assert result['status'] == 'not_ready'
+    assert registry.bucket.writes == []
+
+
+def test_failed_capture_is_not_accepted_even_if_original_owner_has_serving_rows(monkeypatch):
+    entry, state, context, day_inputs = example(monkeypatch)
+    from services import paired_nav_recommendation_path as path
+    monkeypatch.setattr(path, 'run_and_capture_recommendation_path',
+                        lambda **kw: ({'recommendations': context['expected']['recommendations']},
+                                      {'status': 'shadow_failed', 'reason': 'source_changed'}))
+    with pytest.raises(ValueError, match='recommendation_capture_failed'):
+        producer.capture_recommendation_context(entry=entry, state=state,
+            recommendation_inputs=context['inputs'], day_inputs=day_inputs)
+
+
+def test_fresh_capture_invalid_second_entry_has_zero_publication(monkeypatch, tmp_path):
+    registry, spec = input_directory(monkeypatch, tmp_path)
+    current, _ = registry.current()
+    second = seal({**{k: v for k, v in current['entries']['old-chain'].items() if k != 'checksum'},
+                   'entry_id': 'z-invalid'})
+    registry.register(second, expected_registry_checksum=current['checksum'])
+    bad = deepcopy(spec)
+    bad['entry_checksum'] = second['checksum']
+    inputs = json.loads(registry.bucket.objects[spec['recommendation_inputs_reference']['path']][1])
+    inputs['predictions']['A']['ensemble_v2']['artifact_checksum'] = 'c' * 64
+    bad['recommendation_inputs_reference'] = put(registry.bucket, 'invalid-inputs', inputs)
+    (tmp_path / 'z-invalid.json').write_text(json.dumps(bad), encoding='utf-8')
+    registry.bucket.writes.clear()
+    result = asyncio.run(producer.produce_directory(registry, tmp_path, session_date=DAY, now=NOW))
+    assert result['status'] == 'not_ready'
+    assert set(result['entries']) == {'z-invalid'}
+    assert registry.bucket.writes == []
+
+
+@pytest.mark.parametrize('failure_stage', ['sources', 'index'])
+def test_fresh_capture_partial_publication_retry_never_overwrites(monkeypatch, tmp_path, failure_stage):
+    from test_l4_challenger_registry import Blob
+
+    registry, _ = input_directory(monkeypatch, tmp_path)
+    original = Blob.upload_from_string
+    failed = []
+    def interrupted(blob, raw, **options):
+        selected = ('/sources/' in blob.key if failure_stage == 'sources'
+                    else blob.key.endswith('/index.json'))
+        if selected and not failed:
+            failed.append(blob.key)
+            raise RuntimeError('simulated_transport_interrupt')
+        return original(blob, raw, **options)
+    monkeypatch.setattr(Blob, 'upload_from_string', interrupted)
+    with pytest.raises(RuntimeError, match='simulated_transport_interrupt'):
+        asyncio.run(producer.produce_directory(registry, tmp_path, session_date=DAY, now=NOW))
+    partial = {key: registry.bucket.objects[key] for key in registry.bucket.writes}
+    assert partial and not any(key.endswith('/index.json') for key in partial)
+    result = asyncio.run(producer.produce_directory(registry, tmp_path, session_date=DAY, now=NOW))
+    assert result['status'] == 'published'
+    assert all(registry.bucket.objects[key] == value for key, value in partial.items())
+    assert len(registry.bucket.writes) == 3
+    written = deepcopy(registry.bucket.objects)
+    assert asyncio.run(producer.produce_directory(
+        registry, tmp_path, session_date=DAY, now=NOW)) == result
+    assert registry.bucket.objects == written
+    assert len(registry.bucket.writes) == 3
+
+
+def test_preallocation_distribution_skips_artifact_and_weight_readers(monkeypatch):
+    from services import l4_alpha_ev_producer as alpha
+    from services import allocator_ev_fusion as fusion
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('preallocation must not load live model bytes')
+    monkeypatch.setattr(alpha, '_policy_artifact', forbidden)
+    monkeypatch.setattr(fusion, 'policy_artifact', forbidden)
+    monkeypatch.setattr(weights, '_load', forbidden)
+    policy = {'l4Distribution': {'artifact': {'model_checksum': 'a' * 64}}}
+    assert alpha.materialize_l4_alpha_ev({}, prediction={}, policy=policy) is None
+    assert fusion.materialize_allocator_ev_fusion({}, l4_value=None, l4_source='missing',
+        l4_payload=None, market_heat_expected_return=0., policy=policy) is None
+
+
+def test_fresh_producer_to_native_accounts_two_days_isolated_and_idempotent(
+        monkeypatch, tmp_path, native_runner):
+    """Engineering fixture: real owners/Worker, synthetic account and market data."""
+    from services.l4_shadow_accounts import Accounts
+    from services.l4_shadow_producer import produce_day, read_reference
+    from test_l4_shadow_daily import setup as daily_setup, read_cash
+    from services import recommendation_service
+
+    _, _, daily, opening, _ = daily_setup(native_runner, full_session=True)
+    entry, state, context, inputs = example(monkeypatch)
+    for key in ('stock_rows', 'seed_rows', 'execution_context', 'risk_config'):
+        inputs[key] = deepcopy(daily[key])
+    inputs['trading_config'] = {
+        **deepcopy(daily['trading_config']), 'l4Distribution': inputs['trading_config']['l4Distribution']}
+    for row, prepared in zip(inputs['recommendations'], daily['recommendations']):
+        row.update(stock_id=prepared['stock_id'], score=prepared['score'],
+                   score_seed_inputs=deepcopy(prepared['score_seed_inputs']))
+    context['inputs']['screener_recs'] = deepcopy(inputs['recommendations'])
+    monkeypatch.setattr(recommendation_service, 'filter_and_score_recommendations',
+                        lambda rows, *a, **kw: (deepcopy(rows), 0, {}))
+    entry['components']['allocator_policy'] = configuration_checksum(
+        inputs['trading_config'], inputs['risk_config'])
+    entry['components']['execution_context'] = digest(inputs['execution_context'])
+    entry = seal({k: v for k, v in entry.items() if k != 'checksum'})
+    second = seal({**{k: v for k, v in entry.items() if k != 'checksum'}, 'entry_id': 'second-account'})
+    clock = [NOW.isoformat()]
+    registry = Registry(Bucket(), formal_identity=lambda: entry['serving_identity'], clock=lambda: clock[0])
+    current = registry.initialize(entry)
+    registry.register(second, expected_registry_checksum=current['checksum'])
+    accounts = Accounts(registry, runner=native_runner)
+    for model in (entry, second):
+        accounts.initialize(model['entry_id'], state_sql=opening['state_sql'],
+            state_checksum=opening['state_checksum'], account_id=1,
+            opening_receipt=seal(dict(scope='paper_shadow', state_checksum=opening['state_checksum'],
+                                      source='synthetic_daily_native_fixture')))
+    for signal, day, balance in [('2026-10-19', '2026-10-20', 1000100),
+                                  ('2026-10-20', '2026-10-21', 1000300)]:
+        clock[0] = day + 'T06:01:00+08:00'
+        now = datetime.fromisoformat(clock[0])
+        state['run_date'] = signal
+        inputs.update(signal_date=signal, session_date=day, next_open=day + 'T09:00:00+08:00')
+        for row in inputs['seed_rows']:
+            row['date'] = signal
+        policy = inputs['l4_allocation_inputs']['alpha_policy']['l4Distribution']
+        policy['runtime']['signal_date'] = signal
+        policy['runtime']['account']['signal_date'] = signal
+        inputs['trading_config']['l4Distribution'] = deepcopy(policy)
+        recommendation = deepcopy(context['inputs'])
+        recommendation['filter_options'].update(run_date=signal, alpha_policy=deepcopy(
+            inputs['l4_allocation_inputs']['alpha_policy']))
+        for model in (entry, second):
+            spec = dict(entry_checksum=model['checksum'], observed_at=clock[0],
+                state_reference=put(registry.bucket, day + '/state', state),
+                recommendation_inputs_reference=put(registry.bucket, day + '/inputs', recommendation),
+                day_inputs_reference=put(registry.bucket, day + '/day', inputs))
+            (tmp_path / (model['entry_id'] + '.json')).write_text(json.dumps(spec), encoding='utf-8')
+        before = {model['entry_id']: read_cash(accounts.current(model['entry_id'])[0])
+                  for model in (entry, second)}
+        published = asyncio.run(producer.produce_directory(registry, tmp_path, session_date=day, now=now))
+        assert published['status'] == 'published'
+        index = read_reference(registry.bucket, published['source_index_reference'])
+        prepared = produce_day(accounts, index, session_date=day, now=now)
+        assert prepared['outer_acceptance_credit'] == 0
+        assert produce_day(accounts, index, session_date=day, now=now) == prepared
+        for model in (entry, second):
+            assert read_cash(accounts.current(model['entry_id'])[0]) == before[model['entry_id']]
+        untouched = accounts.current(second['entry_id'])[0]
+        for model in (entry, second):
+            key = model['entry_id']
+            head, _ = accounts.current(key)
+            observed = frame(day)
+            action = dict(action_id=day + ':settlement', expected_state_checksum=head['checksum'],
+                          serving_identity=model['serving_identity'], frames=[observed],
+                          frame_inputs={observed['input_id']: observed}, variables={})
+            receipt = accounts.advance(key, **action)
+            assert accounts.advance(key, **action) == receipt
+            assert read_cash(accounts.current(key)[0]) == {1: balance, 2: 12345}
+            if key == entry['entry_id']:
+                assert accounts.current(second['entry_id'])[0] == untouched
 
 
 @pytest.mark.parametrize('changed_projection', [False, True])

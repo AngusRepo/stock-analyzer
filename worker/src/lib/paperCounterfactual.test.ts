@@ -60,6 +60,22 @@ test('a completed target reduction cannot be submitted again under the same deci
   const second = advanceCounterfactualLot(first, { ...observation(now + 2000), targetExit }).lot
   assert.equal(second.arms.current_target.shares, 60)
 })
+test('missing corporate evidence retains pending exits and unconsumed closes until coverage is available', () => {
+  const lot=openCounterfactualLot(entry()).lot!
+  const pending=advanceCounterfactualLot(lot,{...observation(),z:-1,snapshot:null}).lot
+  const ms=Date.parse(next+'T09:05:00+08:00')
+  const blocked=advanceCounterfactualLot(pending,{...observation(ms),date:next,price:94,limitPrice:94,
+    snapshot:book('sell',ms,94),closes:[{date,close:94,observedAtMs:ms,nextSession:next}],
+    observationBlockedReason:'corporate_symbol_not_covered:'+next})
+  assert.deepEqual(blocked.lot.arms,pending.arms)
+  assert.deepEqual(blocked.lot.swing,pending.swing)
+  assert.ok(blocked.events.every(e=>e.status==='unknown'))
+  const resumed=advanceCounterfactualLot(blocked.lot,{...observation(ms+1000),date:next,price:94,limitPrice:94,
+    snapshot:book('sell',ms+1000,94),closes:[{date,close:94,observedAtMs:ms,nextSession:next}],
+    corporateThroughDate:next})
+  assert.ok(resumed.events.every(e=>e.status==='closed'&&e.reason==='swing_daily_orl'))
+  assert.equal(resumed.lot.corporateThroughDate,next)
+})
 test('cross-day ORL sell is independent of z and requires an observed executable book', () => {
   const lot = openCounterfactualLot(entry()).lot!, ms = Date.parse(next + 'T09:05:00+08:00')
   const result = advanceCounterfactualLot(lot, { ...observation(ms), date: next, price: 94, limitPrice: 94,

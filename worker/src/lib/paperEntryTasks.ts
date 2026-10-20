@@ -1,5 +1,5 @@
 import { createSwingEntryAssessor } from './paperSwingAssessment'
-import { createPaperCounterfactualRecorder, pollPaperCounterfactualLots } from './paperCounterfactualRuntime'
+import { counterfactualSizing, createPaperCounterfactualRecorder, pollPaperCounterfactualLots } from './paperCounterfactualRuntime'
 import { shioajiBookObservation, validatedBookL5 } from './paperExecutionBook'
 import { getPrevTradingDay } from './paperMarketData'
 import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
@@ -1754,6 +1754,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string,
     let currentOhlc = ohlcMap.get(pending.symbol)
     const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
     const or15Assessment = paperOr15Owner ? or15Sidecars.get(pending.symbol) ?? null : null
+    const l5Thresholds={
+        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
+        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
+        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
+        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
+        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
+          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
+          : -0.7
+    }
     if (paperOr15Owner) {
       if (!paperSwingOwner) await recordPaperExecutionEvent(env, {
         tradeDate: today,
@@ -1771,6 +1781,41 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string,
       })
       if (or15Assessment?.action !== 'pass') {
         recordActiveExecutionStatus(pending.symbol, 'checked_waiting', or15Assessment?.reason ?? 'or15_market_data_unavailable')
+        // Research-only: observe the existing account/book at this veto. No refetch, authorization,
+        // cooldown, weak_waiting, cash reservation or formal order mutation belongs to this branch.
+        const signal = swingSidecars.get(pending.symbol)
+        if (counterfactual && paperSwingOwner && signal?.conditions?.or_touch === true) {
+          try {
+            if (!planIdFromWatchPoints(pending.watch_points)) {
+              counterfactual.sizingUnavailable(pending.symbol,'counterfactual_l4_sizing_owner_missing')
+            } else {
+              const nowMs = paperExecutionNow(), quote = currentOhlc ? structuredClone(currentOhlc) : undefined
+              const maxBookAgeMs = optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500)
+              const quality = quoteQualityFromL5(validatedBookL5(pending.symbol,quote,maxBookAgeMs),l5Thresholds)
+              const allocation = await buildExecutionAllocatorEvaluation(pending,s12Sidecar,quality)
+              const entryPrice = Math.max(price,quote?.ask ?? price)
+              const result = counterfactualSizing({ nowMs, signal, quote, ...allocation,
+                minPositionValue: cfg.position.minPositionValue ?? 30_000,
+                slippageTicks: cfg.position.fillSlippageTicks ?? 1, maxBookAgeMs,
+                maxDisagreementTicks: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_DISAGREEMENT_TICKS,1),
+                context: { ...allocation.context, exact_cash: Number(acc.cash), exact_nav: totalPortfolio,
+                  exact_daily_remaining: Math.max(0,DAILY_BUY_LIMIT-dailyBuyTotal), observed_at_ms: nowMs },
+                preTrade: { symbol: pending.symbol, currentPrice: price, entryPrice, bestAsk: quote?.ask,
+                  stopLoss: null, originalEntry: entryPrice, retryCount: (pending as any).retry_count ?? 0,
+                  previousClose: quote?.referencePrice ?? prevCloseMap.get(pending.symbol) ?? null,
+                  quoteAgeMs: quote ? bookConfirmationAgeMs(quote) : null,
+                  quoteSource: quote?.source === 'shioaji' ? 'shioaji' : 'none', marketRiskLevel: marketRisk.risk_level,
+                  policy: { limitUpPct: cfg.circuit.limitUpPct ?? .10,
+                    requoteDeviationMax: cfg.position.requoteDeviationMax, requoteDiscount: cfg.position.requoteDiscount,
+                    requoteStopFallback: cfg.position.requoteStopFallback, maxQuoteAgeMs: cfg.position.maxQuoteAgeMs,
+                    maxEntryChasePct: 0, strongBreakoutMaxEntryChasePct: 0 } } })
+              if (result.sizing) counterfactual.sized(pending.symbol,result.sizing)
+              else counterfactual.sizingUnavailable(pending.symbol,result.reason)
+            }
+          } catch (error) {
+            counterfactual.sizingUnavailable(pending.symbol,'counterfactual_sizing_unavailable:' + String(error))
+          }
+        }
         continue
       }
     }
@@ -1802,16 +1847,6 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string,
       })).get(pending.symbol)
       finLabL5Quote=validatedBookL5(pending.symbol,book,optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500))
       if(book && finLabL5Quote)currentOhlc={...currentOhlc,...book}
-    }
-    const l5Thresholds={
-        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
-        maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
-        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
-        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
-        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
-        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
-          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
-          : -0.7
     }
     let finLabL5Quality = quoteQualityFromL5(finLabL5Quote,l5Thresholds)
     const l4PlanId = planIdFromWatchPoints(pending.watch_points)

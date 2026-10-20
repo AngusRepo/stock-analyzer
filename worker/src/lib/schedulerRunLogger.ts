@@ -1,10 +1,11 @@
 /**
  * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
+import type { TimeXerCallbackEvidence } from './timexerCallbackEvidence'
 
 export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running' | 'waiting'
 
-export interface SchedulerRunLogEntry {
+export interface SchedulerRunLogEntry extends TimeXerCallbackEvidence {
   task: string
   status: SchedulerRunStatus
   summary: string
@@ -247,11 +248,20 @@ export async function logSchedulerRunResult(
     run_date: today,
     run_scope: result.run_scope,
     error: result.error,
+    timexer_evidence_receipt: result.timexer_evidence_receipt,
+    timexer_recorder_error: result.timexer_recorder_error,
     timestamp: new Date().toISOString(),
   }
 
   try {
     const previous = await kv.get(`scheduler:run:${task}:${today}`, 'json') as SchedulerRunLogEntry | null
+    // A duplicate legacy callback must not erase evidence already saved for this outcome.
+    if (task === 'pipeline' && previous?.run_id === incoming.run_id
+        && previous?.run_date === incoming.run_date && previous?.status === incoming.status
+        && !incoming.timexer_evidence_receipt && !incoming.timexer_recorder_error) {
+      incoming.timexer_evidence_receipt = previous.timexer_evidence_receipt
+      incoming.timexer_recorder_error = previous.timexer_recorder_error
+    }
     const entry = resolveMonotonicSchedulerEntry(previous, incoming, {
       supersedePrevious: result.supersedePrevious === true,
     })

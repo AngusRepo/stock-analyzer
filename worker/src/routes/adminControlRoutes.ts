@@ -1176,7 +1176,19 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  // Terminal pipeline identity was accepted above; stale runs cannot persist evidence.
+  let timexerEvidence: import('../lib/timexerCallbackEvidence').TimeXerCallbackEvidence = {}
+  if (body.task === 'pipeline' && criticalTerminalCallback) {
+    const { timexerCallbackEvidence } = await import('../lib/timexerCallbackEvidence')
+    try {
+      timexerEvidence = await timexerCallbackEvidence(body, callbackRunDate, callbackRunId)
+    } catch {
+      return c.json({ error: 'timexer_callback_evidence_invalid' }, 400)
+    }
+  }
   const logAcceptedCallbackTask = () => logSchedulerResult(c.env.KV, String(body.task), {
+    ...timexerEvidence,
+    strict: Object.keys(timexerEvidence).length > 0,
     supersedePrevious: acceptedPipelineL3Seal,
     status: body.status,
     summary: String(body.summary ?? ''),

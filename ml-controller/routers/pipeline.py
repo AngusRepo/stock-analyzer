@@ -358,6 +358,7 @@ async def reconcile_pipeline_execution(
     """Reconcile only verified Cloud Run failures through the existing root owner."""
     _check_service_token(request)
     from services.pipeline_execution_status import failure_callback
+    from services.timexer_daily_evidence import attach_outcome
     try:
         snapshot = await asyncio.to_thread(_jobs_client.pipeline_execution_status,
             run_date=date, run_id=run_id, execution_name=execution_name)
@@ -371,9 +372,9 @@ async def reconcile_pipeline_execution(
             # A validated immutable L3 request owns progress after input recovery.
             # Earlier failed input attempts cannot fail its active successor.
             if recovery.get('error'):
-                await _callback_worker({'task': 'pipeline', 'status': 'error', 'run_id': run_id,
+                await _callback_worker(await attach_outcome({'task': 'pipeline', 'status': 'error', 'run_id': run_id,
                     'run_date': date, 'duration_ms': 0, 'error': recovery['error'],
-                    'summary': recovery['error']})
+                    'summary': recovery['error']}))
             return {**snapshot, 'modal_recovery': recovery, 'reason': recovery['reason'],
                     'failure_callback_sent': bool(recovery.get('error'))}
         from services.pipeline_input_events import reconcile_inputs
@@ -383,8 +384,8 @@ async def reconcile_pipeline_execution(
             dependency = {'status': 'error', 'reason': str(exc), 'error': str(exc)}
         if dependency:
             if dependency.get('error'):
-                await _callback_worker({'task': 'pipeline', 'status': 'error', 'run_id': run_id,
-                    'run_date': date, 'duration_ms': 0, 'error': dependency['error'], 'summary': dependency['error']})
+                await _callback_worker(await attach_outcome({'task': 'pipeline', 'status': 'error', 'run_id': run_id,
+                    'run_date': date, 'duration_ms': 0, 'error': dependency['error'], 'summary': dependency['error']}))
             return {**snapshot, 'input_recovery': dependency, 'reason': dependency['reason'],
                     'failure_callback_sent': bool(dependency.get('error'))}
         snapshot = {**snapshot, 'modal_recovery': recovery, 'reason': recovery['reason']}
@@ -395,7 +396,7 @@ async def reconcile_pipeline_execution(
     if callback is not None:
         # Callback authority rejects stale runs and refuses to overwrite success.
         # Never synthesize success from an async dispatcher having exited zero.
-        await _callback_worker(callback)
+        await _callback_worker(await attach_outcome(callback))
     return {**snapshot, "failure_callback_sent": callback is not None}
 
 

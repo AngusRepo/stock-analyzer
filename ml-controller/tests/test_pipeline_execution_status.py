@@ -73,11 +73,18 @@ def test_terminal_timestamp_alone_is_not_failure_proof():
 async def test_real_reconcile_route_uses_existing_callback_only_for_verified_failure(monkeypatch):
     # Compile the actual route function without importing unrelated server apps.
     import asyncio
+    import os
     from fastapi import Query, Request, HTTPException
-    source=Path(__file__).resolve().parents[1]/'routers/pipeline.py'
+    source=Path(os.environ.get('TIMEXER_RECONCILE_SOURCE') or
+        Path(__file__).resolve().parents[1]/'routers/pipeline.py')
     fn=next(n for n in ast.parse(source.read_text(encoding='utf-8')).body
             if isinstance(n,ast.AsyncFunctionDef) and n.name=='reconcile_pipeline_execution')
-    fn.decorator_list=[];sent=[];auth=[]
+    fn.decorator_list=[];sent=[];auth=[];recorded=[]
+    from services import timexer_daily_evidence
+    def record(**kwargs):
+        recorded.append(kwargs)
+        return {'path':'fixture-receipt.json','checksum':'a'*64,'pipeline_status':kwargs['status']}
+    monkeypatch.setattr(timexer_daily_evidence,'record_outcome',record)
     async def callback(body):sent.append(body)
     current=lookup([execution()])
     ns={'Request':Request,'Query':Query,'HTTPException':HTTPException,'asyncio':asyncio,
@@ -86,6 +93,8 @@ async def test_real_reconcile_route_uses_existing_callback_only_for_verified_fai
     exec(compile(ast.Module(body=[fn],type_ignores=[]),'pipeline.py','exec'),ns)
     result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
     assert result['failure_callback_sent'] is True and len(sent)==1 and auth
+    assert recorded==[dict(day='2026-09-18',run_id='run-a',status='error',error_type='pipeline_cloud_run_failed')]
+    assert sent[0]['timexer_evidence_receipt']['path']=='fixture-receipt.json'
     from services import pipeline_prediction_recovery, pipeline_input_events
     input_calls=[]
     def old_failed_input(**kwargs):
@@ -115,6 +124,8 @@ async def test_real_reconcile_route_uses_existing_callback_only_for_verified_fai
     result=await ns['reconcile_pipeline_execution']('authenticated-request',date='2026-09-18',run_id='run-a',execution_name='')
     assert result['failure_callback_sent'] and len(input_calls)==1
     assert sent[-1]['error']=='pipeline_input_continuation_unfinished:failed'
+    assert len(recorded)==len(sent)==3
+    assert all(row['timexer_evidence_receipt']['pipeline_status']=='error' for row in sent)
 
 
 def test_old_job_history_does_not_block_recent_exact_run():

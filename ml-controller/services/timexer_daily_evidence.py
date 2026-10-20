@@ -1,7 +1,9 @@
 """Daily TimeXer evidence from the frozen serving context, never today's registry."""
 from collections import Counter
+import asyncio
 import hashlib
 import json
+import logging
 import math
 
 
@@ -77,3 +79,25 @@ def record_outcome(*, day, run_id, status, error_type=None, client=None):
     premarket.immutable(blob,raw)
     if blob.download_as_bytes()!=raw:raise ValueError('timexer_outcome_readback_failed')
     return dict(path=path,checksum=packet['checksum'],observation_status=body['observation_status'],pipeline_status=status)
+
+
+async def attach_outcome(callback, *, recorder=None):
+    """Attach the same immutable evidence to job and verified recovery callbacks."""
+    if (callback.get('task') != 'pipeline' or callback.get('status') not in ('success', 'error')
+            or not callback.get('run_date') or not callback.get('run_id')):
+        return callback
+    result = dict(callback)
+    result.pop('timexer_evidence_receipt', None)
+    result.pop('timexer_recorder_error', None)
+    try:
+        result['timexer_evidence_receipt'] = await asyncio.to_thread(
+            recorder or record_outcome, day=callback['run_date'], run_id=callback['run_id'],
+            status=callback['status'],
+            error_type=str(callback.get('error') or 'pipeline_failed').split(':', 1)[0]
+            if callback['status'] == 'error' else None)
+    except Exception as exc:
+        # Evidence failure cannot undo a published plan or hide a verified job failure.
+        logging.getLogger(__name__).exception('TimeXer outcome receipt failed')
+        result['timexer_recorder_error'] = type(exc).__name__
+        result['summary'] = (str(callback.get('summary') or '') + ' timexer_recorder=failed').strip()
+    return result

@@ -69,16 +69,22 @@ def test_terminal_outcome_reuses_frozen_status_and_rejects_changed_source(monkey
         record_outcome(day='2026-10-19',run_id='fixture',status='success',client=storage)
 
 
-@pytest.mark.parametrize('raises',[False,True])
-def test_actual_job_records_terminal_failure_before_worker_callback(monkeypatch,raises):
+@pytest.mark.parametrize('outcome',['error','raises','completed','deferred'])
+def test_actual_job_records_terminal_outcome_before_worker_callback(monkeypatch,outcome):
     import asyncio
-    import pipeline_job_main as job
-    from graphs import daily_pipeline_v2 as graph
+    import ast
+    import logging
+    import os
+    import sys
+    import time
+    import uuid
+    from pathlib import Path
+    from types import SimpleNamespace
     from services import pipeline_progress, allocator_contract_guard, timexer_daily_evidence
     calls=[]
     async def run(**kwargs):
-        if raises:raise RuntimeError('fixture')
-        return {'status':'error','error':'fixture-result'}
+        if outcome=='raises':raise RuntimeError('fixture')
+        return {'status':outcome,'error':'fixture-result'}
     async def report(*args,**kwargs):pass
     async def callback(payload):calls.append(('callback',payload))
     async def subtasks(*args,**kwargs):pass
@@ -89,12 +95,55 @@ def test_actual_job_records_terminal_failure_before_worker_callback(monkeypatch,
             'PIPELINE_PREMARKET_RESUME_MODE','PIPELINE_MODAL_CONTINUATION_MODE','PIPELINE_SNAPSHOT_RECOVERY_MODE',
             'PIPELINE_MODAL_PREDICTION_CALLBACK_ENABLED'):monkeypatch.setenv(name,'0')
     monkeypatch.setenv('PIPELINE_RUN_DATE','2026-10-19');monkeypatch.setenv('PIPELINE_PARENT_RUN_ID','fixture')
-    monkeypatch.setattr(graph,'run_pipeline_v2',run)
+    graph=SimpleNamespace(**{name:run for name in ('run_pipeline_v2',
+        'run_pipeline_v2_from_modal_prediction_callback','run_pipeline_v2_from_snapshot_recovery',
+        'run_pipeline_v2_until_modal_prediction_spawn')})
+    monkeypatch.setitem(sys.modules,'graphs.daily_pipeline_v2',graph)
     monkeypatch.setattr(pipeline_progress,'report',report)
     monkeypatch.setattr(allocator_contract_guard,'assert_allocator_contract_run_date',lambda *a,**k:None)
-    monkeypatch.setattr(job,'_callback_worker',callback);monkeypatch.setattr(job,'_emit_subtask_callbacks',subtasks)
     monkeypatch.setattr(timexer_daily_evidence,'record_outcome',record)
-    assert asyncio.run(job._run())==1
+    # Run the actual entrypoint function without constructing unrelated server clients.
+    source=Path(__file__).resolve().parents[1]/'pipeline_job_main.py'
+    fn=next(n for n in ast.parse(source.read_text(encoding='utf-8')).body
+        if isinstance(n,ast.AsyncFunctionDef) and n.name=='_run')
+    ns={'asyncio':asyncio,'os':os,'time':time,'uuid':uuid,'logger':logging.getLogger('fixture'),
+        '_truthy_env':lambda name:False,'_callback_worker':callback,'_emit_subtask_callbacks':subtasks}
+    exec(compile(ast.Module(body=[fn],type_ignores=[]),str(source),'exec'),ns)
+    assert asyncio.run(ns['_run']())==(0 if outcome in ('completed','deferred') else 1)
+    if outcome=='deferred':
+        assert [r[0] for r in calls]==['callback']
+        assert 'timexer_evidence_receipt' not in calls[0][1]
+        return
     assert [r[0] for r in calls]==['receipt','callback']
-    assert calls[0][1]['status']=='error' and calls[0][1]['run_id']=='fixture'
+    assert calls[0][1]['status']==('success' if outcome=='completed' else 'error')
+    assert calls[0][1]['run_id']=='fixture'
     assert calls[1][1]['timexer_evidence_receipt']['path']=='receipt.json'
+
+
+def test_callback_recorder_failure_preserves_failure_and_is_explicit():
+    import asyncio
+    from services.timexer_daily_evidence import attach_outcome
+    def broken(**kwargs):raise OSError('fixture-local-storage-unavailable')
+    original={'task':'pipeline','status':'error','run_date':'2026-10-19',
+        'run_id':'fixture','error':'pipeline_cloud_run_failed:memory_limit','summary':'Cloud Run failed'}
+    result=asyncio.run(attach_outcome(original,recorder=broken))
+    assert result['status']=='error' and result['error']==original['error']
+    assert result['timexer_recorder_error']=='OSError'
+    assert 'timexer_evidence_receipt' not in result
+    assert 'timexer_recorder=failed' in result['summary']
+    assert 'timexer_recorder_error' not in original
+
+
+def test_duplicate_terminal_callbacks_share_immutable_receipt(monkeypatch):
+    import asyncio
+    from functools import partial
+    from services.timexer_daily_evidence import attach_outcome, record_outcome
+    from test_premarket_pipeline import Storage
+    monkeypatch.setenv('GCS_BUCKET_NAME','local-fixture')
+    storage=Storage()
+    callback={'task':'pipeline','status':'error','run_date':'2026-10-19','run_id':'fixture',
+        'error':'pipeline_cloud_run_failed:memory_limit'}
+    recorder=partial(record_outcome,client=storage)
+    first=asyncio.run(attach_outcome(callback,recorder=recorder))
+    assert asyncio.run(attach_outcome(callback,recorder=recorder))==first
+    assert first['timexer_evidence_receipt']['observation_status']=='l3_evidence_not_recorded'

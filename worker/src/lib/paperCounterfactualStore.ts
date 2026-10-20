@@ -3,6 +3,27 @@ export type StoredCounterfactualLot = { version: number; checksum: string; lot: 
 const digest = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))))
   .map(v => v.toString(16).padStart(2, '0')).join('')
 
+/** Keep missing inputs observable without inventing the entry contract or a fill. */
+export async function recordCounterfactualSignal(db: D1Database, input: {
+  accountId: number; lotId: string; observedMs: number; reason: string; evidence: unknown;
+}) {
+  const evidence = JSON.stringify(input.evidence), checksum = await digest(evidence)
+  const write = await db.prepare(`INSERT INTO paper_counterfactual_signals_v1(account_id,lot_id,observed_ms,reason,evidence_sha,evidence_json)
+    VALUES(?,?,?,?,?,?) ON CONFLICT(account_id,lot_id,observed_ms) DO NOTHING`)
+    .bind(input.accountId,input.lotId,input.observedMs,input.reason,checksum,evidence).run()
+  const saved = await db.prepare('SELECT reason,evidence_sha,evidence_json FROM paper_counterfactual_signals_v1 WHERE account_id=? AND lot_id=? AND observed_ms=?')
+    .bind(input.accountId,input.lotId,input.observedMs).first<{ reason: string; evidence_sha: string; evidence_json: string }>()
+  if (!write.success || saved?.reason !== input.reason || saved.evidence_sha !== checksum || await digest(saved.evidence_json) !== checksum)
+    throw new Error('counterfactual_signal_conflict')
+}
+
+export async function listOpenCounterfactualLots(db: D1Database, accountId: number): Promise<StoredCounterfactualLot[]> {
+  const rows = await db.prepare('SELECT lot_id FROM paper_counterfactual_lots_v1 WHERE account_id=? AND open_arms>0 ORDER BY signal_ms,lot_id')
+    .bind(accountId).all<{ lot_id: string }>()
+  const lots = await Promise.all(rows.results.map(row => readCounterfactualLot(db, accountId, row.lot_id)))
+  return lots.filter((lot): lot is StoredCounterfactualLot => lot !== null)
+}
+
 export async function readCounterfactualLot(db: D1Database, accountId: number, lotId: string): Promise<StoredCounterfactualLot | null> {
   const row = await db.prepare('SELECT version,state_sha,state_json FROM paper_counterfactual_lots_v1 WHERE account_id=? AND lot_id=?')
     .bind(accountId, lotId).first<{ version: number; state_sha: string; state_json: string }>()
@@ -42,14 +63,8 @@ async function persist(db: D1Database, previous: StoredCounterfactualLot | null,
 }
 export async function recordCounterfactualEntry(db: D1Database, input: Parameters<typeof openCounterfactualLot>[0]) {
   const result = openCounterfactualLot(input)
-  const evidence = JSON.stringify({ input, reason: result.reason, fill: result.fill }), checksum = await digest(evidence)
-  const write = await db.prepare(`INSERT INTO paper_counterfactual_signals_v1(account_id,lot_id,observed_ms,reason,evidence_sha,evidence_json)
-    VALUES(?,?,?,?,?,?) ON CONFLICT(account_id,lot_id,observed_ms) DO NOTHING`)
-    .bind(input.accountId,input.lotId,input.nowMs,result.reason,checksum,evidence).run()
-  const saved = await db.prepare('SELECT evidence_sha,evidence_json FROM paper_counterfactual_signals_v1 WHERE account_id=? AND lot_id=? AND observed_ms=?')
-    .bind(input.accountId,input.lotId,input.nowMs).first<{ evidence_sha: string; evidence_json: string }>()
-  if (!write.success || saved?.evidence_sha !== checksum || await digest(saved.evidence_json) !== checksum)
-    throw new Error('counterfactual_signal_conflict')
+  await recordCounterfactualSignal(db, { accountId: input.accountId, lotId: input.lotId, observedMs: input.nowMs,
+    reason: result.reason, evidence: { input, reason: result.reason, fill: result.fill } })
   if (!result.lot) return { ...result, stored: null }
   return { ...result, stored: await persist(db, null, result.lot, { input, fill: result.fill }) }
 }

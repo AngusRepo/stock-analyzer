@@ -25,6 +25,7 @@ if args.get('model_family')=='full_mlp_median':
     policy.update(scope='paper',operating_mode=MLP_MODE,strategy_role='B')
 policy['constraints'].update(args['constraints'])
 policy['runtime'].update(signal_date=args['account']['signal_date'],l3_identity=identity,account=args['account'],predictions={'2330':pred})
+if args.get('hmm_lineage') is not None: policy['runtime']['hmm_lineage']=args['hmm_lineage']
 policy['runtime']['account']['forbidden_buys']=args['account'].get('forbidden_buys',[])
 from services.l4_allocation_contract import native_opb_policy
 policy['opb']=native_opb_policy(policy['constraints'])

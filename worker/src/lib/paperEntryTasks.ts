@@ -1,4 +1,5 @@
 import { createSwingEntryAssessor } from './paperSwingAssessment'
+import { createPaperCounterfactualRecorder, pollPaperCounterfactualLots } from './paperCounterfactualRuntime'
 import { shioajiBookObservation, validatedBookL5 } from './paperExecutionBook'
 import { getPrevTradingDay } from './paperMarketData'
 import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
@@ -512,7 +513,8 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
     status === 'quote_unavailable'
 }
 
-async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
+async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string,
+  counterfactual: ReturnType<typeof createPaperCounterfactualRecorder> | null): Promise<IntradayStopLossPollResult> {
   const paperSwingOwner = env.PAPER_INTRADAY_ENTRY_OWNER === SWING_POLICY_VERSION
   const paperOr15Owner = paperSwingOwner || String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
   const opsDb = databaseForDataDomain(env, 'ops')
@@ -692,6 +694,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       const receipt = await assess(pending,priceMap.get(pending.symbol) ?? NaN,ohlcMap.get(pending.symbol))
       const a = receipt.assessment
       swingSidecars.set(pending.symbol,a)
+      counterfactual?.observe(pending,a)
       or15Sidecars.set(pending.symbol,{action:a.action,reason:a.reason,signalMs:a.signalMs??null,
         orHigh:a.orHigh??null,orLow:a.orLow??null,vwap:a.vwap??null,latestBarMs:a.signalMs??null})
       or15BarSources.set(pending.symbol,receipt.barSource)
@@ -707,6 +710,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   // Missing holding risk evidence blocks new exposure, never the independent signal receipt.
   if (holdingPoll.status === 'partial' && holdingPoll.missing_symbols.length > 0) {
     const reason = 'holding_risk_evidence_unavailable'
+    for (const item of pendingBuys) counterfactual?.blocked(item.symbol,reason)
     const detail = JSON.stringify({missing_symbols:holdingPoll.missing_symbols,quoted:holdingPoll.quoted,positions:holdingPoll.positions})
     const transition=applyPendingBuyExecutionStatusUpdates(pendingBuys,pendingBuys.map(item=>({
       symbol:item.symbol,status:'checked_waiting' as const,reason,detail,
@@ -720,6 +724,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
 
   if (cb.halt) {
+    for (const item of pendingBuys) counterfactual?.blocked(item.symbol,'portfolio_risk_halt')
     const detail = [
       `status=${cb.marketRiskStatus ?? 'unknown'}`,
       `date=${cb.marketRiskDate ?? 'missing'}`,
@@ -1455,6 +1460,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   ) => {
     executionEvents.push({ symbol, status, reason, detail: detail ?? null })
     executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
+    if (status === 'filled') counterfactual?.filled(symbol)
+    else counterfactual?.blocked(symbol,reason)
   }
   const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
     executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
@@ -1466,6 +1473,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     detail?: string | null,
   ) => {
     recordExecutionNote(symbol, status, reason, detail)
+    if (status === 'partially_filled') counterfactual?.filled(symbol)
+    else counterfactual?.blocked(symbol,reason)
     if (paperSwingOwner && ['checked_waiting','quote_unavailable','submitted'].includes(status)
       && !reason.startsWith('swing_waiting_') && !['swing_entry_window_not_open','swing_entry_window_closed'].includes(reason)) {
       recordExecutionNote(symbol,'execution_blocked',reason,detail)
@@ -2560,6 +2569,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         continue
       }
     }
+    counterfactual?.sized(pending.symbol,{shares,limitPrice,snapshot:authoritativeSnapshot})
     const paperRiskValidation = await validateOrder({
       symbol: pending.symbol,
       side: 'buy',
@@ -2607,6 +2617,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       if(shares<1) continue
     }
     const requestedShares = shares
+    counterfactual?.sized(pending.symbol,{shares:requestedShares,limitPrice,snapshot:authoritativeSnapshot})
     const lotType = isOddLot ? 'odd_lot' : 'board_lot'
     const twExecutionGate = resolveTwEquityExecutionGate({
       lotType,
@@ -3121,6 +3132,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       throw error
     }
 
+    counterfactual?.filled(pending.symbol)
     const autoOrderId = await paperDomainDatabase(env).prepare(
       "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1",
     ).bind(paperAccountId(), pending.symbol).first<{ id: number }>()
@@ -3289,12 +3301,21 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
     console.log('[Intraday] atomic D1 lease busy; overlapping trigger suppressed')
     return { status: 'partial', positions: 0, quoted: 0, missing_symbols: [] }
   }
+  const counterfactual = paperSwingOwner ? createPaperCounterfactualRecorder(env,today) : null
   try {
-    return await runIntradayCheckUnlocked(env, runId)
+    return await runIntradayCheckUnlocked(env, runId, counterfactual)
   } finally {
     await releaseIntradayExecutionLease(opsDb, runId).catch((error) => {
       console.warn('[Intraday] D1 lease release failed:',
         error instanceof Error ? error.message : String(error))
     })
+    // Research failures cannot alter a Paper order decision or prevent protective exits.
+    // Release the execution lease first; research persistence has its own CAS.
+    if (counterfactual) {
+      try {
+        await counterfactual.flush()
+        await pollPaperCounterfactualLots(env,today)
+      } catch (error) { console.warn('[Counterfactual] runtime evidence unavailable:',error) }
+    }
   }
 }

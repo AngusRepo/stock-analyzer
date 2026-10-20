@@ -12,7 +12,8 @@ export type ShadowExitState = {
 export type CounterfactualLot = {
   schemaVersion: typeof COUNTERFACTUAL_POLICY; lotId: string; accountId: number; symbol: string;
   signalMs: number; lastObservedMs: number; lotType: 'board_lot' | 'odd_lot'; entryShares: number; entry: PaperDepthMatch;
-  source: { signalSha: string; modelSha: string; planId: string; l3Identity: Record<string, string> };
+  source: { signalSha: string; modelSha: string; planId: string; l3Identity: Record<string, string>;
+    blockedReason?: string; quantitySource?: 'paper_entry_same_snapshot' };
   swing: SwingPositionState; arms: Record<ExitArm, ShadowExitState>;
 }
 export type CounterfactualExitEvent = {

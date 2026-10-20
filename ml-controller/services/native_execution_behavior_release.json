@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:0f717789993aec9c6bd5301d94fcf41ee6f9d1cd63ac81dd74433a907b6b8ebc",
+  "execution_owner_version": "native-paper-v1:89a96c9d675e5c823b0e68a8771e243c603dd732a0317d34794501108f8a1f88",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "audits/hmm-maintenance-20261019/authorization.json",
-  "review": "audits/hmm-maintenance-20261019/REVIEW.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:hmm-maintenance-20261019"
+  "authorization": "Wei: L4失敗了找出原因修補; prior commit push deploy authorization in this conversation; source-only Paper repair, no retraining or live orders",
+  "review": "audits/l4-oom-recovery-20261020/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-parent-memory-20261020"
 }

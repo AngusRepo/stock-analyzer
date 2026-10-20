@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "b73409351f84ce90dec1057612d6ed0dd4563ab5",
+  "production_baseline_source": "c296bff5fe0983a9d5e24b8f153dd604f82c1d33",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "b64b9d28ddbf1723ad8ef6ce74f57be639780bc599d00e94c971857ed49dc7e6",
-  "prior_configuration_checksum": "c6c630a7674f048bba00c24ef4e0e116945aefe06a81718fa539e3dd25a0f2e1",
+  "prior_approval_checksum": "198c59fb8ff00f334ea4c775099af7253adee3bc3c5f9e54efde5075aeba93a4",
+  "prior_configuration_checksum": "ad86e252cd82a426ed6c51d7d87892d5d92ac05c7b94d067c850ab585f51d94c",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -81,6 +81,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:0f717789993aec9c6bd5301d94fcf41ee6f9d1cd63ac81dd74433a907b6b8ebc",
-  "review": "audits/hmm-maintenance-20261019/REVIEW.md"
+  "execution_owner_version": "native-paper-v1:89a96c9d675e5c823b0e68a8771e243c603dd732a0317d34794501108f8a1f88",
+  "review": "audits/l4-oom-recovery-20261020/release/review.md"
 }

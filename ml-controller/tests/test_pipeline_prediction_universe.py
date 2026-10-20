@@ -9,6 +9,9 @@ from graphs import daily_pipeline_v2 as graph
 
 @pytest.fixture
 def batch(monkeypatch):
+    # Admission is exercised separately. This unit isolates batch identity and
+    # must not query the production canonical-window service for a fixture date.
+    monkeypatch.setattr(graph, '_assert_pipeline_canonical_window', lambda _state: None)
     effects = []
     seeds = [{'symbol': '2330', 'id': 1}, {'symbol': '2317', 'id': 2}]
     predictions = {s['symbol']: {'rank_scores': {'LightGBM': .3},
@@ -21,7 +24,7 @@ def batch(monkeypatch):
             return result
         return call
     for name, result in (('prune_predictions_outside_universe',0), ('write_predictions_to_d1',2),
-                         ('write_layer2_timesfm_enrichment_audit',2), ('write_layer3_formal_gate_audit',2),
+                         ('write_layer3_formal_gate_audit',2),
                          ('update_recommendations_in_d1',2), ('delete_filtered_recommendations',0),
                          ('re_rank_recommendations',0)):
         monkeypatch.setattr(graph, name, fake_effect(name, result))

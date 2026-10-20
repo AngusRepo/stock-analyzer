@@ -71,6 +71,22 @@ def test_original_writer_readback_and_retry_close_same_execution(persisted):
     assert control['writes'] == 2
 
 
+def test_retired_timesfm_is_not_regenerated_or_published_by_prediction_writer(persisted, monkeypatch):
+    db, predictions, _, _, _, *_ = persisted
+    for prediction in predictions.values():
+        prediction['timesfm'] = {'forecast_pct': .8}
+        prediction['stock_meta'] = {'timesfm_l175_sidecar': {'features': {'forecast_return': .8}}}
+    def forbidden(*args, **kwargs):
+        raise AssertionError('retired TimesFM sidecar must not be built')
+    monkeypatch.setattr(writer, '_timesfm_sidecar_payload', forbidden)
+    assert writer.write_predictions_to_d1(predictions, {'2330': 1, '2317': 2}, '2026-09-22') >= 2
+    for row in db.query("SELECT stock_id,forecast_data FROM predictions WHERE model_name='ensemble'"):
+        payload = json.loads(row['forecast_data'])
+        assert 'timesfm' not in payload and 'timesfm_sidecar' not in payload
+        symbol = {1: '2330', 2: '2317'}[row['stock_id']]
+        assert payload['ensemble_v2'] == predictions[symbol]['ensemble_v2']
+
+
 @pytest.mark.parametrize('fault', ['drop','output','time'])
 def test_successful_batch_ack_cannot_hide_bad_nav_rows(persisted, fault):
     _, predictions, _, _, control, *_ = persisted
@@ -116,7 +132,7 @@ def test_original_write_node_projects_verified_receipt(persisted, monkeypatch):
         'pipeline_modal_serving_context': {'schema_version': 'pipeline-modal-serving-context-v1',
             'serving_manifest': manifest, 'serving_manifest_digest': graph._pipeline_modal_canonical_digest(manifest)}}
     # Replace unrelated recommendation/audit I/O, not inference persistence or readback.
-    for name, count in (('prune_predictions_outside_universe',0), ('write_layer2_timesfm_enrichment_audit',2),
+    for name, count in (('prune_predictions_outside_universe',0),
                         ('write_layer3_formal_gate_audit',2), ('update_recommendations_in_d1',2),
                         ('delete_filtered_recommendations',0), ('re_rank_recommendations',0)):
         monkeypatch.setattr(graph, name, lambda *a, _count=count, **k: _count)

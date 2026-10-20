@@ -42,7 +42,8 @@ def validate_sequence_oof_lineage(predictions):
             'model_rows': dict(counts), 'source': 'checksum_verified_oof_artifact_metadata'}
 
 
-def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, as_of, meta_builder=None, excluded_label_fold=None):
+def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, as_of, meta_builder=None,
+                          excluded_label_fold=None, stacker_recipe=None, qualification_context=None):
     from services.ensemble_v2 import _evaluate_validated_ensemble
     from services.recommendation_service import calculate_ml_score, _rescale_score
     from services.l4_distribution_runtime import native_features
@@ -54,6 +55,14 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
             or len(manifest.get('manifest_checksum','')) != 64):
         raise ValueError('l4_dataset_verified_native_manifest_required')
     order = model_order(parent_l3["observation_artifacts"], complete=True)
+    from services.active8_stacker_recipe import validate_parent_recipe, prepare_qualification_context
+    stacker_recipe = validate_parent_recipe(parent_l3,stacker_recipe,order)
+    if stacker_recipe is not None:
+        qualification_context = prepare_qualification_context(qualification_context,order,
+            required=stacker_recipe['mode']=='mean_loss_causal_prior',excluded_label_fold=excluded_label_fold,
+            source_manifest_checksum=manifest['manifest_checksum'])
+    elif qualification_context is not None:
+        raise ValueError('active8_qualification_without_recipe')
     if model_order(row["model_name"] for row in predictions) != order:
         raise ValueError("l4_dataset_parent_roster_mismatch")
     schema = feature_schema(order)
@@ -79,7 +88,9 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
     from services.l4_native_meta_replica import replica_builder
     if meta_builder is None:
         build_meta,meta_evidence=replica_builder(predictions,parent_l3, **(
-            {'excluded_label_fold':excluded_label_fold} if excluded_label_fold is not None else {}))
+            {'excluded_label_fold':excluded_label_fold} if excluded_label_fold is not None else {}),
+            **({'stacker_recipe':stacker_recipe,'qualification_context':qualification_context}
+               if stacker_recipe is not None else {}))
     else:
         build_meta,meta_evidence=meta_builder,{'scope':'injected_test_builder'}
     output, replicas, excluded, rejected = [], {}, [], Counter()
@@ -95,6 +106,8 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
             replica=build_meta(prior,base_artifacts=parent_l3['observation_artifacts'],
                 cohort_id=manifest['cohort_id'],source_manifest_checksum=manifest['manifest_checksum'],
                 knowledge_cutoff_date=cutoff)
+            if stacker_recipe is not None and replica.get('stacker_recipe') != stacker_recipe:
+                raise ValueError('native_meta_selected_recipe_mismatch')
         except ValueError as exc:
             if 'insufficient' not in str(exc):
                 raise
@@ -164,6 +177,7 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
                 'market_segment':next(iter(models.values()))['market_segment'],
                 'source':{'manifest_checksum':manifest['manifest_checksum'],'fold_id':fold,
                           'meta_replica_checksum':replica['payload_checksum'],
+                          **({'stacker_recipe_checksum':stacker_recipe['recipe_checksum']} if stacker_recipe else {}),
                           'base_artifacts':{name:{'version':r['artifact_version'],'checksum':r['artifact_checksum']} for name,r in full_models.items()}}})
     receipt={'schema_version':'l4-native-oof-dataset-v1','feature_schema':schema,
         'parent_l3_identity':parent_identity,'source_manifest_checksum':manifest['manifest_checksum'],
@@ -173,4 +187,6 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
         'meta_recipe':'native_chronological_ridge_and_prior_oof_isotonic',
         'meta_serving_eligibility':False,'source_l3_ineligible_rows':dict(rejected),
         'native_stacker_evidence':meta_evidence}
+    if stacker_recipe is not None:
+        receipt['stacker_recipe']=stacker_recipe
     return output,receipt

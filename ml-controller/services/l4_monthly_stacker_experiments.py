@@ -7,47 +7,13 @@ import math
 import numpy as np
 import polars as pl
 from services.active8_oof_stacker import (
-    _fit_selected_ridge, _fit_ridge, _select_regularization,
-    fit_qualified_prior_ridge, _spearman, RIDGE_CANDIDATES, MODEL_WEIGHT_ZERO_TOLERANCE,
+    _fit_selected_ridge, fit_qualified_prior_ridge, _spearman, RIDGE_CANDIDATES,
 )
-from services.model_tail_validation import evaluate_tail_fold_guard
+from services.active8_stacker_recipe import ablated_fit, causal_prior
 from services.l4_comparison_statistics import paired_stats, difference
 from services.l4_distribution import digest
 
 TREES=('LightGBM','XGBoost','ExtraTrees')
-
-
-def ablated_fit(x,y,dates,markets,*,known,order,removed):
-    active=tuple(m for m in order if m!=removed)
-    def fit(names):
-        lam=_select_regularization(x,y,dates,markets,label_known_dates=known,model_order=order,active_models=names)
-        w,b=_fit_ridge(x,y,lam,model_order=order,active_models=names)
-        return w,b,lam
-    w,b,lam=fit(active)
-    selected=tuple(m for i,m in enumerate(order) if m in active and w[i]>MODEL_WEIGHT_ZERO_TOLERANCE)
-    if not selected:return np.zeros(x.shape[1]),float(np.mean(y)),lam,selected
-    if selected!=active:w,b,lam=fit(selected)
-    return w,b,lam,selected
-
-
-def causal_prior(evidence, order, maturity, cutoff, *, excluded=()):
-    values=[];details={}
-    for name in order:
-        proof=evidence[name];folds=[]
-        for row in proof['fold_metrics']:
-            clusters=row.get('date_cluster_ics') or []
-            if clusters and all(c['date'] in maturity and maturity[c['date']]<cutoff for c in clusters):
-                folds.append(row)
-        guard={**proof['policy']['tail_fold_guard'],'enabled':True,'required_for_serving_promotion':True}
-        stats,failed,warnings=evaluate_tail_fold_guard(folds,guard,stage='promotion')
-        eligible=bool(stats) and not failed and not warnings and name not in excluded
-        values.append(float(eligible))
-        details[name]=dict(folds=[r['fold_id'] for r in folds],eligible=eligible,
-            failed=failed,warnings=warnings,
-            label_known_max=max((maturity[c['date']] for r in folds for c in r['date_cluster_ics']),default=None))
-    prior=np.asarray(values)
-    if prior.sum():prior/=prior.sum()
-    return prior,details
 
 
 def daily_metrics(frame, column):

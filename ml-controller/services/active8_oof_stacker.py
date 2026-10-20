@@ -161,6 +161,11 @@ def _equal_date_market_ic(
     return (float(np.mean(daily_values)) if daily_values else 0.0, len(daily_values))
 
 
+def inner_validation_start(dates: np.ndarray) -> str | None:
+    unique_dates = sorted(set(dates.tolist()))
+    return unique_dates[max(1, int(len(unique_dates) * 0.8))] if len(unique_dates) >= 5 else None
+
+
 def _select_regularization(
     x: np.ndarray,
     y: np.ndarray,
@@ -188,7 +193,7 @@ def _select_regularization(
     split = max(1, int(len(unique_dates) * 0.8))
     train_dates = set(unique_dates[:split])
     validation_dates = set(unique_dates[split:])
-    validation_start = unique_dates[split]
+    validation_start = inner_validation_start(dates)
     train_idx = (
         np.asarray([date in train_dates for date in dates], dtype=bool)
         & (label_known_dates < validation_start)
@@ -417,10 +422,18 @@ def prepare_oof_candidates(
 
 def build_chronological_oof_stack(
     prediction_rows: list[dict[str, Any]], *, excluded_label_fold=None,
+    stacker_recipe=None, qualification_context=None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Stack PIT model ranks with explicit availability and resolved prior folds."""
     candidates, prepared = prepare_oof_candidates(prediction_rows)
     order, feature_names = prepared['order'], prepared['feature_names']
+    if stacker_recipe is not None:
+        from services.active8_stacker_recipe import validate_recipe, prepare_qualification_context, fit_selected_recipe
+        stacker_recipe = validate_recipe(stacker_recipe, order)
+        qualification_context = prepare_qualification_context(qualification_context, order,
+            required=stacker_recipe['mode'] == 'mean_loss_causal_prior', excluded_label_fold=excluded_label_fold)
+    elif qualification_context is not None:
+        raise ValueError('active8_qualification_without_recipe')
     fold_ranges = prepared['fold_ranges']
     incomplete, partial_used = prepared['incomplete'], prepared['partial_used']
     rejected_core_model_rows = prepared['rejected_core_model_rows']
@@ -446,6 +459,7 @@ def build_chronological_oof_stack(
             ]
             train_dates = sorted({row["prediction_date"] for row in prior})
             ready = len(prior) >= MIN_STACKER_TRAIN_ROWS and len(train_dates) >= MIN_STACKER_TRAIN_DATES
+            fit_receipt = None
             if ready:
                 x_train = np.vstack([row["x"] for row in prior])
                 y_train = np.asarray([row["target_return"] for row in prior], dtype=float)
@@ -453,13 +467,17 @@ def build_chronological_oof_stack(
                 markets_train = np.asarray(
                     [row["market_segment"] for row in prior], dtype=object
                 )
-                weights, intercept, regularization, selected_models = _fit_selected_ridge(
-                    x_train, y_train, dates_train, markets_train,
-                    model_order=order,
-                    label_known_dates=np.asarray(
-                        [row["label_known_date"] for row in prior], dtype=object
-                    ),
-                )
+                known_train = np.asarray([row["label_known_date"] for row in prior], dtype=object)
+                if stacker_recipe is None:
+                    weights, intercept, regularization, selected_models = _fit_selected_ridge(
+                        x_train, y_train, dates_train, markets_train,
+                        model_order=order, label_known_dates=known_train,
+                    )
+                else:
+                    weights, intercept, regularization, selected_models, fit_receipt = fit_selected_recipe(
+                        x_train, y_train, dates_train, markets_train, model_order=order,
+                        label_known_dates=known_train, recipe=stacker_recipe, cutoff_exclusive=prediction_date,
+                        qualification_context=qualification_context, excluded_label_fold=excluded_label_fold)
                 source = (
                     "chronological_resolved_oof_nonnegative_ridge"
                     if selected_models
@@ -474,6 +492,9 @@ def build_chronological_oof_stack(
                 ])
                 intercept = 0.0
                 source = "warmup_equal_weight_baseline"
+                if stacker_recipe is not None:
+                    selected_models = tuple(stacker_recipe['active_models'])
+                    weights[:len(order)] = [1.0 / len(selected_models) if name in selected_models else 0.0 for name in order]
             for row in current_date_rows:
                 fold_rows.append({
                     **{key: value for key, value in row.items() if key not in {"x", "raw_by_model"}},
@@ -482,6 +503,7 @@ def build_chronological_oof_stack(
                     "stacker_source": source,
                     "eligible_for_efficacy": ready,
                     "stacker_semantic_version": STACKER_SEMANTIC_VERSION,
+                    **({'stacker_recipe_checksum':stacker_recipe['recipe_checksum']} if stacker_recipe else {}),
                 })
             date_states.append({
                 "prediction_date": prediction_date,
@@ -493,6 +515,7 @@ def build_chronological_oof_stack(
                 "intercept": intercept,
                 "weights": dict(zip(feature_names, weights.tolist())),
                 "source": source,
+                **({'recipe_fit_receipt':fit_receipt} if stacker_recipe else {}),
             })
         _rank_by_date_market(fold_rows)
         output.extend(fold_rows)
@@ -534,4 +557,5 @@ def build_chronological_oof_stack(
         "output_rows": len(output),
         "efficacy_rows": sum(1 for row in output if row["eligible_for_efficacy"]),
         "folds": fold_evidence,
+        **({'stacker_recipe':stacker_recipe} if stacker_recipe else {}),
     }

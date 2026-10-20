@@ -8,17 +8,27 @@ registered as L3 releases. No parent validation metrics enter the replica.
 from copy import deepcopy
 from services.alpha_model_roster import model_order, stacker_features
 import numpy as np
-from services.active8_oof_stacker import build_chronological_oof_stack,STACKER_FEATURE_NAMES
+from services.active8_oof_stacker import build_chronological_oof_stack
 from services.active8_ensemble_artifact import _fit_isotonic,finite_sample_quantile,payload_checksum
 
 
-def replica_builder(predictions,parent,*,excluded_label_fold=None):
+def replica_builder(predictions,parent,*,excluded_label_fold=None,stacker_recipe=None,qualification_context=None):
     order = model_order(row["model_name"] for row in predictions)
     if parent.get("observation_artifacts") and model_order(parent["observation_artifacts"], complete=True) != order:
         raise ValueError("native_meta_parent_roster_mismatch")
     names = stacker_features(order)
+    from services.active8_stacker_recipe import validate_parent_recipe, prepare_qualification_context
+    stacker_recipe = validate_parent_recipe(parent,stacker_recipe,order)
+    if stacker_recipe is not None:
+        qualification_context = prepare_qualification_context(qualification_context,order,
+            required=stacker_recipe['mode']=='mean_loss_causal_prior',excluded_label_fold=excluded_label_fold,
+            source_manifest_checksum=parent.get('source_manifest_checksum'))
+    elif qualification_context is not None:
+        raise ValueError('active8_qualification_without_recipe')
     stacked,evidence=build_chronological_oof_stack(predictions, **(
-        {'excluded_label_fold':excluded_label_fold} if excluded_label_fold is not None else {}))
+        {'excluded_label_fold':excluded_label_fold} if excluded_label_fold is not None else {}),
+        **({'stacker_recipe':stacker_recipe,'qualification_context':qualification_context}
+           if stacker_recipe is not None else {}))
     states={s['prediction_date']:s for f in evidence['folds'] for s in f['date_states']}
     def build(prior,*,knowledge_cutoff_date,**_):
         if excluded_label_fold is not None and any(excluded_label_fold.excludes(
@@ -45,6 +55,9 @@ def replica_builder(predictions,parent,*,excluded_label_fold=None):
             validation={'decision':'FAIL','failed_gates':['research_replica_has_no_serving_qualification']},
             training={'prediction_date':day,'label_known_max':max(r['label_known_date'] for r in prior),
                 'meta_train_dates':state['train_dates'],'calibration_dates':len({r['prediction_date'] for r in honest})})
+        if stacker_recipe is not None:
+            payload['stacker_recipe']=deepcopy(stacker_recipe)
+            payload['training']['recipe_fit_receipt']=deepcopy(state['recipe_fit_receipt'])
         payload['payload_checksum']=payload_checksum(payload)
         return payload
     return build,evidence

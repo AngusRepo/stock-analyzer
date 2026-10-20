@@ -45,6 +45,9 @@ def test_dispatch_without_start_is_waiting_and_failure_is_explicit(store):
     events.put_once(store,path.replace('request.json','launch.json'),{'execution_name':'job'})
     assert observe(store,execution_reader=lambda *_:{'status':'waiting'})['status']=='waiting'
     assert observe(store,execution_reader=lambda *_:{'status':'failed'})['status']=='failed'
+    def unavailable(*_):
+        raise TimeoutError('cloud run unavailable')
+    assert observe(store,execution_reader=unavailable)['status']=='unknown'
 
 
 def test_export_success_is_waiting_callback_never_parent_complete(store):
@@ -77,8 +80,14 @@ def test_wrong_lineage_or_ambiguous_owners_never_turn_blue(store):
 
 def test_snapshot_runtime_must_match_the_immutable_stage_and_really_have_a_started_task(monkeypatch):
     from types import SimpleNamespace as NS
+    import google.cloud
     from services import cloud_run_jobs_client
     from services.pipeline_input_work import snapshot_execution
+    # Other suites may stub run_v2 in sys.modules; pin the exact surface used here.
+    State=NS(CONDITION_FAILED='failed',CONDITION_SUCCEEDED='succeeded')
+    run_v2=NS(GetExecutionRequest=lambda name:NS(name=name),Condition=NS(State=State))
+    monkeypatch.setattr(google.cloud,'run_v2',run_v2,raising=False)
+    monkeypatch.setitem(__import__('sys').modules,'google.cloud.run_v2',run_v2)
     observed=NS(template=NS(containers=[NS(env=[NS(name='DATASET_SNAPSHOT_INPUT_STAGE',value='exact-stage')])]),
                 conditions=[],running_count=0,start_time=None)
     client=NS(_parent='projects/p/locations/r/jobs/snapshot',_get_executions_client=lambda:NS(get_execution=lambda **_:observed))

@@ -72,7 +72,11 @@ def observe_input_work(*, run_id, run_date, phase, store=None,
                 row.update(status='waiting' if valid else 'unknown' if result.get('status') == 'success' else 'failed',
                            completed=int(valid))
             elif launch.get('execution_name'):
-                row.update(execution_reader(launch['execution_name'], path))
+                try:
+                    row.update(execution_reader(launch['execution_name'], path))
+                except Exception:
+                    # Unobservable runtime is unknown, never running; return a cacheable answer.
+                    row['status'] = 'unknown'
                 row['active'] = int(row['status'] == 'running')
         elif stage['kind'] == 'prep':
             refs = stage['spec']['batches']

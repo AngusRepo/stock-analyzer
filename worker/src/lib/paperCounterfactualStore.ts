@@ -1,4 +1,5 @@
 import { advanceCounterfactualLot, openCounterfactualLot, EXIT_ARMS, type CounterfactualLot } from './paperCounterfactual'
+import { counterfactualArmHasOutstandingRights } from './paperCounterfactualCorporate'
 export type StoredCounterfactualLot = { version: number; checksum: string; lot: CounterfactualLot }
 const digest = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))))
   .map(v => v.toString(16).padStart(2, '0')).join('')
@@ -38,7 +39,7 @@ async function persist(db: D1Database, previous: StoredCounterfactualLot | null,
   const version = previous ? previous.version + 1 : 0
   const json = JSON.stringify(lot), checksum = await digest(json)
   const evidenceJson = JSON.stringify(evidence), evidenceSha = await digest(evidenceJson)
-  const openArms = EXIT_ARMS.filter(arm => lot.arms[arm].shares > 0).length
+  const openArms = EXIT_ARMS.filter(arm => lot.arms[arm].shares > 0 || counterfactualArmHasOutstandingRights(lot, arm)).length
   const write = previous
     ? db.prepare(`UPDATE paper_counterfactual_lots_v1 SET version=?,state_sha=?,state_json=?,open_arms=?,observed_ms=?
         WHERE account_id=? AND lot_id=? AND version=? AND state_sha=?`)

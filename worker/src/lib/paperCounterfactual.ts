@@ -1,6 +1,9 @@
 import type { AuthoritativeExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import { matchPaperOrderAgainstAuthoritativeDepth, type PaperDepthMatch } from './paperOrderBookMatcher'
 import { assessSwingExit, closeSwingSession, SWING_POLICY_VERSION, type SwingPositionState } from './paperSwingPolicy'
+import { buildTwOrderLegs, type TwOrderLotType } from './twMarketRules'
+import { applyResearchCorporateSessions, createResearchCorporateLedger, counterfactualArmHasOutstandingRights,
+  type ResearchCorporateLedger, type ResearchCorporateSession } from './paperCounterfactualCorporate'
 
 export const COUNTERFACTUAL_POLICY = 'blocked-signal-three-exits-v1' as const
 export const EXIT_ARMS = ['current_target', 'z_hysteresis', 'or15_only'] as const
@@ -8,6 +11,7 @@ export type ExitArm = typeof EXIT_ARMS[number]
 type PendingExit = { reason: string; remainingShares: number; triggeredAtMs: number }
 export type ShadowExitState = {
   shares: number; proceeds: number; pending: PendingExit | null; consumedBook: string | null; consumedTarget: string | null;
+  swing?: SwingPositionState;
 }
 export type CounterfactualLot = {
   schemaVersion: typeof COUNTERFACTUAL_POLICY; lotId: string; accountId: number; symbol: string;
@@ -16,6 +20,7 @@ export type CounterfactualLot = {
     blockedReason?: string; quantitySource?: 'paper_entry_same_snapshot' | 'paper_allocator_counterfactual_snapshot';
     sizingEvidence?: Record<string, unknown> };
   corporateThroughDate?: string;
+  corporate?: ResearchCorporateLedger;
   swing: SwingPositionState; arms: Record<ExitArm, ShadowExitState>;
 }
 export type CounterfactualExitEvent = {
@@ -64,12 +69,15 @@ export function openCounterfactualLot(input: {
   const arms = Object.fromEntries(EXIT_ARMS.map(arm => [arm, {
     shares: fill.filledShares, proceeds: 0, pending: null, consumedBook: null, consumedTarget: null,
   }])) as CounterfactualLot['arms']
-  return { reason: fill.reason, fill, lot: {
+  const lot: CounterfactualLot = {
     schemaVersion: COUNTERFACTUAL_POLICY, lotId: input.lotId, accountId: input.accountId, symbol: input.symbol,
     signalMs: input.signalMs, lastObservedMs: input.nowMs, lotType: input.snapshot!.lotType, entryShares: fill.filledShares, entry: fill,
     source: structuredClone(input.source), arms,
     swing: { policy: SWING_POLICY_VERSION, entryDate: input.date, entryPrice: fill.averageFillPrice, entryOrLow: input.entryOrLow },
-  } }
+  }
+  for (const arm of EXIT_ARMS) lot.arms[arm].swing = structuredClone(lot.swing)
+  lot.corporate = createResearchCorporateLedger(lot)
+  return { reason: fill.reason, fill, lot }
 }
 
 /** No account, order, cash or position writer. Each policy has independent remaining shares. */
@@ -79,8 +87,12 @@ export function advanceCounterfactualLot(previous: CounterfactualLot, input: {
   targetExit: { decisionId: string; shares: number; reason: string } | null; z: number | null;
   closes: Array<{ date: string; close: number; observedAtMs: number; nextSession: string }>;
   snapshot: AuthoritativeExecutionSnapshot | null; limitPrice: number | null;
+  exitBooks?: Partial<Record<TwOrderLotType, {
+    snapshot: AuthoritativeExecutionSnapshot | null; limitPrice: number | null; price: number | null;
+  }>>;
   observationBlockedReason?: string | null; corporateThroughDate?: string;
   corporateEvidence?: unknown; targetMissingReason?: string | null;
+  corporateSessions?: ResearchCorporateSession[];
 }): { lot: CounterfactualLot; events: CounterfactualExitEvent[] } {
   if (previous.schemaVersion !== COUNTERFACTUAL_POLICY || !Number.isFinite(input.nowMs)
     || input.nowMs <= previous.lastObservedMs
@@ -88,31 +100,45 @@ export function advanceCounterfactualLot(previous: CounterfactualLot, input: {
     || (input.z !== null && !Number.isFinite(input.z))
     || (input.targetExit !== null && (!Number.isSafeInteger(input.targetExit.shares) || input.targetExit.shares < 0 || !input.targetExit.reason || !input.targetExit.decisionId)))
     throw new Error('counterfactual_observation_contract_invalid')
-  const lot = structuredClone(previous)
+  let lot = structuredClone(previous)
   lot.lastObservedMs = input.nowMs
   // Missing corporate coverage must not consume closes, targets, depth or pending exits.
-  if (input.observationBlockedReason) return { lot, events: EXIT_ARMS.filter(arm => lot.arms[arm].shares > 0)
-    .map(arm => ({ arm, status: 'unknown' as const, reason: input.observationBlockedReason!,
-      z: input.z, requestedShares: 0, fill: null })) }
+  const blocked = (reason: string) => ({ lot, events: EXIT_ARMS.filter(arm =>
+    lot.arms[arm].shares > 0 || counterfactualArmHasOutstandingRights(lot, arm))
+    .map(arm => ({ arm, status: 'unknown' as const, reason,
+      z: input.z, requestedShares: 0, fill: null })) })
+  if (input.observationBlockedReason) return blocked(input.observationBlockedReason)
+  if (input.corporateSessions) {
+    try { lot = applyResearchCorporateSessions(lot, { ...input, sessions: input.corporateSessions }) }
+    catch (error) { return blocked(String(error)) }
+  }
   if (input.corporateThroughDate) lot.corporateThroughDate = input.corporateThroughDate
-  for (const close of [...input.closes].sort((a, b) => a.date.localeCompare(b.date))) {
-    if (close.date < lot.swing.entryDate || close.date <= (lot.swing.lastEvaluatedCloseDate ?? '')) continue
-    if (close.observedAtMs > input.nowMs) throw new Error('counterfactual_future_close')
-    lot.swing = { ...closeSwingSession(lot.swing, { ...close, calendar: input.calendar }), lastEvaluatedCloseDate: close.date }
-  }
-  let shared: ReturnType<typeof assessSwingExit> | null = null
-  let sharedError: string | null = null
-  if (input.price !== null && positive(input.price)) {
-    try { shared = assessSwingExit(lot.swing, { date: input.date, nowMs: input.nowMs, price: input.price, calendar: input.calendar }) }
-    catch (error) { sharedError = String(error) }
-  } else sharedError = 'observed_price_missing'
-  if (shared?.action === 'full_sell' && !lot.swing.pendingExit) lot.swing.pendingExit = {
-    reason: shared.reason as NonNullable<SwingPositionState['pendingExit']>['reason'], notBeforeMs: input.nowMs,
-  }
   const events: CounterfactualExitEvent[] = []
   for (const arm of EXIT_ARMS) {
     const state = lot.arms[arm]
     if (!state.shares) continue
+    let swing = state.swing ?? structuredClone(lot.swing)
+    for (const close of [...input.closes].sort((a, b) => a.date.localeCompare(b.date))) {
+      if (close.date < swing.entryDate || close.date <= (swing.lastEvaluatedCloseDate ?? '')) continue
+      if (close.observedAtMs > input.nowMs) throw new Error('counterfactual_future_close')
+      const factor = (swing.priceAdjustments ?? []).filter(a => a.effectiveDate > close.date)
+        .reduce((value, a) => value * a.factor, 1)
+      swing = { ...closeSwingSession(swing, { ...close, close: close.close * factor, calendar: input.calendar }),
+        lastEvaluatedCloseDate: close.date }
+    }
+    let shared: ReturnType<typeof assessSwingExit> | null = null
+    let sharedError: string | null = null
+    // Different arm quantities can require different books after corporate delivery.
+    const holdingLot = buildTwOrderLegs(state.shares)[0].lotType
+    const price = input.exitBooks ? input.exitBooks[holdingLot]?.price ?? null : input.price
+    if (price !== null && positive(price)) {
+      try { shared = assessSwingExit(swing, { date: input.date, nowMs: input.nowMs, price, calendar: input.calendar }) }
+      catch (error) { sharedError = String(error) }
+    } else sharedError = 'observed_price_missing'
+    if (shared?.action === 'full_sell' && !swing.pendingExit) swing.pendingExit = {
+      reason: shared.reason as NonNullable<SwingPositionState['pendingExit']>['reason'], notBeforeMs: input.nowMs,
+    }
+    state.swing = swing
     const emit = (status: CounterfactualExitEvent['status'], reason: string, fill: PaperDepthMatch | null = null) =>
       events.push({ arm, status, reason, z: input.z, requestedShares: state.pending?.remainingShares ?? 0, fill })
     if (shared?.action === 'full_sell') state.pending = {
@@ -134,23 +160,28 @@ export function advanceCounterfactualLot(previous: CounterfactualLot, input: {
     if (state.pending.reason === 'swing_20_sessions' && shared?.action !== 'full_sell') {
       emit('hold', shared?.reason ?? sharedError ?? 'expiry_evidence_missing'); continue
     }
-    const error = input.snapshot && input.snapshot.lotType !== lot.lotType ? 'execution_lot_type_mismatch' :
-      bookError(input.snapshot, 'sell', input.nowMs, state.pending.triggeredAtMs)
-    if (error || input.limitPrice === null || !positive(input.limitPrice)) {
+    const leg = buildTwOrderLegs(state.pending.remainingShares)[0]
+    const selected = input.exitBooks ? input.exitBooks[leg.lotType] : input
+    const snapshot = selected?.snapshot ?? null, limitPrice = selected?.limitPrice ?? null
+    const error = snapshot && snapshot.lotType !== leg.lotType ? 'execution_lot_type_mismatch' :
+      bookError(snapshot, 'sell', input.nowMs, state.pending.triggeredAtMs)
+    if (error || limitPrice === null || !positive(limitPrice)) {
       emit('unobservable', error ?? 'sell_limit_missing'); continue
     }
-    const identity = bookIdentity(input.snapshot!)
+    const identity = bookIdentity(snapshot!)
     if (state.consumedBook === identity) { emit('unobservable', 'depth_already_consumed'); continue }
-    const requested = state.pending.remainingShares
+    const requested = leg.shares
     const reason = state.pending.reason
-    const fill = matchPaperOrderAgainstAuthoritativeDepth({ snapshot: input.snapshot!, requestedShares: requested, limitPrice: input.limitPrice! })
+    const fill = matchPaperOrderAgainstAuthoritativeDepth({ snapshot: snapshot!, requestedShares: requested, limitPrice })
     if (!fill.filledShares || fill.averageFillPrice === null) { emit('unobservable', fill.reason, fill); continue }
     state.shares -= fill.filledShares
     state.proceeds += fill.filledShares * fill.averageFillPrice
+    if (lot.corporate) lot.corporate.arms[arm].lastShareChangeMs = input.nowMs
     state.consumedBook = identity
     state.pending.remainingShares -= fill.filledShares
     events.push({ arm, status: state.shares === 0 ? 'closed' : 'partial', reason, z: input.z, requestedShares: requested, fill })
     if (!state.pending.remainingShares) state.pending = null
   }
+  lot.swing = structuredClone(lot.arms.or15_only.swing ?? lot.swing)
   return { lot, events }
 }

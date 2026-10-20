@@ -14,8 +14,9 @@ import { shioajiBookObservation } from './paperExecutionBook'
 import { loadMarketPriceHistoryBySymbols } from './stockIdentityMarketBridge'
 import { recordCounterfactualEntry, recordCounterfactualSignal, readCounterfactualLot,
   listOpenCounterfactualLots, recordCounterfactualObservation } from './paperCounterfactualStore'
-import { normalizeTwLimitPrice } from './twMarketRules'
+import { buildTwOrderLegs, normalizeTwLimitPrice } from './twMarketRules'
 import type { CounterfactualLot } from './paperCounterfactual'
+import { applyResearchCorporateSessions, type ResearchCorporateSession } from './paperCounterfactualCorporate'
 import type { FiveSlotDecision } from './fiveSlotCapitalAllocator'
 import { evaluatePreTradeExecution, type PreTradeExecutionInput } from './preTradeExecutionPolicy'
 import { resolveLimitBuyFill } from './paperTradeMath'
@@ -198,9 +199,11 @@ export async function counterfactualTarget(plan: L4PortfolioPlan | null, lot: Co
 export async function counterfactualCorporateCoverage(input: {
   lot: CounterfactualLot; date: string; nowMs: number; calendar: string[];
   read: (date: string) => Promise<CorporateActionSnapshot | null>;
+  previousClose?: (date: string) => ResearchCorporateSession['previousClose'];
 }) {
   const receipts: Array<{ date: string; source_checksum: string; observed_at: string }> = []
-  const missing = (reason: string) => ({ reason, throughDate: null, receipts })
+  const sessions: ResearchCorporateSession[] = []
+  const missing = (reason: string) => ({ reason, throughDate: null, receipts, sessions })
   const from = input.lot.corporateThroughDate ?? input.lot.swing.entryDate
   if (!input.calendar.includes(input.date)) return missing('corporate_session_calendar_incomplete')
   // Recheck today's producer even if an earlier tick established coverage; later source revisions
@@ -216,10 +219,9 @@ export async function counterfactualCorporateCoverage(input: {
     if (!snapshot.covered_symbols.includes(input.lot.symbol)) return missing('corporate_symbol_not_covered:' + day)
     if (snapshot.blockers[input.lot.symbol]?.length) return missing('corporate_terms_blocked:' + day + ':' + snapshot.blockers[input.lot.symbol].join('|'))
     receipts.push({ date: day, source_checksum: snapshot.source_checksum, observed_at: snapshot.observed_at })
-    const actions = snapshot.actions.filter(a => a.symbol === input.lot.symbol && a.ex_date === day)
-    if (actions.length) return missing('corporate_research_adjustment_required:' + day + ':' + actions.map(a=>a.action_id).join('|'))
+    sessions.push({ snapshot, previousClose: input.previousClose?.(day) ?? null })
   }
-  return { reason: null, throughDate: input.date, receipts }
+  return { reason: null, throughDate: input.date, receipts, sessions }
 }
 
 /** Run after the live Paper path, including empty-pending days. Only the research tables are written. */
@@ -228,7 +230,8 @@ export async function pollPaperCounterfactualLots(env: Bindings, date: string) {
   if (!lots.length) return { observed: 0, errors: [] as string[] }
   const byLot = new Map<'board_lot' | 'odd_lot', Map<string, IntradayOHLC>>()
   for (const lotType of ['board_lot', 'odd_lot'] as const) {
-    const symbols = [...new Set(lots.filter(row => row.lot.lotType === lotType).map(row => row.lot.symbol))]
+    const symbols = [...new Set(lots.filter(row => Object.values(row.lot.arms)
+      .some(arm => buildTwOrderLegs(arm.shares).some(leg => leg.lotType === lotType))).map(row => row.lot.symbol))]
     if (symbols.length) byLot.set(lotType, await batchGetExecutionOrderbooks(symbols,
       { ...env, marketDataLotType: lotType }))
   }
@@ -250,27 +253,51 @@ export async function pollPaperCounterfactualLots(env: Bindings, date: string) {
         const day = new Date(ms), iso = day.toISOString().slice(0,10)
         if (![0,6].includes(day.getUTCDay()) && !calendar.includes(iso) && !await env.KV.get('holiday:'+iso)) complete = false
       }
-      const quote = byLot.get(lot.lotType)?.get(lot.symbol)
-      const limitPrice = quote?.bid != null && quote.bid > 0 ? normalizeTwLimitPrice(quote.bid, 'sell') : null
-      const snapshot = quote?.source === 'shioaji' && limitPrice != null
-        ? resolveAuthoritativeSellExecutionSnapshot({ nowMs, limitPrice, lotType: lot.lotType,
-          maxAgeMs: Number((env as any).EXECUTION_BOOK_MAX_AGE_MS) || 1500, observations: [shioajiBookObservation(quote)] }) : null
-      const price = snapshot?.status === 'ready' && Number.isFinite(quote?.last) && quote!.last > 0 ? quote!.last : null
       if (complete && calendar.some(day => day >= lot.swing.entryDate && day < date
-        && day > (lot.swing.lastEvaluatedCloseDate ?? '')
         && !rows.some(row => row.symbol === lot.symbol && row.date === day && Number(row.close) > 0))) complete = false
       const closes = complete ? rows.filter(row => row.symbol === lot.symbol && row.date >= lot.swing.entryDate
-        && row.date > (lot.swing.lastEvaluatedCloseDate ?? '') && row.date < date).map(row => ({
+        && row.date < date).map(row => ({
         date: row.date, close: Number(row.close), observedAtMs: nowMs, nextSession: calendar[calendar.indexOf(row.date)+1],
       })).filter(row => row.nextSession) : []
       const corporate = complete
         ? await counterfactualCorporateCoverage({ lot, date, nowMs, calendar,
+          previousClose: day => {
+            const previousDay = calendar[calendar.indexOf(day) - 1]
+            const row = rows.find(row => row.symbol === lot.symbol && row.date === previousDay)
+            return row ? { date: row.date, close: Number(row.close) } : null
+          },
           read: async day => await env.KV.get('market:corporate_actions:v1:'+day,'json') as CorporateActionSnapshot | null })
-        : { reason: 'corporate_session_calendar_incomplete', throughDate: null, receipts: [] }
-      const target = await counterfactualTarget(plan,lot,date,nowMs,price)
+        : { reason: 'corporate_session_calendar_incomplete', throughDate: null, receipts: [], sessions: [] }
+      let economicLot = lot, corporateReason = corporate.reason
+      if (!corporateReason) {
+        try { economicLot = applyResearchCorporateSessions(lot, { date, nowMs, calendar, sessions: corporate.sessions }) }
+        catch (error) { corporateReason = String(error) }
+      }
+      const exitBooks: NonNullable<Parameters<typeof recordCounterfactualObservation>[2]['exitBooks']> = {}
+      const needed = [...new Set(Object.values(economicLot.arms).flatMap(arm =>
+        buildTwOrderLegs(arm.shares).map(leg => leg.lotType)))]
+      for (const lotType of needed) {
+        // Stock delivery can introduce a lot type absent before this tick.
+        if (!byLot.get(lotType)?.has(lot.symbol)) {
+          const additional = await batchGetExecutionOrderbooks([lot.symbol], { ...env, marketDataLotType: lotType })
+          if (!byLot.has(lotType)) byLot.set(lotType, new Map())
+          for (const [symbol, quote] of additional) byLot.get(lotType)!.set(symbol, quote)
+        }
+        const quote = byLot.get(lotType)?.get(lot.symbol)
+        const limitPrice = quote?.bid != null && quote.bid > 0 ? normalizeTwLimitPrice(quote.bid, 'sell') : null
+        const snapshot = quote?.source === 'shioaji' && limitPrice != null
+          ? resolveAuthoritativeSellExecutionSnapshot({ nowMs, limitPrice, lotType,
+            maxAgeMs: Number((env as any).EXECUTION_BOOK_MAX_AGE_MS) || 1500, observations: [shioajiBookObservation(quote)] }) : null
+        const price = snapshot?.status === 'ready' && Number.isFinite(quote?.last) && quote!.last > 0 ? quote!.last : null
+        exitBooks[lotType] = { snapshot, limitPrice, price }
+      }
+      const targetLot = buildTwOrderLegs(economicLot.arms.current_target.shares)[0]?.lotType
+      const price = targetLot ? exitBooks[targetLot]?.price ?? null : null
+      const target = await counterfactualTarget(plan,economicLot,date,nowMs,price)
       await recordCounterfactualObservation(db, previous, { date, nowMs, price, calendar: complete ? calendar : [],
-        closes, snapshot, limitPrice, observationBlockedReason: corporate.reason,
+        closes, snapshot: null, limitPrice: null, exitBooks, observationBlockedReason: corporateReason,
         corporateThroughDate: corporate.throughDate ?? undefined, corporateEvidence: corporate.receipts,
+        corporateSessions: corporate.sessions,
         // Missing/changed model evidence is unknown; missing membership never means a target exit.
         z: counterfactualZ(plan?.execution_review?.tradeDate === date ? plan : null,lot),
         targetExit: target.targetExit, targetMissingReason: target.reason })

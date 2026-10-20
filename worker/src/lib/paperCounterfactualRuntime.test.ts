@@ -8,8 +8,8 @@ import type { FiveSlotDecision } from './fiveSlotCapitalAllocator'
 import type { IntradayOHLC } from './paperIntradayData'
 import type { CorporateActionSnapshot } from './paperCorporateActions'
 import { openCounterfactualLot, type CounterfactualLot } from './paperCounterfactual'
-import { listOpenCounterfactualLots, readCounterfactualLot } from './paperCounterfactualStore'
-import { resolveAuthoritativeBuyExecutionSnapshot } from './authoritativeExecutionSnapshot'
+import { listOpenCounterfactualLots, readCounterfactualLot, recordCounterfactualObservation } from './paperCounterfactualStore'
+import { resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { withPaperExecutionScope } from './paperExecutionScope'
 import { SWING_POLICY_VERSION, type SwingEntryDecision } from './paperSwingPolicy'
@@ -220,8 +220,66 @@ test('corporate coverage cannot infer missing data is zero or apply a later snap
   assert.equal((await counterfactualCorporateCoverage({...input,read:async()=>null})).reason,'corporate_snapshot_missing:'+next)
   assert.equal((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),covered_symbols:[]})})).reason,'corporate_symbol_not_covered:'+next)
   const action={action_id:'cash-1',symbol:'2337',kind:'cash' as const,ex_date:next,payable_date:null,cash_per_share:2,stock_per_share:0}
-  assert.equal((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),actions:[action]})})).reason,'corporate_research_adjustment_required:'+next+':cash-1')
-  assert.equal((await counterfactualCorporateCoverage({...input,lot:{...lot,corporateThroughDate:next},
-    read:async()=>({...corporateSnapshot(next),actions:[action]})})).reason,'corporate_research_adjustment_required:'+next+':cash-1')
+  assert.deepEqual((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),actions:[action]})})).sessions[0].snapshot.actions,[action])
+  assert.deepEqual((await counterfactualCorporateCoverage({...input,lot:{...lot,corporateThroughDate:next},
+    read:async()=>({...corporateSnapshot(next),actions:[action]})})).sessions[0].snapshot.actions,[action])
   assert.ok((await counterfactualCorporateCoverage({...input,read:async()=>({...corporateSnapshot(next),observed_at:next+'T10:00:00+08:00'})})).reason?.startsWith('corporate_snapshot_invalid:'))
+})
+
+test('runtime corporate delivery uses each arm quantity and correct lot book, persists rights and never writes formal cash',async()=>{
+  const f=fixture(), pay='2026-10-19'
+  try {
+    const buy=resolveAuthoritativeBuyExecutionSnapshot({nowMs:now,limitPrice:100,lotType:'board_lot',observations:[{
+      source:'shioaji_hub',lotType:'board_lot',bid:100,ask:100,bidPrices:[100],askPrices:[100],
+      bidVolumes:[1000],askVolumes:[1000],volumeUnit:'shares',sourceTime:new Date(now).toISOString(),
+    }]})
+    const recorder=f.recorder()
+    recorder.observe(pending,signal);recorder.sized('2337',{shares:1000,limitPrice:100,snapshot:buy})
+    recorder.blocked('2337','paper_order_risk_blocked');await recorder.flush()
+    f.sqls.core.exec("INSERT INTO stocks(id,symbol,name) VALUES(1,'2337','fixture'),(2,'0050','benchmark')")
+    for(const [day,close] of [[date,100],[next,91]] as const) {
+      f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(?,?,?)').run(1,day,close)
+      f.sqls.market.prepare('INSERT INTO stock_prices(stock_id,date,close) VALUES(?,?,?)').run(2,day,100)
+    }
+    const stock={action_id:'stock-1',symbol:'2337',kind:'stock' as const,ex_date:next,payable_date:pay,cash_per_share:0,stock_per_share:.1}
+    for(const day of [next,pay]) f.kvs.set('market:corporate_actions:v1:'+day,JSON.stringify({...corporateSnapshot(day),actions:[stock]}))
+    f.env.SHIOAJI_PROXY_URL='https://fixture.invalid'
+    const requested:string[]=[]
+    f.ports.fetchFrozen=async(url:RequestInfo|URL,init?:RequestInit)=>{
+      assert.equal(String(url),'https://fixture.invalid/orderbooks')
+      const {lot_type}=JSON.parse(String(init?.body));requested.push(lot_type)
+      const price=f.ports.nowMs<Date.parse(pay+'T00:00:00+08:00')?91:83
+      const time=new Date(f.ports.nowMs).toISOString()
+      return Response.json({data:{2337:{status:'ok',last:price,bid:price,ask:price,source_time:time,received_at:time,
+        lot_type,volume_unit:'shares',bid_prices:[price],ask_prices:[price],
+        bid_volumes:[lot_type==='board_lot'?1000:100],ask_volumes:[lot_type==='board_lot'?1000:100]}}})
+    }
+    const before=f.sqls.paper.prepare('SELECT * FROM paper_accounts').all()
+    f.ports.nowMs=Date.parse(next+'T09:05:00+08:00')
+    assert.deepEqual((await withPaperExecutionScope(f.ports,()=>pollPaperCounterfactualLots(f.env,next))).result,{observed:1,errors:[]})
+    let stored=(await listOpenCounterfactualLots(f.env.PAPER_DB,1))[0]
+    assert.equal(stored.lot.corporate!.arms.z_hysteresis.rights['stock-1'].wholeSharesDue,100)
+    const sellMs=f.ports.nowMs+1000
+    const sell=resolveAuthoritativeSellExecutionSnapshot({nowMs:sellMs,limitPrice:91,lotType:'board_lot',observations:[{
+      source:'shioaji_hub',lotType:'board_lot',bid:91,ask:91,bidPrices:[91],askPrices:[91],
+      bidVolumes:[1000],askVolumes:[1000],volumeUnit:'shares',sourceTime:new Date(sellMs).toISOString(),
+    }]})
+    stored=(await recordCounterfactualObservation(f.env.PAPER_DB,stored,{date:next,nowMs:sellMs,price:91,
+      calendar:[date,next,pay],targetExit:null,z:-1,closes:[],snapshot:sell,limitPrice:91})).stored
+    assert.equal(stored.lot.arms.z_hysteresis.shares,0)
+    f.ports.nowMs=Date.parse(pay+'T09:05:00+08:00')
+    assert.deepEqual((await withPaperExecutionScope(f.ports,()=>pollPaperCounterfactualLots(f.env,pay))).result,{observed:1,errors:[]})
+    stored=(await listOpenCounterfactualLots(f.env.PAPER_DB,1))[0]
+    assert.deepEqual(Object.values(stored.lot.arms).map(a=>a.shares),[100,0,100])
+    assert.deepEqual(requested,['board_lot','board_lot','odd_lot'])
+    assert.equal(stored.lot.corporate!.arms.z_hysteresis.rights['stock-1'].settledAtMs,f.ports.nowMs)
+    const events=JSON.parse(String(f.sqls.paper.prepare('SELECT evidence_json FROM paper_counterfactual_events_v1 WHERE version=3').get()?.evidence_json))
+    assert.equal(events.events.find((e:any)=>e.arm==='z_hysteresis').requestedShares,100)
+    assert.equal(events.events.find((e:any)=>e.arm==='current_target').requestedShares,1000)
+    assert.equal(events.input.corporateSessions[0].previousClose.date,next)
+    assert.equal(events.input.exitBooks.odd_lot.snapshot.lotType,'odd_lot')
+    assert.deepEqual(f.sqls.paper.prepare('SELECT * FROM paper_accounts').all(),before)
+    assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
+    assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_orders').get()?.n,0)
+  } finally {f.close()}
 })

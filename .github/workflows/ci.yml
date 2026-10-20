@@ -84,6 +84,14 @@ jobs:
     needs: suite
     runs-on: ubuntu-latest
     steps:
+      # Suites exit 0 once their list is written, so any other result means a suite
+      # was cancelled or timed out and its (possibly empty) list cannot be trusted.
+      - name: Require every suite to finish
+        run: |
+          set -e
+          if [ "${{ needs.suite.result }}" != success ]; then
+            echo "suite result: ${{ needs.suite.result }}"; exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}

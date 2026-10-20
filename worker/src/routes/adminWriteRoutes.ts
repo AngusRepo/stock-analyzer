@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
-import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
+import { getBearerToken, verifyJWT, requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { buildStrategyFormalMatureCompatibilitySql } from '../lib/selectionReferenceEvidence'
 import {
@@ -16,8 +16,28 @@ import {
 } from '../lib/dataDomainFormalCutover'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
+import { executionSubmissionControl } from '../lib/executionPaperReturn'
 
 export const adminWriteRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+adminWriteRoutes.post('/api/admin/execution/return-to-paper', async (c) => {
+  const authError = await requireAdminJWT(c)
+  if (authError) return authError
+  const body = await c.req.json<{ request_id?: unknown }>().catch(() => null)
+  if (!body || typeof body.request_id !== 'string') return c.json({ error: 'request_id_required' }, 400)
+  const token = getBearerToken(c.req.header('Authorization'))
+  const actor = token ? await verifyJWT(token, c.env.JWT_SECRET) : null
+  return c.json(await executionSubmissionControl(c.env, {
+    request_id: body.request_id,
+    reason: `admin_return_to_paper:subject:${String(actor?.sub ?? 'local_admin').slice(0, 128)}`,
+  }))
+})
+
+adminWriteRoutes.get('/api/admin/execution/submission-state', async (c) => {
+  const authError = await requireAdminJWT(c)
+  if (authError) return authError
+  return c.json(await executionSubmissionControl(c.env, null))
+})
 
 adminWriteRoutes.post('/api/admin/pit-residual/funnel-enrichment/recover', async (c) => {
   const authError = await requireAdminOrServiceToken(c)

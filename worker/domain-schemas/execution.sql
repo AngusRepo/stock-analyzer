@@ -1,4 +1,11 @@
 -- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+CREATE TABLE IF NOT EXISTS live_submission_pause (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    request_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    paused_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS broker_execution_intents (
   intent_id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,

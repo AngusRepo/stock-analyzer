@@ -11,6 +11,7 @@ import { Fragment, lazy, Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { paperApi, marketApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
+import { ExecutionPaperReturn } from '@/components/ExecutionPaperReturn'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -1610,7 +1611,7 @@ function AdaptiveParamsCard() {
 // ─── 模擬交易主頁 ─────────────────────────────────────────────────────────
 
 export default function BotDashboard() {
-  const { isAuthenticated, login } = useAuth()
+  const { isAuthenticated, login, user } = useAuth()
 
   // ⚠ All hooks BEFORE conditional return（React rules of hooks — M15 教訓）
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
@@ -1674,6 +1675,8 @@ export default function BotDashboard() {
             </div>
           }
         />
+
+        {user?.role === 'admin' && <ExecutionPaperReturn />}
 
         <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl">
           <div className="px-4 pb-2 pt-3">

@@ -43,70 +43,56 @@ def test_daily_original_l2_uses_own_slate_and_frozen_context_with_retry(monkeypa
                 (str(999 + int(sid)), row['date'], row['close'], row['date'], 'finlab.price'))
     monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda sql, args, **kw: [dict(r) for r in db.execute(sql, args)])
     monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 6)
-    monkeypatch.setattr(graph, '_timesfm_l175_release_policy', lambda: {})
-    monkeypatch.setattr(graph, '_load_model_pool_versions', lambda: ({'TimesFM': 'active'}, {'TimesFM': 'frozen-v'}, {}, True))
-    monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {'l2_feature_sidecars':{'TimesFM':{'checksum':'a'*64}}}))
-    monkeypatch.setattr(graph, '_timesfm_sequence_contract_points', lambda pool: 2)
     calls = []
-    def forbidden(*a, **kw):
-        pytest.fail('candidate/retry must not read mutable policy, version, sequence contract or prices')
     failed_once = False
-    async def predict(rows, **kw):
+    prepare = graph._node_prepare_sequence_inputs
+    async def isolated(child):
         nonlocal failed_once
-        calls.append(deepcopy(rows))
-        assert kw['version'] == 'frozen-v' and kw['sequence_contract_points'] == 2
-        for name in ('_timesfm_l175_release_policy', '_load_model_pool_versions',
-                     '_load_active8_serving_pool', '_timesfm_sequence_contract_points'):
-            monkeypatch.setattr(graph, name, forbidden)
-        monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', forbidden)
-        if candidate_fails and any(r['symbol'] == '1002' for r in rows) and not failed_once:
+        symbols = [p['symbol'] for p in child['payloads']]
+        calls.append(symbols)
+        if candidate_fails and '1002' in symbols and not failed_once:
             failed_once = True
-            raise RuntimeError('isolated candidate model failure')
-        return {'results': [{'symbol': r['symbol'], 'forecast_pct': .02, 'horizon': 5} for r in rows]}
-    monkeypatch.setattr(modal_client, 'timesfm_batch_predict', predict)
+            raise ValueError('isolated candidate sequence source failure')
+        return await prepare(child)
+    monkeypatch.setattr(graph, '_node_prepare_sequence_inputs', isolated)
+    async def forbidden(*args, **kwargs):pytest.fail('retired TimesFM inference')
+    monkeypatch.setattr(modal_client, 'timesfm_batch_predict', forbidden)
+    before_payloads = deepcopy(state['payloads'])
     try:
-        result = asyncio.run(graph.node_l2_timesfm_enrich(state))
+        result = asyncio.run(graph.node_prepare_sequence_inputs(state))
         packet = result['paired_nav_atomic_l2']
-        assert result['timesfm_l2_summary']['status'] == ('blocked' if formal_empty else 'ready')
-        assert [r['symbol'] for r in result.get('payloads', state['payloads'])] == ([] if formal_empty else ['1000', '1001'])
-        if not formal_empty:
-            assert result['payloads'][0]['stock_meta']['sector_peer_return_1d'] == 0
-            assert [r['symbol'] for r in calls[0]] == ['1000', '1001']
-        assert [r['symbol'] for r in calls[0 if formal_empty else 1]] == ['1000', '1002']
-        first_calls = 1 if formal_empty else 2
-        assert len(calls) == first_calls
+        assert result['sequence_input_summary']['status'] == 'ready'
+        assert result.get('payloads', state['payloads']) == before_payloads
         assert load(packet['slates']['f'*64]['payloads']) == []
-        assert 'd'*64 not in packet['slates'], 'unobserved semantic evidence is not empty admission'
+        assert 'd'*64 not in packet['slates']
         if candidate_fails:
             assert packet['status'] == 'incomplete'
             assert packet['slates']['c'*64]['status'] == packet['slates']['e'*64]['status'] == 'failed'
         else:
             assert packet['status'] == 'l2_payloads_built'
-            assert load(packet['slates']['c'*64]['payloads'])[0]['stock_meta']['sector_peer_return_1d'] == .2
-            assert load(packet['slates']['c'*64]['payloads'])[0]['stock_meta']['timesfm_l175_sidecar']['features']['forecast_return'] == .02
-        assert packet['nav_maturity_credit'] == 0 and packet['promotion_allowed'] is False
+        first_calls = len(calls)
         state['paired_nav_atomic_l2'] = deepcopy(packet)
-        # A persisted retry calls the original L2 only for previously failed
-        # complete-input identities, retaining completed slate outputs.
-        retry = asyncio.run(prepare_atomic_l2(state, result, enrich=graph._node_l2_timesfm_enrich))
+        monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query',
+            lambda *args, **kwargs:pytest.fail('retry must use frozen prices'))
+        retry = asyncio.run(prepare_atomic_l2(state, result, enrich=graph._node_prepare_sequence_inputs))
         assert retry['status'] == 'l2_payloads_built'
         assert len(calls) == first_calls + int(candidate_fails)
         assert retry['slates']['f'*64] == packet['slates']['f'*64]
-        assert load(retry['slates']['c'*64]['payloads'])[0]['stock_meta']['sector_peer_return_1d'] == .2
+        candidate = load(retry['slates']['c'*64]['payloads'])
+        assert candidate[0]['stock_meta']['sector_peer_return_1d'] == .2
+        assert all('timesfm_l175_sidecar' not in p.get('stock_meta', {}) for p in candidate)
+        assert packet['nav_maturity_credit'] == 0 and packet['promotion_allowed'] is False
         state['paired_nav_atomic_l2'] = retry
         status = daily_setup_status(state)
         assert status['status'] == 'incomplete' and status['reason'] == 'requires_ml_and_native_execution'
-        assert status['unavailable_replacement_count'] == 1
-        state.update({k: deepcopy(v) for k, v in result.items() if k != 'paired_nav_atomic_l2'})
-        whole_retry = asyncio.run(graph.node_l2_timesfm_enrich(state))
-        assert whole_retry['paired_nav_atomic_l2']['status'] == 'l2_payloads_built'
+        state.update({k:deepcopy(v) for k,v in result.items() if k != 'paired_nav_atomic_l2'})
+        whole_retry = asyncio.run(graph.node_prepare_sequence_inputs(state))
         assert whole_retry['paired_nav_atomic_l2']['slates'] == retry['slates']
-        assert len(calls) == first_calls + int(candidate_fails)
         before = deepcopy(retry)
         state['paired_nav_atomic_pre_l2']['slates']['c'*64] = load(state['paired_nav_atomic_pre_l2']['slates']['c'*64])
         state['paired_nav_atomic_pre_l2']['slates']['c'*64][0]['stock_meta']['sector_peer_return_1d'] = .9
         with pytest.raises(ValueError, match='retry_inputs_changed'):
-            asyncio.run(prepare_atomic_l2(state, result, enrich=graph._node_l2_timesfm_enrich))
+            asyncio.run(prepare_atomic_l2(state, result, enrich=graph._node_prepare_sequence_inputs))
         assert retry == before
     finally:
         db.close()

@@ -160,11 +160,14 @@ def choose_opb(policy, ledger, identity, signal_date):
     return policies[selected], {**evidence,'status':'learned_policy','arm_id':selected}
 
 
-def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None):
+def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None, p6_weight_loader=None):
     runtime = policy.get('runtime') or {}
     signal_date = runtime['signal_date']
     identity = runtime['l3_identity']
     bundle = policy['artifact']
+    from services.l4_p6_bundle import is_p6
+    p6=is_p6(bundle);p6_projection=None
+    if p6 and r2_shadow is not None:raise ValueError('p6_multiple_model_owners')
     research = private_research and policy.get('scope') == 'private_research'
     if r2_shadow is not None and not research:
         raise ValueError('l4_r2_formal_promotion_not_admitted')
@@ -198,7 +201,21 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     # coefficient is inert because zero/new or existing/held weights are fixed.
     locked.update(set(unavailable) & set(holdings))
     modeled = sorted(set(by_symbol) - set(unavailable))
-    if r2_shadow is None:
+    if p6:
+        from services.l4_p6_pool_projection import project
+        from services.l4_p6_weights import load
+        model=bundle['model']
+        feature_rows,outputs,p6_projection=project(runtime.get('p6_native_pool') or {},
+            identity=identity,signal_date=signal_date,model_checksum=bundle['model_checksum'],
+            seeds=model['seeds'],head=model['frozen_p_loss']['model'],calibration=model['calibration'],
+            calibration_kind=model['calibration_kind'],symbols=modeled,load_bytes=p6_weight_loader or load)
+        # The projected features and routed L3 packet must describe the same
+        # prediction. A correct full-pool receipt cannot bless stale routing.
+        for item in feature_rows:
+            symbol=item['symbol']
+            if item['features']!=native_features(by_symbol[symbol],predictions[symbol],identity):
+                raise ValueError('p6_routed_full_pool_feature_mismatch')
+    elif r2_shadow is None:
         feature_rows = [{'symbol':s,'features':native_features(by_symbol[s],predictions[s],identity),
                          'l3_baseline':native_baseline(predictions[s],identity)} for s in modeled]
         outputs = dict(zip(modeled,
@@ -281,7 +298,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},
                       locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,**constraints)
     attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
-        model_feature_names=bundle['model']['recipe']['names'],unavailable=unavailable)
+        model_feature_names=(bundle['model']['seeds'][0]['final_recipe']['feature_names'] if p6 else bundle['model']['recipe']['names']),
+        unavailable=unavailable,utility_semantic='five_session_relative_pool_decimal' if p6 else 'five_session_gross_decimal')
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
             'execution_scope':'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
@@ -300,6 +318,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
          '_buy_costs':constraints['buy_cost']+buy_extra,'_sell_costs':constraints['sell_cost']+sell_extra,
          '_turnover_pressure':pressure},nav,trade_uncertainty,locked)
     if execution is not None:plan['sealed_execution']=execution
+    if p6_projection is not None:plan['p6_projection']=p6_projection
     if r2_shadow is not None:
         plan['r2_evidence']={'forecast_checksum':digest(r2_shadow['forecast']),
             'policy_checksum':r2_shadow['forecast']['policy_checksum'],
@@ -331,8 +350,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                    l4_distribution=output)
         row['alpha_allocation']={'engine':'sparse_tangent_inverse_risk','schema_version':PLAN_SCHEMA,
             'expected_return_owner':OWNER,'expected_return':expected,
-            'expected_return_semantic':'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
-            'expected_return_source':SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
+            'expected_return_semantic':'five_session_relative_pool_decimal' if p6 else 'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
+            'expected_return_source':'l4-p6-direct-excess-model-v1' if p6 else SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
             'selected':selected,'allocation_weight':weight,'allocation_rank':rank[symbol],
             'selection_reason':'l3_evidence_unavailable' if symbol in unavailable else 'portfolio_target' if selected else 'portfolio_cash_or_other_assets',
             'prediction_blockers':unavailable.get(symbol,[]),

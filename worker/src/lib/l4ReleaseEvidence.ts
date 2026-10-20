@@ -1,8 +1,10 @@
+import { isP6Model, validP6Structure, p6ReleaseEvidenceError } from './l4P6Evidence'
 export const L4_FEATURE_SCHEMA = 'full-l3-30-all-available-signals-v3'
 export const L4_TIMEXER_FEATURE_SCHEMA = 'full-l3-30-timexer-signals-v4'
 
 /** v4 replaces the DLinear coordinate in place; sorting again changes model inputs. */
 export function validL4FeatureSchema(artifact: any): boolean {
+  if (isP6Model(artifact)) return artifact?.feature_schema === L4_TIMEXER_FEATURE_SCHEMA && validP6Structure(artifact)
   if (artifact?.feature_schema === L4_FEATURE_SCHEMA) return true
   if (artifact?.feature_schema !== L4_TIMEXER_FEATURE_SCHEMA) return false
   const names = ['LightGBM','XGBoost','ExtraTrees','TabM','GNN','DLinear','PatchTST','iTransformer']
@@ -28,6 +30,10 @@ export function l4ReleaseEvidenceError(artifact: any): string | null {
   if (r?.scope!=='paper' || r?.decision!=='PASS' || r.model_checksum!==artifact.model_checksum
       || !hex(r.validation_receipt_checksum) || !receipt || receipt.model_checksum!==artifact.model_checksum
       || receipt.schema_version!=='l4-paper-acceptance-v1') return 'l4_release_evidence_missing'
+  if (isP6Model(artifact)) {
+    if (!validL4FeatureSchema(artifact) || receipt.feature_schema!==artifact.feature_schema) return 'l4_release_feature_schema_mismatch'
+    return p6ReleaseEvidenceError(artifact, L4_ACCEPTANCE_CHECKS)
+  }
   if (receipt.checks?.native_l3_baseline_preserved!==true || receipt.checks?.incremental_comparison_contract!==true)
     return 'l4_release_design_repair_evidence_missing'
   if (!validL4FeatureSchema(artifact) || receipt.feature_schema!==artifact.feature_schema)

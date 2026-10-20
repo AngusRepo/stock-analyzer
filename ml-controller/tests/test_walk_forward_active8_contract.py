@@ -418,6 +418,17 @@ def test_oof_lifecycle_calendar_uses_checksum_verified_immutable_prep():
     assert evidence["prep_manifest_checksum"] == manifest["manifest_checksum"]
     assert evidence["sequence_gcs_prefix"] == "universal/sequence_long/test"
 
+    capped, receipt = walk_forward._oof_lifecycle_calendar(
+        "2026-07-17", bucket=Bucket(), prep_gcs_prefix=prefix,
+        signal_date_max="2026-07-08",
+    )
+    assert capped == ["2026-07-08"]
+    assert receipt["mature_rows"] == 1
+    assert receipt["signal_date_max"] == "2026-07-08"
+    assert receipt["label_known_at_max"] == "2026-07-15"
+    assert receipt["excluded_by_signal_cutoff"] == 1
+
+
 def test_full_fit_plan_blocks_legacy_manifest_without_immutable_prep():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan
 

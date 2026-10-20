@@ -107,7 +107,7 @@ function statusLabel(status: string): string {
 }
 
 type StrategyLifecycleLane = 'active' | 'candidate'
-type StrategyHealthBucket = 'execution_eligible' | 'performance_cooldown' | 'formal_policy_pending' | 'evidence_repair' | 'accumulating' | 'atomic_not_applicable' | 'prefilter_failed' | 'promotion_pending'
+type StrategyHealthBucket = 'read_unavailable' | 'execution_eligible' | 'performance_cooldown' | 'formal_policy_pending' | 'evidence_repair' | 'accumulating' | 'atomic_not_applicable' | 'prefilter_failed' | 'promotion_pending'
 type StrategyHealthSection = {
   key: StrategyHealthBucket
   label: string
@@ -116,7 +116,16 @@ type StrategyHealthSection = {
   countClassName: string
 }
 
+const READ_UNAVAILABLE_SECTION: StrategyHealthSection = {
+  key: 'read_unavailable',
+  label: '資料讀取待恢復',
+  description: '尚未取得完整的策略資料與判定回應，無法判定健康狀態；不代表原始累積資料遺失。',
+  className: 'border-slate-600/40 bg-slate-800/[0.2]',
+  countClassName: 'border-slate-600 bg-slate-800/60 text-slate-300',
+}
+
 const ACTIVE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
+  READ_UNAVAILABLE_SECTION,
   {
     key: 'execution_eligible',
     label: '可進待買',
@@ -155,6 +164,7 @@ const ACTIVE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
 ]
 
 const CANDIDATE_STRATEGY_HEALTH_SECTIONS: StrategyHealthSection[] = [
+  READ_UNAVAILABLE_SECTION,
   {
     key: 'accumulating',
     label: '證據累積',
@@ -230,10 +240,10 @@ function strategyHealthBucket(
   formalWeight: number | null,
   ownerDecision?: StrategyFormalOwnerDecision,
 ): StrategyHealthBucket {
-  if (strategyLifecycleLane(row) === 'candidate' && gate?.activation_gate.status === 'nav_review') return 'promotion_pending'
+  if (!gate || row.learning.reward_status_reason === 'reward ledger unavailable') return 'read_unavailable'
+  if (strategyLifecycleLane(row) === 'candidate' && gate.activation_gate.status === 'nav_review') return 'promotion_pending'
   if (
-    !gate
-    || row.learning.reward_state === 'reward_join_missing'
+    row.learning.reward_state === 'reward_join_missing'
     || row.learning.reward_state === 'unavailable'
     || (
       row.learning.reward_state === 'ready'
@@ -268,6 +278,7 @@ function strategyHealthBucket(
 
 function strategyHealthLabel(bucket: StrategyHealthBucket): string {
   return {
+    read_unavailable: '資料讀取待恢復',
     execution_eligible: '可進待買',
     performance_cooldown: '績效降溫 · bounded sleeve',
     formal_policy_pending: '當日正式政策未配置',
@@ -1631,9 +1642,9 @@ export default function StrategyLearningPage() {
         setRows(ledger?.specs ?? [])
       }
 
-      if (!ledger) setNotice('Reward ledger API unavailable; showing canonical strategy registry rows without reward metrics.')
+      if (!ledger) setNotice('策略數據 API 暫時未讀取成功；保留策略清單，健康狀態與累積數據待讀取恢復，不能據此判定資料遺失。')
       else if (!registry) setNotice('Strategy registry API unavailable; showing the latest reward-ledger snapshot.')
-      else if ((ledger.specs ?? []).length === 0) setNotice('Reward ledger returned no specs; showing canonical strategy registry rows.')
+      else if ((ledger.specs ?? []).length === 0) setNotice('策略數據回應未包含策略項目；目前顯示策略清單，待取得數據後再判定健康狀態。')
       else if (profilesResult.status === 'rejected') setNotice('Strategy evidence profile API unavailable; current-semantic evidence is unavailable and no legacy maturity fallback is shown.')
     } catch (cause) {
       setLearning(null)
@@ -1687,6 +1698,7 @@ export default function StrategyLearningPage() {
   const formalQuarantinedStrategyIds = formalPolicy?.quarantined_strategy_ids ?? []
   const orderedRows = useMemo(() => {
     const priority: Record<StrategyHealthBucket, number> = {
+      read_unavailable: -1,
       evidence_repair: 0,
       prefilter_failed: 1,
       performance_cooldown: 2,

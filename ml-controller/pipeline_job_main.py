@@ -260,8 +260,13 @@ async def _run() -> int:
             result = await run_pipeline_v2_from_input_event(stage_path=os.environ.get('PIPELINE_INPUT_STAGE', ''),
                 run_date=run_date, producer_run_id=run_id)
         elif premarket_mode:
-            from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
-            result=await run_pipeline_v2_from_premarket(os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI',''))
+            uri = os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI','')
+            if _truthy_env('PIPELINE_PREMARKET_COMPLETED_ONLY'):
+                from graphs.daily_pipeline_v2 import reconcile_completed_premarket
+                result = await reconcile_completed_premarket(uri)
+            else:
+                from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
+                result = await run_pipeline_v2_from_premarket(uri)
         elif snapshot_recovery_mode:
             source_gcs_uri = os.environ.get("PIPELINE_SNAPSHOT_RECOVERY_SOURCE_GCS_URI", "").strip()
             result = await run_pipeline_v2_from_snapshot_recovery(
@@ -345,6 +350,18 @@ async def _run() -> int:
         error = f"{type(e).__name__}: {e}"
         summary = f"run_id={run_id} {error[:120]}"
 
+    timexer_receipt = None
+    timexer_recorder_error = None
+    if status in ("success", "error") and run_date:
+        from services.timexer_daily_evidence import record_outcome
+        try:
+            timexer_receipt = await asyncio.to_thread(record_outcome, day=run_date, run_id=run_id,
+                status=status, error_type=(error or "pipeline_failed").split(":",1)[0] if status=="error" else None)
+        except Exception as exc:
+            # Never silently claim the daily recorder was complete. Publication
+            # has its own immutable receipt; this diagnostic cannot undo it.
+            logger.exception("[JobEntry] TimeXer outcome receipt failed")
+            timexer_recorder_error = type(exc).__name__
     elapsed_ms = int((time.time() - t0) * 1000)
     overall_payload: dict = {
         "task": "pipeline",
@@ -353,6 +370,8 @@ async def _run() -> int:
         "duration_ms": elapsed_ms,
         "run_id": run_id,
     }
+    if isinstance(result,dict) and result.get('serving_publication_checksum'):
+        overall_payload['serving_publication_checksum']=result['serving_publication_checksum']
     if isinstance(result,dict) and result.get('l3_receipt'):
         overall_payload['l3_receipt']=result['l3_receipt']
     if run_date:
@@ -360,6 +379,11 @@ async def _run() -> int:
     if error:
         overall_payload["error"] = error
 
+    if timexer_receipt is not None:
+        overall_payload['timexer_evidence_receipt'] = timexer_receipt
+    if timexer_recorder_error is not None:
+        overall_payload['timexer_recorder_error'] = timexer_recorder_error
+        overall_payload['summary'] += ' timexer_recorder=failed'
     await _callback_worker(overall_payload)
     if emit_subtasks:
         await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)

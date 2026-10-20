@@ -49,11 +49,10 @@ export function formalModelSlots(order?: readonly string[]): string[] {
 
 export const MODEL_POOL_FORMAL_L3_SLOT_IDS = MODEL_POOL_ACTIVE_ALPHA_MODEL_IDS
 
-export const MODEL_POOL_L2_FEATURE_SIDECAR_IDS = [
-  'TimesFM',
-] as const
+export const MODEL_POOL_L2_FEATURE_SIDECAR_IDS = [] as const
 
 export const MODEL_POOL_RETIRED_MODEL_IDS = [
+  'TimesFM',
   'CatBoost',
   'FT-Transformer',
   'FTTransformer',
@@ -174,17 +173,7 @@ export const MODEL_UPGRADE_CANDIDATES: ModelUpgradeCandidate[] = [
     requiredEvidence: ['production artifact', 'verified rows', 'walk-forward IC', 'sequence slice report', 'CPCV/PBO', 'latency cost'],
     canVote: true,
   },
-  {
-    id: 'TimesFM',
-    stage: 'l2_feature_sidecar_member',
-    family: 'sequence_family',
-    layer: 'L2 feature sidecar',
-    titleZh: 'TimesFM 2.5 L2 sidecar',
-    roleZh: 'Foundation time-series branch backed by the TimesFM 2.5 config artifact. It enriches formal137+timesfm_l175 features before L3 8ML and never votes as direct alpha.',
-    roleEn: 'L2 TimesFM 2.5 feature sidecar.',
-    requiredEvidence: ['production artifact', 'TimesFM 2.5 config', 'verified rows', 'L2 feature release', 'forecast OOS IC', 'walk-forward', 'cost report', 'slice stability'],
-    canVote: false,
-  },
+
   {
     id: 'LinUCB',
     stage: 'shadow_challenger',

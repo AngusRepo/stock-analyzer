@@ -9,7 +9,8 @@ from services.l4_distribution_runtime import choose_opb,distribution_policy_iden
 def prepare_packet(*,current_config,candidate,acceptance,source_evidence,l3_identity,constraints,signal_date,current_l3_identity=None,current_plan_id=None,nav_candidate=False):
     if acceptance.get('source_evidence_checksum')!=digest(source_evidence):
         raise ValueError('l4_release_source_evidence_checksum_mismatch')
-    allowed_scope = ('native_engineering_paper_execution' if acceptance.get('acceptance_mode')=='paper_experiment'
+    allowed_scope = ('r32_p6_native_engineering_paper_execution' if acceptance.get('acceptance_mode')=='p6_r32_paper'
+                     else 'native_engineering_paper_execution' if acceptance.get('acceptance_mode')=='paper_experiment'
                      else 'paired_native_paper_execution')
     if source_evidence.get('scope')!=allowed_scope or source_evidence.get('complete') is not True:
         raise ValueError('l4_release_real_account_evidence_required')
@@ -53,8 +54,12 @@ def prepare_packet(*,current_config,candidate,acceptance,source_evidence,l3_iden
     config['l4Distribution']={'scope':'paper','artifact':release,'constraints':deepcopy(constraints),'opb':opb}
     from services.l4_mlp_median import SCHEMA as MEDIAN_SCHEMA
     from services.l4_tabpack_median import SCHEMA as TABPACK_MEDIAN_SCHEMA
-    from services.paper_strategy_mode import MLP_MODE, MODE, TABPACK_MEDIAN_MODE, validate_model_mode
-    if release['model'].get('residual_tabpack',{}).get('schema_version')==TABPACK_MEDIAN_SCHEMA:
+    from services.paper_strategy_mode import MLP_MODE, MODE, TABPACK_MEDIAN_MODE, P6_MODE, validate_model_mode
+    from services.l4_p6_bundle import is_p6
+    if is_p6(release):
+        config['l4Distribution'].update(operating_mode=P6_MODE,strategy_role='B',candidate_model_family='p6_a')
+        validate_model_mode(config['l4Distribution'])
+    elif release['model'].get('residual_tabpack',{}).get('schema_version')==TABPACK_MEDIAN_SCHEMA:
         config['l4Distribution'].update(operating_mode=TABPACK_MEDIAN_MODE,strategy_role='B')
         validate_model_mode(config['l4Distribution'])
     elif release['model'].get('residual_mlp',{}).get('schema_version')==MEDIAN_SCHEMA:

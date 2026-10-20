@@ -37,9 +37,7 @@ from services.model_artifact_registry import (
     upsert_artifact_records,
 )
 from services.dataset_snapshots import latest_dataset_snapshot
-from services.foundation_forecast_evidence import (
-    attach_timesfm_foundation_evidence_to_followup_payload,
-)
+
 from services.cost_tracker import record_modal_call
 from services.modal_client import _modal_resource_spec
 
@@ -294,20 +292,6 @@ async def _record_modal_telemetry(events: list[dict[str, Any]]) -> dict[str, Any
 async def retrain_followup(payload: RetrainFollowupPayload, request: Request) -> dict[str, Any]:
     _check_token(request)
 
-    foundation_evidence = {"attempted": False, "updated": False}
-    try:
-        payload_dict = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-        foundation_evidence = attach_timesfm_foundation_evidence_to_followup_payload(payload_dict)
-        if foundation_evidence.get("updated"):
-            payload = RetrainFollowupPayload(**payload_dict)
-    except Exception as exc:  # noqa: BLE001 - followup persistence remains authoritative.
-        foundation_evidence = {
-            "attempted": True,
-            "updated": False,
-            "error": str(exc),
-        }
-        logger.warning("[RetrainFollowup] TimesFM foundation evidence enrichment failed: %s", exc)
-
     received_at = datetime.now(timezone.utc).isoformat()
     idem_key = payload.run_id or payload.trained_at
     if not idem_key:
@@ -405,7 +389,9 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
     artifact_registry = {"attempted": 0, "written": 0, "errors": []}
     artifact_records: list[dict[str, Any]] = []
     try:
-        artifact_records = build_artifact_records_from_retrain_followup(payload)
+        artifact_records = [row for row in build_artifact_records_from_retrain_followup(payload)
+            if row.get('model_name') != 'TimesFM'
+            and row.get('candidate_type') != 'timesfm_l175_l2_feature_release']
         artifact_registry = upsert_artifact_records(artifact_records)
     except Exception as exc:  # noqa: BLE001 - followup persistence remains authoritative.
         artifact_registry = {
@@ -443,7 +429,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "action": "retrain_followup",
         "lock_release": lock_release,
         "modal_telemetry": telemetry_status,
-        "foundation_evidence": foundation_evidence,
+
         "artifact_registry": artifact_registry,
         "scheduler_callback": scheduler_callback,
         "oof_lifecycle_resume": oof_lifecycle_resume,

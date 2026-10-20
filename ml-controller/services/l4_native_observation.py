@@ -180,14 +180,9 @@ async def prepare(*,bucket,config,day,context,key):
             source_checksum=state['payload_source_observations']['source_checksum'])),if_generation_match=0)
     except PreconditionFailed:
         raise ValueError('l4_native_existing_dispatch_requires_recovery')
-    # Frozen L2 model/policy, with this observation's date; never select latest.
-    l2=deepcopy(read_reference(bucket,config['timesfm_context']))
-    l2['signal_date']=day
-    from services.paired_nav_journal import digest as pipeline_digest
-    l2['source_checksum']=pipeline_digest({k:v for k,v in l2.items() if k!='source_checksum'})
-    state['pipeline_timesfm_context']=l2
-    state.update(await pipeline._node_l2_timesfm_enrich(state))
-    if state['timesfm_l2_summary']['status']!='ready':raise ValueError('l4_native_l2_not_ready')
+    from services.l4_native_l2_dependency import enrich
+    state.update(await enrich(state,pipeline=pipeline,bucket=bucket,config=config,
+                              read_reference=read_reference))
     request=await pipeline._build_pipeline_modal_prediction_payload(state,state_gcs_uri='',research_only=True)
     request.update(execution_scope=SCOPE,max_symbols=5000)
     from services.l4_risk_history import load_canonical_risk_payloads

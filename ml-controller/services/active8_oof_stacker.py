@@ -67,14 +67,26 @@ def _fit_ridge(
     y: np.ndarray,
     regularization: float,
     *,
+    rank_prior: np.ndarray | None = None,
+    loss_units: str = "sum",
     active_models: tuple[str, ...] | None = None,
     model_order: tuple[str, ...] = ACTIVE8_MODELS,
 ) -> tuple[np.ndarray, float]:
-    """Fit convex ridge while forbidding sign inversion of model-rank alpha."""
+    """Nonnegative ridge; historical sum-loss is the unchanged default.
+
+    P3 uses mean-loss and a causal prior in standardized-design coordinates.
+    The intercept is unpenalized; availability coefficients have a zero prior.
+    """
 
     from scipy.optimize import lsq_linear
 
     model_order = validate_order(model_order)
+    if loss_units not in ("sum","mean") or not len(x) or not math.isfinite(regularization) or regularization<0:
+        raise ValueError("active8_ridge_loss_contract")
+    prior=np.zeros(len(model_order),dtype=float) if rank_prior is None else np.asarray(rank_prior,dtype=float)
+    if prior.shape!=(len(model_order),) or not np.isfinite(prior).all() or (prior<0).any():
+        raise ValueError("active8_rank_prior_invalid")
+    penalty=float(regularization)*(len(x) if loss_units=="mean" else 1)
     selected = tuple(model_order if active_models is None else active_models)
     selected_indices = [model_order.index(name) for name in selected]
     feature_indices = [
@@ -91,10 +103,11 @@ def _fit_ridge(
     design = np.column_stack([np.ones(len(normalized)), normalized])
     ridge_rows = np.column_stack([
         np.zeros(design.shape[1] - 1, dtype=float),
-        np.eye(design.shape[1] - 1, dtype=float) * math.sqrt(float(regularization)),
+        np.eye(design.shape[1] - 1, dtype=float) * math.sqrt(penalty),
     ])
     augmented_x = np.vstack([design, ridge_rows])
-    augmented_y = np.concatenate([y, np.zeros(design.shape[1] - 1, dtype=float)])
+    prior_coefficients=np.concatenate([prior[selected_indices],np.zeros(len(selected_indices),dtype=float)])
+    augmented_y = np.concatenate([y, math.sqrt(penalty)*prior_coefficients])
     lower = np.full(design.shape[1], -np.inf, dtype=float)
     lower[1 : 1 + len(selected_indices)] = 0.0
     result = lsq_linear(
@@ -155,6 +168,8 @@ def _select_regularization(
     markets: np.ndarray,
     *,
     label_known_dates: np.ndarray,
+    rank_prior: np.ndarray | None = None,
+    loss_units: str = "sum",
     active_models: tuple[str, ...] | None = None,
     model_order: tuple[str, ...] = ACTIVE8_MODELS,
 ) -> float:
@@ -187,6 +202,8 @@ def _select_regularization(
             x[train_idx],
             y[train_idx],
             regularization,
+            **({"rank_prior":rank_prior} if rank_prior is not None else {}),
+            **({"loss_units":loss_units} if loss_units!="sum" else {}),
             active_models=active_models,
             model_order=model_order,
         )
@@ -200,6 +217,22 @@ def _select_regularization(
         mse = float(np.mean((prediction - y[validation_idx]) ** 2))
         candidates.append((ic, -mse, regularization))
     return max(candidates)[2]
+
+
+def fit_qualified_prior_ridge(
+    x, y, dates, markets, *, label_known_dates, model_order, rank_prior,
+    inner_rank_prior, active_models=None, loss_units="mean",
+):
+    """P3/P7 opt-in fit; inner and final causal priors are separately supplied.
+
+    No active-set refit removes a DEGRADED model: its prior can be zero while
+    its coefficient remains estimable. P7 exclusions are an explicit experiment.
+    """
+    regularization=_select_regularization(x,y,dates,markets,label_known_dates=label_known_dates,
+        model_order=model_order,active_models=active_models,rank_prior=inner_rank_prior,loss_units=loss_units)
+    weights,intercept=_fit_ridge(x,y,regularization,model_order=model_order,active_models=active_models,
+        rank_prior=rank_prior,loss_units=loss_units)
+    return weights,intercept,regularization
 
 
 def _fit_selected_ridge(
@@ -285,10 +318,10 @@ def _rerank_models_on_available_universe(rows: list[dict[str, Any]], *, model_or
 def row_model_available(row: dict[str, Any], model_name: str) -> bool:
     return bool(row.get("model_availability", {}).get(model_name))
 
-def build_chronological_oof_stack(
+def prepare_oof_candidates(
     prediction_rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Stack PIT model ranks with explicit availability and resolved prior folds."""
+    """Validate and align the shared OOF pool without fitting a stacker."""
 
     order = model_order(row.get("model_name") for row in prediction_rows)
     feature_names = stacker_features(order)
@@ -376,6 +409,23 @@ def build_chronological_oof_stack(
     if duplicate_rows:
         raise ValueError(f"active8_oof_duplicate_model_rows:{duplicate_rows}")
     _rerank_models_on_available_universe(candidates, model_order=order)
+    return candidates, dict(order=order,feature_names=feature_names,fold_ranges=fold_ranges,
+        incomplete=incomplete,partial_used=partial_used,rejected_core_model_rows=rejected_core_model_rows,
+        missing_by_model=dict(missing_by_model),max_target_lineage_drift=max_target_lineage_drift,
+        grouped_count=len(grouped))
+
+
+def build_chronological_oof_stack(
+    prediction_rows: list[dict[str, Any]], *, excluded_label_fold=None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Stack PIT model ranks with explicit availability and resolved prior folds."""
+    candidates, prepared = prepare_oof_candidates(prediction_rows)
+    order, feature_names = prepared['order'], prepared['feature_names']
+    fold_ranges = prepared['fold_ranges']
+    incomplete, partial_used = prepared['incomplete'], prepared['partial_used']
+    rejected_core_model_rows = prepared['rejected_core_model_rows']
+    missing_by_model = prepared['missing_by_model']
+    max_target_lineage_drift = prepared['max_target_lineage_drift']
     fold_order = sorted(fold_ranges, key=lambda fold: (fold_ranges[fold][0], fold))
     output: list[dict[str, Any]] = []
     fold_evidence: list[dict[str, Any]] = []
@@ -391,6 +441,8 @@ def build_chronological_oof_stack(
                 row for row in candidates
                 if row["prediction_date"] < prediction_date
                 and row["label_known_date"] < prediction_date
+                and (excluded_label_fold is None or not excluded_label_fold.excludes(
+                    row["prediction_date"], row["label_known_date"]))
             ]
             train_dates = sorted({row["prediction_date"] for row in prior})
             ready = len(prior) >= MIN_STACKER_TRAIN_ROWS and len(train_dates) >= MIN_STACKER_TRAIN_DATES
@@ -471,10 +523,10 @@ def build_chronological_oof_stack(
         "incomplete_candidate_rows": incomplete,
         "complete_candidate_coverage": round(
             sum(1 for row in candidates if all(row["model_availability"].values()))
-            / max(1, len(grouped)),
+            / max(1, prepared["grouped_count"]),
             6,
         ),
-        "eligible_candidate_coverage": round(len(candidates) / max(1, len(grouped)), 6),
+        "eligible_candidate_coverage": round(len(candidates) / max(1, prepared["grouped_count"]), 6),
         "missing_by_model": dict(sorted(missing_by_model.items())),
         "target_agreement_tolerance": TARGET_AGREEMENT_TOLERANCE,
         "max_target_lineage_drift": max_target_lineage_drift,

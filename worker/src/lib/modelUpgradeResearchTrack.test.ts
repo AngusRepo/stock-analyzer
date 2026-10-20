@@ -49,11 +49,7 @@ function assert(condition: unknown, message: string): void {
 }
 
 {
-  const sidecars = listModelUpgradeCandidates('l2_feature_sidecar_member')
-  const timesfm = sidecars.find((candidate) => candidate.id === 'TimesFM')
-  assert(timesfm, 'TimesFM should move to the L2 feature sidecar track')
-  assert(timesfm!.can_predict && !timesfm!.can_vote && timesfm!.vote_weight === 0, 'TimesFM sidecar must predict/enrich features without direct alpha vote')
-  assert(timesfm!.evidence_required.includes('l2_feature_release'), 'TimesFM sidecar must require L2 feature release evidence')
+  assert(!listModelUpgradeCandidates().some(candidate => candidate.id === 'TimesFM'), 'retired TimesFM is absent from active research slots')
 }
 
 {

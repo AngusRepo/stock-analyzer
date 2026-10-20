@@ -12,6 +12,7 @@ import { loadPendingBuySnapshot } from './pendingBuyStore'
 import type { PremarketPayload } from './premarketEventChain'
 import { atomicInputFailureOnly,historicalAtomicFailureOnly,sealedAllocationRecoveryOnly,verifyStoredFormalServing } from './premarketServingClosure'
 import { afterClosePaperRecovery } from './afterClosePaperRecovery'
+import { verifyStoredPublication } from './premarketPublicationReceipt'
 function stable(value:any):string {
   if(Array.isArray(value))return '['+value.map(stable).join(',')+']'
   if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}'
@@ -34,9 +35,18 @@ export async function singlePlanContext(env:Bindings,date:string,signalDate:stri
  return {signal_date:signalDate,l3_receipt:seal.receipt,morning_context:{...body,checksum:hash},context_hash:hash}
 }
 export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
- const receipt=input.l3_receipt as {run_id:string;run_date:string}
+ const receipt=input.l3_receipt as {run_id:string;run_date:string;checksum:string}
  const row=await databaseForDataDomain(env,'ops').prepare("SELECT status,last_error FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
    .bind(receipt.run_date,receipt.run_id).first<{status:string;last_error:string|null}>()
+ // A verified serving receipt may precede the pipeline's research callback.
+ const serving=await controllerJson<{publication:any}>(env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:receipt.run_date,run_id:receipt.run_id}))
+ if(serving.publication) {
+   const plan=await readL4PortfolioPlan(env)
+   if(!plan)throw new Error('premarket_wait:l4_publication')
+   await verifyStoredPublication(env,{publication:serving.publication,source:receipt,
+     context:input.morning_context as {trade_date:string;checksum:string},plan})
+   return plan.plan_id
+ }
  const tradeDate=(input.morning_context as {trade_date?:string}|undefined)?.trade_date
  const historical=tradeDate==='2026-10-16' && afterClosePaperRecovery(env,tradeDate,input)
    && historicalAtomicFailureOnly(row?.last_error)

@@ -1,5 +1,3 @@
-import { isSingleBMode } from '../../../worker/src/lib/paperStrategyMode'
-import L4DistributionPanel from './L4DistributionPanel'
 import type {
   PipelineDecisionMaturityPacket,
   PipelineMaturityMetric,
@@ -7,7 +5,6 @@ import type {
   PipelineMaturityStatus,
 } from '@/lib/pipelineMaturityContract'
 import { Badge } from '@/components/ui/badge'
-import NavCollectionSummary from '@/components/NavCollectionSummary'
 import CandidateVersionPanel from '@/components/CandidateVersionPanel'
 import { navReadinessReason, preoutcomeSummary } from '@/lib/expectedReturnEvidencePresentation'
 import {
@@ -684,7 +681,7 @@ export default function PipelineMaturityContribution({
     )
   }
 
-  const ownerLabel = data.l4_distribution ? '新 L4 收益分布模型' : data.current_expected_return_owner === 'allocator_ev_fusion'
+  const ownerLabel = data.l4_distribution ? 'L4 收益分布模型' : data.current_expected_return_owner === 'allocator_ev_fusion'
     ? 'Fusion'
     : data.current_expected_return_owner === 'l4_alpha_ev'
       ? 'Canonical L4'
@@ -819,14 +816,6 @@ export default function PipelineMaturityContribution({
         <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,32fr)_minmax(0,32fr)_minmax(0,36fr)]">
           {upstreamStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
-      {data.l4_distribution ? <L4DistributionPanel data={data.l4_distribution} /> : (
-        <section className="rounded-2xl border border-amber-300/20 bg-amber-300/[0.04] p-5" aria-label="重構流程發布狀態">
-          <h3 className="font-semibold text-slate-100">新 L3＋三頭 L4 · 尚未正式採用</h3>
-          <p role="status" className="mt-2 text-sm leading-6 text-amber-100/80">目前尚未讀到新 L4 的正式設定。模型配對、候選執行與 NAV 發布資格須分別驗證；此頁更新不代表新策略已啟用。</p>
-          <p className="mt-2 text-xs leading-5 text-slate-400">上方負責者顯示現行正式設定；下方 NAV 區顯示實際封存與帳務證據。舊收益模型與 IPO 比較卡已退出重構主流程。</p>
-        </section>
-      )}
-      {isSingleBMode(data.l4_distribution?.operating_mode) ? <section className="rounded-xl border border-slate-700/70 p-4"><h3 className="text-sm font-semibold">B 主策略帳務</h3><p className="mt-2 text-sm text-slate-400">目前以單一模擬帳戶的持倉、現金及成交追蹤績效。</p><a href="/bot" className="mt-3 inline-block text-sm text-sky-200">查看模擬帳戶 →</a></section> : <NavCollectionSummary data={data.paired_nav_shadow} />}
         {otherStages.length ? (
           <div className="grid items-start gap-3 lg:grid-cols-2">
             {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}

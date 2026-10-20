@@ -17,7 +17,7 @@ For each walk-forward window (~12 windows for 1y data with 60d train + 30d test)
   3. Evaluate on OOS [test_start, test_end] → per-window IC
 
 Produces per-window model bank + HMM snapshots. Downstream consumers:
-  - predict_regime_at_date(date) — real HMM replay for backtest Mode B
+  - Historical HMM replay helpers are retired (R30); use dated production receipts
   - Per-regime robust Optuna (#33) — uses predict_regime_at_date for minimax
   - Champion-Challenger pool (ML_POOL_ARCHITECTURE) — aggregate metrics decide
     whether to promote per-window models to production
@@ -230,7 +230,7 @@ def _filter_market_env_by_end_date(market_env: dict, end_date: str) -> dict:
     hist = market_env.get("history", {})
     filtered = {d: v for d, v in hist.items() if d <= end_date}
     if not filtered:
-        return market_env
+        raise ValueError("hmm_training_history_empty_before_cutoff")
     # latest row for 'current features' context
     latest_date = max(filtered.keys())
     latest = filtered[latest_date]
@@ -243,75 +243,14 @@ def predict_regime_at_date(
     train_window_days: int = 60,
     test_window_days: int = 30,
 ) -> str:
-    """Predict regime at a historical date using per-window HMM snapshots.
+    """Retired: this helper cannot reproduce point-in-time production HMM.
 
-    Real Mode B implementation:
-      1. Find the walk-forward window whose test_range covers `date`
-         (or the most recent window trained before `date`)
-      2. Load that window's HMM from GCS walk_forward/w{id}/
-      3. Build market features for `date` from dataset.market_risk
-      4. Predict regime
-
-    Falls back to `sideways` if no HMM snapshot or features available.
-
-    English label mapping (from regime.py _REGIME_INDEX_TO_EN):
-      0 → bull_market  |  1 → volatile  |  2 → sideways  |  3 → bear_market
+    The old single-row proxy used different feature units, a volatility
+    placeholder and positional state labels, and silently returned sideways.
+    Training and replay must consume dated production regime receipts with
+    computed_at before the next session open. Never synthesize missing history.
     """
-    windows = _index_windows(dataset, train_window_days, test_window_days)
-    if not windows:
-        return "sideways"
-    w = _find_window_for_date(historical_date, windows)
-    if w is None:
-        return "sideways"
-    detector = _load_hmm_for_window(w.window_id)
-    if detector is None:
-        return "sideways"
-
-    # Build market feature vector for this date from dataset.market_risk
-    if dataset.market_risk.is_empty():
-        return "sideways"
-    rows = dataset.market_risk.filter(dataset.market_risk["date"] == historical_date)
-    if rows.is_empty():
-        return "sideways"
-
-    import numpy as np
-    row = {k: rows[k][0] for k in rows.columns}
-    twii_close = float(row.get("twii_close") or 0)
-
-    # Need prev1 and prev5 for 1d/5d returns — query dataset
-    all_dates = dataset.market_risk.sort("date")
-    date_col = all_dates["date"].to_list()
-    try:
-        idx = date_col.index(historical_date)
-    except ValueError:
-        return "sideways"
-    prev1_close = float(all_dates["twii_close"][idx - 1]) if idx >= 1 else twii_close
-    prev5_close = float(all_dates["twii_close"][idx - 5]) if idx >= 5 else twii_close
-
-    ret_1d = (twii_close - prev1_close) / prev1_close if prev1_close else 0.0
-    ret_5d = (twii_close - prev5_close) / prev5_close if prev5_close else 0.0
-    risk_score = float(row.get("risk_score") or 50) / 100
-    market_bias_20d = float(row.get("twii_bias") or 0)
-
-    # Same 6-feature shape as regime.get_current_market_features
-    cur_feat = np.array([
-        ret_1d,
-        ret_5d,
-        risk_score,
-        market_bias_20d,
-        abs(ret_1d),
-        abs(ret_1d),   # 3d vol placeholder — single-date context only
-    ], dtype=float)
-
-    # regime.py REGIME_INDEX_TO_EN mapping (duplicated here to avoid ml-service import)
-    REGIME_EN = {0: "bull_market", 1: "volatile", 2: "sideways", 3: "bear_market"}
-    try:
-        info = detector.predict_regime(cur_feat)
-        reg_idx = int(info.get("regime_index", 2))
-        return REGIME_EN.get(reg_idx, "sideways")
-    except Exception as e:
-        logger.warning(f"[WalkForward] predict_regime crashed at {historical_date}: {e}")
-        return "sideways"
+    raise RuntimeError("legacy_hmm_replay_disabled_use_dated_production_receipts")
 
 
 def predict_regime_batch(
@@ -320,11 +259,8 @@ def predict_regime_batch(
     train_window_days: int = 60,
     test_window_days: int = 30,
 ) -> dict[str, str]:
-    """Batch variant of predict_regime_at_date."""
-    return {
-        d: predict_regime_at_date(dataset, d, train_window_days, test_window_days)
-        for d in dates
-    }
+    """Retired together with predict_regime_at_date, including empty batches."""
+    raise RuntimeError("legacy_hmm_replay_disabled_use_dated_production_receipts")
 
 
 def clear_hmm_cache():

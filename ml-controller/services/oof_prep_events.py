@@ -13,7 +13,8 @@ def prep_context(*, cadence, end_date, profile, controls=None):
         raise ValueError('oof_prep_cadence_invalid')
     keys = ('CADENCE', 'END_DATE', 'PROMOTE', 'DISPATCH_FULL_FIT', 'RUN_ID', 'CALLBACK_TASK',
             'CONTINUATION_ATTEMPT', 'CONTINUATION_ONLY', 'EXPECTED_COHORT_ID',
-            'SCHEDULER_TICKET_ID', 'SCHEDULER_RUN_ID', 'MODEL_PROFILE_SCHEMA')
+            'SCHEDULER_TICKET_ID', 'SCHEDULER_RUN_ID', 'MODEL_PROFILE_SCHEMA',
+            'SIGNAL_DATE_MAX', 'LABEL_KNOWN_AT_MAX')
     defaults = {'PROMOTE':'1', 'DISPATCH_FULL_FIT':'0', 'CONTINUATION_ONLY':'0',
                 'CONTINUATION_ATTEMPT':'0', 'CALLBACK_TASK':f'active8-oof-{cadence}',
                 'RUN_ID':os.environ.get('CLOUD_RUN_EXECUTION') or f'active8-oof-{cadence}:{day}:resolve-after-prep'}
@@ -27,7 +28,10 @@ def prep_context(*, cadence, end_date, profile, controls=None):
     sha = os.environ.get('STOCKVISION_SOURCE_SHA', '')
     if len(sha) != 40:
         raise ValueError('oof_prep_source_identity_missing')
-    ctx = {'run_id': f'oof-prep:{cadence}:{day}:{profile}:{sha}', 'run_date': day,
+    from services.training_dual_cutoff import request_cutoff_from_environment
+    cutoff = request_cutoff_from_environment(resume)
+    suffix = ':' + events.digest(events.encoded(cutoff)) if cutoff else ''
+    ctx = {'run_id': f'oof-prep:{cadence}:{day}:{profile}:{sha}'+suffix, 'run_date': day,
            'state_gcs_uri': '', 'oof_resume': resume, 'producer_source_sha': sha}
     token = events._CONTEXT.set(ctx)
     try:
@@ -44,6 +48,8 @@ def _validate(stage):
             or stage['kind'] not in ('prep', 'adjusted')
             or any(not key.startswith('OOF_MATERIALIZE_') for key in env)):
         raise ValueError('oof_input_owner_mismatch')
+    from services.training_dual_cutoff import request_cutoff_from_environment
+    request_cutoff_from_environment(env)
     return env
 
 

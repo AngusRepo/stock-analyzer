@@ -12,18 +12,24 @@ from services.active8_oof_stacker import build_chronological_oof_stack,STACKER_F
 from services.active8_ensemble_artifact import _fit_isotonic,finite_sample_quantile,payload_checksum
 
 
-def replica_builder(predictions,parent):
+def replica_builder(predictions,parent,*,excluded_label_fold=None):
     order = model_order(row["model_name"] for row in predictions)
     if parent.get("observation_artifacts") and model_order(parent["observation_artifacts"], complete=True) != order:
         raise ValueError("native_meta_parent_roster_mismatch")
     names = stacker_features(order)
-    stacked,evidence=build_chronological_oof_stack(predictions)
+    stacked,evidence=build_chronological_oof_stack(predictions, **(
+        {'excluded_label_fold':excluded_label_fold} if excluded_label_fold is not None else {}))
     states={s['prediction_date']:s for f in evidence['folds'] for s in f['date_states']}
     def build(prior,*,knowledge_cutoff_date,**_):
+        if excluded_label_fold is not None and any(excluded_label_fold.excludes(
+                r['prediction_date'],r['label_known_date']) for r in prior):
+            raise ValueError('native_meta_forbidden_label_ancestor')
         days=[d for d in states if d>knowledge_cutoff_date]
         if not days:raise ValueError('native_meta_prediction_state_insufficient')
         day=min(days);state=states[day]
-        honest=[r for r in stacked if r['eligible_for_efficacy'] and r['label_known_date']<day]
+        honest=[r for r in stacked if r['eligible_for_efficacy'] and r['label_known_date']<day
+            and (excluded_label_fold is None or not excluded_label_fold.excludes(
+                r['prediction_date'],r['label_known_date']))]
         if (not state['eligible_for_efficacy'] or not state['selected_models']
                 or len({r['prediction_date'] for r in honest})<5):
             raise ValueError('native_meta_purged_calibration_insufficient')

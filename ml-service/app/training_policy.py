@@ -959,6 +959,8 @@ class UniversalTrainingPolicy:
         for key in (
             "run_date",
             "as_of_date",
+            "signal_date_max",
+            "label_known_at_max",
             "max_prep_stale_days",
             "gcs_prefix",
             "feature_pool_path",

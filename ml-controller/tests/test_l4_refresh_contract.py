@@ -57,6 +57,14 @@ def test_refresh_seals_replayable_dataset_before_candidate_identity_and_retries_
     monkeypatch.setattr(walk_forward_retrain, '_get_bucket', lambda: bucket)
     monkeypatch.setattr(materializer, 'load_verified_oof_manifest',
         lambda *args, **kwargs: ({'manifest_checksum': 'a' * 64}, None))
+    # This orchestration fixture stubs the verified manifest loader above;
+    # source-quality proof is covered by test_training_source_preflight.
+    from services import training_source_preflight
+    verified_sources = []
+    def source_gate(actual_bucket, manifest):
+        assert actual_bucket is bucket and manifest == {'manifest_checksum': 'a' * 64}
+        verified_sources.append(manifest['manifest_checksum'])
+    monkeypatch.setattr(training_source_preflight, 'require_oof_training_sources', source_gate)
     inputs = source_rows()
     monkeypatch.setattr(materializer, 'load_oof_prediction_rows', lambda *args, **kwargs: inputs)
     rows = [{'date': '2026-08-01', 'features': {'test': 1}}]
@@ -86,6 +94,7 @@ def test_refresh_seals_replayable_dataset_before_candidate_identity_and_retries_
     with pytest.raises(ValueError, match='score_semantic_unverified'):
         job.execute(**{**args, 'as_of': '2026-09-15'})
     assert len(calls) == 1
+    assert verified_sources == ['a' * 64] * 3
 
 
 @pytest.mark.parametrize('fixed', [False, True])

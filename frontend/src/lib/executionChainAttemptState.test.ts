@@ -64,6 +64,40 @@ const inferStage = (summary?: string | null): string | null => (
   /regime/i.test(String(summary ?? '')) ? 'regime-compute' : null
 )
 
+// Actual incident: generic finalizer lock retries arrive after the indicator and
+// regime receipts have completed, while mature evidence runs for several minutes.
+{
+  const chain = { orchestratorId: 'evening-chain', columns: [['indicator-queue'], ['regime-compute'], ['strategy-learning-mature-evidence'], ['screener']] }
+  const identity = { runId: 'same-run', statusRunDate: '2026-10-14' }
+  const base = new Map<string, SchedulerJob>([
+    ['evening-chain', job('evening-chain', 'running', {...identity, summary: 'indicator finalizer deferred'})],
+    ['indicator-queue', job('indicator-queue', 'success', {...identity, lastDuration: '2m51s'})],
+    ['regime-compute', job('regime-compute', 'success', identity)],
+    ['strategy-learning-mature-evidence', job('strategy-learning-mature-evidence', 'waiting', identity)],
+    ['screener', job('screener', 'waiting', identity)],
+  ])
+  const infer = () => 'indicator-queue'
+  const resolved = buildAttemptAwareJobMap(base, chain, infer)
+  assert(resolved.get('indicator-queue')?.lastStatus === 'success', 'finalizer retry cannot restart completed same-run indicator')
+  assert(resolved.get('regime-compute')?.lastStatus === 'success', 'finalizer retry cannot hide same-run regime completion')
+  base.set('strategy-learning-mature-evidence', job('strategy-learning-mature-evidence', 'running', identity))
+  assert(buildAttemptAwareJobMap(base, chain, infer).get('strategy-learning-mature-evidence')?.lastStatus === 'running', 'direct mature stage owns spinner')
+  base.set('strategy-learning-mature-evidence', job('strategy-learning-mature-evidence', 'waiting', identity))
+  base.set('indicator-queue', job('indicator-queue', 'success', {...identity, runId: 'old-run', lastDuration: '9m'}))
+  const replay = buildAttemptAwareJobMap(base, chain, infer)
+  assert(replay.get('indicator-queue')?.lastStatus === 'running', 'different run can replay a previously completed stage')
+  assert(replay.get('indicator-queue')?.lastDuration === 'N/A', 'parent-derived replay cannot reuse old attempt duration')
+  assert(replay.get('regime-compute')?.lastStatus === 'success', 'same-run downstream terminal receipt is stronger than upstream parent hint')
+}
+
+{
+  const queued = job('pipeline', 'waiting', {runId:'pipeline-dispatch:current', statusRunDate:'2026-10-14'})
+  queued.ticket.durable = true
+  const parent = job('evening-chain', 'running', {statusRunDate:'2026-10-14', summary:'pipeline triggered run_id=pipeline-dispatch:current, callback expected'})
+  const base = new Map([['pipeline',queued],['evening-chain',parent]])
+  assert(buildAttemptAwareJobMap(base, {orchestratorId:'evening-chain',columns:[['pipeline']]}, ()=>'pipeline').get('pipeline')?.lastStatus === 'waiting', 'durable dispatch queue must not display computation running')
+}
+
 {
   const base = new Map<string, SchedulerJob>([
     ['evening-chain', job('evening-chain', 'waiting', {

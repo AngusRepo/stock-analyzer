@@ -4,6 +4,7 @@ No alternate feature owner, model training, promotion or maturity authority.
 Completed slate outputs survive retries; failed slates remain explicit.
 """
 from copy import deepcopy
+from services.pipeline_sequence_context import sequence_context
 
 from services.paired_nav_journal import digest
 from services.paired_nav_collection import shadow_failure
@@ -24,11 +25,11 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
         raise ValueError('paired_nav_atomic_l2_population_changed')
     if set(pre.get('holding_slates', {})) != set(source.get('holding_scopes', {})):
         raise ValueError('paired_nav_atomic_l2_holdings_changed')
-    context = state.get('pipeline_timesfm_context')
+    context = sequence_context(state)
     sequence = state.get('pipeline_sequence_observations')
     if not context or not sequence:
         raise ValueError('paired_nav_atomic_l2_frozen_context_missing')
-    if formal_result.get('timesfm_l2_summary', {}).get('status') not in {'ready', 'blocked', 'skipped'}:
+    if formal_result.get('sequence_input_summary', {}).get('status') not in {'ready', 'blocked', 'skipped'}:
         raise ValueError('paired_nav_atomic_l2_formal_inference_failed')
     formal_payloads = formal_result.get('payloads', state['payloads'])
     saved = state.get('paired_nav_atomic_l2')
@@ -56,7 +57,7 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
     # keeps its compatibility behavior; new production state always has a scope.
     cache = {formal_input_checksum: {
         'payloads': keep(formal_payloads, state),
-        'timesfm_l2_summary': deepcopy(formal_result['timesfm_l2_summary'])}}
+        'sequence_input_summary': deepcopy(formal_result['sequence_input_summary'])}}
     policy_key = digest([context, sequence])
 
     failures = {}
@@ -80,17 +81,17 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
                     async def compute():
                         payloads = load_owned(reference, scope)
                         child = {'run_date': state['run_date'], 'payloads': payloads,
-                            'pipeline_timesfm_context': deepcopy(context),
+                            'pipeline_sequence_context': deepcopy(context),
                             'pipeline_sequence_observations': deepcopy(sequence)}
                         result = await enrich(child)
-                        status = (result.get('timesfm_l2_summary') or {}).get('status')
+                        status = (result.get('sequence_input_summary') or {}).get('status')
                         if status not in {'ready', 'blocked', 'skipped'}:
                             raise ValueError('paired_nav_atomic_l2_inference_failed')
                         # A no-output result must retain the original input even
                         # if an injected/legacy enrichment mutated its private copy.
                         output_payloads = result['payloads'] if 'payloads' in result else load(reference, scope)
                         return {'payloads': keep(output_payloads, state),
-                                'timesfm_l2_summary': deepcopy(result['timesfm_l2_summary'])}
+                                'sequence_input_summary': deepcopy(result['sequence_input_summary'])}
                     if scope:
                         record = await checkpoint_async(scope, ['l2', policy_key, key], compute)
                         cache[key] = load(record, scope)
@@ -98,7 +99,7 @@ async def prepare_atomic_l2(state, formal_result, *, enrich):
                         cache[key] = await compute()
                 result = cache[key]
                 outputs[definition] = {'status': 'ready', 'payloads': deepcopy(result['payloads']),
-                    'summary': deepcopy(result['timesfm_l2_summary']), 'input_payload_checksum': key}
+                    'summary': deepcopy(result['sequence_input_summary']), 'input_payload_checksum': key}
             except Exception as exc:
                 outputs[definition] = shadow_failure('atomic_l2_slate', exc)
                 if key is not None:

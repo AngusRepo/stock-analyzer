@@ -48,7 +48,7 @@ def risk_groups(symbols,history,rows,holdings,constraints, *, dated_covariance_p
     return knobs,groups,pressure,horizon,evidence
 
 
-def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_names,unavailable=None):
+def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_names,unavailable=None,utility_semantic='five_session_gross_decimal'):
     """Preserve full upstream packets; modeling and audit roles stay explicit."""
     ordered=sorted(rows)
     feature_by_symbol={row['symbol']:row['features'] for row in feature_rows}
@@ -65,7 +65,7 @@ def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_na
     from services.online_portfolio_bandit import _candidate_feature_summary
     candidates=[{**rows[s],'expected_return':outputs[s]['expected_return_gross']} for s in ordered if s in outputs]
     packet['opb_candidate_summary']=_candidate_feature_summary(candidates,utility_field='expected_return',
-        utility_semantic='five_session_gross_decimal')
+        utility_semantic=utility_semantic)
     # Full packets are already sealed in the chunked allocation snapshot.
     # Keep a verifiable index in the Paper plan instead of duplicating megabytes.
     packet['upstream_snapshot_path']='content.inputs.alpha_policy.l4Distribution.runtime.predictions'

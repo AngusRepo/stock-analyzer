@@ -1292,6 +1292,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)
+    from .full_fit_scope import sequence_records as scoped_sequence_records
+    dataset_source.records, input_scope = scoped_sequence_records(payload, dataset_source.records, horizon=pred_len)
     explicit_test_start = str(payload.get("test_start") or "").strip()
     explicit_test_end = str(payload.get("test_end") or "").strip()
     if generation_mode == "purged_oof":
@@ -1580,6 +1582,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         },
         "oos_ic": metrics["oos_ic"],
         "direction_accuracy": metrics["direction_accuracy"],
+        "input_scope": input_scope,
         "sample_count": int(len(train_rows)),
         "validation_sample_count": int(len(all_actual_return)),
         "dataset_snapshot": {

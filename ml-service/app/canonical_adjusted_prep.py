@@ -186,6 +186,15 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("canonical_adjusted_output_prefix_must_be_new")
 
     source_receipt = _verified_source_receipt(bucket, source_prefix, batch_count, payload.get("feature_semantic_version", LEGACY_SEMANTIC))
+    # Reject incomplete producer metadata before loading sequence data or writing
+    # costly canonical batches. This is a source date, never the training cutoff.
+    business_date = source_receipt.get("business_date")
+    try:
+        if not isinstance(business_date, str) or len(business_date) != 10:
+            raise ValueError()
+        datetime.strptime(business_date, "%Y-%m-%d")
+    except (ValueError, TypeError) as exc:
+        raise ValueError("canonical_adjusted_source_business_date_invalid") from exc
     sequence_manifest = _verified_sequence_manifest(bucket, sequence_prefix, sequence_batch_count)
     price_capture = source_receipt.get("price_capture") or {}
     daily = [row for row in sequence_manifest.get("lane_reports", []) if row.get("lane") == "daily_price"]

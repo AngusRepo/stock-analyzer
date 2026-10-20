@@ -13,6 +13,9 @@ def completed_candidate(bucket, run_key, *, identity, manifest_checksum, as_of, 
     from services.l4_tabpack_dispatch import dispatch
     if not re.fullmatch(r'[a-f0-9]{64}', run_key):
         raise ValueError('monthly_completed_run_key_invalid')
+    if expected_family=='p6_a':
+        from services.l4_p6_monthly import completed
+        return completed(bucket,run_key,identity=identity,manifest_checksum=manifest_checksum,as_of=as_of)
     from services.l4_r2_monthly import PREFIX as R2_PREFIX
     r2_exists=bucket.blob(R2_PREFIX+run_key+'/completed.json').exists()
     tab_exists=bucket.blob('l4_distribution/tabpack_runs/' + run_key + '/completed.json').exists()

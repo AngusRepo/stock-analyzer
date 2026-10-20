@@ -26,9 +26,10 @@ def materialize_inputs(bucket, payload, directory):
     if (manifest.get('manifest_checksum') != _manifest_checksum(manifest)
             or manifest['manifest_checksum'] != snapshot['manifest_checksum']
             or manifest.get('schema_version') != 'active8-canonical-adjusted-prep-v3'
-            or manifest.get('status') != 'ready'
-            or manifest.get('source_feature_date_max','') > payload['run_date']):
+            or manifest.get('status') != 'ready'):
         raise ValueError('timexer_training_manifest_invalid')
+    from .timexer_cutoff import input_scope
+    input_scope(manifest, payload)
     feature_prefix = manifest['source_gcs_prefix']
     receipt = json.loads(bucket.blob(feature_prefix+'/prep/immutable_receipt.json').download_as_bytes())
     raw = json.dumps({k:v for k,v in receipt.items() if k != 'receipt_checksum'}, sort_keys=True).encode()
@@ -119,14 +120,18 @@ def run(payload, *, bucket=None):
     with tempfile.TemporaryDirectory(prefix='timexer-') as temp:
         manifest, eligible_by_date = materialize_inputs(bucket,payload,Path(temp))
         cutoff = payload['run_date']
+        from .timexer_cutoff import input_scope
+        scope = input_scope(manifest, payload)
         if (not full_fit and not (payload['train_start'] <= payload['train_end'] < payload['test_start'] <= payload['test_end'] <= cutoff)):
             raise ValueError('timexer_oof_date_split_invalid')
         job = {'name':version, 'settings':payload['settings'], 'exogenous':payload['exogenous'],
                'train_start':payload.get('train_start') or manifest['source_feature_date_min'],
-               'train_end':payload.get('train_end') or cutoff,
+               'train_end':payload.get('train_end') or (scope['signal_date_max'] if full_fit and scope else cutoff),
                'test_start':(date.fromisoformat(cutoff)+timedelta(days=1)).isoformat() if full_fit else payload['test_start'],
                'test_end':cutoff if full_fit else payload['test_end'],
                'expected_market_dates':json.loads((Path(temp)/'canonical/prep/eligible_market_dates.json').read_text(encoding='utf-8'))}
+        if scope is not None:
+            job['input_scope'] = scope
         result = train(job,Path(temp),device='cuda',full_fit=full_fit)
     report = result['report']
     effective = {'settings':job['settings'], 'exogenous':job['exogenous'], 'device':report['device'],
@@ -148,11 +153,12 @@ def run(payload, *, bucket=None):
             'inference_device':'cuda','matmul_precision':'high',
             'feature_history_schema':semantic,
             'max_exogenous_staleness_sessions':1},
-        'train_range':[job['train_start'],job['train_end']],
+        'train_range':[report['training_signal_date_min'],report['training_signal_date_max']],
         'deployment_fit':{'performed':True,'method':'purged_inner_epoch_then_full_train_refit',
             'train_rows':report['train_rows'],'selected_epochs':report['selected_epochs'],
             'training_label_known_max':report['training_label_known_max'],'validation_models_are_not_served':True},
         'source_manifest_checksum':manifest['manifest_checksum'],
+        'input_scope':scope,
         'model_training_config_attestation':attestation,
         'producer_source_sha':source_sha,
         **build_model_feature_policy_metadata('TimeXer', [*prep_feature_names(semantic, FEATURE_COLS),'close'] if job['exogenous'] else ['close'],

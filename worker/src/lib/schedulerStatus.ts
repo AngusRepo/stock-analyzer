@@ -70,7 +70,8 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 11 },
   { id: 'recommendation', name: 'Daily Recommendation', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 12 },
   { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 13 },
-  { id: 'dataset-snapshot-export', name: 'Research Dataset Snapshot', schedule: 'Detached after pipeline success', cron: '', group: 'pipeline_chain', chainIndex: 14 },
+  { id: 'postclose-research-dispatch', name: 'Post-close Research Dispatch', schedule: 'Trading days 14:20', cron: '20 6 * * 1-5', group: 'pipeline_chain' },
+  { id: 'dataset-snapshot-export', name: 'Research Dataset Snapshot', schedule: 'After-close for premarket owner; detached for other pipelines', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'allocator-ev-feature-snapshot-backfill', name: 'Allocator EV Feature Snapshot', schedule: 'Inside post-pipeline callback before verify', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 15 },
   { id: 'post-verify-chain', name: 'Post Verify Callback', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 16 },
@@ -109,6 +110,7 @@ const JOB_DEF_METADATA: JobDef[] = [
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },
   { id: 'paired-native-execution', name: 'Paired Native Shadow Execution（已停用）', schedule: 'PAUSED · single B; history retained', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
+  { id: 'l4-shadow-execution', name: 'L4 冠軍挑戰者影子帳戶', schedule: 'Mon-Fri 07:15-14:59 per-min', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
   { id: 'strategy-nav-execution', name: '策略 NAV 獨立比較', schedule: 'Mon-Fri 07:15-14:59 per-min', cron: '15-59 23 * * SUN-THU + * 0-6 * * 1-5', group: 'intraday' },
   { id: 'rescore-10', name: 'Intraday Re-score 10:00', schedule: 'Weekdays 10:00', cron: '0 2 * * 1-5', group: 'intraday' },
   { id: 'rescore-11', name: 'Intraday Re-score 11:00', schedule: 'Weekdays 11:00', cron: '0 3 * * 1-5', group: 'intraday' },
@@ -706,6 +708,7 @@ export function resolveSchedulerLogStatus(
     && log.summary?.includes('reason=awaiting_premarket job_dispatched=false')) {
     return { status: 'waiting', staleRunning: false }
   }
+  if (log.status === 'waiting') return { status: 'waiting', staleRunning: false }
   if (log.status === 'success') return { status: 'success', staleRunning: false }
   if (log.status === 'blocked') return { status: 'blocked', staleRunning: false }
   // Read old callbacks correctly without rewriting their historical evidence.

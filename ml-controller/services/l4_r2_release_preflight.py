@@ -13,10 +13,9 @@ def check(bucket,config,*,signal_date):
     context=read_reference(bucket,observer['serving_context']);cutoffs=read_reference(bucket,observer['training_cutoffs'])
     records={r['model']:read_reference(bucket,r['reference']) for r in cutoffs['source_references']}
     known=validate_context(context,observer['l3_identity'],cutoffs,signal_date,records)
-    l2=read_reference(bucket,observer['timesfm_context'])
-    from services.paired_nav_journal import digest as pipeline_digest
-    if l2.get('schema_version')!='pipeline-timesfm-context-v1' or l2['source_checksum']!=pipeline_digest({k:v for k,v in l2.items() if k!='source_checksum'}):
-        raise ValueError('l4_r2_release_l2_context_invalid')
+    from services.l4_native_l2_dependency import unused_timesfm_receipt
+    if unused_timesfm_receipt(context) is None:
+        raise ValueError('l4_release_model_feature_contract_unverified')
     baseline=read_reference(bucket,shadow['baseline']);bundle=read_reference(bucket,shadow['bundle'])
     policy=read_reference(bucket,shadow['evaluation_policy']);validate_policy(policy)
     from services.l4_r2_identity import implementation_identity

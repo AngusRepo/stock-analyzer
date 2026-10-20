@@ -35,7 +35,7 @@ ACTIVE_8_DIRECT_ALPHA = (
     "iTransformer",
 )
 
-TIMESFM_L2_SIDECAR = ("TimesFM",)
+TIMESFM_L2_SIDECAR = ()
 
 MODEL_POOL_REQUIRED_MODELS = (
     *ACTIVE_8_DIRECT_ALPHA,
@@ -301,14 +301,8 @@ def _model_track_checks() -> list[dict[str, Any]]:
             f"active8_track:{name}",
             "active direct-alpha model is a production_slot_member in the backend track",
         ))
-    timesfm = manifest.get("TimesFM")
-    checks.append(_check(
-        isinstance(timesfm, dict)
-        and timesfm.get("status") == "l2_feature_sidecar_member"
-        and timesfm.get("model_type") == "foundation_time_series_timesfm25",
-        "timesfm_l2_sidecar_track:TimesFM:timesfm25",
-        "TimesFM is backed by the TimesFM 2.5 runtime/config as an L2 feature sidecar, not a direct L3 voter",
-    ))
+    checks.append(_check('TimesFM' not in manifest,
+        'retired_timesfm_not_required', 'Retired TimesFM is absent from active research slots'))
     return checks
 
 
@@ -336,48 +330,26 @@ def _semantic_boundary_checks(root: Path) -> list[dict[str, Any]]:
             root,
             "worker/src/lib/screenerFunnelEvidence.ts",
             (
-                "const L2_TIMESFM_MODELS = ['TimesFM']",
                 "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
                 "ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS",
-                "layer2_timesfm_enrichment_summary_v1",
                 "layer3_8ml_formal_summary_v1",
-                "timesfm_sequence_sidecar_feature_enrichment_not_selector",
                 "eight_ml_formal_family_evidence_not_topk",
             ),
             "roadmap:p0:l2_l3_semantics",
-            "L2 is TimesFM feature enrichment and L3 is 8ML formal family evidence, not a single top-k ranker",
+            "L3 is active-8 formal family evidence; the retired forecast branch is not a selector",
         ),
-        _check_text_contains(
-            root,
-            "ml-controller/graphs/daily_pipeline_v2.py",
-            (
-                "node_l2_timesfm_enrich",
-                "TimesFM L2 sidecar",
-                "g.add_edge(\"l2_timesfm_enrich\",   \"l3_formal_predict\")",
-                "apply_l2_timesfm_evidence",
-            ),
-            "roadmap:p0:l2_timesfm_active_name",
-            "Daily pipeline runs TimesFM as L2 feature enrichment before full-slate L3 formal inference",
-        ),
-        _check_text_contains(
-            root,
-            "ml-controller/services/recommendation_service.py",
-            (
-                "write_layer2_timesfm_enrichment_audit",
-                "\"schema_version\": \"l2_timesfm_enrichment_evidence_v1\"",
-                "\"source\": \"timesfm_l2_sidecar\"",
-                "\"selection_role\": \"feature_enrichment_not_gate\"",
-            ),
-            "roadmap:p0:l2_timesfm_enrichment_audit_schema",
-            "Layer2 D1 audit persists TimesFM feature-enrichment evidence, not tree shortlist gate rows",
-        ),
+        _check_text_contains(root, 'ml-controller/graphs/daily_pipeline_v2.py',
+            ('node_prepare_sequence_inputs', '_pipeline_sequence_inputs', '"prepare_sequence_inputs",   "l3_formal_predict"'),
+            'roadmap:p0:sequence_preparation', 'Sequence preparation remains before formal L3 inference'),
+        _check_text_regex_absent(root, 'ml-controller/graphs/daily_pipeline_v2.py',
+            r'(timesfm_batch_predict|write_layer2_timesfm_enrichment_audit|apply_l2_timesfm_evidence)\s*\(',
+            'roadmap:p0:timesfm_no_active_consumers', 'Daily graph does not generate or consume TimesFM diagnostics'),
         _check_text_contains(
             root,
             "frontend/src/components/model-pool/ModelPoolNewFlowWorkbench.tsx",
             (
                 "const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])",
-                "const SEQUENCE_MODELS = new Set(['DLinear', 'PatchTST', 'iTransformer'])",
-                "const L2_SIDECAR_MODELS = new Set(['TimesFM'])",
+                "const SEQUENCE_MODELS = new Set(['DLinear', 'TimeXer', 'PatchTST', 'iTransformer'])",
                 "const GRAPH_MODELS = new Set(['GNN'])",
                 "const TABULAR_NEURAL_MODELS = new Set(['TabM'])",
                 "function modelFamily",
@@ -401,7 +373,7 @@ def _semantic_boundary_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "worker/src/lib/tradingConfigChampionContract.test.ts",
-            ("sparse_tangent_inverse_risk", "OnlinePortfolioBandit", "legacy top-k override must stay disabled"),
+            ("sparse_tangent_inverse_risk", "OnlinePortfolioBandit", "legacy allocation.topK must not shrink L4 buySignalCount", "legacy allocation.topK must not be materialized back into champion config"),
             "roadmap:p0:l4_allocator_boundary",
             "L4 sparse allocation is separated from meta-policy replay and legacy top-k override remains disabled",
         ),
@@ -1183,7 +1155,7 @@ def _l15_l2_owner_boundary_checks(root: Path) -> list[dict[str, Any]]:
                 "stage: 'l15_ml_slate_queue'",
                 "worker_seed_only: true",
                 "downstream_owner: 'ml-controller'",
-                "downstream_stage: 'layer2_timesfm_enrichment'",
+                "downstream_stage: 'prepare_sequence_inputs'",
             ),
             "roadmap:p3:l15_ml_slate_queue_stage",
             "Worker persists L1.5 ML slate queue as a pre-controller queue, not formal L2",
@@ -1210,7 +1182,7 @@ def _l15_l2_owner_boundary_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "worker/src/routes/other.ts",
-            ("'l15_ml_slate_queue'", "'layer2_timesfm_enrichment'"),
+            ("'l15_ml_slate_queue'", "'layer3_formal_ml_gate'"),
             "roadmap:p3:daily_api_reads_l15_and_l2",
             "daily recommendation API reads both L1.5 slate queue and formal L2 evidence",
         ),

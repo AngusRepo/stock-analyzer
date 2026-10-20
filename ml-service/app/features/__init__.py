@@ -981,20 +981,8 @@ def build_feature_matrix(
         ("vola_realized_1m", ret1_raw.rolling_std(21)),
     ])
 
-    timesfm_l175_features = (
-        _timesfm_l175_history(stock_meta)
-        if historical_training
-        else (_timesfm_l175_feature_map(stock_meta) or _timesfm_l175_history(stock_meta))
-    )
-    if timesfm_l175_features:
-        df = df.with_columns([
-            pl.Series(
-                col,
-                _timesfm_l175_series_values(df, stock_meta, col),
-                dtype=pl.Float64,
-            )
-            for col in TIMESFM_L175_FEATURE_COLS
-        ])
+    if (stock_meta or {}).get('timesfm_l175_l2_feature_input_active') is True:
+        raise ValueError('retired_timesfm_features_not_supported')
 
     formal_missing = [col for col in FEATURE_COLS if col not in df.columns]
     if formal_missing:
@@ -1356,8 +1344,6 @@ def get_features(
             f"first_missing={preview}"
         )
     available = list(FEATURE_COLS)
-    if all(col in df.columns for col in TIMESFM_L175_FEATURE_COLS):
-        available = available + TIMESFM_L175_FEATURE_COLS
     if target_col not in df.columns:
         if not allow_missing_target:
             raise ValueError(f"target_col '{target_col}' not found in DataFrame. "

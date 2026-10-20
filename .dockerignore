@@ -79,6 +79,7 @@ ml-controller/scripts/*
 screen_*.png
 /*.json
 *.md
+!ml-controller/policies/P4-CHALLENGER-RULES-v1.md
 *.ipynb
 *.log
 *.tmp

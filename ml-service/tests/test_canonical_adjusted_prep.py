@@ -204,3 +204,15 @@ def test_missingness_is_not_sliced_when_rows_equal_feature_width():
     np.testing.assert_array_equal(result["missingness_rates"],rates)
     source.pop("missingness_rates")
     with pytest.raises(ValueError,match="missingness_required"):_slice_feature_batch(source,mask)
+
+
+@pytest.mark.parametrize("value", [None, "", "2026-13-01", "2026-10-08T00:00:00Z", "2026-2-1"])
+def test_missing_source_business_date_fails_before_sequence_load_or_output(monkeypatch, value):
+    from app import canonical_adjusted_prep as prep
+    monkeypatch.setattr(prep, "_get_bucket", lambda: object())
+    monkeypatch.setattr(prep, "_verified_source_receipt", lambda *args: {"business_date": value})
+    def forbidden(*args):
+        raise AssertionError("must_reject_before_sequence_load")
+    monkeypatch.setattr(prep, "_verified_sequence_manifest", forbidden)
+    with pytest.raises(ValueError, match="source_business_date_invalid"):
+        prep.rebuild_canonical_adjusted_prep({"source_gcs_prefix": "f", "sequence_gcs_prefix": "s", "output_gcs_prefix": "new"})

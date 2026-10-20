@@ -86,3 +86,17 @@ test('actual 6994 09:50 first signal matches Python research .55 vs .585, day ve
  assert.equal(r.status,'veto');assert.equal(r.firstSignalMs,Date.parse('2026-10-05T09:50:00+08:00'))
  assert.ok(Math.abs(r.delta!-.55)<1e-10);assert.ok(Math.abs(r.atr5!-.39)<1e-10);assert.ok(Math.abs(r.threshold!-.585)<1e-10)
 })
+
+test('first signal continuous evidence preserves missing ATR and flat-bar location as null',()=>{
+ const unknown=assessAtrOnce(input([100,100,100,101]))
+ assert.equal(unknown.firstSignalValues?.run3,1)
+ assert.equal(unknown.firstSignalValues?.atr5,null)
+ assert.equal(unknown.firstSignalValues?.run3OverAtr5,null)
+ assert.equal(unknown.firstSignalValues?.ratioMissingReason,'atr_warmup_missing')
+ assert.equal(unknown.firstSignalValues?.closeLocation,null)
+ assert.equal(unknown.firstSignalValues?.closeAboveOrh,1)
+ const valid=assessAtrOnce(input([100,100,100,101]),0)
+ assert.equal(valid.firstSignalValues?.atr5,.2)
+ assert.equal(valid.firstSignalValues?.run3OverAtr5,5)
+ assert.equal(valid.firstSignalValues?.locationMissingReason,'zero_bar_range')
+})

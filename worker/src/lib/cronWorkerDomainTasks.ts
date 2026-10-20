@@ -74,6 +74,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
   }
 
   if (cron === '20 6 * * 1-5') {
+    // GCP Scheduler invokes postclose-research-dispatch directly. This Worker
+    // cron may be disabled and must never own long-running research dispatch.
     runWithLog('daily-snapshot', async () => {
       const snapshot = await runDailySnapshot(env)
       return `Daily snapshot done; l4_reward=${snapshot?.l4Reward?.status ?? 'not_evaluated'}:${snapshot?.l4Reward?.reason ?? ''}`

@@ -1,8 +1,37 @@
 """Pure new-L4 evaluation inside the same transactional private Paper host."""
+import base64
+import hashlib
 import json
 from copy import deepcopy
 from services.l4_distribution import digest
 from services.l4_distribution_runtime import run
+
+
+def frozen_p6_loader(inputs, bundle):
+    """Private replay must carry the exact three weight objects, never read live storage."""
+    from services.l4_p6_bundle import is_p6
+    from services.l4_p6_weights import validate_reference
+    if not is_p6(bundle):
+        if inputs.get('p6_weight_objects') is not None:
+            raise ValueError('private_l4_unexpected_p6_weights')
+        return None
+    objects=inputs.get('p6_weight_objects') or {}
+    refs={seed['weights']['path']:seed['weights'] for seed in bundle['model']['seeds']}
+    if set(objects)!=set(refs):raise ValueError('private_p6_weight_inventory_missing')
+    decoded={}
+    for path,ref in refs.items():
+        validate_reference(ref)
+        obj=objects[path]
+        if obj.get('reference')!=ref:raise ValueError('private_p6_weight_reference_changed')
+        try:raw=base64.b64decode(obj['base64'],validate=True)
+        except (ValueError,TypeError,KeyError) as exc:raise ValueError('private_p6_weight_encoding_invalid') from exc
+        if len(raw)!=ref['bytes'] or hashlib.sha256(raw).hexdigest()!=ref['sha256']:
+            raise ValueError('private_p6_weight_checksum_mismatch')
+        decoded[path]=raw
+    def load(ref):
+        if refs.get(ref.get('path'))!=ref:raise ValueError('private_p6_weight_reference_changed')
+        return decoded[ref['path']]
+    return load
 
 
 def allocate_private(store,account):
@@ -20,6 +49,7 @@ def allocate_private(store,account):
         raise ValueError('private_l4_account_head_changed')
     policy['runtime']['account']=account
     ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
+    weight_loader=frozen_p6_loader(inputs,policy['artifact'])
     captures = []
     shadow=inputs.get('r2_shadow')
     if shadow is not None:
@@ -28,7 +58,8 @@ def allocate_private(store,account):
         policy['scope']='private_research'
     rows=run(inputs['recommendations'],policy,return_history=inputs['return_history'],reward_ledger=ledger,
         private_research=True, evidence_sink=captures.append,
-        **({'r2_shadow':shadow} if shadow is not None else {}))
+        **({'r2_shadow':shadow} if shadow is not None else {}),
+        **({'p6_weight_loader':weight_loader} if weight_loader is not None else {}))
     if len(captures) != 1:
         raise ValueError('private_l4_allocation_capture_missing')
     plan=captures[0]['portfolio_plan']

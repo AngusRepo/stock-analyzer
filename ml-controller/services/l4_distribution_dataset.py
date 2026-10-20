@@ -42,7 +42,7 @@ def validate_sequence_oof_lineage(predictions):
             'model_rows': dict(counts), 'source': 'checksum_verified_oof_artifact_metadata'}
 
 
-def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, as_of, meta_builder=None):
+def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, as_of, meta_builder=None, excluded_label_fold=None):
     from services.ensemble_v2 import _evaluate_validated_ensemble
     from services.recommendation_service import calculate_ml_score, _rescale_score
     from services.l4_distribution_runtime import native_features
@@ -78,7 +78,8 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
         folds[row['fold_id']]=row['test_start']
     from services.l4_native_meta_replica import replica_builder
     if meta_builder is None:
-        build_meta,meta_evidence=replica_builder(predictions,parent_l3)
+        build_meta,meta_evidence=replica_builder(predictions,parent_l3, **(
+            {'excluded_label_fold':excluded_label_fold} if excluded_label_fold is not None else {}))
     else:
         build_meta,meta_evidence=meta_builder,{'scope':'injected_test_builder'}
     output, replicas, excluded, rejected = [], {}, [], Counter()
@@ -86,7 +87,9 @@ def build_native_oof_rows(predictions, *, manifest, parent_l3, parent_identity, 
     for key,models in groups.items():by_day[key[1]].append((key,models))
     for start in sorted(by_day):
         fold=next(iter(by_day[start]))[0][0]
-        prior=[r for r in predictions if r['label_known_date']<start]
+        prior=[r for r in predictions if r['label_known_date']<start
+            and (excluded_label_fold is None or not excluded_label_fold.excludes(
+                r['prediction_date'],r['label_known_date']))]
         cutoff=str(date.fromisoformat(start)-timedelta(days=1))
         try:
             replica=build_meta(prior,base_artifacts=parent_l3['observation_artifacts'],

@@ -86,3 +86,18 @@ export async function batchGetAtrByDomain(
     databaseForDataDomain(env, 'core'), databaseForDataDomain(env, 'market'), symbols, asOfDate,
   )
 }
+
+/** Exact session close for accounting. Never substitute an earlier day's mark. */
+export async function batchGetClosingPricesByDomain(
+  env: PaperMarketDomainDataEnv, symbols: string[], session: string,
+): Promise<Map<string, number>> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(session)) throw new Error('paper_valuation_session_invalid')
+  const identity = await identities(databaseForDataDomain(env, 'core'), symbols)
+  const ids = [...new Set(identity.values())]
+  if (!ids.length) return new Map()
+  const { results } = await databaseForDataDomain(env, 'market').prepare(`
+    SELECT stock_id, close AS price FROM stock_prices
+    WHERE stock_id IN (${ids.map(() => '?').join(',')}) AND date=? AND close>0
+  `).bind(...ids, session).all<PriceRow>()
+  return mapByIdentity(identity, results ?? [], row => Number(row.price))
+}

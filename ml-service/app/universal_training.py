@@ -116,6 +116,8 @@ class UniversalTrainRequest(BaseModel):
     training_run_suffix: str | None = None
     run_date: str | None = None
     as_of_date: str | None = None
+    signal_date_max: str | None = None
+    label_known_at_max: str | None = None
     max_prep_stale_days: int | None = None
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
@@ -181,6 +183,8 @@ def validate_immutable_oof_snapshot_for_registration(
     label_known_dates: np.ndarray,
     run_date: str | None,
     release_training_contract: dict | None,
+    source_rows: int | None = None,
+    input_scope: dict | None = None,
 ) -> dict:
     """Verify exact point-in-time OOF lineage instead of applying native-prep freshness."""
 
@@ -218,8 +222,11 @@ def validate_immutable_oof_snapshot_for_registration(
         or not str(feature_pool.get("path") or "").strip()
     ):
         errors.append("immutable_oof_snapshot_feature_pool_invalid")
-    if int(snapshot.get("total_rows") or 0) != int(rows):
+    archive_rows = int(rows) if source_rows is None else int(source_rows)
+    if int(snapshot.get("total_rows") or 0) != archive_rows:
         errors.append("immutable_oof_snapshot_row_count_mismatch")
+    if archive_rows < int(rows) or (archive_rows != int(rows) and not input_scope):
+        errors.append("immutable_oof_snapshot_scope_missing_or_invalid")
 
     date_values = [str(value) for value in np.asarray(dates).reshape(-1).tolist() if str(value)]
     label_values = [
@@ -243,6 +250,12 @@ def validate_immutable_oof_snapshot_for_registration(
         errors.append("immutable_oof_snapshot_cutoff_or_label_date_invalid")
     if label_known_date_max and cutoff and label_known_date_max > cutoff:
         errors.append("immutable_oof_snapshot_future_label_detected")
+    if input_scope:
+        if (input_scope.get("label_known_at_max") != cutoff
+                or not input_scope.get("signal_date_max")
+                or input_scope["signal_date_max"] >= cutoff
+                or (date_max and date_max > input_scope["signal_date_max"])):
+            errors.append("immutable_oof_snapshot_scope_cutoff_mismatch")
     if date_max and label_known_date_max and date_max > label_known_date_max:
         errors.append("immutable_oof_snapshot_signal_after_label_known_date")
 
@@ -257,6 +270,9 @@ def validate_immutable_oof_snapshot_for_registration(
         "date_max": date_max,
         "label_known_date_max": label_known_date_max,
         "rows": int(rows),
+        "source_rows": archive_rows,
+        "excluded_rows": archive_rows - int(rows),
+        "input_scope": input_scope,
         "verification": "manifest_batches_feature_consensus_and_label_known_cutoff_v1",
         "errors": errors,
     }
@@ -983,6 +999,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise ValueError("prep_batch_rank_alignment_incomplete")
     if len(target_returns_arr) != len(X):
         raise ValueError("global_cross_sectional_rank_requires_raw_target_returns")
+    from .full_fit_scope import bounds, row_mask
+    archive_row_count = len(X)
+    scope_mask = row_mask(req.model_dump(), dates_arr, label_known_dates_arr)
+    if not scope_mask.all():
+        X, batch_local_y, target_returns_arr, dates_arr, symbols_arr, markets_arr, label_known_dates_arr = (
+            values[scope_mask] for values in (X, batch_local_y, target_returns_arr, dates_arr, symbols_arr, markets_arr, label_known_dates_arr)
+        )
     y = recompute_global_cross_sectional_rank(
         target_returns_arr,
         dates_arr,
@@ -1053,12 +1076,30 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         and req.test_start is not None
         and req.test_end is not None
     )
+    immutable_oof_mode = requires_immutable_oof_snapshot(req)
+    immutable_prep_freshness = None
+    if not walk_forward_mode and immutable_oof_mode:
+        if not req.dataset_snapshot:
+            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
+        # The immutable receipt describes the entire archive. The explicit
+        # full-fit scope admits only cutoff-safe rows; never rewrite its receipt
+        # to make the admitted count look like the original archive count.
+        # Fail before any expensive fit when either boundary is invalid.
+        immutable_prep_freshness = validate_immutable_oof_snapshot_for_registration(
+            req.dataset_snapshot, gcs_prefix=gcs_prefix, rows=len(X),
+            dates=dates_arr, label_known_dates=label_known_dates_arr,
+            run_date=req.run_date, release_training_contract=req.release_training_contract,
+            source_rows=archive_row_count, input_scope=bounds(req.model_dump()),
+        )
     from .deployment_refit import requested, validate_full_history
     full_fit = requested(req.model_dump())
     deployment_fit = validate_full_history(
         signal_dates=dates_arr, label_known_dates=label_known_dates_arr,
         cutoff=req.as_of_date or req.run_date,
     ) if full_fit else None
+    if deployment_fit is not None:
+        from .full_fit_scope import bounds
+        deployment_fit["input_scope"] = bounds(req.model_dump())
     original_output_version = req.output_model_version
     req = normalize_universal_lifecycle_request(
         req,
@@ -1564,19 +1605,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         rows=len(X),
         dates=dates_arr,
     )
-    immutable_oof_mode = requires_immutable_oof_snapshot(req)
     if not walk_forward_mode and immutable_oof_mode:
-        if not req.dataset_snapshot:
-            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
-        prep_freshness = validate_immutable_oof_snapshot_for_registration(
-            req.dataset_snapshot,
-            gcs_prefix=gcs_prefix,
-            rows=len(X),
-            dates=dates_arr,
-            label_known_dates=label_known_dates_arr,
-            run_date=req.run_date,
-            release_training_contract=req.release_training_contract,
-        )
+        prep_freshness = immutable_prep_freshness
     elif not walk_forward_mode and req.dataset_snapshot:
         prep_freshness = validate_monthly_dataset_snapshot_for_registration(
             req.dataset_snapshot,

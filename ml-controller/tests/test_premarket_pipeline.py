@@ -385,17 +385,27 @@ def test_postwrite_legacy_v1_and_checkpoint_capacity_fail_closed(f):
         encode_postwrite_checkpoint({**projected,'sector_flow_summary':{'large':'x'*(PROJECTION_LIMIT+1)}},
             r,phase='node_compute_sector_flow',context_checksum=c['checksum'])
 
-def test_premarket_serving_callback_does_not_wait_for_next_session_research(monkeypatch):
+def test_premarket_serving_callback_does_not_wait_for_next_session_research(monkeypatch,f):
     from graphs import daily_pipeline_v2 as graph
+    from services import premarket_publication, premarket_postclose
+    from test_premarket_publication import prepared
+    _,state,_=prepared(f)
+    state['paired_nav_collection']={'status':'failed','reason':'research_not_yet_executed'}
     seen=[]
-    async def fake_resume(uri, *, nodes, merge):
+    async def fake_resume(uri, *, nodes, merge, serving_only):
+        assert serving_only is True
         seen.extend(node.__name__ for node in nodes)
-        return {'run_date':'2026-10-02','metrics':{},'paired_nav_collection':{}}
+        return state
     monkeypatch.setattr(m,'resume',fake_resume)
-    monkeypatch.setattr(graph,'_pipeline_terminal_result',lambda state, **kw:{'status':'completed'})
-    assert asyncio.run(graph.run_pipeline_v2_from_premarket('gs://bucket/input'))['status']=='completed'
-    assert seen==['node_compute_personas','node_recommend','node_llm_reasons','node_write_d1',
-        'node_paired_nav_setup','node_export_dataset_snapshot']
+    monkeypatch.setattr(premarket_publication,'read',lambda *args,**kw:{'checksum':'a'*64})
+    monkeypatch.setattr(premarket_postclose,'enqueue',lambda *args,**kw:{'status':'queued_postclose'})
+    monkeypatch.setattr(graph,'_pipeline_terminal_result',lambda *a,**kw:pytest.fail('NAV terminal validator in morning'))
+    result=asyncio.run(graph.run_pipeline_v2_from_premarket('gs://bucket/input'))
+    assert result['status']=='completed' and result['postclose_research']['status']=='queued_postclose'
+    assert seen==['node_compute_personas','node_recommend','node_write_d1']
+    state['errors']=['d1_write:failed']
+    assert asyncio.run(graph.run_pipeline_v2_from_premarket('gs://bucket/input'))['status']=='error'
+
 
 def test_premarket_snapshot_stays_deferred_even_if_global_mode_is_blocking(monkeypatch):
     from graphs import daily_pipeline_v2 as graph

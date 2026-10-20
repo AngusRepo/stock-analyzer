@@ -12,7 +12,7 @@ from services.state_space_series import read_frozen_sequence_inputs
 def atomic_persona_slates(state):
     keys = ('run_date', 'screener_run_id', 'active_stocks', 'paired_nav_atomic_inputs',
             'paired_nav_atomic_dispatch', 'paired_nav_atomic_ml', 'paired_nav_atomic_l2',
-            'paired_nav_atomic_pre_l2', 'pipeline_timesfm_context', 'pipeline_sequence_observations',
+            'paired_nav_atomic_pre_l2', 'pipeline_sequence_context', 'pipeline_timesfm_context', 'pipeline_sequence_observations',
             'payloads', 'pipeline_slate_scope', 'pipeline_shared_payload_ref')
     identity = ['atomic-persona-slates', {k: state.get(k) for k in keys},
                 (state.get('payload_source_observations') or {}).get('source_checksum'),

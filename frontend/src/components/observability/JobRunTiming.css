@@ -1,0 +1,3 @@
+.obs-job-timing { display: grid; width: 100%; min-width: 0; gap: 4px; color: var(--foreground); font-size: .8125rem; font-variant-numeric: tabular-nums; line-height: 1.4; }
+.obs-job-timing > span { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; min-width: 0; }
+.obs-job-timing__label { color: var(--muted-foreground); }

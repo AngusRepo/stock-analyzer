@@ -80,15 +80,6 @@ RESEARCH_BENCHMARK_MODELS: dict[str, dict[str, Any]] = {
         "promotion_state": "model_pool_lifecycle",
         "evidence_required": ["production_artifact", "sequence_policy", "walk_forward", "pbo", "cost_profile"],
     },
-    "TimesFM": {
-        "status": "l2_feature_sidecar_member",
-        "model_type": "foundation_time_series_timesfm25",
-        "family": "time_series",
-        "direct_prediction": False,
-        "vote_weight": 0.0,
-        "promotion_state": "timesfm_l175_l2_feature_release",
-        "evidence_required": ["production_artifact", "timesfm_2p5_config", "forecast_validation", "walk_forward", "cost_profile", "l2_feature_release"],
-    },
 }
 
 V4_RESEARCH_CHALLENGERS: dict[str, dict[str, Any]] = {

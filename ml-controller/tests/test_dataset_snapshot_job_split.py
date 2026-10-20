@@ -9,13 +9,16 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
-    import google.cloud as google_cloud
+    from google.cloud import run_v2  # noqa: F401
 except ImportError:
     google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
-setattr(google_cloud, "run_v2", run_v2_stub)
-sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
-sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
+    run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
+    setattr(google_cloud, "run_v2", run_v2_stub)
+    sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
 
 import dataset_snapshot_job_main  # noqa: E402
 import pipeline_job_main  # noqa: E402

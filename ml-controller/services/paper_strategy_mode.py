@@ -5,17 +5,18 @@ from services.l4_distribution import validate_bundle,digest
 MODE='single_b_tabpack_v1'
 MLP_MODE='single_b_full_mlp_median_v1'
 TABPACK_MEDIAN_MODE='single_b_tabpack_core16_median_v1'
-MODES=(MODE,MLP_MODE,TABPACK_MEDIAN_MODE)
+P6_MODE='single_b_p6_direct_excess_v1'
+MODES=(MODE,MLP_MODE,TABPACK_MEDIAN_MODE,P6_MODE)
 STATUS='disabled_by_single_b_policy'
 
 def refresh_family(config):
     override=((config or {}).get('l4Distribution') or {}).get('candidate_model_family')
     if override is not None:
-        if override not in ('tabpack', 'tabpack_median16', 'full_mlp_median', 'tabpack_r2'):
+        if override not in ('tabpack', 'tabpack_median16', 'full_mlp_median', 'tabpack_r2', 'p6_a'):
             raise ValueError('paper_candidate_model_family_invalid')
         return override
     mode=((config or {}).get('l4Distribution') or {}).get('operating_mode')
-    return {MLP_MODE:'full_mlp_median',TABPACK_MEDIAN_MODE:'tabpack_median16'}.get(mode,'tabpack')
+    return {MLP_MODE:'full_mlp_median',TABPACK_MEDIAN_MODE:'tabpack_median16',P6_MODE:'p6_a'}.get(mode,'tabpack')
 
 def is_single_b(policy):
     return (policy or {}).get('operating_mode') in MODES
@@ -23,7 +24,11 @@ def is_single_b(policy):
 def validate_model_mode(policy):
     model=((policy or {}).get('artifact') or {}).get('model') or {}
     mode=(policy or {}).get('operating_mode')
-    if mode == MODE:
+    if mode == P6_MODE:
+        from services.l4_p6_bundle import is_p6
+        if not is_p6((policy or {}).get('artifact')) or model.get('calibration_kind')!='linear':
+            raise ValueError('paper_p6_linear_champion_required')
+    elif mode == MODE:
         if model.get('residual_mlp') is not None or not model.get('residual_tabpack'):
             raise ValueError('paper_single_b_tabpack_required')
     elif mode == TABPACK_MEDIAN_MODE:

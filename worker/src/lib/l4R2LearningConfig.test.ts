@@ -23,3 +23,9 @@ test('partial setup, mismatched classification and trading activation fail valid
     assert.ok(validateTradingConfig(buildChampionTradingConfig({l4R2Learning:value})).some(s=>s.startsWith('l4R2Learning')))
   }
 })
+
+test('retired TimesFM reference is not required by new learning configuration',()=>{
+  const value: any=learning()
+  delete value.native_observation.timesfm_context
+  assert.deepEqual(validateTradingConfig(buildChampionTradingConfig({l4R2Learning:value})),[])
+})

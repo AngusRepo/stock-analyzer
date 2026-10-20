@@ -287,7 +287,18 @@ export const cronApi = {
 
 // 2026-04-21 Scheduler Dashboard API
 export type SchedulerJob = {
+  stageCard?: boolean
+  stageElapsed?: string
+  pipelineBatches?: Array<{stage_id:string;phase:string;completed:number;total:number;observed_at:string}>
+  stageVisualStatus?: 'completed'|'blocked'|'running'|'waiting'|'not_started'|'stale'
+  finlabPhase?: 'acquire'|'validate'|'publish'
+  finlabProgress?: {run_id:string;run_date:string;dispatch_attempt:number;sequence:number;observed_at:string;
+    phases:Array<{phase:'acquire'|'validate'|'publish';status:'running'|'completed'|'failed'|'waiting';
+      started_at:string;completed_at?:string;elapsed_ms?:number}>} | null
   pipelinePhase?: 'premarket_l4'
+  pipelineProgress?: { run_id?: string; run_date?: string; executions?: Record<string, Array<{phase:string;elapsed_ms:number;status:'completed'|'failed'|'blocked'|'waiting';started_at?:string|null;completed_at?:string}>>; phase: string; status: 'running'|'waiting'|'completed'|'failed'|'blocked'; started_at: string;
+    phase_started_at: string; observed_at: string; execution_id: string;
+    completed: Array<{phase:string;elapsed_ms:number;status:'completed'|'failed'|'blocked'|'waiting';started_at?:string|null;completed_at?:string}> } | null
   id: string
   name: string
   schedule: string
@@ -298,9 +309,9 @@ export type SchedulerJob = {
   lastRunAt?: string | null
   lastRunBasis?: 'started' | 'updated'
   lastAttemptAt?: string | null
-  lastAttemptStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
+  lastAttemptStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'waiting' | 'none'
   lastEffectiveRunAt?: string | null
-  lastEffectiveStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
+  lastEffectiveStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'waiting' | 'none'
   lastStatus: 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep'
   statusScope?: 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle' | 'durable_event'
   statusRunDate?: string | null
@@ -1750,6 +1761,7 @@ export type ModelArtifactRegistryRow = {
   offline_gate_status?: string
   offline_gate_decision?: string
   offline_gate_failed_gates?: string[] | string
+  cpcv_tail_review?: Record<string, unknown>
   offline_evidence_json?: Record<string, unknown> | string
   live_gate_status?: string
   live_evidence_json?: Record<string, unknown> | string

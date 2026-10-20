@@ -717,10 +717,6 @@ def retrain_orchestrator(payload: dict) -> dict:
     if journal is not None:
         candidate_version = journal.pin_version(payload, candidate_version)
 
-    def _lifecycle_call(model_name, function, train_payload):
-        if journal is not None:
-            return journal.call("lifecycle/" + model_name, function.spawn, train_payload)
-        return function.remote(train_payload)
     base_train_payload = training_policy.to_base_train_payload(
         {
             **payload,
@@ -770,6 +766,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -789,6 +787,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -833,6 +833,42 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "note": spec["note"],
             }
             print(f"[Orchestrator] Spawned group={group} models={spec['models']}")
+
+        from app.training_lifecycle_dispatch import start_lifecycle, collect_lifecycle
+        def _base_artifact_payload(model_name: str) -> dict:
+            return {
+                **(_release_model_payload(model_name) if is_release_train else {}),
+                "gcs_prefix": gcs_prefix,
+                "batch_count": batch_count,
+                "output_model_version": candidate_version,
+                "run_date": run_date,
+                "candidate_type": payload.get("candidate_type"),
+                "release_training_contract": release_training_contract,
+                "dataset_snapshot": payload.get("dataset_snapshot"),
+                "as_of_date": payload.get("as_of_date"),
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
+                "max_prep_stale_days": payload.get("max_prep_stale_days"),
+                "label_horizon_days": label_horizon_days,
+            }
+        def _sequence_seq_len_for_target(model_name: str) -> int:
+            key = f"{model_name.lower()}_seq_len"
+            if payload.get(key):
+                return int(payload[key])
+            if payload.get("sequence_seq_len"):
+                return int(payload["sequence_seq_len"])
+            from app.neuralforecast_sequence_runtime import default_seq_len_for_model
+            return default_seq_len_for_model(model_name)
+
+
+        lifecycle_batch = start_lifecycle(
+            artifact_lifecycle_targets, base_payload=_base_artifact_payload,
+            sequence_records=sequence_records, sequence_length=_sequence_seq_len_for_target,
+            sequence_gcs_prefix=sequence_gcs_prefix, sequence_batch_count=sequence_batch_count,
+            sequence_device=payload.get("sequence_device") or "cuda", journal=journal,
+            functions={"GNN":train_gnn_graphsage_universal,"TabM":train_tabm_universal,
+                "PatchTST":train_patchtst_universal,"iTransformer":train_itransformer_universal},
+        )
 
         tree_result = {}
         aux_train = {}
@@ -937,249 +973,21 @@ def retrain_orchestrator(payload: dict) -> dict:
             result["stages"]["train"]["reason"] = "artifact_lifecycle_only_no_train_groups"
 
         if artifact_lifecycle_targets:
-            lifecycle_results: dict[str, dict] = {}
-            lifecycle_errors: dict[str, str] = {}
-            lifecycle_t0 = time.time()
-
-            def _base_artifact_payload(model_name: str) -> dict:
-                return {
-                    **(_release_model_payload(model_name) if is_release_train else {}),
-                    "gcs_prefix": gcs_prefix,
-                    "batch_count": batch_count,
-                    "output_model_version": candidate_version,
-                    "run_date": run_date,
-                    "candidate_type": payload.get("candidate_type"),
-                    "release_training_contract": release_training_contract,
-                    "dataset_snapshot": payload.get("dataset_snapshot"),
-                    "as_of_date": payload.get("as_of_date"),
-                    "max_prep_stale_days": payload.get("max_prep_stale_days"),
-                    "label_horizon_days": label_horizon_days,
-                }
-            def _sequence_seq_len_for_target(model_name: str) -> int:
-                key = f"{model_name.lower()}_seq_len"
-                if payload.get(key):
-                    return int(payload[key])
-                if payload.get("sequence_seq_len"):
-                    return int(payload["sequence_seq_len"])
-                from app.neuralforecast_sequence_runtime import default_seq_len_for_model
-                return default_seq_len_for_model(model_name)
-
-            def _validate_timesfm_config() -> dict:
-                import hashlib
-                import json
-                from app.model_serving_contract import load_pool
-                from google.cloud import storage as _gcs
-
-                pool = load_pool() or {}
-                entry = (pool.get("models") or {}).get("TimesFM") or {}
-                version = str(entry.get("version") or "").strip()
-                gcs_path = str(entry.get("gcs_path") or "").strip()
-                if not version or not gcs_path:
-                    raise RuntimeError("TimesFM model_pool entry missing version or gcs_path")
-                bucket_name = _get_gcs_bucket_name()
-                if not bucket_name:
-                    raise RuntimeError("GCS bucket not configured")
-                bucket = _gcs.Client().bucket(bucket_name)
-                config_blob = bucket.blob(gcs_path)
-                if not config_blob.exists():
-                    raise RuntimeError(f"TimesFM config artifact missing in GCS: {gcs_path}")
-
-                def _load_json_blob(path: str, *, required: bool) -> dict:
-                    if not path:
-                        if required:
-                            raise RuntimeError("TimesFM required JSON artifact path is empty")
-                        return {}
-                    blob = bucket.blob(path)
-                    if not blob.exists():
-                        if required:
-                            raise RuntimeError(f"TimesFM required JSON artifact missing in GCS: {path}")
-                        return {}
-                    try:
-                        loaded = json.loads(blob.download_as_text())
-                    except Exception as exc:
-                        if required:
-                            raise RuntimeError(f"TimesFM JSON artifact invalid: {path}: {exc}") from exc
-                        return {}
-                    if not isinstance(loaded, dict):
-                        if required:
-                            raise RuntimeError(f"TimesFM JSON artifact is not an object: {path}")
-                        return {}
-                    return loaded
-
-                config_bytes = config_blob.download_as_bytes()
-                config_checksum = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
-                try:
-                    config = json.loads(config_bytes.decode("utf-8"))
-                except Exception as exc:
-                    raise RuntimeError(f"TimesFM config artifact invalid: {gcs_path}: {exc}") from exc
-                if not isinstance(config, dict):
-                    raise RuntimeError(f"TimesFM config artifact is not an object: {gcs_path}")
-                explicit_metadata_path = (
-                    str(entry.get("metadata_path") or "").strip()
-                    or str(config.get("metadata_path") or "").strip()
-                )
-                metadata_path = (
-                    explicit_metadata_path
-                    or f"universal/timesfm/metadata_{version}.json"
-                )
-                metadata = _load_json_blob(metadata_path, required=bool(explicit_metadata_path))
-                evidence = {}
-                for candidate in (
-                    config.get("last_artifact_evidence"),
-                    metadata.get("last_artifact_evidence"),
-                    config.get("benchmark_evidence"),
-                    metadata.get("benchmark_evidence"),
-                ):
-                    if isinstance(candidate, dict) and (candidate.get("oos_ic") is not None or candidate.get("after_oos_ic") is not None):
-                        evidence = dict(candidate)
-                        break
-                oos_ic = None
-                if evidence:
-                    oos_ic = evidence.get("oos_ic") if evidence.get("oos_ic") is not None else evidence.get("after_oos_ic")
-                model_cpcv = (
-                    evidence.get("model_cpcv")
-                    or config.get("model_cpcv")
-                    or metadata.get("model_cpcv")
-                    or metadata.get("cpcv_evidence")
-                )
-                metrics = {
-                    key: evidence.get(key)
-                    for key in (
-                        "oos_ic",
-                        "after_oos_ic",
-                        "direction_accuracy",
-                        "oos_samples",
-                        "pbo",
-                        "price_mae",
-                        "price_rmse",
-                        "p10_p90_coverage",
-                    )
-                    if evidence.get(key) is not None
-                }
-                if oos_ic is not None:
-                    metrics["oos_ic"] = oos_ic
-                result = {
-                    "status": "ok" if evidence else "warning",
-                    "model": "TimesFM",
-                    "version": version,
-                    "artifact_path": gcs_path,
-                    "metadata_path": metadata_path if metadata else None,
-                    "artifact_type": "foundation_forecast_config",
-                    "checksum": config_checksum,
-                    "candidate_type": "timesfm_l175_l2_feature_release",
-                    "release_stage": "timesfm_l2_feature_release",
-                    "direct_alpha_blocked": True,
-                    "producer_contract": "timesfm-l2-sidecar-immutable-candidate-v1",
-                    "note": "TimesFM is config-backed foundation runtime; no local retrain is run.",
-                }
-                if not evidence:
-                    result["warning"] = "timesfm_oos_evidence_missing"
-                    result["validation_status"] = "evidence_missing_non_blocking"
-                if metrics:
-                    result["metrics"] = metrics
-                if oos_ic is not None:
-                    result["oos_ic"] = oos_ic
-                    result["last_artifact_evidence"] = evidence
-                if isinstance(model_cpcv, dict):
-                    result["model_cpcv"] = model_cpcv
-                return result
-
-            for target in artifact_lifecycle_targets:
-                target = str(target).strip()
-                if not target:
-                    continue
-                target_t0 = time.time()
-                try:
-                    if target == "GNN":
-                        train_payload = _base_artifact_payload(target)
-                        lifecycle_results[target] = _lifecycle_call(target, train_gnn_graphsage_universal, train_payload)
-                    elif target == "TabM":
-                        train_payload = _base_artifact_payload(target)
-                        lifecycle_results[target] = _lifecycle_call(target, train_tabm_universal, train_payload)
-                    elif target == "PatchTST":
-                        if not sequence_records:
-                            raise RuntimeError("missing_sequence_records_artifact")
-                        train_payload = {
-                            **_base_artifact_payload(target),
-                            "sequence_records": sequence_records,
-                            "seq_len": _sequence_seq_len_for_target(target),
-                            "device": payload.get("sequence_device") or "cuda",
-                            "sequence_gcs_prefix": sequence_gcs_prefix,
-                            "sequence_batch_count": sequence_batch_count,
-                        }
-                        lifecycle_results[target] = _lifecycle_call(target, train_patchtst_universal, train_payload)
-                    elif target == "iTransformer":
-                        if not sequence_records:
-                            raise RuntimeError("missing_sequence_records_artifact")
-                        train_payload = {
-                            **_base_artifact_payload(target),
-                            "sequence_records": sequence_records,
-                            "seq_len": _sequence_seq_len_for_target(target),
-                            "device": payload.get("sequence_device") or "cuda",
-                            "sequence_gcs_prefix": sequence_gcs_prefix,
-                            "sequence_batch_count": sequence_batch_count,
-                        }
-                        lifecycle_results[target] = _lifecycle_call(target, train_itransformer_universal, train_payload)
-                    elif target == "TimesFM":
-                        lifecycle_results[target] = _validate_timesfm_config()
-                    else:
-                        lifecycle_results[target] = {
-                            "status": "skipped",
-                            "model": target,
-                            "reason": "unsupported_artifact_lifecycle_target",
-                        }
-                    if isinstance(lifecycle_results.get(target), dict) and lifecycle_results[target].get("error"):
-                        raise RuntimeError(str(lifecycle_results[target].get("error")))
-                    lifecycle_results[target]["elapsed_s"] = round(time.time() - target_t0, 3)
-                    print(f"[Orchestrator] Artifact lifecycle ok target={target}")
-                except Exception as e:
-                    lifecycle_errors[target] = str(e)
-                    lifecycle_results[target] = {
-                        "status": "error",
-                        "model": target,
-                        "error": str(e),
-                        "elapsed_s": round(time.time() - target_t0, 3),
-                    }
-                    print(f"[Orchestrator] Artifact lifecycle failed target={target}: {e}")
-
+            lifecycle_results, lifecycle_errors, lifecycle_elapsed = collect_lifecycle(lifecycle_batch)
             result["stages"]["artifact_lifecycle"] = {
                 "status": "error" if lifecycle_errors else "ok",
                 "targets": artifact_lifecycle_targets,
                 "contracts": artifact_lifecycle_contracts,
                 "results": lifecycle_results,
                 "errors": lifecycle_errors,
-                "elapsed_s": round(time.time() - lifecycle_t0, 3),
+                "elapsed_s": lifecycle_elapsed,
+                "training_execution_mode": "parallel_with_primary_groups",
                 "model_pool_write_mode": "sequential",
             }
-            partial_results["artifact_lifecycle"] = {
-                "elapsed_s": result["stages"]["artifact_lifecycle"]["elapsed_s"],
-                "results": lifecycle_results,
-            }
+            partial_results["artifact_lifecycle"] = {"elapsed_s":lifecycle_elapsed,"results":lifecycle_results}
             if lifecycle_errors:
                 result["stages"]["train"]["status"] = "error"
                 result["stages"]["train"]["error"] = "artifact_lifecycle_failed"
-
-            oof_resume = payload.get("oof_lifecycle_resume") if isinstance(payload.get("oof_lifecycle_resume"), dict) else {}
-            if str(oof_resume.get("cadence") or "").strip().lower() == "monthly":
-                sidecar_t0 = time.time()
-                try:
-                    sidecar_result = _validate_timesfm_config()
-                    result["stages"]["timesfm_l2_feature_release"] = {
-                        "status": "candidate_ready",
-                        "producer_contract": "timesfm-l2-sidecar-immutable-candidate-v1",
-                        "results": {"TimesFM": sidecar_result},
-                        "elapsed_s": round(time.time() - sidecar_t0, 3),
-                        "production_effect": False,
-                    }
-                except Exception as exc:
-                    result["stages"]["timesfm_l2_feature_release"] = {
-                        "status": "blocked",
-                        "producer_contract": "timesfm-l2-sidecar-immutable-candidate-v1",
-                        "results": {},
-                        "error": str(exc),
-                        "elapsed_s": round(time.time() - sidecar_t0, 3),
-                        "production_effect": False,
-                    }
 
         if circuit_breaker:
             print("[Orchestrator] Circuit breaker: weak model IC detected; ensemble will auto-zero-weight affected models")
@@ -1869,7 +1677,6 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     frozen_pool = build_pool_from_frozen_manifest(
         serving_manifest,
         expected_digest=serving_manifest_digest,
-        l2_sidecar_context={"version": active_versions.get("TimesFM")},
     )
     slot_identities = serving_manifest_identities(serving_manifest)
     serving_identities = serving_manifest_identities(serving_manifest, serving_only=True)
@@ -2956,6 +2763,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     t0 = time.time()
     windows = payload["windows"]
     market_env = payload["market_env"]
+    from app.walk_forward_regime_policy import mode as regime_policy_mode, run_window as run_regime_window
+    regime_mode = regime_policy_mode(payload.get("regime_mode", "train_window"))
     batch_count = payload.get("batch_count", 5)
     profile_schema = payload.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
     from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names
@@ -3239,12 +3048,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 
         # Step 1: HMM
         try:
-            hmm_payload = {
-                "window_id": wid,
-                "train_end": window["train_end"],
-                "market_env": _filter_env(window["train_end"]),
-            }
-            result["hmm_result"] = await train_wf_hmm_window.remote.aio(hmm_payload)
+            result["hmm_result"] = await run_regime_window(
+                regime_mode=regime_mode, window_id=wid, train_end=window["train_end"],
+                filtered_env=_filter_env, train=train_wf_hmm_window.remote.aio)
         except Exception as e:
             print(f"[WF-Orchestrator] w{wid} HMM crashed: {e}")
             result["hmm_result"] = {"error": str(e)}
@@ -3303,6 +3109,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             if model_name in requested:
                 model_payload = {**train_payload, **active8_model_payload(model_name, schema_version=profile_schema)}
                 if model_name == "TimeXer":
+                    if payload.get('knowledge_cutoff_date'):
+                        model_payload.update(signal_date_max=end_date, label_known_at_max=payload['knowledge_cutoff_date'])
                     model_payload.update(run_date=payload.get("knowledge_cutoff_date") or prep_manifest["source_business_date"],dataset_snapshot={
                         "manifest_path":prep_manifest_path,"manifest_checksum":prep_manifest_checksum})
                 tasks.append((model_name, fn.remote.aio(model_payload)))
@@ -3953,7 +3761,10 @@ def train_patchtst_universal(payload: dict) -> dict:
             max_prep_stale_days=payload.get("max_prep_stale_days"),
             run_date=payload.get("run_date"),
             as_of_date=payload.get("as_of_date"),
+            signal_date_max=payload.get("signal_date_max"),
+            label_known_at_max=payload.get("label_known_at_max"),
             generation_mode=payload.get("generation_mode"),
+            feature_semantic_version=payload.get("feature_semantic_version"),
             persist_oof_artifact=payload.get("persist_oof_artifact", True),
             research_source_bundle_checksum=payload.get("research_source_bundle_checksum"),
             oof_training_history_mode=payload.get("oof_training_history_mode"),
@@ -3988,6 +3799,11 @@ def train_patchtst_universal(payload: dict) -> dict:
             "type": result.get("type", "neuralforecast_patchtst_universal"),
 
             "oof_artifact": result.get("oof_artifact"),
+            "oof_evidence_path": result.get("oof_evidence_path"),
+            "oof_evidence_checksum": result.get("oof_evidence_checksum"),
+            "asof_prediction_artifact": result.get("asof_prediction_artifact"),
+            "fold_model_artifact": result.get("fold_model_artifact"),
+            "model_cpcv": result.get("model_cpcv"),
             "allowed_use": result.get("allowed_use"),
             "production_effect": result.get("production_effect"),
             "research_source_bundle_checksum": result.get("research_source_bundle_checksum"),
@@ -4068,31 +3884,6 @@ def train_itransformer_universal(payload: dict) -> dict:
 
 
 # L2 feature sidecar: TimesFM config-backed batch predict.
-@app.function(
-    gpu="L4",
-    memory=8192,
-    timeout=600,
-    scaledown_window=300,
-    max_containers=1,
-)
-def timesfm_universal_predict(payload: dict) -> dict:
-    """Batch TimesFM forecast for the watchlist."""
-    _setup_env()
-    from app.timesfm_universal import timesfm_batch_predict
-    try:
-        results = timesfm_batch_predict(
-            series_list=payload.get("series_list") or [],
-            horizon_used=payload.get("horizon_used", 5),
-            version=payload.get("version", "v1"),
-            sequence_contract_points=payload.get("sequence_contract_points"),
-            expected_checksum=payload.get("expected_checksum"),
-        )
-        return {"results": results, "n_input": len(payload.get("series_list") or []),
-                "n_success": sum(1 for r in results if not r.get("error")),
-                "n_error": sum(1 for r in results if r.get("error"))}
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "timesfm_universal_predict"}
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict (KalmanFilter + MarkovSwitching)
@@ -4770,4 +4561,13 @@ def fit_l4_r2_seed(payload: dict) -> dict:
     """Six-hour fit budget plus two-hour independent checkpoint verification."""
     _setup_env()
     from app.l4_r2_job import run
+    return run(payload)
+
+
+@app.function(image=tabpack_image, gpu='L4', cpu=(8,8), memory=(16384,16384),
+              timeout=28800, max_containers=3, scaledown_window=2, retries=0)
+def fit_l4_p6_seed(payload: dict) -> dict:
+    """Sealed P6 CV or fixed-epoch refit; no serving publication."""
+    _setup_env()
+    from app.l4_p6_job import run
     return run(payload)

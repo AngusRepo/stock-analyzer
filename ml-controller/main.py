@@ -241,7 +241,6 @@ async def warmup():
     targets = {
         "predict_batch_v2": modal_client.batch_predict(payloads),
         "gnn_graphsage_universal_predict": modal_client.gnn_graphsage_batch_predict(payloads),
-        "timesfm_universal_predict": modal_client.timesfm_batch_predict(series),
         "strategy_similarity_evidence": modal_client.strategy_similarity_evidence(_strategy_similarity_warmup_payload()),
     }
     outcomes = await run_named_warmups(targets)

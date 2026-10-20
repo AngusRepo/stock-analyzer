@@ -22,7 +22,7 @@ def worker_request(path, payload, *, transport=None):
     return response.json()
 
 
-def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_reader=None,reward_reader=None):
+def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_reader=None,reward_reader=None,p6_native_pool=None):
     from services.paired_nav_collection import baseline_model_identity
     from services.l4_distribution import validate_bundle
     frozen=deepcopy(policy)
@@ -30,6 +30,16 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
         raise ValueError('l4_distribution_paper_scope_required')
     identity=baseline_model_identity(manifest)
     validate_bundle(frozen['artifact'],l3_identity=identity,signal_date=signal_date)
+    from services.l4_p6_bundle import is_p6
+    from services.l4_distribution import digest
+    if is_p6(frozen['artifact']):
+        pool=p6_native_pool or {}
+        if (pool.get('signal_date')!=signal_date or pool.get('l3_identity')!=identity
+                or not pool.get('universe_checksum') or not pool.get('classification_reference')
+                or pool.get('features_checksum')!=digest(pool.get('feature_rows'))):
+            raise ValueError('p6_runtime_native_pool_missing_or_changed')
+    elif p6_native_pool is not None:
+        raise ValueError('p6_runtime_pool_for_legacy_model')
     start=datetime.now(timezone.utc)
     account=(account_reader or (lambda day:worker_request('/api/internal/l4-distribution/account',{'signal_date':day})))(signal_date)
     if not account.get('risk_limits') or not account.get('fees'):
@@ -38,6 +48,7 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
     if not start-timedelta(seconds=5)<=observed<=datetime.now(timezone.utc)+timedelta(seconds=5):
         raise ValueError('l4_distribution_account_observation_stale')
     frozen['runtime']={'signal_date':signal_date,'l3_identity':identity,'account':account,'predictions':deepcopy(predictions)}
+    if p6_native_pool is not None:frozen['runtime']['p6_native_pool']=deepcopy(p6_native_pool)
     from services.l4_execution_evidence import bind_calibration_packets
     frozen['runtime'].update(bind_calibration_packets(frozen,signal_date))
     if reward_reader is None:

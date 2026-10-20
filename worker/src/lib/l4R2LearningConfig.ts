@@ -3,7 +3,7 @@ export type L4R2LearningConfig = {
   native_observation: {
     l3_identity: Record<string, string>
     serving_context: Reference
-    timesfm_context: Reference
+    timesfm_context?: Reference // Accepted only for immutable historical configurations.
     training_cutoffs: Reference
     classification: Reference
   }
@@ -25,7 +25,7 @@ export function validateR2Learning(value: unknown): string[] {
       || Object.keys(c).some(k => !['native_observation','shadow','monthly'].includes(k))
       || !identity || !identity.artifact_id || !identity.cohort_id
       || !hex(identity.payload_checksum) || !hex(identity.base_artifact_set_checksum)
-      || !['serving_context','timesfm_context','training_cutoffs','classification'].every(k => ref(c.native_observation?.[k]))
+      || !['serving_context','training_cutoffs','classification'].every(k => ref(c.native_observation?.[k]))
       || !['bundle','baseline','evaluation_policy','classification'].every(k => ref(c.shadow?.[k]))
       || !ref(c.monthly?.classification)
       || !sameRef(c.native_observation.classification,c.shadow.classification)

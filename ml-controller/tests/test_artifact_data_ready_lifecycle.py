@@ -69,7 +69,7 @@ def lifecycle(monkeypatch):
     bucket = Bucket()
     monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
     monkeypatch.setattr(wf, "_latest_ready_oof_manifest", lambda _b: ("parent/manifest.json", parent))
-    monkeypatch.setattr(wf, "_latest_canonical_prep_prefix", lambda _b: "immutable/prep")
+    monkeypatch.setattr(wf, "_latest_canonical_prep_prefix", lambda _b, **_kwargs: "immutable/prep")
     monkeypatch.setattr(wf, "_oof_manifest_observed_core_dates", lambda _b, m: ([m["end_date"]], {}))
     monkeypatch.setenv("OOF_MATERIALIZE_JOB_EXECUTION", "1")
     materialize = AsyncMock(return_value={"status": "materialized", "candidate_artifacts": {},
@@ -347,3 +347,15 @@ def test_timexer_nested_history_prepends_two_folds_without_replacing_parent(monk
     assert wf.OOF_PROMOTION_MIN_FOLDS==5
     from services.backtest_engine import walk_forward_windows
     assert len(walk_forward_windows(days[10:140],60,10))==7
+
+
+def test_dual_cutoff_monthly_plan_uses_shared_regime_without_hmm_training(monkeypatch,lifecycle):
+    days,parent,_,_,_=lifecycle
+    monkeypatch.setattr(wf,'_oof_lifecycle_calendar',lambda *a,**k:(days[:150],{'cutoff':days[154]}))
+    plan=AsyncMock(side_effect=lambda req:req.model_dump())
+    monkeypatch.setattr(wf,'walk_forward_dry_run',plan)
+    asyncio.run(wf.run_walk_forward_oof_lifecycle(wf.OofLifecycleRequest(
+        cadence='monthly',dry_run=True,dispatch_full_fit=True,
+        signal_date_max=days[149],label_known_at_max=days[154])))
+    assert plan.await_args.args[0].regime_mode=='shared_dated_environment'
+    assert wf.WalkForwardRequest(start_date=days[0],end_date=days[149]).regime_mode=='train_window'

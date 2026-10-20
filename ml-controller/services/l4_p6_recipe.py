@@ -91,14 +91,19 @@ def prepare_fold(rows, *, spec, graph, cutoff, calendar, calendar_sha256, output
     if purge!=frozenset(spec['calendar_purge_dates']):raise ValueError('p6_purge_contract_changed')
     fold=HeldoutFold(first,last,purge);nodes=verify_graph(graph)
     if len({(r['date'],r['symbol']) for r in rows})!=len(rows):raise ValueError('p6_duplicate_rows')
-    byday={}
+    byday={};checked_ancestries=set()
     for row in rows:
         if not cutoff.admits(row['date'],row['label_known_date']):raise ValueError('p6_row_after_cutoff')
         roots=row.get('feature_roots') or {}
         if set(roots)!=set(pure.MODELS)|{'native_meta'}:raise ValueError('p6_upstream_roster_incomplete')
         # Warm-up inputs can be used by p_loss, so they require the same full
         # ancestry audit as train/validation matrix rows.
-        check_roots(nodes,list(roots.values()),cutoff=cutoff,signal_date=row['date'],fold=fold)
+        # Cross-sectional rows often share the same checkpoint/meta closure.
+        # Reuse only within this immutable graph/fold and exact date/root set.
+        ancestry_key=(row['date'],tuple(sorted(roots.items())))
+        if ancestry_key not in checked_ancestries:
+            check_roots(nodes,list(roots.values()),cutoff=cutoff,signal_date=row['date'],fold=fold)
+            checked_ancestries.add(ancestry_key)
         byday.setdefault(row['date'],[]).append(row)
     if not set(train_days+val_days)<=set(byday):raise ValueError('p6_fold_dates_missing')
     if any(fold.excludes(r['date'],r['label_known_date']) for d in train_days for r in byday[d]):

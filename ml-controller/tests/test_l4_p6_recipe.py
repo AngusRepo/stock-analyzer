@@ -111,3 +111,36 @@ def test_fold_preparation_seals_native_inputs_and_rejects_overwrite(tmp_path):
     (tmp_path/'val-rows.parquet').write_bytes(b'changed')
     with pytest.raises(ValueError,match='immutable_output_conflict:val-rows'):
         prepare_fold(source,spec=spec,graph=g,cutoff=cutoff,calendar=calendar,calendar_sha256='a'*64,output=tmp_path)
+
+
+def test_shared_ancestry_reused_but_one_foreign_root_still_rejected(tmp_path,monkeypatch):
+    from datetime import date,timedelta
+    from services import l4_p6_recipe as owner
+    calendar=[(date(2026,7,1)+timedelta(days=i)).isoformat() for i in range(100)
+        if (date(2026,7,1)+timedelta(days=i)).weekday()<5]
+    source=[]
+    for i,day in enumerate(calendar[10:50],10):
+        for row in rows(day):
+            row.update(label_known_date=calendar[i+5],feature_roots={**{m:'base' for m in MODELS},'native_meta':'meta'})
+            source.append(row)
+    g=graph();g['nodes']['known'].update(date='2026-06-01',label_known_date='2026-06-08')
+    g['checksum']=digest({k:v for k,v in g.items() if k!='checksum'})
+    spec=dict(fold=1,head_eligible_train_dates=[calendar[35]],head_eligible_validation_dates=[calendar[49]],
+        calendar_purge_dates=calendar[44:55])
+    kwargs=dict(spec=spec,graph=g,cutoff=TrainingCutoff('2026-09-22','2026-10-01'),
+        calendar=calendar,calendar_sha256='a'*64)
+    actual=owner.check_roots;calls=[]
+    def checked(*args,**kw):
+        calls.append((kw['signal_date'],tuple(args[1])))
+        return actual(*args,**kw)
+    monkeypatch.setattr(owner,'check_roots',checked)
+    owner.prepare_fold(source,output=tmp_path/'clean',**kwargs)
+    assert len(calls)==40  # 280 rows, forty distinct date/root closures.
+    calls.clear()
+    dirty=deepcopy(source)
+    dirty[-1]['feature_roots']['TimeXer']='forbidden'
+    g['nodes']['forbidden']=dict(kind='label',complete=True,parents=[],date=calendar[49],label_known_date=calendar[54])
+    g['checksum']=digest({k:v for k,v in g.items() if k!='checksum'})
+    with pytest.raises(ValueError,match='forbidden_label_ancestor:forbidden'):
+        owner.prepare_fold(dirty,output=tmp_path/'dirty',**kwargs)
+    assert len(calls)==41 and not (tmp_path/'dirty').exists()

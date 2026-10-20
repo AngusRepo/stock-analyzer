@@ -247,6 +247,10 @@ const paperDomainTables = [
   'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
   'l4_policy_account_rewards_v1', 'l4_portfolio_head_v1', 'l4_portfolio_plans_v1',
   'l4_replan_outbox_v1', 'l4_replan_requests_v1', 'paper_p5_rearms_v1',
+  'paper_atr_once_v1', 'paper_intraday_nav_risk_v1',
+  'paper_second_breakout_state_v2', 'paper_second_breakout_signals_v2',
+  'paper_daily_plan_reviews_v1', 'paper_daily_plan_heads_v1', 'paper_rotation_outcomes_v1',
+  'paper_counterfactual_lots_v1', 'paper_counterfactual_events_v1', 'paper_counterfactual_signals_v1',
 ]
 const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', paperDomainTables)
 
@@ -270,7 +274,10 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   assert.equal(healthy.artifact_active_references, 1998)
   assert.equal(healthy.artifact_true_orphan_references, 0)
   assert.equal(healthy.domain_schema.every((row) => row.ready), true)
-  for (const missing of ['paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1']) {
+  for (const missing of [
+    'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
+    'paper_counterfactual_lots_v1', 'paper_counterfactual_events_v1', 'paper_counterfactual_signals_v1',
+  ]) {
     const incomplete = await runStorageHealthCheck({ DB: healthyDb as any, ...splitBindings,
       PAPER_DB: readyDomainDb('0001_paper_baseline.sql', paperDomainTables.filter(name => name !== missing)) as any })
     assert.equal(incomplete.healthy, false)

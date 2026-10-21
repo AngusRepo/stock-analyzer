@@ -5,9 +5,11 @@ import { createHash } from 'node:crypto'
 import { withPaperExecutionScope } from './paperExecutionScope'
 import { buildDailyMarketRiskPacket, riskPacketChecksum } from './dailyMarketRiskPacket'
 import { adminConfigCoreRoutes } from '../routes/adminConfigCoreRoutes'
-const root='C:/Users/Wei/Desktop/CloudCode/stockvision-cloudflare-v12/audits/dynamic-risk-p9-20261007'
-const raw=JSON.parse(fs.readFileSync(root+'/../revenue-and-picks-20261007/risk-canonical-inputs.json','utf8'))
-const policy=JSON.parse(fs.readFileSync(root+'/policy-source-readback.json','utf8'))
+// 2026-10-07 canonical inputs and the trading:config / trading:risk_config readback of that day,
+// copied from the dynamic-risk P9 audit so the test runs on any machine and on CI.
+const fixtures=new URL('../../test-fixtures/daily-market-risk/',import.meta.url)
+const raw=JSON.parse(fs.readFileSync(new URL('risk-canonical-inputs.json',fixtures),'utf8'))
+const policy=JSON.parse(fs.readFileSync(new URL('policy-source-readback.json',fixtures),'utf8'))
 raw.breadth[0].bull_alignment_pct=60
 raw.breadth[0].advance_ratio=.6
 const patchedState=JSON.parse(raw.hmm[0].state_json)
@@ -34,7 +36,6 @@ async function main(){
  assert.equal(packet.content.constraints.max_positions,5)
  assert.equal(packet.checksum,await riskPacketChecksum(packet.content))
  assert.deepEqual(JSON.parse(packet.canonical_json),packet.content)
- fs.writeFileSync(root+'/../hmm-risk-repair-20261007/worker-daily-packet-golden.json',JSON.stringify(packet,null,2))
  const noAuth=await adminConfigCoreRoutes.request('http://test/api/admin/risk/daily-packet?trade_date=2026-10-07',{},env)
  assert.equal(noAuth.status,401)
  const {result:response}=await scoped(async()=>await adminConfigCoreRoutes.request('http://test/api/admin/risk/daily-packet?trade_date=2026-10-07',{headers:{Authorization:'Bearer local-test-token'}},env))

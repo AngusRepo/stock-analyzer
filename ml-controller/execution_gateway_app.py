@@ -43,6 +43,10 @@ class PaperReturnRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class AccountObservationRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 def _verify_service_token(authorization: str | None) -> None:
     if SERVICE_ROLE != "dedicated_execution_gateway":
         raise HTTPException(503, "dedicated execution gateway role not configured")
@@ -138,3 +142,15 @@ def intent_status(idempotency_key: str, authorization: str | None = Header(defau
     if lifecycle is None:
         raise HTTPException(404, "execution intent not found")
     return {"status": "ok", **lifecycle}
+
+
+@app.post("/v1/account/observations")
+def capture_account_observation(req: AccountObservationRequest,
+                                authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _verify_service_token(authorization)
+    try:
+        return gateway.capture_account_observation(request_id=req.request_id)
+    except ValueError as exc:
+        raise HTTPException(422, "live account source rejected") from exc
+    except Exception as exc:
+        raise HTTPException(503, "live account observation unavailable") from exc

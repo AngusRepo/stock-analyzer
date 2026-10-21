@@ -382,6 +382,25 @@ class PersistentFinlabExecutionGateway:
                 "account_match": bool(actual_account_id and expected_account_id and actual_account_id == expected_account_id),
             }
 
+    def capture_account_observation(self, *, request_id: str, repository: Any = None) -> dict[str, Any]:
+        # Read admission is independent of order admission. A return to Paper
+        # must retain broker reconciliation without granting submission rights.
+        if not _truthy(self.env.get("LIVE_EXECUTION_SHADOW_BROKER_READ_ENABLED")):
+            raise RuntimeError("live_account_broker_read_disabled")
+        if not request_id.strip() or len(request_id) > 128:
+            raise ValueError("live_account_request_id_invalid")
+        from services.live_account_snapshot import LiveAccountObservations, capture_observation
+        import shioaji as sj
+
+        self.ensure_started()
+        with self._lock:
+            if self._account is None:
+                raise RuntimeError("execution_gateway_not_started")
+            return capture_observation(self._account,
+                expected_account_id=str(self.env.get("SHIOAJI_ACCOUNT_ID") or ""),
+                request_id=request_id, repository=repository if repository is not None else LiveAccountObservations(),
+                share_unit=sj.Unit.Share)
+
     def reconcile_once(self) -> dict[str, Any]:
         if self._account is None:
             return {"status": "not_started", "trade_count": 0}

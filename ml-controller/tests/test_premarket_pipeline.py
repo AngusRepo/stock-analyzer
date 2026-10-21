@@ -523,3 +523,19 @@ def test_oct13_recovery_is_date_owner_and_freshness_bound(monkeypatch,signal,tra
     else:
         with pytest.raises(ValueError,match='allocation_cutoff'):
             m.validate_context({'run_date':signal},context,now=now)
+
+def test_completed_failed_pipeline_is_parked_without_relaunch_or_large_reads(f,monkeypatch):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs()
+    first=m.dispatch(r,c,jobs_client=j,client=s)
+    root=m.prefix(r['run_date'],r['run_id'])
+    for name in m.SERVING_PHASES:
+        s.blob(root+'/phases/'+name+'.json.gz').raw=b'sealed'
+    monkeypatch.setattr(m,'load_state',lambda *a,**kw:pytest.fail('large state read'))
+    j.state='failed'
+    for _ in range(2):
+        result=m.dispatch(r,c,jobs_client=j,client=s)
+        assert result['status']=='reconciliation_required'
+        assert result['reason']=='premarket_completed_phases_require_terminal_reconciliation'
+        assert result['execution_name']==first['execution_name']
+    assert len(j.calls)==1
+    assert all(s.blob(root+'/phases/'+name+'.json.gz').downloads==0 for name in m.SERVING_PHASES)

@@ -4947,8 +4947,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const bonusPoints = sc.sectorLeaderBonusPoints ?? 5
     const corrThreshold = sc.sectorLeaderCorrThreshold ?? 0.7
     const bonusCandidates = atomicShadowSource?.inputs.universe.map(candidate => ({
-      symbol: candidate.symbol, sector: typeof candidate.sector === 'string' ? candidate.sector : null,
-    })) ?? finalCandidates.map(candidate => ({ symbol: candidate.symbol, sector: candidate.sector ?? null }))
+      symbol: candidate.symbol, sector: taxonomyProfiles.get(candidate.symbol)?.industry ?? null,
+    })) ?? finalCandidates.map(candidate => ({ symbol: candidate.symbol, sector: taxonomyProfiles.get(candidate.symbol)?.industry ?? null }))
     const bonusSnapshot = await atomicOverlayCapture.read('sector_bonus', bonusCandidates.map(row => row.symbol),
       () => readSectorLeaderBonusSnapshot(env, {
         signalDate: endDate, observedAt: new Date().toISOString(), candidates: bonusCandidates,

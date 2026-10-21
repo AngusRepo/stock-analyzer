@@ -10,7 +10,7 @@ import { readCurrentNewsReport } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import type { PremarketPayload } from './premarketEventChain'
-import { atomicInputFailureOnly,historicalAtomicFailureOnly,sealedAllocationRecoveryOnly,verifyStoredFormalServing } from './premarketServingClosure'
+import { atomicInputFailureOnly,historicalAtomicFailureOnly,sealedAllocationRecoveryOnly,unavailableAtomicFailureOnly,verifyStoredFormalServing } from './premarketServingClosure'
 import { afterClosePaperRecovery } from './afterClosePaperRecovery'
 function stable(value:any):string {
   if(Array.isArray(value))return '['+value.map(stable).join(',')+']'
@@ -44,7 +44,13 @@ export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
    && env.LIVE_EXECUTION_CLIENT_ENABLED==='0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED==='0'
    && (input.morning_context as {checksum?:string}|undefined)?.checksum==='c45c12df7e514c8e58c58575781aeb6811084c5f475c0e9c6ef1341c3898b555'
    && sealedAllocationRecoveryOnly(row?.last_error)
- if(row?.status==='error' && (atomicInputFailureOnly(row.last_error) || historical || sealed)) {
+ const october21=tradeDate==='2026-10-21' && env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'
+   && env.LIVE_EXECUTION_CLIENT_ENABLED==='0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED==='0'
+   && receipt.run_date==='2026-10-20' && receipt.run_id==='pipeline-dispatch:2026-10-20:270320c4-8d25-4187-aec2-79595289d428'
+   && (input.l3_receipt as {checksum?:string})?.checksum==='9e36664032344abc96ebfa0ffa39dcc95c59516aad06a5ec5f41423a6efc01f8'
+   && (input.morning_context as {checksum?:string}|undefined)?.checksum==='d5b866e6f694a4b461e02cb54ee058f1ba7bc63e9b04fd5504c15be95b0e7213'
+   && unavailableAtomicFailureOnly(row?.last_error)
+ if(row?.status==='error' && (atomicInputFailureOnly(row.last_error) || historical || sealed || october21)) {
    const plan=await readL4PortfolioPlan(env)
    if(!plan)throw new Error('premarket_wait:l4_publication')
    await verifyStoredFormalServing(env,{runId:receipt.run_id,signalDate:receipt.run_date,error:row.last_error!,plan,

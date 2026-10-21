@@ -34,6 +34,17 @@ export function sealedAllocationRecoveryOnly(error: string | null | undefined): 
   return error === 'ValueError: premarket_phase_outcome_requires_reconciliation:node_recommend'
 }
 
+export function unavailableAtomicFailureOnly(error: string | null | undefined): boolean {
+  const expected = new Set([
+    'paired_nav:atomic_collection:atomic_candidates_unavailable',
+    'paired_nav:atomic_daily:requires_allocation_and_native_execution',
+    'paired_nav:atomic_candidate_setup:paired_nav_atomic_no_executable_plans',
+  ])
+  const errors = (error ?? '').split(';').map(value => value.trim()).filter(Boolean)
+  return errors.length === expected.size && new Set(errors).size === errors.length
+    && errors.every(value => expected.has(value))
+}
+
 type PublishedRow = {symbol:string; alpha_allocation:string | null}
 export function verifyFormalServingClosure(input: {
   runId:string; signalDate:string; error:string; plan:L4PortfolioPlan;
@@ -45,6 +56,14 @@ export function verifyFormalServingClosure(input: {
 }): void {
   const {runId,signalDate,plan,prediction,recommendation,rows} = input
   const now=input.nowMs ?? paperExecutionNow()
+  // Wei authorized Oct 21 after 08:45. Admit only the exact already-published
+  // formal plan; unavailable comparison accounts remain failed with no credit.
+  const october21=unavailableAtomicFailureOnly(input.error)
+    && runId==='pipeline-dispatch:2026-10-20:270320c4-8d25-4187-aec2-79595289d428'
+    && signalDate==='2026-10-20' && plan.plan_id==='a7978d89c41abf8a655fb0894b37d62d1aacd089503d847ce5d0620148704829'
+    && input.manifest?.payload_checksum==='aef910f9d27729e46b942713cf3362f0e522dc604fefad36199febc2af0428ff'
+    && input.manifest.prospective===1
+    && now>=Date.parse('2026-10-21T00:00:00+08:00') && now<Date.parse('2026-10-22T00:00:00+08:00')
   const sealed=sealedAllocationRecoveryOnly(input.error)
     && runId==='pipeline-dispatch:2026-10-19:8393bb2a-8c49-43c5-b5a8-e0f8581a0d79'
     && signalDate==='2026-10-19' && plan.plan_id==='12b665a6cf992ac82111a93d1c6e4fe1e50c81a38f156282ed800aea8ccf23ba'
@@ -57,7 +76,7 @@ export function verifyFormalServingClosure(input: {
     && Date.parse(input.manifest!.frozen_at!)>=Date.parse('2026-10-16T09:00:00+08:00')
     && Date.parse(input.manifest!.frozen_at!)<=(input.nowMs ?? paperExecutionNow())
   const admittedError=(error:string|null|undefined)=>atomicInputFailureOnly(error)
-    || ((historical || sealed) && error===input.error)
+    || ((historical || sealed || october21) && error===input.error)
   if (!admittedError(input.error) || plan.execution_scope !== 'paper'
     || plan.signal_date !== signalDate || !/^[a-f0-9]{64}$/.test(plan.plan_id))
     throw new Error('premarket_formal_publication_not_eligible')

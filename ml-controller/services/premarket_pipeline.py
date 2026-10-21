@@ -209,6 +209,12 @@ def dispatch(receipt,context,*,jobs_client,client=None):
                     return {**old,'status':'reconciliation_required',
                         'reason':'premarket_phase_outcome_requires_reconciliation:'+name}
                 break
+            else:
+                # A new process can only restore the same terminal state when
+                # every serving phase is sealed. Keep failure visible and ask
+                # for explicit reconciliation instead of rereading GBs forever.
+                return {**old,'status':'reconciliation_required',
+                    'reason':'premarket_completed_phases_require_terminal_reconciliation'}
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'dispatching','recovery_of':old['execution_name']}),
                 if_generation_match=claim.generation)

@@ -19,20 +19,30 @@ def read(suite, side):
     return {line.strip() for line in path.read_text(encoding='utf-8').splitlines() if line.strip()}
 
 
-lines, blocked = ['| suite | head failures | pre-existing | **new** | fixed |', '|---|---|---|---|---|'], False
-details = []
+def read_flaky(suite):
+    """Head-only failures that passed when rerun (written by ci/rerun_new_failures.py)."""
+    path = root / f'flaky-{suite}' / 'flaky.txt'
+    return {l.strip() for l in path.read_text(encoding='utf-8').splitlines() if l.strip()} if path.exists() else set()
+
+
+lines = ['| suite | head failures | pre-existing | **new** | flaky | fixed |', '|---|---|---|---|---|---|']
+blocked, details = False, []
 for suite in SUITES:
     head, base = read(suite, 'head'), read(suite, 'base')
     if head is None:
         blocked = True
-        lines.append(f'| {suite} | did not run | - | **blocked** | - |')
+        lines.append(f'| {suite} | did not run | - | **blocked** | - | - |')
         continue
     base = base or set()
-    new, fixed = sorted(head - base), sorted(base - head)
+    flaky = (head - base) & read_flaky(suite)
+    new, fixed = sorted(head - base - flaky), sorted(base - head)
     blocked |= bool(new)
-    lines.append(f'| {suite} | {len(head)} | {len(head & base)} | **{len(new)}** | {len(fixed)} |')
+    lines.append(f'| {suite} | {len(head)} | {len(head & base)} | **{len(new)}** | {len(flaky)} | {len(fixed)} |')
     if new:
         details.append(f'### {suite}: new failures\n' + '\n'.join(f'- `{n}`' for n in new))
+    if flaky:
+        details.append(f'### {suite}: flaky (failed on head, passed on rerun; not blocking)\n'
+                       + '\n'.join(f'- `{f}`' for f in sorted(flaky)))
     if fixed:
         details.append(f'### {suite}: fixed\n' + '\n'.join(f'- `{f}`' for f in fixed))
 

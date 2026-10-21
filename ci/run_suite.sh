@@ -25,15 +25,14 @@ case "$suite" in
     [ -f "$RUNNER_TEMP/node-fail.txt" ] && sort -u "$RUNNER_TEMP/node-fail.txt" >> "$out" || fail "worker: test runner produced no report"
     ;;
   controller)
-    # Native Paper tests bundle worker/src with esbuild, so they need the worker's node_modules.
-    (cd worker && npm ci --no-audit --no-fund) || fail "controller: worker npm ci"
+    source "$tools/controller_deps.sh"
+    controller_deps || { fail "controller: dependency install"; exit 0; }
     cd ml-controller
-    python -m pip install -q -r requirements.txt pytest==9.0.3 pytest-asyncio==1.4.0 pytest-timeout==2.4.0 \
-      pytest-xdist==3.8.0 || { fail "controller: pip install"; exit 0; }
     # Tests import both repo-root `tools` and `tests.*`; a broken module must not hide the rest.
-    # One worker per core; loadfile keeps each file's tests in one process. --durations shows the slowest tests.
+    # One worker per core, tests spread individually: several 4-5 minute tests share files,
+    # so loadfile left one worker running them in sequence. --durations shows the slowest tests.
     PYTHONPATH="$(cd .. && pwd):$PWD" python -m pytest tests -q -p no:cacheprovider --timeout=300 \
-      -n auto --dist loadfile --durations=40 \
+      -n auto --dist load --durations=40 \
       --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
     python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller: pytest produced no report"
     ;;

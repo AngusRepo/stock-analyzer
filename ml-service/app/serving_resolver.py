@@ -736,15 +736,6 @@ def build_pool_from_frozen_manifest(
         )
     pool["active8_action_authority"] = dict(authority)
 
-    sidecar = dict(l2_sidecar_context or {})
-    pool["l2_feature_sidecars"]["TimesFM"] = {
-        "status": "retired",
-        "version": str(sidecar.get("version") or "controller-l2-precomputed"),
-        "serving_eligible": False,
-        "serving_block_reason": "controller_l2_precomputed_not_modal_runtime",
-        "role": "l2_feature_sidecar",
-        "direct_prediction": False,
-    }
     return pool
 
 

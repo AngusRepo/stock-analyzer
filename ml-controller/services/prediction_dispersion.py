@@ -20,13 +20,12 @@ def _rank_scores(pred: dict[str, Any]) -> dict[str, float]:
     if isinstance(raw, dict):
         for name, value in raw.items():
             number = _finite_float(value)
-            if number is not None:
+            if number is not None and str(name) != "TimesFM":
                 scores[str(name)] = max(0.0, min(1.0, number))
     for src_key, model_name in (
         ("dlinear", "DLinear"),
         ("patchtst", "PatchTST"),
         ("itransformer", "iTransformer"),
-        ("timesfm", "TimesFM"),
     ):
         signal = pred.get(src_key) or {}
         if not isinstance(signal, dict):

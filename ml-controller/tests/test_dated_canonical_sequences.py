@@ -223,10 +223,8 @@ def _l2_dispatch_state(monkeypatch, mode='ready'):
             return datetime(2026, 9, 6, 14, tzinfo=timezone.utc)
     monkeypatch.setattr(graph, 'datetime', Clock)
     monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 6)
-    monkeypatch.setattr(graph, '_timesfm_l175_release_policy', lambda: {})
     monkeypatch.setattr(graph, '_load_model_pool_versions', lambda: ({}, {'TimesFM': 'fixture-v1'}, {}, True))
     monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {'l2_feature_sidecars': {'TimesFM': {'checksum': 'a'*64}}}))
-    monkeypatch.setattr(graph, '_timesfm_sync_gate', lambda **kw: (mode != 'blocked', {'sequence_contract_points': 2}))
     calls = []
     async def predict(rows, **kw):
         calls.append(deepcopy(rows))
@@ -257,8 +255,8 @@ def test_real_l2_node_return_transport_and_ml_request_share_dated_source(monkeyp
     _prep(monkeypatch)
     state, calls = _l2_dispatch_state(monkeypatch, mode)
     # Mimic LangGraph: only returned node updates persist to the next node.
-    result = asyncio.run(graph.node_l2_timesfm_enrich(deepcopy(state)))
-    assert result['timesfm_l2_summary']['status'] == mode
+    result = asyncio.run(graph.node_prepare_sequence_inputs(deepcopy(state)))
+    assert result['sequence_input_summary']['status'] == 'ready'
     assert 'pipeline_sequence_observations' in result
     state.update(result)
     state['l3_payloads'] = deepcopy(state['payloads'])
@@ -272,11 +270,9 @@ def test_real_l2_node_return_transport_and_ml_request_share_dated_source(monkeyp
     assert request['sequence_series'][0]['dates'][-1] == '2026-09-06'
     assert request['sequence_input_contract']['sequence_point_counts'] == {'2330': 6}
     assert request['sequence_dataset_meta']['frozen_source_checksum'] == result['pipeline_sequence_observations']['source_checksum']
-    assert len(calls) == (0 if mode == 'blocked' else 1)
-    if mode == 'ready':
-        assert calls[0] == request['sequence_series']
-        assert request['payloads'][0]['stock_meta']['timesfm_l175_sidecar']['features']['forecast_return'] == .02
-        assert request['payloads'][0]['prices'] == _payload()[0]['prices']
+    assert calls == [], 'retired inference must never run regardless of prior readiness'
+    assert request['payloads'][0]['prices'] == _payload()[0]['prices']
+
 
 
 @pytest.mark.parametrize('fault', [None, 'late', 'mutated_during_build', 'request_only', 'mutated_during_write'])
@@ -286,7 +282,7 @@ def test_frozen_recovery_uses_actual_request_builder_without_live_sequence_reads
     from services.paired_nav_journal import digest
     _prep(monkeypatch)
     state, _ = _l2_dispatch_state(monkeypatch)
-    state.update(asyncio.run(graph.node_l2_timesfm_enrich(deepcopy(state))))
+    state.update(asyncio.run(graph.node_prepare_sequence_inputs(deepcopy(state))))
     state['l3_payloads'] = deepcopy(state['payloads'])
     source_context = deepcopy(state['pipeline_modal_serving_context'])
     if fault == 'late':

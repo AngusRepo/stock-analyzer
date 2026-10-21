@@ -16,7 +16,7 @@ from services.broker_execution_contract import (
     validate_execution_packet,
 )
 from services.broker_execution_repository import BrokerExecutionRepository, D1BrokerExecutionRepository
-from services.finlab_execution_gateway import BrokerOrderRejected, PersistentFinlabExecutionGateway
+from services.finlab_execution_gateway import BrokerOrderRejected, LiveSubmissionBlocked, PersistentFinlabExecutionGateway
 from services.execution_snapshot_revalidator import revalidate_authoritative_snapshots
 from services.finlab_execution_preview_service import validate_stockvision_execution_intent
 from services.finlab_sinopac_l5_market_data import l5_market_data_env_status
@@ -148,6 +148,10 @@ def run_finlab_live_submit(
         return _blocked(packet, packet_errors, env_status=env_status)
 
     execution_gateway = gateway
+    try:
+        execution_gateway.assert_live_submission_allowed()
+    except LiveSubmissionBlocked as exc:
+        return _blocked(packet, str(exc), env_status=env_status)
     symbol = str(packet_intent.get("symbol") or "")
     side = str(packet_intent.get("side") or "").lower()
     price = limit_price(packet_intent)
@@ -290,14 +294,14 @@ def run_finlab_live_submit(
                 )
                 return {
                     "schema_version": SCHEMA_VERSION,
-                    "status": "partial" if submitted else "rejected",
-                    "reason": "broker_order_rejected",
+                    "status": "partial" if submitted else ("blocked" if isinstance(exc, LiveSubmissionBlocked) else "rejected"),
+                    "reason": str(exc) if isinstance(exc, LiveSubmissionBlocked) else "broker_order_rejected",
                     "symbol": symbol,
                     "side": side,
                     "intent_id": intent_id,
                     "submitted_orders": submitted,
                     "legs": repo.list_legs(intent_id),
-                    "can_submit_real_order": True,
+                    "can_submit_real_order": not isinstance(exc, LiveSubmissionBlocked),
                     "live_submit_enabled": True,
                     "env_status": env_status,
                 }

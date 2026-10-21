@@ -208,7 +208,9 @@ function assert(condition: unknown, message: string): void {
   const summary = summaries.get('2330')
   assert(summary?.rank === 4, 'final selection rank must be preserved')
   assert(summary?.reason_code === 'selected_for_ml_shortlist', 'final reason must be preserved')
-  assert(summary?.timeline.length === 9, 'timeline must retain all screener stages')
+  assert(summary?.timeline.length === 8, 'timeline retains every non-retired stage')
+  assert(!summary?.timeline.some(step => step.stage === 'layer2_timesfm_enrichment'), 'retired TimesFM is not displayed')
+  assert(!summary?.evidence.layer2_timesfm_enrichment, 'retired evidence is not emitted')
   assert((summary?.evidence.layer0_universe_features as any)?.schema_version === 'layer0_universe_features_summary_v2', 'Layer0 universe/features evidence must expose the liquidity-capacity schema')
   assert((summary?.evidence.layer0_universe_features as any)?.median_daily_traded_value_twd === 3_200_000_000, 'Layer0 summary must expose PIT median daily traded value')
   assert((summary?.evidence.layer0_universe_features as any)?.decision_policy === 'feature_materialization_only_not_selector', 'Layer0 feature materialization must not be summarized as a selector')
@@ -298,14 +300,6 @@ function assert(condition: unknown, message: string): void {
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.market_heat_alpha === 5.74, 'Layer1.5 summary should expose market heat marginal utility alpha')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.new_strategy_ratio === 1, 'Layer1.5 summary should expose strategy novelty signal')
   assert((summary?.evidence.layer15_multi_strategy_router as any)?.strategy_rank_ic === 0.12, 'Layer1.5 summary should expose learned RankIC signal')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.schema_version === 'layer2_timesfm_enrichment_summary_v1', 'Layer2 TimesFM evidence must expose a stable summary schema')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.decision_policy === 'timesfm_sequence_sidecar_feature_enrichment_not_selector', 'Layer2 TimesFM must not be summarized as selector/ranker')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.expected_model_count === 1, 'Layer2 TimesFM should keep the 1-model sidecar contract')
-  assert(((summary?.evidence.layer2_timesfm_enrichment as any)?.expected_models ?? []).join(',') === 'TimesFM', 'Layer2 TimesFM model id must stay visible')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.final_recommendation_gate === false, 'Layer2 TimesFM must not be a final recommendation gate')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.l3_formal_inference_selected === true, 'Layer2 TimesFM must not shrink the L3 queue')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.l2_feature_input_active === true, 'Layer2 TimesFM feature input must be visible')
-  assert((summary?.evidence.layer2_timesfm_enrichment as any)?.populated_feature_count === 11, 'Layer2 TimesFM feature coverage must be summarized')
   assert((summary?.evidence.layer3_8ml_formal as any)?.schema_version === 'layer3_8ml_formal_summary_v1', 'Layer3 8ML formal evidence must expose a stable summary schema')
   assert((summary?.evidence.layer3_8ml_formal as any)?.decision_policy === 'eight_ml_formal_family_evidence_not_topk', 'Layer3 formal ML must be family evidence, not top-k')
   assert((summary?.evidence.layer3_8ml_formal as any)?.expected_model_count === 8, 'Layer3 formal should keep the 8-model contract')
@@ -508,7 +502,7 @@ function assert(condition: unknown, message: string): void {
       reason_code: 'ml_slate_queue_seed_from_l1_5_router',
       rank: 3,
       score_after: 70,
-      evidence: JSON.stringify({ worker_seed_only: true, downstream_owner: 'ml-controller', downstream_stage: 'layer2_timesfm_enrichment' }),
+      evidence: JSON.stringify({ worker_seed_only: true, downstream_owner: 'ml-controller', downstream_stage: 'prepare_sequence_inputs' }),
     },
   ])
 
@@ -516,6 +510,6 @@ function assert(condition: unknown, message: string): void {
   assert(!summary?.evidence.layer2_timesfm_enrichment, 'worker seed must not be summarized as formal L2 TimesFM evidence')
   assert(!summary?.evidence.layer2_3ml_coarse, 'worker seed must not preserve legacy L2 tree summary')
   assert(!summary?.evidence.layer2_coarse_ml, 'worker seed must not be summarized as formal L2 coarse ML pass')
-  assert((summary?.evidence.layer15_ml_slate_queue as any)?.downstream_stage === 'layer2_timesfm_enrichment', 'L1.5 slate queue should expose the downstream L2 owner')
+  assert((summary?.evidence.layer15_ml_slate_queue as any)?.downstream_stage === 'prepare_sequence_inputs', 'L1.5 slate queue should expose the downstream L2 owner')
   assert((summary?.evidence.layer2_queue_seed as any)?.worker_seed_only === true, 'worker seed should stay visible as queue seed evidence')
 }

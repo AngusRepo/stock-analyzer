@@ -89,10 +89,10 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
             options = {'strategy_role': 'B'} if manifest.get('model_profile_schema_version') in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE) else {}
             family_binding={}
             if options.get('strategy_role')=='B' and model_family is not None:
-                if model_family not in ('full_mlp_median','tabpack','tabpack_median16','tabpack_r2'):
+                if model_family not in ('full_mlp_median','tabpack','tabpack_median16','tabpack_r2','p6_a'):
                     raise ValueError('l4_oof_model_family_invalid')
                 options['model_family']=model_family
-                if model_family in ('full_mlp_median','tabpack_median16','tabpack_r2'):
+                if model_family in ('full_mlp_median','tabpack_median16','tabpack_r2','p6_a'):
                     family_binding={'model_family':model_family}
             binding = None
             if cadence == 'monthly' and options.get('strategy_role') == 'B':
@@ -117,7 +117,7 @@ async def materialize_native_base(*,manifest_path,cohort_id,as_of,cadence,dry_ru
                     raise ValueError('monthly_candidate_binding_readback_failed')
     refresh_status = (refresh or {}).get('status')
     pending = bool(full_fit.get('retry_required')) or refresh_status in ('pending', 'awaiting_l3_candidate')
-    failed = refresh_status == 'failed'
+    failed = refresh_status in ('failed','needs_review','needs_user_decision')
     result={'status':'dry_run' if dry_run else 'failed' if failed else 'pending' if pending else 'materialized',
         'dependency_retry_required':pending and not failed,'calendar':calendar or {},
         'cadence':cadence,'knowledge_cutoff_date':as_of,'materialization_owner':'native_l3_new_l4',

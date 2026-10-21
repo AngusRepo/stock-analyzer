@@ -260,8 +260,13 @@ async def _run() -> int:
             result = await run_pipeline_v2_from_input_event(stage_path=os.environ.get('PIPELINE_INPUT_STAGE', ''),
                 run_date=run_date, producer_run_id=run_id)
         elif premarket_mode:
-            from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
-            result=await run_pipeline_v2_from_premarket(os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI',''))
+            uri = os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI','')
+            if _truthy_env('PIPELINE_PREMARKET_COMPLETED_ONLY'):
+                from graphs.daily_pipeline_v2 import reconcile_completed_premarket
+                result = await reconcile_completed_premarket(uri)
+            else:
+                from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
+                result = await run_pipeline_v2_from_premarket(uri)
         elif snapshot_recovery_mode:
             source_gcs_uri = os.environ.get("PIPELINE_SNAPSHOT_RECOVERY_SOURCE_GCS_URI", "").strip()
             result = await run_pipeline_v2_from_snapshot_recovery(
@@ -353,6 +358,8 @@ async def _run() -> int:
         "duration_ms": elapsed_ms,
         "run_id": run_id,
     }
+    if isinstance(result,dict) and result.get('serving_publication_checksum'):
+        overall_payload['serving_publication_checksum']=result['serving_publication_checksum']
     if isinstance(result,dict) and result.get('l3_receipt'):
         overall_payload['l3_receipt']=result['l3_receipt']
     if run_date:
@@ -360,6 +367,8 @@ async def _run() -> int:
     if error:
         overall_payload["error"] = error
 
+    from services.timexer_daily_evidence import attach_outcome
+    overall_payload = await attach_outcome(overall_payload)
     await _callback_worker(overall_payload)
     if emit_subtasks:
         await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)

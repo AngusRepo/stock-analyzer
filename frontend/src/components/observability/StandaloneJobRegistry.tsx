@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowRight, CalendarClock, CircleDot, ListTree } from 'lucide-react'
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
+import JobRunTiming from './JobRunTiming'
 import './StandaloneJobRegistry.css'
 
 const GROUP_LABEL: Record<SchedulerJob['group'], string> = {
@@ -153,10 +154,10 @@ export default function StandaloneJobRegistry({
                         </div>
 
                         <dl className="obs-standalone__timing sv-num">
-                          <div><dt>Last</dt><dd>{job.lastRun || '—'}</dd></div>
                           <div><dt>Next</dt><dd>{job.nextRun || job.schedule || '—'}</dd></div>
                           <div><dt>Ticket</dt><dd>{ticketLabel(job.ticket)}</dd></div>
                         </dl>
+                        <JobRunTiming job={job} />
                       </article>
                     )
                   })}

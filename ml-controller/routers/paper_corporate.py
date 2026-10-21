@@ -20,6 +20,18 @@ async def native_execution_tick(request: NativeTickRequest):
     return {'status': 'disabled_by_single_b_policy', 'pairs': [], 'executed': 0}
 
 
+@router.post('/l4-shadow-execution-tick')
+async def l4_shadow_execution_tick(request: NativeTickRequest):
+    from services.l4_shadow_sources import run_tick
+    try:
+        return await asyncio.to_thread(run_tick, session_date=request.session_date)
+    except ValueError as exc:
+        import re
+        reason=str(exc)
+        detail=reason if re.fullmatch(r'shadow_[a-z0-9_]+',reason) else 'shadow_execution_failed'
+        raise HTTPException(status_code=409, detail=detail) from None
+
+
 @router.post('/strategy-nav-execution-tick')
 async def strategy_nav_execution_tick(request: NativeTickRequest):
     from services.paired_native_runtime import run_strategy_execution_tick

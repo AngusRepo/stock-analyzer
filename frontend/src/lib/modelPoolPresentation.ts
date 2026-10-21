@@ -68,3 +68,32 @@ export function ensembleQualificationPresentation(pointers?: ModelChampionPointe
       : '交易訊號資格與 ensemble 排名晉級分開判定。',
   }
 }
+
+
+/** Immutable qualification and a separately labelled current tail-rule review. */
+export function modelTailPresentation(evidence: Record<string, unknown>, review?: Record<string, unknown>) {
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  const tokens = (value: unknown): string[] => Array.isArray(value) ? value.map(String) : []
+  const metric = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(3) : '缺資料'
+  const reviewed = review?.status === 'reviewed'
+  const current = reviewed ? review! : evidence
+  const folds = Array.isArray(evidence.fold_metrics) ? evidence.fold_metrics : []
+  const last = record(folds[folds.length - 1]).oos_ic
+  const tail = record(current.tail_fold_stats)
+  const failures = tokens(current.failed_gates)
+  const warnings = tokens(current.warning_gates)
+  const decision = String(current.decision ?? '').toUpperCase()
+  const degraded = decision !== 'FAIL' && (current.serving_disposition === 'DEGRADED' || warnings.length > 0)
+  const missing = review?.status === 'evidence_missing'
+  const label = decision === 'FAIL' ? '未通過' : missing ? '待補尾折證據' : degraded ? '通過・有警告' : decision === 'PASS' ? '通過' : '待補證據'
+  const tone: PoolTone = decision === 'FAIL' ? 'error' : degraded || missing || decision !== 'PASS' ? 'warn' : 'ok'
+  const detail = [
+    `原始收據：${String(evidence.serving_disposition ?? evidence.decision ?? '缺資料')}`,
+    reviewed ? `現行尾折規則覆核：${String(current.serving_disposition)}（僅供檢視）` : missing ? '現行尾折規則覆核：證據不足' : null,
+    `全 ${current.folds ?? evidence.folds ?? '?'} 折平均 IC ${metric(current.oos_ic_mean)} · 末折 ${metric(current.last_fold_oos_ic ?? last)}`,
+    `尾三折均值 ${metric(tail.tail_oos_ic_mean)} · 日期群聚上界 ${metric(tail.upper_confidence_bound)}`,
+    failures.length ? `未通過：${failures.join(', ')}` : null,
+    warnings.length ? `警告：${warnings.join(', ')}` : null,
+  ].filter(Boolean).join('\n')
+  return { label, tone, detail }
+}

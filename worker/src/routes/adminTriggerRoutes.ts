@@ -33,6 +33,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'market-close-refresh',
   'daily-execution-paper-lineage',
   'paired-native-execution',
+  'l4-shadow-execution',
   'update', 'pipeline', 'post-screener-pipeline',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
@@ -132,7 +133,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const requestedTask = c.req.param('task')
     const task = resolveSchedulerTaskAlias(requestedTask)
     const maintenanceBackfill = task === 'data-domain-shadow-backfill'
-    const minuteTask = task === 'intraday-check' || task === 'paired-native-execution' || task === 'strategy-nav-execution'
+    const minuteTask = task === 'intraday-check' || task === 'paired-native-execution' || task === 'strategy-nav-execution' || task === 'l4-shadow-execution'
     const rateLimitNamespace = maintenanceBackfill
       ? 'admin-maintenance:data-domain-shadow-backfill'
       : minuteTask ? `admin-minute:${task}` : 'admin'

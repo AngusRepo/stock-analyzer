@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Iterator, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from dataclasses import asdict
 
 from services import d1_client, retrain_lock
@@ -122,6 +122,8 @@ class UniversalRetrainTriggerRequest(BaseModel):
     limit: int = 2500  # max stocks
     run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
     candidate_type: str | None = Field(default=None, description="Candidate type. Formal releases must use oof_full_fit_release.")
+    signal_date_max: str | None = None
+    label_known_at_max: str | None = None
     force_monthly: bool = Field(default=False, description="Explicit execution lineage. weekly_drift callers must remain false.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
@@ -163,6 +165,17 @@ class UniversalRetrainTriggerRequest(BaseModel):
         default=None,
         description="New immutable GCS prefix required by prep_only.",
     )
+
+    @model_validator(mode="after")
+    def validate_full_fit_cutoff(self):
+        if (self.signal_date_max is None) != (self.label_known_at_max is None):
+            raise ValueError("training_dual_cutoff_requires_both_bounds")
+        if self.signal_date_max is not None:
+            from services.training_dual_cutoff import TrainingCutoff
+            TrainingCutoff(self.signal_date_max, self.label_known_at_max)
+            if self.candidate_type != "oof_full_fit_release" or self.run_date != self.label_known_at_max:
+                raise ValueError("full_fit_scope_cutoff_mismatch")
+        return self
 
 
 def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
@@ -1315,6 +1328,8 @@ async def _dispatch_prebuilt_oof_full_fit(
         "oof_promotion_evidence": req.oof_promotion_evidence,
         "oof_lifecycle_resume": req.oof_lifecycle_resume,
         "generation_mode": "oof_full_fit_release",
+        "signal_date_max": req.signal_date_max,
+        "label_known_at_max": req.label_known_at_max,
         "cohort_id": str(req.prebuilt_prep_source_cohort_id),
         "label_horizon_days": 5,
         "training_policy": training_policy.to_dict(),
@@ -1781,6 +1796,8 @@ async def trigger_universal_retrain(
 
     # ?? 4. Sector encoding ??????????????????????????????????????????????????
     timesfm_l175_feature_release_requested = _timesfm_l175_feature_release_requested(req)
+    if timesfm_l175_feature_release_requested:
+        raise HTTPException(410, "timesfm_feature_release_retired")
     if timesfm_l175_feature_release_requested:
         # TimesFM changes the governed tabular universe. TabM and GNN must be
         # trained in the same release run as the three tree models.

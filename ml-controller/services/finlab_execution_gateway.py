@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from services.broker_execution_repository import BrokerExecutionRepository
+from services.execution_submission_control import D1SubmissionControl, SubmissionControl
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 class BrokerOrderRejected(RuntimeError):
     """The broker explicitly rejected the order before acknowledgement."""
+
+
+class LiveSubmissionBlocked(BrokerOrderRejected):
+    """No broker call was made because submission admission is closed or unavailable."""
 
 
 def _truthy(value: Any) -> bool:
@@ -62,10 +67,12 @@ class PersistentFinlabExecutionGateway:
         *,
         env: Mapping[str, str] | None = None,
         account_factory: Callable[[], Any] | None = None,
+        submission_control: SubmissionControl | None = None,
     ) -> None:
         self.repository = repository
         self.env = env or os.environ
         self.account_factory = account_factory
+        self.submission_control = submission_control if submission_control is not None else D1SubmissionControl()
         self._account: Any | None = None
         self._lock = threading.RLock()
         self._started = False
@@ -298,6 +305,23 @@ class PersistentFinlabExecutionGateway:
             raise BrokerOrderRejected("broker_order_rejected")
         return str(_field(status, "id", "") or _field(_field(trade, "order", {}), "id", ""))
 
+    def assert_live_submission_allowed(self) -> None:
+        try:
+            receipt = self.submission_control.paused_receipt()
+        except Exception as exc:
+            raise LiveSubmissionBlocked("live_submission_control_unavailable") from exc
+        if receipt is not None:
+            raise LiveSubmissionBlocked("live_submission_paused_by_paper_return")
+
+    def return_to_paper(self, *, request_id: str, reason: str) -> dict[str, Any]:
+        self._runtime_guard()
+        # Same lock as the final broker call, NOT the whole multi-leg intent lock.
+        # An in-flight call may finish before this receipt; no later leg can start.
+        with self._lock:
+            receipt = self.submission_control.pause(request_id=request_id, reason=reason)
+        return {"status": "live_submission_paused", "receipt": receipt,
+                "existing_orders_and_positions": "preserved", "reconciliation": "continues"}
+
     def submit_leg(
         self,
         *,
@@ -309,10 +333,11 @@ class PersistentFinlabExecutionGateway:
         exchange: str,
         client_tag: str,
     ) -> str:
-        self.ensure_started()
         if not re.fullmatch(r"[A-Za-z0-9]{6}", client_tag):
             raise RuntimeError("broker_client_tag_invalid")
         with self._lock:
+            self.assert_live_submission_allowed()
+            self.ensure_started()
             if self._trade_cache_degraded():
                 self.reconcile_once()
             health = self.health()
@@ -356,6 +381,25 @@ class PersistentFinlabExecutionGateway:
                 "position_shares": position_shares,
                 "account_match": bool(actual_account_id and expected_account_id and actual_account_id == expected_account_id),
             }
+
+    def capture_account_observation(self, *, request_id: str, repository: Any = None) -> dict[str, Any]:
+        # Read admission is independent of order admission. A return to Paper
+        # must retain broker reconciliation without granting submission rights.
+        if not _truthy(self.env.get("LIVE_EXECUTION_SHADOW_BROKER_READ_ENABLED")):
+            raise RuntimeError("live_account_broker_read_disabled")
+        if not request_id.strip() or len(request_id) > 128:
+            raise ValueError("live_account_request_id_invalid")
+        from services.live_account_snapshot import LiveAccountObservations, capture_observation
+        import shioaji as sj
+
+        self.ensure_started()
+        with self._lock:
+            if self._account is None:
+                raise RuntimeError("execution_gateway_not_started")
+            return capture_observation(self._account,
+                expected_account_id=str(self.env.get("SHIOAJI_ACCOUNT_ID") or ""),
+                request_id=request_id, repository=repository if repository is not None else LiveAccountObservations(),
+                share_unit=sj.Unit.Share)
 
     def reconcile_once(self) -> dict[str, Any]:
         if self._account is None:

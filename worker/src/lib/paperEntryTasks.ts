@@ -1,4 +1,5 @@
 import { createSwingEntryAssessor } from './paperSwingAssessment'
+import { counterfactualSizing, createPaperCounterfactualRecorder, pollPaperCounterfactualLots } from './paperCounterfactualRuntime'
 import { shioajiBookObservation, validatedBookL5 } from './paperExecutionBook'
 import { getPrevTradingDay } from './paperMarketData'
 import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
@@ -512,7 +513,8 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
     status === 'quote_unavailable'
 }
 
-async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
+async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string,
+  counterfactual: ReturnType<typeof createPaperCounterfactualRecorder> | null): Promise<IntradayStopLossPollResult> {
   const paperSwingOwner = env.PAPER_INTRADAY_ENTRY_OWNER === SWING_POLICY_VERSION
   const paperOr15Owner = paperSwingOwner || String(env.PAPER_INTRADAY_ENTRY_OWNER ?? '').trim() === 'or15_vwap_v1'
   const opsDb = databaseForDataDomain(env, 'ops')
@@ -692,6 +694,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       const receipt = await assess(pending,priceMap.get(pending.symbol) ?? NaN,ohlcMap.get(pending.symbol))
       const a = receipt.assessment
       swingSidecars.set(pending.symbol,a)
+      counterfactual?.observe(pending,a)
       or15Sidecars.set(pending.symbol,{action:a.action,reason:a.reason,signalMs:a.signalMs??null,
         orHigh:a.orHigh??null,orLow:a.orLow??null,vwap:a.vwap??null,latestBarMs:a.signalMs??null})
       or15BarSources.set(pending.symbol,receipt.barSource)
@@ -707,6 +710,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   // Missing holding risk evidence blocks new exposure, never the independent signal receipt.
   if (holdingPoll.status === 'partial' && holdingPoll.missing_symbols.length > 0) {
     const reason = 'holding_risk_evidence_unavailable'
+    for (const item of pendingBuys) counterfactual?.blocked(item.symbol,reason)
     const detail = JSON.stringify({missing_symbols:holdingPoll.missing_symbols,quoted:holdingPoll.quoted,positions:holdingPoll.positions})
     const transition=applyPendingBuyExecutionStatusUpdates(pendingBuys,pendingBuys.map(item=>({
       symbol:item.symbol,status:'checked_waiting' as const,reason,detail,
@@ -720,6 +724,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
 
   if (cb.halt) {
+    for (const item of pendingBuys) counterfactual?.blocked(item.symbol,'portfolio_risk_halt')
     const detail = [
       `status=${cb.marketRiskStatus ?? 'unknown'}`,
       `date=${cb.marketRiskDate ?? 'missing'}`,
@@ -1455,6 +1460,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   ) => {
     executionEvents.push({ symbol, status, reason, detail: detail ?? null })
     executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
+    if (status === 'filled') counterfactual?.filled(symbol)
+    else counterfactual?.blocked(symbol,reason)
   }
   const recordExecutionNote = (symbol: string, status: string, reason: string, detail?: string | null) => {
     executionAuditEvents.push({ symbol, status, reason, detail: detail ?? null })
@@ -1466,6 +1473,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     detail?: string | null,
   ) => {
     recordExecutionNote(symbol, status, reason, detail)
+    if (status === 'partially_filled') counterfactual?.filled(symbol)
+    else counterfactual?.blocked(symbol,reason)
     if (paperSwingOwner && ['checked_waiting','quote_unavailable','submitted'].includes(status)
       && !reason.startsWith('swing_waiting_') && !['swing_entry_window_not_open','swing_entry_window_closed'].includes(reason)) {
       recordExecutionNote(symbol,'execution_blocked',reason,detail)
@@ -1745,6 +1754,16 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     let currentOhlc = ohlcMap.get(pending.symbol)
     const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
     const or15Assessment = paperOr15Owner ? or15Sidecars.get(pending.symbol) ?? null : null
+    const l5Thresholds={
+        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
+        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
+        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
+        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
+        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
+          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
+          : -0.7
+    }
     if (paperOr15Owner) {
       if (!paperSwingOwner) await recordPaperExecutionEvent(env, {
         tradeDate: today,
@@ -1762,6 +1781,41 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       })
       if (or15Assessment?.action !== 'pass') {
         recordActiveExecutionStatus(pending.symbol, 'checked_waiting', or15Assessment?.reason ?? 'or15_market_data_unavailable')
+        // Research-only: observe the existing account/book at this veto. No refetch, authorization,
+        // cooldown, weak_waiting, cash reservation or formal order mutation belongs to this branch.
+        const signal = swingSidecars.get(pending.symbol)
+        if (counterfactual && paperSwingOwner && signal?.conditions?.or_touch === true) {
+          try {
+            if (!planIdFromWatchPoints(pending.watch_points)) {
+              counterfactual.sizingUnavailable(pending.symbol,'counterfactual_l4_sizing_owner_missing')
+            } else {
+              const nowMs = paperExecutionNow(), quote = currentOhlc ? structuredClone(currentOhlc) : undefined
+              const maxBookAgeMs = optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500)
+              const quality = quoteQualityFromL5(validatedBookL5(pending.symbol,quote,maxBookAgeMs),l5Thresholds)
+              const allocation = await buildExecutionAllocatorEvaluation(pending,s12Sidecar,quality)
+              const entryPrice = Math.max(price,quote?.ask ?? price)
+              const result = counterfactualSizing({ nowMs, signal, quote, ...allocation,
+                minPositionValue: cfg.position.minPositionValue ?? 30_000,
+                slippageTicks: cfg.position.fillSlippageTicks ?? 1, maxBookAgeMs,
+                maxDisagreementTicks: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_DISAGREEMENT_TICKS,1),
+                context: { ...allocation.context, exact_cash: Number(acc.cash), exact_nav: totalPortfolio,
+                  exact_daily_remaining: Math.max(0,DAILY_BUY_LIMIT-dailyBuyTotal), observed_at_ms: nowMs },
+                preTrade: { symbol: pending.symbol, currentPrice: price, entryPrice, bestAsk: quote?.ask,
+                  stopLoss: null, originalEntry: entryPrice, retryCount: (pending as any).retry_count ?? 0,
+                  previousClose: quote?.referencePrice ?? prevCloseMap.get(pending.symbol) ?? null,
+                  quoteAgeMs: quote ? bookConfirmationAgeMs(quote) : null,
+                  quoteSource: quote?.source === 'shioaji' ? 'shioaji' : 'none', marketRiskLevel: marketRisk.risk_level,
+                  policy: { limitUpPct: cfg.circuit.limitUpPct ?? .10,
+                    requoteDeviationMax: cfg.position.requoteDeviationMax, requoteDiscount: cfg.position.requoteDiscount,
+                    requoteStopFallback: cfg.position.requoteStopFallback, maxQuoteAgeMs: cfg.position.maxQuoteAgeMs,
+                    maxEntryChasePct: 0, strongBreakoutMaxEntryChasePct: 0 } } })
+              if (result.sizing) counterfactual.sized(pending.symbol,result.sizing)
+              else counterfactual.sizingUnavailable(pending.symbol,result.reason)
+            }
+          } catch (error) {
+            counterfactual.sizingUnavailable(pending.symbol,'counterfactual_sizing_unavailable:' + String(error))
+          }
+        }
         continue
       }
     }
@@ -1793,16 +1847,6 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       })).get(pending.symbol)
       finLabL5Quote=validatedBookL5(pending.symbol,book,optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500))
       if(book && finLabL5Quote)currentOhlc={...currentOhlc,...book}
-    }
-    const l5Thresholds={
-        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
-        maxOddLotQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_ODD_LOT_MAX_QUOTE_AGE_MS, 10_000),
-        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
-        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
-        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
-        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
-          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
-          : -0.7
     }
     let finLabL5Quality = quoteQualityFromL5(finLabL5Quote,l5Thresholds)
     const l4PlanId = planIdFromWatchPoints(pending.watch_points)
@@ -2560,6 +2604,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         continue
       }
     }
+    counterfactual?.sized(pending.symbol,{shares,limitPrice,snapshot:authoritativeSnapshot})
     const paperRiskValidation = await validateOrder({
       symbol: pending.symbol,
       side: 'buy',
@@ -2607,6 +2652,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       if(shares<1) continue
     }
     const requestedShares = shares
+    counterfactual?.sized(pending.symbol,{shares:requestedShares,limitPrice,snapshot:authoritativeSnapshot})
     const lotType = isOddLot ? 'odd_lot' : 'board_lot'
     const twExecutionGate = resolveTwEquityExecutionGate({
       lotType,
@@ -3121,6 +3167,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       throw error
     }
 
+    counterfactual?.filled(pending.symbol)
     const autoOrderId = await paperDomainDatabase(env).prepare(
       "SELECT id FROM paper_orders WHERE account_id=? AND symbol=? AND side='buy' ORDER BY id DESC LIMIT 1",
     ).bind(paperAccountId(), pending.symbol).first<{ id: number }>()
@@ -3289,12 +3336,21 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
     console.log('[Intraday] atomic D1 lease busy; overlapping trigger suppressed')
     return { status: 'partial', positions: 0, quoted: 0, missing_symbols: [] }
   }
+  const counterfactual = paperSwingOwner ? createPaperCounterfactualRecorder(env,today) : null
   try {
-    return await runIntradayCheckUnlocked(env, runId)
+    return await runIntradayCheckUnlocked(env, runId, counterfactual)
   } finally {
     await releaseIntradayExecutionLease(opsDb, runId).catch((error) => {
       console.warn('[Intraday] D1 lease release failed:',
         error instanceof Error ? error.message : String(error))
     })
+    // Research failures cannot alter a Paper order decision or prevent protective exits.
+    // Release the execution lease first; research persistence has its own CAS.
+    if (counterfactual) {
+      try {
+        await counterfactual.flush()
+        await pollPaperCounterfactualLots(env,today)
+      } catch (error) { console.warn('[Counterfactual] runtime evidence unavailable:',error) }
+    }
   }
 }

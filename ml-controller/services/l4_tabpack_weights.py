@@ -1,5 +1,7 @@
 """Content-addressed, bounded FP32 weights. No pickle or model code is loaded."""
 from functools import lru_cache
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import io
 import os
@@ -11,6 +13,17 @@ import numpy as np
 SCHEMA = 'l4-three-head-residual-tabpack-official-v2'
 PREFIX = 'l4_distribution/tabpack_weights/'
 MAX_BYTES = 96 * 1024 * 1024
+_PRIVATE_READER = ContextVar('l4_tabpack_private_reader', default=None)
+
+
+@contextmanager
+def private_weight_reader(reader):
+    """Bind exact private bytes for this task; keep all normal decode checks."""
+    token = _PRIVATE_READER.set(reader)
+    try:
+        yield
+    finally:
+        _PRIVATE_READER.reset(token)
 
 
 def validate_reference(ref):
@@ -49,6 +62,9 @@ def _load(bucket_name, path, sha, size):
 
 def load(ref):
     validate_reference(ref)
+    reader = _PRIVATE_READER.get()
+    if reader is not None:
+        return decode(reader(ref), ref)
     bucket = os.environ.get('GCS_BUCKET_NAME', '').strip()
     if not bucket:
         raise ValueError('l4_tabpack_weights_bucket_missing')

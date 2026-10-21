@@ -117,19 +117,7 @@ export const P7_MODEL_UPGRADE_CANDIDATES: readonly ModelUpgradeCandidate[] = [
     evidence_required: ['production_artifact', 'sequence_policy', 'walk_forward', 'pbo', 'cost_profile', 'positive_ic'],
     notes: 'NeuralForecast iTransformer won before/after replay; legacy simplified Torch iTransformer adapter removed.',
   },
-  {
-    id: 'TimesFM',
-    stage: 'l2_feature_sidecar_member',
-    family: 'foundation_time_series_timesfm25',
-    role: 'L2 TimesFM feature sidecar backed by TimesFM 2.5 config artifact',
-    vote_weight: 0,
-    can_predict: true,
-    can_vote: false,
-    can_promote_directly: false,
-    requires_review_packet: true,
-    evidence_required: ['production_artifact', 'timesfm_2p5_config', 'forecast_validation', 'walk_forward', 'cost_profile', 'l2_feature_release'],
-    notes: 'L2 feature sidecar member; serving id remains TimesFM while the active artifact/config uses TimesFM 2.5. Direct alpha voting is blocked; downstream value comes from released formal137+timesfm_l175 features.',
-  },
+
   {
     id: 'GAOptimizer',
     stage: 'meta_optimizer',

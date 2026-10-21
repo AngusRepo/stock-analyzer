@@ -216,6 +216,7 @@ const forecastData = {
   const diagnostics = buildMlDiagnostics(forecastData)
 
   assert(diagnostics?.totalAlphaModels === 8, 'diagnostics must use direct-alpha voters only')
+  assert(!('timesfmSidecar' in (diagnostics ?? {})), 'retired diagnostics must not be emitted')
   assert(diagnostics?.activeWeightCount === 8, 'active weights must ignore overlays, challenger models, and TimesFM sidecar')
   assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
   assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic_5bar_close', 'forecast calibration method should be visible to UI')
@@ -226,13 +227,6 @@ const forecastData = {
   assert(diagnostics?.dispersion.mergeCompression === 0.62, 'rank compression should be visible to UI')
   assert(diagnostics?.zeroWeightModels?.[0] === 'DLinear', 'zero weight root-cause list should be visible to UI')
   assert(diagnostics?.validationBlockedModels?.[0] === 'DLinear', 'CPCV/PBO blocked models should be visible to UI')
-  assert(diagnostics?.timesfmSidecar?.layer === 'L2', 'TimesFM should remain visible only as an L2 sidecar diagnostic')
-  assert(diagnostics?.timesfmSidecar?.directAlphaBlocked === true, 'TimesFM sidecar must expose direct-alpha blocked status')
-  assert(diagnostics?.timesfmSidecar?.eligibleForL2FeatureEnrichment === false, 'TimesFM must not claim L2 enrichment eligibility before formal137/retrain/release')
-  assert(diagnostics?.timesfmSidecar?.l2FeatureInputActive === false, 'TimesFM must not claim active L2 feature input before formal137/retrain/release')
-  assert(diagnostics?.timesfmSidecar?.l2FeatureInputBlockedReason === 'requires_formal137_registry_retrain_release', 'TimesFM L2 blocked reason should be visible')
-  assert(diagnostics?.timesfmSidecar?.currentAllowedUse.includes('risk_sidecar'), 'TimesFM allowed-use scope should be visible')
-  assert(diagnostics?.timesfmSidecar?.populatedFeatureCount === 3, 'TimesFM sidecar should expose populated feature count')
   assert((diagnostics?.allocatorLearningLedger as any)?.model_states?.DLinear?.state === 'learning_only', 'diagnostics should expose per-model learning/reject state')
 }
 

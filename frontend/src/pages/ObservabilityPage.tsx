@@ -330,12 +330,12 @@ function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone 
   const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
   const color = toneColor(tone)
   return (
-    <div className="relative grid h-28 w-28 shrink-0 place-items-center rounded-full border border-[#2b3a49] bg-[#070a10]">
+    <div className="relative grid h-20 w-20 shrink-0 place-items-center rounded-full border border-[#2b3a49] bg-[#070a10]">
       <div
         className="absolute inset-2 rounded-full"
         style={{ background: `conic-gradient(${color} ${clamped * 3.6}deg, rgba(148,163,184,0.14) 0deg)` }}
       />
-      <div className="relative grid h-[74px] w-[74px] place-items-center rounded-full bg-[#0f151d] shadow-[inset_0_0_20px_rgba(0,0,0,0.45)]">
+      <div className="relative grid h-16 w-16 place-items-center rounded-full bg-[#0f151d] shadow-[inset_0_0_20px_rgba(0,0,0,0.45)]">
         <div className="text-center">
           <p className="sv-num text-2xl font-semibold text-[#f2ead8]">{clamped}</p>
           <p className="sv-num text-xs normal-case text-[#7f8ba0]">readiness</p>
@@ -1028,17 +1028,6 @@ function OperationalReadinessDeck({
           <DataQualityCompactMatrix gates={gates} compact />
         </section>
       </div>
-
-      <div className="mt-3">
-        <ExecutionChainPanel
-          jobs={jobs}
-          isFetching={schedulerFetching}
-          dataUpdatedAt={schedulerDataUpdatedAt}
-          apiError={schedulerApiError}
-          governance={schedulerGovernance}
-        />
-      </div>
-
     </div>
   )
 }
@@ -1599,7 +1588,7 @@ export default function ObservabilityPage() {
 
   return (
     <AppShell>
-      <div className="relative min-h-[70vh] p-4 lg:p-5">
+      <div className="sv-stockintelli-page relative min-h-[70vh] p-4 lg:p-5">
         {initialLoading && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
             <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
@@ -1652,6 +1641,10 @@ export default function ObservabilityPage() {
             </div>
           </div>
         </WorkstationPanel>
+
+        <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
+          dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
+          governance={scheduler.data?.governance} />
 
         <section>
           <EvidenceClockPanel

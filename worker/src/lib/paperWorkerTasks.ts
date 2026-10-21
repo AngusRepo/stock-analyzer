@@ -2,8 +2,8 @@ import { paperExecutionNow, paperAccountId, scopedPaperAccountId } from './paper
 import { executeContinuousPaperBatch, isPaperContinuousSession } from './paperContinuousExecution'
 import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
-import { recordSellSettlement } from './paperMarketData'
-import { batchGetLatestPricesByDomain, getLatestPriceByDomain } from './paperMarketDomainData'
+import { recordSellSettlement, getPrevTradingDay } from './paperMarketData'
+import { batchGetLatestPricesByDomain, batchGetClosingPricesByDomain, getLatestPriceByDomain } from './paperMarketDomainData'
 import { batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
 import { refreshOpenPositionPostClosePriceCache } from './paperIntradayPriceCache'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
@@ -33,6 +33,9 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   console.log('[Snapshot] Starting...')
   const today = snapshotDate(options.date)
   const paperDb = paperDomainDatabase(env)
+  const weekday = new Date(today + 'T00:00:00Z').getUTCDay()
+  const valuationSession = weekday === 0 || weekday === 6 || await env.KV.get(`holiday:${today}`)
+    ? await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV, today) : today
 
   const updatedAcc = await paperDb.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(paperAccountId()).first<any>()
   if (!updatedAcc) throw new Error('paper_snapshot_account_missing')
@@ -44,30 +47,19 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const corporateRights = await outstandingCorporateEntitlements(paperDb, paperAccountId())
   const stockRights = corporateRights.filter(row => row.shares_due > 0 || row.kind === 'subscription').map(row => row.symbol)
   const finalSymbols = [...new Set([...(finalPos ?? []).map((p: any) => p.symbol), ...stockRights])]
-  const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: today, additionalSymbols: stockRights })
+  const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: valuationSession, additionalSymbols: stockRights })
   const finalPriceMap = new Map<string, number>(
     [...postCloseRefresh.prices.entries()].map(([symbol, snapshot]) => [symbol, snapshot.price]),
   )
-  const missingPostCloseSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
-  if (missingPostCloseSymbols.length) {
-    const intradayPrices = await batchGetIntradayPrices(missingPostCloseSymbols, {
-      SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
-      PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
-    })
-    for (const [symbol, price] of intradayPrices) finalPriceMap.set(symbol, price)
-  }
   const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
-  if (missingFinalSymbols.length) {
-    const eodPrices = await batchGetLatestPricesByDomain(env, missingFinalSymbols, today)
-    for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
-    console.log(
-      `[Snapshot] price coverage post_close=${postCloseRefresh.refreshed}/${finalSymbols.length} ` +
-      `intraday=${finalPriceMap.size - eodPrices.size - postCloseRefresh.refreshed}/${missingPostCloseSymbols.length} ` +
-      `eod_fallback=${eodPrices.size}/${missingFinalSymbols.length}`,
-    )
-  } else {
-    console.log(`[Snapshot] price coverage post_close=${postCloseRefresh.refreshed}/${finalSymbols.length} eod_fallback=0/0`)
-  }
+  const eodPrices = await batchGetClosingPricesByDomain(env, missingFinalSymbols, valuationSession)
+  for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
+  const markEvidence = Object.fromEntries(finalSymbols.filter(s => finalPriceMap.has(s)).map(symbol => {
+    const quote = postCloseRefresh.prices.get(symbol)
+    return [symbol, { price: finalPriceMap.get(symbol), price_date: valuationSession,
+      source: quote?.source ?? 'stock_prices.exact_session_close',
+      quote_time: quote?.quote_time ?? null, observed_at: quote?.updated_at ?? null }]
+  }))
 
   // Never persist a partial valuation as a genuine account loss. Retrying after
   // prices arrive is safe; no snapshot/closure has been written at this point.
@@ -87,7 +79,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     positions: Object.fromEntries((finalPos ?? []).map((p: any) => [p.symbol, p.shares])),
     corporate_receivables: corporateRights,
     corporate_receivables_value: bounds.complete ? corporateValue : null,
-    marks: Object.fromEntries(finalPriceMap), nav: bounds.complete ? totalValue : null,
+    marks: Object.fromEntries(finalPriceMap), mark_evidence: markEvidence, nav: bounds.complete ? totalValue : null,
     nav_lower_bound: totalValue, nav_upper_bound: totalValue + bounds.upper - bounds.lower,
     unpriced_rights: bounds.unpricedRights, valuation_complete: bounds.complete,
   }
@@ -172,7 +164,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     calmar = cagr / maxDrawdownToDate
   }
 
-  await paperDb.prepare(`
+  const snapshotWrite = paperDb.prepare(`
     INSERT INTO paper_daily_snapshots
       (account_id, date, cash, positions_value, total_value, pnl, pnl_pct,
        benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d,
@@ -200,7 +192,14 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     sortino30d,
     calmar,
     cagr,
-  ).run()
+  )
+  // Persist per-symbol marks atomically with the NAV that used them. This is
+  // necessary to explain historical valuation; aggregate NAV alone cannot.
+  const saved = await paperDb.batch([snapshotWrite, paperDb.prepare(`
+    INSERT INTO paper_execution_events(account_id,trade_date,event_type,status,reason,detail_json,source)
+    VALUES(?,?,'snapshot_audit','verified','dated_marks_complete',?,'daily-snapshot')
+  `).bind(paperAccountId(), today, JSON.stringify(valuation))])
+  if (saved.some(result => !result.success)) throw new Error('paper_snapshot_mark_receipt_write_failed')
 
   const { auditPaperSnapshotConsistency } = await import('./paperSnapshotAudit')
   await auditPaperSnapshotConsistency(env, {

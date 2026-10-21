@@ -20,7 +20,7 @@ def recommendation_source_identity() -> dict[str, str]:
         'paired_nav_recommendation_path.py', 'strict_json_clone.py', 'paired_nav_l3_candidate.py', 'paired_nav_l3_dispatch.py',
         'paired_nav_strategy_bundle.py', 'recommendation_service.py',
         'active8_paper_admission.py', 'strategy_nav_runtime_approval.py', 'active8_nav_adoption.py', 'active8_nav_inference.py', 'strategy_ab.py',
-        'model_serving_resolver.py', 'worker_config_client.py', 'timesfm_evidence_contract.py', 'timesfm_l175_sidecar.py',
+        'model_serving_resolver.py', 'worker_config_client.py',
         'ensemble_v2.py', 'alpha_framework.py', 'l4_alpha_ev_producer.py',
         'allocator_ev_fusion.py', 'expected_return_numeric.py', 'persona_service.py',
         'pipeline_persona_context.py', 'paired_nav_atomic_personas.py',
@@ -64,8 +64,8 @@ def run_recommendation_path(*, inputs: dict, filter_rows=None, enrich_l2=None,
     rows, sell_count, diagnostics = (filter_rows or service.filter_and_score_recommendations)(
         inputs['screener_recs'], predictions, inputs['payloads'],
         **inputs['filter_options'], include_filtered_diagnostics=True)
-    rows = (enrich_l2 or service.apply_l2_timesfm_evidence)(
-        rows, predictions, l2_summary=inputs['l2_summary'])
+    if enrich_l2 is not None:  # Explicit historical replay adapter only.
+        rows = enrich_l2(rows, predictions, l2_summary=inputs.get('l2_summary'))
     layer2_symbols = [str(row['symbol']) for row in rows if row.get('symbol')]
     # The original resolver returns input_count. This is evidence coverage,
     # not a Top-K limit, and must be recomputed for EACH arm's actual slate.

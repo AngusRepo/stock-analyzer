@@ -42,19 +42,7 @@ export interface MlDiagnosticsSummary {
     mergeCompression: number | null
     weightHhi: number | null
   }
-  timesfmSidecar: {
-    schemaVersion: string | null
-    layer: string | null
-    role: string | null
-    directAlphaBlocked: boolean
-    eligibleForL2FeatureEnrichment: boolean
-    l2FeatureInputActive: boolean
-    l2FeatureInputBlockedReason: string | null
-    currentAllowedUse: string[]
-    featureKeys: string[]
-    populatedFeatureCount: number
-    features: Record<string, unknown>
-  } | null
+
   allocatorLearningLedger: Record<string, unknown> | null
 }
 
@@ -179,15 +167,12 @@ export const DIRECT_ALPHA_VOTE_MODEL_NAMES = [
   'iTransformer',
 ] as const
 
-export const TIMESFM_SIDECAR_MODEL_NAMES = [
-  'TimesFM',
-] as const
+
 
 // Retrieval allowlist spans both published roster generations; voting uses exact packet identity.
 export const ALPHA_PREDICTION_MODEL_NAMES = [
   ...DIRECT_ALPHA_VOTE_MODEL_NAMES,
   'TimeXer',
-  ...TIMESFM_SIDECAR_MODEL_NAMES,
 ] as const
 
 const TRACKED_MODEL_NAMES = [...DIRECT_ALPHA_VOTE_MODEL_NAMES]
@@ -295,33 +280,7 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
 
-function buildTimesFmSidecarDiagnostics(data: Record<string, any> | null): MlDiagnosticsSummary['timesfmSidecar'] {
-  const sidecar = data?.timesfm_sidecar && typeof data.timesfm_sidecar === 'object'
-    ? data.timesfm_sidecar as Record<string, any>
-    : null
-  if (!sidecar) return null
-  const features = sidecar.features && typeof sidecar.features === 'object'
-    ? sidecar.features as Record<string, unknown>
-    : {}
-  const currentAllowedUse = Array.isArray(sidecar.current_allowed_use)
-    ? sidecar.current_allowed_use.map(String).filter(Boolean)
-    : []
-  const featureKeys = Object.keys(features).sort()
 
-  return {
-    schemaVersion: typeof sidecar.schema_version === 'string' ? sidecar.schema_version : null,
-    layer: typeof sidecar.layer === 'string' ? sidecar.layer : null,
-    role: typeof sidecar.role === 'string' ? sidecar.role : null,
-    directAlphaBlocked: boolFromUnknown(sidecar.direct_alpha_blocked),
-    eligibleForL2FeatureEnrichment: boolFromUnknown(sidecar.eligible_for_l2_feature_enrichment),
-    l2FeatureInputActive: boolFromUnknown(sidecar.l2_feature_input_active),
-    l2FeatureInputBlockedReason: cleanTextOrNull(sidecar.l2_feature_input_blocked_reason),
-    currentAllowedUse,
-    featureKeys,
-    populatedFeatureCount: featureKeys.filter((key) => features[key] !== null && features[key] !== undefined && features[key] !== '').length,
-    features,
-  }
-}
 
 function resolveVoteThresholds(
   forecastData: Record<string, any> | null,
@@ -536,7 +495,6 @@ export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary 
       mergeCompression: finiteOrNull(dispersion.merge_compression),
       weightHhi: finiteOrNull(dispersion.weight_hhi),
     },
-    timesfmSidecar: buildTimesFmSidecarDiagnostics(data),
     allocatorLearningLedger: ev2.allocator_learning_ledger && typeof ev2.allocator_learning_ledger === 'object'
       ? ev2.allocator_learning_ledger as Record<string, unknown>
       : null,

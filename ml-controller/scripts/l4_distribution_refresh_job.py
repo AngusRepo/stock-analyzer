@@ -54,7 +54,7 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
         from services.trading_config_loader import load_merged_trading_config_with_contract
         from services.paper_strategy_mode import refresh_family
         model_family=refresh_family(load_merged_trading_config_with_contract().config)
-    if model_family not in (None,'tabpack','tabpack_median16','full_mlp_median','tabpack_r2') or (strategy_role!='B' and model_family is not None):
+    if model_family not in (None,'tabpack','tabpack_median16','full_mlp_median','tabpack_r2','p6_a') or (strategy_role!='B' and model_family is not None):
         raise ValueError('l4_refresh_model_family_invalid')
     if model_family=='tabpack_r2' and cadence not in ('monthly','manual'):
         return dict(status='not_requested',reason='l4_r2_neural_training_monthly_only',
@@ -79,6 +79,10 @@ def execute(*,as_of,cadence,target_l3_artifact_id=None,strategy_role="A",complet
     manifest,_=load_verified_oof_manifest(source,bucket=bucket,require_formal_lineage=True)
     from services.training_source_preflight import require_oof_training_sources
     require_oof_training_sources(bucket, manifest)
+    if model_family=='p6_a':
+        from services.l4_p6_monthly import execute as execute_p6
+        return execute_p6(bucket=bucket,identity=identity,manifest=manifest,as_of=as_of,
+            cadence=cadence,completed_run_key=completed_run_key)
     if completed_run_key is not None:
         if strategy_role != 'B' or cadence != 'monthly':
             raise ValueError('completed_run_reuse_requires_monthly_B')

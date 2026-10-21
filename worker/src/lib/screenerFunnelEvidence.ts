@@ -112,7 +112,6 @@ export interface StrategyPortfolioIntelligenceHealth {
   no_topk: true
 }
 
-const L2_TIMESFM_MODELS = ['TimesFM'] as const
 const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'] as const
 const ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS = [...L3_FORMAL_MODELS] as const
 const LEGACY_L2_COARSE_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees'] as const
@@ -343,12 +342,6 @@ function pickAllByStage(steps: ScreenerFunnelStep[], stage: string): ScreenerFun
 }
 
 function pickLastFormalLayer2Step(steps: ScreenerFunnelStep[]): ScreenerFunnelStep | null {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i]
-    if (step.stage !== 'layer2_timesfm_enrichment') continue
-    if (step.evidence?.worker_seed_only === true) continue
-    return step
-  }
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i]
     if (step.stage !== 'layer2_coarse_ml_gate') continue
@@ -729,31 +722,7 @@ function buildLayer2CoarseMlSummary(
   const source = layer2
   if (!source) return null
   const evidence = source.evidence ?? {}
-  if (source.stage === 'layer2_timesfm_enrichment') {
-    return {
-      schema_version: 'layer2_timesfm_enrichment_summary_v1',
-      source: 'screener_funnel_items',
-      owner: 'ml_controller',
-      model_scope: 'l2_timesfm_sequence_feature_enrichment',
-      expected_models: [...L2_TIMESFM_MODELS],
-      expected_model_count: L2_TIMESFM_MODELS.length,
-      decision_policy: 'timesfm_sequence_sidecar_feature_enrichment_not_selector',
-      selection_policy: 'no_candidate_drop_no_topk_no_l3_queue_shrink',
-      capacity_policy: 'full_l15_slate_to_l3_8ml',
-      final_recommendation_gate: evidence.final_recommendation_gate === true,
-      l3_formal_inference_selected: evidence.l3_formal_inference_selected !== false,
-      direct_alpha_blocked: evidence.direct_alpha_blocked !== false,
-      sidecar_schema_version: evidence.sidecar_schema_version ?? null,
-      l2_feature_input_active: evidence.l2_feature_input_active === true,
-      l2_feature_input_blocked_reason: evidence.l2_feature_input_blocked_reason ?? null,
-      l2_feature_schema_version: evidence.l2_feature_schema_version ?? null,
-      populated_feature_count: toNullableNumber(evidence.populated_feature_count),
-      current_allowed_use: arrayOfStrings(evidence.current_allowed_use),
-      decision: source.decision,
-      reason_code: source.reason_code,
-      rank: source.rank,
-    }
-  }
+
   const workerSeedOnly = evidence.worker_seed_only === true
   const formalEvidence = Boolean(layer2 && !workerSeedOnly)
   const finalRecommendationGate = evidence.final_recommendation_gate === true
@@ -793,10 +762,8 @@ function buildLayer3FormalMlSummary(layer3: ScreenerFunnelStep | null): Record<s
   const evidence = layer3.evidence ?? {}
   const contributingModels = arrayOfStrings(evidence.contributing_models)
   const activeFamilies = arrayOfStrings(evidence.active_families)
-  const l2ModelSet = new Set<string>(L2_TIMESFM_MODELS)
   const formalModels = predictionModelOrder(evidence)
   const l3ModelSet = new Set<string>(formalModels)
-  const l2ContributingModels = contributingModels.filter((model) => l2ModelSet.has(model))
   const l3ContributingModels = contributingModels.filter((model) => l3ModelSet.has(model))
   return {
     schema_version: 'layer3_8ml_formal_summary_v1',
@@ -807,7 +774,7 @@ function buildLayer3FormalMlSummary(layer3: ScreenerFunnelStep | null): Record<s
     expected_model_count: formalModels.length,
     decision_policy: 'eight_ml_formal_family_evidence_not_topk',
     retention_report_schema: 'strategy_family_retention_report_v1',
-    retention_input_layer: 'layer2_timesfm_enrichment',
+    retention_input_layer: 'l15_ml_slate_queue',
     retention_output_layer: 'layer3_8ml_formal',
     diversity_loss_report_scope: 'l2_to_l3_model_family_retention',
     capacity_policy: 'evidence_only_no_minimum_fill',
@@ -819,7 +786,6 @@ function buildLayer3FormalMlSummary(layer3: ScreenerFunnelStep | null): Record<s
     active_families: activeFamilies,
     contributing_model_count: contributingModels.length,
     contributing_models: contributingModels,
-    l2_contributing_models: l2ContributingModels,
     l3_contributing_models: l3ContributingModels,
     active_l3_model_count: l3ContributingModels.length,
     weights: evidence.weights ?? null,
@@ -1007,13 +973,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
   if (layer1Labeler) evidence.layer1_strategy_labeler = layer1Labeler
   if (layer125) evidence.layer125_finlab_portfolio_intelligence = layer125
   if (layer15) evidence.layer15_multi_strategy_router = layer15
-  if (layer2Summary) {
-    if (layer2Summary.schema_version === 'layer2_timesfm_enrichment_summary_v1') {
-      evidence.layer2_timesfm_enrichment = layer2Summary
-    } else {
-      evidence.layer2_3ml_coarse = layer2Summary
-    }
-  }
+  if (layer2Summary) evidence.layer2_3ml_coarse = layer2Summary
   if (layer2) evidence.layer2_coarse_ml = { reason_code: layer2.reason_code, rank: layer2.rank, score_after: layer2.score_after, ...layer2.evidence }
   if (layer15SlateSeed) evidence.layer15_ml_slate_queue = { reason_code: layer15SlateSeed.reason_code, rank: layer15SlateSeed.rank, score_after: layer15SlateSeed.score_after, ...layer15SlateSeed.evidence }
   if (!layer2 && layer2Seed) evidence.layer2_queue_seed = { reason_code: layer2Seed.reason_code, rank: layer2Seed.rank, score_after: layer2Seed.score_after, ...layer2Seed.evidence }
@@ -1061,6 +1021,7 @@ function summarizeEvidence(steps: ScreenerFunnelStep[]): Record<string, unknown>
 }
 
 export function summarizeScreenerFunnelRows(rows: ScreenerFunnelRow[]): Map<string, ScreenerFunnelSummary> {
+  rows = rows.filter(row => row.stage !== 'layer2_timesfm_enrichment')
   const grouped = new Map<string, ScreenerFunnelStep[]>()
   for (const row of rows) {
     const symbol = normalizeSymbol(row.symbol)

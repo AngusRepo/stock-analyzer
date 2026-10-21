@@ -35,7 +35,6 @@ const MODEL_COLORS: Record<string, string> = {
   DLinear: '#8b5cf6',
   PatchTST: '#f59e0b',
   iTransformer: '#38bdf8',
-  TimesFM: '#f43f5e',
   KalmanFilter: '#3b82f6',
   MarkovSwitching: '#06b6d4',
 }

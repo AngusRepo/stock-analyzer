@@ -64,7 +64,7 @@ for (const id of ['TabM', 'GNN', 'iTransformer']) {
   assert(track.includes(`id: '${id}'`), `${id} should remain a production L3 slot`)
   assert(workbench.includes(id), `${id} should remain visible in the model cockpit`)
 }
-assert(track.includes("id: 'TimesFM'") && track.includes("stage: 'l2_feature_sidecar_member'"), 'TimesFM should remain an L2 feature sidecar')
+assert(!track.includes("id: 'TimesFM'"), 'Retired TimesFM must not appear as an active candidate')
 assert(track.includes('MODEL_POOL_RETIRED_MODEL_IDS'), 'Retired model taxonomy should remain explicit')
 
 for (const token of ['\ueec4', '\uef3e', '\uea57']) {

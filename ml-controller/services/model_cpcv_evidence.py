@@ -6,6 +6,7 @@ import math
 from statistics import mean, pstdev
 from typing import Any
 
+from services.model_tail_validation import evaluate_tail_fold_guard
 from services.model_validation_policy import resolve_model_validation_policy
 
 
@@ -247,6 +248,8 @@ def build_model_cpcv_evidence(
             ):
                 if key in fold:
                     normalized[key] = fold.get(key)
+            if isinstance(fold.get("date_cluster_ics"), list):
+                normalized["date_cluster_ics"] = fold["date_cluster_ics"]
             rows.append(normalized)
 
     ic_values = [row["oos_ic"] for row in rows]
@@ -291,6 +294,12 @@ def build_model_cpcv_evidence(
     if coverage_gate_value < _as_float(p["min_coverage"]):
         failed_gates.append("cpcv_coverage")
 
+    warning_gates: list[str] = []
+    tail_guard = p.get("tail_fold_guard") if isinstance(p.get("tail_fold_guard"), dict) else {}
+    tail_stats, tail_failures, tail_warnings = evaluate_tail_fold_guard(rows, tail_guard, stage=stage)
+    failed_gates.extend(tail_failures)
+    warning_gates.extend(tail_warnings)
+
     decision = "PASS" if not failed_gates else "FAIL"
     evidence = {
         "schema_version": MODEL_CPCV_EVIDENCE_SCHEMA_VERSION,
@@ -299,6 +308,9 @@ def build_model_cpcv_evidence(
         "decision": decision,
         "passed": decision == "PASS",
         "failed_gates": failed_gates,
+        "warning_gates": sorted(set(warning_gates)),
+        "serving_disposition": "DEGRADED" if warning_gates and not failed_gates else decision,
+        "tail_fold_stats": tail_stats,
         "folds": folds,
         "oos_ic_mean": round(ic_mean, 6),
         "oos_ic_std": round(ic_std, 6),
@@ -444,4 +456,57 @@ def build_foundation_forecast_validation_evidence(
         "sample_rows": rows[:100],
         "retrain_required": False,
         "reason": f"{model} is validated by forecast/outcome evidence; retrain-style CPCV is not the default owner.",
+    }
+
+
+def review_model_tail_evidence(model: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    """Read-only uniform tail review; retain the receipt's numerical policy.
+
+    This is descriptive evidence, never a replacement promotion receipt.
+    Historical non-tail failures/warnings remain in the combined disposition.
+    """
+    from services.model_validation_policy import MODEL_VALIDATION_POLICY_VERSION
+
+    policy = evidence.get("policy")
+    guard = policy.get("tail_fold_guard") if isinstance(policy, dict) else None
+    folds = evidence.get("fold_metrics")
+    result: dict[str, Any] = {
+        "schema_version": "model-tail-review-v1",
+        "model": model,
+        "policy_version": MODEL_VALIDATION_POLICY_VERSION,
+        "policy_source": "archived_numeric_rule_uniform_tail_eligibility",
+        "production_effect": False,
+        "original_decision": evidence.get("decision"),
+        "original_serving_disposition": evidence.get("serving_disposition"),
+        "original_policy_version": evidence.get("policy_version"),
+    }
+    if not isinstance(guard, dict) or not isinstance(folds, list) or not folds:
+        return {**result, "status": "evidence_missing", "reason": "archived_tail_policy_or_fold_metrics_missing"}
+    rows = []
+    for row in folds:
+        if not isinstance(row, dict):
+            continue
+        value = _as_float(row.get("oos_ic", row.get("rank_ic")), math.nan)
+        if math.isfinite(value):
+            rows.append({**row, "oos_ic": value})
+    if len(rows) != len(folds):
+        return {**result, "status": "evidence_missing", "reason": "invalid_fold_metric"}
+    uniform_guard = {**guard, "enabled": True, "required_for_serving_promotion": True}
+    stats, tail_failures, tail_warnings = evaluate_tail_fold_guard(rows, uniform_guard, stage="promotion")
+    failures = [str(x) for x in evidence.get("failed_gates", []) if not str(x).startswith("cpcv_tail_")]
+    warnings = [str(x) for x in evidence.get("warning_gates", []) if not str(x).startswith("cpcv_tail_")]
+    failures = sorted(set(failures + tail_failures))
+    warnings = sorted(set(warnings + tail_warnings))
+    return {
+        **result,
+        "status": "reviewed",
+        "decision": "FAIL" if failures else "PASS",
+        "serving_disposition": "FAIL" if failures else "DEGRADED" if warnings else "PASS",
+        "failed_gates": failures,
+        "warning_gates": warnings,
+        "folds": len(rows),
+        "oos_ic_mean": round(mean(row["oos_ic"] for row in rows), 6),
+        "last_fold_oos_ic": rows[-1]["oos_ic"],
+        "tail_fold_stats": stats,
+        "tail_fold_guard": uniform_guard,
     }

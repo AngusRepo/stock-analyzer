@@ -38,6 +38,15 @@ class ShadowRequest(BaseModel):
     packet: dict[str, Any] = Field(default_factory=dict)
 
 
+class PaperReturnRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class AccountObservationRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 def _verify_service_token(authorization: str | None) -> None:
     if SERVICE_ROLE != "dedicated_execution_gateway":
         raise HTTPException(503, "dedicated execution gateway role not configured")
@@ -104,6 +113,28 @@ def validate_shadow(
     )
 
 
+@app.post("/v1/control/return-to-paper")
+def return_to_paper(req: PaperReturnRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _verify_service_token(authorization)
+    try:
+        return gateway.return_to_paper(request_id=req.request_id, reason=req.reason)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, "paper return not confirmed") from exc
+
+
+@app.get("/v1/control/submission-state")
+def submission_state(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _verify_service_token(authorization)
+    try:
+        receipt = gateway.submission_control.paused_receipt()
+        return {"status": "live_submission_paused" if receipt else "not_paused",
+                "receipt": receipt, "live_admission_granted": False}
+    except Exception as exc:
+        raise HTTPException(503, "live submission state unavailable") from exc
+
+
 @app.get("/v1/intents/{idempotency_key}")
 def intent_status(idempotency_key: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _verify_service_token(authorization)
@@ -111,3 +142,15 @@ def intent_status(idempotency_key: str, authorization: str | None = Header(defau
     if lifecycle is None:
         raise HTTPException(404, "execution intent not found")
     return {"status": "ok", **lifecycle}
+
+
+@app.post("/v1/account/observations")
+def capture_account_observation(req: AccountObservationRequest,
+                                authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _verify_service_token(authorization)
+    try:
+        return gateway.capture_account_observation(request_id=req.request_id)
+    except ValueError as exc:
+        raise HTTPException(422, "live account source rejected") from exc
+    except Exception as exc:
+        raise HTTPException(503, "live account observation unavailable") from exc

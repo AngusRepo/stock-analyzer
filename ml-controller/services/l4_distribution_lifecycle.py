@@ -10,15 +10,37 @@ ACCEPTANCE_CHECKS = ('native_feature_parity','purged_labels','same_pool','same_c
     'native_l3_baseline_preserved','incremental_comparison_contract')
 
 
+P6_ACCEPTANCE_CHECKS = tuple(k for k in ACCEPTANCE_CHECKS if k not in
+    ('native_l3_baseline_preserved','incremental_comparison_contract')) + (
+    'p6_direct_excess_no_A','p6_frozen_full_pool_calibration','p6_final_checkpoint_lineage',
+    'morning_nine_day_deadline','morning_no_nav_or_research','nav_five_day_reconciliation',
+    'shadow_accounts_cross_day','timesfm_nine_day_output_parity',
+    'forward_counterfactual_and_exit_events','timexer_daily_status',
+    'unique_deployment_owner','current_prod_rollback')
+
+
 def validate_acceptance(receipt,bundle):
+    from services.l4_p6_bundle import is_p6,verify_inner_report
+    p6=is_p6(bundle)
+    checks=P6_ACCEPTANCE_CHECKS if p6 else ACCEPTANCE_CHECKS
     if (receipt.get('schema_version')!='l4-paper-acceptance-v1'
             or receipt.get('model_checksum')!=bundle['model_checksum']
             or receipt.get('l3_identity_checksum')!=digest(bundle['l3_identity'])
             or receipt.get('feature_schema')!=bundle.get('feature_schema')
-            or not all(receipt.get('checks',{}).get(key) is True for key in ACCEPTANCE_CHECKS)
+            or not all(receipt.get('checks',{}).get(key) is True for key in checks)
             or len(receipt.get('source_evidence_checksum',''))!=64):
         raise ValueError('l4_distribution_acceptance_evidence_incomplete')
     mode=receipt.get('acceptance_mode','comparative_promotion')
+    if p6:
+        grant=receipt.get('experiment_authorization') or {}
+        if (mode!='p6_r32_paper' or grant.get('scope')!='paper' or grant.get('approved') is not True
+                or grant.get('model_checksum')!=bundle['model_checksum']
+                or not isinstance(grant.get('source_reference'),str) or not grant['source_reference'].strip()
+                or receipt.get('inner_report_checksum')!=bundle['model']['inner_report']['checksum']
+                or receipt.get('efficacy_status')!='inner_only_outer_unproven'):
+            raise ValueError('p6_r32_acceptance_authorization_missing')
+        verify_inner_report(bundle['model']['inner_report'])
+        return
     if mode == 'paper_experiment':
         grant=receipt.get('experiment_authorization') or {}
         if (grant.get('scope')!='paper' or grant.get('approved') is not True
@@ -41,7 +63,7 @@ def prepare_paper_release(candidate,receipt,*,signal_date):
     validate_acceptance(receipt,frozen)
     frozen['release']={'scope':'paper','decision':'PASS',
         'acceptance_mode':receipt.get('acceptance_mode','comparative_promotion'),
-        'efficacy_status':'unproven' if receipt.get('acceptance_mode')=='paper_experiment' else 'paired_comparison_passed',
+        'efficacy_status':'inner_only_outer_unproven' if receipt.get('acceptance_mode')=='p6_r32_paper' else 'unproven' if receipt.get('acceptance_mode')=='paper_experiment' else 'paired_comparison_passed',
         'model_checksum':frozen['model_checksum'],
         'l3_identity_checksum':digest(frozen['l3_identity']),'validation_receipt':deepcopy(receipt),
         'validation_receipt_checksum':digest(receipt)}

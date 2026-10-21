@@ -436,6 +436,7 @@ export async function runActive8OofLifecycle(
     expectedCohortId?: string
     continuationAttempt?: number
     continuationOnly?: boolean
+    trainingCutoff?: { signal_date_max: string; label_known_at_max: string }
     schedulerTicketId?: string
     schedulerRunId?: string
   } = {},
@@ -497,6 +498,10 @@ export async function runActive8OofLifecycle(
       model_profile_schema_version: modelProfile,
       cadence,
       end_date: runDate,
+      ...(options.trainingCutoff ? {
+        signal_date_max: options.trainingCutoff.signal_date_max,
+        label_known_at_max: options.trainingCutoff.label_known_at_max,
+      } : {}),
       dry_run: false,
       // Only the daily exact-candidate forward evaluator may promote.
       // Weekly/monthly runs generate immutable candidates and must never
@@ -561,6 +566,7 @@ export async function runActive8OofLifecycle(
       schedulerRunId: options.schedulerRunId,
       oofCadence: cadence,
       oofExpectedCohortId: cleanText(data.cohort_id),
+      oofTrainingCutoff: options.trainingCutoff,
       oofContinuationAttempt: 1,
     }, { delaySeconds: 300 })
   }

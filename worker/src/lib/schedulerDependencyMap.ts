@@ -19,6 +19,19 @@ export interface SchedulerDependencySpec {
 }
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
+  'postclose-research-dispatch': {
+    task:'postclose-research-dispatch',owner:'worker_chain',consolidationClass:'keep_scheduler',
+    currentFunction:'At 14:20 dispatch checksum-bound morning research and the existing post-pipeline verification owner.',
+    upstream:['pipeline'],downstream:['dataset-snapshot-export','post-pipeline-chain'],
+    requiredBeforeDisable:['all sealed morning research has an equivalent after-close dispatcher'],
+    operatorRisk:'high',recommendation:'Keep dispatch status distinct from research completion; never run NAV on the premarket serving path.',
+  },
+  'l4-shadow-execution': {
+    task:'l4-shadow-execution',owner:'gcp_scheduler',consolidationClass:'keep_scheduler',
+    currentFunction:'Advance immutable registered accounts using their own daily frozen chain and ledger.',
+    upstream:['pipeline'],downstream:[],requiredBeforeDisable:['registered accounts have another complete source collector'],
+    operatorRisk:'high',recommendation:'Per-minute session coverage; no retired paired owner, registration, promotion or synthetic backfill.',
+  },
   'strategy-nav-execution': {
     task: 'strategy-nav-execution', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
     currentFunction: 'Collect only atomic_strategy native frames under the current released single-B model.',

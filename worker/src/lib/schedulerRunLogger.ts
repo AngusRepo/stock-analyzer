@@ -1,10 +1,11 @@
 /**
  * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
+import type { TimeXerCallbackEvidence } from './timexerCallbackEvidence'
 
-export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running'
+export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running' | 'waiting'
 
-export interface SchedulerRunLogEntry {
+export interface SchedulerRunLogEntry extends TimeXerCallbackEvidence {
   task: string
   status: SchedulerRunStatus
   summary: string
@@ -42,6 +43,7 @@ const TASK_NAMES: Record<string, string> = {
   'post-verify-chain': 'Post Verify Chain',
   'post-screener-pipeline': 'Post Screener Pipeline Continuation',
   'dataset-snapshot-export': 'Dataset Snapshot Export',
+  'postclose-research-dispatch': 'Post-close Research Dispatch',
   'linucb-reward-ledger': 'LinUCB Reward Ledger',
   'adaptive-meta-policy-replay': 'Adaptive Meta Policy Replay',
   'linucb-multiplier-replay': 'LinUCB Multiplier Replay',
@@ -146,7 +148,8 @@ export function isSchedulerRunStatus(status: unknown): status is SchedulerRunSta
     status === 'blocked' ||
     status === 'skipped' ||
     status === 'triggered' ||
-    status === 'running'
+    status === 'running' ||
+    status === 'waiting'
   )
 }
 
@@ -158,6 +161,7 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   if (/\bstatus=skipped\b/.test(normalized)) return 'skipped'
   if (/\bstatus=(?:pending|spawned|triggered)\b/.test(normalized)) return 'triggered'
   if (/\bstatus=running\b/.test(normalized)) return 'running'
+  if (/\bstatus=waiting\b/.test(normalized)) return 'waiting'
   if (
     normalized.startsWith('running') ||
     normalized.includes('started (background)') ||
@@ -219,7 +223,7 @@ export function resolveMonotonicSchedulerEntry(
     && previous.attempt_id !== incoming.attempt_id
   if (explicitNewAttempt) return incoming
   if (previous.status === 'error' && incoming.status !== 'error') return previous
-  if (previous.status === 'success' && ['running', 'triggered', 'skipped'].includes(incoming.status)) return previous
+  if (previous.status === 'success' && ['running', 'triggered', 'skipped', 'waiting'].includes(incoming.status)) return previous
   return incoming
 }
 
@@ -244,11 +248,20 @@ export async function logSchedulerRunResult(
     run_date: today,
     run_scope: result.run_scope,
     error: result.error,
+    timexer_evidence_receipt: result.timexer_evidence_receipt,
+    timexer_recorder_error: result.timexer_recorder_error,
     timestamp: new Date().toISOString(),
   }
 
   try {
     const previous = await kv.get(`scheduler:run:${task}:${today}`, 'json') as SchedulerRunLogEntry | null
+    // A duplicate legacy callback must not erase evidence already saved for this outcome.
+    if (task === 'pipeline' && previous?.run_id === incoming.run_id
+        && previous?.run_date === incoming.run_date && previous?.status === incoming.status
+        && !incoming.timexer_evidence_receipt && !incoming.timexer_recorder_error) {
+      incoming.timexer_evidence_receipt = previous.timexer_evidence_receipt
+      incoming.timexer_recorder_error = previous.timexer_recorder_error
+    }
     const entry = resolveMonotonicSchedulerEntry(previous, incoming, {
       supersedePrevious: result.supersedePrevious === true,
     })

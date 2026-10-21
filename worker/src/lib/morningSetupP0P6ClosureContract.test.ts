@@ -14,7 +14,6 @@ const formal137 = fs.readFileSync('src/lib/formal137FeatureMaterialization.ts', 
 const recommendationContext = fs.readFileSync('src/lib/recommendationContext.ts', 'utf8')
 const recommendationCard = fs.readFileSync('../frontend/src/components/RecommendationCardClean.tsx', 'utf8')
 const recommendationService = fs.readFileSync('../ml-controller/services/recommendation_service.py', 'utf8')
-const timesfmL175Sidecar = fs.readFileSync('../ml-controller/services/timesfm_l175_sidecar.py', 'utf8')
 const rrgCalculator = fs.readFileSync('../ml-controller/services/_rrg_calculator.py', 'utf8')
 const sectorFlowService = fs.readFileSync('../ml-controller/services/sector_flow_service.py', 'utf8')
 const sectorFlowRotationMigration = fs.readFileSync('migration_sector_flow_rotation_model_2026_06_23.sql', 'utf8')
@@ -70,19 +69,11 @@ assert(
 
 assert(
   recommendationContext.includes('DIRECT_ALPHA_VOTE_MODEL_NAMES') &&
-    recommendationContext.includes('TIMESFM_SIDECAR_MODEL_NAMES') &&
-    recommendationContext.includes('timesfmSidecar') &&
-    recommendationContext.includes('l2FeatureInputActive') &&
-    recommendationContext.includes('l2FeatureInputBlockedReason') &&
-    recommendationService.includes('build_timesfm_l175_sidecar') &&
-    timesfmL175Sidecar.includes('"eligible_for_l2_feature_enrichment": active') &&
-    timesfmL175Sidecar.includes('"l2_feature_input_active": active') &&
-    timesfmL175Sidecar.includes('requires_formal137_registry_retrain_release') &&
-    recommendationCard.includes('L2 TimesFM + L3 Direct ML') &&
-    recommendationCard.includes('L2 input') &&
-    recommendationCard.includes('L2 block formal137/retrain/release') &&
-    recommendationCard.includes('TimesFM direct alpha blocked'),
-  'P4 must remove TimesFM from direct ML vote display and expose it as an L2 sidecar diagnostic without falsely claiming direct alpha input',
+    !recommendationContext.includes('timesfmSidecar') &&
+    !recommendationService.includes('"timesfm_sidecar": _timesfm_sidecar_payload(data)') &&
+    !recommendationCard.includes('L2 TimesFM + L3 Direct ML') &&
+    !recommendationCard.includes('L2 block formal137/retrain/release'),
+  'R32 retires TimesFM generation, prediction publication and active sidecar display',
 )
 
 assert(

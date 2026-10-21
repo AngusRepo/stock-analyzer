@@ -88,15 +88,9 @@ def dispatched(monkeypatch):
                 'adj_close': observed.get(day, 100), 'source': 'finlab.price'})
     monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda *a, **kw: deepcopy(canonical))
     monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 512)
-    monkeypatch.setattr(graph, '_timesfm_l175_release_policy', lambda: {})
-    monkeypatch.setattr(graph, '_load_model_pool_versions', lambda: ({'TimesFM': 'active'}, {'TimesFM': 'fixture-v'}, {}, True))
-    monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {
-        'l2_feature_sidecars': {'TimesFM': {'checksum': 'a'*64}}}))
-    monkeypatch.setattr(graph, '_timesfm_sequence_contract_points', lambda pool: 2)
-    async def l2(rows, **kw):
-        return {'results': [{'symbol': r['symbol'], 'forecast_pct': .02} for r in rows]}
-    monkeypatch.setattr(modal_client, 'timesfm_batch_predict', l2)
-    state.update(asyncio.run(graph.node_l2_timesfm_enrich(state)))
+    async def retired(*args, **kwargs):pytest.fail('retired inference called')
+    monkeypatch.setattr(modal_client,'timesfm_batch_predict',retired)
+    state.update(asyncio.run(graph.node_prepare_sequence_inputs(state)))
     assert state['paired_nav_atomic_l2']['status'] == 'l2_payloads_built'
     artifact = _artifact()  # existing synthetic contract fixture, not production training
     pool, rows = _pool_and_rows(artifact)

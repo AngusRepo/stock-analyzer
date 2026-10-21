@@ -19,6 +19,7 @@ from services.active8_release_training_contract import (
 from services.d1_domain_client import D1DataDomain, DomainD1Client, client_for_domain
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.model_validation_policy import resolve_model_validation_policy
+from services.model_cpcv_evidence import review_model_tail_evidence
 from services.ensemble_qualification import assess_ensemble_qualifications
 
 
@@ -2146,6 +2147,19 @@ def build_artifact_action_context(
     }
 
 
+def _with_tail_review(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Decorate response only; eligibility and persisted receipt are unchanged."""
+    if not row or str(row.get("model_name") or "") not in {
+        "LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST", "iTransformer",
+    }:
+        return row
+    registration = _artifact_registration(row)
+    evidence = registration.get("oof_promotion_evidence")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    return {**row, "cpcv_tail_review": review_model_tail_evidence(str(row["model_name"]), evidence)}
+
+
 def build_candidate_selection(
     rows: list[dict[str, Any]],
     *,
@@ -2198,9 +2212,9 @@ def build_candidate_selection(
         )
 
         selections[model_name] = {
-            "oof_full_fit_release_candidate": selected_release,
-            "latest_oof_full_fit_release_artifact": latest_release,
-            "serving_release_artifact": serving_release,
+            "oof_full_fit_release_candidate": _with_tail_review(selected_release),
+            "latest_oof_full_fit_release_artifact": _with_tail_review(latest_release),
+            "serving_release_artifact": _with_tail_review(serving_release),
             "archive_candidates": [],
             "superseded_candidates": [],
             "action_context": {

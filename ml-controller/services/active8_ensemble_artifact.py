@@ -13,6 +13,7 @@ import json
 import math
 from bisect import bisect_right
 from collections import defaultdict
+from datetime import date, timedelta
 from typing import Any
 
 import numpy as np
@@ -270,6 +271,8 @@ def build_active8_ensemble_artifact(
     cohort_id: str,
     source_manifest_checksum: str,
     knowledge_cutoff_date: str,
+    stacker_recipe=None,
+    qualification_context=None,
 ) -> dict[str, Any]:
     if len(source_manifest_checksum) != 64 or len(knowledge_cutoff_date) != 10 or not cohort_id:
         raise ValueError("active8_ensemble_lineage_identity_invalid")
@@ -277,7 +280,16 @@ def build_active8_ensemble_artifact(
     if model_order(row.get("model_name") for row in prediction_rows) != order:
         raise ValueError("active8_oof_and_artifact_roster_mismatch")
     feature_names = stacker_features(order)
-    stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows)
+    if stacker_recipe is not None:
+        from services.active8_stacker_recipe import validate_recipe, prepare_qualification_context, fit_selected_recipe
+        stacker_recipe = validate_recipe(stacker_recipe,order)
+        qualification_context = prepare_qualification_context(qualification_context,order,
+            required=stacker_recipe['mode'] == 'mean_loss_causal_prior',
+            source_manifest_checksum=source_manifest_checksum)
+    elif qualification_context is not None:
+        raise ValueError('active8_qualification_without_recipe')
+    stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows, **(
+        {'stacker_recipe':stacker_recipe,'qualification_context':qualification_context} if stacker_recipe else {}))
     resolved = [
         row for row in stack_rows
         if str(row.get("label_known_date") or "")[:10] <= knowledge_cutoff_date
@@ -395,12 +407,17 @@ def build_active8_ensemble_artifact(
     y = np.asarray([row["target_return"] for row in resolved], dtype=float)
     fit_dates = np.asarray([row["prediction_date"] for row in resolved], dtype=object)
     fit_markets = np.asarray([row["market_segment"] for row in resolved], dtype=object)
-    coefficients, intercept, regularization, selected_models = _fit_selected_ridge(
-        x, y, fit_dates, fit_markets, model_order=order,
-        label_known_dates=np.asarray(
-            [row["label_known_date"] for row in resolved], dtype=object
-        ),
-    )
+    fit_known = np.asarray([row["label_known_date"] for row in resolved], dtype=object)
+    fit_receipt = None
+    if stacker_recipe is None:
+        coefficients, intercept, regularization, selected_models = _fit_selected_ridge(
+            x, y, fit_dates, fit_markets, model_order=order, label_known_dates=fit_known,
+        )
+    else:
+        coefficients, intercept, regularization, selected_models, fit_receipt = fit_selected_recipe(
+            x, y, fit_dates, fit_markets, model_order=order, label_known_dates=fit_known,
+            recipe=stacker_recipe, qualification_context=qualification_context,
+            cutoff_exclusive=str(date.fromisoformat(knowledge_cutoff_date)+timedelta(days=1)))
     if not selected_models:
         raise Active8EnsembleValidationError({
             **validation,
@@ -479,6 +496,9 @@ def build_active8_ensemble_artifact(
             "missing_by_model": stack_evidence.get("missing_by_model"),
         },
     }
+    if stacker_recipe is not None:
+        payload['stacker_recipe']=stacker_recipe
+        payload['fit']['recipe_fit_receipt']=fit_receipt
     qualification = assess_ensemble_qualifications(payload)
     validation["directional_decision"] = qualification["directional"]["decision"]
     validation["final_fit_signal_reachability"] = {

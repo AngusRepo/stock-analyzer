@@ -25,7 +25,7 @@ def prepare_atomic_request(state, parent):
     # original verifier still executes on every changed input and outside an
     # owner scope. Do not include the saved output in its own dependency key.
     keys = ('run_date', 'screener_run_id', 'active_stocks', 'paired_nav_atomic_inputs',
-            'paired_nav_atomic_l2', 'paired_nav_atomic_pre_l2', 'pipeline_timesfm_context',
+            'paired_nav_atomic_l2', 'paired_nav_atomic_pre_l2', 'pipeline_sequence_context', 'pipeline_timesfm_context',
             'pipeline_sequence_observations', 'pipeline_slate_scope', 'pipeline_shared_payload_ref')
     identity = ['atomic-dispatch', {k: state.get(k) for k in keys},
                 (state.get('payload_source_observations') or {}).get('source_checksum'), parent]
@@ -44,7 +44,8 @@ def _prepare_atomic_request(state, parent):
     definitions = source['population']['replacements']
     l2 = _checked(state.get('paired_nav_atomic_l2'), 'paired-nav-atomic-l2-v1', 'output_checksum')
     pre = state.get('paired_nav_atomic_pre_l2') or {}
-    context = _checked(state.get('pipeline_timesfm_context'), 'pipeline-timesfm-context-v1', 'source_checksum')
+    from services.pipeline_sequence_context import sequence_context
+    context = sequence_context(state)
     sequence = state['pipeline_sequence_observations']
     formal_checksum = digest(parent['payloads'])
     if (l2.get('status') not in {'l2_payloads_built', 'incomplete'} or l2.get('signal_date') != state['run_date']

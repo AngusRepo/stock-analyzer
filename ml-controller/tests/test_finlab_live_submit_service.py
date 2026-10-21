@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 from typing import Any, Mapping
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from services.broker_execution_contract import packet_hash, sign_packet  # noqa: E402
 from services.finlab_live_submit_service import run_finlab_live_submit  # noqa: E402
-from services.finlab_execution_gateway import BrokerOrderRejected  # noqa: E402
+from services.finlab_execution_gateway import BrokerOrderRejected, LiveSubmissionBlocked  # noqa: E402
 
 
 TEST_NOW = datetime(2026, 7, 13, 1, 1, tzinfo=timezone.utc)
@@ -208,6 +209,9 @@ class FakeGateway:
         self.calls: list[dict[str, Any]] = []
         self.fail_call = fail_call
 
+    def assert_live_submission_allowed(self):
+        return None
+
     def submit_leg(self, **kwargs: Any) -> str:
         self.calls.append(kwargs)
         if self.fail_call == len(self.calls):
@@ -314,6 +318,40 @@ def test_explicit_odd_lot_rejection_preserves_acknowledged_board_leg(tmp_path: P
     assert result["status"] == "partial"
     assert [row["status"] for row in result["legs"]] == ["ACKNOWLEDGED", "REJECTED"]
     assert len(result["submitted_orders"]) == 1
+
+
+def test_paper_return_between_legs_preserves_board_ack_and_blocks_odd_leg(tmp_path: Path) -> None:
+    class PauseAfterBoard(FakeGateway):
+        def submit_leg(self, **kwargs):
+            if self.calls:
+                raise LiveSubmissionBlocked("live_submission_paused_by_paper_return")
+            return super().submit_leg(**kwargs)
+
+    repo, gateway = MemoryRepository(), PauseAfterBoard()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "partial"
+    assert result["reason"] == "live_submission_paused_by_paper_return"
+    assert result["can_submit_real_order"] is False
+    assert [row["status"] for row in result["legs"]] == ["ACKNOWLEDGED", "REJECTED"]
+    assert len(gateway.calls) == 1
+    # Reconciliation keeps the existing acknowledged order; a replay cannot submit more.
+    assert _run(tmp_path, repo, gateway, _packet())["status"] == "idempotent_replay"
+    assert len(gateway.calls) == 1
+
+
+def test_paper_return_blocks_before_broker_truth_and_intent_reservation(tmp_path: Path) -> None:
+    class Paused(FakeGateway):
+        def assert_live_submission_allowed(self):
+            raise LiveSubmissionBlocked("live_submission_paused_by_paper_return")
+
+        def revalidate_broker_truth(self, **kwargs):
+            pytest.fail("paused submission must not query broker")
+
+    repo, gateway = MemoryRepository(), Paused()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "blocked"
+    assert result["reason"] == "live_submission_paused_by_paper_return"
+    assert not repo.intents and not gateway.calls
 
 
 def test_each_leg_uses_new_market_data_before_broker_submit(tmp_path: Path) -> None:

@@ -889,6 +889,7 @@ async function handleSchedulerCallback(c: any) {
         schedulerRunId: callbackSchedulerRunId || undefined,
         oofCadence: cadence as 'daily' | 'weekly' | 'monthly',
         oofExpectedCohortId: expectedCohortId || undefined,
+        oofTrainingCutoff: callbackMetadata?.training_cutoff || undefined,
         oofContinuationAttempt: continuationAttempt + 1,
       }, { delaySeconds: active8OofContinuationDelay(continuationAttempt + 1) })
     }
@@ -1175,7 +1176,19 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  // Terminal pipeline identity was accepted above; stale runs cannot persist evidence.
+  let timexerEvidence: import('../lib/timexerCallbackEvidence').TimeXerCallbackEvidence = {}
+  if (body.task === 'pipeline' && criticalTerminalCallback) {
+    const { timexerCallbackEvidence } = await import('../lib/timexerCallbackEvidence')
+    try {
+      timexerEvidence = await timexerCallbackEvidence(body, callbackRunDate, callbackRunId)
+    } catch {
+      return c.json({ error: 'timexer_callback_evidence_invalid' }, 400)
+    }
+  }
   const logAcceptedCallbackTask = () => logSchedulerResult(c.env.KV, String(body.task), {
+    ...timexerEvidence,
+    strict: Object.keys(timexerEvidence).length > 0,
     supersedePrevious: acceptedPipelineL3Seal,
     status: body.status,
     summary: String(body.summary ?? ''),
@@ -1527,6 +1540,16 @@ async function handleSchedulerCallback(c: any) {
       if (body.status === 'success') {
         if (!callbackRunDate || !callbackRunId) {
           throw new Error('pipeline callback missing run_date or run_id for post-pipeline continuation')
+        }
+        if (body.serving_publication_checksum !== undefined) {
+          const { verifyServingOnlyCallback } = await import('../lib/postcloseResearch')
+          await verifyServingOnlyCallback(c.env,callbackRunDate,callbackRunId,body.serving_publication_checksum)
+          await logAcceptedCallbackTask()
+          await logSchedulerResult(c.env.KV,'post-pipeline-chain',{
+            status:'waiting',summary:'Serving published; research and verification wait for the after-close dispatch',
+            duration_ms:0,run_id:callbackRunId,run_date:callbackRunDate,
+          },c.env as any)
+          return c.json({ok:true,serving_published:true,research_status:'queued_postclose'})
         }
         const continuation = await queuePostPipelineStage(c.env, {
           businessDate: callbackRunDate,

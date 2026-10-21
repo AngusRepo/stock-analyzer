@@ -107,3 +107,56 @@ def relay_execution_live_status(
         return dict(payload) if isinstance(payload, Mapping) else {"status": "unknown", "reason": "execution_gateway_status_invalid"}
     except Exception as exc:
         return {"status": "unknown", "reason": "execution_gateway_status_unavailable", "error_type": exc.__class__.__name__}
+
+
+def relay_execution_paper_return(
+    *, request_id: str, reason: str,
+    env: Mapping[str, str] | None = None,
+    identity_token_provider: Callable[[str], str] | None = None,
+    post_fn: Callable[..., Any] = httpx.post,
+) -> dict[str, Any]:
+    """The stop remains callable when Live admission/approval is closed or expired."""
+    values = env or os.environ
+    url, service_token, audience = _config(values)
+    if not url or not service_token:
+        return {"status": "blocked", "reason": "execution_paper_return_config_incomplete"}
+    if not request_id.strip() or not reason.strip() or len(request_id) > 128 or len(reason) > 500:
+        return {"status": "blocked", "reason": "execution_paper_return_request_invalid"}
+    try:
+        token = (identity_token_provider or fetch_google_identity_token)(audience)
+        response = post_fn(f"{url}/v1/control/return-to-paper",
+                           headers=_headers(token, service_token),
+                           json={"request_id": request_id, "reason": reason}, timeout=4.5)
+        payload = response.json()
+        if (int(response.status_code) == 200 and isinstance(payload, Mapping)
+                and payload.get("status") == "live_submission_paused"
+                and isinstance(payload.get("receipt"), Mapping)
+                and payload["receipt"].get("sha256")):
+            return dict(payload)
+    except Exception:
+        pass
+    # A lost ACK must not be displayed as a confirmed stop or as Live resumed.
+    return {"status": "unknown", "reason": "paper_return_unconfirmed_read_submission_state"}
+
+
+def relay_execution_submission_state(
+    *, env: Mapping[str, str] | None = None,
+    identity_token_provider: Callable[[str], str] | None = None,
+    get_fn: Callable[..., Any] = httpx.get,
+) -> dict[str, Any]:
+    values = env or os.environ
+    url, service_token, audience = _config(values)
+    if not url or not service_token:
+        return {"status": "blocked", "reason": "execution_paper_return_config_incomplete"}
+    try:
+        token = (identity_token_provider or fetch_google_identity_token)(audience)
+        response = get_fn(f"{url}/v1/control/submission-state",
+                          headers=_headers(token, service_token), timeout=2.5)
+        payload = response.json()
+        if (int(response.status_code) == 200 and isinstance(payload, Mapping)
+                and payload.get("status") in {"live_submission_paused", "not_paused"}
+                and payload.get("live_admission_granted") is False):
+            return dict(payload)
+    except Exception:
+        pass
+    return {"status": "unknown", "reason": "live_submission_state_unavailable"}

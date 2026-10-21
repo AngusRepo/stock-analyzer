@@ -24,6 +24,11 @@ class Repository:
         return []
 
 
+class OpenSubmissionControl:
+    def paused_receipt(self):
+        return None
+
+
 def _env(**overrides: str) -> dict[str, str]:
     values = {
         "LIVE_EXECUTION_GATEWAY_MODE": "persistent_singleton",
@@ -158,7 +163,7 @@ def test_submit_reconciles_degraded_trade_cache_before_placing_order() -> None:
             return []
 
     api = Api()
-    gateway = PersistentFinlabExecutionGateway(Repository(), env=_env())  # type: ignore[arg-type]
+    gateway = PersistentFinlabExecutionGateway(Repository(), env=_env(), submission_control=OpenSubmissionControl())  # type: ignore[arg-type]
     gateway._account = type("Account", (), {"api": api})()
     gateway._started = True
     gateway._connected = True
@@ -183,7 +188,7 @@ def test_submit_does_not_place_order_while_trade_cache_remains_degraded() -> Non
         def list_trades(self):
             return []
 
-    gateway = PersistentFinlabExecutionGateway(Repository(), env=_env())  # type: ignore[arg-type]
+    gateway = PersistentFinlabExecutionGateway(Repository(), env=_env(), submission_control=OpenSubmissionControl())  # type: ignore[arg-type]
     gateway._account = type("Account", (), {"api": Api()})()
     gateway._started = True
     gateway._connected = True

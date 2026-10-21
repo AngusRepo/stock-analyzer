@@ -1,17 +1,20 @@
+import { validP6Structure } from './l4P6Evidence'
+export const SINGLE_B_P6_DIRECT_EXCESS = 'single_b_p6_direct_excess_v1' as const
 export const SINGLE_B_TABPACK = 'single_b_tabpack_v1' as const
 export const SINGLE_B_FULL_MLP_MEDIAN = 'single_b_full_mlp_median_v1' as const
 export const SINGLE_B_TABPACK_CORE16_MEDIAN = 'single_b_tabpack_core16_median_v1' as const
-export type SingleBMode = typeof SINGLE_B_TABPACK | typeof SINGLE_B_FULL_MLP_MEDIAN | typeof SINGLE_B_TABPACK_CORE16_MEDIAN
+export type SingleBMode = typeof SINGLE_B_P6_DIRECT_EXCESS | typeof SINGLE_B_TABPACK | typeof SINGLE_B_FULL_MLP_MEDIAN | typeof SINGLE_B_TABPACK_CORE16_MEDIAN
 export const MLP_MEDIAN_SCHEMA = 'l4-three-head-residual-mlp-median-v1'
 
 export function isSingleBMode(mode: unknown): mode is SingleBMode {
-  return mode === SINGLE_B_TABPACK || mode === SINGLE_B_FULL_MLP_MEDIAN || mode === SINGLE_B_TABPACK_CORE16_MEDIAN
+  return mode === SINGLE_B_P6_DIRECT_EXCESS || mode === SINGLE_B_TABPACK || mode === SINGLE_B_FULL_MLP_MEDIAN || mode === SINGLE_B_TABPACK_CORE16_MEDIAN
 }
 
 /** Structural admission; the Controller also verifies every weight/checksum. */
 export function validSingleBModel(policy: any): boolean {
   if (!isSingleBMode(policy?.operating_mode) || policy.strategy_role !== 'B' || policy.scope !== 'paper') return false
   const model = policy.artifact?.model
+  if (policy.operating_mode === SINGLE_B_P6_DIRECT_EXCESS) return validP6Structure(policy.artifact) && model.calibration_kind === 'linear'
   if (policy.operating_mode === SINGLE_B_TABPACK_CORE16_MEDIAN) {
     return model?.residual_mlp == null && validTabPackMedian(model?.residual_tabpack)
   }
@@ -36,6 +39,7 @@ export function validSingleBModel(policy: any): boolean {
 }
 
 export function primaryModelLabel(mode: unknown): string {
+  if (mode === SINGLE_B_P6_DIRECT_EXCESS) return 'P6-a（五日超額報酬，線性校準）'
   if (mode === SINGLE_B_TABPACK_CORE16_MEDIAN) return 'TabPack median（官方核心16 × 3 seeds）'
   return mode === SINGLE_B_FULL_MLP_MEDIAN ? 'Full MLP median（3 seeds，λ=1）' : 'TabPack'
 }

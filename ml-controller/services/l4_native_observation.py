@@ -147,8 +147,15 @@ def discover(bucket,*,start,end,cutoff):
     return found
 
 
-async def prepare(*,bucket,config,day,context,key):
+async def prepare(*,bucket,config,day,context,key,frozen_day_source_reference=None,prepared_day_source=None):
     """Freeze inputs once; a lost acknowledgement requires explicit recovery."""
+    if frozen_day_source_reference is not None:
+        from services.l4_native_day_source import prepare_day_source,validate_prepared,publish_prepared
+        prepared=prepared_day_source or await prepare_day_source(bucket=bucket,
+            reference=frozen_day_source_reference,config=config,context=context,day=day)
+        validate_prepared(prepared,reference=frozen_day_source_reference,config=config,context=context,day=day)
+        if prepared['key']!=key:raise ValueError('l4_native_frozen_preparation_changed')
+        return publish_prepared(bucket,prepared=prepared)
     import asyncio
     from google.api_core.exceptions import PreconditionFailed
     from graphs import daily_pipeline_v2 as pipeline
@@ -180,14 +187,9 @@ async def prepare(*,bucket,config,day,context,key):
             source_checksum=state['payload_source_observations']['source_checksum'])),if_generation_match=0)
     except PreconditionFailed:
         raise ValueError('l4_native_existing_dispatch_requires_recovery')
-    # Frozen L2 model/policy, with this observation's date; never select latest.
-    l2=deepcopy(read_reference(bucket,config['timesfm_context']))
-    l2['signal_date']=day
-    from services.paired_nav_journal import digest as pipeline_digest
-    l2['source_checksum']=pipeline_digest({k:v for k,v in l2.items() if k!='source_checksum'})
-    state['pipeline_timesfm_context']=l2
-    state.update(await pipeline._node_l2_timesfm_enrich(state))
-    if state['timesfm_l2_summary']['status']!='ready':raise ValueError('l4_native_l2_not_ready')
+    from services.l4_native_l2_dependency import enrich
+    state.update(await enrich(state,pipeline=pipeline,bucket=bucket,config=config,
+                              read_reference=read_reference))
     request=await pipeline._build_pipeline_modal_prediction_payload(state,state_gcs_uri='',research_only=True)
     request.update(execution_scope=SCOPE,max_symbols=5000)
     from services.l4_risk_history import load_canonical_risk_payloads
@@ -205,7 +207,7 @@ async def prepare(*,bucket,config,day,context,key):
     return envelope
 
 
-async def collect(*,bucket,config,day,spawn=None,poll=None):
+async def collect(*,bucket,config,day,spawn=None,poll=None,frozen_day_source_reference=None,prepared_day_source=None):
     """Resume the same frozen inference across bounded Cloud Run invocations."""
     from graphs import daily_pipeline_v2 as pipeline
     from services.l4_native_dispatch import advance
@@ -215,11 +217,20 @@ async def collect(*,bucket,config,day,spawn=None,poll=None):
     records={r['model']:read_reference(bucket,r['reference']) for r in cutoffs.get('source_references',[])}
     known=validate_context(context,identity,cutoffs,day,records)
     key=digest(dict(day=day,identity=identity,policy=config))
+    if frozen_day_source_reference is not None:
+        from services.l4_native_day_source import validate_resume,validate_prepared
+        validate_resume(bucket,config=config,day=day,source_reference=frozen_day_source_reference,
+                        prepared=prepared_day_source)
+        if prepared_day_source is not None:
+            validate_prepared(prepared_day_source,reference=frozen_day_source_reference,
+                              config=config,context=context,day=day)
     index=bucket.blob(PREFIX+'index/'+key+'.json')
     if index.exists():return dict(status='captured',projection=json.loads(index.download_as_bytes()),reused=True)
     request_index=bucket.blob(PREFIX+'requests/'+key+'.json')
     envelope_ref=(json.loads(request_index.download_as_bytes()) if request_index.exists() else
-        await prepare(bucket=bucket,config=config,day=day,context=context,key=key))
+        await prepare(bucket=bucket,config=config,day=day,context=context,key=key,**(
+            dict(frozen_day_source_reference=frozen_day_source_reference,prepared_day_source=prepared_day_source)
+            if frozen_day_source_reference is not None else {})))
     envelope=read_reference(bucket,envelope_ref)
     request_ref=envelope['request'];request=read_reference(bucket,request_ref)
     dispatched=await advance(bucket,key,envelope_ref,request,request_ref=request_ref,spawn=spawn,poll=poll)

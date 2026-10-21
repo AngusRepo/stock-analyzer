@@ -4603,8 +4603,6 @@ def write_predictions_to_d1(
             "core_ml_gate": data.get("core_ml_gate") or data.get("core_ml_evidence"),
             "core_family_vote": data.get("core_family_vote"),
             "gnn": data.get("gnn"),
-            "timesfm": data.get("timesfm"),
-            "timesfm_sidecar": _timesfm_sidecar_payload(data),
             "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
             "formal_layer3_contract": data.get("formal_layer3_contract"),

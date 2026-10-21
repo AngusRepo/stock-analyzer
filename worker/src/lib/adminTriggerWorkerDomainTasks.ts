@@ -789,6 +789,10 @@ export function buildAdminWorkerDomainTaskMap(
       const { pairedNativeExecution } = await import('./pairedNativeExecution')
       return pairedNativeExecution(c.env)
     },
+    'l4-shadow-execution': async () => {
+      const { l4ShadowExecution } = await import('./l4ShadowExecution')
+      return l4ShadowExecution(c.env)
+    },
     'strategy-nav-execution': async () => {
       const { strategyNavExecution } = await import('./strategyNavExecution')
       return strategyNavExecution(c.env)

@@ -328,6 +328,10 @@ async def _execute_oof_lifecycle(
     expected_cohort_id: str | None, continuation_attempt: int, continuation_only: bool,
 ) -> dict[str, Any]:
     from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
+    from services.training_dual_cutoff import request_cutoff_from_environment
+    cutoff = request_cutoff_from_environment(os.environ)
+    if cutoff and end_date != cutoff['label_known_at_max']:
+        raise ValueError('training_knowledge_cutoff_alias_conflict')
     from services.active8_prep_lifecycle import (
         Active8PrepDependencyPending,
         ensure_active8_daily_prep,
@@ -370,6 +374,7 @@ async def _execute_oof_lifecycle(
                 "prep_lifecycle": exc.evidence,
             }
     result = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        **cutoff,
         model_profile_schema_version=os.environ.get("OOF_MATERIALIZE_MODEL_PROFILE_SCHEMA", "active8-release-model-profiles-v3"),
         cadence=cadence,
         end_date=end_date,
@@ -692,8 +697,12 @@ async def _run() -> int:
     error: str | None = None
     result: dict[str, Any] = {}
     freshness: dict[str, Any] | None = None
+    training_cutoff: dict[str, str] = {}
 
     try:
+        if mode in {"oof_lifecycle", "forward_extension_resume"}:
+            from services.training_dual_cutoff import request_cutoff_from_environment
+            training_cutoff = request_cutoff_from_environment(os.environ)
         if bool(scheduler_ticket_id) != bool(scheduler_run_id):
             raise RuntimeError("OOF scheduler ticket identity is incomplete")
         if mode == "allocator_snapshot":
@@ -844,6 +853,7 @@ async def _run() -> int:
     if mode in {"oof_lifecycle", "forward_extension_resume"}:
         freshness = freshness or _oof_freshness_evidence(result)
         payload["metadata"] = {
+            "training_cutoff": training_cutoff or None,
             "oof_freshness": freshness,
             "cadence": cadence,
             "lifecycle_status": str(result.get("status") or "").lower(),

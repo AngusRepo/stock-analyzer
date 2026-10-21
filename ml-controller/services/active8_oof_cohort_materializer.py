@@ -652,6 +652,7 @@ def _load_prediction_artifact(
     expected_feature_semantic: str | None = None,
     expected_imputation_semantic: str | None = None,
     expected_producer_source_sha: str | None = None,
+    semantic_equivalence_manifest: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     raw = bucket.blob(path).download_as_bytes()
     if hashlib.sha256(raw).hexdigest() != expected_checksum:
@@ -667,6 +668,12 @@ def _load_prediction_artifact(
         "target_semantic_version": TARGET_SEMANTIC_VERSION,
     }
     if expected_feature_semantic is not None:
+        if semantic_equivalence_manifest is not None:
+            from services.oof_semantic_equivalence import declared_semantic
+            expected_feature_semantic = declared_semantic(semantic_equivalence_manifest,
+                metadata=metadata,path=path,artifact_checksum=expected_checksum,
+                cohort=expected_artifact_cohort,fold=expected_artifact_fold,
+                model=expected_model,requested=expected_feature_semantic)
         expected.update({
             "feature_semantic_version": expected_feature_semantic,
             "feature_imputation_semantic": expected_imputation_semantic,
@@ -753,6 +760,7 @@ def load_oof_prediction_rows(
                 materialized_fold=fold_id,
                 expected_model=model_name,
                 split=split,
+                semantic_equivalence_manifest=manifest,
                 expected_prediction_schema=(
                     "active8-oof-predictions-v2" if formal_lineage
                     else "active8-oof-predictions-v1"

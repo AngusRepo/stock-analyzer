@@ -12,7 +12,10 @@ from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
 from services.finlab_live_submit_service import run_finlab_live_submit
 from services.execution_gateway_shadow_relay import relay_execution_shadow
-from services.execution_gateway_live_relay import relay_execution_live_submit, relay_execution_live_status
+from services.execution_gateway_live_relay import (
+    relay_execution_live_submit, relay_execution_live_status,
+    relay_execution_paper_return, relay_execution_submission_state,
+)
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
     run_production_simulated_execution_loop,
@@ -117,6 +120,11 @@ class FinLabLiveSubmitRequest(BaseModel):
 
 class FinLabExecutionShadowRelayRequest(BaseModel):
     packet: dict[str, Any] = Field(default_factory=dict)
+
+
+class FinLabPaperReturnRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class FinLabProductionSimulatedLoopRequest(BaseModel):
@@ -577,6 +585,16 @@ def relay_finlab_execution_live_route(
 @router.get("/execution/live-intents/{idempotency_key}")
 def relay_finlab_execution_live_status_route(idempotency_key: str) -> dict:
     return relay_execution_live_status(idempotency_key)
+
+
+@router.post("/execution/return-to-paper")
+def relay_paper_return(req: FinLabPaperReturnRequest) -> dict:
+    return relay_execution_paper_return(request_id=req.request_id, reason=req.reason)
+
+
+@router.get("/execution/submission-state")
+def relay_submission_state() -> dict:
+    return relay_execution_submission_state()
 
 
 async def _run_finlab_production_simulated_loop(req: FinLabProductionSimulatedLoopRequest) -> dict:

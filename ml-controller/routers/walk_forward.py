@@ -19,7 +19,7 @@ import re
 import statistics
 from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.oof_continuation import COMPUTE_WAIT_MAX_ATTEMPTS
@@ -50,6 +50,7 @@ class WalkForwardRequest(BaseModel):
     prep_gcs_prefix: str = "universal"
     sequence_gcs_prefix: str = "universal/sequence_long/latest"
     sequence_batch_count: int = 5
+    regime_mode: Literal["train_window", "shared_dated_environment"] = "train_window"
     resume_manifest_path: str | None = None
     knowledge_cutoff_date: str | None = None
     expected_producer_source_sha: str | None = None
@@ -395,6 +396,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         fn_call = await modal_client.spawn_walk_forward_orchestrator({
             "windows": windows_payload,
             "market_env": market_env,
+            "regime_mode": req.regime_mode,
             "batch_count": req.batch_count,
             "models": models,
             "model_profile_schema_version":req.model_profile_schema_version,
@@ -1770,6 +1772,8 @@ async def dispatch_oof_full_fit_training(
     request = UniversalRetrainTriggerRequest(
         limit=2500,
         run_date=knowledge_cutoff_date,
+        signal_date_max=manifest.get("end_date") or None,
+        label_known_at_max=knowledge_cutoff_date if manifest.get("end_date") else None,
         candidate_type="oof_full_fit_release",
         drift_target_models=plan["release_models"],
         train_model_groups=plan["train_model_groups"],
@@ -2795,6 +2799,21 @@ class OofLifecycleRequest(BaseModel):
     continuation_only: bool = False
     scheduler_ticket_id: str | None = None
     scheduler_run_id: str | None = None
+    signal_date_max: str | None = None
+    label_known_at_max: str | None = None
+
+    @model_validator(mode='after')
+    def validate_dual_cutoff(self):
+        if (self.signal_date_max is None) != (self.label_known_at_max is None):
+            raise ValueError('training_dual_cutoff_requires_both_bounds')
+        if self.signal_date_max is not None:
+            from services.training_dual_cutoff import TrainingCutoff
+            TrainingCutoff(self.signal_date_max,self.label_known_at_max)
+            if self.end_date is not None and self.end_date != self.label_known_at_max:
+                raise ValueError('training_knowledge_cutoff_alias_conflict')
+            self.end_date=self.label_known_at_max
+        return self
+
 
 
 OOF_TRAIN_SESSIONS = 60
@@ -3197,6 +3216,7 @@ def _oof_lifecycle_calendar(
     prep_gcs_prefix: str,
     expected_producer_source_sha: str | None = None,
     expected_feature_semantic: str = LEGACY_SEMANTIC,
+    signal_date_max: str | None = None,
 ) -> tuple[list[str], dict[str, object]]:
     import hashlib
     import io
@@ -3206,6 +3226,8 @@ def _oof_lifecycle_calendar(
     import numpy as np
 
     cutoff = end_date or datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    from services.training_dual_cutoff import TrainingCutoff
+    dual = TrainingCutoff(signal_date_max, cutoff) if signal_date_max else None
     prefix = str(prep_gcs_prefix or "").strip().rstrip("/")
     if not prefix or prefix == "universal":
         raise ValueError("oof_lifecycle_immutable_prep_prefix_missing")
@@ -3237,6 +3259,8 @@ def _oof_lifecycle_calendar(
 
     coverage_by_date: Counter[str] = Counter()
     mature_rows = 0
+    actual_known_max = None
+    excluded_by_signal_cutoff = 0
     for path in expected_paths:
         raw = bucket.blob(path).download_as_bytes()
         if hashlib.sha256(raw).hexdigest() != str(output_checksums.get(path) or ""):
@@ -3254,6 +3278,10 @@ def _oof_lifecycle_calendar(
             signal = str(signal_date)[:10]
             known = str(known_date)[:10]
             if signal and market and known and signal <= cutoff and known <= cutoff:
+                if dual is not None and not dual.admits(signal,known):
+                    excluded_by_signal_cutoff += 1
+                    continue
+                actual_known_max = max(actual_known_max or known,known)
                 coverage_by_date[signal] += 1
                 mature_rows += 1
 
@@ -3263,6 +3291,10 @@ def _oof_lifecycle_calendar(
     dates = sorted(date for date, count in coverage_by_date.items() if count >= threshold)
     return dates, {
         "cutoff": cutoff,
+        "signal_date_max": dates[-1] if dates else None,
+        "label_known_at_max": actual_known_max,
+        "requested_signal_date_max": signal_date_max,
+        "excluded_by_signal_cutoff": excluded_by_signal_cutoff,
         "calendar_source": "immutable_canonical_adjusted_prep",
         "prep_gcs_prefix": prefix,
         "prep_manifest_checksum": actual_manifest_checksum,
@@ -3550,6 +3582,10 @@ def _pre_dispatch_completed_oof_lifecycle(
 ) -> dict[str, Any] | None:
     """Return only a checksum-verified terminal receipt; never create work."""
 
+    if req.signal_date_max or req.label_known_at_max:
+        # Legacy terminal receipts do not attest both bounds. The durable job
+        # validates exact-cohort identity and mature dates before reuse.
+        return None
     if cadence == "daily":
         # OOF completion does not attest the current original NAV journal or
         # review records. The durable daily job reconciles NAV first, then may
@@ -3682,6 +3718,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "OOF_MATERIALIZE_CONTINUATION_ATTEMPT": str(req.continuation_attempt),
             "OOF_MATERIALIZE_CONTINUATION_ONLY": "1" if req.continuation_only else "0",
         }
+        # Clear inherited bounded-job settings for ordinary scheduled runs.
+        env_overrides['OOF_MATERIALIZE_SIGNAL_DATE_MAX'] = req.signal_date_max or ''
+        env_overrides['OOF_MATERIALIZE_LABEL_KNOWN_AT_MAX'] = req.label_known_at_max or ''
         if req.expected_cohort_id:
             env_overrides["OOF_MATERIALIZE_EXPECTED_COHORT_ID"] = req.expected_cohort_id
         if scheduler_ticket_id:
@@ -3757,6 +3796,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                   else _latest_ready_oof_manifest(bucket, model_profile_schema_version=req.model_profile_schema_version))
     parent_manifest = parent[1] if parent is not None else {}
     cohort_version = OOF_COHORT_ID_VERSION
+    if req.signal_date_max:
+        cohort_version += '-dual-' + req.signal_date_max + '-' + req.label_known_at_max
     if req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
         cohort_version += "-" + req.model_profile_schema_version.removeprefix("active8-release-model-profiles-")
 
@@ -3774,6 +3815,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     try:
         dates, calendar_evidence = _oof_lifecycle_calendar(
             req.end_date,
+            **({"signal_date_max":req.signal_date_max} if req.signal_date_max else {}),
             bucket=bucket,
             prep_gcs_prefix=prep_gcs_prefix,
             expected_producer_source_sha=exact_producer_source_sha if pinned_prep else None,
@@ -3863,6 +3905,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             parent_start = str(parent_manifest.get("start_date") or "")[:10]
             compatible_parent = (
                 parent_start in mature_dates
+                # A bounded experiment builds its own complete cohort; latest
+                # production parents can contain labels after this cutoff.
+                and (req.signal_date_max is None or (
+                    req.continuation_only and req.expected_cohort_id
+                    and req.expected_cohort_id == parent_manifest.get('cohort_id')
+                    and req.expected_cohort_id.startswith('active8-oof-'+cohort_version+'-')))
                 and parent_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION) == req.model_profile_schema_version
                 and int(parent_manifest.get("train_window_days") or 0) == 60
                 and int(parent_manifest.get("test_window_days") or 0) == 10
@@ -3884,6 +3932,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             parent_end = parent_physical_dates[-1] if parent_physical_dates else ""
+            if req.signal_date_max and (not parent_physical_dates or not set(parent_physical_dates) <= set(mature_dates)):
+                raise HTTPException(422, 'training_dual_cutoff_parent_dates_exceeded')
             calendar_evidence["parent_physical_coverage"] = parent_physical_coverage
             new_mature_dates = [date for date in mature_dates if date > parent_end]
             if parent_fold_count < training_min_folds:
@@ -3936,7 +3986,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         if manifest_blob.exists():
             manifest = json.loads(manifest_blob.download_as_text())
             if manifest.get("status") == "ready":
-                if dispatch_blob.exists():
+                if not req.dry_run and dispatch_blob.exists():
                     dispatch = json.loads(dispatch_blob.download_as_text())
                     if dispatch.get("status") != "terminal_completed":
                         dispatch_blob.upload_from_string(
@@ -3987,15 +4037,16 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                             "function_call_id": dispatch.get("function_call_id"),
                             "probe": call_state,
                         }
-                    dispatch_blob.upload_from_string(
-                        json.dumps({
-                            **dispatch,
-                            "status": f"terminal_{call_state['status']}",
-                            "terminal_probe": call_state,
-                            "terminal_observed_at": datetime.now(timezone.utc).isoformat(),
-                        }, sort_keys=True),
-                        content_type="application/json",
-                    )
+                    if not req.dry_run:
+                        dispatch_blob.upload_from_string(
+                            json.dumps({
+                                **dispatch,
+                                "status": f"terminal_{call_state['status']}",
+                                "terminal_probe": call_state,
+                                "terminal_observed_at": datetime.now(timezone.utc).isoformat(),
+                            }, sort_keys=True),
+                            content_type="application/json",
+                        )
             if req.continuation_only:
                 return {
                     "status": "pending",
@@ -4006,6 +4057,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "promotion_attempted": False,
                 }
             plan = WalkForwardRequest(
+                regime_mode="shared_dated_environment" if req.signal_date_max else "train_window",
                 model_profile_schema_version=req.model_profile_schema_version,
                 start_date=start_date,
                 end_date=signal_end_date,

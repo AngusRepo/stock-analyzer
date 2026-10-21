@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 
-MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v4"
+MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v5"
 
 MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "LightGBM": "tree",
@@ -320,7 +320,7 @@ def _tail_fold_guard(
     min_oos_ic_mean: float,
     min_positive_fold_ratio: float,
 ) -> dict[str, Any]:
-    enabled = model_name in {"TabM", "PatchTST"} or family in {"tabular_neural", "learned_sequence"}
+    enabled = model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST", "iTransformer"} or family in {"tabular_neural", "learned_sequence"}
     risk_buffer = 0.02 if regime in {"bear", "volatile"} else 0.0
     return {
         "enabled": enabled,
@@ -333,7 +333,7 @@ def _tail_fold_guard(
         "hac_lag_mode": "newey_west_auto",
         "hard_fail_rule": "upper_confidence_bound_below_ic_floor",
         "uncertain_degradation_action": "degraded_warning",
-        "required_for_serving_promotion": model_name in {"TabM", "PatchTST"},
+        "required_for_serving_promotion": model_name in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST", "iTransformer"},
     }
 
 

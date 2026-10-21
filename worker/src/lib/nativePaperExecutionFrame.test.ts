@@ -161,3 +161,31 @@ test('native helpers catching a missing sealed response cannot commit any SQL or
   assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM paper_daily_snapshots').get()?.n, 1)
   f.sql.close()
 })
+
+test('NAV rejects prior-day close instead of disguising it as today and writes no snapshot', async () => {
+  const f = fixture()
+  f.sql.exec("UPDATE stock_prices SET date='2026-09-04' WHERE stock_id=1")
+  await assert.rejects(runNativePaperExecutionFrame(f.ports, 'snapshot'), /held_marks_missing/)
+  assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM paper_daily_snapshots').get()?.n, 0)
+  f.sql.close()
+})
+
+test('successful NAV preserves exact-session mark attribution with the same account', async () => {
+  const f = fixture()
+  await runNativePaperExecutionFrame(f.ports, 'snapshot')
+  const event = f.sql.prepare("SELECT detail_json FROM paper_execution_events WHERE account_id=2 AND reason='dated_marks_complete'").get() as any
+  const evidence = JSON.parse(event.detail_json).mark_evidence['2330']
+  assert.deepEqual(evidence, { price:110, price_date:'2026-09-07',
+    source:'stock_prices.exact_session_close', quote_time:null, observed_at:null })
+  f.sql.close()
+})
+
+test('non-session NAV accepts the previous trading session with its real mark date', async () => {
+  const f = fixture()
+  f.sql.exec("UPDATE stock_prices SET date='2026-09-11'")
+  const result = await withPaperExecutionScope({...f.ports,nowMs:Date.parse('2026-09-12T06:00:00Z')},
+    () => runDailySnapshot(f.ports.environment,{date:'2026-09-12'}))
+  assert.equal(result.result.valuation.mark_evidence['2330'].price_date,'2026-09-11')
+  assert.equal(result.result.valuation.nav,101000)
+  f.sql.close()
+})

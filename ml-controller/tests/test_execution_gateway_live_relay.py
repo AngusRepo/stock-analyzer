@@ -11,6 +11,8 @@ from services.broker_execution_contract import sign_packet  # noqa: E402
 from services.execution_gateway_live_relay import (  # noqa: E402
     relay_execution_live_status,
     relay_execution_live_submit,
+    relay_execution_paper_return,
+    relay_execution_submission_state,
 )
 
 
@@ -36,6 +38,37 @@ class Response:
 
     def json(self):
         return self.payload
+
+
+def test_paper_return_uses_iam_with_live_disabled_and_lost_ack_is_readable():
+    env = _env()
+    env['EXECUTION_GATEWAY_LIVE_RELAY_ENABLED'] = '0'
+    env['LIVE_TRADING_APPROVAL_EXPIRES_AT'] = '2020-01-01T00:00:00+00:00'
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        raise TimeoutError('stop committed; response lost')
+
+    result = relay_execution_paper_return(request_id='r1', reason='operator', env=env,
+        identity_token_provider=lambda _: 'header.payload.signature', post_fn=post)
+    assert result['status'] == 'unknown'
+    assert len(calls) == 1
+    assert calls[0][0] == 'https://gateway.invalid/v1/control/return-to-paper'
+    assert calls[0][1]['headers']['Authorization'] == 'Bearer app-token'
+    assert calls[0][1]['headers']['X-Serverless-Authorization'] == 'Bearer header.payload.signature'
+    stopped = {'status': 'live_submission_paused', 'receipt': {'sha256': 'receipt-sha'}, 'live_admission_granted': False}
+    readback = relay_execution_submission_state(env=env,
+        identity_token_provider=lambda _: 'header.payload.signature',
+        get_fn=lambda *args, **kwargs: Response(200, stopped))
+    assert readback == stopped
+
+
+def test_paper_return_never_confirms_an_http_success_without_receipt():
+    result = relay_execution_paper_return(request_id='r1', reason='operator', env=_env(),
+        identity_token_provider=lambda _: 'header.payload.signature',
+        post_fn=lambda *args, **kwargs: Response(200, {'status': 'live_submission_paused'}))
+    assert result['status'] == 'unknown'
 
 
 def test_disabled_relay_never_requests_iam_or_gateway() -> None:

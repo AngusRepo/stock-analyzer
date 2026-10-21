@@ -1,0 +1,74 @@
+"""Private shadow Cloud Run Job: assembly, export, bootstrap, daily or tick."""
+from datetime import datetime,timezone,timedelta
+import json
+import os
+from pathlib import Path
+
+
+def run(*,operation=None,session_date=None,accounts=None,now=None,source_index=None,bootstrap=None,
+        native_source_directory=None,native_input_directory=None,frozen_source_index=None,clock=None):
+    from services.l4_shadow_producer import initialize,produce_day,DAILY_PREFIX
+    operation=operation or os.environ.get('L4_SHADOW_OPERATION','tick')
+    now=now or datetime.now(timezone.utc)
+    day=session_date or os.environ.get('L4_SHADOW_SESSION_DATE') or now.astimezone(
+        timezone(timedelta(hours=8))).date().isoformat()
+    if operation not in ('capture-sources','observation','assemble','produce','export','bootstrap','daily','tick'):
+        raise ValueError('shadow_job_operation_invalid')
+    if operation=='tick':
+        from services.l4_shadow_sources import run_tick
+        result=run_tick(session_date=day)
+        if (result['status']!='ok' or not result.get('accounts') or any(
+                row.get('status') not in ('collecting','execution_complete') for row in result['accounts'])):
+            raise RuntimeError('shadow_tick_incomplete:'+result['status'])
+        return result
+    if accounts is None:
+        from services.paper_corporate_source import production_objects
+        from services.l4_challenger_registry import Registry
+        from services.l4_shadow_accounts import Accounts
+        from services.kv_client import get
+        def identity():
+            config=get('trading:config',strict=True)
+            if isinstance(config,str):config=json.loads(config)
+            artifact=config['l4Distribution']['artifact']
+            return dict(l3_payload_checksum=artifact['l3_identity']['payload_checksum'],
+                        l4_model_checksum=artifact['model_checksum'])
+        objects=production_objects()
+        accounts=Accounts(Registry(objects.bucket,formal_identity=identity),
+            runner=Path(os.environ.get('NATIVE_PAPER_RUNNER','/app/worker-dist/native-paper.cjs')))
+    if operation=='bootstrap':
+        if bootstrap is None:
+            from services.l4_shadow_producer import read_reference
+            reference=json.loads(os.environ.get('L4_SHADOW_BOOTSTRAP_REFERENCE','null'))
+            bootstrap=read_reference(accounts.bucket,reference)
+        return initialize(accounts,bootstrap)
+    if operation=='export':
+        from services.l4_shadow_input_export import publish_directory
+        directory=native_source_directory or os.environ.get('L4_SHADOW_NATIVE_SOURCE_DIRECTORY')
+        if not directory:raise ValueError('shadow_native_source_directory_missing')
+        return publish_directory(accounts.registry,directory,session_date=day,now=now)
+    if operation in ('capture-sources','observation','assemble','produce'):
+        import asyncio
+        directory=native_input_directory or os.environ.get('L4_SHADOW_NATIVE_INPUT_DIRECTORY')
+        if not directory:raise ValueError('shadow_native_input_directory_missing')
+        if operation=='capture-sources':
+            from services.l4_shadow_source_capture import capture_directory
+            return capture_directory(accounts.registry,directory,session_date=day,now=now,clock=clock)
+        if operation=='observation':
+            from services.l4_shadow_observation import observe_directory
+            reference=frozen_source_index or json.loads(os.environ.get('L4_SHADOW_FROZEN_SOURCE_INDEX','null'))
+            return asyncio.run(observe_directory(accounts.registry,directory,session_date=day,now=now,
+                                                  source_index_reference=reference,clock=clock))
+        from services.l4_shadow_native_producer import produce_directory
+        return asyncio.run(produce_directory(accounts.registry,directory,session_date=day,now=now,
+                                            assemble=operation=='assemble'))
+    if source_index is None:
+        blob=accounts.bucket.blob(DAILY_PREFIX+day+'/index.json');blob.reload()
+        source_index=json.loads(blob.download_as_bytes(if_generation_match=blob.generation))
+    return produce_day(accounts,source_index,session_date=day,now=now)
+
+
+if __name__=='__main__':
+    result=run()
+    print(json.dumps(result,sort_keys=True))
+    if result.get('status')=='not_ready':
+        raise SystemExit(2)

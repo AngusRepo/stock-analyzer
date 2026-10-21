@@ -129,20 +129,8 @@ type MlDiagnosticsSummary = {
     mergeCompression?: number | null
     weightHhi?: number | null
   }
-  timesfmSidecar?: {
-    schemaVersion?: string | null
-    layer?: string | null
-    role?: string | null
-    directAlphaBlocked?: boolean | number | string | null
-    eligibleForL2FeatureEnrichment?: boolean | number | string | null
-    l2FeatureInputActive?: boolean | number | string | null
-    l2FeatureInputBlockedReason?: string | null
-    currentAllowedUse?: string[]
-    featureKeys?: string[]
-    populatedFeatureCount?: number | string | null
-    features?: Record<string, unknown>
-  } | null
-  timesfm_sidecar?: MlDiagnosticsSummary['timesfmSidecar']
+
+
 }
 
 type SparseAllocationSummary = {
@@ -444,16 +432,15 @@ const DIRECT_ALPHA_VOTE_MODEL_NAMES = [
   'iTransformer',
 ] as const
 
-const TIMESFM_SIDECAR_MODEL_NAMES = ['TimesFM'] as const
+
 
 const ALPHA_PREDICTION_MODEL_NAMES = [
   ...DIRECT_ALPHA_VOTE_MODEL_NAMES,
-  ...TIMESFM_SIDECAR_MODEL_NAMES,
 ] as const
 
 const DIRECT_ALPHA_VOTE_MODEL_SET = new Set<string>(DIRECT_ALPHA_VOTE_MODEL_NAMES)
 const DIRECT_ALPHA_VOTE_MODEL_LABEL = DIRECT_ALPHA_VOTE_MODEL_NAMES.join(' / ')
-const TIMESFM_SIDECAR_LABEL = 'TimesFM L2 sidecar'
+
 
 function normalizeModelName(raw: unknown): string {
   const value = String(raw ?? '').trim()
@@ -703,37 +690,12 @@ function strategyPortfolioIntelligenceFromRec(rec: any): StrategyPortfolioIntell
 function mlStackEvidenceFromRec(rec: any): { coarse: Layer2CoarseMlSummary | null; formal: Layer3FormalMlSummary | null } | null {
   const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
   if (!funnelEvidence) return null
-  const coarse = parseObject(funnelEvidence.layer2_timesfm_enrichment)
-    ?? parseObject(funnelEvidence.layer2_3ml_coarse)
-    ?? parseObject(funnelEvidence.layer2_coarse_ml)
-    ?? parseObject(funnelEvidence.layer2_queue_seed)
   const formal = parseObject(funnelEvidence.layer3_8ml_formal)
     ?? parseObject(funnelEvidence.layer3_6ml_formal)
     ?? parseObject(funnelEvidence.layer3_formal_ml)
-  if (!coarse && !formal) return null
+  if (!formal) return null
   return {
-    coarse: coarse
-      ? {
-          schema_version: coarse.schema_version ?? 'layer2_timesfm_enrichment_summary_v1',
-          decision_policy: coarse.decision_policy ?? 'timesfm_sequence_sidecar_feature_enrichment_not_selector',
-          capacity_policy: coarse.capacity_policy ?? 'max_only_no_minimum_no_topup',
-          expected_models: Array.isArray(coarse.expected_models) ? coarse.expected_models.map(String) : ['TimesFM'],
-          expected_model_count: coarse.expected_model_count ?? 1,
-          formal_l2_pass: coarse.formal_l2_pass ?? (coarse.worker_seed_only === true ? false : coarse.decision === 'pass'),
-          worker_seed_only: coarse.worker_seed_only ?? false,
-          decision: coarse.decision ?? null,
-          reason_code: coarse.reason_code ?? null,
-          coarse_queue_size: coarse.coarse_queue_size ?? coarse.coarse_ml_queue_size ?? null,
-          core_ml_shortlist_size: coarse.core_ml_shortlist_size ?? null,
-          l3_formal_inference_selected: coarse.l3_formal_inference_selected ?? null,
-          direct_alpha_blocked: coarse.direct_alpha_blocked ?? null,
-          l2_feature_input_active: coarse.l2_feature_input_active ?? null,
-          l2_feature_input_blocked_reason: coarse.l2_feature_input_blocked_reason ?? null,
-          l2_feature_schema_version: coarse.l2_feature_schema_version ?? null,
-          populated_feature_count: coarse.populated_feature_count ?? null,
-          current_allowed_use: Array.isArray(coarse.current_allowed_use) ? coarse.current_allowed_use.map(String) : [],
-        }
-      : null,
+    coarse: null,
     formal: formal
       ? {
           schema_version: formal.schema_version ?? 'layer3_8ml_formal_summary_v1',
@@ -995,38 +957,9 @@ function parseObject(raw: unknown): any | null {
   }
 }
 
-function timesFmSidecarFromForecast(forecast: any): MlDiagnosticsSummary['timesfmSidecar'] | null {
-  const sidecar = parseObject(forecast?.timesfm_sidecar ?? forecast?.timesfmSidecar)
-  if (!sidecar) return null
-  const features = parseObject(sidecar.features) ?? {}
-  const featureKeys = Array.isArray(sidecar.featureKeys)
-    ? sidecar.featureKeys.map(String)
-    : Object.keys(features).sort()
-  const populatedFeatureCount = Number.isFinite(Number(sidecar.populatedFeatureCount))
-    ? Number(sidecar.populatedFeatureCount)
-    : featureKeys.filter((key) => features[key] !== null && features[key] !== undefined && features[key] !== '').length
-  return {
-    schemaVersion: sidecar.schemaVersion ?? sidecar.schema_version ?? null,
-    layer: sidecar.layer ?? null,
-    role: sidecar.role ?? null,
-    directAlphaBlocked: sidecar.directAlphaBlocked ?? sidecar.direct_alpha_blocked ?? null,
-    eligibleForL2FeatureEnrichment: sidecar.eligibleForL2FeatureEnrichment ?? sidecar.eligible_for_l2_feature_enrichment ?? null,
-    l2FeatureInputActive: sidecar.l2FeatureInputActive ?? sidecar.l2_feature_input_active ?? null,
-    l2FeatureInputBlockedReason: sidecar.l2FeatureInputBlockedReason ?? sidecar.l2_feature_input_blocked_reason ?? null,
-    currentAllowedUse: Array.isArray(sidecar.currentAllowedUse)
-      ? sidecar.currentAllowedUse.map(String)
-      : Array.isArray(sidecar.current_allowed_use)
-        ? sidecar.current_allowed_use.map(String)
-        : [],
-    featureKeys,
-    populatedFeatureCount,
-    features,
-  }
-}
 
-function timesFmSidecarFromDiagnostics(diagnostics: MlDiagnosticsSummary | null): MlDiagnosticsSummary['timesfmSidecar'] | null {
-  return parseObject(diagnostics?.timesfmSidecar ?? diagnostics?.timesfm_sidecar) ?? null
-}
+
+
 
 type TradePlanContext = {
   source: 'ohlcv' | 'alpha_fallback'
@@ -1143,7 +1076,6 @@ function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
   if (persisted) {
     return {
       ...persisted,
-      timesfmSidecar: timesFmSidecarFromDiagnostics(persisted) ?? timesFmSidecarFromForecast(forecast),
     }
   }
   if (!forecast) return null
@@ -1188,7 +1120,6 @@ function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
       mergeCompression: Number.isFinite(Number(dispersion.merge_compression)) ? Number(dispersion.merge_compression) : null,
       weightHhi: Number.isFinite(Number(dispersion.weight_hhi)) ? Number(dispersion.weight_hhi) : null,
     },
-    timesfmSidecar: timesFmSidecarFromForecast(forecast),
   }
 }
 
@@ -1291,23 +1222,10 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
   const thresholds = diagnostics.rankSignalThresholds ?? {}
   const buyThreshold = finiteMetric((thresholds as any).buyThreshold ?? (thresholds as any).bullish)
   const sellThreshold = finiteMetric((thresholds as any).sellThreshold ?? (thresholds as any).bearish)
-  const timesFmSidecar = timesFmSidecarFromDiagnostics(diagnostics)
   const chips: string[] = []
 
   chips.push(`權重 ${Number.isFinite(active) ? active : 0}/${Number.isFinite(total) ? total : DIRECT_ALPHA_VOTE_MODEL_NAMES.length}`)
-  if (timesFmSidecar) {
-    const featureCount = Number(timesFmSidecar.populatedFeatureCount ?? timesFmSidecar.featureKeys?.length ?? 0)
-    const l2Eligible = boolFromValue(timesFmSidecar.eligibleForL2FeatureEnrichment)
-    const l2Active = boolFromValue(timesFmSidecar.l2FeatureInputActive)
-    const l2BlockedReason = String(timesFmSidecar.l2FeatureInputBlockedReason ?? '')
-    const directBlocked = boolFromValue(timesFmSidecar.directAlphaBlocked)
-    chips.push(`${timesFmSidecar.layer ?? 'L2'} TimesFM sidecar`)
-    chips.push(`TimesFM features ${Number.isFinite(featureCount) ? featureCount : 0}`)
-    chips.push(`L2 input ${l2Active ? 'ACTIVE' : 'PENDING'}`)
-    if (!l2Active && l2BlockedReason.includes('formal137')) chips.push('L2 block formal137/retrain/release')
-    else if (l2Eligible) chips.push('L2 enrich eligible only')
-    if (directBlocked) chips.push('TimesFM direct alpha blocked')
-  }
+
   if (diagnostics.icWeightScope) chips.push(`IC scope ${diagnostics.icWeightScope}`)
   if (buyThreshold != null && sellThreshold != null) chips.push(`動態門檻 BUY ${fmtNumber(buyThreshold, 3)} / SELL ${fmtNumber(sellThreshold, 3)}`)
   if (dispersion?.rawRankStd != null) chips.push(`模型分歧 σ ${fmtNumber(dispersion.rawRankStd, 3)}`)
@@ -1623,7 +1541,6 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.observe_topup_policy ?? 'research_observe_only_never_formal_l2'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">research attribution {researchCount}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">teachers {teacherModels}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{TIMESFM_SIDECAR_LABEL}</span>
       </div>
     </div>
   )
@@ -1829,47 +1746,24 @@ function StrategyPortfolioIntelligenceBlock({ portfolio }: { portfolio: Strategy
   )
 }
 
-function MlStackEvidenceBlock({
-  coarse,
-  formal,
-}: {
+function MlStackEvidenceBlock({ formal }: {
   coarse: Layer2CoarseMlSummary | null
   formal: Layer3FormalMlSummary | null
 }) {
-  if (!coarse && !formal) return null
-  const l2FeatureActive = boolFromValue(coarse?.l2_feature_input_active)
-  const workerSeedOnly = boolFromValue(coarse?.worker_seed_only)
-  const l2Models = coarse?.expected_models?.length ? coarse.expected_models.join(' / ') : 'TimesFM'
-  const formalModelList = (formal?.expected_models?.length ? formal.expected_models : ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'])
-    .filter((model) => normalizeModelName(model) !== 'TimesFM')
-  const l3Models = formalModelList.length ? formalModelList.join(' / ') : 'LightGBM / XGBoost / ExtraTrees / TabM / GNN / DLinear / PatchTST / iTransformer'
-  const l3ContributorList = (formal?.contributing_models ?? []).filter((model) => normalizeModelName(model) !== 'TimesFM')
-  const l3Contributors = l3ContributorList.length ? l3ContributorList.join(' / ') : 'no formal contributors reported'
-
+  if (!formal) return null
+  const models = (formal.expected_models ?? []).filter(model => normalizeModelName(model) !== 'TimesFM')
+  const contributors = (formal.contributing_models ?? []).filter(model => normalizeModelName(model) !== 'TimesFM')
   return (
     <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.05] p-3 text-xs">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-violet-700 dark:text-violet-300">L2 TimesFM + L3 Direct ML</span>
-        <span className="sv-num text-[11px] text-muted-foreground">L2 feature sidecar; L3 8ML formal direct alpha</span>
-      </div>
+      <div className="mb-2 font-medium text-violet-700 dark:text-violet-300">L3 模型證據</div>
       <div className="grid gap-2 sm:grid-cols-4">
-        <MetricPill label="L2 expected" value={countText(coarse?.expected_model_count ?? 1)} />
-        <MetricPill label="L2 feature input" value={l2FeatureActive ? 'ACTIVE' : workerSeedOnly ? 'seed only' : 'PENDING'} />
-        <MetricPill label="L3 direct expected" value={countText(formalModelList.length || 8)} />
-        <MetricPill label="L3 active" value={countText(formal?.active_l3_model_count ?? formal?.contributing_model_count)} />
+        <MetricPill label="模型數" value={countText(formal.expected_model_count)} />
+        <MetricPill label="有效模型" value={countText(formal.active_l3_model_count ?? formal.contributing_model_count)} />
+        <MetricPill label="family score" value={percentText(formal.formal_family_score)} />
+        <MetricPill label="active families" value={countText(formal.active_family_count)} />
       </div>
-      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        <MetricPill label="L3 family score" value={percentText(formal?.formal_family_score)} />
-        <MetricPill label="active families" value={countText(formal?.active_family_count)} />
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{coarse?.decision_policy ?? 'timesfm_sequence_sidecar_feature_enrichment_not_selector'}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{formal?.decision_policy ?? 'eight_ml_formal_family_evidence_not_topk'}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">L2 {l2Models}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">L3 {l3Models}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{TIMESFM_SIDECAR_LABEL}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">contributors {l3Contributors}</span>
-      </div>
+      <p className="mt-2 text-muted-foreground">{models.join(' / ') || '未提供模型名單'}</p>
+      <p className="mt-1 text-muted-foreground">contributors: {contributors.join(' / ') || '未提供貢獻證據'}</p>
     </div>
   )
 }

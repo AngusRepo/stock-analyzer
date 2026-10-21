@@ -115,7 +115,6 @@ const SCREENER_FUNNEL_AUDIT_CRITICAL_STAGES = new Set([
   // Native PIT consumers require these complete components before formal ML promotion.
   'scoring',
   'l15_ml_slate_queue',
-  'layer2_timesfm_enrichment',
   'strategy_pool_ml_queue',
   'pit_residual_momentum_shadow_base',
   'pit_residual_momentum_shadow',
@@ -4160,9 +4159,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         rank: index + 1,
         evidence: {
           worker_seed_only: true,
-          layer_contract: 'L1.5 router owns ML slate queue; ml-controller owns L2 TimesFM feature enrichment before L3 8ML',
+          layer_contract: 'L1.5 router owns ML slate queue; ml-controller prepares frozen sequence inputs before L3 8ML',
           downstream_owner: 'ml-controller',
-          downstream_stage: 'layer2_timesfm_enrichment',
+          downstream_stage: 'prepare_sequence_inputs',
           strategy_ids: (candidate as any).strategy_pool_ids ?? [],
           strategy_family_ids: (candidate as any).strategy_family_ids ?? [],
           strategy_variant_ids: (candidate as any).strategy_variant_ids ?? [],

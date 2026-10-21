@@ -217,3 +217,17 @@ def test_chronological_stacker_passes_actual_label_maturity(monkeypatch):
     assert len(calls) == 1
     assert len(calls[0]) == 520
     assert evidence["inner_tuning_policy"] == stacker.INNER_TUNING_POLICY
+
+
+def test_candidate_preparation_reuses_exact_pool_without_fitting(monkeypatch):
+    import numpy as np
+    from services import active8_oof_stacker as owner
+    rows=_rows()
+    output,_=owner.build_chronological_oof_stack(rows)
+    expected={(r['fold_id'],r['prediction_date'],r['symbol']):r['stacker_features'] for r in output}
+    def forbidden(*args,**kwargs):raise AssertionError('candidate preparation must not fit')
+    monkeypatch.setattr(owner,'_fit_selected_ridge',forbidden)
+    candidates,proof=owner.prepare_oof_candidates(rows)
+    assert proof['grouped_count']==len(expected)
+    for row in candidates:
+        np.testing.assert_array_equal(row['x'],expected[(row['fold_id'],row['prediction_date'],row['symbol'])])

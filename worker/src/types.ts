@@ -395,6 +395,7 @@ export interface UpdateQueueMsg {
   strategyEvidenceMaxDates?: number
   oofCadence?: 'daily' | 'weekly' | 'monthly'
   oofExpectedCohortId?: string
+  oofTrainingCutoff?: { signal_date_max: string; label_known_at_max: string }
   oofContinuationAttempt?: number
   active8SnapshotId?: string
   active8PipelineWaitAttempt?: number // defer NAV census until the same-day pipeline has published its allocation context

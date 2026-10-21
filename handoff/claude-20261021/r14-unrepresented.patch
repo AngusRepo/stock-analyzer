@@ -1,0 +1,207 @@
+--- a/frontend/src/components/model-pool/ModelPoolNewFlowWorkbench.tsx
++++ b/frontend/src/components/model-pool/ModelPoolNewFlowWorkbench.tsx
+@@ -1,4 +1,4 @@
+-import { ensembleQualificationPresentation, modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
++import { modelTailPresentation, ensembleQualificationPresentation, modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
+ import { useMemo, useState, type ReactNode } from 'react'
+ import EnsembleAuthority from './EnsembleAuthority'
+ import {
+@@ -462,6 +462,7 @@
+   const cpcvPolicy = asRecord(modelCpcv.policy ?? gateCpcvPolicy)
+   const rowFailedGates = asStringList(artifact?.offline_gate_failed_gates)
+   return {
++    tailReview: asRecord(artifact?.cpcv_tail_review),
+     offline,
+     live,
+     gate,
+@@ -545,6 +546,7 @@
+     ...asStringList(evidence.modelCpcv.failed_gates),
+     ...asStringList(evidence.foundationForecastValidation.failed_gates),
+   ])
++  const tailPresentation = modelTailPresentation(evidence.modelCpcv, evidence.tailReview)
+   const cpcvIc = firstFiniteNumber(evidence.modelCpcv.oos_ic_mean, evidence.foundationForecastValidation.oos_ic_mean)
+   const cpcvDetail = cpcvDecision
+     ? 'CPCV ' + (gateToken(cpcvDecision) === 'PASS' ? '通過' : '未通過') + ' · ' + Math.trunc(cpcvFolds!) + ' folds' + (cpcvIc != null ? ' · IC ' + formatMetric(cpcvIc, 3) : '')
+@@ -552,13 +554,12 @@
+   const detailParts = [
+     failedGates.length ? 'fail gates: ' + failedGates.map((item) => humanizeToken(item)).join(', ') : null,
+     cpcvDetail,
++    tailPresentation.detail,
+     'selection risk：由 V5 ensemble 的 later-window IC／spread LCB 與 conformal coverage 驗證，不在單一模型重複填 PBO。',
+   ].filter(Boolean)
+-  const cpcvFailed = gateToken(cpcvDecision) === 'FAIL'
+-  const cpcvPassed = gateToken(cpcvDecision) === 'PASS'
+-  const tone: WorkstationTone = cpcvFailed ? 'error' : cpcvPassed ? 'ok' : 'warn'
++  const tone: WorkstationTone = cpcvContractReady ? tailPresentation.tone : 'warn'
+   return {
+-    value: cpcvFailed ? '未通過' : cpcvPassed ? '通過' : '待補證據',
++    value: cpcvContractReady ? tailPresentation.label : '待補證據',
+     detail: detailParts.join('\n'),
+     title: [
+       candidateId + ': base CPCV=' + (cpcvDecision ?? 'missing'),
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -1750,6 +1750,7 @@
+   offline_gate_status?: string
+   offline_gate_decision?: string
+   offline_gate_failed_gates?: string[] | string
++  cpcv_tail_review?: Record<string, unknown>
+   offline_evidence_json?: Record<string, unknown> | string
+   live_gate_status?: string
+   live_evidence_json?: Record<string, unknown> | string
+--- a/ml-controller/services/active8_oof_stacker.py
++++ b/ml-controller/services/active8_oof_stacker.py
+@@ -67,14 +67,23 @@
+     y: np.ndarray,
+     regularization: float,
+     *,
++    rank_prior: np.ndarray | None = None,
+     active_models: tuple[str, ...] | None = None,
+     model_order: tuple[str, ...] = ACTIVE8_MODELS,
+ ) -> tuple[np.ndarray, float]:
+-    """Fit convex ridge while forbidding sign inversion of model-rank alpha."""
++    """Fit nonnegative rank coefficients with an optional standardized prior.
++
++    The intercept and unbounded availability terms retain their existing rules.
++    rank_prior is in the existing normalized-design coefficient coordinates,
++    not a portfolio weight. None exactly preserves the historical zero prior.
++    """
+ 
+     from scipy.optimize import lsq_linear
+ 
+     model_order = validate_order(model_order)
++    prior = np.zeros(len(model_order), dtype=float) if rank_prior is None else np.asarray(rank_prior, dtype=float)
++    if prior.shape != (len(model_order),) or not np.isfinite(prior).all() or np.any(prior < 0):
++        raise ValueError("active8_rank_prior_invalid")
+     selected = tuple(model_order if active_models is None else active_models)
+     selected_indices = [model_order.index(name) for name in selected]
+     feature_indices = [
+@@ -94,7 +103,8 @@
+         np.eye(design.shape[1] - 1, dtype=float) * math.sqrt(float(regularization)),
+     ])
+     augmented_x = np.vstack([design, ridge_rows])
+-    augmented_y = np.concatenate([y, np.zeros(design.shape[1] - 1, dtype=float)])
++    prior_coefficients = np.concatenate([prior[selected_indices], np.zeros(len(selected_indices), dtype=float)])
++    augmented_y = np.concatenate([y, math.sqrt(float(regularization)) * prior_coefficients])
+     lower = np.full(design.shape[1], -np.inf, dtype=float)
+     lower[1 : 1 + len(selected_indices)] = 0.0
+     result = lsq_linear(
+@@ -155,6 +165,7 @@
+     markets: np.ndarray,
+     *,
+     label_known_dates: np.ndarray,
++    rank_prior: np.ndarray | None = None,
+     active_models: tuple[str, ...] | None = None,
+     model_order: tuple[str, ...] = ACTIVE8_MODELS,
+ ) -> float:
+@@ -187,6 +198,7 @@
+             x[train_idx],
+             y[train_idx],
+             regularization,
++            **({"rank_prior": rank_prior} if rank_prior is not None else {}),
+             active_models=active_models,
+             model_order=model_order,
+         )
+@@ -200,6 +212,30 @@
+         mse = float(np.mean((prediction - y[validation_idx]) ** 2))
+         candidates.append((ic, -mse, regularization))
+     return max(candidates)[2]
++
++
++def fit_qualified_prior_ridge(
++    x: np.ndarray,
++    y: np.ndarray,
++    dates: np.ndarray,
++    markets: np.ndarray,
++    *,
++    label_known_dates: np.ndarray,
++    model_order: tuple[str, ...],
++    rank_prior: np.ndarray,
++    inner_rank_prior: np.ndarray,
++) -> tuple[np.ndarray, float, float]:
++    """P3 candidate: same inner split/lambdas, all models remain estimable.
++
++    Caller supplies separately audited full-training and inner-training priors;
++    accepting an inner prior explicitly prevents reusing held-out qualification.
++    """
++    regularization = _select_regularization(
++        x, y, dates, markets, label_known_dates=label_known_dates,
++        model_order=model_order, rank_prior=inner_rank_prior,
++    )
++    weights, intercept = _fit_ridge(x, y, regularization, model_order=model_order, rank_prior=rank_prior)
++    return weights, intercept, regularization
+ 
+ 
+ def _fit_selected_ridge(
+--- /dev/null
++++ b/ml-controller/tests/test_p3_prior_ridge.py
+@@ -0,0 +1,69 @@
++from pathlib import Path
++import sys
++
++import numpy as np
++import pytest
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from services.active8_oof_stacker import _fit_ridge, fit_qualified_prior_ridge, RIDGE_CANDIDATES
++
++ORDER = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST", "iTransformer")
++
++
++def fixture():
++    rng = np.random.default_rng(144)
++    x = rng.uniform(size=(1000, 16))
++    x[:, 8:] = rng.integers(0, 2, size=(1000, 8))
++    y = .10 * x[:, 5] + .02 * x[:, 1] - .03 * x[:, 10]
++    prior = np.array([1 / 6] * 5 + [0., 0., 1 / 6])
++    return x, y, prior
++
++
++def test_zero_prior_exactly_reproduces_historical_fit():
++    x, y, _ = fixture()
++    a = _fit_ridge(x, y, 1., model_order=ORDER)
++    b = _fit_ridge(x, y, 1., model_order=ORDER, rank_prior=np.zeros(8))
++    np.testing.assert_array_equal(a[0], b[0])
++    assert a[1] == b[1]
++
++
++def test_prior_solution_obeys_kkt_and_keeps_degraded_model_estimable():
++    x, y, prior = fixture()
++    weights, intercept = _fit_ridge(x, y, 10., model_order=ORDER, rank_prior=prior)
++    mean, scale = x.mean(axis=0), x.std(axis=0)
++    z = (x - mean) / scale
++    theta = weights * scale
++    theta0 = np.r_[prior, np.zeros(8)]
++    residual = x @ weights + intercept - y
++    gradient = z.T @ residual + 10 * (theta - theta0)
++    free = np.r_[theta[:8] > 1e-8, np.ones(8, dtype=bool)]
++    assert np.max(np.abs(gradient[free])) < 1e-6
++    assert np.all(gradient[:8][~free[:8]] > -1e-6)
++    assert abs(residual.sum()) < 1e-6
++    assert weights[5] > 0  # zero prior is not a model exclusion
++    assert weights[10] < 0  # availability remains unbounded
++
++
++def test_large_lambda_converges_to_standardized_prior():
++    x, y, prior = fixture()
++    weights, _ = _fit_ridge(x, y, 1e10, model_order=ORDER, rank_prior=prior)
++    np.testing.assert_allclose(weights * x.std(axis=0), np.r_[prior, np.zeros(8)], atol=1e-7)
++
++
++@pytest.mark.parametrize("prior", ([.1] * 7, [float('nan')] * 8, [-.1] * 8))
++def test_invalid_prior_fails_explicitly(prior):
++    x, y, _ = fixture()
++    with pytest.raises(ValueError, match='rank_prior_invalid'):
++        _fit_ridge(x, y, 1., model_order=ORDER, rank_prior=prior)
++
++
++def test_candidate_requires_distinct_inner_prior_and_existing_lambda_set():
++    x, y, prior = fixture()
++    days = np.array([f'2026-01-{i // 50 + 1:02d}' for i in range(1000)])
++    known = np.array([f'2026-01-{i // 50 + 3:02d}' for i in range(1000)])
++    markets = np.full(1000, 'TW')
++    result = fit_qualified_prior_ridge(x, y, days, markets, label_known_dates=known,
++                                     model_order=ORDER, rank_prior=prior, inner_rank_prior=np.zeros(8))
++    assert result[2] in RIDGE_CANDIDATES
++    with pytest.raises(TypeError):
++        fit_qualified_prior_ridge(x, y, days, markets, label_known_dates=known, model_order=ORDER, rank_prior=prior)

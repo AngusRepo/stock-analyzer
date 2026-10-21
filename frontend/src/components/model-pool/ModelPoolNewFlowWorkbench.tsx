@@ -1,4 +1,4 @@
-import { ensembleQualificationPresentation, modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
+import { modelTailPresentation, ensembleQualificationPresentation, modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
 import { useMemo, useState, type ReactNode } from 'react'
 import EnsembleAuthority from './EnsembleAuthority'
 import {
@@ -43,14 +43,13 @@ const RETIRED_MODELS = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
 const PRODUCTION_SLOT_MODELS = new Set<string>([...MODEL_POOL_PRODUCTION_SLOT_IDS, 'TimeXer'])
 const TREE_MODELS = new Set(['LightGBM', 'XGBoost', 'ExtraTrees'])
 const SEQUENCE_MODELS = new Set(['DLinear', 'TimeXer', 'PatchTST', 'iTransformer'])
-const L2_SIDECAR_MODELS = new Set(['TimesFM'])
 const GRAPH_MODELS = new Set(['GNN'])
 const TABULAR_NEURAL_MODELS = new Set(['TabM'])
 
 const ADAPTIVE_EVIDENCE_STEPS = [
   {
     label: 'Active-8 confidence hook',
-    detail: 'Risk thresholds and PF quality use active-8 direct-alpha verified model_accuracy only; retired models and TimesFM sidecar stay out of confidence and quality multipliers.',
+    detail: 'Risk thresholds and PF quality use active-8 direct-alpha verified model_accuracy only; retired models stay out of confidence and quality multipliers.',
     tone: 'ok' as const,
   },
   {
@@ -116,11 +115,7 @@ const MODEL_DATASET_REQUIREMENTS: Record<string, { window: string; shape: string
     shape: 'NeuralForecast multiseries',
     note: 'Inverted attention is more useful with longer multiseries context.',
   },
-  TimesFM: {
-    window: '1024/2048 context',
-    shape: 'TimesFM 2.5 zero-shot series',
-    note: 'Use 16k context only after data depth and cost evidence justify it.',
-  },
+
 }
 
 const EVIDENCE_MATRIX_COLUMNS = [
@@ -171,7 +166,6 @@ function toneFromStatus(status?: string | null): WorkstationTone {
 
 function modelFamily(name: string, model?: ModelPoolLineageModel): 'Tree' | 'TabM' | 'Sequence' | 'GNN' | 'Sidecar' | 'Other' {
   const family = `${model?.balance_family ?? ''} ${model?.model_type ?? ''}`.toLowerCase()
-  if (L2_SIDECAR_MODELS.has(name) || family.includes('sidecar') || family.includes('timesfm_l2')) return 'Sidecar'
   if (TREE_MODELS.has(name) || family.includes('tree') || family.includes('boost')) return 'Tree'
   if (TABULAR_NEURAL_MODELS.has(name) || family.includes('tabm') || family.includes('tabular_neural')) return 'TabM'
   if (GRAPH_MODELS.has(name) || family.includes('graph') || family.includes('gnn')) return 'GNN'
@@ -462,6 +456,7 @@ function selectedArtifactEvidence(artifact?: SelectedArtifactRow | null) {
   const cpcvPolicy = asRecord(modelCpcv.policy ?? gateCpcvPolicy)
   const rowFailedGates = asStringList(artifact?.offline_gate_failed_gates)
   return {
+    tailReview: asRecord(artifact?.cpcv_tail_review),
     offline,
     live,
     gate,
@@ -545,6 +540,7 @@ function baseCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedA
     ...asStringList(evidence.modelCpcv.failed_gates),
     ...asStringList(evidence.foundationForecastValidation.failed_gates),
   ])
+  const tailPresentation = modelTailPresentation(evidence.modelCpcv, evidence.tailReview)
   const cpcvIc = firstFiniteNumber(evidence.modelCpcv.oos_ic_mean, evidence.foundationForecastValidation.oos_ic_mean)
   const cpcvDetail = cpcvDecision
     ? 'CPCV ' + (gateToken(cpcvDecision) === 'PASS' ? '通過' : '未通過') + ' · ' + Math.trunc(cpcvFolds!) + ' folds' + (cpcvIc != null ? ' · IC ' + formatMetric(cpcvIc, 3) : '')
@@ -552,13 +548,12 @@ function baseCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedA
   const detailParts = [
     failedGates.length ? 'fail gates: ' + failedGates.map((item) => humanizeToken(item)).join(', ') : null,
     cpcvDetail,
+    tailPresentation.detail,
     'selection risk：由 V5 ensemble 的 later-window IC／spread LCB 與 conformal coverage 驗證，不在單一模型重複填 PBO。',
   ].filter(Boolean)
-  const cpcvFailed = gateToken(cpcvDecision) === 'FAIL'
-  const cpcvPassed = gateToken(cpcvDecision) === 'PASS'
-  const tone: WorkstationTone = cpcvFailed ? 'error' : cpcvPassed ? 'ok' : 'warn'
+  const tone: WorkstationTone = cpcvContractReady ? tailPresentation.tone : 'warn'
   return {
-    value: cpcvFailed ? '未通過' : cpcvPassed ? '通過' : '待補證據',
+    value: cpcvContractReady ? tailPresentation.label : '待補證據',
     detail: detailParts.join('\n'),
     title: [
       candidateId + ': base CPCV=' + (cpcvDecision ?? 'missing'),
@@ -1521,7 +1516,7 @@ export default function ModelPoolNewFlowWorkbench({
 
       <div className="border-t border-[#263247] bg-[#071018] p-4 text-[15px] leading-6 text-[#a7b5c8]">
         Parameter search and allocator/meta proposals stay in Promotion & Parameter Governance.
-        This cockpit is only the L2 TimesFM sidecar and L3 active-8 evidence surface: active slots, artifacts, verified rows,
+        This cockpit is the L3 active-8 evidence surface: active slots, artifacts, verified rows,
         blockers, and V5 bundle pointer readiness.
       </div>
     </WorkstationPanel>

@@ -156,7 +156,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
   ]),
   paper: new Set([
-    'paper_intraday_nav_risk_v1', 'paper_atr_once_v1', 'paper_second_breakout_state_v2', 'paper_second_breakout_signals_v2', 'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_p5_rearms_v1',
+    'paper_intraday_nav_risk_v1', 'paper_atr_once_v1', 'paper_second_breakout_state_v2', 'paper_second_breakout_signals_v2', 'paper_counterfactual_lots_v1', 'paper_counterfactual_events_v1', 'paper_counterfactual_signals_v1', 'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_p5_rearms_v1',
     'l4_portfolio_plans_v1', 'l4_policy_account_rewards_v1', 'paper_daily_plan_reviews_v1', 'paper_daily_plan_heads_v1', 'paper_rotation_outcomes_v1', 'l4_replan_requests_v1', 'l4_portfolio_head_v1', 'l4_replan_outbox_v1',
     'paper_daily_snapshots', 'paper_execution_events', 'paper_order_intents',
     'paper_exit_intents', 'paper_challenger_candidates',
@@ -259,6 +259,8 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 's12_calibration_work_lifecycle_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 's12_calibration_work_censor_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'execution_retention_releases_v1', domain: 'execution', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'live_submission_pause', domain: 'execution', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  { table: 'live_account_observations_v1', domain: 'execution', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'ops_retention_releases_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'research_retention_releases_v1', domain: 'research', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_orphan_archives_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
@@ -352,7 +354,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
   ]),
   paper: new Set([
     'paper_intraday_nav_risk_v1',
-    'paper_atr_once_v1', 'paper_second_breakout_state_v2', 'paper_second_breakout_signals_v2',
+    'paper_atr_once_v1', 'paper_second_breakout_state_v2', 'paper_second_breakout_signals_v2', 'paper_counterfactual_lots_v1', 'paper_counterfactual_events_v1', 'paper_counterfactual_signals_v1',
     'paper_p5_rearms_v1',
     'paper_kelly_calibration_runs_v1',
     'paper_kelly_calibration_artifacts_v1',

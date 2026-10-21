@@ -5,13 +5,11 @@
  * 讓使用者看到每個階段選了哪些股票、為什麼選
  */
 import { useQuery } from '@tanstack/react-query'
-import { dashboardV4Api, recommendationsApi, paperApi, schedulerApi, type DailyPipelineView } from '@/lib/api'
+import { dashboardV4Api, recommendationsApi, paperApi, type DailyPipelineView } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
-import SchedulerPipelineChain from '@/components/SchedulerPipelineChain'
-import { WorkstationPanel } from '@/components/workstation/WorkstationChrome'
 import {
   AlertTriangle, Filter, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react'
@@ -19,6 +17,7 @@ import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 import PipelineMaturityContribution from '@/components/PipelineMaturityContribution'
+import L4DistributionPanel from '@/components/L4DistributionPanel'
 import type { PipelineDecisionMaturityPacket } from '@/lib/pipelineMaturityContract'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
@@ -148,7 +147,6 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
   const l1 = evidenceObject(evidence.layer1_strategy_labeler)
   const l125 = evidenceObject(evidence.layer125_finlab_portfolio_intelligence)
   const l15 = evidenceObject(evidence.layer15_multi_strategy_router) ?? evidenceObject(evidence.layer1_breadth)
-  const l2 = evidenceObject(evidence.layer2_timesfm_enrichment) ?? evidenceObject(evidence.layer2_3ml_coarse) ?? evidenceObject(evidence.layer2_coarse_ml) ?? evidenceObject(evidence.layer2_queue_seed)
   const l3 = evidenceObject(evidence.layer3_8ml_formal) ?? evidenceObject(evidence.layer3_6ml_formal) ?? evidenceObject(evidence.layer3_formal_ml)
   const l35 = evidenceObject(evidence.layer35_evidence_fusion)
   const l4 = evidenceObject(rec?.l4_sparse_allocation)
@@ -209,17 +207,6 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
         `route ${percentMetric(l15?.route_score)}`,
         `formal L2 ${boolMetric(l15?.formal_l2_queue, 'queue', 'observe')}`,
         `teachers ${numberMetric(l15?.teacher_label_count, 0)}`,
-      ],
-    },
-    {
-      layer: 'L2',
-      title: '3ML Coarse / TimesFM Enrichment',
-      status: l2 ? boolMetric(l2.l2_feature_input_active, 'active', textMetric(l2.reason_code, 'observe')) : 'no evidence',
-      detail: l2?.decision_policy ?? 'TimesFM L2 enrichment evidence not found',
-      metrics: [
-        `expected ${numberMetric(l2?.expected_model_count, 0)}`,
-        `features ${numberMetric(l2?.populated_feature_count, 0)}`,
-        `direct ${boolMetric(l2?.direct_alpha_blocked, 'blocked', 'allowed')}`,
       ],
     },
     {
@@ -584,7 +571,11 @@ function PipelineColumnError({
     </PipelineColumn>
   )
 }
-function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbackCount: number }) {
+function FunnelSummaryColumn({ summary, fallbackCount, l4Distribution }: {
+  summary: any
+  fallbackCount: number
+  l4Distribution?: PipelineDecisionMaturityPacket['l4_distribution']
+}) {
   const layers = Array.isArray(summary?.layers) ? summary.layers : []
   return (
     <PipelineColumn
@@ -618,6 +609,12 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
             </div>
           )
         })}
+        <details className="rounded-xl border border-white/10 p-3">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-200">L4 · 配置詳情</summary>
+          <div className="mt-3 min-w-0">
+            {l4Distribution ? <L4DistributionPanel data={l4Distribution} /> : <p role="status" className="text-xs text-slate-400">尚未取得 L4 配置資料。</p>}
+          </div>
+        </details>
       </div>
     </PipelineColumn>
   )
@@ -831,14 +828,6 @@ export default function PipelinePage() {
   const { isAuthenticated, login } = useAuth()
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
-  const scheduler = useQuery({
-    queryKey: ['scheduler', 'drilldown'],
-    queryFn: schedulerApi.status,
-    enabled: isAuthenticated,
-    staleTime: queryTtl.realtime,
-    refetchInterval: 60_000,
-  })
-
   // Stage 1+2+3: Daily recommendations (screener → ML → filtered)
   const {
     data: recData,
@@ -970,10 +959,6 @@ export default function PipelinePage() {
           </div>
         </div>
 
-        <WorkstationPanel title="當日執行狀態" kicker="daily dependency chain">
-          <SchedulerPipelineChain jobs={scheduler.data?.jobs ?? []} loading={scheduler.isLoading} error={scheduler.error} />
-        </WorkstationPanel>
-
         <div className="grid gap-4 xl:grid-cols-4">
           {recIsError ? (
             <PipelineColumnError
@@ -989,7 +974,7 @@ export default function PipelinePage() {
             </>
           ) : (
             <>
-              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} />
+              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} l4Distribution={maturityData?.l4_distribution} />
               <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
             </>
           )}

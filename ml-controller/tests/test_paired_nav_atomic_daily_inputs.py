@@ -207,7 +207,7 @@ def test_daily_graph_reaches_capture_before_formal_payloads_and_l2():
     edges = {(e.source, e.target) for e in graph.build_graph().get_graph().edges}
     assert ('load_market_env', 'capture_atomic_inputs') in edges
     assert ('capture_atomic_inputs', 'build_payloads') in edges
-    assert ('build_payloads', 'l2_timesfm_enrich') in edges
+    assert ('build_payloads', 'prepare_sequence_inputs') in edges
 
 
 def test_empty_population_is_distinct_from_missing_or_uncomputed_candidates(monkeypatch):
@@ -273,7 +273,7 @@ def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monke
     # raw capture, stock/slate builder and state envelope writer/reader.
     monkeypatch.setattr(graph, 'node_load_inputs', load)
     monkeypatch.setattr(graph, 'node_load_market_env', no_op)
-    monkeypatch.setattr(graph, 'node_l2_timesfm_enrich', no_op)
+    monkeypatch.setattr(graph, 'node_prepare_sequence_inputs', no_op)
     monkeypatch.setattr(graph, '_attach_pipeline_modal_serving_context', serving_context)
     async def request(state, *, state_gcs_uri):
         assert state['paired_nav_atomic_pre_l2']['status'] == 'pre_l2_payloads_built'

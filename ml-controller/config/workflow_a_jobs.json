@@ -1,0 +1,41 @@
+{
+  "schema": "workflow-a-jobs-v1",
+  "deployment_owner": "Claude via reviewed CI/CD and Wei-approved SHA",
+  "rules_document_sha256": "980d8d2cc9a07e2eece7e46630b5c6927920173a080b1e15a26b36ce0c46e96f",
+  "jobs": {
+    "postclose-research-dispatch": {
+      "command": ["python", "-m", "postclose_research_job_main"],
+      "schedule": "20 14 * * 1-5",
+      "time_zone": "Asia/Taipei",
+      "required_environment": ["STOCKVISION_SOURCE_SHA", "GCP_PROJECT_ID", "GCP_REGION", "DATASET_SNAPSHOT_JOB_NAME"],
+      "acceptance": "dispatch receipt is not research completion; ambiguous dispatch is not retried blindly"
+    },
+    "l4-shadow-daily": {
+      "command": ["python", "-m", "l4_shadow_job_main"],
+      "environment": {"L4_SHADOW_OPERATION": "daily"},
+      "trigger": "frozen full-chain source-index publication, before next market open",
+      "source_contract": "l4_distribution/shadow_inputs/v1/{session_date}/index.json",
+      "acceptance": "every registered entry has its own verified full-chain source; no active-chain substitution"
+    },
+    "l4-shadow-execution": {
+      "command": ["python", "-m", "l4_shadow_job_main"],
+      "environment": {"L4_SHADOW_OPERATION": "tick"},
+      "schedule": "* 0-6 * * 1-5",
+      "time_zone": "UTC",
+      "acceptance": "original native session schedule and frame deadlines; missing past frames fail, never backfill current quotes"
+    }
+  },
+  "bootstrap": {
+    "job": "l4-shadow-daily",
+    "override_environment": {"L4_SHADOW_OPERATION": "bootstrap"},
+    "required_reference": "generation and SHA-bound L4_SHADOW_BOOTSTRAP_REFERENCE",
+    "preconditions": ["new B gate passed", "Claude observed formal L3/L4 atomic pointer", "GCS write approval", "opening state receipts"],
+    "automatic_bootstrap": false
+  },
+  "release_dependencies": [
+    "Claude creates or updates these jobs via CI/CD; Codex does not execute provider mutations",
+    "CI application-job inventory includes all new same-image jobs",
+    "daily inference source owner publishes an index for the complete registered frozen chains",
+    "release JSON and Paper admission regenerated only by Claude"
+  ]
+}

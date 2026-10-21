@@ -37,8 +37,8 @@ def test_explicit_blocked_result_is_reported_without_failing_node(monkeypatch):
     monkeypatch.setattr(progress,'report',report)
     monkeypatch.setattr(progress,'_completed',[])
     async def run():
-        async with progress.phase('node_l2_timesfm_enrich') as outcome:
-            outcome['status']=progress.node_result_status('node_l2_timesfm_enrich',{'timesfm_l2_summary':{'status':'blocked'}})
+        async with progress.phase('node_prepare_sequence_inputs') as outcome:
+            outcome['status']=progress.node_result_status('node_prepare_sequence_inputs',{'sequence_input_summary':{'status':'blocked'}})
         return 'continues'
     assert asyncio.run(run()) == 'continues'
     assert events[-1][1]['status']=='blocked'

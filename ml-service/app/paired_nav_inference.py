@@ -55,8 +55,7 @@ def run_candidate_bundles(parent, *, compute):
         manifest['active8_shadow_suppressions'] = []
         child['serving_manifest_digest'] = checksum(manifest)
         build_pool_from_frozen_manifest(manifest,
-            expected_digest=child['serving_manifest_digest'],
-            l2_sidecar_context={'version': child.get('active_versions', {}).get('TimesFM')})
+            expected_digest=child['serving_manifest_digest'])
         child['active8_shadow_artifact_identities'] = active8_shadow_candidate_identities(manifest)
         contracts = request['sequence_contracts']
         series = request['sequence_series_by_model']

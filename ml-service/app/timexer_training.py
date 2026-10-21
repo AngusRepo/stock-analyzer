@@ -35,6 +35,7 @@ class Windows(Dataset):
 
 def load_windows(inputs, job):
     from .sequence_training import canonical_session_calendar
+    from .timexer_cutoff import admitted
     validate_settings(job['settings'], job['exogenous'])
     from .formal_feature_contract import feature_count, timexer_semantic
     expected_columns = feature_count(timexer_semantic(job['settings']))
@@ -105,6 +106,8 @@ def load_windows(inputs, job):
         for end in range(length - 1, len(dates) - 5):
             day = str(dates[end])
             if day < job['train_start'] or day > job['test_end']:
+                continue
+            if not admitted(day, str(dates[end + 5]), job.get('input_scope')):
                 continue
             ci = positions[day]
             if ci + 5 >= len(calendar) or dates[end + 1] != calendar[ci + 1] or dates[end + 5] != calendar[ci + 5]:
@@ -215,6 +218,8 @@ def train(job, inputs, *, device="cuda", full_fit=False):
             predictions.extend((forecast * scale.numpy() + mean.numpy()).tolist())
     scores = forecast_return_from_signal_close(np.asarray(predictions), np.asarray([r['last_close'] for r in testing])) if testing else np.empty(0)
     report = {'train_rows': len(training), 'inner_rows': len(inner), 'validation_rows': len(valid), 'test_rows': len(testing),
+              'training_signal_date_min': min(r['date'] for r in training),
+              'training_signal_date_max': max(r['date'] for r in training),
               'training_label_known_max': max(r['label_known_date'] for r in training), 'inner_validation_start': valid_start,
               'selected_epochs': epochs, 'inner_history': inner_history, 'refit_history': history, 'coverage': coverage,
               'settings': settings, 'price_scaling': 'input-window mean/std only; target uses same transform',

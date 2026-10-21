@@ -46,6 +46,32 @@ test('Oct 20 sealed OOM recovery requires the exact frozen plan, parent and comp
  ]){const v=make();change(v);assert.throws(()=>verifyFormalServingClosure(v))}
 })
 const historicalError='paired_nav:atomic_collection:historical_not_prospective; paired_nav:atomic_daily:requires_allocation_and_native_execution; paired_nav:atomic_candidate_setup:paired_nav_atomic_no_executable_plans'
+
+test('Oct 21 comparison failure recovery admits only the exact complete formal Paper plan on its authorized date',()=>{
+ const make=()=>{
+  const f=fixture();f.signalDate='2026-10-20';f.plan.signal_date=f.signalDate
+  f.runId='pipeline-dispatch:2026-10-20:270320c4-8d25-4187-aec2-79595289d428'
+  f.error=historicalError.replace('historical_not_prospective','atomic_candidates_unavailable')
+  f.nowMs=Date.parse('2026-10-21T10:00:00+08:00')
+  const old=f.plan.plan_id;f.plan.plan_id='a7978d89c41abf8a655fb0894b37d62d1aacd089503d847ce5d0620148704829'
+  Object.assign(f.manifest!,{source_run_id:f.runId,signal_date:f.signalDate,prospective:1,
+   payload_checksum:'aef910f9d27729e46b942713cf3362f0e522dc604fefad36199febc2af0428ff'})
+  for(const log of [f.prediction!,f.recommendation!]){log.run_id=f.runId;log.run_date=f.signalDate;log.error=f.error;log.summary=log.summary.replace('run_id=run ',`run_id=${f.runId} `)}
+  for(const row of f.rows)row.alpha_allocation=row.alpha_allocation!.replace(old,f.plan.plan_id)
+  return f
+ }
+ const f=make(),before=JSON.stringify(f);verifyFormalServingClosure(f);assert.equal(JSON.stringify(f),before)
+ for(const change of [
+  (v:ReturnType<typeof make>)=>{v.manifest!.payload_checksum='a'.repeat(64)},
+  (v:ReturnType<typeof make>)=>{v.manifest!.prospective=0},
+  (v:ReturnType<typeof make>)=>{v.runId+='other'},
+  (v:ReturnType<typeof make>)=>{v.plan.plan_id='b'.repeat(64)},
+  (v:ReturnType<typeof make>)=>{v.nowMs=Date.parse('2026-10-22T08:00:00+08:00')},
+  (v:ReturnType<typeof make>)=>{v.rows.pop()},
+  (v:ReturnType<typeof make>)=>{v.prediction!.status='running'},
+  (v:ReturnType<typeof make>)=>{v.error+='; d1_write:failed'},
+ ]){const v=make();change(v);assert.throws(()=>verifyFormalServingClosure(v))}
+})
 function historicalFixture(){
   const f=fixture();f.signalDate='2026-10-15';f.plan.signal_date=f.signalDate;f.error=historicalError
   f.historicalRecoveryTradeDate='2026-10-16'

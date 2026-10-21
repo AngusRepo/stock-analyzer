@@ -49,6 +49,16 @@ test('real D1: original kernel parity, future-price exclusion, cold/future cache
     assert.deepEqual(before.output, await sectorLeaderBonusBatch(env, request.candidates, .7, 5),
       'same valid cache and past prices produce exactly the original kernel result')
     assert.equal(before.output.get('2330')?.bonus, 5)
+    const noIndustry = await readSectorLeaderBonusSnapshot(env, { ...request,
+      candidates: [{ symbol: '2330', sector: null }],
+      fullIndustryUniverse: request.fullIndustryUniverse.map(row => row.symbol === '2330' ? { ...row, sector: null } : row),
+    })
+    assert.equal(noIndustry.source_status, 'captured')
+    assert.deepEqual(noIndustry.output.get('2330'), { bonus: 0, avgCorr: null, leaderCount: 0 })
+    const conflictingIndustry = await readSectorLeaderBonusSnapshot(env, { ...request,
+      candidates: [{ symbol: '2330', sector: 'display fallback' }],
+    })
+    assert(conflictingIndustry.issues.includes('taxonomy_missing_or_mismatched:2330'))
     assert(Math.abs(before.output.get('2330')!.avgCorr! - 1) < 1e-12)
     const immutable = structuredClone(before)
 
@@ -110,6 +120,8 @@ test('actual screener uses bounded reader, limits formal output scope and seals 
   assert(source.includes("atomicOverlayCapture.read('sector_bonus'"))
   assert(source.includes('readSectorLeaderBonusSnapshot(env'))
   assert(source.includes('taxonomyUniverse.map(symbol => ({ symbol, sector: taxonomyProfiles.get(symbol)?.industry ?? null }))'))
+  assert(source.includes('symbol: candidate.symbol, sector: taxonomyProfiles.get(candidate.symbol)?.industry ?? null'))
+  assert(!source.includes("symbol: candidate.symbol, sector: typeof candidate.sector === 'string' ? candidate.sector : null"))
   assert(source.includes('new Map([...bonusSnapshot.output].filter(([symbol]) => finalSymbols.has(symbol)))'))
   assert(!source.includes('await sectorLeaderBonusBatch('))
   assert(source.indexOf("atomicOverlayCapture.record('core_seed_materialization'") > source.indexOf('await writeScreenerSeedBatches('))

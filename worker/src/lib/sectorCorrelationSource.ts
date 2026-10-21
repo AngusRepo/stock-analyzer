@@ -28,7 +28,9 @@ export async function readSectorLeaderBonusSnapshot(env: Pick<Bindings, 'DB'> & 
     || [...universe.keys()].some(symbol => !symbol || symbol !== symbol.trim())) throw new Error('sector_bonus_universe_invalid')
   const issues: string[] = []
   for (const row of input.candidates) {
-    if (!universe.has(row.symbol) || !row.sector || universe.get(row.symbol) !== row.sector) {
+    // An explicitly captured null industry has no sector bonus in the kernel.
+    // Missing membership and conflicting classifications still fail closed.
+    if (!universe.has(row.symbol) || universe.get(row.symbol) !== row.sector) {
       issues.push(`taxonomy_missing_or_mismatched:${row.symbol}`)
     }
   }

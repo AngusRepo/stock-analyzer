@@ -85,7 +85,7 @@ export async function replayFrozenCandidateCoreSeeds(packet: AtomicPostOverlayIn
         const sectors = new Set(members.map(row => row.sector).filter(Boolean))
         const peers = new Set<string>(source.full_industry_universe.filter((row: any) => sectors.has(row.sector)).map((row: any) => row.symbol))
         const taxonomy = new Map<string, string | null>(source.full_industry_universe.map((row: any) => [row.symbol, row.sector]))
-        if (taxonomy.size !== source.full_industry_universe.length || members.some(row => !row.sector || taxonomy.get(row.symbol) !== row.sector)
+        if (taxonomy.size !== source.full_industry_universe.length || members.some(row => !taxonomy.has(row.symbol) || taxonomy.get(row.symbol) !== row.sector)
           || raw.leaderRows.some(row => sectors.has(row.sector) && taxonomy.get(row.symbol) !== row.sector)) {
           throw new MissingCandidateSource('sector_bonus:taxonomy_missing_or_mismatched')
         }

@@ -11,6 +11,18 @@ export type PremarketWork = (stage: PremarketStage, input: PremarketPayload, gua
 const PREFIX = 'premarket_v3:'
 const RUN = (date: string) => `${date}:premarket-v3`
 const MAX_ATTEMPTS = 3
+function october21PublicationRecovery(env: Bindings, date: string): boolean {
+  return date === '2026-10-21' && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1'
+    && env.LIVE_EXECUTION_CLIENT_ENABLED === '0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED === '0'
+}
+const october21AllocationRetryPredicate = `target.business_date='2026-10-21'
+  AND target.canonical_run_id='2026-10-21:premarket-v3' AND target.stage='premarket_v3:allocate'
+  AND target.attempt_count=3 AND target.last_error='Error: paper_morning_recovery_setup_not_materialized'
+  AND json_extract(target.cursor_key,'$.signal_date')='2026-10-20'
+  AND json_extract(target.cursor_key,'$.morning_context.trade_date')='2026-10-21'
+  AND json_extract(target.cursor_key,'$.morning_context.checksum')='d5b866e6f694a4b461e02cb54ee058f1ba7bc63e9b04fd5504c15be95b0e7213'
+  AND json_extract(target.cursor_key,'$.l3_receipt.run_id')='pipeline-dispatch:2026-10-20:270320c4-8d25-4187-aec2-79595289d428'
+  AND json_extract(target.cursor_key,'$.l3_receipt.checksum')='9e36664032344abc96ebfa0ffa39dcc95c59516aad06a5ec5f41423a6efc01f8'`
 function october16PublicationRecovery(env: Bindings, date: string): boolean {
   return date === '2026-10-16' && env.PAPER_DAILY_PLAN_OWNER === 'premarket_once_v1'
     && env.LIVE_EXECUTION_CLIENT_ENABLED === '0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED === '0'
@@ -90,6 +102,9 @@ export async function ensurePremarketEventChain(env: Bindings, date: string, now
   const db = databaseForDataDomain(env, 'ops')
   // Source repair grants one continuation of the exact preserved setup. It
   // neither resets attempts nor revives unrelated failures or a fourth failure.
+  if (october21PublicationRecovery(env,date)) await db.prepare(`UPDATE pipeline_stage_runs AS target
+    SET status='queued',lease_owner=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
+    WHERE target.status='error' AND ${october21AllocationRetryPredicate}`).run()
   if (october16PublicationRecovery(env,date)) await db.prepare(`UPDATE pipeline_stage_runs
     SET status='queued',lease_owner=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
     WHERE business_date=? AND canonical_run_id=? AND stage=? AND status='error'
@@ -131,6 +146,9 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   // One Wei-authorized recovery after the three preserved preopen-only failures.
   let attemptLimit = (['2026-10-12','2026-10-13'].includes(date) || october16PublicationRecovery(env,date))
     && stage === 'setup' ? MAX_ATTEMPTS + 1 : MAX_ATTEMPTS
+  if (october21PublicationRecovery(env,date) && stage==='allocate'
+    && await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs target WHERE target.status='queued'
+      AND ${october21AllocationRetryPredicate}`).first())attemptLimit=MAX_ATTEMPTS+1
   if (october16PublicationRecovery(env,date) && stage==='allocate'
     && await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs target WHERE target.status='queued'
       AND ${historicalAllocationRetryPredicate}`).first())attemptLimit=MAX_ATTEMPTS+1

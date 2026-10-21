@@ -9,6 +9,7 @@ import {
   STORAGE_LIFECYCLE_SCHEDULE,
   writeEvidenceArtifact,
 } from './artifactLifecycle'
+import { tablesForDataDomainRouteReady } from './dataDomainRegistry'
 
 class Statement {
   values: unknown[] = []
@@ -232,22 +233,15 @@ function readyDomainDb(baseline: string, tables: string[]): MockDb {
   return db
 }
 
-const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', [
-  'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events', 'risk_audit_log',
-  'execution_retention_releases_v1',
-])
-const paperDomainTables = [
-  'debate_memory', 'decision_logs', 'exit_shadow_log', 'paper_accounts', 'paper_orders',
-  'paper_positions', 'paper_settlements', 'paper_daily_snapshots', 'paper_execution_events',
-  'paper_order_intents', 'paper_exit_intents', 'paper_challenger_candidates',
-  'paper_challenger_daily_metrics', 'paper_decision_attribution', 'pending_buy_filter_audit',
-  'pending_buy_items', 'pending_buy_runs', 'promotion_audit_events',
-  'paper_kelly_calibration_artifacts_v1', 'paper_kelly_calibration_head_v1',
-  'paper_kelly_calibration_runs_v1',
-  'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
-  'l4_policy_account_rewards_v1', 'l4_portfolio_head_v1', 'l4_portfolio_plans_v1',
-  'l4_replan_outbox_v1', 'l4_replan_requests_v1', 'paper_p5_rearms_v1',
-]
+// The ready fixtures mirror the registry that runStorageHealthCheck reads, so a new
+// route-ready table cannot silently turn this health fixture red. Whether every
+// registry table is actually created by a migration is asserted separately in
+// domainMigrationLayout.test.ts.
+const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', tablesForDataDomainRouteReady('execution'))
+const paperDomainTables = tablesForDataDomainRouteReady('paper')
+for (const table of ['paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1']) {
+  assert(paperDomainTables.includes(table), `paper registry must still own ${table}`)
+}
 const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', paperDomainTables)
 
 async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): Promise<void> {

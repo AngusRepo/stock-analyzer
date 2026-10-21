@@ -84,7 +84,17 @@ def prepare_final(fold_directories, *, selections, cutoff, output):
             raise ValueError('p6_final_selected_members_invalid')
         if selection.get('refit_max_epoch')!=max(k[0] for k in selected):
             raise ValueError('p6_final_epoch_changed')
-    frame=pl.concat([f for _,f,_,_ in loaded]).sort('date','symbol')
+    # Root maps are semantically unordered. Polars Struct schemas retain their
+    # insertion order, which can differ between fold-producing processes.
+    # Canonicalize this metadata only; preserve every value and keep strict
+    # concatenation for all actual features and labels.
+    frames=[]
+    for _,fold_frame,_,_ in loaded:
+        fields=sorted(field.name for field in fold_frame.schema['feature_roots'].fields)
+        frames.append(fold_frame.with_columns(pl.struct([
+            pl.col('feature_roots').struct.field(name).alias(name) for name in fields
+        ]).alias('feature_roots')))
+    frame=pl.concat(frames).sort('date','symbol')
     probabilities=pl.concat([p for _,_,p,_ in loaded]).sort('date','symbol')
     if frame.unique(['date','symbol']).height!=frame.height:
         raise ValueError('p6_final_heldout_overlap')

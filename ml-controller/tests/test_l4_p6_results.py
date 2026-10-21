@@ -47,7 +47,22 @@ def results(batch):
     return bucket,batch_id
 
 
-def test_verified_three_seed_results_feed_new_calibration_and_fixed_final_refit(batch):
+@pytest.mark.parametrize('reordered_roots', [False, True])
+def test_verified_three_seed_results_feed_new_calibration_and_fixed_final_refit(batch, monkeypatch, reordered_roots):
+    if reordered_roots:
+        from services import l4_p6_final_inputs as final_inputs
+        read_fold = final_inputs._read_fold
+        def read_with_reordered_roots(directory, cutoff):
+            receipt, frame, probability, source = read_fold(directory, cutoff)
+            fields = sorted(field.name for field in frame.schema['feature_roots'].fields)
+            if receipt['fold'] % 2:
+                fields.reverse()
+            frame = frame.with_columns(pl.struct([
+                pl.col('feature_roots').struct.field(name).alias(name) for name in fields
+            ]).alias('feature_roots'))
+            return receipt, frame, probability, source
+        monkeypatch.setattr('services.l4_p6_results._read_fold', read_with_reordered_roots)
+        monkeypatch.setattr(final_inputs, '_read_fold', read_with_reordered_roots)
     bucket,batch_id=results(batch);directories,selections,cutoff,out=batch
     dest=out.parent/'results'
     receipt,selected,calibration=collect_cv(bucket,directories,sealed_batch_id=batch_id,cutoff=cutoff,output=dest)

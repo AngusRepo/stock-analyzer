@@ -68,3 +68,26 @@ def test_final_refit_rejects_old_selection_changed_epoch_or_tampered_file(batch)
     (directories[0]/'val-pure-p-loss.parquet').write_bytes(b'tamper')
     with pytest.raises(ValueError,match='fold_file_changed'):prepare_final(directories,selections=selections,cutoff=cutoff,output=out)
     assert not out.exists()
+
+
+def test_final_preserves_root_values_with_different_struct_field_order(batch, monkeypatch):
+    from services import l4_p6_final_inputs as owner
+    directories, selections, cutoff, out = batch
+    read_fold = owner._read_fold
+    expected = {}
+    def reordered(directory, requested_cutoff):
+        receipt, frame, probability, source = read_fold(directory, requested_cutoff)
+        for row in frame.select('date', 'symbol', 'feature_roots').to_dicts():
+            expected[(row['date'], row['symbol'])] = row['feature_roots']
+        fields = sorted(field.name for field in frame.schema['feature_roots'].fields)
+        if receipt['fold'] % 2:
+            fields.reverse()
+        frame = frame.with_columns(pl.struct([
+            pl.col('feature_roots').struct.field(name).alias(name) for name in fields
+        ]).alias('feature_roots'))
+        return receipt, frame, probability, source
+    monkeypatch.setattr(owner, '_read_fold', reordered)
+    result = prepare_final(directories, selections=selections, cutoff=cutoff, output=out)
+    actual = pl.read_parquet(out/'crossfitted-native.parquet')
+    assert result['rows'] == len(expected) == actual.height
+    assert {(r['date'], r['symbol']):r['feature_roots'] for r in actual.to_dicts()} == expected

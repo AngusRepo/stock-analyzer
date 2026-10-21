@@ -33,7 +33,10 @@ def collect_cv(bucket, fold_directories, *, sealed_batch_id, cutoff, output):
     if [r['fold'] for r,_,_,_ in loaded]!=[1,2,3,4]:raise ValueError('p6_cv_four_ordered_folds_required')
     hashes={str(r['fold']):r['checksum'] for r,_,_,_ in loaded}
     identity=digest(dict(recipe=recipe.RECIPE,fold_receipt_checksums=hashes,cutoff=cutoff.__dict__))
-    frame=pl.concat([f for _,f,_,_ in loaded]).select('date','symbol','gross_return','label_known_date')
+    # Fold-specific ancestry metadata is verified by _read_fold, but is not
+    # part of prediction/label alignment. Project before concatenating so its
+    # nested Struct field order cannot change the result-reader schema.
+    frame=pl.concat([f.select('date','symbol','gross_return','label_known_date') for _,f,_,_ in loaded])
     if frame.unique(['date','symbol']).height!=frame.height:raise ValueError('p6_cv_duplicate_heldout')
     targets=pl.concat([pl.read_parquet(Path(d)/'val-rows.parquet') for d in fold_directories])
     if not targets.select('date','symbol').equals(frame.select('date','symbol')):

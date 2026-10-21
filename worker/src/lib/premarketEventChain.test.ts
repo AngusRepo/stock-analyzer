@@ -10,7 +10,7 @@ function fixture() {
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
-for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
+for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16','2026-10-21']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
  const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
  try{
   f.ports.nowMs=Date.parse(`${recoveryDate}T09:00:00+08:00`)
@@ -22,6 +22,35 @@ for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16']) test(`${rec
   await processPremarketEvent(f.env,f.messages.shift()!,async()=>{calls++;return {next:null,receipt:{}}},f.now())
   assert.equal(calls,1)
   assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/outside_window/)
+ }finally{f.close()}
+})
+
+for(const scenario of ['repaired','wrong_context','live_enabled','fourth_failure','retry_failed'])test(`Oct 21 exact Paper publication continuation preserves attempts: ${scenario}`,async()=>{
+ const f=fixture(),day='2026-10-21';let calls=0
+ f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';f.env.LIVE_EXECUTION_CLIENT_ENABLED='0'
+ f.env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=scenario==='live_enabled'?'1':'0'
+ f.ports.nowMs=Date.parse(day+'T10:00:00+08:00')
+ const cursor=JSON.stringify({signal_date:'2026-10-20',morning_context:{trade_date:day,
+  checksum:scenario==='wrong_context'?'wrong':'d5b866e6f694a4b461e02cb54ee058f1ba7bc63e9b04fd5504c15be95b0e7213'},
+  l3_receipt:{run_id:'pipeline-dispatch:2026-10-20:270320c4-8d25-4187-aec2-79595289d428',checksum:'9e36664032344abc96ebfa0ffa39dcc95c59516aad06a5ec5f41423a6efc01f8'}})
+ const attempts=scenario==='fourth_failure'?4:3,error='Error: paper_morning_recovery_setup_not_materialized'
+ try{
+  f.sqls.ops.prepare('INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)')
+   .run(day,'premarket_v3:allocate',day+':premarket-v3','error',cursor,attempts,error)
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const before=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
+  const allowed=scenario==='repaired'||scenario==='retry_failed'
+  assert.equal(before.status,allowed?'queued':'error');assert.equal(before.attempt_count,attempts)
+  assert.equal(before.cursor_key,cursor);assert.equal(before.last_error,error)
+  if(allowed){
+   const msg={type:'premarket_stage',cursor:0,triggerTime:day,runId:day+':premarket-v3',premarketStage:'allocate'} as UpdateQueueMsg
+   const work:PremarketWork=async()=>{calls++;if(scenario==='retry_failed')throw new Error('repair_failed');return {next:null,receipt:{ready:true}}}
+   if(scenario==='retry_failed')await assert.rejects(processPremarketEvent(f.env,msg,work,f.now()),/repair_failed/)
+   else await processPremarketEvent(f.env,msg,work,f.now())
+   await ensurePremarketEventChain(f.env,day,f.now());await processPremarketEvent(f.env,msg,work,f.now())
+   const after=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
+   assert.equal(calls,1);assert.equal(after.attempt_count,4);assert.equal(after.status,scenario==='retry_failed'?'error':'success')
+  }
  }finally{f.close()}
 })
 test('atomic chain deduplicates signals and simultaneous deliveries',async()=>{

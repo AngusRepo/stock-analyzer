@@ -1,0 +1,320 @@
+﻿file,purpose,still_needed,last_commit
+.dockerignore,.dockerignore 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/ExecutionPaperReturn.tsx,前端 ExecutionPaperReturn 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+frontend/src/components/L4DistributionPanel.tsx,前端 L4DistributionPanel 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/PendingEntryChecklist.tsx,前端 PendingEntryChecklist 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/PipelineMaturityContribution.tsx,前端 PipelineMaturityContribution 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/RecommendationCardClean.tsx,前端 RecommendationCardClean 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/SchedulerPipelineChain.tsx,前端 SchedulerPipelineChain 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/StockAIReport.tsx,前端 StockAIReport 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/StrategyNavEvidence.tsx,前端 StrategyNavEvidence 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/model-pool/ModelPoolNewFlowWorkbench.tsx,前端 ModelPoolNewFlowWorkbench 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/DailyReadinessBoard.css,前端 DailyReadinessBoard 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/DailyReadinessBoard.tsx,前端 DailyReadinessBoard 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/ExecutionChainPanel.css,前端 ExecutionChainPanel 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/ExecutionChainPanel.tsx,前端 ExecutionChainPanel 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/JobRunTiming.css,前端 JobRunTiming 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/JobRunTiming.tsx,前端 JobRunTiming 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/StandaloneJobRegistry.css,前端 StandaloneJobRegistry 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/StandaloneJobRegistry.tsx,前端 StandaloneJobRegistry 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/dailyReadinessPhases.ts,前端 dailyReadinessPhases 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/components/observability/executionChainAttemptState.ts,前端 executionChainAttemptState 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/api.ts,前端 api 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/dailyReadinessPhases.test.ts,驗證 dailyReadinessPhases.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/executionChainAttemptState.test.ts,驗證 executionChainAttemptState.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/finlabStageCards.test.ts,驗證 finlabStageCards.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/finlabStageCards.ts,前端 finlabStageCards 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/modelPoolNewFlowContract.test.ts,驗證 modelPoolNewFlowContract.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/modelPoolPresentation.ts,前端 modelPoolPresentation 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/modelTailPresentation.test.ts,驗證 modelTailPresentation.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/modelUpgradeTrack.ts,前端 modelUpgradeTrack 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pendingBuyExecutionUi.ts,前端 pendingBuyExecutionUi 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pendingBuyTradePreview.ts,前端 pendingBuyTradePreview 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pendingEntryChecklist.test.ts,驗證 pendingEntryChecklist.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pendingEntryChecklist.ts,前端 pendingEntryChecklist 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pipelineMaturityWiring.test.ts,驗證 pipelineMaturityWiring.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pipelineStageCards.test.ts,驗證 pipelineStageCards.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/pipelineStageCards.ts,前端 pipelineStageCards 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/schedulerPipelineChain.test.tsx,驗證 schedulerPipelineChain.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/sealedL3DisplayContract.test.ts,驗證 sealedL3DisplayContract.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/lib/strategyNavContract.ts,前端 strategyNavContract 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/pages/BotDashboard.tsx,前端 BotDashboard 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+frontend/src/pages/ObservabilityPage.tsx,前端 ObservabilityPage 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/pages/PipelinePage.tsx,前端 PipelinePage 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/pages/StockReportPage.tsx,前端 StockReportPage 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/src/pages/StrategyLearningPage.tsx,前端 StrategyLearningPage 的資料／狀態顯示與契約,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+frontend/tests/daily-readiness.fixture.tsx,驗證 daily-readiness.fixture 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/config/WORKFLOW-A-RELEASE-HANDOFF.md,WORKFLOW-A-RELEASE-HANDOFF 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,1bb3f7c1214f1dcb618dbe53663ceb9cc35e22d3
+ml-controller/config/workflow_a_jobs.json,workflow_a_jobs 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/dataset_snapshot_job_main.py,dataset_snapshot_job_main 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/execution_gateway_app.py,execution_gateway_app 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+ml-controller/graphs/daily_pipeline_v2.py,daily_pipeline_v2 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/l4_shadow_job_main.py,l4_shadow_job_main 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f01480ef77b61c02f2fb1a1ce35677c32592e2f2
+ml-controller/main.py,main 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/oof_materialize_job_main.py,oof_materialize_job_main 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/pipeline_job_main.py,pipeline_job_main 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+ml-controller/policies/P4-CHALLENGER-RULES-v1.md,P4-CHALLENGER-RULES-v1 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/postclose_research_job_main.py,postclose_research_job_main 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/routers/finlab.py,finlab 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/routers/paper_corporate.py,paper_corporate 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/routers/pipeline.py,pipeline 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+ml-controller/routers/retrain_followup.py,retrain_followup 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/routers/retrain_trigger.py,retrain_trigger 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/routers/walk_forward.py,walk_forward 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/scripts/l4_distribution_refresh_job.py,l4_distribution_refresh_job 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/active8_ensemble_artifact.py,active8_ensemble_artifact 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/services/active8_oof_cohort_materializer.py,active8_oof_cohort_materializer 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/active8_oof_stacker.py,active8_oof_stacker 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/services/active8_stacker_recipe.py,active8_stacker_recipe 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/services/active_model_policy.py,active_model_policy 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/execution_gateway_live_relay.py,execution_gateway_live_relay 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/services/execution_submission_control.py,execution_submission_control 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/services/finlab_execution_gateway.py,finlab_execution_gateway 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+ml-controller/services/finlab_live_submit_service.py,finlab_live_submit_service 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/services/l4_allocation_contract.py,l4_allocation_contract 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_challenger_comparison.py,l4_challenger_comparison 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_challenger_registry.py,l4_challenger_registry 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_challenger_rules.py,l4_challenger_rules 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_comparison_statistics.py,l4_comparison_statistics 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_distribution.py,l4_distribution 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_distribution_context.py,l4_distribution_context 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_distribution_dataset.py,l4_distribution_dataset 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/services/l4_distribution_lifecycle.py,l4_distribution_lifecycle 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_distribution_runtime.py,l4_distribution_runtime 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_monthly_closure.py,l4_monthly_closure 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_monthly_stacker_experiments.py,l4_monthly_stacker_experiments 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/services/l4_native_day_source.py,l4_native_day_source 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,f01480ef77b61c02f2fb1a1ce35677c32592e2f2
+ml-controller/services/l4_native_l2_dependency.py,l4_native_l2_dependency 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_native_meta_replica.py,l4_native_meta_replica 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/services/l4_native_observation.py,l4_native_observation 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,f01480ef77b61c02f2fb1a1ce35677c32592e2f2
+ml-controller/services/l4_oof_lifecycle.py,l4_oof_lifecycle 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_batch.py,l4_p6_batch 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_bundle.py,l4_p6_bundle 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_calibration.py,l4_p6_calibration 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_dispatch.py,l4_p6_dispatch 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_final_inputs.py,l4_p6_final_inputs 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f32fd5b24503a24bb96938b07ef4ebfb2a1fd5f7
+ml-controller/services/l4_p6_inference.py,l4_p6_inference 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_monthly.py,l4_p6_monthly 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_monthly_collect.py,l4_p6_monthly_collect 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_pipeline.py,l4_p6_pipeline 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_pool_projection.py,l4_p6_pool_projection 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_pure_head.py,l4_p6_pure_head 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_recipe.py,l4_p6_recipe 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,18a979bb789436ba4d1215d3bf8e3657a70677e1
+ml-controller/services/l4_p6_results.py,l4_p6_results 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f32fd5b24503a24bb96938b07ef4ebfb2a1fd5f7
+ml-controller/services/l4_p6_validation.py,l4_p6_validation 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_p6_weights.py,l4_p6_weights 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_private_execution.py,l4_private_execution 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,9ae36016fcd0566fe9d672de377cbc1213897700
+ml-controller/services/l4_r2_release_preflight.py,l4_r2_release_preflight 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_release_packet.py,l4_release_packet 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_shadow_accounts.py,l4_shadow_accounts 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_shadow_daily.py,l4_shadow_daily 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,9ae36016fcd0566fe9d672de377cbc1213897700
+ml-controller/services/l4_shadow_daily_assembly.py,l4_shadow_daily_assembly 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,8f97a9dddec98490e1b4081a24daaf5fa207f3fb
+ml-controller/services/l4_shadow_execution.py,l4_shadow_execution 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_shadow_input_export.py,l4_shadow_input_export 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,cec4ee1a644c32799532ee066a9335a18e48e84e
+ml-controller/services/l4_shadow_native_producer.py,l4_shadow_native_producer 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,8f97a9dddec98490e1b4081a24daaf5fa207f3fb
+ml-controller/services/l4_shadow_observation.py,l4_shadow_observation 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f01480ef77b61c02f2fb1a1ce35677c32592e2f2
+ml-controller/services/l4_shadow_producer.py,l4_shadow_producer 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_shadow_source_capture.py,l4_shadow_source_capture 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f01480ef77b61c02f2fb1a1ce35677c32592e2f2
+ml-controller/services/l4_shadow_sources.py,l4_shadow_sources 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/l4_tabpack_weights.py,l4_tabpack_weights 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,9ae36016fcd0566fe9d672de377cbc1213897700
+ml-controller/services/l4_training_ancestry.py,l4_training_ancestry 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/live_account_snapshot.py,live_account_snapshot 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+ml-controller/services/local_prod_ready_audit.py,local_prod_ready_audit 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/modal_client.py,modal_client 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/model_artifact_registry.py,model_artifact_registry 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/model_cpcv_evidence.py,model_cpcv_evidence 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/model_serving_resolver.py,model_serving_resolver 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/model_tail_validation.py,P2 月訓與線上資格／尾折規則一致化,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/model_upgrade_research_track.py,model_upgrade_research_track 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/model_validation_policy.py,P2 月訓與線上資格／尾折規則一致化,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/native_paper_sandbox.py,native_paper_sandbox 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/oof_prep_events.py,oof_prep_events 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/oof_semantic_equivalence.py,oof_semantic_equivalence 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/paired_nav_atomic_dispatch.py,paired_nav_atomic_dispatch 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/paired_nav_atomic_l2.py,paired_nav_atomic_l2 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/paired_nav_atomic_personas.py,paired_nav_atomic_personas 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/paired_nav_recommendation_path.py,paired_nav_recommendation_path 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/paper_strategy_mode.py,paper_strategy_mode 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/pipeline_execution_status.py,pipeline_execution_status 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/pipeline_progress.py,pipeline_progress 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/pipeline_saved_l2_resume.py,pipeline_saved_l2_resume 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/pipeline_sequence_context.py,pipeline_sequence_context 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/prediction_dispersion.py,prediction_dispersion 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/premarket_atomic_research.py,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/premarket_pipeline.py,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/premarket_postclose.py,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/premarket_publication.py,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/production_cutover_packet.py,production_cutover_packet 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/recommendation_service.py,recommendation_service 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,29eb9ed92077e92f0d5723c46c17f70ca63ed80b
+ml-controller/services/timexer_daily_evidence.py,TimeXer 訓練截止、推論或每日證據,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+ml-controller/services/training_dual_cutoff.py,training_dual_cutoff 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/services/walk_forward_retrain.py,walk_forward_retrain 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/l4_native_chain_allocator.py,驗證 l4_native_chain_allocator 的契約／回歸行為,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,cec4ee1a644c32799532ee066a9335a18e48e84e
+ml-controller/tests/test_active8_oof_stacker.py,驗證 active8_oof_stacker 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_active8_selected_recipe.py,驗證 active8_selected_recipe 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,d9799632ce4a43725ec3c1042d8a12fa07e946e8
+ml-controller/tests/test_artifact_data_ready_lifecycle.py,驗證 artifact_data_ready_lifecycle 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_dataset_snapshot_job_split.py,驗證 dataset_snapshot_job_split 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_dated_canonical_sequences.py,驗證 dated_canonical_sequences 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_execution_gateway_live_relay.py,驗證 execution_gateway_live_relay 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/tests/test_execution_paper_return.py,驗證 execution_paper_return 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/tests/test_finlab_execution_gateway.py,驗證 finlab_execution_gateway 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/tests/test_finlab_live_submit_service.py,驗證 finlab_live_submit_service 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+ml-controller/tests/test_full_fit_scope_request.py,驗證 full_fit_scope_request 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_challenger_comparison.py,驗證 l4_challenger_comparison 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_challenger_registry.py,驗證 l4_challenger_registry 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_challenger_rules.py,驗證 l4_challenger_rules 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_monthly_stacker_experiments.py,驗證 l4_monthly_stacker_experiments 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_native_l2_dependency.py,驗證 l4_native_l2_dependency 的契約／回歸行為,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_batch.py,驗證 l4_p6_batch 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_bundle.py,驗證 l4_p6_bundle 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_dispatch.py,驗證 l4_p6_dispatch 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_final_inputs.py,驗證 l4_p6_final_inputs 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f32fd5b24503a24bb96938b07ef4ebfb2a1fd5f7
+ml-controller/tests/test_l4_p6_final_results.py,驗證 l4_p6_final_results 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_monthly.py,驗證 l4_p6_monthly 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_monthly_collect.py,驗證 l4_p6_monthly_collect 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_pipeline.py,驗證 l4_p6_pipeline 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_pool_projection.py,驗證 l4_p6_pool_projection 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_recipe.py,驗證 l4_p6_recipe 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,18a979bb789436ba4d1215d3bf8e3657a70677e1
+ml-controller/tests/test_l4_p6_release_packet.py,驗證 l4_p6_release_packet 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_results.py,驗證 l4_p6_results 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,52d252d94e108764a27f32e6b0cd4305415018b4
+ml-controller/tests/test_l4_p6_runtime.py,驗證 l4_p6_runtime 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_validation.py,驗證 l4_p6_validation 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_p6_worker_contract.py,驗證 l4_p6_worker_contract 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_private_execution.py,驗證 l4_private_execution 的契約／回歸行為,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_refresh_contract.py,驗證 l4_refresh_contract 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_shadow_accounts.py,驗證 l4_shadow_accounts 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_shadow_daily.py,驗證 l4_shadow_daily 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_shadow_daily_assembly.py,驗證 l4_shadow_daily_assembly 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,8f97a9dddec98490e1b4081a24daaf5fa207f3fb
+ml-controller/tests/test_l4_shadow_execution.py,驗證 l4_shadow_execution 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_shadow_input_export.py,驗證 l4_shadow_input_export 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,cec4ee1a644c32799532ee066a9335a18e48e84e
+ml-controller/tests/test_l4_shadow_job.py,驗證 l4_shadow_job 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_shadow_native_producer.py,驗證 l4_shadow_native_producer 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,8f97a9dddec98490e1b4081a24daaf5fa207f3fb
+ml-controller/tests/test_l4_shadow_observation.py,驗證 l4_shadow_observation 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,f01480ef77b61c02f2fb1a1ce35677c32592e2f2
+ml-controller/tests/test_l4_shadow_producer.py,驗證 l4_shadow_producer 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_l4_shadow_sources.py,驗證 l4_shadow_sources 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_legacy_hmm_isolation.py,驗證 legacy_hmm_isolation 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_live_account_snapshot.py,驗證 live_account_snapshot 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+ml-controller/tests/test_nav_l3_execution_receipt.py,驗證 nav_l3_execution_receipt 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,29eb9ed92077e92f0d5723c46c17f70ca63ed80b
+ml-controller/tests/test_p2_tail_parity.py,驗證 p2_tail_parity 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_p3_mean_loss.py,驗證 p3_mean_loss 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_p6_native_isolation.py,驗證 p6_native_isolation 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_p7_model_upgrade_research_track.py,驗證 p7_model_upgrade_research_track 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,2fe62077e11a72d5fab205de21bbaf61f19a56ca
+ml-controller/tests/test_paired_nav_atomic_daily_inputs.py,驗證 paired_nav_atomic_daily_inputs 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_paired_nav_atomic_dispatch.py,驗證 paired_nav_atomic_dispatch 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_paired_nav_atomic_l2.py,驗證 paired_nav_atomic_l2 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_paired_nav_pipeline.py,驗證 paired_nav_pipeline 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_pipeline_execution_status.py,驗證 pipeline_execution_status 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+ml-controller/tests/test_pipeline_prediction_universe.py,驗證 pipeline_prediction_universe 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,29eb9ed92077e92f0d5723c46c17f70ca63ed80b
+ml-controller/tests/test_pipeline_progress.py,驗證 pipeline_progress 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_premarket_atomic_research.py,驗證 premarket_atomic_research 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_premarket_pipeline.py,驗證 premarket_pipeline 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_premarket_postclose.py,驗證 premarket_postclose 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_premarket_publication.py,驗證 premarket_publication 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_recommendation_provenance.py,驗證 recommendation_provenance 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,2fe62077e11a72d5fab205de21bbaf61f19a56ca
+ml-controller/tests/test_retrain_followup_telemetry.py,驗證 retrain_followup_telemetry 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_takeover_postclose_job.py,驗證 takeover_postclose_job 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_timexer_daily_evidence.py,驗證 timexer_daily_evidence 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+ml-controller/tests/test_training_cutoff_transport.py,驗證 training_cutoff_transport 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_training_dual_cutoff.py,驗證 training_dual_cutoff 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-controller/tests/test_walk_forward_active8_contract.py,驗證 walk_forward_active8_contract 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/canonical_adjusted_prep.py,canonical_adjusted_prep 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/features/__init__.py,__init__ 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/full_fit_scope.py,full_fit_scope 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,2763f935fe082f414c9254efb00eede093d4fe69
+ml-service/app/gnn_training.py,gnn_training 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/l4_p6_job.py,l4_p6_job 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/model_tail_validation.py,P2 月訓與線上資格／尾折規則一致化,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/model_validation.py,P2 月訓與線上資格／尾折規則一致化,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/model_validation_policy.py,P2 月訓與線上資格／尾折規則一致化,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/neuralforecast_sequence_runtime.py,neuralforecast_sequence_runtime 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,2763f935fe082f414c9254efb00eede093d4fe69
+ml-service/app/p6_engine/p6_train.py,p6_train 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/paired_nav_inference.py,paired_nav_inference 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/serving_resolver.py,serving_resolver 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/tabm_training.py,tabm_training 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/timexer_cutoff.py,TimeXer 訓練截止、推論或每日證據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/timexer_job.py,TimeXer 訓練截止、推論或每日證據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/timexer_training.py,TimeXer 訓練截止、推論或每日證據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/training_lifecycle_dispatch.py,training_lifecycle_dispatch 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/training_policy.py,training_policy 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/universal_training.py,universal_training 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/app/walk_forward_regime_policy.py,walk_forward_regime_policy 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/modal_app.py,modal_app 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_canonical_adjusted_prep.py,驗證 canonical_adjusted_prep 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_full_fit_scope.py,驗證 full_fit_scope 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,2763f935fe082f414c9254efb00eede093d4fe69
+ml-service/tests/test_l4_p6_job.py,驗證 l4_p6_job 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_nf_full_fit_window_scope.py,驗證 nf_full_fit_window_scope 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,2763f935fe082f414c9254efb00eede093d4fe69
+ml-service/tests/test_p6_engine.py,驗證 p6_engine 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_patchtst_entrypoint.py,驗證 patchtst_entrypoint 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_timexer_cutoff.py,驗證 timexer_cutoff 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_training_lifecycle_dispatch.py,驗證 training_lifecycle_dispatch 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_training_policy.py,驗證 training_policy 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+ml-service/tests/test_walk_forward_regime_policy.py,驗證 walk_forward_regime_policy 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/domain-migrations/execution/0005_live_submission_pause.sql,0005_live_submission_pause 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+worker/domain-migrations/execution/0006_live_account_observations.sql,0006_live_account_observations 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+worker/domain-migrations/paper/0012_counterfactual_recorder.sql,前瞻與反事實成交／出場紀錄,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/domain-schemas/execution.sql,execution 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+worker/src/lib/adminGateRoutes.test.ts,驗證 adminGateRoutes.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,2fe62077e11a72d5fab205de21bbaf61f19a56ca
+worker/src/lib/adminTriggerWorkerDomainTasks.ts,adminTriggerWorkerDomainTasks 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/artifactLifecycle.test.ts,驗證 artifactLifecycle.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,0d3765eb72e3b46fdb1d263d8655d7fdbe667ffa
+worker/src/lib/controllerResearchWorkflows.ts,controllerResearchWorkflows 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/cronWorkerDomainTasks.ts,cronWorkerDomainTasks 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/dataDomainRegistry.ts,dataDomainRegistry 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,53bca47bbbe29043c123d38d73927bbcb56bf975
+worker/src/lib/executionPaperReturn.test.ts,驗證 executionPaperReturn.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+worker/src/lib/executionPaperReturn.ts,executionPaperReturn 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+worker/src/lib/l4P6Evidence.ts,l4P6Evidence 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/l4R2LearningConfig.test.ts,驗證 l4R2LearningConfig.test 的契約／回歸行為,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/l4R2LearningConfig.ts,l4R2LearningConfig 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/l4ReleaseEvidence.ts,l4ReleaseEvidence 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/l4RiskNumericTrace.test.ts,驗證 l4RiskNumericTrace.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,3b409830a712a16822b686596a3c8cf51a971cc3
+worker/src/lib/l4ShadowExecution.test.ts,驗證 l4ShadowExecution.test 的契約／回歸行為,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/l4ShadowExecution.ts,l4ShadowExecution 模組的來源工作樹修補（以保存的 diff 為準）,R33 正式鏈不再需要；保留歷史研究／相容／測試，勿再啟用,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/marketScreener.ts,marketScreener 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/modelUpgradeResearchTrack.test.ts,驗證 modelUpgradeResearchTrack.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/modelUpgradeResearchTrack.ts,modelUpgradeResearchTrack 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/morningSetupP0P6ClosureContract.test.ts,驗證 morningSetupP0P6ClosureContract.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,2fe62077e11a72d5fab205de21bbaf61f19a56ca
+worker/src/lib/nativePaperExecutionFrame.test.ts,驗證 nativePaperExecutionFrame.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperAtrOnce.test.ts,驗證 paperAtrOnce.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperAtrOnce.ts,paperAtrOnce 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperCounterfactual.test.ts,驗證 paperCounterfactual.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,6b50112740d44d904c206bc231a0c41f427fa49e
+worker/src/lib/paperCounterfactual.ts,paperCounterfactual 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,17c005be7e514c66fd7473f04b14abff2e9a0345
+worker/src/lib/paperCounterfactualCorporate.test.ts,驗證 paperCounterfactualCorporate.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,17c005be7e514c66fd7473f04b14abff2e9a0345
+worker/src/lib/paperCounterfactualCorporate.ts,paperCounterfactualCorporate 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,17c005be7e514c66fd7473f04b14abff2e9a0345
+worker/src/lib/paperCounterfactualRuntime.test.ts,驗證 paperCounterfactualRuntime.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,17c005be7e514c66fd7473f04b14abff2e9a0345
+worker/src/lib/paperCounterfactualRuntime.ts,paperCounterfactualRuntime 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,17c005be7e514c66fd7473f04b14abff2e9a0345
+worker/src/lib/paperCounterfactualStore.ts,paperCounterfactualStore 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,17c005be7e514c66fd7473f04b14abff2e9a0345
+worker/src/lib/paperEntryTasks.ts,paperEntryTasks 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,6b50112740d44d904c206bc231a0c41f427fa49e
+worker/src/lib/paperIntradayPriceCache.ts,paperIntradayPriceCache 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperMarketDomainData.ts,paperMarketDomainData 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperStrategyMode.ts,paperStrategyMode 模組的來源工作樹修補（以保存的 diff 為準）,部分由 R33 取代；Claude 僅保留共用契約與既有相容功能,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperSwingNative.test.ts,驗證 paperSwingNative.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,6b50112740d44d904c206bc231a0c41f427fa49e
+worker/src/lib/paperValuationDate.test.ts,驗證 paperValuationDate.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperValuationDate.ts,NAV 精確交易日報價檢查,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/paperWorkerTasks.ts,paperWorkerTasks 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/pipelineProgress.ts,pipelineProgress 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/pipelineStageLease.ts,pipelineStageLease 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/postcloseResearch.test.ts,驗證 postcloseResearch.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/postcloseResearch.ts,postcloseResearch 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/premarketPublicationReceipt.test.ts,驗證 premarketPublicationReceipt.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/premarketPublicationReceipt.ts,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/premarketResearchGate.test.ts,驗證 premarketResearchGate.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/premarketResearchGate.ts,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/premarketSinglePlan.ts,盤前發布、盤後研究分離及發布收據,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/recommendationContext.test.ts,驗證 recommendationContext.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/recommendationContext.ts,recommendationContext 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/riskAudit.test.ts,驗證 riskAudit.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,cec4ee1a644c32799532ee066a9335a18e48e84e
+worker/src/lib/riskAudit.ts,風險單一 owner 與帳戶停單規則,仍需保留或由 Claude 審查整合；不代表已部署,cec4ee1a644c32799532ee066a9335a18e48e84e
+worker/src/lib/schedulerDependencyMap.ts,schedulerDependencyMap 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/schedulerExecutionTickets.ts,schedulerExecutionTickets 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/schedulerPolicy.ts,schedulerPolicy 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/schedulerRunLogger.ts,schedulerRunLogger 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+worker/src/lib/schedulerStatus.ts,schedulerStatus 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/screenerFunnelEvidence.test.ts,驗證 screenerFunnelEvidence.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/screenerFunnelEvidence.ts,screenerFunnelEvidence 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/lib/timexerCallbackEvidence.test.ts,驗證 timexerCallbackEvidence.test 的契約／回歸行為,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+worker/src/lib/timexerCallbackEvidence.ts,TimeXer 訓練截止、推論或每日證據,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+worker/src/lib/updateOrchestrator.ts,updateOrchestrator 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/routes/adminControlRoutes.ts,adminControlRoutes 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,ed40cf58194ea3e382fbd9a56c48c537f2b14359
+worker/src/routes/adminTriggerRoutes.ts,adminTriggerRoutes 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/routes/adminWriteRoutes.ts,adminWriteRoutes 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,d52d2913f7e29c96387494e4f30326503f9b104f
+worker/src/routes/other.ts,other 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/routes/scheduleReadRoutes.ts,scheduleReadRoutes 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef
+worker/src/types.ts,types 模組的來源工作樹修補（以保存的 diff 為準）,仍需保留或由 Claude 審查整合；不代表已部署,bf1941ef39a8678b819b382a64acee728c950eef

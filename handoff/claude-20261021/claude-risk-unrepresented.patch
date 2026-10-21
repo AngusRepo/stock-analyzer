@@ -1,0 +1,487 @@
+--- a/ml-controller/services/backtest_engine.py
++++ b/ml-controller/services/backtest_engine.py
+@@ -3235,22 +3235,8 @@
+     # circuit_cfg explicitly provided. Mode A skips entirely to preserve
+     # existing Optuna 5.x parity.
+     if ml_predictions is not None and circuit_cfg is not None:
+-        dd_halt_thresh = float(circuit_cfg.get("drawdownHalt", 0.15))
+         low_acc_thresh = float(circuit_cfg.get("lowAccuracyThreshold", 0.45))
+         raised_conf    = float(circuit_cfg.get("drawdownRaisedConf", 0.70))
+-
+-        # Layer 1: rolling 30d drawdown > drawdownHalt → halt ALL entries today
+-        # Source: paper.ts checkCircuitBreakers lines 269-273 (identical threshold)
+-        if current_drawdown_30d is not None and current_drawdown_30d > dd_halt_thresh:
+-            halt_reason = (f"L1 halt: dd_30d {current_drawdown_30d:.1%} "
+-                           f"> drawdownHalt {dd_halt_thresh:.1%}")
+-            for c in buy_candidates:
+-                attempts.append(EntryAttempt(
+-                    symbol=c.symbol, decision_date=decision_date, entry_date=entry_date,
+-                    status="skipped_circuit_halt", adjusted_entry=c.close,
+-                    reason=f"Mode B: {halt_reason}",
+-                ))
+-            return attempts
+ 
+         # Layer 2: 30d rolling accuracy < lowAccuracyThreshold → raise conf gate
+         # Source: paper.ts checkCircuitBreakers lines 324-328
+@@ -3494,17 +3480,14 @@
+         # 2026-04-20 #28 P4: Mode B budget multipliers (dd scale, bull align).
+         # Applied AFTER Kelly/risk-parity so confidence-based sizing stays primary.
+         if ml_predictions is not None and circuit_cfg is not None:
+-            # Layer 3: drawdownScaleStart → mddMultFloor linear scaling.
+-            # Paper.ts source 269-279: mdd_mult = max(floor, (halt-dd)/(halt-start)).
+-            # Applied only inside (dd_scale_start, dd_halt]; outside this range no
+-            # scaling (> dd_halt is caught by Layer 1 halt; ≤ dd_scale_start = 1.0).
++            # Layer 3: drawdownScaleStart → mddMultFloor linear scaling (p1Mdd.ts).
++            # mdd_mult = max(floor, (halt-dd)/(halt-start)); past dd_halt it stays at
++            # the floor. P1 never halts; stop authority is risk_config accountDrawdownPause.
+             if current_drawdown_30d is not None:
+                 dd_scale_start = float(circuit_cfg.get("drawdownScaleStart", 0.03))
+                 dd_halt = float(circuit_cfg.get("drawdownHalt", 0.15))
+                 mdd_floor = float(circuit_cfg.get("mddMultFloor", 0.2))
+-                if (current_drawdown_30d > dd_scale_start
+-                        and current_drawdown_30d <= dd_halt
+-                        and dd_halt > dd_scale_start):
++                if current_drawdown_30d > dd_scale_start and dd_halt > dd_scale_start:
+                     mdd_mult = max(
+                         mdd_floor,
+                         (dd_halt - current_drawdown_30d) / (dd_halt - dd_scale_start),
+--- a/worker/src/lib/p5LossesPolicy.test.ts
++++ b/worker/src/lib/p5LossesPolicy.test.ts
+@@ -89,7 +89,8 @@
+   } finally {f.close()}
+ })
+ 
+-for(const hardGate of ['P1','P8','P9','S1','missing_market_evidence'])test(`P5 scaling cannot override ${hardGate}`,async()=>{
++// P1 only scales size; the account drawdown stop is AD (risk_config accountDrawdownPause).
++for(const hardGate of ['AD','P8','P9','S1','missing_market_evidence'])test(`P5 scaling cannot override ${hardGate}`,async()=>{
+   const f=l4NativeFixture()
+   try {
+     seedRisk(f)
+@@ -97,8 +98,10 @@
+     if(hardGate==='S1')f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,
+       system:{...DEFAULT_RISK_CONFIG.system,killSwitch:true}}))
+     if(hardGate==='missing_market_evidence')f.sqls.core.exec('DELETE FROM market_risk_quality_v1')
+-    if(hardGate==='P1' || hardGate==='P8') {
+-      const navs=hardGate==='P1'?[1000000,950000,800000]:[1000000,965000]
++    if(hardGate==='AD')f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,
++      portfolio:{...DEFAULT_RISK_CONFIG.portfolio,accountDrawdownBaselineDate:'2026-09-10'}}))
++    if(hardGate==='AD' || hardGate==='P8') {
++      const navs=hardGate==='AD'?[1000000,950000,800000]:[1000000,965000]
+       for(const [i,nav] of navs.entries())f.sqls.paper.prepare(`INSERT INTO paper_daily_snapshots
+         (account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)`)
+         .run(hardGate==='P8' ? ['2026-09-11','2026-09-14'][i] : `2026-09-${10+i}`,nav,nav)
+--- a/worker/src/lib/p5Recovery.test.ts
++++ b/worker/src/lib/p5Recovery.test.ts
+@@ -5,6 +5,7 @@
+ import { checkP5Losses } from './riskChecks/p5Losses'
+ import { checkP1Mdd } from './riskChecks/p1Mdd'
+ import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
++import { checkAccountDrawdownPause } from './riskChecks/accountDrawdownPause'
+ import { checkS1KillSwitch } from './riskChecks/s1KillSwitch'
+ import { DEFAULT_RISK_CONFIG } from './riskConfig'
+ import { adminConfigCoreRoutes } from '../routes/adminConfigCoreRoutes'
+@@ -83,7 +84,10 @@
+     for (const [date,nav] of [['2026-09-01',1000000],['2026-09-02',900000],['2026-09-03',500000]]) {
+       f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run(date,nav,nav)
+     }
+-    assert.equal((await checkP1Mdd(f.env.PAPER_DB, f.cfg, deps))?.halt, true)
++    // P1 only scales; the drawdown stop authority is risk_config accountDrawdownPause.
++    assert.equal((await checkP1Mdd(f.env.PAPER_DB, f.cfg, deps))?.halt, false)
++    const ddCfg = { ...DEFAULT_RISK_CONFIG, portfolio: { ...DEFAULT_RISK_CONFIG.portfolio, accountDrawdownBaselineDate: '2026-09-01' } }
++    assert.equal((await checkAccountDrawdownPause(f.env.PAPER_DB, ddCfg, deps))?.halt, true)
+     assert.equal((await checkP8DailyPnl(f.env.PAPER_DB, DEFAULT_RISK_CONFIG, deps,
+       {tradeDate:'2026-09-03',previousSession:'2026-09-02',currentNav:500000,netExternalFlow:0}))?.halt, true)
+     f.kvs.set('trading:risk_config', JSON.stringify({ ...DEFAULT_RISK_CONFIG, system: { ...DEFAULT_RISK_CONFIG.system, killSwitch: true } }))
+--- a/worker/src/lib/paperEntryTasks.ts
++++ b/worker/src/lib/paperEntryTasks.ts
+@@ -33,6 +33,7 @@
+ import { checkCircuitBreakersForDomains } from './pendingBuyOrchestrator'
+ import { mergeIntradayPortfolioRisk, readP9IntradayHalt, checkP9IntradayDrawdown } from './intradayPortfolioRisk'
+ import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
++import { checkAccountDrawdownPause } from './riskChecks/accountDrawdownPause'
+ import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
+ import { acquirePaperBuyIntent, completePaperBuyIntent, l4BuySettlementStatements } from './paperOrderIntent'
+ import { readL4EntryContinuation, validateEntryAuthorization, type L4EntryAuthorization, type L4EntryContinuation } from './l4EntryContinuation'
+@@ -119,7 +120,7 @@
+ } from './fiveSlotCapitalAllocator'
+ import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
+ import { withD1ReadRetry } from './d1TransientRetry'
+-import { getRiskConfig } from './riskConfig'
++import { getRiskConfig, swingHardStopPct } from './riskConfig'
+ import { validateOrder } from './validateOrder'
+ import { assessPositionCorrelation } from './positionRiskDistribution'
+ import {
+@@ -882,6 +883,16 @@
+     await Promise.all(pendingBuys.map(item=>recordPaperExecutionEvent(env,{tradeDate:today,symbol:item.symbol,
+       side:'buy',eventType:'paper_order',status:'blocked',reason:'p8_daily_loss',detail:{risk:dailyLoss},pendingRunId,
+       source:'p8_daily_nav'})))
++    return holdingPoll
++  }
++  const accountDrawdown = await checkAccountDrawdownPause(paperDomainDatabase(env),riskCfg,
++    {defaults:cb,effectiveBuy:cb.buyConfThreshold,effectiveSell:cb.sellConfThreshold},
++    {tradeDate:today,nav:totalPortfolio})
++  if(accountDrawdown?.halt) {
++    await persistPendingBuyActiveState(env,today,pendingBuys,{stage:'intraday_risk_gate',reason:'account_drawdown_pause',detail:accountDrawdown.reason})
++    await Promise.all(pendingBuys.map(item=>recordPaperExecutionEvent(env,{tradeDate:today,symbol:item.symbol,
++      side:'buy',eventType:'paper_order',status:'blocked',reason:'account_drawdown_pause',detail:{risk:accountDrawdown},pendingRunId,
++      source:'account_drawdown_nav'})))
+     return holdingPoll
+   }
+   {
+@@ -2466,7 +2477,7 @@
+     const atr14 = atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct
+     const dailyRemaining = DAILY_BUY_LIMIT - dailyBuyTotal
+     const mediumRiskDampen = marketRisk.risk_level === 'medium' ? cfg.L2_formula.medium_risk_scale : 1.0
+-    const stopPct = paperSwingOwner ? .08 : Math.max(
++    const stopPct = paperSwingOwner ? swingHardStopPct(riskCfg) : Math.max(
+       cfg.position.minStopPct,
+       paperOr15Owner && executionStopLoss != null
+         ? (executionEntryPrice - executionStopLoss) / executionEntryPrice
+@@ -2925,7 +2936,7 @@
+       continue
+     }
+     const canonicalTradeLifecycleJson=paperSwingOwner ? writeSwingState(legacyLifecycleJson,{policy:SWING_POLICY_VERSION,
+-      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAuthorization!.orLow}) : legacyLifecycleJson
++      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAuthorization!.orLow,hardStopPct:swingHardStopPct(riskCfg)}) : legacyLifecycleJson
+     let fillExit = readSwingFillExit(canonicalTradeLifecycleJson) ?? {
+       initialStop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,
+       owner: canonicalTradeLifecycle.owners.exit, fallbackOwner: canonicalTradeLifecycle.owners.fallbackExit,
+--- a/worker/src/lib/paperSwingLifecycle.ts
++++ b/worker/src/lib/paperSwingLifecycle.ts
+@@ -1,4 +1,4 @@
+-import { SWING_POLICY_VERSION, type SwingPositionState } from './paperSwingPolicy'
++import { SWING_POLICY_VERSION, swingStopPrice, type SwingPositionState } from './paperSwingPolicy'
+ export function readSwingState(raw: unknown): SwingPositionState | null {
+   let value: any
+   try { value = typeof raw === 'string' ? JSON.parse(raw) : raw } catch { return null }
+@@ -6,13 +6,15 @@
+   if (!state || state.policy !== SWING_POLICY_VERSION) return null
+   if (![state.entryPrice,state.entryOrLow].every(x=>Number.isFinite(x)&&x>0)
+     || !/^\d{4}-\d{2}-\d{2}$/.test(state.entryDate)) throw new Error('swing_lifecycle_invalid')
++  swingStopPrice(state)
+   return state
+ }
+ export function writeSwingState(raw: unknown, state: SwingPositionState): string {
+   const value = typeof raw === 'string' ? JSON.parse(raw) : structuredClone(raw)
++  const stop = swingStopPrice(state)
+   return JSON.stringify({...value,swing:state,owners:{...(value as any)?.owners,
+     entry:SWING_POLICY_VERSION,exit:SWING_POLICY_VERSION,fallbackExit:SWING_POLICY_VERSION},
+-    exit:{...(value as any)?.exit,initialStop:state.entryPrice*.92,trailingStop:state.entryPrice*.92,
++    exit:{...(value as any)?.exit,initialStop:stop,trailingStop:stop,
+       tp1:null,tp2:null,tp1Source:null,tp2Source:null,fusionPolicy:null,protectiveFloorPolicy:null,fallbackOwner:SWING_POLICY_VERSION},position_tp1_progress:undefined})
+ }
+ 
+--- a/worker/src/lib/paperSwingPolicy.ts
++++ b/worker/src/lib/paperSwingPolicy.ts
+@@ -110,9 +110,16 @@
+ 
+ export type SwingPositionState = {
+   policy: typeof SWING_POLICY_VERSION; entryDate: string; entryPrice: number; entryOrLow: number;
++  /** trading:risk_config.position.swingHardStopPct sealed at entry; absent on legacy positions (0.08). */
++  hardStopPct?: number;
+   lastEvaluatedCloseDate?: string;
+   priceAdjustments?: {effectiveDate:string;factor:number}[];
+   pendingExit?: {reason:'swing_daily_orl'|'swing_20_sessions'|'swing_hard_stop_8';notBeforeMs:number};
++}
++export function swingStopPrice(state:SwingPositionState) {
++  const pct=state.hardStopPct ?? .08
++  if(!Number.isFinite(pct) || pct<=0 || pct>=.5) throw new Error('swing_hard_stop_invalid')
++  return state.entryPrice*(1-pct)
+ }
+ function sessionAge(state:SwingPositionState,date:string,calendar:string[]) {
+   if (calendar.some((d,i)=>i>0&&d<=calendar[i-1]) || !calendar.includes(state.entryDate) || !calendar.includes(date))
+@@ -133,7 +140,7 @@
+   if(state.policy!==SWING_POLICY_VERSION || !positive(state.entryPrice) || !positive(state.entryOrLow) || !positive(input.price))
+     throw new Error('swing_position_invalid')
+   // Hard protection never waits for calendar or daily-close evidence.
+-  if(input.price<=state.entryPrice*.92) return {action:'full_sell' as const,reason:'swing_hard_stop_8',exitIntentKind:'risk_stop' as const}
++  if(input.price<=swingStopPrice(state)) return {action:'full_sell' as const,reason:'swing_hard_stop_8',exitIntentKind:'risk_stop' as const}
+   // Scheduled expiry never submits during the closing auction. Keep its intent for the next session.
+   const expiryWindow=input.nowMs>=time(input.date,'09:05') && input.nowMs<time(input.date,'13:25')
+   if(state.pendingExit?.reason==='swing_20_sessions' && !expiryWindow)
+--- a/worker/src/lib/riskChain.ts
++++ b/worker/src/lib/riskChain.ts
+@@ -34,6 +34,7 @@
+ import { checkP7Streak } from './riskChecks/p7Streak'
+ import { checkS1KillSwitch } from './riskChecks/s1KillSwitch'
+ import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
++import { checkAccountDrawdownPause } from './riskChecks/accountDrawdownPause'
+ import { getRiskConfig } from './riskConfig'
+ import { resolveCanonicalMarketRisk } from './marketRiskRuntime'
+ import { getPrevTradingDay } from './paperMarketData'
+@@ -75,7 +76,7 @@
+   }
+ 
+   // Run 9 checks in parallel — none depend on each other's output.
+-  const [s1, p1, p2, marketRestriction, p5, p6, p7, p8] = await Promise.all([
++  const [s1, p1, p2, marketRestriction, p5, p6, p7, p8, accountDd] = await Promise.all([
+     checkS1KillSwitch(kv, deps),
+     checkP1Mdd(databases.paper, cfg, deps),
+     checkP2Accuracy(databases.learning, kv, cfg, deps),
+@@ -84,11 +85,12 @@
+     checkP6Momentum(databases.market, deps),
+     checkP7Streak(databases.learning, cfg, deps),
+     checkP8DailyPnl(databases.paper, riskCfg, deps),
++    checkAccountDrawdownPause(databases.paper, riskCfg, deps),
+   ])
+ 
+   const entries: Array<[string, CircuitBreakerState | null]> = [
+     ['S1', s1], ['P1', p1], ['P2', p2], ['P3', marketRestriction],
+-    ['P5', p5], ['P6', p6], ['P7', p7], ['P8', p8],
++    ['P5', p5], ['P6', p6], ['P7', p7], ['P8', p8], ['AD', accountDd],
+   ]
+ 
+   let halt = false
+--- /dev/null
++++ b/worker/src/lib/riskChecks/accountDrawdownPause.ts
+@@ -0,0 +1,48 @@
++import { paperAccountId } from '../paperExecutionScope'
++/**
++ * accountDrawdownPause.ts — account-level stop of new entries.
++ *
++ * Peak NAV is taken from trading:risk_config.portfolio.accountDrawdownBaselineDate
++ * (activation / real account start), never a rolling window. This is the only
++ * drawdown check with stop-trading authority; P1 only scales position size.
++ */
++import type { RiskConfig } from '../riskConfig'
++import type { CircuitBreakerState, LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
++import { failClosedRiskCheck } from './failClosed'
++
++export async function checkAccountDrawdownPause(
++  db: D1Database,
++  riskCfg: RiskConfig,
++  deps: LegacyLayerDeps,
++  current?: { tradeDate: string; nav: number },
++): Promise<LegacyLayerResult> {
++  const { accountDrawdownPause: limit, accountDrawdownBaselineDate: baseline } = riskCfg.portfolio
++  if (baseline == null) return null
++  try {
++    if (!/^\d{4}-\d{2}-\d{2}$/.test(baseline) || !Number.isFinite(limit) || limit <= -1 || limit >= 0)
++      throw new Error('account_drawdown_config_invalid')
++    if (current && (!/^\d{4}-\d{2}-\d{2}$/.test(current.tradeDate) || !Number.isFinite(current.nav) || current.nav <= 0))
++      throw new Error('account_drawdown_context_invalid')
++    const upTo = current?.tradeDate ?? '9999-12-31'
++    const { results } = await db.prepare(
++      'SELECT date, total_value FROM paper_daily_snapshots WHERE account_id=? AND date>=? AND date<=? ORDER BY date'
++    ).bind(paperAccountId(), baseline, upTo).all<{ date: string; total_value: number }>()
++    const values = (results ?? []).map(r => Number(r.total_value))
++    if (values.some(v => !Number.isFinite(v) || v <= 0)) throw new Error('account_drawdown_snapshot_invalid')
++    if (current) values.push(current.nav)
++    if (!values.length) return null
++    const peak = Math.max(...values)
++    const nav = values[values.length - 1]
++    const drawdown = nav / peak - 1
++    if (drawdown > limit) return null
++    console.warn(`[AccountDrawdown] pause: drawdown ${(drawdown * 100).toFixed(2)}% <= ${(limit * 100).toFixed(2)}% since ${baseline}`)
++    const state: CircuitBreakerState = {
++      halt: true,
++      reason: `【帳戶回撤】自 ${baseline} 高點 ${peak.toFixed(0)} 回撤 ${(drawdown * 100).toFixed(2)}%，達暫停線 ${(limit * 100).toFixed(1)}%`,
++      maxPositionPct: 0,
++      buyConfThreshold: deps.defaults.buyConfThreshold,
++      sellConfThreshold: deps.defaults.sellConfThreshold,
++    }
++    return state
++  } catch (error) { return failClosedRiskCheck('ACCOUNT_DD', error, deps) }
++}
+--- a/worker/src/lib/riskChecks/p1Mdd.ts
++++ b/worker/src/lib/riskChecks/p1Mdd.ts
+@@ -3,8 +3,9 @@
+  * p1Mdd.ts — Layer 1: 30d rolling drawdown gate (P1-9 MDD-based sizing)
+  *
+  * Extracted from paper.ts `checkCircuitBreakers()` L1 (2026-04-21, R1).
+- * Behavior verbatim from original. DO NOT mutate logic here without updating
+- * Sprint 5.1 parity tests.
++ * Sizing only (2026-10-20): stop-trading authority lives in trading:risk_config
++ * (accountDrawdownPause). Past drawdownHalt the multiplier stays at mddMultFloor.
++ * Mirrored by backtest_engine.py Layer 3; change both together.
+  */
+ import type { TradingConfig } from '../tradingConfig'
+ import type { CircuitBreakerState, LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
+@@ -29,19 +30,6 @@
+   const maxValue = Math.max(...values)
+   const drawdown = maxValue > 0 ? (maxValue - current) / maxValue : 0
+ 
+-  if (drawdown > cc.drawdownHalt) {
+-    console.warn(`[CircuitBreaker] Layer1 HALT: drawdown ${(drawdown * 100).toFixed(1)}% > ${(cc.drawdownHalt * 100).toFixed(0)}%`)
+-    const haltConf = Math.max(effectiveBuy, cc.drawdownRaisedConf)
+-    const out: CircuitBreakerState = {
+-      halt: true,
+-      reason: `30日回撤 ${(drawdown * 100).toFixed(1)}% 超過 ${(cc.drawdownHalt * 100).toFixed(0)}% 上限`,
+-      maxPositionPct: 0,
+-      buyConfThreshold: haltConf,
+-      sellConfThreshold: haltConf,
+-    }
+-    return out
+-  }
+-
+   if (drawdown > cc.drawdownScaleStart) {
+     // CPPI-style linear scaling (Black & Perold 1992 JEDC):
+     // mult=1.0 at drawdownScaleStart, mult=0.0 at drawdownHalt, linear between.
+--- a/worker/src/lib/riskChecks/p8DailyPnl.ts
++++ b/worker/src/lib/riskChecks/p8DailyPnl.ts
+@@ -20,7 +20,8 @@
+   context?: DailyPnlContext,
+ ): Promise<LegacyLayerResult> {
+   const { defaults } = deps
+-  const { dailyPnlLossLimit, dailyPnlLossLimitPct } = riskCfg.portfolio
++  // NT$ limit is the pct of prior-session equity; a fixed NT$ amount would tighten or loosen with account size.
++  const { dailyPnlLossLimitPct } = riskCfg.portfolio
+   const tradeDate=context?.tradeDate ?? new Date(paperExecutionNow()+8*3600000).toISOString().slice(0,10)
+ 
+   // Need at least yesterday's equity + today's current total_value snapshot.
+@@ -41,17 +42,17 @@
+   const pnl = (context?.currentNav ?? today.total_value) - yday.total_value - (context?.netExternalFlow ?? 0)
+   const pnlPct = pnl / yday.total_value
+ 
+-  const hitAbs = pnl <= dailyPnlLossLimit
+-  const hitPct = pnlPct <= dailyPnlLossLimitPct
+-  if (!hitAbs && !hitPct) return null
++  if (!Number.isFinite(dailyPnlLossLimitPct) || dailyPnlLossLimitPct <= -1 || dailyPnlLossLimitPct >= 0)
++    throw new Error('daily_pnl_limit_invalid')
++  if (pnlPct > dailyPnlLossLimitPct) return null
+ 
+   console.warn(
+     `[P8] Daily P&L halt: pnl=${pnl.toFixed(0)} (${(pnlPct * 100).toFixed(2)}%) ` +
+-    `limits abs=${dailyPnlLossLimit} pct=${(dailyPnlLossLimitPct * 100).toFixed(2)}%`
++    `limit=${(dailyPnlLossLimitPct * yday.total_value).toFixed(0)} NT$ (${(dailyPnlLossLimitPct * 100).toFixed(2)}% of ${yday.total_value.toFixed(0)})`
+   )
+   const state: CircuitBreakerState = {
+     halt: true,
+-    reason: `【P8】${tradeDate} vs ${yday.date} 當日虧損 ${pnl.toFixed(0)} NT$ (${(pnlPct * 100).toFixed(2)}%) abs=${hitAbs} pct=${hitPct}`,
++    reason: `【P8】${tradeDate} vs ${yday.date} 當日虧損 ${pnl.toFixed(0)} NT$ (${(pnlPct * 100).toFixed(2)}%) 上限 ${(dailyPnlLossLimitPct * yday.total_value).toFixed(0)} NT$ (${(dailyPnlLossLimitPct * 100).toFixed(2)}%)`,
+     maxPositionPct: 0,
+     buyConfThreshold: defaults.buyConfThreshold,
+     sellConfThreshold: defaults.sellConfThreshold,
+--- a/worker/src/lib/riskConfig.ts
++++ b/worker/src/lib/riskConfig.ts
+@@ -17,8 +17,10 @@
+     clockSkewTolerance: number              // seconds, S4 TW time drift
+   }
+   portfolio: {
+-    dailyPnlLossLimit: number               // NT$ absolute, P8
++    dailyPnlLossLimit: number               // NT$ absolute; ignored since 2026-10-20 (P8 = pct of prior equity)
+     dailyPnlLossLimitPct: number            // fraction of account equity, P8
++    accountDrawdownPause: number            // fraction (negative), stop new entries below peak NAV since baseline
++    accountDrawdownBaselineDate: string | null  // YYYY-MM-DD peak window start (activation / real account start); null = off
+     intradayDrawdownHalt: number            // fraction, P9 (peak-to-trough intraday)
+     marketShockOrangePct: number            // fraction, one-day TWII shock overlay
+     marketShockRedPct: number               // fraction, one-day TWII severe shock overlay
+@@ -37,6 +39,7 @@
+     maxSingleNamePct: number                // N2: fraction of portfolio
+     correlationThreshold: number            // N3: pairwise 60d return corr
+     correlationWindow: number               // trading days
++    swingHardStopPct: number                // single owner of the swing hard stop (sizing + exit), sealed per position at entry
+   }
+   order: {
+     maxSingleOrderValue: number             // G5 fat finger, NT$
+@@ -58,7 +61,9 @@
+   },
+   portfolio: {
+     dailyPnlLossLimit: -30000,
+-    dailyPnlLossLimitPct: -0.03,
++    dailyPnlLossLimitPct: -0.021,
++    accountDrawdownPause: -0.077,
++    accountDrawdownBaselineDate: null,
+     intradayDrawdownHalt: 0.05,
+     marketShockOrangePct: -0.03,
+     marketShockRedPct: -0.05,
+@@ -77,6 +82,7 @@
+     maxSingleNamePct: 0.25,
+     correlationThreshold: 0.7,
+     correlationWindow: 60,
++    swingHardStopPct: 0.08,
+   },
+   order: {
+     maxSingleOrderValue: 300000,
+@@ -161,6 +167,15 @@
+ }
+ 
+ const RISK_CONFIG_KV_KEY = 'trading:risk_config'
++
++/** Swing hard stop fraction; out-of-range KV values fail closed instead of widening the stop. */
++export function swingHardStopPct(cfg: RiskConfig): number {
++  const pct = cfg.position.swingHardStopPct
++  if (!Number.isFinite(pct) || pct <= 0 || pct >= 0.5) throw new Error('risk_config_swing_hard_stop_invalid')
++  return pct
++}
++
++
+ 
+ export function normalizeRiskConfig(partial: unknown): RiskConfig {
+   return cloneRiskConfig(deepMerge(DEFAULT_RISK_CONFIG, isRecord(partial) ? partial : {}))
+--- /dev/null
++++ b/worker/src/lib/riskLimitOwners.test.ts
+@@ -0,0 +1,73 @@
++import test from 'node:test'
++import assert from 'node:assert/strict'
++import { l4NativeFixture } from './l4NativeFixture.testSupport'
++import { withPaperExecutionScope } from './paperExecutionScope'
++import { checkAccountDrawdownPause } from './riskChecks/accountDrawdownPause'
++import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
++import { checkP1Mdd } from './riskChecks/p1Mdd'
++import { DEFAULT_RISK_CONFIG, normalizeRiskConfig, swingHardStopPct } from './riskConfig'
++import { assessSwingExit, swingStopPrice, SWING_POLICY_VERSION } from './paperSwingPolicy'
++import { readSwingState, writeSwingState } from './paperSwingLifecycle'
++import { DEFAULT_TRADING_CONFIG as DEFAULT_CONFIG } from './tradingConfig'
++
++const deps={defaults:{halt:false,maxPositionPct:.08,buyConfThreshold:.6,sellConfThreshold:.65},effectiveBuy:.6,effectiveSell:.65}
++const cfg=(portfolio:object={},position:object={})=>normalizeRiskConfig({...DEFAULT_RISK_CONFIG,
++  portfolio:{...DEFAULT_RISK_CONFIG.portfolio,...portfolio},position:{...DEFAULT_RISK_CONFIG.position,...position}})
++
++test('swing hard stop has one KV owner, is sealed per position, and legacy positions keep 8%',()=>{
++  assert.equal(swingHardStopPct(DEFAULT_RISK_CONFIG),.08)
++  for (const bad of [0,-.08,.5,NaN]) assert.throws(()=>swingHardStopPct(cfg({},{swingHardStopPct:bad})),/swing_hard_stop_invalid/)
++  const base={policy:SWING_POLICY_VERSION,entryDate:'2026-10-20',entryPrice:100,entryOrLow:98}
++  assert.equal(swingStopPrice(base),92)
++  const sealed={...base,hardStopPct:.06}
++  const at=(price:number,state=sealed)=>assessSwingExit(state,{date:'2026-10-20',nowMs:Date.parse('2026-10-20T02:00:00Z'),price,calendar:['2026-10-20']})
++  assert.equal(at(94.5).action,'hold')
++  assert.equal(at(94).reason,'swing_hard_stop_8')
++  assert.equal(at(93,base).action,'hold') // legacy state is not widened or tightened by a new KV value
++  const raw=writeSwingState('{}',sealed)
++  assert.equal(JSON.parse(raw).exit.initialStop,94)
++  assert.equal(readSwingState(raw)?.hardStopPct,.06)
++  assert.throws(()=>readSwingState(writeSwingState('{}',base).replace('"entryOrLow":98','"entryOrLow":98,"hardStopPct":0.7')),/swing_hard_stop_invalid/)
++})
++
++test('P8 NT$ limit is the pct of prior equity; the fixed NT$ amount no longer binds',async()=>{
++  assert.equal(DEFAULT_RISK_CONFIG.portfolio.dailyPnlLossLimitPct,-.021)
++  const f=l4NativeFixture()
++  try {
++    f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run('2026-10-17',5e6,5e6)
++    const run=(loss:number,c=DEFAULT_RISK_CONFIG)=>withPaperExecutionScope(f.ports,()=>checkP8DailyPnl(f.env.PAPER_DB,c,deps,
++      {tradeDate:'2026-10-20',previousSession:'2026-10-17',currentNav:5e6-loss,netExternalFlow:0}))
++    assert.equal((await run(45_000)).result,null)          // −0.9%: old fixed −30,000 would have halted a 5M account
++    assert.equal((await run(104_000)).result,null)         // −2.08%
++    assert.match(String((await run(105_000)).result?.reason),/上限 -105000 NT\$/) // −2.1% × 5M
++    assert.equal((await run(0,cfg({dailyPnlLossLimitPct:.02}))).result?.halt,true) // invalid limit fails closed
++  } finally {f.close()}
++})
++
++test('account drawdown pause uses the peak since baseline, not a rolling window, and is off without a baseline',async()=>{
++  const f=l4NativeFixture()
++  try {
++    const add=(date:string,nav:number)=>f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run(date,nav,nav)
++    add('2026-06-01',2e6) // before baseline: a polluted/old peak must not count
++    add('2026-10-20',1e6);add('2026-10-21',1.05e6)
++    const run=(c:ReturnType<typeof cfg>,nav:number,tradeDate='2026-10-22')=>withPaperExecutionScope(f.ports,()=>checkAccountDrawdownPause(f.env.PAPER_DB,c,deps,{tradeDate,nav}))
++    assert.equal((await run(DEFAULT_RISK_CONFIG,500_000)).result,null)
++    const on=cfg({accountDrawdownBaselineDate:'2026-10-20'})
++    assert.equal((await run(on,1.05e6*(1-.076))).result,null)
++    const hit=(await run(on,1.05e6*(1-.078))).result
++    assert.equal(hit?.halt,true); assert.match(String(hit?.reason),/帳戶回撤/)
++    assert.equal((await run(cfg({accountDrawdownBaselineDate:'20261020'}),1e6)).result?.halt,true) // invalid config fails closed
++    assert.equal((await run(cfg({accountDrawdownBaselineDate:'2026-10-20',accountDrawdownPause:.05}),1e6)).result?.halt,true)
++  } finally {f.close()}
++})
++
++test('P1 only scales size past drawdownHalt; it never halts',async()=>{
++  const f=l4NativeFixture()
++  try {
++    const add=(date:string,nav:number)=>f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run(date,nav,nav)
++    add('2026-10-15',1e6);add('2026-10-16',.9e6);add('2026-10-19',.7e6) // −30% > drawdownHalt
++    const r=(await withPaperExecutionScope(f.ports,()=>checkP1Mdd(f.env.PAPER_DB,DEFAULT_CONFIG,deps))).result
++    assert.equal(r?.halt,false)
++    assert.ok(Math.abs(Number(r?.maxPositionPct)-DEFAULT_CONFIG.circuit.maxPositionPct*DEFAULT_CONFIG.circuit.mddMultFloor)<1e-12)
++  } finally {f.close()}
++})

@@ -166,7 +166,11 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     identity = runtime['l3_identity']
     bundle = policy['artifact']
     from services.l4_p6_bundle import is_p6
+    from services.l3_equal_weight_bundle import is_equal7
+    equal7 = is_equal7(bundle)
     p6=is_p6(bundle);p6_projection=None
+    equal7_projection=None
+    if equal7 and r2_shadow is not None:raise ValueError('r33_multiple_model_owners')
     if p6 and r2_shadow is not None:raise ValueError('p6_multiple_model_owners')
     research = private_research and policy.get('scope') == 'private_research'
     if r2_shadow is not None and not research:
@@ -195,13 +199,17 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     locked = set(account.get('locked_symbols') or []) | (set(holdings)-set(by_symbol))
     symbols = sorted(set(by_symbol)|set(holdings))
     predictions = runtime['predictions']
-    unavailable = {s: reasons for s in sorted(by_symbol)
+    unavailable = {} if equal7 else {s: reasons for s in sorted(by_symbol)
         if (reasons := missing_l3_evidence(predictions[s], identity, signal_date))}
     # Missing evidence never authorizes liquidation or new buying. Its utility
     # coefficient is inert because zero/new or existing/held weights are fixed.
     locked.update(set(unavailable) & set(holdings))
     modeled = sorted(set(by_symbol) - set(unavailable))
-    if p6:
+    if equal7:
+        from services.l3_equal_weight_bundle import project
+        feature_rows,outputs,equal7_projection=project(runtime.get('r33_rank_pool') or {},
+            bundle=bundle,identity=identity,signal_date=signal_date,symbols=modeled,predictions=predictions)
+    elif p6:
         from services.l4_p6_pool_projection import project
         from services.l4_p6_weights import load
         model=bundle['model']
@@ -235,6 +243,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         # existing formal rewards do not acquire a new-model identity.
         policy={**policy,'opb':{**(policy.get('opb') or {}),'approved_policy_identity':policy_identity}}
     constraints, opb = choose_opb(policy,reward_ledger,policy_identity,signal_date)
+    if equal7 and (type(constraints.get('max_positions')) is not int or not 1<=constraints['max_positions']<=5):
+        raise ValueError('r33_maximum_five_positions_required')
     hard=account.get('risk_limits') or {}
     if hard:
         constraints['exposure_cap']=min(constraints['exposure_cap'],finite(hard['exposure_cap'],'risk_exposure'))
@@ -298,8 +308,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},
                       locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,**constraints)
     attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
-        model_feature_names=(bundle['model']['seeds'][0]['final_recipe']['feature_names'] if p6 else bundle['model']['recipe']['names']),
-        unavailable=unavailable,utility_semantic='five_session_relative_pool_decimal' if p6 else 'five_session_gross_decimal')
+        model_feature_names=(bundle['model']['feature_names'] if equal7 else bundle['model']['seeds'][0]['final_recipe']['feature_names'] if p6 else bundle['model']['recipe']['names']),
+        unavailable=unavailable,utility_semantic='five_session_relative_pool_decimal' if p6 or equal7 else 'five_session_gross_decimal')
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
             'execution_scope':'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
@@ -319,6 +329,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
          '_turnover_pressure':pressure},nav,trade_uncertainty,locked)
     if execution is not None:plan['sealed_execution']=execution
     if p6_projection is not None:plan['p6_projection']=p6_projection
+    if equal7_projection is not None:plan['r33_projection']=equal7_projection
     if r2_shadow is not None:
         plan['r2_evidence']={'forecast_checksum':digest(r2_shadow['forecast']),
             'policy_checksum':r2_shadow['forecast']['policy_checksum'],
@@ -350,8 +361,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                    l4_distribution=output)
         row['alpha_allocation']={'engine':'sparse_tangent_inverse_risk','schema_version':PLAN_SCHEMA,
             'expected_return_owner':OWNER,'expected_return':expected,
-            'expected_return_semantic':'five_session_relative_pool_decimal' if p6 else 'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
-            'expected_return_source':'l4-p6-direct-excess-model-v1' if p6 else SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
+            'expected_return_semantic':'five_session_relative_pool_decimal' if p6 or equal7 else 'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
+            'expected_return_source':bundle['model']['schema_version'] if equal7 else 'l4-p6-direct-excess-model-v1' if p6 else SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
             'selected':selected,'allocation_weight':weight,'allocation_rank':rank[symbol],
             'selection_reason':'l3_evidence_unavailable' if symbol in unavailable else 'portfolio_target' if selected else 'portfolio_cash_or_other_assets',
             'prediction_blockers':unavailable.get(symbol,[]),

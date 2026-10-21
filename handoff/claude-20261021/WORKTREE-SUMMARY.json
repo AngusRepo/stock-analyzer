@@ -1,0 +1,42 @@
+[
+  {
+    "tree": "r14",
+    "path": "C:\\Users\\Wei\\.codex\\worktrees\\r14-p2-p3\\stockvision-cloudflare-v12",
+    "head": "c339616077716006ea0750b94e32fcb3d0013f56",
+    "counts": {
+      "archived_patch_do_not_apply_blindly": 4,
+      "already_represented_in_pr34": 10
+    }
+  },
+  {
+    "tree": "r17",
+    "path": "C:\\Users\\Wei\\.codex\\worktrees\\r17-p4-20261019\\stockvision-cloudflare-v12",
+    "head": "50ad123436cb1f74877fcf92136efd6b8f3c7d47",
+    "counts": {}
+  },
+  {
+    "tree": "r30",
+    "path": "C:\\Users\\Wei\\.codex\\worktrees\\r30-paper-integration\\stockvision-cloudflare-v12",
+    "head": "c296bff5fe0983a9d5e24b8f153dd604f82c1d33",
+    "counts": {
+      "already_represented_in_pr34": 206,
+      "archived_patch_do_not_apply_blindly": 45
+    }
+  },
+  {
+    "tree": "claude-risk",
+    "path": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\audits\\takeover-integration-20261020",
+    "head": "4ebe1242898798768fc69f1d191cbbc99095bacd",
+    "counts": {
+      "archived_patch_do_not_apply_blindly": 12
+    }
+  },
+  {
+    "tree": "a-r33",
+    "path": "C:\\Users\\Wei\\Desktop\\CloudCode\\stockvision-cloudflare-v12\\.worktrees\\codex-a-monthly-p6a-20261020",
+    "head": "0d3765eb72e3b46fdb1d263d8655d7fdbe667ffa",
+    "counts": {
+      "active_source_to_commit": 8
+    }
+  }
+]

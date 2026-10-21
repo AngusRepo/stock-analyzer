@@ -647,11 +647,14 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       `).bind(sourceRecoDate).first<{ status: string;last_error:string|null;canonical_run_id:string }>())
     let formalServingReady = sourceStage?.status === 'success'
     if (!formalServingReady && sourceStage?.status === 'error' && cfg.l4Distribution) {
-      const { atomicInputFailureOnly,sealedAllocationRecoveryOnly,verifyStoredFormalServing } = await import('./premarketServingClosure')
+      const { atomicInputFailureOnly,sealedAllocationRecoveryOnly,unavailableAtomicFailureOnly,verifyStoredFormalServing } = await import('./premarketServingClosure')
       const sealed=pendingDate==='2026-10-20' && env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'
         && env.LIVE_EXECUTION_CLIENT_ENABLED==='0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED==='0'
         && sealedAllocationRecoveryOnly(sourceStage.last_error)
-      if (atomicInputFailureOnly(sourceStage.last_error) || sealed) {
+      const october21=pendingDate==='2026-10-21' && env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'
+        && env.LIVE_EXECUTION_CLIENT_ENABLED==='0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED==='0'
+        && unavailableAtomicFailureOnly(sourceStage.last_error)
+      if (atomicInputFailureOnly(sourceStage.last_error) || sealed || october21) {
         const plan=await readL4PortfolioPlan(env)
         if (!plan) throw new Error('premarket_formal_plan_missing')
         await verifyStoredFormalServing(env,{runId:sourceStage.canonical_run_id,

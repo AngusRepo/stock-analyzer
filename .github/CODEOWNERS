@@ -1,0 +1,5 @@
+# Wei owns everything; workflow and release files are the sensitive ones.
+*                                   @AngusRepo
+/.github/                           @AngusRepo
+/ci/                                @AngusRepo
+/ml-controller/services/*_release.json @AngusRepo

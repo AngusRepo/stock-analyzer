@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:89a96c9d675e5c823b0e68a8771e243c603dd732a0317d34794501108f8a1f88",
+  "execution_owner_version": "native-paper-v1:8ac1b95dcbacdf5bfd54560bc1915e0b33201f6179515b9768fcb349cc240f47",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei: L4失敗了找出原因修補; prior commit push deploy authorization in this conversation; source-only Paper repair, no retraining or live orders",
-  "review": "audits/l4-oom-recovery-20261020/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:l4-parent-memory-20261020"
+  "authorization": "Wei 2026-10-21: N 與 #39 合併 release：paired NAV root delta + native runner flush，source-only Paper repair，不 retrain、不下真實單",
+  "review": "audits/n-flush-rollout-20261021/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:n-flush-20261021"
 }

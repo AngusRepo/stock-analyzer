@@ -2783,17 +2783,9 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     else:
         l4_pending_plan = None
 
-    atomic_allocation = None
-    if atomic_prepared is not None and atomic_recommendation is not None:
-        try:
-            if paired_nav_collection.get('status') != 'allocation_context_frozen':
-                raise ValueError('paired_nav_atomic_formal_allocation_context_missing')
-            from services.paired_nav_atomic_allocation import run_atomic_allocations
-            atomic_allocation = await asyncio.to_thread(run_atomic_allocations,
-                snapshot_id=paired_nav_collection['snapshot_id'], query=LEARNING_D1_CLIENT.query,
-                prepared=atomic_prepared, recommendations=atomic_recommendation)
-        except Exception as exc:
-            atomic_allocation = shadow_failure('atomic_allocation_execution', exc)
+    # Atomic allocations run once, after formal D1 writes, inside
+    # node_paired_nav_setup (collect_atomic_allocations). Running them here
+    # duplicated that work and decoded the sealed parent inside the L4 phase.
     for row in final:
         allocation = row.get("alpha_allocation")
         if isinstance(allocation, dict):
@@ -2898,7 +2890,6 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "pipeline_recommendation_source_context": recommendation_sources,
         "paired_nav_atomic_recommendation": atomic_recommendation,
         "pipeline_allocator_history_context": allocator_history,
-        "paired_nav_atomic_allocation": atomic_allocation,
         "l4_pending_plan": l4_pending_plan,
         "dated_formal_publication": publication_recovery,
     }

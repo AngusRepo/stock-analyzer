@@ -1,7 +1,7 @@
 """Sealed original Atomic allocations -> existing native candidate lifecycle."""
 from copy import deepcopy
 
-from services.paired_nav_journal import digest, freeze_snapshot, read_snapshot, _timestamp
+from services.paired_nav_journal import atomic_child_content, digest, freeze_snapshot, read_snapshot, _timestamp
 from services.paired_nav_atomic_policy import validate_atomic_policy
 
 OWNER = 'atomic_strategy'
@@ -61,17 +61,18 @@ def collect_atomic_allocations(*, snapshot_id, query, writer):
         native = definition['native_model_context']
         fields = {name: deepcopy(native[name]) for name in ('model_predictions', 'model_prediction_arms')}
         if distribution is not None:
-            fields['atomic_distribution_input_arms'] = {'baseline': deepcopy(context['inputs']),
+            fields['atomic_distribution_input_arms'] = {'baseline': context['inputs'],
                 'candidate': deepcopy(definition['inputs'])}
         seeds = {'baseline': context['recommendation_context']['inputs']['screener_seed_context']['inputs']['daily_rows'],
                  'candidate': prepared['definitions'][key]['candidate_seed_inputs']['daily_rows']}
         contrast = {'definition_checksum': key, 'policy_checksum': baseline_checksum,
             'prepared_input_checksum': prepared['input_hash'], 'allocation_output_checksum': output['output_checksum'],
             'baseline': deepcopy(output['baseline']), 'candidate': deepcopy(definition['allocation'])}
+        # Reference the sealed root instead of copying it once per definition;
+        # read_snapshot merges the root back so readers see identical content.
         parent = freeze_snapshot(signal_date=manifest['signal_date'], source_run_id='atomic:' + pair_id,
-            snapshot_kind='allocation_context', query=query, writer=writer, content={**deepcopy(context), **fields,
-                'upstream_allocation_context_snapshot_id': snapshot_id,
-                'atomic_contrast': contrast, 'atomic_native_seed_rows': deepcopy(seeds)})
+            snapshot_kind='allocation_context', query=query, writer=writer, content=atomic_child_content(
+                root_manifest=manifest, delta={**fields, 'atomic_contrast': contrast, 'atomic_native_seed_rows': seeds}))
         seal = freeze_snapshot(signal_date=manifest['signal_date'], source_run_id=pair_id,
             snapshot_kind='allocation_pair', query=query, writer=writer, content={
                 'pair_id': pair_id, 'root_pair_id': root_pair_id, 'owner': OWNER,

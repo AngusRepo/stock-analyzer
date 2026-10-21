@@ -243,7 +243,11 @@ def test_actual_daily_node_runs_own_candidates_without_formal_writes(full_atomic
     assert parent['recommendation_context']['status']=='recommendation_context_captured', str(parent['recommendation_context'])
     assert parent['recommendation_context']['l3_candidate_selection']['status']=='failed'
     own = result['paired_nav_atomic_recommendation']
-    allocation=result['paired_nav_atomic_allocation']
+    # node_recommend no longer allocates atomic definitions; the post-write
+    # NAV setup runs the same sealed-parent function.
+    assert 'paired_nav_atomic_allocation' not in result
+    from services.paired_nav_atomic_allocation import run_atomic_allocations
+    allocation=run_atomic_allocations(snapshot_id=result['paired_nav_collection']['snapshot_id'],query=db.query)
     assert allocation['status']=='incomplete', str(allocation)
     assert own['status']=='incomplete', str(own)  # unavailable semantic definition remains visible
     ready = own['definitions']['c'*64]
@@ -311,4 +315,5 @@ def test_actual_daily_node_runs_own_candidates_without_formal_writes(full_atomic
     status = daily_setup_status(state)
     assert status['status']=='incomplete' and status['reason']=='requires_allocation_and_native_execution'
     assert status['recommendation_status']=='incomplete'
-    assert status['allocation_status']=='incomplete'
+    # Allocation now runs only post-write in node_paired_nav_setup.
+    assert status['allocation_status']=='not_computed'

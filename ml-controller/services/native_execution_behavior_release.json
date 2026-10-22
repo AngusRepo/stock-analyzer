@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:8ac1b95dcbacdf5bfd54560bc1915e0b33201f6179515b9768fcb349cc240f47",
+  "execution_owner_version": "native-paper-v1:94cec7408ea84e4aa89b4cb35727063bb1b25a55d74ac592735d0366212d71d9",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-21: N 與 #39 合併 release：paired NAV root delta + native runner flush，source-only Paper repair，不 retrain、不下真實單",
-  "review": "audits/n-flush-rollout-20261021/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:n-flush-20261021"
+  "authorization": "Wei 2026-10-22 TW approved: \"Go 授權你做今晚\"",
+  "review": "audits/r33-phase1-release-20261022/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r33-phase1-20261022"
 }

@@ -11,16 +11,6 @@ const row: PremarketProgressRow = {
 const pipeline = {business_date:'2026-10-05',canonical_run_id:'recovered-run',status:'waiting',last_error:'awaiting_premarket'}
 const input = {jobId:'pipeline',today:'2026-10-06',businessDate:'2026-10-05',rows:[row],pipeline}
 
-test('same-run formal publication succeeds independently without masking Atomic failure',()=>{
-  const ready={...input,jobId:'recommendation',pipeline:{...pipeline,status:'error',
-    last_error:'paired_nav:atomic_daily:paired_nav_source_or_capture_failed'},
-    rows:[{...row,stage:'premarket_v3:publish:0',status:'success',publication_ready:1,pending_status:'ready'}]}
-  assert.equal(premarketExecutionDisplay(ready)?.lastStatus,'success')
-  assert.equal(premarketExecutionDisplay({...ready,jobId:'pipeline'}),null)
-  assert.equal(premarketExecutionDisplay({...ready,pipeline:{...ready.pipeline,last_error:'write_failure'}}),null)
-  assert.equal(premarketExecutionDisplay({...ready,rows:[{...ready.rows[0],l3_run_id:'other'}]}),null)
-})
-
 test('morning L4 receipt replaces the prior night waiting projection without marking success', () => {
   for (const jobId of ['pipeline','recommendation']) {
     const result = premarketExecutionDisplay({...input,jobId})!

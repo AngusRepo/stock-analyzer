@@ -5254,7 +5254,6 @@ def build_graph():
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("compute_pit_residual_shadow", node_compute_pit_residual_shadow)
     g.add_node("build_payloads",    node_build_payloads)
-    g.add_node("capture_atomic_inputs", node_capture_atomic_inputs)
     g.add_node("l2_timesfm_enrich", node_l2_timesfm_enrich, retry=ml_retry)
     g.add_node("l3_formal_predict", node_l3_formal_predict, retry=ml_retry)
     g.add_node("compute_personas", node_compute_personas)
@@ -5269,8 +5268,8 @@ def build_graph():
     # Cloudflare D1 queued-too-long 429s.
     g.set_entry_point("load_inputs")
     g.add_edge("load_inputs",         "load_market_env")
-    g.add_edge("load_market_env",     "capture_atomic_inputs")
-    g.add_edge("capture_atomic_inputs", "build_payloads")
+    # Strategy replacement evidence is evaluated outside the formal night.
+    g.add_edge("load_market_env",     "build_payloads")
     g.add_edge("build_payloads",      "l2_timesfm_enrich")
     g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")
     g.add_edge("l3_formal_predict",   "compute_personas")
@@ -5357,7 +5356,7 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
         # No checkpointer ??no config needed
         from services.premarket_pipeline import enabled as premarket_enabled, seal_l3, l3_handoff_result
         if premarket_enabled():
-            await _run_pipeline_nodes(initial_state,[node_load_inputs,node_load_market_env,node_capture_atomic_inputs,
+            await _run_pipeline_nodes(initial_state,[node_load_inputs,node_load_market_env,
                 node_build_payloads,node_l2_timesfm_enrich,node_l3_formal_predict])
             receipt=await asyncio.to_thread(seal_l3,initial_state)
             return l3_handoff_result(initial_state,receipt)
@@ -5491,9 +5490,6 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         # Validate and freeze the exact serving contract before expensive L2 work.
         # The request builder below reuses this context, never recaptures it.
         await _attach_pipeline_modal_serving_context(state)
-        await _run_pipeline_nodes(state, [
-            node_capture_atomic_inputs,
-        ])
         return await _continue_pipeline_before_l2(state)
     except Exception as e:  # noqa: BLE001
         elapsed = asyncio.get_event_loop().time() - t0

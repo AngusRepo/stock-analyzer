@@ -1,5 +1,4 @@
 /** Read-only display of the current trading day's durable premarket handoff. */
-import { atomicInputFailureOnly } from './premarketServingClosure'
 export interface PremarketProgressRow {
   business_date: string
   stage: string
@@ -61,19 +60,6 @@ export function premarketExecutionDisplay(input: {
   pipeline?: { business_date: string; canonical_run_id: string; status: string; last_error: string | null };
 }) {
   if (!['pipeline','recommendation'].includes(input.jobId)) return null
-  const published=input.rows.find(r=>r.business_date===input.today && r.canonical_run_id===`${input.today}:premarket-v3`
-    && r.stage==='premarket_v3:publish:0' && r.status==='success' && r.publication_ready===1
-    && ['ready','empty','halted'].includes(r.pending_status ?? '')
-    && r.signal_date===input.businessDate && r.l3_run_id===input.pipeline?.canonical_run_id
-    && /^[a-f0-9]{64}$/.test(r.l3_checksum ?? ''))
-  if(input.jobId==='recommendation' && input.pipeline?.status==='error'
-    && atomicInputFailureOnly(input.pipeline.last_error) && published) {
-    return {lastStatus:'success' as const,pipelinePhase:'premarket_l4' as const,
-      summary:`正式 Paper 計畫已發布，pending=${published.pending_status}；Atomic 比較資料失敗仍保留於 pipeline`,
-      lastError:undefined,lastRunAt:published.updated_at.replace(' ','T')+(published.updated_at.includes('T')?'':'Z'),
-      lastDuration:'N/A',nextRun:'正式計畫已發布',statusScope:'durable_event' as const,
-      statusAuthority:'durable_pipeline_stage' as const,recoveredFromStatus:null}
-  }
   if (['error','blocked','skipped','success'].includes(input.ticketStatus ?? '')) return null
   const pipeline = input.pipeline
   if (!pipeline || pipeline.business_date !== input.businessDate || pipeline.status !== 'waiting'

@@ -60,7 +60,7 @@ test('Multi-D1 and daily lineage watchdogs remain automatic and non-serving', ()
   assert(drain.includes("['execution', 'paper', 'ops', 'learning', 'research', 'core', 'market']"))
   assert(lineage.includes('daily_paper_snapshot_not_ready'))
   assert(lineage.includes("status: 'reused'"))
-  assert(scheduler.jobs.some((job: any) => job.id === 'daily-execution-paper-lineage' && job.schedule === '35,50 6 * * 1-5'))
+  assert(scheduler.jobs.some((job: any) => job.id === 'daily-execution-paper-lineage' && job.schedule === '35,50 6,10 * * 1-5'))
   assert(scheduler.jobs.some((job: any) => job.id === 'data-domain-shadow-backfill-next' && job.schedule === '30 16 * * *'))
 })
 

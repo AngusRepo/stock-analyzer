@@ -42,9 +42,10 @@ assert(
 )
 assert(
   workerTasks.includes('missingFinalSymbols') &&
-    workerTasks.includes('batchGetLatestPricesByDomain(env, missingFinalSymbols, today)') &&
+    workerTasks.includes('batchGetClosingPricesByDomain(env, missingFinalSymbols, valuationSession)') &&
+    !workerTasks.includes('batchGetLatestPricesByDomain(env, missingFinalSymbols') &&
     !workerTasks.includes('if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices'),
-  'daily snapshot must fill missing intraday quotes from EOD prices instead of treating partial intraday coverage as complete',
+  'daily snapshot must fill missing post-close quotes from the exact valuation-session close, never from an earlier day, and never treat partial coverage as complete',
 )
 assert(
   workerTasks.includes('options: DailySnapshotOptions = {}') &&

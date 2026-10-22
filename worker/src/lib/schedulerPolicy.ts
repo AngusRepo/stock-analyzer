@@ -27,6 +27,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'post-close-price-refresh': { kind: 'trading_day', holidayGated: true, description: 'post-close open-position price cache refresh' },
   'paired-native-execution': { kind: 'trading_day', holidayGated: true, description: 'private paired native source collection and evidence-derived session closure' },
   'strategy-nav-execution': { kind: 'trading_day', holidayGated: true, description: 'same released model; isolated canonical strategy comparison frames and original daily journal' },
+  'postclose-research-dispatch': { kind: 'trading_day', holidayGated: true, description: '14:20 dispatch of sealed morning research; completion has its own callback' },
   'daily-snapshot': { kind: 'trading_day', holidayGated: true, description: 'post-market account snapshot' },
   'daily-execution-paper-lineage': { kind: 'trading_day', holidayGated: true, description: 'idempotent post-snapshot canonical execution and paper lineage closure watchdog' },
   'market-close-refresh': { kind: 'trading_day', holidayGated: true, description: '18:10 market-close data refresh before evening chain' },

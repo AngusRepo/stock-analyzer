@@ -493,7 +493,22 @@ async def premarket_state(request:Request,date:str,run_id:str):
     from services.premarket_pipeline import enabled,read_seal
     if not enabled():raise HTTPException(409,'premarket_owner_disabled')
     receipt=await asyncio.to_thread(read_seal,date,run_id)
-    return {'status':'sealed' if receipt else 'waiting','receipt':receipt}
+    from services.premarket_publication import read as read_publication
+    publication=await asyncio.to_thread(read_publication,date,run_id) if receipt else None
+    return {'status':'sealed' if receipt else 'waiting','receipt':receipt,'publication':publication}
+
+@router.post('/v2/premarket-postclose')
+async def premarket_postclose(request:Request):
+    """14:20 dispatcher: run sealed morning research in the dataset-snapshot job after the close."""
+    _check_service_token(request)
+    from services.premarket_pipeline import enabled
+    from services.premarket_postclose import dispatch_day
+    if not enabled():raise HTTPException(409,'premarket_owner_disabled')
+    body=await request.json()
+    job_name=(os.environ.get('DATASET_SNAPSHOT_JOB_NAME') or os.environ.get('PIPELINE_DATASET_SNAPSHOT_JOB_NAME') or '').strip()
+    if not job_name:raise HTTPException(409,'postclose_job_not_configured')
+    try:return await asyncio.to_thread(dispatch_day,body['trade_date'],jobs_client=CloudRunJobsClient(job_name=job_name))
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
 
 @router.post('/v2/premarket-resume')
 async def premarket_resume(request:Request):

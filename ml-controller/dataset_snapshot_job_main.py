@@ -94,11 +94,23 @@ async def _run() -> int:
         premarket_input_uri = os.environ.get("PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI", "").strip()
         if input_only and premarket_input_uri:
             raise RuntimeError("input-only snapshot cannot run premarket postwrite")
-        if premarket_input_uri:
+        postclose_uri = os.environ.get("PIPELINE_PREMARKET_POSTCLOSE_WORK_URI", "").strip()
+        postclose_result = None
+        if postclose_uri:
+            # After-close research on the sealed morning state, then the normal export.
+            if input_only or premarket_input_uri:
+                raise ValueError("postclose_job_mode_conflict")
+            from services.premarket_postclose import read_work
+            from graphs.daily_pipeline_v2 import run_pipeline_v2_postclose
+            work = await asyncio.to_thread(read_work, postclose_uri)
+            if work["signal_date"] != run_date or work["run_id"] != parent_run_id:
+                raise ValueError("postclose_job_identity_mismatch")
+            postclose_result = await run_pipeline_v2_postclose(work["input_gcs_uri"])
+        elif premarket_input_uri:
             from services.premarket_postwrite import run_premarket_postwrite
             await run_premarket_postwrite(premarket_input_uri)
         if _truthy_env("DATASET_SNAPSHOT_SKIP_EXPORT", "0"):
-            if not premarket_input_uri:
+            if not (premarket_input_uri or postclose_uri):
                 raise RuntimeError("snapshot export skipped without premarket postwrite")
             summary = f"run_id={run_id} postwrite=complete snapshot=disabled"
         else:
@@ -116,6 +128,9 @@ async def _run() -> int:
             else:
                 combined = await asyncio.to_thread(export_daily_research_snapshots, request)
             summary = _format_snapshot_summary(run_id, combined)
+        if postclose_result is not None and postclose_result.get("status") != "completed":
+            # The export still happened; the research failure must stay visible on this job.
+            raise RuntimeError("postclose_research_incomplete:" + str(postclose_result.get("error") or postclose_result.get("status")))
         status = "success"
     except Exception as e:  # noqa: BLE001
         logger.exception("[DatasetSnapshotJob] Export failed")

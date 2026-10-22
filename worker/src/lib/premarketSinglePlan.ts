@@ -10,6 +10,7 @@ import { readCurrentNewsReport } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import type { PremarketPayload } from './premarketEventChain'
+import { verifyStoredPublication,type ServingPublication } from './premarketPublicationReceipt'
 function stable(value:any):string {
   if(Array.isArray(value))return '['+value.map(stable).join(',')+']'
   if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}'
@@ -32,7 +33,23 @@ export async function singlePlanContext(env:Bindings,date:string,signalDate:stri
  return {signal_date:signalDate,l3_receipt:seal.receipt,morning_context:{...body,checksum:hash},context_hash:hash}
 }
 export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
- const receipt=input.l3_receipt as {run_id:string;run_date:string}
+ const receipt=input.l3_receipt as {run_id:string;run_date:string;checksum:string}
+ // Serving is published before the open; the research tail waits for the close and never gates the plan.
+ let serving:{status:string;publication:ServingPublication|null}
+ try {
+   serving=await controllerJson<{status:string;publication:ServingPublication|null}>(env,
+     '/pipeline/v2/premarket-state?'+new URLSearchParams({date:receipt.run_date,run_id:receipt.run_id}))
+ } catch(error) {
+   // An unreachable receipt is a retry, like the L3 seal probe; a mismatching receipt below is not.
+   throw new Error('premarket_wait:serving_state:'+String(error instanceof Error?error.message:error).slice(0,80))
+ }
+ if(serving.publication) {
+   const plan=await readL4PortfolioPlan(env)
+   if(!plan||plan.signal_date!==receipt.run_date)throw new Error('premarket_wait:l4_publication')
+   await verifyStoredPublication(env,{publication:serving.publication,source:receipt,
+     context:input.morning_context as {trade_date:string;checksum:string},plan})
+   return plan.plan_id
+ }
  const row=await databaseForDataDomain(env,'ops').prepare("SELECT status FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
    .bind(receipt.run_date,receipt.run_id).first<{status:string}>()
  if(row?.status!=='success') {

@@ -3355,6 +3355,11 @@ export async function processUpdateBatch(
   if (msg.type === 'post_pipeline_chain') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `post-pipeline-chain-${triggerTime}`
+    const { postPipelineResearchAllowed } = await import('./premarketResearchGate')
+    if (!await postPipelineResearchAllowed(env, triggerTime, runId)) {
+      console.log(`[Queue] post-pipeline waits for verified after-close publication date=${triggerTime} run_id=${runId}`)
+      return
+    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid post-pipeline chain date ${triggerTime}, skipping.`)
       return

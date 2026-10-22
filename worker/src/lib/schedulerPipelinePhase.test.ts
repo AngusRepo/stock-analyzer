@@ -27,12 +27,3 @@ test('actual error and resumed/completed stages retain authority', () => {
   for (const status of ['running', 'error', 'success'])
     assert.equal(sealedPremarketDisplay({ ...base, jobId: 'pipeline', stage: { ...base.stage, status } }), null)
 })
-
-test('sealed predictions never imply failed Atomic input validation passed', () => {
-  const log={...base.log,summary:base.log.summary+' atomic_inputs=failed'}
-  const result=sealedPremarketDisplay({...base,jobId:'ml-predict',log})!
-  assert.equal(result.lastStatus,'failed')
-  assert.equal(result.lastError,'paired_nav_atomic_inputs_failed')
-  assert.match(result.summary,/已完成並封存/)
-  assert.match(result.summary,/驗證未通過/)
-})

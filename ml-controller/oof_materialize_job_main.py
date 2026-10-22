@@ -118,14 +118,10 @@ async def _execute_account_lifecycle(
         display_date = single_result['paired_nav_maturity']['signal_date']
         nav = _execute_daily_nav(end_date=display_date, retire_legacy_owners=True,
             publish_strategy_display=True, strategy_only=True)
-        candidates = nav.pop('_adoption_candidates', [])
-        if promote and nav.get('status') != 'failed':
-            from services.paired_nav_daily_adoption import run_daily_ev_adoption
-            nav['adoption'] = await run_daily_ev_adoption(candidates=candidates, business_date=display_date)
-            if nav['adoption']['status'] == 'incomplete':
-                nav.update(status='failed', reason='paired_nav_daily_closure_incomplete')
-        else:
-            nav['adoption'] = {'status': 'blocked_by_nav_failure' if nav.get('status') == 'failed' else 'disabled_by_request'}
+        nav.pop('_adoption_candidates', None)
+        # Strategy replacement requires layered evidence plus Wei's approval;
+        # the daily NAV owner never adopts a strategy.
+        nav['adoption'] = {'status': 'disabled_replacement_authority_moved'}
         single_result['strategy_comparison_nav'] = nav
         single_result['strategy_nav_read_model'] = nav.get('strategy_nav_read_model')
         single_result['comparison_review_status'] = (nav.get('family_reviews') or {}).get('status', nav.get('status'))

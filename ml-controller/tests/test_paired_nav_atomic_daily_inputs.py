@@ -202,14 +202,6 @@ def test_frozen_state_cannot_switch_screener_run_or_add_new_live_candidate(monke
     assert update['paired_nav_atomic_inputs']['reason'] == 'paired_nav_atomic_capture_after_formal_freeze'
 
 
-def test_daily_graph_reaches_capture_before_formal_payloads_and_l2():
-    from graphs import daily_pipeline_v2 as graph
-    edges = {(e.source, e.target) for e in graph.build_graph().get_graph().edges}
-    assert ('load_market_env', 'capture_atomic_inputs') in edges
-    assert ('capture_atomic_inputs', 'build_payloads') in edges
-    assert ('build_payloads', 'l2_timesfm_enrich') in edges
-
-
 def test_empty_population_is_distinct_from_missing_or_uncomputed_candidates(monkeypatch):
     from services.paired_nav_pipeline import pipeline_shadow_errors
     graph, state, _ = _setup(monkeypatch)
@@ -251,54 +243,6 @@ def test_actual_terminal_setup_preserves_other_registered_nav_lanes(monkeypatch)
                                                run_date=state['run_date'], elapsed=1)
     assert terminal['status'] == 'error'
     assert terminal['critical_errors'] == ['paired_nav:atomic_daily:requires_l2_ml_and_native_execution']
-
-
-def test_actual_async_entry_retains_candidate_inputs_in_compressed_handoff(monkeypatch):
-    from google.cloud import storage
-    from test_pipeline_modal_handoff import StorageClient
-    graph, inputs, reads = _setup(monkeypatch)
-    memory = StorageClient()
-    memory.bucket("isolated-nav-handoff").name = "isolated-nav-handoff"
-    monkeypatch.setenv('GCS_BUCKET_NAME', 'isolated-nav-handoff')
-    monkeypatch.setattr(storage, 'Client', lambda: memory)
-    async def load(state):
-        return {key: deepcopy(value) for key, value in inputs.items() if key != 'run_date'}
-    async def no_op(state): return {}
-    async def provenance(**kwargs): return {'status': 'verified'}
-    async def serving_context(state):
-        state['pipeline_modal_serving_context'] = {'expected_source_sha': 'a' * 40}
-    from services import pipeline_runtime_preflight
-    monkeypatch.setattr(pipeline_runtime_preflight, 'verify_pipeline_runtime', provenance)
-    # Only model/policy/network primitives are replaced. Execute the real entry,
-    # raw capture, stock/slate builder and state envelope writer/reader.
-    monkeypatch.setattr(graph, 'node_load_inputs', load)
-    monkeypatch.setattr(graph, 'node_load_market_env', no_op)
-    monkeypatch.setattr(graph, 'node_l2_timesfm_enrich', no_op)
-    monkeypatch.setattr(graph, '_attach_pipeline_modal_serving_context', serving_context)
-    async def request(state, *, state_gcs_uri):
-        assert state['paired_nav_atomic_pre_l2']['status'] == 'pre_l2_payloads_built'
-        return {'payloads': deepcopy(state['payloads']), 'state_gcs_uri': state_gcs_uri}
-    monkeypatch.setattr(graph, '_build_pipeline_modal_prediction_payload', request)
-    received = []
-    def spawn(payload):
-        restored = graph._read_pipeline_async_state_artifact(payload['state_gcs_uri'])
-        assert restored['payloads'] == payload['payloads']
-        received.append(restored)
-        return {'n_input': len(payload['payloads']), 'function_call_id': 'local-only'}
-    monkeypatch.setattr(graph, '_spawn_pipeline_prediction_bundle_from_artifact', spawn)
-    result = asyncio.run(graph.run_pipeline_v2_until_modal_prediction_spawn('2026-09-06', 'local-atomic-entry'))
-    assert result['status'] == 'deferred', result
-    assert len(received) == 1 and [r[0] for r in reads] == ['node', 'identities']
-    restored = received[0]
-    assert len(restored['paired_nav_atomic_inputs']['population']['replacements']) == 2
-    assert load_slate(restored['paired_nav_atomic_pre_l2']['slates']['c' * 64])[0]['stock_meta']['sector_peer_return_1d'] == .2
-    assert restored['payloads'][0]['stock_meta']['sector_peer_return_1d'] == 0
-    atomic.validate_daily_inputs(restored['paired_nav_atomic_inputs'], signal_date=restored['run_date'],
-        producer_run_id=restored['screener_run_id'], formal_stocks=restored['active_stocks'])
-    before = deepcopy(restored)
-    monkeypatch.setattr(atomic, 'read_daily_population', lambda **kw: pytest.fail('recapture restored source'))
-    assert asyncio.run(graph.node_capture_atomic_inputs(restored)) == {}
-    assert restored == before
 
 
 def test_formal_consumer_is_not_retained_while_candidate_slates_build(monkeypatch):

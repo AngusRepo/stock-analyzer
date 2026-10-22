@@ -8,6 +8,7 @@ import type { FiveSlotDecision, FiveSlotHolding } from './fiveSlotCapitalAllocat
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { validateEntryAuthorization, type L4EntryContinuation } from './l4EntryContinuation'
+import { WEIGHT_SUPPORT } from './l4NumericContract'
 
 export interface L4PortfolioPlan {
   hmm_lineage?: import('./hmmLifecycle').HmmLineage
@@ -33,13 +34,15 @@ export interface L4PortfolioPlan {
   constraints: { exposure_cap: number; name_cap: number; min_weight: number; max_positions: number | null; name_caps?: Record<string,number>; exposure_groups?: Record<string,{symbols:string[];cap:number;effective_cap:number;locked_inherited_weight:number}>;
     membership_groups?:Record<string,{symbols:string[];max_count:number;effective_count:number;inherited_count:number}>;excluded_pairs?:string[][] }
   proof: { within_tolerance: boolean; absolute_objective_gap: number; tolerance: number; evaluated_candidate_count: number; preselection: boolean }
-  opb: { enabled: boolean; status: string; arm_id: string }
+  opb: { enabled: boolean; status: string; arm_id: string; effective_digest?: string; arm_inert?: boolean }
 }
 
 function amount(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) }
 
 export function validateL4PortfolioPlan(raw: unknown): L4PortfolioPlan {
   const plan = raw as L4PortfolioPlan
+  // forced_arm replays exist only for the learning ledger; never execute or store one.
+  if ((plan as any)?.execution_scope === 'counterfactual') throw new Error('l4_counterfactual_plan_cannot_publish')
   if (!plan || plan.schema_version !== 'l4-portfolio-plan-v1' || plan.owner !== 'l4_distribution'
     || plan.account_id !== 1 || !/^\d{4}-\d{2}-\d{2}$/.test(plan.signal_date)
     || !(plan.parent_plan_id === null || /^[a-f0-9]{64}$/.test(plan.parent_plan_id))
@@ -85,11 +88,11 @@ export function validateL4PortfolioPlan(raw: unknown): L4PortfolioPlan {
     if (!symbol || !amount(target.weight) || !amount(target.current_weight) || target.current_weight < 0
       || target.weight < 0 || target.weight !== plan.weights[symbol]
       || (target.weight > Math.min(c.name_cap,c.name_caps?.[symbol] ?? 1) + 1e-8 && !target.locked)
-      || (target.weight > 1e-7 && target.weight < c.min_weight - 1e-8 && !target.locked)
+      || (target.weight > WEIGHT_SUPPORT && target.weight < c.min_weight - 1e-8 && !target.locked)
       || (target.locked && Math.abs(target.weight - target.current_weight) > 1e-8))
       throw new Error('l4_plan_target_invalid')
     sum += target.weight
-    if (target.weight > 1e-7) count++
+    if (target.weight > WEIGHT_SUPPORT) count++
   }
   for (const [id,group] of Object.entries(c.exposure_groups ?? {})) {
     if (!id || !Array.isArray(group.symbols) || !group.symbols.length
@@ -110,13 +113,13 @@ export function validateL4PortfolioPlan(raw: unknown): L4PortfolioPlan {
       throw new Error('l4_membership_group_invalid')
     const inherited=group.symbols.filter(s=>plan.targets[s].locked && plan.targets[s].current_weight>0).length
     if(group.inherited_count!==inherited || group.effective_count!==Math.max(group.max_count,inherited)
-      || group.symbols.filter(s=>plan.weights[s]>1e-7).length>group.effective_count) throw new Error('l4_membership_limit_exceeded')
+      || group.symbols.filter(s=>plan.weights[s]>WEIGHT_SUPPORT).length>group.effective_count) throw new Error('l4_membership_limit_exceeded')
   }
   for(const pair of c.excluded_pairs ?? []) {
     if(!Array.isArray(pair) || pair.length!==2 || pair[0]===pair[1] || pair.some(s=>!plan.targets[s]))
       throw new Error('l4_excluded_pair_invalid')
     const inherited=pair.every(s=>plan.targets[s].current_weight>0)
-    if(inherited ? pair.some(s=>plan.weights[s]>plan.targets[s].current_weight+1e-8) : pair.every(s=>plan.weights[s]>1e-7))
+    if(inherited ? pair.some(s=>plan.weights[s]>plan.targets[s].current_weight+1e-8) : pair.every(s=>plan.weights[s]>WEIGHT_SUPPORT))
       throw new Error('l4_pair_limit_exceeded')
   }
   if (sum > c.exposure_cap + 1e-8 || (c.max_positions !== null && count > c.max_positions))

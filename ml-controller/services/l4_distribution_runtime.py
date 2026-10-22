@@ -11,6 +11,9 @@ from services.alpha_model_roster import model_order, validate_order
 from services.l4_portfolio import allocate
 from services.l4_l3_baseline import native_baseline, attach_baseline
 from services.similarity_evidence import ledoit_wolf_covariance
+from services.l4_numeric_contract import DAILY_VOL_FLOOR, MIN_RETURN_OBSERVATIONS, WEIGHT_SUPPORT
+from services.l4_opb_selection import (POLICY_SCHEMA, arm_policies, context_identity, is_v2,
+    objective_costs, risk_envelope, select_arm, validate_arms, validate_constraints)
 
 PLAN_SCHEMA = 'l4-portfolio-plan-v1'
 
@@ -81,6 +84,8 @@ def distribution_policy_identity(policy,identity):
     body={'model':policy['artifact']['model_checksum'],'l3':identity,
           'constraints':policy['constraints'],'opb_policy':opb,'schema':PLAN_SCHEMA}
     if policy.get('sealedExecution') is not None:body['sealed_execution']=policy['sealedExecution']
+    # Absent on the v1 shape, so v1 identities stay byte-identical.
+    if policy.get('policy_schema') is not None:body['policy_schema']=policy['policy_schema']
     return digest(body)
 
 
@@ -160,8 +165,25 @@ def choose_opb(policy, ledger, identity, signal_date):
     return policies[selected], {**evidence,'status':'learned_policy','arm_id':selected}
 
 
-def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None):
+def validate_opb_policy(policy, identity, signal_date):
+    """Release-time validation for either policy shape; reads no rewards."""
+    if not is_v2(policy):
+        choose_opb(policy, [], identity, signal_date)
+        return
+    validate_constraints(policy['constraints'])
+    validate_arms(policy)
+    if policy['opb'].get('enabled') and policy['opb'].get('approved_policy_identity') != identity:
+        raise ValueError('l4_distribution_opb_policy_identity_missing')
+
+
+def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_sink=None, private_research=False, r2_shadow=None, forced_arm=None):
     runtime = policy.get('runtime') or {}
+    v2 = is_v2(policy)
+    if policy.get('policy_schema') not in (None, POLICY_SCHEMA):
+        raise ValueError('l4_distribution_policy_schema_invalid')
+    # A forced arm only replays a counterfactual; it is never a formal capture.
+    if forced_arm is not None and (not v2 or evidence_sink is not None):
+        raise ValueError('l4_distribution_forced_arm_not_admitted')
     signal_date = runtime['signal_date']
     identity = runtime['l3_identity']
     bundle = policy['artifact']
@@ -217,14 +239,23 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         # The explicit private packet grants this isolated policy identity only;
         # existing formal rewards do not acquire a new-model identity.
         policy={**policy,'opb':{**(policy.get('opb') or {}),'approved_policy_identity':policy_identity}}
-    constraints, opb = choose_opb(policy,reward_ledger,policy_identity,signal_date)
-    hard=account.get('risk_limits') or {}
-    if hard:
-        constraints['exposure_cap']=min(constraints['exposure_cap'],finite(hard['exposure_cap'],'risk_exposure'))
-        constraints['name_cap']=min(constraints['name_cap'],finite(hard['name_cap'],'risk_name'))
-        constraints['max_positions']=min(constraints['max_positions'] or len(symbols),int(hard['max_positions']))
-        constraints['min_weight']=max(constraints['min_weight'],finite(hard['min_trade_value'],'min_trade')/nav)
-        constraints.update(account['fees'])
+    if v2:
+        # Risk owns the envelope; the arm only scales it. No clip, no fallback.
+        validate_constraints(policy['constraints'])
+        envelope=risk_envelope(account,nav)
+        hard=account['risk_limits']
+        constraints, opb = select_arm(policy,arm_policies(policy,envelope),reward_ledger,
+            identity=policy_identity,context=context_identity(policy,identity),
+            signal_date=signal_date,envelope=envelope,forced_arm=forced_arm)
+    else:
+        constraints, opb = choose_opb(policy,reward_ledger,policy_identity,signal_date)
+        hard=account.get('risk_limits') or {}
+        if hard:
+            constraints['exposure_cap']=min(constraints['exposure_cap'],finite(hard['exposure_cap'],'risk_exposure'))
+            constraints['name_cap']=min(constraints['name_cap'],finite(hard['name_cap'],'risk_name'))
+            constraints['max_positions']=min(constraints['max_positions'] or len(symbols),int(hard['max_positions']))
+            constraints['min_weight']=max(constraints['min_weight'],finite(hard['min_trade_value'],'min_trade')/nav)
+            constraints.update(account['fees'])
     from services.l4_dated_risk import is_dated_risk,estimate_risk
     dated_risk=None
     if is_dated_risk(return_history):
@@ -232,16 +263,16 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         if return_history.get('checksum') != digest({k:v for k,v in return_history.items() if k!='checksum'}):
             raise ValueError('l4_risk_packet_checksum_invalid')
         dated_risk=estimate_risk(return_history,symbols) if symbols else None
-        if any(dated_risk['coverage'][s]['observations']<20 for s in holdings):
+        if any(dated_risk['coverage'][s]['observations']<MIN_RETURN_OBSERVATIONS for s in holdings):
             raise ValueError('l4_risk_held_observations_insufficient')
     else:
         for symbol in symbols:
             history = return_history.get(symbol) or []
-            if len(history)<20 or any(not math.isfinite(float(v)) for v in history):
+            if len(history)<MIN_RETURN_OBSERVATIONS or any(not math.isfinite(float(v)) for v in history):
                 raise ValueError('l4_distribution_risk_history_missing:'+symbol)
     from services.l4_allocation_contract import risk_groups,full_l3_attribution
     constraints,groups,pressure,horizon,risk_evidence = risk_groups(symbols,return_history,by_symbol,holdings,constraints,dated_covariance_packet=dated_risk)
-    covariance = np.asarray((dated_risk or ledoit_wolf_covariance(symbols,return_history,daily_vol_floor=.01))['covariance']).reshape(len(symbols),len(symbols))*horizon
+    covariance = np.asarray((dated_risk or ledoit_wolf_covariance(symbols,return_history,daily_vol_floor=DAILY_VOL_FLOOR))['covariance']).reshape(len(symbols),len(symbols))*horizon
     if dated_risk is not None:
         risk_evidence['dated_history']={k:v for k,v in dated_risk.items() if k not in ('covariance','graph_correlation')}
 
@@ -269,6 +300,10 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         runtime={**runtime,'five_session_risk_evidence':measured_five_session_covariance(
             return_history,symbols,execution_config['minimum_covariance_windows'])}
     covariance,horizon_evidence=aligned_covariance(execution_config,runtime,symbols,signal_date,horizon,covariance)
+    objective=None
+    if v2:
+        objective=objective_costs(constraints['buy_cost']+buy_extra,constraints['sell_cost']+sell_extra,
+                                  policy['constraints']['cost_objective'])
     if horizon_evidence is not None:
         horizon_forbidden=set(horizon_evidence.get('forbidden_buys',[]))
         if horizon_forbidden & set(holdings):raise ValueError('l4_five_session_held_observations_insufficient')
@@ -279,11 +314,15 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                       trade_uncertainty=trade_uncertainty,
                       buy_cost_adjustments=buy_extra,sell_cost_adjustments=sell_extra,
                       current_weights=current,capital_available=capital,name_caps={s:min(v,constraints['name_cap']) for s,v in (account.get('name_caps') or {}).items()},
-                      locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,**constraints)
+                      locked_symbols=locked,forbidden_buys=forbidden,exposure_groups=groups,turnover_pressure=pressure,
+                      objective_costs=objective,**constraints)
+    for i,symbol in enumerate(symbols):
+        if symbol in forbidden and result['weights'][symbol]>current[i]+WEIGHT_SUPPORT:
+            raise ValueError('l4_plan_selected_non_executable:'+symbol)
     attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
         model_feature_names=bundle['model']['recipe']['names'],unavailable=unavailable)
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
-            'execution_scope':'private_research' if research else 'paper',
+            'execution_scope':'counterfactual' if forced_arm is not None else 'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
             'model_checksum':allocation_model_checksum,'l3_identity':identity,'nav_at_decision':nav,
             'opb':{**opb,'candidate_feature_summary':attribution['opb_candidate_summary']},
@@ -295,10 +334,13 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                 'expected_return_gross':outputs[s]['expected_return_gross'] if s in outputs else None,
                 'distribution':outputs.get(s)}
                 for i,s in enumerate(symbols)}}
-    execution=seal_execution_evidence(execution_config,symbols,current,gross,covariance,
-        {**result,'_buy_cost':constraints['buy_cost'],'_sell_cost':constraints['sell_cost'],
+    sealed_costs={'_buy_cost':constraints['buy_cost'],'_sell_cost':constraints['sell_cost'],
          '_buy_costs':constraints['buy_cost']+buy_extra,'_sell_costs':constraints['sell_cost']+sell_extra,
-         '_turnover_pressure':pressure},nav,trade_uncertainty,locked)
+         '_turnover_pressure':pressure}
+    if objective is not None:
+        sealed_costs.update(_objective_entry_costs=objective[0],_objective_reduce_costs=objective[1])
+    execution=seal_execution_evidence(execution_config,symbols,current,gross,covariance,
+        {**result,**sealed_costs},nav,trade_uncertainty,locked)
     if execution is not None:plan['sealed_execution']=execution
     if r2_shadow is not None:
         plan['r2_evidence']={'forecast_checksum':digest(r2_shadow['forecast']),
@@ -322,7 +364,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     for row in rows:
         symbol=row['symbol'];weight=result['weights'][symbol]
         old_advice=row.get('ml_advisory') or {'signal':row.get('signal'),'role':'advisory_only'}
-        selected=weight>1e-7 and symbol not in unavailable
+        selected=weight>WEIGHT_SUPPORT and symbol not in unavailable
         output=outputs.get(symbol)
         expected=output['expected_return_gross'] if output else None
         row.update(ml_advisory=old_advice, signal='BUY' if selected else 'HOLD',

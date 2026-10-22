@@ -11,6 +11,7 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import csc_matrix, eye, hstack, vstack
 from services.l4_quadratic_refinement import refine
+from services.l4_numeric_contract import WEIGHT_SUPPORT
 
 
 def allocate(*, symbols, expected_gross, covariance, current_weights,
@@ -20,7 +21,7 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
              alpha_strength=1., turnover_penalty=0., turnover_pressure=None, l2_penalty=0.,
              membership_groups=None, excluded_pairs=(), trade_uncertainty=None,
              buy_cost_adjustments=None, sell_cost_adjustments=None,
-             tolerance=1e-8, time_limit=30.):
+             objective_costs=None, tolerance=1e-8, time_limit=30.):
     n = len(symbols)
     if len(set(symbols)) != n:
         raise ValueError('l4_portfolio_symbols_invalid')
@@ -42,6 +43,14 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
         raise ValueError('l4_execution_cost_invalid')
     buy_costs=buy_cost+additional_buy;sell_costs=sell_cost+additional_sell
     if (buy_costs>=1).any() or (sell_costs>=1).any():raise ValueError('l4_execution_cost_invalid')
+    # Objective-only cost semantic (l4_cost_objective). Cash budget, validity and
+    # reported trading cost always use the actual single-side fees above.
+    if objective_costs is None:
+        entry_costs,reduce_costs=buy_costs,sell_costs
+    else:
+        entry_costs,reduce_costs=(np.asarray(v,float) for v in objective_costs)
+        if any(v.shape!=(n,) or not np.isfinite(v).all() or (v<0).any() or (v>=1).any() for v in (entry_costs,reduce_costs)):
+            raise ValueError('l4_objective_cost_invalid')
     if (gross.shape != (n,) or mu.shape != (n,) or current.shape != (n,) or risk_matrix.shape != (n, n) or q.shape != (n, n)
             or not np.isfinite(mu).all() or not np.isfinite(q).all()
             or not np.isfinite(current).all() or (current < 0).any()
@@ -100,7 +109,7 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
             minima[i] = min(minima[i], current[i])
     for i,j in pair_indices:
         # Existing correlated positions may remain, but cannot authorize further buying.
-        if current[i]>0 and current[j]>0:
+        if current[i]>WEIGHT_SUPPORT and current[j]>WEIGHT_SUPPORT:
             upper[i]=min(upper[i],current[i]);upper[j]=min(upper[j],current[j])
     if (lower > upper).any() or lower.sum() > exposure_cap + tolerance:
         raise ValueError('l4_portfolio_locked_exposure_requires_risk_exit')
@@ -127,7 +136,7 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
         membership_rows.append(indices);membership_limits.append(effective)
         membership_evidence[key]={'symbols':members,'max_count':limit,'effective_count':effective,'inherited_count':inherited}
     for i,j in pair_indices:
-        membership_rows.append([i,j]);membership_limits.append(2 if current[i]>0 and current[j]>0 else 1)
+        membership_rows.append([i,j]);membership_limits.append(2 if current[i]>WEIGHT_SUPPORT and current[j]>WEIGHT_SUPPORT else 1)
     if membership_rows:
         rr=[];cc=[]
         for row,indices in enumerate(membership_rows):
@@ -166,7 +175,7 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
         lhs=np.r_[lhs,-np.inf];rhs=np.r_[rhs,0.]
     bounds = Bounds(np.r_[lower, np.zeros(3*n+1)],
                     np.r_[upper, np.ones(n), np.ones(2*n), np.inf])
-    objective = np.r_[-mu, np.zeros(n), buy_costs+uncertainty, sell_costs+uncertainty, 1.]
+    objective = np.r_[-mu, np.zeros(n), entry_costs+uncertainty, reduce_costs+uncertainty, 1.]
     integrality = np.r_[np.zeros(n), np.ones(n), np.zeros(2*n+1)]
     deadline = time.monotonic() + time_limit
     best, best_value, global_lower, rounds = None, math.inf, -math.inf, 0
@@ -187,8 +196,8 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
                            matrix=linear_matrix, lhs=linear_lhs, rhs=linear_rhs,
                            bounds=bounds, deadline=deadline)
         positive, negative = np.maximum(candidate-current, 0), np.maximum(current-candidate, 0)
-        value = float(candidate @ q @ candidate - mu @ candidate + buy_costs@positive + sell_costs@negative+uncertainty@(positive+negative))
-        active = candidate > 1e-7
+        value = float(candidate @ q @ candidate - mu @ candidate + entry_costs@positive + reduce_costs@negative+uncertainty@(positive+negative))
+        active = candidate > WEIGHT_SUPPORT
         valid = (candidate.min() >= -tolerance and (candidate <= upper+tolerance).all()
                  and (candidate >= lower-tolerance).all() and active.sum() <= count_cap
                  and (candidate[active] >= minima[active]-tolerance).all()

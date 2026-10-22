@@ -4,6 +4,7 @@
 import type { TradingConfig } from '../tradingConfig'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 import type { CanonicalMarketRiskContext } from '../marketRiskRuntime'
+import { circuitPositionScales } from '../circuitPositionScales'
 
 export async function checkP3MarketRisk(
   marketRisk: CanonicalMarketRiskContext,
@@ -12,6 +13,7 @@ export async function checkP3MarketRisk(
 ): Promise<LegacyLayerResult> {
   const cc = cfg.circuit
   const { defaults } = deps
+  const scales = circuitPositionScales(cc)
 
   if (marketRisk.status === 'blocked') {
     return {
@@ -56,7 +58,9 @@ export async function checkP3MarketRisk(
     return {
       ...defaults,
       ...shared,
-      maxPositionPct: Math.min(defaults.maxPositionPct, cc.highVolReducedPosPct * 0.5),
+      maxPositionPct: Math.min(defaults.maxPositionPct, scales
+        ? defaults.maxPositionPct * scales.highVol * scales.severeHighVol
+        : cc.highVolReducedPosPct * 0.5),
       reason: `canonical market risk red: ${marketRisk.reasons.join(' | ')}`,
     }
   }
@@ -64,7 +68,9 @@ export async function checkP3MarketRisk(
     return {
       ...defaults,
       ...shared,
-      maxPositionPct: Math.min(defaults.maxPositionPct, cc.highVolReducedPosPct),
+      maxPositionPct: Math.min(defaults.maxPositionPct, scales
+        ? defaults.maxPositionPct * scales.highVol
+        : cc.highVolReducedPosPct),
       reason: `canonical market risk orange: ${marketRisk.reasons.join(' | ')}`,
     }
   }

@@ -2720,17 +2720,19 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
     held_risk_payloads = None
     canonical_risk_payloads = None
+    from services.l4_opb_selection import allocator_return_history_lookback
+    risk_lookback = allocator_return_history_lookback(distribution_policy)
     if distribution_policy is not None and not state.get('pipeline_allocator_history_context'):
         from services.l4_risk_history import load_held_risk_payloads, load_canonical_risk_payloads
-        from services.recommendation_service import gnn_return_history_lookback
         held_risk_payloads = await asyncio.to_thread(load_held_risk_payloads,
             holdings=alpha_policy['l4Distribution']['runtime']['account']['holdings'],
-            payloads=state['payloads'], signal_date=state['run_date'], lookback=gnn_return_history_lookback())
+            payloads=state['payloads'], signal_date=state['run_date'], lookback=risk_lookback)
         canonical_risk_payloads = await asyncio.to_thread(load_canonical_risk_payloads,
-            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=gnn_return_history_lookback(),
+            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=risk_lookback,
             capture_source=state.get('timexer_feature_source'))
     allocator_history = capture_allocator_return_history(payloads=state['payloads'], signal_date=state['run_date'],
-        saved=state.get('pipeline_allocator_history_context'), held_payloads=held_risk_payloads,canonical_risk_payloads=canonical_risk_payloads)
+        saved=state.get('pipeline_allocator_history_context'), held_payloads=held_risk_payloads,canonical_risk_payloads=canonical_risk_payloads,
+        lookback=risk_lookback)
     if distribution_policy is not None and (allocator_history['schema_version'] != 'allocator-return-history-context-v3'
             or 'canonical_risk_payloads' not in allocator_history):
         raise ValueError('l4_risk_dated_history_required')

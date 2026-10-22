@@ -69,8 +69,9 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'pipeline', name: 'Pipeline', schedule: 'After allocation readiness', cron: '', group: 'pipeline_chain', chainIndex: 9 },
   { id: 'ml-predict', name: 'ML Predict', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 11 },
   { id: 'recommendation', name: 'Daily Recommendation', schedule: 'Inside pipeline', cron: '', group: 'pipeline_chain', chainIndex: 12 },
-  { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 13 },
-  { id: 'dataset-snapshot-export', name: 'Research Dataset Snapshot', schedule: 'Detached after pipeline success', cron: '', group: 'pipeline_chain', chainIndex: 14 },
+  { id: 'postclose-research-dispatch', name: 'Post-close Research Dispatch', schedule: 'Trading days 14:20', cron: '20 6 * * 1-5', group: 'pipeline_chain', chainIndex: 13 },
+  { id: 'post-pipeline-chain', name: 'Post Pipeline Callback', schedule: 'After the 14:20 post-close dispatch', cron: '', group: 'pipeline_chain', chainIndex: 13 },
+  { id: 'dataset-snapshot-export', name: 'Research Dataset Snapshot', schedule: 'Inside the 14:20 post-close research job', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'allocator-ev-feature-snapshot-backfill', name: 'Allocator EV Feature Snapshot', schedule: 'Inside post-pipeline callback before verify', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 15 },
   { id: 'post-verify-chain', name: 'Post Verify Callback', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 16 },
@@ -706,6 +707,7 @@ export function resolveSchedulerLogStatus(
     && log.summary?.includes('reason=awaiting_premarket job_dispatched=false')) {
     return { status: 'waiting', staleRunning: false }
   }
+  if (log.status === 'waiting') return { status: 'waiting', staleRunning: false }
   if (log.status === 'success') return { status: 'success', staleRunning: false }
   if (log.status === 'blocked') return { status: 'blocked', staleRunning: false }
   // Read old callbacks correctly without rewriting their historical evidence.

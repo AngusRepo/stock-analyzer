@@ -2449,6 +2449,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     """
     Preserve ML advice, compute Score V2, then let L4 own sparse allocation.
     """
+    if state.get('premarket_execution_scope') == 'postclose':
+        raise ValueError('postclose_formal_allocation_forbidden')
     logger.info("[Pipeline V2] node_recommend")
 
     # Phase 2: persona weight is KV-controllable for safe rollout
@@ -2981,6 +2983,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     Predictions and recommendation projections use separate checked writes.
     NAV execution is reported only after exact prediction readback.
     """
+    if state.get('premarket_execution_scope')=='postclose':
+        raise ValueError('postclose_formal_publication_forbidden')
     if state.get('l4_pending_plan') is not None:
         _require_frozen_allocation_context(state.get('paired_nav_collection'))
         contract = _resolve_runtime_regime_contract(state, scope='publication')
@@ -3201,7 +3205,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         metrics["timesfm_l2_summary"] = timesfm_l2_summary
     if state.get('l4_pending_plan') is not None:
         from services.l4_distribution_context import publish_plan
-        await asyncio.to_thread(publish_plan, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
+        metrics['l4_plan_publication'] = await asyncio.to_thread(publish_plan, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
         from services.rfs_comparison_store import observe_safely
         metrics['rfs_sparse_comparison'] = await asyncio.to_thread(
             observe_safely, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
@@ -5165,7 +5169,11 @@ def classify_pipeline_terminal_invariants(metrics: Any) -> list[str]:
 
 def _pipeline_terminal_result(state: PipelineStateV2, *, run_date: str, elapsed: float) -> dict:
     from services.paired_nav_pipeline import pipeline_shadow_errors
-    nav_errors = pipeline_shadow_errors(state.get('paired_nav_collection'))
+    if state.get('premarket_execution_scope') == 'postclose':
+        # After-close research never owns NAV closure; the serving receipt closed the morning.
+        nav_errors = []
+    else:
+        nav_errors = pipeline_shadow_errors(state.get('paired_nav_collection'))
     errors = list(dict.fromkeys([*list(state.get('errors') or []), *nav_errors]))
     classified = classify_pipeline_terminal_errors(errors)
     invariant_errors = classify_pipeline_terminal_invariants(state.get("metrics"))
@@ -5196,6 +5204,17 @@ def _pipeline_terminal_result(state: PipelineStateV2, *, run_date: str, elapsed:
 
 
 def _assert_pipeline_canonical_window(state: PipelineStateV2) -> None:
+    if state.get('premarket_execution_scope')=='postclose':
+        # Research can use the original published state after its allocation
+        # window. It may not create another formal plan or write recommendations.
+        from services.premarket_publication import read as read_publication
+        receipt=read_publication(state['run_date'],state['producer_run_id'])
+        if (not receipt or receipt['context_checksum']!=(state.get('premarket_context') or {}).get('checksum')
+                or receipt['plan_id']!=(state.get('l4_pending_plan') or {}).get('plan_id')):
+            raise ValueError('postclose_original_publication_unverified')
+        if datetime.now(timezone.utc) < datetime.fromisoformat(receipt['trade_date']+'T13:30:00+08:00'):
+            raise ValueError('postclose_before_market_close')
+        return
     dated = state.get('dated_formal_publication')
     if dated is not None:
         from services.dated_formal_publication import publication_deferral
@@ -5640,20 +5659,52 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
         }
 
 
+async def reconcile_completed_premarket(input_uri: str) -> dict:
+    """Read-only closure of legacy six-phase checkpoints; never execute missing phases."""
+    if os.environ.get('PIPELINE_PREMARKET_COMPLETED_ONLY') != '1':
+        raise ValueError('premarket_terminal_reconciliation_mode_required')
+    from services.premarket_pipeline import resume
+    state = await resume(input_uri, nodes=[node_compute_personas, node_recommend,
+        node_llm_reasons, node_write_d1, node_paired_nav_setup, node_export_dataset_snapshot],
+        merge=_merge_pipeline_state_update)
+    return _pipeline_terminal_result(state, run_date=state['run_date'], elapsed=0.)
+
+
 async def run_pipeline_v2_from_premarket(input_uri: str) -> dict:
+    """Serve before the open, then seal an immutable serving receipt.
+
+    Only personas, recommend and write_d1 run here. Sector flow, PIT residual
+    shadow, the dataset snapshot and verification resume after 13:30 through the
+    postclose dispatcher on the same sealed state. No NAV step runs on this path.
+    """
+    from services.premarket_pipeline import resume
+    from services.premarket_publication import read as read_publication
+    from services.premarket_postclose import enqueue
+    t0=asyncio.get_event_loop().time()
+    state=await resume(input_uri,nodes=[node_compute_personas,node_recommend,node_write_d1],
+        merge=_merge_pipeline_state_update,serving_only=True)
+    publication=await asyncio.to_thread(read_publication,state['run_date'],state['producer_run_id'])
+    if not publication:raise ValueError('premarket_serving_publication_missing')
+    research=await asyncio.to_thread(enqueue,state)
+    classified=classify_pipeline_terminal_errors(state.get('errors'))
+    invariants=classify_pipeline_terminal_invariants(state.get('metrics'))
+    critical=list(dict.fromkeys([*classified['critical'],*invariants]))
+    metrics={**state.get('metrics',{}),'postclose_research':research,
+             'dataset_snapshot_export':{'status':'queued_postclose','owner':'postclose_research'}}
+    result={'status':'error' if critical else 'completed','run_date':state['run_date'],
+        'elapsed_s':round(asyncio.get_event_loop().time()-t0,1),'metrics':metrics,
+        'errors':list(state.get('errors') or []),'critical_errors':critical,
+        'advisory_errors':classified['advisory'],'terminal_invariant_errors':invariants,
+        'serving_publication_checksum':publication['checksum'],'postclose_research':research}
+    if critical:result['error']='; '.join(critical[:3])
+    return result
+
+
+async def run_pipeline_v2_postclose(input_uri: str) -> dict:
+    """After-close research on the sealed morning state; formal phases are read, never rerun."""
     from services.premarket_pipeline import resume
     t0=asyncio.get_event_loop().time()
-    state=await resume(input_uri,nodes=[node_compute_personas,node_recommend,node_llm_reasons,node_write_d1,
-        node_paired_nav_setup,node_export_dataset_snapshot],
-        merge=_merge_pipeline_state_update)
-    from services.historical_atomic_exclusion import reconcile
-    collection=await asyncio.to_thread(reconcile,state,query=LEARNING_D1_CLIENT.query)
-    if isinstance(collection,dict) and collection.get('historical_exclusion'):
-        from services.premarket_pipeline import save_historical_exclusion
-        await asyncio.to_thread(save_historical_exclusion,state,collection['historical_exclusion'])
-        state['paired_nav_collection']=collection
-        state.setdefault('metrics',{})['historical_atomic_exclusion']=collection['historical_exclusion']
-    result=_pipeline_terminal_result(state,run_date=state['run_date'],elapsed=asyncio.get_event_loop().time()-t0)
-    from services.premarket_pipeline import record_nonretryable_inputs
-    await asyncio.to_thread(record_nonretryable_inputs,state,result)
-    return result
+    state=await resume(input_uri,nodes=[node_compute_personas,node_recommend,node_write_d1,
+        node_compute_sector_flow,node_compute_pit_residual_shadow],
+        merge=_merge_pipeline_state_update,postclose_only=True)
+    return _pipeline_terminal_result(state,run_date=state['run_date'],elapsed=asyncio.get_event_loop().time()-t0)

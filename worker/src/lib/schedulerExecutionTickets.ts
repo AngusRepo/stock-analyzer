@@ -527,9 +527,9 @@ export async function loadLatestSchedulerRootTickets(
   return result.results ?? []
 }
 export function schedulerTicketStatusForRunLog(
-  status: 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running',
+  status: import('./schedulerRunLogger').SchedulerRunStatus,
 ): SchedulerExecutionTicketStatus {
-  return status
+  return status === 'waiting' ? 'queued' : status
 }
 
 export const SCHEDULER_TICKET_CONTRACT_ROOTS = MANIFEST_JOBS.length

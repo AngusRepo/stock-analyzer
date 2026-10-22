@@ -730,6 +730,10 @@ export async function queuePostPipelineStage(
     attempt?: number
   },
 ): Promise<{ queued: boolean; canonicalRunId: string; status: PipelineStageStatus }> {
+  // Verification is research: it waits for the serving receipt and the session close.
+  const { postPipelineResearchAllowed } = await import('./premarketResearchGate')
+  if (!await postPipelineResearchAllowed(env, input.businessDate, input.runId))
+    return { queued: false, canonicalRunId: input.runId, status: 'waiting' }
   const opsDb = databaseForDataDomain(env, 'ops')
   const state = input.authority
     ? await enqueuePipelineStageAuthorized(opsDb, {

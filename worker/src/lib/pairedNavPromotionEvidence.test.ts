@@ -13,9 +13,8 @@ import { commitExpectedReturnChampion } from './expectedReturnServingRegistry'
 
 const source = process.env.NAV_ORIGINAL_FIXTURE
 if (!source) {
-  test('build and verify original NAV through Python and nested Worker integration', () => {
-    const localPython = path.resolve('../../ml-service/.venv/Scripts/python.exe')
-    const python = process.env.NAV_TEST_PYTHON ?? (fs.existsSync(localPython) ? localPython : 'python')
+  test('build and verify original NAV through Python and nested Worker integration', { skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' }, () => {
+    const python = process.env.NAV_TEST_PYTHON!
     // Do not leak the outer Node runner's IPC context into a fresh nested
     // runner. Its failed assertions must become the Python subprocess status.
     const childEnv: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' }

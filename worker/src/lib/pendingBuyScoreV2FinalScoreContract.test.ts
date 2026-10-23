@@ -96,11 +96,10 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup must keep ML watch evidence out of executable pending buys',
   )
   assert(
-    pendingBuyOrchestrator.includes('debate_retry_pending') &&
-      pendingBuyOrchestrator.includes('debate_retry:debate_missing') &&
-      pendingBuyOrchestrator.includes("debateStatus: failedCount > 0 ? 'pending' : 'completed'") &&
+    pendingBuyOrchestrator.includes('export async function recordAdvisoryDebateResults(') &&
+      !pendingBuyOrchestrator.includes('debate_retry_pending') &&
       !pendingBuyOrchestrator.includes('debate_failed_closed'),
-    'debate outages must keep the execution watch pool active for retry instead of terminal-skipping candidates',
+    'debate is advisory (9519f01b6): outages are recorded as observations and never retry-gate or terminal-skip pending buys',
   )
   assert(
     !morningSetupQuery.includes('ORDER BY dr.score DESC'),

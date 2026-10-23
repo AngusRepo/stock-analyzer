@@ -129,6 +129,29 @@ def test_pre_l2_helper_defers_without_polling_or_running_l2(store,monkeypatch):
     assert result['deferred_reason']=='input_snapshot'
 
 
+@pytest.mark.parametrize('first_capture,expected',[(True,'node_prepare_l2_inputs'),(False,'node_resume_l2_inputs')])
+def test_pre_l2_resume_reports_its_own_phase(store,monkeypatch,first_capture,expected):
+    # The input-freeze stage ends at the first capture; a resume after the input
+    # wait must not be recorded as that capture again.
+    from graphs import daily_pipeline_v2 as graph
+    from services import pipeline_progress as progress
+    import services.pipeline_runtime_preflight as preflight
+    async def report(*args,**kwargs):pass
+    monkeypatch.setattr(progress,'report',report)
+    monkeypatch.setattr(progress,'_completed',[])
+    async def verified(**kw):return {'status':'verified'}
+    monkeypatch.setattr(preflight,'verify_pipeline_runtime',verified)
+    monkeypatch.setattr(graph,'assert_canonical_window_open',lambda day:None)
+    async def nodes(saved,steps):raise events.InputDeferred('fixture-stage','snapshot')
+    monkeypatch.setattr(graph,'_run_pipeline_nodes',nodes)
+    state={'producer_run_id':'run-1','run_date':'2026-10-02','metrics':{},
+           'active_stocks':[{'id':1,'symbol':'2330'}],
+           'pipeline_modal_serving_context':{'expected_source_sha':'a'*40},
+           'payload_source_observations':{'stocks':{'2330':{}}}}
+    asyncio.run(graph._continue_pipeline_before_l2(state,first_capture=first_capture))
+    assert [row['phase'] for row in progress._completed]==[expected]
+
+
 def test_real_node_runner_reports_expected_dependency_as_waiting(monkeypatch):
     from graphs import daily_pipeline_v2 as graph
     from services import pipeline_progress as progress

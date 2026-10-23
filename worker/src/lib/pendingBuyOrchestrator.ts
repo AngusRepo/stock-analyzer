@@ -672,7 +672,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
              dr.watch_points, dr.score_components, dr.alpha_allocation,
-             s.market AS market,
+             COALESCE(s.listing_market, s.market) AS market,
              NULL AS ml_entry_price,
              NULL AS ml_stop_loss,
              NULL AS ml_target1,
@@ -695,7 +695,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          AND json_valid(dr.alpha_allocation)
          AND (?=1 OR json_extract(dr.alpha_allocation, '$.selected') = 1)
          AND json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'
-         AND COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB')
+         AND COALESCE(UPPER(COALESCE(s.listing_market, s.market)), '') NOT IN ('EMERGING', 'ESB', 'ROTC')
         ORDER BY CAST(json_extract(dr.alpha_allocation, '$.allocation_rank') AS INTEGER), dr.symbol
     `).bind(sourceRecoDate, activeL4Plan ? 1 : 0, activeL4Plan ? 1 : 0).all<BuyRecommendationRow>())
     for (const row of coreRecommendationRows ?? []) {

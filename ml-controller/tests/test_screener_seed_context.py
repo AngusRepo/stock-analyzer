@@ -39,7 +39,7 @@ def source():
         'market_segment recommendation_lane eligible_for_ml eligible_for_pending_buy '
         'alpha_context alpha_allocation ml_vote_summary score_components date').split()
     core.db.execute('CREATE TABLE daily_recommendations(' + ','.join(columns) + ')')
-    core.db.execute('CREATE TABLE stocks(id,symbol,name,sector,market)')
+    core.db.execute('CREATE TABLE stocks(id,symbol,name,sector,market,listing_market)')
     fixture = recommendation_inputs()
     for index, rec in enumerate(fixture['screener_recs'], 1):
         components = deepcopy(rec['score_components'])
@@ -47,8 +47,8 @@ def source():
             'score_components': json.dumps({'different_post_calibration': True}), 'current_price': 100}
         core.db.execute('INSERT INTO daily_recommendations VALUES(' + ','.join('?' for _ in columns) + ')',
             [json.dumps(daily[c]) if isinstance(daily.get(c), (dict, list)) else daily.get(c) for c in columns])
-        core.db.execute('INSERT INTO stocks VALUES(?,?,?,?,?)',
-            [rec['stock_id'], rec['symbol'], rec['name'], 'Semis', 'TWSE'])
+        core.db.execute('INSERT INTO stocks VALUES(?,?,?,?,?,?)',
+            [rec['stock_id'], rec['symbol'], rec['name'], 'Semis', 'TWSE', 'TWSE'])
         for stage, decision, score, evidence in (
             ('scoring', 'pass', 60, {'score_components': components}),
             ('final_selection', 'selected', 91, {'legacy_final': True}),

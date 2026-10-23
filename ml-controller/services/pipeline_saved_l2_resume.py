@@ -120,5 +120,4 @@ async def resume_saved_l2(*, run_date, run_id):
     spawned = await asyncio.to_thread(_spawn_pipeline_prediction_bundle_from_artifact, request)
     return {'status':'deferred','deferred_reason':'modal_prediction_callback','run_date':run_date,
         'metrics':{'async_modal_prediction':{**spawned,'status':'triggered','state_gcs_uri':state_uri},
-                   'timesfm_l2_summary':state.get('timesfm_l2_summary') or state.get('timesfm_l175_summary') or {},
                    'saved_l2_resume':lineage}, 'errors':list(state.get('errors') or [])}

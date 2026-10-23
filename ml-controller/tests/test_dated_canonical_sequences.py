@@ -223,10 +223,8 @@ def _l2_dispatch_state(monkeypatch, mode='ready'):
             return datetime(2026, 9, 6, 14, tzinfo=timezone.utc)
     monkeypatch.setattr(graph, 'datetime', Clock)
     monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 6)
-    monkeypatch.setattr(graph, '_timesfm_l175_release_policy', lambda: {})
     monkeypatch.setattr(graph, '_load_model_pool_versions', lambda: ({}, {'TimesFM': 'fixture-v1'}, {}, True))
     monkeypatch.setattr(graph, '_load_active8_serving_pool', lambda: ({}, {'l2_feature_sidecars': {'TimesFM': {'checksum': 'a'*64}}}))
-    monkeypatch.setattr(graph, '_timesfm_sync_gate', lambda **kw: (mode != 'blocked', {'sequence_contract_points': 2}))
     calls = []
     async def predict(rows, **kw):
         calls.append(deepcopy(rows))
@@ -257,9 +255,10 @@ def test_real_l2_node_return_transport_and_ml_request_share_dated_source(monkeyp
     _prep(monkeypatch)
     state, calls = _l2_dispatch_state(monkeypatch, mode)
     # Mimic LangGraph: only returned node updates persist to the next node.
-    result = asyncio.run(graph.node_l2_timesfm_enrich(deepcopy(state)))
-    assert result['timesfm_l2_summary']['status'] == mode
+    result = asyncio.run(graph.node_prepare_sequence_inputs(deepcopy(state)))
+    assert result['sequence_input_summary']['status'] == 'ready'
     assert 'pipeline_sequence_observations' in result
+    assert 'payloads' not in result
     state.update(result)
     state['l3_payloads'] = deepcopy(state['payloads'])
     envelope = {'schema_version': 'pipeline-async-state-v1', 'run_date': state['run_date'],
@@ -272,11 +271,8 @@ def test_real_l2_node_return_transport_and_ml_request_share_dated_source(monkeyp
     assert request['sequence_series'][0]['dates'][-1] == '2026-09-06'
     assert request['sequence_input_contract']['sequence_point_counts'] == {'2330': 6}
     assert request['sequence_dataset_meta']['frozen_source_checksum'] == result['pipeline_sequence_observations']['source_checksum']
-    assert len(calls) == (0 if mode == 'blocked' else 1)
-    if mode == 'ready':
-        assert calls[0] == request['sequence_series']
-        assert request['payloads'][0]['stock_meta']['timesfm_l175_sidecar']['features']['forecast_return'] == .02
-        assert request['payloads'][0]['prices'] == _payload()[0]['prices']
+    assert calls == [], 'retired inference must never run regardless of prior readiness'
+    assert request['payloads'] == _payload()
 
 
 @pytest.mark.parametrize('fault', [None, 'late', 'mutated_during_build', 'request_only', 'mutated_during_write'])
@@ -286,7 +282,7 @@ def test_frozen_recovery_uses_actual_request_builder_without_live_sequence_reads
     from services.paired_nav_journal import digest
     _prep(monkeypatch)
     state, _ = _l2_dispatch_state(monkeypatch)
-    state.update(asyncio.run(graph.node_l2_timesfm_enrich(deepcopy(state))))
+    state.update(asyncio.run(graph.node_prepare_sequence_inputs(deepcopy(state))))
     state['l3_payloads'] = deepcopy(state['payloads'])
     source_context = deepcopy(state['pipeline_modal_serving_context'])
     if fault == 'late':
@@ -391,3 +387,32 @@ def test_daily_sequence_resolves_immutable_producer_run_instead_of_stale_latest(
     assert meta['history']['prefix'] == 'frozen'
     assert meta['history']['requested_prefix'] == configured
     assert configured + '/prep/sequence_manifest.json' not in bucket.blobs
+
+
+def test_scoped_sequence_freeze_reuses_cached_observations_and_rejects_changed_payloads(monkeypatch):
+    # node_build_payloads always opens a slate scope, so this is the production branch.
+    from test_paired_nav_atomic_daily_inputs import _setup
+    from services import modal_client
+    graph, state, _ = _setup(monkeypatch)
+    state.update(asyncio.run(graph.node_build_payloads(state)))
+    assert state.get('pipeline_slate_scope')
+    db = sqlite3.connect(':memory:'); db.row_factory = sqlite3.Row
+    db.execute('CREATE TABLE canonical_market_daily(stock_id TEXT,date TEXT,adj_close REAL,as_of_date TEXT,source TEXT)')
+    for sid, rows in state['payload_source_observations']['sources']['prices_by_id'].items():
+        for row in rows:
+            db.execute('INSERT INTO canonical_market_daily VALUES(?,?,?,?,?)',
+                (str(999 + int(sid)), row['date'], row['close'], row['date'], 'finlab.price'))
+    monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda sql, args, **kw: [dict(r) for r in db.execute(sql, args)])
+    monkeypatch.setattr(graph, 'daily_sequence_target_points', lambda: 6)
+    async def forbidden(*a, **k): pytest.fail('retired TimesFM generation called')
+    monkeypatch.setattr(modal_client, 'timesfm_batch_predict', forbidden)
+    first = asyncio.run(graph.node_prepare_sequence_inputs(deepcopy(state)))
+    assert first['sequence_input_summary']['status'] == 'ready'
+    assert first['pipeline_sequence_observations'] and 'payloads' not in first
+    # A LangGraph retry starts from the pre-node state and must not re-read prices.
+    monkeypatch.setattr(payload_builder.MARKET_D1_CLIENT, 'query', lambda *a, **k: pytest.fail('price read on retry'))
+    retry = asyncio.run(graph.node_prepare_sequence_inputs(deepcopy(state)))
+    assert retry['pipeline_sequence_observations'] == first['pipeline_sequence_observations']
+    changed = deepcopy(state); changed['payloads'] = changed['payloads'][:1]
+    with pytest.raises(ValueError, match='retry_inputs_changed'):
+        asyncio.run(graph.node_prepare_sequence_inputs(changed))

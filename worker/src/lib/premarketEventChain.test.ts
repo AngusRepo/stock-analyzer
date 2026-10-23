@@ -316,7 +316,7 @@ test('typhoon closure announced after the chain is queued stops every stage',asy
   const row=f.sqls.ops.prepare("SELECT status,last_error,attempt_count FROM pipeline_stage_runs WHERE stage='premarket_v3:context'").get() as any
   assert.equal(row.status,'error');assert.equal(row.last_error,'premarket_non_trading_day:twse_adhoc_closure');assert.equal(row.attempt_count,0)
   assert.match(String(f.kvs.get(`holiday:${day}`)),/115年10月23日休市/)
-  assert.match(await ensurePremarketEventChain(f.env,day,f.now()),/status=skipped premarket_non_trading_day reason=holiday_kv/)
+  assert.match(await ensurePremarketEventChain(f.env,day,f.now()),/status=skipped premarket_non_trading_day reason=twse_adhoc_closure/)
   assert.equal(f.kvs.get(`scheduler:run:morning-setup:${day}`),undefined)
  }finally{f.close()}
 })

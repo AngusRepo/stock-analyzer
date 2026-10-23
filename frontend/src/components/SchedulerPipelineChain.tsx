@@ -1,6 +1,7 @@
 import { ArrowRight } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { SchedulerJob } from '@/lib/api'
+import { pipelinePhaseName } from '@/lib/pipelineStageCards'
 import JobRunTiming from './observability/JobRunTiming'
 import { WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 
@@ -35,18 +36,6 @@ export function pipelinePreparationLabel(job?: SchedulerJob): string {
   if (/dependency=input_snapshot|stage=snapshot\b/.test(summary)) return '目前階段：輸入快照準備'
   if (/modal_prediction=(?:triggered|running|spawned)\b/.test(summary)) return '目前階段：ML 預測'
   return job?.lastStatus === 'success' ? '流程已完成；各子階段狀態依自己的收據呈現' : '各子階段狀態依自己的啟動與完成收據呈現'
-}
-export function pipelinePhaseName(phase: string): string {
-  return ({ startup: '工作啟動', node_load_inputs: '讀取選股輸入', node_load_market_env: '市場環境',
-    awaiting_premarket: '次交易日盤前資訊', modal_prediction: 'L3 模型運算結果', input_prep: '特徵批次結果', input_adjusted: '還原股價',
-    node_capture_atomic_inputs: 'Atomic 輸入重播', input_snapshot: '輸入快照匯出',
-    feature_preparation: '特徵資料準備', node_build_payloads: '特徵與推論輸入',
-    seal_l2_inputs: '封存 L2 輸入', prepare_prediction_request: '準備 L3 請求', dispatch_prediction: '派送 L3 模型',
-    node_l2_timesfm_enrich: 'L2 時序特徵', node_l3_formal_predict: 'L3 結果驗證與整合',
-    node_compute_personas: '推薦特徵', node_recommend: 'L4 配置', node_llm_reasons: '推薦說明',
-    node_write_d1: '寫入結果', node_paired_nav_setup: '配對證據', node_compute_sector_flow: '產業資金流',
-    node_compute_pit_residual_shadow: '殘差證據', node_export_dataset_snapshot: '研究快照',
-  } as Record<string,string>)[phase] ?? phase
 }
 export function PipelinePhaseDetails({ job }: { job?: SchedulerJob }) {
   const p = job?.pipelineProgress

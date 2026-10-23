@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { SchedulerJob } from './api'
-import { pipelineStageCards } from './pipelineStageCards'
+import { pipelineRunSummary, pipelineStageCards } from './pipelineStageCards'
 const row=(phase:string,status='completed')=>({phase,status,elapsed_ms:10000,started_at:'2026-10-16T14:00:00Z',completed_at:'2026-10-16T14:00:10Z'})
 const parent=()=>({id:'pipeline',runId:'run-a',statusRunDate:'2026-10-16',lastStatus:'waiting',summary:'dependency=input_prep',
   lastRunAt:'2026-10-16T07:02:32Z',lastDuration:'8m55s',
@@ -140,4 +140,78 @@ test('a failed child blocks its card and downstream; stale evidence still needs 
   assert.equal(pipelineStageCards(p,at)[2].lastStatus,'blocked')
   p.pipelineWork={...work(p,'unknown'),observed_at:new Date(at+60*60_000).toISOString()}
   assert.equal(pipelineStageCards(p,at+60*60_000)[1].stageVisualStatus,'stale')
+})
+
+test('pre-L2 preparation belongs to input freezing and is its end once the controller records it',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  const at=Date.parse(progress.observed_at)
+  progress.phase='node_prepare_l2_inputs';progress.status='running';progress.phase_started_at='2026-10-16T14:00:30Z'
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context')]} as any
+  let cards=pipelineStageCards(p,at)
+  assert.equal(cards[0].stageVisualStatus,'running','attach done but prep running: inputs are not frozen yet')
+  assert.equal(cards[1].stageVisualStatus,'waiting')
+  // 2026-10-22: roster mismatch raised inside the prep phase.
+  progress.status='failed'
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context'),
+    {...row('node_prepare_l2_inputs','failed'),completed_at:'2026-10-16T14:00:40Z'}]} as any
+  cards=pipelineStageCards(p,at)
+  assert.equal(cards[0].stageVisualStatus,'blocked')
+  assert.deepEqual(cards.slice(1).map(c=>c.lastStatus),['blocked','blocked','blocked'])
+  progress.phase='node_build_payloads';progress.status='running'
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context'),row('node_prepare_l2_inputs')]} as any
+  assert.equal(pipelineStageCards(p,at)[0].stageVisualStatus,'completed')
+})
+
+test('a run inside serving-context attach is not closed by the legacy market-env end',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  progress.phase='node_attach_serving_context';progress.status='running';progress.phase_started_at='2026-10-16T14:00:20Z'
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env')]} as any
+  const at=Date.parse(progress.observed_at)
+  assert.deepEqual(pipelineStageCards(p,at).map(c=>c.stageVisualStatus),['running','waiting','waiting','waiting'])
+  progress.status='failed';p.lastStatus='failed'
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),
+    {...row('node_attach_serving_context','failed'),completed_at:'2026-10-16T14:00:30Z'}]} as any
+  const cards=pipelineStageCards(p,at)
+  assert.equal(cards[0].stageVisualStatus,'blocked')
+  assert.deepEqual(cards.slice(1).map(c=>c.lastStatus),['blocked','blocked','blocked'])
+})
+
+test('resuming after the feature wait runs in the feature card and leaves input freezing time alone',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context'),
+    row('node_prepare_l2_inputs'),row('node_build_payloads','waiting')]} as any
+  const frozen=pipelineStageCards(p,Date.parse(progress.observed_at))[0]
+  progress.phase='node_resume_l2_inputs';progress.status='running'
+  progress.phase_started_at='2026-10-16T15:30:00Z';progress.observed_at='2026-10-16T15:30:05Z'
+  const cards=pipelineStageCards(p,Date.parse('2026-10-16T15:31:00Z'))
+  assert.equal(cards[0].stageVisualStatus,'completed')
+  assert.equal(cards[0].stageElapsed,frozen.stageElapsed)
+  assert.equal(cards[0].lastDuration,frozen.lastDuration)
+  assert.equal(cards[1].stageVisualStatus,'running')
+  assert.match(cards[1].summary,/L2 前輸入重新驗證/)
+})
+
+test('a finished run stops every clock at its last evidence',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  p.lastStatus='success'
+  progress.phase='modal_inference';progress.status='running'
+  progress.phase_started_at='2026-10-16T14:05:00Z';progress.observed_at='2026-10-16T14:07:00Z'
+  const early=pipelineStageCards(p,Date.parse('2026-10-16T14:10:00Z'))
+  const late=pipelineStageCards(p,Date.parse('2026-10-16T22:00:00Z'))
+  assert.deepEqual(late.map(c=>c.stageElapsed),early.map(c=>c.stageElapsed))
+  assert.deepEqual(late.map(c=>c.lastDuration),early.map(c=>c.lastDuration))
+  assert.equal(late[3].stageElapsed,'2分0秒')
+  assert.notEqual(late[3].stageVisualStatus,'running')
+  assert.equal(pipelineRunSummary(p,Date.parse('2026-10-16T22:00:00Z')),pipelineRunSummary(p,Date.parse('2026-10-16T14:10:00Z')))
+  assert.match(pipelineRunSummary(p,Date.parse('2026-10-16T22:00:00Z')),/經過 7分0秒/)
+})
+
+test('a failed parent stops the current card even if its last receipt says running',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  p.lastStatus='failed';progress.status='running'
+  for (const at of [Date.parse('2026-10-16T14:06:00Z'),Date.parse('2026-10-16T18:00:00Z')]) {
+    const cards=pipelineStageCards(p,at)
+    assert.deepEqual(cards.map(c=>c.stageVisualStatus),['completed','blocked','blocked','blocked'])
+    assert.doesNotMatch(cards[1].lastDuration,/進行中/)
+  }
 })

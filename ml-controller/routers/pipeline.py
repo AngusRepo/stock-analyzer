@@ -136,6 +136,7 @@ PRE_ML_PIPELINE_PHASES = frozenset({
     "node_load_market_env",
     "node_attach_serving_context",
     "node_prepare_l2_inputs",
+    "node_resume_l2_inputs",
     "node_build_payloads",
 })
 

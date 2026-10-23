@@ -28,7 +28,7 @@ export async function recordPipelineProgress(db: D1Database, runDate: string, ru
   // Each execution sends a cumulative local history. Merge it atomically in D1;
   // a new process must not replace receipts from previous continuations.
   const rank = ({startup:0,node_load_inputs:10,node_load_market_env:10,node_capture_atomic_inputs:10,node_attach_serving_context:10,node_prepare_l2_inputs:15,
-    node_build_payloads:20,input_snapshot:20,input_prep:20,feature_preparation:20,
+    node_build_payloads:20,input_snapshot:20,input_prep:20,feature_preparation:20,node_resume_l2_inputs:20,
     node_l2_timesfm_enrich:30,seal_l2_inputs:30,prepare_prediction_request:30,
     dispatch_prediction:40,modal_prediction:40,modal_inference:41,node_l3_formal_predict:42,seal_l3_results:43} as Record<string,number>)[progress.phase] ?? 50
   const payload = { ...progress, phase_rank:rank, executions: { [progress.execution_id]: progress.completed } }

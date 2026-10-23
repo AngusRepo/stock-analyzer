@@ -22,7 +22,9 @@ def official_board_index(frame):
     """symbol -> board from exchange rosters, or None when any roster is incomplete."""
     if frame is None or frame.is_empty() or not {'symbol', 'board'} <= set(frame.columns):
         return None
-    counts = {board: frame.filter(frame['board'] == board).height for board in OFFICIAL_BOARD_MIN_ROWS}
+    # Count common-stock codes only, so a roster of warrants/ETFs cannot pass as complete.
+    stocks = frame.filter(frame['symbol'].cast(str).str.strip_chars().str.contains(r'^\d{4}$'))
+    counts = {board: stocks.filter(stocks['board'] == board).height for board in OFFICIAL_BOARD_MIN_ROWS}
     if any(counts[board] < minimum for board, minimum in OFFICIAL_BOARD_MIN_ROWS.items()):
         return None
     boards = {}

@@ -259,3 +259,12 @@ def test_source_capture_one_lane_three_distinct_artifacts_and_failure_is_not_gre
     if failed_source:
         assert blockers[0]['required_fields'] == [failed_source]
         assert next(r for r in reports if r['field'] == failed_source)['status'] == 'failed'
+
+
+def test_official_roster_completeness_counts_common_stock_codes_only():
+    warrants = [(f'03{i:04d}', 'TWSE') for i in range(2000)]
+    frame = pl.DataFrame([(f'9{i:03d}', 'TWSE') for i in range(10)] + warrants
+                         + [(f'8{i:03d}', 'OTC') for i in range(600)] + [(f'7{i:03d}', 'ROTC') for i in range(100)],
+                         schema=['symbol', 'board'], orient='row')
+    assert official_board_index(frame) is None
+    assert official_board_index(official()) is not None

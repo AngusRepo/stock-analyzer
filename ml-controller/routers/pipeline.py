@@ -130,6 +130,16 @@ async def _callback_worker(
             await _post(c)
 
 
+# Phases that run before ML prediction; a failure here blocks ml-predict and recommendation.
+PRE_ML_PIPELINE_PHASES = frozenset({
+    "node_load_inputs",
+    "node_load_market_env",
+    "node_attach_serving_context",
+    "node_prepare_l2_inputs",
+    "node_build_payloads",
+})
+
+
 async def _emit_subtask_callbacks(
     run_id: str,
     result: dict | None,
@@ -137,12 +147,14 @@ async def _emit_subtask_callbacks(
     overall_error: str | None,
     elapsed_ms: int,
     run_date: str | None = None,
+    phases: list[dict] | None = None,
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
     Dashboard reads scheduler:run:{task}:{date}. Screener is Worker-owned before
     the pipeline trigger, so the pipeline callback must not overwrite screener
     success/failure. Only ML predict and recommendation are pipeline-owned.
+    `phases` is this process's phase telemetry (services.pipeline_progress).
     """
     metrics: dict = {}
     if isinstance(result, dict):
@@ -182,14 +194,20 @@ async def _emit_subtask_callbacks(
         ),
     ]
 
+    # Error results carry no metrics, so only a recorded pre-ML phase failure
+    # proves the children never ran; anything else stays a child error.
+    failed_phase = next(
+        (str(p.get("phase")) for p in reversed(phases or []) if isinstance(p, dict) and p.get("status") == "failed"),
+        None,
+    )
+    upstream_failed = overall_status != "success" and failed_phase in PRE_ML_PIPELINE_PHASES
+
     def _payload(task: str, ok: bool, summary: str, reached: bool) -> dict:
-        # A failed pipeline that never reached this child (e.g. failed at
-        # node_build_payloads) is upstream-blocked, not a child failure.
         if overall_status == "success" and ok:
             status = "success"
-        elif overall_status != "success" and not reached:
+        elif upstream_failed and not reached:
             status = "blocked"
-            summary = f"{summary} upstream_pipeline_failed_before_{task}"
+            summary = f"{summary} upstream_pipeline_failed_at={failed_phase}"
         else:
             status = "error"
         payload: dict = {

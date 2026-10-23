@@ -5465,17 +5465,19 @@ async def run_pipeline_v2_from_input_event(*, stage_path: str, run_date: str, pr
 async def _continue_pipeline_before_l2(state: PipelineStateV2) -> dict:
     """Resume the same frozen pre-L2 inputs after snapshot/prep completion."""
     from services.pipeline_input_events import InputDeferred, input_context, seal_pre_l2_checkpoint
+    from services.pipeline_progress import phase
     from services.pipeline_runtime_preflight import verify_pipeline_runtime
     context=state.get('pipeline_modal_serving_context') or {}
-    await verify_pipeline_runtime(expected_source_sha=context.get('expected_source_sha'))
-    assert_canonical_window_open(state['run_date'])
-    # Freeze raw observations before a dependency can suspend this invocation.
-    # Otherwise a resumed build would capture newer observations for this run.
-    if state.get('payload_source_observations') is None:
-        from services.payload_builder import capture_payload_sources
-        state['payload_source_observations']=await asyncio.to_thread(
-            capture_payload_sources,state['active_stocks'],state['run_date'])
-    checkpoint_uri=await asyncio.to_thread(seal_pre_l2_checkpoint,state)
+    async with phase('node_prepare_l2_inputs', deferred_exception=InputDeferred):
+        await verify_pipeline_runtime(expected_source_sha=context.get('expected_source_sha'))
+        assert_canonical_window_open(state['run_date'])
+        # Freeze raw observations before a dependency can suspend this invocation.
+        # Otherwise a resumed build would capture newer observations for this run.
+        if state.get('payload_source_observations') is None:
+            from services.payload_builder import capture_payload_sources
+            state['payload_source_observations']=await asyncio.to_thread(
+                capture_payload_sources,state['active_stocks'],state['run_date'])
+        checkpoint_uri=await asyncio.to_thread(seal_pre_l2_checkpoint,state)
     try:
         with input_context(state,checkpoint_uri,resume_phase='pre_l2'):
             await _run_pipeline_nodes(state,[node_build_payloads])
@@ -5508,7 +5510,9 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         ])
         # Validate and freeze the exact serving contract before expensive L2 work.
         # The request builder below reuses this context, never recaptures it.
-        await _attach_pipeline_modal_serving_context(state)
+        from services.pipeline_progress import phase
+        async with phase('node_attach_serving_context'):
+            await _attach_pipeline_modal_serving_context(state)
         return await _continue_pipeline_before_l2(state)
     except Exception as e:  # noqa: BLE001
         elapsed = asyncio.get_event_loop().time() - t0

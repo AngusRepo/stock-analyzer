@@ -44,14 +44,25 @@ def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
     assert [p for p in payloads if p["task"] == "recommendation"][0]["summary"] == "run_id=pipeline-v2-test recos_updated=2 filtered=1 seed_rows=3 closure=True"
 
 
-@pytest.mark.parametrize("metrics,expected", [
-    # 2026-10-22: failed at node_build_payloads; children never ran.
-    ({}, {"ml-predict": "blocked", "recommendation": "blocked"}),
-    ({"predictions_written": 10, "prediction_symbols": 3}, {"ml-predict": "error", "recommendation": "blocked"}),
-    ({"predictions_written": 10, "prediction_symbols": 3, "recommendation_seed_rows": 3},
+_PRE_ML_DONE = [{"phase": "node_load_inputs", "status": "completed"},
+                {"phase": "node_load_market_env", "status": "completed"},
+                {"phase": "node_attach_serving_context", "status": "completed"}]
+
+
+@pytest.mark.parametrize("phases,expected", [
+    # 2026-10-22: roster mismatch raised while capturing payload sources.
+    (_PRE_ML_DONE + [{"phase": "node_prepare_l2_inputs", "status": "failed"}],
+     {"ml-predict": "blocked", "recommendation": "blocked"}),
+    (_PRE_ML_DONE + [{"phase": "node_prepare_l2_inputs", "status": "completed"},
+                     {"phase": "node_build_payloads", "status": "failed"}],
+     {"ml-predict": "blocked", "recommendation": "blocked"}),
+    # Error results carry no metrics: without phase evidence it is a child error.
+    (None, {"ml-predict": "error", "recommendation": "error"}),
+    ([], {"ml-predict": "error", "recommendation": "error"}),
+    (_PRE_ML_DONE + [{"phase": "node_l3_formal_predict", "status": "failed"}],
      {"ml-predict": "error", "recommendation": "error"}),
 ])
-def test_failed_pipeline_marks_unreached_children_blocked(monkeypatch, metrics, expected):
+def test_failed_pipeline_marks_children_blocked_only_on_pre_ml_failure(monkeypatch, phases, expected):
     payloads = []
 
     async def fake_callback_worker(payload, client=None):
@@ -59,13 +70,18 @@ def test_failed_pipeline_marks_unreached_children_blocked(monkeypatch, metrics, 
 
     monkeypatch.setattr(pipeline, "_callback_worker", fake_callback_worker)
     asyncio.run(pipeline._emit_subtask_callbacks(
-        "pipeline-v2-test", {"metrics": metrics}, "error", "daily_capture_roster_identity_mismatch", 1234,
-        run_date="2026-10-22"))
+        "pipeline-v2-test", {"status": "error", "error": "x"}, "error", "daily_capture_roster_identity_mismatch", 1234,
+        run_date="2026-10-22", phases=phases))
 
     assert {p["task"]: p["status"] for p in payloads} == expected
     assert all(p["error"] == "daily_capture_roster_identity_mismatch" for p in payloads)
     blocked = [p for p in payloads if p["status"] == "blocked"]
-    assert all(p["summary"].endswith("upstream_pipeline_failed_before_" + p["task"]) for p in blocked)
+    assert all(p["summary"].endswith("upstream_pipeline_failed_at=" + phases[-1]["phase"]) for p in blocked)
+
+
+def test_job_entry_hands_phase_telemetry_to_subtask_callbacks():
+    source = (Path(pipeline.__file__).parents[1] / "pipeline_job_main.py").read_text(encoding="utf-8")
+    assert "phases=list(pipeline_phases)" in source
 
 
 def test_pipeline_subtask_callbacks_do_not_overwrite_worker_owned_screener():

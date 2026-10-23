@@ -1101,5 +1101,5 @@ adminReadRoutes.get('/api/admin/data-domains/backfill-retirement-readiness', asy
   const { inspectDataDomainBackfillRetirementReadiness } = await import(
     '../lib/dataDomainBackfillRetirementReadiness'
   )
-  return c.json(await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV))
+  return c.json(await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV, databaseForDataDomain(c.env, 'ops')))
 })

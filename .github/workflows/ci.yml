@@ -50,10 +50,12 @@ jobs:
           ref: ${{ steps.ref.outputs.sha }}
           fetch-depth: 1
 
-      # The comparison tooling always comes from the head commit's ci/ folder.
+      # The comparison tooling comes from github.sha: on pull_request that is the
+      # base+head merge commit, so a branch older than ci/ still gets the tools and a
+      # PR that edits ci/ is tested with its own version. On push it is the commit itself.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           path: .ci-tools
           sparse-checkout: ci
           fetch-depth: 1
@@ -90,16 +92,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Code under rerun is the head; the rerun tooling comes from github.sha like the suites.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-tools
+          sparse-checkout: ci
           fetch-depth: 1
       - uses: actions/download-artifact@v4
         with:
           pattern: failures-controller-*
           path: failures
       - name: List head-only failures
-        run: python ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
+        run: python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -108,7 +117,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Rerun them
-        run: bash ci/rerun_controller.sh "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
+        run: bash .ci-tools/ci/rerun_controller.sh "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: flaky-controller
@@ -131,7 +140,7 @@ jobs:
           fi
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           sparse-checkout: ci
       - uses: actions/download-artifact@v4
         with:

@@ -35,12 +35,15 @@ import {
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
+import JobRunTiming from './JobRunTiming'
 import DailyReadinessBoard from './DailyReadinessBoard'
-import { pipelinePreparationLabel } from '../SchedulerPipelineChain'
+import { pipelinePreparationLabel, PipelinePhaseDetails, SchedulerStageCard } from '../SchedulerPipelineChain'
 import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
+import { FINLAB_STAGE_CARDS, expandFinlabStages, finlabStageCards } from '@/lib/finlabStageCards'
+import { PIPELINE_STAGE_CARDS, expandPipelineStages, pipelineStageCards, pipelineRunSummary } from '@/lib/pipelineStageCards'
 import './ExecutionChainPanel.css'
 
-type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped'
+type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped' | 'stale'
 
 type StageDefinition = {
   id: string
@@ -71,6 +74,7 @@ type ChainScope = {
 }
 
 const STAGES: Record<string, StageDefinition> = {
+  ...Object.fromEntries(FINLAB_STAGE_CARDS.map(card => [card.id, { id: card.id, label: card.label, icon: Database }])),
   'market-close-refresh': { id: 'market-close-refresh', label: 'Close refresh', icon: RefreshCw },
   'evening-chain': { id: 'evening-chain', label: 'Evening root', icon: Link2 },
   'finlab-v4-backfill': { id: 'finlab-v4-backfill', label: 'FinLab canonical', icon: Database },
@@ -81,6 +85,7 @@ const STAGES: Record<string, StageDefinition> = {
   'regime-compute': { id: 'regime-compute', label: 'HMM regime', icon: Activity },
   'allocator-ev-readiness': { id: 'allocator-ev-readiness', label: 'Allocator EV', icon: CircleGauge },
   'strategy-learning-mature-evidence': { id: 'strategy-learning-mature-evidence', label: '成熟策略證據', icon: BookOpenCheck },
+  ...Object.fromEntries(PIPELINE_STAGE_CARDS.map(card => [card.id, { id: card.id, label: card.label, icon: card.id === 'pipeline-l3' ? BrainCircuit : Layers3 }])),
   pipeline: { id: 'pipeline', label: 'Pipeline · 整體進度', icon: Workflow },
   'ml-predict': { id: 'ml-predict', label: 'ML Predict · L3 預測', icon: BrainCircuit },
   recommendation: { id: 'recommendation', label: 'Recommendation · L4 推薦', icon: Target },
@@ -303,6 +308,7 @@ if (DUPLICATE_SCOPE_JOB_IDS.length > 0) {
 }
 
 const STATUS_LABEL: Record<VisualStatus, string> = {
+  stale: '待確認',
   completed: 'Completed',
   noop: 'Checked · no action',
   running: 'Running',
@@ -314,6 +320,7 @@ const STATUS_LABEL: Record<VisualStatus, string> = {
 }
 
 const STATUS_ICON: Record<VisualStatus, LucideIcon> = {
+  stale: CircleHelp,
   completed: Check,
   noop: Check,
   running: LoaderCircle,
@@ -348,6 +355,7 @@ function isExpectedEvidenceNoop(job?: SchedulerJob): boolean {
 
 function visualStatus(job?: SchedulerJob): VisualStatus {
   if (!job) return 'not_started'
+  if (job.stageVisualStatus) return job.stageVisualStatus
   if (job.lastStatus === 'success') return 'completed'
   if (isAllocatorSafeAbstention(job)) return 'noop'
   if (isExpectedEvidenceNoop(job)) return 'noop'
@@ -369,6 +377,7 @@ function formatReplayDate(runDate?: string | null): string {
 }
 
 function statusLabel(job?: SchedulerJob): string {
+  if (job?.finlabPhase && job.summary.startsWith('無階段紀錄')) return '無階段紀錄'
   if (job?.lastStatus === 'blocked') return job.id === 'evening-closure' ? '全鏈中止' : '上游阻擋 · 未執行'
   const label = STATUS_LABEL[visualStatus(job)]
   if (isAllocatorSafeAbstention(job)) return 'Checked · safe abstention'
@@ -409,6 +418,7 @@ function statusPriority(status: VisualStatus): number {
 }
 
 const ORCHESTRATOR_STAGE_HINTS: Array<[RegExp, string]> = [
+  [/strategy-learning-mature-evidence|mature evidence/i, 'strategy-learning-mature-evidence'],
   [/strategy-learning/i, 'strategy-learning'],
   [/meta(?:-| )learning/i, 'meta-learning-shadow'],
   [/obsidian/i, 'obsidian-sync'],
@@ -519,6 +529,8 @@ export default function ExecutionChainPanel({
     const attemptAware = buildAttemptAwareJobMap(jobMap, attemptScope, inferOrchestratorStage)
     const next = new Map(attemptAware)
     if (scope.id === 'daily_readiness') {
+      finlabStageCards(next.get('finlab-v4-backfill')).forEach(job => next.set(job.id, job))
+      pipelineStageCards(jobMap.get('pipeline')).forEach(job => next.set(job.id, job))
       const rootClosure = next.get('evening-chain')
       if (rootClosure) {
         next.set('evening-closure', eveningClosureDisplay(rootClosure))
@@ -540,7 +552,7 @@ export default function ExecutionChainPanel({
     })
     return next
   }, [jobMap, scope])
-  const stageIds = scopeExecutionStageIds(scope)
+  const stageIds = scope.id === 'daily_readiness' ? scopeExecutionStageIds(scope).flatMap(expandFinlabStages).flatMap(expandPipelineStages) : scopeExecutionStageIds(scope)
   const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
   const orchestratorStatus = visualStatus(orchestratorJob)
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
@@ -567,7 +579,7 @@ export default function ExecutionChainPanel({
     job && visualStatus(job) !== 'skipped' && !STAGES[job.id]?.optional,
   ))
   // Missing receipts count as incomplete; do not silently shrink the daily denominator.
-  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().map(id=>scopedJobMap.get(id))
+  const progressJobs = scope.id === 'daily_readiness' ? scope.columns.flat().flatMap(expandFinlabStages).flatMap(expandPipelineStages).map(id=>scopedJobMap.get(id))
     : expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0
@@ -624,7 +636,7 @@ export default function ExecutionChainPanel({
   }, [scopeId, currentId])
 
   return (
-    <section className="obs-chain" aria-labelledby="obs-chain-title">
+    <section className={`obs-chain is-${scope.id}`} aria-labelledby="obs-chain-title">
       <div className="obs-chain__header">
         <div className="obs-chain__heading">
           <div className="obs-chain__heading-icon"><Waypoints aria-hidden="true" /></div>
@@ -707,25 +719,20 @@ export default function ExecutionChainPanel({
             </div>
           )}
           {scope.id === 'daily_readiness' ? <DailyReadinessBoard
-            pipelineSummary={pipelinePreparationLabel(scopedJobMap.get('pipeline'))}
+            pipelineSummary={pipelineRunSummary(jobMap.get('pipeline'))}
             stageView={id => ({ label: STAGES[id]?.label ?? id, status: visualStatus(scopedJobMap.get(id)),
               statusLabel: statusLabel(scopedJobMap.get(id)), date: scopedJobMap.get(id)?.statusRunDate })}
-            renderStage={(id, ordinal) => {
+            renderStage={(id) => {
               const definition = STAGES[id] ?? { id, label: id, icon: Workflow }
               const job = scopedJobMap.get(id)
               const status = visualStatus(job)
               const Icon = definition.icon
-              return <button type="button" data-chain-stage={id}
-                className={`obs-chain__stage is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
-                onClick={() => setSelectedId(id)} aria-label={`${definition.label}: ${statusLabel(job)}`}
-                aria-current={currentId === id ? 'step' : undefined}>
-                <span className="obs-chain__ordinal sv-num">{ordinal}</span>
-                <span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>
-                <span className="obs-chain__stage-copy"><strong>{definition.label}</strong><span>{job?.name ?? id}</span>
-                  <small className="sv-num">{runtimeEvidence(job)}{job?.lastDuration ? ` · ${job.lastDuration}` : ''}
-                    <span className="daily-readiness-board__date">{job?.statusRunDate ?? '尚無收據'}</span></small>
-                  <em title={definition.optional ? 'Optional job' : undefined}>{statusLabel(job)}</em></span>
-              </button>
+              return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={job?.stageCard || job?.finlabPhase || job?.lastStatus === 'running' ? job : jobMap.get(id) ?? job}
+                overview visualState={status} justCompleted={justCompleted.has(id)}
+                leading={<span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>}
+                statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}
+                selected={selectedId === id} current={currentId === id} onSelect={() => setSelectedId(id)}
+                detail={`${runtimeEvidence(job)}${job?.lastDuration ? ` · ${job.lastDuration}` : ''}`} />
             }} /> : <div className="obs-chain__viewport" ref={viewportRef}>
         <div className={`obs-chain__sequence ${scope.columns.length >= 16 ? 'is-dense' : ''}`}>
           {scope.columns.map((column, index) => {
@@ -761,7 +768,7 @@ export default function ExecutionChainPanel({
                         <span className="obs-chain__stage-copy">
                           <strong>{definition.label}</strong>
                           <span>{job?.name ?? id}</span>
-                          <small className="sv-num">{runtimeEvidence(job)}</small>
+                          <JobRunTiming job={jobMap.get(id) ?? job} />
                           <em>{statusLabel(job)}{definition.optional ? ' · optional' : ''}</em>
                         </span>
                       </button>
@@ -823,7 +830,7 @@ export default function ExecutionChainPanel({
                               <span className="obs-chain__stage-copy">
                                 <strong>{definition.label}</strong>
                                 <span>{job?.name ?? id}</span>
-                                <small className="sv-num">{runtimeEvidence(job)}</small>
+                                <JobRunTiming job={jobMap.get(id) ?? job} />
                                 <em>{statusLabel(job)}</em>
                               </span>
                             </button>
@@ -850,6 +857,16 @@ export default function ExecutionChainPanel({
           <div className={`obs-chain__progress-fill ${running ? 'is-running' : ''} ${progressBlocked ? 'is-blocked' : ''}`} style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
       </div>
+
+      {scope.id === 'daily_readiness' && (
+        <section className="obs-chain__details" aria-label="Pipeline 階段與耗時">
+          <article className="obs-chain__detail">
+            <h4>Pipeline 階段與耗時</h4>
+            <p className="mt-2 text-xs text-slate-400">{pipelinePreparationLabel(scopedJobMap.get('pipeline'))}</p>
+            <PipelinePhaseDetails job={scopedJobMap.get('pipeline')} />
+          </article>
+        </section>
+      )}
 
       <div className="obs-chain__details">
         <article className={`obs-chain__detail obs-chain__detail--selected ${selectedJob?.lastError && !isAllocatorSafeAbstention(selectedJob) ? 'has-error' : ''}`}>

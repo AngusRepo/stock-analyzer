@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { buildCanonicalMarketRiskContext as originalBuild } from './marketRiskRuntime'
 import { normalizeRiskConfig } from './riskConfig'
-const source=JSON.parse(fs.readFileSync('C:/Users/Wei/Desktop/CloudCode/stockvision-cloudflare-v12/audits/revenue-and-picks-20261007/risk-canonical-inputs.json','utf8'))
+const source=JSON.parse(fs.readFileSync(new URL('../../test-fixtures/daily-market-risk/risk-canonical-inputs.json', import.meta.url),'utf8'))
 const state=JSON.parse(source.hmm[0].state_json)
 const base:any={marketRiskRows:source.market_risk,factorPacket:source.factors[0],breadth:{...source.breadth[0],advance_ratio:.6,bull_alignment_pct:60},regimeState:state,
  policy:normalizeRiskConfig(source.risk_config).portfolio,expectedSession:'2026-10-06'}

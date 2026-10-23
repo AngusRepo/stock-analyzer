@@ -1,0 +1,71 @@
+{
+ "hmm": [
+  {
+   "run_date": "2026-10-06",
+   "effective_label": "volatile",
+   "raw_label": "volatile",
+   "family": "volatile",
+   "hmm_state": 3,
+   "regime_index": 1,
+   "computed_at": "2026-10-06T21:42:02.019089+08:00",
+   "state_json": "{\"schema_version\":\"market-regime-state-v1\",\"label\":\"volatile\",\"raw_label\":\"volatile\",\"family\":\"volatile\",\"run_date\":\"2026-10-06\",\"computed_at\":\"2026-10-06T21:42:02.019089+08:00\",\"source\":\"hmm\",\"regime_index\":1,\"hmm_state\":3,\"label_zh\":\"高波動市場\",\"regime_surface\":{\"bull_market\":2.1053588522264245e-56,\"volatile\":1,\"sideways\":0,\"bear_market\":1.1584051908676509e-131},\"consensus_threshold\":0.6,\"weight_multipliers\":{\"iTransformer\":0.9,\"DLinear\":0.9,\"PatchTST\":0.9,\"GNN\":1.25,\"LightGBM\":1.25,\"ExtraTrees\":1.25,\"TabM\":1.25,\"XGBoost\":1.25},\"regime_evidence\":{\"schema_version\":\"regime-evidence-v2\",\"raw_label\":\"volatile\",\"effective_label\":\"volatile\",\"evidence\":{\"price_trend\":{\"status\":\"available\",\"stance\":\"bullish\",\"metrics\":{\"twii_return_1d\":0.004743423889607565,\"twii_return_5d\":0.04672057502246184,\"twii_bias_20d\":0.052607801947098735,\"negative_sessions_5d\":0},\"reason\":\"trend_positive\"},\"breadth\":{\"status\":\"available\",\"stance\":\"neutral\",\"metrics\":{\"advance_ratio\":0.4191343963553531,\"bull_alignment_pct\":1,\"adl_trend_numeric\":-1,\"limit_down_pct\":0.0005},\"reason\":\"breadth_mixed\"},\"atr_vturn\":{\"status\":\"derived\",\"stance\":\"neutral\",\"metrics\":{\"twii_return_1d\":0.004743423889607565,\"realized_vol_10d\":0.008531931194959628,\"us_vix\":15.520000457763672},\"reason\":\"no_vturn_signal\"},\"leverage\":{\"status\":\"missing\",\"stance\":\"neutral\",\"metrics\":{},\"reason\":\"leverage_missing\"},\"valuation\":{\"status\":\"missing\",\"stance\":\"neutral\",\"metrics\":{},\"reason\":\"valuation_missing\"},\"macro_liquidity\":{\"status\":\"available\",\"stance\":\"neutral\",\"metrics\":{\"business_indicator_score\":0.7142857142857143},\"reason\":\"macro_liquidity_mixed\"},\"tw_business_indicators\":{\"status\":\"available\",\"stance\":\"bullish\",\"metrics\":{\"signal\":41,\"leading_index\":140.5879095445833,\"coincident_index\":143.364268137404},\"reason\":\"business_cycle_expansion\",\"signal\":41,\"leading_index\":140.5879095445833,\"coincident_index\":143.364268137404,\"date\":\"2026-09-27\",\"source\":\"finlab.tw_business_indicators\"},\"global_risk\":{\"status\":\"available\",\"stance\":\"bullish\",\"metrics\":{\"us_vix\":15.520000457763672,\"us_gspc_return\":0.006633670396382023,\"us_sox_return\":0.0027454755630224614,\"us_hy_spread_chg\":-0.14000000000000012},\"reason\":\"global_risk_on\"}},\"support_counts\":{\"bearish\":0,\"bullish\":3,\"available\":6,\"missing\":2},\"missing_dimensions\":[\"leverage\",\"valuation\"],\"transition_guard\":{\"status\":\"not_required\",\"reason\":\"non_bear_transition\",\"min_bearish_dimensions\":3,\"requires\":[\"price_trend\",\"breadth_or_global_risk\",\"volatility_or_leverage\"]},\"monitors\":{\"lppls_weekly_bubble\":{\"status\":\"available\",\"score\":0.4151,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"lppls_weekly_proxy_v1\",\"signals\":{\"daily_rows\":428,\"weekly_rows\":85,\"momentum_8w\":0.115147,\"acceleration_4w\":-0.012428,\"positive_weeks_8w\":6,\"drawdown_8w\":0}},\"hawkes_contagion\":{\"status\":\"available\",\"score\":0,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"hawkes_exponential_decay_proxy_v1\",\"signals\":{\"daily_rows\":428,\"shock_count_10d\":0,\"decayed_intensity\":0,\"intensity_score\":0,\"cluster_score\":0}}},\"decision_policy\":\"bear_market_requires_cross_evidence_confirmation\",\"hmm_semantic_mapping_version\":\"emission_direction_vol_v2\",\"hmm_state_semantic_map\":{\"0\":3,\"1\":0,\"2\":2,\"3\":1,\"4\":3},\"hmm_raw_regime_index\":1,\"hmm_raw_regime_surface\":{\"bull_market\":2.1053588522264245e-56,\"volatile\":1,\"sideways\":0,\"bear_market\":1.1584051908676509e-131}},\"transition_guard\":{\"status\":\"not_required\",\"reason\":\"non_bear_transition\",\"min_bearish_dimensions\":3,\"requires\":[\"price_trend\",\"breadth_or_global_risk\",\"volatility_or_leverage\"]},\"monitors\":{\"lppls_weekly_bubble\":{\"status\":\"available\",\"score\":0.4151,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"lppls_weekly_proxy_v1\",\"signals\":{\"daily_rows\":428,\"weekly_rows\":85,\"momentum_8w\":0.115147,\"acceleration_4w\":-0.012428,\"positive_weeks_8w\":6,\"drawdown_8w\":0}},\"hawkes_contagion\":{\"status\":\"available\",\"score\":0,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"hawkes_exponential_decay_proxy_v1\",\"signals\":{\"daily_rows\":428,\"shock_count_10d\":0,\"decayed_intensity\":0,\"intensity_score\":0,\"cluster_score\":0}}},\"downstream_contract\":{\"primary_kv_key\":\"market_regime_state\",\"legacy_mirror_keys\":[\"ml:regime\",\"ml:regime:meta\"],\"read_policy\":\"market_regime_state_first_legacy_fallback\",\"consumers\":[\"ml_payload_builder\",\"recommendation_service\",\"alpha_framework\",\"adaptive_params\",\"sltp_overlay\",\"paper_entry\",\"paper_exit\",\"risk_triggers\"]},\"pushed_at\":\"2026-10-06T13:42:02.553Z\"}"
+  }
+ ],
+ "factors": [
+  {
+   "date": "2026-10-06",
+   "score": 36,
+   "level": "yellow",
+   "generated_at": "2026-10-06T13:53:53.608Z"
+  }
+ ],
+ "market_risk": [
+  {
+   "date": "2026-10-06",
+   "twii_close": 49822.55,
+   "risk_score": 21,
+   "risk_level": "green"
+  },
+  {
+   "date": "2026-10-05",
+   "twii_close": 49712.04,
+   "risk_score": 8,
+   "risk_level": "green"
+  }
+ ],
+ "breadth": [
+  {
+   "date": "2026-10-06",
+   "advance_ratio": 0.4191343963553531,
+   "bull_alignment_pct": null
+  }
+ ],
+ "risk_config": {
+  "system": {
+   "killSwitch": false,
+   "quoteStalenessTolerance": 120,
+   "dailyDataStalenessTolerance": 86400,
+   "haltOnProxyFailure": true,
+   "clockSkewTolerance": 30
+  },
+  "portfolio": {
+   "dailyPnlLossLimit": -30000,
+   "dailyPnlLossLimitPct": -0.03,
+   "intradayDrawdownHalt": 0.05
+  },
+  "position": {
+   "maxPerSector": 2,
+   "maxSingleNamePct": 0.25,
+   "correlationThreshold": 0.7,
+   "correlationWindow": 60
+  },
+  "order": {
+   "maxSingleOrderValue": 300000,
+   "maxPriceDeviationPct": 0.07,
+   "maxDailyBuyOrders": 5,
+   "maxDailySellOrders": 10,
+   "enforceRegularLots": true,
+   "maxVolumeParticipation": 0.05
+  }
+ }
+}

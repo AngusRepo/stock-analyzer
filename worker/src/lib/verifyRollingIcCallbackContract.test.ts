@@ -26,8 +26,8 @@ assert(
 )
 
 assert(
-  postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh") &&
-    !postMarketChain.includes("'model-ic-tracker', () => runModelIcRollingRefresh"),
+  postMarketChain.includes("'model-ic-rolling', env => runModelIcRollingRefresh") &&
+    !postMarketChain.includes("'model-ic-tracker'"),
   'rolling IC callback must persist only the model-ic-rolling scheduler identity',
 )
 

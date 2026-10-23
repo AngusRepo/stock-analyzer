@@ -108,10 +108,10 @@ if (source) test('original NAV L3 -> original NAV OPB -> projection -> next-day 
   assert.deepEqual(current.trading_config, projected)
   assert.deepEqual(sql.prepare('SELECT * FROM paired_nav_review_records_v1 ORDER BY record_id').all(), reviews)
 })
-else test('original sequential L3 and OPB evidence', () => {
-  const python = process.env.NAV_TEST_PYTHON ?? path.resolve('../../ml-service/.venv/Scripts/python.exe')
+else test('original sequential L3 and OPB evidence', { skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' }, () => {
+  const python = process.env.NAV_TEST_PYTHON!
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8',
-    PYTHONPATH: process.env.PYTHONPATH ?? path.resolve('../.tmp/nav-controller-runtime-deps') }
+    PYTHONPATH: process.env.PYTHONPATH ?? [path.resolve('..'), path.resolve('../ml-controller')].join(path.delimiter) }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync(python, ['-m', 'pytest', 'tests/test_nav_l3_opb_handoff.py', '-q', '--tb=short'],
     { cwd: path.resolve('../ml-controller'), env, encoding: 'utf8', timeout: 240000 })

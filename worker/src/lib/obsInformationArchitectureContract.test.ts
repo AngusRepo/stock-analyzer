@@ -58,12 +58,26 @@ assert(!executionChain.includes("['weekly-drift-retrain']") && !executionChain.i
 assert(executionChain.includes('duplicateScopeJobIds') && executionChain.includes('DUPLICATE_SCOPE_JOB_IDS'), 'DAG must fail closed when one job is assigned to multiple cadence scopes')
 assert(executionChain.includes("job.lastRunBasis === 'started'") && executionChain.includes("Started '"), 'callback containers must label their durable start time instead of implying a reversed execution order')
 assert(executionChain.includes('StandaloneJobRegistry') && executionChain.includes('MAPPED_JOB_IDS'), 'execution chain must route non-chain jobs into the registry')
-assert(standaloneJobs.includes('.filter((job) => !mappedJobIds.has(job.id))'), 'all unmapped scheduler API jobs must remain visible')
+assert(standaloneJobs.includes('.filter((job) => !mappedJobIds.has(job.id) && !isRetiredRegistryJob(job))'), 'all unmapped, non-retired scheduler API jobs must remain visible')
+assert(
+  standaloneJobs.includes(`export function isRetiredRegistryJob(job: SchedulerJob): boolean {
+  return job.accounting?.desiredState === 'PAUSED'
+    || (job.consolidation?.owner === 'manual_only'
+      && job.consolidation.consolidationClass === 'disable_candidate')
+}`),
+  'only paused or manual-only disable-candidate jobs may be hidden as retired',
+)
 assert(standaloneJobs.includes('Standalone root') && standaloneJobs.includes('Unmapped dependency'), 'registry must distinguish independent jobs from true topology gaps')
 assert(standaloneJobs.includes('Dependency reviewed') && standaloneJobs.includes('Internal logical ticket'), 'governed dependencies and logical tickets must not be labeled as missing topology')
 assert(standaloneJobs.includes('logical accounted') && standaloneJobs.includes('physical'), 'OBS must account for the full scheduler API universe')
 assert(standaloneJobsCss.includes('.obs-standalone__group-card') && standaloneJobsCss.includes('.obs-standalone__job-grid') && !standaloneJobsCss.includes('.obs-standalone__rows'), 'standalone registry must preserve the grouped-card presentation')
-assert(standaloneJobs.includes("['weekly', 'pipeline_chain', 'daily', 'intraday', 'monthly']") && standaloneJobsCss.includes('grid-template-columns: repeat(12, minmax(0, 1fr));') && standaloneJobsCss.includes("[aria-label='Weekly operations'] { grid-column: 1 / -1;") && standaloneJobsCss.includes("[aria-label='Pipeline support'] { grid-column: span 4;") && standaloneJobsCss.includes("[aria-label='Daily operations'] { grid-column: span 8;") && standaloneJobsCss.includes("[aria-label='Daily operations'] .obs-standalone__job-grid") && standaloneJobsCss.includes('grid-template-columns: repeat(4, minmax(0, 1fr));'), 'standalone desktop must place Pipeline support beside Daily operations while Daily keeps four cards per row')
+assert(standaloneJobs.includes("['weekly', 'daily', 'pipeline_chain', 'intraday', 'monthly']") && standaloneJobs.includes('data-group={group}') &&
+  standaloneJobsCss.includes('grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);') &&
+  standaloneJobsCss.includes(".obs-standalone__group-card[data-group='weekly'] { grid-column: 1; grid-row: 1; }") &&
+  standaloneJobsCss.includes(".obs-standalone__group-card[data-group='pipeline_chain'] { grid-column: 1; grid-row: 2; }") &&
+  standaloneJobsCss.includes(".obs-standalone__group-card[data-group='daily'] { grid-column: 2; grid-row: 1 / span 3; }") &&
+  standaloneJobsCss.includes(".obs-standalone__group-card[data-group='daily'] .obs-standalone__job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }"),
+  'standalone desktop must stack Weekly and Pipeline support beside a two-column Daily operations card')
 assert(executionChain.includes("lastStatus === 'running') ? 3_000 : 15_000"), 'callback sync must be 3s while running and 15s while idle')
 assert(executionChain.includes('previousStatuses') && executionChain.includes('justCompleted'), 'final callback must trigger a completed-stage transition')
 assert(executionChainCss.includes('@keyframes obs-running-orbit'), 'running stage must have an attention animation')

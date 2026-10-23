@@ -76,7 +76,7 @@ assert(
     botDashboard.includes('交易門檻：</span>{trade.gateReason ??') &&
     botDashboard.includes("allocatorAction === 'buy' || allocatorAction === 'add'") &&
     botDashboard.includes('trade.l5Status') &&
-    botDashboard.includes('S12 結構：</span>{s12Label}') &&
+    botDashboard.includes("{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>") && botDashboard.includes(': s12Label}</div>') &&
     botDashboard.includes('formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)') &&
     botDashboard.includes("s12Badge?.label ?? '等待近期盤中結構資料'"),
   'Bot dashboard pending-buy cards must merge intraday threshold and S12 structure into one readable real-time gate card',
@@ -153,7 +153,8 @@ assert(
 assert(
   paperRoutes.includes('resolveTwEquityExitFusionV2') &&
     paperRoutes.includes('s12_near_pressure_price') &&
-    paperRoutes.includes("tp_fusion_policy: fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2'") &&
+    // Swing positions carry no Fusion TP; only non-swing holdings expose the fusion policy.
+    paperRoutes.includes("tp_fusion_policy: swing ? null : fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2'") &&
     uiHelper.includes('nearPressure') &&
     botDashboard.includes('Fusion TP1') &&
     botDashboard.includes('S12 近端壓力'),

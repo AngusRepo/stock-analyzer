@@ -3,7 +3,6 @@ import test from 'node:test'
 import { createHash } from 'node:crypto'
 import { ensurePaperCorporateSource } from './paperCorporateSource'
 import { withPaperExecutionScope } from './paperExecutionScope'
-import { handleWorkerDomainCron } from './cronWorkerDomainTasks'
 import { buildAdminWorkerDomainTaskMap } from './adminTriggerWorkerDomainTasks'
 
 function fixture() {
@@ -73,21 +72,6 @@ for (const echo of [true, false]) test(`sold holding discovery is sent to the ac
   } finally { globalThis.fetch = saved }
 })
 
-test('publication outage does not enter actual morning settlement or pending-buy setup', async () => {
-  const f = fixture(), saved = globalThis.fetch
-  globalThis.fetch = (async () => { throw new Error('fixture_source_outage') }) as typeof fetch
-  let task: Promise<string> | undefined, settled = false
-  try {
-    await handleWorkerDomainCron({ cron: '15 23 * * SUN-THU', env: f.env, ctx: {} as any,
-      twTodayStr: f.date, runWithLog: (_, run) => { task = run() },
-      settlePaperT2: async () => { settled = true }, runPreMarketWarmup: async () => '',
-      runIntradayHeartbeat: async () => {}, runIntradayRescore: async () => '' })
-    await assert.rejects(task!, /fixture_source_outage/)
-    assert.equal(settled, false)
-    assert.equal(f.values.size, 0)
-  } finally { globalThis.fetch = saved }
-})
-
 test('a private execution scope cannot publish a shared formal source key', async () => {
   const f = fixture()
   await assert.rejects(withPaperExecutionScope({ environment: f.env, accountId: 1,
@@ -96,49 +80,14 @@ test('a private execution scope cannot publish a shared formal source key', asyn
   assert.equal(f.events.length, 0)
 })
 
-test('actual GCP admin morning handler requires source before any formal settlement or pending setup', async () => {
+// Source-before-settlement for the morning owner is covered in premarketEventWork.test.ts.
+test('actual GCP paired tick stays disabled and never reaches the controller', async () => {
   const f = fixture(), saved = globalThis.fetch
-  globalThis.fetch = (async () => { throw new Error('fixture_actual_gcp_source_outage') }) as typeof fetch
-  let setup = false
-  try {
-    const tasks = buildAdminWorkerDomainTaskMap({ env: f.env, req: { query: () => undefined } }, {
-      setupMorningPendingBuys: async () => { setup = true },
-    } as any)
-    await assert.rejects(tasks['morning-setup'](), /fixture_actual_gcp_source_outage/)
-    assert.equal(setup, false)
-    assert.equal(f.values.size, 0)
-  } finally { globalThis.fetch = saved }
-})
-
-test('actual GCP paired tick cannot translate a failed controller result into success', async () => {
-  const f = fixture(), saved = globalThis.fetch
-  globalThis.fetch = (async (input, init) => {
-    assert.equal(input, 'https://controller.invalid/paper/native-execution-tick')
-    assert.deepEqual(JSON.parse(String(init?.body)), { session_date: f.date })
-    return Response.json({ status: 'failed', pairs: [] })
-  }) as typeof fetch
+  let fetched = false
+  globalThis.fetch = (async () => { fetched = true; return Response.json({ status: 'failed', pairs: [] }) }) as typeof fetch
   try {
     const tasks = buildAdminWorkerDomainTaskMap({ env: f.env, req: { query: () => undefined } }, {} as any)
-    await assert.rejects(tasks['paired-native-execution'](), /paired_native_execution_tick_failed/)
-  } finally { globalThis.fetch = saved }
-})
-
-test('paired tick scheduler error retains active pair reasons after superseded pairs', async () => {
-  const f = fixture(), saved = globalThis.fetch
-  globalThis.fetch = (async () => Response.json({ detail: {
-    status: 'failed', pairs: [
-      ...Array.from({ length: 6 }, (_, index) => ({
-        snapshot_id: `superseded-${index}`, status: 'superseded',
-      })),
-      { snapshot_id: 'active-ab', status: 'failed',
-        reason: 'native_paper_execution_owner_changed', error_type: 'ValueError' },
-    ],
-  } }, { status: 409 })) as typeof fetch
-  try {
-    const tasks = buildAdminWorkerDomainTaskMap({ env: f.env, req: { query: () => undefined } }, {} as any)
-    await assert.rejects(tasks['paired-native-execution'](), (error: Error) =>
-      error.message.includes('active-ab')
-      && error.message.includes('native_paper_execution_owner_changed')
-      && !error.message.includes('superseded-0'))
+    assert.match(String(await tasks['paired-native-execution']()), /disabled_by_single_b_policy/)
+    assert.equal(fetched, false)
   } finally { globalThis.fetch = saved }
 })

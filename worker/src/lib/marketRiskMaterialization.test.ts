@@ -3,8 +3,7 @@ import fs from 'node:fs'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { recomputeDailyMarketRisk } from './marketRiskMaterialization'
 import { adminConfigCoreRoutes } from '../routes/adminConfigCoreRoutes'
-const root='C:/Users/Wei/Desktop/CloudCode/stockvision-cloudflare-v12/audits/hmm-risk-repair-20261007'
-const frozen=JSON.parse(fs.readFileSync(root+'/readonly-sources.json','utf8'))
+const frozen=JSON.parse(fs.readFileSync(new URL('../../test-fixtures/daily-market-risk/readonly-sources.json', import.meta.url),'utf8'))
 const f=l4NativeFixture(),nativeMarket=f.env.MARKET_DB,nativeCore=f.env.CORE_DB
 const realFetch=globalThis.fetch;let fault=false
 globalThis.fetch=(async(input:unknown)=>{

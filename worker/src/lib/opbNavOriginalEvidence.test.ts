@@ -14,9 +14,8 @@ import { L4_ALPHA_EV_CONTRACT as L } from './evidenceContracts'
 
 const source = process.env.NAV_OPB_ORIGINAL_FIXTURE
 if (!source) {
-  test('original ten-session OPB NAV -> Worker verifier', () => {
-    const local = path.resolve('../../ml-service/.venv/Scripts/python.exe')
-    const python = process.env.NAV_TEST_PYTHON ?? (fs.existsSync(local) ? local : 'python')
+  test('original ten-session OPB NAV -> Worker verifier', { skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' }, () => {
+    const python = process.env.NAV_TEST_PYTHON!
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' }
     delete env.NODE_TEST_CONTEXT
     const checked = spawnSync(python, ['-m', 'pytest', 'tests/test_nav_opb_daily_primary.py',

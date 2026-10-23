@@ -95,6 +95,8 @@ test('actual native snapshot values injected account, persists native artifact c
 
 test('native partial rescore exit retains shares, charges real fees and records only the isolated account', async () => {
   const f = fixture()
+  // Every paper fill passes the continuous-session gate (91df12ccf): 10:00 Taipei.
+  f.ports.nowMs = Date.parse('2026-09-07T02:00:00Z')
   const args = { symbol: '2330', shares: 40, price: 110, reason: 'native_test', source: 'rescore',
     quote: { last: 110, bid: 110, ask: 110.5, low: 109, high: 112 } as any }
   const result = await withPaperExecutionScope(f.ports, () => executeRescoreSell(f.ports.environment, args))

@@ -1,3 +1,4 @@
+import { hmmLineage } from './hmmLifecycle'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { settlePaperT2 } from './paperSettlementTasks'
 import { spawnSync } from 'node:child_process'
@@ -18,7 +19,7 @@ import { withPaperExecutionScope } from './paperExecutionScope'
 import { storeL4PortfolioPlan } from './l4PortfolioPlan'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 
-for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFamily} full chain executes positive L4 target through real entry owner`,async()=>{
+for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFamily} full chain executes positive L4 target through real entry owner`,{ skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' },async()=>{
   const f=l4NativeFixture()
   f.ports.allocateL4Private=async()=>{throw new Error('fixture_plan_already_supplied')}
   f.env.SHIOAJI_PROXY_URL='https://fixture.invalid'
@@ -67,11 +68,11 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     f.sqls.core.exec("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','fixture','TWSE')")
     f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,open,high,low,close,avg_price,volume) VALUES(1,'2026-09-11',20,20.5,19.5,20,20,1000000)")
     f.sqls.core.prepare(`INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation)
-      VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false}))
+      VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false,hmm_lineage:hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!))}))
     const allocateNative=(context:any,cap=.08)=>{
-      const python=process.env.NAV_TEST_PYTHON ?? fileURLToPath(new URL('../../../../../ml-service/.venv/Scripts/python.exe',import.meta.url))
+      const python=process.env.NAV_TEST_PYTHON!
       const script=fileURLToPath(new URL('../../../ml-controller/tests/l4_native_chain_allocator.py',import.meta.url))
-      const result=spawnSync(python,['-B',script],{input:JSON.stringify({account:context,identity:l3,model_family:modelFamily,
+      const result=spawnSync(python,['-B',script],{input:JSON.stringify({account:context,identity:l3,hmm_lineage:hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!)),model_family:modelFamily,
         reward_ledger:f.sqls.paper.prepare('SELECT payload_json FROM l4_policy_account_rewards_v1 WHERE known_date < ?').all(context.signal_date).map(row=>JSON.parse(String(row.payload_json))),
         constraints:{...f.cfg.l4Distribution!.constraints,buy_cost:.001425,sell_cost:.004425,name_cap:cap}}),encoding:'utf8',maxBuffer:16*1024*1024})
       assert.equal(result.status,0,result.stderr)
@@ -136,7 +137,8 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     f.sqls.market.exec("INSERT INTO market_regime_factor_packets(date,schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,generated_at) SELECT '2026-09-14',schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,'2026-09-14T14:00:00Z' FROM market_regime_factor_packets WHERE date='2026-09-11'")
     f.kvs.set('market_regime_state',JSON.stringify(buildMarketRegimeState({label:'bull_market',runDate:'2026-09-14',computedAt:'2026-09-14T14:00:00Z'})))
     f.seedRiskQuality('2026-09-14')
-    f.sqls.core.exec("INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation) SELECT stock_id,symbol,name,'2026-09-14',rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation FROM daily_recommendations WHERE date='2026-09-11'")
+    f.sqls.core.prepare("INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation) SELECT stock_id,symbol,name,'2026-09-14',rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,json_set(alpha_allocation,'$.hmm_lineage',json(?)) FROM daily_recommendations WHERE date='2026-09-11'")
+      .run(JSON.stringify(hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!))))
     f.ports.nowMs=Date.parse('2026-09-15T00:00:00Z')
     const nextAccount=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-14'))).result
     const reduced=allocateNative(nextAccount,.03001)

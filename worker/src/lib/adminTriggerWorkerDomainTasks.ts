@@ -817,6 +817,10 @@ export function buildAdminWorkerDomainTaskMap(
       const result = await refreshOpenPositionPostClosePriceCache(c.env, { tradeDate: requestedRunDate() })
       return result.summary
     },
+    'postclose-research-dispatch': async () => {
+      const { runPostcloseResearch } = await import('./postcloseResearch')
+      return runPostcloseResearch(c.env, requestedRunDate() || twToday())
+    },
     'daily-snapshot': () => deps.runDailySnapshot(requestedRunDate()),
     'daily-execution-paper-lineage': async () => {
       const { ensureDailyExecutionPaperClosureArtifacts } = await import('./dailyExecutionPaperLineage')

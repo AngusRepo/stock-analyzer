@@ -14,6 +14,9 @@ from services.pipeline_slate_artifacts import artifact_reads
 OWNER = 'premarket_once_v1'
 SERVING_PHASES=('node_compute_personas','node_recommend','node_llm_reasons','node_write_d1',
     'node_paired_nav_setup','node_export_dataset_snapshot')
+# Serving before the open publishes a receipt; research resumes after 13:30 on the sealed state.
+CURRENT_SERVING_PHASES=('node_compute_personas','node_recommend','node_write_d1')
+POSTCLOSE_PHASES=('node_compute_sector_flow','node_compute_pit_residual_shadow')
 def enabled():
     return os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == OWNER
 def digest(value):
@@ -305,18 +308,34 @@ from services.paired_nav_read_cache import verified_reads_async
 
 @verified_reads_async
 @artifact_reads
-async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
+async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, serving_only=False, postclose_only=False):
     b=bucket(client);root='gs://'+b.name+'/'
     if not input_uri.startswith(root):raise ValueError('premarket_input_bucket_mismatch')
     body=json.loads(b.blob(input_uri[len(root):]).download_as_bytes());receipt,context=body['receipt'],body['context']
     completed_only=os.environ.get('PIPELINE_PREMARKET_COMPLETED_ONLY')=='1'
+    if sum(map(bool,(serving_only,postwrite_only,postclose_only,completed_only)))>1:
+        raise ValueError('premarket_execution_scope_conflict')
+    if serving_only and tuple(n.__name__ for n in nodes)!=CURRENT_SERVING_PHASES:
+        raise ValueError('premarket_serving_phase_invalid')
+    if postclose_only:
+        if tuple(n.__name__ for n in nodes)!=CURRENT_SERVING_PHASES+POSTCLOSE_PHASES:
+            raise ValueError('premarket_postclose_phase_invalid')
+        for name in CURRENT_SERVING_PHASES:
+            if not b.blob(prefix(receipt['run_date'],receipt['run_id'])+'/phases/'+name+'.json.gz').exists():
+                raise ValueError('premarket_postclose_serving_not_sealed:'+name)
+        from services.premarket_publication import read as read_publication
+        publication=read_publication(receipt['run_date'],receipt['run_id'],client=client)
+        if not publication or publication['context_checksum']!=context['checksum']:
+            raise ValueError('premarket_postclose_publication_missing')
+        if datetime.now(timezone.utc)<datetime.fromisoformat(context['trade_date']+'T13:30:00+08:00'):
+            raise ValueError('premarket_postclose_before_close')
     if completed_only:
         if postwrite_only or tuple(n.__name__ for n in nodes)!=SERVING_PHASES:
             raise ValueError('premarket_terminal_reconciliation_phases_invalid')
         p=prefix(receipt['run_date'],receipt['run_id'])
         if not all(b.blob(p+'/phases/'+name+'.json.gz').exists() for name in SERVING_PHASES):
             raise ValueError('premarket_terminal_reconciliation_incomplete')
-    if postwrite_only or completed_only:
+    if postwrite_only or completed_only or postclose_only:
         # Research cannot open a second allocation window. Validate the sealed
         # capture time, then require both serving phase receipts before work.
         captured=datetime.fromisoformat(context['cutoff'].replace('Z','+00:00'))
@@ -391,8 +410,15 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
         for required in ('node_paired_nav_setup','node_export_dataset_snapshot'):
             if not b.blob(p+'/phases/'+required+'.json.gz').exists():
                 raise ValueError('premarket_postwrite_serving_not_sealed:'+required)
+    if serving_only:
+        state['premarket_execution_scope']='serving'
+    elif postclose_only:
+        state['premarket_execution_scope']='postclose'
+    if completed and nodes[completed-1].__name__ == 'node_write_d1' and not postclose_only:
+        from services.premarket_publication import record
+        record(state,client=client)
     for node in nodes[completed:]:
-        if not postwrite_only:validate_context(receipt,context)
+        if not (postwrite_only or postclose_only):validate_context(receipt,context)
         key=p+'/phases/'+node.__name__+'.json.gz'; blob=b.blob(key)
         try:
             if postwrite_only:
@@ -429,6 +455,9 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False):
                     else:
                         raw=encode_pipeline_state_envelope({'schema_version':STATE_SCHEMA_V2,'state':{k:v for k,v in state.items() if k!='l3_payloads'}})
                     immutable(blob,raw,'application/gzip')
+                if node.__name__ == 'node_write_d1':
+                    from services.premarket_publication import record
+                    record(state,client=client)
         except Exception:
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'ambiguous' if node.__name__=='node_recommend' else 'failed'}),

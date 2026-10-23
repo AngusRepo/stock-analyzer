@@ -18,6 +18,7 @@ const index = fs.readFileSync('src/index.ts', 'utf8')
 const backtestRouter = fs.readFileSync('../ml-controller/routers/backtest.py', 'utf8')
 const optunaJob = fs.readFileSync('../ml-controller/optuna_job_main.py', 'utf8')
 const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
+const weeklyOperations = fs.readFileSync('../ml-controller/services/weekly_operations.py', 'utf8')
 const localMaintenance = fs.readFileSync('src/lib/localMaintenance.ts', 'utf8')
 const deployScript = fs.readFileSync('../deploy_ml_controller.sh', 'utf8')
 const adminControl = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
@@ -240,7 +241,9 @@ assert(
 
 assert(
   workflows.includes("jsonBody: { apply: false, confirm: false }") &&
-    dailyWorkflows.includes("jsonBody: { apply: false, confirm: false }") &&
+    dailyWorkflows.includes("dispatchWeeklyOperation(env, 'model-ic-full-check'") &&
+    weeklyOperations.includes('WeeklyEvalRequest(apply=False, confirm=False), apply_query=None') &&
+    !weeklyOperations.includes('apply=True') &&
     workerCron.includes('lifecycle dry-run') &&
     adminWorker.includes('runWeeklyCleanupClosure') &&
     durableScheduler.includes('lifecycle dry-run') &&

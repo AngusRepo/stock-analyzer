@@ -7,6 +7,8 @@ const date='2026-09-14'
 function fixture() {
  const f=l4NativeFixture(), messages:UpdateQueueMsg[]=[], delays:number[]=[]
  f.env.UPDATE_QUEUE={send:async(msg:UpdateQueueMsg,o:any)=>{messages.push(msg);delays.push(o?.delaySeconds ?? 0)}}
+ // Trading-day owner reads TWSE feeds; keep them offline and announcing nothing.
+ globalThis.fetch=(async(url:string)=>({ok:true,status:200,json:async()=>String(url).includes('newsList')?[{Title:'unrelated'}]:[]})) as typeof fetch
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
@@ -298,5 +300,23 @@ for(const success of [true,false])test(`publication retry requires actual reconc
    const done=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
    assert.equal(calls,1);assert.equal(done.status,'success');assert.equal(done.attempt_count,5)
   }
+ }finally{f.close()}
+})
+test('typhoon closure announced after the chain is queued stops every stage',async()=>{
+ const f=fixture(),day='2026-10-23';let calls=0
+ const closure={Title:'臺灣證券交易所集中交易市場115年10月23日休市一天',Url:'u',Date:'1151022'}
+ try{
+  f.ports.nowMs=Date.parse(day+'T06:50:00+08:00')
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const msg=f.messages.shift()!
+  globalThis.fetch=(async(url:string)=>({ok:true,status:200,json:async()=>String(url).includes('newsList')?[closure]:[]})) as typeof fetch
+  f.kvs.delete(`market:twse_adhoc_closure_check:v1:${day}`)
+  await processPremarketEvent(f.env,msg,async()=>{calls++;return {next:'setup',receipt:{}}},f.now())
+  assert.equal(calls,0)
+  const row=f.sqls.ops.prepare("SELECT status,last_error,attempt_count FROM pipeline_stage_runs WHERE stage='premarket_v3:context'").get() as any
+  assert.equal(row.status,'error');assert.equal(row.last_error,'premarket_non_trading_day:twse_adhoc_closure');assert.equal(row.attempt_count,0)
+  assert.match(String(f.kvs.get(`holiday:${day}`)),/115年10月23日休市/)
+  assert.match(await ensurePremarketEventChain(f.env,day,f.now()),/status=skipped premarket_non_trading_day reason=holiday_kv/)
+  assert.equal(f.kvs.get(`scheduler:run:morning-setup:${day}`),undefined)
  }finally{f.close()}
 })

@@ -275,7 +275,8 @@ export function parseTwseHolidayDates(
     const gregorianYear = Number(raw.slice(0, 3)) + 1911
     if (gregorianYear !== year) return []
     if (/\u958b\u59cb\u4ea4\u6613|\u6700\u5f8c\u4ea4\u6613\u65e5/.test(text)) return []
-    if (!/\u653e\u5047|\u7121\u4ea4\u6613|\u505c\u6b62\u4ea4\u6613/.test(text)) return []
+    // \u653e\u5047 / \u7121\u4ea4\u6613 / \u505c\u6b62\u4ea4\u6613 / \u88dc\u5047 (a weekend holiday moved onto a weekday).
+    if (!/\u653e\u5047|\u7121\u4ea4\u6613|\u505c\u6b62\u4ea4\u6613|\u88dc\u5047/.test(text)) return []
     return [`${gregorianYear}-${raw.slice(3, 5)}-${raw.slice(5, 7)}`]
   }))].sort()
 }
@@ -323,6 +324,200 @@ export async function isTwHoliday(kv: KVNamespace, twDate: string): Promise<bool
   return Boolean(schedule?.dates.includes(twDate))
 }
 
+const TWSE_NEWS_URL = 'https://openapi.twse.com.tw/v1/news/newsList'
+const ADHOC_CLOSURE_CHECK_TTL_SECONDS = 600
+
+// Market-wide only: issuer suspensions are rejected by ISSUER_NOTICE before this applies.
+const CLOSURE_KEYWORD = /休市|停止(?:交易|買賣)/
+const REOPEN_KEYWORD = /照常開市|照常交易|恢復交易|恢復開市|取消休市|不休市/
+const PARTIAL_SESSION = /上午|下午|半日/
+const FOREIGN_MARKET = /美國|美股|海外|外國|國外|香港|日本|歐洲|新加坡|大陸/
+const ISSUER_NOTICE = /股份有限公司|股票|普通股|債券|受益憑證/
+const DATE_TOKEN = /(?:(?:(\d{2,3})年)?(\d{1,2})月)?(\d{1,2})日(?:\s*[（(]星期.[)）])?/g
+const DATE_JOIN = /^\s*(至|到|~|～|－|-|及|和|與|、|，|,)\s*$/
+const DATE_RANGE_JOIN = /至|到|~|～|－|-/
+
+function isoCalendarDate(year: number, month: number, day: number): string | null {
+  const value = new Date(Date.UTC(year, month - 1, day))
+  if (value.getUTCFullYear() !== year || value.getUTCMonth() !== month - 1 || value.getUTCDate() !== day) return null
+  return value.toISOString().slice(0, 10)
+}
+
+/** The date cluster directly before `keywordIndex`; earlier dates (announcement date etc.) are ignored. */
+function datesBeforeKeyword(title: string, keywordIndex: number, fallbackRocYear: number | null): string[] {
+  const head = title.slice(0, keywordIndex)
+  let rocYear = fallbackRocYear
+  let month: number | null = null
+  let cluster: string[] = []
+  let previousEnd = -1
+  for (const match of head.matchAll(DATE_TOKEN)) {
+    const joiner = previousEnd >= 0 ? head.slice(previousEnd, match.index).match(DATE_JOIN) : null
+    if (match[1]) rocYear = Number(match[1])
+    if (match[2]) month = Number(match[2])
+    let date = rocYear !== null && month !== null ? isoCalendarDate(rocYear + 1911, month, Number(match[3])) : null
+    if (!date) { cluster = []; previousEnd = -1; continue }
+    if (!joiner) {
+      cluster = []
+    } else if (DATE_RANGE_JOIN.test(joiner[1]) && cluster.length > 0) {
+      const from = cluster[cluster.length - 1]
+      // 「12月30日至1月2日」 crosses the year without restating it.
+      if (!match[1] && date < from && rocYear !== null) {
+        rocYear += 1
+        date = isoCalendarDate(rocYear + 1911, month as number, Number(match[3]))
+        if (!date) { cluster = []; previousEnd = -1; continue }
+      }
+      let day = new Date(`${from}T00:00:00Z`)
+      for (let guard = 0; guard < 31; guard += 1) {
+        day = new Date(day.getTime() + 86400_000)
+        const iso = day.toISOString().slice(0, 10)
+        if (iso >= date) break
+        cluster.push(iso)
+      }
+    }
+    cluster.push(date)
+    previousEnd = (match.index ?? 0) + match[0].length
+  }
+  // The dates must sit next to the keyword (market name in between at most).
+  if (previousEnd < 0 || head.length - previousEnd > 20) return []
+  return [...new Set(cluster)]
+}
+
+function rocYearOf(rowDate: string | undefined): number | null {
+  const text = String(rowDate ?? '').trim()
+  return /^\d{7}$/.test(text) ? Number(text.slice(0, 3)) : null
+}
+
+/** Dates a TWSE announcement closes for the whole session, e.g. typhoon days. */
+export function parseTwseAdHocClosures(
+  rows: Array<{ Title?: string; Url?: string; Date?: string }>,
+): Array<{ date: string; title: string; url: string }> {
+  const closures: Array<{ date: string; title: string; url: string; announced: string }> = []
+  const reopened = new Map<string, string>()
+  for (const row of rows) {
+    const title = String(row.Title ?? '').trim()
+    if (!/集中交易市場|證券市場/.test(title) || FOREIGN_MARKET.test(title) || ISSUER_NOTICE.test(title)) continue
+    const announced = String(row.Date ?? '').trim()
+    const reopen = title.match(REOPEN_KEYWORD)
+    if (reopen) {
+      for (const date of datesBeforeKeyword(title, reopen.index ?? 0, rocYearOf(row.Date))) {
+        if ((reopened.get(date) ?? '') <= announced) reopened.set(date, announced || '9999999')
+      }
+      continue
+    }
+    // Half-day closures are not whole-session closures.
+    const closure = title.match(CLOSURE_KEYWORD)
+    if (!closure || PARTIAL_SESSION.test(title)) continue
+    for (const date of datesBeforeKeyword(title, closure.index ?? 0, rocYearOf(row.Date))) {
+      closures.push({ date, title, url: String(row.Url ?? ''), announced })
+    }
+  }
+  // A reopen notice for the same date announced no earlier than the closure reverses it.
+  return closures
+    .filter((row) => {
+      const reopen = reopened.get(row.date)
+      return reopen === undefined || reopen < row.announced
+    })
+    .map(({ date, title, url }) => ({ date, title, url }))
+}
+
+export interface TwTradingSession {
+  trading: boolean
+  reason: 'weekend' | 'holiday_kv' | 'twse_schedule' | 'twse_adhoc_closure' | 'trading'
+  adHocCheck: 'closed' | 'open' | 'cached_open' | 'unavailable' | 'not_needed'
+}
+
+export interface TradingSessionAlertEnv {
+  DISCORD_WEBHOOK_URL?: string
+}
+
+async function alertAdHocCheckUnavailable(
+  kv: KVNamespace,
+  twDate: string,
+  error: unknown,
+  env: TradingSessionAlertEnv | undefined,
+): Promise<void> {
+  if (!env?.DISCORD_WEBHOOK_URL) return
+  const dedupKey = `cron:alert:twse-adhoc-closure-check:${twDate}`
+  try {
+    if (await kv.get(dedupKey)) return
+    await fetch(env.DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: [
+          `Scheduler Warn: TWSE ad-hoc closure check unavailable (\`twse-adhoc-closure-check\`)`,
+          `Date: ${twDate}`,
+          `Error: \`${String(error instanceof Error ? error.message : error).slice(0, 300)}\``,
+          `Runs continue as a trading day. If TWSE announced a closure, set holiday:${twDate}.`,
+        ].join('\n'),
+      }),
+      signal: AbortSignal.timeout(5000),
+    })
+    await kv.put(dedupKey, '1', { expirationTtl: 86400 })
+  } catch {
+    // Alerting must never block the run.
+  }
+}
+
+/**
+ * Single trading-day owner for run start. An ad-hoc TWSE closure (typhoon)
+ * is written to `holiday:{date}` so every existing holiday reader agrees.
+ * The announcement feed being down never blocks trading; it is alerted once a day.
+ */
+export async function resolveTwTradingSession(
+  kv: KVNamespace,
+  twDate: string,
+  alertEnv?: TradingSessionAlertEnv,
+): Promise<TwTradingSession> {
+  const day = new Date(`${twDate}T12:00:00+08:00`).getUTCDay()
+  if (day === 0 || day === 6) return { trading: false, reason: 'weekend', adHocCheck: 'not_needed' }
+  if (await kv.get(`holiday:${twDate}`)) return { trading: false, reason: 'holiday_kv', adHocCheck: 'not_needed' }
+  const schedule = await loadTwseHolidaySchedule(kv, Number(twDate.slice(0, 4)))
+  if (schedule?.dates.includes(twDate)) return { trading: false, reason: 'twse_schedule', adHocCheck: 'not_needed' }
+  const checkKey = `market:twse_adhoc_closure_check:v1:${twDate}`
+  if (await kv.get(checkKey)) return { trading: true, reason: 'trading', adHocCheck: 'cached_open' }
+  let rows: Array<{ Title?: string; Url?: string; Date?: string }>
+  try {
+    const response = await fetch(TWSE_NEWS_URL, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) throw new Error(`twse_news_http_${response.status}`)
+    rows = await response.json() as typeof rows
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error('twse_news_payload_empty')
+  } catch (error) {
+    console.error(`[schedulerPolicy] TWSE ad-hoc closure check unavailable for ${twDate}:`, error)
+    await alertAdHocCheckUnavailable(kv, twDate, error, alertEnv)
+    return { trading: true, reason: 'trading', adHocCheck: 'unavailable' }
+  }
+  const closure = parseTwseAdHocClosures(rows).find((row) => row.date === twDate)
+  // KV writes are best-effort: the decision for this run stands either way.
+  if (!closure) {
+    await kv.put(checkKey, new Date().toISOString(), { expirationTtl: ADHOC_CLOSURE_CHECK_TTL_SECONDS })
+      .catch((error) => console.warn(`[schedulerPolicy] ad-hoc open cache write failed for ${twDate}:`, error))
+    return { trading: true, reason: 'trading', adHocCheck: 'open' }
+  }
+  await kv.put(`holiday:${twDate}`, `TWSE公告：${closure.title} ${closure.url} (twse.openapi.newsList)`)
+    .catch((error) => console.error(`[schedulerPolicy] holiday key write failed for ${twDate}:`, error))
+  return { trading: false, reason: 'twse_adhoc_closure', adHocCheck: 'closed' }
+}
+
+/** Walk past known closures and check the first unknown session for an ad-hoc closure. */
+export async function resolveNextTwSessionClosure(
+  kv: KVNamespace,
+  afterDate: string,
+  alertEnv?: TradingSessionAlertEnv,
+): Promise<string | null> {
+  let candidate = new Date(`${afterDate}T00:00:00.000Z`)
+  for (let offset = 1; offset <= 10; offset += 1) {
+    candidate = new Date(candidate.getTime() + 86400_000)
+    const date = candidate.toISOString().slice(0, 10)
+    const session = await resolveTwTradingSession(kv, date, alertEnv)
+    if (session.trading) return date
+  }
+  return null
+}
+
 export async function nextTwTradingDate(
   kv: KVNamespace,
   afterDate: string,
@@ -365,6 +560,9 @@ export async function shouldRunScheduledTask(input: {
   task: string
   kv: KVNamespace
   nowTw?: Date
+  /** Run start only: also consult TWSE ad-hoc closure announcements. */
+  checkAdHocClosure?: boolean
+  alertEnv?: TradingSessionAlertEnv
 }): Promise<SchedulerRunDecision> {
   const policy = getSchedulerTaskPolicy(input.task)
   const nowTw = input.nowTw ?? twNowDate()
@@ -380,18 +578,27 @@ export async function shouldRunScheduledTask(input: {
       twDate,
     }
   }
-  const holiday = policy.holidayGated ? await isTwHoliday(input.kv, twDate) : false
+  const session = policy.holidayGated && input.checkAdHocClosure && !isWeekend
+    ? await resolveTwTradingSession(input.kv, twDate, input.alertEnv)
+    : null
+  const holiday = session ? !session.trading : policy.holidayGated ? await isTwHoliday(input.kv, twDate) : false
 
   if (policy.holidayGated && (isWeekend || holiday)) {
     return {
       shouldRun: false,
-      reason: `${isWeekend ? 'weekend' : 'holiday'}:${twDate}; policy=${policy.kind}`,
+      reason: `${isWeekend ? 'weekend' : 'holiday'}:${twDate}; policy=${policy.kind}`
+        + (session?.reason === 'twse_adhoc_closure' ? '; source=twse_adhoc_closure' : ''),
       policy,
       twDate,
     }
   }
 
-  return { shouldRun: true, reason: `run; policy=${policy.kind}`, policy, twDate }
+  return {
+    shouldRun: true,
+    reason: `run; policy=${policy.kind}` + (session?.adHocCheck === 'unavailable' ? '; adhoc_closure_check=unavailable' : ''),
+    policy,
+    twDate,
+  }
 }
 
 export async function getNextRunApproxWithPolicy(input: {

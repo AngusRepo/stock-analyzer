@@ -1,4 +1,5 @@
 import { twToday } from './dateUtils'
+import { resolveTwTradingSession } from './schedulerPolicy'
 import type { Bindings } from '../types'
 import { classifyCronSummary, logCronResult } from './schedulerRunLogger'
 import { runMorningWarmup } from './localMaintenance'
@@ -213,8 +214,10 @@ export async function handleScheduledCron(
   const twTodayStr = twDateString()
   const twDayOfWeek = twNow().getUTCDay()
   const isWeekend = twDayOfWeek === 0 || twDayOfWeek === 6
-  const isHoliday = await env.KV.get(`holiday:${twTodayStr}`)
   const weekendCrons = new Set(['0 20 * * 6', '0 22 * * 6', '30 22 * * 6', '0 */6 * * *'])
+  // Same trading-day owner as the GCP gate, including TWSE ad-hoc closures.
+  const isHoliday = !isWeekend && !weekendCrons.has(cron)
+    && !(await resolveTwTradingSession(env.KV, twTodayStr, env)).trading
 
   if ((isWeekend || isHoliday) && !weekendCrons.has(cron)) {
     console.log(`[Cron] ${twTodayStr} holiday/weekend, skipping ${cron}`)

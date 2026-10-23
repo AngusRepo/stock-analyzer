@@ -99,6 +99,24 @@ def test_merge_filters_missing_identity_and_emerging_rows():
     assert [row["symbol"] for row in rows] == ["2330"]
 
 
+def test_exact_rotc_venue_outranks_stale_tradable_seed_lane():
+    # 2026-04/07 leak: the Worker seed wrote LISTED/tradable for ROTC stocks.
+    rows = merge_screener_seed_domains(
+        run_date="2026-07-06",
+        ops_seed_rows=[{"symbol": "6467", "seed_rank": 1}, {"symbol": "7856", "seed_rank": 2}],
+        daily_rows=[
+            {"stock_id": 1, "symbol": "6467", "market_segment": "LISTED", "recommendation_lane": "tradable"},
+            {"stock_id": 2, "symbol": "7856", "market_segment": "LISTED", "recommendation_lane": "tradable"},
+        ],
+        stock_rows=[
+            {"stock_id": 1, "symbol": "6467", "market": "TWSE"},
+            {"stock_id": 2, "symbol": "7856", "market": "ROTC"},
+        ],
+    )
+
+    assert [row["symbol"] for row in rows] == ["6467"]
+
+
 def test_merge_orders_by_rank_then_score_descending():
     rows = merge_screener_seed_domains(
         run_date="2026-08-16",

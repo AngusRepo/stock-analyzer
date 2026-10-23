@@ -20,7 +20,8 @@ def _daily_stock_owners(stocks, decision_date):
     for stock in stocks:
         owner = by_id.get(stock["id"])
         if owner is None or owner["symbol"] != stock["symbol"]:
-            raise ValueError("daily_capture_roster_identity_mismatch")
+            raise ValueError("daily_capture_roster_identity_mismatch:symbol={} id={} roster={}".format(
+                stock.get("symbol"), stock.get("id"), "missing" if owner is None else owner["symbol"]))
         owners.append(dict(owner))
     return owners
 

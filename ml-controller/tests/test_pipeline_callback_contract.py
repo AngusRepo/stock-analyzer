@@ -44,6 +44,30 @@ def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
     assert [p for p in payloads if p["task"] == "recommendation"][0]["summary"] == "run_id=pipeline-v2-test recos_updated=2 filtered=1 seed_rows=3 closure=True"
 
 
+@pytest.mark.parametrize("metrics,expected", [
+    # 2026-10-22: failed at node_build_payloads; children never ran.
+    ({}, {"ml-predict": "blocked", "recommendation": "blocked"}),
+    ({"predictions_written": 10, "prediction_symbols": 3}, {"ml-predict": "error", "recommendation": "blocked"}),
+    ({"predictions_written": 10, "prediction_symbols": 3, "recommendation_seed_rows": 3},
+     {"ml-predict": "error", "recommendation": "error"}),
+])
+def test_failed_pipeline_marks_unreached_children_blocked(monkeypatch, metrics, expected):
+    payloads = []
+
+    async def fake_callback_worker(payload, client=None):
+        payloads.append(payload)
+
+    monkeypatch.setattr(pipeline, "_callback_worker", fake_callback_worker)
+    asyncio.run(pipeline._emit_subtask_callbacks(
+        "pipeline-v2-test", {"metrics": metrics}, "error", "daily_capture_roster_identity_mismatch", 1234,
+        run_date="2026-10-22"))
+
+    assert {p["task"]: p["status"] for p in payloads} == expected
+    assert all(p["error"] == "daily_capture_roster_identity_mismatch" for p in payloads)
+    blocked = [p for p in payloads if p["status"] == "blocked"]
+    assert all(p["summary"].endswith("upstream_pipeline_failed_before_" + p["task"]) for p in blocked)
+
+
 def test_pipeline_subtask_callbacks_do_not_overwrite_worker_owned_screener():
     source = Path(pipeline.__file__).read_text(encoding="utf-8")
 

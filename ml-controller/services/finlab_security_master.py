@@ -7,6 +7,29 @@ SOURCE = 'finlab.company_basic_info'
 FIELDS = {'symbol', '公司簡稱', '市場別', '上市日期', '上櫃日期', '興櫃日期'}
 MARKETS = {'sii': ('TWSE', '上市日期'), 'otc': ('OTC', '上櫃日期'), 'rotc': ('ROTC', '興櫃日期')}
 ETF_FIELDS = {'symbol', '證券簡稱', '上市日期', 'ETF詳情頁'}
+BOARD_DATE_FIELDS = {market: field for market, field in MARKETS.values()}
+# A partial exchange roster cannot prove absence; below these sizes the
+# official snapshot is treated as unavailable and FinLab's venue stands.
+OFFICIAL_BOARD_MIN_ROWS = {'TWSE': 800, 'OTC': 600, 'ROTC': 100}
+
+
+def legacy_market(listing_market):
+    """Core `market` is the exchange-family enum; ROTC routes as OTC."""
+    return 'OTC' if listing_market == 'ROTC' else listing_market
+
+
+def official_board_index(frame):
+    """symbol -> board from exchange rosters, or None when any roster is incomplete."""
+    if frame is None or frame.is_empty() or not {'symbol', 'board'} <= set(frame.columns):
+        return None
+    counts = {board: frame.filter(frame['board'] == board).height for board in OFFICIAL_BOARD_MIN_ROWS}
+    if any(counts[board] < minimum for board, minimum in OFFICIAL_BOARD_MIN_ROWS.items()):
+        return None
+    boards = {}
+    for symbol, board in frame.select('symbol', 'board').unique().iter_rows():
+        boards.setdefault(str(symbol).strip(), set()).add(board)
+    # A symbol on two rosters (e.g. on its transfer day) has no single owner.
+    return {symbol: next(iter(found)) for symbol, found in boards.items() if len(found) == 1}
 
 
 def _observed_clock(value):
@@ -16,11 +39,14 @@ def _observed_clock(value):
     return observed.astimezone(timezone.utc).isoformat(timespec='microseconds')
 
 
-def normalize_security_master(frame, observed_at):
+def normalize_security_master(frame, observed_at, official_boards=None, conflicts=None):
+    """`official_boards` (from official_board_index) overrides FinLab's 市場別,
+    which stays stale after a board transfer; each override is appended to `conflicts`."""
     observed_at = _observed_clock(observed_at)
     if frame.is_empty() or not FIELDS <= set(frame.columns):
         raise ValueError('finlab_security_master_schema_invalid')
     rows, seen = [], set()
+    official_boards = official_boards or {}
     for row in frame.select(sorted(FIELDS)).iter_rows(named=True):
         symbol = str(row['symbol']).strip()
         if symbol in seen or not symbol.isalnum() or not 4 <= len(symbol) <= 8:
@@ -36,12 +62,24 @@ def normalize_security_master(frame, observed_at):
             raise ValueError('finlab_security_master_listing_missing:' + symbol) from exc
         if not row['公司簡稱']:
             raise ValueError('finlab_security_master_name_missing:' + symbol)
+        checksum = digest(row)
+        board = official_boards.get(symbol)
+        if board is not None and board != market:
+            if conflicts is not None:
+                conflicts.append({'symbol': symbol, 'finlab_market': market, 'official_board': board})
+            market = board
+            try:
+                listed = date.fromisoformat(str(row[BOARD_DATE_FIELDS[board]]).strip()).isoformat()
+                field = BOARD_DATE_FIELDS[board]
+            except ValueError:
+                pass  # keep the captured FinLab date; its source field still says which one
+            checksum = digest({**row, '__official_board': board})
         # Legacy Core market is an exchange-family routing enum. Preserve it
-        # while retaining the exact FinLab venue, including emerging ROTC.
+        # while retaining the exact venue, including emerging ROTC.
         rows.append({'symbol': symbol, 'name': str(row['公司簡稱']),
-            'market': 'OTC' if market == 'ROTC' else market, 'listing_market': market,
+            'market': legacy_market(market), 'listing_market': market,
             'listed_date': listed, 'listed_date_source': SOURCE + ':' + field,
-            'listing_observed_at': observed_at, 'listing_checksum': digest(row),
+            'listing_observed_at': observed_at, 'listing_checksum': checksum,
             'in_current_watchlist': 0, 'source': 'finlab_security_master'})
     return sorted(rows, key=lambda r: r['symbol'])
 

@@ -172,50 +172,51 @@ async def _emit_subtask_callbacks(
             "ml-predict",
             predictions_n > 0 and prediction_symbol_closure and incomplete_active_models == 0,
             prediction_summary,
+            predictions_n > 0 or prediction_symbols > 0,
         ),
         (
             "recommendation",
             recommendation_closed,
             f"run_id={run_id} recos_updated={recos_n} filtered={filtered_n} seed_rows={seed_rows_n} closure={recommendation_closed}",
+            seed_rows_n > 0 or recos_n > 0,
         ),
     ]
+
+    def _payload(task: str, ok: bool, summary: str, reached: bool) -> dict:
+        # A failed pipeline that never reached this child (e.g. failed at
+        # node_build_payloads) is upstream-blocked, not a child failure.
+        if overall_status == "success" and ok:
+            status = "success"
+        elif overall_status != "success" and not reached:
+            status = "blocked"
+            summary = f"{summary} upstream_pipeline_failed_before_{task}"
+        else:
+            status = "error"
+        payload: dict = {
+            "task": task,
+            "status": status,
+            "summary": summary,
+            "duration_ms": elapsed_ms,
+            "run_id": run_id,
+        }
+        if run_date:
+            payload["run_date"] = run_date
+        if status != "success":
+            payload["error"] = overall_error or f"{task}: no output"
+        return payload
 
     async def _send(payload: dict, client: httpx.AsyncClient | None = None) -> None:
         await _callback_worker(payload, client=client)
 
     async_client_cls = getattr(httpx, "AsyncClient", None)
     if async_client_cls is object or not callable(async_client_cls):
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _send(payload)
+        for subtask in subtasks:
+            await _send(_payload(*subtask))
         return
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _callback_worker(payload, client=client)
+        for subtask in subtasks:
+            await _callback_worker(_payload(*subtask), client=client)
 
 
 # ─── V2 trigger endpoint ─────────────────────────────────────────────────────

@@ -204,7 +204,8 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert(screenerSeedQuality.includes('recommendation_lane'), 'screener seed SQL must persist recommendation lane governance')
   assert(screenerSeedQuality.includes('eligible_for_pending_buy'), 'screener seed SQL must persist pending-buy eligibility')
   assert(pendingBuyOrchestrator.includes("from './boardTradability'"), 'pending-buy setup must consume the board/tradability contract')
-  assert(pendingBuyOrchestrator.includes("NOT IN ('EMERGING', 'ESB')"), 'pending-buy setup must exclude explicit emerging-board stocks')
+  assert(pendingBuyOrchestrator.includes("COALESCE(UPPER(COALESCE(s.listing_market, s.market)), '') NOT IN ('EMERGING', 'ESB', 'ROTC')"),
+    'pending-buy setup must exclude emerging-board stocks by exact venue (legacy market stores ROTC as OTC)')
   assert(pendingBuyOrchestrator.includes('row.latest_open != null'), 'pending-buy setup must reject emerging-style rows without an executable open price')
   assert(pendingBuyOrchestrator.includes('latest_avg_price'), 'pending-buy setup must inspect avg-price-only emerging-style rows')
   assert(pendingBuyOrchestrator.includes("execution_pool_policy: 'l4_sparse_final_buy_only'"), 'pending-buy setup must only execute L4 sparse final BUY rows')

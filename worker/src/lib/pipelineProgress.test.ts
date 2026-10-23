@@ -55,3 +55,20 @@ test('newer same-run handoff supersedes an old node but preserves matching or ne
   const next={...p,phase:'node_l3_formal_predict',observed_at:'2026-10-14T18:00:00Z'}
   assert.deepEqual(pipelineProgressForDisplay(parent,row(next),handoff),next)
 })
+
+test('pre-L2 preparation phases rank before payload build so the current phase keeps advancing', async () => {
+  const sql=new DatabaseSync(':memory:')
+  sql.exec(readFileSync('migrations/0074_pipeline_stage_and_maintenance_control.sql','utf8'))
+  sql.exec("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key) VALUES('2026-10-22','pipeline_execution','run-a','running','execution-a')")
+  const db={prepare(query:string){let args:any[]=[];const stmt={bind(...v:any[]){args=v;return stmt},async first(){return sql.prepare(query).get(...args)??null}};return stmt}} as unknown as D1Database
+  const base:PipelineProgress={phase:'node_load_market_env',status:'completed',started_at:'2026-10-22T10:00:00Z',phase_started_at:'2026-10-22T10:00:00Z',observed_at:'2026-10-22T10:00:01Z',execution_id:'execution-a',completed:[]}
+  const phases=['node_attach_serving_context','node_prepare_l2_inputs','node_build_payloads','node_resume_l2_inputs']
+  for (const [index,phase] of phases.entries()) {
+    const at=`2026-10-22T10:0${index+1}:00Z`
+    assert.equal(await recordPipelineProgress(db,'2026-10-22','run-a',{...base,phase,status:'running',phase_started_at:at,observed_at:at}),true)
+    const row=sql.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='pipeline_progress'").get() as any
+    const parent=sql.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='pipeline_execution'").get() as any
+    assert.equal(pipelineProgressForDisplay(parent,row)!.phase,phase)
+  }
+  sql.close()
+})

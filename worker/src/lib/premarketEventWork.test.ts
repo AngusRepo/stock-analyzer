@@ -53,3 +53,13 @@ test('explicit empty outcome is preserved for an unchanged plan',async()=>{
  const result=await f.work('publish:0',{...f.input,debated_plan_id:oldId},guard)
  assert.equal(result.receipt.ready,true);assert.equal(result.receipt.pending_status,'empty');assert.equal(f.calls.length,0)
 })
+test('daily-plan owner never settles when the corporate source cannot be published',async()=>{
+ let settled=0
+ const work=premarketWork({PAPER_DAILY_PLAN_OWNER:'premarket_once_v1'} as any,date,{
+  warmup:async()=>'ok', afterClosePaperRecovery:()=>false,
+  ensurePaperCorporateSource:async()=>{throw new Error('fixture_source_outage')},
+  settle:async()=>{settled++},
+ })
+ await assert.rejects(work('setup',{context_hash:'frozen',signal_date:'2026-09-30'} as PremarketPayload,guard),/fixture_source_outage/)
+ assert.equal(settled,0)
+})

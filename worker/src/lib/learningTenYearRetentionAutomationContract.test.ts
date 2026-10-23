@@ -58,7 +58,7 @@ assert.match(source, /cutover\?\.status !== 'complete' && !domainReadiness\?\.cu
 assert.match(source, /deletion_gate_policy: 'formal_cutover_receipt_plus_time_travel_window'/)
 assert.match(source, /post_cutover_target_drift/)
 assert.match(capacitySource, /meta\?\.size_after/)
-assert.match(capacitySource, /utilizationPct >= 85/)
+assert.match(capacitySource, /utilizationPct >= 90/)
 assert.match(capacitySource, /utilizationPct >= 75/)
 assert.match(capacitySource, /utilizationPct >= 65/)
 assert.match(handlers, /storage_capacity_daily/)

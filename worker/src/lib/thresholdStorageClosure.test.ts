@@ -33,9 +33,11 @@ test('Threshold V2 and Route V2 promotion is one evidence bundle', () => {
 })
 
 test('storage admission blocks high-write producers but never trading serving', () => {
-  assert.equal(classifyStorageAdmission('weekly-optuna', 79).allowed, false)
+  // Approved 90% critical gate (afe348f02): high-write producers stop at critical, not in the drain band.
+  assert.equal(classifyStorageAdmission('weekly-optuna', 79).allowed, true)
+  assert.equal(classifyStorageAdmission('weekly-optuna', 90).allowed, false)
   assert.equal(classifyStorageAdmission('l4-alpha-ev-refresh', 79).allowed, true)
-  assert.equal(classifyStorageAdmission('l4-alpha-ev-refresh', 86).allowed, false)
+  assert.equal(classifyStorageAdmission('l4-alpha-ev-refresh', 90).allowed, false)
   assert.equal(classifyStorageAdmission('active8-oof-monthly', null).allowed, false)
   assert.equal(classifyStorageAdmission('evening-chain', 99).allowed, true)
   assert.equal(classifyStorageAdmission('intraday-check', 99).allowed, true)

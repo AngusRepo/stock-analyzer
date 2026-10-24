@@ -731,7 +731,9 @@ adminConfigCoreRoutes.post('/api/admin/risk-config/p5-rearm', async (c) => {
   try {
     const { previewP5Recovery, applyP5Recovery } = await import('../lib/p5Recovery')
     const db = databaseForDataDomain(c.env, 'paper')
-    if (dryRun) return c.json({ mode: 'dry_run', production_effect: false, ...await previewP5Recovery(db, accountId) })
+    const { getTradingConfig } = await import('../lib/tradingConfig')
+    const circuit = (await getTradingConfig(c.env.KV, { bypassCache: true })).circuit
+    if (dryRun) return c.json({ mode: 'dry_run', production_effect: false, ...await previewP5Recovery(db, accountId, circuit) })
     const result = await applyP5Recovery(db, accountId, body)
     return c.json({ mode: result.written ? 'persisted' : 'no_op', production_effect: result.written, ...result })
   } catch (error: any) {

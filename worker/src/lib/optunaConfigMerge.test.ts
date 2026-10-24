@@ -89,3 +89,18 @@ assert.throws(
   ),
   /missing sources: rrg/,
 )
+
+// Policy v2 owns allocator params in l4Distribution.constraints; Optuna reports the skip.
+{
+  const current = structuredClone(DEFAULT_TRADING_CONFIG) as any
+  current.l4Distribution = { policy_schema: 'l4-distribution-policy-v2', constraints: { risk_aversion: 2 } }
+  const allocation = { riskAversion: 9, alpha_strength: 3, weights: { bull: { technical: 0.42 } } }
+  const v2 = mergeCompositeOptunaCandidate(current, { ...sources, alpha_framework: { allocation } }, mergeAlphaFrameworkConfig)
+  assert.equal(v2.config.alphaFramework.allocation.riskAversion, DEFAULT_TRADING_CONFIG.alphaFramework.allocation.riskAversion)
+  assert.equal((v2.config.alphaFramework.allocation.weights.bull as any).technical, 0.42)
+  assert.deepEqual(v2.skippedFields, [
+    { field: 'alphaFramework.allocation.riskAversion', reason: 'l4_distribution_owns_allocation_params' },
+    { field: 'alphaFramework.allocation.alpha_strength', reason: 'l4_distribution_owns_allocation_params' },
+  ])
+  assert.deepEqual(candidate.skippedFields, [], 'v1 configs keep writing alphaFramework.allocation')
+}

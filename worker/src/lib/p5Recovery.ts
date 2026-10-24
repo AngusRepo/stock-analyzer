@@ -1,5 +1,5 @@
 import { type SellOrderRowForPnl } from './paperOrderAccounting'
-import { P5_LOSS_POSITION_SCALE, P5_LOSS_POLICY, summarizeP5Stopouts } from './riskChecks/p5Losses'
+import { P5_LOSS_POLICY, p5LossStreakScale, summarizeP5Stopouts } from './riskChecks/p5Losses'
 
 export interface P5RecoveryRequest {
   request_id: string
@@ -15,7 +15,7 @@ export interface P5RecoveryRequest {
 
 const evidenceFields = ['request_id', 'incident_ref', 'repair_version', 'validation_ref', 'validation_sha256', 'approved_by'] as const
 
-export async function previewP5Recovery(db: D1Database, accountId: number) {
+export async function previewP5Recovery(db: D1Database, accountId: number, circuit?: { positionScales?: unknown }) {
   const anchor = await db.prepare(`SELECT
     COALESCE((SELECT MAX(id) FROM paper_orders WHERE account_id=?),0) AS last_order_id,
     COALESCE((SELECT MAX(id) FROM paper_orders WHERE account_id=? AND side='sell'),0) AS cutoff_sell_id,
@@ -35,7 +35,7 @@ export async function previewP5Recovery(db: D1Database, accountId: number) {
     policy: P5_LOSS_POLICY,
     p5_halted: false,
     p5_triggered: p5Triggered,
-    position_scale: p5Triggered ? P5_LOSS_POSITION_SCALE : 1,
+    position_scale: p5Triggered ? p5LossStreakScale(circuit) : 1,
   }
 }
 

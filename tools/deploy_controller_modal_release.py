@@ -283,10 +283,26 @@ def main():
     sys.path.insert(0, str(source / 'ml-controller'))
     from services.active8_paper_admission import validate_runtime_approval
     validate_runtime_approval(grant, grant['admission'])
+    # Optional L4 policy grants (P1..Pn): same source, reviewed chain of next configurations.
+    # They are staged beside S and only selected once the activation tool writes KV.
+    policy_path = args.admission / 'policy-grants.json'
+    policy_grants = load(policy_path) if policy_path.exists() else []
+    if policy_grants:
+        from services.l4_policy_activation import policy_keys
+        behavior = json.loads((source / 'ml-controller/services/native_execution_behavior_release.json').read_text())
+        keys = admission.get('policy_keys')
+        if (behavior.get('runtime_admission') != admission['new_key'] or keys != policy_keys(behavior)
+                or len(keys) != len(policy_grants) or len(set(keys)) != len(keys)
+                or set(keys) & {admission['new_key'], admission['prior_key']}
+                or any(g.get('approved_l4_execution_policy_change') is None for g in policy_grants)):
+            raise RuntimeError('policy_grant_packet_mismatch')
+        for policy_grant in policy_grants:
+            validate_runtime_approval(policy_grant, policy_grant['admission'])
+        risk_before = kv_get('trading:risk_config')
     prior_before = kv_get(admission['prior_key'])
     if prior_before['http_status'] != 200 or prior_before['body']['approval_checksum'] != admission['prior_approval_checksum']:
         raise RuntimeError('prior_grant_preflight_mismatch')
-    grant_staged = False
+    grant_staged, policy_staged = False, 0
 
     def unchanged_policies(full_grants=False):
         if kv_get('trading:config') != {'http_status': 200, 'body': config_before}:
@@ -295,6 +311,12 @@ def main():
             raise RuntimeError('prior_grant_changed')
         if full_grants and grant_staged and kv_get(admission['new_key']) != {'http_status': 200, 'body': grant}:
             raise RuntimeError('new_grant_changed')
+        if policy_grants and kv_get('trading:risk_config') != risk_before:
+            raise RuntimeError('risk_configuration_changed')
+        staged = list(zip(admission.get('policy_keys', []), policy_grants))[:policy_staged]
+        for key, policy_grant in staged if full_grants else []:
+            if kv_get(key) != {'http_status': 200, 'body': policy_grant}:
+                raise RuntimeError('policy_grant_changed:' + key)
         current_worker = worker('/api/health')
         if current_worker['http_status'] != 200 or current_worker['body'].get('provenance') != worker_provenance:
             raise RuntimeError('concurrent_worker_change')
@@ -441,6 +463,24 @@ def main():
     unchanged_policies(full_grants=True)
     save('source-grant-readback.json', dict(key=admission['new_key'], checksum=grant['approval_checksum'],
         status='PASS', prior_grant_unchanged=True, configuration_changed=False, source_equivalence=False, maturity_transfer=False))
+    for key, policy_grant in zip(admission.get('policy_keys', []), policy_grants):
+        existing = kv_get(key)
+        if existing['http_status'] == 404:
+            url = ('https://api.cloudflare.com/client/v4/accounts/' + os.environ['CF_ACCOUNT_ID']
+                   + '/storage/kv/namespaces/' + os.environ['CF_KV_NAMESPACE_ID'] + '/values/' + quote(key, safe=''))
+            reply = request(url, method='PUT', body=policy_grant, headers={'Authorization': 'Bearer ' + os.environ['CF_API_TOKEN']})
+            if reply['http_status'] != 200 or reply['body'].get('success') is not True:
+                raise RuntimeError('policy_grant_write_unconfirmed:' + key)
+        elif existing != {'http_status': 200, 'body': policy_grant}:
+            raise RuntimeError('policy_grant_collision:' + key)
+        if kv_get(key) != {'http_status': 200, 'body': policy_grant}:
+            raise RuntimeError('policy_grant_readback_mismatch:' + key)
+        policy_staged += 1
+        unchanged_policies(full_grants=True)
+    if policy_grants:
+        save('policy-grants-readback.json', dict(status='PASS', grants=[
+            dict(key=key, checksum=g['approval_checksum']) for key, g in zip(admission['policy_keys'], policy_grants)],
+            configuration_changed=False, selected_only_after_activation=True, maturity_transfer=False))
 
     suffix = 'perf-' + packet['source_sha'][:12] + '-' + datetime.now(timezone.utc).strftime('%H%M%S')
     revision, tag = 'ml-controller-' + suffix, 'perf-' + packet['source_sha'][:12]

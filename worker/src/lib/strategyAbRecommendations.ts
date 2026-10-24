@@ -7,6 +7,7 @@ import { strategyAbTag } from './strategyAbContract'
 import { sha256Text } from './datasetSnapshots'
 
 import type { StrategyPick, StrategyAllocationView, StrategyAbRecommendations } from './strategyAbRecommendationContract'
+import { WEIGHT_SUPPORT } from './l4NumericContract'
 const unavailable = (reason: string): StrategyAllocationView => ({ status: 'unavailable', picks: [], cash_weight: null, source_id: null, reason })
 
 export function allocationView(rows: unknown, source: string): StrategyAllocationView {
@@ -18,7 +19,7 @@ export function allocationView(rows: unknown, source: string): StrategyAllocatio
       || typeof row.allocation_weight !== 'number' || !Number.isFinite(row.allocation_weight)
       || row.allocation_weight < 0 || row.allocation_weight > 1) throw Error('strategy_ab_allocation_invalid')
     seen.add(row.symbol)
-    if (row.allocation_weight > 1e-7) picks.push({ symbol: row.symbol, weight: row.allocation_weight })
+    if (row.allocation_weight > WEIGHT_SUPPORT) picks.push({ symbol: row.symbol, weight: row.allocation_weight })
   }
   const total = picks.reduce((sum, row) => sum + row.weight, 0)
   if (total > 1 + 1e-8) throw Error('strategy_ab_weight_sum_invalid')

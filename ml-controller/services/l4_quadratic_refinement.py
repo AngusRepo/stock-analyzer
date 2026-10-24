@@ -6,11 +6,12 @@ supplies a better feasible incumbent and a valid quadratic tangent.
 import time
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, minimize
+from services.l4_numeric_contract import WEIGHT_SUPPORT
 
 
 def refine(candidate, *, q, objective, current, matrix, lhs, rhs, bounds, deadline):
     n = len(candidate)
-    active = np.flatnonzero(candidate > 1e-7)
+    active = np.flatnonzero(candidate > WEIGHT_SUPPORT)
     if not len(active) or time.monotonic() >= deadline:
         return candidate
     # Freeze membership from the MILP, and account for every inactive sell.

@@ -4,6 +4,7 @@
 import type { TradingConfig } from '../tradingConfig'
 import type { LegacyLayerDeps, LegacyLayerResult } from '../riskTypes'
 import type { CanonicalMarketRiskContext } from '../marketRiskRuntime'
+import { circuitPositionScales } from '../circuitPositionScales'
 
 export async function checkP4Breadth(
   marketRisk: CanonicalMarketRiskContext,
@@ -12,6 +13,7 @@ export async function checkP4Breadth(
 ): Promise<LegacyLayerResult> {
   const cc = cfg.circuit
   const { defaults } = deps
+  const scales = circuitPositionScales(cc)
 
   if (marketRisk.status === 'blocked') {
     const breadthBlockers = marketRisk.blockers.filter((item) => item.includes('breadth'))
@@ -39,7 +41,9 @@ export async function checkP4Breadth(
     ...defaults,
     maxPositionPct: Math.min(
       defaults.maxPositionPct,
-      severe ? cc.highVolReducedPosPct * 0.5 : cc.highVolReducedPosPct,
+      scales
+        ? defaults.maxPositionPct * scales.highVol * (severe ? scales.severeHighVol : 1)
+        : severe ? cc.highVolReducedPosPct * 0.5 : cc.highVolReducedPosPct,
     ),
     targetExposurePct: marketRisk.targetExposureCap,
     deRiskExistingPositions: marketRisk.deRiskExistingPositions,

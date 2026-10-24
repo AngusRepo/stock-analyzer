@@ -12,7 +12,14 @@ export default function StrategyNavEvidence({ data, loading, error, onRetry }: {
     <p className="text-xs leading-5 text-slate-400">同一策略的全部凍結比較，逐一顯示原始判定；不是挑最好的一組。淨報酬已含成本，不再次扣費。PASS 與歷史發布紀錄都不等於今日已成交或必然獲利。</p>
     {loading ? <p role="status" className="text-sm text-cyan-200">讀取原始 NAV 證據中…</p> : null}
     {error ? <div role="alert" className="text-sm text-rose-200">原始 NAV 證據讀取失敗，不能當成未通過或 0 日。<button type="button" onClick={onRetry} className="ml-3 underline">重試</button></div> : null}
-    {data && !error && !loading ? <>
+    {data?.status === 'display_unavailable' && !error && !loading ? <div role="status" className="space-y-2 text-sm text-amber-200">
+      <p>{data.unavailable_reason === 'strategy_nav_read_model_source_changed'
+        ? 'NAV 原始來源已更新，顯示資料等待重新驗證。'
+        : '目前版本的 NAV 顯示資料尚未產生。'}</p>
+      <p>目前無法核對比較組數與 NAV 成熟日數；這不代表策略未通過，也不代表日數是 0。累積的 Alpha／命中樣本仍保留。</p>
+      <button type="button" onClick={onRetry} className="underline">重新讀取</button>
+    </div> : null}
+    {data && data.status !== 'display_unavailable' && !error && !loading ? <>
       <p className="text-xs text-slate-300">目前替換 owner：{data.current_replacement_owner === 'original_paired_daily_nav' ? '原始配對 NAV' : '舊 Atomic V7（NAV 仍獨立觀察）'} · 決策截止 {data.as_of_date} · {data.entry_count} 組原始比較</p>
       {data.read_model?.is_prior_business_date ? <p role="status" className="text-sm text-amber-200">顯示最近完成的原始證據，截至 {data.as_of_date}；{data.read_model.requested_as_of_date} 的證據尚未完成更新。下方判定與日數均屬於上述截止日。</p> : null}
       {data.status === 'not_registered' ? <p className="text-sm text-amber-200">此策略版本尚未找到原始凍結 NAV 比較；沒有把舊 Alpha 樣本換算成 NAV 成熟日。</p> : null}

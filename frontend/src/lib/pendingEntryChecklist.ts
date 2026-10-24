@@ -9,7 +9,7 @@ export function checklistEvidence(preview?: PendingBuyExecutionPreview | null, n
   const historical = !!signal && signal !== current
   const conditions = { ...signal?.conditions, ...current?.conditions }
   // A historical quote/price check is not a current execution authorization.
-  const windowExpired = signal?.latest_bar_ms != null && nowMs >= signal.latest_bar_ms + 60_000
+  const windowExpired = signal?.latest_bar_ms != null && nowMs >= (signal.atr_once?.authorization?.submitUntilMs ?? signal.latest_bar_ms + 60_000)
   if (historical || windowExpired) for (const key of ['quote', 'buy_limit', 'chase']) conditions[key] = null
   if (windowExpired) conditions.window = false
   return { signal, historical, conditions, checkedAt: signal?.checked_at ?? null }
@@ -34,6 +34,11 @@ export function checklistNumbers(key:string,s:PendingBuyExecutionPreview['or15']
   if(key==='atr_once') {
     const a=s.atr_once
     if(!a) return '等待首次原進場訊號；當日資格確認後保留'
+    if(a.policy==='atr5-sma-second-breakout-s-v2') {
+      const initial=`首次動能不足（delta ${num(a.firstDelta)?a.firstDelta!.toFixed(2):'待補'} ≤ 門檻 ${num(a.firstThreshold)?a.firstThreshold!.toFixed(2):'待補'}）`
+      if(a.status==='weak_waiting') return `${initial}，等待二次突破：需收盤 > ${num(a.priorHigh)?a.priorHigh!.toFixed(2):'待補'} 且動能過關`
+      if(a.status==='passed') return `${a.triggerKind==='second'?'二次突破':'首次動能'}通過 · 觸發根 ${evidenceTime((a.triggerMs??0)-300000)} · delta ${a.delta?.toFixed(2)} ／ 門檻 ${a.threshold?.toFixed(2)}${a.priorHigh!=null?` · 前高 ${a.priorHigh.toFixed(2)}`:''}`
+    }
     return `首次訊號 ${evidenceTime(a.firstSignalMs)} · 差額 ${num(a.delta)?a.delta!.toFixed(4):'待補'} ／ 1.5 × ATR5 ${num(a.threshold)?a.threshold!.toFixed(4):'待補'} · ${a.status==='veto'?'當日不再進場':a.status==='passed'?'當日動能資格已通過':'首次訊號資料待補，不改用後續訊號'}`
   }
   if(key==='ma60') return `0050 昨收 ${price(s.benchmark_previous_close)} ＞ MA60 ${price(s.ma60)}`
@@ -47,7 +52,7 @@ export function checklistNumbers(key:string,s:PendingBuyExecutionPreview['or15']
   }
   if(key==='chase') return `檢查價 ${price(s.quote_price)} ／ 上限 ${price(s.max_buy_price)}`
   if(key==='buy_limit') return `檢查價 ${price(s.quote_price)} ／ 漲停 ${price(s.limit_up)}`
-  if(key==='window' && s.latest_bar_ms) return `訊號根 ${evidenceTime(s.latest_bar_ms-300000)}～${evidenceTime(s.latest_bar_ms)}；送單窗口 ${evidenceTime(s.latest_bar_ms)}～${evidenceTime(s.latest_bar_ms+60000)}（不含終點）`
+  if(key==='window' && s.latest_bar_ms) return `訊號根 ${evidenceTime(s.latest_bar_ms-300000)}～${evidenceTime(s.latest_bar_ms)}；送單窗口 ${evidenceTime(s.latest_bar_ms)}～${evidenceTime(s.atr_once?.authorization?.submitUntilMs??s.latest_bar_ms+60000)}（不含終點）`
   return ''
 }
 

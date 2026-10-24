@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "3f29eac2ff38a673fc2207b8589865faa2696b4a",
+  "production_baseline_source": "1c5b59b9de358e6883cf7916dad42611227aba82",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "9ef6b62d63d483b9012993cdd1e0f23cf2bc86dbc9420d5758e65fee5659d244",
-  "prior_configuration_checksum": "af0fcbbc2905e2b90fa4c40606f87f1c8248dcebee70f26531b97e181f08f634",
+  "prior_approval_checksum": "b98f37157afbf4905bbd74e39faf8ff73685d40cb180bd9c2f16947c31f79cfa",
+  "prior_configuration_checksum": "86dda6dc365ca9f392801bc4ea1eda46114d44c2e425c9b27d45d03027e76803",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -81,6 +81,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:a4c03c23fc702b98720bb2419db858e4dbe48c8f0182d3ff62ccdfa9cd18df12",
-  "review": "audits/rd-release-20261024/release/review.md"
+  "execution_owner_version": "native-paper-v1:351ced2b0b8dfa8a1db582851105daf74008c7ddb50dd7d3a7aa52299cd79a27",
+  "review": "audits/rc-release-20261024/release/review.md"
 }

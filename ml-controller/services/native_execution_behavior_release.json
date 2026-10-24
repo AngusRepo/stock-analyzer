@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:a4c03c23fc702b98720bb2419db858e4dbe48c8f0182d3ff62ccdfa9cd18df12",
+  "execution_owner_version": "native-paper-v1:351ced2b0b8dfa8a1db582851105daf74008c7ddb50dd7d3a7aa52299cd79a27",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-24 TW approved R-D (B#3a #58 + M1-c #60): \"go\"; and PR #61 (l4_forward_refresh_failed fix) folded into R-D: \"go\"",
-  "review": "audits/rd-release-20261024/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rd-20261024"
+  "authorization": "Wei 2026-10-24 TW approved R-C (#54 + #42 + #49) with R-E (#53) folded in: \"能完整走完就走完，R-E可以一起\"",
+  "review": "audits/rc-release-20261024/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rc-20261024"
 }

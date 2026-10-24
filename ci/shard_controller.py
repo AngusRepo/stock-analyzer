@@ -4,8 +4,8 @@ usage: shard_controller.py <shard 1..N> <N>
 
 Files are packed longest-first onto the lightest shard using the seconds recorded in
 ci/controller_durations.json (refresh it with ci/controller_durations.py from the junit
-artifacts of a main run). A file without a record weighs the median, so new tests still
-land somewhere and every file is in exactly one shard.
+artifacts of a main run). A file without a record weighs the mean of the recorded files that
+took time (most records round to 0.0, so the median would be 0), so new tests spread out.
 """
 import json
 import statistics
@@ -19,7 +19,8 @@ tests = Path('tests')
 files = sorted(p.as_posix() for p in tests.glob('test_*.py'))
 recorded_path = Path(__file__).with_name('controller_durations.json')
 recorded = json.loads(recorded_path.read_text(encoding='utf-8')) if recorded_path.exists() else {}
-default = statistics.median(recorded.values()) if recorded else 1.0
+timed = [v for v in recorded.values() if v > 0]
+default = statistics.mean(timed) if timed else 1.0
 weight = {f: float(recorded.get(f, default)) for f in files}
 
 loads = [0.0] * total

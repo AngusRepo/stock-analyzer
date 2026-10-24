@@ -29,20 +29,24 @@ case "$suite" in
     # recorded seconds, so the suite's wall time divides across parallel jobs.
     shard="${suite#controller-}"; shards="${CONTROLLER_SHARDS:?CONTROLLER_SHARDS is required}"
     source "$tools/controller_deps.sh"
-    controller_deps || { fail "controller: dependency install"; exit 0; }
+    # Infra ids carry the shard: merged with the other shards, one shard's crash must not
+    # match the same id from a different base shard and pass as pre-existing.
+    controller_deps || { fail "controller-$shard: dependency install"; exit 0; }
     cd ml-controller
-    mapfile -t files < <(python "$tools/shard_controller.py" "$shard" "$shards")
+    python "$tools/shard_controller.py" "$shard" "$shards" > "$RUNNER_TEMP/shard.txt"       || { fail "controller-$shard: shard assignment"; exit 0; }
+    mapfile -t files < "$RUNNER_TEMP/shard.txt"
     echo "== controller shard $shard/$shards: ${#files[@]} files"
-    # Tests import both repo-root `tools` and `tests.*`; a broken module must not hide the rest.
+    # Tests import repo-root `tools`; a broken module must not hide the rest.
     # ml-service is on the path explicitly: a shard no longer collects every file, so a test
-    # cannot rely on another file's sys.path insert during collection.
+    # cannot rely on another file's sys.path insert during collection. Its `tests` package is a
+    # regular package and shadows ml-controller's namespace `tests`, as it already did unsharded.
     # One worker per logical CPU: `auto` counts physical cores, which left half of the
     # 4-vCPU public runner idle. Tests spread individually (several 4-5 minute tests share
     # files) and idle workers steal queued ones. --durations shows the slowest tests.
     PYTHONPATH="$(cd .. && pwd):$PWD:$(cd ../ml-service && pwd)" python -m pytest "${files[@]}" -q -p no:cacheprovider \
       --timeout=300 -n logical --dist worksteal --durations=20 \
       --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
-    python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller: pytest produced no report"
+    python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller-$shard: pytest produced no report"
     # Worker tests that drive controller Python skip in the worker suite (no pip deps there).
     # Shard 1 runs the ones pytest does not already spawn with its own fixture.
     [ "$shard" = 1 ] || { echo "== $suite failures: $(wc -l < "$out")"; exit 0; }

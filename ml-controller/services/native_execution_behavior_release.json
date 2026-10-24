@@ -5,7 +5,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-24 TW approved R-C (#54 + #42 + #49) with R-E (#53) folded in: \"能完整走完就走完，R-E可以一起\"",
-  "review": "audits/rc-release-20261024/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rc-20261024"
+  "authorization": "Wei 2026-10-24 TW: R-G (#56 frontend reconcile + #36 input-work status; #45 test-only; #37 superseded by #56): \"剩下進度繼續推進\"",
+  "review": "audits/rg-release-20261024/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rg-20261024"
 }

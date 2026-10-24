@@ -171,7 +171,9 @@ def snapshot_state():
           CREATE TABLE stocks(id INTEGER PRIMARY KEY,symbol TEXT);
           INSERT INTO stocks VALUES(1,'2330'),(2,'0050');
           CREATE TABLE stock_prices(stock_id INTEGER,date TEXT,close REAL);
-          INSERT INTO stock_prices VALUES(1,'2026-09-07',110),(2,'2026-09-07',200);
+          -- every sandbox session carries its own close: the snapshot marks held positions only on the exact session close
+          INSERT INTO stock_prices VALUES(1,'2026-09-07',110),(2,'2026-09-07',200),(1,'2026-09-08',110),(2,'2026-09-08',200),
+                                          (1,'2026-09-09',110),(2,'2026-09-09',200),(1,'2026-09-10',110),(2,'2026-09-10',200);
           CREATE TABLE market_risk(date TEXT,twii_close REAL);
           INSERT INTO market_risk VALUES('2026-09-07',22000);
           CREATE TABLE broker_execution_intents(trade_date TEXT);

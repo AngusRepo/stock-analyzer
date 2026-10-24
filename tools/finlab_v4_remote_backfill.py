@@ -1511,6 +1511,31 @@ def fetch_official_twse_index_frame() -> pd.DataFrame:
     return frame
 
 
+# Exchange-published daily rosters. FinLab's 市場別 can stay rotc after a board
+# transfer (6467/7812 traded on TWSE while still labelled rotc on 2026-10-22).
+OFFICIAL_BOARD_SOURCES = (
+    ("TWSE", "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", "Code"),
+    ("OTC", "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", "SecuritiesCompanyCode"),
+    ("ROTC", "https://www.tpex.org.tw/openapi/v1/tpex_esb_latest_statistics", "SecuritiesCompanyCode"),
+)
+
+
+def fetch_official_board_frame() -> pd.DataFrame:
+    """One row per (symbol, board); a board whose roster is unavailable has no rows."""
+    observed_at = utc_now()
+    output: list[dict[str, Any]] = []
+    for board, url, code_field in OFFICIAL_BOARD_SOURCES:
+        body = official_json_get(url, label=f"official_board_{board.lower()}")
+        rows = body if isinstance(body, list) else []
+        for row in rows:
+            symbol = str(row.get(code_field) or "").strip() if isinstance(row, dict) else ""
+            if symbol:
+                output.append({"symbol": symbol, "board": board, "source": url,
+                               "report_date": str(row.get("Date") or ""), "observed_at": observed_at})
+    columns = ["symbol", "board", "source", "report_date", "observed_at"]
+    return pd.DataFrame(output, columns=columns).drop_duplicates(["symbol", "board"])
+
+
 def fetch_official_tpex_index_frame() -> pd.DataFrame:
     body = official_json_get("https://www.tpex.org.tw/openapi/v1/tpex_index", label="tpex_index")
     rows = body if isinstance(body, list) else []
@@ -2470,6 +2495,14 @@ def materialize_specs(
                         path=path, run_dir=run_dir, gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
                         metadata={"kind": spec.kind, "shape": list(frame.shape)},
                     ))
+            if spec.lane == "security_master":
+                # Venue arbitration input for the materializer; never a blocker.
+                frame = fetch_official_board_frame()
+                path = lane_dir / "official_boards.parquet"
+                write_parquet(path, frame)
+                artifacts.append({"field": "official_boards", "api_key": "twse_tpex.openapi.daily_rosters",
+                                  "path": str(path), "shape": list(frame.shape),
+                                  "boards": sorted(set(frame["board"])) if not frame.empty else []})
         elif spec.kind == "official_market_summary":
             frames = fetch_official_market_summary_frames(OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS)
             if require_official_market_summary:

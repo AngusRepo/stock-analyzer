@@ -171,7 +171,43 @@ async function assertPagedPriceLoader(): Promise<void> {
   assert(callCounts.get('2026-08-11|2026-08-12') === 1, 'remaining dates must load once')
 }
 
-assertPagedPriceLoader().catch((error) => {
+// Core stores ROTC under the legacy OTC family; an emerging row with a full
+// OHLC bar defeats the avg-price heuristic, so the exact venue must decide.
+async function assertExactVenueDecidesLane(): Promise<void> {
+  const identities: Record<number, { symbol: string; market: string; listing_market: string | null }> = {
+    1: { symbol: '7856', market: 'OTC', listing_market: 'ROTC' },
+    2: { symbol: '6467', market: 'TWSE', listing_market: 'TWSE' },
+    3: { symbol: '5483', market: 'OTC', listing_market: null },
+  }
+  const marketDb = {
+    prepare: () => ({
+      bind: (_minDate: string, maxDate: string) => ({
+        all: async () => ({
+          results: [1, 2, 3].map((stock_id) => ({
+            stock_id, date: maxDate, open: 10, high: 11, low: 9, close: 10.5, volume: 1000, avg_price: 10.2,
+          })),
+        }),
+      }),
+    }),
+  } as unknown as D1Database
+  const coreDb = {
+    prepare: () => ({
+      bind: (...ids: number[]) => ({
+        all: async () => ({ results: ids.map((id) => ({ id, name: `Test ${id}`, sector: 'Test', ...identities[id] })) }),
+      }),
+    }),
+  } as unknown as D1Database
+  const fakeEnv = { DB: coreDb, CORE_DB: coreDb, MARKET_DB: marketDb, MULTI_D1_ACTIVE_DOMAINS: 'core,market', MULTI_D1_STRICT: 'true' }
+  const rows = await loadScreenerPriceRowsPaged(fakeEnv, ['2026-10-22'])
+  assert(rows.map((row) => `${row.symbol}:${row.market}`).join(',') === '7856:ROTC,6467:TWSE,5483:OTC',
+    'price rows must carry the exact venue, falling back to legacy market only when it is absent')
+  const venueSplit = splitPriceRowsByBoard(rows, '2026-10-22')
+  assert(!venueSplit.allPrices.some((row) => row.stock_id === '7856'), 'ROTC stock with a full OHLC bar must not enter the tradable universe')
+  assert(venueSplit.allPrices.some((row) => row.stock_id === '6467'), 'official TWSE venue must stay tradable')
+  assert([...venueSplit.tpexSymbols].join(',') === '5483', 'only listed TPEx stocks are marked OTC')
+}
+
+Promise.all([assertPagedPriceLoader(), assertExactVenueDecidesLane()]).catch((error) => {
   console.error(error)
   process.exitCode = 1
 })

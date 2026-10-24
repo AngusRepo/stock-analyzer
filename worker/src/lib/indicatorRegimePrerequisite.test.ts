@@ -23,8 +23,7 @@ async function main() {
     async () => ({ ...valid, quality_status: 'bounded' })), 'HMM_READY')
 
   // Reproduce the actual missing-day dependency with SQLite and the production writer.
-  const root = 'C:/Users/Wei/Desktop/CloudCode/stockvision-cloudflare-v12/audits/hmm-risk-repair-20261007'
-  const frozen = JSON.parse(fs.readFileSync(root + '/readonly-sources.json', 'utf8'))
+  const frozen = JSON.parse(fs.readFileSync(new URL('../../test-fixtures/daily-market-risk/readonly-sources.json', import.meta.url), 'utf8'))
   const f = l4NativeFixture(), nativeMarket = f.env.MARKET_DB, originalFetch = globalThis.fetch
   try {
     globalThis.fetch = (async (input: unknown) => {

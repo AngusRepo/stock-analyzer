@@ -256,7 +256,9 @@ def read_context_projection(query, snapshot_id, fields):
         lambda root_id: read_context_projection(query, root_id, fields))
     if projected or delta:
         # Keep the original projection shape: only requested fields are returned.
-        payload['content'] = {k: v for k, v in payload['content'].items() if k in fields}
+        # Fields are dotted paths; the content holds their top-level keys.
+        roots = {field.split('.', 1)[0] for field in fields}
+        payload['content'] = {k: v for k, v in payload['content'].items() if k in roots}
     return {'manifest': manifest, 'payload': payload, 'read_projection': 'validation_fields_v1'}
 
 

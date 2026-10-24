@@ -1311,7 +1311,7 @@ async function loadLatestPriceShapes(
   return output
 }
 
-async function loadBoardLaneStats(
+export async function loadBoardLaneStats(
   coreDb: D1Database,
   marketDb: D1Database,
   paperDb: D1Database,
@@ -1323,7 +1323,8 @@ async function loadBoardLaneStats(
         FROM daily_recommendations
        WHERE date = ?
     `).bind(targetDate).all<BoardRecommendationRow>(),
-    coreDb.prepare('SELECT id, symbol, market FROM stocks').all<CoreStockMarketRow>(),
+    // Exact venue owner first: ROTC is stored as market=OTC.
+    coreDb.prepare('SELECT id, symbol, COALESCE(listing_market, market) AS market FROM stocks').all<CoreStockMarketRow>(),
     paperDb.prepare(`
       SELECT i.symbol, r.source_reco_date, r.trade_date
         FROM pending_buy_runs r
@@ -1355,7 +1356,7 @@ async function loadBoardLaneStats(
   const isEmergingLike = (stock: CoreStockMarketRow | undefined, date: string): boolean => {
     if (!stock) return false
     const market = String(stock.market ?? '').toUpperCase()
-    if (market === 'EMERGING' || market === 'ESB') return true
+    if (market === 'EMERGING' || market === 'ESB' || market === 'ROTC') return true
     const price = pricesByDate.get(date)?.get(Number(stock.id))
     return Boolean(price && price.open == null && price.avg_price != null)
   }

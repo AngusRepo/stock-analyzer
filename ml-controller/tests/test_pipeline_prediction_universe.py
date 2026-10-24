@@ -21,7 +21,7 @@ def batch(monkeypatch):
             return result
         return call
     for name, result in (('prune_predictions_outside_universe',0), ('write_predictions_to_d1',2),
-                         ('write_layer2_timesfm_enrichment_audit',2), ('write_layer3_formal_gate_audit',2),
+                         ('write_layer3_formal_gate_audit',2),
                          ('update_recommendations_in_d1',2), ('delete_filtered_recommendations',0),
                          ('re_rank_recommendations',0)):
         monkeypatch.setattr(graph, name, fake_effect(name, result))
@@ -55,6 +55,9 @@ def test_exact_research_or_hold_batch_is_not_a_profit_or_buy_gate(batch):
     state['predictions']['2330']['signal'] = 'HOLD'
     result = asyncio.run(graph.node_write_d1(state))
     assert effects
+    # TimesFM L2 is retired: no OPS layer2_timesfm_enrichment rows are written.
+    assert not hasattr(graph, 'write_layer2_timesfm_enrichment_audit')
+    assert 'layer2_timesfm_enrichment_audit_rows' not in result['metrics']
     assert result['metrics']['prediction_symbol_closure_passed'] is True
     assert result['metrics']['unexpected_prediction_symbols'] == []
     assert result['metrics']['prediction_symbols'] == 2

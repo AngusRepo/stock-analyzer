@@ -7,7 +7,8 @@ import sys
 import polars as pl
 import pytest
 
-from services.finlab_security_master import normalize_security_master, normalize_etf_master, merge_security_masters
+from services.finlab_security_master import (SOURCE, normalize_security_master, normalize_etf_master,
+    merge_security_masters, official_board_index)
 from services.finlab_canonical_materializer import FinLabCanonicalOutputs, build_d1_upsert_statements
 
 
@@ -48,6 +49,75 @@ def test_emerging_source_keeps_exact_venue_without_breaking_core_exchange_family
     assert row['listing_market'] == 'ROTC'
     assert row['listed_date'] == '2024-08-12'
     assert row['listed_date_source'].endswith(':興櫃日期')
+
+
+def official(extra=()):
+    # Padded to the completeness floor; symbols are the 2026-10-22 stale FinLab venues.
+    rows = [(f'9{i:03d}', 'TWSE') for i in range(800)] + [(f'8{i:03d}', 'OTC') for i in range(600)]
+    rows += [(f'7{i:03d}', 'ROTC') for i in range(100)] + list(extra)
+    return pl.DataFrame(rows, schema=['symbol', 'board'], orient='row')
+
+
+def stale(symbol, finlab_market, **dates):
+    field = {'sii': '上市日期', 'otc': '上櫃日期', 'rotc': '興櫃日期'}[finlab_market]
+    base = {'symbol': symbol, '市場別': finlab_market, '上市日期': None, '上櫃日期': None, '興櫃日期': None}
+    return company(**{**base, field: '2022-01-03', **dates})
+
+
+def test_official_board_overrides_stale_finlab_venue_and_records_receipt():
+    frame = pl.DataFrame([stale('6467', 'rotc', 上市日期='2025-12-15'), stale('7812', 'rotc'),
+        stale('7856', 'rotc'), stale('8908', 'otc'), company()])
+    index = official_board_index(official([('6467', 'TWSE'), ('7812', 'TWSE'), ('7856', 'OTC'),
+        ('8908', 'TWSE'), ('2330', 'TWSE')]))
+    plain = {r['symbol']: r for r in normalize_security_master(frame, '2026-10-23T00:00:00Z')}
+    conflicts = []
+    rows = {r['symbol']: r for r in normalize_security_master(frame, '2026-10-23T00:00:00Z', index, conflicts)}
+    assert {s: (r['market'], r['listing_market']) for s, r in rows.items()} == {
+        '6467': ('TWSE', 'TWSE'), '7812': ('TWSE', 'TWSE'), '7856': ('OTC', 'OTC'),
+        '8908': ('TWSE', 'TWSE'), '2330': ('TWSE', 'TWSE')}
+    assert conflicts == [{'symbol': s, 'finlab_market': m, 'official_board': b} for s, m, b in [
+        ('6467', 'ROTC', 'TWSE'), ('7812', 'ROTC', 'TWSE'), ('7856', 'ROTC', 'OTC'), ('8908', 'OTC', 'TWSE')]]
+    # Board date when FinLab has it, else the captured date with its true source field.
+    assert (rows['6467']['listed_date'], rows['6467']['listed_date_source']) == ('2025-12-15', SOURCE + ':上市日期')
+    assert (rows['7812']['listed_date'], rows['7812']['listed_date_source']) == ('2022-01-03', SOURCE + ':興櫃日期')
+    # An overridden row is a different receipt; an agreeing row keeps its checksum.
+    assert rows['6467']['listing_checksum'] != plain['6467']['listing_checksum']
+    assert rows['2330']['listing_checksum'] == plain['2330']['listing_checksum']
+
+
+@pytest.mark.parametrize('frame', [
+    None, pl.DataFrame(), official().filter(pl.col('board') != 'ROTC'),
+    official().filter(~((pl.col('board') == 'TWSE') & (pl.col('symbol') < '9100')))])
+def test_incomplete_official_snapshot_never_overrides(frame):
+    assert official_board_index(frame) is None
+    rows = normalize_security_master(pl.DataFrame([stale('6467', 'rotc')]), '2026-10-23T00:00:00Z',
+                                     official_board_index(frame))
+    assert rows[0]['listing_market'] == 'ROTC'
+
+
+def test_symbol_on_two_rosters_or_absent_keeps_finlab_venue():
+    index = official_board_index(official([('6467', 'TWSE'), ('6467', 'ROTC')]))
+    assert '6467' not in index
+    rows = normalize_security_master(pl.DataFrame([stale('6467', 'rotc'), stale('5555', 'otc')]),
+                                     '2026-10-23T00:00:00Z', index)
+    assert [(r['symbol'], r['listing_market']) for r in rows] == [('5555', 'OTC'), ('6467', 'ROTC')]
+
+
+@pytest.mark.parametrize('with_official', [True, False])
+def test_materializer_reads_official_boards_when_captured(tmp_path, with_official):
+    from services.finlab_canonical_materializer import materialize_finlab_canonical_outputs
+    raw = tmp_path / 'raw' / 'security_master'
+    raw.mkdir(parents=True)
+    pl.DataFrame([{**stale('6467', 'rotc'), '__observed_at': '2026-10-23T00:00:00Z'}]).write_parquet(
+        raw / 'company_basic_info.parquet')
+    pl.DataFrame([{**etf(), '__observed_at': '2026-10-23T00:00:00Z'}]).write_parquet(raw / 'tw_etf_basic_info.parquet')
+    if with_official:
+        official([('6467', 'TWSE')]).write_parquet(raw / 'official_boards.parquet')
+    out = materialize_finlab_canonical_outputs(tmp_path, generated_at='2026-10-23T00:00:00Z', datasets=['stocks'])
+    venue = {r['symbol']: r['listing_market'] for r in out.security_master}['6467']
+    assert venue == ('TWSE' if with_official else 'ROTC')
+    assert out.manifest['venue_arbitration'] == {'official_snapshot': with_official, 'overrides': [
+        {'symbol': '6467', 'finlab_market': 'ROTC', 'official_board': 'TWSE'}] if with_official else []}
 
 
 @pytest.mark.parametrize('changes,reason', [({'市場別': 'unknown'}, 'market_unknown'),
@@ -168,13 +238,18 @@ def test_source_capture_one_lane_three_distinct_artifacts_and_failure_is_not_gre
     monkeypatch.setattr(tool, 'login_finlab_sdk', lambda _: None)
     monkeypatch.setattr(tool, 'd1_counts', lambda _: {})
     monkeypatch.setattr(tool, 'utc_now', lambda: '2026-09-08T00:00:00+00:00')
+    monkeypatch.setattr(tool, 'fetch_official_board_frame', lambda: pd.DataFrame(
+        [{'symbol': '2330', 'board': 'TWSE', 'source': 'test', 'report_date': '', 'observed_at': ''}]))
     summaries, diffs, reports, blockers = tool.materialize_specs(years=1, run_dir=tmp_path,
         lanes=['security_master'], generated_at='2026-01-01T00:00:00+00:00')
     assert calls == ['security_categories', 'company_basic_info', 'tw_etf_basic_info']
     assert len(summaries) == len(diffs) == 1
-    assert len(reports) == len(summaries[0]['artifacts']) == 3
+    assert len(reports) == 3
     assert {r['field'] for r in reports} == {'table', 'company_basic_info', 'tw_etf_basic_info'}
-    assert len({r['path'] for r in summaries[0]['artifacts']}) == 3
+    # official_boards is an arbitration input, not a FinLab source key.
+    assert [a['field'] for a in summaries[0]['artifacts']][-1] == 'official_boards'
+    assert len({r['path'] for r in summaries[0]['artifacts']}) == 4
+    assert pl.read_parquet(tmp_path / 'raw/security_master/official_boards.parquet')['board'].to_list() == ['TWSE']
     assert pl.read_parquet(tmp_path / 'raw/security_master/table.parquet')['source_identity'][0] == 'security_categories'
     for key in {'company_basic_info', 'tw_etf_basic_info'} - {failed_source}:
         frame = pl.read_parquet(tmp_path / f'raw/security_master/{key}.parquet')
@@ -184,3 +259,12 @@ def test_source_capture_one_lane_three_distinct_artifacts_and_failure_is_not_gre
     if failed_source:
         assert blockers[0]['required_fields'] == [failed_source]
         assert next(r for r in reports if r['field'] == failed_source)['status'] == 'failed'
+
+
+def test_official_roster_completeness_counts_common_stock_codes_only():
+    warrants = [(f'03{i:04d}', 'TWSE') for i in range(2000)]
+    frame = pl.DataFrame([(f'9{i:03d}', 'TWSE') for i in range(10)] + warrants
+                         + [(f'8{i:03d}', 'OTC') for i in range(600)] + [(f'7{i:03d}', 'ROTC') for i in range(100)],
+                         schema=['symbol', 'board'], orient='row')
+    assert official_board_index(frame) is None
+    assert official_board_index(official()) is not None

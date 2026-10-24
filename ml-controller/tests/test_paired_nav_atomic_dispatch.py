@@ -19,6 +19,9 @@ from services import payload_builder, modal_client, cost_tracker
 from services.paired_nav_atomic_inputs import daily_setup_status
 from services.paired_nav_journal import digest
 
+pytestmark = pytest.mark.skip(
+    reason='Atomic L2 had no graph producer after B#0; its TimesFM node retired in B#3a. Deleted with the atomic slice.')
+
 
 def _model_bundle(request):
     bundle = {k: deepcopy(request[k]) for k in ('run_date', 'run_id', 'state_gcs_uri',
@@ -41,6 +44,8 @@ def _model_bundle(request):
 
 @pytest.fixture
 def dispatched(monkeypatch):
+    # Other atomic modules import this fixture; the module pytestmark does not reach them.
+    pytest.skip(pytestmark.kwargs['reason'])
     monkeypatch.setenv('STOCKVISION_SOURCE_SHA', 'a'*40)
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / 'ml-service'))
     population = daily._population()

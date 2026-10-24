@@ -1,3 +1,4 @@
+import { hmmLineage } from './hmmLifecycle'
 import { getTradingConfig } from './tradingConfig'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
@@ -34,13 +35,13 @@ test('native morning admits L3 HOLD with a positive L4 target and canonical exec
     f.sqls.core.exec("INSERT INTO stocks(id,symbol,name,market) VALUES(1,'2330','fixture','TWSE')")
     f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,open,high,low,close,avg_price,volume) VALUES(1,'2026-09-11',100,102,98,100,100,1000000)")
     f.sqls.core.prepare(`INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation)
-      VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false}))
+      VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false,hmm_lineage:hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!))}))
     const raw:any={execution_scope:'private_research',schema_version:'l4-portfolio-plan-v1',owner:'l4_distribution',parent_plan_id:null,
       account_anchor:account.account_anchor,policy_identity:'d'.repeat(64),model_checksum:'c'.repeat(64),l3_identity:l3,
       signal_date:'2026-09-11',account_id:1,nav_at_decision:1e6,weights:{'2330':.05},
       targets:{'2330':{weight:.05,current_weight:0,locked:false,expected_return_gross:.02}},
       constraints:{exposure_cap:account.risk_limits.exposure_cap,name_cap:account.risk_limits.name_cap,min_weight:.03,max_positions:5},
-      proof:{within_tolerance:true,absolute_objective_gap:0,tolerance:1e-8,evaluated_candidate_count:1,preselection:false},opb:{enabled:false,status:'fixed_policy',arm_id:'base'}}
+      proof:{within_tolerance:true,absolute_objective_gap:0,tolerance:1e-8,evaluated_candidate_count:1,preselection:false},opb:{enabled:false,status:'fixed_policy',arm_id:'base'},hmm_lineage:hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!))}
     const canonical_payload=JSON.stringify(raw),plan={...raw,plan_id:createHash('sha256').update(canonical_payload).digest('hex')}
     await withPaperExecutionScope(f.ports,()=>storeL4PortfolioPlan(f.env,{plan,canonical_payload,allocation_snapshot_id:'e'.repeat(64)}))
     await withPaperExecutionScope(f.ports,()=>setupMorningPendingBuys(f.env))

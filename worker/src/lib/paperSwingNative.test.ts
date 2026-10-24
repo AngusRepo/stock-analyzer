@@ -1,3 +1,4 @@
+import { hmmLineage } from './hmmLifecycle'
 import fs from 'node:fs'
 import {finalizeSinglePlan} from './premarketSinglePlan'
 import {readL4ExecutionPlan} from './paperDailyPlanRuntime'
@@ -30,7 +31,7 @@ import { checkL4RotationGate } from './l4RotationGate'
 for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_sector_reservation','hold_owner_consistency','hold_owner_repair','owner_price_622','owner_price_626','owner_limit_changed','p5_small_trial','daily_orl','hard_stop','20_sessions','closing_auction','atr_veto','missing_book','unchanged_stream_book','atr_sparse_warmup','atr_sparse_missing','clock_domain','clock_domain_stale','clock_domain_dead_heartbeat','odd_lot_fee','holding_503_recovery','all_books_missing','controller_static_book','wide_live_book','submit_expired']) test(
   scenario==='missing_book'?'native swing missing broker book updates baseline without entry'
     : scenario==='unchanged_stream_book'?'native swing enters on unchanged live stream book'
-      :`native swing full entry / ${scenario} exit through broker adapter`,async()=>{
+      :`native swing full entry / ${scenario} exit through broker adapter`,{ skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' },async()=>{
   const f=l4NativeFixture()
   const ownerPriceCase=scenario.startsWith('owner_')
   f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
@@ -184,11 +185,11 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
     f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,open,high,low,close,avg_price,volume) VALUES(1,'2026-09-11',20,20.5,19.5,20,20,1000000)")
     if(ownerPriceCase)f.sqls.market.exec("UPDATE stock_prices SET open=599,high=610,low=590,close=599,avg_price=599 WHERE stock_id=1")
     f.sqls.core.prepare(`INSERT INTO daily_recommendations(stock_id,symbol,name,date,rank,score,reason,signal,confidence,has_buy_signal,eligible_for_ml,eligible_for_pending_buy,alpha_allocation)
-      VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false}))
+      VALUES(1,'2330','fixture','2026-09-11',1,50,'synthetic fixture','HOLD',.5,0,1,1,?)`).run(JSON.stringify({engine:'sparse_tangent_inverse_risk',selected:false,hmm_lineage:hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!))}))
     const allocateNative=(context:any,cap=.08)=>{
-      const python=process.env.NAV_TEST_PYTHON ?? fileURLToPath(new URL('../../../../../ml-service/.venv/Scripts/python.exe',import.meta.url))
+      const python=process.env.NAV_TEST_PYTHON!
       const script=fileURLToPath(new URL('../../../ml-controller/tests/l4_native_chain_allocator.py',import.meta.url))
-      const result=spawnSync(python,['-B',script],{input:JSON.stringify({account:context,identity:l3,
+      const result=spawnSync(python,['-B',script],{input:JSON.stringify({account:context,identity:l3,hmm_lineage:hmmLineage(JSON.parse(f.kvs.get('market_regime_state')!)),
         reward_ledger:f.sqls.paper.prepare('SELECT payload_json FROM l4_policy_account_rewards_v1 WHERE known_date < ?').all(context.signal_date).map(row=>JSON.parse(String(row.payload_json))),
         constraints:{...f.cfg.l4Distribution!.constraints,buy_cost:.001425,sell_cost:.004425,name_cap:cap}}),encoding:'utf8'})
       assert.equal(result.status,0,result.stderr)

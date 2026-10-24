@@ -134,7 +134,8 @@ def _core_rows(
         ))
         stock_rows.extend(client.query(
             f"""
-            SELECT id AS stock_id, symbol, name, sector, market
+            SELECT id AS stock_id, symbol, name, sector,
+                   COALESCE(listing_market, market) AS market
               FROM stocks
              WHERE symbol IN ({placeholders})
             """,

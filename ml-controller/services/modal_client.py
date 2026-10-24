@@ -743,28 +743,9 @@ async def itransformer_batch_predict(series_list: list[dict], horizon_used: int 
     })
 
 
-async def _modal_timesfm_universal_predict(payload: dict) -> dict:
-    return await _modal_remote_call("timesfm_universal_predict", payload)
-
-
-async def timesfm_batch_predict(
-    series_list: list[dict],
-    horizon_used: int = 5,
-    version: str = "v1",
-    sequence_contract_points: int | None = None,
-    expected_checksum: str | None = None,
-) -> dict:
-    """Config-backed TimesFM forecast for a batch of stocks."""
-    payload = {
-        "series_list": series_list,
-        "horizon_used": horizon_used,
-        "version": version,
-    }
-    if sequence_contract_points is not None:
-        payload["sequence_contract_points"] = int(sequence_contract_points)
-    if expected_checksum is not None:
-        payload['expected_checksum'] = expected_checksum
-    return await _modal_timesfm_universal_predict(payload)
+async def timesfm_batch_predict(*_args, **_kwargs) -> dict:
+    """TimesFM L2 generation is retired; fail closed instead of starting a Modal GPU call."""
+    raise RuntimeError("timesfm_generation_retired")
 
 
 async def _modal_gnn_graphsage_universal_predict(payload: dict) -> dict:

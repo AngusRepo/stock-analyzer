@@ -435,3 +435,16 @@ def test_tiny_verified_subset_reused_when_raw_file_exceeds_cache_budget(env,monk
         assert config['payload']['content']=={'trading_config':{'strategy':'single_b'}}
         assert len(downloads)==1
         assert _scope.get().bytes<=4096
+
+
+def test_projection_keeps_root_of_dotted_fields(env):
+    from services.paired_nav_journal import read_context_projection
+    db,_=env
+    runtime={'account':{'cash':1}}
+    manifest=freeze(db,{'inputs':{'alpha_policy':{'l4Distribution':{'runtime':runtime}}},
+                        'model_predictions':{'2330':.1},'unused_history':list(range(20000))})
+    frozen=read_context_projection(db.query,manifest['snapshot_id'],
+                                   ('inputs.alpha_policy.l4Distribution.runtime','model_predictions'))
+    content=frozen['payload']['content']
+    assert set(content)=={'inputs','model_predictions'}
+    assert content['inputs']['alpha_policy']['l4Distribution']['runtime']==runtime

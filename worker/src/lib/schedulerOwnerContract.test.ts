@@ -115,7 +115,7 @@ assert(modelIcFullCheck?.task === 'model-ic-full-check', 'Friday Model IC must o
 assert(modelIcFullCheck?.legacyIds?.includes('model-ic-tracker'), 'Model IC full-check cutover must explicitly retire the legacy scheduler id')
 
 assert(controllerDailyWorkflows.includes('runModelIcFullCheck') && !controllerDailyWorkflows.includes('runModelIcTrackerChain'), 'full-check workflow function must have a distinct name')
-assert(postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh") && !postMarketChain.includes("'model-ic-tracker', () => runModelIcRollingRefresh"), 'post-verify must log only model-ic-rolling')
+assert(postMarketChain.includes("'model-ic-rolling', env => runModelIcRollingRefresh") && !postMarketChain.includes("'model-ic-tracker'"), 'post-verify must log only model-ic-rolling')
 assert(adminGcpTasks.includes("'model-ic-full-check': async () => runModelIcFullCheck"), 'admin scheduler trigger must expose only the full-check identity')
 assert(adminTriggerRoutes.includes("'model-ic-tracker': 'model-ic-full-check'") && adminTriggerRoutes.includes('resolveSchedulerTaskAlias'), 'legacy trigger URL must canonicalize before policy and logging')
 assert(schedulerStatus.includes("id: 'model-ic-rolling'") && schedulerStatus.includes("id: 'model-ic-full-check'") && schedulerStatus.includes("legacyLogIds: ['model-ic-tracker']"), 'OBS status must expose split identities and map old evidence only to full-check')

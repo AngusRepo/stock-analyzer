@@ -68,7 +68,7 @@ async function run(): Promise<void> {
 
   // EMERGING/ESB/ROTC targets under v2 surface as an explicit setup error, never a silent SQL drop.
   const orchestrator = readFileSync(new URL('./pendingBuyOrchestrator.ts', import.meta.url), 'utf8')
-  assert.ok(orchestrator.includes("AND (?=1 OR COALESCE(UPPER(s.market), '') NOT IN ('EMERGING', 'ESB'))"))
+  assert.ok(orchestrator.includes("AND (?=1 OR COALESCE(UPPER(COALESCE(s.listing_market, s.market)), '') NOT IN ('EMERGING', 'ESB', 'ROTC'))"))
   assert.ok(orchestrator.includes("normalizeBoardType(row.market) === 'EMERGING' && targetBuyGap(row)"))
   assert.ok(orchestrator.includes('l4_plan_selected_non_executable:'))
   const board = readFileSync(new URL('./boardTradability.ts', import.meta.url), 'utf8')

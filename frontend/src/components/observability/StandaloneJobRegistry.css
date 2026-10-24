@@ -72,6 +72,7 @@
 .obs-standalone__relation.is-unmapped strong { color: var(--chart-2); }
 .obs-standalone__timing { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 9px 0 0; }
 .obs-standalone__timing > div { min-width: 0; }
+.obs-standalone__job-card > .obs-job-timing { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--border); }
 .obs-standalone__timing > div + div { border-left: 1px solid var(--border); padding-left: 9px; }
 .obs-standalone__timing dt { color: var(--muted-foreground); font-size: .8125rem; text-transform: uppercase; }
 .obs-standalone__timing dd { margin: 2px 0 0; overflow: hidden; color: var(--muted-foreground); font-size: .8125rem; overflow-wrap: anywhere; white-space: normal; }

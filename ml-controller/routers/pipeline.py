@@ -130,6 +130,17 @@ async def _callback_worker(
             await _post(c)
 
 
+# Phases that run before ML prediction; a failure here blocks ml-predict and recommendation.
+PRE_ML_PIPELINE_PHASES = frozenset({
+    "node_load_inputs",
+    "node_load_market_env",
+    "node_attach_serving_context",
+    "node_prepare_l2_inputs",
+    "node_resume_l2_inputs",
+    "node_build_payloads",
+})
+
+
 async def _emit_subtask_callbacks(
     run_id: str,
     result: dict | None,
@@ -137,12 +148,14 @@ async def _emit_subtask_callbacks(
     overall_error: str | None,
     elapsed_ms: int,
     run_date: str | None = None,
+    phases: list[dict] | None = None,
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
     Dashboard reads scheduler:run:{task}:{date}. Screener is Worker-owned before
     the pipeline trigger, so the pipeline callback must not overwrite screener
     success/failure. Only ML predict and recommendation are pipeline-owned.
+    `phases` is this process's phase telemetry (services.pipeline_progress).
     """
     metrics: dict = {}
     if isinstance(result, dict):
@@ -172,50 +185,57 @@ async def _emit_subtask_callbacks(
             "ml-predict",
             predictions_n > 0 and prediction_symbol_closure and incomplete_active_models == 0,
             prediction_summary,
+            predictions_n > 0 or prediction_symbols > 0,
         ),
         (
             "recommendation",
             recommendation_closed,
             f"run_id={run_id} recos_updated={recos_n} filtered={filtered_n} seed_rows={seed_rows_n} closure={recommendation_closed}",
+            seed_rows_n > 0 or recos_n > 0,
         ),
     ]
+
+    # Error results carry no metrics, so only a recorded pre-ML phase failure
+    # proves the children never ran; anything else stays a child error.
+    failed_phase = next(
+        (str(p.get("phase")) for p in reversed(phases or []) if isinstance(p, dict) and p.get("status") == "failed"),
+        None,
+    )
+    upstream_failed = overall_status != "success" and failed_phase in PRE_ML_PIPELINE_PHASES
+
+    def _payload(task: str, ok: bool, summary: str, reached: bool) -> dict:
+        if overall_status == "success" and ok:
+            status = "success"
+        elif upstream_failed and not reached:
+            status = "blocked"
+            summary = f"{summary} upstream_pipeline_failed_at={failed_phase}"
+        else:
+            status = "error"
+        payload: dict = {
+            "task": task,
+            "status": status,
+            "summary": summary,
+            "duration_ms": elapsed_ms,
+            "run_id": run_id,
+        }
+        if run_date:
+            payload["run_date"] = run_date
+        if status != "success":
+            payload["error"] = overall_error or f"{task}: no output"
+        return payload
 
     async def _send(payload: dict, client: httpx.AsyncClient | None = None) -> None:
         await _callback_worker(payload, client=client)
 
     async_client_cls = getattr(httpx, "AsyncClient", None)
     if async_client_cls is object or not callable(async_client_cls):
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _send(payload)
+        for subtask in subtasks:
+            await _send(_payload(*subtask))
         return
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _callback_worker(payload, client=client)
+        for subtask in subtasks:
+            await _callback_worker(_payload(*subtask), client=client)
 
 
 # ─── V2 trigger endpoint ─────────────────────────────────────────────────────
@@ -397,6 +417,16 @@ async def reconcile_pipeline_execution(
         # Never synthesize success from an async dispatcher having exited zero.
         await _callback_worker(callback)
     return {**snapshot, "failure_callback_sent": callback is not None}
+
+
+@router.get('/v2/input/status')
+async def input_work_status(request: Request, date: str, run_id: str = Query(..., max_length=180), phase: str = Query(...)):
+    _check_service_token(request)
+    from services.pipeline_input_work import observe_input_work
+    try:
+        return await asyncio.to_thread(observe_input_work, run_id=run_id, run_date=date, phase=phase)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/v2/resume")

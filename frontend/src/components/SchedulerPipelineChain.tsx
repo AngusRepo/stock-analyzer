@@ -1,5 +1,8 @@
 import { ArrowRight } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { SchedulerJob } from '@/lib/api'
+import { pipelinePhaseName } from '@/lib/pipelineStageCards'
+import JobRunTiming from './observability/JobRunTiming'
 import { WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
 
 const upstream = [
@@ -25,19 +28,62 @@ function label(status?: string) {
 export function pipelinePreparationLabel(job?: SchedulerJob): string {
   const summary = job?.summary ?? ''
   if (/awaiting_premarket|L3 已封存/.test(summary)) return 'L3 預測已封存；等待下一交易日盤前資訊後接續 L4 推薦'
+  if (job?.pipelineProgress && ['running','waiting'].includes(job.lastStatus)) {
+    const p = job.pipelineProgress
+    return `${p.status === 'waiting' ? '等待依賴' : p.status === 'blocked' ? '輸入條件未滿足' : p.status === 'failed' ? '階段失敗' : p.status === 'completed' ? '階段結束' : '目前階段'}：${pipelinePhaseName(p.phase)}`
+  }
   if (/dependency=input_prep|stage=prep\b/.test(summary)) return '目前階段：特徵資料準備；等待批次完成收據'
   if (/dependency=input_snapshot|stage=snapshot\b/.test(summary)) return '目前階段：輸入快照準備'
   if (/modal_prediction=(?:triggered|running|spawned)\b/.test(summary)) return '目前階段：ML 預測'
   return job?.lastStatus === 'success' ? '流程已完成；各子階段狀態依自己的收據呈現' : '各子階段狀態依自己的啟動與完成收據呈現'
 }
-function Stage({ id, title, job, detail }: { id: string; title: string; job?: SchedulerJob; detail?: string }) {
-  return <div data-stage={id} className="min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3">
+export function PipelinePhaseDetails({ job }: { job?: SchedulerJob }) {
+  const p = job?.pipelineProgress
+  if (!p) return <p className="mt-2 text-[11px] text-slate-400">此執行尚無階段回報；不能由 waiting 判定 Job 尚未啟動。</p>
+  return <div className="mt-3 space-y-2" aria-label="Pipeline 階段紀錄">
+    <p className="text-[11px] text-slate-400">階段回報時間：{new Date(p.observed_at).toLocaleTimeString('zh-TW', {timeZone:'Asia/Taipei',hour12:false})}</p>
+    <ol className="grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
+      {p.completed.map((row,index) => <li key={`${index}-${row.phase}`} className="rounded border border-[#263247] p-2 text-xs">
+        <span>{pipelinePhaseName(row.phase)}</span>
+        <span className="mt-1 block text-slate-400">{row.status === 'failed' ? '失敗' : row.status === 'blocked' ? '輸入條件未滿足' : '結束'} · {Math.floor(row.elapsed_ms/60000)}分 {Math.floor(row.elapsed_ms%60000/1000)}秒</span>
+      </li>)}
+    </ol>
+  </div>
+}
+export function matureEvidencePhaseLabel(job?: SchedulerJob): string | null {
+  if (job?.id !== 'strategy-learning-mature-evidence' || job.lastStatus !== 'running') return null
+  const phase = /\bphase=([a-z_]+)/.exec(job.summary ?? '')?.[1]
+  return ({ recover_mature_selection: '補齊成熟選股證據', canonical_selection_labels: '更新成熟標籤',
+    marginal_edge: '計算策略邊際效果', reward_ledger: '更新策略回饋紀錄' } as Record<string, string>)[phase ?? ''] ?? null
+}
+export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect, selected, current, statusText, statusTone, leading, overview, visualState, justCompleted }: {
+  id: string; title: string; job?: SchedulerJob; detail?: string;
+  timingJob?: SchedulerJob;
+  onSelect?: () => void; selected?: boolean; current?: boolean;
+  statusText?: string; statusTone?: WorkstationTone;
+  leading?: ReactNode; overview?: boolean; visualState?: string; justCompleted?: boolean;
+}) {
+  const Element = onSelect ? 'button' : 'div'
+  const phaseLabel = (job?.stageCard ? job.summary : null) ?? matureEvidencePhaseLabel(job) ?? (job?.id === 'pipeline' ? pipelinePreparationLabel(job) : null)
+  return <Element data-stage={id} data-chain-stage={onSelect ? id : undefined}
+    className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-slate-400' : '')}
+    onClick={onSelect} aria-current={current ? 'step' : undefined}
+    aria-label={onSelect ? `${title}: ${statusText || label(job?.lastStatus)}` : undefined}>
+    {overview ? <>
+      {leading}
+      <span className="readiness-task__copy"><strong>{title}</strong>
+        <span className="readiness-task__meta"><span className="readiness-task__status" title={statusText}>{statusText?.replace(/^Historical replay · [^·]+ · /, '') || label(job?.lastStatus)}</span><span>業務日 {job?.statusRunDate || '—'}</span></span>
+        {phaseLabel && <span className="readiness-task__phase text-[10px] text-slate-400">{phaseLabel}</span>}
+        <JobRunTiming job={timingJob ?? job} />
+      </span>
+    </> : <>
     <p className="text-xs text-slate-100">{title}</p>
-    <div className="mt-2"><WorkstationPill tone={tone(job?.lastStatus)}>{label(job?.lastStatus)}</WorkstationPill></div>
+    <div className="mt-2"><WorkstationPill tone={statusTone ?? tone(job?.lastStatus)}>{statusText || label(job?.lastStatus)}</WorkstationPill></div>
     <p className="mt-2 text-[10px] text-[#8a92a6]">業務日 {job?.statusRunDate || '—'}</p>
     {detail && <p className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{detail}</p>}
     {job?.summary && <p className="mt-2 line-clamp-2 break-words text-[10px] leading-4 text-[#70809b]" title={job.summary}>{job.summary}</p>}
-  </div>
+    </>}
+  </Element>
 }
 export default function SchedulerPipelineChain({ jobs, loading, error }: {
   jobs: SchedulerJob[]; loading?: boolean; error?: unknown
@@ -55,7 +101,7 @@ export default function SchedulerPipelineChain({ jobs, loading, error }: {
       {root && <WorkstationPill tone={tone(root.lastStatus)}>整體流程：{label(root.lastStatus)}</WorkstationPill>}
     </div>
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-      {upstream.map(([id, title]) => <Stage key={id} id={id} title={title} job={byId.get(id)}
+      {upstream.map(([id, title]) => <SchedulerStageCard key={id} id={id} title={title} job={byId.get(id)}
         detail={id === 'regime-compute' ? '前置：同日風險資料品質驗證' : undefined} />)}
     </div>
     <div data-stage="pipeline" className="rounded-xl border border-[#d6a85f]/35 bg-[#d6a85f]/[0.03] p-3">
@@ -66,9 +112,9 @@ export default function SchedulerPipelineChain({ jobs, loading, error }: {
       <p className="mt-2 text-xs text-[#b9b1a1]">{pipelinePreparationLabel(pipeline)}</p>
       <p className="mt-1 text-[11px] leading-5 text-[#8a92a6]">資料準備 → ML Predict／L3 封存 → 次交易日盤前資訊 → Recommendation／L4。共用業務日與 run ID；等待上游的階段不表示正在計算。</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_1fr] sm:items-start">
-        <Stage id="ml-predict" title="ML Predict · 模型預測" job={byId.get('ml-predict')} />
+        <SchedulerStageCard id="ml-predict" title="ML Predict · 模型預測" job={byId.get('ml-predict')} />
         <ArrowRight aria-hidden="true" className="hidden h-4 w-4 self-center text-amber-300 sm:block" />
-        <Stage id="recommendation" title="Recommendation · 推薦評分與配置" job={byId.get('recommendation')} />
+        <SchedulerStageCard id="recommendation" title="Recommendation · 推薦評分與配置" job={byId.get('recommendation')} />
       </div>
     </div>
   </div>

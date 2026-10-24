@@ -4,7 +4,7 @@ export interface PendingBuyExecutionPreview {
   last_or15_assessment?: PendingBuyExecutionPreview['or15']
   entry_owner?: 's12' | 'or15_vwap_v1' | 'or15-5m-orl8-20-v1'
   or15?: {
-    atr_once?: {policy:string;status:string;reason:string;firstSignalMs?:number;delta?:number;atr5?:number;threshold?:number} | null
+    atr_once?: {policy:string;status:string;reason:string;firstSignalMs?:number;delta?:number;atr5?:number;threshold?:number;firstDelta?:number;firstThreshold?:number;priorHigh?:number;triggerMs?:number;triggerKind?:string;authorization?:{submitUntilMs?:number}} | null
     conditions?: Record<string, boolean | null>
     stock_return?: number | null
     benchmark_return?: number | null
@@ -107,6 +107,11 @@ const OR15_REASONS: Record<string, string> = {
   swing_opening_range_at_limit: '開盤區間高點已達漲停，今日不買',
   swing_buy_at_limit: '可成交價已達漲停，不買',
   swing_execution_window_or_price_changed: '成交前訊號、送單期限或價格複核未通過',
+  swing_second_breakout_waiting: '首次動能不足，等待二次突破創新高',
+  swing_second_breakout_passed: '二次突破動能與前高條件通過',
+  swing_saved_signal_recovery: '已保存突破訊號，期限內重查報價與風控',
+  swing_recovery_expired: '突破訊號補進期限已結束，今日不再追單',
+  swing_recovery_not_observed_live: '未於原訊號窗口保存送單資格，不回補歷史觸發',
   swing_atr_day_veto: '首次原進場訊號動能未通過；今日不再買入',
   swing_atr_first_passed: '首次 ATR5 動能已通過；仍須本次結構與送單檢查',
   swing_atr_waiting_first_signal: '等待首次 ORH／VWAP／相對強度訊號',

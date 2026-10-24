@@ -205,7 +205,7 @@ def test_actual_graph_writes_incumbent_before_nav_failure_and_reports_truth(monk
     if fault == 'capture':
         state['paired_nav_collection'] = capture.shadow_failure('allocation_context_seal', RuntimeError('D1 failure'))
     monkeypatch.setattr(graph, 'LEARNING_D1_CLIENT', SimpleNamespace(query=db.query, batch_execute=db.writer))
-    for name in ['prune_predictions_outside_universe', 'write_layer2_timesfm_enrichment_audit',
+    for name in ['prune_predictions_outside_universe',
                  'write_layer3_formal_gate_audit', 'delete_filtered_recommendations', 're_rank_recommendations']:
         monkeypatch.setattr(graph, name, lambda *a, **kw: 0)
     monkeypatch.setattr(graph, 'write_predictions_to_d1', lambda *a, **kw: 1)
@@ -239,7 +239,7 @@ def test_actual_graph_writes_incumbent_before_nav_failure_and_reports_truth(monk
     # Execute the actual compiled graph, preserving real write_d1 + NAV setup;
     # upstream ML and external writer I/O are isolated local fixtures.
     for name in ['node_load_inputs', 'node_load_market_env', 'node_capture_atomic_inputs', 'node_build_payloads',
-                 'node_l2_timesfm_enrich', 'node_l3_formal_predict', 'node_compute_personas',
+                 'node_prepare_sequence_inputs', 'node_l3_formal_predict', 'node_compute_personas',
                  'node_recommend', 'node_llm_reasons', 'node_compute_pit_residual_shadow',
                  'node_export_dataset_snapshot']:
         monkeypatch.setattr(graph, name, noop)

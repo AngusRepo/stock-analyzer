@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "8c41913b845b8042a08cd6e936a0b1b9d05307d5",
+  "production_baseline_source": "1c5b59b9de358e6883cf7916dad42611227aba82",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "c126b6f770bc3f7f6f3129d27f0a77c0b2b7f41e09966ff00f43e2c78a7b074d",
-  "prior_configuration_checksum": "e4f38ce2b04c8886ef5c223934efeb4ae3f766d9d54b3a4f552e1893d1f29782",
+  "prior_approval_checksum": "b98f37157afbf4905bbd74e39faf8ff73685d40cb180bd9c2f16947c31f79cfa",
+  "prior_configuration_checksum": "86dda6dc365ca9f392801bc4ea1eda46114d44c2e425c9b27d45d03027e76803",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -69,8 +69,8 @@
       "persona_service.py": "f07758b9ee3fc80e12c846ba42076d5fdc92196a0db0c269344d0af238460056",
       "pipeline_persona_context.py": "a9bc09ee59c4ce98bf141873fcda134d09173c2b4436f21e9d31ebba173cb137",
       "paired_nav_atomic_personas.py": "0b9b38527a038426b86127c37af66cd2e418500ef8d68de3a1a90bc7a154a2fe",
-      "screener_seed_domain_merge.py": "3c111952cddb69cc71ce36da29a3f332e157a3ffa3e197bb90eae3b57c6510cf",
-      "screener_seed_domain_shadow.py": "4c848e8ab913708467a31bb5e0a0e131f78f68239afd5933c4dff876d10079cb",
+      "screener_seed_domain_merge.py": "ae4f84eef7ec2296b1170336aeb38b1db5f3b74039e99f9c0fa36638e9441edc",
+      "screener_seed_domain_shadow.py": "4121771a1ae935fd37d149ea45046258e1ed4fdbee7d653ac1f6c9f31dacafaf",
       "recommendation_source_context.py": "4b7f5ae1ef6d1a86a9ca62696da73c2eae9f0558f5b05b7665dbbc0be32c38b7",
       "paired_nav_atomic_recommendation.py": "01f190d0a9d77e9eb160c332e9b76d941e642c42011f43918cb6ffabe37400ca",
       "paired_nav_atomic_policy.py": "97c1c82915bd443de4c90d7e749fc000ad9b31b91997d51ae9735c7c2bf51d18",
@@ -81,6 +81,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:94cec7408ea84e4aa89b4cb35727063bb1b25a55d74ac592735d0366212d71d9",
-  "review": "audits/r33-phase1-release-20261022/release/review.md"
+  "execution_owner_version": "native-paper-v1:351ced2b0b8dfa8a1db582851105daf74008c7ddb50dd7d3a7aa52299cd79a27",
+  "review": "audits/rc-release-20261024/release/review.md"
 }

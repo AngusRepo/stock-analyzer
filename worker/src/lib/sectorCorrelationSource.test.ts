@@ -10,13 +10,13 @@ test('real D1: original kernel parity, future-price exclusion, cold/future cache
   const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response("local") } }', d1Databases: ['NAV'] })
   try {
     const db = await mf.getD1Database('NAV')
-    await db.prepare('CREATE TABLE stocks(id INTEGER PRIMARY KEY,symbol TEXT,name TEXT,market TEXT,sector TEXT)').run()
+    await db.prepare('CREATE TABLE stocks(id INTEGER PRIMARY KEY,symbol TEXT,name TEXT,market TEXT,sector TEXT,listing_market TEXT)').run()
     await db.prepare(`CREATE TABLE stock_prices(stock_id INTEGER,date TEXT,open REAL,high REAL,low REAL,close REAL,
       avg_price REAL,volume REAL,PRIMARY KEY(stock_id,date))`).run()
     await db.prepare('CREATE TABLE sector_leaders(sector TEXT,symbol TEXT,rank INTEGER,computed_at TEXT)').run()
     const symbols = ['2330', '2317', '2454', '2308']
     for (const [index, symbol] of symbols.entries()) {
-      await db.prepare("INSERT INTO stocks VALUES(?,?,?,'TWSE','STALE_CORE_CLASSIFICATION')").bind(index + 1, symbol, symbol).run()
+      await db.prepare("INSERT INTO stocks(id,symbol,name,market,sector) VALUES(?,?,?,'TWSE','STALE_CORE_CLASSIFICATION')").bind(index + 1, symbol, symbol).run()
     }
     for (const [index, symbol] of symbols.slice(1).entries()) {
       await db.prepare("INSERT INTO sector_leaders VALUES('Semiconductor',?,?,'2026-09-08 10:00:00')").bind(symbol, index + 1).run()
@@ -100,7 +100,7 @@ test('real D1: original kernel parity, future-price exclusion, cold/future cache
     assert.equal(missing.source_status, 'incomplete')
     assert(missing.issues.includes('identity_missing:9999'))
     assert(missing.issues.includes('price_history_missing:9999'), 'missing peer prices cannot masquerade as a zero-correlation observation')
-    await db.prepare("INSERT INTO stocks VALUES(5,'8888','peer','TWSE','STALE_CORE_CLASSIFICATION')").run()
+    await db.prepare("INSERT INTO stocks(id,symbol,name,market,sector) VALUES(5,'8888','peer','TWSE','STALE_CORE_CLASSIFICATION')").run()
     const peerNoPrice = await readSectorLeaderBonusSnapshot({ DB: readonly }, { ...request,
       fullIndustryUniverse: [...request.fullIndustryUniverse, { symbol: '8888', sector: 'Semiconductor' }],
     })

@@ -40,9 +40,13 @@ $WorkerTestSources = Get-ChildItem -Path (Join-Path (Get-Location) 'src\lib') -F
   Sort-Object Name |
   Where-Object { $RuntimeE2ETests -notcontains $_.Name } |
   ForEach-Object { "src/lib/$($_.Name)" }
+$FailedWorkerTests = @()
 foreach ($testSource in $WorkerTestSources) {
   npx tsx $testSource
-  if ($LASTEXITCODE -ne 0) { throw "$testSource failed" }
+  if ($LASTEXITCODE -ne 0) { $FailedWorkerTests += $testSource }
+}
+if ($FailedWorkerTests.Count -gt 0) {
+  throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join ', ')"
 }
 Write-Host '[P9 gate] runtime E2E tests are gated separately with an explicit local server/model runtime'
 Pop-Location

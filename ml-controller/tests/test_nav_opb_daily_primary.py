@@ -378,7 +378,7 @@ def test_original_ten_session_opb_nav_reaches_worker_verifier(environment, monke
         # retry callback -> original controller dispatch -> job recovery/replay
         # -> actual Worker queue consumer, readiness and durable root receipt.
         from routers import walk_forward
-        from services import cloud_run_jobs_client, walk_forward_retrain
+        from services import active8_daily_dispatch_guard, cloud_run_jobs_client, walk_forward_retrain
         root_callbacks, dispatches = [], []
         class PrivateCloudJob:
             def __init__(self, **kw):
@@ -397,6 +397,9 @@ def test_original_ten_session_opb_nav_reaches_worker_verifier(environment, monke
                 with scoped.context() as dispatch_scope:
                     dispatch_scope.setattr(cloud_run_jobs_client, 'CloudRunJobsClient', PrivateCloudJob)
                     dispatch_scope.setattr(walk_forward_retrain, '_get_bucket', lambda: object())
+                    # Guard state/scan semantics live in test_active8_daily_dispatch_guard.py.
+                    dispatch_scope.setattr(active8_daily_dispatch_guard, 'dispatch_daily_guarded',
+                        lambda client, _bucket, *, env_overrides, expected_source_sha=None: client.run_job(env_overrides=env_overrides))
                     dispatch_scope.delenv('OOF_MATERIALIZE_JOB_EXECUTION', raising=False)
                     continuation_dispatch = asyncio.run(walk_forward.run_walk_forward_oof_lifecycle(
                         walk_forward.OofLifecycleRequest(**continuation_request)))

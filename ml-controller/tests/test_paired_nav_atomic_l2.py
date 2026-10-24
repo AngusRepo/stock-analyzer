@@ -13,6 +13,9 @@ from services.paired_nav_atomic_l2 import prepare_atomic_l2
 from services.paired_nav_atomic_inputs import daily_setup_status
 from services.paired_nav_journal import digest
 
+pytestmark = pytest.mark.skip(
+    reason='Atomic L2 had no graph producer after B#0; its TimesFM node retired in B#3a. Deleted with the atomic slice.')
+
 
 @pytest.mark.parametrize('candidate_fails', [False, True])
 @pytest.mark.parametrize('formal_empty', [False, True])

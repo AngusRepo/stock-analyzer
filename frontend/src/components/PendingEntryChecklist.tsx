@@ -4,11 +4,11 @@ import { lastEntryBlocker, checklistEvidence, checklistNumbers, checklistUnknown
 
 const groups = [
   {title:'當日基準',note:'跨日重置；計畫修訂或資料更正時更新',rows:[
-    ['plan','盤前計畫封存且標的允許買入'],['ma60','0050 昨收高於 60 日均線'],['opening_limit','開盤 ORH 未達漲停'],['atr_once','首次訊號動能 > 1.5 × ATR5（SMA）；不通過當日不買']]},
+    ['plan','盤前計畫封存且標的允許買入'],['ma60','0050 昨收高於 60 日均線'],['opening_limit','開盤 ORH 未達漲停'],['atr_once','首次動能通過，或等待二次突破創新高']]},
   {title:'完整 5 分 K 訊號',note:'保留最近確認值；下一根完整 K 棒後更新',rows:[
     ['bars','一分鐘 K 棒完整'],['or_touch','訊號根最高價觸及 ORH'],['vwap','訊號根收盤 ≥ 累積 VWAP'],['relative_strength','同時刻漲幅 ≥ 0050']]},
   {title:'送單前檢查',note:'每次送單重查，歷史通過不代表目前可下單',rows:[
-    ['window','下一根 5 分 K 首分鐘送單期限'],['quote','訊號後的有效新報價'],['buy_limit','該次價格未達漲停'],
+    ['window','訊號送單／補進期限'],['quote','訊號後的有效新報價'],['buy_limit','該次價格未達漲停'],
     ['chase','該次價格未超過追價上限'],['position','尚未持有、今日未買入'],
     ['allocation','配置、可用資金與持倉席位'],['l5','五檔報價、價差與深度'],['final','成交前風控與委託複核']]},
 ]
@@ -46,7 +46,7 @@ export function PendingEntryChecklist({preview,plannedAllocation,todayFills,live
         if(key==='allocation' && preview?.allocator) detail=`最近檢查 ${evidenceTime(preview.allocator.checked_at)} · 上限 $${preview.allocator.budget_cap?.toLocaleString('zh-TW')??'未記錄'}（送單時重查）`
         if(key==='l5' && preview?.allocator) detail=`最近檢查 ${evidenceTime(preview.allocator.checked_at)} · ${preview.allocator.l5_status??'未記錄'}（送單時重查）`
         return <div key={key} className="min-w-0">
-          <div className="flex items-start justify-between gap-3"><span className="text-foreground">{label}</span><span className={`shrink-0 ${value===true?'text-emerald-400':value===false?'text-amber-400':'text-muted-foreground'}`}>
+          <div className="flex items-start justify-between gap-3"><span className="text-foreground">{key==='atr_once' && preview?.or15?.atr_once?.policy==='atr5-sma-first-signal-v1'?'首次訊號動能 > 1.5 × ATR5（SMA）；不通過當日不買':label}</span><span className={`shrink-0 ${value===true?'text-emerald-400':value===false?'text-amber-400':'text-muted-foreground'}`}>
             {value===true?<Check className="h-4 w-4" aria-label="通過"/>:value===false?<X className="h-4 w-4" aria-label="未通過"/>:<span>{checklistUnknownReason(key,!!signal)}</span>}
           </span></div>
           {detail&&<p className="mt-1 text-sm text-muted-foreground">{detail}</p>}

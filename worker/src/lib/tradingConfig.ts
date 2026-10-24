@@ -1231,8 +1231,9 @@ export async function setTradingConfig(
   let snapshotId: string | null = null
   let skipped = false
   try {
-    const cached = configCache.get(kv)
-    const prevHash = cached ? await hashConfig(cached.value) : null
+    // Hash the value actually in KV; the cache can be stale or a merged view.
+    const stored = await kv.get(KV_KEY, 'json')
+    const prevHash = stored ? await hashConfig(stored as TradingConfig) : null
     const newHash = await hashConfig(config)
     if (prevHash === newHash) {
       skipped = true  // no-op write，不 pollute snapshot history

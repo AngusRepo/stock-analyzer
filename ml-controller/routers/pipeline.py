@@ -419,6 +419,16 @@ async def reconcile_pipeline_execution(
     return {**snapshot, "failure_callback_sent": callback is not None}
 
 
+@router.get('/v2/input/status')
+async def input_work_status(request: Request, date: str, run_id: str = Query(..., max_length=180), phase: str = Query(...)):
+    _check_service_token(request)
+    from services.pipeline_input_work import observe_input_work
+    try:
+        return await asyncio.to_thread(observe_input_work, run_id=run_id, run_date=date, phase=phase)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/v2/resume")
 async def pipeline_resume_preflight(request: Request, date: str = Query(...), run_id: str = Query(..., max_length=180)):
     _check_service_token(request)

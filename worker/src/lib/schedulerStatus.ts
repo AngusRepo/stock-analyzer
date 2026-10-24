@@ -1,4 +1,5 @@
 import { pipelineProgressForDisplay } from './pipelineProgress'
+import { loadPipelineInputWork } from './pipelineInputWork'
 import { finlabProgressForDisplay } from './finlabStageProgress'
 /**
  * schedulerStatus.ts - Scheduler dashboard status builder
@@ -1097,6 +1098,9 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
         phase: handoffStage === 'modal_prediction' ? handoffStage : `input_${handoffStage}` } : undefined) : null
     const progressActive = pipelineProgress && durableState && ['running','waiting'].includes(durableState.status)
       && !['success','failed'].includes(resolvedDisplay.status)
+      const pipelineWork = progressActive && pipelineProgress.status === 'waiting'
+        ? await loadPipelineInputWork(env, durableState.canonical_run_id, resolvedDisplay.statusRunDate!, pipelineProgress.phase)
+        : undefined
     const progressStatus = progressActive ? (pipelineProgress.status === 'waiting' ? 'waiting' as const : 'running' as const) : null
     const baseLastStatus = progressStatus ?? durableOverride?.lastStatus ?? resolvedDisplay.status
     const baseTimestamp = durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null
@@ -1208,6 +1212,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
       pipelineProgress: pipelineProgress ? { ...pipelineProgress, run_id: durableState?.canonical_run_id, run_date: resolvedDisplay.statusRunDate } : null,
+      pipelineWork,
       pipelineBatches: def.id === 'pipeline' ? (await batchProgressPromise)
         .filter(row=>row.business_date===resolvedDisplay.statusRunDate && row.canonical_run_id===durableState?.canonical_run_id)
         .flatMap(row=>{try { return [JSON.parse(row.cursor_key??'')] } catch { return [] }}) : undefined,

@@ -9,6 +9,7 @@ import {
 } from './dataDomainShadowBackfill'
 import {
   activeDataDomains,
+  databaseForDataDomain,
   invalidActiveDataDomains,
   shadowDatabaseForDataDomain,
   tableOwnershipMetadata,
@@ -580,7 +581,7 @@ export async function enqueueNextDataDomainShadowBackfill(
   // The global coordinator must therefore execute one bounded HTTP step instead
   // of enqueueing a message that cannot be consumed.
   if (domain === 'ops') {
-    const leased = await runWithMaintenanceLease(env.DB, {
+    const leased = await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
       taskName: 'data-domain-shadow-backfill:ops-coordinator',
       leaseGroup: 'd1_heavy_maintenance',
       leaseSeconds: 300,
@@ -1442,7 +1443,7 @@ export async function processDataDomainShadowBackfillDrain(
 
   let leased: DomainShadowBackfillResult | { skipped: true; reason: string }
   try {
-    leased = await runWithMaintenanceLease(env.DB, {
+    leased = await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
       taskName: `data-domain-shadow-backfill:${domain}`,
       leaseGroup: 'd1_heavy_maintenance',
       leaseSeconds: 300,

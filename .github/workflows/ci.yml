@@ -62,12 +62,35 @@ jobs:
           sparse-checkout: ci
           fetch-depth: 1
 
+      # The base list may come from main's own run of this commit (saved by the gate job
+      # below); a miss runs the base suite as before.
+      - name: Cached base key
+        id: key
+        if: matrix.side == 'base'
+        shell: bash
+        run: echo "key=$(bash .ci-tools/ci/base_cache_key.sh .ci-tools '${{ steps.ref.outputs.sha }}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        if: matrix.side == 'base'
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.key.outputs.key }}
+      - name: Use cached base list
+        id: cached
+        if: matrix.side == 'base'
+        shell: bash
+        run: |
+          set -e
+          # hit only when this suite's list is in the restored set
+          list="$RUNNER_TEMP/base-cache/failures-${{ matrix.suite }}.txt"
+          if [ -f "$list" ]; then cp "$list" "$RUNNER_TEMP/failures.txt"; echo "hit=true" >> "$GITHUB_OUTPUT"; fi
+
       - uses: actions/setup-node@v4
-        if: matrix.suite != 'hygiene'
+        if: matrix.suite != 'hygiene' && steps.cached.outputs.hit != 'true'
         with:
           node-version: '22'
 
       - uses: actions/setup-python@v5
+        if: steps.cached.outputs.hit != 'true'
         with:
           python-version: '3.12'
           # Only the controller suite installs pip packages; caching elsewhere fails the post step.
@@ -75,6 +98,7 @@ jobs:
           cache-dependency-path: ml-controller/requirements.txt
 
       - name: Run suite
+        if: steps.cached.outputs.hit != 'true'
         shell: bash
         run: bash .ci-tools/ci/run_suite.sh "${{ matrix.suite }}" "$RUNNER_TEMP/failures.txt"
 
@@ -161,3 +185,17 @@ jobs:
         run: python ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: Compare head against base
         run: python ci/compare_failures.py failures
+      # main only, after a passing gate: keep the head lists as the base for later runs of
+      # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
+      - name: Pack base lists
+        id: pack
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          python ci/base_cache.py failures "$RUNNER_TEMP/base-cache" worker             $(seq -f 'controller-%g' 1 "$CONTROLLER_SHARDS") frontend hygiene
+          [ -d "$RUNNER_TEMP/base-cache" ] && echo "key=$(bash ci/base_cache_key.sh . '${{ github.sha }}')" >> "$GITHUB_OUTPUT" || true
+      - uses: actions/cache/save@v4
+        if: steps.pack.outputs.key != ''
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.pack.outputs.key }}

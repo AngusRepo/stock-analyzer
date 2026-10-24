@@ -72,3 +72,16 @@ test('pre-L2 preparation phases rank before payload build so the current phase k
   }
   sql.close()
 })
+
+test('sequence-only freeze node keeps the rank of the L2 boundary it replaced', async () => {
+  const sql=new DatabaseSync(':memory:')
+  sql.exec(readFileSync('migrations/0074_pipeline_stage_and_maintenance_control.sql','utf8'))
+  sql.exec("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key) VALUES('2026-10-14','pipeline_execution','run-a','running','execution-a')")
+  const db={prepare(query:string){let args:any[]=[];const stmt={bind(...v:any[]){args=v;return stmt},async first(){return sql.prepare(query).get(...args)??null}};return stmt}} as unknown as D1Database
+  const p:PipelineProgress={phase:'node_prepare_sequence_inputs',status:'running',started_at:'2026-10-14T16:19:00Z',
+    phase_started_at:'2026-10-14T17:45:00Z',observed_at:'2026-10-14T17:45:01Z',execution_id:'execution-a',completed:[]}
+  assert.equal(await recordPipelineProgress(db,'2026-10-14','run-a',p),true)
+  const row=sql.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='pipeline_progress'").get() as any
+  assert.equal(pipelineProgressForDisplay({canonical_run_id:'run-a',status:'running'},row)!.phase_rank,30)
+  sql.close()
+})

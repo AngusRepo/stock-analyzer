@@ -36,7 +36,7 @@ def report_batches(stage, path, results):
 def node_result_status(name, update):
     """Reflect explicit shadow/sidecar outcomes without changing graph control."""
     key = {'node_capture_atomic_inputs': 'paired_nav_atomic_inputs',
-           'node_l2_timesfm_enrich': 'timesfm_l2_summary'}.get(name)
+           'node_prepare_sequence_inputs': 'sequence_input_summary'}.get(name)
     result = update.get(key) if key and isinstance(update, dict) else None
     status = result.get('status') if isinstance(result, dict) else None
     return 'blocked' if status == 'blocked' else 'failed' if status in ('failed', 'error') else 'completed'

@@ -35,6 +35,20 @@ case "$suite" in
       -n auto --dist load --durations=40 \
       --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
     python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller: pytest produced no report"
+    # Worker tests that drive controller Python skip in the worker suite (no pip deps there).
+    # Run here the ones pytest does not already spawn with its own fixture.
+    cd ../worker
+    mapfile -t pyfiles < <(for f in $(grep -l 'NAV_TEST_PYTHON' src/lib/*.test.ts | sort); do
+      grep -rqF "$(basename "$f")" ../ml-controller/tests || echo "$f"; done)
+    if [ "${#pyfiles[@]}" -gt 0 ]; then
+      NAV_TEST_PYTHON="$(command -v python)" PYTHONPATH="$(cd .. && pwd):$(cd ../ml-controller && pwd)" \
+        node --import tsx --test --test-concurrency=4 \
+        --test-reporter=dot --test-reporter-destination=stdout \
+        --test-reporter="$tools/node_failures_reporter.mjs" --test-reporter-destination="$RUNNER_TEMP/node-py-fail.txt" \
+        "${pyfiles[@]}" || true
+      [ -f "$RUNNER_TEMP/node-py-fail.txt" ] && sed 's/^worker: /controller worker-python: /' "$RUNNER_TEMP/node-py-fail.txt" | sort -u >> "$out" \
+        || fail "controller: worker python tests produced no report"
+    fi
     ;;
   frontend)
     cd frontend

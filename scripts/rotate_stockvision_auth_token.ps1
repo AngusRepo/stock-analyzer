@@ -31,7 +31,7 @@ param(
     'retention-archive-only',
     'retention-hot-window-drain'
   ),
-  [int]$ExpectedSchedulerCount = 59
+  [int]$ExpectedSchedulerCount = 57
 )
 
 Set-StrictMode -Version Latest

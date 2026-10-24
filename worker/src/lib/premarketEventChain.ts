@@ -1,6 +1,7 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { logSchedulerResult } from './schedulerRunLogger'
+import { resolveTwTradingSession } from './schedulerPolicy'
 import { settlePremarketReadinessTickets } from './premarketReadinessTickets'
 import { premarketPublicationMinutes, premarketPublicationTarget } from './premarketPublicationWindow'
 
@@ -97,8 +98,8 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
 export async function ensurePremarketEventChain(env: Bindings, date: string, now = Date.now()): Promise<string> {
   const clock = premarketClock(now)
   if (date !== clock.date || clock.minutes < 390 || clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540)) return 'status=skipped premarket_outside_window'
-  const day = new Date(`${date}T12:00:00+08:00`).getUTCDay()
-  if (day === 0 || day === 6 || await env.KV.get(`holiday:${date}`)) return 'status=skipped premarket_non_trading_day'
+  const session = await resolveTwTradingSession(env.KV, date, env)
+  if (!session.trading) return `status=skipped premarket_non_trading_day reason=${session.reason}`
   const db = databaseForDataDomain(env, 'ops')
   // Source repair grants one continuation of the exact preserved setup. It
   // neither resets attempts nor revives unrelated failures or a fourth failure.
@@ -161,6 +162,14 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
     await db.prepare(`UPDATE pipeline_stage_runs SET status='error',last_error='premarket_session_expired',updated_at=CURRENT_TIMESTAMP
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status!='success'`)
       .bind(date,key,RUN(date)).run()
+    return
+  }
+  // A closure announced after the chain was queued (typhoon) must stop every stage.
+  const session = await resolveTwTradingSession(env.KV, date, env)
+  if (!session.trading) {
+    await db.prepare(`UPDATE pipeline_stage_runs SET status='error',last_error=?,updated_at=CURRENT_TIMESTAMP
+      WHERE business_date=? AND stage=? AND canonical_run_id=? AND status!='success'`)
+      .bind(`premarket_non_trading_day:${session.reason}`,date,key,RUN(date)).run()
     return
   }
   if (now < premarketStageNotBefore(date,stage)) { await dispatchPremarketEvents(env,date,now); return }

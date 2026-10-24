@@ -1,6 +1,7 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { logSchedulerResult } from './schedulerRunLogger'
 import { runWithMaintenanceLease } from './maintenanceLease'
+import { maintenanceLeaseYieldRequested, runWithMaintenanceLeaseYielding } from './maintenanceLeaseYield'
 import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { updateSchedulerExecutionTicket } from './schedulerExecutionTickets'
@@ -34,6 +35,7 @@ type MaintenanceChunkResult = {
   failureAttempt?: number
   failureError?: string
   nextAuditTargets?: string[]
+  backlogAuditTargets?: string[]
 }
 
 export function isAuditJsonDurableWindowOpen(now: Date): boolean {
@@ -56,6 +58,17 @@ function auditJsonOpsShadowBackfillActiveResult(runId: string): MaintenanceChunk
     backlogRemaining: true,
     deferred: 'ops_shadow_backfill_active',
   }
+}
+
+// A multi-night opt-in backlog (ref-v2) must not starve the other d1-heavy jobs
+// that share its lease window; it pauses when one of them asked for the lease.
+const OPT_IN_DRAIN_YIELD_SECONDS = 90
+
+async function optInDrainYieldRequest(env: Bindings, task: MaintenanceBacklogTask, result: MaintenanceChunkResult): Promise<string | null> {
+  if (task !== 'audit-json-retention' || !result.nextAuditTargets?.length) return null
+  const { isOptInAuditJsonTarget } = await import('./auditJsonArchive')
+  if (!result.nextAuditTargets.every(isOptInAuditJsonTarget)) return null
+  return maintenanceLeaseYieldRequested(databaseForDataDomain(env, 'ops')).catch(() => null)
 }
 
 export type MaintenanceDrainNextStep = 'next_attempt' | 'next_cycle' | 'complete' | 'exhausted'
@@ -433,6 +446,8 @@ async function runChunk(
       summary: summarizeAuditJsonArchiveRun(result) + (needsFullVerification ? '; full_target_verification_pending=true' : ''),
       backlogRemaining: nextAuditTargets.length > 0,
       nextAuditTargets,
+      // Targets with real backlog; a verification-only step owes work only to the targets it just drained.
+      backlogAuditTargets: pendingTargets.length ? pendingTargets : effectiveTargets,
     }
   }
   if (task === 'legacy-strategy-evidence-migration') {
@@ -525,12 +540,20 @@ export async function processMaintenanceBacklogDrain(
         : null
       leaseResult = opsShadowBackfillRunId
         ? auditJsonOpsShadowBackfillActiveResult(opsShadowBackfillRunId)
-        : await runWithMaintenanceLease(env.DB, {
-          taskName: `${task}:queue`,
-          leaseGroup: 'd1_heavy_maintenance',
-          leaseSeconds: 300,
-          run: () => task === 'audit-json-retention' ? runAuditChunkWithReceipt(env, ownedMessage, now) : runChunk(env, task, msg, now),
-        })
+        : task === 'audit-json-retention'
+          ? await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
+            taskName: `${task}:queue`,
+            leaseGroup: 'd1_heavy_maintenance',
+            leaseSeconds: 300,
+            run: () => runAuditChunkWithReceipt(env, ownedMessage, now),
+          })
+          // Other drains already retry in 30s; they only ask an opt-in audit drain to leave a gap.
+          : await runWithMaintenanceLeaseYielding(databaseForDataDomain(env, 'ops'), {
+            taskName: `${task}:queue`,
+            leaseGroup: 'd1_heavy_maintenance',
+            leaseSeconds: 300,
+            run: () => runChunk(env, task, msg, now),
+          }, 0)
     }
   } catch (error) {
     if (task !== 'audit-json-retention' || msg.schedulerTicketId) throw error
@@ -636,6 +659,7 @@ export async function processMaintenanceBacklogDrain(
   })
 
   if (nextStep === 'next_attempt') {
+    const yieldTo = await optInDrainYieldRequest(env, task, result)
     await sendMaintenanceContinuation(env, {
       task,
       runDate: msg.triggerTime,
@@ -651,7 +675,7 @@ export async function processMaintenanceBacklogDrain(
         auditJsonOptionsFromMessage(msg),
         msg,
       ),
-      delaySeconds: 5,
+      delaySeconds: yieldTo ? OPT_IN_DRAIN_YIELD_SECONDS : 5,
       phase: 'next_attempt',
     })
     await markAuditContinuationDispatched(env, ownedMessage, result)
@@ -682,6 +706,20 @@ export async function processMaintenanceBacklogDrain(
   }
 
   if (task === 'audit-json-retention' && nextStep === 'exhausted') {
+    // An opt-in backlog (ref-v2 compaction) is expected to span nights: defer it
+    // to the next window instead of a 6h failure cooldown. Any other target with
+    // backlog left keeps the fail-closed exhaustion alert.
+    const { isOptInAuditJsonTarget } = await import('./auditJsonArchive')
+    const remaining = result.backlogAuditTargets ?? result.nextAuditTargets ?? []
+    if (remaining.length && remaining.every(isOptInAuditJsonTarget)) {
+      const summary = `durable_drain deferred=opt_in_budget_exhausted backlog_remaining=true ${result.summary}`
+      await settleAuditTicket(env, ownedMessage, 'skipped', summary)
+      await releaseActiveRun(env.KV, task, runId)
+      await logSchedulerResult(env.KV, task, {
+        status: 'skipped', summary, duration_ms: 0, run_id: runId, run_date: msg.triggerTime,
+      }, env)
+      return
+    }
     await finishAuditFailure(env, ownedMessage, 'maintenance_drain_budget_exhausted:backlog_remaining=true', now)
     return
   }

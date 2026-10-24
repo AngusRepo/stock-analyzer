@@ -24,7 +24,7 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "[switch]$Apply" in source
     assert "[switch]$DryRun" in source
     assert "[switch]$DrainVerified" in source
-    assert "[int]$ExpectedSchedulerCount = 59" in source
+    assert "[int]$ExpectedSchedulerCount = 57" in source
     assert "Get-SchedulerOptionalValue -Object $job -Name 'desiredState'" in source
     assert "if ($job.desiredState)" not in source
     assert "'retention-hot-window-drain'" in source

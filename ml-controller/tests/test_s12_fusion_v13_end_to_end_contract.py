@@ -22,9 +22,9 @@ def test_l0_to_l4_layers_remain_and_no_topk_is_added_by_fusion_v13_cutover():
     assert "stage: 'l15_ml_slate_queue'" in screener
     assert "authority_aware_decision_universe_no_capacity_admission" in strategy_pool
     assert "researchOnlyQueue" in strategy_pool
-    assert 'g.add_node("l2_timesfm_enrich"' in pipeline
+    assert 'g.add_node("prepare_sequence_inputs"' in pipeline
     assert 'g.add_node("l3_formal_predict"' in pipeline
-    assert 'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")' in pipeline
+    assert 'g.add_edge("prepare_sequence_inputs", "l3_formal_predict")' in pipeline
     assert "layer35_evidence_fusion" in funnel_evidence
     assert "no_candidate_drop_no_topk_no_minimum_fill" in funnel_evidence
     assert "l4_sparse_allocation_summary_v1" in recommendation_context

@@ -21,6 +21,8 @@ import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDat
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import { readMarketRegimeState, restoreMarketRegimeStateFromHistory } from './marketRegimeState'
 import {
+  buildFinLabDailyRunId,
+  isFinLabDispatchTransportError,
   runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
 } from './controllerResearchWorkflows'
@@ -255,6 +257,14 @@ type SchedulerRunSnapshot = {
 function schedulerSummaryField(entry: SchedulerRunSnapshot | null, field: string): string | null {
   const match = String(entry?.summary ?? '').match(new RegExp(`(?:^|\\s)${field}=([^\\s;]+)`))
   return match?.[1] ?? null
+}
+
+// Reservations and unconfirmed dispatches record `function_call_id=unknown`.
+// Sending it as a supersede target makes the controller's fail-closed cancel
+// reject the retry, so there is no Modal call to cancel in that case.
+export function finLabSupersedeCallId(entry: SchedulerRunSnapshot | null): string | null {
+  const id = schedulerSummaryField(entry, 'function_call_id')
+  return id && id !== 'unknown' ? id : null
 }
 
 function isFinLabQuotaLimitLog(entry: SchedulerRunSnapshot | null): boolean {
@@ -2658,25 +2668,25 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     })
     return summary
   }
-  const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
-    continueEveningChain: true,
-    dailySourceRefresh: true,
-    callbackMode: 'evening_chain',
+  const { summary: finlabSummary, startObserved } = await dispatchEveningFinLabRefresh(env, twDate, force, {
     lanes: refreshScope.lanes,
     canonicalDatasets: refreshScope.canonicalDatasets,
     keyScopeJson: refreshScope.keyScopeJson,
     reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson),
-  }))
+  })
   const finlabStatus = classifySchedulerSummary(finlabSummary)
   const finlabRunId = schedulerSummaryField({ summary: finlabSummary }, 'run_id') ?? undefined
-  await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
-    status: finlabStatus,
-    summary: `${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}`,
-    duration_ms: 0,
-    details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
-    run_id: finlabRunId,
-    run_date: twDate,
-  })
+  // A start heartbeat that arrived while the request timed out is newer than this outcome.
+  if (!startObserved) {
+    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+      status: finlabStatus,
+      summary: `${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}`,
+      duration_ms: 0,
+      details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
+      run_id: finlabRunId,
+      run_date: twDate,
+    })
+  }
   if (finlabStatus !== 'triggered' && finlabStatus !== 'success') {
     throw new Error(`FinLab primary backfill did not start: ${finlabSummary}`)
   }
@@ -2698,6 +2708,51 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     run_date: twDate,
   })
   return `triggered evening-chain: ${finlabSummary}; awaiting FinLab canonical callback`
+}
+
+// The controller spawn is not idempotent and a timeout cannot tell whether it ran.
+// Reserve first so Modal's start heartbeat or the pending watchdog settles it.
+export async function dispatchEveningFinLabRefresh(
+  env: Bindings,
+  twDate: string,
+  force: boolean,
+  scope: { lanes?: string, canonicalDatasets?: string, keyScopeJson?: string, reuseSuccessfulArtifacts: boolean },
+): Promise<{ summary: string, startObserved: boolean }> {
+  const runId = buildFinLabDailyRunId(twDate)
+  await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+    status: 'triggered',
+    summary: `triggered FinLab dispatch reservation run_id=${runId} function_call_id=unknown dispatch_attempt=1`,
+    duration_ms: 0,
+    run_id: runId,
+    run_date: twDate,
+  })
+  try {
+    const summary = String(await runFinLabV4Backfill(env, twDate, force, {
+      continueEveningChain: true,
+      dailySourceRefresh: true,
+      callbackMode: 'evening_chain',
+      ...scope,
+      runId,
+    }))
+    return { summary, startObserved: false }
+  } catch (error) {
+    if (!isFinLabDispatchTransportError(error)) {
+      // A deterministic failure must not leave a reservation for the watchdog to resend.
+      await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+        status: 'error',
+        summary: `failed: FinLab dispatch run_id=${runId}: ${error instanceof Error ? error.message : String(error)}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: twDate,
+      })
+      throw error
+    }
+    const current = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+    return {
+      summary: `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${runId} function_call_id=unknown dispatch_attempt=1 error=${(error as Error).name}`,
+      startObserved: current?.run_id === runId && (current.status === 'running' || current.status === 'success'),
+    }
+  }
 }
 
 export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string): Promise<string> {
@@ -2768,7 +2823,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   }
 
   const runId = finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id')
-  const functionCallId = schedulerSummaryField(finlabLog, 'function_call_id')
+  const functionCallId = finLabSupersedeCallId(finlabLog)
   const previousAttempt = Number.parseInt(schedulerSummaryField(finlabLog, 'dispatch_attempt') ?? '1', 10)
   if (!runId) throw new Error(`FinLab watchdog cannot recover ${twDate}: pending run_id missing`)
   if (previousAttempt >= FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS) {
@@ -3355,6 +3410,11 @@ export async function processUpdateBatch(
   if (msg.type === 'post_pipeline_chain') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `post-pipeline-chain-${triggerTime}`
+    const { postPipelineResearchAllowed } = await import('./premarketResearchGate')
+    if (!await postPipelineResearchAllowed(env, triggerTime, runId)) {
+      console.log(`[Queue] post-pipeline waits for verified after-close publication date=${triggerTime} run_id=${runId}`)
+      return
+    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid post-pipeline chain date ${triggerTime}, skipping.`)
       return

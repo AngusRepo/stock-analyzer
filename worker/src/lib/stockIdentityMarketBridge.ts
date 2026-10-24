@@ -8,7 +8,14 @@ export type CoreStockIdentity = {
   symbol: string
   name: string
   market: string | null
+  /** Exact venue (TWSE/OTC/ROTC); `market` keeps ROTC under the legacy OTC family. */
+  listing_market?: string | null
   sector: string | null
+}
+
+/** Single venue reader for board/lane decisions: exact venue first, legacy family as fallback. */
+export function resolveVenue(identity: Pick<CoreStockIdentity, 'market' | 'listing_market'>): string | null {
+  return identity.listing_market || identity.market || null
 }
 
 export function normalizeStockIdentitySymbols(symbols: readonly string[]): string[] {
@@ -26,7 +33,7 @@ export async function loadCoreStockIdentitiesBySymbols(
     const chunk = normalized.slice(offset, offset + D1_BIND_CHUNK_SIZE)
     const marks = chunk.map(() => '?').join(',')
     const response = await databaseForDataDomain(env, 'core').prepare(`
-      SELECT id, symbol, name, market, sector
+      SELECT id, symbol, name, market, listing_market, sector
         FROM stocks
        WHERE symbol IN (${marks})
     `).bind(...chunk).all<CoreStockIdentity>()
@@ -49,7 +56,7 @@ export async function loadCoreStockIdentitiesByIds(
     const chunk = normalized.slice(offset, offset + D1_BIND_CHUNK_SIZE)
     const marks = chunk.map(() => '?').join(',')
     const { results } = await databaseForDataDomain(env, 'core').prepare(`
-      SELECT id, symbol, name, market, sector
+      SELECT id, symbol, name, market, listing_market, sector
         FROM stocks
        WHERE id IN (${marks})
     `).bind(...chunk).all<CoreStockIdentity>()

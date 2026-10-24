@@ -20,10 +20,11 @@ assert(
 assert(
   gateScript.includes('foreach ($testSource in $WorkerTestSources)') &&
     gateScript.includes('npx tsx $testSource') &&
-    gateScript.includes('throw "$testSource failed"') &&
+    gateScript.includes('if ($LASTEXITCODE -ne 0) { $FailedWorkerTests += $testSource }') &&
+    gateScript.includes('throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join \', \')"') &&
     gateScript.includes('strategyDiscoveryLocalE2E.test.ts') &&
     gateScript.includes('strategyDiscoveryRealModelE2E.test.ts'),
-  'P12 release gate must execute every offline worker test, explicitly separate runtime E2E, and fail on the exact broken test',
+  'P12 release gate must execute every offline worker test, explicitly separate runtime E2E, and fail naming every broken test instead of stopping at the first',
 )
 
 assert(

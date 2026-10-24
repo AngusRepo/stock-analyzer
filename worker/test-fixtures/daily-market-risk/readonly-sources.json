@@ -1,0 +1,882 @@
+{
+  "date": "2026-10-06",
+  "captured_at": "2026-10-07T05:27:52.609537+00:00",
+  "queries": {
+    "index": {
+      "sql": "SELECT date,close,source FROM canonical_market_index_daily WHERE symbol IN ('TWII','TAIEX') AND date<=? AND close>1000 AND close<100000 AND source!='finlab.benchmark_return' ORDER BY date DESC LIMIT 600",
+      "params": [
+        "2026-10-06"
+      ],
+      "sha256": "06d005dbcaae7934bd38e7e3c51fa139a6b3a236d1a24fe05cc2108063cf1817"
+    },
+    "sessions": {
+      "sql": "SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 21",
+      "params": [
+        "2026-10-06"
+      ],
+      "sha256": "329a6ac58d8ebf26751782bd5b8fccd54e62b561ba37c873e2f7e5461b982c79"
+    },
+    "foreign": {
+      "sql": "SELECT date,SUM(COALESCE(net_amount,0))/1e8 AS daily_net FROM canonical_institutional_amount_daily WHERE investor='foreign' AND source='finlab.institutional_investors_trading_all_market_summary' AND net_amount IS NOT NULL AND date BETWEEN date(?,'-25 days') AND ? GROUP BY date ORDER BY date",
+      "params": [
+        "2026-10-06",
+        "2026-10-06"
+      ],
+      "sha256": "9898ea9c51d650a2605461caffa356835f005fdb5cf6d7a61d6f3e614059a1e9"
+    },
+    "adl": {
+      "sql": "SELECT date,advance_count,decline_count FROM market_breadth WHERE date<=? ORDER BY date DESC LIMIT 15",
+      "params": [
+        "2026-10-06"
+      ],
+      "sha256": "fffc764a43f4c514190d34e8985e430d935ce2953711e3ce7e4703f77a78cdd2"
+    },
+    "alignment": {
+      "sql": "SELECT * FROM (\n      WITH sessions AS (SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 60),\n      ranked AS (\n        SELECT stock_id,date,close,ROW_NUMBER() OVER(PARTITION BY stock_id ORDER BY date DESC) rn\n        FROM canonical_market_daily\n        WHERE date BETWEEN date(?, '-120 days') AND ? AND close>0 AND source='finlab.price'\n          AND stock_id GLOB '[1-9][0-9][0-9][0-9]' AND date IN (SELECT session_date FROM sessions)\n      ), stats AS (\n        SELECT stock_id,COUNT(*) n,MAX(date) last_date,\n          AVG(CASE WHEN rn<=5 THEN close END) ma5,AVG(CASE WHEN rn<=20 THEN close END) ma20,AVG(close) ma60\n        FROM ranked GROUP BY stock_id\n      )\n      SELECT SUM(CASE WHEN n=60 AND ma5>ma20 AND ma20>ma60 THEN 1 ELSE 0 END) bull_count,\n        SUM(CASE WHEN n=60 THEN 1 ELSE 0 END) eligible,COUNT(*) universe\n      FROM stats WHERE last_date=?\n    )",
+      "params": [
+        "2026-10-06",
+        "2026-10-06",
+        "2026-10-06",
+        "2026-10-06"
+      ],
+      "sha256": "3077646ade88b5d794f5a55623b7924a2c18736704b2ac576881411ae58b12f3"
+    }
+  },
+  "index": [
+    {
+      "date": "2026-10-06",
+      "close": 49822.55,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-10-05",
+      "close": 49712.04,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-10-02",
+      "close": 48475.74,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-10-01",
+      "close": 48353.49,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-30",
+      "close": 47940.13,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-29",
+      "close": 47631.96,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-24",
+      "close": 48024.6,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-23",
+      "close": 48157.29,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-22",
+      "close": 47800.17,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-21",
+      "close": 47718.84,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-18",
+      "close": 47180.75,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-17",
+      "close": 46288,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-16",
+      "close": 45848.9,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-15",
+      "close": 45511.49,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-14",
+      "close": 45862.52,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-11",
+      "close": 46184.85,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-10",
+      "close": 46940.49,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-09",
+      "close": 47183.36,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-08",
+      "close": 47105.78,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-07",
+      "close": 47326.27,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-04",
+      "close": 46551.13,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-03",
+      "close": 45857.66,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-02",
+      "close": 46164.72,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-09-01",
+      "close": 46948.72,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-31",
+      "close": 46128.47,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-28",
+      "close": 46331.45,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-27",
+      "close": 45975.22,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-26",
+      "close": 45832.62,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-25",
+      "close": 45169.46,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-24",
+      "close": 44762.32,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-21",
+      "close": 45224.29,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-20",
+      "close": 44933.74,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-19",
+      "close": 44719.35,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-18",
+      "close": 45308.68,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-17",
+      "close": 45857.27,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-14",
+      "close": 45811.01,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-13",
+      "close": 46021.48,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-12",
+      "close": 45518.07,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-11",
+      "close": 45120.72,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-10",
+      "close": 44928.76,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-07",
+      "close": 44225.91,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-06",
+      "close": 44396.7,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-05",
+      "close": 44611.6,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-04",
+      "close": 43360.66,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-08-03",
+      "close": 43386.41,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-31",
+      "close": 43119.75,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-30",
+      "close": 39933.3,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-29",
+      "close": 40039.18,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-28",
+      "close": 41603.36,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-27",
+      "close": 43634.19,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-24",
+      "close": 43654.84,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-23",
+      "close": 44850.81,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-22",
+      "close": 44825.78,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-21",
+      "close": 44232.87,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-20",
+      "close": 42449.7,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-17",
+      "close": 42671.27,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-16",
+      "close": 45624.98,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-15",
+      "close": 45631.59,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-14",
+      "close": 44737.95,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-13",
+      "close": 45380.52,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-09",
+      "close": 45354.61,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-08",
+      "close": 45734.41,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-07",
+      "close": 45479.11,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-06",
+      "close": 46556.39,
+      "source": "twse.mi_5mins_hist.official"
+    },
+    {
+      "date": "2026-07-03",
+      "close": 46780.62,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-07-02",
+      "close": 46744.16,
+      "source": "twse.mi_5mins_hist.official"
+    },
+    {
+      "date": "2026-07-01",
+      "close": 47018.99,
+      "source": "twse.mi_5mins_hist.official"
+    },
+    {
+      "date": "2026-07-01",
+      "close": 47018.99,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-06-30",
+      "close": 46125.91,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-06-29",
+      "close": 44999.9,
+      "source": "twse.mi_5mins_hist.official"
+    },
+    {
+      "date": "2026-06-29",
+      "close": 44999.9,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-06-26",
+      "close": 44571.76,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-06-25",
+      "close": 46255.26,
+      "source": "finlab.taiex_total_index"
+    },
+    {
+      "date": "2026-06-24",
+      "close": 46043.6,
+      "source": "finlab.taiex_total_index"
+    }
+  ],
+  "sessions": [
+    {
+      "session_date": "2026-10-06"
+    },
+    {
+      "session_date": "2026-10-05"
+    },
+    {
+      "session_date": "2026-10-02"
+    },
+    {
+      "session_date": "2026-10-01"
+    },
+    {
+      "session_date": "2026-09-30"
+    },
+    {
+      "session_date": "2026-09-29"
+    },
+    {
+      "session_date": "2026-09-24"
+    },
+    {
+      "session_date": "2026-09-23"
+    },
+    {
+      "session_date": "2026-09-22"
+    },
+    {
+      "session_date": "2026-09-21"
+    },
+    {
+      "session_date": "2026-09-18"
+    },
+    {
+      "session_date": "2026-09-17"
+    },
+    {
+      "session_date": "2026-09-16"
+    },
+    {
+      "session_date": "2026-09-15"
+    },
+    {
+      "session_date": "2026-09-14"
+    },
+    {
+      "session_date": "2026-09-11"
+    },
+    {
+      "session_date": "2026-09-10"
+    },
+    {
+      "session_date": "2026-09-09"
+    },
+    {
+      "session_date": "2026-09-08"
+    },
+    {
+      "session_date": "2026-09-07"
+    },
+    {
+      "session_date": "2026-09-04"
+    }
+  ],
+  "foreign": [
+    {
+      "date": "2026-09-11",
+      "daily_net": -951.54083048
+    },
+    {
+      "date": "2026-09-14",
+      "daily_net": -318.73164969
+    },
+    {
+      "date": "2026-09-15",
+      "daily_net": -653.31398139
+    },
+    {
+      "date": "2026-09-16",
+      "daily_net": -204.87321519
+    },
+    {
+      "date": "2026-09-17",
+      "daily_net": 5.70170933
+    },
+    {
+      "date": "2026-09-18",
+      "daily_net": 1084.79094489
+    },
+    {
+      "date": "2026-09-21",
+      "daily_net": 111.11429586
+    },
+    {
+      "date": "2026-09-22",
+      "daily_net": 581.69795976
+    },
+    {
+      "date": "2026-09-23",
+      "daily_net": 191.02847041
+    },
+    {
+      "date": "2026-09-24",
+      "daily_net": -359.52817881
+    },
+    {
+      "date": "2026-09-29",
+      "daily_net": -676.33877449
+    },
+    {
+      "date": "2026-09-30",
+      "daily_net": 390.16214118
+    },
+    {
+      "date": "2026-10-01",
+      "daily_net": 150.24407042
+    },
+    {
+      "date": "2026-10-02",
+      "daily_net": 67.54635083
+    },
+    {
+      "date": "2026-10-05",
+      "daily_net": 731.8503242
+    },
+    {
+      "date": "2026-10-06",
+      "daily_net": -102.18432795
+    }
+  ],
+  "adl": [
+    {
+      "date": "2026-10-06",
+      "advance_count": 920,
+      "decline_count": 1077
+    },
+    {
+      "date": "2026-10-05",
+      "advance_count": 815,
+      "decline_count": 1207
+    },
+    {
+      "date": "2026-10-02",
+      "advance_count": 1042,
+      "decline_count": 963
+    },
+    {
+      "date": "2026-10-01",
+      "advance_count": 906,
+      "decline_count": 1053
+    },
+    {
+      "date": "2026-09-30",
+      "advance_count": 1532,
+      "decline_count": 503
+    },
+    {
+      "date": "2026-09-29",
+      "advance_count": 815,
+      "decline_count": 1186
+    },
+    {
+      "date": "2026-09-24",
+      "advance_count": 842,
+      "decline_count": 1097
+    },
+    {
+      "date": "2026-09-23",
+      "advance_count": 882,
+      "decline_count": 1061
+    },
+    {
+      "date": "2026-09-22",
+      "advance_count": 773,
+      "decline_count": 1220
+    },
+    {
+      "date": "2026-09-21",
+      "advance_count": 1088,
+      "decline_count": 919
+    },
+    {
+      "date": "2026-09-18",
+      "advance_count": 1503,
+      "decline_count": 525
+    },
+    {
+      "date": "2026-09-17",
+      "advance_count": 1411,
+      "decline_count": 607
+    },
+    {
+      "date": "2026-09-16",
+      "advance_count": 1449,
+      "decline_count": 526
+    },
+    {
+      "date": "2026-09-15",
+      "advance_count": 506,
+      "decline_count": 1518
+    },
+    {
+      "date": "2026-09-14",
+      "advance_count": 773,
+      "decline_count": 1233
+    }
+  ],
+  "alignment": [
+    {
+      "bull_count": 580,
+      "eligible": 1730,
+      "universe": 1952
+    }
+  ],
+  "margin": {
+    "date": "2026-10-06",
+    "source": "twse.mi_margn.all.listed",
+    "balance": 9356798.0,
+    "limit": null,
+    "coverage": 1297,
+    "limit_publication_date": "2026-10-05",
+    "limit_effective_date": "2026-10-06",
+    "unit": "1000_shares",
+    "status": "bounded",
+    "ratio_lower": 0,
+    "ratio_upper": 3.6806593234177445,
+    "known_limit": 254215269.0,
+    "universe": 1298,
+    "unknown_limit_symbols": [
+      "7822"
+    ]
+  },
+  "vix": {
+    "chart": {
+      "result": [
+        {
+          "meta": {
+            "currency": "USD",
+            "symbol": "^VIX",
+            "exchangeName": "CXI",
+            "fullExchangeName": "Cboe Indices",
+            "instrumentType": "INDEX",
+            "firstTradeDate": 631267200,
+            "regularMarketTime": 1791317701,
+            "hasPrePostMarketData": false,
+            "gmtoffset": -18000,
+            "timezone": "CDT",
+            "exchangeTimezoneName": "America/Chicago",
+            "regularMarketPrice": 15.01,
+            "regularMarketChangePercent": -3.286,
+            "fulldayPrice": 15.01,
+            "fulldayChange": -0.51,
+            "fulldayChangePercent": -3.286,
+            "fiftyTwoWeekHigh": 35.3,
+            "fiftyTwoWeekLow": 0.0,
+            "regularMarketDayHigh": 0.0,
+            "regularMarketDayLow": 0.0,
+            "regularMarketVolume": 0,
+            "longName": "CBOE Volatility Index",
+            "shortName": "CBOE Volatility Index",
+            "chartPreviousClose": 14.87,
+            "priceHint": 2,
+            "currentTradingPeriod": {
+              "pre": {
+                "timezone": "CDT",
+                "start": 1791356400,
+                "end": 1791356400,
+                "gmtoffset": -18000
+              },
+              "regular": {
+                "timezone": "CDT",
+                "start": 1791356400,
+                "end": 1791404100,
+                "gmtoffset": -18000
+              },
+              "post": {
+                "timezone": "CDT",
+                "start": 1791404100,
+                "end": 1791404100,
+                "gmtoffset": -18000
+              }
+            },
+            "dataGranularity": "1d",
+            "range": "",
+            "validRanges": [
+              "1d",
+              "5d",
+              "1mo",
+              "3mo",
+              "6mo",
+              "1y",
+              "2y",
+              "5y",
+              "10y",
+              "ytd",
+              "max"
+            ]
+          },
+          "timestamp": [
+            1790578800,
+            1790665200,
+            1790751600,
+            1790838000,
+            1790924400,
+            1791183600
+          ],
+          "indicators": {
+            "quote": [
+              {
+                "high": [
+                  16.6200008392334,
+                  16.440000534057617,
+                  16.610000610351562,
+                  17.59000015258789,
+                  16.239999771118164,
+                  16.3799991607666
+                ],
+                "volume": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ],
+                "low": [
+                  15.680000305175781,
+                  15.729999542236328,
+                  15.619999885559082,
+                  16.209999084472656,
+                  15.300000190734863,
+                  15.479999542236328
+                ],
+                "close": [
+                  16.06999969482422,
+                  16.040000915527344,
+                  16.34000015258789,
+                  16.389999389648438,
+                  15.3100004196167,
+                  15.520000457763672
+                ],
+                "open": [
+                  16.15999984741211,
+                  16.170000076293945,
+                  15.930000305175781,
+                  16.329999923706055,
+                  16.149999618530273,
+                  16.239999771118164
+                ]
+              }
+            ],
+            "adjclose": [
+              {
+                "adjclose": [
+                  16.06999969482422,
+                  16.040000915527344,
+                  16.34000015258789,
+                  16.389999389648438,
+                  15.3100004196167,
+                  15.520000457763672
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "error": null
+    }
+  },
+  "existing_risk": [
+    {
+      "id": 233,
+      "date": "2026-10-06",
+      "vix": 15.36,
+      "vix_level": "normal",
+      "twii_close": 49822.55,
+      "twii_vol20": 15.87,
+      "twii_ma20": 47453.46,
+      "twii_bias": 4.99,
+      "foreign_consecutive_sell": -1,
+      "foreign_net_5d": 1237.62,
+      "margin_ratio": null,
+      "limit_down_count": null,
+      "limit_down_pct": null,
+      "risk_score": 21,
+      "risk_level": "green",
+      "risk_summary": "當前大盤風險評分 21/100（市場正常，可正常操作）。主要警示：騰落線（ADL）呈下降趨勢，市場廣度萎縮。",
+      "calculated_at": "2026-10-06 13:53:53",
+      "adl_value": null,
+      "adl_trend": null,
+      "margin_maintenance_rate": null,
+      "bull_alignment_count": null,
+      "bull_alignment_pct": null
+    },
+    {
+      "id": 232,
+      "date": "2026-10-05",
+      "vix": 15.58,
+      "vix_level": "normal",
+      "twii_close": 49712.04,
+      "twii_vol20": 16.36,
+      "twii_ma20": 47289.89,
+      "twii_bias": 5.12,
+      "foreign_consecutive_sell": 1,
+      "foreign_net_5d": 663.46,
+      "margin_ratio": null,
+      "limit_down_count": null,
+      "limit_down_pct": null,
+      "risk_score": 8,
+      "risk_level": "green",
+      "risk_summary": "當前大盤風險評分 8/100（市場正常，可正常操作）。目前各項指標正常，無重大警示。",
+      "calculated_at": "2026-10-05 15:43:40",
+      "adl_value": null,
+      "adl_trend": null,
+      "margin_maintenance_rate": null,
+      "bull_alignment_count": null,
+      "bull_alignment_pct": null
+    }
+  ],
+  "existing_regime": [
+    {
+      "run_date": "2026-10-06",
+      "state_json": "{\"schema_version\":\"market-regime-state-v1\",\"label\":\"volatile\",\"raw_label\":\"volatile\",\"family\":\"volatile\",\"run_date\":\"2026-10-06\",\"computed_at\":\"2026-10-06T21:42:02.019089+08:00\",\"source\":\"hmm\",\"regime_index\":1,\"hmm_state\":3,\"label_zh\":\"高波動市場\",\"regime_surface\":{\"bull_market\":2.1053588522264245e-56,\"volatile\":1,\"sideways\":0,\"bear_market\":1.1584051908676509e-131},\"consensus_threshold\":0.6,\"weight_multipliers\":{\"iTransformer\":0.9,\"DLinear\":0.9,\"PatchTST\":0.9,\"GNN\":1.25,\"LightGBM\":1.25,\"ExtraTrees\":1.25,\"TabM\":1.25,\"XGBoost\":1.25},\"regime_evidence\":{\"schema_version\":\"regime-evidence-v2\",\"raw_label\":\"volatile\",\"effective_label\":\"volatile\",\"evidence\":{\"price_trend\":{\"status\":\"available\",\"stance\":\"bullish\",\"metrics\":{\"twii_return_1d\":0.004743423889607565,\"twii_return_5d\":0.04672057502246184,\"twii_bias_20d\":0.052607801947098735,\"negative_sessions_5d\":0},\"reason\":\"trend_positive\"},\"breadth\":{\"status\":\"available\",\"stance\":\"neutral\",\"metrics\":{\"advance_ratio\":0.4191343963553531,\"bull_alignment_pct\":1,\"adl_trend_numeric\":-1,\"limit_down_pct\":0.0005},\"reason\":\"breadth_mixed\"},\"atr_vturn\":{\"status\":\"derived\",\"stance\":\"neutral\",\"metrics\":{\"twii_return_1d\":0.004743423889607565,\"realized_vol_10d\":0.008531931194959628,\"us_vix\":15.520000457763672},\"reason\":\"no_vturn_signal\"},\"leverage\":{\"status\":\"missing\",\"stance\":\"neutral\",\"metrics\":{},\"reason\":\"leverage_missing\"},\"valuation\":{\"status\":\"missing\",\"stance\":\"neutral\",\"metrics\":{},\"reason\":\"valuation_missing\"},\"macro_liquidity\":{\"status\":\"available\",\"stance\":\"neutral\",\"metrics\":{\"business_indicator_score\":0.7142857142857143},\"reason\":\"macro_liquidity_mixed\"},\"tw_business_indicators\":{\"status\":\"available\",\"stance\":\"bullish\",\"metrics\":{\"signal\":41,\"leading_index\":140.5879095445833,\"coincident_index\":143.364268137404},\"reason\":\"business_cycle_expansion\",\"signal\":41,\"leading_index\":140.5879095445833,\"coincident_index\":143.364268137404,\"date\":\"2026-09-27\",\"source\":\"finlab.tw_business_indicators\"},\"global_risk\":{\"status\":\"available\",\"stance\":\"bullish\",\"metrics\":{\"us_vix\":15.520000457763672,\"us_gspc_return\":0.006633670396382023,\"us_sox_return\":0.0027454755630224614,\"us_hy_spread_chg\":-0.14000000000000012},\"reason\":\"global_risk_on\"}},\"support_counts\":{\"bearish\":0,\"bullish\":3,\"available\":6,\"missing\":2},\"missing_dimensions\":[\"leverage\",\"valuation\"],\"transition_guard\":{\"status\":\"not_required\",\"reason\":\"non_bear_transition\",\"min_bearish_dimensions\":3,\"requires\":[\"price_trend\",\"breadth_or_global_risk\",\"volatility_or_leverage\"]},\"monitors\":{\"lppls_weekly_bubble\":{\"status\":\"available\",\"score\":0.4151,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"lppls_weekly_proxy_v1\",\"signals\":{\"daily_rows\":428,\"weekly_rows\":85,\"momentum_8w\":0.115147,\"acceleration_4w\":-0.012428,\"positive_weeks_8w\":6,\"drawdown_8w\":0}},\"hawkes_contagion\":{\"status\":\"available\",\"score\":0,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"hawkes_exponential_decay_proxy_v1\",\"signals\":{\"daily_rows\":428,\"shock_count_10d\":0,\"decayed_intensity\":0,\"intensity_score\":0,\"cluster_score\":0}}},\"decision_policy\":\"bear_market_requires_cross_evidence_confirmation\",\"hmm_semantic_mapping_version\":\"emission_direction_vol_v2\",\"hmm_state_semantic_map\":{\"0\":3,\"1\":0,\"2\":2,\"3\":1,\"4\":3},\"hmm_raw_regime_index\":1,\"hmm_raw_regime_surface\":{\"bull_market\":2.1053588522264245e-56,\"volatile\":1,\"sideways\":0,\"bear_market\":1.1584051908676509e-131}},\"transition_guard\":{\"status\":\"not_required\",\"reason\":\"non_bear_transition\",\"min_bearish_dimensions\":3,\"requires\":[\"price_trend\",\"breadth_or_global_risk\",\"volatility_or_leverage\"]},\"monitors\":{\"lppls_weekly_bubble\":{\"status\":\"available\",\"score\":0.4151,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"lppls_weekly_proxy_v1\",\"signals\":{\"daily_rows\":428,\"weekly_rows\":85,\"momentum_8w\":0.115147,\"acceleration_4w\":-0.012428,\"positive_weeks_8w\":6,\"drawdown_8w\":0}},\"hawkes_contagion\":{\"status\":\"available\",\"score\":0,\"warning_threshold\":0.7,\"decision_effect\":\"context_only\",\"method\":\"hawkes_exponential_decay_proxy_v1\",\"signals\":{\"daily_rows\":428,\"shock_count_10d\":0,\"decayed_intensity\":0,\"intensity_score\":0,\"cluster_score\":0}}},\"downstream_contract\":{\"primary_kv_key\":\"market_regime_state\",\"legacy_mirror_keys\":[\"ml:regime\",\"ml:regime:meta\"],\"read_policy\":\"market_regime_state_first_legacy_fallback\",\"consumers\":[\"ml_payload_builder\",\"recommendation_service\",\"alpha_framework\",\"adaptive_params\",\"sltp_overlay\",\"paper_entry\",\"paper_exit\",\"risk_triggers\"]},\"pushed_at\":\"2026-10-06T13:42:02.553Z\"}",
+      "state_checksum": "5983d20d0efa577b9093c05ef683e58dc9bce5998805f969d2a5236e4c23bb5c"
+    }
+  ],
+  "breadth": [
+    {
+      "id": 351,
+      "date": "2026-10-06",
+      "advance_count": 920,
+      "decline_count": 1077,
+      "unchanged_count": 198,
+      "advance_ratio": 0.4191343963553531,
+      "bull_alignment_pct": null,
+      "new_high_count": null,
+      "new_low_count": null,
+      "margin_balance": null,
+      "short_balance": null,
+      "margin_maintenance": null,
+      "sample_size": 2195,
+      "limit_down_count": 1,
+      "created_at": "2026-10-06 13:27:24"
+    }
+  ],
+  "factor": [
+    {
+      "date": "2026-10-06",
+      "schema_version": "market-regime-factor-packet-v1",
+      "score": 36,
+      "level": "yellow",
+      "factor_json": "[{\"id\":\"price_trend\",\"label\":\"趨勢 / 20MA\",\"raw_value\":4.99,\"value\":\"4.99%\",\"score\":20,\"weight\":0.2,\"status\":\"ok\",\"source\":\"market_risk.twii_bias\",\"source_date\":\"2026-10-06\",\"detail\":\"TWII close 49822.55 vs MA20 47453.46\",\"contribution\":4},{\"id\":\"breadth\",\"label\":\"景氣對策燈號\",\"raw_value\":41,\"value\":\"紅燈 41\",\"score\":72,\"weight\":0.15,\"status\":\"info\",\"source\":\"finlab.tw_business_indicators\",\"source_date\":\"2026-09-27\",\"detail\":\"景氣對策信號=41；領先=140.5879095445833；同時=143.364268137404\",\"contribution\":10.8},{\"id\":\"chips\",\"label\":\"三大法人\",\"raw_value\":1365.9,\"value\":\"1365.9億\",\"score\":20,\"weight\":0.15,\"status\":\"ok\",\"source\":\"canonical_chip_daily.finlab_5d_amount\",\"source_date\":\"2026-10-06\",\"detail\":\"外資=1288.2億 投信=-82.3億 自營=160.1億\",\"contribution\":3},{\"id\":\"leverage\",\"label\":\"融資融券\",\"raw_value\":16.7,\"value\":\"融資 16.7億 / 融券 0.4億\",\"score\":55,\"weight\":0.15,\"status\":\"warn\",\"source\":\"canonical_chip_daily.margin_short_amount\",\"source_date\":\"2026-10-06\",\"detail\":\"融資=16.7億 融券=0.4億；融資變化=7.87%\",\"contribution\":8.3},{\"id\":\"volatility\",\"label\":\"波動\",\"raw_value\":15.36,\"value\":\"VIX 15.4\",\"score\":25,\"weight\":0.1,\"status\":\"info\",\"source\":\"market_risk.vix\",\"source_date\":\"2026-10-06\",\"detail\":\"vix_level=normal\",\"contribution\":2.5},{\"id\":\"macro\",\"label\":\"總經\",\"raw_value\":\"neutral\",\"value\":\"neutral\",\"score\":40,\"weight\":0.1,\"status\":\"info\",\"source\":\"market_regime_state.evidence.macro_liquidity\",\"source_date\":\"2026-10-06\",\"detail\":\"stance=neutral\",\"contribution\":4},{\"id\":\"global\",\"label\":\"全球風險\",\"raw_value\":\"bullish\",\"value\":\"bullish\",\"score\":15,\"weight\":0.1,\"status\":\"info\",\"source\":\"market_regime_state.evidence.global_risk\",\"source_date\":\"2026-10-06\",\"detail\":\"stance=bullish\",\"contribution\":1.5},{\"id\":\"event_monitors\",\"label\":\"全球事件\",\"raw_value\":\"〈美股早盤〉AI熱潮與油價降溫聯手助攻！主要指數開高 標普500刷新盤中紀錄\",\"value\":\"〈美股早盤〉AI熱潮與油價降溫聯手助攻！主要指數開高 標普500刷新盤中紀錄\",\"score\":41.510000000000005,\"weight\":0.05,\"status\":\"info\",\"source\":\"https://news.cnyes.com/news/id/6622909\",\"source_date\":\"2026-10-06\",\"detail\":\"鉅亨頭條：〈美股早盤〉AI熱潮與油價降溫聯手助攻！主要指數開高 標普500刷新盤中紀錄；url=https://news.cnyes.com/news/id/6622909；LPPLS=0.4151 Hawkes=0\",\"contribution\":2.1}]",
+      "contribution_json": "{\"price_trend\":4,\"breadth\":10.8,\"chips\":3,\"leverage\":8.3,\"volatility\":2.5,\"macro\":4,\"global\":1.5,\"event_monitors\":2.1}",
+      "source_json": "{\"price_trend\":\"market_risk.twii_bias\",\"breadth\":\"finlab.tw_business_indicators\",\"chips\":\"canonical_chip_daily.finlab_5d_amount\",\"leverage\":\"canonical_chip_daily.margin_short_amount\",\"volatility\":\"market_risk.vix\",\"macro\":\"market_regime_state.evidence.macro_liquidity\",\"global\":\"market_regime_state.evidence.global_risk\",\"event_monitors\":\"https://news.cnyes.com/news/id/6622909\"}",
+      "freshness_json": "{\"price_trend\":\"2026-10-06\",\"breadth\":\"2026-09-27\",\"chips\":\"2026-10-06\",\"leverage\":\"2026-10-06\",\"volatility\":\"2026-10-06\",\"macro\":\"2026-10-06\",\"global\":\"2026-10-06\",\"event_monitors\":\"2026-10-06\"}",
+      "missing_reason_json": "{}",
+      "lineage_json": "{\"score_policy\":\"weighted_finlab_composite_v1\",\"finlab_primary\":[\"canonical_chip_daily\",\"canonical_market_daily\",\"sector_flow\",\"market_regime_state\"],\"official_fallback\":[\"market_risk\",\"TWSE/TPEX audit\"]}",
+      "generated_at": "2026-10-06T13:53:53.608Z",
+      "created_at": "2026-10-06 13:53:53",
+      "updated_at": "2026-10-06 13:53:53"
+    }
+  ],
+  "quality_table_exists": [],
+  "previous_session": "2026-10-05"
+}

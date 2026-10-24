@@ -13,10 +13,10 @@ import type { Bindings } from '../types'
 
 const source = process.env.NAV_L3_SQLITE
 if (!source) {
-  test('original Python NAV publication to Worker baseline', () => {
+  test('original Python NAV publication to Worker baseline', { skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' }, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' }
     delete env.NODE_TEST_CONTEXT
-    const python = process.env.NAV_TEST_PYTHON ?? path.resolve('../../ml-service/.venv/Scripts/python.exe')
+    const python = process.env.NAV_TEST_PYTHON!
     const result = spawnSync(python, ['-m', 'pytest', 'tests/test_nav_worker_l3_baseline.py',
       '-q', '--tb=short', '-p', 'no:cacheprovider'], { cwd: path.resolve('../ml-controller'),
       env, encoding: 'utf-8', timeout: 120000 })

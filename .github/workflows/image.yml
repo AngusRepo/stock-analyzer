@@ -17,6 +17,7 @@ on:
       - 'data/**'
       - 'tools/**'
       - 'output/feature_universe_triage/**'
+      - 'ci/check_constraints.py'
       - '.github/workflows/image.yml'
   push:
     branches: [main]
@@ -52,7 +53,10 @@ jobs:
           # what an unpinned requirement or transitive dependency resolved to in this build
           docker run --rm --entrypoint pip stockvision-controller:ci freeze --all | sort > "$RUNNER_TEMP/pip-freeze.txt"
           wc -l "$RUNNER_TEMP/pip-freeze.txt"
+      - name: Packages match constraints.txt
+        run: python ci/check_constraints.py ml-controller/constraints.txt "$RUNNER_TEMP/pip-freeze.txt"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: controller-image-pip-freeze
           path: ${{ runner.temp }}/pip-freeze.txt

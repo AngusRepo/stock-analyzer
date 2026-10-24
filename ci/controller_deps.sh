@@ -4,6 +4,6 @@
 controller_deps() {
   (cd worker && npm ci --no-audit --no-fund) &&
     (cd frontend && npm ci --no-audit --no-fund) &&
-    python -m pip install -q -r ml-controller/requirements.txt pytest==9.0.3 pytest-asyncio==1.4.0 \
+    python -m pip install -q -r ml-controller/requirements.txt -c ml-controller/constraints.txt pytest==9.0.3 pytest-asyncio==1.4.0 \
       pytest-timeout==2.4.0 pytest-xdist==3.8.0
 }

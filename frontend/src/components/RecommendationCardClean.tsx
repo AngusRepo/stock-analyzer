@@ -348,11 +348,7 @@ type StrategyRouterSummary = {
   no_minimum_fill?: boolean | number | string | null
   is_topk_ranker?: boolean | number | string | null
   output_scope?: string | null
-  teacher_label_scope?: string | null
-  expected_teacher_models?: string[]
-  expected_teacher_count?: number | string | null
-  teacher_models?: string[]
-  teacher_label_count?: number | string | null
+  admission_policy?: string | null
   formal_l2_queue?: boolean | number | string | null
   observe_only_top_up?: boolean | number | string | null
   strategy_labeler_version?: string | null
@@ -375,7 +371,6 @@ type StrategyRouterSummary = {
   strategy_reliability?: number | string | null
   strategy_crowding_score?: number | string | null
   strategy_diversification_value?: number | string | null
-  teacher_alignment?: number | string | null
   portfolio_metric_source?: string | null
   portfolio_metric_status?: string | null
   portfolio_metric_count?: number | string | null
@@ -452,7 +447,6 @@ const ALPHA_PREDICTION_MODEL_NAMES = [
 ] as const
 
 const DIRECT_ALPHA_VOTE_MODEL_SET = new Set<string>(DIRECT_ALPHA_VOTE_MODEL_NAMES)
-const DIRECT_ALPHA_VOTE_MODEL_LABEL = DIRECT_ALPHA_VOTE_MODEL_NAMES.join(' / ')
 const TIMESFM_SIDECAR_LABEL = 'TimesFM L2 sidecar'
 
 function normalizeModelName(raw: unknown): string {
@@ -1586,9 +1580,6 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
   const strategyCount = countText(router?.strategy_count ?? router?.strategy_ids?.length)
   const familyCount = countText(router?.family_count ?? router?.family_ids?.length)
   const researchCount = countText(router?.research_strategy_count ?? router?.research_strategy_ids?.length)
-  const teacherModelList = (router.expected_teacher_models?.length ? router.expected_teacher_models : [...DIRECT_ALPHA_VOTE_MODEL_NAMES])
-    .filter((model) => normalizeModelName(model) !== 'TimesFM')
-  const teacherModels = teacherModelList.length ? teacherModelList.join(' / ') : DIRECT_ALPHA_VOTE_MODEL_LABEL
 
   return (
     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs">
@@ -1607,9 +1598,8 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
         <MetricPill label="risk affinity" value={percentText(router.risk_adjusted_affinity)} />
         <MetricPill label="uncertainty" value={percentText(router.uncertainty)} />
       </div>
-      <div className="mt-2 grid gap-2 sm:grid-cols-3">
-        <MetricPill label="teacher labels" value={`${countText(router.teacher_label_count)} / ${countText(router.expected_teacher_count ?? 9)}`} />
-        <MetricPill label="teacher align" value={percentText(router.teacher_alignment)} />
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <MetricPill label="admission" value={router.admission_policy ?? 'eligible_for_ml_and_active_strategy_label_only'} />
         <MetricPill label="top-up scope" value={router.no_topup_policy_scope ?? 'formal_ml_slate_no_minimum_fill'} />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
@@ -1619,10 +1609,8 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.selection_policy ?? 'quality_floor_max_capacity_no_forced_fill'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.capacity_policy ?? 'max_only_no_minimum_no_topup'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.output_scope ?? 'candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty'}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.teacher_label_scope ?? 'strategy_priors_future_reward_risk_diversity_9ml_teacher_labels'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{router.observe_topup_policy ?? 'research_observe_only_never_formal_l2'}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">research attribution {researchCount}</span>
-        <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">teachers {teacherModels}</span>
         <span className="rounded-full border border-border/40 bg-background/50 px-2 py-0.5">{TIMESFM_SIDECAR_LABEL}</span>
       </div>
     </div>

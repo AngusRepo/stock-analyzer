@@ -24,20 +24,28 @@ case "$suite" in
       "${files[@]}" || true
     [ -f "$RUNNER_TEMP/node-fail.txt" ] && sort -u "$RUNNER_TEMP/node-fail.txt" >> "$out" || fail "worker: test runner produced no report"
     ;;
-  controller)
+  controller-*)
+    # controller-<k>: shard k of $CONTROLLER_SHARDS. ci/shard_controller.py packs test files by
+    # recorded seconds, so the suite's wall time divides across parallel jobs.
+    shard="${suite#controller-}"; shards="${CONTROLLER_SHARDS:?CONTROLLER_SHARDS is required}"
     source "$tools/controller_deps.sh"
     controller_deps || { fail "controller: dependency install"; exit 0; }
     cd ml-controller
+    mapfile -t files < <(python "$tools/shard_controller.py" "$shard" "$shards")
+    echo "== controller shard $shard/$shards: ${#files[@]} files"
     # Tests import both repo-root `tools` and `tests.*`; a broken module must not hide the rest.
+    # ml-service is on the path explicitly: a shard no longer collects every file, so a test
+    # cannot rely on another file's sys.path insert during collection.
     # One worker per logical CPU: `auto` counts physical cores, which left half of the
     # 4-vCPU public runner idle. Tests spread individually (several 4-5 minute tests share
     # files) and idle workers steal queued ones. --durations shows the slowest tests.
-    PYTHONPATH="$(cd .. && pwd):$PWD" python -m pytest tests -q -p no:cacheprovider --timeout=300 \
-      -n logical --dist worksteal --durations=40 \
+    PYTHONPATH="$(cd .. && pwd):$PWD:$(cd ../ml-service && pwd)" python -m pytest "${files[@]}" -q -p no:cacheprovider \
+      --timeout=300 -n logical --dist worksteal --durations=20 \
       --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
     python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller: pytest produced no report"
     # Worker tests that drive controller Python skip in the worker suite (no pip deps there).
-    # Run here the ones pytest does not already spawn with its own fixture.
+    # Shard 1 runs the ones pytest does not already spawn with its own fixture.
+    [ "$shard" = 1 ] || { echo "== $suite failures: $(wc -l < "$out")"; exit 0; }
     cd ../worker
     mapfile -t pyfiles < <(for f in $(grep -l 'NAV_TEST_PYTHON' src/lib/*.test.ts | sort); do
       grep -rqF "$(basename "$f")" ../ml-controller/tests || echo "$f"; done)

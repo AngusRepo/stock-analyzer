@@ -2,11 +2,25 @@ name: P9 Gate
 
 on:
   workflow_dispatch:
+  # Windows re-run of the worker/controller/frontend checks: PRs that touch none of them
+  # (docs, CI tooling, audits) skip it. Not a required check, so a skipped run blocks nothing.
   pull_request:
+    paths:
+      - 'worker/**'
+      - 'ml-controller/**'
+      - 'ml-service/**'
+      - 'frontend/**'
+      - 'scripts/**'
+      - '.github/workflows/p9-gate.yml'
   push:
     branches:
       - main
       - feature/**
+
+# A newer push to the same PR or branch supersedes the 25-minute Windows run.
+concurrency:
+  group: p9-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   p9-gate:

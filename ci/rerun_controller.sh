@@ -8,4 +8,4 @@ tools="$(cd "$(dirname "$0")" && pwd)"
 source "$tools/controller_deps.sh"
 controller_deps
 cd ml-controller
-PYTHONPATH="$(cd .. && pwd):$PWD" python "$tools/rerun_new_failures.py" rerun "$new" "$flaky"
+PYTHONPATH="$(cd .. && pwd):$PWD:$(cd ../ml-service && pwd)" python "$tools/rerun_new_failures.py" rerun "$new" "$flaky"

@@ -22,4 +22,16 @@ assert(
   'admin config PUT response must expose snapshot write result for audit',
 )
 
+for (const key of ['l4Distribution', 'l4R2Learning', 'sltp_per_regime']) {
+  assert(
+    source.includes(`{ ${key}: ${key === 'sltp_per_regime' ? '(current as any).sltp_per_regime' : `current.${key}`} }`),
+    `admin config PUT must keep ${key} from the stored config`,
+  )
+}
+assert(
+  source.includes("['l4Distribution', 'l4R2Learning', 'sltp_per_regime'].filter((key) => key in body)")
+    && source.includes("error: 'config_put_cannot_write_owned_blocks'"),
+  'admin config PUT must reject writes to blocks owned by reviewed writers',
+)
+
 console.log('adminConfigCoreRoutesContract ok')

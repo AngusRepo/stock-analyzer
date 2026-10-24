@@ -29,10 +29,11 @@ case "$suite" in
     controller_deps || { fail "controller: dependency install"; exit 0; }
     cd ml-controller
     # Tests import both repo-root `tools` and `tests.*`; a broken module must not hide the rest.
-    # One worker per core, tests spread individually: several 4-5 minute tests share files,
-    # so loadfile left one worker running them in sequence. --durations shows the slowest tests.
+    # One worker per logical CPU: `auto` counts physical cores, which left half of the
+    # 4-vCPU public runner idle. Tests spread individually (several 4-5 minute tests share
+    # files) and idle workers steal queued ones. --durations shows the slowest tests.
     PYTHONPATH="$(cd .. && pwd):$PWD" python -m pytest tests -q -p no:cacheprovider --timeout=300 \
-      -n auto --dist load --durations=40 \
+      -n logical --dist worksteal --durations=40 \
       --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
     python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" >> "$out" || fail "controller: pytest produced no report"
     # Worker tests that drive controller Python skip in the worker suite (no pip deps there).

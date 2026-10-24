@@ -641,8 +641,13 @@ class BacktestDataset:
             if chunk_end > end_date:
                 chunk_end = end_date
 
+            # Raw OHLCV only. The legacy stock_prices.adj_close column mixes
+            # FinLab-adjusted values with raw-close copies (2026-06 and the
+            # 2026-08-24 / 2026-09-01 mirror writes), so it must not be read here.
+            # The engine never consumed it: the numpy hot cache and every replay
+            # path use raw open/high/low/close only (no dividend/split adjustment).
             sql = """
-                SELECT stock_id, date, open, high, low, close, adj_close,
+                SELECT stock_id, date, open, high, low, close,
                        volume, avg_price
                 FROM stock_prices
                 WHERE date >= ? AND date <= ?

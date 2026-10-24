@@ -81,6 +81,22 @@ async function run(): Promise<void> {
     )
     assert(!kv.store.has('trading:config'), 'main trading:config must not be written after snapshot failure')
   }
+
+  {
+    // prev_hash and the no-op check use the value in KV, not a cold or stale cache.
+    invalidateConfigCache()
+    const kv = new FakeKV()
+    const before = buildChampionTradingConfig({ signal: { buySignalScore: 0.61 } })
+    kv.store.set('trading:config', JSON.stringify(before))
+    const same = await setTradingConfig(kv as unknown as KVNamespace, before, { source: 'contract_test' })
+    assert.equal(same.skipped, true, 'rewriting the stored value must be a no-op snapshot')
+    invalidateConfigCache()
+    const next = buildChampionTradingConfig({ signal: { buySignalScore: 0.62 } })
+    const written = await setTradingConfig(kv as unknown as KVNamespace, next, { source: 'contract_test' })
+    const snapshot = JSON.parse(kv.store.get(written.snapshotId!)!)
+    assert.equal(typeof snapshot.meta.prev_hash, 'string', 'snapshot must hash the stored predecessor')
+    assert.notEqual(snapshot.meta.prev_hash, snapshot.meta.new_hash)
+  }
 }
 
 run().catch((error) => {

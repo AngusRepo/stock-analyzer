@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:fbbd8fc3a53ff1a836960c5ef381cc12bfcbda86f7a220e4f01641c1f8db8c05",
+  "execution_owner_version": "native-paper-v1:351ced2b0b8dfa8a1db582851105daf74008c7ddb50dd7d3a7aa52299cd79a27",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-23 TW approved: \"核准 #51 venue release：merge、re-pin、10/24 晚部署 controller／Modal／Worker 並重跑 10/22，順序照你們討論出的順序處裡即可\"",
-  "review": "audits/venue-vo1023-release-20261024/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:vo1023-20261024"
+  "authorization": "Wei 2026-10-24 TW approved R-C (#54 + #42 + #49) with R-E (#53) folded in: \"能完整走完就走完，R-E可以一起\"",
+  "review": "audits/rc-release-20261024/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rc-20261024"
 }

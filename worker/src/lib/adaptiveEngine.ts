@@ -319,7 +319,7 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
-  const { assertPostVerifyEffectAllowed } = await import('./postVerifyTaskCheckpoint')
+  const { assertPostVerifyEffectAllowed } = await import('./postVerifyEffectScope')
   await assertPostVerifyEffectAllowed(env)
   const res = await fetch(`${env.ML_CONTROLLER_URL}/risk-assess`, {
     method: 'POST',

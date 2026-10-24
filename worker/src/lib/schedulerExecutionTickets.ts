@@ -257,7 +257,9 @@ const ALLOWED_PREVIOUS: Record<SchedulerExecutionTicketStatus, readonly Schedule
   success: ['accepted', 'queued', 'running', 'triggered', 'success'],
   error: ['accepted', 'queued', 'running', 'triggered', 'error'],
   skipped: ['accepted', 'queued', 'running', 'triggered', 'skipped'],
-  blocked: ['accepted', 'queued', 'running', 'triggered', 'blocked'],
+  // `triggered` means the work was handed to a callback or durable queue; only that owner
+  // (the durable_queue branch below) may settle it as blocked.
+  blocked: ['accepted', 'queued', 'running', 'blocked'],
 }
 
 export async function updateSchedulerExecutionTicket(

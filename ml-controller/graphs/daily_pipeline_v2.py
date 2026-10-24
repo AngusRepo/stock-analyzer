@@ -85,17 +85,14 @@ from services.state_space_series import (
     build_state_space_series_from_payloads,
     enrich_state_space_series_with_long_history,
 )
-from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 from services.recommendation_service import (
     apply_core_family_evidence,
-    apply_l2_timesfm_evidence,
     build_return_history_from_payloads,
     filter_and_score_recommendations,
     apply_sparse_tangent_allocation,
     load_online_portfolio_bandit_reward_ledger,
     load_fundamental_quality_by_symbol,
     write_predictions_to_d1,
-    write_layer2_timesfm_enrichment_audit,
     write_layer3_formal_gate_audit,
     prune_predictions_outside_universe,
     update_recommendations_in_d1,
@@ -681,13 +678,14 @@ class PipelineStateV2(TypedDict, total=False):
     timesfm_l2_summary: dict                 # L2 feature enrichment telemetry
     timesfm_l175_sidecars: dict              # Legacy key for TimesFM L2 sidecar payload
     timesfm_l175_summary: dict               # Legacy key for TimesFM L2 enrichment telemetry
+    sequence_input_summary: dict             # L3 sequence observation freeze telemetry
     modal_prediction_bundle: dict            # Raw Modal L3 bundle returned by async callback path
     modal_prediction_state_gcs_uri: str       # Durable partial state URI for async callback continuation
     pipeline_modal_serving_context: dict      # Frozen model_pool/trading context for async Modal split path
     snapshot_recovery_lineage: dict           # Explicit non-native PIT recovery evidence
     predictions: dict                       # symbol ??ml result
     nav_inference_receipt: dict             # Actual L3 outputs; not a publication or maturity grant
-    l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate after L2 TimesFM enrichment
+    l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate
     l3_predictions: dict                     # symbol -> formal L3 merged result
     final_recommendations: list[dict]       # after filter + scoring + allocation
     layer2_recommendation_symbols: list[str] # symbols entering formal L3 family evidence
@@ -1067,7 +1065,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         "critical_modal_waiter_sec": round(float(critical_modal_waiter), 3),
         "slowest_stage": slowest_stage,
         "stage_timings": stage_timings,
-        "timesfm_l2_owner": "node_l2_timesfm_enrich",
+        "sequence_input_owner": "node_prepare_sequence_inputs",
         "sequence_dataset": sequence_dataset_meta,
         "gnn_result_summary": gnn_result_summary,
         "n_input": n,
@@ -1598,18 +1596,26 @@ def _pipeline_sequence_inputs(state: PipelineStateV2, payloads: list[dict]):
     return read_frozen_sequence_inputs(saved, decision_date=state['run_date'], payloads=payloads)
 
 
+async def _node_prepare_sequence_inputs(state: PipelineStateV2) -> dict:
+    """Freeze L3 sequence observations before seal_l2_inputs; TimesFM L2 is retired."""
+    payloads = state.get('payloads') or []
+    if not payloads:
+        return {'sequence_input_summary': {'status': 'skipped', 'reason': 'empty_payloads'}}
+    _, metadata = _pipeline_sequence_inputs(state, payloads)
+    return {'sequence_input_summary': {'status': 'ready', 'sequence_dataset_meta': metadata}}
+
+
 @artifact_reads
-async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
+async def node_prepare_sequence_inputs(state: PipelineStateV2) -> dict:
     async def formal():
         if state.get('pipeline_slate_scope'):
             from services.pipeline_slate_artifacts import content_digest
             from services.paired_nav_journal import digest
             if digest(state['payloads']) != content_digest(state['pipeline_formal_payload_ref']):
                 raise ValueError('paired_nav_atomic_l2_retry_inputs_changed')
-        result = await _node_l2_timesfm_enrich(state)
-        for key in ('pipeline_sequence_observations', 'pipeline_timesfm_context'):
-            if state.get(key) is not None:
-                result[key] = state[key]
+        result = await _node_prepare_sequence_inputs(state)
+        if state.get('pipeline_sequence_observations') is not None:
+            result['pipeline_sequence_observations'] = state['pipeline_sequence_observations']
         return result
 
     if state.get('pipeline_slate_scope'):
@@ -1617,205 +1623,23 @@ async def node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
         from services.paired_nav_journal import digest
         original_hash = content_digest(state['pipeline_formal_payload_ref'])
         reference = await checkpoint_async(state['pipeline_slate_scope'],
-            ['formal-l2', original_hash, state.get('paired_nav_atomic_pre_l2')], formal,
-            cacheable=lambda r: r.get('timesfm_l2_summary', {}).get('status') in {'ready', 'blocked', 'skipped'})
+            ['formal-sequence-inputs-v1', original_hash], formal,
+            cacheable=lambda r: r.get('sequence_input_summary', {}).get('status') in {'ready', 'skipped'})
         result = load(reference, state['pipeline_slate_scope'])
-        if digest(state['payloads']) not in {original_hash, digest(result.get('payloads', state['payloads']))}:
+        # formal() only runs on a checkpoint miss; a cache hit must re-check payloads too.
+        if digest(state['payloads']) != original_hash:
             raise ValueError('paired_nav_atomic_l2_retry_inputs_changed')
-        for key in ('pipeline_sequence_observations', 'pipeline_timesfm_context'):
-            if result.get(key) is not None:
-                if state.get(key) is not None and state[key] != result[key]:
-                    raise ValueError('paired_nav_atomic_l2_retry_context_changed')
-                state[key] = result[key]
+        observed = result.get('pipeline_sequence_observations')
+        if observed is not None:
+            if state.get('pipeline_sequence_observations') is not None and state['pipeline_sequence_observations'] != observed:
+                raise ValueError('paired_nav_atomic_l2_retry_context_changed')
+            state['pipeline_sequence_observations'] = observed
     else:
         result = await formal()
     # LangGraph persists returned updates, not arbitrary input-dict mutations.
     if state.get('pipeline_sequence_observations') is not None:
         result['pipeline_sequence_observations'] = state['pipeline_sequence_observations']
-    if state.get('pipeline_timesfm_context') is not None:
-        result['pipeline_timesfm_context'] = state['pipeline_timesfm_context']
-    if (state.get('paired_nav_atomic_pre_l2') or {}).get('status') == 'pre_l2_payloads_built':
-        from services.paired_nav_atomic_l2 import prepare_atomic_l2
-        from services.paired_nav_collection import shadow_failure
-        try:
-            result['paired_nav_atomic_l2'] = await prepare_atomic_l2(state, result, enrich=_node_l2_timesfm_enrich)
-        except Exception as exc:
-            result['paired_nav_atomic_l2'] = shadow_failure('atomic_l2', exc)
     return result
-
-
-async def _node_l2_timesfm_enrich(state: PipelineStateV2) -> dict:
-    """Build TimesFM L2 sidecar features before formal L3 8ML inference."""
-    from services import modal_client
-
-    payloads = state.get("payloads") or []
-    # A no-pick baseline can still have Atomic candidates. Capture their shared
-    # source/policy before returning the baseline's empty/no-sidecar outcome.
-    if not payloads and (state.get('paired_nav_atomic_pre_l2') or {}).get('status') != 'pre_l2_payloads_built':
-        summary = {"status": "skipped", "reason": "empty_payloads", "layer": "L2"}
-        return {
-            "timesfm_l2_sidecars": {},
-            "timesfm_l2_summary": summary,
-            "timesfm_l175_sidecars": {},
-            "timesfm_l175_summary": summary,
-        }
-
-    try:
-        from services.paired_nav_journal import digest
-        from copy import deepcopy
-        frozen = state.get('pipeline_timesfm_context')
-        if frozen is not None:
-            if (frozen.get('schema_version') != 'pipeline-timesfm-context-v1'
-                    or frozen.get('signal_date') != state['run_date']
-                    or frozen.get('source_checksum') != digest({k: v for k, v in frozen.items() if k != 'source_checksum'})):
-                raise ValueError('paired_nav_timesfm_frozen_context_invalid')
-            release_policy = deepcopy(frozen['release_policy'])
-            model_status, active_versions, serving_pool = (deepcopy(frozen[k]) for k in ('model_status', 'active_versions', 'serving_pool'))
-            if (model_status.get('TimesFM') in {'active', 'degraded'}
-                    and (type(frozen.get('sequence_contract_points')) is not int or frozen['sequence_contract_points'] <= 0)):
-                raise ValueError('paired_nav_timesfm_frozen_sequence_contract_missing')
-        else:
-            release_policy = _timesfm_l175_release_policy()
-            model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
-            serving_model_status, serving_pool = await asyncio.to_thread(_load_active8_serving_pool)
-            if serving_model_status:
-                model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
-
-        sequence_series, sequence_dataset_meta = _pipeline_sequence_inputs(state, payloads)
-        timesfm_allowed, timesfm_gate = _timesfm_sync_gate(
-            model_status=model_status,
-            pool=serving_pool,
-            sequence_series=sequence_series,
-            **({'sequence_contract_points': frozen.get('sequence_contract_points')} if frozen else {}),
-        )
-        if frozen is None:
-            core = _json_safe({'schema_version': 'pipeline-timesfm-context-v1', 'signal_date': state['run_date'],
-                'release_policy': release_policy, 'model_status': model_status, 'active_versions': active_versions,
-                'serving_pool': serving_pool, 'sequence_contract_points': timesfm_gate.get('sequence_contract_points'),
-                'observed_at': datetime.now(timezone.utc).isoformat()})
-            state['pipeline_timesfm_context'] = {**core, 'source_checksum': digest(core)}
-        if not timesfm_allowed:
-            return {
-                "timesfm_l175_sidecars": {},
-                "timesfm_l2_sidecars": {},
-                "timesfm_l2_summary": {
-                    "status": "blocked",
-                    "layer": "L2",
-                    "gate": timesfm_gate,
-                    "sequence_dataset_meta": sequence_dataset_meta,
-                },
-                "timesfm_l175_summary": {
-                    "status": "blocked",
-                    "layer": "L2",
-                    "gate": timesfm_gate,
-                    "sequence_dataset_meta": sequence_dataset_meta,
-                },
-            }
-
-        sequence_contract_points = int(timesfm_gate.get("sequence_contract_points") or DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS)
-        timesfm_sequence_series, excluded = _sequence_contract_subset(
-            sequence_series,
-            min_points=sequence_contract_points,
-        )
-        evidence_entry = ((serving_pool.get('l2_feature_sidecars') or {}).get('TimesFM') or {})
-        expected_checksum = evidence_entry.get('checksum')
-        if not isinstance(expected_checksum, str) or not re.fullmatch(r'(?:sha256:)?[a-f0-9]{64}', expected_checksum):
-            raise ValueError('timesfm_evidence_checksum_unverified')
-        started = time.time()
-        raw = await modal_client.timesfm_batch_predict(
-            timesfm_sequence_series,
-            version=_require_loaded_serving_version(active_versions, "TimesFM", "l2_timesfm_enrich"),
-            sequence_contract_points=sequence_contract_points,
-            expected_checksum=expected_checksum,
-        )
-        elapsed = round(time.time() - started, 3)
-        result_rows = raw.get("results") if isinstance(raw, dict) else raw
-        if not isinstance(result_rows, list):
-            return {
-                "timesfm_l175_sidecars": {},
-                "timesfm_l2_sidecars": {},
-                "timesfm_l2_summary": {
-                    "status": "error",
-                    "layer": "L2",
-                    "reason": "timesfm_batch_invalid_payload",
-                    "gate": timesfm_gate,
-                    "elapsed_sec": elapsed,
-                },
-                "timesfm_l175_summary": {
-                    "status": "error",
-                    "layer": "L2",
-                    "reason": "timesfm_batch_invalid_payload",
-                    "gate": timesfm_gate,
-                    "elapsed_sec": elapsed,
-                },
-            }
-
-        timesfm_by_symbol = {
-            str(row.get("symbol")): row
-            for row in result_rows
-            if isinstance(row, dict) and row.get("symbol") and not row.get("error")
-        }
-        payload_by_symbol = {
-            str(payload.get("symbol")): payload
-            for payload in payloads
-            if isinstance(payload, dict) and payload.get("symbol")
-        }
-        sidecars: dict[str, dict] = {}
-        enriched_payloads: list[dict] = []
-        for payload in payloads:
-            symbol = str(payload.get("symbol") or "")
-            timesfm = timesfm_by_symbol.get(symbol)
-            if not timesfm:
-                enriched_payloads.append(payload)
-                continue
-            data = {
-                **(payload_by_symbol.get(symbol) or {}),
-                "timesfm": timesfm,
-            }
-            sidecar = build_timesfm_l175_sidecar(data, release_policy=release_policy)
-            if not sidecar:
-                enriched_payloads.append(payload)
-                continue
-            sidecars[symbol] = sidecar
-            enriched_payloads.append(_payload_with_timesfm_l175_sidecar(payload, sidecar))
-
-        active_count = sum(1 for sidecar in sidecars.values() if sidecar.get("l2_feature_input_active"))
-        summary = {
-            "status": "ready" if sidecars else "unavailable",
-            "layer": "L2",
-            "evidence_generation_active": bool(sidecars),
-            "direct_alpha_blocked": True,
-            "sidecar_count": len(sidecars),
-            "l2_feature_input_active_count": active_count,
-            "l2_feature_input_blocked_count": len(sidecars) - active_count,
-            "release_policy": sidecars[next(iter(sidecars))].get("release_evidence") if sidecars else release_policy,
-            "gate": timesfm_gate,
-            "excluded_count": len(excluded),
-            "excluded_symbols": excluded[:20],
-            "elapsed_sec": elapsed,
-            "sequence_dataset_meta": sequence_dataset_meta,
-        }
-        logger.info("[Pipeline V2] TimesFM L2 sidecar summary: %s", summary)
-        return {
-            "timesfm_l2_sidecars": sidecars,
-            "timesfm_l2_summary": summary,
-            "payloads": enriched_payloads,
-            "timesfm_l175_sidecars": sidecars,
-            "timesfm_l175_summary": summary,
-        }
-    except Exception as exc:  # noqa: BLE001 - L2 sidecar must not break L3.
-        logger.warning("[Pipeline V2] TimesFM L2 sidecar failed: %s", exc)
-        summary = {
-            "status": "error",
-            "layer": "L2",
-            "reason": f"{type(exc).__name__}: {exc}",
-        }
-        return {
-            "timesfm_l2_sidecars": {},
-            "timesfm_l2_summary": summary,
-            "timesfm_l175_sidecars": {},
-            "timesfm_l175_summary": summary,
-        }
 
 
 @artifact_reads
@@ -2650,10 +2474,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
                 "fundamental_quality_by_symbol": fundamental_quality_by_symbol,
                 "pit_sector_alpha_by_symbol": sector_experts, "run_date": state["run_date"],
             },
-            "l2_summary": state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
+            # TimesFM L2 is retired. The path's default missing-sidecar evidence stays
+            # until its l3 source identity changes; it never affects score or order.
+            "l2_summary": None,
         },
         filter_rows=filter_and_score_recommendations,
-        enrich_l2=apply_l2_timesfm_evidence, enrich_core=apply_core_family_evidence,
+        enrich_core=apply_core_family_evidence,
         candidate_reader=lambda: ({'schema_version':'paired-nav-l3-candidate-selection-v1',
             'signal_date':state['run_date'],'decision_cutoff':decision_cutoff,'base_artifacts':{},
             'candidates':[],'production_effect':False,'status':'disabled_by_single_b_policy'} if single_b else (
@@ -3037,13 +2863,6 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
             raise ValueError('active8_nav_execution_readback_missing')
     else:
         predictions_written = write_predictions_to_d1(state['predictions'], stock_id_map, run_date)
-    layer2_audit_rows = write_layer2_timesfm_enrichment_audit(
-        predictions=state["predictions"],
-        screener_recs=state.get("screener_recs") or [],
-        run_date=run_date,
-        screener_run_id=state.get("screener_run_id"),
-        l2_summary=state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
-    )
     layer3_audit_rows = write_layer3_formal_gate_audit(
         predictions=state["predictions"],
         recommendations=state.get("final_recommendations") or [],
@@ -3167,7 +2986,6 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         **({'active8_nav_execution': nav_observations[0]} if nav_observations else {}),
         "active8_action_authority": action_authority,
         "active8_observation_only": observation_only,
-        "layer2_timesfm_enrichment_audit_rows": layer2_audit_rows,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
         "prediction_symbols": len(successful_prediction_symbols),
         "prediction_seed_symbols": len(prediction_seed_symbols),
@@ -3200,9 +3018,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
             key: value for key, value in dispersion.items()
             if key != "symbols"
         }
-    timesfm_l2_summary = state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary")
-    if timesfm_l2_summary:
-        metrics["timesfm_l2_summary"] = timesfm_l2_summary
+    if state.get("sequence_input_summary"):
+        metrics["sequence_input_summary"] = state["sequence_input_summary"]
     if state.get('l4_pending_plan') is not None:
         from services.l4_distribution_context import publish_plan
         metrics['l4_plan_publication'] = await asyncio.to_thread(publish_plan, state['l4_pending_plan'], state['paired_nav_collection']['snapshot_id'])
@@ -5273,7 +5090,7 @@ def build_graph():
     g.add_node("compute_sector_flow", node_compute_sector_flow)
     g.add_node("compute_pit_residual_shadow", node_compute_pit_residual_shadow)
     g.add_node("build_payloads",    node_build_payloads)
-    g.add_node("l2_timesfm_enrich", node_l2_timesfm_enrich, retry=ml_retry)
+    g.add_node("prepare_sequence_inputs", node_prepare_sequence_inputs, retry=ml_retry)
     g.add_node("l3_formal_predict", node_l3_formal_predict, retry=ml_retry)
     g.add_node("compute_personas", node_compute_personas)
     g.add_node("recommend",         node_recommend)
@@ -5289,8 +5106,8 @@ def build_graph():
     g.add_edge("load_inputs",         "load_market_env")
     # Strategy replacement evidence is evaluated outside the formal night.
     g.add_edge("load_market_env",     "build_payloads")
-    g.add_edge("build_payloads",      "l2_timesfm_enrich")
-    g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")
+    g.add_edge("build_payloads",      "prepare_sequence_inputs")
+    g.add_edge("prepare_sequence_inputs", "l3_formal_predict")
     g.add_edge("l3_formal_predict",   "compute_personas")
     g.add_edge("compute_personas",    "recommend")
     g.add_edge("recommend",           "gen_llm_reasons")
@@ -5376,7 +5193,7 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
         from services.premarket_pipeline import enabled as premarket_enabled, seal_l3, l3_handoff_result
         if premarket_enabled():
             await _run_pipeline_nodes(initial_state,[node_load_inputs,node_load_market_env,
-                node_build_payloads,node_l2_timesfm_enrich,node_l3_formal_predict])
+                node_build_payloads,node_prepare_sequence_inputs,node_l3_formal_predict])
             receipt=await asyncio.to_thread(seal_l3,initial_state)
             return l3_handoff_result(initial_state,receipt)
         final_state = await graph.ainvoke(initial_state)
@@ -5438,7 +5255,7 @@ async def _continue_pipeline_after_l2(state: PipelineStateV2) -> dict:
                     "request_uncompressed_bytes": spawn_info.get("request_uncompressed_bytes"),
                     "request_compressed_bytes": spawn_info.get("request_compressed_bytes"),
                 },
-                "timesfm_l2_summary": state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary") or {},
+                "sequence_input_summary": state.get("sequence_input_summary") or {},
             },
             "errors": list(state.get("errors") or []),
         }
@@ -5462,24 +5279,29 @@ async def run_pipeline_v2_from_input_event(*, stage_path: str, run_date: str, pr
     return result
 
 
-async def _continue_pipeline_before_l2(state: PipelineStateV2) -> dict:
+async def _continue_pipeline_before_l2(state: PipelineStateV2, *, first_capture: bool = False) -> dict:
     """Resume the same frozen pre-L2 inputs after snapshot/prep completion."""
     from services.pipeline_input_events import InputDeferred, input_context, seal_pre_l2_checkpoint
+    from services.pipeline_progress import phase
     from services.pipeline_runtime_preflight import verify_pipeline_runtime
     context=state.get('pipeline_modal_serving_context') or {}
-    await verify_pipeline_runtime(expected_source_sha=context.get('expected_source_sha'))
-    assert_canonical_window_open(state['run_date'])
-    # Freeze raw observations before a dependency can suspend this invocation.
-    # Otherwise a resumed build would capture newer observations for this run.
-    if state.get('payload_source_observations') is None:
-        from services.payload_builder import capture_payload_sources
-        state['payload_source_observations']=await asyncio.to_thread(
-            capture_payload_sources,state['active_stocks'],state['run_date'])
-    checkpoint_uri=await asyncio.to_thread(seal_pre_l2_checkpoint,state)
+    # A resume re-verifies after the input wait; reporting it as the first
+    # capture would stretch the input-freeze stage over that wait.
+    async with phase('node_prepare_l2_inputs' if first_capture else 'node_resume_l2_inputs',
+                     deferred_exception=InputDeferred):
+        await verify_pipeline_runtime(expected_source_sha=context.get('expected_source_sha'))
+        assert_canonical_window_open(state['run_date'])
+        # Freeze raw observations before a dependency can suspend this invocation.
+        # Otherwise a resumed build would capture newer observations for this run.
+        if state.get('payload_source_observations') is None:
+            from services.payload_builder import capture_payload_sources
+            state['payload_source_observations']=await asyncio.to_thread(
+                capture_payload_sources,state['active_stocks'],state['run_date'])
+        checkpoint_uri=await asyncio.to_thread(seal_pre_l2_checkpoint,state)
     try:
         with input_context(state,checkpoint_uri,resume_phase='pre_l2'):
             await _run_pipeline_nodes(state,[node_build_payloads])
-        await _run_pipeline_nodes(state,[node_l2_timesfm_enrich])
+        await _run_pipeline_nodes(state,[node_prepare_sequence_inputs])
         state['pipeline_payload_identity']=build_pipeline_payload_identity(state.get('payloads') or [])
         return await _continue_pipeline_after_l2(state)
     except InputDeferred as deferred:
@@ -5508,8 +5330,10 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         ])
         # Validate and freeze the exact serving contract before expensive L2 work.
         # The request builder below reuses this context, never recaptures it.
-        await _attach_pipeline_modal_serving_context(state)
-        return await _continue_pipeline_before_l2(state)
+        from services.pipeline_progress import phase
+        async with phase('node_attach_serving_context'):
+            await _attach_pipeline_modal_serving_context(state)
+        return await _continue_pipeline_before_l2(state, first_capture=True)
     except Exception as e:  # noqa: BLE001
         elapsed = asyncio.get_event_loop().time() - t0
         logger.exception("[Pipeline V2] async Modal prediction spawn failed after %.1fs", elapsed)

@@ -39,7 +39,7 @@ def source():
         'market_segment recommendation_lane eligible_for_ml eligible_for_pending_buy '
         'alpha_context alpha_allocation ml_vote_summary score_components date').split()
     core.db.execute('CREATE TABLE daily_recommendations(' + ','.join(columns) + ')')
-    core.db.execute('CREATE TABLE stocks(id,symbol,name,sector,market)')
+    core.db.execute('CREATE TABLE stocks(id,symbol,name,sector,market,listing_market)')
     fixture = recommendation_inputs()
     for index, rec in enumerate(fixture['screener_recs'], 1):
         components = deepcopy(rec['score_components'])
@@ -47,8 +47,8 @@ def source():
             'score_components': json.dumps({'different_post_calibration': True}), 'current_price': 100}
         core.db.execute('INSERT INTO daily_recommendations VALUES(' + ','.join('?' for _ in columns) + ')',
             [json.dumps(daily[c]) if isinstance(daily.get(c), (dict, list)) else daily.get(c) for c in columns])
-        core.db.execute('INSERT INTO stocks VALUES(?,?,?,?,?)',
-            [rec['stock_id'], rec['symbol'], rec['name'], 'Semis', 'TWSE'])
+        core.db.execute('INSERT INTO stocks VALUES(?,?,?,?,?,?)',
+            [rec['stock_id'], rec['symbol'], rec['name'], 'Semis', 'TWSE', 'TWSE'])
         for stage, decision, score, evidence in (
             ('scoring', 'pass', 60, {'score_components': components}),
             ('final_selection', 'selected', 91, {'legacy_final': True}),
@@ -150,14 +150,16 @@ def test_source_capture_through_original_recommendation_consumer(source):
     result, captured = recommendation.run_and_capture_recommendation_path(inputs=inputs)
     assert captured['status'] == 'recommendation_context_captured'
     assert recommendation.replay_recommendation_context(captured) == result
-    assert result['sell_count'] == 1
+    # 2317's SELL is advisory (recommendation_service); only a missing prediction counts as a sell.
+    assert result['sell_count'] == 0
+    assert {row['symbol'] for row in result['recommendations']} == {'2330', '2317'}
     # Whole input boundary, not just final selected recommendations.
     assert len(captured['inputs']['screener_recs']) == 2
     changed = deepcopy(captured['inputs'])
     changed['screener_recs'][1]['score'] = 99
     formal_result, failure = recommendation.run_and_capture_recommendation_path(inputs=changed)
     assert failure['status'] == 'failed'
-    assert formal_result['sell_count'] == 1
+    assert formal_result['sell_count'] == 0
     assert 'boundary_mismatch' in str(failure)
 
 
@@ -230,6 +232,9 @@ def test_actual_daily_candidate_capture_verifies_canonical_source_and_retry(sour
     monkeypatch.setattr(atomic, 'read_daily_population', read)
     monkeypatch.setattr(builder.CORE_D1_CLIENT, 'query', source[1].query)
     monkeypatch.setattr(builder, 'capture_payload_sources', lambda stocks, date: {'fixture_stocks': stocks})
+    from datetime import datetime, timezone
+    from test_paired_nav_atomic_daily_inputs import _native_holding_sources
+    _native_holding_sources(monkeypatch, graph, datetime(2026, 9, 7, 13, tzinfo=timezone.utc))
     state = dict(run_date='2026-09-07', screener_run_id='run-seed', screener_recs=rows,
         active_stocks=builder.build_ml_universe([], rows), pipeline_screener_seed_context=context)
     update = asyncio.run(graph.node_capture_atomic_inputs(state))

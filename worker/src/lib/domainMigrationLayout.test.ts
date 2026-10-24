@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { tablesForDataDomainRouteReady } from './dataDomainRegistry'
 
 const wrangler = fs.readFileSync('wrangler.toml', 'utf8')
 const expected: Record<string, string> = {
@@ -118,5 +121,21 @@ for (const [domain, migration] of [
 ] as const) {
   assert.match(migration, /CREATE TABLE IF NOT EXISTS data_domain_cutover_probe_canary/)
   assert.match(migration, new RegExp(`CHECK\\(domain = '${domain}'\\)`))
+}
+// Storage health (storageReadiness.inspectDomain) marks a split domain ready only when every
+// route-ready registry table exists. Applying the domain migrations in order must therefore
+// create all of them; a registry entry without a migration would block storage producers.
+for (const domain of ['execution', 'paper'] as const) {
+  const dir = path.join('domain-migrations', domain)
+  const db = new DatabaseSync(':memory:')
+  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.sql')).sort()) {
+    db.exec(fs.readFileSync(path.join(dir, file), 'utf8'))
+  }
+  const present = new Set(
+    db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()
+      .map((row) => String((row as { name: string }).name)),
+  )
+  const missing = tablesForDataDomainRouteReady(domain).filter((table) => !present.has(table))
+  assert.deepEqual(missing, [], `${domain}: route-ready registry tables not created by domain-migrations/${domain}`)
 }
 console.log('domain migration layout contract passed')

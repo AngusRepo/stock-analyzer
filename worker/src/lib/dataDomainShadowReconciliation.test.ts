@@ -26,8 +26,15 @@ assert(source.includes('data-domain-full-recopy-reset-v1'))
 assert(source.includes('domain_shadow_full_checksum_recopy_required:'))
 assert(source.includes('domain_full_recopy_reset_cutover_blocked:'))
 assert(drain.includes("status === 'shadow_delete_reconciliation_deferred'"))
-assert(scheduler.includes('"id": "data-domain-shadow-backfill-ops"'))
-assert(scheduler.includes('target-only delete reconciliation'))
+// The per-domain ops job was folded into the sequential coordinator; delete reconciliation
+// stays inside backfillDataDomainTableShadow, which every coordinator step runs.
+const schedulerConfig = JSON.parse(scheduler) as { jobs: Array<{ id: string; description?: string }>; deleteJobIds: string[] }
+const coordinator = schedulerConfig.jobs.find((job) => job.id === 'data-domain-shadow-backfill-next')
+assert(coordinator)
+const backfillOrder = drain.match(/const DOMAIN_BACKFILL_ORDER: DataDomain\[\] = \[([^\]]*)\]/)?.[1] ?? ''
+assert(backfillOrder.includes("'ops'"), 'the sequential coordinator must still backfill the ops domain')
+assert(schedulerConfig.deleteJobIds.includes('data-domain-shadow-backfill-ops'))
+assert(!schedulerConfig.jobs.some((job) => job.id === 'data-domain-shadow-backfill-ops'))
 
 const rawCountMismatch = source.indexOf(
   'if (sourceRows !== targetRows) throw new Error(`domain_shadow_count_mismatch',

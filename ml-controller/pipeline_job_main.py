@@ -370,7 +370,10 @@ async def _run() -> int:
 
     await _callback_worker(overall_payload)
     if emit_subtasks:
-        await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
+        from services.pipeline_progress import _completed as pipeline_phases
+        await _emit_subtask_callbacks(
+            run_id, result, status, error, elapsed_ms, run_date=run_date or None, phases=list(pipeline_phases),
+        )
 
     snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
     if status == "success" and snapshot_state.get("status") == "deferred":

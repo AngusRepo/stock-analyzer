@@ -1,0 +1,58 @@
+name: controller image
+
+# Build the root Dockerfile from scratch: no push, no secrets. The build runs the image's own
+# checks (Worker compile, native bundle, native_execution_identity == the committed
+# native_execution_behavior_release.json, FinLab/Arrow import). Production images are still
+# overlays on the live image; this shows whether the commit also builds without that chain
+# (CD prerequisite E-3) and records the Python packages a fresh build resolves.
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'ml-controller/**'
+      - 'worker/**'
+      - 'schemas/**'
+      - 'infra/**'
+      - 'data/**'
+      - 'tools/**'
+      - 'output/feature_universe_triage/**'
+      - '.github/workflows/image.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Layer cache in the Actions cache: the pip and npm layers change only with their lockfiles.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: stockvision-controller:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Resolved Python packages
+        run: |
+          set -e
+          # what an unpinned requirement or transitive dependency resolved to in this build
+          docker run --rm --entrypoint pip stockvision-controller:ci freeze --all | sort > "$RUNNER_TEMP/pip-freeze.txt"
+          wc -l "$RUNNER_TEMP/pip-freeze.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: controller-image-pip-freeze
+          path: ${{ runner.temp }}/pip-freeze.txt

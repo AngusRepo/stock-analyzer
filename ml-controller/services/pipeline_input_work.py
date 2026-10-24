@@ -36,9 +36,10 @@ def call_running(call_id):
     if not call_id:
         return False
     import modal
+    from modal.exception import TimeoutError as ModalTimeoutError
     try:
         modal.FunctionCall.from_id(call_id).get(timeout=0)
-    except TimeoutError:
+    except (TimeoutError, ModalTimeoutError):  # modal 1.4's TimeoutError is not the builtin one
         return True
     except Exception:
         return False

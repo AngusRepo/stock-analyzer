@@ -121,3 +121,18 @@ def test_status_endpoint_requires_auth_and_only_observes(monkeypatch):
         date='2026-10-20',run_id='run-1',phase='input_snapshot'))
     assert response['status']=='running'
     assert calls==[{'run_id':'run-1','run_date':'2026-10-20','phase':'input_snapshot'}]
+
+
+@pytest.mark.parametrize('error,running',[('modal_timeout',True),('builtin_timeout',True),('other',False),(None,False)])
+def test_call_running_treats_modal_poll_timeout_as_running(monkeypatch,error,running):
+    import modal
+    from modal.exception import TimeoutError as ModalTimeoutError
+    from services.pipeline_input_work import call_running
+    raised={'modal_timeout':ModalTimeoutError('pending'),'builtin_timeout':TimeoutError(),'other':RuntimeError('gone')}
+    class Call:
+        def get(self,timeout):
+            assert timeout==0
+            if error:raise raised[error]
+    monkeypatch.setattr(modal.FunctionCall,'from_id',lambda call_id:Call())
+    assert call_running('fc-1') is running
+    assert call_running('') is False

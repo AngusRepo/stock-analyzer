@@ -108,6 +108,9 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
 
   const body = await c.req.json<any>().catch(() => null)
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
+  // These blocks have their own reviewed writers; a generic PUT keeps them as-is.
+  const ownedElsewhere = ['l4Distribution', 'l4R2Learning', 'sltp_per_regime'].filter((key) => key in body)
+  if (ownedElsewhere.length) return c.json({ error: 'config_put_cannot_write_owned_blocks', fields: ownedElsewhere }, 400)
 
   const { setTradingConfig, getTradingConfig, validateTradingConfig, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
   const current = await getTradingConfig(c.env.KV)
@@ -168,6 +171,9 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
     intraday: { ...current.intraday, ...body.intraday },
     momentum: { ...current.momentum, ...body.momentum },
     alphaFramework: mergedAlphaFramework,
+    ...(current.l4Distribution !== undefined ? { l4Distribution: current.l4Distribution } : {}),
+    ...(current.l4R2Learning !== undefined ? { l4R2Learning: current.l4R2Learning } : {}),
+    ...((current as any).sltp_per_regime !== undefined ? { sltp_per_regime: (current as any).sltp_per_regime } : {}),
   }
   const errors = validateTradingConfig(merged)
   if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:94cec7408ea84e4aa89b4cb35727063bb1b25a55d74ac592735d0366212d71d9",
+  "execution_owner_version": "native-paper-v1:a4c03c23fc702b98720bb2419db858e4dbe48c8f0182d3ff62ccdfa9cd18df12",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-22 TW approved: \"Go 授權你做今晚\"",
-  "review": "audits/r33-phase1-release-20261022/release/review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r33-phase1-20261022"
+  "authorization": "Wei 2026-10-24 TW approved R-D (B#3a #58 + M1-c #60): \"go\"; and PR #61 (l4_forward_refresh_failed fix) folded into R-D: \"go\"",
+  "review": "audits/rd-release-20261024/release/review.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rd-20261024"
 }

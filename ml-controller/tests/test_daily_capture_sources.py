@@ -174,5 +174,15 @@ def test_daily_identity_only_packet_restores_verified_venue(monkeypatch):
     with pytest.raises(ValueError,match="price_venue_requested_owner_mismatch"):
         bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)
     monkeypatch.setattr(retrain_trigger,"_training_stock_rows",lambda req:[{"id":1,"symbol":"9999","market":"TWSE"}])
-    with pytest.raises(ValueError,match="daily_capture_roster_identity_mismatch"):
+    with pytest.raises(ValueError,match="daily_capture_roster_identity_mismatch:symbol=3004 id=1 roster=9999"):
         bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)
+
+
+def test_roster_mismatch_names_the_issuer(monkeypatch):
+    # 2026-10-22: 6467 was listed but Core said ROTC, so the roster omitted it.
+    from routers import retrain_trigger
+    from services.daily_capture_sources import _daily_stock_owners
+    monkeypatch.setattr(retrain_trigger,"_training_stock_rows",lambda req:[{"id":1,"symbol":"3004","market":"TWSE"}])
+    assert _daily_stock_owners([{"id":1,"symbol":"3004"}],DAY)==[{"id":1,"symbol":"3004","market":"TWSE"}]
+    with pytest.raises(ValueError,match="daily_capture_roster_identity_mismatch:symbol=6467 id=7 roster=missing"):
+        _daily_stock_owners([{"id":1,"symbol":"3004"},{"id":7,"symbol":"6467"}],DAY)

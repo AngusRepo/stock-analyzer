@@ -42,16 +42,16 @@ def test_l2_tree_gate_node_is_not_in_daily_hot_path():
     assert "predict_l2_tree_batch" not in source
 
 
-def test_l2_routes_through_timesfm_sidecar_before_l3():
+def test_sequence_inputs_freeze_before_l3_without_timesfm_generation():
     source = (ROOT / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
-    assert 'g.add_node("l2_timesfm_enrich"' in source
-    assert 'g.add_edge("build_payloads",      "l2_timesfm_enrich")' in source
-    assert 'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")' in source
-    assert 'build_timesfm_l175_sidecar' in source
-    assert '"ml:timesfm_l175_l2_feature_release"' in source
-    assert "_timesfm_l175_registry_release_policy" in source
-    assert "candidate_type = 'timesfm_l175_l2_feature_release'" in source
+    assert 'g.add_node("prepare_sequence_inputs", node_prepare_sequence_inputs, retry=ml_retry)' in source
+    assert 'g.add_edge("build_payloads",      "prepare_sequence_inputs")' in source
+    assert 'g.add_edge("prepare_sequence_inputs", "l3_formal_predict")' in source
+    assert "l2_timesfm_enrich" not in source
+    assert "modal_client.timesfm_batch_predict" not in source
+    assert "write_layer2_timesfm_enrichment_audit" not in source
+    assert "['formal-sequence-inputs-v1', original_hash]" in source
 
 
 def test_timesfm_l175_release_retrain_path_materializes_l2_features():

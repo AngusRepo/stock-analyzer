@@ -1101,6 +1101,27 @@ function buildFinLabBackfillRunId(years: number, runDate?: string, dailySourceRe
   return `finlab-v4-${mode}-${day.replace(/-/g, '')}-${Date.now()}`
 }
 
+export function buildFinLabDailyRunId(runDate: string): string {
+  return buildFinLabBackfillRunId(0, runDate, true)
+}
+
+const FINLAB_DISPATCH_PLATFORM_RETRY_DELAYS_MS = [5_000, 10_000]
+
+// A Cloud Run front-end 5xx never reached /finlab/backfill/run, so resending the
+// same run_id cannot start a second Modal writer. App 5xx did reach the
+// non-idempotent spawn and is never retried.
+export function isCloudRunPlatformError(status: number, body: string): boolean {
+  return status >= 500 && status <= 504
+    && (/no available instance/i.test(body) || /^\s*<(?:!doctype html|html)/i.test(body))
+}
+
+// Transport failures leave the spawn outcome unknown; config/policy errors do not.
+export function isFinLabDispatchTransportError(error: unknown): boolean {
+  const name = (error as { name?: unknown } | null)?.name
+  return name === 'TimeoutError' || name === 'AbortError'
+    || (error instanceof TypeError && /network|connection|fetch failed/i.test(error.message))
+}
+
 function optionalString(value: unknown): string | undefined {
   const text = String(value ?? '').trim()
   return text || undefined
@@ -1133,6 +1154,7 @@ type FinLabBackfillRunOptions = {
   runId?: string
   dispatchAttempt?: number
   supersedeFunctionCallId?: string
+  platformRetryDelaysMs?: number[]
 }
 
 function buildFinLabBackfillRequestBody(
@@ -1220,12 +1242,17 @@ export async function runFinLabV4Backfill(
   }
   requireController(env)
 
-  const resp = await controllerFetch(env, '/finlab/backfill/run', {
-    method: 'POST',
-    jsonBody: buildFinLabBackfillRequestBody(env, runDate, force, options),
-    timeoutMs: 60_000,
-  })
-  const text = await resp.text().catch(() => '')
+  const jsonBody = buildFinLabBackfillRequestBody(env, runDate, force, options)
+  const retryDelaysMs = options.platformRetryDelaysMs ?? FINLAB_DISPATCH_PLATFORM_RETRY_DELAYS_MS
+  let resp: Response
+  let text: string
+  for (let attempt = 0; ; attempt++) {
+    resp = await controllerFetch(env, '/finlab/backfill/run', { method: 'POST', jsonBody, timeoutMs: 60_000 })
+    text = await resp.text().catch(() => '')
+    const delayMs = retryDelaysMs[attempt]
+    if (resp.ok || delayMs === undefined || !isCloudRunPlatformError(resp.status, text)) break
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+  }
   if (!resp.ok) {
     return `failed (${resp.status}): ${text.slice(0, 200)}`
   }

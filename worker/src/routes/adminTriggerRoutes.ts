@@ -5,7 +5,7 @@ import { resolveActive8DailyBusinessDate } from '../lib/active8DailyBusinessDate
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 import type { SchedulerCallbackContext, TaskHandler } from '../lib/adminTriggerTaskMap'
-import { shouldRunScheduledTask } from '../lib/schedulerPolicy'
+import { resolveNextTwSessionClosure, shouldRunScheduledTask } from '../lib/schedulerPolicy'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import {
   admitSchedulerExecutionTicket,
@@ -222,7 +222,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
 
     const { classifySchedulerSummary, logSchedulerResult } = await import('../lib/schedulerRunLogger')
     if (!c.req.query('force')) {
-      const decision = await shouldRunScheduledTask({ task, kv: c.env.KV })
+      const decision = await shouldRunScheduledTask({ task, kv: c.env.KV, checkAdHocClosure: true, alertEnv: c.env })
       if (!decision.shouldRun) {
         const summary = `skipped by scheduler policy: ${decision.reason}`
         await updateTicket('skipped', 'scheduler_http', summary)
@@ -236,6 +236,12 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           reason: decision.reason,
           message: `${task} ${summary}`,
         })
+      }
+      if (task === 'evening-chain') {
+        // A closure announced tonight for the next session must be on record
+        // before the chain resolves its target trading date.
+        await resolveNextTwSessionClosure(c.env.KV, decision.twDate, c.env)
+          .catch((error) => console.error('[evening-chain] next-session closure check failed:', error))
       }
     }
 

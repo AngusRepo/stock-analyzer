@@ -66,8 +66,8 @@ eval(r.outputFiles[0].text);
 def full_cash_state(config):
     with sqlite3.connect(':memory:') as db:
         db.executescript(base_state())
-        for path in ('core/0001_core_baseline.sql', 'core/0008_market_risk_quality.sql',
-                     'market/0001_market_baseline.sql', 'market/0002_runtime_owned_tables.sql',
+        for path in ('core/0001_core_baseline.sql', 'core/0007_stock_listing_source.sql',
+                     'core/0008_market_risk_quality.sql', 'market/0001_market_baseline.sql', 'market/0002_runtime_owned_tables.sql',
                      'market/0004_legacy_schema_alignment.sql',
                      'learning/0001_learning_baseline.sql', 'learning/0006_data_domain_control_revision_fence.sql',
                      'learning/0027_active8_ensemble_serving_owner.sql',

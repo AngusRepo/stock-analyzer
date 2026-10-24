@@ -17,15 +17,44 @@ from typing import Any, Iterator
 
 # Match this runtime's gzip header, including Python-version OS-byte behavior.
 _GZIP_HEADER = gzip.compress(b"", compresslevel=6, mtime=0)[:10]
+# Canonical hashing/packing: subtrees this small are cheaper in one C call than
+# a Python generator per key, and stay far below the 3f5def125 OOM payloads.
+CANONICAL_INLINE_NODES = 4096
+
+
+def _within_nodes(item: Any, limit: int) -> bool:
+    """True when the container tree has at most `limit` nodes (cycles never are)."""
+    stack, seen = [item], 0
+    while stack:
+        node = stack.pop()
+        seen += 1
+        if seen > limit:
+            return False
+        if isinstance(node, dict):
+            if len(node) > limit:
+                return False
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            if len(node) > limit:
+                return False
+            stack.extend(node)
+    return True
+
 
 def iter_json_bytes(value: Any, *, sort_keys: bool = False,
-                    allow_nan: bool = True, default=str) -> Iterator[bytes]:
+                    allow_nan: bool = True, default=str,
+                    inline_nodes: int = 0) -> Iterator[bytes]:
+    """`inline_nodes` > 0 C-encodes any subtree of at most that many nodes in one
+    piece: same bytes, bounded memory, but not lazy inside the subtree, so byte
+    budgets that must stop early (compress_json) keep the default of 0."""
     options = dict(ensure_ascii=False, sort_keys=sort_keys, separators=(",", ":"),
                    allow_nan=allow_nan, default=default)
     active: set[int] = set()
 
     def encode(item: Any) -> Iterator[bytes]:
-        if isinstance(item, dict) and all(isinstance(key, str) for key in item):
+        if inline_nodes and isinstance(item, (dict, list)) and _within_nodes(item, inline_nodes):
+            yield json.dumps(item, **options).encode("utf-8")
+        elif isinstance(item, dict) and all(isinstance(key, str) for key in item):
             identity = id(item)
             if identity in active:
                 raise ValueError("Circular reference detected")

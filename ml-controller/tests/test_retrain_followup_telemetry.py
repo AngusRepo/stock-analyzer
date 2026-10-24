@@ -197,35 +197,13 @@ def _retired_test_retrain_followup_reconciles_champion_pointer_after_artifact_li
     assert result["champion_pointer_reconcile"]["status"] == "ok"
 
 
-def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
+def test_retrain_followup_does_not_regenerate_or_register_retired_timesfm(monkeypatch):
     written: list[dict] = []
-
-    def fake_attach_timesfm_l2_evidence(payload: dict) -> dict:
-        stages = payload.setdefault("stages", {})
-        lifecycle_results = stages.get("artifact_lifecycle", {}).get("results", {})
-        legacy = lifecycle_results.pop("TimesFM")
-        l2_results = stages.setdefault("timesfm_l2_feature_release", {}).setdefault("results", {})
-        l2_results["TimesFM"] = {
-            **legacy,
-            "candidate_type": "timesfm_l175_l2_feature_release",
-            "release_stage": "timesfm_l2_feature_release",
-            "direct_alpha_blocked": True,
-            "oos_ic": 0.088,
-            "metrics": {"oos_ic": 0.088, "oos_samples": 80},
-            "model_cpcv": {"decision": "PASS", "failed_gates": []},
-            "foundation_forecast_validation": {"decision": "PASS", "oos_ic_mean": 0.088},
-        }
-        return {"attempted": True, "updated": True, "oos_ic": 0.088, "samples": 80}
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
     monkeypatch.setattr(followup_router.OPS_D1_CLIENT, "execute", lambda *args, **kwargs: {"meta": {"changes": 1}})
     monkeypatch.setattr(followup_router.retrain_lock, "release", lambda key, **kwargs: True)
     monkeypatch.setattr(followup_router, "record_modal_call", lambda **kwargs: None)
-    monkeypatch.setattr(
-        followup_router,
-        "attach_timesfm_foundation_evidence_to_followup_payload",
-        fake_attach_timesfm_l2_evidence,
-    )
     monkeypatch.setattr(
         followup_router,
         "upsert_artifact_records",
@@ -243,7 +221,9 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
         candidate_version="v20260612T160113_timesfm25_ctx1024",
         status="completed",
         stages={
-            "artifact_lifecycle": {
+            # Modal still emits this stage on monthly runs until B#3b.
+            "timesfm_l2_feature_release": {
+                "status": "ok",
                 "results": {
                     "TimesFM": {
                         "status": "ok",
@@ -256,13 +236,15 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
             },
         },
     )
+    from services.model_artifact_registry import build_artifact_records_from_retrain_followup
+    unfiltered = build_artifact_records_from_retrain_followup(payload.model_dump())
+    assert [row["candidate_type"] for row in unfiltered] == ["timesfm_l175_l2_feature_release"]
 
     result = asyncio.run(followup_router.retrain_followup(payload, _Request()))
 
-    assert result["foundation_evidence"]["updated"] is True
-    assert written[0]["artifact_id"] == "TimesFM:v20260612T160113_timesfm25_ctx1024:timesfm_l175_l2_feature_release"
-    assert written[0]["candidate_type"] == "timesfm_l175_l2_feature_release"
-    assert written[0]["offline_gate_decision"] in {"PASS", "STRONG_PASS"}
+    assert "foundation_evidence" not in result
+    assert written == []
+    assert result["artifact_registry"]["written"] == 0
 
 
 def test_retrain_followup_prefers_dedicated_token_when_configured(monkeypatch):

@@ -506,9 +506,9 @@ export function computeStrategyEvidenceMetricRows(
       matureDates = maeByDate.length
       evidence = {
         semantic: 'date_clustered_equal_weight_mean_adjusted_intrahorizon_maximum_adverse_excursion',
-        price_source: 'market.stock_prices',
+        price_source: STRATEGY_EVIDENCE_PRICE_SOURCE,
         path_window: 'canonical_selection_outcomes_v1.entry_date_through_exit_date',
-        missing_reason: value == null ? 'adjusted_price_path_unavailable' : null,
+        missing_reason: value == null ? 'canonical_adjusted_price_path_unavailable' : null,
       }
     } else if (metric === 'fundamental_revision_persistence') {
       const persistenceByDate = dateClusteredValues(primary, (row) => finite(row.fundamental_revision_persistence))
@@ -808,22 +808,22 @@ export function metricWriteStatements(
   ))
 }
 
+// The adjusted entry/low path is read from the canonical FinLab daily owner.
+// The legacy market.stock_prices.adj_close mirror mixes adjusted values with
+// raw-close copies (2026-06 and the 2026-08-24 / 2026-09-01 writes), so a
+// per-row raw*adj_close/close rebase is not a valid adjustment along a path.
+export const STRATEGY_EVIDENCE_PRICE_SOURCE = 'market.canonical_market_daily:finlab.price'
+
 type StrategyEvidencePriceRow = {
-  stock_id: number | string
+  symbol: string
   date: string
-  open: number | string | null
-  low: number | string | null
-  close: number | string | null
-  adj_close: number | string | null
+  adj_open: number | string | null
+  adj_low: number | string | null
 }
 
-function adjustedPrice(value: unknown, close: unknown, adjustedClose: unknown): number | null {
-  const raw = finite(value)
-  const rawClose = finite(close)
-  const adjusted = finite(adjustedClose)
-  return raw != null && raw > 0 && rawClose != null && rawClose > 0 && adjusted != null && adjusted > 0
-    ? raw * adjusted / rawClose
-    : null
+function positivePrice(value: unknown): number | null {
+  const parsed = finite(value)
+  return parsed != null && parsed > 0 ? parsed : null
 }
 
 export function maximumAdverseExcursionFromPricePath(
@@ -833,11 +833,11 @@ export function maximumAdverseExcursionFromPricePath(
 ): number | null {
   const entry = rows.find((row) => row.date === entryDate)
   if (!entry) return null
-  const adjustedEntryOpen = adjustedPrice(entry.open, entry.close, entry.adj_close)
+  const adjustedEntryOpen = positivePrice(entry.adj_open)
   if (adjustedEntryOpen == null) return null
   const adjustedLows = rows
     .filter((row) => row.date >= entryDate && row.date <= exitDate)
-    .map((row) => adjustedPrice(row.low, row.close, row.adj_close))
+    .map((row) => positivePrice(row.adj_low))
     .filter((value): value is number => value != null)
   if (!adjustedLows.length) return null
   return round6(Math.min(0, Math.min(...adjustedLows) / adjustedEntryOpen - 1))
@@ -851,7 +851,6 @@ function chunks<T>(items: T[], width: number): T[][] {
 
 async function attachMaximumAdverseExcursions(
   observations: StrategyEvidenceObservation[],
-  identityDb: D1Database,
   marketDb: D1Database,
   strategyKeys: Set<string>,
 ): Promise<void> {
@@ -860,37 +859,24 @@ async function attachMaximumAdverseExcursions(
     && row.entry_date && row.exit_date
   ))
   if (!relevant.length) return
+  // canonical_market_daily is keyed by symbol, so no Core identity lookup is needed.
   const symbols = [...new Set(relevant.map((row) => row.symbol))].sort()
-  const stockIdsBySymbol = new Map<string, number>()
-  for (const symbolChunk of chunks(symbols, 75)) {
-    const placeholders = symbolChunk.map(() => '?').join(',')
-    const result = await identityDb.prepare(`
-      SELECT id, symbol FROM stocks WHERE symbol IN (${placeholders})
-    `).bind(...symbolChunk).all<{ id: number; symbol: string }>()
-    for (const row of result.results ?? []) stockIdsBySymbol.set(row.symbol, Number(row.id))
-  }
-  const stockIds = [...new Set([...stockIdsBySymbol.values()])].sort((left, right) => left - right)
   const dateStart = relevant.map((row) => row.entry_date!).sort()[0]
   const dateEnd = relevant.map((row) => row.exit_date!).sort().at(-1)!
-  const pricesByStock = new Map<number, StrategyEvidencePriceRow[]>()
-  for (const stockIdChunk of chunks(stockIds, 50)) {
-    const placeholders = stockIdChunk.map(() => '?').join(',')
+  const pricesBySymbol = new Map<string, StrategyEvidencePriceRow[]>()
+  for (const symbolChunk of chunks(symbols, 50)) {
+    const placeholders = symbolChunk.map(() => '?').join(',')
     const result = await marketDb.prepare(`
-      SELECT stock_id, date, open, low, close, adj_close
-        FROM stock_prices
-       WHERE stock_id IN (${placeholders}) AND date>=? AND date<=?
+      SELECT stock_id AS symbol, date, adj_open, adj_low
+        FROM canonical_market_daily
+       WHERE stock_id IN (${placeholders}) AND source='finlab.price' AND date>=? AND date<=?
        ORDER BY stock_id, date
-    `).bind(...stockIdChunk, dateStart, dateEnd).all<StrategyEvidencePriceRow>()
-    for (const row of result.results ?? []) {
-      const stockId = Number(row.stock_id)
-      appendGroup(pricesByStock, stockId, row)
-    }
+    `).bind(...symbolChunk, dateStart, dateEnd).all<StrategyEvidencePriceRow>()
+    for (const row of result.results ?? []) appendGroup(pricesBySymbol, String(row.symbol), row)
   }
   for (const row of relevant) {
-    const stockId = stockIdsBySymbol.get(row.symbol)
-    if (stockId == null) continue
     row.maximum_adverse_excursion = maximumAdverseExcursionFromPricePath(
-      pricesByStock.get(stockId) ?? [],
+      pricesBySymbol.get(row.symbol) ?? [],
       row.entry_date!,
       row.exit_date!,
     )
@@ -1033,7 +1019,6 @@ export async function materializeStrategyEvidenceMetrics(
   const profiles = listStrategyEvidenceProfiles(specs.filter((spec) => spec.status !== 'retired'), {
     availableOutcomeHorizonDays: [3, 5, 10],
   })
-  const coreDb = databaseForDataDomain(env, 'core')
   const marketDb = databaseForDataDomain(env, 'market')
   const revisionMarketDb = shadowDatabaseForDataDomain(env, 'market') ?? marketDb
   const canonicalRunIds = await loadCanonicalScreenerRunIds(
@@ -1052,7 +1037,6 @@ export async function materializeStrategyEvidenceMetrics(
       const profileKey = new Set([`${profile.strategy_id}|${profile.strategy_version}`])
       await attachMaximumAdverseExcursions(
         observations,
-        coreDb,
         marketDb,
         profile.required_metrics.includes('maximum_adverse_excursion') ? profileKey : new Set(),
       )
@@ -1086,7 +1070,6 @@ export async function materializeStrategyEvidenceMetrics(
     )
     await attachMaximumAdverseExcursions(
       observations,
-      coreDb,
       marketDb,
       new Set(profiles.filter((profile) => profile.required_metrics.includes('maximum_adverse_excursion'))
         .map((profile) => `${profile.strategy_id}|${profile.strategy_version}`)),

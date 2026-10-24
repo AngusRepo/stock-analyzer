@@ -31,10 +31,8 @@ def _population():
         'production_effect': False, 'promotion_allowed': False, 'nav_maturity_credit': 0}
 
 
-def _setup(monkeypatch):
-    from daily_capture_test_dependency import stub_daily_capture_dependency
-    stub_daily_capture_dependency(monkeypatch)
-    from graphs import daily_pipeline_v2 as graph
+def _native_holding_sources(monkeypatch, graph, now):
+    """Local learning/paper D1 and a fixed clock for the actual native holdings capture."""
     from test_paired_nav_journal import DB
     nav = DB(legacy_assessments=False)
     nav.conn.commit()
@@ -51,11 +49,17 @@ def _setup(monkeypatch):
         'CREATE TABLE paper_corporate_entitlements_v1(account_id INTEGER,action_id TEXT,symbol TEXT,shares_due REAL,settled INTEGER);')
     monkeypatch.setattr(graph, 'PAPER_D1_CLIENT', SimpleNamespace(
         query=lambda sql,args:[dict(r) for r in paper.execute(sql,args)], connection=paper))
-    from datetime import datetime, timezone
     from services import paired_nav_native_holdings as holdings
     capture = holdings.capture_native_holdings
-    monkeypatch.setattr(holdings, 'capture_native_holdings', lambda **kw: capture(**{
-        'now': datetime(2026,9,6,13,tzinfo=timezone.utc), **kw}))
+    monkeypatch.setattr(holdings, 'capture_native_holdings', lambda **kw: capture(**{'now': now, **kw}))
+
+
+def _setup(monkeypatch):
+    from daily_capture_test_dependency import stub_daily_capture_dependency
+    stub_daily_capture_dependency(monkeypatch)
+    from graphs import daily_pipeline_v2 as graph
+    from datetime import datetime, timezone
+    _native_holding_sources(monkeypatch, graph, datetime(2026,9,6,13,tzinfo=timezone.utc))
     raw = _frozen_loaders(monkeypatch)
     formal = builder.build_ml_universe(raw[:2], [])
     reads = []

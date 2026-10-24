@@ -167,12 +167,16 @@ const zeroWeightTurnover = computeStrategyEvidenceMetricRows(
 assert.notEqual(zeroWeightTurnover?.metric_value, null, 'zero-authority shadow weights must use equal-weight observation turnover')
 
 assert.equal(maximumAdverseExcursionFromPricePath([{
-  stock_id: 1, date: '2026-08-03', open: 100, low: 98, close: 100, adj_close: 50,
+  symbol: '2330', date: '2026-08-03', adj_open: 50, adj_low: 49,
 }, {
-  stock_id: 1, date: '2026-08-04', open: 99, low: 90, close: 100, adj_close: 50,
+  symbol: '2330', date: '2026-08-04', adj_open: 49.5, adj_low: 45,
 }, {
-  stock_id: 1, date: '2026-08-05', open: 95, low: 92, close: 100, adj_close: 50,
+  symbol: '2330', date: '2026-08-05', adj_open: 47.5, adj_low: 46,
 }], '2026-08-03', '2026-08-05'), -0.1)
+// A missing canonical adjusted entry open yields null; a raw close is never rebased into the path.
+assert.equal(maximumAdverseExcursionFromPricePath([{
+  symbol: '2330', date: '2026-08-03', adj_open: null, adj_low: 49,
+}], '2026-08-03', '2026-08-05'), null)
 assert.equal(fundamentalRevisionPersistenceAsOf([
   { stock_id: '2330', revenue_month: '2026-05-01', yoy: 10, previous_comparison_pct: null, knowledge_time: '2026-06-10T00:00:00.000Z', payload_checksum: 'a' },
   { stock_id: '2330', revenue_month: '2026-05-01', yoy: 12, previous_comparison_pct: null, knowledge_time: '2026-06-20T00:00:00.000Z', payload_checksum: 'b' },

@@ -153,9 +153,9 @@ def test_l2_timesfm_replaces_tree_gate_without_split_target():
     assert "_attach_l2_core_ml_evidence" not in source
     assert "PIPELINE_L2_L3_SPLIT_ENABLED" not in source
     assert "modal_client.l2_tree_batch_predict" not in source
-    assert 'g.add_node("l2_timesfm_enrich"' in source
-    assert 'g.add_edge("build_payloads",      "l2_timesfm_enrich")' in source
-    assert 'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")' in source
+    assert 'g.add_node("l2_timesfm_enrich"' not in source
+    assert 'g.add_edge("build_payloads",      "prepare_sequence_inputs")' in source
+    assert 'g.add_edge("prepare_sequence_inputs", "l3_formal_predict")' in source
 
 
 def test_l2_timesfm_evidence_does_not_truncate_sparse_allocator_pool():
@@ -300,13 +300,13 @@ def test_l3_formal_predict_uses_full_post_l2_timesfm_slate(monkeypatch):
     assert result["l3_predictions"]["2317"]["rank_scores"] == {"TabM": 0.51, "GNN": 0.52}
 
 
-def test_daily_pipeline_graph_routes_l2_timesfm_before_l3_formal_predict():
+def test_daily_pipeline_graph_freezes_sequence_inputs_before_l3_formal_predict():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
-    assert source.index('g.add_edge("build_payloads",      "l2_timesfm_enrich")') < source.index(
-        'g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")'
+    assert source.index('g.add_edge("build_payloads",      "prepare_sequence_inputs")') < source.index(
+        'g.add_edge("prepare_sequence_inputs", "l3_formal_predict")'
     )
-    assert source.index('g.add_edge("l2_timesfm_enrich",   "l3_formal_predict")') < source.index(
+    assert source.index('g.add_edge("prepare_sequence_inputs", "l3_formal_predict")') < source.index(
         'g.add_edge("l3_formal_predict",   "compute_personas")'
     )
     assert 'g.add_edge("build_payloads",      "ml_predict")' not in source

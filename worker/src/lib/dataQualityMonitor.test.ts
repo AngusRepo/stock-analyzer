@@ -19,6 +19,7 @@ import {
   buildScreenerSeedQualityCheck,
   buildThemeSignalCoverageCheck,
   daysBetweenDates,
+  loadBoardLaneStats,
   EXPECTED_V2_MODELS,
   resolveExpectedCompletedDataDate,
   resolveExpectedTradingDate,
@@ -587,3 +588,35 @@ void (async () => {
   ])
   assert(status === 'warn', 'summary should preserve warning severity')
 }
+
+void (async () => {
+  // 6467-style rows: core market=OTC, exact venue ROTC. The board gate must read the exact venue.
+  const { DatabaseSync } = await import('node:sqlite')
+  const sql = new DatabaseSync(':memory:')
+  sql.exec(`CREATE TABLE stocks (id INTEGER, symbol TEXT, market TEXT, listing_market TEXT);
+    CREATE TABLE daily_recommendations (date TEXT, stock_id INTEGER, symbol TEXT);
+    CREATE TABLE stock_prices (stock_id INTEGER, date TEXT, open REAL, avg_price REAL);
+    CREATE TABLE pending_buy_runs (id INTEGER, source_reco_date TEXT, trade_date TEXT, status TEXT);
+    CREATE TABLE pending_buy_items (run_id INTEGER, symbol TEXT);
+    INSERT INTO stocks VALUES (1,'7879','OTC','ROTC'),(2,'2330','TWSE','TWSE'),(3,'6748','OTC',NULL);
+    INSERT INTO daily_recommendations VALUES ('2026-07-01',1,'7879'),('2026-07-01',2,'2330'),('2026-07-01',3,'6748');
+    INSERT INTO stock_prices VALUES (1,'2026-07-01',10,10),(2,'2026-07-01',10,10),(3,'2026-07-01',10,10);
+    INSERT INTO pending_buy_runs VALUES (9,'2026-07-01','2026-07-01','active');
+    INSERT INTO pending_buy_items VALUES (9,'7879'),(9,'2330');`)
+  const db = {
+    prepare: (query: string) => {
+      const statement = (args: unknown[]) => ({
+        bind: (...values: unknown[]) => statement(values),
+        all: async () => ({ results: sql.prepare(query).all(...(args as never[])) }),
+      })
+      return statement([])
+    },
+  } as unknown as D1Database
+  const stats = await loadBoardLaneStats(db, db, db, '2026-07-01')
+  assert(stats.emerging_recommendations === 1, `ROTC recommendation must count as emerging-like: ${JSON.stringify(stats)}`)
+  assert(stats.pending_buy_emerging_like === 1, `ROTC pending buy must fail the board gate: ${JSON.stringify(stats)}`)
+  sql.close()
+})().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

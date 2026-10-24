@@ -8,6 +8,7 @@ import { runMorningWarmup } from './localMaintenance'
 import { runCadenceReadiness } from './cadenceReadiness'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
 import { isMaintenanceLeaseBusy, runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
+import { MAINTENANCE_LEASE_YIELD_WAIT_MS, runWithMaintenanceLeaseYielding } from './maintenanceLeaseYield'
 import {
   resolveEveningChainClosureDurationMs,
   resolveEveningChainRunAuthority,
@@ -817,6 +818,10 @@ export function buildAdminWorkerDomainTaskMap(
       const result = await refreshOpenPositionPostClosePriceCache(c.env, { tradeDate: requestedRunDate() })
       return result.summary
     },
+    'postclose-research-dispatch': async () => {
+      const { runPostcloseResearch } = await import('./postcloseResearch')
+      return runPostcloseResearch(c.env, requestedRunDate() || twToday())
+    },
     'daily-snapshot': () => deps.runDailySnapshot(requestedRunDate()),
     'daily-execution-paper-lineage': async () => {
       const { ensureDailyExecutionPaperClosureArtifacts } = await import('./dailyExecutionPaperLineage')
@@ -898,7 +903,10 @@ export function buildAdminWorkerDomainTaskMap(
         AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE,
         AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
         AUDIT_JSON_ARCHIVE_TARGET_IDS,
+        AUDIT_JSON_DEFAULT_TARGET_IDS,
+        AUDIT_JSON_REF_V2_TARGET_ID,
         AUDIT_JSON_RETENTION_DEFAULT_DAYS,
+        readAuditJsonRefV2Gate,
         runAuditJsonArchiveRetention,
         summarizeAuditJsonArchiveRun,
       } = await import('./auditJsonArchive')
@@ -925,17 +933,26 @@ export function buildAdminWorkerDomainTaskMap(
         c.req.query('min_blob_bytes') ?? `${AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES}`,
         10,
       )
+      // Opt-in targets join an unnamed (scheduled) target list only when the
+      // ref-v2 KV gate is in scheduled mode; manual mode requires naming them.
+      const scheduledOptInTargets = !requestedAuditTargets.length
+        && await readAuditJsonRefV2Gate(c.env.KV) === 'scheduled'
+        ? [AUDIT_JSON_REF_V2_TARGET_ID]
+        : []
       const paperShadowProtected = await paperShadowSourceMutationProtected(c.env)
       const auditTargets = paperShadowProtected
         ? (requestedAuditTargets?.length
           ? requestedAuditTargets.filter((target) => target !== 'paper_execution_events')
-          : AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION)
-        : (requestedAuditTargets.length ? requestedAuditTargets : null)
+          : [...AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION, ...scheduledOptInTargets])
+        : (requestedAuditTargets.length
+          ? requestedAuditTargets
+          : scheduledOptInTargets.length ? [...AUDIT_JSON_DEFAULT_TARGET_IDS, ...scheduledOptInTargets] : null)
       if (paperShadowProtected && auditTargets?.length === 0) {
         return 'audit_json_retention skipped=paper_execution_events reason=paper_shadow_parity_protected'
       }
       if (durableRequested) {
         const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
+        const durableTargets = auditTargets?.length ? [...auditTargets] : [...AUDIT_JSON_DEFAULT_TARGET_IDS]
         const queued = await enqueueMaintenanceBacklogDrain(c.env, {
           task: 'audit-json-retention',
           runId: schedulerContext.schedulerRunId,
@@ -943,8 +960,13 @@ export function buildAdminWorkerDomainTaskMap(
           schedulerRunId: schedulerContext.schedulerRunId,
           runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+          // One 240-attempt cycle drains ~100k rows; ref-v2 keeps cycling until
+          // the 22:40Z window closes (skipped, not a failure cooldown).
+          maxCycles: parseBoundedPositiveInt(
+            c.req.query('max_cycles'), durableTargets.includes(AUDIT_JSON_REF_V2_TARGET_ID) ? 8 : 1, 8,
+          ),
           auditJsonOptions: {
-            targets: auditTargets?.length ? [...auditTargets] : [...AUDIT_JSON_ARCHIVE_TARGET_IDS],
+            targets: durableTargets,
             retentionDays,
             limitPerTable,
             minBlobBytes,
@@ -1335,7 +1357,7 @@ export function buildAdminWorkerDomainTaskMap(
         import('./dataDomainShadowBackfillDrain'),
         import('./dataDomainBackfillRetirementReadiness'),
       ])
-      const readiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV)
+      const readiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV, databaseForDataDomain(c.env, 'ops'))
       if (readiness.retirement_data_plane_ready) {
         return `data_domain_shadow_backfill_next all_domains_caught_up=true retirement_data_plane_ready=true observed_at=${readiness.observed_at}`
       }
@@ -1349,7 +1371,7 @@ export function buildAdminWorkerDomainTaskMap(
         parityNotBefore: closure.timestamp,
       })
       if (next.caughtUp) {
-        const refreshedReadiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV)
+        const refreshedReadiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV, databaseForDataDomain(c.env, 'ops'))
         if (refreshedReadiness.retirement_data_plane_ready) {
           return `data_domain_shadow_backfill_next all_domains_caught_up=true retirement_data_plane_ready=true observed_at=${refreshedReadiness.observed_at}`
         }
@@ -1627,12 +1649,11 @@ export function buildAdminWorkerDomainTaskMap(
     const handler = tasks[taskName]
     if (!handler) continue
     tasks[taskName] = async () => {
-      const result = await runWithMaintenanceLease(c.env.DB, {
-        taskName,
-        leaseGroup: 'd1_heavy_maintenance',
-        leaseSeconds: 300,
-        run: handler,
-      })
+      const lease = { taskName, leaseGroup: 'd1_heavy_maintenance', leaseSeconds: 300, run: handler }
+      // The wait fits the 60s weekly-cleanup deadline; audit-json's own trigger never asks its drain to yield.
+      const result = taskName === 'audit-json-retention'
+        ? await runWithMaintenanceLease(databaseForDataDomain(c.env, 'ops'), lease)
+        : await runWithMaintenanceLeaseYielding(databaseForDataDomain(c.env, 'ops'), lease, MAINTENANCE_LEASE_YIELD_WAIT_MS)
       // This job is the only daily cold-archive writer. A busy lease must
       // retry, not close its scheduler ticket as a successful no-op.
       if (taskName === 'retention-archive-only' && isMaintenanceLeaseBusy(result)) {

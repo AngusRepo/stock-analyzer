@@ -153,10 +153,10 @@ if (source) test('L3 remains usable after genuinely committed EV projections', a
   assert.deepEqual(evidence(), originalEvidence)
   assert.deepEqual({ ...sql.prepare('SELECT * FROM active8_ensemble_pointer_v1').get() }, f.l3_pointer)
 })
-else test('original L3 and EV handoff fixture is supplied by Python', () => {
-  const python = process.env.NAV_TEST_PYTHON ?? path.resolve('../../ml-service/.venv/Scripts/python.exe')
+else test('original L3 and EV handoff fixture is supplied by Python', { skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' }, () => {
+  const python = process.env.NAV_TEST_PYTHON!
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8',
-    PYTHONPATH: process.env.PYTHONPATH ?? path.resolve('../.tmp/nav-controller-runtime-deps') }
+    PYTHONPATH: process.env.PYTHONPATH ?? [path.resolve('..'), path.resolve('../ml-controller')].join(path.delimiter) }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync(python, ['-m', 'pytest', 'tests/test_nav_l3_ev_handoff.py', '-q', '--tb=short'],
     { cwd: path.resolve('../ml-controller'), env, encoding: 'utf8', timeout: 240000 })

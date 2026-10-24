@@ -58,7 +58,7 @@ for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   const hasInternalChainOwner =
     (spec.task === 'allocator-ev-readiness' && updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'")) ||
     (spec.task === 'allocator-ev-feature-snapshot-backfill' && postMarketChain.includes("task: 'allocator-ev-feature-snapshot-backfill'")) ||
-    (spec.task === 'model-ic-rolling' && postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh")) ||
+    (spec.task === 'model-ic-rolling' && postMarketChain.includes("'model-ic-rolling', env => runModelIcRollingRefresh")) ||
     (spec.task === 'dataset-snapshot-export' && adminControlRoutes.includes("body.task === 'dataset-snapshot-export'"))
   assert(hasHandler(spec.task) || hasInternalChainOwner, `${spec.task} must keep a scheduled/manual handler or explicit internal chain owner during consolidation`)
 }

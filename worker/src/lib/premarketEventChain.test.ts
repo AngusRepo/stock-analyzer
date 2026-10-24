@@ -7,10 +7,12 @@ const date='2026-09-14'
 function fixture() {
  const f=l4NativeFixture(), messages:UpdateQueueMsg[]=[], delays:number[]=[]
  f.env.UPDATE_QUEUE={send:async(msg:UpdateQueueMsg,o:any)=>{messages.push(msg);delays.push(o?.delaySeconds ?? 0)}}
+ // Trading-day owner reads TWSE feeds; keep them offline and announcing nothing.
+ globalThis.fetch=(async(url:string)=>({ok:true,status:200,json:async()=>String(url).includes('newsList')?[{Title:'unrelated'}]:[]})) as typeof fetch
  return {...f,messages,delays,now:()=>f.ports.nowMs, rows:()=>f.sqls.ops.prepare("SELECT stage,status,attempt_count FROM pipeline_stage_runs WHERE stage LIKE 'premarket_v3:%' ORDER BY rowid").all() as any[]}
 }
 const stages=['context','setup','debate:0','replan:0','publish:0'] as const
-for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
+for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16','2026-10-21']) test(`${recoveryDate} paper recovery dispatches after 09:00 and expires at day end`,async()=>{
  const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
  try{
   f.ports.nowMs=Date.parse(`${recoveryDate}T09:00:00+08:00`)
@@ -22,6 +24,35 @@ for (const recoveryDate of ['2026-10-12','2026-10-14','2026-10-16']) test(`${rec
   await processPremarketEvent(f.env,f.messages.shift()!,async()=>{calls++;return {next:null,receipt:{}}},f.now())
   assert.equal(calls,1)
   assert.match(await ensurePremarketEventChain(f.env,recoveryDate,f.now()),/outside_window/)
+ }finally{f.close()}
+})
+
+for(const scenario of ['repaired','wrong_context','live_enabled','fourth_failure','retry_failed'])test(`Oct 21 exact Paper publication continuation preserves attempts: ${scenario}`,async()=>{
+ const f=fixture(),day='2026-10-21';let calls=0
+ f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';f.env.LIVE_EXECUTION_CLIENT_ENABLED='0'
+ f.env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=scenario==='live_enabled'?'1':'0'
+ f.ports.nowMs=Date.parse(day+'T10:00:00+08:00')
+ const cursor=JSON.stringify({signal_date:'2026-10-20',morning_context:{trade_date:day,
+  checksum:scenario==='wrong_context'?'wrong':'d5b866e6f694a4b461e02cb54ee058f1ba7bc63e9b04fd5504c15be95b0e7213'},
+  l3_receipt:{run_id:'pipeline-dispatch:2026-10-20:270320c4-8d25-4187-aec2-79595289d428',checksum:'9e36664032344abc96ebfa0ffa39dcc95c59516aad06a5ec5f41423a6efc01f8'}})
+ const attempts=scenario==='fourth_failure'?4:3,error='Error: paper_morning_recovery_setup_not_materialized'
+ try{
+  f.sqls.ops.prepare('INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)')
+   .run(day,'premarket_v3:allocate',day+':premarket-v3','error',cursor,attempts,error)
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const before=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
+  const allowed=scenario==='repaired'||scenario==='retry_failed'
+  assert.equal(before.status,allowed?'queued':'error');assert.equal(before.attempt_count,attempts)
+  assert.equal(before.cursor_key,cursor);assert.equal(before.last_error,error)
+  if(allowed){
+   const msg={type:'premarket_stage',cursor:0,triggerTime:day,runId:day+':premarket-v3',premarketStage:'allocate'} as UpdateQueueMsg
+   const work:PremarketWork=async()=>{calls++;if(scenario==='retry_failed')throw new Error('repair_failed');return {next:null,receipt:{ready:true}}}
+   if(scenario==='retry_failed')await assert.rejects(processPremarketEvent(f.env,msg,work,f.now()),/repair_failed/)
+   else await processPremarketEvent(f.env,msg,work,f.now())
+   await ensurePremarketEventChain(f.env,day,f.now());await processPremarketEvent(f.env,msg,work,f.now())
+   const after=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
+   assert.equal(calls,1);assert.equal(after.attempt_count,4);assert.equal(after.status,scenario==='retry_failed'?'error':'success')
+  }
  }finally{f.close()}
 })
 test('atomic chain deduplicates signals and simultaneous deliveries',async()=>{
@@ -269,5 +300,23 @@ for(const success of [true,false])test(`publication retry requires actual reconc
    const done=f.sqls.ops.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='premarket_v3:allocate'").get() as any
    assert.equal(calls,1);assert.equal(done.status,'success');assert.equal(done.attempt_count,5)
   }
+ }finally{f.close()}
+})
+test('typhoon closure announced after the chain is queued stops every stage',async()=>{
+ const f=fixture(),day='2026-10-23';let calls=0
+ const closure={Title:'臺灣證券交易所集中交易市場115年10月23日休市一天',Url:'u',Date:'1151022'}
+ try{
+  f.ports.nowMs=Date.parse(day+'T06:50:00+08:00')
+  await ensurePremarketEventChain(f.env,day,f.now())
+  const msg=f.messages.shift()!
+  globalThis.fetch=(async(url:string)=>({ok:true,status:200,json:async()=>String(url).includes('newsList')?[closure]:[]})) as typeof fetch
+  f.kvs.delete(`market:twse_adhoc_closure_check:v1:${day}`)
+  await processPremarketEvent(f.env,msg,async()=>{calls++;return {next:'setup',receipt:{}}},f.now())
+  assert.equal(calls,0)
+  const row=f.sqls.ops.prepare("SELECT status,last_error,attempt_count FROM pipeline_stage_runs WHERE stage='premarket_v3:context'").get() as any
+  assert.equal(row.status,'error');assert.equal(row.last_error,'premarket_non_trading_day:twse_adhoc_closure');assert.equal(row.attempt_count,0)
+  assert.match(String(f.kvs.get(`holiday:${day}`)),/115年10月23日休市/)
+  assert.match(await ensurePremarketEventChain(f.env,day,f.now()),/status=skipped premarket_non_trading_day reason=twse_adhoc_closure/)
+  assert.equal(f.kvs.get(`scheduler:run:morning-setup:${day}`),undefined)
  }finally{f.close()}
 })

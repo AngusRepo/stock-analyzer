@@ -55,3 +55,22 @@ def test_cycles_are_rejected_and_legacy_transport_defaults_stay_unchanged():
     with pytest.raises(ValueError,match='Circular reference'):digest(cycle)
     value={'nan':float('nan'),'date':date(2026,10,15)}
     assert b''.join(iter_json_bytes(value))==json.dumps(value,ensure_ascii=False,separators=(',',':'),default=str).encode()
+
+
+NESTED={'by_date':{f'2026-09-{d:02d}':{'arms':{arm:{'nav':1+d/97,'fills':[{'symbol':str(2330+i),'qty':i}
+    for i in range(d%5)]} for arm in ('a','b')}} for d in range(1,31)},'中文':[{},[],{'z':None}],'int_keys':{2:'b',1:'a'}}
+
+
+@pytest.mark.parametrize('limit',[1,3,40,4096])
+@pytest.mark.parametrize('value',[NESTED,{2:'two',1:'one'},{'rows':[{'v':i/7} for i in range(5000)]},[[{'a':[1,2]}]*7]])
+def test_inline_subtrees_keep_exact_canonical_bytes(value,limit):
+    raw=b''.join(iter_json_bytes(value,sort_keys=True,allow_nan=False,default=None,inline_nodes=limit))
+    assert raw==reference(value)
+
+
+def test_inline_bound_keeps_large_payloads_streamed_and_rejections():
+    pieces=list(iter_json_bytes({'rows':list(range(5000))},inline_nodes=4096))
+    assert len(pieces)>3 and max(map(len,pieces))<1000
+    cycle={'rows':[]};cycle['rows'].append(cycle)
+    with pytest.raises(ValueError,match='Circular reference'):b''.join(iter_json_bytes(cycle,inline_nodes=4096))
+    with pytest.raises(ValueError):digest({'small':[float('inf')]})

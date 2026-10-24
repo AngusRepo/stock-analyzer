@@ -2317,12 +2317,19 @@ def materialize_finlab_canonical_outputs(
     ) if wants("canonical_fundamental_features") else []
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
     security_master = []
+    venue_arbitration: dict[str, Any] | None = None
     if wants("stocks"):
-        from services.finlab_security_master import normalize_security_master, normalize_etf_master, merge_security_masters
+        from services.finlab_security_master import (normalize_security_master, normalize_etf_master,
+            merge_security_masters, official_board_index)
         master_frame = _read_parquet(root / "raw" / "security_master" / "company_basic_info.parquet")
         if '__observed_at' not in master_frame.columns or master_frame['__observed_at'].n_unique() != 1:
             raise ValueError('finlab_security_master_raw_capture_missing')
-        security_master = normalize_security_master(master_frame, master_frame['__observed_at'][0])
+        # Runs captured before official_boards.parquet existed keep FinLab's venue.
+        official_boards = official_board_index(_read_parquet(root / "raw" / "security_master" / "official_boards.parquet"))
+        overrides: list[dict[str, Any]] = []
+        security_master = normalize_security_master(master_frame, master_frame['__observed_at'][0],
+            official_boards=official_boards, conflicts=overrides)
+        venue_arbitration = {"official_snapshot": official_boards is not None, "overrides": overrides}
         etf_frame = _read_parquet(root / 'raw' / 'security_master' / 'tw_etf_basic_info.parquet')
         if '__observed_at' not in etf_frame.columns or etf_frame['__observed_at'].n_unique() != 1:
             raise ValueError('finlab_etf_master_raw_capture_missing')
@@ -2375,6 +2382,8 @@ def materialize_finlab_canonical_outputs(
         },
         "row_counts": row_counts,
     }
+    if venue_arbitration is not None:
+        manifest["venue_arbitration"] = venue_arbitration
     manifest["checksum"] = sha256_json(manifest)
     return FinLabCanonicalOutputs(
         run_id=rid,

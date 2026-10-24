@@ -260,8 +260,13 @@ async def _run() -> int:
             result = await run_pipeline_v2_from_input_event(stage_path=os.environ.get('PIPELINE_INPUT_STAGE', ''),
                 run_date=run_date, producer_run_id=run_id)
         elif premarket_mode:
-            from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
-            result=await run_pipeline_v2_from_premarket(os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI',''))
+            uri = os.environ.get('PIPELINE_PREMARKET_INPUT_GCS_URI', '')
+            if os.environ.get('PIPELINE_PREMARKET_COMPLETED_ONLY', '').strip() == '1':
+                from graphs.daily_pipeline_v2 import reconcile_completed_premarket
+                result = await reconcile_completed_premarket(uri)
+            else:
+                from graphs.daily_pipeline_v2 import run_pipeline_v2_from_premarket
+                result = await run_pipeline_v2_from_premarket(uri)
         elif snapshot_recovery_mode:
             source_gcs_uri = os.environ.get("PIPELINE_SNAPSHOT_RECOVERY_SOURCE_GCS_URI", "").strip()
             result = await run_pipeline_v2_from_snapshot_recovery(
@@ -355,6 +360,9 @@ async def _run() -> int:
     }
     if isinstance(result,dict) and result.get('l3_receipt'):
         overall_payload['l3_receipt']=result['l3_receipt']
+    if isinstance(result,dict) and result.get('serving_publication_checksum'):
+        # The Worker verifies this receipt and waits for the after-close dispatch.
+        overall_payload['serving_publication_checksum']=result['serving_publication_checksum']
     if run_date:
         overall_payload["run_date"] = run_date
     if error:
@@ -362,7 +370,10 @@ async def _run() -> int:
 
     await _callback_worker(overall_payload)
     if emit_subtasks:
-        await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
+        from services.pipeline_progress import _completed as pipeline_phases
+        await _emit_subtask_callbacks(
+            run_id, result, status, error, elapsed_ms, run_date=run_date or None, phases=list(pipeline_phases),
+        )
 
     snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
     if status == "success" and snapshot_state.get("status") == "deferred":

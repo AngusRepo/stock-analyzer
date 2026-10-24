@@ -2,7 +2,7 @@
  * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
 
-export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running'
+export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running' | 'waiting'
 
 export interface SchedulerRunLogEntry {
   task: string
@@ -42,6 +42,7 @@ const TASK_NAMES: Record<string, string> = {
   'post-verify-chain': 'Post Verify Chain',
   'post-screener-pipeline': 'Post Screener Pipeline Continuation',
   'dataset-snapshot-export': 'Dataset Snapshot Export',
+  'postclose-research-dispatch': 'Post-close Research Dispatch',
   'linucb-reward-ledger': 'LinUCB Reward Ledger',
   'adaptive-meta-policy-replay': 'Adaptive Meta Policy Replay',
   'linucb-multiplier-replay': 'LinUCB Multiplier Replay',
@@ -146,7 +147,8 @@ export function isSchedulerRunStatus(status: unknown): status is SchedulerRunSta
     status === 'blocked' ||
     status === 'skipped' ||
     status === 'triggered' ||
-    status === 'running'
+    status === 'running' ||
+    status === 'waiting'
   )
 }
 
@@ -158,6 +160,7 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   if (/\bstatus=skipped\b/.test(normalized)) return 'skipped'
   if (/\bstatus=(?:pending|spawned|triggered)\b/.test(normalized)) return 'triggered'
   if (/\bstatus=running\b/.test(normalized)) return 'running'
+  if (/\bstatus=waiting\b/.test(normalized)) return 'waiting'
   if (
     normalized.startsWith('running') ||
     normalized.includes('started (background)') ||
@@ -219,7 +222,7 @@ export function resolveMonotonicSchedulerEntry(
     && previous.attempt_id !== incoming.attempt_id
   if (explicitNewAttempt) return incoming
   if (previous.status === 'error' && incoming.status !== 'error') return previous
-  if (previous.status === 'success' && ['running', 'triggered', 'skipped'].includes(incoming.status)) return previous
+  if (previous.status === 'success' && ['running', 'triggered', 'skipped', 'waiting'].includes(incoming.status)) return previous
   return incoming
 }
 

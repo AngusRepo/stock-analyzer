@@ -675,15 +675,6 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
   return c.json({ success: true, params: merged })
 })
 
-adminControlRoutes.post('/api/admin/pipeline-terminal-reconcile',async(c)=>{
-  const authError=await requireAdminOrServiceToken(c)
-  if(authError)return authError
-  const input=await c.req.json().catch(()=>null)
-  if(!input)return c.json({error:'Invalid JSON'},400)
-  const {reconcileHistoricalPipeline}=await import('../lib/historicalPipelineReconcile')
-  return c.json(await reconcileHistoricalPipeline(c.env,input))
-})
-
 async function handleSchedulerCallback(c: any) {
   const authError = await requireServiceToken(c)
   if (authError) return authError
@@ -1527,6 +1518,40 @@ async function handleSchedulerCallback(c: any) {
       if (body.status === 'success') {
         if (!callbackRunDate || !callbackRunId) {
           throw new Error('pipeline callback missing run_date or run_id for post-pipeline continuation')
+        }
+        if (body.serving_publication_checksum !== undefined) {
+          // Serving was published before the open. Research and verification wait
+          // for the 14:20 post-close dispatch, which queues this same post-pipeline owner.
+          const { verifyServingOnlyCallback } = await import('../lib/postcloseResearch')
+          await verifyServingOnlyCallback(c.env, callbackRunDate, callbackRunId, body.serving_publication_checksum)
+          const servingStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(c.env, 'ops'), {
+            businessDate: callbackRunDate,
+            stage: 'pipeline_execution',
+            canonicalRunId: callbackRunId,
+            status: 'success',
+          })
+          if (!servingStillCurrent) {
+            return c.json({ success: false, ignored: true, reason: 'stale_pipeline_callback' }, 409)
+          }
+          const { resumeActive8PremarketTickets } = await import('../lib/active8PremarketWait')
+          await resumeActive8PremarketTickets(c.env, callbackRunDate)
+          await logAcceptedCallbackTask()
+          await logSchedulerResult(c.env.KV, 'evening-chain', {
+            status: 'running',
+            summary: `pipeline serving published; research waits for the after-close dispatch run_id=${callbackRunId}`,
+            duration_ms: 0,
+            run_id: callbackRunId,
+            run_date: callbackRunDate,
+            strict: true,
+          }, c.env as any)
+          await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
+            status: 'waiting',
+            summary: `Serving published; research and verification wait for the after-close dispatch run_id=${callbackRunId}`,
+            duration_ms: 0,
+            run_id: callbackRunId,
+            run_date: callbackRunDate,
+          }, c.env as any)
+          return c.json({ ok: true, task: body.task, status: body.status, serving_published: true, research_status: 'queued_postclose' })
         }
         const continuation = await queuePostPipelineStage(c.env, {
           businessDate: callbackRunDate,

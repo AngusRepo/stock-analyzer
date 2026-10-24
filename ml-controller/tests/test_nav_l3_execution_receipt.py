@@ -116,7 +116,7 @@ def test_original_write_node_projects_verified_receipt(persisted, monkeypatch):
         'pipeline_modal_serving_context': {'schema_version': 'pipeline-modal-serving-context-v1',
             'serving_manifest': manifest, 'serving_manifest_digest': graph._pipeline_modal_canonical_digest(manifest)}}
     # Replace unrelated recommendation/audit I/O, not inference persistence or readback.
-    for name, count in (('prune_predictions_outside_universe',0), ('write_layer2_timesfm_enrichment_audit',2),
+    for name, count in (('prune_predictions_outside_universe',0),
                         ('write_layer3_formal_gate_audit',2), ('update_recommendations_in_d1',2),
                         ('delete_filtered_recommendations',0), ('re_rank_recommendations',0)):
         monkeypatch.setattr(graph, name, lambda *a, _count=count, **k: _count)

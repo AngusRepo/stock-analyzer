@@ -232,7 +232,8 @@ def merge_screener_seed_domains(
             else "research_only"
         )
         recommendation_lane = _coalesce(daily.get("recommendation_lane"), default_lane)
-        if recommendation_lane == "emerging_watchlist":
+        # Core's exact venue outranks a seed lane written from stale board data.
+        if recommendation_lane == "emerging_watchlist" or stock_market in EMERGING_SEGMENTS:
             continue
         if str(market_segment or "").upper() in EMERGING_SEGMENTS:
             continue

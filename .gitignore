@@ -61,3 +61,6 @@ uiux_gemini_package_*.zip
 
 # Private model cutover/config/runtime receipts. Never publish credentials or ledgers.
 /output/mlp-cutover/
+
+# R33 handoff audit evidence (87+ JSON receipts, regenerable; docs .md stay tracked)
+/output/herdr-handoff-20261018/evidence/

@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "c296bff5fe0983a9d5e24b8f153dd604f82c1d33",
+  "production_baseline_source": "1c5b59b9de358e6883cf7916dad42611227aba82",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "198c59fb8ff00f334ea4c775099af7253adee3bc3c5f9e54efde5075aeba93a4",
-  "prior_configuration_checksum": "ad86e252cd82a426ed6c51d7d87892d5d92ac05c7b94d067c850ab585f51d94c",
+  "prior_approval_checksum": "b98f37157afbf4905bbd74e39faf8ff73685d40cb180bd9c2f16947c31f79cfa",
+  "prior_configuration_checksum": "86dda6dc365ca9f392801bc4ea1eda46114d44c2e425c9b27d45d03027e76803",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -17,7 +17,7 @@
       "l4_alpha_ev_producer.py": "422ba17b2f4c2926759af1b8e59c890cf994fb1068ac4b40bbee5fd9d5a89a45",
       "allocator_ev_fusion.py": "31d98e4b95f80c6626fe0a211a09876f2e0b18cd349a39bf110fadf288279366",
       "paired_nav_intervention.py": "0163eca5ca9ca872bf151acf97e46f5f1f1b1ad59dcc4ffcd5316b82c5c6f244",
-      "strategy_nav_distribution.py": "d98e149f52418b1e8358dca90bce383fc3ccf8ad1821e3130cf157c8b1ab9f9c",
+      "strategy_nav_distribution.py": "8e01b97bc2bd6e35e53fb619b653607dd42a88de4cc9a57d761f7605066d0a6a",
       "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
       "active_model_policy.py": "3d51ff740bbd312533379f43dc0e313941b9d7b647feaf8719e8498d0b21aeb6",
       "paired_nav_collection.py": "c61418806a924260b7d04dd35f2cf41516867392ae7b853e1f74d73f943d9c0f",
@@ -69,18 +69,18 @@
       "persona_service.py": "f07758b9ee3fc80e12c846ba42076d5fdc92196a0db0c269344d0af238460056",
       "pipeline_persona_context.py": "a9bc09ee59c4ce98bf141873fcda134d09173c2b4436f21e9d31ebba173cb137",
       "paired_nav_atomic_personas.py": "0b9b38527a038426b86127c37af66cd2e418500ef8d68de3a1a90bc7a154a2fe",
-      "screener_seed_domain_merge.py": "3c111952cddb69cc71ce36da29a3f332e157a3ffa3e197bb90eae3b57c6510cf",
-      "screener_seed_domain_shadow.py": "4c848e8ab913708467a31bb5e0a0e131f78f68239afd5933c4dff876d10079cb",
+      "screener_seed_domain_merge.py": "ae4f84eef7ec2296b1170336aeb38b1db5f3b74039e99f9c0fa36638e9441edc",
+      "screener_seed_domain_shadow.py": "4121771a1ae935fd37d149ea45046258e1ed4fdbee7d653ac1f6c9f31dacafaf",
       "recommendation_source_context.py": "4b7f5ae1ef6d1a86a9ca62696da73c2eae9f0558f5b05b7665dbbc0be32c38b7",
       "paired_nav_atomic_recommendation.py": "01f190d0a9d77e9eb160c332e9b76d941e642c42011f43918cb6ffabe37400ca",
       "paired_nav_atomic_policy.py": "97c1c82915bd443de4c90d7e749fc000ad9b31b91997d51ae9735c7c2bf51d18",
       "paired_nav_atomic_allocation.py": "c984ee2ac1d00035007259f138fc15f3097484c26ee035f8eeae54ee5d5c04d9",
-      "paired_nav_atomic_candidate.py": "d27d4b277dfe1d5deae2b445784f1aad962b53db2e6e713d550a5a0f717e197e",
+      "paired_nav_atomic_candidate.py": "0a395b368c9c215110da617a8ee5aeeffe2079d2931260fa4da62ecdac5d765c",
       "fundamental_quality.py": "6662c407e47448ce9a82ab9c2b47093ec508bd20b147125297e792c9df7213f7",
       "pit_sector_alpha.py": "919b06527e04c826ef9d8b38c13d84ba98eba1fbb19fc3508a4e2b3c39859f34",
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:89a96c9d675e5c823b0e68a8771e243c603dd732a0317d34794501108f8a1f88",
-  "review": "audits/l4-oom-recovery-20261020/release/review.md"
+  "execution_owner_version": "native-paper-v1:351ced2b0b8dfa8a1db582851105daf74008c7ddb50dd7d3a7aa52299cd79a27",
+  "review": "audits/rc-release-20261024/release/review.md"
 }

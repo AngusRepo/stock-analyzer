@@ -185,6 +185,8 @@ export function evaluateDataDomainBackfillRetirement(input: {
 export async function inspectDataDomainBackfillRetirementReadiness(
   db: D1Database,
   kv: KVNamespace,
+  // Backfill leases live with the ops owner of maintenance_task_leases, not the control-plane tables.
+  leaseDb: D1Database = db,
 ): Promise<{
   schema_version: 'data-domain-backfill-retirement-readiness-v1'
   mode: 'read_only'
@@ -195,7 +197,7 @@ export async function inspectDataDomainBackfillRetirementReadiness(
   domains: DataDomainBackfillRetirementReadiness[]
   jobs: Record<string, { domains: DataDomain[]; data_plane_ready: boolean; blockers: string[] }>
 }> {
-  const activeLeasesQuery = await db.prepare(`
+  const activeLeasesQuery = await leaseDb.prepare(`
     SELECT lease_group, task_name, owner_id, lease_expires_at
       FROM maintenance_task_leases
      WHERE lease_expires_at >= CURRENT_TIMESTAMP

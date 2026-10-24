@@ -10,8 +10,7 @@ import { readCurrentNewsReport } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
 import type { PremarketPayload } from './premarketEventChain'
-import { atomicInputFailureOnly,historicalAtomicFailureOnly,sealedAllocationRecoveryOnly,verifyStoredFormalServing } from './premarketServingClosure'
-import { afterClosePaperRecovery } from './afterClosePaperRecovery'
+import { verifyStoredPublication,type ServingPublication } from './premarketPublicationReceipt'
 function stable(value:any):string {
   if(Array.isArray(value))return '['+value.map(stable).join(',')+']'
   if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}'
@@ -34,25 +33,25 @@ export async function singlePlanContext(env:Bindings,date:string,signalDate:stri
  return {signal_date:signalDate,l3_receipt:seal.receipt,morning_context:{...body,checksum:hash},context_hash:hash}
 }
 export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
- const receipt=input.l3_receipt as {run_id:string;run_date:string}
- const row=await databaseForDataDomain(env,'ops').prepare("SELECT status,last_error FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
-   .bind(receipt.run_date,receipt.run_id).first<{status:string;last_error:string|null}>()
- const tradeDate=(input.morning_context as {trade_date?:string}|undefined)?.trade_date
- const historical=tradeDate==='2026-10-16' && afterClosePaperRecovery(env,tradeDate,input)
-   && historicalAtomicFailureOnly(row?.last_error)
- const sealed=tradeDate==='2026-10-20' && env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'
-   && env.LIVE_EXECUTION_CLIENT_ENABLED==='0' && env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED==='0'
-   && (input.morning_context as {checksum?:string}|undefined)?.checksum==='c45c12df7e514c8e58c58575781aeb6811084c5f475c0e9c6ef1341c3898b555'
-   && sealedAllocationRecoveryOnly(row?.last_error)
- if(row?.status==='error' && (atomicInputFailureOnly(row.last_error) || historical || sealed)) {
+ const receipt=input.l3_receipt as {run_id:string;run_date:string;checksum:string}
+ // Serving is published before the open; the research tail waits for the close and never gates the plan.
+ let serving:{status:string;publication:ServingPublication|null}
+ try {
+   serving=await controllerJson<{status:string;publication:ServingPublication|null}>(env,
+     '/pipeline/v2/premarket-state?'+new URLSearchParams({date:receipt.run_date,run_id:receipt.run_id}))
+ } catch(error) {
+   // An unreachable receipt is a retry, like the L3 seal probe; a mismatching receipt below is not.
+   throw new Error('premarket_wait:serving_state:'+String(error instanceof Error?error.message:error).slice(0,80))
+ }
+ if(serving.publication) {
    const plan=await readL4PortfolioPlan(env)
-   if(!plan)throw new Error('premarket_wait:l4_publication')
-   await verifyStoredFormalServing(env,{runId:receipt.run_id,signalDate:receipt.run_date,error:row.last_error!,plan,
-     ...(historical ? {historicalRecoveryTradeDate:tradeDate} : {})})
-   // Only the existing optimizer plan may proceed through the original pending,
-   // daily-review and execution risk gates. The parent/NAV failure remains intact.
+   if(!plan||plan.signal_date!==receipt.run_date)throw new Error('premarket_wait:l4_publication')
+   await verifyStoredPublication(env,{publication:serving.publication,source:receipt,
+     context:input.morning_context as {trade_date:string;checksum:string},plan})
    return plan.plan_id
  }
+ const row=await databaseForDataDomain(env,'ops').prepare("SELECT status FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
+   .bind(receipt.run_date,receipt.run_id).first<{status:string}>()
  if(row?.status!=='success') {
  const status=await controllerJson<{status:string;reason?:string}>(env,'/pipeline/v2/premarket-resume',{
    method:'POST',jsonBody:{receipt:input.l3_receipt,context:input.morning_context},timeoutMs:60_000})

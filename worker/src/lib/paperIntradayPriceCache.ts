@@ -1,3 +1,4 @@
+import { quoteBelongsToSession } from './paperValuationDate'
 import { paperExecutionNow, paperExecutionDate, paperAccountId } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { paperDomainDatabase } from './paperDomainDatabase'
@@ -16,6 +17,7 @@ export type PostClosePriceSnapshot = {
   price: number
   source: string
   trade_date: string
+  quote_time?: string
   updated_at: string
 }
 
@@ -190,15 +192,16 @@ export async function refreshOpenPositionPostClosePriceCache(
   })
   const updatedAt = paperExecutionDate().toISOString()
   const snapshots = symbols
-    .map((symbol) => {
+    .map((symbol): PostClosePriceSnapshot | null => {
       const quote = quoteMap.get(symbol)
       const price = finitePositive(quote?.last)
-      if (price == null) return null
+      if (price == null || !quoteBelongsToSession(quote?.quoteTime, tradeDate)) return null
       return {
         symbol,
         price,
         source: quote?.source ? `post_close_${quote.source}` : 'post_close_quote',
         trade_date: tradeDate,
+        quote_time: quote!.quoteTime,
         updated_at: updatedAt,
       } satisfies PostClosePriceSnapshot
     })

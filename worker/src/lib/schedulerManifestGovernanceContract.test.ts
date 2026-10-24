@@ -42,16 +42,24 @@ for (const field of ['state', 'schedule', 'timeZone', 'description', 'attemptDea
 
 const nativeJobs = manifest.jobs.filter(job => job.task === 'paired-native-execution')
 assert(nativeJobs.length === 0, 'retired native collectors must not be scheduled')
-assert(['paired-native-execution-day', 'paired-native-execution-morning', 'morning-briefing']
+// R33 Phase 1 (2026-10-22): the strategy NAV shadow collectors had no registered pair since 2026-09-30
+// and failed every minute; both physical roots are retired. The Worker task handler stays until the
+// R33 deletion slice removes the native comparison engine.
+const strategyNavJobs = manifest.jobs.filter(job => job.task === 'strategy-nav-execution')
+assert(strategyNavJobs.length === 0, 'retired strategy NAV collectors must not be scheduled')
+assert(['paired-native-execution-day', 'paired-native-execution-morning', 'morning-briefing',
+  'strategy-nav-execution-morning', 'strategy-nav-execution-day']
   .every(id => manifest.deleteJobIds.includes(id)), 'retired jobs must be explicit deletion targets')
 const recoveryJobs = manifest.jobs.filter(job => job.task === 'premarket-evidence-watchdog')
 assert(recoveryJobs.length === 1 && recoveryJobs[0].timeZone === 'Asia/Taipei', 'one Taipei-time recovery scheduler replaces the briefing schedule')
-assert(schedulerManifestJobs().length - recoveryJobs.length === 55, 'physical roots preserve both strategy NAV collectors and exclude retired jobs')
-assert(manifestTasks.filter(task => task !== 'premarket-evidence-watchdog').length === 51, 'logical inventory preserves strategy NAV and excludes retired jobs')
-assert(summary.physicalRoots === 56, 'summary physical root count mismatch')
-assert(summary.uniqueLogicalTasks === 52 && summary.accountedLogicalTasks === 52, 'logical task accounting must be 52/52')
-assert(summary.reviewedDependencies === 35, 'reviewed dependencies include strategy NAV and exclude retired jobs')
-assert(summary.unmappedDependencies === 17 && summary.unmappedTasks.length === 17, 'unreviewed non-daily dependency debt must remain fail-visible')
+// 57 roots: 56 prior + daily-snapshot-settle (B#2) + postclose-research-dispatch (B#1) + the Taipei recovery job
+// - the two retired strategy NAV collectors (R33 Phase 1).
+assert(schedulerManifestJobs().length - recoveryJobs.length === 56, 'physical roots exclude retired strategy NAV collectors and other retired jobs')
+assert(manifestTasks.filter(task => task !== 'premarket-evidence-watchdog').length === 52, 'logical inventory excludes retired strategy NAV and other retired jobs')
+assert(summary.physicalRoots === 57, 'summary physical root count mismatch')
+assert(summary.uniqueLogicalTasks === 53 && summary.accountedLogicalTasks === 53, 'logical task accounting must be 53/53')
+assert(summary.reviewedDependencies === 35, 'reviewed dependencies include the post-close dispatcher and exclude retired jobs')
+assert(summary.unmappedDependencies === 18 && summary.unmappedTasks.length === 18, 'unreviewed non-daily dependency debt must remain fail-visible')
 assert(summary.pausedPhysicalRoots === 1, 'only paper shadow backfill remains paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 

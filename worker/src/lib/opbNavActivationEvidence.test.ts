@@ -12,11 +12,10 @@ import { adminConfigCoreRoutes } from '../routes/adminConfigCoreRoutes'
 
 const source = process.env.NAV_OPB_CONTROL_FIXTURE
 if (!source) {
-  test('original formal allocation returns verified activation over HTTP', () => {
-    const local = path.resolve('../../ml-service/.venv/Scripts/python.exe')
+  test('original formal allocation returns verified activation over HTTP', { skip: process.env.NAV_TEST_PYTHON ? false : 'NAV_TEST_PYTHON unset: needs an interpreter with ml-controller deps' }, () => {
     const env: NodeJS.ProcessEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' }
     delete env.NODE_TEST_CONTEXT
-    const result = spawnSync(process.env.NAV_TEST_PYTHON ?? local, ['-m', 'pytest',
+    const result = spawnSync(process.env.NAV_TEST_PYTHON!, ['-m', 'pytest',
       'tests/test_nav_opb_daily_primary.py', '-k', 'original_ten_session', '-q', '--tb=short'],
       { cwd: path.resolve('../ml-controller'), env, encoding: 'utf-8', timeout: 120000 })
     assert.equal(result.status, 0, result.stdout + result.stderr)

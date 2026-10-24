@@ -1,7 +1,7 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
-import { loadCoreStockIdentitiesByIds } from './stockIdentityMarketBridge'
+import { loadCoreStockIdentitiesByIds, resolveVenue } from './stockIdentityMarketBridge'
 
 export interface CanonicalScreenerPrice {
   date: string
@@ -436,7 +436,7 @@ export async function loadScreenerPriceRowsPaged(
     if (!identity?.symbol) return []
     return [{
       symbol: identity.symbol,
-      market: identity.market,
+      market: resolveVenue(identity),
       date: row.date,
       open: row.open,
       high: row.high,

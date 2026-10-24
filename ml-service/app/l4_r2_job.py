@@ -1,6 +1,12 @@
-"""One fixed seed fit + independent checkpoint readback; never auto-restart."""
+"""One fixed seed fit + independent checkpoint readback; never auto-restart.
+
+After verification is durable, checkpoints of unselected epochs are pruned: no
+reader (verification or serving) loads them, and they were ~95% of the archive.
+"""
 from pathlib import Path,PurePosixPath
 import hashlib,io,json,re,subprocess,tempfile,zipfile
+
+CHECKPOINT=re.compile(r'(?:cv/fold[1-4]|final)/epoch(\d{3})\.pt')
 
 
 def validate_request(payload):
@@ -21,6 +27,32 @@ def extract(raw,root):
             if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
                 raise ValueError('l4_r2_unsafe_archive')
         archive.extractall(root)
+
+
+def prune_targets(names,selected):
+    epochs={int(key[0]) for key in selected}
+    if not epochs:raise ValueError('l4_r2_prune_empty_selection')
+    return [name for name in names if (m:=CHECKPOINT.fullmatch(name)) and int(m.group(1)) not in epochs]
+
+
+def prune(bucket,prefix):
+    """Best effort: verification is already sealed, so a failure only leaves checkpoints in place."""
+    deleted=[]
+    try:
+        blob=bucket.get_blob(prefix+'selection.json')
+        raw=blob.download_as_bytes(if_generation_match=blob.generation)
+        if hashlib.sha256(raw).hexdigest()!=(blob.metadata or {}).get('sha256'):raise ValueError('l4_r2_prune_selection_checksum')
+        blobs={b.name[len(prefix):]:b for b in bucket.list_blobs(prefix=prefix)}
+        for name in prune_targets(sorted(blobs),json.loads(raw)['selected']):
+            b=blobs[name];b.delete(if_generation_match=b.generation)
+            deleted.append(dict(name=name,sha256=(b.metadata or {}).get('sha256'),bytes=int(b.size or 0),generation=str(b.generation)))
+        result=dict(status='pruned')
+    except Exception as exc:
+        result=dict(status='failed',error_type=type(exc).__name__)
+    result.update(deleted=deleted,deleted_count=len(deleted),deleted_bytes=sum(d['bytes'] for d in deleted))
+    try:bucket.blob(prefix+'checkpoint-prune.json').upload_from_string(json.dumps(result,sort_keys=True),if_generation_match=0)
+    except Exception as exc:print(json.dumps(dict(prune_receipt_failed=type(exc).__name__)),flush=True)
+    return result
 
 
 def run(payload):
@@ -53,6 +85,7 @@ def run(payload):
             verified.metadata={'sha256':hashlib.sha256(raw).hexdigest()}
             verified.upload_from_string(raw,if_generation_match=0)
             if verified.download_as_bytes()!=raw:raise ValueError('l4_r2_verification_readback')
+            prune(bucket,prefix)
             return proof
     except Exception as exc:
         failure=dict(status='failed',error_type=type(exc).__name__,promoted=False,retry_requires_review=True)

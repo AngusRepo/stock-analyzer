@@ -76,6 +76,19 @@ test('same symbol is insufficient: changed reason or request rank requires candi
   assert.notEqual(await breeze2AdvisoryCacheKey(a[1]), await breeze2AdvisoryCacheKey(b[0]))
 })
 
+test('explicit canonical null industry keeps the original zero sector bonus; absent membership still rejects', async () => {
+  const { packet, rows } = await fixture()
+  const source = packet.observations.sector_bonus[0].value as any
+  source.inputs.candidates.find((row: any) => row.symbol === '1001').sector = null
+  source.full_industry_universe.find((row: any) => row.symbol === '1001').sector = null
+  const result = await replayFrozenCandidateCoreSeeds(packet, rows, replacement)
+  assert.equal(result.status, 'materialized')
+  if (result.status !== 'materialized') throw new Error('canonical null was rejected')
+  assert.equal(result.rows[0].seed.row.seedScore, 48)
+  source.full_industry_universe = source.full_industry_universe.filter((row: any) => row.symbol !== '1001')
+  assert.equal((await replayFrozenCandidateCoreSeeds(packet, rows, replacement)).status, 'unavailable')
+})
+
 test('candidate source absence remains explicit; unrelated sector failure does not erase the covered candidate', async () => {
   const { packet, rows } = await fixture()
   for (const stage of ['selection_history', 'sector_bonus']) {

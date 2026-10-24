@@ -19,11 +19,19 @@ export interface SchedulerDependencySpec {
 }
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
+  'postclose-research-dispatch': {
+    task: 'postclose-research-dispatch', owner: 'worker_chain', consolidationClass: 'keep_scheduler',
+    currentFunction: 'At 14:20 dispatch checksum-bound morning research and queue the existing post-pipeline verification owner.',
+    upstream: ['pipeline'], downstream: ['dataset-snapshot-export', 'post-pipeline-chain'],
+    requiredBeforeDisable: ['all sealed morning research has an equivalent after-close dispatcher'],
+    operatorRisk: 'high', recommendation: 'Keep dispatch status distinct from research completion; never run NAV on the premarket serving path.',
+  },
   'strategy-nav-execution': {
-    task: 'strategy-nav-execution', owner: 'gcp_scheduler', consolidationClass: 'keep_scheduler',
-    currentFunction: 'Collect only atomic_strategy native frames under the current released single-B model.',
-    upstream: ['pipeline'], downstream: ['active8-oof-daily'], requiredBeforeDisable: [], operatorRisk: 'high',
-    recommendation: 'Keep full session coverage. Missing frames prohibit NAV maturity; formal Paper and retired comparison roots stay independent.',
+    task: 'strategy-nav-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',
+    currentFunction: 'Retired 2026-10-22 (R33 Phase 1): no shadow pair registered since 2026-09-30 and every tick failed; both physical roots are deleted. Historical strategy NAV receipts remain readable.',
+    replacementOwner: 'R33 layered evaluation; formal single-B Paper execution',
+    upstream: [], downstream: [], requiredBeforeDisable: ['no registered shadow pair', 'both physical roots deleted after approved retirement', 'historical receipts retained'], operatorRisk: 'low',
+    recommendation: 'Keep retired roots absent. The Worker task handler stays until the R33 deletion slice removes the native comparison engine.',
   },
   'paired-native-execution': {
     task: 'paired-native-execution', owner: 'manual_only', consolidationClass: 'disable_candidate',

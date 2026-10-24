@@ -10,13 +10,13 @@ test('real D1: original kernel parity, future-price exclusion, cold/future cache
   const mf = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response("local") } }', d1Databases: ['NAV'] })
   try {
     const db = await mf.getD1Database('NAV')
-    await db.prepare('CREATE TABLE stocks(id INTEGER PRIMARY KEY,symbol TEXT,name TEXT,market TEXT,sector TEXT)').run()
+    await db.prepare('CREATE TABLE stocks(id INTEGER PRIMARY KEY,symbol TEXT,name TEXT,market TEXT,sector TEXT,listing_market TEXT)').run()
     await db.prepare(`CREATE TABLE stock_prices(stock_id INTEGER,date TEXT,open REAL,high REAL,low REAL,close REAL,
       avg_price REAL,volume REAL,PRIMARY KEY(stock_id,date))`).run()
     await db.prepare('CREATE TABLE sector_leaders(sector TEXT,symbol TEXT,rank INTEGER,computed_at TEXT)').run()
     const symbols = ['2330', '2317', '2454', '2308']
     for (const [index, symbol] of symbols.entries()) {
-      await db.prepare("INSERT INTO stocks VALUES(?,?,?,'TWSE','STALE_CORE_CLASSIFICATION')").bind(index + 1, symbol, symbol).run()
+      await db.prepare("INSERT INTO stocks(id,symbol,name,market,sector) VALUES(?,?,?,'TWSE','STALE_CORE_CLASSIFICATION')").bind(index + 1, symbol, symbol).run()
     }
     for (const [index, symbol] of symbols.slice(1).entries()) {
       await db.prepare("INSERT INTO sector_leaders VALUES('Semiconductor',?,?,'2026-09-08 10:00:00')").bind(symbol, index + 1).run()
@@ -49,6 +49,16 @@ test('real D1: original kernel parity, future-price exclusion, cold/future cache
     assert.deepEqual(before.output, await sectorLeaderBonusBatch(env, request.candidates, .7, 5),
       'same valid cache and past prices produce exactly the original kernel result')
     assert.equal(before.output.get('2330')?.bonus, 5)
+    const noIndustry = await readSectorLeaderBonusSnapshot(env, { ...request,
+      candidates: [{ symbol: '2330', sector: null }],
+      fullIndustryUniverse: request.fullIndustryUniverse.map(row => row.symbol === '2330' ? { ...row, sector: null } : row),
+    })
+    assert.equal(noIndustry.source_status, 'captured')
+    assert.deepEqual(noIndustry.output.get('2330'), { bonus: 0, avgCorr: null, leaderCount: 0 })
+    const conflictingIndustry = await readSectorLeaderBonusSnapshot(env, { ...request,
+      candidates: [{ symbol: '2330', sector: 'display fallback' }],
+    })
+    assert(conflictingIndustry.issues.includes('taxonomy_missing_or_mismatched:2330'))
     assert(Math.abs(before.output.get('2330')!.avgCorr! - 1) < 1e-12)
     const immutable = structuredClone(before)
 
@@ -90,7 +100,7 @@ test('real D1: original kernel parity, future-price exclusion, cold/future cache
     assert.equal(missing.source_status, 'incomplete')
     assert(missing.issues.includes('identity_missing:9999'))
     assert(missing.issues.includes('price_history_missing:9999'), 'missing peer prices cannot masquerade as a zero-correlation observation')
-    await db.prepare("INSERT INTO stocks VALUES(5,'8888','peer','TWSE','STALE_CORE_CLASSIFICATION')").run()
+    await db.prepare("INSERT INTO stocks(id,symbol,name,market,sector) VALUES(5,'8888','peer','TWSE','STALE_CORE_CLASSIFICATION')").run()
     const peerNoPrice = await readSectorLeaderBonusSnapshot({ DB: readonly }, { ...request,
       fullIndustryUniverse: [...request.fullIndustryUniverse, { symbol: '8888', sector: 'Semiconductor' }],
     })
@@ -110,6 +120,8 @@ test('actual screener uses bounded reader, limits formal output scope and seals 
   assert(source.includes("atomicOverlayCapture.read('sector_bonus'"))
   assert(source.includes('readSectorLeaderBonusSnapshot(env'))
   assert(source.includes('taxonomyUniverse.map(symbol => ({ symbol, sector: taxonomyProfiles.get(symbol)?.industry ?? null }))'))
+  assert(source.includes('symbol: candidate.symbol, sector: taxonomyProfiles.get(candidate.symbol)?.industry ?? null'))
+  assert(!source.includes("symbol: candidate.symbol, sector: typeof candidate.sector === 'string' ? candidate.sector : null"))
   assert(source.includes('new Map([...bonusSnapshot.output].filter(([symbol]) => finalSymbols.has(symbol)))'))
   assert(!source.includes('await sectorLeaderBonusBatch('))
   assert(source.indexOf("atomicOverlayCapture.record('core_seed_materialization'") > source.indexOf('await writeScreenerSeedBatches('))

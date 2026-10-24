@@ -130,6 +130,17 @@ async def _callback_worker(
             await _post(c)
 
 
+# Phases that run before ML prediction; a failure here blocks ml-predict and recommendation.
+PRE_ML_PIPELINE_PHASES = frozenset({
+    "node_load_inputs",
+    "node_load_market_env",
+    "node_attach_serving_context",
+    "node_prepare_l2_inputs",
+    "node_resume_l2_inputs",
+    "node_build_payloads",
+})
+
+
 async def _emit_subtask_callbacks(
     run_id: str,
     result: dict | None,
@@ -137,12 +148,14 @@ async def _emit_subtask_callbacks(
     overall_error: str | None,
     elapsed_ms: int,
     run_date: str | None = None,
+    phases: list[dict] | None = None,
 ) -> None:
     """Fan out per-subtask callbacks so dashboard tiles light up correctly.
 
     Dashboard reads scheduler:run:{task}:{date}. Screener is Worker-owned before
     the pipeline trigger, so the pipeline callback must not overwrite screener
     success/failure. Only ML predict and recommendation are pipeline-owned.
+    `phases` is this process's phase telemetry (services.pipeline_progress).
     """
     metrics: dict = {}
     if isinstance(result, dict):
@@ -172,50 +185,57 @@ async def _emit_subtask_callbacks(
             "ml-predict",
             predictions_n > 0 and prediction_symbol_closure and incomplete_active_models == 0,
             prediction_summary,
+            predictions_n > 0 or prediction_symbols > 0,
         ),
         (
             "recommendation",
             recommendation_closed,
             f"run_id={run_id} recos_updated={recos_n} filtered={filtered_n} seed_rows={seed_rows_n} closure={recommendation_closed}",
+            seed_rows_n > 0 or recos_n > 0,
         ),
     ]
+
+    # Error results carry no metrics, so only a recorded pre-ML phase failure
+    # proves the children never ran; anything else stays a child error.
+    failed_phase = next(
+        (str(p.get("phase")) for p in reversed(phases or []) if isinstance(p, dict) and p.get("status") == "failed"),
+        None,
+    )
+    upstream_failed = overall_status != "success" and failed_phase in PRE_ML_PIPELINE_PHASES
+
+    def _payload(task: str, ok: bool, summary: str, reached: bool) -> dict:
+        if overall_status == "success" and ok:
+            status = "success"
+        elif upstream_failed and not reached:
+            status = "blocked"
+            summary = f"{summary} upstream_pipeline_failed_at={failed_phase}"
+        else:
+            status = "error"
+        payload: dict = {
+            "task": task,
+            "status": status,
+            "summary": summary,
+            "duration_ms": elapsed_ms,
+            "run_id": run_id,
+        }
+        if run_date:
+            payload["run_date"] = run_date
+        if status != "success":
+            payload["error"] = overall_error or f"{task}: no output"
+        return payload
 
     async def _send(payload: dict, client: httpx.AsyncClient | None = None) -> None:
         await _callback_worker(payload, client=client)
 
     async_client_cls = getattr(httpx, "AsyncClient", None)
     if async_client_cls is object or not callable(async_client_cls):
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _send(payload)
+        for subtask in subtasks:
+            await _send(_payload(*subtask))
         return
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        for task, ok, summary in subtasks:
-            status = "success" if (overall_status == "success" and ok) else "error"
-            payload: dict = {
-                "task": task,
-                "status": status,
-                "summary": summary,
-                "duration_ms": elapsed_ms,
-                "run_id": run_id,
-            }
-            if run_date:
-                payload["run_date"] = run_date
-            if status == "error":
-                payload["error"] = overall_error or f"{task}: no output"
-            await _callback_worker(payload, client=client)
+        for subtask in subtasks:
+            await _callback_worker(_payload(*subtask), client=client)
 
 
 # ─── V2 trigger endpoint ─────────────────────────────────────────────────────
@@ -503,7 +523,22 @@ async def premarket_state(request:Request,date:str,run_id:str):
     from services.premarket_pipeline import enabled,read_seal
     if not enabled():raise HTTPException(409,'premarket_owner_disabled')
     receipt=await asyncio.to_thread(read_seal,date,run_id)
-    return {'status':'sealed' if receipt else 'waiting','receipt':receipt}
+    from services.premarket_publication import read as read_publication
+    publication=await asyncio.to_thread(read_publication,date,run_id) if receipt else None
+    return {'status':'sealed' if receipt else 'waiting','receipt':receipt,'publication':publication}
+
+@router.post('/v2/premarket-postclose')
+async def premarket_postclose(request:Request):
+    """14:20 dispatcher: run sealed morning research in the dataset-snapshot job after the close."""
+    _check_service_token(request)
+    from services.premarket_pipeline import enabled
+    from services.premarket_postclose import dispatch_day
+    if not enabled():raise HTTPException(409,'premarket_owner_disabled')
+    body=await request.json()
+    job_name=(os.environ.get('DATASET_SNAPSHOT_JOB_NAME') or os.environ.get('PIPELINE_DATASET_SNAPSHOT_JOB_NAME') or '').strip()
+    if not job_name:raise HTTPException(409,'postclose_job_not_configured')
+    try:return await asyncio.to_thread(dispatch_day,body['trade_date'],jobs_client=CloudRunJobsClient(job_name=job_name))
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
 
 @router.post('/v2/premarket-resume')
 async def premarket_resume(request:Request):

@@ -121,3 +121,14 @@ def test_old_job_history_does_not_block_recent_exact_run():
     rows=[execution('old-'+str(i), run='other',created=STAMP-timedelta(days=1)) for i in range(105)]
     result=lookup(rows+[execution()])
     assert result['state']=='failed' and result['observed_executions']==1
+
+
+def test_postclose_identity_does_not_match_another_work_item_on_same_parent():
+    row=execution()
+    row.template.containers[0].env.append(run_v2.EnvVar(
+        name='PIPELINE_PREMARKET_POSTCLOSE_WORK_URI', value='gs://private/work-a'))
+    required={'PIPELINE_PREMARKET_POSTCLOSE_WORK_URI':'gs://private/work-a'}
+    assert lookup([row],required_env=required)['state']=='failed'
+    assert lookup([row],required_env={**required,'PIPELINE_PREMARKET_POSTCLOSE_WORK_URI':'gs://private/work-b'})['state']=='unknown'
+    with pytest.raises(ValueError,match='run_mismatch'):
+        lookup([row],execution_name=row.name,required_env={'PIPELINE_PREMARKET_POSTCLOSE_WORK_URI':'gs://private/work-b'})

@@ -33,7 +33,6 @@ import {
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
 import { buildPendingBuyTradeView, describeOr15Reason } from '@/lib/pendingBuyTradePreview'
-import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
 const RecommendationCard = lazy(() => import('@/components/RecommendationCardClean').then((module) => ({
   default: module.RecommendationCardClean,

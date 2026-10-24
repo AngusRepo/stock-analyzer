@@ -233,15 +233,12 @@ def _summarize_strategy_similarity_warmup_result(result) -> dict:
 async def warmup():
     """Prewarm Modal hot-path inference functions before the daily pipeline."""
     from services import modal_client
-    from services.state_space_series import build_state_space_series_from_payloads
     from services.warmup_service import run_named_warmups
 
     payloads = [_warmup_payload("2330", 2330), _warmup_payload("2317", 2317)]
-    series = build_state_space_series_from_payloads(payloads)
     targets = {
         "predict_batch_v2": modal_client.batch_predict(payloads),
         "gnn_graphsage_universal_predict": modal_client.gnn_graphsage_batch_predict(payloads),
-        "timesfm_universal_predict": modal_client.timesfm_batch_predict(series),
         "strategy_similarity_evidence": modal_client.strategy_similarity_evidence(_strategy_similarity_warmup_payload()),
     }
     outcomes = await run_named_warmups(targets)

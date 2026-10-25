@@ -64,3 +64,6 @@ uiux_gemini_package_*.zip
 
 # R33 handoff audit evidence (87+ JSON receipts, regenerable; docs .md stay tracked)
 /output/herdr-handoff-20261018/evidence/
+
+# CI compiles the Worker here for controller tests (ci/controller_deps.sh)
+ml-controller/worker-dist/

@@ -1,0 +1,21 @@
+{
+  "_comment": "probes: read-only checks for data-only migrations (one row, ok = 1 once applied). not_applicable: files whose objects moved to another domain database and must not be applied here.",
+  "probes": {
+    "learning": {
+      "0053_stock_technical_hard_signal_semantics.sql": "SELECT COUNT(*) > 0 AS ok FROM strategy_spec_registry WHERE created_by = 'stock_technical_hard_signal_20260923'"
+    },
+    "ops": {
+      "0017_ten_year_archive_windows.sql": "SELECT COUNT(*) = 0 AS ok FROM data_retention_policies WHERE policy_id IN ('canonical_market_hot_v1','execution_ledger_v1','learning_lineage_v1','legacy_hot_r2_v1','market_sessions_hot_v1','oof_lineage_cold_archive_v2','price_horizon_ops_v1','price_horizon_rejections_v1','research_runs_v1') AND (cold_retention_days IS NULL OR cold_retention_days < 3650)",
+      "0018_audit_json_ten_year.sql": "SELECT COUNT(*) = 0 AS ok FROM data_retention_policies WHERE policy_id = 'audit_json_r2_v1' AND (cold_retention_days IS NULL OR cold_retention_days < 3650)"
+    }
+  },
+  "not_applicable": {
+    "legacy": {
+      "0118_learning_bounded_hot_retention.sql": "data_retention_policies is ops-owned; stockvision-ops-db has learning_lineage_v1 at version 2, 120 hot days (the legacy copy is a stale v1)",
+      "0119_pit_factor_shadow_daily_v1.sql": "pit_factor_shadow_daily_v1 is a learning-domain table (dataDomainRegistry) and exists in stockvision-learning-db",
+      "0120_strategy_lifecycle_candidate_active.sql": "strategy_label_matrix_v4 is a learning-domain table and exists in stockvision-learning-db",
+      "0121_expected_return_candidate_forward_evaluations.sql": "learning-domain table, exists in stockvision-learning-db",
+      "0122_expected_return_candidate_preoutcome_evaluations.sql": "learning-domain table, exists in stockvision-learning-db"
+    }
+  }
+}

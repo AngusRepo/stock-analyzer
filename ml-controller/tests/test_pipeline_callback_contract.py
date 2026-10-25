@@ -10,9 +10,14 @@ try:
     import google.cloud as google_cloud
 except ImportError:
     google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
-setattr(google_cloud, "run_v2", run_v2_stub)
-sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
+    run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
+    setattr(google_cloud, "run_v2", run_v2_stub)
+    sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 
 from routers import pipeline
 

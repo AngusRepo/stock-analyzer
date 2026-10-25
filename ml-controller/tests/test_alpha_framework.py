@@ -567,7 +567,12 @@ def _sparse_recommendation_row(
         "recommendation_lane": "tradable",
         "eligible_for_pending_buy": True,
         "has_buy_signal": 1 if signal == "BUY" else 0,
-        "score_components": _sparse_score_v2(final_score, ml_edge=12.0),
+        # fa58528c6: L4 admission also requires formal family evidence on the row.
+        "score_components": {**_sparse_score_v2(final_score, ml_edge=12.0), "coreFamilyEvidence": {
+            "formal_model_contract_passed": True,
+            "evidence_status": "sufficient_family_breadth",
+            "active_family_count": 3,
+        }},
         "watch_points": [],
     }
 

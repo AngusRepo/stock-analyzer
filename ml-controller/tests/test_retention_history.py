@@ -1,4 +1,5 @@
 import hashlib,json
+from types import SimpleNamespace
 import pytest
 from services.retention_archive import SCHEMA
 from services.retention_history import archived_predictions
@@ -94,6 +95,19 @@ def test_compute_snapshot_export_keeps_archived_signals(monkeypatch):
   return iter([{'id':1,'stock_id':1,'generated_at':'2025-01-01','prediction_date':'2025-01-01','trade_signal':'BUY','direction_accuracy':0.7,'entry_price':100.,'forecast_data':'{"retained":true}'}])
  monkeypatch.setattr(retention_history,'archived_predictions',cold)
  monkeypatch.setattr(exporter,'_write_compute_snapshot',lambda **kw:kw)
+ # b0fed84d9 added direct MARKET reads (us_market_signals, market_breadth); keep them local like the others.
+ def market(sql,params,**kw):
+  assert ('FROM us_market_signals' in sql or 'FROM market_breadth' in sql) and params==['2025-01-01','2025-01-02']
+  return []
+ monkeypatch.setattr(exporter,'MARKET_D1_CLIENT',SimpleNamespace(query=market))
+ # 9a2001cb5 added the PAPER corporate-session index, corporate records and verified predictions.
+ def paper(sql,params,**kw):
+  assert 'FROM paper_corporate_sessions_v1' in sql and params==['2025-01-01','2025-01-02']
+  return []
+ monkeypatch.setattr(exporter,'client_for_domain',lambda domain:SimpleNamespace(query=paper) if domain==exporter.D1DataDomain.PAPER else pytest.fail(domain))
+ from services import backtest_corporate_export,backtest_state
+ monkeypatch.setattr(backtest_corporate_export,'export_original_corporate_records',lambda days:pl.DataFrame() if days==[] else pytest.fail(days))
+ monkeypatch.setattr(backtest_state,'load_verified_predictions',lambda start,end:[])
  req=exporter.DatasetSnapshotExportRequest(business_date='2026-09-22',start_date='2025-01-01',end_date='2025-01-02')
  result=exporter.export_backtest_dataset_snapshot(req)
  signals=result['components']['signals']

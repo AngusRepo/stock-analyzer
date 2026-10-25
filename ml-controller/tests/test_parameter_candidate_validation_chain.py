@@ -11,8 +11,15 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-if not hasattr(google_cloud, "run_v2"):
+try:
+    import google.cloud as google_cloud
+except ImportError:
+    google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
     run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
     setattr(google_cloud, "run_v2", run_v2_stub)
     sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
@@ -54,7 +61,9 @@ def test_trigger_validation_reuses_optuna_job_with_mode_override(monkeypatch):
     captured: dict = {}
 
     class FakeClient:
-        def __init__(self, job_name: str):
+        def __init__(self, job_name: str, require_source_alignment: bool = False):
+            # 8d43888b5: validation job dispatch must verify the image source first.
+            assert require_source_alignment is True
             captured["job_name"] = job_name
 
         def run_job(self, env_overrides, reject_if_running):

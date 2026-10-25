@@ -203,6 +203,9 @@ def paired_fixture(native_runner):
         'initial_account': initial, 'initial_state_checksums': {arm: checksum(raw) for arm in ('baseline', 'candidate')},
         'account_id': 2, 'variables': {}, 'schedule': schedule, 'previous_session_date': None,
         'session_date': '2026-09-07', 'session_open_at': '2026-09-07T01:00:00Z', 'session_close_at': '2026-09-07T05:30:00Z'}
+    # register_allocation_pair seals the runner's commission contract (cabab05af); mirror it.
+    from services.native_paper_sandbox import native_runtime_manifest
+    packet['commission_contract'] = native_runtime_manifest(native_runner)['commission_contract']
     seal = freeze_snapshot(signal_date='2026-09-04', source_run_id=packet['pair_id'], snapshot_kind='execution_pair',
         content=packet, query=db.query, writer=db.writer, now=datetime(2026, 9, 4, 14, tzinfo=timezone.utc))
     source = {'session_date': '2026-09-07', 'complete': True, 'schedule_checksum': digest(schedule),

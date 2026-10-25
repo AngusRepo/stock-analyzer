@@ -5,6 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.obsidian_position_valuation import hydrate_position_valuations  # noqa: E402
@@ -50,8 +52,9 @@ class PositionValuationTests(unittest.TestCase):
         self.assertEqual(calls[1][1][-2:], ["2026-08-21", "2026-08-21"])
 
     def test_paper_query_excludes_derived_market_columns(self) -> None:
-        source = Path("ml-controller/services/obsidian_writer.py").read_text(encoding="utf-8")
-        self.assertIn('SELECT symbol, name, shares, avg_cost, entry_price "', source)
+        source = (REPO_ROOT / "ml-controller/services/obsidian_writer.py").read_text(encoding="utf-8")
+        # eb5b6f8b0 joined the query onto one line; the selected columns are unchanged.
+        self.assertIn('SELECT symbol, name, shares, avg_cost, entry_price FROM paper_positions', source)
         self.assertNotIn('entry_price, current_price', source)
         self.assertNotIn('unrealized_pnl, unrealized_pnl_pct FROM paper_positions', source)
 

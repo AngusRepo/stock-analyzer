@@ -10,7 +10,11 @@ try:
     import google.cloud as google_cloud
 except ImportError:
     google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-if not hasattr(google_cloud, "run_v2"):
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
     run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
     setattr(google_cloud, "run_v2", run_v2_stub)
     sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
@@ -36,7 +40,9 @@ async def test_backtest_research_bundle_dispatches_cloud_run_job(monkeypatch):
         execution_name = "projects/p/locations/r/jobs/j/executions/optuna-research-sweep-test"
 
     class FakeClient:
-        def __init__(self, *, job_name: str):
+        def __init__(self, *, job_name: str, require_source_alignment: bool = False):
+            # 8d43888b5: research job dispatch must verify the image source first.
+            assert require_source_alignment is True
             captured["job_name"] = job_name
 
         def run_job(self, *, env_overrides: dict[str, str], reject_if_running: bool):
@@ -92,8 +98,9 @@ async def test_backtest_research_bundle_rejects_duplicate_running_execution(monk
     )
 
     class FakeClient:
-        def __init__(self, *, job_name: str):
+        def __init__(self, *, job_name: str, require_source_alignment: bool = False):
             assert job_name == "weekly-backtest-research"
+            assert require_source_alignment is True
 
         def run_job(self, *, env_overrides: dict[str, str], reject_if_running: bool):
             assert reject_if_running is True

@@ -47,10 +47,13 @@ jobs:
           fi
           [ "${{ matrix.side }}" = head ] && echo "sha=$head" >> "$GITHUB_OUTPUT" || echo "sha=$base" >> "$GITHUB_OUTPUT"
 
+      # Controller tests read older committed sources (git show <sha>:path), so controller
+      # suites fetch full history without blobs; other suites keep the one-commit checkout.
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.ref.outputs.sha }}
-          fetch-depth: 1
+          fetch-depth: ${{ startsWith(matrix.suite, 'controller') && '0' || '1' }}
+          filter: ${{ startsWith(matrix.suite, 'controller') && 'blob:none' || '' }}
 
       # The comparison tooling comes from github.sha: on pull_request that is the
       # base+head merge commit, so a branch older than ci/ still gets the tools and a
@@ -129,10 +132,12 @@ jobs:
     timeout-minutes: 30
     steps:
       # Code under rerun is the head; the rerun tooling comes from github.sha like the suites.
+      # Same history as the controller suites: reruns may read older committed sources.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
+          filter: blob:none
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}

@@ -10,6 +10,8 @@ controller_deps() {
     # ml-controller/scripts, so tests that run those scripts need the same compile here.
     (cd worker && npx tsc -p tsconfig.json --noEmit false --rootDir src --outDir ../ml-controller/worker-dist/src --module commonjs --moduleResolution node --ignoreDeprecations 6.0) &&
     (cd frontend && npm ci --no-audit --no-fund) &&
+    # loguru: test_tabpack_core16 imports the vendored TabPack `lib` (ml-service/vendor/tabpack,
+    # pinned in its uv.lock); the controller image itself never imports it.
     python -m pip install -q -r ml-controller/requirements.txt "${pins[@]}" pytest==9.0.3 pytest-asyncio==1.4.0 \
-      pytest-timeout==2.4.0 pytest-xdist==3.8.0
+      pytest-timeout==2.4.0 pytest-xdist==3.8.0 loguru==0.7.3
 }

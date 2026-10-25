@@ -1,0 +1,80 @@
+{
+  "schema_version": "stockvision-chip-pit-feature-contract-v1",
+  "contract_version": "chip-pit-features-v1",
+  "consumer": "chip_challenger_only",
+  "base_contract_untouched": "formal131-without-unverified-daily-owners-v1",
+  "storage_prefix": "chip-pit/v1",
+  "classes": {
+    "institutional": {
+      "source_lane": "chip_diversity",
+      "fields": {
+        "foreign_net": "institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)",
+        "trust_net": "institutional_investors_trading_summary:投信買賣超股數",
+        "dealer_self_net": "institutional_investors_trading_summary:自營商買賣超股數(自行買賣)",
+        "dealer_hedge_net": "institutional_investors_trading_summary:自營商買賣超股數(避險)"
+      },
+      "unit": "shares",
+      "presumed_publication_tw": "17:00",
+      "official_source": "TWSE T86 / TPEx 3itrade"
+    },
+    "margin": {
+      "source_lane": "chip_diversity",
+      "fields": {
+        "margin_balance": "margin_transactions:融資今日餘額",
+        "short_balance": "margin_transactions:融券今日餘額"
+      },
+      "unit": "lots_1000_shares",
+      "presumed_publication_tw": "21:30",
+      "official_source": "TWSE MI_MARGN / TPEx margin_bal"
+    },
+    "lending": {
+      "source_lane": "chip_diversity",
+      "fields": {
+        "security_lending_sell_balance": "security_lending_sell:借券賣出餘額",
+        "security_lending_balance": "security_lending:借券餘額"
+      },
+      "unit": "shares",
+      "presumed_publication_tw": "21:30",
+      "official_source": "TWSE TWT93U / TPEx margin_sbl"
+    },
+    "turnover": {
+      "source_lane": "daily_price",
+      "fields": {
+        "volume": "price:成交股數"
+      },
+      "unit": "shares",
+      "presumed_publication_tw": "14:30",
+      "official_source": "TWSE STOCK_DAY_ALL / TPEx daily close"
+    }
+  },
+  "pit_rule": {
+    "rule_cutoff_tw": "21:00",
+    "signal_cutoff": "evening L3 input freeze of signal date s; observed = write time of the first ready FinLab daily capture for business date s; otherwise s 21:00 Asia/Taipei (evening-chain fire time, rule_presumed); a later cutoff than s+1 is clamped down to s+1",
+    "observation_available_at": "observed_capture = GCS write time of the capture holding the row; rule_presumed = data date + presumed_publication_tw",
+    "vintage": "first observed value per (stock_id, data_date, class); later vendor revisions are counted, never applied",
+    "window_availability": "a feature row is usable only after every observation inside its 20-session window is available"
+  },
+  "features": [
+    "chip_inst_foreign_net_vol_5",
+    "chip_inst_foreign_net_vol_20",
+    "chip_inst_trust_net_vol_5",
+    "chip_inst_trust_net_vol_20",
+    "chip_inst_dealer_net_vol_5",
+    "chip_inst_total_net_vol_1",
+    "chip_inst_total_net_vol_5",
+    "chip_inst_total_net_vol_20",
+    "chip_margin_bal_chg_1",
+    "chip_margin_bal_chg_5",
+    "chip_margin_bal_chg_20",
+    "chip_margin_bal_vol_20",
+    "chip_short_bal_chg_5",
+    "chip_short_bal_chg_20",
+    "chip_short_bal_vol_20",
+    "chip_short_margin_ratio",
+    "chip_sbl_sell_bal_chg_5",
+    "chip_sbl_sell_bal_chg_20",
+    "chip_sbl_sell_bal_vol_20",
+    "chip_sbl_bal_chg_5",
+    "chip_sbl_bal_chg_20"
+  ]
+}

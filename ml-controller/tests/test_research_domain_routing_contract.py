@@ -1,8 +1,10 @@
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_strategy_mining_uses_research_domain_client() -> None:
-    source = Path("ml-controller/strategy_mining_job_main.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "ml-controller/strategy_mining_job_main.py").read_text(encoding="utf-8")
     assert "class _ResearchD1ClientProxy:" in source
     assert source.count("client_for_domain(D1DataDomain.RESEARCH)") >= 3
     assert "d1_client = _ResearchD1ClientProxy()" in source
@@ -10,7 +12,7 @@ def test_strategy_mining_uses_research_domain_client() -> None:
 
 
 def test_weekly_audit_routes_each_table_owner_explicitly() -> None:
-    source = Path("ml-controller/graphs/weekly_audit_graph.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "ml-controller/graphs/weekly_audit_graph.py").read_text(encoding="utf-8")
     assert "domain=D1DataDomain.PAPER" in source
     assert source.count("domain=D1DataDomain.RESEARCH") >= 2
     assert "domain=audit_domain" in source

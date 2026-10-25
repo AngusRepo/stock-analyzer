@@ -19,6 +19,8 @@ def entry_state():
     with sqlite3.connect(':memory:') as db:
         db.executescript(full_cash_state(config))
         db.executescript((ROOT / 'worker/domain-migrations/market/0005_market_regime_state_history.sql').read_text(encoding='utf8'))
+        # bdf904c74: regime reads union the append-only revisions table (same as l4NativeFixture).
+        db.executescript((ROOT / 'worker/domain-migrations/market/0010_market_regime_state_revisions.sql').read_text(encoding='utf8'))
         db.executescript("""
           INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status)
             VALUES('2026-09-04','pipeline_execution','synthetic-fixture-pipeline','success');

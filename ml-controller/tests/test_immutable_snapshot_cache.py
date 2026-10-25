@@ -42,7 +42,7 @@ def test_only_completed_remotely_verified_seals_are_cached(monkeypatch):
     manifest = []
     requests = []
     monkeypatch.setattr(immutable_snapshot_cache, "SNAPSHOT_PARTS_CACHE", SnapshotPartsCache())
-    monkeypatch.setattr(d1_domain_client, "database_id_for_domain", lambda domain: "learning")
+    monkeypatch.setattr(d1_domain_client, "database_id_for_domain", lambda domain, *, require_specific=False: "learning")
     monkeypatch.setattr(d1_client, "STRATEGY_MINING_D1_WORKER_ONLY", False)
     def post(body, **kwargs):
         requests.append(body)

@@ -110,7 +110,7 @@ def test_real_replay_observer_preserves_results_and_catches_screener_future_peek
     from services import backtest_engine as engine
     ds=dataset()
     # Corporate receipts are independently attested; the fixture has no actions.
-    monkeypatch.setattr(engine,'_apply_daily_corporate',lambda *args:None)
+    monkeypatch.setattr(engine,'_apply_daily_corporate',lambda *args, **kwargs:None)
     def screener(*,dataset,date,**kw):
         price=dataset.get_bar('A',date)['close']
         return [engine.Candidate(symbol='A',date=date,close=price,industry='fixture',

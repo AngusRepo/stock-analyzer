@@ -13,7 +13,7 @@ import pytest
 
 from services.corporate_opening_history import read_corporate_cash_discovery_dates
 from services.finlab_corporate_actions import normalize_dividend_announcements, CASH, STOCK
-from services.native_paper_sandbox import native_execution_identity, run_native_paper_frames
+from services.native_paper_sandbox import native_execution_identity, native_runtime_manifest, run_native_paper_frames
 from services.paired_native_runtime import KV_READ_POLICY
 from services.paired_native_session import session_schedule, run_paired_session
 from services.paired_nav_journal import freeze_snapshot, digest, mature_staged_pairs
@@ -51,7 +51,9 @@ def test_actual_three_day_native_pairs_capture_late_source_reconcile_and_materia
             'initial_state_checksums': {arm: state['state_checksum'] for arm, state in states.items()},
             'account_id': 2, 'variables': {'SHIOAJI_PROXY_URL': 'https://broker.fixture'}, 'schedule': schedule,
             'previous_session_date': previous, 'session_date': day,
-            'session_open_at': day + 'T01:00:00Z', 'session_close_at': day + 'T05:30:00Z'}
+            'session_open_at': day + 'T01:00:00Z', 'session_close_at': day + 'T05:30:00Z',
+            # register_allocation_pair seals the runner's commission contract (cabab05af); mirror it.
+            'commission_contract': native_runtime_manifest(native_runner)['commission_contract']}
         sealed = freeze_snapshot(signal_date=signal, source_run_id=packet['pair_id'] + ':' + signal,
             snapshot_kind='execution_pair', content=packet, query=db.query, writer=db.writer,
             now=datetime.fromisoformat(signal + 'T14:00:00+00:00'))
@@ -93,10 +95,12 @@ def test_actual_three_day_native_pairs_capture_late_source_reconcile_and_materia
         raw, previous = result['states']['candidate']['state_sql'], day
     evidence = read_verified_nav_evidence(business_date=day, query=db.query, now=clock)
     observations = evidence.pairs[0].observations
-    assert len(observations) == 3 and observations[0].candidate_daily_return == pytest.approx(-49 / 109000)
+    # 07305f42e: the 100-share odd-lot buy (9,800) pays floor(9800*0.001425)=13 with a NT$1 odd-lot
+    # minimum instead of the old NT$20 floor, so the day's cost is 7 lower than the fa58528c6 golden (-49).
+    assert len(observations) == 3 and observations[0].candidate_daily_return == pytest.approx(-42 / 109000)
     assert observations[1].candidate_daily_return == observations[2].candidate_daily_return == 0
     with sqlite3.connect(':memory:') as private:
         private.executescript(raw)
-        assert private.execute('SELECT cash FROM paper_accounts WHERE id=2').fetchone()[0] == 108951
+        assert private.execute('SELECT cash FROM paper_accounts WHERE id=2').fetchone()[0] == 108958  # same 07305f42e odd-lot commission delta (+7)
         assert private.execute('SELECT cash FROM paper_accounts WHERE id=1').fetchone()[0] == 999999
         assert private.execute('SELECT eligible_shares,cash_due,settled FROM paper_corporate_entitlements_v1 WHERE account_id=2').fetchall() == [(100, 200., 1)]

@@ -30,6 +30,11 @@ def store():
                  'checksum': registry['checksum'], 'selection_semantic_floor_date': '2026-08-25'}
     connection.execute('INSERT INTO model_artifact_registry(artifact_id,model_name,version,candidate_type,state,checksum) VALUES(?,?,?,?,?,?)',
                        [registry['artifact_id'], 'l4_alpha_ev', registry['version'], 'l4_alpha_ev_refresh', registry['state'], registry['checksum']])
+    # Production reads the candidate registry row from D1, so it carries the stored live
+    # evidence columns that the fa58528c6 evidence CAS compares; mirror that read.
+    registry.update(dict(connection.execute(
+        'SELECT live_evidence_json, live_gate_status, promotion_decision FROM model_artifact_registry WHERE artifact_id=?',
+        [registry['artifact_id']]).fetchone()))
 
     def query(sql, params):
         return [dict(row) for row in connection.execute(sql, params)]

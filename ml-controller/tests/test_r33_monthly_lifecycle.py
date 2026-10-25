@@ -274,7 +274,7 @@ def test_fold_receipts_require_every_model_attestation():
     from services.r33_monthly_lifecycle import fold_receipts
     store, metrics = {}, {}
     for name in R33_MODELS:
-        split = {"train_end": "2026-09-30"} if name in ("PatchTST", "iTransformer") else (
+        split = {"train_end": "2026-09-30", "train_label_known_max": "2026-09-30"} if name in ("PatchTST", "iTransformer") else (
             {"training_label_known_max": "2026-10-01"} if name == "TimeXer" else {"train_label_known_max": "2026-10-02"})
         buf = io.BytesIO()
         np.savez(buf, metadata=np.array(json.dumps({"model_name": name, "split_metadata": split})))
@@ -288,6 +288,12 @@ def test_fold_receipts_require_every_model_attestation():
     store["a/TabM"] = buf.getvalue()
     metrics["TabM"]["artifact_checksum"] = hashlib.sha256(buf.getvalue()).hexdigest()
     assert fold_receipts(manifest, Bucket(store)) == []  # unattested fold: leakage check fails it
+    for name, split in (("TabM", {"train_label_known_max": "2026-10-02"}), ("PatchTST", {"train_end": "2026-09-30"})):
+        buf = io.BytesIO()
+        np.savez(buf, metadata=np.array(json.dumps({"model_name": name, "split_metadata": split})))
+        store[f"a/{name}"] = buf.getvalue()
+        metrics[name]["artifact_checksum"] = hashlib.sha256(buf.getvalue()).hexdigest()
+    assert fold_receipts(manifest, Bucket(store)) == []  # NF train_end alone is not an attestation
 
 
 def test_r33_routing_gates_in_walk_forward():

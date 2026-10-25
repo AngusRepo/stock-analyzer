@@ -93,12 +93,11 @@ def candidate_registry_complete(registry: dict | None, release_models) -> bool:
 
 def _artifact_train_label_known_max(metadata: dict) -> str | None:
     split = metadata.get("split_metadata") if isinstance(metadata.get("split_metadata"), dict) else {}
-    # Tree/TabM/GNN: purged split; TimeXer: its trainer report.
+    # Every R33 family writes an explicit attestation (TimeXer: its trainer report key).
+    # A model without one (e.g. a pre-R33 NF artifact with only train_end) stays unattested.
     for key in ("train_label_known_max", "training_label_known_max"):
         if split.get(key):
             return str(split[key])[:10]
-    if metadata.get("model_name") in ("PatchTST", "iTransformer") and split.get("train_end"):
-        return str(split["train_end"])[:10]  # NeuralForecast fits the aligned panel through train_end.
     return None
 
 

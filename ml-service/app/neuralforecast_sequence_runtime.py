@@ -583,6 +583,8 @@ def _train_dense_purged_oof(
     all_rows: list[dict[str, Any]] = []
     asof_rows: list[dict[str, Any]] = []
     daily_metrics: list[dict[str, Any]] = []
+    drops = {"context_rows": 0, "label_rows": 0, "labels_without_prediction": 0,
+             "dates_below_min_labels": 0, "label_rows_on_dates_below_min_labels": 0}
     import pandas as pd
 
     for signal_date in test_dates:
@@ -593,6 +595,8 @@ def _train_dense_purged_oof(
             seq_len=seq_len,
             pred_len=pred_len,
         )
+        drops["context_rows"] += len(context_rows)
+        drops["label_rows"] += len(labels)
         if not context_rows:
             continue
         pred_by_id, _pred_col = _predict_horizon_by_id_with_column(
@@ -614,7 +618,10 @@ def _train_dense_purged_oof(
                 )),
             })
         if len(labels) < 10:
+            drops["dates_below_min_labels"] += 1
+            drops["label_rows_on_dates_below_min_labels"] += len(labels)
             continue
+        drops["labels_without_prediction"] += sum(str(label["unique_id"]) not in pred_by_id for label in labels)
         pred_return: list[float] = []
         actual_return: list[float] = []
         market_segments: list[str] = []
@@ -657,6 +664,15 @@ def _train_dense_purged_oof(
     panel_report["evaluation_universe_series"] = len(evaluation_records)
     panel_report["evaluation_prediction_rows"] = len(all_rows)
     panel_report["training_series_cap_applied"] = len(panel_records) < panel_report["eligible_series"]
+    # R33 (complete-horizon) folds attest the latest observation the fitted panel saw
+    # (the panel never extends past train_end). Older profiles keep their exact metadata.
+    r33_attestation = {
+        "train_label_known_max": str(panel_report["calendar_end"])[:10],
+        "nf_require_complete_horizon": True,
+        "evaluation_row_accounting": drops,
+    } if training_options.get("nf_require_complete_horizon") else {}
+    if r33_attestation:
+        panel_report["evaluation_row_accounting"] = drops
     if not asof_rows:
         raise ValueError("oof_sequence_dense_predictions_empty")
     non_overlapping_metrics = daily_metrics[::max(1, pred_len)]
@@ -738,6 +754,7 @@ def _train_dense_purged_oof(
                 "test_end": test_end,
                 "purge_horizon": pred_len,
                 "refit_inside_test": False,
+                **r33_attestation,
             },
         ) if all_rows else None
     oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics])) if daily_metrics else 0.0
@@ -770,6 +787,7 @@ def _train_dense_purged_oof(
                 "test_start": test_start,
                 "test_end": test_end,
                 "purge_horizon": pred_len,
+                **r33_attestation,
             },
         },
     ) if persist_oof_artifact else None

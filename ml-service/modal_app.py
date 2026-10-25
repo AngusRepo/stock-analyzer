@@ -3206,6 +3206,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             sequence_prefix=sequence_prefix,
             sequence_manifest_checksum=sequence_manifest_evidence["artifact_checksum"],
             model_coverage=model_coverage,
+            # R33: every family must carry the full attestation for this runtime and prep.
+            r33_lineage=({"producer_source_sha": producer_source_sha, "feature_semantic_version": feature_semantic}
+                         if _r33_outer_test_fold_evidence(profile_schema) else None),
         )
         reused_windows.update(artifact_recovered)
     except Exception as exc:

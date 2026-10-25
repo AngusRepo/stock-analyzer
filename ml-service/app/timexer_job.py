@@ -182,19 +182,20 @@ def run(payload, *, bucket=None):
         import numpy as np
         from .oof_lineage import save_oof_prediction_artifact
         rows = result['oof_rows']
-        oof_artifact = save_oof_prediction_artifact(feature_semantic_version=semantic, bucket=bucket,gcs_prefix=payload['gcs_prefix'],
-            cohort_id=payload['cohort_id'],fold_id=payload.get('fold_id') or payload['window_id'],
-            model_name='TimeXer',artifact_version=version,raw_scores=result['oof_scores'],
-            targets=np.asarray([r['target'] for r in rows]),dates=[r['date'] for r in rows],
-            symbols=[r['symbol'] for r in rows],markets=[r['market'] for r in rows],
-            label_known_dates=[r['label_known_date'] for r in rows],split_metadata={
+        split_metadata = {
                 'score_semantic_version':SCORE_SEMANTIC,'checkpoint_selection':report['checkpoint_selection'],
                 'method':'outer_train_fixed_dense_test_purged_rank_ic',
                 'train_start':job['train_start'],'train_end':job['train_end'],
                 'test_start':job['test_start'],'test_end':job['test_end'],
                 'training_label_known_max':report['training_label_known_max'],
                 'purge_horizon':5,'refit_inside_test':False,
-                'source_manifest_checksum':manifest['manifest_checksum']})
+                'source_manifest_checksum':manifest['manifest_checksum']}
+        oof_artifact = save_oof_prediction_artifact(feature_semantic_version=semantic, bucket=bucket,gcs_prefix=payload['gcs_prefix'],
+            cohort_id=payload['cohort_id'],fold_id=payload.get('fold_id') or payload['window_id'],
+            model_name='TimeXer',artifact_version=version,raw_scores=result['oof_scores'],
+            targets=np.asarray([r['target'] for r in rows]),dates=[r['date'] for r in rows],
+            symbols=[r['symbol'] for r in rows],markets=[r['market'] for r in rows],
+            label_known_dates=[r['label_known_date'] for r in rows],split_metadata=split_metadata)
         from .oof_lineage import date_market_rank_ic_evidence
         from .model_validation import build_model_cpcv_evidence
         dates=np.asarray([r['date'] for r in rows])
@@ -213,8 +214,29 @@ def run(payload, *, bucket=None):
             coverage_mode='sequence_window',method='outer_train_fixed_dense_test_purged_rank_ic')
         tracking={'TimeXer':{'model_cpcv':validation,'oos_ic':float(np.mean(
             [r['oos_ic'] for r in daily if r['oos_ic'] is not None])) if any(r['oos_ic'] is not None for r in daily) else None}}
+        save_fold_evidence(bucket, payload=payload, version=version, oof_artifact=oof_artifact,
+                           model_cpcv=validation, oos_ic=tracking['TimeXer']['oos_ic'], saved=saved,
+                           split_metadata=split_metadata, producer_source_sha=source_sha)
     return {'saved':saved,'metadata':metadata,'version':version,'elapsed_s':metadata['elapsed_s'],
             'ic_tracking':tracking,'oof_artifact':oof_artifact,'type':'timexer_universal'}
+
+
+def save_fold_evidence(bucket, *, payload, version, oof_artifact, model_cpcv, oos_ic, saved, split_metadata,
+                       producer_source_sha):
+    """Immutable fold evidence (validation + checkpoint identity) so a rerun can recover the fold."""
+    from .neuralforecast_sequence_runtime import OOF_FOLD_MODEL_EVIDENCE_SCHEMA_VERSION, _save_immutable_oof_fold_evidence
+    from .oof_lineage import OOF_TARGET_SEMANTIC_VERSION
+    cohort_id = str(payload['cohort_id'])
+    fold_id = str(payload.get('fold_id') or payload['window_id'])
+    return _save_immutable_oof_fold_evidence(
+        bucket, path=f"{str(payload['gcs_prefix']).rstrip('/')}/oof/{cohort_id}/{fold_id}/timexer.evidence.json",
+        evidence={'schema_version': OOF_FOLD_MODEL_EVIDENCE_SCHEMA_VERSION, 'generation_mode': 'purged_oof',
+                  'cohort_id': cohort_id, 'fold_id': fold_id, 'model_name': 'TimeXer', 'version': version,
+                  'target_semantic_version': OOF_TARGET_SEMANTIC_VERSION, 'model_cpcv': model_cpcv,
+                  'oos_ic': oos_ic, 'oos_samples': int(oof_artifact['rows']), 'oos_dates': int(oof_artifact['dates']),
+                  'oof_artifact': oof_artifact['path'], 'oof_artifact_checksum': oof_artifact['payload_checksum'],
+                  'model_metadata_path': saved['metadata_path'], 'model_checksum': saved['checksum'],
+                  'producer_source_sha': producer_source_sha, 'split_metadata': split_metadata})
 
 
 def _write_immutable(bucket,path,raw,content_type):

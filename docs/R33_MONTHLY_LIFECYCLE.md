@@ -144,7 +144,8 @@ Remove-Item Env:FINLAB_API_KEY
 - **run-id 必須包含 `-3y-`**：controller 的 sequence-refresh 只接受 run-id 含 `-3y-` 或 `-daily-` 的 run（`ml-controller/routers/finlab.py:282-283`）。
 - **`--gcs-prefix finlab/v4/backfill`**：capture 會落在 `gs://stockvision-models/finlab/v4/backfill/<run_id>/`，正是 sequence-refresh 讀取的位置（`routers/finlab.py:242-243`、`:320`）。
 - **`--years 3`**：只影響 holding 和 canonical broker 的 window。training 不需要這兩者的長歷史。
-- **`--fundamental-training-fields-only`**：`fundamental_factor_diversity` 只抓 training／serving 實際用到的 6 個欄位（eps、roe、pe、pb、dividend_yield、revenue_growth_yoy）。其餘約 60 個 financial 欄位 training 和 serving 都不讀，不抓也不跑 gate（例如 `營業費用率` 的 vendor ±inf）。
+- **`--fundamental-training-fields-only`**：`fundamental_factor_diversity` 只抓 training／serving 實際用到的 6 個欄位（eps、roe、pe、pb、dividend_yield、revenue_growth_yoy）。其餘約 60 個 financial 欄位 training 和 serving 都不讀，不抓也不跑 gate（例如 `營業費用率` 的 vendor ±inf）。其他 5 個 lane 的 key 完全不變（`84551b044` 之前的版本會漏掉其他 lane，trial c 只產出 fundamental，必須重跑）。
+- **Fail closed**：training capture（帶 `--training-capture-start-date`）只要有任何一個要求的 lane 沒產出 dataset，就記 `requested_lane_produced_no_dataset` blocker，`backfill_status=partial_failed`，exit 2。
 - **revenue required field**：月營收以公布日（約每月 10 日）為 index。training capture 檢查 end date 前 45 天內有公布即可（daily run 仍檢查 end date 當天），避免 `revenue=missing_target_date` 誤報造成 `partial_failed`。
 - **financial 日期 gate（live SDK + `--training-capture-start-date`）**：
   - financial 欄位只檢查 window 內有收盤價的 symbol（price universe）。2013–2018 已下市、window 內沒有價格的 symbol 不進 gate。

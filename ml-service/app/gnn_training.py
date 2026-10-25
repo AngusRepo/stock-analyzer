@@ -22,7 +22,12 @@ import numpy as np
 from .model_store import _get_bucket
 from .gcs_batch_io import download_existing_blobs
 from .features import FEATURE_SEMANTIC_VERSION
-from .gnn_graph_contract import GNN_GRAPH_SEMANTIC_VERSION, build_feature_sector_edge_index
+from .gnn_graph_contract import (
+    GNN_GRAPH_SEMANTIC_VERSION,
+    GNN_GRAPH_VARIANTS,
+    build_feature_sector_edge_index,
+    build_industry_edge_index,
+)
 from .prep_lineage import (
     attach_prep_lineage_aliases,
     collect_prep_lineage,
@@ -36,6 +41,7 @@ from .training_policy import (
     build_model_training_config_attestation,
 )
 from .training_reproducibility import configure_training_reproducibility
+from .challenger_models import CHALLENGERS, challenger_feature_policy_metadata
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 MODEL_NAME = "GNN"
@@ -193,7 +199,18 @@ def _group_by_date(indices: np.ndarray, dates: np.ndarray) -> list[np.ndarray]:
     return [np.asarray(values, dtype=np.int64) for _date, values in sorted(groups.items()) if len(values) >= 2]
 
 
-def _feature_edge_index(x_date: np.ndarray, sectors: np.ndarray, *, top_k: int, threshold: float) -> np.ndarray:
+def _feature_edge_index(
+    x_date: np.ndarray,
+    sectors: np.ndarray,
+    *,
+    top_k: int,
+    threshold: float,
+    graph_variant: str = "incumbent",
+) -> np.ndarray:
+    if graph_variant != "incumbent":
+        edge_index, _report = build_industry_edge_index(
+            x_date, sectors, variant=graph_variant, top_k=top_k, threshold=threshold)
+        return edge_index
     edge_index, _report = build_feature_sector_edge_index(
         x_date,
         sectors,
@@ -210,6 +227,7 @@ def _build_graph_snapshots(
     sectors: np.ndarray,
     top_k: int,
     threshold: float,
+    graph_variant: str = "incumbent",
 ) -> tuple[list[tuple[np.ndarray, np.ndarray]], dict[str, int]]:
     """Build immutable date graphs once for reuse across epochs and evaluation."""
 
@@ -217,7 +235,8 @@ def _build_graph_snapshots(
     edge_count = 0
     node_count = 0
     for idx in groups:
-        edge_index = _feature_edge_index(x[idx], sectors[idx], top_k=top_k, threshold=threshold)
+        edge_index = _feature_edge_index(
+            x[idx], sectors[idx], top_k=top_k, threshold=threshold, graph_variant=graph_variant)
         snapshots.append((idx, edge_index))
         node_count += int(len(idx))
         edge_count += int(edge_index.shape[1]) if edge_index.ndim == 2 else 0
@@ -261,6 +280,7 @@ def _evaluate(
     threshold: float,
     graph_snapshots: list[tuple[np.ndarray, np.ndarray]] | None = None,
     include_predictions: bool = False,
+    graph_variant: str = "incumbent",
 ) -> dict:
     import torch
 
@@ -279,6 +299,7 @@ def _evaluate(
                 sectors=sectors,
                 top_k=top_k,
                 threshold=threshold,
+                graph_variant=graph_variant,
             )
         for fold_idx, (idx, edge_np) in enumerate(snapshots, start=1):
             xb = torch.tensor(x[idx], dtype=torch.float32, device=device)
@@ -320,11 +341,12 @@ def _save_artifact(
     model,
     version: str,
     metadata: dict,
+    folder: str = "gnn",
 ) -> dict:
     import torch
 
-    artifact_path = f"universal/gnn/{version}.pt"
-    metadata_path = f"universal/gnn/metadata_{version}.json"
+    artifact_path = f"universal/{folder}/{version}.pt"
+    metadata_path = f"universal/{folder}/metadata_{version}.json"
     payload = {
         "state_dict": model.state_dict(),
         "architecture": metadata["architecture"],
@@ -368,6 +390,18 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     )
     seed = int(payload.get("seed") or 42)
     reproducibility = configure_training_reproducibility(seed)
+    graph_variant = str(payload.get("graph_variant") or "incumbent").strip()
+    if graph_variant != "incumbent" and graph_variant not in GNN_GRAPH_VARIANTS:
+        raise ValueError(f"gnn_graph_variant_invalid:{graph_variant}")
+    model_name = MODEL_NAME if graph_variant == "incumbent" else GNN_GRAPH_VARIANTS[graph_variant]["model_name"]
+    graph_semantic = (
+        GNN_GRAPH_SEMANTIC_VERSION if graph_variant == "incumbent"
+        else GNN_GRAPH_VARIANTS[graph_variant]["semantic_version"]
+    )
+    edge_source = (
+        "same_date_feature_cosine_plus_sector" if graph_variant == "incumbent"
+        else GNN_GRAPH_VARIANTS[graph_variant]["edge_source"]
+    )
 
     generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
     from .deployment_refit import requested, validate_full_history
@@ -393,6 +427,17 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     if feature_semantic == FEATURE131_SEMANTIC and list(feature_names) != list(FEATURES131):
         raise ValueError("formal131_training_inventory_mismatch")
     finite_mask = np.isfinite(y) & np.isfinite(target_returns)
+    industry_sidecar_meta = None
+    industry_coverage = None
+    if graph_variant != "incumbent":
+        from .industry_exposure import asof_industry, coverage_report, load_industry_sidecar
+
+        # Challenger edges never read prep sectors; only PIT membership on/before each signal date.
+        sidecar = load_industry_sidecar(bucket, payload.get("industry_exposure"))
+        industry_sidecar_meta = sidecar["metadata"]
+        sectors = asof_industry(symbols, dates, sidecar)
+        industry_coverage = coverage_report(sectors, dates)
+        finite_mask = finite_mask & (sectors != "")
     x_raw = x_raw[finite_mask]
     y = np.clip(y[finite_mask], 0.0, 1.0).astype(np.float32)
     target_returns = target_returns[finite_mask]
@@ -469,6 +514,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         sectors=sectors,
         top_k=edge_top_k,
         threshold=edge_threshold,
+        graph_variant=graph_variant,
     )
     test_graphs, test_graph_report = _build_graph_snapshots(
         test_groups,
@@ -476,6 +522,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         sectors=sectors,
         top_k=edge_top_k,
         threshold=edge_threshold,
+        graph_variant=graph_variant,
     )
     stage_timings["build_graphs_s"] = round(time.time() - stage_t0, 3)
     print(
@@ -537,6 +584,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         threshold=edge_threshold,
         graph_snapshots=test_graphs,
         include_predictions=generation_mode == "purged_oof",
+        graph_variant=graph_variant,
     )
     oof_predictions = np.asarray(eval_metrics.pop("_predictions", []), dtype=float)
     oof_indices = np.asarray(eval_metrics.pop("_indices", []), dtype=np.int64)
@@ -551,6 +599,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         top_k=edge_top_k,
         threshold=edge_threshold,
         graph_snapshots=recent_train_graphs,
+        graph_variant=graph_variant,
     )
     stage_timings["evaluate_s"] = round(time.time() - stage_t0, 3)
     print(
@@ -560,7 +609,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         flush=True,
     )
     model_cpcv = build_model_cpcv_evidence(
-        model=MODEL_NAME,
+        model=model_name,
         fold_metrics=eval_metrics.get("fold_metrics") or [],
         policy=payload.get("model_cpcv_policy") or None,
         family="graph",
@@ -575,7 +624,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         x, medians, scales = _robust_standardize(x_raw, x_raw, clip_value=standardization_clip)
         deployment_graphs, deployment_graph_report = _build_graph_snapshots(
             _group_by_date(np.arange(len(y)), dates), x=x, sectors=sectors,
-            top_k=edge_top_k, threshold=edge_threshold,
+            top_k=edge_top_k, threshold=edge_threshold, graph_variant=graph_variant,
         )
         model, deployment_losses = fit_model(x, deployment_graphs)
         fitted_rows = len(y)
@@ -601,10 +650,11 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "seed": seed,
         "edge_top_k": edge_top_k,
         "edge_threshold": edge_threshold,
-        "graph_semantic_version": GNN_GRAPH_SEMANTIC_VERSION,
+        "graph_semantic_version": graph_semantic,
         "reproducibility": reproducibility,
+        **({"graph_variant": graph_variant} if graph_variant != "incumbent" else {}),
     }
-    training_config_attestation = build_model_training_config_attestation(
+    training_config_attestation = None if graph_variant != "incumbent" else build_model_training_config_attestation(
         MODEL_NAME,
         payload,
         {
@@ -619,7 +669,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "schema_version": "graphsage_formal_artifact_v1",
         "artifact_schema": "torch_graphsage_ranker_v1",
         "version": version,
-        "model_name": MODEL_NAME,
+        "model_name": model_name,
         "model_type": "graphsage",
         "family": "cross_stock_graph",
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
@@ -638,9 +688,14 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         },
         "architecture": architecture,
         "graph_context": {
-            "semantic_version": GNN_GRAPH_SEMANTIC_VERSION,
-            "training_edge_source": "same_date_feature_cosine_plus_sector",
-            "serving_edge_source": "same_date_feature_cosine_plus_sector",
+            "semantic_version": graph_semantic,
+            "training_edge_source": edge_source,
+            "serving_edge_source": edge_source,
+            **({
+                "graph_variant": graph_variant,
+                "industry_sidecar": industry_sidecar_meta,
+                "industry_coverage": industry_coverage,
+            } if graph_variant != "incumbent" else {}),
             "top_k": edge_top_k,
             "threshold": edge_threshold,
             "training_edge_top_k": edge_top_k,
@@ -679,18 +734,23 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "prep_lineage": prep_lineage,
             "prep_freshness": prep_freshness,
         },
-        **build_model_feature_policy_metadata(
+        **(build_model_feature_policy_metadata(
             MODEL_NAME,
             feature_names,
             selection_evidence={"selection_method": "production_artifact"},
             feature_release_mode=payload.get("feature_release_mode") or payload.get("candidate_type"),
-        ),
+        ) if graph_variant == "incumbent" else challenger_feature_policy_metadata(
+            model_name, feature_names, feature_release_mode=payload.get("feature_release_mode"),
+        )),
         **({"model_training_config_attestation": training_config_attestation} if training_config_attestation else {}),
         "training_params": training_params,
         "stage_timings": stage_timings,
     }, prep_lineage)
     stage_t0 = time.time()
-    saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
+    saved = _save_artifact(
+        bucket=bucket, model=model.cpu(), version=version, metadata=metadata,
+        folder="gnn" if graph_variant == "incumbent" else CHALLENGERS[model_name]["artifact_folder"],
+    )
     oof_artifact = None
     if generation_mode == "purged_oof":
         from .oof_lineage import save_oof_prediction_artifact
@@ -701,7 +761,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             gcs_prefix=gcs_prefix,
             cohort_id=str(payload.get("cohort_id") or ""),
             fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
-            model_name=MODEL_NAME,
+            model_name=model_name,
             artifact_version=version,
             raw_scores=oof_predictions,
             targets=target_returns[oof_indices],
@@ -719,7 +779,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     )
     return {
         "status": "ok",
-        "model": MODEL_NAME,
+        "model": model_name,
         "version": version,
         "artifact_path": saved["artifact_path"],
         "metadata_path": saved["metadata_path"],
@@ -728,7 +788,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "metrics": saved["metadata"]["metrics"],
         "model_cpcv": saved["metadata"]["model_cpcv"],
         "ic_tracking": {
-            MODEL_NAME: {
+            model_name: {
                 "oos_ic": saved["metadata"]["oos_ic"],
                 "oos_samples": saved["metadata"]["validation_sample_count"],
                 "passed": float(saved["metadata"]["oos_ic"] or 0.0) > 0.0,

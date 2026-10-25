@@ -1408,6 +1408,21 @@ def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pat
     })
 
 
+def chip_pit_lane_fields(lane: str) -> tuple[str, ...]:
+    from services.chip_pit import lane_fields
+    return lane_fields(lane)
+
+
+def write_chip_pit_window(frames: dict[str, pd.DataFrame], *, lane: str, run_dir: Path, end_date: str | None) -> None:
+    """Trailing sessions for the chip PIT log: a table the vendor publishes after this capture
+    (margin/lending usually land after 21:00) is still observed by the next day's capture."""
+    from services.chip_pit import CAPTURE_WINDOW_SESSIONS
+    for field in chip_pit_lane_fields(lane):
+        if field in frames:
+            frame = filter_date_range(frames[field], end_date=end_date)
+            write_parquet(run_dir / "raw" / "chip_pit_window" / f"{field}.parquet", frame.tail(CAPTURE_WINDOW_SESSIONS))
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
 
@@ -2231,7 +2246,8 @@ def materialize_specs(
                     if spec.lane == "daily_price" and field in {"adj_close", "adj_open", "open", "high", "low", "close", "volume", "value", "market_value"}:
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
-                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})):
+                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
+                            or (daily_refresh and field in chip_pit_lane_fields(spec.lane))):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2314,6 +2330,8 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
+            if daily_refresh and chip_pit_lane_fields(spec.lane):
+                write_chip_pit_window(unsliced_frames, lane=spec.lane, run_dir=run_dir, end_date=source_end_date)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
@@ -3979,6 +3997,19 @@ def main() -> int:
             uploaded_files=uploaded_files,
         )
         manifest["gcs_upload_raw"] = gcs
+        write_json(run_dir / "manifest.json", manifest)
+
+    # Chip challenger PIT log (chip-pit/v1/daily). Evidence only: a failure is recorded, never fatal.
+    if args.daily_refresh and args.gcs_bucket and os.environ.get("CHIP_PIT_DAILY_RECORD", "1") != "0":
+        try:
+            from google.cloud import storage
+            from services.chip_pit import record_daily_capture
+            manifest["chip_pit_daily"] = record_daily_capture(
+                run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket), business_date=source_end_date,
+                capture_id=run_id, capture_ready=not source_key_blockers)
+        except Exception as exc:
+            print(f"[finlab-backfill] chip_pit_daily failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            manifest["chip_pit_daily"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1 and finlab_key_report_enabled():

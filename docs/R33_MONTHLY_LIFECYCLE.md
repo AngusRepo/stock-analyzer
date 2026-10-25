@@ -233,7 +233,7 @@ Invoke-RestMethod -Method Post -Uri "$ctrl/finlab/backfill/sequence-refresh" -He
   - `dispatch.json` 的 `status=terminal_failed`，`terminal_probe.error_type=FunctionTimeoutError`。
 - **手動步驟**（同一個 business date 內，ticket attempt 少於 3）：
   ```powershell
-  gcloud scheduler jobs run active8-oof-monthly --location asia-east1   # location 以 infra/gcp-scheduler-jobs.json 實際部署為準
+  gcloud scheduler jobs run active8-oof-monthly --location asia-east1   # scripts/sync_gcp_scheduler.ps1 的 Location 預設
   ```
   非 continuation 的 run 會用同一個 cohort 重新 dispatch。
 - ⚠️ R33 roster 有 TimeXer，但 `app/oof_artifact_recovery.py` 的 `MODEL_SLUGS` 沒有 TimeXer，所以 `recover_completed_oof_windows` 直接回空。重跑會把 7 個 fold 全部重做，不會沿用已完成的 fold。

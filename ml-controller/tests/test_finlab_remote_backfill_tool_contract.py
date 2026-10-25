@@ -1027,3 +1027,118 @@ def test_daily_materialize_retains_auxiliary_history_before_daily_canonical_clip
     canonical = pd.read_parquet(tmp_path / 'raw/fundamental_factor_diversity/pe.parquet')
     assert full['2330'].tolist() == [0., 2.]
     assert canonical['2330'].tolist() == [2.]
+
+
+def _legacy_normalize_broker(tool, frame, start):
+    """Pre-window implementation, kept verbatim as the output oracle."""
+    date_col = tool._first_existing_column(frame, ("date", "日期", "trade_date"))
+    stock_col = tool._first_existing_column(frame, ("stock_id", "symbol", "股票代號", "證券代號"))
+    broker_col = tool._first_existing_column(frame, ("broker", "broker_code", "securities_broker", "分點", "券商", "證券商"))
+    buy_col = tool._first_existing_column(frame, ("buy_shares", "buy_volume", "buy_qty", "buy", "買進股數", "買進張數"))
+    sell_col = tool._first_existing_column(frame, ("sell_shares", "sell_volume", "sell_qty", "sell", "賣出股數", "賣出張數"))
+    out = frame.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
+    out = out[out["date"] >= pd.Timestamp(start)]
+    out["stock_id"] = [tool._clean_symbol(row.get(stock_col), row) for row in out.to_dict(orient="records")]
+    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
+    out = out[(out["stock_id"] != "") & out["date"].notna()]
+    if out.empty:
+        return pd.DataFrame()
+    broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
+        broker_buy_shares=("buy_shares_raw", "sum"), broker_sell_shares=("sell_shares_raw", "sum"),
+        broker_net=("broker_net", "sum")).reset_index()
+    broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+    dominant = (broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+        .groupby(["date", "stock_id"], observed=True).head(1)[["date", "stock_id", "broker_code", "broker_net", "abs_broker_net"]]
+        .rename(columns={"broker_code": "dominant_broker_code", "broker_net": "dominant_net_shares",
+                         "abs_broker_net": "dominant_abs_net_shares"}))
+    pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+        gross_imbalance_shares=("abs_broker_net", "sum"),
+        directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum()))).reset_index()
+    grouped = out.groupby(["date", "stock_id"], observed=True).agg(
+        buy_shares=("buy_shares_raw", "sum"), sell_shares=("sell_shares_raw", "sum"),
+        broker_count=("broker_code", "nunique")).reset_index()
+    grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    grouped.attrs["broker_rank_daily"] = tool.build_broker_rank_daily(
+        broker_daily, market_segment="LISTED_OTC", source="finlab.broker_transactions")
+    return grouped
+
+
+def _synthetic_broker_frame(string_dates=False):
+    import numpy as np
+    rng = np.random.default_rng(7)
+    days = pd.bdate_range("2026-07-20", "2026-09-30")
+    symbols = ["2330", "2330 台積電", "00878", "6488", "invalid", None]
+    brokers = ["1020", " 1020", "9A00", "1030", "8440 "]
+    rows = []
+    for day in days:
+        for symbol in symbols:
+            for broker in brokers:
+                buy, sell = float(rng.integers(0, 6) * 1000), float(rng.integers(0, 6) * 1000)
+                rows.append([day, symbol, broker, buy, sell])
+        # Exact |net| tie with opposite signs on the same symbol/day.
+        rows.append([day, "3008", "1020", 5000.0, 0.0])
+        rows.append([day, "3008", "9A00", 0.0, 5000.0])
+    frame = pd.DataFrame(rows, columns=["date", "symbol", "broker", "buy", "sell"])
+    frame.loc[3, "buy"] = float("nan")
+    frame.loc[11, "sell"] = None
+    frame.loc[17, "date"] = pd.NaT
+    frame = frame.sample(frac=1.0, random_state=3).reset_index(drop=True)
+    frame["stock_id"] = frame["symbol"]
+    if string_dates:
+        frame["date"] = frame["date"].dt.strftime("%Y-%m-%d")
+    return frame
+
+
+@pytest.mark.parametrize("string_dates", [False, True])
+def test_windowed_broker_normalization_matches_single_pass(tmp_path, string_dates):
+    import hashlib
+    tool = _load_tool_module()
+    frame = _synthetic_broker_frame(string_dates)
+    before = frame.copy()
+    expected = _legacy_normalize_broker(tool, frame, "2026-08-03")
+    actual = tool.normalize_broker_transactions_daily(frame, "2026-08-03")
+    pd.testing.assert_frame_equal(frame, before)
+    pd.testing.assert_frame_equal(actual, expected)
+    pd.testing.assert_frame_equal(actual.attrs["broker_rank_daily"], expected.attrs["broker_rank_daily"])
+    assert expected["date"].nunique() > 14
+    for name, left, right in (("daily", actual, expected),
+                              ("rank", actual.attrs["broker_rank_daily"], expected.attrs["broker_rank_daily"])):
+        a, b = tmp_path / f"{name}-new.parquet", tmp_path / f"{name}-old.parquet"
+        tool.write_parquet(a, tool.filter_rows_date_range(left, start_date="2026-08-03", end_date="2026-09-29"))
+        tool.write_parquet(b, tool.filter_rows_date_range(right, start_date="2026-08-03", end_date="2026-09-29"))
+        assert hashlib.sha256(a.read_bytes()).hexdigest() == hashlib.sha256(b.read_bytes()).hexdigest()
+    assert tool.normalize_broker_transactions_daily(frame, "2026-12-01").empty
+
+
+def test_filter_rows_date_range_matches_copy_first_version():
+    import warnings
+    tool = _load_tool_module()
+    frame = _synthetic_broker_frame()
+
+    def legacy(df, start_date=None, end_date=None):
+        out = pd.DataFrame(df).copy()
+        if out.empty or "date" not in out.columns or (not start_date and not end_date):
+            return out
+        parsed = pd.to_datetime(out["date"], errors="coerce")
+        mask = parsed.notna()
+        if start_date:
+            mask &= parsed >= pd.Timestamp(start_date)
+        if end_date:
+            mask &= parsed <= pd.Timestamp(end_date)
+        return out[mask.to_numpy()].copy()
+
+    for start, end in (("2026-08-03", "2026-09-29"), (None, None), ("2026-09-01", None)):
+        actual = tool.filter_rows_date_range(frame, start_date=start, end_date=end)
+        pd.testing.assert_frame_equal(actual, legacy(frame, start, end))
+        assert actual is not frame
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            actual["buy"] = -1.0
+        assert (frame["buy"] != -1.0).all()

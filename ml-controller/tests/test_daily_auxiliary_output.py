@@ -57,3 +57,26 @@ def test_actual_daily_materializer_seals_pe_pb_and_broker_without_expanding_fetc
     values=pl.read_parquet(root/'training_long_full_vintage/broker.parquet')
     assert values['broker_net_lots'].to_list()==[90.]
     assert sorted(calls)==sorted(['price_earning_ratio:本益比','price_earning_ratio:股價淨值比','broker_transactions'])
+
+
+@pytest.mark.parametrize('training_start',['2026-10-08',None])
+def test_full_capture_broker_start_follows_training_capture_start(monkeypatch,tmp_path,training_start):
+    tool=_load_tool_module()
+    broker=pd.DataFrame({'date':pd.to_datetime(['2026-10-08','2026-10-12']),
+                        'symbol':['3000','3000'],'broker':['A','A'],'buy':[100.,120.],'sell':[20.,30.]})
+    class Source:
+        binding={'test_only':'synthetic; no vendor or cloud calls'}
+        def __init__(self,*a,**kw):pass
+        def get(self,key):
+            if key=='broker_transactions':return broker.copy()
+            raise AssertionError('unexpected vendor fetch:'+key)
+    monkeypatch.setitem(sys.modules,'finlab',SimpleNamespace(data=Source(),login=lambda *a,**kw:None))
+    monkeypatch.setattr(tool,'login_finlab_sdk',lambda login:None)
+    monkeypatch.setattr(tool,'d1_counts',lambda start:{})
+    monkeypatch.setattr(tool.time,'sleep',lambda seconds:None)
+    scope={'broker_flow_diversity':set()}
+    tool.materialize_specs(years=3,run_dir=tmp_path/'full',lanes=list(scope),key_scope=scope,
+        source_start_date='2026-10-12',training_capture_start_date=training_start,source_end_date='2026-10-12')
+    b=json.loads((tmp_path/'full/raw/training_long_full_vintage/broker.json').read_bytes())
+    assert b['start']==(training_start or tool.start_date_for_years(3)) and b['end']=='2026-10-12'
+    assert b['rows']==(2 if training_start else 2)  # --years 3 also covers both synthetic days

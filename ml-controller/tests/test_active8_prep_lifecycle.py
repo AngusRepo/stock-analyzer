@@ -379,3 +379,45 @@ def test_independent_calendar_catches_globally_missing_day(fault):
         lifecycle._latest_market_session("2026-07-25",query_fn=query)
     if fault=="missing_entire_price_day":
         assert error.value.evidence["official_sessions_missing_prices"]==["2026-07-24"]
+
+
+def _seal_vintage(bucket, run, *, sessions, created, date_max="2026-07-24"):
+    prefix = f"universal/sequence_long/runs/{run}"
+    batch_path = f"{prefix}/prep/batch_0.npz"
+    bucket.store[batch_path] = run.encode()
+    price_root = f"finlab/v4/backfill/{run}/raw/daily_price_full_vintage"
+    bucket.store[price_root + "/manifest.json"] = json.dumps({"sessions": sessions}).encode()
+    manifest = {"schema_version": "finlab-long-history-sequence-prep-v2", "status": "ready", "created_at": created,
+                "contract": "sequence_records_v3", "output_gcs_prefix": prefix, "batch_count": 1, "batch_rows": [100],
+                "summary": {"date_min": "2020-05-04", "date_max": date_max},
+                "lane_reports": [{"lane": "daily_price", "source_rows": sessions,
+                                  "source_uri": {"capture_id": run, "close": f"gs://test-bucket/{price_root}/adj_close.parquet"}}],
+                "output_checksums": {batch_path: hashlib.sha256(run.encode()).hexdigest()}}
+    manifest["manifest_checksum"] = lifecycle._manifest_checksum(manifest)
+    bucket.store[f"{prefix}/prep/sequence_manifest.json"] = json.dumps(manifest).encode("utf-8")
+    return prefix
+
+
+def test_r33_dry_run_selects_full_window_vintage_other_profiles_unchanged(monkeypatch):
+    from services import training_session_calendar
+    from services.formal_feature_contract import R33_PROFILE
+    from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
+    bucket = _Bucket()
+    full = _seal_vintage(bucket, "finlab-v4-3y-r33full-20260724", sessions=1576, created="2026-07-24T08:00:00+00:00")
+    daily = _seal_vintage(bucket, "finlab-v4-daily-20260724", sessions=729, created="2026-07-24T12:00:00+00:00")
+    monkeypatch.setattr(training_session_calendar, "verify_training_calendar", lambda b, *, price_capture: {
+        "start": "2020-05-04", "end": "2026-07-24", "calendar_sha256": "c" * 64,
+        "sessions": json.loads(b.blob(price_capture["capture_manifest_path"]).download_as_bytes())["sessions"]})
+    start = (datetime(2026, 7, 24) - timedelta(days=1280)).date().isoformat()
+    monkeypatch.setattr(lifecycle, "latest_dataset_snapshot", lambda **_kwargs: _snapshot(start_date=start))
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
+    run = lambda profile: asyncio.run(lifecycle.ensure_active8_daily_prep(
+        end_date="2026-07-25", dry_run=True, query_fn=_market_query, model_profile_schema_version=profile))
+    r33 = run(R33_PROFILE)
+    assert r33["sequence_gcs_prefix"] == full
+    selection = r33["r33_sequence_selection"]
+    assert selection["selected_sequence_gcs_prefix"] == full and selection["required_price_sessions"] == 1532
+    assert sorted(c["price_sessions"] for c in selection["candidates"]) == [729, 1576]
+    for profile in (TIMEXER_EXO_PROFILE_SCHEMA, "active8-release-model-profiles-v6-timexer-exo131"):
+        other = run(profile)
+        assert other["sequence_gcs_prefix"] == daily and "r33_sequence_selection" not in other

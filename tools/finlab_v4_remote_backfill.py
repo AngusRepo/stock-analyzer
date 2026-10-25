@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -788,16 +789,18 @@ def filter_rows_date_range(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.DataFrame:
-    out = pd.DataFrame(df).copy()
+    out = pd.DataFrame(df)
     if out.empty or date_col not in out.columns or (not start_date and not end_date):
-        return out
+        return out.copy()
+    # take() equals out[mask].copy() (same rows/labels, no is_copy flag) but makes
+    # one row-filtered copy instead of full copy + masked copy + copy.
     parsed = pd.to_datetime(out[date_col], errors="coerce")
     mask = parsed.notna()
     if start_date:
         mask &= parsed >= pd.Timestamp(start_date)
     if end_date:
         mask &= parsed <= pd.Timestamp(end_date)
-    return out[mask.to_numpy()].copy()
+    return out.take(np.flatnonzero(mask.to_numpy()))
 
 
 def non_null_cells(df: pd.DataFrame) -> int:
@@ -1856,6 +1859,11 @@ def build_broker_rank_daily(
     ]
     if broker_daily.empty:
         return pd.DataFrame(columns=columns)
+    buy, sell = _broker_rank_sides(broker_daily)
+    return _finish_broker_rank([buy], [sell], market_segment=market_segment, source=source)
+
+
+def _broker_rank_sides(broker_daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     base = broker_daily.copy()
     base["broker_code"] = base["broker_code"].astype(str).str.strip()
     base["broker_name"] = None
@@ -1873,17 +1881,24 @@ def build_broker_rank_daily(
     ).groupby(["date", "stock_id"], observed=True).head(3).copy()
     sell["rank_side"] = "sell"
     sell["rank_no"] = sell.groupby(["date", "stock_id"], observed=True).cumcount() + 1
+    return buy, sell
 
-    ranked = pd.concat([buy, sell], ignore_index=True)
+
+def _finish_broker_rank(buys: list[pd.DataFrame], sells: list[pd.DataFrame], *, market_segment: str, source: str) -> pd.DataFrame:
+    columns = ["date", "stock_id", "market_segment", "rank_side", "rank_no", "broker_code",
+               "broker_name", "buy_lots", "sell_lots", "net_lots", "source"]
+    # Date-ordered window pieces concatenate to the same rows as one global pass.
+    ranked = pd.concat([*buys, *sells], ignore_index=True)
+    buys.clear(), sells.clear()  # release window pieces before the column copy below
     if ranked.empty:
         return pd.DataFrame(columns=columns)
     ranked["market_segment"] = market_segment
     ranked["source"] = source
-    ranked = ranked.rename(columns={
+    ranked.rename(columns={
         "broker_buy_shares": "buy_lots",
         "broker_sell_shares": "sell_lots",
         "broker_net": "net_lots",
-    })
+    }, inplace=True)
     return ranked[columns]
 
 
@@ -1921,20 +1936,68 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
-    out = frame.copy()
-    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
-    out = out[out["date"] >= pd.Timestamp(start)]
-    out["stock_id"] = [
-        _clean_symbol(row.get(stock_col), row)
-        for row in out.to_dict(orient="records")
-    ]
+    # Groups never span dates, so 7-day windows give the same rows as one pass
+    # while only one window is copied; the vendor archive itself is never copied.
+    parsed = pd.to_datetime(frame[date_col], errors="coerce")
+    first = pd.Timestamp(start)
+    if not (parsed >= first).any():
+        return pd.DataFrame()
+    values = parsed.to_numpy()
+    keys = [key for key in _SYMBOL_ROW_KEYS if key in frame.columns]
+    columns = list(dict.fromkeys([date_col, stock_col, *([broker_col] if broker_col else []), buy_col, sell_col, *keys]))
+    positions = [frame.columns.get_loc(column) for column in columns]
+    pieces, buys, sells = [], [], []
+    lower, last = first, parsed.max()
+    while lower <= last:
+        upper = lower + pd.Timedelta(days=7)
+        rows = np.flatnonzero((values >= lower.to_datetime64()) & (values < upper.to_datetime64()))
+        lower = upper
+        if not len(rows):
+            continue
+        # take() rows first: iloc[rows, cols] copies the chosen columns in full first.
+        out = frame.take(rows).iloc[:, positions].copy()
+        out["date"] = values[rows]
+        piece = _normalize_broker_window(out, stock_col=stock_col, broker_col=broker_col,
+                                         buy_col=buy_col, sell_col=sell_col, keys=keys)
+        if piece is not None:
+            pieces.append(piece[0]);buys.append(piece[1]);sells.append(piece[2])
+    if not pieces:
+        return pd.DataFrame()
+    grouped = pd.concat(pieces, ignore_index=True)
+    pieces.clear()
+    grouped.attrs["broker_rank_daily"] = _finish_broker_rank(
+        buys, sells, market_segment="LISTED_OTC", source="finlab.broker_transactions")
+    return grouped
+
+
+_SYMBOL_ROW_KEYS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
+
+
+def _clean_symbol_column(out: pd.DataFrame, stock_col: str, keys: list[str]) -> list[str]:
+    """_clean_symbol(row[stock_col], row) memoized on the identity fields it reads."""
+    memo: dict[tuple, str] = {}
+    result = []
+    for item in zip(out[stock_col].tolist(), *(out[key].tolist() for key in keys)):
+        try:
+            symbol = memo[item]
+        except KeyError:
+            symbol = memo[item] = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        except TypeError:
+            symbol = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        result.append(symbol)
+    return result
+
+
+def _normalize_broker_window(out: pd.DataFrame, *, stock_col: str, broker_col: str | None,
+                             buy_col: str, sell_col: str, keys: list[str]):
+    out["stock_id"] = _clean_symbol_column(out, stock_col, keys)
     out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
     out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
     out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
     out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
     out = out[(out["stock_id"] != "") & out["date"].notna()]
     if out.empty:
-        return pd.DataFrame()
+        return None
 
     broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
         broker_buy_shares=("buy_shares_raw", "sum"),
@@ -1965,12 +2028,7 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
     grouped["source"] = "finlab.broker_transactions"
     grouped["market_segment"] = "LISTED_OTC"
-    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
-        broker_daily,
-        market_segment="LISTED_OTC",
-        source="finlab.broker_transactions",
-    )
-    return grouped
+    return (grouped, *_broker_rank_sides(broker_daily))
 
 
 def write_source_session_calendar(source_close: pd.DataFrame, *, run_dir: Path, years: int, end_date: str | None) -> Path:
@@ -2552,9 +2610,13 @@ def materialize_specs(
             if not frame.empty:
                 from services.training_long_sources import write_broker_capture
                 write_broker_capture(frame,run_dir=run_dir,
-                    start=start if daily_refresh else start_date_for_years(years),end=source_end_date or target_date)
+                    start=start if daily_refresh else (training_capture_start_date or start_date_for_years(years)),
+                    end=source_end_date or target_date)
             source_observation = broker_source_observation(frame, target_date)
-            grouped = normalize_broker_transactions_daily(frame, start)
+            # broker_daily/broker_rank_daily feed only canonical D1 windows, never
+            # training (that reads training_long_full_vintage/broker.parquet), so a
+            # longer --source-start-date does not widen them past --years.
+            grouped = normalize_broker_transactions_daily(frame, max(start, start_date_for_years(years)))
             rank_rows = grouped.attrs.get("broker_rank_daily")
             grouped = filter_rows_date_range(
                 grouped,

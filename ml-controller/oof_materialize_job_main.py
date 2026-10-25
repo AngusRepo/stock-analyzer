@@ -792,6 +792,15 @@ async def _run() -> int:
             elif status == 'blocked':
                 # Missing morning-owned plan cannot be repaired by this job.
                 raise RuntimeError(f"oof_daily_blocked:{result.get('reason')}:awaiting=paper_plan_activation")
+            elif result.get('materialization_owner') == 'r33_monthly_candidate' and status in {'failed', 'materialized'}:
+                # Candidate-only: a failed OOF check is terminal; success needs the sealed bundle and fresh OOF.
+                bundle = result.get('r33_candidate_bundle') or {}
+                if status == 'failed' or bundle.get('status') != 'sealed' or not bundle.get('checksum'):
+                    raise RuntimeError(f"r33_monthly_candidate_failed:{result.get('reason') or 'bundle_not_sealed'}")
+                freshness = _oof_freshness_evidence(result)
+                if freshness["status"] != "fresh":
+                    raise RuntimeError(f"oof_freshness_closure_failed:{freshness['reason']}")
+                callback_status = 'success'
             elif cadence == 'monthly' and status == 'materialized' and result.get('materialization_owner') == 'native_l3_new_l4':
                 closure = result.get('monthly_training_closure') or {}
                 if (closure.get('schema_version') != 'l4-monthly-training-closure-v1'

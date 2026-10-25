@@ -10,26 +10,48 @@ def _lazy(frame):
     if isinstance(frame,pl.DataFrame):return frame.lazy()
     return pl.from_pandas(frame).lazy()
 
-def write_broker_capture(frame, *, run_dir, start, end):
-    f=_lazy(frame)
-    required={"date","symbol","broker","buy","sell"}
-    if not required<=set(f.collect_schema().names()):raise ValueError("training_broker_native_schema_required")
-    f=(f.select(pl.col("date").cast(pl.Date).cast(pl.String),pl.col("symbol").cast(pl.String),pl.col("broker").cast(pl.String),
+BROKER_NATIVE_COLUMNS=("date","symbol","broker","buy","sell")
+BROKER_AVAILABILITY="capture_observed; historic publication time not certified"
+
+def _native_broker(f,start,end):
+    return (f.select(pl.col("date").cast(pl.Date).cast(pl.String),pl.col("symbol").cast(pl.String),pl.col("broker").cast(pl.String),
         pl.col("buy").cast(pl.Float64),pl.col("sell").cast(pl.Float64)).filter(pl.col("date").is_between(pl.lit(start),pl.lit(end))))
-    # Each date/symbol/broker key belongs to exactly one bounded window.
-    # Limit group/sort state before collecting the111M-row native archive.
-    pieces = []
+
+def _broker_windows(start,end):
     lower, final = date.fromisoformat(start), date.fromisoformat(end)
     if lower > final:
         raise ValueError("training_broker_window_invalid")
     while lower <= final:
         upper = min(lower + timedelta(days=6), final)
-        piece = _aggregate_broker_window(f.filter(
-            pl.col("date").is_between(pl.lit(lower.isoformat()), pl.lit(upper.isoformat()))))
-        pieces.append(piece)
+        yield lower, upper
         lower = upper + timedelta(days=1)
+
+def write_broker_capture(frame, *, run_dir, start, end):
+    if not isinstance(frame,(pl.LazyFrame,pl.DataFrame)):
+        import pandas as pd
+        if set(BROKER_NATIVE_COLUMNS)<=set(frame.columns) and pd.api.types.is_datetime64_dtype(frame["date"]):
+            return _write_pandas_broker_capture(frame,run_dir=run_dir,start=start,end=end)
+    f=_lazy(frame)
+    if not set(BROKER_NATIVE_COLUMNS)<=set(f.collect_schema().names()):raise ValueError("training_broker_native_schema_required")
+    f=_native_broker(f,start,end)
+    # Each date/symbol/broker key belongs to exactly one bounded window.
+    # Limit group/sort state before collecting the111M-row native archive.
+    pieces = [_aggregate_broker_window(f.filter(pl.col("date").is_between(pl.lit(lower.isoformat()), pl.lit(upper.isoformat()))))
+              for lower, upper in _broker_windows(start, end)]
     out = pl.concat(pieces)
-    return _write(out,run_dir=run_dir,name="broker",start=start,end=end,availability="capture_observed; historic publication time not certified")
+    return _write(out,run_dir=run_dir,name="broker",start=start,end=end,availability=BROKER_AVAILABILITY)
+
+def _write_pandas_broker_capture(frame,*,run_dir,start,end):
+    """Same windows and expressions as the lazy path, but only one window's five
+    native columns are ever converted; the full vendor archive is not copied."""
+    import numpy as np
+    values=frame["date"].to_numpy();positions=[frame.columns.get_loc(c) for c in BROKER_NATIVE_COLUMNS];pieces=[]
+    for lower, upper in _broker_windows(start, end):
+        rows=np.flatnonzero((values>=np.datetime64(lower,"D"))&(values<np.datetime64(upper+timedelta(days=1),"D")))
+        if len(rows):
+            pieces.append(_aggregate_broker_window(_native_broker(pl.from_pandas(frame.take(rows).iloc[:,positions]).lazy(),start,end)))
+    if not pieces:raise ValueError("training_long_source_empty:broker")
+    return _write(pl.concat(pieces),run_dir=run_dir,name="broker",start=start,end=end,availability=BROKER_AVAILABILITY)
 
 def _aggregate_broker_window(f):
     branches=f.group_by("date","symbol","broker").agg(pl.col("buy").sum(),pl.col("sell").sum()).with_columns((pl.col("buy")-pl.col("sell")).alias("net"))
@@ -71,8 +93,25 @@ def inspect_long_capture(bucket, *,price_capture,name,run_date):
     return frame,{**meta,"manifest_path":root+"/"+name+".json","manifest_sha256":hashlib.sha256(raw).hexdigest()}
 
 
-def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,prior_chips,run_date,inference_composition=None):
-    """Keep dated evidence; a fresh capture cannot make old reports known earlier."""
+BROKER_FIELDS=("broker_net_shares","broker_estimated_amount","broker_concentration","broker_count")
+# R33: d-day branch rows are known after d close, as serving reads same-day D1 rows.
+# Dominant-branch ties: the capture picks the lowest broker code among equal |net|.
+# canonical_broker_flow_daily (normalize_broker_transactions_daily) sorts the
+# broker-ordered groupby output with a multi-key sort_values (stable np.lexsort), so
+# it also keeps the lowest code. They can differ only where canonical's inputs
+# differ: it strips broker codes and cleans symbols, the capture casts them raw.
+HISTORICAL_BROKER_POLICY=("d-day broker branch rows are treated as known after the d-day close, matching serving's "
+    "same-day canonical_broker_flow_daily rows; historic publication time is not certified")
+
+
+def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,prior_chips,run_date,inference_composition=None,historical_broker=False):
+    """Keep dated evidence; a fresh capture cannot make old reports known earlier.
+
+    historical_broker (R33 only) replaces snapshot broker history with every capture
+    row up to run_date under HISTORICAL_BROKER_POLICY.
+    """
+    if historical_broker and inference_composition is not None:
+        raise ValueError("training_historical_broker_requires_capture")
     if inference_composition is None:
         broker,broker_proof=inspect_long_capture(bucket,price_capture=price_capture,name="broker",run_date=run_date)
         holding,holding_proof=inspect_long_capture(bucket,price_capture=price_capture,name="holding",run_date=run_date)
@@ -92,10 +131,17 @@ def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,pri
     # Current-day branch observations are available at this capture. Earlier
     # snapshot observations retain their original conservative known dates.
     current=broker.filter((pl.col("date")==run_date)&pl.col("symbol").is_in(list(ids)))
-    for r in current.iter_rows(named=True):
-        sym=r["symbol"];close=prices.get(sym,{}).get(run_date,{}).get("close")
+    bound=current
+    if historical_broker:
+        # Never mix vintages: snapshot broker values are dropped before capture rows land.
+        for rows in index.values():
+            for row in rows.values():
+                for field in BROKER_FIELDS:row.pop(field,None)
+        bound=broker.filter((pl.col("date")<=run_date)&pl.col("symbol").is_in(list(ids)))
+    for r in bound.iter_rows(named=True):
+        sym,day=r["symbol"],r["date"];close=prices.get(sym,{}).get(day,{}).get("close")
         if close is None:continue
-        target=index.setdefault(sym,{}).setdefault(run_date,{"date":run_date})
+        target=index.setdefault(sym,{}).setdefault(day,{"date":day})
         target.update(broker_net_shares=r["broker_net_lots"],broker_estimated_amount=r["broker_net_lots"]*close*1000.,broker_concentration=r["broker_concentration"],broker_count=r["broker_count"])
     current_holding=(holding.filter((pl.col("date")<=run_date)&pl.col("symbol").is_in(list(ids)))
         .sort("symbol","date").group_by("symbol",maintain_order=True).tail(1))
@@ -106,4 +152,7 @@ def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,pri
         "historical_availability_policy":"retain previously observed snapshot dates; newly captured historical reports are not backdated",
         "historical_broker_rows_without_publication_attestation":broker.filter(pl.col("date")<run_date).height,
         "historical_holding_rows_without_publication_attestation":holding.filter(pl.col("date")<run_date).height}
+    if historical_broker:
+        proof["historical_broker_binding"]={"policy":HISTORICAL_BROKER_POLICY,"rows_bound":bound.height,
+            "date_min":bound["date"].min() if bound.height else None,"snapshot_broker_fields_cleared":list(BROKER_FIELDS)}
     return dated,{s:sorted(rows.values(),key=lambda r:r["date"]) for s,rows in index.items()},proof

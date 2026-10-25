@@ -18,6 +18,8 @@ concurrency:
 env:
   PYTHONUTF8: '1'
   PYTHONIOENCODING: utf-8
+  # The controller suite runs as controller-1..N; keep in step with the matrix below.
+  CONTROLLER_SHARDS: '6'
 
 jobs:
   suite:
@@ -28,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         side: [base, head]
-        suite: [worker, controller, frontend, hygiene]
+        suite: [worker, controller-1, controller-2, controller-3, controller-4, controller-5, controller-6, frontend, hygiene]
     steps:
       - name: Resolve commit
         id: ref
@@ -60,19 +62,45 @@ jobs:
           sparse-checkout: ci
           fetch-depth: 1
 
+      # The base list may come from main's own run of this commit (saved by the gate job
+      # below); a miss runs the base suite as before.
+      - name: Cached base key
+        id: key
+        if: matrix.side == 'base'
+        shell: bash
+        run: echo "key=$(bash .ci-tools/ci/base_cache_key.sh .ci-tools '${{ steps.ref.outputs.sha }}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        if: matrix.side == 'base'
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.key.outputs.key }}
+      - name: Use cached base list
+        id: cached
+        if: matrix.side == 'base'
+        shell: bash
+        run: |
+          set -e
+          # hit only when this suite's list is in the restored set
+          list="$RUNNER_TEMP/base-cache/failures-${{ matrix.suite }}.txt"
+          if [ -f "$list" ]; then cp "$list" "$RUNNER_TEMP/failures.txt"; echo "hit=true" >> "$GITHUB_OUTPUT"; fi
+
       - uses: actions/setup-node@v4
-        if: matrix.suite != 'hygiene'
+        if: matrix.suite != 'hygiene' && steps.cached.outputs.hit != 'true'
         with:
           node-version: '22'
 
       - uses: actions/setup-python@v5
+        if: steps.cached.outputs.hit != 'true'
         with:
           python-version: '3.12'
           # Only the controller suite installs pip packages; caching elsewhere fails the post step.
-          cache: ${{ matrix.suite == 'controller' && 'pip' || '' }}
-          cache-dependency-path: ml-controller/requirements.txt
+          cache: ${{ startsWith(matrix.suite, 'controller') && 'pip' || '' }}
+          cache-dependency-path: |
+            ml-controller/requirements.txt
+            ml-controller/constraints.txt
 
       - name: Run suite
+        if: steps.cached.outputs.hit != 'true'
         shell: bash
         run: bash .ci-tools/ci/run_suite.sh "${{ matrix.suite }}" "$RUNNER_TEMP/failures.txt"
 
@@ -82,6 +110,14 @@ jobs:
           name: failures-${{ matrix.suite }}-${{ matrix.side }}
           path: ${{ runner.temp }}/failures.txt
           if-no-files-found: error
+
+      # Per-file seconds for ci/controller_durations.py (refreshes the shard weights).
+      - uses: actions/upload-artifact@v4
+        if: always() && startsWith(matrix.suite, 'controller')
+        with:
+          name: junit-${{ matrix.suite }}-${{ matrix.side }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: ignore
 
   # Controller tests that fail on head but not on base are rerun twice, serially, on head.
   # Ids that pass at least once are reported as flaky by the gate instead of blocking it.
@@ -107,6 +143,8 @@ jobs:
         with:
           pattern: failures-controller-*
           path: failures
+      - name: Merge controller shards
+        run: python .ci-tools/ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: List head-only failures
         run: python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
       - uses: actions/setup-node@v4
@@ -145,5 +183,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: failures
+      - name: Merge controller shards
+        run: python ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: Compare head against base
         run: python ci/compare_failures.py failures
+      # main only, after a passing gate: keep the head lists as the base for later runs of
+      # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
+      - name: Pack base lists
+        id: pack
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          python ci/base_cache.py failures "$RUNNER_TEMP/base-cache" worker             $(seq -f 'controller-%g' 1 "$CONTROLLER_SHARDS") frontend hygiene
+          [ -d "$RUNNER_TEMP/base-cache" ] && echo "key=$(bash ci/base_cache_key.sh . '${{ github.sha }}')" >> "$GITHUB_OUTPUT" || true
+      - uses: actions/cache/save@v4
+        if: steps.pack.outputs.key != ''
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.pack.outputs.key }}

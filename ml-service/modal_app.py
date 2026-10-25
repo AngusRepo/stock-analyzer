@@ -434,6 +434,15 @@ def _tree_model_split_enabled(payload: dict) -> bool:
     return _truthy(payload.get("tree_model_split")) or _truthy(os.environ.get("UNIVERSAL_TREE_MODEL_SPLIT"))
 
 
+def _tree_group_function(payload: dict, release_profile_schema: str | None):
+    """R33 full-fit tree children (nested CPCV, ~40-45 min each at 1280 sessions) outlive the
+    1800 s split parent; train_tree_models fans out the same children under its 5400 s budget."""
+    from app.formal_feature_contract import R33_PROFILE
+    if release_profile_schema == R33_PROFILE or not _tree_model_split_enabled(payload):
+        return train_tree_models
+    return train_tree_models_split_parent
+
+
 def _save_oos_rank_payload_to_gcs(path: str, payload: dict) -> dict:
     """Persist a combined OOS rank payload with the same npz contract."""
     import io
@@ -749,11 +758,9 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     train_group_specs = {
         "tree": {
-            "spawn": lambda p: (
-                train_tree_models_split_parent.spawn(p)
-                if _tree_model_split_enabled(p)
-                else train_tree_models.spawn(p)
-            ),
+            "spawn": lambda p: _tree_group_function(
+                p, verified_release_contract["model_profile_schema_version"] if is_release_train else None,
+            ).spawn(p),
             "payload": lambda: build_group_train_payload(base_train_payload, "tree"),
             "mergeable": training_group_feature_policy("tree").mergeable_oos,
             "models": base_train_payload.get("tree_models") or models_for_training_group("tree"),

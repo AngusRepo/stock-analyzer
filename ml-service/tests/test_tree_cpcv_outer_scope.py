@@ -112,3 +112,21 @@ def test_r33_fold_outer_test_evidence_skips_nested_cpcv(monkeypatch):
     from app.formal_feature_contract import R33_PROFILE, EXO131_PROFILE
     assert all(modal_app._oof_coverage_contract(result['results'][n]['model_cpcv']) for n in base['models_filter'])
     assert modal_app._r33_outer_test_fold_evidence(R33_PROFILE) and not modal_app._r33_outer_test_fold_evidence(EXO131_PROFILE)
+
+
+def test_r33_full_fit_never_dispatches_the_1800s_split_parent(monkeypatch):
+    import inspect
+    import modal_app
+    from app.formal_feature_contract import R33_PROFILE, EXO131_PROFILE
+    monkeypatch.delenv('UNIVERSAL_TREE_MODEL_SPLIT', raising=False)
+    split = {'tree_model_split': True}
+    # R33 full-fit: children keep nested CPCV (~40-45 min each), so the waiter must be the 5400 s function.
+    assert modal_app._tree_group_function(split, R33_PROFILE) is modal_app.train_tree_models
+    assert modal_app._tree_group_function({}, R33_PROFILE) is modal_app.train_tree_models
+    # Every other profile keeps its previous routing unchanged.
+    assert modal_app._tree_group_function(split, EXO131_PROFILE) is modal_app.train_tree_models_split_parent
+    assert modal_app._tree_group_function(split, None) is modal_app.train_tree_models_split_parent
+    assert modal_app._tree_group_function({}, EXO131_PROFILE) is modal_app.train_tree_models
+    # The retrain orchestrator's tree group is the only spawn site and routes through the helper.
+    source = inspect.getsource(modal_app)
+    assert 'train_tree_models_split_parent.spawn' not in source and source.count('_tree_group_function(') == 2

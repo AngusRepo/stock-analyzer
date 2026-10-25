@@ -95,7 +95,9 @@ jobs:
           python-version: '3.12'
           # Only the controller suite installs pip packages; caching elsewhere fails the post step.
           cache: ${{ startsWith(matrix.suite, 'controller') && 'pip' || '' }}
-          cache-dependency-path: ml-controller/requirements.txt
+          cache-dependency-path: |
+            ml-controller/requirements.txt
+            ml-controller/constraints.txt
 
       - name: Run suite
         if: steps.cached.outputs.hit != 'true'

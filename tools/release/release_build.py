@@ -17,7 +17,6 @@ Submit uses --gcs-source-staging-dir (the deploy SA has no project-level storage
 """
 from __future__ import annotations
 
-import ast
 from datetime import datetime, timezone
 import fnmatch
 import json
@@ -29,7 +28,7 @@ import sys
 import tarfile
 import time
 
-from release_admission import MANIFEST_PATHS, MANIFESTS, git, runtime_baseline, save, sha
+from release_admission import MANIFEST_PATHS, MANIFESTS, git, native_pipeline_members, runtime_baseline, save, sha
 from runtime_context import GC, PROJECT, kv_available
 
 BUILD_REGION = 'asia-east2'
@@ -164,18 +163,6 @@ def git_blob_id(raw: bytes) -> str:
 def long_path(path: Path) -> str:
     # Windows MAX_PATH; the context holds deep worker/src paths.
     return '\\\\?\\' + str(path) if os.name == 'nt' else str(path)
-
-
-def native_pipeline_members(native_source: str) -> list[str]:
-    """The `pipeline` file names native_execution_identity() hashes, read from its source."""
-    for node in ast.walk(ast.parse(native_source)):
-        if isinstance(node, ast.FunctionDef) and node.name == 'native_execution_identity':
-            for inner in ast.walk(node):
-                if isinstance(inner, ast.Tuple) and len(inner.elts) > 5 and all(
-                        isinstance(e, ast.Constant) and isinstance(e.value, str) and e.value.endswith('.py')
-                        for e in inner.elts):
-                    return [e.value for e in inner.elts]
-    raise RuntimeError('native_pipeline_members_not_found')
 
 
 def module_name(path: str) -> str | None:

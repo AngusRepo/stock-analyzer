@@ -24,10 +24,11 @@ defaults:
   run:
     shell: bash
 
-# One production deploy at a time; a newer run waits instead of cancelling a running one. A pending
-# run it replaces loses nothing: units are diffed against what is live.
+# Its own group: a newer run waits for a running one and replaces a pending one (units are diffed
+# against what is live, so nothing is lost). Never shared with deploy-controller.yml, whose pending
+# run a shared group would cancel; the two take turns in tools/release/production_turn.py instead.
 concurrency:
-  group: production
+  group: production-cloudflare
   cancel-in-progress: false
 
 jobs:
@@ -63,10 +64,12 @@ jobs:
     if: needs.plan.outputs.worker == 'true' || needs.plan.outputs.pages == 'true'
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 45
+    # Up to 100 min waiting for a controller rollout that started first, then the deploy itself.
+    timeout-minutes: 150
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       PRODUCTION_BRANCH: main
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -85,6 +88,13 @@ jobs:
           remote="$(git ls-remote origin refs/heads/main | cut -f1)"
           if [ "$remote" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
           else echo "::notice::main moved to $remote; nothing deployed by this run"; echo "current=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Take the production turn
+        if: steps.tip.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # One production deploy at a time: a controller rollout that started first finishes first
+        # (it fails closed on a Worker change mid-rollout). Stdlib only.
+        run: python3 tools/release/production_turn.py wait --role cloudflare --limit-minutes 100
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.tip.outputs.current == 'true'
         with:

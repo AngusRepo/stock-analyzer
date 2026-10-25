@@ -1,0 +1,5 @@
+{
+  "schema": "stockvision-release-trust-anchors-v1",
+  "about": "Git-committed digests the release tools trust instead of the receipt store (writable by runtime service accounts). finlab_daily_history_bootstrap_ref_sha256 = sha256 of the FinLab daily-history bootstrap reference {path, sha256} as compact sorted JSON; release.py seed-receipts prints it. null: a rollout that takes the bootstrap from receipts fails closed.",
+  "finlab_daily_history_bootstrap_ref_sha256": null
+}

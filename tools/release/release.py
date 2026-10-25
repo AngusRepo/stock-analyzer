@@ -5,26 +5,34 @@
                                                prints identity=reuse|new-grant and the reasons
   admission --expected-live-source <sha> --out DIR [--new-grant ...]
   build     --out DIR [--submit] [--wait]      prepare the full-build packet; --submit/--wait write
+  window                                       wait (no credentials) until a rollout can start
   rollout   --out DIR                          staged controller + Modal + jobs + traffic (writes)
   verify    --out DIR                          read back the live release; writes <sha>/current.json
+  verify    --from-receipts --sha S [--attempt A] --out DIR
+                                               the same, from a rollout's receipts in the store
+                                               (a run whose verify step failed or was cancelled)
   seed-receipts ...                            one-time: publish receipts of a release made by hand
 
 Stages share --out (out/admission, out/build, out/rollout, out/verify). With --publish (the
 default in CD) each stage's directory is copied to gs://stockvision-models/release-receipts/
-<sha>/<attempt>/ when the stage ends, pass or fail; the Docker context is not copied.
+<sha>/<attempt>/ when the stage ends, pass or fail; the Docker context is not copied. The rollout
+also copies its rollback anchor and every controller-release.json state the moment it saves them.
 PRIOR comes from that store: the live Modal tag's verified rollout receipts (previous Modal
-release + bootstrap) and, for a new-grant admission, the live native bundle.
-Controller CD runs plan, classify, admission (reuse), build --submit --wait, rollout and verify.
-A new-grant release (native identity, policy chain or allocator/L3 sources change) fails closed in
-CD and goes through the manual path with operator credentials and Wei's go.
+release + bootstrap), re-hashed against the digests in that release's current.json, and, for a
+new-grant admission, the live native bundle.
+Controller CD runs plan, classify, admission (reuse), build --submit --wait, window, rollout and
+verify. A new-grant release (native identity inputs, policy chain or allocator/L3 sources change)
+fails closed in CD and goes through the manual path with operator credentials and Wei's go.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import posixpath
 import subprocess
 import sys
 import urllib.request
@@ -43,15 +51,93 @@ from runtime_context import in_cd  # noqa: E402
 
 CONTROLLER_HEALTH = 'https://ml-controller-530028717113.asia-east1.run.app/health'
 STAGES = ('admission', 'build', 'rollout', 'verify')
+DIGEST_STAGES = ('admission', 'build', 'rollout')
+MODAL_APP = 'ml-service/modal_app.py'
+# Receipts the next release reads; verify re-reads them from the store before writing current.json.
+NEXT_RELEASE_READS = ('rollout/modal-release.json', 'rollout/bootstrap-verification.json', 'admission/admission-receipt.json')
+# Saved by the rollout before traffic moves; a standalone verify rebuilds them from progress copies.
+ROLLOUT_DURABLE = ('rollback.json', 'bootstrap-verification.json', 'modal-release.json', 'controller-release.json')
 
 
-def controller_inputs_changed(changed: list[str], dockerfile: str) -> bool:
+def _is_file_parent(node) -> bool:
+    """Path(__file__).parent or Path(__file__).resolve().parent"""
+    if not (isinstance(node, ast.Attribute) and node.attr == 'parent'):
+        return False
+    inner = node.value
+    if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute) and inner.func.attr == 'resolve' and not inner.args:
+        inner = inner.func.value
+    return (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id == 'Path'
+            and len(inner.args) == 1 and isinstance(inner.args[0], ast.Name) and inner.args[0].id == '__file__')
+
+
+def modal_local_inputs(text: str, root_dirs=()) -> set[str]:
+    """Repo paths the Modal image ships: every add_local_* / copy_local_* source of modal_app.py,
+    resolved through its _LOCAL_* assignments. Anything else fails closed."""
+    tree = ast.parse(text)
+    assigns = {node.targets[0].id: node.value for node in tree.body
+               if isinstance(node, ast.Assign) and len(node.targets) == 1
+               and isinstance(node.targets[0], ast.Name) and node.targets[0].id.startswith('_LOCAL_')}
+
+    def paths(node, depth=0) -> set[str]:
+        if depth > 20:
+            raise RuntimeError('modal_local_input_unrecognized:recursion')
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == 'str' and len(node.args) == 1 and not node.keywords:
+                return paths(node.args[0], depth + 1)
+            if node.func.id == '_resolve_local_repo_root' and not node.args:
+                return {''}  # the checkout root (STOCKVISION_MODAL_REPO_ROOT in the rollout)
+            if node.func.id == 'next' and len(node.args) == 2 and isinstance(node.args[0], ast.GeneratorExp):
+                return paths(node.args[0].generators[0].iter, depth + 1) | paths(node.args[1], depth + 1)
+        if isinstance(node, ast.Name) and node.id in assigns:
+            return paths(assigns[node.id], depth + 1)
+        if _is_file_parent(node):
+            return {'ml-service'}
+        if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and isinstance(node.right, ast.Constant)
+                and isinstance(node.right.value, str) and '..' not in node.right.value.split('/')):
+            return {posixpath.join(base, node.right.value) if base else node.right.value for base in paths(node.left, depth + 1)}
+        if isinstance(node, ast.IfExp):
+            return paths(node.body, depth + 1) | paths(node.orelse, depth + 1)
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            return set().union(*(paths(item, depth + 1) for item in node.elts))
+        if isinstance(node, ast.Subscript):
+            return paths(node.value, depth + 1)  # the whole list: a superset
+        raise RuntimeError(f'modal_local_input_unrecognized:{getattr(node, "lineno", "?")}')
+
+    inputs, calls = set(), 0
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr.startswith(('add_local_', 'copy_local_'))):
+            calls += 1
+            source = node.args[0] if node.args else next((k.value for k in node.keywords if k.arg == 'local_path'), None)
+            if source is None:
+                raise RuntimeError(f'modal_local_input_unrecognized:{node.lineno}')
+            inputs |= paths(source)
+    if not calls or '' in inputs:
+        raise RuntimeError('modal_local_inputs_not_found' if not calls else 'modal_local_input_is_repo_root')
+    for node in ast.walk(tree):
+        names = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                 else [node.module] if isinstance(node, ast.ImportFrom) and node.module and not node.level else [])
+        for name in names:
+            top = name.split('.')[0]
+            if top in root_dirs and top not in inputs:
+                raise RuntimeError('modal_import_not_shipped:' + name)
+    return inputs
+
+
+def modal_inputs(root: Path = ROOT) -> set[str]:
+    dirs = {p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith('.')}
+    return modal_local_inputs((root / MODAL_APP).read_text(encoding='utf-8'), dirs)
+
+
+def controller_inputs_changed(changed: list[str], dockerfile: str, modal: set[str] = frozenset()) -> bool:
     """True if a changed path can alter the controller image or the Modal app shipped with it."""
     copies = build_stage.dockerfile_copies(dockerfile)
     for path in changed:
         if TEST.search(path) or path.endswith('.md'):
             continue
         if path in ('Dockerfile', '.dockerignore') or path.startswith('ml-service/'):
+            return True
+        if any(path == item or path.startswith(item + '/') for item in modal):
             return True
         if any(build_stage.copy_matches(pattern, path) for sources, _ in copies for pattern in sources):
             return True
@@ -82,7 +168,7 @@ def plan(choice: str, live: str | None = None) -> dict[str, str]:
         raise SystemExit(f'live controller {live} is not an ancestor of main {head}; release it manually')
     changed = repo_git('diff', '--name-only', live, head).splitlines()
     dockerfile = (ROOT / 'Dockerfile').read_text(encoding='utf-8')
-    deploy = choice == 'controller' or controller_inputs_changed(changed, dockerfile)
+    deploy = choice == 'controller' or controller_inputs_changed(changed, dockerfile, modal_inputs())
     return {'controller': str(deploy).lower(), 'live_sha': live, 'gate_base': live if deploy else ''}
 
 
@@ -99,13 +185,17 @@ def attempt_id(out: Path) -> str:
     return value
 
 
+def release_sha(args) -> str:
+    return args.sha if getattr(args, 'from_receipts', False) else admission_stage.git(args.source, 'rev-parse', 'HEAD')
+
+
 def publish(args, stage: str) -> None:
     """Receipts are keyed by the release commit. A new-grant admission runs before its release PR
     exists, so admission receipts are (re)published with the build stage, without clobbering."""
     if not args.publish:
         return
     import release_receipts as receipts
-    head = admission_stage.git(args.source, 'rev-parse', 'HEAD')
+    head = release_sha(args)
     for name in (('admission', 'build') if stage == 'build' else (stage,)):
         if name == 'admission' and stage == 'admission' and args.new_grant:
             continue
@@ -125,12 +215,12 @@ def run_stage(args, stage: str, action):
 
 
 def prior_native(args, live: str) -> tuple[bytes, dict]:
-    """Live native bundle + components: --prior-dir, else the receipt store chain from live."""
+    """Live native bundle + components: --prior-dir, else the receipt store chain from live. Either
+    way new_grant() proves the bundle reproduces the git-committed live native owner."""
     if args.prior_dir:
         return (args.prior_dir / 'native-paper.cjs').read_bytes(), json.loads((args.prior_dir / 'native-components.json').read_bytes())
     import release_receipts as receipts
-    receipt = json.loads(receipts.read_current(live, 'admission/admission-receipt.json') or b'null')
-    holder = live if receipt and receipt.get('mode') == 'new-grant' else (receipt or {}).get('native_receipt_sha')
+    holder = native_receipt_sha(live)
     bundle = receipts.read_current(holder, 'admission/native-paper.cjs') if holder else None
     components = receipts.read_current(holder, 'admission/native-components.json') if holder else None
     if bundle is None or components is None:
@@ -157,17 +247,23 @@ def cmd_admission(args):
             policy_chain=args.policy_chain)
 
     return lambda: admission_stage.reuse(args.source, out, args.expected_live_source,
-        native_receipt_sha=native_receipt_sha(args.expected_live_source) if args.publish else None)
+        native_receipt_sha=native_receipt_sha(args.expected_live_source) if args.publish else None,
+        identities='checked' if args.identities_checked_by_plan else None)
 
 
 def cmd_build(args):
     out = args.out / 'build'
 
     def action():
+        import release_rollout as deployer
         result = {}
         if not (out / 'deployment-build-packet.json').exists():
             result['prepare'] = build_stage.prepare(args.source, args.out / 'admission', out, args.expected_live_source)
         if args.submit:
+            # The rollout refuses an admission baseline from another TW day: refuse to spend a
+            # full build that could only reach its first mutation after TW midnight.
+            observed = json.loads((args.out / 'admission/baseline.json').read_bytes())['observed_at']
+            deployer.require_submit_window(observed, datetime.now(timezone.utc), deployer.job_deadline())
             result['submit'] = build_stage.submit(out)
         if args.wait:
             value = build_stage.wait(out)
@@ -191,65 +287,149 @@ def rollout_prior(args) -> dict:
     if pointer is None:
         return {'modal_tag': tag}
     return {'modal_tag': tag, 'attempt': pointer['attempt'],
-            'modal_release': json.loads(receipts.read_current(tag, 'rollout/modal-release.json') or b'null'),
-            'bootstrap': json.loads(receipts.read_current(tag, 'rollout/bootstrap-verification.json') or b'null')}
+            'modal_release': json.loads(receipts.read_current(tag, 'rollout/modal-release.json')),
+            'bootstrap': json.loads(receipts.read_current(tag, 'rollout/bootstrap-verification.json'))}
 
 
 def cmd_rollout(args):
     def action():
         import release_rollout as deployer
+        hook = None
+        if args.publish:
+            import release_receipts as receipts
+            head, attempt = release_sha(args), attempt_id(args.out)
+            # A killed or unrolled-back attempt of this commit may have left a staged revision,
+            # Modal version or job image behind: reconcile it (verify --from-receipts or by hand).
+            stale = receipts.unreconciled_attempts(head, skip=attempt)
+            if stale:
+                raise RuntimeError('previous_rollout_attempt_unreconciled:' + ','.join(stale))
+
+            def hook(path):
+                print(json.dumps({'receipt': receipts.publish_progress(head, attempt, path, 'rollout')}), flush=True)
         return deployer.rollout(source=args.source, out=args.out / 'rollout', build_dir=args.out / 'build',
                                 admission_dir=args.out / 'admission', prior=rollout_prior(args), python=args.python,
-                                resume_staged=args.resume_staged)
+                                resume_staged=args.resume_staged, publish=hook)
     return action
+
+
+def fetch_attempt(sha: str, attempt: str | None, out: Path) -> tuple[str, dict]:
+    """Download a rollout attempt's receipts into out; rebuild stage files a killed run only
+    left as progress copies. Returns (attempt, controller-release state)."""
+    import release_receipts as receipts
+    if attempt is None:
+        candidates = [a for a in receipts.attempts(sha) if receipts.rollout_state(sha, a)]
+        if len(candidates) != 1:
+            raise RuntimeError('rollout_attempt_ambiguous_pass_--attempt:' + ','.join(candidates))
+        attempt = candidates[0]
+    state = receipts.rollout_state(sha, attempt)
+    if state is None:
+        raise RuntimeError('rollout_receipts_not_found:' + attempt)
+    if out.exists() and any(out.iterdir()):
+        raise RuntimeError('verify_out_not_empty')
+    out.mkdir(parents=True, exist_ok=True)
+    for stage in DIGEST_STAGES:
+        for line in receipts.listing(receipts.prefix(sha, attempt) + '/' + stage + '/**'):
+            relative = line[len(receipts.prefix(sha, attempt)) + 1:]
+            if line.endswith('/') or '..' in relative.split('/'):
+                continue
+            raw = receipts.read(line)
+            target = out / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+    progress = out / 'rollout' / 'progress'
+    for name in ROLLOUT_DURABLE:
+        copies = sorted(progress.glob('*-' + name)) if progress.is_dir() else []
+        if not (out / 'rollout' / name).exists() and copies:
+            (out / 'rollout' / name).write_bytes(copies[-1].read_bytes())
+    (out / 'attempt.json').write_text(json.dumps({'attempt': attempt}) + '\n', encoding='utf-8')
+    return attempt, state
+
+
+def verify_release(out: Path, *, publish: bool, sha: str | None = None) -> dict:
+    """Read the live release back against its receipts; with publish, write <sha>/current.json."""
+    from runtime_context import gc, load_environment, request
+    from verify_cloud_run_release import verify_health, verify_paper_runtime, verify_traffic
+    from application_job_inventory import read_live_inventory, verify_inventory
+    import modal
+    release = json.loads((out / 'rollout/controller-release.json').read_bytes())
+    packet = json.loads((out / 'build/deployment-build-packet.json').read_bytes())
+    admission = json.loads((out / 'admission/admission-receipt.json').read_bytes())
+    if sha is not None and packet['source_sha'] != sha:
+        raise RuntimeError('receipt_sha_mismatch')
+    # 'staging' = a run killed after its last save; it counts only if everything below is live.
+    if release.get('status') not in ('verified', 'staging') or release['source_sha'] != packet['source_sha']:
+        raise RuntimeError('rollout_not_verified_or_rolled_back:' + str(release.get('status')))
+    for relative in ('rollout/modal-release.json', 'rollout/bootstrap-verification.json'):
+        if not (out / relative).exists():
+            raise RuntimeError('rollout_receipt_missing:' + relative)
+    live = load_environment()
+    service = json.loads(gc('run', 'services', 'describe', 'ml-controller', '--region=asia-east1', '--format=json'))
+    verify_traffic(service, release['revision'])
+    if service['spec']['template']['spec']['containers'][0]['image'] != release['image']:
+        raise RuntimeError('live_image_not_release_image')
+    verify_health(request(service['status']['url'] + '/health')['body'], {'sourceSha': packet['source_sha'],
+                  'sourceTreeSha': packet['tree'], 'schedulerManifestSha256': packet['scheduler_sha256']})
+    paper = request(live['url'].rstrip('/') + '/research_validation/production_bundle',
+                    headers={'X-Controller-Token': os.environ['ML_CONTROLLER_SECRET']})
+    if paper['http_status'] != 200:
+        raise RuntimeError('paper_bundle_http_failure')
+    verify_paper_runtime(paper['body'])
+    provenance = modal.Function.from_name('stockvision-ml', 'deployment_provenance').remote()
+    modal_release = json.loads((out / 'rollout/modal-release.json').read_bytes())
+    if provenance.get('source_sha') != packet['source_sha'] or provenance != modal_release.get('provenance'):
+        raise RuntimeError('modal_source_mismatch')
+    env, jobs = read_live_inventory(gc, region='asia-east1', service='ml-controller')
+    verified_jobs = verify_inventory(controller_env=env, live_jobs=jobs, expected_image=release['image'],
+                                     expected_sha=packet['source_sha'])
+    result = dict(status='verified', verified_at=datetime.now(timezone.utc).isoformat(), source_sha=packet['source_sha'],
+                  revision=release['revision'], image=release['image'], modal_provenance=provenance,
+                  jobs=sorted(verified_jobs), admission_mode=packet['admission_mode'],
+                  rollout_receipt_status=release.get('status'))
+    (out / 'verify').mkdir(parents=True, exist_ok=True)
+    (out / 'verify/verify.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+    if publish:
+        import release_receipts as receipts
+        head, attempt = packet['source_sha'], attempt_id(out)
+        for stage in ('rollout', 'verify'):  # rollout: files rebuilt from progress copies
+            receipts.publish_stage(head, attempt, out, stage)
+        files = receipts.digests(out, DIGEST_STAGES)
+        for relative in NEXT_RELEASE_READS:  # what the store now holds is what the next release reads
+            receipts.read_attempt(head, attempt, relative, files)
+        base = packet['base_source_sha']
+        previous_raw = receipts.current_raw(base)
+        receipts.write_current(head, dict(sha=head, attempt=attempt, status='verified', verified_at=result['verified_at'],
+            admission_mode=admission['mode'], files=files,
+            previous=dict(sha=base, current_sha256=receipts.sha256(previous_raw) if previous_raw is not None else None),
+            native_receipt_sha=head if admission['mode'] == 'new-grant' else admission.get('native_receipt_sha')),
+            out / 'verify/current.json')
+    return result
 
 
 def cmd_verify(args):
     def action():
-        from runtime_context import gc, load_environment, request
-        from verify_cloud_run_release import verify_health, verify_traffic
-        from application_job_inventory import read_live_inventory, verify_inventory
-        import modal
-        out = args.out / 'verify'
-        out.mkdir(parents=True, exist_ok=True)
-        release = json.loads((args.out / 'rollout/controller-release.json').read_bytes())
-        packet = json.loads((args.out / 'build/deployment-build-packet.json').read_bytes())
-        if release.get('status') != 'verified' or release['source_sha'] != packet['source_sha']:
-            raise RuntimeError('rollout_not_verified')
-        load_environment()
-        service = json.loads(gc('run', 'services', 'describe', 'ml-controller', '--region=asia-east1', '--format=json'))
-        verify_traffic(service, release['revision'])
-        verify_health(request(service['status']['url'] + '/health')['body'], {'sourceSha': packet['source_sha'],
-                      'sourceTreeSha': packet['tree'], 'schedulerManifestSha256': packet['scheduler_sha256']})
-        provenance = modal.Function.from_name('stockvision-ml', 'deployment_provenance').remote()
-        if provenance.get('source_sha') != packet['source_sha']:
-            raise RuntimeError('modal_source_mismatch')
-        env, jobs = read_live_inventory(gc, region='asia-east1', service='ml-controller')
-        verified_jobs = verify_inventory(controller_env=env, live_jobs=jobs, expected_image=release['image'],
-                                         expected_sha=packet['source_sha'])
-        result = dict(status='verified', verified_at=datetime.now(timezone.utc).isoformat(), source_sha=packet['source_sha'],
-                      revision=release['revision'], image=release['image'], modal_provenance=provenance,
-                      jobs=sorted(verified_jobs), admission_mode=packet['admission_mode'])
-        (out / 'verify.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
-        if args.publish:
-            import release_receipts as receipts
-            admission = json.loads((args.out / 'admission/admission-receipt.json').read_bytes())
-            receipts.write_current(packet['source_sha'], dict(sha=packet['source_sha'], attempt=attempt_id(args.out),
-                status='verified', verified_at=result['verified_at'], admission_mode=admission['mode'],
-                native_receipt_sha=packet['source_sha'] if admission['mode'] == 'new-grant' else admission.get('native_receipt_sha')),
-                out / 'current.json')
-        return result
+        if args.from_receipts:
+            attempt, state = fetch_attempt(args.sha, args.attempt, args.out)
+            print(json.dumps({'attempt': attempt, 'rollout_status': state.get('status')}), flush=True)
+            return verify_release(args.out, publish=args.publish, sha=args.sha)
+        return verify_release(args.out, publish=args.publish)
     return action
+
+
+def cmd_window(args):
+    import release_rollout as deployer
+    deployer.wait_outside_scaler_windows(deadline=deployer.job_deadline())
+    return {'status': 'outside_scaler_windows', 'at': datetime.now(timezone.utc).isoformat()}
 
 
 def cmd_seed(args):
     """One-time, by hand: publish the receipts of a release made with the audits/ tools so the next
-    release can derive its PRIOR. Verifies them against the live Modal deployment first."""
+    release can derive its PRIOR. Verifies them against the live Modal deployment first, and prints
+    the bootstrap anchor to commit in tools/release/trust_anchors.json."""
     def action():
         import hashlib
         import release_receipts as receipts
         import modal
-        from release_rollout import validate_bootstrap_ref
+        from release_rollout import bootstrap_anchor_digest, validate_bootstrap_ref
         raw = args.modal_release.read_bytes()
         modal_release = json.loads(raw)
         bootstrap = json.loads(args.bootstrap_verification.read_bytes())
@@ -283,10 +463,15 @@ def cmd_seed(args):
             receipt = json.loads((target / 'admission-receipt.json').read_bytes())
             mode = receipt.get('mode', 'new-grant')
             receipts.publish_stage(args.sha, attempt, args.out, 'admission')
+        files = receipts.digests(args.out, ('admission', 'rollout'))
+        for relative in files:
+            receipts.read_attempt(args.sha, attempt, relative, files)
         receipts.write_current(args.sha, dict(sha=args.sha, attempt=attempt, status='verified', seeded=True,
-            verified_at=datetime.now(timezone.utc).isoformat(), admission_mode=mode,
+            verified_at=datetime.now(timezone.utc).isoformat(), admission_mode=mode, files=files, previous=None,
             native_receipt_sha=args.sha if mode == 'new-grant' else None), args.out / 'current.json')
-        return {'status': 'seeded', 'sha': args.sha, 'attempt': attempt}
+        return {'status': 'seeded', 'sha': args.sha, 'attempt': attempt,
+                'commit_in_trust_anchors_json': {'finlab_daily_history_bootstrap_ref_sha256':
+                                                 bootstrap_anchor_digest(bootstrap['reference'])}}
     return action
 
 
@@ -297,6 +482,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--choice', choices=['changed', 'controller'], default='changed')
     p = sub.add_parser('classify')
     p.add_argument('--live', required=True)
+    sub.add_parser('window')
     for name in ('admission', 'build', 'rollout', 'verify', 'seed-receipts'):
         p = sub.add_parser(name)
         p.add_argument('--source', type=Path, default=ROOT, help='release checkout (default: this repo)')
@@ -307,6 +493,8 @@ def parser() -> argparse.ArgumentParser:
         if name in ('admission', 'build'):
             p.add_argument('--expected-live-source', required=True)
     p = sub.choices['admission']
+    p.add_argument('--identities-checked-by-plan', action='store_true',
+                   help='CD: the plan job compared the allocator / L3 identities at this commit')
     p.add_argument('--new-grant', action='store_true', help='identity-changing release (manual only)')
     p.add_argument('--prior-dir', type=Path)
     p.add_argument('--new-native-bundle', type=Path)
@@ -321,6 +509,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--resume-staged', action='store_true')
     p.add_argument('--prior-modal-release', type=Path)
     p.add_argument('--prior-bootstrap', type=Path)
+    p = sub.choices['verify']
+    p.add_argument('--from-receipts', action='store_true', help='verify a rollout from the receipt store')
+    p.add_argument('--sha', help='release commit (with --from-receipts)')
+    p.add_argument('--attempt', help='rollout attempt, e.g. gh-<run id>-<run attempt> (with --from-receipts)')
     p = sub.choices['seed-receipts']
     p.add_argument('--sha', required=True)
     p.add_argument('--modal-release', type=Path, required=True)
@@ -345,15 +537,26 @@ def main(argv=None) -> None:
                   'stage the new Paper grant with the manual release (tools/release/release.py admission --new-grant) after Wei go',
                   file=sys.stderr)
         return
+    if args.stage == 'window':
+        print(json.dumps(cmd_window(args)), flush=True)
+        return
     args.source, args.out = args.source.resolve(), args.out.resolve()
     if args.stage == 'admission' and args.new_grant and not all((args.new_native_bundle, args.release_id, args.authorization)):
         raise SystemExit('--new-grant needs --new-native-bundle, --release-id and --authorization')
+    if args.stage == 'admission' and args.identities_checked_by_plan and (args.new_grant or not in_cd()):
+        raise SystemExit('--identities-checked-by-plan is for the CD deploy job only')
+    if args.stage == 'verify' and args.from_receipts and not (args.sha and len(args.sha) == 40):
+        raise SystemExit('--from-receipts needs --sha <40-hex release commit>')
     if args.stage == 'seed-receipts' and in_cd():
         raise SystemExit('seed-receipts is a one-time manual step')
     if args.stage == 'seed-receipts':
         print(json.dumps(cmd_seed(args)()), flush=True)
         return
     action = {'admission': cmd_admission, 'build': cmd_build, 'rollout': cmd_rollout, 'verify': cmd_verify}[args.stage](args)
+    if args.stage == 'verify':
+        # verify publishes its own stage, before current.json, under the rollout's attempt.
+        print(json.dumps(action(), ensure_ascii=False), flush=True)
+        return
     run_stage(args, args.stage, action)
 
 

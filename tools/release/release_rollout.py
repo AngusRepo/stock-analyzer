@@ -12,7 +12,15 @@ complete runtime specs stay in process memory. Changes from the rehearsal3 copy:
   verified attempt), not hand-copied files; this rollout writes both for the next release.
 - idle guard: release_idle.inspect (no hard-coded forward-job / e084938e exceptions). The first
   boundary waits for idle up to a limit; later boundaries fail as before.
-- scaler windows: the rollout starts only when it can finish before the next scaler window.
+- bootstrap: the reference must equal the git-committed anchor (tools/release/trust_anchors.json)
+  and the object is always re-hashed in full; receipts only carry the raw env string.
+- scaler windows / job time: the rollout starts only when the idle wait, the proofs and the full
+  mutation budget (rollout + rollback) fit before the next scaler window and the CD job end, and
+  mutation_gate() re-checks the pushed head, the admission TW day, the window and the job time
+  immediately before the first mutation.
+- durable receipts: rollback.json, bootstrap-verification.json, modal-release.json and every
+  controller-release.json state are copied to the receipt store the moment they are saved, so a
+  run the runner kills mid-rollout (SIGINT then SIGKILL ~10 s later) can still be reconciled.
 - KV: only a new-grant release stages grants, and only with operator credentials. Without KV
   (controller CD) the trading:config byte comparison is replaced by "the serving controller's
   paper runtime is still PASS with no drift" at the full boundaries.
@@ -44,7 +52,14 @@ TW = timezone(timedelta(hours=8))
 # Cloud Run scaler jobs rewrite ml-controller around these TW times (CD_DESIGN.md §5).
 SCALER_WINDOWS = ((0, 0), (8, 40), (13, 40))
 WINDOW_MARGIN = timedelta(minutes=10)
-ROLLOUT_BUDGET = timedelta(minutes=30)
+# From the first mutation: staged rollout (30 min) plus a full rollback (15 min). Nothing in that
+# span may meet a scaler window or the end of the CD job (SIGINT, then SIGKILL ~10 s later).
+MUTATION_BUDGET = timedelta(minutes=45)
+IDLE_WAIT = timedelta(minutes=30)            # first boundary: wait for active work to finish
+PREPARE_BUDGET = timedelta(minutes=10)       # build/ownership/bootstrap/IAM proofs before mutating
+START_BUDGET = IDLE_WAIT + PREPARE_BUDGET + MUTATION_BUDGET
+BUILD_BUDGET = timedelta(minutes=46)         # release_build.wait: 180 polls x 15 s, plus submit
+BOOTSTRAP_ANCHOR = 'finlab_daily_history_bootstrap_ref_sha256'
 
 
 def now():
@@ -59,33 +74,104 @@ def load(path):
     return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 
 
-def save(name, value):
+PUBLISH = None  # rollout(publish=...): copies a just-saved receipt to the receipt store
+
+
+def save(name, value, *, durable=False, strict=True):
+    """durable: also copy to the store at once, so a killed run leaves it behind. strict=False
+    (rollback path) logs a failed copy instead of raising before the rollback runs."""
     (OUT / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    if durable and PUBLISH is not None:
+        try:
+            PUBLISH(OUT / name)
+        except Exception as error:
+            if strict:
+                raise
+            print(f'::warning::receipt copy failed for {name}: {type(error).__name__}', flush=True)
 
 
-def blocked_until(at: datetime) -> datetime | None:
-    """None if a rollout started at `at` ends before the next scaler window opens, else when it may start."""
+def blocked_until(at: datetime, budget: timedelta = MUTATION_BUDGET) -> datetime | None:
+    """None if work of length `budget` started at `at` ends before the next scaler window opens
+    (with margin), else the time it may start."""
     local = at.astimezone(TW)
     for day in (-1, 0, 1):
         base = (local + timedelta(days=day)).replace(second=0, microsecond=0)
         for hour, minute in SCALER_WINDOWS:
             centre = base.replace(hour=hour, minute=minute)
-            if centre - WINDOW_MARGIN - ROLLOUT_BUDGET < local < centre + WINDOW_MARGIN:
+            if centre - WINDOW_MARGIN - budget < local < centre + WINDOW_MARGIN:
                 return (centre + WINDOW_MARGIN).astimezone(timezone.utc)
     return None
 
 
-def wait_outside_scaler_windows(*, clock=lambda: datetime.now(timezone.utc), sleep=time.sleep, limit=timedelta(minutes=75)):
+def job_deadline() -> datetime | None:
+    """CD: when the runner stops this job (RELEASE_DEADLINE, epoch seconds, set by the workflow)."""
+    value = os.environ.get('RELEASE_DEADLINE', '').strip()
+    if not value:
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            raise RuntimeError('release_deadline_missing_in_cd')
+        return None
+    return datetime.fromtimestamp(int(value), timezone.utc)
+
+
+def wait_outside_scaler_windows(*, budget=START_BUDGET, deadline=None, clock=lambda: datetime.now(timezone.utc),
+                                sleep=time.sleep, limit=timedelta(minutes=110)):
     started = clock()
-    while (until := blocked_until(clock())) is not None:
-        if until - started > limit:
-            raise RuntimeError('scaler_window_wait_limit')
+    while (until := blocked_until(clock(), budget)) is not None:
+        if until - started > limit or (deadline is not None and until + budget > deadline):
+            raise RuntimeError('scaler_window_wait_exceeds_limit_or_job_time')
         print('Waiting for the scaler window to pass until ' + until.isoformat(), flush=True)
         sleep(max(1.0, (until - clock()).total_seconds()))
 
 
 def same_tw_day(first_iso: str, second: datetime) -> bool:
     return datetime.fromisoformat(first_iso).astimezone(TW).date() == second.astimezone(TW).date()
+
+
+def latest_first_mutation(start: datetime) -> datetime:
+    """Worst case: when a rollout started at `start` reaches its first mutation."""
+    begin = blocked_until(start, START_BUDGET) or start
+    return begin + IDLE_WAIT + PREPARE_BUDGET
+
+
+def require_submit_window(observed_at: str, at: datetime, deadline: datetime | None = None) -> None:
+    """Before a full build: its rollout must still mutate on the admission baseline's TW day and
+    finish (rollback included) inside the CD job."""
+    first = latest_first_mutation(at + BUILD_BUDGET)
+    if not same_tw_day(observed_at, first):
+        raise RuntimeError('admission_day_ends_before_rollout_resubmit_after_tw_00_10')
+    if deadline is not None and first + MUTATION_BUDGET > deadline:
+        raise RuntimeError('job_time_left_below_build_and_rollout_budget')
+
+
+def mutation_gate(at: datetime, *, observed_at: str, deadline: datetime | None, remote_sha: str, release_sha: str) -> None:
+    """Immediately before the first mutation, after every wait: same pushed head, same TW day as
+    the admission baseline, no scaler window and no job end inside the full mutation budget."""
+    if remote_sha != release_sha:
+        raise RuntimeError('source_remote_branch_moved_before_first_mutation')
+    if not same_tw_day(observed_at, at):
+        raise RuntimeError('admission_baseline_crossed_tw_midnight_readmit')
+    if blocked_until(at, MUTATION_BUDGET) is not None:
+        raise RuntimeError('scaler_window_inside_mutation_budget')
+    if deadline is not None and at + MUTATION_BUDGET > deadline:
+        raise RuntimeError('job_time_left_below_mutation_budget')
+
+
+def bootstrap_anchor_digest(reference: dict) -> str:
+    return sha(json.dumps(reference, sort_keys=True, separators=(',', ':')).encode('utf-8'))
+
+
+def require_bootstrap_anchor(source: Path, reference: dict, *, required: bool) -> str | None:
+    """The FinLab bootstrap reference must equal the git-committed anchor of the release source.
+    required=False (reference read fresh from the live service env) accepts an absent anchor."""
+    anchors = json.loads((source / 'tools/release/trust_anchors.json').read_text(encoding='utf-8'))
+    expected = anchors.get(BOOTSTRAP_ANCHOR)
+    if expected is None:
+        if required:
+            raise RuntimeError('bootstrap_trust_anchor_not_committed_see_seed_receipts')
+        return None
+    if bootstrap_anchor_digest(reference) != expected:
+        raise RuntimeError('bootstrap_reference_differs_from_git_anchor')
+    return expected
 
 
 def env_map(container):
@@ -224,9 +310,9 @@ def prior_bootstrap(prior: dict, baseline_modal: dict, history: dict) -> tuple[s
 
 
 def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, prior: dict, python: str,
-            resume_staged: bool = False, idle_wait=timedelta(minutes=30)) -> dict:
-    global OUT
-    OUT = out
+            resume_staged: bool = False, idle_wait=IDLE_WAIT, publish=None) -> dict:
+    global OUT, PUBLISH
+    OUT, PUBLISH = out, publish
     out.mkdir(parents=True, exist_ok=True)
     packet_path, build_start = build_dir / 'deployment-build-packet.json', build_dir / 'build-start.json'
     failed_stage = load(OUT / 'controller-release.json') if resume_staged else None
@@ -269,8 +355,8 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
     remote = git('ls-remote', 'origin', 'refs/heads/' + packet['branch']).split()
     if len(remote) != 2 or remote[0] != packet['source_sha']:
         raise RuntimeError('source_remote_branch_not_final_head')
-    if not same_tw_day(load(admission_dir / 'baseline.json')['observed_at'], datetime.now(timezone.utc)):
-        raise RuntimeError('admission_baseline_crossed_tw_midnight_readmit')
+    observed_at = load(admission_dir / 'baseline.json')['observed_at']
+    deadline = job_deadline()
     updates = dict(zip(SOURCE_KEYS, (packet['source_sha'], packet['tree'], packet['branch'], packet['scheduler_sha256'])))
     if any(',' in value or '\n' in value for value in updates.values()):
         raise RuntimeError('invalid_source_env_argument')
@@ -278,7 +364,14 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         tree_sha=packet['tree'], source_branch=packet['branch'], scheduler_manifest_sha256=packet['scheduler_sha256'])
     expected_health = dict(sourceSha=packet['source_sha'], sourceTreeSha=packet['tree'],
         sourceBranch=packet['branch'], schedulerManifestSha256=packet['scheduler_sha256'])
-    wait_outside_scaler_windows()
+    wait_outside_scaler_windows(deadline=deadline)
+    if not same_tw_day(observed_at, datetime.now(timezone.utc)):
+        raise RuntimeError('admission_baseline_crossed_tw_midnight_readmit')
+    if deadline is not None:
+        # Shorten the idle wait so the proofs and the whole mutation budget still fit in the job.
+        idle_wait = min(idle_wait, deadline - datetime.now(timezone.utc) - PREPARE_BUDGET - MUTATION_BUDGET)
+        if idle_wait < timedelta(0):
+            raise RuntimeError('job_time_left_below_rollout_budget')
     live = load_environment()
     if live['source_sha'] != (packet['source_sha'] if resume_staged else packet['base_source_sha']):
         raise RuntimeError('live_controller_source_drift')
@@ -404,10 +497,10 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         if not idle:
             return None
         save('expected-runtime.json', expected_inventory)
-        deadline = time.monotonic() + wait.total_seconds()
+        wait_until = time.monotonic() + wait.total_seconds()
         while True:
             result = idle_inspect(OUT / 'expected-runtime.json', source=source, release_sha=packet['source_sha'])
-            if result['idle'] or time.monotonic() >= deadline:
+            if result['idle'] or time.monotonic() >= wait_until:
                 break
             print('Waiting for active work: ' + json.dumps({k: sorted(result[k]) for k in ('busy_functions', 'active_jobs')}), flush=True)
             time.sleep(60)
@@ -468,34 +561,34 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
     bootstrap = values.get('FINLAB_DAILY_HISTORY_BOOTSTRAP_REF', {}).get('value')
     bucket_name = values.get('GCS_BUCKET_NAME', {}).get('value') or os.environ.get('GCS_BUCKET_NAME')
     bootstrap_source = {'kind': 'fresh_live_service_env'}
-    previous_bootstrap = None
-    if not bootstrap:
+    from_receipts = not bootstrap
+    if from_receipts:
         history = ready['modal_history']
-        bootstrap, _, previous_bootstrap = prior_bootstrap(prior, baseline['components']['modal/stockvision-ml'], history)
+        bootstrap, _, _ = prior_bootstrap(prior, baseline['components']['modal/stockvision-ml'], history)
         bootstrap_source = dict(kind='receipt_store_previous_modal_release', modal_version=history['Version'],
                                 source_sha=history['Tag'], receipt_attempt=prior.get('attempt'))
     if not bootstrap or not bucket_name:
         raise RuntimeError('live_bootstrap_or_bucket_missing')
     reference = validate_bootstrap_ref(bootstrap)
+    # The receipt store is writable by runtime service accounts: the reference must match the
+    # git-committed anchor, and the object is always re-hashed in full (no generation shortcut).
+    anchor = require_bootstrap_anchor(source, reference, required=from_receipts)
     blob_meta = json.loads(gc('storage', 'objects', 'describe', 'gs://' + bucket_name + '/' + reference['path'], '--format=json'))
     generation = str(blob_meta.get('generation', ''))
     if not generation.isdigit():
         raise RuntimeError('bootstrap_generation_missing')
-    if previous_bootstrap and previous_bootstrap['reference'] == reference and str(previous_bootstrap['generation']) == generation:
-        verification = dict(previous_bootstrap, verification='fresh same immutable generation; reuse prior SHA256 proof')
-    else:
-        stream = subprocess.Popen([GC, 'storage', 'cat', 'gs://' + bucket_name + '/' + reference['path'] + '#' + generation,
-                                   '--project=' + PROJECT], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        digest, size = hashlib.sha256(), 0
-        while chunk := stream.stdout.read(8 * 1024 * 1024):
-            digest.update(chunk)
-            size += len(chunk)
-        stream.communicate(timeout=60)
-        if stream.returncode != 0 or digest.hexdigest() != reference['sha256']:
-            raise RuntimeError('live_bootstrap_checksum_mismatch')
-        verification = dict(reference=reference, generation=generation, bytes=size, status='PASS',
-                            verification='fresh full SHA256 read')
-    save('bootstrap-verification.json', dict(verification, raw_ref=bootstrap, source=bootstrap_source))
+    stream = subprocess.Popen([GC, 'storage', 'cat', 'gs://' + bucket_name + '/' + reference['path'] + '#' + generation,
+                               '--project=' + PROJECT], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    digest, size = hashlib.sha256(), 0
+    while chunk := stream.stdout.read(8 * 1024 * 1024):
+        digest.update(chunk)
+        size += len(chunk)
+    stream.communicate(timeout=60)
+    if stream.returncode != 0 or digest.hexdigest() != reference['sha256']:
+        raise RuntimeError('live_bootstrap_checksum_mismatch')
+    verification = dict(reference=reference, generation=generation, bytes=size, status='PASS',
+                        verification='fresh full SHA256 read', git_anchor=anchor)
+    save('bootstrap-verification.json', dict(verification, raw_ref=bootstrap, source=bootstrap_source), durable=True)
     policy = json.loads(gc('storage', 'buckets', 'get-iam-policy', 'gs://' + bucket_name, '--format=json'))
     runtime_sa = before['spec']['template']['spec'].get('serviceAccountName')
     if not runtime_sa or not any(row.get('role') == 'roles/storage.objectAdmin' and not row.get('condition')
@@ -511,8 +604,10 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
             source={k: row.get('value') for k, row in env_map(container(value, 'job')).items() if k in SOURCE_KEYS},
             spec_sha256=sha(json.dumps(value['spec'], sort_keys=True).encode())) for name, value in jobs_before.items()},
         modal_history=ready['modal_history'], modal_provenance=baseline['components']['modal/stockvision-ml'])
-    save('rollback.json', rollback)
+    save('rollback.json', rollback, durable=True)
     boundary('before-grant')
+    mutation_gate(datetime.now(timezone.utc), observed_at=observed_at, deadline=deadline, release_sha=packet['source_sha'],
+                  remote_sha=(git('ls-remote', 'origin', 'refs/heads/' + packet['branch']).split() or [''])[0])
 
     def kv_put(key, value, label):
         url = ('https://api.cloudflare.com/client/v4/accounts/' + os.environ['CF_ACCOUNT_ID']
@@ -569,7 +664,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
             raise RuntimeError('prior_stage_receipt_already_archived_reconcile')
         archive.write_bytes((OUT / 'controller-release.json').read_bytes())
         receipt['resumed_existing_staged_revision'] = True
-    save('controller-release.json', receipt)
+    save('controller-release.json', receipt, durable=True)
     staged_snapshot = None
     job_snapshots, attempted_jobs = {}, []
     modal_attempted = False
@@ -614,7 +709,8 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
             raise RuntimeError('modal_deploy_failed')
         modal_wait(expected_modal)
         save('modal-release.json', dict(status='verified', provenance=expected_modal, bootstrap_preserved=True,
-                                        verification_method='fresh_exact_deployment_provenance', completed_at=now()))
+                                        verification_method='fresh_exact_deployment_provenance', completed_at=now()),
+             durable=True)
         accept_own_change({'modal/stockvision-ml'})
         # These independent templates share identical source-only updates.
         # Retain fresh batch boundaries and complete per-template comparisons.
@@ -664,14 +760,14 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         save('runtime-after.json', expected_inventory)
         receipt.update(status='verified', completed_at=now(), paper_runtime='PASS', native_owner=packet['native_owner'],
                        configuration_changed=False, bootstrap_preserved=True, jobs=list(JOBS))
-        save('controller-release.json', receipt)
+        save('controller-release.json', receipt, durable=True, strict=False)
         return {key: receipt[key] for key in ('status', 'source_sha', 'revision', 'image', 'chain_dispatched')}
     except BaseException as error:
         # Never clobber a concurrent owner. Reconcile ambiguous CLI completion
         # by comparing its complete expected source-only result before rollback.
         errors, reverted = [], []
         receipt.update(status='failed', failed_at=now(), error_type=type(error).__name__, error=str(error)[:300])
-        save('controller-release.json', receipt)
+        save('controller-release.json', receipt, durable=True, strict=False)
         try:
             current = service()
             if configuration(current, 'service') != configuration(before, 'service'):
@@ -755,5 +851,5 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
             errors.append(dict(component='service-template', error_type=type(exc).__name__, reason=str(exc)[:160]))
         receipt.update(rollback_status='requires_reconciliation' if errors else 'verified', reverted=reverted,
                        rollback_errors=errors, new_source_grant_retained=grant_staged, prior_grant_unchanged=True)
-        save('controller-release.json', receipt)
+        save('controller-release.json', receipt, durable=True, strict=False)
         raise RuntimeError('controller_modal_release_failed_see_receipt') from None

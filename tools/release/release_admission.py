@@ -16,12 +16,14 @@ live release made before receipts existed.
 """
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import subprocess
 import sys
@@ -36,6 +38,11 @@ SOURCE_ENV = ('STOCKVISION_SOURCE_SHA', 'STOCKVISION_SOURCE_TREE_SHA',
 MANIFESTS = ('native_execution_behavior_release.json', 'strategy_nav_source_release.json')
 MANIFEST_PATHS = tuple('ml-controller/services/' + name for name in MANIFESTS)
 GRANT_PREFIX = 'ml:active8:paper_runtime_approval:v1:'
+# native_execution_identity() inputs besides its pipeline members (see new_grant's old_parts).
+NATIVE_HOST = 'ml-controller/services/native_paper_sandbox.py'
+NATIVE_RESCORE = 'ml-controller/routers/intraday.py'
+NATIVE_ENTRY = 'worker/src/node-runner/nativePaperJobMain.ts'  # Dockerfile esbuild entry
+NATIVE_RUNNER_DIR = 'worker/src/node-runner/'
 
 
 def sha(raw: bytes) -> str:
@@ -118,14 +125,119 @@ def source_identities(source: Path, python: str = sys.executable) -> dict:
     return json.loads(result.stdout)
 
 
+def native_pipeline_members(native_source: str) -> list[str]:
+    """The `pipeline` file names native_execution_identity() hashes, read from its source."""
+    for node in ast.walk(ast.parse(native_source)):
+        if isinstance(node, ast.FunctionDef) and node.name == 'native_execution_identity':
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Tuple) and len(inner.elts) > 5 and all(
+                        isinstance(e, ast.Constant) and isinstance(e.value, str) and e.value.endswith('.py')
+                        for e in inner.elts):
+                    return [e.value for e in inner.elts]
+    raise RuntimeError('native_pipeline_members_not_found')
+
+
+class GitBlobs:
+    """`git cat-file --batch` reader: rev:path -> bytes, or None when the path does not exist."""
+
+    def __init__(self, source: Path):
+        self.process = subprocess.Popen(['git', '-C', str(source), 'cat-file', '--batch'],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
+    def read(self, rev: str, path: str) -> bytes | None:
+        self.process.stdin.write(f'{rev}:{path}\n'.encode('utf-8'))
+        self.process.stdin.flush()
+        header = self.process.stdout.readline().decode('utf-8').split()
+        if len(header) != 3:
+            return None  # "<rev>:<path> missing"
+        raw = self.process.stdout.read(int(header[2]))
+        self.process.stdout.read(1)
+        return raw if header[1] == 'blob' else None
+
+    def close(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=30)
+
+
+_TS_COMMENT = re.compile(r'/\*.*?\*/|(?<![:\w"\'`])//[^\n]*', re.S)
+_TS_FROM = re.compile(r'\b(?:import|export)\s+(type\s+)?[\w$*{}\s,]*?\bfrom\s*[\'"]([^\'"]+)[\'"]', re.S)
+_TS_SIDE_EFFECT = re.compile(r'\bimport\s*[\'"]([^\'"]+)[\'"]')
+_TS_CALL = re.compile(r'\b(?:require|import)\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)')
+
+
+def ts_relative_imports(text: str) -> list[str]:
+    """Relative module specifiers a bundler follows (type-only imports are erased)."""
+    text = _TS_COMMENT.sub('', text)
+    specs = [m.group(2) for m in _TS_FROM.finditer(text) if not m.group(1)]
+    specs += _TS_SIDE_EFFECT.findall(text) + _TS_CALL.findall(text)
+    return [s for s in specs if s.startswith('.')]
+
+
+def ts_closure(read, entry: str) -> set[str]:
+    """Files reachable from entry over relative imports (superset of the esbuild inputs). An
+    import that resolves to no file fails closed."""
+    seen, queue = set(), [entry]
+    while queue:
+        path = queue.pop()
+        if path in seen:
+            continue
+        raw = read(path)
+        if raw is None:
+            raise RuntimeError('native_bundle_input_missing:' + path)
+        seen.add(path)
+        for spec in ts_relative_imports(raw.decode('utf-8')):
+            base = posixpath.normpath(posixpath.join(posixpath.dirname(path), spec))
+            stem = base[:-3] if base.endswith('.js') else base
+            for candidate in (base, stem + '.ts', stem + '.tsx', base + '.ts', base + '.js', base + '/index.ts', base + '/index.js'):
+                if candidate in seen or read(candidate) is not None:
+                    queue.append(candidate)
+                    break
+            else:
+                raise RuntimeError(f'native_bundle_import_unresolved:{path}:{spec}')
+    return seen
+
+
+def native_identity_inputs(blobs: GitBlobs, rev: str, bundle: bool) -> set[str]:
+    """Repo paths native_execution_identity() hashes at rev (the inputs of the identity delta in
+    new_grant): private host, rescore router, pipeline members and, with bundle, the native
+    Paper bundle's source graph."""
+    host = blobs.read(rev, NATIVE_HOST)
+    if host is None:
+        raise RuntimeError('native_host_missing:' + rev)
+    inputs = {NATIVE_HOST, NATIVE_RESCORE}
+    inputs |= {'ml-controller/services/' + name for name in native_pipeline_members(host.decode('utf-8'))}
+    if bundle:
+        inputs |= ts_closure(lambda path: blobs.read(rev, path), NATIVE_ENTRY)
+    return inputs
+
+
+def native_identity_changes(source: Path, live_sha: str, head: str) -> list[str]:
+    changed = git(source, 'diff', '--name-only', live_sha, head).splitlines()
+    bundle = any(path.startswith('worker/src/') for path in changed)
+    blobs = GitBlobs(source)
+    try:
+        inputs = native_identity_inputs(blobs, live_sha, bundle) | native_identity_inputs(blobs, head, bundle)
+    finally:
+        blobs.close()
+    return sorted(path for path in changed if path in inputs or path.startswith(NATIVE_RUNNER_DIR))
+
+
 def classify(source: Path, live_sha: str, head: str, identities: dict | None = None) -> dict:
-    """reuse when the release keeps the live grant valid; otherwise new-grant with the reasons."""
+    """reuse when the release keeps the live grant valid; otherwise new-grant with the reasons.
+    identities=None computes the allocator / L3 identities (needs the ml-controller requirements);
+    'checked' means the CD plan job already compared them at this commit (the deploy job holding
+    the OIDC token installs no controller requirements)."""
     reasons = []
     for path in MANIFEST_PATHS:
         if git(source, 'show', f'{live_sha}:{path}', raw=True) != git(source, 'show', f'{head}:{path}', raw=True):
             reasons.append('release_manifest_repinned:' + path.rsplit('/', 1)[1])
+    native = native_identity_changes(source, live_sha, head)
+    if native:
+        reasons.append('native_identity_inputs_changed:' + ','.join(native[:8]) + (',...' if len(native) > 8 else ''))
     approved = json.loads(git(source, 'show', f'{head}:{MANIFEST_PATHS[1]}', raw=True))['approved_sources']
-    if identities is None:
+    if identities == 'checked':
+        identities = approved
+    elif identities is None:
         identities = source_identities(source)
     for name in ('allocator_source_identity', 'l3_inference_source_identity'):
         if identities.get(name) != approved.get(name):
@@ -148,7 +260,8 @@ def require_clean_pushed_head(source: Path, branch_ref: str | None) -> str:
     return head
 
 
-def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str | None = None) -> dict:
+def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str | None = None,
+          identities: dict | str | None = None) -> dict:
     """Read-only admission for a release that keeps the live Paper grant."""
     branch = git(source, 'branch', '--show-current')
     head = require_clean_pushed_head(source, 'refs/heads/' + branch if branch else None)
@@ -157,7 +270,7 @@ def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str |
     if subprocess.run(['git', '-C', str(source), 'merge-base', '--is-ancestor', expected_live, head]).returncode != 0:
         raise RuntimeError('live_source_not_ancestor_of_release')
     baseline = runtime_baseline(source, expected_live)
-    decision = classify(source, expected_live, head)
+    decision = classify(source, expected_live, head, identities)
     if decision['mode'] != 'reuse':
         raise RuntimeError('identity_changing_release_requires_manual_new_grant:' + ';'.join(decision['reasons']))
     if not decision['grant_key'] or not decision['grant_key'].startswith(GRANT_PREFIX):
@@ -170,6 +283,7 @@ def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str |
                    native_owner=decision['native_owner'], native_bundle_sha256=None, native_receipt_sha=native_receipt_sha,
                    manifest_sha256={name: sha(raw) for name, raw in services.items()},
                    production_baseline_source=expected_live, production_baseline_image=baseline['image'],
+                   source_identities_checked_by='plan_job' if identities == 'checked' else 'admission',
                    policy_keys=[], cloud_writes=0, kv_reads=0, models_invoked=0, chain_dispatched=False)
     save(out / 'admission-receipt.json', receipt)
     return receipt

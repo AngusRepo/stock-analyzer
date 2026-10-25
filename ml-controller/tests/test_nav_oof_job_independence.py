@@ -165,6 +165,18 @@ def test_invalid_or_future_nav_cutoff_performs_no_storage_io(monkeypatch, day, p
     assert result['error_type'] == 'ValueError'
 
 
+@pytest.mark.parametrize('day', ['2099-01-01', 'not-a-date'])
+def test_invalid_nav_cutoff_skips_receipt_reuse_io(monkeypatch, day):
+    from services import d1_domain_client, walk_forward_retrain
+    monkeypatch.setattr(d1_domain_client, 'client_for_domain',
+        lambda *a: pytest.fail('date must be checked before D1 I/O'))
+    monkeypatch.setattr(walk_forward_retrain, '_get_bucket',
+        lambda: pytest.fail('date must be checked before receipt storage I/O'))
+    result = job._execute_daily_nav(end_date=day, retire_legacy_owners=True, publish_strategy_display=True)
+    assert result['status'] == 'failed' and result['error_type'] == 'ValueError'
+    assert 'strategy_nav_read_model' not in result
+
+
 @pytest.mark.parametrize('cached', [False, True])
 def test_display_publication_also_runs_after_accounting_receipt_reuse(monkeypatch, cached):
     from services import strategy_nav_read_model as display, daily_nav_read_receipt as receipts

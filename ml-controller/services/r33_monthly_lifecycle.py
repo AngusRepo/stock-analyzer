@@ -267,8 +267,12 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
         bundle, bundle_checksum = _read(bundle_blob)
     else:
         data = inputs()
+        # A15: the isotonic minimum block weight is a declared contract parameter. Its single
+        # owner is r33_calibration_job.MIN_BLOCK_DAYS (the OOF checks' crossfit reads the same).
+        min_block_days = float(r33_calibration_job.MIN_BLOCK_DAYS)
         calibration = r33_calibration_job.fit_calibration(
             oof=data["oof"], pool_by_date=data["pool"], round_trip_cost=ROUND_TRIP_COST,
+            min_block_weight=min_block_days,
             inputs={"cohort_id": cohort_id, "manifest_checksum": manifest["manifest_checksum"],
                     "oof_checks_checksum": checks_checksum, "pool": data["pool_receipt"],
                     "prices": data["price_receipt"]})
@@ -279,6 +283,9 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
             "mature_max_date": signal_date_max,
             "training_run_id": registry["training_run_id"], "promotion_decision": PROMOTION_DECISION,
             "artifacts": registry["artifacts"], "calibration": calibration, "oof_checks": checks,
+            "calibration_contract": {"min_block_days": min_block_days,
+                                     "owner": "services.r33_calibration_job.MIN_BLOCK_DAYS",
+                                     "round_trip_cost": ROUND_TRIP_COST},
             "serving_pointer_changed": False})
     if (bundle.get("schema_version") != BUNDLE_SCHEMA or bundle.get("manifest_checksum") != manifest["manifest_checksum"]
             or bundle.get("artifacts") != registry["artifacts"]

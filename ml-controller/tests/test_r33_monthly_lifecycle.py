@@ -196,7 +196,8 @@ def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None):
         seen_oof["frame"] = kwargs["oof"]
         return {"status": checks_status}
     monkeypatch.setattr(r33_oof_checks, "run_checks", checks)
-    monkeypatch.setattr(r33_calibration_job, "fit_calibration", lambda **kw: {"schema": "cal", "cost": kw["round_trip_cost"]})
+    monkeypatch.setattr(r33_calibration_job, "fit_calibration",
+                        lambda **kw: {"schema": "cal", "cost": kw["round_trip_cost"], "min_block_weight": kw["min_block_weight"]})
 
     async def dispatch(**kwargs):
         calls["dispatch"].append(kwargs)
@@ -244,6 +245,7 @@ def test_passing_checks_seal_a_candidate_bundle(monkeypatch):
     assert calls["dispatch"][0]["candidate_only"] is True and calls["dispatch"][0]["allow_new_dispatch"] is True
     bundle = json.loads(bucket.store["r33/monthly_candidates/c-r33/bundle.json"])
     assert bundle["status"] == "sealed" and bundle["calibration"]["cost"] == ROUND_TRIP_COST
+    assert bundle["calibration"]["min_block_weight"] == bundle["calibration_contract"]["min_block_days"] == 1.0
     assert bundle["artifacts"] == artifacts and bundle["serving_pointer_changed"] is False
     assert bundle["full_fit_signal_date_max"] == bundle["mature_max_date"] == "2026-10-23"
     assert result["r33_candidate_bundle"]["checksum"] == hashlib.sha256(bucket.store["r33/monthly_candidates/c-r33/bundle.json"]).hexdigest()

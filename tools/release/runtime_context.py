@@ -3,9 +3,11 @@
 Two credential sources:
 - local (an operator's gcloud login): secrets come from the ml-controller service env, as the
   audits/pipeline-nightly-20261013 original did.
-- CD (GITHUB_ACTIONS=true, deploy SA via WIF): only the named secrets the deploy SA may read
-  (see output/herdr-handoff-20261018/cicd-phase-e-20261024/e1_wif_setup.ps1). The controller's
-  own Cloudflare token is never read; Cloudflare calls use the deploy-scoped token.
+- CD (GITHUB_ACTIONS=true, stockvision-cd-deployer via WIF from deploy-controller.yml): only the
+  four named secrets that SA may read (output/herdr-handoff-20261018/cicd-phase-e-20261024/
+  e1_wif_setup.ps1). No Cloudflare token at all: since the 10/25 two-SA split only
+  stockvision-cd-cloudflare can read one, so kv_get() fails closed here and controller CD never
+  reads or writes KV.
 Plain (non-secret) values always come from the live ml-controller service env.
 """
 from __future__ import annotations
@@ -22,9 +24,11 @@ SERVICE = 'ml-controller'
 # shutil.which applies PATHEXT on Windows, so this finds gcloud.cmd there and gcloud on Linux.
 GC = shutil.which('gcloud')
 CD_SECRETS = {
-    'CF_API_TOKEN': 'stockvision-cd-cf-deploy-token',
     'ML_CONTROLLER_SECRET': 'stockvision-ml-controller-secret',
     'STOCKVISION_AUTH_TOKEN': 'stockvision-stockvision-auth-token',
+    # Read by the modal client and `python -m modal` from the environment.
+    'MODAL_TOKEN_ID': 'stockvision-cd-modal-token-id',
+    'MODAL_TOKEN_SECRET': 'stockvision-cd-modal-token-secret',
 }
 PLAIN = {'CF_ACCOUNT_ID', 'CF_KV_NAMESPACE_ID', 'STOCKVISION_WORKER_URL', 'GCS_BUCKET_NAME'}
 LOCAL_SECRETS = {'CF_API_TOKEN', 'STOCKVISION_AUTH_TOKEN', 'ML_CONTROLLER_SECRET'}
@@ -57,7 +61,10 @@ def load_environment() -> dict:
             os.environ[name] = item['value']
     if in_cd():
         for name, secret_name in CD_SECRETS.items():
-            os.environ[name] = secret(secret_name)
+            value = secret(secret_name)
+            # Not a GitHub secret, so the runner does not know to redact it unless told.
+            print('::add-mask::' + value, flush=True)
+            os.environ[name] = value
     else:
         for name in LOCAL_SECRETS | plain:
             item = values.get(name)
@@ -85,8 +92,14 @@ def worker(path: str, *, method: str = 'GET', body=None) -> dict:
                    headers={'Authorization': 'Bearer ' + os.environ['STOCKVISION_AUTH_TOKEN']})
 
 
+def kv_available() -> bool:
+    return bool(os.environ.get('CF_API_TOKEN')) and not in_cd()
+
+
 def kv_get(key: str) -> dict:
     from urllib.parse import quote
+    if not kv_available():
+        raise RuntimeError('kv_unavailable_in_controller_cd_use_manual_release')
     base = 'https://api.cloudflare.com/client/v4/accounts/' + os.environ['CF_ACCOUNT_ID']
     return request(base + '/storage/kv/namespaces/' + os.environ['CF_KV_NAMESPACE_ID'] + '/values/' + quote(key, safe=''),
                    headers={'Authorization': 'Bearer ' + os.environ['CF_API_TOKEN']})

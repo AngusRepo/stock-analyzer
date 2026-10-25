@@ -1,0 +1,175 @@
+name: deploy-controller
+
+# Production CD for ml-controller, its release Cloud Run Jobs and the Modal app stockvision-ml at
+# one SHA (E-4b; tools/release/release.py). Runs only on main, only when the controller image or
+# Modal inputs changed since the LIVE controller source (/health), only after every pushed main
+# commit since then passed its ci `gate`, and only once Wei approves the `production` environment.
+# GCP access is Workload Identity Federation to stockvision-cd-deployer, which the WIF binding
+# grants to this file on main only (e1_wif_setup.ps1); it can read no Cloudflare token, so this
+# workflow never reads or writes KV.
+# Identity-changing releases (new Paper grant: native identity, policy chain or allocator / L3
+# sources) fail closed in `plan`, before any approval request; they use the manual release.
+# Inert until the repository variable CD_CONTROLLER_ENABLED is 'true'.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: dry-run = read-only admission + build packet, no Cloud Build and no deploy; deploy = full release
+        type: choice
+        options: [dry-run, deploy]
+        default: dry-run
+      units:
+        description: changed = only if controller/Modal inputs differ from live; controller = even if not
+        type: choice
+        options: [changed, controller]
+        default: changed
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# Shared with deploy-cloudflare.yml: one production deploy at a time, a newer run waits instead of
+# cancelling a running one. A pending run it replaces loses nothing: the diff base is what is live.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: vars.CD_CONTROLLER_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 160
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      controller: ${{ steps.units.outputs.controller }}
+      live_sha: ${{ steps.units.outputs.live_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select units
+        id: units
+        env:
+          CHOICE: ${{ github.event_name == 'workflow_dispatch' && inputs.units || 'changed' }}
+        run: python3 tools/release/release.py plan --choice "$CHOICE" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.units.outputs.controller == 'true'
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            ml-controller/requirements.txt
+            ml-controller/constraints.txt
+      - name: Install controller requirements
+        if: steps.units.outputs.controller == 'true'
+        run: |
+          set -e
+          # The allocator / L3 source identity is computed by importing ml-controller services.
+          python -m pip install -r ml-controller/requirements.txt -c ml-controller/constraints.txt
+      - name: Refuse identity-changing releases
+        if: steps.units.outputs.controller == 'true'
+        env:
+          LIVE: ${{ steps.units.outputs.live_sha }}
+        run: |
+          set -e
+          # A new Paper grant must be staged in KV under Wei's authorization text: manual release only.
+          python tools/release/release.py classify --live "$LIVE" | tee "$RUNNER_TEMP/identity"
+          grep -qx 'identity=reuse' "$RUNNER_TEMP/identity"
+      - name: Require ci gate on every pushed commit since live
+        if: steps.units.outputs.controller == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ steps.units.outputs.gate_base }}
+        run: python3 tools/deploy_units.py gate --base "$BASE"
+
+  controller:
+    needs: plan
+    if: needs.plan.outputs.controller == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    # Cloud Build waits up to 45 min (8m20s measured); the rollout waits up to 30 min for idle and
+    # up to 75 min for a scaler window to pass.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      LIVE: ${{ needs.plan.outputs.live_sha }}
+      MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'deploy' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Still the main tip
+        id: tip
+        run: |
+          set -e
+          # Approval can come long after the plan; a newer main is that run's to deploy.
+          remote="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$remote" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::main moved to $remote; nothing deployed by this run"; echo "current=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.tip.outputs.current == 'true'
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            ml-controller/requirements.txt
+            ml-controller/constraints.txt
+      - name: Install controller requirements
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          set -e
+          # Same pins as the image: modal (Modal deploy), httpx, and the services classify imports.
+          python -m pip install -r ml-controller/requirements.txt -c ml-controller/constraints.txt
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: steps.tip.outputs.current == 'true'
+        with:
+          workload_identity_provider: projects/530028717113/locations/global/workloadIdentityPools/github-stock-analyzer/providers/production-deploy
+          service_account: stockvision-cd-deployer@gen-lang-client-0602998820.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        if: steps.tip.outputs.current == 'true'
+      # Each stage re-checks a clean, pushed HEAD and the live baseline; receipts go to
+      # gs://stockvision-models/release-receipts/<sha>/ (never to logs or artifacts: public repo).
+      - name: Admission (read-only)
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/release"
+          publish=--publish; [ "$MODE" = deploy ] || publish=--no-publish
+          python tools/release/release.py admission --expected-live-source "$LIVE" --out "$OUT" $publish
+      - name: Build
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/release"
+          # dry-run stops at the prepared packet: no Cloud Build.
+          if [ "$MODE" = deploy ]; then
+            python tools/release/release.py build --expected-live-source "$LIVE" --out "$OUT" --publish --submit --wait
+          else
+            python tools/release/release.py build --expected-live-source "$LIVE" --out "$OUT" --no-publish
+          fi
+      - name: Rollout (controller no-traffic -> paper admission -> Modal -> jobs -> traffic)
+        if: steps.tip.outputs.current == 'true' && env.MODE == 'deploy'
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/release"
+          # Main may have moved during the build; the new run deploys that commit instead.
+          [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" ] || { echo "::notice::main moved; not rolling out"; exit 0; }
+          python tools/release/release.py rollout --out "$OUT" --publish
+      - name: Verify
+        if: steps.tip.outputs.current == 'true' && env.MODE == 'deploy'
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/release"
+          if [ ! -f "$OUT/rollout/controller-release.json" ]; then echo "no rollout in this run"; exit 0; fi
+          python tools/release/release.py verify --out "$OUT" --publish

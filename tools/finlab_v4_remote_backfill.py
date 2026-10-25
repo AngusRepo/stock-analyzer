@@ -707,6 +707,10 @@ TRAINING_AUX_FIELDS = {
     "fundamental_factor_diversity": {"eps":"eps", "roe":"roe", "pe":"pe", "pb":"pb",
         "dividend_yield":"dividend_yield", "revenue_growth_yoy":"revenue_growth_yoy"},
 }
+# Training (training_auxiliary_full_vintage) and serving (canonical_fundamental_features /
+# daily composition) consume only these fundamental fields; the other ~60 lane fields
+# feed neither, so a training capture need not fetch or gate them.
+FUNDAMENTAL_TRAINING_KEY_SCOPE = {"fundamental_factor_diversity": set(TRAINING_AUX_FIELDS["fundamental_factor_diversity"])}
 
 def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None, requested_fields=None):
     """Preserve full vendor windows before daily-tail materialization clips them."""
@@ -3950,6 +3954,8 @@ def main() -> int:
     parser.add_argument("--canonical-dry-run", action="store_true")
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
     parser.add_argument("--key-scope-json", default="", help="JSON object/list limiting data.get calls to lane fields.")
+    parser.add_argument("--fundamental-training-fields-only", action="store_true",
+                        help="Limit fundamental_factor_diversity to the fields training/serving consume.")
     parser.add_argument("--reuse-successful-artifacts", action="store_true", help="Allow materializer repair to reuse previous successful key artifacts.")
     parser.add_argument("--sealed-raw-root", default="", help="Explicit sealed daily numeric capture; no SDK fallback.")
     parser.add_argument("--sealed-raw-receipt-sha256", default="", help="Exact SHA256 of the sealed capture.json.")
@@ -3987,6 +3993,11 @@ def main() -> int:
     requested_lanes = parse_lanes(args.lanes)
     if key_scope and not requested_lanes:
         requested_lanes = sorted(key_scope)
+    if args.fundamental_training_fields_only:
+        if "fundamental_factor_diversity" in key_scope:
+            raise SystemExit("fundamental_training_fields_only_conflicts_with_key_scope_json")
+        if not requested_lanes or "fundamental_factor_diversity" in requested_lanes:
+            key_scope = {**key_scope, **FUNDAMENTAL_TRAINING_KEY_SCOPE}
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
     effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())

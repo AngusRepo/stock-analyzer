@@ -118,6 +118,7 @@ $env:FINLAB_API_KEY = (gcloud secrets versions access latest --secret=finlab-api
 & $py tools\finlab_v4_remote_backfill.py --years 3 --run-id finlab-v4-3y-r33trial-20261028 `
   --gcs-bucket stockvision-models --gcs-prefix finlab/v4/backfill `
   --lanes daily_price,chip_diversity,revenue,fundamental_factor_diversity,training_shareholding,broker_flow_diversity `
+  --fundamental-training-fields-only `
   --source-start-date 2020-05-04 --training-capture-start-date 2020-05-04 --source-end-date 2026-10-28
 Remove-Item Env:FINLAB_API_KEY
 ```
@@ -128,6 +129,7 @@ $env:FINLAB_API_KEY = (gcloud secrets versions access latest --secret=finlab-api
 & $py tools\finlab_v4_remote_backfill.py --years 3 --run-id finlab-v4-3y-r33full-20261030 `
   --gcs-bucket stockvision-models --gcs-prefix finlab/v4/backfill `
   --lanes daily_price,chip_diversity,revenue,fundamental_factor_diversity,training_shareholding,broker_flow_diversity `
+  --fundamental-training-fields-only `
   --source-start-date 2020-05-04 --training-capture-start-date 2020-05-04 --source-end-date 2026-10-30
 Remove-Item Env:FINLAB_API_KEY
 ```
@@ -142,6 +144,7 @@ Remove-Item Env:FINLAB_API_KEY
 - **run-id 必須包含 `-3y-`**：controller 的 sequence-refresh 只接受 run-id 含 `-3y-` 或 `-daily-` 的 run（`ml-controller/routers/finlab.py:282-283`）。
 - **`--gcs-prefix finlab/v4/backfill`**：capture 會落在 `gs://stockvision-models/finlab/v4/backfill/<run_id>/`，正是 sequence-refresh 讀取的位置（`routers/finlab.py:242-243`、`:320`）。
 - **`--years 3`**：只影響 holding 和 canonical broker 的 window。training 不需要這兩者的長歷史。
+- **`--fundamental-training-fields-only`**：`fundamental_factor_diversity` 只抓 training／serving 實際用到的 6 個欄位（eps、roe、pe、pb、dividend_yield、revenue_growth_yoy）。其餘約 60 個 financial 欄位 training 和 serving 都不讀，不抓也不跑 gate（例如 `營業費用率` 的 vendor ±inf）。
 - **financial 日期 gate（live SDK + `--training-capture-start-date`）**：
   - financial 欄位只檢查 window 內有收盤價的 symbol（price universe）。2013–2018 已下市、window 內沒有價格的 symbol 不進 gate。
   - 舊季度缺日期，但同 symbol 在起日前已有更新季度可用時才 omit（`scope_financial_history` 既有規則）。

@@ -1200,3 +1200,30 @@ def test_d1_counts_unchanged_when_credentials_exist(monkeypatch):
     monkeypatch.setattr(tool, "market_d1_query", lambda sql, params: [{"n": 7}])
     counts = tool.d1_counts("2023-10-25")
     assert counts["daily_price"] == 7 and tool.D1_UNAVAILABLE_SKIPS == []
+
+
+def test_fundamental_training_fields_only_requests_consumed_fields(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    lanes = "daily_price,chip_diversity,fundamental_factor_diversity"
+    _no_d1_env(monkeypatch, tmp_path, "--lanes", lanes, "--fundamental-training-fields-only")
+    seen = {}
+
+    def materialize(**kwargs):
+        seen.update(kwargs)
+        return [], [], [], []
+
+    monkeypatch.setattr(tool, "materialize_specs", materialize)
+    assert tool.main() == 0
+    assert seen["key_scope"] == {"fundamental_factor_diversity": {"eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy"}}
+    spec = next(s for s in tool.CORE_SPECS if s.lane == "fundamental_factor_diversity")
+    keys = set(tool.spec_keys_for_scope(spec, seen["key_scope"]).values())
+    financial = {k for k in keys if k.startswith(tool.PIT_DEADLINE_NAMESPACES)}
+    assert financial == {"fundamental_features:每股稅後淨利", "fundamental_features:ROE稅後", "fundamental_features:營收成長率"}
+    assert "fundamental_features:營業費用率" not in keys  # unconsumed ratio with vendor inf is never fetched
+    other = next(s for s in tool.CORE_SPECS if s.lane == "chip_diversity")
+    assert tool.spec_keys_for_scope(other, seen["key_scope"]) == dict(other.keys)  # other lanes unchanged
+
+    _no_d1_env(monkeypatch, tmp_path, "--lanes", lanes, "--fundamental-training-fields-only",
+               "--key-scope-json", '{"fundamental_factor_diversity":["eps"]}')
+    with pytest.raises(SystemExit, match="fundamental_training_fields_only_conflicts_with_key_scope_json"):
+        tool.main()

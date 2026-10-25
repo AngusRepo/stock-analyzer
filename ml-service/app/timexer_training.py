@@ -4,26 +4,43 @@ Only explicit training jobs call this module. Inference never fits a model.
 Window tensors are generated lazily to bound RAM for 137-channel histories.
 """
 from pathlib import Path
+import gc
 import json
+import multiprocessing
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from .timexer_runtime import official_model, validate_settings, SCORE_SEMANTIC
 
 TRAINING_SETTINGS = {"epochs": 10, "learning_rate": 0.0001, "batch_size": 64, "seed": 42}
+# The cpu=8 container used one core: window building ran serially between GPU steps.
+LOADER_WORKERS = 4
+
+
+def _freeze_inherited_objects(_worker_id):
+    gc.freeze()  # a forked worker's GC pass must not copy the parent's row dicts
+
+
+def loader_options(device):
+    """Non-persistent forked workers: same sampler RNG draws, so every batch is unchanged."""
+    if device != 'cuda' or 'fork' not in multiprocessing.get_all_start_methods():
+        return {'num_workers': 0, 'pin_memory': device == 'cuda'}
+    return {'num_workers': LOADER_WORKERS, 'multiprocessing_context': 'fork', 'pin_memory': True,
+            'worker_init_fn': _freeze_inherited_objects}
 
 
 class Windows(Dataset):
     def __init__(self, series, rows, exogenous, length=168):
-        self.series, self.rows, self.exogenous, self.length = series, rows, exogenous, length
+        # Compact (series, end) index: workers never touch the row dicts.
+        self.index = np.asarray([(r['series'], r['end']) for r in rows], dtype=np.int64).reshape(-1, 2)
+        self.series, self.exogenous, self.length = series, exogenous, length
 
     def __len__(self):
-        return len(self.rows)
+        return len(self.index)
 
     def __getitem__(self, index):
-        row = self.rows[index]
-        source = self.series[row['series']]
-        end, fend = row['end'], row['feature_end']
+        series_index, end = (int(v) for v in self.index[index])
+        source = self.series[series_index]
         prices = source['close'][end - self.length + 1:end + 1]
         mean, scale = float(prices.mean()), float(prices.std()) + 1e-4
         price = ((prices - mean) / scale).reshape(-1, 1)
@@ -163,17 +180,17 @@ def train(job, inputs, *, device="cuda", full_fit=False):
         model = official_model(settings, exogenous).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=settings['learning_rate'])
         loader = DataLoader(Windows(series, fit_rows, exogenous), batch_size=settings['batch_size'],
-                            shuffle=True, num_workers=0, pin_memory=device == 'cuda')
+                            shuffle=True, **loader_options(device))
         validation_loader = DataLoader(Windows(series, validation, exogenous), batch_size=settings['batch_size'],
-                                       shuffle=False, num_workers=0) if validation else None
+                                       shuffle=False, **loader_options(device)) if validation else None
         best, selected, stale, history = float('inf'), 0, 0, []
         for epoch in range(1, epochs + 1):
             model.train()
             total, count = 0.0, 0
             for x, y, _, _ in loader:
                 optimizer.zero_grad(set_to_none=True)
-                forecast = model(x.to(device), None, None, None).squeeze(-1)
-                loss = torch.nn.functional.mse_loss(forecast, y.to(device))
+                forecast = model(x.to(device, non_blocking=True), None, None, None).squeeze(-1)
+                loss = torch.nn.functional.mse_loss(forecast, y.to(device, non_blocking=True))
                 if not torch.isfinite(loss):
                     raise ValueError('nonfinite_timexer_loss')
                 loss.backward()
@@ -187,8 +204,9 @@ def train(job, inputs, *, device="cuda", full_fit=False):
                 total, count = 0.0, 0
                 with torch.inference_mode():
                     for x, y, _, _ in validation_loader:
-                        forecast = model(x.to(device), None, None, None).squeeze(-1)
-                        total += float(torch.nn.functional.mse_loss(forecast, y.to(device), reduction='sum'))
+                        forecast = model(x.to(device, non_blocking=True), None, None, None).squeeze(-1)
+                        total += float(torch.nn.functional.mse_loss(forecast, y.to(device, non_blocking=True),
+                                                                    reduction='sum'))
                         count += y.numel()
                 score = total / count
                 item['validation_mse'] = score

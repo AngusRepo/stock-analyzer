@@ -3141,3 +3141,78 @@ def build_market_domain_insert_statements(
         [],
         required_columns=["knowledge_time", "observation_run_id", "payload_checksum"],
     )
+
+
+ADJUSTED_REBASE_TOLERANCE = 1e-9
+ADJUSTED_VINTAGE_FIELDS = ("adj_close", "adj_open", "open", "high", "low", "close")
+
+
+def load_adjusted_price_vintage(artifact_root: Path, *, end_date: str | None) -> pl.DataFrame:
+    """The run's single adjusted-price capture; empty when the run sealed none."""
+    root = Path(artifact_root) / "raw" / "daily_price_full_vintage"
+    if not (root / "manifest.json").exists():
+        return pl.DataFrame()
+    return _join_wide_fields(root, ADJUSTED_VINTAGE_FIELDS, start_date=None, end_date=end_date)
+
+
+def adjusted_vintage_rows(vintage: pl.DataFrame) -> pl.DataFrame:
+    """Vintage rows with all four adjusted prices. The capture has no adjusted
+    high/low; one day's OHLC share one factor, so they take adj_close/close."""
+    if vintage.is_empty():
+        return pl.DataFrame({"stock_id": [], "date": [], "adj_open": [], "adj_high": [], "adj_low": [], "adj_close": []})
+    return (
+        vintage
+        .filter(pl.col("adj_close").is_not_null() & pl.col("adj_open").is_not_null()
+                & (pl.col("close") > 0) & pl.col("high").is_not_null() & pl.col("low").is_not_null())
+        .with_columns((pl.col("adj_close") / pl.col("close")).alias("_factor"))
+        .with_columns((pl.col("high") * pl.col("_factor")).alias("adj_high"),
+                      (pl.col("low") * pl.col("_factor")).alias("adj_low"))
+        .select("stock_id", "date", "adj_open", "adj_high", "adj_low", "adj_close")
+    )
+
+
+def build_adjusted_rebase_repair(
+    vintage: pl.DataFrame,
+    anchor_rows: list[dict[str, Any]],
+    *,
+    run_id: str,
+    source: str = "finlab.price",
+) -> dict[str, Any]:
+    """Rewrite every stored adjusted price of a stock whose anchor disagrees with this capture.
+
+    FinLab adjusts backward from a fixed series start, so any retroactive vendor
+    correction moves the latest stored row (the anchor). Daily runs write one
+    date each and never revisit older rows; a disagreeing anchor therefore means
+    the stored history is on a stale basis. The whole stock is rewritten from
+    the capture (no pure-ratio assumption); as_of_date is left untouched.
+    """
+    rows = adjusted_vintage_rows(vintage)
+    by_key = {(r["stock_id"], r["date"]): r["adj_close"] for r in rows.select("stock_id", "date", "adj_close").iter_rows(named=True)}
+    anchor_dates = sorted({str(r["date"]) for r in anchor_rows})
+    rebased, unmatched = [], 0
+    for row in anchor_rows:
+        current = by_key.get((str(row["stock_id"]), str(row["date"])))
+        stored = row.get("adj_close")
+        if current is None or stored is None:
+            unmatched += 1
+            continue
+        ratio = float(current) / float(stored)
+        if not math.isfinite(ratio) or abs(ratio - 1.0) > ADJUSTED_REBASE_TOLERANCE:
+            rebased.append({"stock_id": str(row["stock_id"]), "k": ratio})
+    symbols = sorted({r["stock_id"] for r in rebased})
+    repair_rows = rows.filter(pl.col("stock_id").is_in(symbols)).sort(["stock_id", "date"])
+    lineage = _json({"run_id": run_id, "reason": "vendor_adjustment_rebase", "anchor_dates": anchor_dates})
+    statements = [(
+        "UPDATE canonical_market_daily SET adj_open=?, adj_high=?, adj_low=?, adj_close=?, "
+        "lineage_json=json_set(COALESCE(lineage_json,'{}'),'$.adjusted_rebase_repair',json(?)) "
+        "WHERE stock_id=? AND date=? AND source=?",
+        [r["adj_open"], r["adj_high"], r["adj_low"], r["adj_close"], lineage, r["stock_id"], r["date"], source],
+    ) for r in repair_rows.iter_rows(named=True)]
+    return {
+        "anchor_dates": anchor_dates,
+        "checked": len(anchor_rows) - unmatched,
+        "unmatched": unmatched,
+        "rebased": sorted(rebased, key=lambda r: r["stock_id"]),
+        "statements": statements,
+        "repair_rows": repair_rows,
+    }

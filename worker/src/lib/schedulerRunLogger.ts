@@ -85,6 +85,7 @@ const TASK_NAMES: Record<string, string> = {
   'storage-health-check': 'Storage Health Check',
   'storage-health-gate': 'Storage Health Check (Legacy Alias)',
   'storage-integrity-audit': 'Storage Integrity Audit',
+  'kv-config-drift': 'KV Config Drift',
   'storage-capacity-report': 'Storage Capacity Report',
   'learning-retention-readiness': 'Learning Ten-Year Retention Readiness',
   'legacy-learning-deletion-readiness': 'Legacy Learning Deletion Readiness',

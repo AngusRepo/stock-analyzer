@@ -797,6 +797,8 @@ def test_reuse_ready_field_artifacts_completes_partial_institutional_lane(monkey
     net_path = previous_dir / "net_amount.parquet"
     pd.DataFrame({"foreign": [70.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(sell_path)
     pd.DataFrame({"foreign": [30.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(net_path)
+    for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"):  # reuse lookup needs D1 credentials
+        monkeypatch.setenv(key, "test-only")
 
     def fake_d1_query(_sql, params=None, **kwargs):
         assert kwargs.get("domain") == "ops"
@@ -1142,3 +1144,59 @@ def test_filter_rows_date_range_matches_copy_first_version():
             warnings.simplefilter("error")
             actual["buy"] = -1.0
         assert (frame["buy"] != -1.0).all()
+
+
+_D1_ENV = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID", "FINLAB_CONTROLLER_TOKEN", "ML_CONTROLLER_TOKEN",
+           "ML_CONTROLLER_SECRET", "FINLAB_CONTROLLER_D1_QUERY_URL", "ML_CONTROLLER_D1_QUERY_URL")
+
+
+def _no_d1_env(monkeypatch, tmp_path, *extra):
+    for key in (*_D1_ENV, "GCS_BUCKET_NAME", "FINLAB_DAILY_HISTORY_BOOTSTRAP_REF"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("FINLAB_API_KEY", "test-only")
+    monkeypatch.setattr(sys, "argv", ["finlab_v4_remote_backfill.py", "--years", "3", "--run-id", "no-d1",
+                                      "--output-dir", str(tmp_path), *extra])
+
+
+def test_read_only_run_without_d1_credentials_skips_d1_and_records_it(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    _no_d1_env(monkeypatch, tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("d1_touched_without_credentials")
+
+    for name in ("market_d1_query", "ops_d1_query", "d1_query", "d1_request", "d1_exec"):
+        monkeypatch.setattr(tool, name, forbidden)
+
+    def materialize(**kwargs):
+        assert tool.d1_counts("2023-10-25") is None
+        assert tool.read_ready_source_key_artifacts(target_date="2026-10-28", lane="broker", fields=["x"]) == {}
+        diff = {"summary": {"missing_in_stockvision": None, "value_conflicts": 0}}
+        return [{"finlab_rows": 3, "stockvision_rows": None}], [diff], [], []
+
+    monkeypatch.setattr(tool, "materialize_specs", materialize)
+    assert tool.main() == 0
+    manifest = json.loads((tmp_path / "no-d1" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["d1_unavailable"] == {"reason": "no_d1_credentials", "stockvision_rows_observed": False,
+                                          "skipped": ["d1_counts", "source_key_report_reuse"]}
+    assert manifest["summary"]["missing_in_stockvision"] == 0 and "gcs_upload" not in manifest
+
+
+@pytest.mark.parametrize("flag", ["--write-d1", "--apply-canonical-d1"])
+def test_d1_writing_run_without_credentials_still_exits_missing_env(monkeypatch, tmp_path, flag):
+    tool = _load_tool_module()
+    _no_d1_env(monkeypatch, tmp_path, flag)
+    monkeypatch.setattr(tool, "materialize_specs", lambda **kwargs: pytest.fail("must exit before fetching"))
+    with pytest.raises(SystemExit, match="missing env vars: CF_API_TOKEN,CF_ACCOUNT_ID,CF_D1_DB_ID"):
+        tool.main()
+
+
+def test_d1_counts_unchanged_when_credentials_exist(monkeypatch):
+    tool = _load_tool_module()
+    for key in _D1_ENV:
+        monkeypatch.delenv(key, raising=False)
+    for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"):
+        monkeypatch.setenv(key, "test-only")
+    monkeypatch.setattr(tool, "market_d1_query", lambda sql, params: [{"n": 7}])
+    counts = tool.d1_counts("2023-10-25")
+    assert counts["daily_price"] == 7 and tool.D1_UNAVAILABLE_SKIPS == []

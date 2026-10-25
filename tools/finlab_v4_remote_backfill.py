@@ -434,6 +434,24 @@ def controller_d1_proxy_configured() -> bool:
     return bool(controller_proxy_token() and controller_d1_query_url())
 
 
+CF_D1_ENV = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID")
+# Read-only D1 steps skipped because this run has no D1 credentials (recorded in the manifest).
+D1_UNAVAILABLE_SKIPS: list[str] = []
+
+
+def d1_credentials_available() -> bool:
+    return controller_d1_proxy_configured() or all(os.environ.get(key) for key in CF_D1_ENV)
+
+
+def d1_unavailable(step: str) -> bool:
+    """True (and recorded) when a read-only D1 step must be skipped for missing credentials."""
+    if d1_credentials_available():
+        return False
+    if step not in D1_UNAVAILABLE_SKIPS:
+        D1_UNAVAILABLE_SKIPS.append(step)
+    return True
+
+
 def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> dict[str, Any] | None:
     url = controller_d1_query_url()
     token = controller_proxy_token()
@@ -1073,7 +1091,7 @@ def read_ready_source_key_artifacts(
     fields: Iterable[str],
 ) -> dict[str, dict[str, Any]]:
     wanted = sorted({str(field).strip() for field in fields if str(field).strip()})
-    if not wanted:
+    if not wanted or d1_unavailable("source_key_report_reuse"):
         return {}
     placeholders = ",".join("?" for _ in wanted)
     try:
@@ -1717,7 +1735,10 @@ def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str,
                           uploaded_files=uploaded_files if uploaded_files is not None else {})
 
 
-def d1_counts(start: str) -> dict[str, int]:
+def d1_counts(start: str) -> dict[str, int] | None:
+    """StockVision row counts for the diff report; None when D1 is not observable."""
+    if d1_unavailable("d1_counts"):
+        return None
     queries = {
         "daily_price": "SELECT COUNT(*) AS n FROM stock_prices WHERE date >= ?",
         "chip_diversity": "SELECT COUNT(*) AS n FROM chip_data WHERE date >= ?",
@@ -2790,8 +2811,9 @@ def materialize_specs(
         else:
             raise ValueError(f"unsupported spec kind: {spec.kind}")
 
-        stockvision_rows = stockvision_count_for_lane(counts, spec.lane)
-        missing = max(finlab_rows - stockvision_rows, 0)
+        # Without D1 the StockVision side is unobserved: report None, never a fake zero.
+        stockvision_rows = None if counts is None else stockvision_count_for_lane(counts, spec.lane)
+        missing = None if stockvision_rows is None else max(finlab_rows - stockvision_rows, 0)
         conflicts = 0
         diff = {
             "schema_version": "finlab-remote-diff-aggregate-v1",
@@ -2805,9 +2827,9 @@ def materialize_specs(
             "summary": {
                 "finlab_rows": finlab_rows,
                 "stockvision_rows": stockvision_rows,
-                "matched": min(finlab_rows, stockvision_rows),
+                "matched": None if stockvision_rows is None else min(finlab_rows, stockvision_rows),
                 "missing_in_stockvision": missing,
-                "missing_in_finlab": max(stockvision_rows - finlab_rows, 0),
+                "missing_in_finlab": None if stockvision_rows is None else max(stockvision_rows - finlab_rows, 0),
                 "value_conflicts": conflicts,
                 "schema_extra_fields": schema_fields,
             },
@@ -3930,8 +3952,10 @@ def main() -> int:
     args = parser.parse_args()
 
     required_env = [] if args.sealed_raw_root else ["FINLAB_API_KEY"]
-    if not controller_d1_proxy_configured():
-        required_env.extend(["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"])
+    # D1 credentials are required only when this run writes D1; read-only D1 steps
+    # skip cleanly without them and are listed under manifest["d1_unavailable"].
+    if (args.write_d1 or args.apply_canonical_d1) and not controller_d1_proxy_configured():
+        required_env.extend(CF_D1_ENV)
     missing = [key for key in required_env if not os.environ.get(key)]
     if missing:
         raise SystemExit(f"missing env vars: {','.join(missing)}")
@@ -3990,9 +4014,9 @@ def main() -> int:
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
-        "gap_fill_rows": sum(1 for item in diff_reports if item["summary"]["missing_in_stockvision"] > 0),
+        "gap_fill_rows": sum(1 for item in diff_reports if (item["summary"]["missing_in_stockvision"] or 0) > 0),
         "value_conflicts": sum(int(item["summary"]["value_conflicts"]) for item in diff_reports),
-        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"]) for item in diff_reports),
+        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"] or 0) for item in diff_reports),
     }
     manifest = {
         "schema_version": "finlab-v4-remote-backfill-v1",
@@ -4014,6 +4038,8 @@ def main() -> int:
         "source_key_blockers": source_key_blockers,
         "backfill_status": "partial_failed" if source_key_blockers else "ready",
         **sealed_raw_source_binding(run_dir),
+        **({"d1_unavailable": {"reason": "no_d1_credentials", "skipped": list(D1_UNAVAILABLE_SKIPS),
+                               "stockvision_rows_observed": False}} if D1_UNAVAILABLE_SKIPS else {}),
     }
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)

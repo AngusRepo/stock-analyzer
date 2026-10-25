@@ -1,0 +1,177 @@
+name: deploy-cloudflare
+
+# Production CD for the Cloudflare Worker and Pages (E-4a). Runs only on main, only after every
+# pushed main commit since the live version passed its ci `gate`, and only once Wei approves the
+# `production` environment. The Cloudflare token comes from Secret Manager through Workload Identity
+# Federation; the WIF binding maps this file (on main, environment production) to a service account
+# that can read that one secret and nothing else (e1_wif_setup.ps1).
+# Inert until the repository variable CD_ENABLED is 'true'.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      units:
+        description: Units to deploy (changed = whatever differs from the live version)
+        type: choice
+        options: [changed, worker, pages, all]
+        default: changed
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# One production deploy at a time; a newer run waits instead of cancelling a running one. A pending
+# run it replaces loses nothing: units are diffed against what is live.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: vars.CD_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 160
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      worker: ${{ steps.units.outputs.worker }}
+      pages: ${{ steps.units.outputs.pages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select units
+        id: units
+        env:
+          CHOICE: ${{ github.event_name == 'workflow_dispatch' && inputs.units || 'changed' }}
+        run: python3 tools/deploy_units.py plan --choice "$CHOICE" | tee -a "$GITHUB_OUTPUT"
+      - name: Require ci gate on every pushed commit since live
+        if: steps.units.outputs.worker == 'true' || steps.units.outputs.pages == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ steps.units.outputs.gate_base }}
+        run: python3 tools/deploy_units.py gate --base "$BASE"
+
+  cloudflare:
+    needs: plan
+    if: needs.plan.outputs.worker == 'true' || needs.plan.outputs.pages == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PRODUCTION_BRANCH: main
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER: ${{ needs.plan.outputs.worker }}
+      PAGES: ${{ needs.plan.outputs.pages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Still the main tip
+        id: tip
+        run: |
+          set -e
+          # Approval can come long after the plan; a newer main is that run's to deploy.
+          remote="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$remote" = "$GITHUB_SHA" ]; then echo "current=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::main moved to $remote; nothing deployed by this run"; echo "current=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.tip.outputs.current == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            worker/package-lock.json
+            frontend/package-lock.json
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: steps.tip.outputs.current == 'true'
+        with:
+          workload_identity_provider: projects/530028717113/locations/global/workloadIdentityPools/github-stock-analyzer/providers/production-deploy
+          service_account: stockvision-cd-cloudflare@gen-lang-client-0602998820.iam.gserviceaccount.com
+      - id: secrets
+        if: steps.tip.outputs.current == 'true'
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            cf_token:gen-lang-client-0602998820/stockvision-cd-cf-deploy-token
+      - name: Install
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          set -e
+          # The Worker's locked wrangler also deploys Pages and runs the D1 checks.
+          (cd worker && npm ci --no-audit --no-fund)
+          if [ "$PAGES" = true ]; then (cd frontend && npm ci --no-audit --no-fund); fi
+      # Order: D1 → Worker → Pages (CD_DESIGN.md). Each deploy script re-checks HEAD, a clean tree and its guards.
+      - name: Require applied D1 migrations
+        if: steps.tip.outputs.current == 'true' && env.WORKER == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+        run: |
+          set -e
+          # No CD unit applies migrations yet (E-6): new Worker code must not go out ahead of its schema.
+          python3 tools/d1/migrations.py status > "$RUNNER_TEMP/d1.jsonl"
+          python3 - "$RUNNER_TEMP/d1.jsonl" <<'EOF'
+          import json, sys
+          bad = [(db['db'], r['name'], r['status']) for db in map(json.loads, open(sys.argv[1]))
+                 for r in db['not_recorded'] if r['status'] in ('pending', 'partial', 'unverifiable')]
+          for row in bad:
+              print('::error::D1 migration not applied: %s %s (%s)' % row)
+          sys.exit(1 if bad else 0)
+          EOF
+      - name: Deploy Worker
+        if: steps.tip.outputs.current == 'true' && env.WORKER == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+        run: |
+          set -e
+          # A re-run must not replace a version that already serves this commit (a new version id
+          # resets version-scoped state such as the allocator forecast writer activation).
+          live="$(curl -fsS -H 'Cache-Control: no-cache' https://stockvision-worker.angus-solo-dev.workers.dev/api/health | jq -r '.provenance.sourceSha // ""' || true)"
+          if [ "$live" = "$GITHUB_SHA" ]; then echo "worker already live at $live"; exit 0; fi
+          node tools/deploy_worker_with_provenance.mjs
+      - name: Verify Worker
+        if: steps.tip.outputs.current == 'true' && env.WORKER == 'true'
+        run: |
+          set -e
+          # /api/health reports the deploy tag of the live version.
+          for _ in $(seq 1 18); do
+            live="$(curl -fsS -H 'Cache-Control: no-cache' https://stockvision-worker.angus-solo-dev.workers.dev/api/health | jq -r '.provenance.sourceSha // ""' || true)"
+            [ "$live" = "$GITHUB_SHA" ] && { echo "worker live at $live"; exit 0; }
+            sleep 10
+          done
+          echo "worker health reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
+      - name: Deploy Pages
+        if: steps.tip.outputs.current == 'true' && env.PAGES == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+          CLOUDFLARE_PAGES_PROJECT: stockvision-frontend
+          CLOUDFLARE_PAGES_PRODUCTION_BRANCH: main
+        run: |
+          set -e
+          # The Pages script has no fresh-remote guard of its own; re-check main right before deploying.
+          [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" ] || { echo "::notice::main moved; skipping Pages"; exit 0; }
+          live="$(curl -fsS -H 'Cache-Control: no-cache' https://stockvision-frontend.pages.dev/production-provenance.json | jq -r '.sourceSha // ""' || true)"
+          if [ "$live" = "$GITHUB_SHA" ]; then echo "pages already live at $live"; exit 0; fi
+          node tools/deploy_pages_with_provenance.mjs
+      - name: Verify Pages
+        if: steps.tip.outputs.current == 'true' && env.PAGES == 'true'
+        run: |
+          set -e
+          # The deploy script writes production-provenance.json into the published assets.
+          [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" ] || exit 0
+          for _ in $(seq 1 18); do
+            live="$(curl -fsS -H 'Cache-Control: no-cache' https://stockvision-frontend.pages.dev/production-provenance.json | jq -r '.sourceSha // ""' || true)"
+            [ "$live" = "$GITHUB_SHA" ] && { echo "pages live at $live"; exit 0; }
+            sleep 10
+          done
+          echo "pages provenance reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1

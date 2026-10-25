@@ -220,3 +220,20 @@ Invoke-RestMethod -Method Post -Uri "$ctrl/finlab/backfill/sequence-refresh" -He
   - **sessions 仍 ≥ 1532**：只要 aux/broker 的起點不晚於 price，就可以照常繼續。
   - **某個 aux daily 欄位或 broker 起點晚於 price**：inventory 會回 `r33_source_history_starts_after_price` 或 `daily_history_starts_after_price_capture`。處理方式：把兩個起日 flag 都改成各來源起點中最晚的那一天，重跑一次。重跑後 sessions 必須仍 ≥ 1532。
   - **sessions < 1532**：R33 selector 會 fail closed（`r33_sequence_history_insufficient`）。這時停下來，把各來源的起點回報 coordinator，由 Wei 決定。
+
+## 11/1 月訓：OOF orchestrator 撞到 8 小時上限時
+- **上限在哪**：`walk_forward_orchestrator` 的 timeout 是 28800 s（`ml-service/modal_app.py` 的 `@app.function(... timeout=28800)`）。7 個 fold、`concurrent_windows=2`，一共跑 4 波。每個 fold 的時間約等於 TimeXer 的時間，估計 6.4–10.4 h，所以有機會撞到上限。
+- **撞到之後會怎樣**（`f155e9d6b` 之後）：
+  - Modal 的 probe 會把這個 call 判成 `failed`。
+  - controller 把 `walk_forward/oof_cohorts/<cohort>/dispatch.json` 改成 `terminal_failed`（`routers/walk_forward.py`，dispatch 分支）。
+  - continuation 都是 `continuation_only`，不會重新 dispatch，只回 `pending`，reason 是 `cohort_manifest_not_ready_for_continuation`，`continuation_limit` 是 12。
+  - 跑到這裡時 continuation attempt 大約已經是 18，所以下一次 poll（最多 30 分鐘後）就會丟 `oof_cohort_continuation_exhausted:status=pending:attempt=N`。scheduler ticket 變成 `error`，不會無限循環。
+- **要看的訊號**：
+  - scheduler ticket `active8-oof-monthly` 的狀態是 `error`，summary 含 `oof_cohort_continuation_exhausted`；
+  - `dispatch.json` 的 `status=terminal_failed`，`terminal_probe.error_type=FunctionTimeoutError`。
+- **手動步驟**（同一個 business date 內，ticket attempt 少於 3）：
+  ```powershell
+  gcloud scheduler jobs run active8-oof-monthly --location asia-east1   # location 以 infra/gcp-scheduler-jobs.json 實際部署為準
+  ```
+  非 continuation 的 run 會用同一個 cohort 重新 dispatch。
+- ⚠️ R33 roster 有 TimeXer，但 `app/oof_artifact_recovery.py` 的 `MODEL_SLUGS` 沒有 TimeXer，所以 `recover_completed_oof_windows` 直接回空。重跑會把 7 個 fold 全部重做，不會沿用已完成的 fold。

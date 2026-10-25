@@ -8,6 +8,15 @@ from services import active8_paper_admission as paper
 from test_paper_runtime_approval import runtime_pair, reseal, wrapper
 
 
+@pytest.fixture(autouse=True)
+def approved_capture_source(monkeypatch):
+    # The r333 transition pinned the 10/12 paired_nav_collection.py bytes, which later
+    # releases changed under their own approvals. Pin the current bytes so these tests
+    # keep checking the transition rules rather than today's file contents.
+    current = hashlib.sha256((Path(paper.__file__).parent / 'paired_nav_collection.py').read_bytes()).hexdigest()
+    monkeypatch.setitem(paper.CAPTURE_PROVENANCE_SOURCE_CHANGE, 'approved', current)
+
+
 def successor(runtime_pair):
     admission, prior = deepcopy(runtime_pair)
     for cfg in (admission['configuration'], prior['configuration'], prior['admission']['configuration']):

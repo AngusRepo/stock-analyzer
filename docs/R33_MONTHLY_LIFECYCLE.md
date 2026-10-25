@@ -236,4 +236,7 @@ Invoke-RestMethod -Method Post -Uri "$ctrl/finlab/backfill/sequence-refresh" -He
   gcloud scheduler jobs run active8-oof-monthly --location asia-east1   # scripts/sync_gcp_scheduler.ps1 的 Location 預設
   ```
   非 continuation 的 run 會用同一個 cohort 重新 dispatch。
-- ⚠️ R33 roster 有 TimeXer，但 `app/oof_artifact_recovery.py` 的 `MODEL_SLUGS` 沒有 TimeXer，所以 `recover_completed_oof_windows` 直接回空。重跑會把 7 個 fold 全部重做，不會沿用已完成的 fold。
+- **重跑會沿用哪些 fold**（`3936fa47b`）：7 個 family 都有完整 R33 attestation 的 window 會被 recover，其餘 window 整個重跑。
+  - attestation 包括：同一個 producer source sha 和 feature semantic、train label-known max 早於 test_start、purge，以及 NF 的 complete-horizon accounting。
+  - TimeXer 的 fold evidence 由這個 commit 開始寫入；在這之前跑完的 fold 不能 recover。
+  - ⚠️ 撞上限當下還在跑的 window，可能已經寫了部分 family 的 immutable artifact。重跑時同一路徑必須 bit-identical，否則該 family 會報 `oof_prediction_artifact_immutable_conflict`（既有設計），那個 window 就會失敗，需要人工處理。

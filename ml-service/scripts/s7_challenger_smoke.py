@@ -74,6 +74,12 @@ def main() -> int:
             results[name] = {k: result.get(k) for k in (
                 "error", "model", "version", "oos_ic", "train_samples", "test_samples", "validation_samples",
                 "elapsed_s", "artifact_path", "exposure_coverage")}
+            # LinearNeutral reports like the tree trainer (per-model dicts); GNN reports top-level keys.
+            model = result.get("model")
+            ic_entry = (result.get("ic_tracking") or {}).get(model) or {}
+            registration = (result.get("artifact_registrations") or {}).get(model) or {}
+            results[name]["oos_ic"] = result.get("oos_ic", ic_entry.get("oos_ic"))
+            results[name]["artifact_path"] = result.get("artifact_path") or registration.get("gcs_path")
             results[name]["oof_path"] = (result.get("oof_artifact") or {}).get("path")
     print(json.dumps(results, ensure_ascii=False, indent=1, default=str))
     return 0 if all(not r.get("error") for r in results.values()) else 1

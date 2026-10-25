@@ -132,3 +132,9 @@ ridge alpha 的選法：
   - 全部 4 個模型跑一次 smoke 約 US$0.5，上限建議 US$1.5。
   - 只跑 auto slot 的 smoke 約 US$0.04（上限 US$0.1）。
   - 11/1 正式跑（7 fold 加 full-fit，選 C）：約 US$0.3。
+
+### Smoke 實跑結果（2026-10-25，Wei 核准，source `c9b7f7093`）
+- `linear_neutral`（auto）→ `LinearNeutralSize`，reason `no_industry_sidecar`；train 1,673,641 列、test 21,409 列（與主模型 tabular OOF 同列數）。
+- alpha 101,543（不在 grid 邊界），inner-CV IC 0.1109；fit 52 s，function 總耗時 112 s，約 US$0.014。
+- w6（2026-09-09～09-22，10 日 × 2 市場）OOS 平均同日 rank IC −0.050（t −2.40）。同 window 主模型：ExtraTrees −0.094、LightGBM −0.019、XGBoost −0.019、TabM −0.008、GNN −0.007、iTransformer +0.043、TimeXer +0.051、PatchTST +0.074。單一 fold 不能下結論，E2 看三窗累積。
+- 寫入：`r32-plan-a-canonical/oof/s7-challenger-smoke-20261028/w6/linearneutralsize.npz`、`r32-plan-a-canonical/frozen_models/linearneutralsize/{s7-challenger-smoke-20261028-w6.joblib, metadata_…json}`、`r32-plan-a-canonical/manifests/s7-challenger-smoke-20261028-w6-linearneutralsize.json`。

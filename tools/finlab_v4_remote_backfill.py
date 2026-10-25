@@ -710,6 +710,8 @@ TRAINING_AUX_FIELDS = {
 # Training (training_auxiliary_full_vintage) and serving (canonical_fundamental_features /
 # daily composition) consume only these fundamental fields; the other ~60 lane fields
 # feed neither, so a training capture need not fetch or gate them.
+MONTHLY_RELEASE_LANES = frozenset({"revenue"})
+MONTHLY_RELEASE_WINDOW_DAYS = 45
 FUNDAMENTAL_TRAINING_KEY_SCOPE = {"fundamental_factor_diversity": set(TRAINING_AUX_FIELDS["fundamental_factor_diversity"])}
 
 def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None, requested_fields=None):
@@ -1227,6 +1229,7 @@ def required_wide_field_errors(
     *,
     target_date: str | None = None,
     requested_fields: set[str] | None = None,
+    target_window_days: int = 0,
 ) -> list[str]:
     required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
     if not required:
@@ -1241,9 +1244,12 @@ def required_wide_field_errors(
             errors.append(f"{field}=missing")
             continue
         if target_date:
-            target = filter_date_range(frame, start_date=target_date, end_date=target_date)
+            window_start = (str((pd.Timestamp(target_date) - pd.Timedelta(days=target_window_days)).date())
+                            if target_window_days else target_date)
+            target = filter_date_range(frame, start_date=window_start, end_date=target_date)
             if non_null_cells(target) <= 0:
-                errors.append(f"{field}=missing_target_date:{target_date}")
+                errors.append(f"{field}=missing_target_date:{target_date}"
+                              + (f":window_days={target_window_days}" if target_window_days else ""))
                 continue
         elif non_null_cells(frame) <= 0:
             errors.append(f"{field}=empty")
@@ -2421,6 +2427,10 @@ def materialize_specs(
                 spec.lane,
                 field_frames,
                 target_date=target_date,
+                # Monthly revenue is indexed by release date (~10th); a training capture ending
+                # on any other session still requires a release within the last 45 days.
+                target_window_days=(MONTHLY_RELEASE_WINDOW_DAYS
+                                    if training_capture_start_date and spec.lane in MONTHLY_RELEASE_LANES else 0),
                 requested_fields=(
                     set(spec_keys)
                     if key_scope and spec.lane in key_scope

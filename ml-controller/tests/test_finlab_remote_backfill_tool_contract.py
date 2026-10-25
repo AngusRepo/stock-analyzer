@@ -1227,3 +1227,17 @@ def test_fundamental_training_fields_only_requests_consumed_fields(monkeypatch, 
                "--key-scope-json", '{"fundamental_factor_diversity":["eps"]}')
     with pytest.raises(SystemExit, match="fundamental_training_fields_only_conflicts_with_key_scope_json"):
         tool.main()
+
+
+def test_monthly_revenue_required_field_uses_release_window_only_when_asked():
+    tool = _load_tool_module()
+    frame = pd.DataFrame({"2330": [1.0, 2.0]}, index=pd.to_datetime(["2026-09-10", "2026-10-12"]))
+    target = "2026-10-22"
+    assert tool.required_wide_field_errors("revenue", {"revenue": frame}, target_date=target) == [
+        "revenue=missing_target_date:2026-10-22"]  # daily semantics unchanged
+    assert tool.required_wide_field_errors("revenue", {"revenue": frame}, target_date=target,
+                                           target_window_days=tool.MONTHLY_RELEASE_WINDOW_DAYS) == []
+    stale = frame.loc[:"2026-09-10"]
+    assert tool.required_wide_field_errors("revenue", {"revenue": stale}, target_date="2026-10-30",
+                                           target_window_days=45) == ["revenue=missing_target_date:2026-10-30:window_days=45"]
+    assert tool.MONTHLY_RELEASE_LANES == {"revenue"}

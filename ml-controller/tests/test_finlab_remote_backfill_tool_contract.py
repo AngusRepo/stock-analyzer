@@ -4,7 +4,9 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -1202,10 +1204,12 @@ def test_d1_counts_unchanged_when_credentials_exist(monkeypatch):
     assert counts["daily_price"] == 7 and tool.D1_UNAVAILABLE_SKIPS == []
 
 
-def test_fundamental_training_fields_only_requests_consumed_fields(monkeypatch, tmp_path):
+SIX_LANES = "daily_price,chip_diversity,revenue,fundamental_factor_diversity,training_shareholding,broker_flow_diversity"
+
+
+def test_fundamental_training_fields_only_keeps_every_requested_lane(monkeypatch, tmp_path):
     tool = _load_tool_module()
-    lanes = "daily_price,chip_diversity,fundamental_factor_diversity"
-    _no_d1_env(monkeypatch, tmp_path, "--lanes", lanes, "--fundamental-training-fields-only")
+    _no_d1_env(monkeypatch, tmp_path, "--lanes", SIX_LANES, "--fundamental-training-fields-only")
     seen = {}
 
     def materialize(**kwargs):
@@ -1214,19 +1218,56 @@ def test_fundamental_training_fields_only_requests_consumed_fields(monkeypatch, 
 
     monkeypatch.setattr(tool, "materialize_specs", materialize)
     assert tool.main() == 0
-    assert seen["key_scope"] == {"fundamental_factor_diversity": {"eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy"}}
-    spec = next(s for s in tool.CORE_SPECS if s.lane == "fundamental_factor_diversity")
-    keys = set(tool.spec_keys_for_scope(spec, seen["key_scope"]).values())
-    financial = {k for k in keys if k.startswith(tool.PIT_DEADLINE_NAMESPACES)}
-    assert financial == {"fundamental_features:每股稅後淨利", "fundamental_features:ROE稅後", "fundamental_features:營收成長率"}
-    assert "fundamental_features:營業費用率" not in keys  # unconsumed ratio with vendor inf is never fetched
-    other = next(s for s in tool.CORE_SPECS if s.lane == "chip_diversity")
-    assert tool.spec_keys_for_scope(other, seen["key_scope"]) == dict(other.keys)  # other lanes unchanged
+    lanes = SIX_LANES.split(",")
+    assert set(seen["key_scope"]) == set(lanes) and set(seen["lanes"]) == set(lanes)
+    fundamental = {"eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy"}
+    assert seen["key_scope"]["fundamental_factor_diversity"] == fundamental
+    for spec in tool.CORE_SPECS:
+        if spec.lane not in lanes:
+            continue
+        keys = tool.spec_keys_for_scope(spec, seen["key_scope"])
+        if spec.lane == "fundamental_factor_diversity":
+            financial = {k for k in keys.values() if k.startswith(tool.PIT_DEADLINE_NAMESPACES)}
+            assert financial == {"fundamental_features:每股稅後淨利", "fundamental_features:ROE稅後", "fundamental_features:營收成長率"}
+            assert "fundamental_features:營業費用率" not in keys.values()  # unconsumed ratio with vendor inf
+        else:
+            assert keys == dict(spec.keys)  # every other requested lane keeps all its keys
 
-    _no_d1_env(monkeypatch, tmp_path, "--lanes", lanes, "--fundamental-training-fields-only",
-               "--key-scope-json", '{"fundamental_factor_diversity":["eps"]}')
-    with pytest.raises(SystemExit, match="fundamental_training_fields_only_conflicts_with_key_scope_json"):
-        tool.main()
+    for extra, reason in ((["--key-scope-json", '{"fundamental_factor_diversity":["eps"]}'],
+                           "fundamental_training_fields_only_conflicts_with_key_scope_json"),
+                          ([], "fundamental_training_fields_only_requires_explicit_fundamental_lane")):
+        lanes_arg = SIX_LANES if extra else "daily_price"
+        _no_d1_env(monkeypatch, tmp_path, "--lanes", lanes_arg, "--fundamental-training-fields-only", *extra)
+        with pytest.raises(SystemExit, match=reason):
+            tool.main()
+
+
+def test_training_capture_fails_closed_when_requested_lane_is_skipped(monkeypatch, tmp_path):
+    """A key_scope naming only one lane used to skip the rest and still report ready."""
+    tool = _load_tool_module()
+    sessions = pd.bdate_range("2026-10-01", "2026-10-22")
+    frames = {}
+
+    def get(key):
+        if key not in frames:
+            frames[key] = pd.DataFrame({"2330": np.arange(len(sessions), dtype=float) + 100.0}, index=sessions)
+        return frames[key]
+
+    monkeypatch.setitem(sys.modules, "finlab", SimpleNamespace(data=SimpleNamespace(get=get), login=lambda *a: None))
+    monkeypatch.setattr(tool, "login_finlab_sdk", lambda fn: None)
+    monkeypatch.setattr(tool, "d1_counts", lambda *a: None)
+    for name in ("write_official_training_calendar", "write_training_breadth_capture"):
+        monkeypatch.setattr(tool, name, lambda **kwargs: None)
+    common = dict(years=3, lanes=["chip_diversity", "fundamental_factor_diversity"], source_start_date="2026-10-01",
+                  source_end_date="2026-10-22", training_capture_start_date="2026-10-01")
+    only_fundamental = {"fundamental_factor_diversity": {"pe", "pb"}}
+    summaries, _, _, blockers = tool.materialize_specs(run_dir=tmp_path / "skipped", key_scope=only_fundamental, **common)
+    assert [s["lane"] for s in summaries] == ["fundamental_factor_diversity"]
+    assert {"lane": "chip_diversity", "reason": "requested_lane_produced_no_dataset"} in blockers
+    both = {"chip_diversity": set(), **only_fundamental}
+    summaries, _, _, blockers = tool.materialize_specs(run_dir=tmp_path / "both", key_scope=both, **common)
+    assert sorted(s["lane"] for s in summaries) == ["chip_diversity", "fundamental_factor_diversity"]
+    assert not [b for b in blockers if b.get("reason") == "requested_lane_produced_no_dataset"]
 
 
 def test_monthly_revenue_required_field_uses_release_window_only_when_asked():

@@ -2879,6 +2879,13 @@ def materialize_specs(
             flush=True,
         )
 
+    if training_capture_start_date is not None:
+        # Training captures fail closed: a requested lane that was skipped or came back empty
+        # without its own recorded blocker makes the run partial_failed (exit 2), never ready.
+        produced = {s["lane"] for s in dataset_summaries if s["artifacts"] or s["finlab_rows"]}
+        blocked = {str(b.get("lane")) for b in source_key_blockers}
+        for lane in sorted({spec.lane for spec in specs} - produced - blocked):
+            source_key_blockers.append({"lane": lane, "reason": "requested_lane_produced_no_dataset"})
     return dataset_summaries, diff_reports, source_key_reports, source_key_blockers
 
 
@@ -4004,10 +4011,13 @@ def main() -> int:
     if key_scope and not requested_lanes:
         requested_lanes = sorted(key_scope)
     if args.fundamental_training_fields_only:
-        if "fundamental_factor_diversity" in key_scope:
+        if key_scope:
             raise SystemExit("fundamental_training_fields_only_conflicts_with_key_scope_json")
-        if not requested_lanes or "fundamental_factor_diversity" in requested_lanes:
-            key_scope = {**key_scope, **FUNDAMENTAL_TRAINING_KEY_SCOPE}
+        if "fundamental_factor_diversity" not in requested_lanes:
+            raise SystemExit("fundamental_training_fields_only_requires_explicit_fundamental_lane")
+        # A key_scope skips every lane it does not name; an empty field set keeps all of a lane's keys.
+        key_scope = {lane: set() for lane in requested_lanes}
+        key_scope.update({lane: set(fields) for lane, fields in FUNDAMENTAL_TRAINING_KEY_SCOPE.items()})
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
     effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())

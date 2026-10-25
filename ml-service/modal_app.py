@@ -2670,6 +2670,7 @@ def train_wf_tree_window(payload: dict) -> dict:
             cohort_id=payload.get("cohort_id"),
             fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
             output_model_version=payload.get("output_model_version"),
+            fold_model_cpcv=str(payload.get("fold_model_cpcv") or "nested_cpcv"),
         )
         result = _train(req)
         result["training_input_cache"] = cache_receipt
@@ -2904,6 +2905,16 @@ def _load_verified_oof_resume_windows(
         "verified_fold_ids": sorted(reused),
         "verification": "split_model_semantic_artifact_sha256_metadata_v1",
     }
+
+def _r33_outer_test_fold_evidence(profile_schema: str) -> bool:
+    """R33 OOF tree folds use outer-test evidence; nested CPCV stays on full-fit/legacy profiles.
+
+    R33 checks (leakage/inversion/tail guard) never read fold CPCV, and the manifest only needs
+    its coverage contract; the two nested 15-split CPCVs were ~88% of a 3356 s smoke tree fold.
+    """
+    from app.formal_feature_contract import R33_PROFILE
+    return profile_schema == R33_PROFILE
+
 
 def _oof_challenger_slots(profile_schema: str) -> dict:
     """R33 lifecycle challenger slots. Single source: app.challenger_models.LIFECYCLE_SLOTS
@@ -3323,6 +3334,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 fold_tree_models = [m for m in ("XGBoost", "ExtraTrees", "LightGBM") if m in requested]
                 if len(fold_tree_models) != 3:
                     tree_payload["tree_models"] = fold_tree_models
+                if _r33_outer_test_fold_evidence(profile_schema):
+                    tree_payload["fold_model_cpcv"] = "outer_test_date_panel"
                 tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
             else:
                 result["tree_result"] = {

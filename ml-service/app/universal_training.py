@@ -114,6 +114,9 @@ class UniversalTrainRequest(BaseModel):
     cpcv_min_train_groups: int | None = None
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
+    # "nested_cpcv": 15-split nested refits (diagnostic). "outer_test_date_panel": evidence from
+    # the fold's own outer-test predictions, as TabM/GNN/NF folds do (R33 OOF folds only).
+    fold_model_cpcv: str = "nested_cpcv"
     training_run_suffix: str | None = None
     run_date: str | None = None
     as_of_date: str | None = None
@@ -1355,7 +1358,28 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")
 
-    if req.enable_model_cpcv:
+    outer_test_evidence = req.fold_model_cpcv == "outer_test_date_panel" and walk_forward_mode
+    if req.enable_model_cpcv and outer_test_evidence:
+        from .model_validation import build_model_cpcv_evidence, date_panel_fold_metrics
+
+        for model_name in TREE_MODEL_NAMES:
+            if model_name not in oos_rank_predictions:
+                continue
+            evidence = build_model_cpcv_evidence(
+                model=model_name,
+                fold_metrics=date_panel_fold_metrics(dates_test, oos_rank_predictions[model_name], y_test),
+                policy=req.model_cpcv_policy,
+                family="tree",
+                coverage_mode="date_symbol_panel",
+                method="outer_test_date_panel_rank_ic",
+            )
+            evidence["data_scope"] = {"source": "outer_test_fold", "rows": int(len(y_test)),
+                                      "nested_cpcv": "skipped_r33_oof_fold"}
+            model_cpcv_evidence_by_model[model_name] = evidence
+            results.setdefault(model_name, {})["model_cpcv"] = evidence
+            print(f"[TrainUniversal] {model_name} outer-test evidence decision={evidence['decision']} "
+                  f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}")
+    elif req.enable_model_cpcv:
         try:
             from .model_validation import evaluate_model_cpcv_rank_ic
 

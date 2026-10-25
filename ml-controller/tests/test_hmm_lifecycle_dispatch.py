@@ -1,6 +1,6 @@
 import asyncio
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -34,7 +34,9 @@ def test_daily_preflight_dispatches_without_waiting_for_training(monkeypatch):
     now = datetime.now(timezone.utc)
     day = now.astimezone(regime.TW_TZ).date().isoformat()
     monkeypatch.setattr(regime,'latest_hmm_input_date',lambda _:day)
-    history = {(now.date()-timedelta(days=i)).isoformat(): {'market_return_1d':.001,
+    # History ends on the TW business day the preflight requests, not the UTC date
+    # (they differ every day from TW 00:00 to 08:00).
+    history = {(date.fromisoformat(day)-timedelta(days=i)).isoformat(): {'market_return_1d':.001,
         'market_return_5d':.005,'risk_score':10,'market_bias_20d':.01,'realized_vol_3d':.002,
         'benchmark_source':SOURCE,'risk_quality_status':'score_verified'} for i in range(40)}
     monkeypatch.setattr(regime,'_fetch_market_env_via_payload_builder',lambda _: {

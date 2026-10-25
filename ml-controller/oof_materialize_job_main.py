@@ -177,9 +177,28 @@ async def _execute_account_lifecycle(
     return result
 
 
+def _nav_business_date(end_date: str | None, now=None) -> str:
+    from datetime import date, datetime, timedelta, timezone
+
+    today = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=8))).date()
+    business_date = end_date or today.isoformat()
+    parsed = date.fromisoformat(business_date)
+    if parsed.isoformat() != business_date or parsed > today:
+        raise ValueError("paired_nav_business_date_invalid_or_future")
+    return business_date
+
+
 def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False, strategy_only=False) -> dict[str, Any]:
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     started = time.monotonic()
+    # An invalid or future cutoff fails before the receipt reuse, accounting or
+    # display publication can touch D1 or storage.
+    try:
+        _nav_business_date(end_date, now)
+    except ValueError as exc:
+        logger.error("[OofMaterializeJob] Independent NAV closure refused: %s", exc)
+        return {"status": "failed", "as_of_date": end_date, "accounting_status": None,
+                "reason": "paired_nav_daily_closure_incomplete", "error_type": type(exc).__name__}
     from services.paired_nav_read_cache import reuse_verified_cold_reads
     from services.runtime_phase_metrics import measured_phase
     with measured_phase("daily_nav"), reuse_verified_cold_reads(), reuse_verified_nav_evidence():
@@ -216,18 +235,15 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
 
 
 def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None, strategy_only=False) -> dict[str, Any]:
-    from datetime import date, datetime, timedelta, timezone
+    from datetime import datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)
-    today = clock.astimezone(timezone(timedelta(hours=8))).date()
-    business_date = end_date or today.isoformat()
+    business_date = end_date or clock.astimezone(timezone(timedelta(hours=8))).date().isoformat()
     result = {}
     try:
         from routers.walk_forward import _materialize_nav_with_reviews
         from services.d1_domain_client import D1DataDomain, client_for_domain
-        parsed = date.fromisoformat(business_date)
-        if parsed.isoformat() != business_date or parsed > today:
-            raise ValueError("paired_nav_business_date_invalid_or_future")
+        business_date = _nav_business_date(end_date, clock)
         client = _client or client_for_domain(D1DataDomain.LEARNING)
         from services.paired_nav_daily_review import NavDailyReviewIncomplete
         review_incomplete = False

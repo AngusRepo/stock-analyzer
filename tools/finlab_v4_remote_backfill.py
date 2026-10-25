@@ -1378,7 +1378,7 @@ def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: b
                     cached=read_cached(cache_key)
                     if cached is None and not allow_historical_fetch and ym not in {end[:7], previous_month}:
                         raise ValueError(f"daily_official_history_cache_missing:{cache_key}")
-                    body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
+                    body=json.loads(cached) if cached is not None else official_history_json_get(url,label=f"training_calendar_{market}_{ym}")
                     official_month_sessions(body,market,ym)
                     write_json(path,body)
                     if cached is None:
@@ -1410,7 +1410,7 @@ def write_training_breadth_capture(*,run_dir: Path, allow_historical_fetch: bool
             key="breadth/TWSE-"+day+".json";raw=read_cached(key)
             if raw is None and not allow_historical_fetch and day != manifest["end_date"]:
                 raise ValueError(f"daily_official_history_cache_missing:{key}")
-            body=json.loads(raw) if raw is not None else official_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
+            body=json.loads(raw) if raw is not None else official_history_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
             parse_breadth(body,day);write_json(path,body)
             if raw is None:write_cached(key,path.read_bytes());time.sleep(4)
         raw=path.read_bytes();parse_breadth(json.loads(raw),day)
@@ -1458,6 +1458,21 @@ def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
     except Exception as exc:
         print(f"[finlab-backfill] official_fetch_failed label={label} error={type(exc).__name__}:{exc}", flush=True)
         return None
+
+
+# A full training capture fetches ~1600 uncached history days; one throttled
+# non-JSON reply used to abort it. Bounded backoff, then fail closed.
+OFFICIAL_HISTORY_RETRY_SLEEPS = (30, 90)
+
+
+def official_history_json_get(url: str, *, label: str) -> Any:
+    for pause in (*OFFICIAL_HISTORY_RETRY_SLEEPS, None):
+        body = official_json_get(url, label=label)
+        if body is not None:
+            return body
+        if pause is not None:
+            time.sleep(pause)
+    raise ValueError(f"official_history_fetch_failed:{label}:attempts={len(OFFICIAL_HISTORY_RETRY_SLEEPS) + 1}")
 
 
 def parse_official_number(value: Any) -> float | None:

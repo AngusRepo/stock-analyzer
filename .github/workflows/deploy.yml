@@ -1,0 +1,159 @@
+name: deploy
+
+# Production CD for the Cloudflare Worker and Pages (E-4a). Runs only on main, only after
+# the same commit's ci `gate` passed, and only once Wei approves the `production` environment.
+# Cloudflare credentials come from GCP Secret Manager through Workload Identity Federation;
+# the WIF provider trusts this file on main with environment `production` and nothing else.
+# Inert until the repository variable CD_ENABLED is 'true'.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      units:
+        description: Units to deploy (changed = by paths since the previous main commit)
+        type: choice
+        options: [changed, worker, pages, all]
+        default: changed
+
+permissions:
+  contents: read
+
+# One production deploy at a time; a newer run waits instead of cancelling a running one.
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: vars.CD_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      worker: ${{ steps.units.outputs.worker }}
+      pages: ${{ steps.units.outputs.pages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select units
+        id: units
+        env:
+          CHOICE: ${{ github.event_name == 'workflow_dispatch' && inputs.units || 'changed' }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -e
+          # An explicit choice wins; otherwise diff against the previous main commit, and
+          # deploy everything when that commit is unknown (first push, force push).
+          case "$CHOICE" in
+            worker) printf 'worker=true\npages=false\n' >> "$GITHUB_OUTPUT"; exit 0 ;;
+            pages)  printf 'worker=false\npages=true\n' >> "$GITHUB_OUTPUT"; exit 0 ;;
+            all)    printf 'worker=true\npages=true\n' >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            BEFORE="$(git rev-parse HEAD^1)"
+          fi
+          git diff --name-only "$BEFORE" HEAD > "$RUNNER_TEMP/changed.txt"
+          python3 tools/deploy_units.py "$RUNNER_TEMP/changed.txt" | tee -a "$GITHUB_OUTPUT"
+      - name: Require this commit's ci gate
+        if: steps.units.outputs.worker == 'true' || steps.units.outputs.pages == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          # ci.yml runs on the same push; wait for its gate check-run and require success.
+          url="repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=gate&filter=latest"
+          started=$SECONDS
+          while :; do
+            read -r status conclusion < <(gh api "$url" --jq \
+              '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last
+               | "\(.status // "none") \(.conclusion // "none")"')
+            if [ "$status" = completed ]; then
+              echo "gate: $conclusion"; [ "$conclusion" = success ]; exit
+            fi
+            if [ "${status:-none}" = none ] && [ $((SECONDS - started)) -gt 900 ]; then
+              echo "no ci gate check-run for $GITHUB_SHA"; exit 1
+            fi
+            sleep 60
+          done
+
+  cloudflare:
+    needs: plan
+    if: needs.plan.outputs.worker == 'true' || needs.plan.outputs.pages == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PRODUCTION_BRANCH: main
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            worker/package-lock.json
+            frontend/package-lock.json
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: projects/530028717113/locations/global/workloadIdentityPools/github-stock-analyzer/providers/production-deploy
+          service_account: stockvision-cd-deployer@gen-lang-client-0602998820.iam.gserviceaccount.com
+      - id: secrets
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            cf_token:gen-lang-client-0602998820/stockvision-cd-cf-deploy-token
+      - name: Install
+        env:
+          PAGES: ${{ needs.plan.outputs.pages }}
+        run: |
+          set -e
+          # The Worker's locked wrangler also deploys Pages.
+          (cd worker && npm ci --no-audit --no-fund)
+          if [ "$PAGES" = true ]; then (cd frontend && npm ci --no-audit --no-fund); fi
+      # Order: Worker before Pages (CD_DESIGN.md). Each script re-checks HEAD == origin/main and a clean tree.
+      - name: Deploy Worker
+        if: needs.plan.outputs.worker == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+        run: node tools/deploy_worker_with_provenance.mjs
+      - name: Verify Worker
+        if: needs.plan.outputs.worker == 'true'
+        run: |
+          set -e
+          # /api/health reports the attested source of the live version.
+          for _ in $(seq 1 18); do
+            live="$(curl -fsS -H 'Cache-Control: no-cache' https://stockvision-worker.angus-solo-dev.workers.dev/api/health | jq -r '.provenance.sourceSha // ""' || true)"
+            [ "$live" = "$GITHUB_SHA" ] && { echo "worker live at $live"; exit 0; }
+            sleep 10
+          done
+          echo "worker health reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
+      - name: Deploy Pages
+        if: needs.plan.outputs.pages == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+          CLOUDFLARE_PAGES_PROJECT: stockvision-frontend
+          CLOUDFLARE_PAGES_PRODUCTION_BRANCH: main
+        run: node tools/deploy_pages_with_provenance.mjs
+      - name: Verify Pages
+        if: needs.plan.outputs.pages == 'true'
+        run: |
+          set -e
+          # The deploy script writes production-provenance.json into the published assets.
+          for _ in $(seq 1 18); do
+            live="$(curl -fsS -H 'Cache-Control: no-cache' https://stockvision-frontend.pages.dev/production-provenance.json | jq -r '.sourceSha // ""' || true)"
+            [ "$live" = "$GITHUB_SHA" ] && { echo "pages live at $live"; exit 0; }
+            sleep 10
+          done
+          echo "pages provenance reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1

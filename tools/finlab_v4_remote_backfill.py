@@ -2179,7 +2179,8 @@ def materialize_specs(
     if financial_keys:
         date_owners = (data.get("etl:financial_statements_disclosure_dates"),
                        data.get("etl:financial_statements_deadline"))
-        financial_sessions = data.get("price:收盤價").index
+        financial_prices = data.get("price:收盤價")
+        financial_sessions = financial_prices.index
         financial_native = {}
         for key in sorted(financial_keys):
             financial_native[key] = data.get(key)
@@ -2190,6 +2191,20 @@ def materialize_specs(
                 selected_native, scope_proof = scope_financial_history(
                     selected_native, date_owners, financial_sessions,
                     symbols=sealed_source.roster, start_date=start, lifecycle=lifecycle)
+            elif training_capture_start_date is not None:
+                # Live training capture: gate the requested window, not 2013+ delisted history.
+                from services.financial_scope import live_price_universe_symbols, scope_financial_history
+                symbols, roster_proof = live_price_universe_symbols(
+                    selected_native, financial_prices,
+                    start_date=training_capture_start_date, end_date=target_date)
+                selected_native, scope_proof = scope_financial_history(
+                    selected_native, date_owners, financial_sessions, symbols=symbols,
+                    start_date=training_capture_start_date, omit_deadline_absent_from_start=True)
+                scope_proof["live_roster"] = roster_proof
+                if scope_proof["remaining_unresolved_cells"]:
+                    raise ValueError("financial_request_unresolved_cells:%s:%d:%s" % (
+                        key, scope_proof["remaining_unresolved_cells"],
+                        json.dumps(scope_proof["remaining_unresolved_sample"][:5], ensure_ascii=False)))
             financial_frames[key] = normalize_finlab_wide_field(
                 selected_native, api_key_name=key, date_owners=date_owners, sessions=financial_sessions)
             if scope_proof is not None:

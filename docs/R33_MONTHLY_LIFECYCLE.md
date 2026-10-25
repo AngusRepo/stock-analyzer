@@ -142,6 +142,11 @@ Remove-Item Env:FINLAB_API_KEY
 - **run-id 必須包含 `-3y-`**：controller 的 sequence-refresh 只接受 run-id 含 `-3y-` 或 `-daily-` 的 run（`ml-controller/routers/finlab.py:282-283`）。
 - **`--gcs-prefix finlab/v4/backfill`**：capture 會落在 `gs://stockvision-models/finlab/v4/backfill/<run_id>/`，正是 sequence-refresh 讀取的位置（`routers/finlab.py:242-243`、`:320`）。
 - **`--years 3`**：只影響 holding 和 canonical broker 的 window。training 不需要這兩者的長歷史。
+- **financial 日期 gate（live SDK + `--training-capture-start-date`）**：
+  - financial 欄位只檢查 window 內有收盤價的 symbol（price universe）。2013–2018 已下市、window 內沒有價格的 symbol 不進 gate。
+  - 舊季度缺日期，但同 symbol 在起日前已有更新季度可用時才 omit（`scope_financial_history` 既有規則）。
+  - deadline owner 缺、disclosure 落在起日（含）之後的 cell（例如新上市股 7947 2026-Q2）：值不採用、不推導日期，逐筆記在 `raw/financial_availability/*.json` 的 `request_scope.deadline_owner_absent_cells_withheld`。
+  - 其餘缺日期 cell 一律 fail：`financial_request_unresolved_cells:<key>:<n>:<sample>`。不帶 `--training-capture-start-date` 時維持原本全歷史 gate。
 
 ### 預估時間、磁碟、輸出位置
 - **10/28**：約 100–110 分鐘。其中約 76 分鐘是官方 history 補抓：breadth 約 868 天 × (sleep 4 s + fetch)，calendar 約 82 個月 × (sleep 2 s + fetch)。本機跑沒有 7200 s 上限。

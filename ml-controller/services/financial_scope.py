@@ -4,12 +4,35 @@ import numpy as np
 import pandas as pd
 
 
-def scope_financial_history(frame, owners, sessions, *, symbols, start_date, lifecycle=None):
+SYMBOL_PATTERN = r'\d{4,6}(?:[A-Z][A-Z0-9]?)?'
+
+
+def live_price_universe_symbols(frame, prices, *, start_date, end_date):
+    """Vendor financial columns that have an observed close inside the window.
+
+    Live SDK runs have no sealed roster; the observed price universe is the request.
+    """
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    window = prices.loc[(prices.index >= start) & (prices.index <= end)]
+    traded = set(window.columns[window.notna().any(axis=0).to_numpy()].astype(str))
+    candidates = [str(c) for c in frame.columns if str(c) in traded]
+    symbols = [c for c in candidates if re.fullmatch(SYMBOL_PATTERN, c) and len(c) <= 6]
+    return symbols, {'roster_source': 'live_price_universe_observed_close_in_window',
+                     'window': [str(start.date()), str(end.date())],
+                     'vendor_columns_without_close_in_window': len(set(map(str, frame.columns)) - traded),
+                     'traded_columns_not_symbol_shaped': sorted(set(candidates) - set(symbols))}
+
+
+def scope_financial_history(frame, owners, sessions, *, symbols, start_date, lifecycle=None,
+                            omit_deadline_absent_from_start=False):
     """Omit an unresolved old value only if a later quarter is already available.
 
     The resolver's latest-quarter policy makes such a value unable to affect any
     output on/after start_date, regardless of its unknown arrival date.
     Raw bytes and the original native frame are retained by the caller.
+    With omit_deadline_absent_from_start, a value whose deadline owner is absent
+    but whose disclosure maps to a session on/after start_date is withheld
+    (never admitted with a derived date); every such cell is listed in the proof.
     """
     if (not symbols or len(symbols) != len(set(symbols)) or
             any(not isinstance(s,str) or not re.fullmatch(r'\d{4,6}(?:[A-Z][A-Z0-9]?)?',s) or len(s)>6 for s in symbols)):
@@ -76,7 +99,24 @@ def scope_financial_history(frame, owners, sessions, *, symbols, start_date, lif
                 'replacement_available_session':str(calendar[positions[anchor,ci]].date()),
                 'original_value_retained_in_native':float(values[ri,ci])})
             selected.iat[ri,ci]=np.nan
-    return selected, {'policy':'explicit_roster_and_provably_superseded_unresolved_history_only',
+    extra={}
+    if omit_deadline_absent_from_start:
+        cal=calendar.to_numpy(dtype='datetime64[ns]')
+        disclosed=~np.isnat(dates[0])
+        session=np.searchsorted(cal,np.where(disclosed,dates[0],cal[0]))
+        absent=selected.notna().to_numpy() & np.isnat(dates[1]) & disclosed & (session>=np.searchsorted(cal,start.to_datetime64()))
+        withheld=[]
+        for ri,ci in zip(*np.nonzero(absent)):
+            withheld.append({'symbol':symbols[ci],'quarter':selected.index[ri],
+                'disclosure_date':str(pd.Timestamp(dates[0][ri,ci]).date()),
+                'original_value_retained_in_native':float(selected.iat[ri,ci])})
+            selected.iat[ri,ci]=np.nan
+        unresolved=selected.notna().to_numpy() & missing
+        extra={'deadline_owner_absent_cells_withheld':withheld,
+               'remaining_unresolved_sample':[{'symbol':symbols[ci],'quarter':selected.index[ri],
+                   'disclosure_missing':bool(np.isnat(dates[0][ri,ci])),'deadline_missing':bool(np.isnat(dates[1][ri,ci]))}
+                   for ri,ci in list(zip(*np.nonzero(unresolved)))[:20]]}
+    return selected, {**extra,'policy':'explicit_roster_and_provably_superseded_unresolved_history_only',
         'start_date':str(start.date()),'requested_symbols':list(symbols),
         'raw_extra_symbols_preserved_not_requested':sorted(set(frame.columns)-set(symbols)),
         'raw_absent_requested_symbols_retained_null':sorted(set(symbols)-set(frame.columns)),

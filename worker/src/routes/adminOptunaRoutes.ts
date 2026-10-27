@@ -166,6 +166,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
 
   let merged: any = current
   let updatedFields: string[] = []
+  let skippedFields: import('../lib/optunaConfigMerge').SkippedOptunaField[] = []
 
   switch (source) {
     case 'barrier': {
@@ -310,49 +311,11 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       break
     }
     case 'alpha_framework': {
-      const alphaParams = params.alphaFramework ?? params.alpha_framework ?? params
-      const alphaFramework = mergeAlphaFrameworkConfig({
-        ...current.alphaFramework,
-        ...alphaParams,
-        riskOverlay: {
-          ...current.alphaFramework.riskOverlay,
-          ...(alphaParams.riskOverlay ?? alphaParams.risk_overlay ?? {}),
-        },
-        allocation: {
-          ...current.alphaFramework.allocation,
-          ...(alphaParams.allocation ?? {}),
-          weights: {
-            bull: {
-              ...current.alphaFramework.allocation.weights.bull,
-              ...((alphaParams.allocation?.weights ?? {}).bull ?? {}),
-            },
-            bear: {
-              ...current.alphaFramework.allocation.weights.bear,
-              ...((alphaParams.allocation?.weights ?? {}).bear ?? {}),
-            },
-            volatile: {
-              ...current.alphaFramework.allocation.weights.volatile,
-              ...((alphaParams.allocation?.weights ?? {}).volatile ?? {}),
-            },
-            sideways: {
-              ...current.alphaFramework.allocation.weights.sideways,
-              ...((alphaParams.allocation?.weights ?? {}).sideways ?? {}),
-            },
-          },
-        },
-      })
-      merged = { ...current, alphaFramework }
-      updatedFields = [
-        'alphaFramework.riskOverlay',
-        'alphaFramework.allocation.slateSize',
-        'alphaFramework.allocation.scoreRoundDecimals',
-        'alphaFramework.allocation.weights',
-        'alphaFramework.classification',
-        'alphaFramework.regimeBucketMultipliers',
-        'alphaFramework.scoring',
-        'alphaFramework.executionOverlay',
-        'alphaFramework.quality',
-      ]
+      const { mergeOptunaConfigSource } = await import('../lib/optunaConfigMerge')
+      const result = mergeOptunaConfigSource(current, 'alpha_framework', params, mergeAlphaFrameworkConfig)
+      merged = result.config
+      updatedFields = result.updatedFields
+      skippedFields = result.skippedFields
       break
     }
     case 'research_sweep': {
@@ -365,6 +328,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
         const candidate = mergeCompositeOptunaCandidate(current, sourcePatches, mergeAlphaFrameworkConfig, meta?.candidate_group)
         merged = candidate.config
         updatedFields = candidate.updatedFields
+        skippedFields = candidate.skippedFields
       } catch (error: any) {
         return c.json({
           error: 'Composite Optuna candidate merge failed',
@@ -695,6 +659,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       params,
       meta: meta ?? null,
       updatedFields,
+      skippedFields,
       pushed_at: new Date().toISOString(),
       snapshot_id: snapshotResult.snapshotId,
       snapshot_skipped: snapshotResult.skipped,
@@ -705,6 +670,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       target: 'prod',
       source,
       updatedFields,
+      skippedFields,
       audit_key: auditKey,
       snapshot_id: snapshotResult.snapshotId,
       snapshot_skipped: snapshotResult.skipped,
@@ -764,6 +730,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     params,
     meta: meta ?? null,
     updatedFields,
+    skippedFields,
     pushed_at: new Date().toISOString(),
     sandbox_id: sandboxId,
     candidate_record: candidateRecord,
@@ -777,6 +744,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     target: 'sandbox',
     source,
     updatedFields,
+    skippedFields,
     audit_key: auditKey,
     sandbox_id: sandboxId,
     candidate_record: candidateRecord,

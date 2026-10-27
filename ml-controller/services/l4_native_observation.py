@@ -192,8 +192,8 @@ async def prepare(*,bucket,config,day,context,key):
     request.update(execution_scope=SCOPE,max_symbols=5000)
     from services.l4_risk_history import load_canonical_risk_payloads
     from services.l4_dated_risk import build_dated_risk
-    from services.recommendation_service import gnn_return_history_lookback
-    lookback=gnn_return_history_lookback()
+    from services.l4_opb_selection import allocator_return_history_lookback
+    lookback=allocator_return_history_lookback(trading.get('l4Distribution'))
     risk_payloads=await asyncio.to_thread(load_canonical_risk_payloads,
         payloads=request['payloads'],held_payloads=[],signal_date=day,lookback=lookback,
         capture_source=request['timexer_feature_source'],bucket=bucket)

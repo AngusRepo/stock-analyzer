@@ -206,7 +206,7 @@ def test_shared_price_capture_mismatch_cannot_seal_risk(monkeypatch):
     p = {'symbol': 'A', 'prices': [{'date': '2026-09-06', 'adj_close': 10}]}
     prepared = {'definitions': {'c': {'status': 'ready', 'payloads': [{**p, 'prices': []}]}}, 'input_hash': 'x'}
     with pytest.raises(ValueError, match='shared_price_capture_changed'):
-        capture_history(prepared, formal_payloads=[p], signal_date='2026-09-06', capture_source=None)
+        capture_history(prepared, formal_payloads=[p], signal_date='2026-09-06', capture_source=None, lookback=252)
 
 
 @pytest.mark.parametrize('full_atomic', ['native_policy_distribution_weekday', 'native_policy_distribution_weekday_holdings'], indirect=True)

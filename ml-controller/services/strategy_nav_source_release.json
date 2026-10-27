@@ -4,9 +4,9 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "a588ef70baa1c9802616f54ac080c4f6901b4638",
+  "production_baseline_source": "0ba73539c2a294dfc221192c96187da01e75a412",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "dcbabab0827889d08e73dd205aa764f8bfe4a3addd0110073966579666c624fb",
+  "prior_approval_checksum": "131f769b723033aee5b55427fce145f573bcc4f222699f050994099fe57a7d29",
   "prior_configuration_checksum": "9f9836672972e950928a15dbb9df722adb7fcc8b4b0c7880e5d8340f3daefba9",
   "approved_sources": {
     "allocator_source_identity": {
@@ -17,15 +17,15 @@
       "l4_alpha_ev_producer.py": "422ba17b2f4c2926759af1b8e59c890cf994fb1068ac4b40bbee5fd9d5a89a45",
       "allocator_ev_fusion.py": "31d98e4b95f80c6626fe0a211a09876f2e0b18cd349a39bf110fadf288279366",
       "paired_nav_intervention.py": "0163eca5ca9ca872bf151acf97e46f5f1f1b1ad59dcc4ffcd5316b82c5c6f244",
-      "strategy_nav_distribution.py": "8e01b97bc2bd6e35e53fb619b653607dd42a88de4cc9a57d761f7605066d0a6a",
+      "strategy_nav_distribution.py": "20d2f874f1355460b2198638227aae4da1f4ecc22e1805d7eefb43618865f8c0",
       "expected_return_numeric.py": "8a7b117581404a58c2fe3382c65ea3ba5ccffb3d503a1233e3f59b58b646e11c",
       "active_model_policy.py": "3d51ff740bbd312533379f43dc0e313941b9d7b647feaf8719e8498d0b21aeb6",
-      "paired_nav_collection.py": "c61418806a924260b7d04dd35f2cf41516867392ae7b853e1f74d73f943d9c0f",
+      "paired_nav_collection.py": "c1eb7aef669821f8329d0da419d5c4b30fb766f55c8a1ab674d9e952bc4558f4",
       "paired_nav_opb_prior.py": "1a562eff2121c4bab8d5cfb7b13db4ea0aa769ea239bc27d5a7004a3bc0ca590",
       "opb_nav_control.py": "6706a7441cac2fa56ec11690747d559f85894f8a0ec366ab3b41a0eb0df59204",
       "opb_nav_serving_source.json": "9bd8eda868edbafdb735af72d61ee27bb7f8db0913862717c3165be1e1231543",
       "l4_distribution.py": "0f82b26d56979ce36232eaf439a4e6cf7603c7ecacc7e380f57c80f95f1c56a8",
-      "l4_model_cutover.py": "fe9b8c042340ee0bde79763246acf68a16d53a69c8d976a349ad23372e90f1b1",
+      "l4_model_cutover.py": "03f683d5078aaf0249f8507af5b720e6d1152194d5fe6b28cf7a594a3ffaa2dd",
       "l4_mlp_weights.py": "1026defc518a04aac776ac4bff1bc974f3f316bae023a4b9ebc7c324f02460f1",
       "l4_mlp_median.py": "996873a35aa4d87177133db0fbe23f4571e4e5ca42d876f7e8732c8352c40a46",
       "l4_residual_mlp.py": "5a5ef79c3bd6220f49024be5f41819e0d21d67c5c397d5bad20da9182dd4d35f",
@@ -34,26 +34,30 @@
       "l4_tabpack_budget_protocol.py": "232e57c94b413b8639f910813daeba193e997e3bed666a71418c5e5c4694005b",
       "l4_tabpack_median.py": "91917cb6185407027acdece3ed6173a59479a809828b6ec10072d3b59c27b925",
       "paper_strategy_mode.py": "685ac349e2c9caec8d7bcf88d91a5f84d05b47b7948d3cd11c7a0ca0bc064389",
-      "l4_portfolio.py": "4e62ec42faeabf186d63bfcbebc4b41927c5ed2f16d66942f0bb5795a5e285fe",
-      "l4_distribution_runtime.py": "640be0018ebb643424d16e63db28b377f4c9b3817b74fee8b3995c5d6ace4622",
-      "l4_distribution_context.py": "970c4ad63419e0409baee74d7de174f213179cbe63e2b888351f88ee4e254fcc",
+      "l4_portfolio.py": "319b5118fa01bd5206b077c5435d9799b55480ed859208014921ac3d7d75e5d4",
+      "l4_distribution_runtime.py": "8c1dbdb023ddadd8c3fbd0e4b46ced160bb2fff4560fe83eedce2c07d0e4d6fd",
+      "l4_distribution_context.py": "17edca362bd5e402adf9c06b7b8bd0e03837c299e2d0ecb0d831402ab24e023d",
       "l4_risk_history.py": "036ab0a81d05931c0d48b59d1bff6177b71b8d4270d8cd85281466f38b0fede3",
-      "l4_dated_risk.py": "d947faf7b99a6b94175b87d3c755c07a7a146d6ff876f543ae9690ca4f78b649",
-      "l4_allocation_contract.py": "6f4adf508492892a68d6f93af244952aa26ab8b52cc2ba4376d40788bb522a62",
+      "l4_dated_risk.py": "f10c43919802a8e86b0fd15e8db744a411cf3a9c6e94a117add5b5fd1ce84ada",
+      "l4_allocation_contract.py": "4e8db6fba447dde0a4dce68d5df3d8bc3956ffc37ea6836e0a48db4511aa1761",
       "similarity_evidence.py": "517936b9592085ebc418c2f23da06d47020c1ffbff2ac3e8e9262c3698728a40",
-      "l4_position_constraints.py": "237bad8de60fe518ac64b537c01026d82baf29b5f6c08b5e886c3fd9b4b4ad1e",
-      "l4_sealed_execution.py": "4cf6b7feb2b8942fcae1220c983a0c64e03f13ff6d784f6f0d699df011f541a0",
-      "l4_execution_evidence.py": "46346b4c003e822b5dff719ccebfd8bcfe1577fafa00f6bf758d021559f5578d"
+      "l4_position_constraints.py": "2725cde4fdb0802efb2aad6fe8a09e5b238ece875557a474f5933ade31c2f1e0",
+      "l4_sealed_execution.py": "5f090d8a451d4dfa1220fa5aae3c187c8347c229ec3ce6e406a6d8f37faa54e1",
+      "l4_execution_evidence.py": "46346b4c003e822b5dff719ccebfd8bcfe1577fafa00f6bf758d021559f5578d",
+      "l4_opb_selection.py": "989a0d2d720c891f0cae5369957a672740e185a6cf5af00f4a3c3886c7868a39",
+      "l4_numeric_contract.py": "8328964aa3c15cdb0241945f3838097b7fce5c393049e5f2a454581999fb3203",
+      "l4_opb_arm_replay.py": "813d0d08ec0b74358dd941e268e98b3c3a50fd47d12bec817fb2993955130447",
+      "forward_net_return.py": "8057de678399be65bf33d82254e640cef0aeb09c608dcd3c089f9c013e2f3eac"
     },
     "l3_inference_source_identity": {
       "paired_nav_recommendation_path.py": "26ad584a8bbe685419c3155fc673cdab604b734a9ccfcae6476d7c05c7dde2bd",
       "strict_json_clone.py": "0eae919d581b4f57fa4950224c72e901ec04a244354d5ec252a3c6ff4d383466",
       "paired_nav_l3_candidate.py": "1208aa957b6e6fb6cb6192f71d1274d34b78e4010ac2f7ba995c534178dd0a62",
       "paired_nav_l3_dispatch.py": "19bdfef7cff0231db33a76f76772bdded13ed8f96d35587bf6d0dbff76010f48",
-      "paired_nav_strategy_bundle.py": "2cbeea5588b609b4ae9ec0850fd5b3956cf737bdcc01370be6fb1c34d2f261d0",
+      "paired_nav_strategy_bundle.py": "870818d2e4681017b18ded9d59142cc25c06c0032d6aab3ced49ae3f2c25af8f",
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
-      "active8_paper_admission.py": "30f5bd9608dcf09abaa13374f78bd7ab434b92f950f4cbf85aff41e02ee54f3c",
-      "strategy_nav_runtime_approval.py": "56902e4d2d803ddba6cb5b20e05f0dc8c3131da186cde9a4f9580e36fef23fe9",
+      "active8_paper_admission.py": "08cb2fad49b38c9b72b42ea84b1436326ea2fe016252035e332556f6e3f66efd",
+      "strategy_nav_runtime_approval.py": "98086fe5f7517ed8ec96f3fad29d7f5df8abb1e82e9e9653523b9037cd1280d8",
       "active8_nav_adoption.py": "10d7944e05b338b2b6c7af205e830a1c4aca5c1061832d77b556b36d54ccde31",
       "active8_nav_inference.py": "52656274b2f87892871f23e5c1adb4edf05f727726b1674fd431954a772b5672",
       "strategy_ab.py": "7b0455efdd89fd0e8d793af45ed78f6a4c602538b367058ff655329f345586d9",
@@ -81,6 +85,59 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:351ced2b0b8dfa8a1db582851105daf74008c7ddb50dd7d3a7aa52299cd79a27",
-  "review": "audits/rg-release-20261024/release/review.md"
+  "execution_owner_version": "native-paper-v1:5b87b7acc81470ad94ddf15ba16b176bcd1f1d53ccdd4fce88ab902905d17b9e",
+  "review": "audits/rf-rehearsal4-mac-20261027/pr50_deviation_review.md",
+  "policy_activations": [
+    {
+      "schema_version": "l4-policy-activation-v2",
+      "scope": "paper",
+      "maturity_transfer": false,
+      "account_reset": false,
+      "return_history_lookback_sessions": 252,
+      "cost_objective": "single_side_v1",
+      "circuit_position_scales": {
+        "highVol": 0.5,
+        "severeHighVol": 0.5,
+        "momentumZone": {
+          "RED": 0.3,
+          "YELLOW": 0.7
+        },
+        "lossStreak": 0.5
+      },
+      "risk_config_filled_fields": {
+        "portfolio.marketShockOrangePct": -0.03,
+        "portfolio.marketShockRedPct": -0.05,
+        "portfolio.marketShockBlackPct": -0.08,
+        "portfolio.breadthOrangeAdvanceRatio": 0.25,
+        "portfolio.breadthRedAdvanceRatio": 0.15,
+        "portfolio.breadthBlackAdvanceRatio": 0.08,
+        "portfolio.greenTargetExposure": 0.95,
+        "portfolio.yellowTargetExposure": 0.68,
+        "portfolio.orangeTargetExposure": 0.45,
+        "portfolio.redTargetExposure": 0.2,
+        "portfolio.blackTargetExposure": 0
+      },
+      "previous_policy_checksum": "6b57659317774eac0cf1cd4a88c0dae7a13a189e11ed5dfa459b4ac21989d7f3",
+      "next_policy_checksum": "fba4fe7652532ee59602998922a7799735cff9d93dedc3d7821e5d7cb3f23981",
+      "previous_risk_config_checksum": "b03a2a05a80183778fc823eb7c47dea98fc6b10c30d66baaee19c98c1ad51f86",
+      "next_risk_config_checksum": "40f866656c7f986a69fbe886d0ee3f97e7f24d798c2714be5c2fbca97a08c613",
+      "next_policy_identity": "555c16a5eb20ece71e48ebcbd3c5ba569aa712c121ad3840972d7a96711dbf90",
+      "engineering_receipt_checksum": "214fa35a1693ac12e3237a68129b914e3330a623679867f7bd1d78cac33ec12e",
+      "source_reference": "R-F release rf-20261027; Wei go 2026-10-27 22:0x TW (\"接著開始你剛剛提的Ｂ計劃\")"
+    },
+    {
+      "schema_version": "l4-policy-constraints-change-v1",
+      "scope": "paper",
+      "maturity_transfer": false,
+      "account_reset": false,
+      "changes": {
+        "cost_objective": "entry_round_trip_v1"
+      },
+      "previous_policy_checksum": "fba4fe7652532ee59602998922a7799735cff9d93dedc3d7821e5d7cb3f23981",
+      "next_policy_checksum": "c01ba9e3425aa5c85896ca893039a3c92011fd89633729e079735d312aadb338",
+      "next_policy_identity": "7436aec8fdf347e0b81a740fb6401f440b7fed3dd381d0159aa599608615fa58",
+      "engineering_receipt_checksum": "214fa35a1693ac12e3237a68129b914e3330a623679867f7bd1d78cac33ec12e",
+      "source_reference": "R-F release rf-20261027; Wei go 2026-10-27 22:0x TW (\"接著開始你剛剛提的Ｂ計劃\")"
+    }
+  ]
 }

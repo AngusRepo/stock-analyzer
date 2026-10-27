@@ -24,7 +24,7 @@ export async function captureL4AccountContext(env: Bindings, signalDate: string)
   const risk=await getRiskConfig(env.KV)
   const cb=await checkCircuitBreakersForDomains(env,cfg,env.KV)
   const riskLimits={exposure_cap:cb.halt ? 0 : cb.targetExposurePct,name_cap:resolveCircuitAdjustedSingleNameCap({
-    configuredSingleNameCap:Math.min(cfg.position.maxPctOfPortfolio,risk.position.maxSingleNamePct),
+    configuredSingleNameCap:risk.position.maxSingleNamePct,
     circuitBaselinePositionPct:cfg.circuit.maxPositionPct,circuitEffectivePositionPct:cb.maxPositionPct}),
     max_positions:cfg.position.maxPositions,min_trade_value:cfg.position.minPositionValue,
     buys_halted:cb.halt || risk.system.killSwitch,max_per_sector:risk.position.maxPerSector,

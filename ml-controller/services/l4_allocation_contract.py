@@ -3,6 +3,7 @@ from copy import deepcopy
 from collections import defaultdict
 from services.l4_distribution import finite,digest
 from services.similarity_evidence import similarity_components
+from services.l4_numeric_contract import DAILY_VOL_FLOOR, MIN_RETURN_OBSERVATIONS
 
 UNKNOWN = {'','UNKNOWN','UNCLASSIFIED','NONE','NULL'}
 
@@ -19,7 +20,7 @@ def risk_groups(symbols,history,rows,holdings,constraints, *, dated_covariance_p
     if sector_cap is not None and not 0 <= finite(sector_cap,'sector_cap') <= 1:
         raise ValueError('l4_native_sector_control_invalid')
     similarity = similarity_components(symbols,history,edge_threshold=threshold,
-        threshold_quantile=quantile,daily_vol_floor=.01,min_observations=20,dated_covariance_packet=dated_covariance_packet)
+        threshold_quantile=quantile,daily_vol_floor=DAILY_VOL_FLOOR,min_observations=MIN_RETURN_OBSERVATIONS,dated_covariance_packet=dated_covariance_packet)
     groups = {'cluster:'+group['cluster_id']:{'symbols':group['symbols'],'cap':cluster_cap}
               for group in similarity['clusters']}
     sectors,unknown = defaultdict(list),[]
@@ -113,6 +114,54 @@ def native_opb_policy(constraints):
             'static_and_old_owner_prior_samples_imported':0,'hard_risk_overrides_arm_caps':True,
             'cash_buffer_role':'exposure_ceiling_not_forced_investment',
             'minimum_weight_role':'joint_optimizer_constraint_not_posthoc_pool_truncation'}}
+
+
+def policy_v2_from_v1(l4, *, lookback, cost_objective):
+    """Pure v1 -> v2 policy migration; the packet and the activation validator share it.
+
+    Risk-owned fields leave `constraints`. Each arm keeps its v1 cap as a
+    fraction of the v1 base cap; min_weight leaves the arms (risk owns the
+    floor). Arms equal to base after conversion are dropped. No value is new.
+    """
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.l4_opb_selection import (ALLOCATOR_KEYS, NON_OPTIMIZER_KEYS,
+        OPB_SCHEMA, POLICY_SCHEMA, arm_definition, validate_constraints)
+    from services.online_portfolio_bandit import REWARD_HALF_LIFE_DAYS, REWARD_WINDOW_DAYS
+    if l4.get('policy_schema') is not None:
+        raise ValueError('l4_policy_v2_source_not_v1')
+    old, opb = l4['constraints'], l4.get('opb') or {}
+    if not 0 < finite(old['exposure_cap'], 'exposure_cap') or not 0 < finite(old['name_cap'], 'name_cap'):
+        raise ValueError('l4_policy_v2_base_envelope_invalid')
+    constraints = {k: deepcopy(v) for k, v in old.items() if k in ALLOCATOR_KEYS - NON_OPTIMIZER_KEYS}
+    constraints.update(return_history_lookback_sessions=lookback, cost_objective=cost_objective)
+    validate_constraints(constraints)
+    arms, dropped, seen = [{'id': 'base'}], [], {digest(arm_definition({}))}
+    for arm in opb.get('arms') or []:
+        if arm['id'] == 'base':
+            continue
+        overrides = arm.get('constraints') or {}
+        converted = {'id': arm['id']}
+        for key, field in (('exposure_cap', 'exposure_fraction'), ('name_cap', 'name_fraction')):
+            converted[field] = finite(overrides[key], key) / finite(old[key], key) if key in overrides else 1.
+        if 'risk_aversion' in overrides:
+            converted['risk_aversion'] = finite(overrides['risk_aversion'], 'risk_aversion')
+        definition = digest(arm_definition(converted))
+        if definition in seen:
+            dropped.append(arm['id'])
+            continue
+        seen.add(definition)
+        arms.append(converted)
+    policy = {**deepcopy(l4), 'policy_schema': POLICY_SCHEMA, 'constraints': constraints,
+        'opb': {'schema_version': OPB_SCHEMA, 'enabled': bool(opb.get('enabled')),
+            'reward_window_observations': REWARD_WINDOW_DAYS,
+            'reward_half_life_observations': REWARD_HALF_LIFE_DAYS, 'arms': arms,
+            'migration': {'source_policy_identity': opb.get('approved_policy_identity'),
+                'arm_semantic': 'fraction_of_risk_envelope', 'arms_equivalent_to_kept_arm_dropped': dropped,
+                'arm_min_weight_owner': 'risk_min_trade_value', 'exploration_removed': opb.get('exploration'),
+                'v1_migration': deepcopy(opb.get('migration'))}}}
+    policy['opb']['approved_policy_identity'] = distribution_policy_identity(
+        policy, policy['artifact']['l3_identity'])
+    return policy
 
 
 def initial_paper_constraints(config):

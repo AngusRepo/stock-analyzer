@@ -61,13 +61,17 @@ async def _execute_lifecycle(**kwargs) -> dict[str, Any]:
         return await _execute_account_lifecycle(**kwargs, _daily_config=config)
     from services.l4_forward_refresh import attach_daily_result
     business_date = kwargs.get('end_date') or datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
+    from services.l4_opb_arm_replay import attach_daily_replay
     data_task = asyncio.create_task(asyncio.to_thread(attach_daily_result, {}, config, business_date))
+    # OPB arm replay is research evidence; its outcome never changes closure status.
+    replay_task = asyncio.create_task(asyncio.to_thread(attach_daily_replay, config, business_date))
     try:
         result = await _execute_account_lifecycle(**kwargs, _daily_config=config)
     except Exception as exc:
         logger.exception('[OofMaterializeJob] account closure failed; independent label refresh continues')
         result = {'status': 'failed', 'reason': 'daily_account_closure_failed', 'error_type': type(exc).__name__}
     data_result = await data_task
+    result['opb_arm_replay'] = await replay_task
     result['forward_learning_data'] = data_result['forward_learning_data']
     if data_result.get('status') == 'failed':
         result.update(accounting_status=result.get('status'), status='failed',

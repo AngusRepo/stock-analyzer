@@ -44,15 +44,20 @@ test('missing plan and missing daily seal are explicit unavailable, never invent
     assert.equal(f.count(),0)
   } finally {f.close()}
 })
-test('late recovery publication cannot retrospectively earn whole-session credit',async()=>{
-  const f=fixture()
-  try {
-    f.insert('2026-10-12 10:43:30'); await f.seal('19:01:25')
-    assert.equal((await recordL4AccountReward(f.env,'2026-10-12',1e6)).reason,'l4_reward_plan_published_after_session_open')
-    f.sqls.paper.exec("UPDATE l4_portfolio_plans_v1 SET created_at='2026-10-12 00:00:00'")
-    assert.equal((await recordL4AccountReward(f.env,'2026-10-12',1e6)).reason,'l4_reward_plan_finalized_after_session_open')
-    assert.equal(f.count(),0)
-  } finally {f.close()}
+test('late publication or finalization records an audit-only receipt, never learning credit',async()=>{
+  for (const [published,finalized,reason] of [['2026-10-12 10:43:30','19:01:25','l4_reward_plan_published_after_session_open'],
+    ['2026-10-12 00:00:00','19:01:25','l4_reward_plan_finalized_after_session_open']]) {
+    const f=fixture()
+    try {
+      f.insert(published); await f.seal(finalized)
+      const result=await recordL4AccountReward(f.env,'2026-10-12',1e6)
+      assert.deepEqual([result.status,result.reason,result.learning_eligible],['recorded',reason,false])
+      const saved=JSON.parse(String(f.sqls.paper.prepare('SELECT payload_json FROM l4_policy_account_rewards_v1').get()?.payload_json))
+      assert.equal(saved.complete,false)
+      assert.equal('effective_digest' in saved,false) // v1 plan payloads keep their receipt shape.
+      assert.equal(f.count(),1)
+    } finally {f.close()}
+  }
 })
 test('valid preopen plan records once; changed NAV and corrupt review still fail',async()=>{
   const f=fixture()

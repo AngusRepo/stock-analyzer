@@ -72,7 +72,7 @@ export async function checkL4RotationGate(env:Bindings,input:{plan:L4PortfolioPl
   const stocks=await databaseForDataDomain(env,'core').prepare(`SELECT symbol,sector FROM stocks WHERE symbol IN (${[...after.map(p=>p.symbol),...targets].map(()=>'?').join(',')})`)
     .bind(...after.map(p=>p.symbol),...targets).all<{symbol:string;sector:string|null}>()
   const sectors=new Map(stocks.results.map(p=>[p.symbol,p.sector??'UNKNOWN']))
-  const nameCap=resolveCircuitAdjustedSingleNameCap({configuredSingleNameCap:Math.min(cfg.position.maxPctOfPortfolio,riskCfg.position.maxSingleNamePct),
+  const nameCap=resolveCircuitAdjustedSingleNameCap({configuredSingleNameCap:riskCfg.position.maxSingleNamePct,
     circuitBaselinePositionPct:cfg.circuit.maxPositionPct,circuitEffectivePositionPct:risk.maxPositionPct})
   let deadline=Infinity
   for(const replacement of targets) {

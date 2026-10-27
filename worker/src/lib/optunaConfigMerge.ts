@@ -1,4 +1,13 @@
 import type { TradingConfig } from './tradingConfig'
+import { isL4PolicyV2 } from './l4PolicySchema'
+
+// alphaFramework.allocation aliases of params that policy v2 keeps in l4Distribution.constraints.
+const L4_OWNED_ALLOCATION_ALIASES = new Set(['alphaStrength', 'alpha_strength', 'riskAversion', 'risk_aversion',
+  'turnoverPenalty', 'turnover_penalty', 'l2Penalty', 'l2_penalty', 'maxClusterWeight', 'max_cluster_weight',
+  'maxWeight', 'max_weight', 'clusterEdgeThreshold', 'cluster_edge_threshold', 'clusterThresholdQuantile',
+  'cluster_threshold_quantile', 'sectorConcentrationCap', 'sector_concentration_cap'])
+
+export interface SkippedOptunaField { field: string; reason: 'l4_distribution_owns_allocation_params' }
 
 export const COMPOSITE_OPTUNA_CONFIG_SOURCES = [
   'barrier',
@@ -24,9 +33,10 @@ export function mergeOptunaConfigSource(
   source: string,
   params: any,
   mergeAlphaFrameworkConfig: AlphaFrameworkMerger,
-): { config: TradingConfig; updatedFields: string[] } {
+): { config: TradingConfig; updatedFields: string[]; skippedFields: SkippedOptunaField[] } {
   let config: any = current
   let updatedFields: string[] = []
+  let skippedFields: SkippedOptunaField[] = []
 
   switch (source) {
     case 'barrier': {
@@ -172,6 +182,12 @@ export function mergeOptunaConfigSource(
     }
     case 'alpha_framework': {
       const alphaParams = params.alphaFramework ?? params.alpha_framework ?? params
+      const requestedAllocation = { ...(alphaParams.allocation ?? {}) }
+      if (isL4PolicyV2(current.l4Distribution)) {
+        const owned = Object.keys(requestedAllocation).filter(key => L4_OWNED_ALLOCATION_ALIASES.has(key))
+        for (const key of owned) delete requestedAllocation[key]
+        skippedFields = owned.map(key => ({ field: `alphaFramework.allocation.${key}`, reason: 'l4_distribution_owns_allocation_params' }))
+      }
       const alphaFramework = mergeAlphaFrameworkConfig({
         ...current.alphaFramework,
         ...alphaParams,
@@ -181,7 +197,7 @@ export function mergeOptunaConfigSource(
         },
         allocation: {
           ...current.alphaFramework.allocation,
-          ...(alphaParams.allocation ?? {}),
+          ...requestedAllocation,
           weights: {
             bull: {
               ...current.alphaFramework.allocation.weights.bull,
@@ -220,7 +236,7 @@ export function mergeOptunaConfigSource(
       throw new Error(`unsupported composite Optuna source: ${source}`)
   }
 
-  return { config, updatedFields }
+  return { config, updatedFields, skippedFields }
 }
 
 export function mergeCompositeOptunaCandidate(
@@ -228,7 +244,7 @@ export function mergeCompositeOptunaCandidate(
   sources: Record<string, any>,
   mergeAlphaFrameworkConfig: AlphaFrameworkMerger,
   candidateGroup?: string,
-): { config: TradingConfig; updatedFields: string[] } {
+): { config: TradingConfig; updatedFields: string[]; skippedFields: SkippedOptunaField[] } {
   const required = candidateGroup ? OPTUNA_CANDIDATE_GROUPS[candidateGroup] : COMPOSITE_OPTUNA_CONFIG_SOURCES
   if (!required) throw new Error(`unknown Optuna candidate group: ${candidateGroup}`)
   const extra = Object.keys(sources).filter(source => !required.includes(source as never))
@@ -238,10 +254,12 @@ export function mergeCompositeOptunaCandidate(
 
   let config = current
   const updatedFields: string[] = []
+  const skippedFields: SkippedOptunaField[] = []
   for (const source of COMPOSITE_OPTUNA_CONFIG_SOURCES.filter(source => required.includes(source as never))) {
     const merged = mergeOptunaConfigSource(config, source, sources[source], mergeAlphaFrameworkConfig)
     config = merged.config
     updatedFields.push(...merged.updatedFields)
+    skippedFields.push(...merged.skippedFields)
   }
-  return { config, updatedFields: [...new Set(updatedFields)] }
+  return { config, updatedFields: [...new Set(updatedFields)], skippedFields }
 }

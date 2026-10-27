@@ -229,6 +229,13 @@ export async function seedRiskConfigDefaults(kv: KVNamespace | undefined): Promi
   return { ...plan, written: true }
 }
 
+/** Audit only: risk fields the merged config takes from program defaults, not KV. */
+export async function riskConfigFieldsFromDefault(kv: KVNamespace | undefined): Promise<string[]> {
+  const raw = kv ? await kv.get(RISK_CONFIG_KV_KEY, 'json') : null
+  return collectMissingFields(raw).filter(reason => /^missing_[a-z]+\.[A-Za-z0-9]+$/.test(reason))
+    .map(reason => reason.slice('missing_'.length))
+}
+
 export async function getRiskConfig(kv: KVNamespace | undefined): Promise<RiskConfig> {
   if (!kv) {
     console.warn('[RiskConfig] KV binding missing, using fail-closed config')

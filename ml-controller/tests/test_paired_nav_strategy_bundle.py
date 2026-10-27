@@ -260,7 +260,7 @@ def test_capture_freezes_canonical_risk_for_candidate_own_holdings(monkeypatch):
     monkeypatch.setattr(prices,'load_canonical_risk_payloads',canonical)
     extra=strategy.capture_strategy_context(selection={'candidates':[{'artifact':{'payload_checksum':'a'*64},'strategy_bundle':{'bound':True}}]},
         recommendation_context={'inputs':{'payloads':payloads}},signal_date=day,query=None,writer=None,
-        capture_source={'source_receipt_checksum':'sealed-capture'})
+        capture_source={'source_receipt_checksum':'sealed-capture'},lookback=252)
     context=extra['strategy_bundle_risk_context']
     assert {p['symbol'] for p in context['canonical_risk_payloads']}=={'POOL','HELD'}
     assert [p['symbol'] for p in payloads]==['POOL']
@@ -270,5 +270,5 @@ def test_capture_freezes_canonical_risk_for_candidate_own_holdings(monkeypatch):
     reused = strategy.capture_strategy_context(
         selection={'candidates':[{'artifact':{'payload_checksum':'a'*64},'strategy_bundle':{'bound':True}}]},
         recommendation_context={'inputs':{'payloads':payloads}},signal_date=day,
-        query=None,writer=None,formal_risk_context=context)
+        query=None,writer=None,formal_risk_context=context,lookback=252)
     assert reused['strategy_bundle_risk_context'] == context

@@ -223,6 +223,11 @@ def test_deploy_provisions_detached_dataset_snapshot_job():
     dataset_snapshot_sync = deploy.split("sync_dataset_snapshot_job()", 1)[1].split("run_preflight()", 1)[0]
     assert '"roles/run.jobsExecutorWithOverrides"' in dataset_snapshot_sync
     assert '"roles/run.viewer"' in dataset_snapshot_sync
+    # input/status and reconcile run in the controller service and read snapshot executions.
+    controller_grant = dataset_snapshot_sync.split('local controller_member="serviceAccount:${SERVICE_RUNTIME_SERVICE_ACCOUNT}"', 1)[1]
+    assert '--member="$controller_member"' in controller_grant
+    assert '--role="roles/run.viewer"' in controller_grant
+    assert "jobsExecutorWithOverrides" not in controller_grant
     assert '--task-timeout="$PIPELINE_JOB_TIMEOUT"' in deploy
     assert 'PIPELINE_JOB_TIMEOUT="${PIPELINE_JOB_TIMEOUT:-6600s}"' in deploy
 

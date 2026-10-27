@@ -1141,7 +1141,14 @@ sync_dataset_snapshot_job() {
       --role="$role" \
       --quiet >/dev/null
   done
-  echo "Dataset snapshot job sync + pipeline IAM succeeded"
+  # The controller observes snapshot executions for input status and lost-callback reconcile.
+  local controller_member="serviceAccount:${SERVICE_RUNTIME_SERVICE_ACCOUNT}"
+  gcloud run jobs add-iam-policy-binding "$DATASET_SNAPSHOT_JOB_NAME" \
+    --region="$REGION" \
+    --member="$controller_member" \
+    --role="roles/run.viewer" \
+    --quiet >/dev/null
+  echo "Dataset snapshot job sync + pipeline/controller IAM succeeded"
   echo ""
 }
 run_preflight() {

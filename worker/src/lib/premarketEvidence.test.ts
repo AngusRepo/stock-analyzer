@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { runPremarketEvidenceStage } from './premarketEvidenceStage'
 import { filterNewsEvidence, NEWS_FEATURES } from './newsEvidence'
-import { runDailyNewsAnalysis, parseReportJson, formatNewsDebateContext, readCurrentNewsReport, isReadyNight, buildPrompts } from './newsAnalyst'
+import { runDailyNewsAnalysis, parseReportJson, formatNewsDebateContext, readCurrentNewsReport, isReadyNight, isReadyNightForTradeDate,
+  previousTwTradingDate, buildPrompts } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { callLLM } from './debateTrader'
 import { withPaperExecutionScope } from './paperExecutionScope'
@@ -75,6 +76,29 @@ test('MIS midnight trades use the next civil day without widening the 96-hour li
   assert.equal(isReadyNight(night, Date.parse('2026-10-13T04:59:54+08:00')), false)
   assert.equal(isReadyNight({ ...night, date: '20261007' }, Date.parse('2026-10-12T08:30:00+08:00')), false)
   assert.ok(isReadyNight({ ...night, time: '230000' }, Date.parse('2026-10-08T23:00:00+08:00')))
+})
+
+test('after a long closure the last trading day night session stays ready past 96 hours', async () => {
+  const values: Record<string, string> = {
+    'holiday:2026-10-23': '颱風休市（薔琵）', 'holiday:2026-10-26': '台灣光復節補假',
+    'market:twse_holiday_schedule:v2:2026': JSON.stringify({ schemaVersion: 'twse-holiday-schedule-v2', dates: [] }),
+    'market:twse_adhoc_closure_check:v1:2026-10-22': 'open', 'market:twse_adhoc_closure_check:v1:2026-10-26': 'open',
+  }
+  const kv = { get: async (key: string, type?: string) => key in values ? (type === 'json' ? JSON.parse(values[key]) : values[key]) : null,
+    put: async () => {} } as unknown as KVNamespace
+  // MIS still reported the Oct 22 session on Oct 27: Oct 23 typhoon, weekend, Oct 26 holiday.
+  const night = { lastPrice: 45654, changePct: -1.25, changePoints: -580, date: '20261022', time: '045959' }
+  const morning = Date.parse('2026-10-27T06:45:00+08:00')
+  assert.equal(isReadyNight(night, morning), false)
+  assert.equal(await previousTwTradingDate(kv, '2026-10-27'), '2026-10-22')
+  assert.ok(await isReadyNightForTradeDate(kv, night, '2026-10-27', morning))
+  // An older session than the last trading day's is still stale.
+  assert.equal(await isReadyNightForTradeDate(kv, { ...night, date: '20261021' }, '2026-10-27', morning), false)
+  // An ordinary weekday never consults the calendar and keeps the 96-hour rule.
+  const noCalendar = { get: async () => { throw new Error('calendar_read') } } as unknown as KVNamespace
+  assert.ok(await isReadyNightForTradeDate(noCalendar, { ...night, date: '20261026' }, '2026-10-27', morning))
+  // No trading day found means no floor.
+  assert.equal(isReadyNight(night, morning, null), false)
 })
 
 test('October 12 TAIFEX date and proxy timeout corrections allow only the two authorized retries', async () => {

@@ -8,6 +8,7 @@ import type { Bindings } from '../types'
 import { gatherNewsEvidence, parseNewsAssessments, filterNewsEvidence, type NewsEvidence, type NewsAssessment } from './newsEvidence'
 import { runPremarketEvidenceStage } from './premarketEvidenceStage'
 import { isReadyUSSignal } from './usLeading'
+import { resolveTwTradingSession } from './schedulerPolicy'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,9 @@ interface GatheredContext {
   top_concepts?: Array<{ concept: string; mention_count: number; sentiment_avg: number }>
 }
 
-export function isReadyNight(night: GatheredContext['taifex_night'], now = paperExecutionNow()): boolean {
+/** `sessionFloor` (YYYY-MM-DD) also accepts an older night session opened on or after
+ * that date: after a long closure the last session can exceed the 96h window. */
+export function isReadyNight(night: GatheredContext['taifex_night'], now = paperExecutionNow(), sessionFloor?: string | null): boolean {
   if (!night || !Number.isFinite(night.lastPrice) || night.lastPrice <= 0 || !Number.isFinite(night.changePct)) return false
   const date = String(night.date).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')
   const time = String(night.time).replace(/^(\d{2})(\d{2})(\d{2})$/, '$1:$2:$3')
@@ -59,7 +62,25 @@ export function isReadyNight(night: GatheredContext['taifex_night'], now = paper
   // belong to the following civil day (TAIFEX daily report: 15:00~次日05:00).
   const timestamp = Date.parse(`${date}T${time}+08:00`)
     + (/^0[0-4]:[0-5]\d:[0-5]\d$|^05:00:00$/.test(time) ? 24 * 3600_000 : 0)
-  return Number.isFinite(timestamp) && timestamp <= now && now - timestamp <= 96 * 3600_000
+  if (!Number.isFinite(timestamp) || timestamp > now) return false
+  return now - timestamp <= 96 * 3600_000 || (Boolean(sessionFloor) && date >= sessionFloor!)
+}
+
+/** Latest TW trading date before `today`; weekends, holidays and ad-hoc closures are skipped. */
+export async function previousTwTradingDate(kv: KVNamespace, today: string): Promise<string | null> {
+  for (let back = 1; back <= 14; back++) {
+    const date = new Date(Date.parse(`${today}T12:00:00+08:00`) - back * 86_400_000 + 8 * 3600_000).toISOString().slice(0, 10)
+    if ((await resolveTwTradingSession(kv, date)).trading) return date
+  }
+  return null
+}
+
+/** The calendar is only consulted when the 96h window fails, so ordinary days do no extra reads. */
+export async function isReadyNightForTradeDate(kv: KVNamespace, night: GatheredContext['taifex_night'], today: string,
+  now = paperExecutionNow()): Promise<boolean> {
+  if (isReadyNight(night, now)) return true
+  if (!night) return false
+  return isReadyNight(night, now, await previousTwTradingDate(kv, today))
 }
 
 async function gatherContext(env: NewsAnalystEnv, today: string): Promise<GatheredContext> {
@@ -115,7 +136,7 @@ async function gatherContext(env: NewsAnalystEnv, today: string): Promise<Gather
   out.cutoff = news.cutoff
   out.evidence = news.evidence
   if (!isReadyUSSignal(out.us_signal, today)) throw new Error('premarket_wait:us-leading')
-  if (!isReadyNight(out.taifex_night)) throw new Error('premarket_wait:taifex-night')
+  if (!await isReadyNightForTradeDate(env.KV, out.taifex_night, today)) throw new Error('premarket_wait:taifex-night')
   if (!out.evidence.length) throw new Error('premarket_wait:news-headlines')
   return out
 }
@@ -357,7 +378,8 @@ export async function readCurrentNewsReport(
   try {
     const report = await kv.get(`market:news_analyst:${today}`, 'json') as NewsAnalystReport | null
     if (!report || report.date !== today || report.schema_version !== 'news-evidence-v2' || report.status !== 'ready' ||
-      !isReadyUSSignal(report.macro_evidence?.us_signal, today) || !isReadyNight(report.macro_evidence?.taifex_night as GatheredContext['taifex_night']) ||
+      !isReadyUSSignal(report.macro_evidence?.us_signal, today) ||
+      !await isReadyNightForTradeDate(kv, report.macro_evidence?.taifex_night as GatheredContext['taifex_night'], today) ||
       !report.evidence?.length || !report.cutoff || Date.parse(report.cutoff) > paperExecutionNow() ||
       new Date(Date.parse(report.cutoff) + 8 * 3600_000).toISOString().slice(0, 10) !== today ||
       filterNewsEvidence(report.evidence, report.cutoff).length !== report.evidence.length || !parseReportJson(JSON.stringify(report), report.evidence)) return null

@@ -20,7 +20,7 @@ export async function runPremarketEvidenceStage<T>(env: Bindings, date: string, 
       lease_owner=excluded.lease_owner, lease_expires_at=excluded.lease_expires_at,
       started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
     WHERE (pipeline_stage_runs.attempt_count < 3
-      OR (pipeline_stage_runs.business_date='2026-10-12'
+      OR (pipeline_stage_runs.business_date IN ('2026-10-12','2026-10-27')
         AND pipeline_stage_runs.stage='premarket_v2:news-analyst'
         AND pipeline_stage_runs.attempt_count IN (3, 4)
         AND pipeline_stage_runs.status='error'

@@ -977,6 +977,10 @@ def _bulk_load_per_stock_misc(
             out[sid]["retail_pct"] = r.get("retail_pct")
 
     # canonical_revenue_monthly: latest row known by the decision date.
+    # revenue_month is FinLab's publication-deadline index (2026-10-12 = September),
+    # so it is compared with the full decision date.
+    # TODO(HL1-1): as_of_date is the last write date of a mutable natural-key row;
+    # rows rewritten on 2026-10-07 are invisible to replays of earlier decision dates.
     rev_rows: list[dict] = []
     symbols = [symbol_by_id.get(sid) for sid in stock_ids if symbol_by_id.get(sid)]
     for chunk in _d1_bind_chunks(symbols):
@@ -989,7 +993,7 @@ def _bulk_load_per_stock_misc(
             f"  ) AS rn "
             f"  FROM canonical_revenue_monthly r "
             f"  WHERE r.stock_id IN ({placeholders}) "
-            f"    AND r.revenue_month <= substr(?, 1, 7) "
+            f"    AND r.revenue_month <= ? "
             f"    AND r.as_of_date <= ?"
             f") WHERE rn = 1",
             [*chunk, decision_date, decision_date],

@@ -75,6 +75,28 @@ def test_successful_empty_fundamental_table_remains_distinct_from_failure(source
     assert 'eps' not in result
 
 
+def test_revenue_reads_publication_index_by_full_decision_date(source_db, monkeypatch):
+    db, query = source_db
+    # revenue_month is FinLab's deadline index: 2026-09-10 = August, 2026-10-12 = September.
+    db.execute('DELETE FROM canonical_revenue_monthly')
+    db.execute("""INSERT INTO canonical_revenue_monthly VALUES
+        ('1000','2026-09-10','2026-10-07',5,6,1000),
+        ('1000','2026-10-12','2026-10-12',15,16,2000)""")
+    revenue_params = []
+    def capture(sql, params, **kwargs):
+        if 'FROM canonical_revenue_monthly' in sql:
+            revenue_params.append(list(params))
+        return query(sql, params, **kwargs)
+    monkeypatch.setattr(builder.MARKET_D1_CLIENT, 'query', capture)
+    late = builder._bulk_load_per_stock_misc([1], {1: '1000'}, decision_date='2026-10-28')[1]
+    assert (late['revenue'], late['revenue_yoy'], late['revenue_mom']) == (2000, 15, 16)
+    assert revenue_params[-1] == ['1000', '2026-10-28', '2026-10-28']
+    # Before the September deadline the August row is still the latest known one.
+    early = builder._bulk_load_per_stock_misc([1], {1: '1000'}, decision_date='2026-10-11')[1]
+    assert early['revenue'] == 1000
+    assert revenue_params[-1] == ['1000', '2026-10-11', '2026-10-11']
+
+
 def test_shareholding_late_arrival_cannot_hide_earlier_known_observation(source_db):
     db,_=source_db
     db.execute("UPDATE shareholding SET created_at='2026-09-09 20:00:00' WHERE date='2026-09-07'")

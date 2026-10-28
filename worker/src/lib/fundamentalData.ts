@@ -150,8 +150,9 @@ async function loadStockSymbol(env: Pick<Bindings, 'DB'> & Partial<Bindings>, st
   return symbol || null
 }
 
+// revenue_month is FinLab's publication-deadline index (YYYY-MM-DD), so an
+// as-of read compares the full date.
 function buildCanonicalRevenueQuery(db: D1Database, symbol: string, limit: number, asOfDate: string | null) {
-  const asOfMonth = asOfDate ? asOfDate.slice(0, 7) : null
   const base = `
       SELECT revenue_month AS date,
              revenue,
@@ -162,12 +163,12 @@ function buildCanonicalRevenueQuery(db: D1Database, symbol: string, limit: numbe
         FROM canonical_revenue_monthly
        WHERE stock_id = ?
   `
-  if (asOfMonth) {
+  if (asOfDate) {
     return db.prepare(`${base}
          AND revenue_month <= ?
        ORDER BY revenue_month DESC, as_of_date DESC
        LIMIT ?
-    `).bind(symbol, asOfMonth, limit)
+    `).bind(symbol, asOfDate, limit)
   }
   return db.prepare(`${base}
        ORDER BY revenue_month DESC, as_of_date DESC

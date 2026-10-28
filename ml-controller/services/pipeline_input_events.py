@@ -5,6 +5,7 @@ address; results and lineage are read back from trusted immutable objects.
 """
 from __future__ import annotations
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 
@@ -200,8 +202,10 @@ async def defer_snapshot(*, business_date, required_history):
 def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
     """Persist CPU work before spawning; never invoke a model training method."""
     store = bucket()
-    refs = []
-    for payload in payloads:
+    log = logging.getLogger(__name__)
+    started = time.monotonic()
+
+    def persist(payload):
         raw = gzip.compress(encoded(payload), mtime=0)
         path = PREFIX + 'batches/' + digest(raw) + '.json.gz'
         blob = store.blob(path)
@@ -210,13 +214,23 @@ def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
         except PreconditionFailed:
             if digest(blob.download_as_bytes()) != digest(raw):
                 raise ValueError('pipeline_input_batch_conflict')
-        refs.append({'path': path, 'sha256': digest(raw)})
+        return {'path': path, 'sha256': digest(raw)}, len(raw)
+
+    # Compression and uploads release the GIL; map keeps refs in batch order.
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(payloads)))) as pool:
+        persisted = list(pool.map(persist, payloads))
+    refs = [ref for ref, _ in persisted]
+    log.info('[InputEvents] prep batches persisted count=%d bytes=%d seconds=%.1f',
+             len(refs), sum(size for _, size in persisted), time.monotonic() - started)
     store, path, stage = register('prep', {'batches': refs, 'receipt_template': receipt_template,
                                          'lock_key': lock_key, 'lock_run_id': lock_run_id})
+    launched = time.monotonic()
     try:
         _launch_missing_prep(store, path, stage)
     except Exception:
-        logging.getLogger(__name__).exception('Prep dispatch uncertain; retained for reconciliation')
+        log.exception('Prep dispatch uncertain; retained for reconciliation')
+    log.info('[InputEvents] prep dispatch seconds=%.1f total_seconds=%.1f',
+             time.monotonic() - launched, time.monotonic() - started)
     raise InputDeferred(path, 'prep')
 
 

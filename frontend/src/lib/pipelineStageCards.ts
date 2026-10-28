@@ -6,7 +6,8 @@ export const PIPELINE_STAGE_CARDS = [
     end: 'node_prepare_l2_inputs', legacyEnd: 'node_load_market_env' },
   // node_resume_l2_inputs re-verifies frozen inputs after the feature wait; it never reopens the first card.
   { id: 'pipeline-features', label: '快照與特徵準備', phases: ['node_build_payloads','input_snapshot','input_prep','feature_preparation','node_resume_l2_inputs'], end: 'node_build_payloads' },
-  { id: 'pipeline-l2', label: 'L2 特徵增強', phases: ['node_l2_timesfm_enrich','seal_l2_inputs','prepare_prediction_request'], end: 'prepare_prediction_request' },
+  // node_prepare_sequence_inputs owns the L2 sub-phases below; while it runs the L2 card is active, not unstarted.
+  { id: 'pipeline-l2', label: 'L2 特徵增強', phases: ['node_prepare_sequence_inputs','node_l2_timesfm_enrich','seal_l2_inputs','prepare_prediction_request'], end: 'prepare_prediction_request' },
   { id: 'pipeline-l3', label: 'L3 預測與封存', phases: ['dispatch_prediction','modal_prediction','modal_inference','node_l3_formal_predict','seal_l3_results'], end: 'seal_l3_results' },
 ] as const
 export const expandPipelineStages = (id: string): string[] => id === 'pipeline'
@@ -19,7 +20,7 @@ const PHASE_NAMES: Record<string,string> = {
   awaiting_premarket:'次交易日盤前資訊',modal_prediction:'L3 模型運算結果',input_prep:'特徵批次結果',input_adjusted:'還原股價',
   node_capture_atomic_inputs:'Atomic 輸入重播',input_snapshot:'輸入快照匯出',
   feature_preparation:'特徵資料準備',node_build_payloads:'特徵與推論輸入',
-  seal_l2_inputs:'封存 L2 輸入',prepare_prediction_request:'準備 L3 請求',dispatch_prediction:'派送 L3 模型',
+  node_prepare_sequence_inputs:'序列與 L2 輸入準備',seal_l2_inputs:'封存 L2 輸入',prepare_prediction_request:'準備 L3 請求',dispatch_prediction:'派送 L3 模型',
   node_l2_timesfm_enrich:'L2 時序特徵',modal_inference:'Modal 模型推論',node_l3_formal_predict:'L3 結果驗證與整合',seal_l3_results:'封存 L3 結果',
   node_compute_personas:'推薦特徵',node_recommend:'L4 配置',node_llm_reasons:'推薦說明',
   node_write_d1:'寫入結果',node_paired_nav_setup:'配對證據',node_compute_sector_flow:'產業資金流',

@@ -190,7 +190,8 @@ def test_payload_builder_prefers_recent_scoped_adaptive_params_before_stale_glob
     seen: list[str] = []
 
     def fake_get_json(key, default=None, timeout=30.0):
-        seen.append(key)
+        if key.startswith("ml:adaptive_params"):
+            seen.append(key)
         if key == "ml:adaptive_params:2026-07-06":
             return _adaptive("2026-07-06", delta=0.06)
         if key == "ml:adaptive_params":
@@ -204,8 +205,44 @@ def test_payload_builder_prefers_recent_scoped_adaptive_params_before_stale_glob
 
     assert params["confidence_delta"] == 0.06
     assert params["runtime_source_key"] == "ml:adaptive_params:2026-07-06"
-    assert seen[:2] == ["ml:adaptive_params:2026-07-07", "ml:adaptive_params:2026-07-06"]
+    # The first wave is probed together; nothing past the wave with the hit is read.
+    assert sorted(seen) == [f"ml:adaptive_params:2026-07-0{day}" for day in (4, 5, 6, 7)]
     assert "ml:adaptive_params" not in seen
+
+
+def test_payload_builder_adaptive_waves_keep_candidate_order_and_observation_reads(monkeypatch):
+    import threading
+    from services.verified_read_observation import verified_read_observation
+
+    older_ready = threading.Event()
+    seen: list[str] = []
+
+    def fake_get_json(key, default=None, timeout=30.0):
+        if key.startswith("ml:adaptive_params"):
+            seen.append(key)
+        if key == "ml:adaptive_params:2026-07-02":
+            older_ready.wait(timeout=5)  # the newer key answers last
+            return _adaptive("2026-07-02", delta=0.02)
+        if key == "ml:adaptive_params:2026-07-01":
+            older_ready.set()
+            return _adaptive("2026-07-01", delta=0.01)
+        if key == "ml:adaptive_params":
+            return _adaptive("2026-06-26", delta=0.09)
+        return default
+
+    monkeypatch.setattr(payload_builder.kv_client, "get_json", fake_get_json)
+    monkeypatch.setattr(payload_builder.kv_client, "get", lambda *_args, **_kwargs: None)
+
+    params = payload_builder.load_effective_adaptive_params(run_date="2026-07-07")
+    assert params["runtime_source_key"] == "ml:adaptive_params:2026-07-02"
+    assert len(seen) == 8 and "ml:adaptive_params" not in seen
+
+    # Inside a UI observation scope reads stay sequential and stop at the first hit.
+    seen.clear(); older_ready.set()
+    with verified_read_observation():
+        params = payload_builder.load_effective_adaptive_params(run_date="2026-07-07")
+    assert params["runtime_source_key"] == "ml:adaptive_params:2026-07-02"
+    assert seen == [f"ml:adaptive_params:2026-07-0{day}" for day in (7, 6, 5, 4, 3, 2)]
 
 
 def test_policy_loader_prefers_run_date_scoped_snapshot():

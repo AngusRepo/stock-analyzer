@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import re
 
-from services.paired_nav_journal import digest, read_snapshot, read_inventory_snapshot, read_context_projection, _timestamp
+from services.paired_nav_journal import digest, read_snapshot, read_inventory_snapshot, read_context_projection, reuse_frozen_snapshot, _timestamp
 from services.paired_nav_comparison import resolve_allocation_comparison, resolve_comparison
 
 
@@ -174,21 +174,24 @@ Use the immutable execution packet's close; do not invent another calendar.
             root = context.get('upstream_allocation_context_snapshot_id') or parent['manifest']['snapshot_id']
         if root not in context_ids:
             raise ValueError('paired_nav_population_root_context_missing')
-        try:
-            comparison = resolve_allocation_comparison(query=query, allocation=saved)
-        except ValueError as exc:
-            from services.strategy_nav_retired_source import retired_source_comparison, execution_parent_identity
-            # Retired-source adjudication retains its full original checks;
-            # the bounded census projection is never substituted as evidence.
-            parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
-            comparison = retired_source_comparison(exc, allocation=saved, parent=parent, clock=clock)
-            if comparison is None:
-                raise
-            unavailable_allocations[m['snapshot_id']] = execution_parent_identity(saved)
-            unresolved_sources.append({'allocation_context_snapshot_id': root,
-                'allocation_snapshot_id': m['snapshot_id'], 'owner': plan['owner'],
-                'status': 'unavailable', 'stage': 'retired_source_verification',
-                'reason': comparison['reason'], 'source_checksum': m['payload_checksum']})
+        # A full parent can be ~1 GB of JSON. The comparison and the retired-source
+        # check share one verified decode; two live copies exhausted the 8Gi job.
+        with reuse_frozen_snapshot(plan['allocation_context_snapshot_id']):
+            try:
+                comparison = resolve_allocation_comparison(query=query, allocation=saved)
+            except ValueError as exc:
+                from services.strategy_nav_retired_source import retired_source_comparison, execution_parent_identity
+                # Retired-source adjudication retains its full original checks;
+                # the bounded census projection is never substituted as evidence.
+                parent = read_snapshot(query, plan['allocation_context_snapshot_id'])
+                comparison = retired_source_comparison(exc, allocation=saved, parent=parent, clock=clock)
+                if comparison is None:
+                    raise
+                unavailable_allocations[m['snapshot_id']] = execution_parent_identity(saved)
+                unresolved_sources.append({'allocation_context_snapshot_id': root,
+                    'allocation_snapshot_id': m['snapshot_id'], 'owner': plan['owner'],
+                    'status': 'unavailable', 'stage': 'retired_source_verification',
+                    'reason': comparison['reason'], 'source_checksum': m['payload_checksum']})
         identity = {k: plan.get(k) for k in ('owner', 'candidate_checksum', 'baseline_checksum', 'configuration_checksum')}
         if (not isinstance(plan.get('pair_id'), str) or not plan['pair_id']
                 or any(not isinstance(identity[k], str) or re.fullmatch('[0-9a-f]{64}', identity[k]) is None

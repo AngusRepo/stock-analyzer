@@ -5,8 +5,10 @@ from .formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, semantic_
 
 import hashlib
 import json
+import logging
 import os
 import statistics
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +24,7 @@ ADJUSTED_PREP_SCHEMA = "active8-canonical-adjusted-prep-v3"
 FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 504
+logger = logging.getLogger(__name__)
 
 
 class Active8PrepDependencyPending(RuntimeError):
@@ -64,10 +67,12 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
     if cutoff in registered:
         return _registered_sequence(bucket, cutoff, registered[cutoff])
     candidates: list[tuple[str, str, dict[str, Any]]] = []
+    started, scanned = time.monotonic(), 0
     for blob in bucket.list_blobs(prefix=SEQUENCE_PREFIX):
         path = str(blob.name)
         if not path.endswith("/prep/sequence_manifest.json"):
             continue
+        scanned += 1
         try:
             manifest = json.loads(blob.download_as_text().lstrip("\ufeff"))
             prefix = path.removesuffix("/prep/sequence_manifest.json")
@@ -89,6 +94,8 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
             candidates.append((date_max, str(manifest.get("created_at") or ""), manifest))
         except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never selected.
             continue
+    logger.info("[active8_prep] sequence manifests scanned=%d candidates=%d seconds=%.1f",
+                scanned, len(candidates), time.monotonic() - started)
     # The old selector downloaded every historical batch before choosing the
     # latest valid seal. Rank the already-verified manifests first, then verify
     # every byte of the candidate we will actually use. Corrupt/missing newest

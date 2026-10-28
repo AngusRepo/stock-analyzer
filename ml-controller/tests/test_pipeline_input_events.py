@@ -587,3 +587,25 @@ def test_cross_release_receipt_still_rejects_wrong_producer_or_bytes(store,monke
     with pytest.raises(ValueError,match='sealed_(receipt_invalid|checksum_mismatch)'):
         events.dispatch_ready(path,jobs_client=jobs,store=store)
     assert not jobs.calls
+
+
+def test_parallel_prep_persistence_keeps_batch_order_bytes_and_conflict_guard(store,monkeypatch):
+    """F3 (10/28): parallel encode/upload must yield the same refs, in batch order, as the sequential loop."""
+    import gzip
+    payloads=[{'batch_index':idx,'rows':list(range(idx*50)),'name':'台積電'} for idx in range(11)]
+    expected=[]
+    for payload in payloads:
+        raw=gzip.compress(events.encoded(payload),mtime=0)
+        expected.append({'path':events.PREFIX+'batches/'+events.digest(raw)+'.json.gz','sha256':events.digest(raw)})
+    monkeypatch.setattr(events,'_launch_missing_prep',lambda bucket,path,stage:None)
+    with events.input_context({'producer_run_id':'run-1','run_date':'2026-10-02'},'gs://fixture/sealed-l2'):
+        with pytest.raises(events.InputDeferred) as deferred:
+            events.defer_prep(payloads=payloads,receipt_template={},lock_key='lock',lock_run_id='prep-1')
+    stage=json.loads(store.blob(deferred.value.path).download_as_text())
+    assert stage['spec']['batches']==expected
+    assert all(gzip.decompress(store.blob(ref['path']).raw)==events.encoded(p) for ref,p in zip(expected,payloads))
+    # An existing batch with different bytes at the same address is still rejected.
+    store.blob(expected[3]['path']).raw=b'tampered'
+    with events.input_context({'producer_run_id':'run-2','run_date':'2026-10-02'},'gs://fixture/sealed-l2'):
+        with pytest.raises(ValueError,match='pipeline_input_batch_conflict'):
+            events.defer_prep(payloads=payloads,receipt_template={},lock_key='lock',lock_run_id='prep-2')

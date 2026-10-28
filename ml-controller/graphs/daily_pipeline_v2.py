@@ -847,6 +847,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
     Build PredictPayload list for all active stocks (bulk D1 reads).
     """
     logger.info("[Pipeline V2] node_build_payloads")
+    started = time.monotonic()
     from services.payload_builder import MarketEnv, capture_payload_sources
 
     # Reconstruct MarketEnv from dict
@@ -874,6 +875,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
                 capture_source=capture_source, decision_date=state["run_date"])
         binding_ref = await checkpoint_async(capture_scope, ['bind-source', capture_source], bind_sources)
         sources = load(binding_ref, capture_scope)
+    logger.info("[Pipeline V2] node_build_payloads sources bound seconds=%.1f", time.monotonic() - started)
     global_history=sources.get("global_market_history")
     if global_history is not None:
         market_env.history=global_history
@@ -898,20 +900,35 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
             verified_sources=view,
         )
     from services.pipeline_slate_artifacts import shared_payload_pool, put_payloads
+    # When the captured universe is exactly the formal slate, one build serves both:
+    # the pool keeps only raw fields and is just the delta base, so loaded rows are unchanged.
+    same_universe = [(s['id'], s['symbol']) for s in sources['stocks']] == [
+        (s['id'], s['symbol']) for s in state['active_stocks']]
+    formal_rows = []
+
+    def formal_slate():
+        if not formal_rows:
+            formal_rows.append([dict(vars(p)) for p in build_slate(state['active_stocks'])])
+        return formal_rows[0]
+
     # This union supplies RAW fields only. Its stock_meta/runtime_options are
     # discarded; every real slate still computes its own peer features below.
     shared_ref = checkpoint(scope, ['shared-payloads', build_context],
-        lambda: shared_payload_pool([dict(vars(p)) for p in build_slate(sources['stocks'])]))
+        lambda: shared_payload_pool(formal_slate() if same_universe
+                                    else [dict(vars(p)) for p in build_slate(sources['stocks'])]))
     shared = load(shared_ref, scope)
+    logger.info("[Pipeline V2] node_build_payloads shared pool ready seconds=%.1f same_universe=%s",
+                time.monotonic() - started, same_universe)
 
-    def save_slate(stocks):
+    def save_slate(stocks, build=None):
         # The builder only reads the verified source. Serialize immediately;
         # never pass these shared nested rows to a mutable consumer.
         return checkpoint(scope, ['pre-l2', build_context, stocks],
-            lambda: [dict(vars(p)) for p in build_slate(stocks)],
+            build or (lambda: [dict(vars(p)) for p in build_slate(stocks)]),
             store=lambda rows, target_scope: put_payloads(rows, target_scope, shared_ref, shared))
 
-    formal_reference = save_slate(state['active_stocks'])
+    formal_reference = save_slate(state['active_stocks'], formal_slate if same_universe else None)
+    logger.info("[Pipeline V2] node_build_payloads formal slate saved seconds=%.1f", time.monotonic() - started)
     result = {"payload_source_observations": sources,
               "timexer_feature_source": capture_source, 'pipeline_slate_scope': scope,
               'pipeline_formal_payload_ref': formal_reference, 'pipeline_shared_payload_ref': shared_ref}
@@ -934,6 +951,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
     # Release that pool before hydrating the one formal consumer.
     del shared, view
     result['payloads'] = load(formal_reference, scope)
+    logger.info("[Pipeline V2] node_build_payloads done seconds=%.1f", time.monotonic() - started)
     return result
 
 

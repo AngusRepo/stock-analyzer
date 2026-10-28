@@ -222,3 +222,38 @@ def test_actual_daily_node_and_compressed_state_roundtrip_reuse_observed_sources
     assert state == before
     with pytest.raises(ValueError, match='payload_source_slate_not_covered'):
         _from_sources(stocks, restored['payload_source_observations'])
+
+
+def test_formal_slate_built_once_and_loads_exactly_as_the_two_build_path(monkeypatch):
+    """FU5 (10/28): with Atomic gone the captured universe is the formal slate, so the
+    raw pool reuses the formal build. Loaded formal rows must equal the two-build path."""
+    from daily_capture_test_dependency import stub_daily_capture_dependency
+    stub_daily_capture_dependency(monkeypatch)
+    from graphs import daily_pipeline_v2 as graph
+    from services.pipeline_slate_artifacts import load
+    stocks = _frozen_loaders(monkeypatch)
+    calls = []
+    real = graph.build_payloads
+
+    def counted(**kwargs):
+        calls.append([s['symbol'] for s in kwargs['active_stocks']])
+        return real(**kwargs)
+    monkeypatch.setattr(graph, 'build_payloads', counted)
+
+    def formal_rows(state):
+        update = asyncio.run(graph.node_build_payloads(state))
+        return load(update['pipeline_formal_payload_ref'], update['pipeline_slate_scope'])
+
+    exact = {'run_date': '2026-09-06', 'producer_run_id': 'local-exact', 'active_stocks': stocks[:2], 'market_env': {}}
+    single = formal_rows(exact)
+    assert calls == [['1000', '1001']], 'the matching universe is built once'
+
+    calls.clear()
+    # A pre-captured superset (the former Atomic shape) keeps the separate pool build.
+    union = builder.capture_payload_sources(stocks, '2026-09-06')
+    superset = {**exact, 'producer_run_id': 'local-union', 'payload_source_observations': union}
+    double = formal_rows(superset)
+    assert calls == [['1000', '1001', '1002'], ['1000', '1001']]
+    assert [row['market'] for row in single] == ['LISTED', 'LISTED']
+    # Full rows (prices, market_env, stock_meta peers), not labels only (M33).
+    assert json.dumps(single, sort_keys=True) == json.dumps(double, sort_keys=True)

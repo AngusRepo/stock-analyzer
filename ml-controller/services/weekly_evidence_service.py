@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -137,25 +136,9 @@ def _metric_summary(metrics: Any) -> dict[str, Any]:
 
 
 def _with_formal_position_risk(trading_config: dict[str, Any]) -> dict[str, Any]:
-    from services.kv_client import get_json
+    from services.position_risk_owner import with_formal_position_risk
 
-    raw = get_json('trading:risk_config', default=None, timeout=5.0)
-    position = raw.get('position') if isinstance(raw, dict) else None
-    if not isinstance(position, dict):
-        raise RuntimeError('weekly_position_risk_config_unavailable')
-    formal = {
-        'contractVersion': 'position-risk-distribution-v1',
-        'maxPerSector': position.get('maxPerSector'),
-        'maxSingleNamePct': position.get('maxSingleNamePct'),
-        'correlationThreshold': position.get('correlationThreshold'),
-        'correlationWindow': position.get('correlationWindow'),
-        'minCorrelationOverlap': 20,
-        'sourceRiskConfigChecksum': _stable_checksum(raw),
-    }
-    FormalPositionRiskParams.from_config(formal)
-    merged = deepcopy(trading_config)
-    merged['positionRiskDistribution'] = formal
-    return merged
+    return with_formal_position_risk(trading_config)
 
 
 def _replay(

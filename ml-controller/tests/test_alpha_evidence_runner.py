@@ -8,6 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.alpha_evidence_runner import run_alpha_candidate_evidence  # noqa: E402
 from routers import backtest  # noqa: E402
+import pytest  # noqa: E402
+
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
 
 
 @dataclass

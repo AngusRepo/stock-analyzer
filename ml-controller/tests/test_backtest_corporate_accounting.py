@@ -118,7 +118,7 @@ def test_exdate_buy_has_no_old_entitlement_and_unpaid_right_is_not_cash():
     assert not book.corporate_receivables and nav(book, 98.) == 109000.
 
 
-def test_daily_replay_keeps_unpaid_cash_right_after_forced_final_sale(monkeypatch):
+def test_daily_replay_keeps_unpaid_cash_right_after_forced_final_sale(monkeypatch, kv_position_risk):
     import services.backtest_engine as engine
     days = ['2026-09-03', '2026-09-04', '2026-09-07']
     actions = [action('cash', 2., '2026-09-09')]
@@ -138,7 +138,8 @@ def test_daily_replay_keeps_unpaid_cash_right_after_forced_final_sale(monkeypatc
             state.pending_settlements.append(engine.PendingSettlement('2026-09-04', '2026-09-08', 'buy', 10000., '2330'))
         return []
     monkeypatch.setattr(engine, 'simulate_entries_for_date', buy)
-    result = engine.replay_period(dataset, days[0], days[-1], {}, initial_capital=109000.)
+    result = engine.replay_period(dataset, days[0], days[-1], {'positionRiskDistribution': kv_position_risk},
+                                  initial_capital=109000.)
     assert result.equity_curve[:2] == [(days[0], 109000.), (days[1], 109000.)]
     trade = result.trades[-1]
     fees = engine.FeeParams.from_trading_config({})

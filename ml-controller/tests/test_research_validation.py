@@ -106,7 +106,7 @@ def test_rehashed_bundle_component_and_completeness_forgery_fail():
     assert bundle_drift(missing,missing['components'])['reason']=='bundle_completeness_invalid'
 
 
-def test_real_replay_observer_preserves_results_and_catches_screener_future_peek(monkeypatch):
+def test_real_replay_observer_preserves_results_and_catches_screener_future_peek(monkeypatch, kv_position_risk):
     from services import backtest_engine as engine
     ds=dataset()
     # Corporate receipts are independently attested; the fixture has no actions.
@@ -116,7 +116,8 @@ def test_real_replay_observer_preserves_results_and_catches_screener_future_peek
         return [engine.Candidate(symbol='A',date=date,close=price,industry='fixture',
             base_score=price,chip_score=0,tech_score=0,momentum_score=0,combined_score=price,has_buy_signal=1)]
     monkeypatch.setattr(engine,'replay_screener_for_date',screener)
-    args=dict(dataset=ds,params={},start_date=ds.start_date,end_date=ds.end_date,mode='A')
+    args=dict(dataset=ds,params={'positionRiskDistribution':kv_position_risk},start_date=ds.start_date,
+              end_date=ds.end_date,mode='A')
     ordinary=engine.replay_period(**args);trace=[]
     observed=engine.replay_period(**args,decision_observer=trace.append)
     assert observed==ordinary and trace[0]['candidates'][0]['symbol']=='A'

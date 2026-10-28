@@ -304,6 +304,10 @@ def run_search(
     end_day = datetime.strptime(end_date, "%Y-%m-%d").date()
     start_date = (end_day - timedelta(days=window_days)).strftime("%Y-%m-%d")
 
+    # The single-name cap and sector/correlation rule come from trading:risk_config (K16a).
+    from services.position_risk_owner import with_formal_position_risk
+    baseline = with_formal_position_risk(_default_sltp_baseline() if target == "sltp" else {})
+
     symbols = select_stratified_subset(target_size=subset_size, end_date=end_date)
     dataset, data_access = BacktestDataset.load_for_research(
         lane="optuna.per_regime",
@@ -314,7 +318,6 @@ def run_search(
         mode=data_mode,
     )
 
-    baseline = _default_sltp_baseline() if target == "sltp" else {}
     objective = create_robust_objective(dataset, start_date, end_date, baseline, target)
 
     study = optuna.create_study(

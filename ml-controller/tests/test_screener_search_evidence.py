@@ -84,6 +84,11 @@ def test_search_samples_only_legal_and_delivered_dimensions():
 
 
 def stub_dataset(monkeypatch, replay):
+    from services.position_risk_owner import formal_position_risk
+    default, formal = search._default_baseline_params, formal_position_risk({'position': {
+        'maxPerSector': 2, 'maxSingleNamePct': 0.25, 'correlationThreshold': 0.7, 'correlationWindow': 60}})
+    monkeypatch.setattr(search, '_default_baseline_params',
+                        lambda: {**default(), 'positionRiskDistribution': formal})
     days = [(date(2026, 6, 6) + timedelta(days=i)).isoformat() for i in range(91)
             if (date(2026, 6, 6) + timedelta(days=i)).weekday() < 5]
     dataset = SimpleNamespace(trading_days=days, get_universe_at=lambda day: {'2330'},
@@ -179,7 +184,7 @@ def test_entry_producer_marks_policy_and_data_separately(monkeypatch, bar, min_v
     account = engine.AccountState(cash=1_000_000, initial_capital=1_000_000)
     attempts = engine.simulate_entries_for_date(
         SimpleNamespace(get_bar=lambda *a: bar), '2026-08-25', '2026-08-26',
-        [candidate], account, engine.PositionSizeParams(min_position_value=min_value),
+        [candidate], account, engine.PositionSizeParams(min_position_value=min_value, max_pct_of_portfolio=0.25),
         engine.SLTPParams(), engine.FeeParams())
     assert len(attempts) == 1
     assert attempts[0].status == status

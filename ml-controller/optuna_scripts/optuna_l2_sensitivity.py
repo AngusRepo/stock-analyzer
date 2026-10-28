@@ -333,6 +333,8 @@ def run_l2_sensitivity_search(
     space = list(search_space or DEFAULT_SEARCH_SPACE)
     if not space:
         raise ValueError("run_l2_sensitivity_search: empty search_space")
+    from services.position_risk_owner import require_position_risk_contract
+    require_position_risk_contract(baseline_config)
 
     # Mode B objective — import lazily so unit-test stubs can intercept
     from services.backtest_engine import replay_period, BacktestDataset, FeeParams  # type: ignore

@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +46,10 @@ def _empty_frame(columns: list[str]) -> pl.DataFrame:
     return pl.DataFrame(schema={column: pl.Utf8 for column in columns})
 
 
+def _snapshot_query_workers() -> int:
+    return int(os.environ.get("DATASET_SNAPSHOT_QUERY_WORKERS", "4"))
+
+
 def _query_date_range(
     sql: str,
     start_date: str,
@@ -53,13 +58,23 @@ def _query_date_range(
     *,
     query_client: Any,
 ) -> tuple[pl.DataFrame, int]:
-    frames: list[pl.DataFrame] = []
-    query_count = 0
-    for chunk_start, chunk_end in _date_chunks(start_date, end_date, chunk_days):
-        rows = query_client.query(sql, [chunk_start, chunk_end], timeout=120.0)
-        query_count += 1
-        if rows:
-            frames.append(_frame(rows))
+    from services.verified_read_observation import observation_active
+    chunks = _date_chunks(start_date, end_date, chunk_days)
+
+    def read(chunk: tuple[str, str]) -> pl.DataFrame | None:
+        rows = query_client.query(sql, list(chunk), timeout=120.0)
+        return _frame(rows) if rows else None
+
+    # Chunks are independent reads; map keeps date order so the concat is unchanged.
+    # d1_client already backs off on 429/overload. UI observation scopes (a ContextVar
+    # pool threads do not inherit) stay sequential.
+    workers = 1 if observation_active() else max(1, min(_snapshot_query_workers(), len(chunks)))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            frames = [frame for frame in pool.map(read, chunks) if frame is not None]
+    else:
+        frames = [frame for frame in map(read, chunks) if frame is not None]
+    query_count = len(chunks)
     from services.retention_market_history import TABLES, archived_market_projection
     match = re.search(r'\bFROM\s+([a-z_]+)\b', sql, re.I)
     if match and match.group(1) in TABLES:

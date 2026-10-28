@@ -294,6 +294,8 @@ def run_search(
 
     if baseline_params is None:
         baseline_params = _default_baseline_params()
+    from services.position_risk_owner import require_position_risk_contract
+    require_position_risk_contract(baseline_params)
 
     logger.info(
         f"[optuna_screener] Sprint 5.2 search: n_trials={n_trials} "

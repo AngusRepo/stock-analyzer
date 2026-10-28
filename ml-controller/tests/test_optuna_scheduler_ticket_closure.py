@@ -23,6 +23,9 @@ except ImportError:
 import optuna_job_main  # noqa: E402
 from routers import optuna  # noqa: E402
 
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
+
 
 def test_research_sweep_route_propagates_scheduler_ticket_identity(monkeypatch):
     captured = {}

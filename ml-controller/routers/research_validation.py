@@ -73,7 +73,8 @@ async def candidate_configuration(candidate_id):
     saved=await worker_fetch('/api/admin/config/sandbox/'+quote(rows[0]['sandbox_id'],safe=''),method='GET')
     current=await worker_fetch('/api/admin/config',method='GET')
     from services.alpha_evidence_runner import _deep_merge,_candidate_config
-    return rows[0],_deep_merge(current,_candidate_config(saved))
+    from services.position_risk_owner import with_formal_position_risk
+    return rows[0],with_formal_position_risk(_deep_merge(current,_candidate_config(saved)))
 
 
 def components(configuration):

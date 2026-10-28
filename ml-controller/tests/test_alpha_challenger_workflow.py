@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from routers import config_pool  # noqa: E402
 from test_promotion_service import _exact_dsr_inputs, _promotion_grade_data_snooping
 
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
+
 CID = 'parameter:alpha_framework:alpha_framework:2026-04-26T00:00:00Z:abcd1234'
 
 

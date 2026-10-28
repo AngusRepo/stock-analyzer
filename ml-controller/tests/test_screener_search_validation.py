@@ -11,6 +11,13 @@ from services.screener_search_validation import (
 from services.screener_search_evidence import assess_metrics
 
 
+@pytest.fixture
+def risk_owned_baseline(monkeypatch, kv_position_risk):
+    default = search._default_baseline_params
+    monkeypatch.setattr(search, '_default_baseline_params',
+                        lambda: {**default(), 'positionRiskDistribution': kv_position_risk})
+
+
 def days():
     return [(date(2026, 6, 1) + timedelta(days=i)).isoformat() for i in range(90)
             if (date(2026, 6, 1) + timedelta(days=i)).weekday() < 5]
@@ -110,7 +117,7 @@ def test_selection_lock_changes_with_candidate_or_split():
         lock({'a': 1}, {})
 
 
-def test_holdout_cannot_change_selection_and_universe_is_prior_to_search(monkeypatch):
+def test_holdout_cannot_change_selection_and_universe_is_prior_to_search(monkeypatch, risk_owned_baseline):
     dataset = research_dataset()
     universe_dates = []
     monkeypatch.setattr(search, 'select_stratified_subset',
@@ -142,7 +149,7 @@ def test_holdout_cannot_change_selection_and_universe_is_prior_to_search(monkeyp
     assert universe_dates == ['2026-05-31', '2026-05-31']
 
 
-def test_holdout_data_failure_is_not_hidden_or_reselected(monkeypatch):
+def test_holdout_data_failure_is_not_hidden_or_reselected(monkeypatch, risk_owned_baseline):
     dataset = research_dataset()
     monkeypatch.setattr(search, 'select_stratified_subset', lambda **_: ['2330'])
     monkeypatch.setattr(search.BacktestDataset, 'load_for_research', lambda **_: (dataset, {}))

@@ -27,6 +27,9 @@ import optuna_job_main  # noqa: E402
 from routers import config_pool  # noqa: E402
 from services.cloud_run_jobs_client import JobExecution  # noqa: E402
 
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
+
 
 def _candidate_row() -> dict:
     return {

@@ -305,10 +305,18 @@ function bestReplacementHolding(
   return best
 }
 
+// The caller derives the cap from `trading:risk_config.position.maxSingleNamePct`
+// (its only owner); a missing or invalid cap is an error, never a default.
+function singleNameCap(config: FiveSlotAllocatorConfig): number {
+  const cap = Number(config.maxPctOfPortfolio)
+  if (!Number.isFinite(cap) || cap < 0 || cap > 1) throw new Error('five_slot_single_name_cap_invalid')
+  return cap
+}
+
 function capBudget(value: number, account: FiveSlotAllocatorAccount, config: FiveSlotAllocatorConfig): number {
   return Math.max(0, Math.min(
     value,
-    finiteNumber(account.totalPortfolio, 0) * finiteNumber(config.maxPctOfPortfolio, 0.25),
+    finiteNumber(account.totalPortfolio, 0) * singleNameCap(config),
     finiteNumber(account.cash, 0),
     finiteNumber(account.dailyRemaining, finiteNumber(config.dailyBuyLimit, 0)),
   ))
@@ -382,6 +390,7 @@ export function buildFiveSlotCapitalPlan(input: {
   holdings: FiveSlotHolding[]
   candidates: FiveSlotCandidate[]
 }): FiveSlotCapitalPlan {
+  singleNameCap(input.config)
   const maxPositions = Math.max(1, Math.floor(finiteNumber(input.config.maxPositions, 5)))
   const minPositionValue = Math.max(0, finiteNumber(input.config.minPositionValue, 30_000))
   const targetExposure = inferFiveSlotTargetExposureFromContext({

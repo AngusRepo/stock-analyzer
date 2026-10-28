@@ -5,7 +5,7 @@ import { checkP5Losses } from './riskChecks/p5Losses'
 import { runPortfolioChecks } from './riskChain'
 import { resolveCircuitAdjustedSingleNameCap } from './riskPositionSizing'
 import { checkP9IntradayDrawdown, mergeIntradayPortfolioRisk } from './intradayPortfolioRisk'
-import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
 import { buildMarketRegimeState } from './marketRegimeState'
 import { withPaperExecutionScope } from './paperExecutionScope'
@@ -21,7 +21,7 @@ function sell(f: ReturnType<typeof l4NativeFixture>, pnl: number) {
 }
 function seedRisk(f: ReturnType<typeof l4NativeFixture>) {
   f.sqls.learning.exec('CREATE TABLE IF NOT EXISTS active8_ensemble_pointer_v1(singleton_id INTEGER PRIMARY KEY,artifact_id TEXT,cohort_id TEXT,payload_checksum TEXT,base_artifact_set_checksum TEXT)')
-  f.kvs.set('trading:risk_config', JSON.stringify(DEFAULT_RISK_CONFIG))
+  f.kvs.set('trading:risk_config', JSON.stringify(RISK_CONFIG_FIXTURE))
   f.kvs.set('ml:adaptive_params', JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,
     recent_accuracy_30d:.6, provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
   f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
@@ -94,8 +94,8 @@ for(const hardGate of ['P1','P8','P9','S1','missing_market_evidence'])test(`P5 s
   try {
     seedRisk(f)
     for(let i=0;i<3;i++)sell(f,-1)
-    if(hardGate==='S1')f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,
-      system:{...DEFAULT_RISK_CONFIG.system,killSwitch:true}}))
+    if(hardGate==='S1')f.kvs.set('trading:risk_config',JSON.stringify({...RISK_CONFIG_FIXTURE,
+      system:{...RISK_CONFIG_FIXTURE.system,killSwitch:true}}))
     if(hardGate==='missing_market_evidence')f.sqls.core.exec('DELETE FROM market_risk_quality_v1')
     if(hardGate==='P1' || hardGate==='P8') {
       const navs=hardGate==='P1'?[1000000,950000,800000]:[1000000,965000]
@@ -106,9 +106,9 @@ for(const hardGate of ['P1','P8','P9','S1','missing_market_evidence'])test(`P5 s
     let result: CircuitBreakerState = (await chain(f)).result
     if(hardGate==='P9') {
       await withPaperExecutionScope(f.ports,()=>checkP9IntradayDrawdown(f.env.PAPER_DB,f.env.KV,1,
-        '2026-09-14',1000000,DEFAULT_RISK_CONFIG,deps))
+        '2026-09-14',1000000,RISK_CONFIG_FIXTURE,deps))
       const p9=await withPaperExecutionScope(f.ports,()=>checkP9IntradayDrawdown(f.env.PAPER_DB,f.env.KV,1,
-        '2026-09-14',940000,DEFAULT_RISK_CONFIG,deps))
+        '2026-09-14',940000,RISK_CONFIG_FIXTURE,deps))
       result=mergeIntradayPortfolioRisk(result,p9.result.state)
     }
     assert.equal(result.halt,true)

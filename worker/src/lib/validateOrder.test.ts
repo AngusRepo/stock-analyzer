@@ -1,4 +1,4 @@
-import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
 import { validateOrder } from './validateOrder'
 
 function assert(condition: unknown, message: string): void {
@@ -14,7 +14,7 @@ async function run(): Promise<void> {
     limitPrice: 141.6,
     refClose: 141.5,
     avgVolume20d: 100_000,
-    }, DEFAULT_RISK_CONFIG)
+    }, RISK_CONFIG_FIXTURE)
 
     assert(result.approved, 'odd-lot buy should be legal when it can be represented as TW order legs')
     assert(result.adjustedOrder?.limitPrice === 141.5, 'buy limit should snap down to legal TW tick')
@@ -29,7 +29,7 @@ async function run(): Promise<void> {
     limitPrice: 1000,
     refClose: 1000,
     avgVolume20d: 100_000,
-    }, DEFAULT_RISK_CONFIG)
+    }, RISK_CONFIG_FIXTURE)
 
     assert(!result.approved, 'buy order above NT$300,000 must be blocked by G5')
     assert(result.violations.some((v) => v.gate === 'G5'), 'buy-side fat-finger cap must be enforced')
@@ -48,7 +48,7 @@ async function run(): Promise<void> {
         authorizedValue: 400_000,
         portfolioValue: 2_000_000,
       },
-    }, DEFAULT_RISK_CONFIG)
+    }, RISK_CONFIG_FIXTURE)
 
     assert(result.approved, 'allocator-authorized NT$400,000 high-price odd-lot target must not be clipped by the manual NT$300,000 guard')
     assert(
@@ -70,7 +70,7 @@ async function run(): Promise<void> {
         authorizedValue: 400_000,
         portfolioValue: 1_000_000,
       },
-    }, DEFAULT_RISK_CONFIG)
+    }, RISK_CONFIG_FIXTURE)
 
     assert(!result.approved, 'sparse authorization must still obey maxSingleNamePct')
     assert(
@@ -87,7 +87,7 @@ async function run(): Promise<void> {
     limitPrice: 141.6,
     refClose: 141.5,
     avgVolume20d: 100_000,
-    }, DEFAULT_RISK_CONFIG)
+    }, RISK_CONFIG_FIXTURE)
 
     assert(!result.approved, 'oversized sell should still respect fat-finger cap')
     assert(result.adjustedOrder === null, 'blocked orders should not expose an adjusted order')

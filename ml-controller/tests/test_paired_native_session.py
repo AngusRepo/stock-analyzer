@@ -53,8 +53,8 @@ def native_config():
     script = """
 const esbuild = require('esbuild');
 const r = esbuild.buildSync({stdin:{contents:`import { buildChampionTradingConfig } from './src/lib/tradingConfig';
-import { DEFAULT_RISK_CONFIG } from './src/lib/riskConfig';
-console.log(JSON.stringify({trading:buildChampionTradingConfig(null),risk:DEFAULT_RISK_CONFIG}));`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false});
+import { RISK_CONFIG_FIXTURE } from './src/lib/riskConfig.testSupport';
+console.log(JSON.stringify({trading:buildChampionTradingConfig(null),risk:RISK_CONFIG_FIXTURE}));`,resolveDir:process.cwd(),loader:'ts'},bundle:true,platform:'node',format:'cjs',write:false});
 eval(r.outputFiles[0].text);
 """
     result = subprocess.run(['node', '-e', script], cwd=ROOT / 'worker', capture_output=True, text=True, check=True)

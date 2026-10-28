@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
 import { pollIntradayStopLoss, runEODExit } from './paperExitTasks'
 import { getTradingConfig, invalidateConfigCache } from './tradingConfig'
-import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -51,7 +51,7 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     throw new Error('unseeded_native_source:'+url)
   }
   try {
-    f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
+    f.kvs.set('trading:risk_config',JSON.stringify(RISK_CONFIG_FIXTURE))
     f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
     f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
     f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES('2026-09-11',.6,60)")

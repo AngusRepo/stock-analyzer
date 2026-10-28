@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash, webcrypto } from 'node:crypto'
 import test from 'node:test'
 import { resolveCanonicalMarketRisk } from './marketRiskRuntime'
-import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
 import { buildMarketRegimeState } from './marketRegimeState'
 import { fixtureQuality, fixtureProvenance } from './riskProtocol.testSupport'
 import { withPaperExecutionScope } from './paperExecutionScope'
@@ -42,7 +42,7 @@ function inputs(fault?: 'checksum' | 'date' | 'missing') {
 async function resolve(f: ReturnType<typeof inputs>) {
   const scope = await withPaperExecutionScope({environment:{} as any,accountId:1,
     nowMs:Date.parse('2026-09-21T00:00:00Z'),databases:{},fetchFrozen:async()=>{throw new Error('unexpected network')}},
-    ()=>resolveCanonicalMarketRisk(f as any,f.kv as any,DEFAULT_RISK_CONFIG))
+    ()=>resolveCanonicalMarketRisk(f as any,f.kv as any,RISK_CONFIG_FIXTURE))
   return scope.result
 }
 test('expired weekend KV retains exact latest-session verified regime with no writes', async () => {

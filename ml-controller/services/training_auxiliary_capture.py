@@ -46,10 +46,11 @@ def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices
         history=values.filter(pl.col("date")<min(dates)).filter(pl.col("value").is_not_null()).sort("symbol","date").group_by("symbol",maintain_order=True).tail(1)
         values=pl.concat([history.select(values.columns),values.filter(pl.col("date")>=min(dates))]).sort("symbol","date")
         # Nulls remain recorded in source; native causal sanitizer owns imputation.
-        for row in values.iter_rows(named=True):
-            dated.setdefault(ids[row["symbol"]],{}).setdefault(row["date"],{})[field]=row["value"]
-            if field in {"margin_balance","short_balance"} and row["date"] in chip_keys.get(row["symbol"],{}):
-                chip_keys[row["symbol"]][row["date"]][field]=row["value"]
+        chip_field=field in {"margin_balance","short_balance"}
+        for symbol,day,value in zip(values["symbol"].to_list(),values["date"].to_list(),values["value"].to_list()):
+            dated.setdefault(ids[symbol],{}).setdefault(day,{})[field]=value
+            if chip_field and day in chip_keys.get(symbol,{}):
+                chip_keys[symbol][day][field]=value
         fields[field]={"sha256":meta["sha256"],"source_rows":wide.height,"selected_rows":values.height,
             "null_count":values["value"].null_count(),"vendor_absent_symbol_columns":sorted(set(ids)-set(columns)),
             "availability":meta.get("availability"),"date_min":wide["date"].min(),"date_max":wide["date"].max()}

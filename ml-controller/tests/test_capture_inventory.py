@@ -20,8 +20,10 @@ class Bucket:
             download_as_bytes=lambda: self.store[name],
             download_as_text=lambda: self.store[name].decode())
 
-    def list_blobs(self, prefix):
-        return [self.blob(name) for name in self.store if name.startswith(prefix)]
+    def list_blobs(self, prefix, match_glob=None):
+        import fnmatch
+        return [self.blob(name) for name in self.store if name.startswith(prefix)
+                and (match_glob is None or fnmatch.fnmatchcase(name, match_glob))]
 
     def put(self, name, obj):
         self.store[name] = json.dumps(obj).encode()
@@ -143,3 +145,139 @@ def test_route_rejects_before_lock_stock_load_and_modal(monkeypatch):
     result=asyncio.run(route.trigger_universal_retrain(req,request=None))
     assert result['error']=='prep_source_inventory_incomplete'
     assert result['source_inventory']['issues'][0]['path'].endswith('holding.parquet')
+
+
+# R33 per_field_auxiliary: each field from its own latest content-addressed capture.
+def _full_aux(b, capture, end, fields, sha='b' * 64, start='2023-01-03'):
+    root = f'daily/{capture}/raw/training_auxiliary_full_vintage'
+    b.put(root + '/manifest.json', {'schema_version': 'finlab-training-auxiliary-single-capture-v1', 'capture_id': capture,
+                                   'end_date': end, 'fields': {f: {'sha256': sha, 'start_date': start} for f in fields}})
+    for f in fields:
+        b.store[f'{root}/{f}.parquet'] = b'presence-only-fixture'
+    return root
+
+
+def _daily_only(b):
+    aux = 'daily/raw/training_auxiliary_full_vintage'
+    m = json.loads(b.store[aux + '/manifest.json'])
+    m['fields'] = {f: v for f, v in m['fields'].items() if f in ('margin_balance', 'short_balance', 'pe', 'pb')}
+    b.put(aux + '/manifest.json', m)
+
+
+def per_field(b):
+    return inspect_capture_inventory(b, sequence_gcs_prefix='seq', run_date='2026-10-12', per_field_auxiliary=True)
+
+
+def test_per_field_inventory_binds_missing_fields_from_older_full_capture():
+    b = fixture(); _daily_only(b); _full_aux(b, 'full', '2026-10-09', FIELDS)
+    assert inspect(b)['status'] == 'blocked'  # v1 same-root contract still requires all 11 fields
+    report = per_field(b)
+    assert report['status'] == 'inventory_ready', report['issues']
+    owners = {k: v['capture_id'] for k, v in report['auxiliary_field_captures'].items()}
+    assert owners['margin_balance'] == owners['pe'] == 'daily'
+    assert owners['revenue'] == owners['dividend_yield'] == 'full'
+
+
+def test_per_field_inventory_blocks_corrupt_latest_sha_missing_object_and_short_daily_history():
+    b = fixture(); _daily_only(b); _full_aux(b, 'full', '2026-10-09', FIELDS)
+    _full_aux(b, 'newer', '2026-10-11', ('revenue',), sha='not-a-sha')
+    report = per_field(b)
+    assert report['status'] == 'blocked'
+    assert [x['detail'] for x in report['issues'] if x['code'] == 'auxiliary_field_capture_unresolved'] == [
+        'root_auxiliary_field_checksum_invalid:revenue']
+
+    b = fixture(); _daily_only(b); root = _full_aux(b, 'full', '2026-10-09', FIELDS, start='2024-01-02')
+    del b.store[root + '/eps.parquet']
+    codes = [(x['code'], x['path'].rsplit('/', 1)[1]) for x in per_field(b)['issues']]
+    assert ('object_missing', 'eps.parquet') in codes
+    assert ('daily_history_starts_after_price_capture', 'dividend_yield.parquet') in codes
+    assert not any(c == 'daily_history_starts_after_price_capture' and f != 'dividend_yield.parquet' for c, f in codes)
+
+
+
+# R33 require_aligned_history: institutional and market_value must start with the price vintage.
+GUARD_DAYS = ['2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-12']
+
+
+def _wide(days, value=1.0, symbols=120):
+    import io
+    import polars as pl
+    buffer = io.BytesIO()
+    pl.DataFrame({'date': days, **{f's{i}': [value] * len(days) for i in range(symbols)}}).write_parquet(buffer)
+    return buffer.getvalue()
+
+
+def _seal_real(b, folder, field, raw):
+    root = f'daily/raw/{folder}'
+    b.store[f'{root}/{field}.parquet'] = raw
+    m = json.loads(b.store[root + '/manifest.json'])
+    m['checksums'][field] = hashlib.sha256(raw).hexdigest()
+    b.put(root + '/manifest.json', m)
+
+
+def _seal_broker(b, days, symbols=120):
+    import io
+    import polars as pl
+    buffer = io.BytesIO()
+    pl.DataFrame({'date': [d for d in days for _ in range(symbols)], 'symbol': [f's{i}' for _ in days for i in range(symbols)],
+                  'broker_net_lots': [1.0] * (len(days) * symbols)}).write_parquet(buffer)
+    raw = buffer.getvalue(); root = 'daily/raw/training_long_full_vintage'
+    b.store[root + '/broker.parquet'] = raw
+    meta = json.loads(b.store[root + '/broker.json']); meta['sha256'] = hashlib.sha256(raw).hexdigest()
+    b.put(root + '/broker.json', meta)
+
+
+def guarded_fixture(*, mv_days=GUARD_DAYS, inst_days=GUARD_DAYS, mv_value=1.0, broker_days=GUARD_DAYS, broker_symbols=120):
+    b = fixture()
+    _seal_broker(b, broker_days, broker_symbols)
+    _seal_real(b, 'daily_price_full_vintage', 'close', _wide(GUARD_DAYS))
+    _seal_real(b, 'daily_price_full_vintage', 'market_value', _wide(mv_days, mv_value))
+    for field in ('foreign_net', 'trust_net', 'dealer_self_net', 'dealer_hedge_net'):
+        _seal_real(b, 'chip_diversity_full_vintage', field, _wide(inst_days if field == 'foreign_net' else GUARD_DAYS, 0.0))
+    return b
+
+
+def guarded(b, **flags):
+    return inspect_capture_inventory(b, sequence_gcs_prefix='seq', run_date='2026-10-12', **flags)
+
+
+def test_aligned_sources_pass_r33_history_guard():
+    report = guarded(guarded_fixture(), require_aligned_history=True)
+    assert report['status'] == 'inventory_ready', report['issues']
+
+
+def test_late_institutional_history_blocks_r33_before_loading():
+    report = guarded(guarded_fixture(inst_days=GUARD_DAYS[2:]), require_aligned_history=True)
+    issue = [x for x in report['issues'] if x['code'].startswith('r33_source_history_starts_after_price')]
+    assert report['status'] == 'blocked'
+    assert issue == [{'code': 'r33_source_history_starts_after_price:foreign_net',
+                      'path': 'daily/raw/chip_diversity_full_vintage/foreign_net.parquet',
+                      'source': 'foreign_net', 'source_start': '2026-10-08', 'price_start': '2026-10-06'}]
+
+
+@pytest.mark.parametrize('kwargs', [{'mv_days': GUARD_DAYS[1:]}, {'mv_value': float('nan')}])
+def test_late_or_empty_market_value_blocks_r33(kwargs):
+    report = guarded(guarded_fixture(**kwargs), require_aligned_history=True)
+    codes = [x['code'] for x in report['issues']]
+    assert report['status'] == 'blocked' and codes == ['r33_source_history_starts_after_price:market_value']
+
+
+def test_non_r33_inventory_ignores_history_alignment():
+    b = guarded_fixture(inst_days=GUARD_DAYS[2:], mv_days=GUARD_DAYS[1:])
+    assert guarded(b)['status'] == 'inventory_ready'
+    assert guarded(b, per_field_auxiliary=False)['status'] == 'inventory_ready'
+
+
+@pytest.mark.parametrize('kwargs', [{'broker_days': GUARD_DAYS[3:]}, {'broker_symbols': 99}])
+def test_late_or_thin_broker_history_blocks_r33(kwargs):
+    report = guarded(guarded_fixture(**kwargs), require_aligned_history=True)
+    issues = [x for x in report['issues'] if x['code'].startswith('r33_source_history_starts_after_price')]
+    assert report['status'] == 'blocked'
+    assert [(x['code'], x['source'], x['price_start']) for x in issues] == [
+        ('r33_source_history_starts_after_price:broker', 'broker', '2026-10-06')]
+    assert issues[0]['source_start'] == ('2026-10-09' if 'broker_days' in kwargs else None)
+
+
+def test_non_r33_ignores_late_broker_history():
+    assert guarded(guarded_fixture(broker_days=GUARD_DAYS[3:]))['status'] == 'inventory_ready'
+

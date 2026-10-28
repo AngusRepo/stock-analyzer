@@ -314,6 +314,22 @@ def rank_ic(preds: np.ndarray, y_actual: np.ndarray) -> float:
     return float(rho) if not np.isnan(rho) else 0.0
 
 
+def date_panel_fold_metrics(dates: Any, pred: Any, y_actual: Any) -> list[dict[str, Any]]:
+    """One rank-IC fold per outer-test date (full date/symbol coverage)."""
+    dates = np.asarray(dates).astype(str).reshape(-1)
+    pred = np.asarray(pred, dtype=float).reshape(-1)
+    y_actual = np.asarray(y_actual, dtype=float).reshape(-1)
+    rows = []
+    for fold_id, day in enumerate(sorted(set(dates.tolist())), start=1):
+        idx = np.flatnonzero(dates == day)
+        if len(idx) < 2:
+            continue
+        rows.append({"fold_id": f"date_panel_{fold_id}", "date": day, "oos_ic": rank_ic(pred[idx], y_actual[idx]),
+                     "test_rows": int(len(idx)), "coverage": 1.0, "date_coverage": 1.0, "symbol_coverage": 1.0,
+                     "fold_share": float(len(idx) / max(1, len(y_actual)))})
+    return rows
+
+
 def build_model_cpcv_evidence(
     *,
     model: str,

@@ -259,7 +259,9 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         dataset.dates,
         dataset.markets,
     )
-    finite_mask = np.isfinite(dataset.y) & np.isfinite(dataset.target_returns) & np.isfinite(dataset.X).all(axis=1)
+    from .full_fit_scope import row_mask
+    finite_mask = (np.isfinite(dataset.y) & np.isfinite(dataset.target_returns) & np.isfinite(dataset.X).all(axis=1)
+                   & row_mask(payload, dataset.dates, dataset.label_known_dates))
     x_raw = np.asarray(dataset.X[finite_mask], dtype=np.float32)
     y = np.clip(np.asarray(dataset.y[finite_mask], dtype=np.float32).reshape(-1), 0.0, 1.0)
     target_returns = np.asarray(dataset.target_returns[finite_mask], dtype=np.float32).reshape(-1)
@@ -323,6 +325,8 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
             signal_dates=dates, label_known_dates=label_known_dates,
             cutoff=payload.get("as_of_date") or payload.get("run_date"),
         )
+        from .full_fit_scope import bounds
+        deployment_fit["input_scope"] = bounds(payload)
         if 0 < max_rows < len(y):
             raise ValueError("deployment_refit_row_truncation_forbidden")
     train_fit_idx = _subsample_indices(train_idx, max_rows=max_rows)

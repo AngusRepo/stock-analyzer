@@ -27,6 +27,37 @@ MODEL_SLUGS = {
     "PatchTST": "patchtst",
     "iTransformer": "itransformer",
 }
+# TimeXer folds are recoverable only under the R33 attestation (non-R33 rosters with
+# TimeXer keep the old behaviour: no recovery).
+ALL_SLUGS = {**MODEL_SLUGS, "TimeXer": "timexer"}
+DENSE_SEQUENCE_MODELS = {*SEQUENCE_MODELS, "TimeXer"}
+R33_PURGE_HORIZON = 5
+
+
+class _UnattestedFold(ValueError):
+    """A fold artifact without the full R33 attestation: re-run the window, never recover it."""
+
+
+def r33_attestation_failure(artifact_metadata: dict[str, Any], *, model_name: str, window: dict[str, Any],
+                            producer_source_sha: str, feature_semantic_version: str) -> str | None:
+    split = artifact_metadata.get("split_metadata")
+    split = split if isinstance(split, dict) else {}
+    if not producer_source_sha or artifact_metadata.get("producer_source_sha") != producer_source_sha:
+        return "producer_source_sha"
+    if not feature_semantic_version or artifact_metadata.get("feature_semantic_version") != feature_semantic_version:
+        return "feature_semantic_version"
+    known_max = split.get("train_label_known_max") or split.get("training_label_known_max")
+    if not known_max or str(known_max)[:10] >= str(window["test_start"]):
+        return "train_label_known_max"
+    if model_name in DENSE_SEQUENCE_MODELS:
+        if split.get("purge_horizon") != R33_PURGE_HORIZON or split.get("refit_inside_test") is not False:
+            return "purge_horizon"
+    elif split.get("method") != "walk_forward_explicit_label_purged":
+        return "purge_method"
+    if model_name in SEQUENCE_MODELS and (split.get("nf_require_complete_horizon") is not True
+                                          or not isinstance(split.get("evaluation_row_accounting"), dict)):
+        return "nf_require_complete_horizon"
+    return None
 
 
 def _sha256(raw: bytes) -> str:
@@ -56,12 +87,12 @@ def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:
 def _fold_evidence_path(prep_prefix: str, cohort_id: str, fold_id: str, model_name: str) -> str:
     return (
         f"{prep_prefix.rstrip('/')}/oof/{cohort_id}/{fold_id}/"
-        f"{MODEL_SLUGS[model_name]}.evidence.json"
+        f"{ALL_SLUGS[model_name]}.evidence.json"
     )
 
 
 def _model_metadata_path(prep_prefix: str, model_name: str, version: str) -> str:
-    slug = MODEL_SLUGS[model_name]
+    slug = ALL_SLUGS[model_name]
     if model_name in TREE_MODELS:
         return f"{prep_prefix}/frozen_models/{slug}/metadata_{version}.json"
     return f"universal/{slug}/metadata_{version}.json"
@@ -116,9 +147,9 @@ def _verify_model_source(
     oof_path: str,
     oof_checksum: str,
 ) -> tuple[dict[str, Any], str, str, str]:
-    slug = MODEL_SLUGS[model_name]
+    slug = ALL_SLUGS[model_name]
     metadata_path = _model_metadata_path(prep_prefix, model_name, version)
-    if model_name in SEQUENCE_MODELS and not bucket.blob(metadata_path).exists():
+    if model_name == "TimeXer" or (model_name in SEQUENCE_MODELS and not bucket.blob(metadata_path).exists()):
         evidence_path = _fold_evidence_path(prep_prefix, cohort_id, fold_id, model_name)
         evidence = _load_json(bucket, evidence_path)
         stored_checksum = _normalize_sha256(evidence.pop("evidence_checksum", ""))
@@ -140,7 +171,21 @@ def _verify_model_source(
             if evidence.get(key) != value:
                 raise ValueError(f"oof_artifact_recovery_evidence_mismatch:{model_name}:{key}")
         _coverage_contract(_model_cpcv(evidence))
-        return evidence, "", evidence_path, ""
+        if model_name != "TimeXer":
+            return evidence, "", evidence_path, ""
+        # TimeXer evidence also pins the content-addressed checkpoint it was scored with.
+        checkpoint_metadata_path = str(evidence.get("model_metadata_path") or "")
+        checkpoint = _load_json(bucket, checkpoint_metadata_path)
+        artifact_path = str(checkpoint.get("artifact_path") or "")
+        expected_checksum = _normalize_sha256(checkpoint.get("checksum"))
+        if (checkpoint.get("model_name") != model_name or checkpoint.get("version") != version
+                or checkpoint.get("metadata_path") != checkpoint_metadata_path
+                or expected_checksum != _normalize_sha256(evidence.get("model_checksum"))
+                or not artifact_path or len(expected_checksum) != 64):
+            raise ValueError(f"oof_artifact_recovery_model_source_reference_invalid:{model_name}")
+        if _sha256(_load_bytes(bucket, artifact_path)) != expected_checksum:
+            raise ValueError(f"oof_artifact_recovery_model_source_checksum_mismatch:{model_name}")
+        return {**evidence, "checkpoint_metadata": checkpoint}, artifact_path, checkpoint_metadata_path, expected_checksum
     metadata = _load_json(bucket, metadata_path)
     stored_version = str(metadata.get("version") or metadata.get("model_pool_version") or "")
     stored_model = str(metadata.get("model_name") or model_name)
@@ -172,9 +217,10 @@ def _recover_model_metric(
     fold_id: str,
     model_name: str,
     window: dict[str, Any],
+    r33_lineage: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
     version = f"{cohort_id}-{fold_id}"
-    oof_path = f"{prep_prefix}/oof/{cohort_id}/{fold_id}/{MODEL_SLUGS[model_name]}.npz"
+    oof_path = f"{prep_prefix}/oof/{cohort_id}/{fold_id}/{ALL_SLUGS[model_name]}.npz"
     raw = _load_bytes(bucket, oof_path)
     artifact_checksum = _sha256(raw)
     artifact = np.load(io.BytesIO(raw), allow_pickle=True)
@@ -202,6 +248,10 @@ def _recover_model_metric(
             raise ValueError(
                 f"oof_artifact_recovery_metadata_mismatch:{fold_id}:{model_name}:{key}"
             )
+    if r33_lineage is not None:
+        failure = r33_attestation_failure(artifact_metadata, model_name=model_name, window=window, **r33_lineage)
+        if failure:
+            raise _UnattestedFold(f"oof_artifact_recovery_r33_unattested:{fold_id}:{model_name}:{failure}")
     split = artifact_metadata.get("split_metadata")
     split = split if isinstance(split, dict) else {}
     requested_train_range = list(
@@ -264,18 +314,23 @@ def recover_completed_oof_windows(
     sequence_prefix: str,
     sequence_manifest_checksum: str,
     model_coverage: dict[str, Any],
+    r33_lineage: dict[str, str] | None = None,
 ) -> dict[int, dict[str, Any]]:
-    """Recover only complete folds; partial folds remain eligible for retraining."""
+    """Recover only complete folds; partial folds remain eligible for retraining.
+
+    With ``r33_lineage`` ({producer_source_sha, feature_semantic_version}) every family must
+    carry the full R33 attestation; a window with any unattested family is re-run whole.
+    """
 
     recovered: dict[int, dict[str, Any]] = {}
-    if any(model not in MODEL_SLUGS for model in models):
+    if any(model not in (ALL_SLUGS if r33_lineage is not None else MODEL_SLUGS) for model in models):
         return recovered
 
     for window in requested_windows:
         window_id = int(window["window_id"])
         fold_id = f"w{window_id}"
         paths = [
-            f"{prep_prefix}/oof/{cohort_id}/{fold_id}/{MODEL_SLUGS[model]}.npz"
+            f"{prep_prefix}/oof/{cohort_id}/{fold_id}/{ALL_SLUGS[model]}.npz"
             for model in models
         ]
         if not all(bucket.blob(path).exists() for path in paths):
@@ -284,9 +339,9 @@ def recover_completed_oof_windows(
         for model_name in models:
             version = f"{cohort_id}-{fold_id}"
             metadata_path = _model_metadata_path(prep_prefix, model_name, version)
-            if bucket.blob(metadata_path).exists():
+            if model_name != "TimeXer" and bucket.blob(metadata_path).exists():
                 continue
-            if model_name in SEQUENCE_MODELS and bucket.blob(
+            if model_name in DENSE_SEQUENCE_MODELS and bucket.blob(
                 _fold_evidence_path(prep_prefix, cohort_id, fold_id, model_name)
             ).exists():
                 continue
@@ -311,16 +366,23 @@ def recover_completed_oof_windows(
                 "reason": "immutable_exact_fold_artifact_recovery",
             },
         }
+        if r33_lineage is not None:
+            result["source_producer_source_sha"] = r33_lineage["producer_source_sha"]  # as a fresh fold declares
         tree_registrations: dict[str, Any] = {}
-        for model_name in models:
-            metric, metadata, source_path, metadata_path, source_checksum = _recover_model_metric(
+        try:
+            recovered_models = [(model_name, *_recover_model_metric(
                 bucket,
                 prep_prefix=prep_prefix,
                 cohort_id=cohort_id,
                 fold_id=fold_id,
                 model_name=model_name,
                 window=window,
-            )
+                r33_lineage=r33_lineage,
+            )) for model_name in models]
+        except _UnattestedFold as exc:
+            print(f"[OOFRecovery] {exc}: window re-runs")
+            continue
+        for model_name, metric, metadata, source_path, metadata_path, source_checksum in recovered_models:
             result["model_metrics"][model_name] = metric
             version = f"{cohort_id}-{fold_id}"
             if model_name in TREE_MODELS:
@@ -340,6 +402,16 @@ def recover_completed_oof_windows(
                     "metadata_path": metadata_path,
                     "checksum": source_checksum,
                     "metadata": metadata,
+                }
+            elif model_name == "TimeXer":
+                # Same identity fields the forward extension reads from a fresh TimeXer_result.
+                result["TimeXer_result"] = {
+                    "status": "ok",
+                    "version": version,
+                    "artifact_path": source_path,
+                    "metadata_path": metadata_path,
+                    "checksum": source_checksum,
+                    "metadata": metadata["checkpoint_metadata"],
                 }
         result["tree_result"] = {"artifact_registrations": tree_registrations}
         forward = assess_fold_forward_sources(result, cohort_id=cohort_id, bucket=bucket)

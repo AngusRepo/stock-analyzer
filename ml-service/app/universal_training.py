@@ -84,6 +84,7 @@ class UniversalPrepRequest(BaseModel):
     feature_semantic_version: str = "formal137-pit-asof-source-quality-v3"
     retain_unlabeled_features: bool = False  # Immutable source stage; canonical prep owns label eligibility.
     gcs_prefix: str = "universal"
+    feature_warmup_rows: int = 0  # Leading rows per stock that only feed long-window features.
 
 
 class UniversalTrainRequest(BaseModel):
@@ -113,9 +114,14 @@ class UniversalTrainRequest(BaseModel):
     cpcv_min_train_groups: int | None = None
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
+    # "nested_cpcv": 15-split nested refits (diagnostic). "outer_test_date_panel": evidence from
+    # the fold's own outer-test predictions, as TabM/GNN/NF folds do (R33 OOF folds only).
+    fold_model_cpcv: str = "nested_cpcv"
     training_run_suffix: str | None = None
     run_date: str | None = None
     as_of_date: str | None = None
+    signal_date_max: str | None = None
+    label_known_at_max: str | None = None
     max_prep_stale_days: int | None = None
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
@@ -181,6 +187,8 @@ def validate_immutable_oof_snapshot_for_registration(
     label_known_dates: np.ndarray,
     run_date: str | None,
     release_training_contract: dict | None,
+    source_rows: int | None = None,
+    input_scope: dict | None = None,
 ) -> dict:
     """Verify exact point-in-time OOF lineage instead of applying native-prep freshness."""
 
@@ -218,8 +226,11 @@ def validate_immutable_oof_snapshot_for_registration(
         or not str(feature_pool.get("path") or "").strip()
     ):
         errors.append("immutable_oof_snapshot_feature_pool_invalid")
-    if int(snapshot.get("total_rows") or 0) != int(rows):
+    archive_rows = int(rows) if source_rows is None else int(source_rows)
+    if int(snapshot.get("total_rows") or 0) != archive_rows:
         errors.append("immutable_oof_snapshot_row_count_mismatch")
+    if archive_rows < int(rows) or (archive_rows != int(rows) and not input_scope):
+        errors.append("immutable_oof_snapshot_scope_missing_or_invalid")
 
     date_values = [str(value) for value in np.asarray(dates).reshape(-1).tolist() if str(value)]
     label_values = [
@@ -243,6 +254,12 @@ def validate_immutable_oof_snapshot_for_registration(
         errors.append("immutable_oof_snapshot_cutoff_or_label_date_invalid")
     if label_known_date_max and cutoff and label_known_date_max > cutoff:
         errors.append("immutable_oof_snapshot_future_label_detected")
+    if input_scope:
+        if (input_scope.get("label_known_at_max") != cutoff
+                or not input_scope.get("signal_date_max")
+                or input_scope["signal_date_max"] >= cutoff
+                or (date_max and date_max > input_scope["signal_date_max"])):
+            errors.append("immutable_oof_snapshot_scope_cutoff_mismatch")
     if date_max and label_known_date_max and date_max > label_known_date_max:
         errors.append("immutable_oof_snapshot_signal_after_label_known_date")
 
@@ -257,6 +274,9 @@ def validate_immutable_oof_snapshot_for_registration(
         "date_max": date_max,
         "label_known_date_max": label_known_date_max,
         "rows": int(rows),
+        "source_rows": archive_rows,
+        "excluded_rows": archive_rows - int(rows),
+        "input_scope": input_scope,
         "verification": "manifest_batches_feature_consensus_and_label_known_cutoff_v1",
         "errors": errors,
     }
@@ -612,6 +632,7 @@ def _save_oos_rank_artifact(
     markets_test: np.ndarray,
     label_known_dates_test: np.ndarray,
     feature_names: list[str],
+    train_label_known_max: str | None = None,
 ) -> dict | None:
     """Persist split-job OOS predictions for the final rank-stacking reducer."""
 
@@ -666,6 +687,7 @@ def _save_oos_rank_artifact(
                     "train_range": [req.train_start, req.train_end],
                     "test_range": [req.test_start, req.test_end],
                     "method": "walk_forward_explicit_label_purged",
+                    **({"train_label_known_max": train_label_known_max} if train_label_known_max else {}),
                 },
             ))
     return {
@@ -745,6 +767,9 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
             if req.retain_unlabeled_features and market in ("TW", "TWO", "TWSE", "OTC"):
                 from .feature_data_quality import require_technical_source_observations
                 require_technical_source_observations(df, symbol)
+            if req.feature_warmup_rows:
+                # ret252/52w windows are undefined (safe-div zero) before this many rows.
+                df = df.slice(req.feature_warmup_rows)
             all_dfs.append(df)
             seq_record = build_sequence_record(
                 symbol=str(payload.get("symbol") or payload.get("stock_id") or ""),
@@ -983,6 +1008,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise ValueError("prep_batch_rank_alignment_incomplete")
     if len(target_returns_arr) != len(X):
         raise ValueError("global_cross_sectional_rank_requires_raw_target_returns")
+    from .full_fit_scope import bounds, row_mask
+    archive_row_count = len(X)
+    scope_mask = row_mask(req.model_dump(), dates_arr, label_known_dates_arr)
+    if not scope_mask.all():
+        X, batch_local_y, target_returns_arr, dates_arr, symbols_arr, markets_arr, label_known_dates_arr = (
+            values[scope_mask] for values in (X, batch_local_y, target_returns_arr, dates_arr, symbols_arr, markets_arr, label_known_dates_arr)
+        )
     y = recompute_global_cross_sectional_rank(
         target_returns_arr,
         dates_arr,
@@ -1053,12 +1085,30 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         and req.test_start is not None
         and req.test_end is not None
     )
+    immutable_oof_mode = requires_immutable_oof_snapshot(req)
+    immutable_prep_freshness = None
+    if not walk_forward_mode and immutable_oof_mode:
+        if not req.dataset_snapshot:
+            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
+        # The immutable receipt describes the entire archive. The explicit
+        # full-fit scope admits only cutoff-safe rows; never rewrite its receipt
+        # to make the admitted count look like the original archive count.
+        # Fail before any expensive fit when either boundary is invalid.
+        immutable_prep_freshness = validate_immutable_oof_snapshot_for_registration(
+            req.dataset_snapshot, gcs_prefix=gcs_prefix, rows=len(X),
+            dates=dates_arr, label_known_dates=label_known_dates_arr,
+            run_date=req.run_date, release_training_contract=req.release_training_contract,
+            source_rows=archive_row_count, input_scope=bounds(req.model_dump()),
+        )
     from .deployment_refit import requested, validate_full_history
     full_fit = requested(req.model_dump())
     deployment_fit = validate_full_history(
         signal_dates=dates_arr, label_known_dates=label_known_dates_arr,
         cutoff=req.as_of_date or req.run_date,
     ) if full_fit else None
+    if deployment_fit is not None:
+        from .full_fit_scope import bounds
+        deployment_fit["input_scope"] = bounds(req.model_dump())
     original_output_version = req.output_model_version
     req = normalize_universal_lifecycle_request(
         req,
@@ -1308,7 +1358,28 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")
 
-    if req.enable_model_cpcv:
+    outer_test_evidence = req.fold_model_cpcv == "outer_test_date_panel" and walk_forward_mode
+    if req.enable_model_cpcv and outer_test_evidence:
+        from .model_validation import build_model_cpcv_evidence, date_panel_fold_metrics
+
+        for model_name in TREE_MODEL_NAMES:
+            if model_name not in oos_rank_predictions:
+                continue
+            evidence = build_model_cpcv_evidence(
+                model=model_name,
+                fold_metrics=date_panel_fold_metrics(dates_test, oos_rank_predictions[model_name], y_test),
+                policy=req.model_cpcv_policy,
+                family="tree",
+                coverage_mode="date_symbol_panel",
+                method="outer_test_date_panel_rank_ic",
+            )
+            evidence["data_scope"] = {"source": "outer_test_fold", "rows": int(len(y_test)),
+                                      "nested_cpcv": "skipped_r33_oof_fold"}
+            model_cpcv_evidence_by_model[model_name] = evidence
+            results.setdefault(model_name, {})["model_cpcv"] = evidence
+            print(f"[TrainUniversal] {model_name} outer-test evidence decision={evidence['decision']} "
+                  f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}")
+    elif req.enable_model_cpcv:
         try:
             from .model_validation import evaluate_model_cpcv_rank_ic
 
@@ -1479,6 +1550,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 markets_test=markets_test,
                 label_known_dates_test=label_known_dates_test,
                 feature_names=feature_names,
+                train_label_known_max=validation_split_metadata.get("train_label_known_max"),
             )
             if oos_artifact:
                 print(
@@ -1564,19 +1636,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         rows=len(X),
         dates=dates_arr,
     )
-    immutable_oof_mode = requires_immutable_oof_snapshot(req)
     if not walk_forward_mode and immutable_oof_mode:
-        if not req.dataset_snapshot:
-            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
-        prep_freshness = validate_immutable_oof_snapshot_for_registration(
-            req.dataset_snapshot,
-            gcs_prefix=gcs_prefix,
-            rows=len(X),
-            dates=dates_arr,
-            label_known_dates=label_known_dates_arr,
-            run_date=req.run_date,
-            release_training_contract=req.release_training_contract,
-        )
+        prep_freshness = immutable_prep_freshness
     elif not walk_forward_mode and req.dataset_snapshot:
         prep_freshness = validate_monthly_dataset_snapshot_for_registration(
             req.dataset_snapshot,

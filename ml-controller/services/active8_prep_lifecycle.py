@@ -1,7 +1,7 @@
 """Durable point-in-time feature/sequence prep owner for Active-8 OOF."""
 
 from __future__ import annotations
-from .formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, semantic_for_profile
+from .formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, R33_PROFILE, semantic_for_profile
 
 import hashlib
 import json
@@ -144,6 +144,128 @@ def _registered_sequence(bucket: Any, cutoff: str, source: dict) -> tuple[str, d
         if not expected or _sha256(bucket.blob(path).download_as_bytes()) != expected:
             raise ValueError("registered_sequence_batch_checksum")
     return prefix, manifest
+
+
+def _r33_minimum_runnable_price_sessions() -> int:
+    """Floor below which the R33 prep/OOF lifecycle cannot run at all (receipt evidence only).
+
+    Warmup rows are sliced off after features; the OOF lifecycle refuses fewer than
+    OOF_TRAIN_SESSIONS + test_sessions * min_folds mature dates; a signal date is
+    mature only after its LABEL_HORIZON_SESSIONS outcome session.
+    """
+    from routers.walk_forward import OOF_TRAIN_SESSIONS, _oof_test_sessions, _oof_training_min_folds
+    from services.active8_oof_release_validation import LABEL_HORIZON_SESSIONS
+    from services.training_policy import R33_FEATURE_WARMUP_SESSIONS
+    return (R33_FEATURE_WARMUP_SESSIONS + OOF_TRAIN_SESSIONS
+            + _oof_test_sessions(R33_PROFILE) * _oof_training_min_folds(R33_PROFILE) + LABEL_HORIZON_SESSIONS)
+
+
+def _r33_required_price_sessions() -> int:
+    """Wei 10/25: the full window the R33 prep consumes (resolve_history rows + warmup)."""
+    from services.training_policy import R33_FEATURE_WARMUP_SESSIONS, TrainingPolicy
+    _, lookback = TrainingPolicy.from_env().resolve_history(vix=0.0, twii_bias=0.0, model_profile_schema_version=R33_PROFILE)
+    return lookback + R33_FEATURE_WARMUP_SESSIONS
+
+
+def _sequence_price_vintage(prefix: str, manifest: dict[str, Any], source: str) -> dict[str, Any]:
+    daily = [r for r in manifest.get("lane_reports", []) if isinstance(r, dict) and r.get("lane") == "daily_price"]
+    lane = daily[0] if len(daily) == 1 else {}
+    rows = lane.get("source_rows")
+    return {"sequence_gcs_prefix": prefix, "source": source,
+            "capture_id": (lane.get("source_uri") or {}).get("capture_id"),
+            "close_uri": (lane.get("source_uri") or {}).get("close"),
+            "date_max": str((manifest.get("summary") or {}).get("date_max") or "")[:10],
+            "price_start_date": str((manifest.get("summary") or {}).get("date_min") or "")[:10] or None,
+            "source_rows": rows if type(rows) is int and rows > 0 else 0,
+            "price_sessions": None, "created_at": str(manifest.get("created_at") or "")}
+
+
+def _verified_price_sessions(bucket: Any, info: dict[str, Any]) -> None:
+    """Count price sessions on the capture's own official TWSE/TPEX calendar.
+
+    source_rows is the wide close frame height and can include non-session rows, so
+    eligibility uses the calendar-verified count, which is exactly the number of rows
+    the prep tail(prices_lookback) can load for a stock that trades every session.
+    """
+    from services.training_session_calendar import verify_training_calendar
+    close = str(info.get("close_uri") or "")
+    marker = "/daily_price_full_vintage/"
+    try:
+        if not close.startswith(f"gs://{bucket.name}/") or marker not in close:
+            raise ValueError("r33_sequence_price_capture_uri_invalid")
+        path = close.split("/", 3)[3].rsplit(marker, 1)[0] + marker + "manifest.json"
+        raw = bucket.blob(path).download_as_bytes()
+        verified = verify_training_calendar(bucket, price_capture={
+            "capture_manifest_path": path, "capture_manifest_sha256": _sha256(raw), "capture_id": info["capture_id"]})
+        if verified["end"] != info["date_max"]:
+            raise ValueError("r33_sequence_calendar_end_mismatch")
+        info.update(price_sessions=int(verified["sessions"]), price_start_date=verified["start"],
+                    calendar_sha256=verified["calendar_sha256"])
+    except Exception as exc:  # noqa: BLE001 - unverifiable vintage is ineligible, never guessed.
+        info.update(price_sessions=None, calendar_error=str(exc)[:300])
+
+
+def _r33_sequence_selection(bucket: Any, cutoff: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """R33: freshest date_max first, then a price vintage covering the full consumed window.
+
+    Never falls back to an older date_max: a long but stale capture would train on
+    stale data. Too-short freshest vintages fail closed until a long one is sealed.
+    """
+    required = _r33_required_price_sessions()
+    registered = json.loads(Path(__file__).with_name("active8_sequence_sources.json").read_text())
+    found: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    if cutoff in registered:
+        prefix, manifest = _registered_sequence(bucket, cutoff, registered[cutoff])
+        found.append((_sequence_price_vintage(prefix, manifest, "registered"), manifest))
+    for blob in bucket.list_blobs(prefix=SEQUENCE_PREFIX):
+        path = str(blob.name)
+        if not path.endswith("/prep/sequence_manifest.json"):
+            continue
+        try:
+            manifest = json.loads(blob.download_as_text().lstrip("\ufeff"))
+            prefix = path.removesuffix("/prep/sequence_manifest.json")
+            date_max = str((manifest.get("summary") or {}).get("date_max") or "")[:10]
+            checksums = manifest.get("output_checksums") or {}
+            batch_count = int(manifest.get("batch_count") or 0)
+            if (manifest.get("status") != "ready" or manifest.get("contract") != "sequence_records_v3"
+                    or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
+                    or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
+                    or not date_max or date_max > cutoff or batch_count < 1
+                    or any(f"{prefix}/prep/batch_{i}.npz" not in checksums for i in range(batch_count))):
+                continue
+            found.append((_sequence_price_vintage(prefix, manifest, "scan"), manifest))
+        except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never selected.
+            continue
+    if not found:
+        raise Active8PrepDependencyPending("immutable_sequence_v3_missing", {"prefix": SEQUENCE_PREFIX, "cutoff": cutoff})
+    latest = max(info["date_max"] for info, _ in found)
+    fresh = [(info, manifest) for info, manifest in found if info["date_max"] == latest]
+    winners = [item for item in fresh if item[0]["source"] == "registered"] or fresh
+    for info, _ in winners:
+        _verified_price_sessions(bucket, info)
+    # Every eligible vintage covers the whole consumed window, so a longer one adds
+    # nothing the prep can load: the newest seal wins.
+    ordered = sorted((item for item in winners if (item[0]["price_sessions"] or 0) >= required),
+                     key=lambda item: item[0]["created_at"], reverse=True)
+    evidence = {"schema_version": "r33-sequence-selection-v2", "cutoff": cutoff, "latest_date_max": latest,
+                "required_price_sessions": required,
+                "minimum_runnable_price_sessions": _r33_minimum_runnable_price_sessions(),
+                "session_count_owner": "official_training_calendar_verified",
+                "candidates": sorted(({k: v for k, v in info.items() if k != "close_uri"} for info, _ in found),
+                                     key=lambda i: (i["date_max"], i["sequence_gcs_prefix"]))}
+    for info, manifest in ordered:
+        prefix = info["sequence_gcs_prefix"]
+        try:
+            if info["source"] == "registered" or all(
+                _sha256(bucket.blob(f"{prefix}/prep/batch_{i}.npz").download_as_bytes())
+                == manifest["output_checksums"][f"{prefix}/prep/batch_{i}.npz"]
+                for i in range(int(manifest["batch_count"]))
+            ):
+                return prefix, manifest, {**evidence, "selected_sequence_gcs_prefix": prefix,
+                                          "selected_capture_id": info["capture_id"]}
+        except Exception:  # noqa: BLE001 - corrupt bytes: next same-date candidate only.
+            continue
+    raise Active8PrepDependencyPending("r33_sequence_history_insufficient", evidence)
 
 
 def _receipt_checksum(receipt: dict[str, Any]) -> str:
@@ -362,7 +484,11 @@ async def ensure_active8_daily_prep(
     )
     snapshot_checksum = _normalize_sha256(snapshot.get("checksum"))
     sequence_prefix, sequence_checksum, sequence_date_max = "", "", ""
-    sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
+    r33_selection = None
+    if model_profile_schema_version == R33_PROFILE:
+        sequence_prefix, sequence_manifest, r33_selection = _r33_sequence_selection(bucket, cutoff)
+    else:
+        sequence_prefix, sequence_manifest = _latest_immutable_sequence(bucket, cutoff)
     sequence_date_max = str((sequence_manifest.get("summary") or {}).get("date_max") or "")[:10]
     if sequence_date_max < business_date:
         raise Active8PrepDependencyPending(
@@ -390,6 +516,10 @@ async def ensure_active8_daily_prep(
     if expanded:
         source_prefix += '-expanded1280'
         adjusted_prefix += '-expanded1280'
+    if model_profile_schema_version == R33_PROFILE:
+        from services.training_policy import R33_PREP_SUFFIX
+        source_prefix += R33_PREP_SUFFIX
+        adjusted_prefix += R33_PREP_SUFFIX
     plan = {
         "cutoff": cutoff,
         "business_date": business_date,
@@ -409,6 +539,8 @@ async def ensure_active8_daily_prep(
         "sequence_date_max": sequence_date_max,
         "output_gcs_prefix": adjusted_prefix,
     }
+    if r33_selection is not None:
+        plan["r33_sequence_selection"] = r33_selection
     if dry_run:
         return {"status": "dry_run", **plan}
 
@@ -493,7 +625,8 @@ async def ensure_active8_daily_prep(
     receipt["receipt_checksum"] = _receipt_checksum(receipt)
     receipt_path = (
         f"walk_forward/prep_lifecycle/{business_date}/"
-        f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}{'-formal131' if model_profile_schema_version in PROFILES131 else ''}.json"
+        f"{snapshot_checksum[:12]}-{sequence_checksum[:12]}{'-formal131' if model_profile_schema_version in PROFILES131 else ''}"
+        f"{R33_PREP_SUFFIX if model_profile_schema_version == R33_PROFILE else ''}.json"
     )
     bucket.blob(receipt_path).upload_from_string(
         json.dumps(receipt, sort_keys=True, indent=2),

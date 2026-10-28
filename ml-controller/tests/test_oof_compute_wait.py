@@ -85,3 +85,31 @@ def test_actual_exact_continuation_after_twelve_polls_preserves_cohort(monkeypat
     assert result['external_compute_pending'] is True
     assert calls == ['original-'+variant]
     assert continuation_limit(result) == 64
+
+
+@pytest.mark.parametrize('raised,expected', [
+    ('pending', 'running'), ('modal_timeout', 'running'), ('function_timeout', 'failed'), ('ok', 'completed')])
+def test_probe_reports_a_timed_out_call_as_failed_not_running(monkeypatch, raised, expected):
+    """FunctionTimeoutError subclasses modal TimeoutError; a 28800 s orchestrator timeout read as running."""
+    import modal
+    from modal import exception as modal_exception
+    from services import modal_client
+
+    class Call:
+        async def _get(self, timeout=None):
+            if raised == 'pending':
+                raise TimeoutError()  # modal's poll_function raises the builtin while outputs are pending
+            if raised == 'modal_timeout':
+                raise modal_exception.TimeoutError()
+            if raised == 'function_timeout':
+                raise modal_exception.FunctionTimeoutError('Function timed out after 28800s')
+            return {'status': 'ok'}
+        get = SimpleNamespace()
+
+    call = Call()
+    call.get = SimpleNamespace(aio=call._get)
+    monkeypatch.setattr(modal.FunctionCall, 'from_id', staticmethod(lambda call_id: call))
+    probe = asyncio.run(modal_client.probe_modal_function_call('fc-1'))
+    assert probe['status'] == expected
+    if expected == 'failed':
+        assert probe['error_type'] == 'FunctionTimeoutError'

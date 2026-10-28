@@ -2443,7 +2443,9 @@ def prep_universal_batch(payload: dict) -> dict:
         return {"error": str(e), "batch_index": payload.get("batch_index", -1)}
 
 
-@app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=3)
+# ~23 nightly batches of ~60 s each: 8 containers finish in three waves instead of eight.
+# Per-container spec is unchanged; prep only touches GCS and the controller callback.
+@app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=8)
 def prep_universal_batch_event(payload: dict) -> dict:
     """Prepare one immutable batch, publish completion, notify the pipeline."""
     _setup_env()

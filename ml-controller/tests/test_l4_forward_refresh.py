@@ -87,8 +87,8 @@ class RefreshTests(unittest.TestCase):
         for secret in ('plain-secret-value',token,token[:10],'abc'):self.assertNotIn(secret,text)
         self.assertIn('a'*64,text);self.assertIn('l4_forward_daily_price_source_missing',text)
         self.assertLessEqual(len(module.error_summary(RuntimeError('x'*999))),300)
-    def run_failing_projection(self,sha,reader=None):
-        def boom(frozen):raise KeyError('feature_rows')
+    def run_failing_projection(self,sha,reader=None,error=None):
+        def boom(frozen):raise error or KeyError('feature_rows')
         with patch.dict('os.environ',{'STOCKVISION_SOURCE_SHA':sha}),patch.object(module,'project',side_effect=boom):
             return module.refresh(query=lambda *a:[self.manifest],bucket=self.bucket,price_capture={},
                 expected_identity={'id':1},cutoff='2026-10-09T10:00:00+08:00',snapshot_reader=reader or self.reader,
@@ -98,6 +98,12 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(self.reads,1);self.assertEqual(first,second)
         self.assertEqual(first['items'][0]['status'],'failed');self.assertEqual(first['items'][0]['error_type'],'KeyError')
         self.run_failing_projection('sha2');self.assertEqual(self.reads,2)
+    def test_resource_exhaustion_is_not_remembered(self):
+        for error in (MemoryError(),RecursionError('depth')):
+            self.reads=0
+            self.run_failing_projection('sha1',error=error);r=self.run_failing_projection('sha1',error=error)
+            self.assertEqual(self.reads,2);self.assertEqual(r['items'][0]['error_type'],type(error).__name__)
+            self.assertFalse([k for k in self.bucket.data if 'projection_failures' in k])
     def test_projection_failure_not_remembered_without_source_sha(self):
         self.run_failing_projection('');self.run_failing_projection('')
         self.assertEqual(self.reads,2);self.assertFalse([k for k in self.bucket.data if 'projection_failures' in k])

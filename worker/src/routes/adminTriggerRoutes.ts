@@ -220,7 +220,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       }
     }
 
-    const { classifySchedulerSummary, logSchedulerResult } = await import('../lib/schedulerRunLogger')
+    const {
+      classifySchedulerSummary, logSchedulerResult, redactSchedulerRunText, schedulerRunLogSummary,
+    } = await import('../lib/schedulerRunLogger')
     if (!c.req.query('force')) {
       const decision = await shouldRunScheduledTask({ task, kv: c.env.KV, checkAdHocClosure: true, alertEnv: c.env })
       if (!decision.shouldRun) {
@@ -440,6 +442,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         try {
           const result = await fn()
           const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+          const logSummary = schedulerRunLogSummary(result, c.env)
           const status = classifySchedulerSummary(summary)
           // Maintenance's queue owns its ticket from admission through terminal receipt.
           const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
@@ -448,19 +451,20 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           }
           if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
             status,
-            summary,
+            summary: logSummary,
             duration_ms: Date.now() - t0,
             run_id: finLabRunLogId(task, summary) ?? runId,
             run_date: requestedRunDate,
           })
           if (!maintenanceOwned) await putRunLog(c.env.KV, task, runId, {
             status,
-            summary,
+            summary: logSummary,
             duration_ms: Date.now() - t0,
             run_date: requestedRunDate,
           })
         } catch (e: any) {
-          await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
+          await updateTicket('error', 'scheduler_http',
+            redactSchedulerRunText(e?.message ?? 'Unknown error', c.env), redactSchedulerRunText(String(e), c.env))
           await logSchedulerResult(
             c.env.KV,
             task,
@@ -476,9 +480,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           )
           await putRunLog(c.env.KV, task, runId, {
             status: 'error',
-            summary: e?.message ?? 'Unknown error',
+            summary: redactSchedulerRunText(e?.message ?? 'Unknown error', c.env),
             duration_ms: Date.now() - t0,
-            error: String(e),
+            error: redactSchedulerRunText(String(e), c.env),
             run_date: requestedRunDate,
           })
         }
@@ -499,12 +503,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+      const logSummary = schedulerRunLogSummary(result, c.env)
       const status = classifySchedulerSummary(summary)
       const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
       if (!maintenanceOwned) await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
       if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
         status,
-        summary,
+        summary: logSummary,
         duration_ms: Date.now() - t0,
         run_id: finLabRunLogId(task, summary) ?? syncRunId,
         run_date: requestedRunDate,
@@ -519,7 +524,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         ticket_id: schedulerTicketId,
       }, maintenanceOwned ? 202 : 200)
     } catch (e: any) {
-      await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
+      await updateTicket('error', 'scheduler_http',
+        redactSchedulerRunText(e?.message ?? 'Unknown error', c.env), redactSchedulerRunText(String(e), c.env))
       await logSchedulerResult(
         c.env.KV,
         task,

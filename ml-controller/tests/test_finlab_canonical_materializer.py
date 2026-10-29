@@ -283,9 +283,223 @@ def test_taxonomy_rows_strip_finlab_display_bullets_and_keep_raw_lineage() -> No
     assert ["3551", "\u25baSemiconductor", "industry_theme", "finlab.security_industry_themes"] in cleanup
     assert ["3551", "\u25baProcess Equipment", "subindustry", "finlab.security_industry_themes"] in cleanup
     assert ["3551", "\u200b\u25baAI", "industry_theme", "finlab.security_industry_themes"] in cleanup
-    assert ["finlab.security_categories", "industry", "2026-09-03T00:00:00+00:00"] in cleanup
-    assert ["finlab.security_industry_themes", "industry_theme", "2026-09-03T00:00:00+00:00"] in cleanup
-    assert ["finlab.security_industry_themes", "subindustry", "2026-09-03T00:00:00+00:00"] in cleanup
+    snapshot = [params[:3] for params in cleanup if len(params) == 7]
+    assert ["finlab.security_categories", "industry", "2026-09-03T00:00:00+00:00"] in snapshot
+    assert ["finlab.security_industry_themes", "industry_theme", "2026-09-03T00:00:00+00:00"] in snapshot
+    assert ["finlab.security_industry_themes", "subindustry", "2026-09-03T00:00:00+00:00"] in snapshot
+
+
+_Q02_SOURCE = "finlab.security_industry_themes"
+_Q02_DATASET = "finlab_taxonomy_tags.prune_guard:industry_theme"
+
+
+def _q02_outputs(tags: dict[str, str], materialization_id: str):
+    from services.finlab_canonical_materializer import FinLabCanonicalOutputs
+
+    rows = [{"symbol": symbol, "tag": tag, "tag_type": "industry_theme", "source": _Q02_SOURCE, "weight": 1.0,
+             "lineage_json": json.dumps({"materialization_id": materialization_id}),
+             "as_of_date": materialization_id[:10]} for symbol, tag in tags.items()]
+    empty = {name: [] for name in (
+        "canonical_market_daily", "canonical_chip_daily", "canonical_institutional_amount_daily",
+        "canonical_market_index_daily", "canonical_futures_daily", "canonical_market_summary_daily",
+        "canonical_regime_context_daily", "canonical_revenue_monthly", "canonical_fundamental_features",
+        "canonical_broker_flow_daily", "canonical_broker_rank_daily", "data_source_inventory", "source_quality_metrics")}
+    return FinLabCanonicalOutputs(run_id="q02", generated_at=materialization_id, artifact_root="",
+                                  finlab_taxonomy_tags=rows, manifest={"filters": {}}, **empty)
+
+
+class _Q02Domains:
+    """Market and ops D1 as sqlite with the repo's domain schemas."""
+
+    def __init__(self, monkeypatch) -> None:
+        import tools.finlab_v4_remote_backfill as tool
+
+        self.tool = tool
+        self.market = sqlite3.connect(":memory:")
+        self.market.executescript((ROOT / "worker/domain-schemas/market.sql").read_text())
+        self.ops = sqlite3.connect(":memory:")
+        self.ops.executescript((ROOT / "worker/domain-schemas/ops.sql").read_text())
+
+        def market_query(sql, params=None):
+            cursor = self.market.execute(sql, params or [])
+            return [dict(zip([column[0] for column in cursor.description], row)) for row in cursor.fetchall()]
+
+        def ops_batch(statements, **_):
+            for sql, params in statements:
+                self.ops.execute(sql, params)
+            return {"success_count": len(statements), "error_count": 0}
+
+        monkeypatch.setattr(tool, "market_d1_query", market_query)
+        monkeypatch.setattr(tool, "ops_d1_batch_execute", ops_batch)
+
+    def run(self, tags: dict[str, str], materialization_id: str) -> list[dict]:
+        """Apply the generated statements in production order, then the skip report."""
+        from services.finlab_canonical_materializer import build_d1_upsert_statements
+
+        legacy, _ops_metadata, market = self.tool.partition_finlab_canonical_statements(
+            build_d1_upsert_statements(_q02_outputs(tags, materialization_id)), market_active=True)
+        assert legacy == []
+        for sql, params in market:
+            self.market.execute(sql, params)
+        return self.tool.report_taxonomy_prune_skips(materialization_id)
+
+    def count(self) -> int:
+        return self.market.execute("SELECT COUNT(*) FROM finlab_taxonomy_tags").fetchone()[0]
+
+    def receipt(self, day: str) -> tuple[str, dict]:
+        status, metrics = self.market.execute(
+            "SELECT freshness_status, metrics_json FROM source_quality_metrics WHERE dataset=? AND as_of_date=?",
+            [_Q02_DATASET, day]).fetchone()
+        return status, json.loads(metrics)
+
+    def logs(self) -> list[tuple[str, str, dict]]:
+        return [(level, cron, json.loads(meta)) for level, cron, meta in
+                self.ops.execute("SELECT level, cron_name, meta FROM system_logs ORDER BY id")]
+
+
+def test_q02_prune_guard_compares_with_the_last_applied_snapshot_and_logs_every_skip(monkeypatch) -> None:
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", raising=False)
+    d = _Q02Domains(monkeypatch)
+
+    # First run on an empty group: nothing to protect, applied.
+    assert d.run({str(i): "A" for i in range(100)}, "2026-09-01T00:00:00+00:00") == []
+    assert d.receipt("2026-09-01")[0] == "prune_applied"
+    assert d.receipt("2026-09-01")[1]["baseline_source"] == "group_rows_before"
+    # Tag churn at an unchanged size: 10 symbols move from A to B, the stale A rows are pruned.
+    d.run({str(i): ("B" if i < 10 else "A") for i in range(100)}, "2026-09-02T00:00:00+00:00")
+    assert d.count() == 100
+    status, metrics = d.receipt("2026-09-02")
+    assert status == "prune_applied"
+    assert (metrics["baseline_rows"], metrics["retained_rows"], metrics["next_baseline_rows"]) == (100, 100, 100)
+    assert metrics["baseline_source"] == "last_applied_snapshot"
+
+    # The vendor loses 10 symbols (>5%) and 5 symbols change tag: upsert only, every night logged.
+    shrunk = {str(i): ("C" if i < 15 else "B" if i < 10 else "A") for i in range(10, 100)}
+    for night, day in enumerate(("2026-09-03", "2026-09-04", "2026-09-05"), start=1):
+        skipped = d.run(shrunk, f"{day}T00:00:00+00:00")
+        status, metrics = d.receipt(day)
+        assert status == "prune_skipped"
+        assert metrics["consecutive_skips"] == night
+        # Stale rows left by the skips raise the group count but never the baseline.
+        assert metrics["baseline_rows"] == 100 and metrics["retained_rows"] == 90
+        assert [log["consecutive_skips"] for log in skipped] == [night]
+    assert d.count() == 105
+    assert d.receipt("2026-09-05")[1]["group_rows_before"] == 105
+    assert [(level, cron, meta["consecutive_skips"], meta["escalated"]) for level, cron, meta in d.logs()] == [
+        ("warn", "finlab-taxonomy-prune-guard", 1, False),
+        ("warn", "finlab-taxonomy-prune-guard", 2, False),
+        ("error", "finlab-taxonomy-prune-guard", 3, True),
+    ]
+    assert d.logs()[0][2]["blocking"] is False
+
+    # Back within 5% of the last applied snapshot: applied, although the stale-inflated group
+    # count (105) would have kept the guard skipping.
+    recovered = {str(i): "A" for i in range(4, 100)}
+    assert d.run(recovered, "2026-09-06T00:00:00+00:00") == []
+    status, metrics = d.receipt("2026-09-06")
+    assert status == "prune_applied"
+    assert (metrics["group_rows_before"], metrics["baseline_rows"], metrics["consecutive_skips"]) == (105, 100, 0)
+    assert d.count() == 96
+
+    # A real shrink is accepted once with ratio 0; it then becomes the baseline and nothing stays stuck.
+    d.run({str(i): "A" for i in range(10, 100)}, "2026-09-07T00:00:00+00:00")
+    assert d.receipt("2026-09-07")[0] == "prune_skipped"
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", "0")
+    d.run({str(i): "A" for i in range(10, 100)}, "2026-09-08T00:00:00+00:00")
+    assert d.receipt("2026-09-08")[0] == "prune_applied"
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO")
+    d.run({str(i): "A" for i in range(10, 100)}, "2026-09-09T00:00:00+00:00")
+    assert d.receipt("2026-09-09")[0] == "prune_applied"
+    assert d.receipt("2026-09-09")[1]["baseline_rows"] == 90
+    assert d.count() == 90
+
+
+def test_q02_first_run_without_a_receipt_uses_the_current_group_count(monkeypatch) -> None:
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", "1")
+    d = _Q02Domains(monkeypatch)
+    # Rows written before the guard existed, no receipt yet.
+    for i in range(100):
+        d.market.execute("INSERT INTO finlab_taxonomy_tags (symbol, tag, tag_type, source, lineage_json, as_of_date) "
+                         "VALUES (?, 'A', 'industry_theme', ?, '{}', '2026-08-31')", [str(i), _Q02_SOURCE])
+    skipped = d.run({str(i): "A" for i in range(90)}, "2026-09-01T00:00:00+00:00")
+    status, metrics = d.receipt("2026-09-01")
+    assert status == "prune_skipped"
+    assert (metrics["baseline_source"], metrics["baseline_rows"], metrics["consecutive_skips"]) == (
+        "group_rows_before", 100, 1)
+    assert d.count() == 100
+    assert [(level, meta["escalated"]) for level, _, meta in d.logs()] == [("error", True)]
+    assert skipped[0]["retained_rows"] == 90
+
+
+def test_q02_consecutive_skips_count_nights_not_reruns(monkeypatch) -> None:
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", raising=False)
+    d = _Q02Domains(monkeypatch)
+    d.run({str(i): "A" for i in range(100)}, "2026-09-01T00:00:00+00:00")
+    shrunk = {str(i): "A" for i in range(90)}
+    # A retry with the same materialization id and a rerun later that day stay night 1.
+    for mid in ("2026-09-02T00:00:00+00:00", "2026-09-02T00:00:00+00:00", "2026-09-02T12:00:00+00:00"):
+        d.run(shrunk, mid)
+        assert d.receipt("2026-09-02")[1]["consecutive_skips"] == 1
+    d.run(shrunk, "2026-09-03T00:00:00+00:00")
+    assert d.receipt("2026-09-03")[1]["consecutive_skips"] == 2
+    assert [level for level, _, _ in d.logs()] == ["warn"] * 4
+
+
+def test_q02_skip_report_never_raises(monkeypatch, capsys) -> None:
+    import tools.finlab_v4_remote_backfill as tool
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("D1 unavailable")
+
+    monkeypatch.setattr(tool, "market_d1_query", broken)
+    assert tool.report_taxonomy_prune_skips("2026-09-01T00:00:00+00:00") == []
+    assert "prune_guard_report_failed" in capsys.readouterr().err
+
+    # A batch that reports errors without raising is surfaced too.
+    receipt = {"source": _Q02_SOURCE, "dataset": _Q02_DATASET, "freshness_status": "prune_skipped",
+               "metrics_json": json.dumps({"consecutive_skips": 1, "retained_rows": 90, "baseline_rows": 100})}
+    monkeypatch.setattr(tool, "market_d1_query", lambda *_args, **_kwargs: [receipt])
+    monkeypatch.setattr(tool, "ops_d1_batch_execute", lambda *_args, **_kwargs: {"success_count": 0, "error_count": 1})
+    assert len(tool.report_taxonomy_prune_skips("2026-09-01T00:00:00+00:00")) == 1
+    assert "prune_guard_report_failed system_logs write errors" in capsys.readouterr().err
+
+
+def test_q02_prune_without_its_receipt_deletes_nothing() -> None:
+    from services.finlab_canonical_materializer import _taxonomy_owner_snapshot_cleanup_statements
+
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE finlab_taxonomy_tags (symbol TEXT, tag TEXT, tag_type TEXT, source TEXT, lineage_json TEXT)")
+    db.execute("CREATE TABLE source_quality_metrics (source TEXT, dataset TEXT, as_of_date TEXT, "
+               "freshness_status TEXT, latest_materialization TEXT, metrics_json TEXT)")
+    db.execute("INSERT INTO finlab_taxonomy_tags VALUES ('2330', 'old', 'industry', 'finlab.security_categories', '{}')")
+    rows = [{"symbol": "2317", "tag": "new", "tag_type": "industry", "source": "finlab.security_categories"}]
+    for sql, params in _taxonomy_owner_snapshot_cleanup_statements(
+            rows, materialization_id="2026-09-01T00:00:00+00:00", full_snapshot=True)[:-1]:
+        db.execute(sql, params)
+    assert db.execute("SELECT COUNT(*) FROM finlab_taxonomy_tags").fetchone()[0] == 1
+
+
+def test_q02_taxonomy_prune_ratio_comes_from_the_environment(monkeypatch) -> None:
+    from services.finlab_canonical_materializer import (
+        taxonomy_prune_min_retained_ratio,
+        taxonomy_prune_skip_escalate_after,
+    )
+
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    assert taxonomy_prune_min_retained_ratio() == 0.95
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", "0.9")
+    assert taxonomy_prune_min_retained_ratio() == 0.9
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", "2")
+    assert taxonomy_prune_min_retained_ratio() == 0.95
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", raising=False)
+    assert taxonomy_prune_skip_escalate_after() == 3
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", "5")
+    assert taxonomy_prune_skip_escalate_after() == 5
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", "0")
+    assert taxonomy_prune_skip_escalate_after() == 3
 
 
 def test_single_day_materialization_does_not_carry_prior_financial_fields() -> None:

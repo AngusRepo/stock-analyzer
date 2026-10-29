@@ -405,3 +405,14 @@ def test_r33_strategy_bundle_may_add_only_its_scoped_exit_fields(monkeypatch):
                    _strategy_bundle(monkeypatch, {'hardStopPct': -.1}, swing, mode=MLP_MODE)):
         with pytest.raises(ValueError, match='paired_nav_strategy_unshared_risk_or_execution_config'):
             validate_strategy_bundle(bundle, signal_date='2026-11-09')
+
+
+def test_first_night_rejects_a_non_hex_policy_identity_even_when_it_matches_the_prior(monkeypatch):
+    approval, admission, _, _ = _grant(monkeypatch)
+    odd = 'z' * 64
+    for config in (approval['prior_runtime_approval']['configuration']['trading_config'],
+                   admission['strategy_bundle']['baseline_trading_config']):
+        config['l4Distribution']['opb']['approved_policy_identity'] = odd
+    approval['approved_r33_cutover']['first_night']['supersedes_plan_policy_identity'] = odd
+    with pytest.raises(RuntimeError, match='r33_cutover_invalid:first_night'):
+        r33_cutover.validate_cutover(approval, admission, now=NOW)

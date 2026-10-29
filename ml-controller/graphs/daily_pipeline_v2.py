@@ -843,15 +843,25 @@ async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
 
 
 def _pit_daily_versions(state) -> tuple[list[str], dict | None]:
-    """PIT versions this run's TimeXers need; a predictor error never blocks production."""
-    from services.pit_daily_sources import STATE_SCHEMA, required_versions
+    """PIT versions the legacy prep can build for this run's TimeXers, and the state value
+    to record when none can. A predictor error or a version this controller does not know
+    never reaches the legacy prep request; those TimeXers fail closed."""
+    from services.pit_daily_sources import STATE_SCHEMA, required_versions, variant_specs
     try:
         from services.walk_forward_retrain import _get_bucket
-        return required_versions(state, query=LEARNING_D1_CLIENT.query, bucket_factory=_get_bucket), None
+        from services.pit_certification import CONTRACT_VERSION
+        versions = required_versions(state, query=LEARNING_D1_CLIENT.query, bucket_factory=_get_bucket)
+        known = [version for version in versions if version == CONTRACT_VERSION]
+        variant_specs("", known)  # the trigger repeats this; a contract load error must surface here
     except Exception as exc:  # noqa: BLE001 - PIT TimeXers then fail closed for this run.
         logger.warning("[Pipeline V2] PIT TimeXer version prediction failed: %s", type(exc).__name__)
         return [], {"schema_version": STATE_SCHEMA, "required_versions": [], "sources": {}, "failures": {},
                     "prediction_error": f"{type(exc).__name__}: {exc}"[:300]}
+    unknown = {version: "pit_variant_version_unknown" for version in versions if version not in known}
+    if not versions:
+        return [], None
+    return known, {"schema_version": STATE_SCHEMA, "required_versions": sorted(versions), "sources": {},
+                   "failures": unknown}
 
 
 @artifact_reads
@@ -888,7 +898,12 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
             if pit_versions:
                 from services.pit_daily_sources import variant_sources
                 from services.walk_forward_retrain import _get_bucket
-                pit_sources = await asyncio.to_thread(variant_sources, _get_bucket(), capture_source, pit_versions)
+                try:
+                    built = await asyncio.to_thread(variant_sources, _get_bucket(), capture_source, pit_versions)
+                except Exception as exc:  # noqa: BLE001 - only these versions' TimeXers fail closed.
+                    built = {"sources": {}, "failures": {v: f"{type(exc).__name__}: {exc}"[:300] for v in pit_versions}}
+                pit_sources = {**pit_sources, "sources": built["sources"],
+                               "failures": {**pit_sources["failures"], **built["failures"]}}
         from services.pipeline_slate_artifacts import scope_for, checkpoint_async, load
         capture_scope = scope_for({**state, 'payload_source_observations': sources})
         async def bind_sources():

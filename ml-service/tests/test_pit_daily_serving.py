@@ -115,6 +115,22 @@ def test_tabm_and_gnn_batches_read_the_view_of_their_artifact(monkeypatch):
     assert seen["GNN"][0, column] == 1000.0 + len(DAYS) - 1
 
 
+@pytest.mark.parametrize("metadata", [LEGACY, PIT])
+def test_gnn_metrics_report_pit_serving_only_for_a_pit_artifact(monkeypatch, metadata):
+    monkeypatch.setitem(sys.modules, "app.gnn_batch_runtime", SimpleNamespace(
+        load_graphsage_artifact=lambda pool: SimpleNamespace(metadata=metadata),
+        predict_graphsage_scores=lambda artifact, node_features, **_: ([0.6] * len(node_features), {})))
+    monkeypatch.setattr(bp, "_require_runtime_artifact_identity", lambda *a: None)
+    monkeypatch.setattr(bp, "_runtime", lambda: (lambda **kw: _request(), None))
+    monkeypatch.setattr(bp, "_model_pool_status", lambda pool: {"GNN": "active"})
+    result = bp.predict_gnn_graphsage_batch([{}], pool_snapshot={"models": {"GNN": {"status": "active"}}})
+    assert result["n_success"] == 1, result
+    if metadata is LEGACY:
+        assert "pit_serving" not in result["metrics"]
+    else:
+        assert result["metrics"]["pit_serving"]["feature_views"][VERSION]["built"] == 1
+
+
 @pytest.mark.parametrize("day, quarter", [
     ("2026-01-02", "2025-Q3"), ("2026-03-30", "2025-Q3"), ("2026-03-31", "2025-Q4"),
     ("2026-05-14", "2025-Q4"), ("2026-05-15", "2026-Q1"), ("2026-08-14", "2026-Q2"),
@@ -289,6 +305,17 @@ def test_timexer_request_carries_pit_sources_only_when_present():
     block = source[start:source.index("    def _timexer() -> dict:", start)]
     assert 'if payload.get("timexer_pit_feature_sources"):' in block
     assert 'gpu_input["pit_feature_sources"] = payload["timexer_pit_feature_sources"]' in block
+
+
+def test_both_prep_functions_bound_pit_variants_by_their_own_timeout():
+    source = (open(__file__.replace("tests/test_pit_daily_serving.py", "modal_app.py")).read())
+    sync = source[source.index("def prep_universal_batch(payload: dict)"):source.index("def prep_universal_batch_event(")]
+    event = source[source.index("def prep_universal_batch_event("):]
+    event = event[:event.index("\n\n\n")]
+    assert "deadline = time.monotonic() + 600 * 0.9" in sync and "_prep(req, deadline=deadline)" in sync
+    assert "deadline = time.monotonic() + 1900 * 0.9" in event and "deadline=deadline)" in event
+    assert "timeout=1900" in source[source.rindex("@app.function", 0, source.index("def prep_universal_batch_event(")):
+                                    source.index("def prep_universal_batch_event(")]
 
 
 # --- Q7: NeuralForecast PatchTST/iTransformer see price-only frames ----------------------

@@ -243,7 +243,7 @@ def _node(monkeypatch, versions, sources=None):
         calls.append(kw)
         return {'status': 'ready', 'signal_date': kw['end_date'], 'source_receipt_checksum': 'fixture-capture'}
     monkeypatch.setattr(prep, 'ensure_active8_daily_prep', ensure)
-    monkeypatch.setattr(graph, '_pit_daily_versions', lambda state: (list(versions), None))
+    monkeypatch.setattr(pds, 'required_versions', lambda state, **kw: list(versions))
     monkeypatch.setattr(walk_forward_retrain, '_get_bucket', lambda: 'bucket')
     def variant_sources(bucket, legacy, required):
         calls.append(('variants', bucket, legacy, list(required)))
@@ -287,6 +287,76 @@ def test_a_failed_variant_never_blocks_the_legacy_payloads(monkeypatch):
     assert output['timexer_pit_feature_sources']['sources'] == {}
 
 
+def test_an_unknown_version_never_reaches_the_legacy_prep_request(monkeypatch):
+    # Verifier finding: an unknown version used to make the trigger reject the whole legacy prep.
+    value = {'schema_version': pds.STATE_SCHEMA, 'required_versions': [V], 'sources': {V: {'x': 1}}, 'failures': {}}
+    graph, state, calls = _node(monkeypatch, ['pit-availability-contract-v9', V], value)
+    output = asyncio.run(graph.node_build_payloads(state))
+    assert calls[0]['pit_variant_versions'] == (V,)
+    assert calls[1][3] == [V]
+    pit = output['timexer_pit_feature_sources']
+    assert pit['sources'] == {V: {'x': 1}}
+    assert pit['failures'] == {'pit-availability-contract-v9': 'pit_variant_version_unknown'}
+    assert pit['required_versions'] == sorted(['pit-availability-contract-v9', V])
+
+
+def test_only_unknown_versions_keep_the_legacy_request_unchanged(monkeypatch):
+    graph, state, calls = _node(monkeypatch, ['pit-availability-contract-v9'])
+    output = asyncio.run(graph.node_build_payloads(state))
+    assert len(calls) == 1 and 'pit_variant_versions' not in calls[0]
+    assert output['timexer_pit_feature_sources']['failures'] == {
+        'pit-availability-contract-v9': 'pit_variant_version_unknown'}
+    assert output['timexer_pit_feature_sources']['sources'] == {}
+
+
+def test_a_contract_load_error_is_a_prediction_error_not_a_prep_rejection(monkeypatch):
+    from services import pit_certification
+    graph, state, calls = _node(monkeypatch, [V])
+    def broken():
+        raise OSError('contract unreadable')
+    monkeypatch.setattr(pit_certification, 'load_contract', broken)
+    output = asyncio.run(graph.node_build_payloads(state))
+    assert len(calls) == 1 and 'pit_variant_versions' not in calls[0]
+    assert 'contract unreadable' in output['timexer_pit_feature_sources']['prediction_error']
+
+
+def test_a_variant_source_read_error_only_fails_that_version(monkeypatch):
+    graph, state, calls = _node(monkeypatch, [V], {})
+    def broken(*a, **k):
+        raise RuntimeError('gcs down')
+    monkeypatch.setattr(pds, 'variant_sources', broken)
+    output = asyncio.run(graph.node_build_payloads(state))
+    assert [p['symbol'] for p in output['payloads']] == ['1000', '1001']
+    pit = output['timexer_pit_feature_sources']
+    assert pit['sources'] == {} and 'gcs down' in pit['failures'][V]
+
+
+def test_l4_price_evidence_ignores_pit_variant_receipts():
+    import hashlib
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from services import l4_forward_refresh as refresh
+    manifest = json.dumps({'end_date': '2026-10-14'}).encode()
+    blobs = {}
+    class B:
+        def __init__(self, name, raw, hour):
+            self.name, self.raw, self.generation = name, raw, 1
+            self.time_created = datetime(2026, 10, 14, hour, tzinfo=timezone.utc)
+        def download_as_bytes(self, **kw):
+            return self.raw
+    legacy = 'universal/oof_forward_prep_v2/2026-10-14-abc'
+    for prefix, hour in [(legacy, 12), (f'{legacy}-pit-{V}', 13)]:
+        receipt = dict(status='ready', business_date='2026-10-14', output_gcs_prefix=prefix,
+                       price_capture={'capture_manifest_path': 'prices', 'capture_manifest_sha256': hashlib.sha256(manifest).hexdigest()})
+        receipt['receipt_checksum'] = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+        blobs[prefix + '/prep/immutable_receipt.json'] = B(prefix + '/prep/immutable_receipt.json', json.dumps(receipt).encode(), hour)
+    blobs['prices'] = B('prices', manifest, 12)
+    bucket = SimpleNamespace(list_blobs=lambda prefix: [b for n, b in blobs.items() if n.startswith(prefix)],
+                             blob=lambda name: blobs[name])
+    _, proof = refresh.current_price_capture(bucket, '2026-10-14', cutoff='2026-10-14T15:00:00+00:00')
+    assert proof['path'] == legacy + '/prep/immutable_receipt.json'
+
+
 def test_request_key_only_for_ready_sources_and_never_for_research():
     from graphs.daily_pipeline_v2 import _pit_feature_source_sets
     from services.formal_feature_contract import LEGACY_SEMANTIC
@@ -328,3 +398,12 @@ def test_lifecycle_refuses_variants_on_a_training_prep():
         asyncio.run(lifecycle.ensure_active8_daily_prep(
             end_date='2026-10-30', pit_variant_versions=(V,),
             model_profile_schema_version='active8-release-model-profiles-v4-timexer-price'))
+
+
+def test_the_prediction_request_forwards_research_only_to_the_pit_key():
+    # L4 native observation builds research_only requests; their shape must not gain the PIT key.
+    import inspect
+    from graphs import daily_pipeline_v2 as graph
+    source = inspect.getsource(inspect.unwrap(graph._build_pipeline_modal_prediction_payload))
+    assert ("**_pit_feature_source_sets(state, semantics if needs_timexer else None, research_only=research_only)"
+            in source)

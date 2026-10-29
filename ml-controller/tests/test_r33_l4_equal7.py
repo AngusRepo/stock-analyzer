@@ -192,3 +192,69 @@ def test_opb_v2_envelope_owns_the_position_count_for_equal7():
                    return_history=history)[0]["_l4_portfolio_plan"]
         assert plan["opb"]["effective_constraints"]["max_positions"] == cap
         assert 1 <= sum(w > 1e-7 for w in plan["weights"].values()) <= cap
+
+
+def _prepare(policy, predictions, **kw):
+    from services.l4_distribution_context import prepare_runtime_policy
+    manifest = {"active8_ensemble": dict(IDENTITY),
+                "active8_action_authority": {"mode": "paper_ensemble", "execution_scope": "paper",
+                                             "buy_authorized": False, "live_buy_authorized": False,
+                                             "paper_buy_authorized": True, "production_effect": True,
+                                             **{k: IDENTITY[k] for k in ("artifact_id", "cohort_id", "payload_checksum")}}}
+    account = {**policy["runtime"]["account"], "risk_limits": {"max_positions": 3}, "fees": {"buy_cost": .001}}
+    return prepare_runtime_policy(policy={k: v for k, v in policy.items() if k != "runtime"}, signal_date=DAY,
+                                  predictions=predictions, manifest=manifest,
+                                  account_reader=lambda _: {**account, "observed_at": datetime.now(timezone.utc).isoformat()},
+                                  reward_reader=lambda: [], **kw)
+
+
+def test_prepare_freezes_the_attested_rank_pool_into_runtime():
+    _, policy, _ = fixture()
+    snapshot, predictions = policy["runtime"]["r33_rank_pool"], policy["runtime"]["predictions"]
+    frozen = _prepare(policy, predictions, r33_rank_pool=snapshot)
+    assert frozen["runtime"]["r33_rank_pool"] == snapshot
+    assert frozen["runtime"]["r33_rank_pool"] is not snapshot
+    assert frozen["runtime"]["l3_identity"] == IDENTITY
+
+
+@pytest.mark.parametrize("case,error", [
+    ("missing", "r33_rank_pool_required"),
+    ("forged_evidence", "r33_rank_pool_evidence_mismatch:P3"),
+    ("other_day", "r33_rank_pool_identity_mismatch"),
+    ("other_identity", "r33_rank_pool_identity_mismatch"),
+    ("tampered", "r33_rank_pool_checksum_invalid"),
+])
+def test_prepare_rejects_an_equal7_policy_without_this_runs_rank_pool(case, error):
+    _, policy, _ = fixture()
+    snapshot, predictions = deepcopy(policy["runtime"]["r33_rank_pool"]), deepcopy(policy["runtime"]["predictions"])
+    if case == "missing":
+        snapshot = None
+    elif case == "forged_evidence":
+        predictions["P3"][rank_pool.EVIDENCE_KEY]["expected_excess"] = 0.5
+    elif case == "other_day":
+        # A pool attested for the next day, with its own predictions: internally consistent, wrong run.
+        other = "2026-11-11"
+        predictions = {s: _prediction(v) for s, v in zip(POOL, (-0.5, -0.1, 0.2, 0.6, 1.0, 1.4))}
+        for p in predictions.values():
+            p["model_score_lineage"]["run_date"] = other
+        receipt = {"source": POOL_SOURCE, "signal_date": other, "screener_run_id": "run-2", "membership_sha256": "p" * 64}
+        snapshot = rank_pool.build_rank_pool(signal_date=other, pool=(POOL, receipt), predictions=predictions,
+                                             holdings=[], ensemble=_ensemble(), l3_identity=IDENTITY)
+    elif case == "other_identity":
+        body = {k: v for k, v in snapshot.items() if k != "checksum"}
+        body["l3_identity"] = {**body["l3_identity"], "cohort_id": "c2"}
+        snapshot = {**body, "checksum": rank_pool.checksum(body)}
+    else:
+        snapshot["rows"][0]["score"] = 9.0
+    with pytest.raises(ValueError, match=error):
+        _prepare(policy, predictions, r33_rank_pool=snapshot)
+
+
+def test_prepare_rejects_a_rank_pool_for_a_non_equal7_bundle(monkeypatch):
+    from services import l4_distribution
+    _, policy, _ = fixture()
+    # Any other (already validated) bundle: the rank pool would have no owner.
+    monkeypatch.setattr(l4_distribution, "validate_bundle", lambda *a, **kw: None)
+    policy["artifact"] = {**policy["artifact"], "model": {**policy["artifact"]["model"], "schema_version": "other"}}
+    with pytest.raises(ValueError, match="r33_rank_pool_without_equal7_bundle"):
+        _prepare(policy, policy["runtime"]["predictions"], r33_rank_pool=policy["runtime"]["r33_rank_pool"])

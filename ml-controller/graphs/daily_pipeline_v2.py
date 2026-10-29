@@ -685,6 +685,7 @@ class PipelineStateV2(TypedDict, total=False):
     pipeline_modal_serving_context: dict      # Frozen model_pool/trading context for async Modal split path
     snapshot_recovery_lineage: dict           # Explicit non-native PIT recovery evidence
     predictions: dict                       # symbol ??ml result
+    r33_rank_pool: dict                     # R33 attested rank pool (z/score/E-hat owner) for this run
     nav_inference_receipt: dict             # Actual L3 outputs; not a publication or maturity grant
     l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate
     l3_predictions: dict                     # symbol -> formal L3 merged result
@@ -2595,7 +2596,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy = dict(alpha_policy or {})
         alpha_policy['l4Distribution'] = await asyncio.to_thread(prepare_runtime_policy,
             policy=distribution_policy, signal_date=state['run_date'],
-            predictions=state['predictions'], manifest=_pipeline_frozen_serving_manifest(state))
+            predictions=state['predictions'], manifest=_pipeline_frozen_serving_manifest(state),
+            r33_rank_pool=state.get('r33_rank_pool'))
         if state.get('premarket_information'):
             alpha_policy['l4Distribution']['runtime']['premarket_information']=state['premarket_information']
             alpha_policy['l4Distribution']['runtime']['premarket_context_hash']=state['premarket_context']['checksum']

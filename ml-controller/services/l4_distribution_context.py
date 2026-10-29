@@ -22,14 +22,26 @@ def worker_request(path, payload, *, transport=None):
     return response.json()
 
 
-def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_reader=None,reward_reader=None):
+def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_reader=None,reward_reader=None,r33_rank_pool=None):
     from services.paired_nav_collection import baseline_model_identity
     from services.l4_distribution import validate_bundle
+    from services.l3_equal_weight_bundle import is_equal7
     frozen=deepcopy(policy)
     if frozen.get('scope')!='paper':
         raise ValueError('l4_distribution_paper_scope_required')
     identity=baseline_model_identity(manifest)
     validate_bundle(frozen['artifact'],l3_identity=identity,signal_date=signal_date)
+    if is_equal7(frozen['artifact']):
+        # The attested rank pool is the only source of z/score/E-hat; it is frozen
+        # with the predictions so replan and replay project the same numbers.
+        from services.r33_rank_pool import validate_rank_pool
+        if r33_rank_pool is None:
+            raise ValueError('r33_rank_pool_required')
+        validate_rank_pool(r33_rank_pool,predictions)
+        if r33_rank_pool['signal_date']!=signal_date or r33_rank_pool['l3_identity']!=identity:
+            raise ValueError('r33_rank_pool_identity_mismatch')
+    elif r33_rank_pool is not None:
+        raise ValueError('r33_rank_pool_without_equal7_bundle')
     start=datetime.now(timezone.utc)
     account=(account_reader or (lambda day:worker_request('/api/internal/l4-distribution/account',{'signal_date':day})))(signal_date)
     if not account.get('risk_limits') or not account.get('fees'):
@@ -38,6 +50,8 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
     if not start-timedelta(seconds=5)<=observed<=datetime.now(timezone.utc)+timedelta(seconds=5):
         raise ValueError('l4_distribution_account_observation_stale')
     frozen['runtime']={'signal_date':signal_date,'l3_identity':identity,'account':account,'predictions':deepcopy(predictions)}
+    if r33_rank_pool is not None:
+        frozen['runtime']['r33_rank_pool']=deepcopy(r33_rank_pool)
     from services.l4_execution_evidence import bind_calibration_packets
     frozen['runtime'].update(bind_calibration_packets(frozen,signal_date))
     from services.l4_opb_selection import context_identity, is_v2

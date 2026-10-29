@@ -91,7 +91,9 @@ test('other settlements keep the existing transition rules', async () => {
 
 test('the trigger route settles post-execution results through settleSchedulerHttpTicket', () => {
   const route = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
-  assert.equal(route.split('await settleTicket(schedulerTicketStatusForRunLog(status), summary)').length, 3,
+  assert.equal(route.split('const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)').length, 3,
     'both the async and sync execution paths settle through the FU17 helper')
+  assert.equal(route.split('if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(').length, 3,
+    'a ticket kept by its owner also keeps the owner run log')
   assert.doesNotMatch(route, /updateTicket\(schedulerTicketStatusForRunLog\(status\)/)
 })

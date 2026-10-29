@@ -240,7 +240,7 @@ test('R8-a: the manual trigger route keeps a start heartbeat over an unconfirmed
   assert.equal(await finLabDispatchSupersededByStart(f.env, date, unconfirmed.replace(runId, 'other-run')), false)
   assert.equal(await finLabDispatchSupersededByStart(f.env, date, 'triggered finlab-v4-backfill dispatch_unconfirmed error=html_502'), false)
   const route = readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
-  assert.equal(route.split('if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(').length, 3,
+  assert.equal(route.split('if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(').length, 3,
     'both the async and sync trigger paths are guarded')
 })
 

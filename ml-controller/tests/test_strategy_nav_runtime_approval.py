@@ -339,3 +339,41 @@ def test_staged_policy_chain_selects_the_grant_matching_kv(source_grant, monkeyp
               'trading:config': trading, 'trading:risk_config': risk}
     monkeypatch.setattr(kv_client, 'get_json', lambda key, **kwargs: deepcopy(values.get(key)))
     assert paper.verify_active_approval(admission) == expected
+
+
+def test_source_release_after_activated_step_pins_that_policy_grant_as_prior(source_grant):
+    """TOOL-PK: with P2 live, the next source-only release S' (built by release_admission.new_grant)
+    takes the P2 grant as prior, and its own chain continues from P2."""
+    from services.active8_paper_admission import runtime_configuration_identity
+    from services.l4_policy_activation import change_document, policy_grants
+    admission, source, (_, p2), manifest = policy_chain(source_grant, ROUND_TRIP)
+    assert validate_runtime_approval(p2, admission, now=CLOCK) == p2
+    configuration = p2['configuration']
+    manifest.clear()
+    manifest.update({'schema_version': 'strategy-nav-source-release-v1', 'scope': 'paper',
+        'source_equivalence': False, 'maturity_transfer': False, 'production_baseline_verified': True,
+        'prior_approval_checksum': p2['approval_checksum'],
+        'prior_configuration_checksum': digest(runtime_configuration_identity(configuration)),
+        'approved_sources': {k: configuration[k] for k in ('allocator_source_identity', 'l3_inference_source_identity')},
+        'execution_owner_version': native_execution_identity()})
+    s_prime = seal({'schema_version': p2['schema_version'], 'admission': p2['admission'], 'scope': 'paper',
+        'approved': True, 'maturity_transfer': False, 'efficacy_status': 'unproven',
+        'source_reference': 'test-only W-REL', 'approved_at': '2026-10-14T12:30:00Z',
+        'configuration': deepcopy(configuration), 'prior_runtime_approval': deepcopy(p2),
+        'approved_strategy_nav_source_change': {'release_manifest_checksum': digest(manifest)}})
+    assert validate_runtime_approval(s_prime, admission, now=CLOCK) == s_prime
+    # Going back to the pre-P1 S is an economic change against prior P2, not a source-only release.
+    reverted = deepcopy(s_prime)
+    reverted['configuration']['trading_config'] = deepcopy(source['configuration']['trading_config'])
+    with pytest.raises(RuntimeError, match='strategy_nav_runtime_economic_configuration_changed'):
+        validate_runtime_approval(seal(reverted), admission, now=CLOCK)
+    # The S' chain starts from P2 (activate_l4_policy prepare-change --continue-from CHAIN --step 2).
+    activation, next_config = change_document(configuration['trading_config'], changes={'risk_aversion': 3.},
+        engineering_receipt_checksum='e' * 64, source_reference='test-only continued change')
+    manifest['policy_activations'] = [activation]
+    s_prime['approved_strategy_nav_source_change']['release_manifest_checksum'] = digest(manifest)
+    seal(s_prime)
+    (p_next,) = policy_grants(s_prime, [{'activation': activation, 'next_merged_config': next_config,
+                                         'next_risk_config': configuration['risk_config']}])
+    assert validate_runtime_approval(s_prime, admission, now=CLOCK) == s_prime
+    assert validate_runtime_approval(p_next, admission, now=CLOCK) == p_next

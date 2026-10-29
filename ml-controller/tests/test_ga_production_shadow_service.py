@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from services import ga_production_shadow_service as service  # noqa: E402
+import pytest  # noqa: E402
+
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
 
 
 class FakeLearningClient:

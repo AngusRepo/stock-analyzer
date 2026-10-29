@@ -2,7 +2,9 @@
 
   prepare         read-only: capture raw/merged config and Worker risk defaults, start the
                   release chain with the v1 -> v2 packet (--cost-objective is required)
-  prepare-change  local: append a v2 constraints change (--set key=JSON) derived from the chain end
+  prepare-change  local: append a v2 constraints change (--set key=JSON) derived from the chain end;
+                  with --continue-from CHAIN --step k, start a new chain from that chain's packet k
+                  (the next release after Pk is activated: its S is Pk)
   grant           local: derive P1..Pn from the release's S grant and validate every grant
   activate        dry-run unless --execute: move one adjacent step to --to (source|1..n);
                   forward follows the packet write order, backward its rollback order
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -54,7 +57,12 @@ def main():
     parser.add_argument('--set', action='append', default=[], metavar='KEY=JSON')
     parser.add_argument('--to', help='source, or the 1-based grant index to step to')
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--continue-from', type=Path, metavar='POLICY_CHAIN_JSON',
+                        help='prepare-change: start a new chain from packet --step of a live release chain')
+    parser.add_argument('--step', type=int, help='with --continue-from: the activated step k (1..n)')
     args = parser.parse_args()
+    if (args.continue_from is None) != (args.step is None) or args.continue_from and args.command != 'prepare-change':
+        raise SystemExit('--continue-from and --step go together, with prepare-change only')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     sys.path[:0] = [str(args.workspace_root / 'audits/pipeline-nightly-20261013'), str(args.controller)]
@@ -109,7 +117,21 @@ def main():
                           'risk_config_filled_fields': packet['activation']['risk_config_filled_fields']}))
         return
 
-    chain = load(out / 'policy-chain.json')
+    if args.continue_from:
+        # A release made while the live chain sits at Pk starts a new chain from Pk: old packet k is
+        # the previous link but not part of the new chain, so new chain[0].rollback_config = Pk raw.
+        if (out / 'policy-chain.json').exists():
+            raise SystemExit('policy-chain.json exists; start a new --out for a continued chain')
+        from services.l4_policy_activation import chain_states
+        previous_raw = args.continue_from.read_bytes()
+        previous_chain = json.loads(previous_raw)
+        if not isinstance(previous_chain, list) or not 1 <= args.step <= len(previous_chain):
+            raise SystemExit('--step must name a packet of the --continue-from chain (1..n)')
+        chain_states(previous_chain)
+        chain, previous = [], previous_chain[args.step - 1]
+    else:
+        chain = load(out / 'policy-chain.json')
+        previous = chain[-1] if args.command == 'prepare-change' else None
     if args.command == 'prepare-change':
         from services.l4_release_packet import prepare_policy_change_packet
         changes = {}
@@ -118,9 +140,12 @@ def main():
             if not sep or key in changes:
                 raise SystemExit('--set needs distinct KEY=JSON items')
             changes[key] = json.loads(value)
-        packet = prepare_policy_change_packet(chain[-1], changes=changes,
+        packet = prepare_policy_change_packet(previous, changes=changes,
             engineering_receipt=load(args.engineering_receipt), source_reference=args.source_reference)
         packet['controller_source_sha'] = release['source_sha']
+        if args.continue_from:
+            packet['continued_from'] = {'step': args.step, 'activation_checksum': digest(previous['activation']),
+                'policy_chain_sha256': hashlib.sha256(previous_raw).hexdigest()}
         save(out, 'policy-chain.json', [*chain, packet])
         print(json.dumps({'status': 'prepared_locally', 'cloud_writes': 0, 'chain_length': len(chain) + 1,
                           'changes': changes, 'next_policy_identity': packet['approved_policy_identity']}))

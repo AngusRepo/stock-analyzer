@@ -537,7 +537,9 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
         f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
     )
     data_mode = _research_data_mode_for_request(req)
+    from services.position_risk_owner import with_formal_position_risk
     try:
+        baseline_params = with_formal_position_risk(baseline_params)
         result = run_search(
             n_trials=req.n_trials,
             subset_size=req.subset_size,
@@ -628,7 +630,9 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
         f"subset={req.subset_size} window={req.start_date}~{req.end_date}"
     )
     data_mode = _research_data_mode_for_request(req)
+    from services.position_risk_owner import with_formal_position_risk
     try:
+        baseline_params = with_formal_position_risk(baseline_params)
         result = run_search(
             n_trials=req.n_trials,
             subset_size=req.subset_size,
@@ -1630,11 +1634,12 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     )
 
     # ── Run search ──────────────────────────────────────────────────────────
+    from services.position_risk_owner import with_formal_position_risk
     result = run_l2_sensitivity_search(
         search_space=search_space,
         start_date=start_date,
         end_date=end_date,
-        baseline_config=baseline_config,
+        baseline_config=with_formal_position_risk(baseline_config),
         n_trials=req.n_trials,
         dd_penalty=req.dd_penalty,
         sampler_name=req.sampler,

@@ -14,7 +14,7 @@ type Identity = {
 }
 type Receipt = {
   schema: 'post-verify-task-receipt-v1'; identity: Identity; task: string; predecessor: string
-  claim: string; leaseOwner: string; result?: PostVerifyTaskResult; checksum?: string
+  claim: string; leaseOwner: string; retrySafe?: boolean; result?: PostVerifyTaskResult; checksum?: string
 }
 type Row = { state: string; receipt_json: string }
 const PREFIX = 'post_verify_task_v1:'
@@ -125,6 +125,42 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
         receiptKey ?? null, receiptKey ?? null, RUNNING, receiptJson ?? null).first()
     if (!current) throw new Error('post_verify_checkpoint_authority_lost')
   }
+  const authority=`EXISTS(SELECT 1 FROM pipeline_stage_runs WHERE business_date=? AND stage='post_verify_chain'
+    AND canonical_run_id=? AND status='running' AND lease_owner=? AND lease_expires_at>=CURRENT_TIMESTAMP)
+    AND ?=(SELECT ticket_id FROM scheduler_execution_tickets_v1 WHERE scheduler_job_id='evening-chain'
+      AND business_date=? AND ticket_kind='physical_root' ORDER BY updated_at DESC,ticket_id DESC LIMIT 1)`
+  const binds=[input.businessDate,input.canonicalRunId,input.leaseOwner,identity.rootTicketId,input.businessDate]
+  // A running receipt belongs to the stage lease that claimed it. Once that
+  // lease is no longer live, its producer can no longer write through the
+  // scoped environment, so an idempotent claim closes as ERROR and may run
+  // again. Elapsed time alone never reclaims; other claims keep blocking.
+  const reclaimExpiredLeases = async (task: string, retrySafe: boolean) => {
+    const rows = await db.prepare('SELECT receipt_key,receipt_json FROM post_verify_task_receipts_v1 WHERE business_date=? AND state=?')
+      .bind(input.businessDate, RUNNING).all<{ receipt_key: string; receipt_json: string }>()
+    let reclaimed = false
+    const requiresReconciliation: string[] = []
+    for (const row of rows.results ?? []) {
+      const stale = JSON.parse(row.receipt_json) as Receipt
+      if (!stale.leaseOwner || stale.leaseOwner === input.leaseOwner) continue
+      // Receipts claimed before the stored flag rely on the same task's own
+      // retry contract.
+      if (stale.retrySafe !== true && !(retrySafe && stale.task === task)) {
+        requiresReconciliation.push(stale.task)
+        continue
+      }
+      const closed: Receipt = { ...stale, result: { task: stale.task, status: 'error',
+        summary: `post_verify_checkpoint_lease_expired_reclaimed:${stale.task}:lease_owner=${stale.leaseOwner}` } }
+      closed.checksum = await digest(closed)
+      const changed = await db.prepare(`UPDATE post_verify_task_receipts_v1 SET state=?,receipt_json=?,updated_at=CURRENT_TIMESTAMP
+        WHERE receipt_key=? AND state=? AND receipt_json=? AND ${authority}
+          AND NOT EXISTS(SELECT 1 FROM pipeline_stage_runs WHERE business_date=? AND stage='post_verify_chain'
+            AND status='running' AND lease_owner=? AND lease_expires_at>=CURRENT_TIMESTAMP)
+        RETURNING receipt_key`).bind(ERROR, JSON.stringify(closed), row.receipt_key, RUNNING, row.receipt_json,
+          ...binds, input.businessDate, stale.leaseOwner).first()
+      if (changed) reclaimed = true
+    }
+    return { reclaimed, requiresReconciliation }
+  }
   return {
     async run(task: string, fn: (scoped: Bindings) => Promise<PostVerifyTaskResult>, options: {
       timeoutMs?: number; retrySafe?: boolean; critical?: boolean; verifyResult?: (result: PostVerifyTaskResult) => Promise<boolean>
@@ -153,11 +189,6 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
           }
           // Preserve the previous success receipt before invalidating its active
           // alias. An idempotent producer may repair changed/missing output.
-          const authority=`EXISTS(SELECT 1 FROM pipeline_stage_runs WHERE business_date=? AND stage='post_verify_chain'
-            AND canonical_run_id=? AND status='running' AND lease_owner=? AND lease_expires_at>=CURRENT_TIMESTAMP)
-            AND ?=(SELECT ticket_id FROM scheduler_execution_tickets_v1 WHERE scheduler_job_id='evening-chain'
-              AND business_date=? AND ticket_kind='physical_root' ORDER BY updated_at DESC,ticket_id DESC LIMIT 1)`
-          const binds=[input.businessDate,input.canonicalRunId,input.leaseOwner,identity.rootTicketId,input.businessDate]
           await db.prepare(`INSERT OR IGNORE INTO post_verify_task_receipts_v1(receipt_key,state,business_date,receipt_json)
             SELECT ?,?,?,? WHERE ${authority}`).bind(`${key}:invalidated:${receipt.checksum}`, ERROR, input.businessDate, old.receipt_json,...binds).run()
           const changed=await db.prepare(`UPDATE post_verify_task_receipts_v1 SET state=?
@@ -171,9 +202,9 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
         }
       }
       const receipt: Receipt = { schema: 'post-verify-task-receipt-v1', identity, task, predecessor,
-        claim: crypto.randomUUID(), leaseOwner: input.leaseOwner }
+        claim: crypto.randomUUID(), leaseOwner: input.leaseOwner, retrySafe: options.retrySafe === true }
       const serialized = JSON.stringify(receipt)
-      const claim = await db.prepare(`INSERT INTO post_verify_task_receipts_v1(receipt_key,state,business_date,receipt_json)
+      const claimOnce = () => db.prepare(`INSERT INTO post_verify_task_receipts_v1(receipt_key,state,business_date,receipt_json)
         SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM pipeline_stage_runs
           WHERE business_date=? AND stage='post_verify_chain' AND canonical_run_id=? AND status='running'
             AND lease_owner=? AND lease_expires_at>=CURRENT_TIMESTAMP)
@@ -186,7 +217,13 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
         RETURNING receipt_key`).bind(key, RUNNING, input.businessDate, serialized, input.businessDate,
           input.canonicalRunId, input.leaseOwner, identity.rootTicketId, input.businessDate,
           RUNNING, UNCERTAIN, input.businessDate, ERROR, options.retrySafe === true ? 1 : 0).first()
-      if (!claim) throw new Error(`post_verify_checkpoint_unsettled_side_effect:${task}`)
+      let claim = await claimOnce()
+      if (!claim) {
+        const blocked = await reclaimExpiredLeases(task, options.retrySafe === true)
+        if (blocked.reclaimed) claim = await claimOnce()
+        if (!claim) throw new Error(`post_verify_checkpoint_unsettled_side_effect:${task}`
+          + (blocked.requiresReconciliation.length ? `:expired_lease_requires_reconciliation:${blocked.requiresReconciliation.join(',')}` : ''))
+      }
       let terminal = false
       let timedOut = false
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -195,17 +232,9 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
         await assertAuthority(key, serialized)
       }
       const scoped = scopedEnvironment(env, assertEffects)
-      const settle = async (result: PostVerifyTaskResult) => {
-        terminal = true
-        const completed: Receipt = { ...receipt, result }
-        completed.checksum = await digest(completed)
-        // Only this exact original claim may publish its own terminal receipt.
-        // It never mutates a newer stage/root or claims that root succeeded.
-        const encoded = JSON.stringify(completed)
-        if (new TextEncoder().encode(encoded).length > 32_768) throw new Error(`post_verify_checkpoint_receipt_too_large:${task}`)
-        const uncertain = result.status === 'error' && options.retrySafe !== true
-          && /timeout|timed out|abort|network|fetch failed|HTTP\s*5\d\d|socket|connection|unacknowledged/i.test(result.summary)
-        const state = result.status === 'error' ? uncertain ? UNCERTAIN : ERROR : SUCCESS
+      // Only this exact original claim may publish its own terminal receipt.
+      // It never mutates a newer stage/root or claims that root succeeded.
+      const persist = async (state: string, encoded: string) => {
         const saved = await db.prepare(`UPDATE post_verify_task_receipts_v1 SET state=?,receipt_json=?,updated_at=CURRENT_TIMESTAMP
           WHERE receipt_key=? AND state=? AND receipt_json=? RETURNING receipt_key`)
           .bind(state, encoded, key, RUNNING, serialized).first()
@@ -215,6 +244,29 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
             || readback.state !== state) {
           throw new Error(`post_verify_checkpoint_terminal_readback_mismatch:${task}`)
         }
+      }
+      const settle = async (result: PostVerifyTaskResult) => {
+        terminal = true
+        let completed: Receipt, encoded: string, state: string
+        try {
+          completed = { ...receipt, result }
+          completed.checksum = await digest(completed)
+          encoded = JSON.stringify(completed)
+          if (new TextEncoder().encode(encoded).length > 32_768) throw new Error(`post_verify_checkpoint_receipt_too_large:${task}`)
+          const uncertain = result.status === 'error' && options.retrySafe !== true
+            && /timeout|timed out|abort|network|fetch failed|HTTP\s*5\d\d|socket|connection|unacknowledged/i.test(result.summary)
+          state = result.status === 'error' ? uncertain ? UNCERTAIN : ERROR : SUCCESS
+        } catch (error) {
+          // A result that cannot be recorded still closes this claim as a
+          // bounded ERROR before failing; a running claim blocks the date.
+          const reason = (error instanceof Error ? error.message : String(error)).slice(0, 512)
+          const closed: Receipt = { ...receipt, result: { task, status: 'error', critical: result?.critical,
+            summary: `${reason}; original_status=${String(result?.status)}; ${String(result?.summary).slice(0, 1024)}` } }
+          closed.checksum = await digest(closed)
+          await persist(ERROR, JSON.stringify(closed))
+          throw error
+        }
+        await persist(state, encoded)
         return completed
       }
       const work = (async () => {
@@ -253,7 +305,8 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
         return completed.result!
       } catch (error) {
         // Timeout does not cancel the producer. Its running claim remains and
-        // all future attempts block until the original promise really settles.
+        // blocks attempts under this stage lease until the original promise
+        // really settles; only a later stage lease may reclaim it.
         void work.catch(() => {})
         throw error
       } finally {

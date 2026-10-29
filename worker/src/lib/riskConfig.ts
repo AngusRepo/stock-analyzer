@@ -48,7 +48,16 @@ export interface RiskConfig {
   }
 }
 
-export const DEFAULT_RISK_CONFIG: RiskConfig = {
+// K16a: KV is the only owner of these fields. They have no program default:
+// a missing or invalid value fails closed at runtime and is never seeded.
+const KV_OWNED_POSITION_FIELDS = ['maxSingleNamePct'] as const
+type KvOwnedPositionField = typeof KV_OWNED_POSITION_FIELDS[number]
+
+export type RiskConfigDefaults = Omit<RiskConfig, 'position'> & {
+  position: Omit<RiskConfig['position'], KvOwnedPositionField>
+}
+
+export const DEFAULT_RISK_CONFIG: RiskConfigDefaults = {
   system: {
     killSwitch: false,
     quoteStalenessTolerance: 120,
@@ -74,7 +83,6 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
   },
   position: {
     maxPerSector: 2,
-    maxSingleNamePct: 0.25,
     correlationThreshold: 0.7,
     correlationWindow: 60,
   },
@@ -94,6 +102,10 @@ export const FAIL_CLOSED_RISK_CONFIG: RiskConfig = {
     ...DEFAULT_RISK_CONFIG.system,
     killSwitch: true,
     haltOnProxyFailure: true,
+  },
+  position: {
+    ...DEFAULT_RISK_CONFIG.position,
+    maxSingleNamePct: 0,
   },
   order: {
     ...DEFAULT_RISK_CONFIG.order,
@@ -117,15 +129,29 @@ export interface RiskConfigRepairPlan {
   error?: string
 }
 
-/** Deep-merge user-supplied partial over defaults (one level deep per section). */
-function deepMerge(defaults: RiskConfig, partial: any): RiskConfig {
-  if (!partial || typeof partial !== 'object') return defaults
+/**
+ * Deep-merge user-supplied partial over program defaults (one level deep per section).
+ * KV-owned fields are carried only when the partial has them; nothing fills them in.
+ */
+function mergeProgramDefaults(partial: any): RiskConfig {
+  const raw = partial && typeof partial === 'object' ? partial : {}
   return {
-    system:    { ...defaults.system,    ...(partial.system    ?? {}) },
-    portfolio: { ...defaults.portfolio, ...(partial.portfolio ?? {}) },
-    position:  { ...defaults.position,  ...(partial.position  ?? {}) },
-    order:     { ...defaults.order,     ...(partial.order     ?? {}) },
+    system:    { ...DEFAULT_RISK_CONFIG.system,    ...(raw.system    ?? {}) },
+    portfolio: { ...DEFAULT_RISK_CONFIG.portfolio, ...(raw.portfolio ?? {}) },
+    position:  { ...DEFAULT_RISK_CONFIG.position,  ...(raw.position  ?? {}) } as RiskConfig['position'],
+    order:     { ...DEFAULT_RISK_CONFIG.order,     ...(raw.order     ?? {}) },
   }
+}
+
+function validSingleNameCap(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+/** Runtime view: a missing or invalid single-name cap means no new single-name exposure. */
+function failClosedOwnedFields(cfg: RiskConfig): RiskConfig {
+  if (validSingleNameCap(cfg.position.maxSingleNamePct)) return cfg
+  console.warn('[RiskConfig] trading:risk_config.position.maxSingleNamePct missing or invalid, single-name cap fails closed to 0')
+  return { ...cfg, position: { ...cfg.position, maxSingleNamePct: 0 } }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,6 +169,12 @@ function collectMissingFields(raw: unknown): string[] {
     }
     for (const key of Object.keys(defaults)) {
       if (!(key in sectionValue)) reasons.push(`missing_${section}.${key}`)
+    }
+  }
+  if (isRecord(raw.position)) {
+    for (const key of KV_OWNED_POSITION_FIELDS) {
+      if (!(key in raw.position)) reasons.push(`missing_position.${key}`)
+      else if (!validSingleNameCap(raw.position[key])) reasons.push(`invalid_position.${key}`)
     }
   }
   if (isRecord(raw.system) && typeof raw.system.killSwitch !== 'boolean') {
@@ -163,7 +195,7 @@ function cloneRiskConfig(cfg: RiskConfig): RiskConfig {
 const RISK_CONFIG_KV_KEY = 'trading:risk_config'
 
 export function normalizeRiskConfig(partial: unknown): RiskConfig {
-  return cloneRiskConfig(deepMerge(DEFAULT_RISK_CONFIG, isRecord(partial) ? partial : {}))
+  return cloneRiskConfig(failClosedOwnedFields(mergeProgramDefaults(isRecord(partial) ? partial : {})))
 }
 
 function runtimeKillSwitchFromRaw(raw: unknown): boolean {
@@ -179,7 +211,7 @@ export async function buildRiskConfigRepairPlan(kv: KVNamespace | undefined): Pr
       exists: false,
       source: 'error',
       effective: cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
-      seedConfig: cloneRiskConfig(DEFAULT_RISK_CONFIG),
+      seedConfig: mergeProgramDefaults({}),
       runtimeKillSwitchActive: true,
       complete: false,
       needsRepair: true,
@@ -192,12 +224,13 @@ export async function buildRiskConfigRepairPlan(kv: KVNamespace | undefined): Pr
     const exists = isRecord(raw)
     const repairReasons = collectMissingFields(raw)
     const complete = exists && repairReasons.length === 0
-    const seedConfig = normalizeRiskConfig(raw)
+    // The seed never invents a KV-owned field; the effective view fails it closed.
+    const seedConfig = cloneRiskConfig(mergeProgramDefaults(isRecord(raw) ? raw : {}))
     return {
       key: RISK_CONFIG_KV_KEY,
       exists,
       source: exists ? 'kv' : 'missing',
-      effective: exists ? seedConfig : cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
+      effective: exists ? normalizeRiskConfig(raw) : cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
       seedConfig,
       runtimeKillSwitchActive: runtimeKillSwitchFromRaw(raw),
       complete,
@@ -210,7 +243,7 @@ export async function buildRiskConfigRepairPlan(kv: KVNamespace | undefined): Pr
       exists: false,
       source: 'error',
       effective: cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG),
-      seedConfig: cloneRiskConfig(DEFAULT_RISK_CONFIG),
+      seedConfig: mergeProgramDefaults({}),
       runtimeKillSwitchActive: true,
       complete: false,
       needsRepair: true,
@@ -234,6 +267,7 @@ export async function riskConfigFieldsFromDefault(kv: KVNamespace | undefined): 
   const raw = kv ? await kv.get(RISK_CONFIG_KV_KEY, 'json') : null
   return collectMissingFields(raw).filter(reason => /^missing_[a-z]+\.[A-Za-z0-9]+$/.test(reason))
     .map(reason => reason.slice('missing_'.length))
+    .filter(field => !KV_OWNED_POSITION_FIELDS.some(key => field === `position.${key}`))
 }
 
 export async function getRiskConfig(kv: KVNamespace | undefined): Promise<RiskConfig> {
@@ -247,7 +281,7 @@ export async function getRiskConfig(kv: KVNamespace | undefined): Promise<RiskCo
       console.warn('[RiskConfig] trading:risk_config missing, using fail-closed config')
       return cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG)
     }
-    return deepMerge(DEFAULT_RISK_CONFIG, raw)
+    return failClosedOwnedFields(mergeProgramDefaults(raw))
   } catch (e) {
     console.warn('[RiskConfig] getRiskConfig failed, using fail-closed config:', e)
     return cloneRiskConfig(FAIL_CLOSED_RISK_CONFIG)

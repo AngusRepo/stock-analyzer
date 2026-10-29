@@ -8,7 +8,7 @@ This tool checks every unrecorded file against the live schema instead:
                        per file; overrides.json holds probes for data-only files and files whose
                        objects moved to another domain database
   record  backfill d1_migrations rows for applied_unrecorded files
-  apply   run pending files in order with `d1 execute --file`, record each, re-verify its objects
+  apply   run pending files in order with `d1 execute --file`, re-verify its objects, record each
 
 record/apply print the plan and stop unless --execute is given. apply refuses while any earlier
 unrecorded file is partial or unverifiable. Run from anywhere; wrangler runs in worker/.
@@ -86,19 +86,27 @@ def migrations(db: str) -> list[Migration]:
     return [parse(p) for p in sorted((WORKER / DATABASES[db][1]).glob('*.sql'))]
 
 
-def wrangler(db: str, *args: str) -> list[dict]:
+def wrangler(db: str, *args: str) -> str:
     npx = shutil.which('npx')
     if not npx:
         raise RuntimeError('npx_not_found')
+    # --json also keeps wrangler from prompting before a --file import.
     out = subprocess.run([npx, 'wrangler@4', 'd1', 'execute', DATABASES[db][0], '--remote', '--json', *args],
                          cwd=WORKER, capture_output=True, text=True, encoding='utf-8', timeout=600)
     if out.returncode:
         raise RuntimeError(f'wrangler_failed:{db}:{out.stderr.strip()[-600:]}')
-    return json.loads(out.stdout)
+    return out.stdout
 
 
 def query(db: str, sql: str) -> list[dict]:
-    return wrangler(db, '--command', sql)[0]['results']
+    return json.loads(wrangler(db, '--command', sql))[0]['results']
+
+
+def execute_file(db: str, path: Path) -> None:
+    # A --file import writes its upload/poll spinner lines to stdout even under --json, so stdout is
+    # not JSON. Exit 0 means the import completed (wrangler throws otherwise); apply re-verifies the
+    # live schema itself instead of trusting the summary.
+    wrangler(db, '--file', str(path))
 
 
 def live_schema(db: str) -> tuple[set[str], dict[tuple[str, str], str]]:
@@ -175,6 +183,8 @@ def record(db: str, names: list[str], execute: bool) -> None:
         print(f'record {db} {name}' + ('' if execute else '  (dry-run)'))
         if execute:
             query(db, f'INSERT OR IGNORE INTO d1_migrations (name) VALUES ({sql_text(name)})')
+            if query(db, f'SELECT COUNT(*) AS n FROM d1_migrations WHERE name = {sql_text(name)}')[0]['n'] != 1:
+                raise RuntimeError(f'record_not_visible:{db}:{name}')
 
 
 def apply(db: str, execute: bool) -> None:
@@ -190,14 +200,31 @@ def apply(db: str, execute: bool) -> None:
         raise SystemExit('apply_refused_unresolved:' + json.dumps(blocking))
     by_name = {m.name: m for m in migrations(db)}
     for row in pending:
-        print(f'apply {db} {row["name"]}' + ('' if execute else '  (dry-run)'))
+        name = row['name']
+        print(f'apply {db} {name}' + ('' if execute else '  (dry-run)'))
         if not execute:
             continue
-        wrangler(db, '--file', str(by_name[row['name']].path))
-        after = classify([by_name[row['name']]], set(), live_schema(db)[1], probe(db, [row['name']]))[0]
+        try:
+            execute_file(db, by_name[name].path)
+        except RuntimeError as error:  # D1 rolls a failed import back; status shows what is live
+            raise SystemExit(f'apply_failed:{db}:{name}:{error} (run status before retrying)') from error
+        except subprocess.TimeoutExpired as error:  # the import may still complete server-side
+            raise SystemExit(f'apply_outcome_unknown:{db}:{name}:wrangler timed out after {error.timeout}s '
+                             '(run status: applied_unrecorded means record, pending means retry)') from error
+        # The SQL ran: from here on every failure must say the file is executed but not confirmed recorded.
+        unrecorded = (f'apply_executed_not_recorded:{db}:{name}: the file ran but its d1_migrations row is not confirmed; '
+                      f'run `python tools/d1/migrations.py status --db {db}`, then `record --db {db} --execute` '
+                      'once it reports applied_unrecorded')
+        try:
+            after = classify([by_name[name]], set(), live_schema(db)[1], probe(db, [name]))[0]
+        except Exception as error:
+            raise SystemExit(f'{unrecorded}:verify_error:{error!r}') from error
         if after['status'] != 'applied_unrecorded':
-            raise SystemExit(f'apply_verification_failed:{row["name"]}:' + json.dumps(after))
-        record(db, [row['name']], True)
+            raise SystemExit(f'{unrecorded}:apply_verification_failed:' + json.dumps(after))
+        try:
+            record(db, [name], True)
+        except Exception as error:
+            raise SystemExit(f'{unrecorded}:record_error:{error!r}') from error
 
 
 def main() -> None:

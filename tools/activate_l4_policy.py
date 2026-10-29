@@ -9,7 +9,11 @@
 
 grant and activate validate grants against the release's native Paper bundle: --admission-dir
 (the new-grant admission output of tools/release/release.py) sets NATIVE_PAPER_RUNNER to its
-native-paper.cjs after checking it against the admission receipt (CD-NEW-07).
+native-paper.cjs after checking it against the admission receipt (CD-NEW-07). The admission must
+also be the one this run works on, checked from local files before any credential or cloud read:
+grant: --source-grant is the admission's S grant; activate: the controller's behavior manifest is
+the one the admission wrote (runtime_admission == the receipt's new_key) and every local P grant
+is derived from that S grant. Another release's admission directory stops there.
 
 Ports audits/risk-review-20261014/activate_policy.py. Optimistic rechecks
 before every write and readback after it; KV has no CAS. Never rewrites a
@@ -58,6 +62,43 @@ def use_admission_bundle(admission: Path) -> Path:
     return bundle
 
 
+POLICY_GRANT_FIELDS = ('configuration', 'approved_l4_execution_policy_change', 'approval_checksum')
+
+
+def bind_admission(admission: Path, command: str, *, source_grant: Path | None, controller: Path, out: Path):
+    """Fail closed unless --admission-dir belongs to the grants this run validates or activates.
+
+    Local files only: it runs before load_environment(), so a wrong directory never reaches a
+    credential, KV or Cloud Run read.
+    """
+    import hashlib
+    receipt = load(admission / 'admission-receipt.json')
+    s_path = admission / 'source-grant.json'
+    s_grant = load(s_path) if s_path.is_file() else None
+    if not receipt.get('new_key') or s_grant is None or s_grant.get('approval_checksum') != receipt.get('approval_checksum'):
+        raise RuntimeError('admission_source_grant_not_bound_to_receipt')
+    if command == 'grant':
+        if source_grant is None:
+            raise SystemExit('grant needs --source-grant')
+        if load(source_grant).get('approval_checksum') != receipt['approval_checksum']:
+            raise RuntimeError('admission_not_for_source_grant')
+        return receipt
+    behavior_path = controller / 'services/native_execution_behavior_release.json'
+    behavior = load(behavior_path)
+    expected = (receipt.get('manifest_sha256') or {}).get('native_execution_behavior_release.json')
+    if behavior.get('runtime_admission') != receipt['new_key'] \
+            or hashlib.sha256(behavior_path.read_bytes()).hexdigest() != expected:
+        raise RuntimeError('admission_not_for_this_release:' + str(behavior.get('runtime_admission')))
+    grants_path = out / 'policy-grants.json'
+    if not grants_path.is_file():
+        raise SystemExit('activate needs ' + str(grants_path) + ' (run grant first)')
+    shared = {k: v for k, v in s_grant.items() if k not in POLICY_GRANT_FIELDS}
+    for index, grant in enumerate(load(grants_path), 1):
+        if {k: v for k, v in grant.items() if k not in POLICY_GRANT_FIELDS} != shared:
+            raise RuntimeError('policy_grant_not_derived_from_admission:P' + str(index))
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=('prepare', 'prepare-change', 'grant', 'activate'))
@@ -78,6 +119,8 @@ def main():
         if not args.admission_dir:
             raise SystemExit(args.command + ' needs --admission-dir (sets NATIVE_PAPER_RUNNER to the release bundle)')
         use_admission_bundle(args.admission_dir)
+        bind_admission(args.admission_dir, args.command, source_grant=args.source_grant,
+                       controller=args.controller, out=args.out.resolve())
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     sys.path[:0] = [str(args.workspace_root / 'audits/pipeline-nightly-20261013'), str(args.controller)]

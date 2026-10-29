@@ -78,7 +78,7 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
   immutable_risk_boundaries: [
     'circuit',
     'riskOverlay.hardGates',
-    'position.maxPctOfPortfolio',
+    'risk_config.position.maxSingleNamePct',
     'paperExecution.impossibleFillGuard',
   ],
 }

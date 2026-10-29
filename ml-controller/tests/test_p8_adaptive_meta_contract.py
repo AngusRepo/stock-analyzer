@@ -57,8 +57,11 @@ def test_adaptive_params_expose_p8_governance_metadata():
     assert meta["meta_optimizers"] == ["GAOptimizer"]
     for component in ["ARF", "LinUCB", "Conformal", "Stacking", "GAOptimizer", "NeuralUCB", "NeuralTS", "OnlinePortfolioBandit", "NeuCB"]:
         assert component in meta["adaptive_components"]
+    assert "risk_config.position.maxSingleNamePct" in meta["immutable_risk_boundaries"]
+    assert "position.maxPctOfPortfolio" not in meta["immutable_risk_boundaries"]
     assert "circuit" not in params
     assert "alphaFramework" not in params
+    assert not {"position", "risk_config", "maxSingleNamePct", "maxPctOfPortfolio"} & set(params)
 
 
 def test_bull_low_vol_high_trend_can_lower_threshold_delta():

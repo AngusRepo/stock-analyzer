@@ -88,6 +88,26 @@ assert(
   ADAPTIVE_META_LAYER_GOVERNANCE.meta_optimizers.includes('GAOptimizer'),
   'GAOptimizer must be declared as meta optimizer governance, not a predictor',
 )
+assert(
+  ADAPTIVE_META_LAYER_GOVERNANCE.immutable_risk_boundaries.includes('risk_config.position.maxSingleNamePct')
+    && !ADAPTIVE_META_LAYER_GOVERNANCE.immutable_risk_boundaries.includes('position.maxPctOfPortfolio'),
+  'single-name cap boundary must name the risk_config owner left after P1',
+)
+const capInjection = normalizeAdaptiveParams({
+  position: { maxSingleNamePct: 0.9 },
+  maxSingleNamePct: 0.9,
+  risk_config: { position: { maxSingleNamePct: 0.9 } },
+  meta_layer: { immutable_risk_boundaries: [] },
+} as Record<string, unknown>) as unknown as Record<string, unknown>
+assert(
+  !('position' in capInjection) && !('maxSingleNamePct' in capInjection) && !('risk_config' in capInjection),
+  'adaptive params must not carry a single-name cap',
+)
+assert(
+  JSON.stringify((capInjection.meta_layer as { immutable_risk_boundaries: string[] }).immutable_risk_boundaries)
+    === JSON.stringify(ADAPTIVE_META_LAYER_GOVERNANCE.immutable_risk_boundaries),
+  'adaptive params must not rewrite immutable risk boundaries',
+)
 for (const component of ['ARF', 'LinUCB', 'Conformal', 'Stacking', 'GAOptimizer', 'NeuralUCB', 'NeuralTS', 'OnlinePortfolioBandit', 'NeuCB']) {
   assert(
     typeof ADAPTIVE_META_LAYER_GOVERNANCE.adaptive_components[component] === 'string',

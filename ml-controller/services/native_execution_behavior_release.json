@@ -1,15 +1,15 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:5b87b7acc81470ad94ddf15ba16b176bcd1f1d53ccdd4fce88ab902905d17b9e",
+  "execution_owner_version": "native-paper-v1:bbf7b8480af603f389e52aa461b755ca5247fb796a12c950b2edccfeba8f400e",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-27 22:0x TW in merge/deploy owner session: \"照你建議的做\" / \"接著開始你剛剛提的Ｂ計劃\" (R-F tonight, plan B)",
-  "review": "audits/rf-rehearsal4-mac-20261027/pr50_deviation_review.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:rf-20261027",
+  "authorization": "Wei 2026-10-28 21:0x TW in merge/deploy owner session: \"go：10/31 release r31-20261031 變體 B（#93＋#95＋#91＋monthly／weekly PAUSED），由你跑正式 admission 和 re-pin 後推\"",
+  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/k9_release_20261031.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r31-20261031",
   "policy_runtime_admissions": [
-    "ml:active8:paper_runtime_approval:v1:rf-20261027-p1",
-    "ml:active8:paper_runtime_approval:v1:rf-20261027-p2"
+    "ml:active8:paper_runtime_approval:v1:r31-20261031-p1",
+    "ml:active8:paper_runtime_approval:v1:r31-20261031-p2"
   ]
 }

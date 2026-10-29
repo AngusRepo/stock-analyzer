@@ -13,7 +13,8 @@ assert.doesNotMatch(entry, /sectorCountMap\.get\(recSector\).*>= 2/)
 // C28-01: the overlap minimum is the KV value, never a literal.
 const rotation = readFileSync('src/lib/l4RotationGate.ts', 'utf8')
 for (const source of [entry, rotation]) {
-  assert.match(source, /minimumOverlappingReturns:\s*riskCfg\.position\.minCorrelationOverlap/)
+  assert.match(source, /minimumOverlappingReturns:\s*riskCfg\.position\.minCorrelationOverlap\s*[,}]/)
+  assert.doesNotMatch(source, /minCorrelationOverlap\s*(\|\||\?\?)/)
   assert.doesNotMatch(source, /minimumOverlappingReturns:\s*\d/)
 }
 

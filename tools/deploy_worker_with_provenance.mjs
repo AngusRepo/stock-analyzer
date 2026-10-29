@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged } from './worker_deploy_preflight.mjs'
+import { captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged, runD1Read } from './worker_deploy_preflight.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workerDir = join(root, 'worker')
@@ -69,7 +69,7 @@ const productionGuard = await captureWorkerDeployGuard(guardOptions)
 // Code admission depends on the domain-native ticket authority. Remote D1
 // migrations remain explicit, so deploy must fail closed until Ops 0011 has
 // already been applied and read back.
-run(process.execPath, [
+runD1Read(run, process.execPath, [
   wranglerCli,
   'd1',
   'execute',
@@ -86,11 +86,11 @@ for (const [database, query] of [
   ['stockvision-ops-db', 'SELECT artifact_id,owner_id,lease_until,next_attempt_at,status FROM artifact_deletion_claims_v1 LIMIT 0;'],
   ['stockvision-learning-db', 'SELECT artifact_id,source_checksum,projection_checksum FROM s12_replay_cold_batches_v1 LIMIT 0; SELECT id,row_checksum,producer_checksum FROM s12_replay_cold_identities_v1 LIMIT 0; SELECT signal_date,outcome_known_date,cost_bps FROM s12_replay_cold_rewards_v1 JOIN s12_replay_cold_batches_v1 USING(artifact_id) LIMIT 0;'],
 ]) {
-  run(process.execPath, [wranglerCli, 'd1', 'execute', database, '--remote', '--command', query], { cwd: workerDir })
+  runD1Read(run, process.execPath, [wranglerCli, 'd1', 'execute', database, '--remote', '--command', query], { cwd: workerDir })
 }
 // The bounded allocator reference owner must never scan all inactive history.
 // A namesake nonpartial index is not an equivalent migration.
-const allocatorIndexState = JSON.parse(run(process.execPath, [
+const allocatorIndexState = JSON.parse(runD1Read(run, process.execPath, [
   wranglerCli, 'd1', 'execute', 'stockvision-ops-db', '--remote', '--json', '--command',
   "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_allocator_forecast_active_refs_v1';",
 ], { cwd: workerDir, capture: true }))
@@ -103,7 +103,7 @@ if (!Array.isArray(allocatorIndexState) || allocatorIndexState.length !== 1
 }
 // A frozen calibration attempt is tied to its source tag. Finish the attempt
 // and explicitly apply Learning 0058 before admitting a different build.
-const calibrationState = JSON.parse(run(process.execPath, [
+const calibrationState = JSON.parse(runD1Read(run, process.execPath, [
   wranglerCli, 'd1', 'execute', 'stockvision-learning-db', '--remote', '--json', '--command',
   'SELECT run_id,revision,commit_token,checkpoint_json FROM s12_calibration_work_v1 LIMIT 0; '
   + 'SELECT run_id,id,row_json,payload_bytes FROM s12_calibration_work_rows_v1 LIMIT 0; '

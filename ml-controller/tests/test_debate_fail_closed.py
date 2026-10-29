@@ -3,13 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import types
 from pathlib import Path
-
-if "httpx" not in sys.modules:
-    httpx_stub = types.ModuleType("httpx")
-    httpx_stub.AsyncClient = object
-    sys.modules["httpx"] = httpx_stub
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

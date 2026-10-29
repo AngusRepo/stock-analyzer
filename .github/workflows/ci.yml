@@ -122,14 +122,15 @@ jobs:
           path: ${{ runner.temp }}/junit.xml
           if-no-files-found: ignore
 
-  # Controller tests that fail on head but not on base are rerun twice, serially, on head.
-  # Ids that pass at least once are reported as flaky by the gate instead of blocking it.
+  # Controller and Worker tests that fail on head but not on base are rerun twice, serially, on
+  # head. Ids that pass at least once are reported as flaky by the gate instead of blocking it.
   confirm:
-    name: confirm new controller failures
+    name: confirm new controller and worker failures
     needs: suite
     if: always() && needs.suite.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Worker reruns are whole files, serial, twice, after the controller reruns.
+    timeout-minutes: 45
     steps:
       # Code under rerun is the head; the rerun tooling comes from github.sha like the suites.
       # Same history as the controller suites: reruns may read older committed sources.
@@ -148,10 +149,17 @@ jobs:
         with:
           pattern: failures-controller-*
           path: failures
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: failures-worker-*
+          path: failures
       - name: Merge controller shards
         run: python .ci-tools/ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: List head-only failures
-        run: python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
+        run: |
+          set -e
+          python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
+          python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new-worker.txt" worker
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -161,10 +169,19 @@ jobs:
           python-version: '3.12'
       - name: Rerun them
         run: bash .ci-tools/ci/rerun_controller.sh "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
+      # Worker reruns are per file (node:test cannot select one test). CI-NEW-35: the miniflare
+      # tests in screenerSeedPersistence fail intermittently and used to block the gate outright.
+      - name: Rerun Worker ones
+        run: bash .ci-tools/ci/rerun_worker.sh "$RUNNER_TEMP/new-worker.txt" "$RUNNER_TEMP/flaky-worker/flaky.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: flaky-controller
           path: ${{ runner.temp }}/flaky.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flaky-worker
+          path: ${{ runner.temp }}/flaky-worker/flaky.txt
           if-no-files-found: error
 
   gate:

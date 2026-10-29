@@ -1,5 +1,27 @@
 export const PRODUCTION_WORKER_HEALTH_URL = 'https://stockvision-worker.angus-solo-dev.workers.dev/api/health'
 
+// CD-NEW-22: D1 sometimes answers a read-only preflight query with the transient API error 7403
+// (whoami and a plain SELECT succeed right after). Only that code is retried, a bounded number of
+// times; any other failure, or a 7403 that persists, still blocks the deployment.
+export const D1_TRANSIENT = /\b7403\b/
+const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+export function runD1Read(run, command, args, options = {}, { attempts = 3, delayMs = 5_000, sleep = pause, log = console.warn } = {}) {
+  if (!args.includes('d1') || !args.includes('execute')) throw new Error('runD1Read is for wrangler d1 execute only')
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // Captured so a 7403 can be recognised; a caller that did not ask for the output still sees it.
+      const output = run(command, args, { ...options, capture: true })
+      if (!options.capture && output) console.log(output)
+      return output
+    } catch (error) {
+      if (attempt >= attempts || !D1_TRANSIENT.test(String(error?.message ?? error))) throw error
+      log(`D1 preflight query hit transient 7403 (attempt ${attempt}/${attempts}); retrying in ${delayMs} ms`)
+      sleep(delayMs)
+    }
+  }
+}
+
 function requireLocalCommit(run, sha, owner) {
   try {
     run('git', ['cat-file', '-e', `${sha}^{commit}`], { capture: true })

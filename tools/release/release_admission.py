@@ -45,8 +45,38 @@ NATIVE_ENTRY = 'worker/src/node-runner/nativePaperJobMain.ts'  # Dockerfile esbu
 NATIVE_RUNNER_DIR = 'worker/src/node-runner/'
 
 
+# CD-NEW-09: each grant nests its whole predecessor (prior_runtime_approval), ~420 KiB per release;
+# a Cloudflare KV value is capped at 25 MiB. Warn (never refuse) above a configurable size.
+GRANT_SIZE_WARN_ENV = 'STOCKVISION_GRANT_SIZE_WARN_BYTES'
+GRANT_SIZE_WARN_DEFAULT = 20 * 1024 * 1024
+KV_VALUE_LIMIT = 25 * 1024 * 1024
+
+
 def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def grant_size_warn_bytes() -> int:
+    raw = os.environ.get(GRANT_SIZE_WARN_ENV, '').strip()
+    if not raw:
+        return GRANT_SIZE_WARN_DEFAULT
+    if not re.fullmatch(r'[0-9]+', raw) or not 0 < int(raw) <= KV_VALUE_LIMIT:
+        raise SystemExit(f'{GRANT_SIZE_WARN_ENV} must be an integer byte count in (0, {KV_VALUE_LIMIT}]')
+    return int(raw)
+
+
+def grant_size(grant: dict, label: str, warn_bytes: int | None = None) -> dict:
+    """Bytes of the grant as a compact JSON KV value; prints a warning above the threshold."""
+    warn_bytes = grant_size_warn_bytes() if warn_bytes is None else warn_bytes
+    size = len(json.dumps(grant, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+    depth, node = 0, grant
+    while isinstance(node, dict) and isinstance(node.get('prior_runtime_approval'), dict):
+        depth, node = depth + 1, node['prior_runtime_approval']
+    over = size > warn_bytes
+    if over:
+        print(f'::warning::grant {label} is {size} bytes ({size / 1048576:.2f} MiB, nesting depth {depth}), above '
+              f'{GRANT_SIZE_WARN_ENV}={warn_bytes}; the KV value limit is {KV_VALUE_LIMIT} bytes', file=sys.stderr, flush=True)
+    return {'bytes': size, 'prior_depth': depth, 'warn_bytes': warn_bytes, 'over_warn': over, 'kv_limit_bytes': KV_VALUE_LIMIT}
 
 
 def git(source: Path, *args: str, raw: bool = False):
@@ -454,6 +484,7 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
         configuration=current, prior_runtime_approval=prior,
         approved_strategy_nav_source_change={'release_manifest_checksum': digest(manifest)})
     grant['approval_checksum'] = digest(grant)
+    size = grant_size(grant, key)
     out.mkdir(parents=True)
     save(out / 'baseline.json', baseline)
     save(out / 'identity-delta.json', {'allocator_and_l3': source_delta,
@@ -483,7 +514,7 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
             production_baseline_source=baseline['source_sha'], production_baseline_image=baseline['image'],
             manifest_sha256={name: sha((services / name).read_bytes()) for name in MANIFESTS},
             policy_keys=policy_keys, policy_chain_sha256=sha(policy_chain.read_bytes()) if chain else None,
-            cloud_writes=0, models_invoked=0, chain_dispatched=False)
+            grant_size=size, cloud_writes=0, models_invoked=0, chain_dispatched=False)
         save(out / 'admission-receipt.json', receipt)
     except BaseException:
         for name, raw in originals.items():

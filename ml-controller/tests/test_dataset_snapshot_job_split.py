@@ -20,7 +20,6 @@ except ImportError:
     run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
     setattr(google_cloud, "run_v2", run_v2_stub)
     sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
-sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
 
 import dataset_snapshot_job_main  # noqa: E402
 import pipeline_job_main  # noqa: E402

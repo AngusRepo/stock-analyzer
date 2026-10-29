@@ -156,6 +156,29 @@ def mutation_gate(at: datetime, *, observed_at: str, deadline: datetime | None, 
         raise RuntimeError('job_time_left_below_mutation_budget')
 
 
+def require_worker_not_behind(source: Path, worker_sha: str | None, release_sha: str) -> None:
+    """E9-d: the Worker goes first or with the release. The live Worker must run the release commit,
+    a descendant of it, or an ancestor whose Worker inputs (tools/deploy_units.py) equal the
+    release's; otherwise the controller and Modal would run ahead of the Worker they call."""
+    if worker_sha == release_sha:
+        return
+    if not worker_sha or not re.fullmatch('[0-9a-f]{40}', worker_sha):
+        raise RuntimeError('worker_live_source_unknown')
+
+    def ancestor(old, new):
+        return subprocess.run(['git', '-C', str(source), 'merge-base', '--is-ancestor', old, new],
+                              capture_output=True, timeout=60).returncode == 0
+    if ancestor(release_sha, worker_sha):
+        return
+    if not ancestor(worker_sha, release_sha):
+        raise RuntimeError('worker_live_source_not_on_release_history')
+    from deploy_units import touched_units
+    changed = subprocess.check_output(['git', '-C', str(source), 'diff', '--name-only', worker_sha, release_sha],
+                                      timeout=60).decode('utf-8').splitlines()
+    if touched_units(changed, source)['worker']:
+        raise RuntimeError('worker_behind_release_deploy_worker_first')
+
+
 def bootstrap_anchor_digest(reference: dict) -> str:
     return sha(json.dumps(reference, sort_keys=True, separators=(',', ':')).encode('utf-8'))
 
@@ -312,6 +335,8 @@ def prior_bootstrap(prior: dict, baseline_modal: dict, history: dict) -> tuple[s
 def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, prior: dict, python: str,
             resume_staged: bool = False, idle_wait=IDLE_WAIT, publish=None) -> dict:
     global OUT, PUBLISH
+    from release_admission import grant_size, grant_size_warn_bytes
+    warn_bytes = grant_size_warn_bytes()  # CD-NEW-09: a bad threshold stops here, before any wait
     OUT, PUBLISH = out, publish
     out.mkdir(parents=True, exist_ok=True)
     packet_path, build_start = build_dir / 'deployment-build-packet.json', build_dir / 'build-start.json'
@@ -321,7 +346,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         raise RuntimeError('resume_requires_exact_pre_modal_failed_stage')
     if not resume_staged and (OUT / 'controller-release.json').exists():
         raise RuntimeError('release_attempt_exists_reconcile_before_rerun')
-    from runtime_context import GC, PROJECT, kv_available, load_environment, request, worker
+    from runtime_context import GC, PROJECT, kv_available, load_environment, read_until_200, request, worker
     from release_guard import compare, inventory
     from release_idle import inspect as idle_inspect
     from verify_prebuilt_release import verify
@@ -414,10 +439,11 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         save('staged-resume-reconciliation.json', dict(status='PASS', original_spec_sha256=baseline_hash,
              exact_original_spec_reconstructed=True, reused_revision=failed_stage['revision'], image_rebuilt=False,
              models_invoked=0, chain_dispatched=False))
-    worker_before = worker('/api/health')
+    worker_before = read_until_200(lambda: worker('/api/health'))
     if worker_before['http_status'] != 200:
         raise RuntimeError('worker_health_unavailable')
     worker_provenance = worker_before['body']['provenance']
+    require_worker_not_behind(source, worker_provenance.get('sourceSha'), packet['source_sha'])
     if admission['new_key'] != packet['grant_key'] or admission.get('approval_checksum') != packet['grant_approval_checksum']:
         raise RuntimeError('admission_packet_mismatch')
     sys_path_entry = str(source / 'ml-controller')
@@ -428,6 +454,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         grant = load(admission_dir / 'source-grant.json')
         if admission['prior_key'] == admission['new_key'] or grant['approval_checksum'] != admission['approval_checksum']:
             raise RuntimeError('new_source_grant_packet_mismatch')
+        grant_size(grant, admission['new_key'], warn_bytes)  # CD-NEW-09: warning only
         os.environ['NATIVE_PAPER_RUNNER'] = str(admission_dir / 'native-paper.cjs')
         if sha(Path(os.environ['NATIVE_PAPER_RUNNER']).read_bytes()) != packet['native_bundle_sha256']:
             raise RuntimeError('native_bundle_checksum_mismatch')
@@ -446,8 +473,9 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
                     or set(keys) & {admission['new_key'], admission['prior_key']}
                     or any(g.get('approved_l4_execution_policy_change') is None for g in policy_grants)):
                 raise RuntimeError('policy_grant_packet_mismatch')
-            for policy_grant in policy_grants:
+            for key, policy_grant in zip(keys, policy_grants):
                 validate_runtime_approval(policy_grant, policy_grant['admission'])
+                grant_size(policy_grant, key, warn_bytes)
     kv_state = {}
     if use_kv:
         kv_state['config'] = {'http_status': 200, 'body': load(OUT / 'config-before.json')}
@@ -458,6 +486,12 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
             kv_state['risk'] = kv_get('trading:risk_config')
     grant_staged, policy_staged = False, 0
     serving = {'url': live['url']}
+
+    def health(url):
+        reply = read_until_200(lambda: request(url.rstrip('/') + '/health'))
+        if reply['http_status'] != 200:
+            raise RuntimeError('controller_health_http_' + str(reply['http_status']))
+        return reply['body']
 
     def paper(url, artifact=None):
         result = request(url.rstrip('/') + '/research_validation/production_bundle',
@@ -487,7 +521,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
             # No KV in controller CD: the serving controller re-derives its configuration from KV and
             # must still match the grant it runs under (status PASS, no drift fields).
             paper(serving['url'])
-        current_worker = worker('/api/health')
+        current_worker = read_until_200(lambda: worker('/api/health'))
         if current_worker['http_status'] != 200 or current_worker['body'].get('provenance') != worker_provenance:
             raise RuntimeError('concurrent_worker_change')
 
@@ -691,7 +725,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         verify_traffic(staged_snapshot, rollback['service_revision'])
         candidate = next(row['url'] for row in staged_snapshot['status']['traffic']
             if row.get('revisionName') == revision and row.get('tag') == tag)
-        verify_health(request(candidate + '/health')['body'], expected_health)
+        verify_health(health(candidate), expected_health)
         paper(candidate, 'candidate-paper.json')
         accept_own_change({'services/ml-controller'})
         boundary('before-modal')
@@ -752,7 +786,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         assert_source_only(before, live_after, 'service', image, updates)
         verify_traffic(live_after, revision)
         staged_snapshot = live_after
-        verify_health(request(live_after['status']['url'] + '/health')['body'], expected_health)
+        verify_health(health(live_after['status']['url']), expected_health)
         paper(live_after['status']['url'], 'live-paper.json')
         serving['url'] = live_after['status']['url']
         accept_own_change({'services/ml-controller'})

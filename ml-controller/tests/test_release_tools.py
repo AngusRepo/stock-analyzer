@@ -672,3 +672,168 @@ def test_verify_can_be_rerun_from_receipts_by_dispatch():
     assert 'release.py verify --from-receipts --sha' in block
     with pytest.raises(SystemExit):
         release.main(['verify', '--from-receipts', '--out', 'x'])
+
+
+# CD-NEW-08/R07: release_guard --baseline with an expected-component allow-list.
+import release_guard as guard  # noqa: E402
+
+OLD, NEW = 'b' * 40, 'c' * 40
+
+
+def cloud_run(sha, image='img@sha256:1', memory='4Gi', updated='t0'):
+    return {'updateTime': updated, 'traffic': None, 'timeout': '600s', 'containers': [{
+        'image': image, 'resources': {'limits': {'memory': memory}}, 'command': None, 'args': None,
+        'source': {'STOCKVISION_SOURCE_SHA': sha, 'STOCKVISION_SOURCE_TREE_SHA': sha[:39] + 'f'}}]}
+
+
+def guard_inventory(sha, **overrides):
+    components = {'services/ml-controller': cloud_run(sha), 'jobs/pipeline-v2': cloud_run(sha),
+                  'jobs/unrelated-job': cloud_run(OLD), 'modal/stockvision-ml': {'source_sha': sha}}
+    components.update(overrides)
+    return {'observed_at': 'x', 'components': components}
+
+
+EXPECTED = {'services/ml-controller', 'jobs/pipeline-v2', 'modal/stockvision-ml'}
+
+
+def released(**overrides):
+    after = guard_inventory(NEW, **overrides)
+    for key in ('services/ml-controller', 'jobs/pipeline-v2'):
+        if key not in overrides:
+            after['components'][key] = cloud_run(NEW, image='img@sha256:2', updated='t1')
+    return after
+
+
+def test_release_guard_accepts_only_allow_listed_components_moving_to_the_release_source():
+    result = guard.compare_release(guard_inventory(OLD), released(), EXPECTED, NEW)
+    assert result == {'changed': sorted(EXPECTED), 'already_on_source': []}
+    with pytest.raises(RuntimeError, match='release_baseline_drift'):  # no allow-list: unchanged behaviour
+        guard.compare(guard_inventory(OLD), released())
+
+
+def test_release_guard_still_stops_on_unlisted_or_non_source_changes():
+    with pytest.raises(RuntimeError, match='release_baseline_drift.*jobs/unrelated-job'):
+        guard.compare_release(guard_inventory(OLD), released(**{'jobs/unrelated-job': cloud_run(NEW)}), EXPECTED, NEW)
+    with pytest.raises(RuntimeError, match='release_changed_more_than_image_and_source:jobs/pipeline-v2'):
+        guard.compare_release(guard_inventory(OLD), released(**{'jobs/pipeline-v2': cloud_run(NEW, memory='8Gi')}), EXPECTED, NEW)
+    with pytest.raises(RuntimeError, match='release_expected_component_not_on_source:modal/stockvision-ml'):
+        guard.compare_release(guard_inventory(OLD), released(**{'modal/stockvision-ml': {'source_sha': OLD}}), EXPECTED, NEW)
+    with pytest.raises(RuntimeError, match='release_expected_component_not_in_baseline:jobs/typo'):
+        guard.compare_release(guard_inventory(OLD), released(), EXPECTED | {'jobs/typo'}, NEW)
+    gone = released()
+    del gone['components']['jobs/pipeline-v2']
+    with pytest.raises(RuntimeError, match='release_expected_component_missing:jobs/pipeline-v2'):
+        guard.compare_release(guard_inventory(OLD), gone, EXPECTED, NEW)
+
+
+def test_release_guard_expect_release_is_what_the_rollout_changes():
+    assert guard.release_components() == ({'services/ml-controller', 'modal/stockvision-ml'}
+                                          | {'jobs/' + name for name in rollout.JOBS})
+
+
+@pytest.mark.parametrize('argv', [
+    ['--capture', 'x.json', '--expect-release', '--expect-source', NEW],
+    ['--baseline', 'x.json', '--expect-release'],
+    ['--baseline', 'x.json', '--expect-source', NEW],
+    ['--baseline', 'x.json', '--expect', 'jobs/x', '--expect-source', 'abc'],
+])
+def test_release_guard_allow_list_arguments_fail_before_any_read(argv, monkeypatch):
+    monkeypatch.setattr(guard, 'inventory', lambda: pytest.fail('read before argument check'))
+    monkeypatch.setattr(sys, 'argv', ['release_guard.py', *argv])
+    with pytest.raises(SystemExit):
+        guard.main()
+
+
+# E9-d: the Worker goes first or with the release; Modal is only ever deployed with the controller.
+def test_rollout_refuses_a_release_ahead_of_the_live_worker(manifest_repo):
+    repo, worker_live, _ = manifest_repo
+    controller_only = commit(repo, 'ml-controller/services/other.py', 'x = 3\n')
+    rollout.require_worker_not_behind(repo, worker_live, controller_only)      # no Worker input in between
+    rollout.require_worker_not_behind(repo, controller_only, controller_only)
+    worker_change = commit(repo, 'worker/src/lib/routes.ts', 'export const unrelated = 2;\n')
+    with pytest.raises(RuntimeError, match='worker_behind_release_deploy_worker_first'):
+        rollout.require_worker_not_behind(repo, worker_live, worker_change)
+    later = commit(repo, 'ml-controller/services/other.py', 'x = 4\n')
+    rollout.require_worker_not_behind(repo, later, worker_change)              # Worker already ahead
+    git(repo, 'checkout', '-q', '-b', 'side', worker_live)
+    side = commit(repo, 'ml-controller/services/m1.py', 'x = 9\n')
+    with pytest.raises(RuntimeError, match='worker_live_source_not_on_release_history'):
+        rollout.require_worker_not_behind(repo, side, worker_change)
+    for unknown in (None, '', 'not-a-sha'):
+        with pytest.raises(RuntimeError, match='worker_live_source_unknown'):
+            rollout.require_worker_not_behind(repo, unknown, worker_change)
+
+
+def test_modal_is_deployed_only_by_the_paired_controller_release_tools():
+    deployers = set()
+    for path in subprocess.run(['git', '-C', str(ROOT), 'ls-files', '*.py', '*.sh', '*.mjs', '*.ps1', '*.yml'],
+                               capture_output=True, text=True, check=True).stdout.splitlines():
+        if path.startswith(('audits/', 'output/')) or '/tests/' in path:
+            continue
+        text = (ROOT / path).read_text(encoding='utf-8', errors='replace')
+        if re.search(r"modal['\",\s]+deploy[^#]{0,160}?\bmodal_app\.py", text):
+            deployers.add(path)
+    # Each deploys Modal with --tag <source sha> in the same run as the controller (deploy_ml_controller.sh
+    # refuses a production run without --with-modal); modal_app.py itself only names the command in its docstring.
+    assert deployers == {'tools/release/release_rollout.py', 'tools/deploy_controller_modal_release.py',
+                         'deploy_ml_controller.sh', 'ml-service/modal_app.py'}
+
+
+# E9-e (followup #15): bounded retries for a non-200 or dropped /health read, none for a 200.
+def test_health_reads_retry_non_200_and_transport_errors_only():
+    import httpx
+    replies = iter([{'http_status': 503, 'body': ''}, httpx.ConnectError('reset'), {'http_status': 200, 'body': {'s': 1}}])
+    pauses = []
+
+    def read():
+        value = next(replies)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    assert runtime_context.read_until_200(read, sleep=pauses.append) == {'http_status': 200, 'body': {'s': 1}}
+    assert pauses == [5.0, 5.0]
+    calls = []
+    assert runtime_context.read_until_200(lambda: calls.append(1) or {'http_status': 200, 'body': 'other source'},
+                                          sleep=pytest.fail)['body'] == 'other source'
+    assert calls == [1]
+    assert runtime_context.read_until_200(lambda: {'http_status': 502, 'body': ''}, sleep=lambda s: None)['http_status'] == 502
+    with pytest.raises(httpx.ConnectError):
+        runtime_context.read_until_200(lambda: (_ for _ in ()).throw(httpx.ConnectError('down')), sleep=lambda s: None)
+    with pytest.raises(KeyError):  # not a transport error: no retry
+        runtime_context.read_until_200(lambda: {}['http_status'], sleep=pytest.fail)
+
+
+def test_every_release_health_read_goes_through_the_retry():
+    for path in ('tools/release/release_rollout.py', 'tools/release/release.py'):
+        text = (ROOT / path).read_text(encoding='utf-8')
+        assert re.findall(r"request\([^)]*/health'\)\['body'\]", text) == []
+        assert "worker('/api/health')" not in text.replace("read_until_200(lambda: worker('/api/health'))", '')
+
+
+# CD-NEW-09: grant size warning, threshold from STOCKVISION_GRANT_SIZE_WARN_BYTES (default 20 MiB).
+def test_grant_size_warns_above_the_configured_threshold(monkeypatch, capsys):
+    inner = {'payload': 'x' * 1000, 'approval_checksum': 'a'}
+    grant = {'payload': 'y' * 1000, 'prior_runtime_approval': {'payload': 'z', 'prior_runtime_approval': inner}}
+    monkeypatch.delenv(admission.GRANT_SIZE_WARN_ENV, raising=False)
+    quiet = admission.grant_size(grant, 'k')
+    assert quiet['warn_bytes'] == 20 * 1024 * 1024 and quiet['over_warn'] is False and quiet['prior_depth'] == 2
+    assert quiet['bytes'] == len(json.dumps(grant, separators=(',', ':')).encode())
+    assert capsys.readouterr().err == ''
+    monkeypatch.setenv(admission.GRANT_SIZE_WARN_ENV, '1500')
+    loud = admission.grant_size(grant, 'ml:active8:paper_runtime_approval:v1:r')
+    assert loud['over_warn'] is True and loud['warn_bytes'] == 1500
+    assert '::warning::grant ml:active8:paper_runtime_approval:v1:r is' in capsys.readouterr().err
+    for bad in ('20MiB', '0', '²', str(26 * 1024 * 1024)):
+        monkeypatch.setenv(admission.GRANT_SIZE_WARN_ENV, bad)
+        with pytest.raises(SystemExit, match=admission.GRANT_SIZE_WARN_ENV):
+            admission.grant_size(grant, 'k')
+
+
+def test_grant_size_is_recorded_by_admission_and_checked_before_staging():
+    source = (ROOT / 'tools/release/release_admission.py').read_text(encoding='utf-8')
+    assert 'size = grant_size(grant, key)' in source and 'grant_size=size,' in source
+    staged = (ROOT / 'tools/release/release_rollout.py').read_text(encoding='utf-8')
+    assert "grant_size(grant, admission['new_key'], warn_bytes)" in staged and 'grant_size(policy_grant, key, warn_bytes)' in staged
+    # the threshold is read once at the start of rollout, before any wait, inventory or mutation
+    body = staged[staged.index('def rollout('):]
+    assert body.index('warn_bytes = grant_size_warn_bytes()') < body.index('out.mkdir(')

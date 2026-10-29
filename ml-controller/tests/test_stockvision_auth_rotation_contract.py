@@ -168,7 +168,8 @@ def test_scheduler_inventory_create_patch_parity_and_rollback_contract() -> None
 
     assert "[string[]]$AllowedSchedulerCreateIds" in source
     assert "'screener-v2-watchdog'" in source
-    assert "'data-domain-shadow-backfill-ops'" in source
+    # CD-NEW-19: -ops is in deleteJobIds, so allowing its creation made every preflight throw.
+    assert "'data-domain-shadow-backfill-ops'" not in source
     assert "New-SchedulerInventoryPlan" in source
     assert "Assert-SchedulerCreatePlanAllowed" in source
     assert "Sync-SchedulerInventory" in source
@@ -290,3 +291,26 @@ def test_rotation_powershell_sources_have_zero_ast_errors() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "ast_ok" in result.stdout
+
+
+def _ps_default_list(source: str, name: str) -> list[str]:
+    import re
+    block = re.search(r"\[string\[\]\]\$" + name + r" = @\((.*?)\)", source, re.S)
+    assert block, name
+    return re.findall(r"'([a-z0-9-]+)'", block.group(1))
+
+
+def test_rotation_defaults_match_the_scheduler_manifest() -> None:
+    """CD-NEW-19: the preflight throws when an allowed create id is not a manifest job, or when the
+    expected count differs from the manifest; keep both defaults derived from the manifest."""
+    import json
+    import re
+    source = (ROOT / "scripts" / "rotate_stockvision_auth_token.ps1").read_text(encoding="utf-8")
+    manifest = json.loads((ROOT / "infra" / "gcp-scheduler-jobs.json").read_text(encoding="utf-8"))
+    jobs = [job["id"] for job in manifest["jobs"]]
+    allowed = _ps_default_list(source, "AllowedSchedulerCreateIds")
+    assert allowed and len(set(allowed)) == len(allowed)
+    assert set(allowed) <= set(jobs), sorted(set(allowed) - set(jobs))
+    assert not set(allowed) & set(manifest["deleteJobIds"])
+    count = int(re.search(r"\[int\]\$ExpectedSchedulerCount = (\d+)", source).group(1))
+    assert count == len(jobs) == len(set(jobs))

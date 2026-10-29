@@ -16,6 +16,9 @@ export interface MarketDataReadinessStats {
   chipRowsOnLatest: number
   marginLatestDate?: string | null
   marginRowsOnLatest?: number
+  // Only loaded when margin is on the target date; late-published margin can land partially.
+  marginBaselineDate?: string | null
+  marginRowsOnBaseline?: number
   indicatorLatestDate?: string | null
   indicatorRowsOnLatest?: number
 }
@@ -31,6 +34,8 @@ export interface MarketDataReadinessOptions {
   requireMargin?: boolean
   // Warn-only: latest-session rows / baseline-session rows below this ratio (HL1-4#c).
   minPriceCoverageRatio?: number
+  // Warn-only, same rule for margin_data on the target date (HL3-4#a).
+  minMarginCoverageRatio?: number
 }
 
 export interface MarketDataReadinessResult {
@@ -50,6 +55,8 @@ const DEFAULT_MIN_MARGIN_ROWS = 1500
 const DEFAULT_MIN_INDICATOR_ROWS = 1000
 // Day-to-day price row counts move by <1% (10/20–10/28: 2191–2204); override with MARKET_DATA_PRICE_COVERAGE_MIN_RATIO.
 const DEFAULT_MIN_PRICE_COVERAGE_RATIO = 0.98
+// margin_data rows per session are as stable (10/20–10/28: 2101–2102); override with MARKET_DATA_MARGIN_COVERAGE_MIN_RATIO.
+const DEFAULT_MIN_MARGIN_COVERAGE_RATIO = 0.98
 // The baseline is the fullest of this many previous sessions, so a loss keeps warning for that many sessions.
 const DEFAULT_COVERAGE_BASELINE_SESSIONS = 5
 
@@ -129,6 +136,11 @@ export function evaluateMarketDataReadiness(
     coverageWarning('price', stats.priceLatestDate, stats.priceRowsOnLatest,
       stats.priceBaselineDate, stats.priceRowsOnBaseline,
       options.minPriceCoverageRatio ?? DEFAULT_MIN_PRICE_COVERAGE_RATIO),
+    stats.marginLatestDate === stats.targetDate
+      ? coverageWarning('margin', stats.marginLatestDate, stats.marginRowsOnLatest,
+        stats.marginBaselineDate, stats.marginRowsOnBaseline,
+        options.minMarginCoverageRatio ?? DEFAULT_MIN_MARGIN_COVERAGE_RATIO)
+      : null,
   ].filter((warning): warning is string => warning !== null)
 
   return {
@@ -229,9 +241,10 @@ export async function loadMarketDataReadinessStats(
   const rawSessions = Number((env as Record<string, unknown>).MARKET_DATA_COVERAGE_BASELINE_SESSIONS)
   const sessions = Number.isInteger(rawSessions) && rawSessions >= 1 && rawSessions <= 20
     ? rawSessions : DEFAULT_COVERAGE_BASELINE_SESSIONS
-  const [priceSegments, priceBaseline] = await Promise.all([
+  const [priceSegments, priceBaseline, marginBaseline] = await Promise.all([
     latestPriceSegmentStats(env, price.latestDate),
     baselineSessionStats(marketDb, 'stock_prices', price.latestDate, sessions),
+    baselineSessionStats(marketDb, 'margin_data', margin.latestDate === targetDate ? targetDate : null, sessions),
   ])
   return {
     targetDate,
@@ -245,6 +258,8 @@ export async function loadMarketDataReadinessStats(
     chipRowsOnLatest: chip.rowsOnLatest,
     marginLatestDate: margin.latestDate,
     marginRowsOnLatest: margin.rowsOnLatest,
+    marginBaselineDate: marginBaseline.baselineDate,
+    marginRowsOnBaseline: marginBaseline.rowsOnBaseline,
     indicatorLatestDate: indicators.latestDate,
     indicatorRowsOnLatest: indicators.rowsOnLatest,
   }
@@ -260,6 +275,8 @@ export async function assertMarketDataReady(
     ...options,
     minPriceCoverageRatio: options.minPriceCoverageRatio
       ?? envRatio(env, 'MARKET_DATA_PRICE_COVERAGE_MIN_RATIO', DEFAULT_MIN_PRICE_COVERAGE_RATIO),
+    minMarginCoverageRatio: options.minMarginCoverageRatio
+      ?? envRatio(env, 'MARKET_DATA_MARGIN_COVERAGE_MIN_RATIO', DEFAULT_MIN_MARGIN_COVERAGE_RATIO),
   })
   if (!result.ok) {
     throw new Error(result.summary)

@@ -19,7 +19,8 @@ def _series(count=3, days=220, width=131, seed=11, stale=True):
     for s in range(count):
         # Realistic price levels (single digits to thousands) exercise float32 rounding of mean/scale.
         level = [8.37, 512.5, 3871.0, 41.2][s % 4]
-        close = (level * np.exp(np.cumsum(rng.normal(0, 0.02, days)))).astype(np.float32)
+        # Alternate calm and volatile (8%/day) series: wide windows make float32 rounding order observable.
+        close = (level * np.exp(np.cumsum(rng.normal(0, [0.02, 0.08][s % 2], days)))).astype(np.float32)
         height = days - 3 if stale else days
         indices = np.arange(days)
         if stale:  # one-session stale feature rows repeat the previous X row, as load_windows allows
@@ -65,10 +66,16 @@ def test_every_device_batch_equals_reference_windows_bitwise(exogenous):
 def test_mismatch_and_cross_series_feature_windows_fail_closed():
     series = _series()
     rows = _rows(series)
-    data = tt.DeviceWindows(series, rows, True, 'cpu')
-    data.scale[0] = data.scale[0] * 2
-    with pytest.raises(ValueError, match='timexer_device_window_mismatch'):
-        data.assert_matches(tt.Windows(series, rows, True), [0])
+    reference = tt.Windows(series, rows, True)
+    first = rows[0]['end']  # row 0 belongs to series 0, whose prices/features start the flat tables
+    for corrupt in ('target', 'features'):  # each changes only y or only x of row 0
+        data = tt.DeviceWindows(series, rows, True, 'cpu')
+        if corrupt == 'target':
+            data.close[first + 1] += 1
+        else:
+            data.X[data.feature_rows[first]] += 1
+        with pytest.raises(ValueError, match='timexer_device_window_mismatch'):
+            data.assert_matches(reference, [0])
     series[1]['feature_indices'] = series[1]['feature_indices'].copy()
     series[1]['feature_indices'][rows[0]['end']] = -1  # Windows would wrap to this series' last row
     with pytest.raises(ValueError, match='timexer_window_feature_index_invalid'):
@@ -156,7 +163,7 @@ def _legacy_train(job, series, rows):
 
 @pytest.mark.parametrize('exogenous', [True, False])
 def test_training_is_bit_identical_to_legacy_loop(monkeypatch, exogenous):
-    series = _series(count=2)
+    series = _series(count=10)  # several validation batches, a partial last batch
     rows = _rows(series)
     job = _job(rows, exogenous)
     torch.manual_seed(1234)  # the CPU RNG stream before train() must not matter: fit() reseeds
@@ -168,7 +175,7 @@ def test_training_is_bit_identical_to_legacy_loop(monkeypatch, exogenous):
     assert report['inner_history'] == expected['inner_history']
     assert report['refit_history'] == expected['refit_history']
     assert report['selected_epochs'] == expected['selected_epochs']
-    assert len(report['inner_history']) > 1 and report['test_rows'] > 0
+    assert len(report['inner_history']) > 1 and report['test_rows'] > 0 and report['validation_rows'] > 64
     state = result['checkpoint']['state_dict']
     assert state.keys() == expected['state_dict'].keys()
     assert all(torch.equal(state[k], expected['state_dict'][k]) for k in state)
@@ -256,3 +263,19 @@ def test_fit_builds_no_per_sample_host_windows(monkeypatch):
     report = tt.train(job, None, device='cpu')['report']
     # Only the one-time equivalence probe and the unchanged test-prediction loader build host windows.
     assert len(calls) == min(len(rows), tt.EQUIVALENCE_PROBE_ROWS) + report['test_rows']
+
+
+def test_nonfinite_training_loss_still_fails_closed(monkeypatch):
+    class NaNModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1))
+
+        def forward(self, x, *_):
+            return (self.weight * float('nan')).expand(len(x), 5, 1)
+    series = _series(count=2)
+    rows = _rows(series)
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    monkeypatch.setattr(tt, 'official_model', lambda *_: NaNModel())
+    with pytest.raises(ValueError, match='nonfinite_timexer_loss'):
+        tt.train(_job(rows, False), None, device='cpu')

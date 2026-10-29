@@ -133,6 +133,42 @@ test('HL1-4#c: readiness alerts a shrunken price session once per date and never
   assert.equal((await assertMarketDataReady(down, '2026-10-28', { requireIndicators: false })).ok, true)
 })
 
+test('HL3-4#a: late-published margin that lands partially on the target date is reported', async (t) => {
+  const partial = evaluateMarketDataReadiness(
+    { ...READY, marginRowsOnLatest: 1600, marginBaselineDate: '2026-10-27', marginRowsOnBaseline: 2102 },
+    { requireIndicators: false, requireMargin: true },
+  )
+  assert.equal(partial.ok, true, 'above the 1500-row floor the chain is not blocked')
+  assert.match(partial.summary, /coverage_warn: margin coverage=1600\/2102 \(0\.761 < 0\.98\) 2026-10-28 vs 2026-10-27/)
+  // Margin not yet on the target date is the FinLab late lane's wait, not a coverage warning.
+  assert.deepEqual(evaluateMarketDataReadiness(
+    { ...READY, marginLatestDate: '2026-10-27', marginRowsOnLatest: 2102, marginBaselineDate: '2026-10-24', marginRowsOnBaseline: 2102 },
+    { requireIndicators: false },
+  ).warnings, [])
+  assert.deepEqual(evaluateMarketDataReadiness(
+    { ...READY, marginRowsOnLatest: 1600, marginBaselineDate: '2026-10-27', marginRowsOnBaseline: 2102 },
+    { requireIndicators: false, minMarginCoverageRatio: 0.7 },
+  ).warnings, [])
+
+  const sent: string[] = []
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body)).content); return new Response(null, { status: 204 })
+  })
+  const { env, store, logs } = fakeEnv({
+    prices: { '2026-10-27': 2204, '2026-10-28': 2203 },
+    margin: { '2026-10-27': 2102, '2026-10-28': 1600 },
+  })
+  const result = await assertMarketDataReady(env, '2026-10-28', { requireIndicators: false, requireMargin: true })
+  assert.equal(result.stats.marginRowsOnBaseline, 2102)
+  assert.deepEqual(result.warnings, ['margin coverage=1600/2102 (0.761 < 0.98) 2026-10-28 vs 2026-10-27'])
+  assert.equal(sent.length, 1)
+  assert.equal(store.has('cron:alert:market-data-coverage:2026-10-28:margin'), true)
+  assert.deepEqual(logs.map((log) => [log.level, log.cron]), [['warn', 'market-data-coverage']])
+  const { env: tuned } = fakeEnv({ prices: { '2026-10-27': 2204, '2026-10-28': 2203 }, margin: { '2026-10-27': 2102, '2026-10-28': 1600 } },
+    { MARKET_DATA_MARGIN_COVERAGE_MIN_RATIO: '0.7' })
+  assert.deepEqual((await assertMarketDataReady(tuned, '2026-10-28', { requireIndicators: false })).warnings, [])
+})
+
 test('DQ alerts leave a system_logs record even when no notify channel is configured', async (t) => {
   const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
   const { env, logs, store } = fakeEnv(

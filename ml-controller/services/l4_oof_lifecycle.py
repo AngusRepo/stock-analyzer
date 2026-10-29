@@ -152,12 +152,30 @@ def daily_plan_closure(config,as_of,paper):
     if plan['signal_date']!=as_of:
         raise L4DailyPlanPending('l4_daily_plan_pending_for_signal_date')
     bundle=config['l4Distribution']['artifact']
-    validate_bundle(bundle,l3_identity=plan['l3_identity'],signal_date=as_of)
-    if plan['model_checksum']!=bundle['model_checksum']:
-        raise ValueError('l4_daily_plan_model_changed')
-    return {'schema_version':'l4-daily-plan-closure-v1','signal_date':as_of,'plan_id':plan['plan_id'],
+    closure={'schema_version':'l4-daily-plan-closure-v1','signal_date':as_of,'plan_id':plan['plan_id'],
         'model_checksum':plan['model_checksum'],'legacy_oof_maturity_requested':False,
         'training_dispatched':False,'promoted':False}
+    if plan['model_checksum']!=bundle['model_checksum']:
+        superseded=_superseded_by_cutover(plan,as_of)
+        if superseded is None:
+            raise ValueError('l4_daily_plan_model_changed')
+        return {**closure,'superseded_by_cutover':superseded}
+    validate_bundle(bundle,l3_identity=plan['l3_identity'],signal_date=as_of)
+    return closure
+
+
+def _superseded_by_cutover(plan,as_of):
+    """R3: the approved R33 cutover's first night closes the old model's plan instead of failing."""
+    from services import kv_client
+    from services.active8_paper_admission import KEY, verify_active_approval
+    from services.r33_cutover import superseded_plan_closure
+    try:
+        admission=kv_client.get_json(KEY,default=None,strict=True)
+        if not isinstance(admission,dict):
+            return None
+        return superseded_plan_closure(plan,as_of,approval=verify_active_approval(admission),admission=admission)
+    except Exception as exc:
+        raise ValueError('l4_daily_plan_model_changed') from exc
 
 
 def verified_paper_closure_with_incomplete_comparison(nav, closure, clients):

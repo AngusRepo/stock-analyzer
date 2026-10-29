@@ -275,3 +275,83 @@ def test_publication_of_an_r33_object_needs_the_cutover_grant(monkeypatch):
         else:
             with pytest.raises(RuntimeError, match='serving_requires_cutover_evidence'):
                 call()
+
+
+# --- R3: the cutover night closes the old model's plan as superseded --------------------------
+
+def _old_plan(**overrides):
+    return {'plan_id': 'old-plan', 'signal_date': '2026-11-09', 'model_checksum': 'o' * 64,
+            'policy_identity': 'p' * 64, 'l3_identity': OLD_IDENTITY, **overrides}
+
+
+def _closure_env(monkeypatch, approval, admission, plan):
+    import json
+    from types import SimpleNamespace
+    from services import active8_paper_admission, kv_client, l4_distribution
+    bundles = []
+    monkeypatch.setattr(l4_distribution, 'validate_bundle', lambda bundle, **kw: bundles.append((bundle, kw)))
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: admission if key == active8_paper_admission.KEY else None)
+    monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', lambda adm, **kw: approval)
+    config = {'l4Distribution': approval['configuration']['trading_config']['l4Distribution']}
+    paper = SimpleNamespace(query=lambda *a: [{'payload_json': json.dumps(plan)}])
+    return config, paper, bundles
+
+
+def test_cutover_night_closes_the_old_plan_as_superseded(monkeypatch):
+    from services import l4_oof_lifecycle
+    approval, admission, _, _ = _grant(monkeypatch)
+    config, paper, bundles = _closure_env(monkeypatch, approval, admission, _old_plan())
+    closure = l4_oof_lifecycle.daily_plan_closure(config, '2026-11-09', paper)
+    assert closure['plan_id'] == 'old-plan' and closure['model_checksum'] == 'o' * 64
+    assert closure['superseded_by_cutover']['status'] == 'superseded_by_cutover'
+    assert closure['superseded_by_cutover']['effective_signal_date'] == '2026-11-10'
+    # The old plan is checked against the prior grant's bundle, not the R33 one.
+    assert bundles == [(approval['prior_runtime_approval']['configuration']['trading_config']['l4Distribution']['artifact'],
+                        {'l3_identity': OLD_IDENTITY, 'signal_date': '2026-11-09'})]
+
+
+@pytest.mark.parametrize('fault', ['no_cutover', 'effective_date', 'policy', 'model', 'no_admission', 'approval_revoked',
+                                   'nested_unpinned'])
+def test_model_change_without_a_matching_cutover_still_fails(monkeypatch, fault):
+    from services import l4_oof_lifecycle, active8_paper_admission
+    approval, admission, _, _ = _grant(monkeypatch)
+    plan = _old_plan()
+    if fault == 'no_cutover':
+        approval.pop('approved_r33_cutover')
+    if fault == 'effective_date':
+        approval['approved_r33_cutover']['first_night']['effective_signal_date'] = '2026-11-09'
+    if fault == 'policy':
+        plan['policy_identity'] = 'q' * 64
+    if fault == 'model':
+        plan['model_checksum'] = 'm' * 64
+    if fault == 'nested_unpinned':
+        approval = {'admission': admission, 'configuration': approval['configuration'],
+                    'prior_runtime_approval': approval, 'approved_other_change': {}}
+    config, paper, _ = _closure_env(monkeypatch, approval, admission, plan)
+    if fault == 'no_admission':
+        from services import kv_client
+        monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: None)
+    if fault == 'approval_revoked':
+        def revoked(adm, **kw):
+            raise RuntimeError('active8_paper_operator_approval_missing_changed_or_revoked')
+        monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', revoked)
+    with pytest.raises(ValueError, match='l4_daily_plan_model_changed'):
+        l4_oof_lifecycle.daily_plan_closure(config, '2026-11-09', paper)
+
+
+def test_the_first_r33_plan_closes_normally_after_the_cutover(monkeypatch):
+    from services import l4_oof_lifecycle
+    approval, admission, _, _ = _grant(monkeypatch)
+    policy = approval['configuration']['trading_config']['l4Distribution']
+    plan = _old_plan(signal_date='2026-11-10', model_checksum=policy['artifact']['model_checksum'], l3_identity=IDENTITY)
+    config, paper, bundles = _closure_env(monkeypatch, approval, admission, plan)
+    closure = l4_oof_lifecycle.daily_plan_closure(config, '2026-11-10', paper)
+    assert 'superseded_by_cutover' not in closure and bundles == [(policy['artifact'],
+        {'l3_identity': IDENTITY, 'signal_date': '2026-11-10'})]
+
+
+def test_superseded_closure_names_only_the_plan_for_that_signal_date(monkeypatch):
+    approval, admission, _, _ = _grant(monkeypatch)
+    _closure_env(monkeypatch, approval, admission, _old_plan())
+    assert r33_cutover.superseded_plan_closure(_old_plan(), '2026-11-08', approval=approval, admission=admission) is None
+    assert r33_cutover.superseded_plan_closure(_old_plan(), '2026-11-09', approval=approval, admission=admission)

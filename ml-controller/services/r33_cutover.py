@@ -191,8 +191,8 @@ def validate_cutover(approval, admission, *, now):
 _PINNED_PRIOR = ('approved_strategy_nav_source_change', 'approved_capture_provenance_source_change')
 
 
-def cutover_evidence(approval, admission):
-    """The cutover evidence behind an active approval for this admission.
+def cutover_grant(approval, admission):
+    """The cutover grant behind an active approval for this admission.
 
     Later source releases embed the approval they replace as prior_runtime_approval,
     so the cutover grant stays reachable through that chain under the same admission.
@@ -201,11 +201,40 @@ def cutover_evidence(approval, admission):
     node = approval
     while isinstance(node, dict) and node.get('admission') == admission:
         if node.get('approved_r33_cutover') is not None:
-            return node['approved_r33_cutover']
+            return node
         if not any(node.get(key) is not None for key in _PINNED_PRIOR):
             return None
         node = node.get('prior_runtime_approval')
     return None
+
+
+def cutover_evidence(approval, admission):
+    grant = cutover_grant(approval, admission)
+    return None if grant is None else grant['approved_r33_cutover']
+
+
+def superseded_plan_closure(plan, as_of, *, approval, admission):
+    """R3: on the cutover night the activated plan still names the model the cutover replaced.
+
+    It closes as superseded_by_cutover only when the active grant's first_night names this
+    plan's policy, the plan predates the first R33 signal date, and the plan's model is the
+    prior grant's model. Anything else returns None and the caller stays fail-closed.
+    """
+    grant = cutover_grant(approval, admission)
+    if grant is None:
+        return None
+    evidence = grant['approved_r33_cutover']
+    first = evidence['first_night']
+    prior_bundle = grant['prior_runtime_approval']['configuration']['trading_config']['l4Distribution']['artifact']
+    if (plan.get('signal_date') != as_of or not as_of < first['effective_signal_date']
+            or plan.get('policy_identity') != first['supersedes_plan_policy_identity']
+            or plan.get('model_checksum') != prior_bundle.get('model_checksum')):
+        return None
+    from services.l4_distribution import validate_bundle
+    validate_bundle(prior_bundle, l3_identity=plan['l3_identity'], signal_date=as_of)
+    return {'status': 'superseded_by_cutover', 'superseded_plan_policy_identity': plan['policy_identity'],
+            'effective_signal_date': first['effective_signal_date'], 'cutover_ensemble': evidence['ensemble'],
+            'cutover_l4_model_checksum': evidence['l4_model_checksum']}
 
 
 def verify_serving(approval, admission, ensemble):

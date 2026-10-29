@@ -31,11 +31,11 @@ function mockFetch(t: any, responses: Array<(body: any) => Response | Promise<Re
 
 const daily = { dailySourceRefresh: true, continueEveningChain: true, runId: 'finlab-v4-daily-20261022-1', platformRetryDelaysMs: [0, 0] }
 
-test('Cloud Run platform 5xx is resent with the same run_id until the controller accepts it', async (t) => {
+test('Cloud Run "no available instance" is resent with the same run_id until the controller accepts it', async (t) => {
   const { env } = fixture()
   const bodies = mockFetch(t, [
-    () => new Response('<!DOCTYPE html><html><title>Error 502</title></html>', { status: 502 }),
     () => new Response('The request was aborted because there was no available instance.', { status: 500 }),
+    () => new Response('<!DOCTYPE html><html><body>Error 503: no available instance</body></html>', { status: 503 }),
     (b) => Response.json({ status: 'spawned', run_id: b.run_id, function_call_id: 'fc-1' }),
   ])
   const summary = await runFinLabV4Backfill(env, '2026-10-22', false, daily)
@@ -43,6 +43,57 @@ test('Cloud Run platform 5xx is resent with the same run_id until the controller
   assert.deepEqual(new Set(bodies.map((b) => b.run_id)), new Set([daily.runId]))
   assert.equal(classifySchedulerSummary(summary), 'triggered')
   assert.match(summary, /function_call_id=fc-1/)
+})
+
+test('R8-a: another front-end HTML 5xx may have spawned, so it is sent once and left to the watchdog', async (t) => {
+  for (const status of [500, 502, 504]) {
+    const { env } = fixture()
+    const bodies = mockFetch(t, [() => new Response(`<!DOCTYPE html><html><title>Error ${status}</title></html>`, { status })])
+    const summary = await runFinLabV4Backfill(env, '2026-10-22', false, { ...daily, dispatchAttempt: 2 })
+    assert.equal(bodies.length, 1)
+    assert.equal(classifySchedulerSummary(summary), 'triggered')
+    assert.equal(summary, `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${daily.runId} function_call_id=unknown dispatch_attempt=2 error=html_${status}`)
+    // No supersede target: the watchdog resend must not cancel an `unknown` call.
+    assert.equal(finLabSupersedeCallId({ summary }), null)
+    t.mock.restoreAll()
+  }
+})
+
+test('R8-a: an evening HTML 5xx keeps the reservation and never overwrites an observed start heartbeat', async (t) => {
+  const scope = { lanes: 'chip_diversity', reuseSuccessfulArtifacts: false }
+  {
+    const { env, finlabLog } = fixture()
+    mockFetch(t, [() => new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 })])
+    const result = await dispatchEveningFinLabRefresh(env, '2026-10-22', false, scope)
+    assert.equal(result.startObserved, false)
+    assert.match(result.summary, /dispatch_unconfirmed .* error=html_502$/)
+    assert.equal(finlabLog().status, 'triggered')
+    t.mock.restoreAll()
+  }
+  {
+    const { env, store, finlabLog } = fixture()
+    mockFetch(t, [(b) => {
+      store.set('scheduler:run:finlab-v4-backfill:2026-10-22', JSON.stringify({
+        task: 'finlab-v4-backfill', status: 'running', run_id: b.run_id, run_date: '2026-10-22', summary: 'running' }))
+      return new Response('<html><body>502 Bad Gateway</body></html>', { status: 502 })
+    }])
+    const result = await dispatchEveningFinLabRefresh(env, '2026-10-22', false, scope)
+    assert.equal(result.startObserved, true)
+    assert.equal(finlabLog().status, 'running')
+    t.mock.restoreAll()
+  }
+})
+
+test('R8-a: exhausted "no available instance" (plain or HTML) is a plain failure, never dispatch_unconfirmed', async (t) => {
+  for (const body of ['no available instance', '<!DOCTYPE html><html><body>Error 503: no available instance</body></html>']) {
+    const { env } = fixture()
+    const bodies = mockFetch(t, [0, 1, 2].map(() => () => new Response(body, { status: 503 })))
+    const summary = await runFinLabV4Backfill(env, '2026-10-22', false, daily)
+    assert.equal(bodies.length, 3)
+    assert.match(summary, /^failed \(503\): /)
+    assert.doesNotMatch(summary, /dispatch_unconfirmed/)
+    t.mock.restoreAll()
+  }
 })
 
 test('controller app 5xx reached the non-idempotent spawn and is never resent', async (t) => {

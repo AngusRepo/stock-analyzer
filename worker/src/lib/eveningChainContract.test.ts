@@ -130,9 +130,9 @@ assert(
 assert(
   updateOrchestrator.includes('runMarketCloseRefresh') &&
     updateOrchestrator.includes('hasEveningChainSucceeded') &&
-    updateOrchestrator.includes('21:00 root suppressed') &&
+    updateOrchestrator.includes('evening-chain root suppressed') &&
     !updateOrchestrator.includes('runSourceReadinessProbe'),
-  'evening chain must run as the TW 21:00 primary root without the source-readiness probe backend/runtime path',
+  'evening chain must run as the primary scheduled root without the source-readiness probe backend/runtime path',
 )
 assert(
   updateOrchestrator.includes('runFinLabV4Backfill(env, twDate, force, {') &&
@@ -176,9 +176,19 @@ assert(
 assert(
   updateOrchestrator.includes('retriablePartialFailure') &&
     updateOrchestrator.includes('/partial_failed/i') &&
-    updateOrchestrator.includes('allowFetchedLaneRefetch: retriablePartialFailure') &&
+    updateOrchestrator.includes('const retriableFailure = retriablePartialFailure || lateLaneNotReady') &&
+    updateOrchestrator.includes('allowFetchedLaneRefetch: retriablePartialFailure || lateLane') &&
     updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : 'pending dispatch'"),
   'FinLab watchdog must retry source-key-scoped partial failures, including incomplete keys inside a fetched lane',
+)
+assert(
+  updateOrchestrator.includes('classifyFinLabLateLaneNotReady(') &&
+    updateOrchestrator.includes('if (lateLaneNotReady && finLabLateRetryCutoffPassed(twDate)) return lateLaneCutoffFailure()') &&
+    updateOrchestrator.includes('if (lateLaneRetryPending && finLabLateRetryCutoffPassed(twDate)) return lateLaneCutoffFailure()') &&
+    updateOrchestrator.includes('!lateLane && previousAttempt >= FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS') &&
+    updateOrchestrator.includes("lateLane ? ' late_lane_retry=1' : ''") &&
+    updateOrchestrator.includes('failed: FinLab late lane not published by ${finLabLateRetryCutoffTw()} TW cutoff'),
+  'FinLab late-published lanes (contract late_publication) retry until the contract cutoff, then fail loudly; the attempt cap does not apply',
 )
 assert(
   updateOrchestrator.includes('FinLab watchdog found no source keys eligible for refetch'),

@@ -12,10 +12,17 @@ FROM python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78a
 WORKDIR /app
 
 # System dependencies for the Worker-backed screener Job runtime.
+# nodejs/npm are pinned to what the live image installed (build 5574e96d, Debian trixie):
+# nodejs 20.19.2+dfsg-1+deb13u3 (trixie-security), npm 9.2.0~ds1-3. The trailing * keeps
+# Debian security rebuilds of the same upstream node (+deb13uN); apt's * also matches the
+# unpatched 20.19.2+dfsg-1, so the dpkg check requires a +deb13uN build. Any other node or npm
+# fails the build instead of changing the runtime that runs the native Paper bundle (CD-NEW-12).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    nodejs \
-    npm \
+    'nodejs=20.19.2+dfsg-1*' \
+    'npm=9.2.0~ds1-3' \
+    && node --version | grep -qx 'v20.19.2' \
+    && dpkg-query -W -f='${Version}' nodejs | grep -Eqx '20\.19\.2\+dfsg-1\+deb13u[0-9]+' \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (ml-controller only; ml-service deps live on Modal cloud).

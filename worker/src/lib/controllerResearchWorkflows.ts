@@ -9,6 +9,7 @@ import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
 import { strategyMiningDispatchKey } from './strategyMiningGateway'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { FINLAB_DISPATCH_ATTEMPT_MAX } from './finLabDispatchFence'
 import type { SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
 
 function requireController(env: Bindings): void {
@@ -1107,12 +1108,18 @@ export function buildFinLabDailyRunId(runDate: string): string {
 
 const FINLAB_DISPATCH_PLATFORM_RETRY_DELAYS_MS = [5_000, 10_000]
 
-// A Cloud Run front-end 5xx never reached /finlab/backfill/run, so resending the
-// same run_id cannot start a second Modal writer. App 5xx did reach the
-// non-idempotent spawn and is never retried.
+// Only Cloud Run's "no available instance" proves the request never reached
+// /finlab/backfill/run, so only that is resent inline with the same run_id.
+// A front-end HTML 5xx (for example a GFE 502) may arrive after the handler
+// already spawned the Modal writer: it is reported as dispatch_unconfirmed and
+// left to the FinLab watchdog, which resends with supersede. App 5xx reached
+// the non-idempotent spawn and is never retried.
 export function isCloudRunPlatformError(status: number, body: string): boolean {
-  return status >= 500 && status <= 504
-    && (/no available instance/i.test(body) || /^\s*<(?:!doctype html|html)/i.test(body))
+  return status >= 500 && status <= 504 && /no available instance/i.test(body)
+}
+
+export function isFinLabDispatchOutcomeUnknown(status: number, body: string): boolean {
+  return status >= 500 && status <= 504 && /^\s*<(?:!doctype html|html)/i.test(body)
 }
 
 // Transport failures leave the spawn outcome unknown; config/policy errors do not.
@@ -1222,7 +1229,7 @@ function buildFinLabBackfillRequestBody(
       ? (optionalString(options.keyScopeJson) ?? optionalString((env as any).FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON) ?? optionalString((env as any).FINLAB_DAILY_PRICE_KEY_SCOPE_JSON) ?? dailyKeyScopeJsonForLanes(dailyLanes))
       : optionalString(options.keyScopeJson),
     reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts),
-    dispatch_attempt: Math.max(1, Math.min(5, Math.floor(options.dispatchAttempt ?? 1))),
+    dispatch_attempt: Math.max(1, Math.min(FINLAB_DISPATCH_ATTEMPT_MAX, Math.floor(options.dispatchAttempt ?? 1))),
     supersede_function_call_id: optionalString(options.supersedeFunctionCallId),
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
@@ -1252,6 +1259,11 @@ export async function runFinLabV4Backfill(
     const delayMs = retryDelaysMs[attempt]
     if (resp.ok || delayMs === undefined || !isCloudRunPlatformError(resp.status, text)) break
     await new Promise((resolve) => setTimeout(resolve, delayMs))
+  }
+  // An exhausted "no available instance" proves no spawn, even inside an HTML page: it stays a plain failure.
+  if (!resp.ok && !isCloudRunPlatformError(resp.status, text) && isFinLabDispatchOutcomeUnknown(resp.status, text)) {
+    return `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${jsonBody.run_id} function_call_id=unknown `
+      + `dispatch_attempt=${jsonBody.dispatch_attempt} error=html_${resp.status}`
   }
   if (!resp.ok) {
     return `failed (${resp.status}): ${text.slice(0, 200)}`

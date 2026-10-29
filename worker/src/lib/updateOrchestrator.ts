@@ -50,7 +50,12 @@ import {
   finLabContractFlagDefault,
   finLabRequiredFieldsForLane,
   finLabSentinelFieldForLane,
+  classifyFinLabLateLaneNotReady,
+  finLabLatePublicationFields,
+  finLabLateRetryCutoffPassed,
+  finLabLateRetryCutoffTw,
 } from './finlabSourceContract'
+import { FINLAB_DISPATCH_ATTEMPT_MAX } from './finLabDispatchFence'
 import {
   loadSplitFusionSnapshotMissingReplaySymbols,
   loadSplitFusionSnapshotReplayCoverage,
@@ -307,10 +312,20 @@ async function hasEveningChainSucceeded(env: Bindings, runDate: string): Promise
   return entry?.status === 'success'
 }
 
-async function hasEveningChainInFlight(env: Bindings, runDate: string): Promise<boolean> {
+/**
+ * In-flight status of today's evening chain. 'waiting' counts only for a FinLab late lane the watchdog
+ * still retries before the contract cutoff (C28-25); after the cutoff a manual restart is the fallback.
+ */
+async function eveningChainInFlightStatus(env: Bindings, runDate: string): Promise<'running' | 'triggered' | 'waiting' | null> {
   const entry = await readSchedulerRunLog(env, 'evening-chain', runDate)
-  return entry?.status === 'running' || entry?.status === 'triggered'
+  const status = entry?.status
+  if (status === 'running' || status === 'triggered') return status
+  return status === 'waiting' && /(?:^|\s)awaiting_late_lane(?:\s|$)/.test(entry?.summary ?? '')
+    && !finLabLateRetryCutoffPassed(runDate) ? 'waiting' : null
 }
+
+/** Marks a summary whose run log stays with the FinLab late-lane watchdog; trigger routes do not log it. */
+export const FINLAB_LATE_LANE_WATCHDOG_OWNER = 'late_lane_owner=finlab_watchdog'
 
 async function countReadinessRows(
   db: D1Database,
@@ -2592,10 +2607,14 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     if (!lineageBoundary.allowed) throw new Error(historicalLearningLineageBlockedMessage(lineageBoundary))
   }
   if (!force && await hasEveningChainSucceeded(env, twDate)) {
-    return `full evening chain already succeeded for ${twDate}; 21:00 root suppressed`
+    return `full evening chain already succeeded for ${twDate}; evening-chain root suppressed`
   }
-  if (!force && await hasEveningChainInFlight(env, twDate)) {
-    const summary = `running: full evening chain already in flight for ${twDate}; 21:00 root suppressed`
+  const inFlight = force ? null : await eveningChainInFlightStatus(env, twDate)
+  // Keep the late-lane waiting record: the watchdog owns that run until the cutoff. Like any in-flight
+  // suppression the summary stays non-terminal ('running') so a scheduler root ticket is not closed as skipped.
+  if (inFlight === 'waiting') return `running: full evening chain awaiting FinLab late lane for ${twDate}; evening-chain root suppressed ${FINLAB_LATE_LANE_WATCHDOG_OWNER}`
+  if (inFlight) {
+    const summary = `running: full evening chain already in flight for ${twDate}; evening-chain root suppressed`
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
       summary,
@@ -2625,7 +2644,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     return `triggered evening-chain: source readiness already ready for ${twDate}; ${continuation}`
   }
   if (!hasFinLabRefreshableMissing(fallbackReadiness)) {
-    const summary = `running: 21:00 evening-chain waiting at non-FinLab source-readiness gate; ${fallbackReadiness.summary}`
+    const summary = `running: evening-chain root waiting at non-FinLab source-readiness gate; ${fallbackReadiness.summary}`
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
       summary,
@@ -2637,7 +2656,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   }
   const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
   if (!force && isFinLabQuotaLimitLog(finlabLog)) {
-    const summary = `running: 21:00 evening-chain skipped FinLab data.get refetch; quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}; ${fallbackReadiness.summary}`
+    const summary = `running: evening-chain root skipped FinLab data.get refetch; quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}; ${fallbackReadiness.summary}`
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
       summary,
@@ -2651,10 +2670,10 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     allowFetchedLaneRefetch: force,
   })
   if (!refreshScope.lanes) {
-    const summary = `running: 21:00 evening-chain skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}; ${fallbackReadiness.summary}`
+    const summary = `running: evening-chain root skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}; ${fallbackReadiness.summary}`
     await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
       status: 'skipped',
-      summary: `21:00 evening-chain skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
+      summary: `evening-chain root skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
       duration_ms: 0,
       details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
       run_date: twDate,
@@ -2734,7 +2753,7 @@ export async function dispatchEveningFinLabRefresh(
       ...scope,
       runId,
     }))
-    return { summary, startObserved: false }
+    return { summary, startObserved: /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId) }
   } catch (error) {
     if (!isFinLabDispatchTransportError(error)) {
       // A deterministic failure must not leave a reservation for the watchdog to resend.
@@ -2747,12 +2766,26 @@ export async function dispatchEveningFinLabRefresh(
       })
       throw error
     }
-    const current = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
     return {
       summary: `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${runId} function_call_id=unknown dispatch_attempt=1 error=${(error as Error).name}`,
-      startObserved: current?.run_id === runId && (current.status === 'running' || current.status === 'success'),
+      startObserved: await finLabStartObserved(env, twDate, runId),
     }
   }
+}
+
+async function finLabStartObserved(env: Bindings, twDate: string, runId: string): Promise<boolean> {
+  const current = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+  return current?.run_id === runId && (current.status === 'running' || current.status === 'success')
+}
+
+/**
+ * R8-a: an unconfirmed (HTML 5xx) dispatch whose start heartbeat already arrived must not overwrite it.
+ * Used by the manual trigger route, which logs the dispatch outcome generically.
+ */
+export async function finLabDispatchSupersededByStart(env: Bindings, runDate: string | undefined, summary: string): Promise<boolean> {
+  if (!/(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary)) return false
+  const runId = summary.match(/(?:^|\s)run_id=([^\s;]+)/)?.[1]
+  return Boolean(runId) && await finLabStartObserved(env, resolveUpdateDate(runDate), runId!)
 }
 
 export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string): Promise<string> {
@@ -2812,21 +2845,57 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     /required_wide_field_incomplete/i.test(finlabLog.summary ?? '') ||
     /materializer_(?:blocked|failed)/i.test(finlabLog.summary ?? '')
   )
-  if ((finlabLog?.status !== 'triggered' && !retriablePartialFailure) || !finlabLog.timestamp) {
+  // Late-published fields (contract late_publication) are retried until the cutoff, not by attempt count.
+  // A late-lane retry still pending (dispatch_unconfirmed or no callback) keeps that class via its marker.
+  const lateLaneNotReady = finlabLog?.status === 'error' && !retriablePartialFailure
+    && classifyFinLabLateLaneNotReady(`${finlabLog.summary ?? ''} ${finlabLog.error ?? ''}`)
+  const lateLaneRetryPending = finlabLog?.status === 'triggered'
+    && /(?:^|\s)late_lane_retry=1(?:$|[\s;])/.test(finlabLog.summary ?? '')
+  const lateLane = lateLaneNotReady || lateLaneRetryPending
+  const retriableFailure = retriablePartialFailure || lateLaneNotReady
+  if ((finlabLog?.status !== 'triggered' && !retriableFailure) || !finlabLog.timestamp) {
     return `skipped: no pending FinLab trigger for ${twDate}`
   }
+  const lateLaneCutoffFailure = async (): Promise<string> => {
+    const runId = finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id') ?? 'unknown'
+    const attempts = schedulerSummaryField(finlabLog, 'dispatch_attempt') ?? '1'
+    const summary = `failed: FinLab late lane not published by ${finLabLateRetryCutoffTw()} TW cutoff `
+      + `fields=${finLabLatePublicationFields().join(',')} dispatch_attempt=${attempts} run_id=${runId}`
+    const failedAt = Date.parse(finlabLog.timestamp!)
+    const durationMs = Number.isFinite(failedAt) ? Math.max(0, Date.now() - failedAt) : 0
+    for (const task of ['finlab-v4-backfill', 'evening-chain']) {
+      await logSchedulerResult(env.KV, task, {
+        status: 'error', summary, duration_ms: durationMs, run_id: runId, run_date: twDate,
+      }, env as any)
+    }
+    // Same terminal state as a failed FinLab callback; the two alerts above already carry it.
+    await logSchedulerResult(env.KV, 'update', {
+      status: 'blocked', summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${summary}`,
+      duration_ms: durationMs, run_id: runId, run_date: twDate,
+    })
+    return summary
+  }
+  // From the cutoff no new attempt is sent; an attempt sent before it may still call back.
+  if (lateLaneNotReady && finLabLateRetryCutoffPassed(twDate)) return lateLaneCutoffFailure()
 
   const triggeredAt = Date.parse(finlabLog.timestamp)
   const ageMs = Number.isFinite(triggeredAt) ? Date.now() - triggeredAt : Number.POSITIVE_INFINITY
   if (ageMs < FINLAB_PENDING_WATCHDOG_STALE_MS) {
-    return `skipped: FinLab ${retriablePartialFailure ? 'partial failure' : 'trigger'} age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
+    return `skipped: FinLab ${lateLaneNotReady ? 'late lane not ready' : retriablePartialFailure ? 'partial failure' : 'trigger'} age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
   }
+  if (lateLaneRetryPending && finLabLateRetryCutoffPassed(twDate)) return lateLaneCutoffFailure()
 
   const runId = finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id')
   const functionCallId = finLabSupersedeCallId(finlabLog)
   const previousAttempt = Number.parseInt(schedulerSummaryField(finlabLog, 'dispatch_attempt') ?? '1', 10)
   if (!runId) throw new Error(`FinLab watchdog cannot recover ${twDate}: pending run_id missing`)
-  if (previousAttempt >= FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS) {
+  // The controller rejects dispatch_attempt above its protocol limit, so a late lane stops resending
+  // there and waits for the cutoff (or a callback from the last attempt) to settle the chain.
+  if (lateLane && previousAttempt >= FINLAB_DISPATCH_ATTEMPT_MAX) {
+    return `skipped: FinLab late lane at dispatch attempt limit dispatch_attempt=${previousAttempt}; `
+      + `awaiting ${finLabLateRetryCutoffTw()} TW cutoff run_id=${runId}`
+  }
+  if (!lateLane && previousAttempt >= FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS) {
     const summary = `failed: FinLab pending watchdog exhausted run_id=${runId} dispatch_attempt=${previousAttempt}`
     await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
       status: 'error', summary, duration_ms: ageMs, run_id: runId, run_date: twDate,
@@ -2847,7 +2916,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   // superseded call cannot overwrite the active dispatch while HTTP is in flight.
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: 'triggered',
-    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}`,
+    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}`,
     duration_ms: 0,
     run_id: runId,
     run_date: twDate,
@@ -2857,7 +2926,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   try {
     const readiness = await checkEveningChainSourceReadiness(env, twDate)
     const refreshScope = await finLabRetryScopeForReadiness(env, twDate, readiness, {
-      allowFetchedLaneRefetch: retriablePartialFailure,
+      allowFetchedLaneRefetch: retriablePartialFailure || lateLane,
     })
     if (!refreshScope.lanes) {
       await env.KV.delete(retryKey)
@@ -2876,16 +2945,36 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
       supersedeFunctionCallId: functionCallId ?? undefined,
     }))
     const status = classifySchedulerSummary(summary)
-    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+    // A start heartbeat that arrived during an unconfirmed (HTML 5xx) dispatch is newer than this outcome.
+    const startObserved = /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId)
+    if (!startObserved) await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
       status,
-      summary: `${summary}; watchdog_retriggered_from_attempt=${previousAttempt}`,
+      summary: `${summary}; watchdog_retriggered_from_attempt=${previousAttempt}${lateLane ? ' late_lane_retry=1' : ''}`,
       duration_ms: 0,
       run_id: runId,
       run_date: twDate,
     })
+    if (lateLane && status === 'error') {
+      // A definite resend failure leaves no callback to wait for: alert now instead of waiting for the cutoff.
+      const failed = `failed: FinLab watchdog late lane resend failed run_id=${runId} dispatch_attempt=${nextAttempt}; ${summary}`
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: failed,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: twDate,
+        supersedePrevious: true,
+      }, env as any)
+      // Same terminal state as the cutoff failure; the evening-chain alert above already carries it.
+      await logSchedulerResult(env.KV, 'update', {
+        status: 'blocked', summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${failed}`,
+        duration_ms: 0, run_id: runId, run_date: twDate,
+      })
+      return summary
+    }
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'triggered',
-      summary: `FinLab watchdog retriggered ${retriablePartialFailure ? 'partial failure' : 'pending dispatch'} run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
+      summary: `FinLab watchdog retriggered ${lateLane ? 'late lane not ready' : retriablePartialFailure ? 'partial failure' : 'pending dispatch'} run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
       duration_ms: 0,
       run_id: runId,
       run_date: twDate,

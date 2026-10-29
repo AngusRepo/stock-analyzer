@@ -5,9 +5,12 @@ export type FinLabDispatchFenceResult = {
   activeAttempt: number
 }
 
+/** Highest dispatch_attempt the controller accepts (ml-controller/routers/finlab.py dispatch_attempt le=5). */
+export const FINLAB_DISPATCH_ATTEMPT_MAX = 5
+
 function boundedAttempt(value: unknown): number {
   const attempt = Math.floor(Number(value) || 1)
-  return Math.max(1, Math.min(5, attempt))
+  return Math.max(1, Math.min(FINLAB_DISPATCH_ATTEMPT_MAX, attempt))
 }
 
 export function resolveFinLabDispatchFence(params: {

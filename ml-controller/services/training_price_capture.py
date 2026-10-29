@@ -3,10 +3,30 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from concurrent.futures import ThreadPoolExecutor
 import polars as pl
 from services.training_source_preflight import _sealed_manifest
 
 PRICE_FIELDS = ("open", "high", "low", "close", "volume", "value", "adj_close", "adj_open")
+
+
+def prefetched_blobs(bucket, paths):
+    """PERF-D5: yield each blob's bytes in order while the next one downloads.
+
+    One blob of lookahead bounds the extra memory; a download error surfaces at
+    its own position, after every earlier blob was handled, as in a plain loop."""
+    paths = list(paths)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        fetch = lambda path: pool.submit(bucket.blob(path).download_as_bytes)
+        pending = fetch(paths[0]) if paths else None
+        for index in range(len(paths)):
+            raw = pending.result()
+            pending = fetch(paths[index + 1]) if index + 1 < len(paths) else None
+            yield raw
+    finally:
+        # A caller that stops early (validation error) never waits on the lookahead.
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows: list[dict],
@@ -35,11 +55,12 @@ def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows:
     if len(ids)!=len(stock_rows) or len(set(ids.values()))!=len(ids):
         raise ValueError("root_price_stock_identity_duplicate")
     frames=[];checksums={}
+    downloads=prefetched_blobs(bucket,[f"{prefix}/{field}.parquet" for field in PRICE_FIELDS])
     for field in PRICE_FIELDS:
         expected=manifest.get("checksums",{}).get(field)
         if not isinstance(expected,str) or len(expected)!=64:
             raise ValueError(f"root_price_capture_field_missing:{field}")
-        raw=bucket.blob(f"{prefix}/{field}.parquet").download_as_bytes()
+        raw=next(downloads)
         if hashlib.sha256(raw).hexdigest()!=expected:
             raise ValueError(f"root_price_capture_checksum_mismatch:{field}")
         wide=pl.read_parquet(io.BytesIO(raw))
@@ -108,10 +129,11 @@ def load_training_institutional_capture(bucket, *, price_capture: dict, run_date
     keys=[{"symbol":str(s["symbol"]),"date":row["date"]} for s in stock_rows for row in prices_map.get(s["id"],[])]
     if not keys:raise ValueError("root_institutional_price_keys_empty")
     frame=pl.DataFrame(keys);symbols=set(frame["symbol"].to_list());checksums={}
+    downloads=prefetched_blobs(bucket,[f"{root}/{field}.parquet" for field in INSTITUTIONAL_FIELDS])
     for field in INSTITUTIONAL_FIELDS:
         expected=manifest.get("checksums",{}).get(field)
         if not expected:raise ValueError(f"root_institutional_field_missing:{field}")
-        data=bucket.blob(f"{root}/{field}.parquet").download_as_bytes()
+        data=next(downloads)
         if hashlib.sha256(data).hexdigest()!=expected:raise ValueError(f"root_institutional_checksum_mismatch:{field}")
         wide=pl.read_parquet(io.BytesIO(data)).with_columns(pl.col("date").cast(pl.String).str.slice(0,10))
         if wide["date"].is_duplicated().any() or wide["date"].null_count():raise ValueError("root_institutional_duplicate_or_null_dates")

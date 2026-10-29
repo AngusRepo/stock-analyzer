@@ -25,7 +25,6 @@ param(
   [string[]]$AllowedSchedulerCreateIds = @(
     'screener-v2-watchdog',
     'indicator-queue-watchdog',
-    'data-domain-shadow-backfill-ops',
     'learning-retention-readiness',
     'legacy-learning-deletion-readiness',
     'retention-archive-only',

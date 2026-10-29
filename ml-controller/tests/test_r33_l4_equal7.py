@@ -26,7 +26,7 @@ def _calibration(xs=(-1.0, -0.2, 0.3, 1.0), ys=(-0.02, 0.0, 0.01, 0.03)):
 
 def _ensemble(calibration=None):
     return build_ensemble(
-        cohort_id="c1", base_artifacts={m: {"artifact_id": f"{m}:c1", "version": m + "-v1", "checksum": "a" * 64}
+        cohort_id="c1", base_artifacts={m: {"artifact_id": f"{m}:c1", "version": m + "-v1", "checksum": "sha256:" + "a" * 64}
                                         for m in MODELS},
         source_bundle={"path": "r33/monthly_candidates/c1/bundle.json", "sha256": "d" * 64, "manifest_checksum": "f" * 64,
                        "oof_checks_checksum": "c" * 64, "source_calibration_checksum": "5" * 64},

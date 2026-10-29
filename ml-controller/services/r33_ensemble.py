@@ -21,6 +21,7 @@ _ARTIFACT = ("artifact_id", "version", "checksum")
 _SOURCE = ("path", "sha256", "manifest_checksum", "oof_checks_checksum", "source_calibration_checksum")
 _VALIDATION = ("decision", "oof_checks_status", "pit_certified", "pit_certification_sha256")
 _HEX = re.compile(r"[0-9a-f]{64}")
+_REGISTRY_CHECKSUM = re.compile(r"(?:sha256:)?[0-9a-f]{64}")     # model_artifact_registry stores "sha256:<hex>"
 
 
 def _sha(value) -> bool:
@@ -67,7 +68,8 @@ def validate_ensemble(ensemble: dict) -> dict:
             or any(not isinstance(artifacts[m], dict) or set(artifacts[m]) != set(_ARTIFACT)
                    or not isinstance(artifacts[m]["artifact_id"], str) or not artifacts[m]["artifact_id"]
                    or not isinstance(artifacts[m]["version"], str) or not artifacts[m]["version"]
-                   or not _sha(artifacts[m]["checksum"]) for m in MODELS)
+                   or not isinstance(artifacts[m]["checksum"], str)
+                   or _REGISTRY_CHECKSUM.fullmatch(artifacts[m]["checksum"]) is None for m in MODELS)
             or ensemble["observation_artifacts"] != artifacts
             or not isinstance(source, dict) or set(source) != set(_SOURCE)
             or not isinstance(source["path"], str) or not source["path"]

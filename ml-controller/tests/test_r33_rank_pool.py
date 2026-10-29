@@ -343,7 +343,7 @@ def _with_artifacts(mutate):
     lambda a: a.update(XGBoost={"artifact_id": "x", "version": "v", "checksum": "a" * 64}),
     lambda a: a.pop("GNN"),
     lambda a: a["TabM"].pop("checksum"),
-    lambda a: a["TabM"].update(checksum="sha256:" + "a" * 64),
+    lambda a: a["TabM"].update(checksum="md5:" + "a" * 32),
     lambda a: a["TabM"].update(version=""),
 ], ids=["extra_model", "missing_model", "no_checksum", "checksum_format", "empty_version"])
 def test_the_artifact_roster_must_be_exactly_seven_well_formed_artifacts(mutate):

@@ -52,6 +52,12 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
     frozen['runtime']={'signal_date':signal_date,'l3_identity':identity,'account':account,'predictions':deepcopy(predictions)}
     if r33_rank_pool is not None:
         frozen['runtime']['r33_rank_pool']=deepcopy(r33_rank_pool)
+        # A holding the pool never saw keeps ehat_missing_reason=r33_rank_pool_missing
+        # on its plan target; say so here too, since its decay exit cannot run today.
+        unranked=sorted({str(h['symbol']) for h in account.get('holdings') or []}-{r['symbol'] for r in r33_rank_pool['rows']})
+        if unranked:
+            import logging
+            logging.getLogger(__name__).warning('[L4] r33 rank pool has no row for held symbols=%s',unranked)
     from services.l4_execution_evidence import bind_calibration_packets
     frozen['runtime'].update(bind_calibration_packets(frozen,signal_date))
     from services.l4_opb_selection import context_identity, is_v2

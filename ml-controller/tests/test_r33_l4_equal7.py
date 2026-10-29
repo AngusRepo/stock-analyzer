@@ -12,21 +12,31 @@ from services.l4_distribution_lifecycle import ACCEPTANCE_CHECKS, prepare_paper_
 from services.l4_distribution_runtime import run
 from services.r33_calibration_job import POOL_SOURCE
 from services.r33_crossfit_serving import ESTIMATOR
+from services.r33_ensemble import build_ensemble
 from services.r33_isotonic_calibration import MODELS, build_payload, pava
 
 DAY = "2026-11-10"
-IDENTITY = {"schema_version": "paired-nav-formal-ml-baseline-v1", "artifact_id": "r33-equal7:c1:abc",
-            "cohort_id": "c1", "payload_checksum": "e" * 64, "base_artifact_set_checksum": "b" * 64}
 POOL = ["P1", "P2", "P3", "P4", "P5", "P6"]
 
 
-def _ensemble():
-    blocks = pava([-1.0, -0.2, 0.3, 1.0], [-0.02, 0.0, 0.01, 0.03], [1, 1, 1, 1])
-    calibration = build_payload(blocks=blocks, variant="mean_z", horizon_sessions=5,
-                                inputs={"estimator": ESTIMATOR, "source_calibration_checksum": "5" * 64}, diagnostics={})
-    return {**{k: IDENTITY[k] for k in rank_pool.IDENTITY_FIELDS}, "variant": "mean_z",
-            "base_artifacts": {m: {"version": m + "-v1"} for m in MODELS},
-            "source_bundle": {"source_calibration_checksum": "5" * 64}, "serving_calibration": calibration}
+def _calibration(xs=(-1.0, -0.2, 0.3, 1.0), ys=(-0.02, 0.0, 0.01, 0.03)):
+    return build_payload(blocks=pava(list(xs), list(ys), [1] * len(xs)), variant="mean_z", horizon_sessions=5,
+                         inputs={"estimator": ESTIMATOR, "source_calibration_checksum": "5" * 64}, diagnostics={})
+
+
+def _ensemble(calibration=None):
+    return build_ensemble(
+        cohort_id="c1", base_artifacts={m: {"artifact_id": f"{m}:c1", "version": m + "-v1", "checksum": "a" * 64}
+                                        for m in MODELS},
+        source_bundle={"path": "r33/monthly_candidates/c1/bundle.json", "sha256": "d" * 64, "manifest_checksum": "f" * 64,
+                       "oof_checks_checksum": "c" * 64, "source_calibration_checksum": "5" * 64},
+        serving_calibration=calibration or _calibration(),
+        validation={"decision": "PASS", "oof_checks_status": "pass", "pit_certified": True,
+                    "pit_certification_sha256": "9" * 64})
+
+
+IDENTITY = {"schema_version": "paired-nav-formal-ml-baseline-v1",
+            **{k: _ensemble()[k] for k in rank_pool.IDENTITY_FIELDS}}
 
 
 def _prediction(value):
@@ -37,9 +47,13 @@ def _prediction(value):
                                     "artifact_versions": {m: m + "-v1" for m in MODELS}}}
 
 
-def _bundle(ensemble=None):
-    candidate = equal7.build_bundle(l3_identity=IDENTITY, ensemble=ensemble or _ensemble(),
-                                    training_label_known_max="2026-10-30")
+def _bundle(model_changes=None, l4plus=None):
+    candidate = equal7.build_bundle(l3_identity=IDENTITY, ensemble=_ensemble(), training_label_known_max="2026-10-30")
+    if model_changes:                                   # a bundle sealed over other bindings
+        candidate["model"].update(model_changes)
+        candidate["model_checksum"] = digest(candidate["model"])
+    if l4plus is not None:
+        candidate["l4plus"] = l4plus
     receipt = {"schema_version": "l4-paper-acceptance-v1", "model_checksum": candidate["model_checksum"],
                "l3_identity_checksum": digest(IDENTITY), "feature_schema": equal7.FEATURE_SCHEMA,
                "checks": dict.fromkeys(ACCEPTANCE_CHECKS, True), "source_evidence_checksum": "c" * 64,
@@ -161,11 +175,8 @@ def test_rank_pool_must_be_attested_for_this_run(mutate, error):
 
 def test_rank_pool_from_another_calibration_is_rejected():
     recs, policy, history = fixture()
-    other = _ensemble()
-    other["serving_calibration"] = build_payload(
-        blocks=pava([0.0, 1.0], [0.0, 0.05], [1, 1]), variant="mean_z", horizon_sessions=5,
-        inputs={"estimator": ESTIMATOR, "source_calibration_checksum": "5" * 64}, diagnostics={})
-    policy["artifact"] = _bundle(other)
+    other = _calibration((0.0, 1.0), (0.0, 0.05))
+    policy["artifact"] = _bundle({"calibration_checksum": other["payload_checksum"]})
     with pytest.raises(ValueError, match="r33_rank_pool_identity_mismatch"):
         run(deepcopy(recs), policy, return_history=history)
 
@@ -258,3 +269,35 @@ def test_prepare_rejects_a_rank_pool_for_a_non_equal7_bundle(monkeypatch):
     policy["artifact"] = {**policy["artifact"], "model": {**policy["artifact"]["model"], "schema_version": "other"}}
     with pytest.raises(ValueError, match="r33_rank_pool_without_equal7_bundle"):
         _prepare(policy, policy["runtime"]["predictions"], r33_rank_pool=policy["runtime"]["r33_rank_pool"])
+
+
+def test_bundle_must_name_the_l3_ensemble_and_own_calibration_alone():
+    with pytest.raises(ValueError, match="r33_bundle_ensemble_mismatch"):
+        validate_bundle(_bundle({"ensemble_payload_checksum": "0" * 64}), l3_identity=IDENTITY, signal_date=DAY)
+    with pytest.raises(ValueError, match="r33_multiple_calibration_owners"):
+        validate_bundle(_bundle(l4plus={"enabled": True}), l3_identity=IDENTITY, signal_date=DAY)
+    validate_bundle(_bundle(l4plus={"enabled": False}), l3_identity=IDENTITY, signal_date=DAY)
+
+
+def test_bundle_is_built_only_from_a_valid_ensemble():
+    forged = _ensemble()
+    forged["base_artifacts"]["TabM"]["version"] = "old"
+    with pytest.raises(ValueError, match="r33_ensemble_contract"):
+        equal7.build_bundle(l3_identity=IDENTITY, ensemble=forged, training_label_known_max="2026-10-30")
+
+
+def test_candidate_without_any_prediction_is_unavailable_not_a_failed_plan():
+    recs, policy, history = fixture(candidates=("P1", "P2", "P3", "P4", "P5", "P6", "X8"))
+    history["X8"] = history["P1"]
+    rows = run(deepcopy(recs), deepcopy(policy), return_history=history)
+    plan = rows[0]["_l4_portfolio_plan"]
+    assert plan["prediction_coverage"]["unavailable"] == {"X8": ["r33_rank_pool_missing"]}
+    assert "X8" in plan["forbidden_buys"] and plan["weights"]["X8"] == 0
+
+
+def test_prepare_warns_about_a_holding_the_rank_pool_never_saw(caplog):
+    _, policy, _ = fixture()
+    policy["runtime"]["account"]["holdings"] = [{"symbol": "H7", "market_value": 1000}]
+    with caplog.at_level("WARNING"):
+        _prepare(policy, policy["runtime"]["predictions"], r33_rank_pool=policy["runtime"]["r33_rank_pool"])
+    assert "['H7']" in caplog.text

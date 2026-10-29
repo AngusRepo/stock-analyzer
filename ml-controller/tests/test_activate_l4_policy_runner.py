@@ -50,21 +50,26 @@ def test_grant_and_activate_refuse_to_start_without_the_admission_dir(command, t
 # M1-c: activating P1/P2 with another release's admission (e.g. r31's run-M) must stop at once.
 def release(tmp_path, *, new_key='ml:active8:paper_runtime_approval:v1:wrel', admitted_key=None):
     """An admission dir, a controller tree and an --out dir as one release leaves them."""
-    s_grant = {'admission': {'release': 'wrel'}, 'configuration': {'trading_config': {'a': 0}},
-               'approval_checksum': 's' * 64}
+    s_grant = {'admission': {'release': 'wrel'}, 'approval_checksum': 's' * 64,
+               'configuration': {'trading_config': {'a': 0}, 'risk_config': {'r': 0}, 'native_execution_policy': 'wrel'}}
     admission_dir = tmp_path / 'admission'
     admission_dir.mkdir()
     (admission_dir / 'source-grant.json').write_text(json.dumps(s_grant), encoding='utf-8')
     behavior = tmp_path / 'controller/services/native_execution_behavior_release.json'
     behavior.parent.mkdir(parents=True)
     behavior.write_text(json.dumps({'runtime_admission': admitted_key or new_key}), encoding='utf-8')
-    receipt = {'mode': 'new-grant', 'new_key': new_key, 'approval_checksum': 's' * 64,
-               'manifest_sha256': {'native_execution_behavior_release.json': hashlib.sha256(behavior.read_bytes()).hexdigest()}}
-    (admission_dir / 'admission-receipt.json').write_text(json.dumps(receipt), encoding='utf-8')
+    nav = behavior.parent / 'strategy_nav_source_release.json'
+    nav.write_text(json.dumps({'source': 'wrel'}), encoding='utf-8')
     out = tmp_path / 'out'
     out.mkdir()
-    p1 = {**s_grant, 'configuration': {'trading_config': {'a': 1}}, 'approved_l4_execution_policy_change': {'activation_checksums': ['x']},
-          'approval_checksum': 'p' * 64}
+    (out / 'policy-chain.json').write_text(json.dumps([{'packet': 1}]), encoding='utf-8')
+    digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+    receipt = {'mode': 'new-grant', 'new_key': new_key, 'approval_checksum': 's' * 64,
+               'manifest_sha256': {path.name: digest(path) for path in (behavior, nav)},
+               'policy_chain_sha256': digest(out / 'policy-chain.json')}
+    (admission_dir / 'admission-receipt.json').write_text(json.dumps(receipt), encoding='utf-8')
+    p1 = {**s_grant, 'configuration': {**s_grant['configuration'], 'trading_config': {'a': 1}, 'risk_config': {'r': 1}},
+          'approved_l4_execution_policy_change': {'activation_checksums': ['x']}, 'approval_checksum': 'p' * 64}
     (out / 'policy-grants.json').write_text(json.dumps([p1]), encoding='utf-8')
     source = tmp_path / 's.json'
     source.write_text(json.dumps(s_grant), encoding='utf-8')
@@ -133,3 +138,34 @@ def test_a_wrong_admission_stops_before_any_credential_or_cloud_read(tmp_path, m
                                       '--to', '1'])
     with pytest.raises(RuntimeError, match='admission_not_for_this_release'):
         activate.main()
+
+
+def test_grant_refuses_another_release_admission_with_its_own_s_grant(tmp_path):
+    # r31's admission dir and its own source-grant.json: the S grant matches the receipt,
+    # but the controller is the W-REL release
+    admission_dir, controller, out, _ = release(tmp_path, new_key='ml:active8:paper_runtime_approval:v1:r31',
+                                                admitted_key='ml:active8:paper_runtime_approval:v1:wrel')
+    with pytest.raises(RuntimeError, match='admission_not_for_this_release'):
+        bind(admission_dir, controller, out, admission_dir / 'source-grant.json', 'grant')
+
+
+def test_both_release_manifests_and_the_policy_chain_are_bound(tmp_path):
+    admission_dir, controller, out, source = release(tmp_path)
+    (controller / 'services/strategy_nav_source_release.json').write_text('{"source": "r31"}', encoding='utf-8')
+    with pytest.raises(RuntimeError, match='admission_not_for_this_release'):
+        bind(admission_dir, controller, out, source, 'grant')
+    (tmp_path / 'b').mkdir()
+    admission_dir, controller, out, source = release(tmp_path / 'b')
+    (out / 'policy-chain.json').write_text('[{"packet": 2}]', encoding='utf-8')
+    for command in ('grant', 'activate'):
+        with pytest.raises(RuntimeError, match='admission_not_for_this_policy_chain'):
+            bind(admission_dir, controller, out, source, command)
+
+
+def test_p_grant_may_differ_only_in_the_two_kv_configs(tmp_path):
+    admission_dir, controller, out, source = release(tmp_path)
+    grants = json.loads((out / 'policy-grants.json').read_text())
+    grants[0]['configuration']['native_execution_policy'] = 'r31'
+    (out / 'policy-grants.json').write_text(json.dumps(grants), encoding='utf-8')
+    with pytest.raises(RuntimeError, match='policy_grant_not_derived_from_admission:P1'):
+        bind(admission_dir, controller, out, source)

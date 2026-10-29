@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 import { parseArgs, planRollback, plainVars, requireInteractive, varChanges, wranglerEnv } from '../../../tools/worker_rollback.mjs'
 
 // CD-NEW-24: wrangler rollback also restores the target's [vars]; pause the jobs that read them first.
@@ -70,4 +71,11 @@ test('wrangler env keeps the deprecated CF_* credentials and Windows mixed-case 
     CF_PAGES: '1', CF_PAGES_BRANCH: 'main', WORKERS_CI: '1', CI: 'true', TF_BUILD: 'True', NODE: '/app/.heroku/node/bin/node' })
   assert.deepEqual(Object.keys(env).sort(),
     ['CF_ACCOUNT_ID', 'CF_API_BASE_URL', 'CF_API_KEY', 'CF_API_TOKEN', 'CF_EMAIL', 'Path', 'SystemRoot', 'TEMP', 'Tmp'])
+})
+
+test('the plan reads and the rollback both start wrangler with wranglerEnv', () => {
+  const source = readFileSync(new URL('../../../tools/worker_rollback.mjs', import.meta.url), 'utf8')
+  assert.match(source, /run\(process\.execPath, \[wrangler, 'versions', 'view', id, '--json'\], wranglerEnv\(process\.env\)\)/)
+  assert.match(source, /\[wrangler, 'rollback',[^\n]*\n\s*\{[^}]*env: wranglerEnv\(process\.env\) \}/)
+  assert.equal(source.match(/\[wrangler, /g)?.length, 2, 'every wrangler call is one of the two above')
 })

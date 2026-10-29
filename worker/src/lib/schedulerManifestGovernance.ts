@@ -113,3 +113,46 @@ export function schedulerGovernanceSummary(internalLogicalSteps = 0): SchedulerG
 export function schedulerManifestJobs(): readonly ManifestJob[] {
   return manifestJobs
 }
+export type ManifestRepeatingWindow = {
+  /** Manifest cron (UTC). */
+  cron: string
+  intervalMinutes: number
+  /** Minutes of the Taiwan day of the first and last tick (the last may fall after midnight). */
+  firstTwMinute: number
+  lastTwMinute: number
+  /** Last tick on the same Taiwan calendar day as the first one. */
+  lastSameDayTwMinute: number
+  label: string
+}
+
+const twHhMm = (minute: number) => {
+  const m = ((minute % 1440) + 1440) % 1440
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+}
+
+/** NEW-86: a weekday repeating window (`*\/N H1-H2 * * 1-5`, UTC) read from the scheduler manifest. */
+export function manifestRepeatingWindow(
+  jobId: string,
+  source: { timeZone?: string; jobs: Array<{ id: string; schedule?: string; timeZone?: string }> } = schedulerManifest as any,
+): ManifestRepeatingWindow {
+  const job = source.jobs.find((row) => row.id === jobId)
+  const match = /^\*\/(\d{1,2}) (\d{1,2})-(\d{1,2}) \* \* 1-5$/.exec(job?.schedule ?? '')
+  // A per-job timeZone overrides the manifest default.
+  if (!job || !match || (job.timeZone ?? source.timeZone) !== 'UTC') throw new Error(`manifest_repeating_window_invalid:${jobId}`)
+  const [interval, startHour, endHour] = match.slice(1).map(Number)
+  if (interval < 1 || interval > 59 || startHour > endHour || endHour > 23) throw new Error(`manifest_repeating_window_invalid:${jobId}`)
+  const lastMinuteInHour = Math.floor(59 / interval) * interval
+  const offset = startHour + 8 >= 24 ? 8 * 60 - 1440 : 8 * 60
+  const firstTwMinute = startHour * 60 + offset
+  const lastTwMinute = endHour * 60 + lastMinuteInHour + offset
+  // Ticks run at minutes 0, N, 2N... of each hour, so the last same-day tick is in TW hour 23.
+  const lastSameDayTwMinute = lastTwMinute < 1440 ? lastTwMinute : 23 * 60 + lastMinuteInHour
+  return {
+    cron: job.schedule!,
+    intervalMinutes: interval,
+    firstTwMinute,
+    lastTwMinute,
+    lastSameDayTwMinute,
+    label: `Weekdays ${twHhMm(firstTwMinute)}-${twHhMm(lastTwMinute)} / ${interval}m`,
+  }
+}

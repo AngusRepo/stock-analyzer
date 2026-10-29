@@ -65,6 +65,10 @@
       "sentinel_field": "foreign_net",
       "fields": {
         "foreign_net": { "required": true }
+      },
+      "late_publication": {
+        "fields": ["margin_balance", "short_balance"],
+        "retry_cutoff_tw": "23:00"
       }
     },
     "institutional_amount_summary": {

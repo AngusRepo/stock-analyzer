@@ -39,7 +39,7 @@ import { materializePostOverlayStrategySeed, dedupeScreenerCandidatesBySymbol, a
 export { dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity } from './screenerPostOverlaySeed'
 import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety } from './screenerPostRouteOverlays'
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
-import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
+import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
 import {
   annotateCandidatesWithStrategySpecs,
 } from './screenerStrategyConsumer'
@@ -3387,6 +3387,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let allChips: CanonicalScreenerChip[]
   let tpexSymbolSet = new Set<string>()
   let chipSourceSummary: Record<string, number> = {}
+  let chipFreshness: ScreenerChipFreshness | null = null
   let combinedBuzz: BuzzResult = []
   let conceptBuzzScore = new Map<string, number>()
   let conceptEvidenceBreakdown = new Map<string, Record<string, number>>()
@@ -3416,6 +3417,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     allChips = marketData.allChips
     tpexSymbolSet = marketData.tpexSymbols
     chipSourceSummary = marketData.chipSourceSummary ?? {}
+    chipFreshness = marketData.chipFreshness
 
     // ?蔥 buzz嚗-score 璅???same as before嚗?
     const themeEvidence = combineMultiSourceThemeEvidence([
@@ -3434,6 +3436,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `chips=${allChips.length} buzz=${combinedBuzz.length} theme_sources=${JSON.stringify(themeEvidence.acceptedSources)} ` +
       `lanes=${JSON.stringify(marketData.laneCounts)} chip_sources=${JSON.stringify(chipSourceSummary)}`,
     )
+    // C28-18: observability only; chip scoring keeps using the latest available dates. The stale warn is
+    // sent by the Worker screener watchdog from the funnel metadata (this job has no webhook).
+    debugLog.push(`[Data] chip_freshness=${JSON.stringify(chipFreshness)}`)
   } catch (e) {
     throw new Error(
       `screener_market_data_load_failed:run_date=${endDate}:${screenerInfrastructureFingerprint(e)}`,
@@ -5269,6 +5274,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         l0RawSignalCoverageAudit,
         finLabFactorNormalization: finLabFactorNormalizationTelemetry,
         restrictedCount: punishedSet.size,
+        chipFreshness,
         l05LiquidityCapacityPolicy: {
           ...L05_LIQUIDITY_CAPACITY_POLICY,
           policy_checksum: L05_LIQUIDITY_CAPACITY_POLICY_CHECKSUM,

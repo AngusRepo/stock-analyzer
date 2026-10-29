@@ -85,10 +85,17 @@ def _evidence(row: dict, *, signal_date: str, pool_checksum: str, calibration_ch
                 calibration_checksum=calibration_checksum, **{k: row[k] for k in _ROW_FIELDS})
 
 
+IDENTITY_FIELDS = ("artifact_id", "cohort_id", "payload_checksum", "base_artifact_set_checksum")
+
+
 def build_rank_pool(*, signal_date: str, pool: tuple[list[str], dict], predictions: dict[str, dict],
-                    holdings, ensemble: dict, stale: dict[str, str] | None = None) -> dict:
-    """Attach r33_rank_evidence to every pool and holding prediction; return the attested snapshot."""
+                    holdings, ensemble: dict, l3_identity: dict, stale: dict[str, str] | None = None) -> dict:
+    """Attach r33_rank_evidence to every pool and holding prediction; return the attested snapshot.
+
+    l3_identity is the pipeline's baseline_model_identity; it must name this ensemble."""
     symbols, receipt = pool
+    if any(l3_identity.get(k) != ensemble.get(k) for k in IDENTITY_FIELDS):
+        raise ValueError("r33_rank_pool_l3_identity_mismatch")
     calibration = ensemble["serving_calibration"]
     source_checksum = ensemble["source_bundle"]["source_calibration_checksum"]
     variant = calibration["variant"]
@@ -147,7 +154,7 @@ def build_rank_pool(*, signal_date: str, pool: tuple[list[str], dict], predictio
     snapshot = dict(
         schema_version=SNAPSHOT_SCHEMA, signal_date=signal_date, screener_run_id=receipt["screener_run_id"],
         pool_source=POOL_SOURCE, pool_membership_sha256=receipt["membership_sha256"], pool_checksum=pool_checksum,
-        l3_identity={k: ensemble[k] for k in ("artifact_id", "cohort_id", "payload_checksum", "base_artifact_set_checksum")},
+        l3_identity=dict(l3_identity),
         model_order=list(MODELS), variant=variant, calibration_checksum=calibration_checksum,
         source_calibration_checksum=source_checksum, rows=rows, uninformative_models=list(uninformative),
         coverage=dict(pool_rows=len(symbols), pool_scored_rows=len(scored), holdings_outside_pool=len(outside),

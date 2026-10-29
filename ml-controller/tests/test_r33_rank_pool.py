@@ -26,6 +26,10 @@ def _ensemble(variant="mean_z"):
             "source_bundle": {"source_calibration_checksum": SOURCE}, "serving_calibration": _calibration(variant)}
 
 
+IDENTITY = {"schema_version": "paired-nav-formal-ml-baseline-v1", "artifact_id": "r33-equal7:c1:abc", "cohort_id": "c1",
+            "payload_checksum": "e" * 64, "base_artifact_set_checksum": "b" * 64}
+
+
 def _prediction(raw: dict, **lineage):
     body = {"schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION, "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
             "run_date": DAY, "model_order": list(MODELS), "raw_scores": raw,
@@ -50,7 +54,7 @@ def test_pool_rows_use_78_pool_scores_and_serving_table():
     raws[symbols[0]].pop("TimeXer")
     predictions = {s: _prediction(raws[s]) for s in symbols}
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions,
-                                         holdings=[], ensemble=_ensemble())
+                                         holdings=[], ensemble=_ensemble(), l3_identity=IDENTITY)
     raw = np.array([[raws[s].get(m, np.nan) for m in MODELS] for s in symbols])
     score, z, _ = pool_scores(raw, np.isfinite(raw), variant="mean_z")
     expected = predict(_calibration()["blocks"], score)
@@ -71,9 +75,9 @@ def test_holding_outside_pool_is_placed_without_moving_the_pool(variant):
     raws[holding] = {m: raws[symbols[3]][m] + 1e-9 for m in MODELS}
     predictions = {s: _prediction(raws[s]) for s in [*symbols, holding]}
     alone = {s: _prediction(raws[s]) for s in symbols}
-    rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=alone, holdings=[], ensemble=_ensemble(variant))
+    rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=alone, holdings=[], ensemble=_ensemble(variant), l3_identity=IDENTITY)
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions,
-                                         holdings=[holding, symbols[1]], ensemble=_ensemble(variant))
+                                         holdings=[holding, symbols[1]], ensemble=_ensemble(variant), l3_identity=IDENTITY)
     for s in symbols:
         assert predictions[s]["r33_rank_evidence"]["z"] == alone[s]["r33_rank_evidence"]["z"]
         assert predictions[s]["r33_rank_evidence"]["score"] == alone[s]["r33_rank_evidence"]["score"]
@@ -99,7 +103,7 @@ def test_tied_holding_takes_the_tied_average_position():
     raws["8888"] = dict(raws[symbols[2]])
     predictions = {s: _prediction(raws[s]) for s in [*symbols, "8888"]}
     rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=["8888"],
-                              ensemble=_ensemble())
+                              ensemble=_ensemble(), l3_identity=IDENTITY)
     assert predictions["8888"]["r33_rank_evidence"]["z"] == predictions[symbols[2]]["r33_rank_evidence"]["z"]
 
 
@@ -109,7 +113,7 @@ def test_unscored_rows_get_no_score_and_say_why():
     predictions[symbols[2]] = _prediction({})
     predictions["7777"] = _prediction({m: 1.0 for m in MODELS})
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions,
-                                         holdings=["7777", "6666"], ensemble=_ensemble(),
+                                         holdings=["7777", "6666"], ensemble=_ensemble(), l3_identity=IDENTITY,
                                          stale={symbols[3]: "last_bar=2026-11-06", "7777": "last_bar=2026-11-06"})
     unscored = snapshot["coverage"]["unscored"]
     assert unscored == {symbols[0]: "prediction_missing", symbols[2]: "no_model_available",
@@ -122,7 +126,7 @@ def test_unscored_rows_get_no_score_and_say_why():
     # Unscored rows never enter the pool's ranking: same z as a pool without them.
     kept = [s for s in symbols if s not in unscored]
     alone = {s: _prediction(raws[s]) for s in kept}
-    rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(kept), predictions=alone, holdings=[], ensemble=_ensemble())
+    rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(kept), predictions=alone, holdings=[], ensemble=_ensemble(), l3_identity=IDENTITY)
     assert all(alone[s]["r33_rank_evidence"]["z"] == predictions[s]["r33_rank_evidence"]["z"] for s in kept)
     assert snapshot["coverage"]["pool_scored_rows"] == len(kept)
 
@@ -137,7 +141,7 @@ def test_lineage_from_another_run_or_artifact_fails_closed():
         predictions[symbols[4]] = _prediction(raws[symbols[4]], **bad)
         with pytest.raises(ValueError, match=reason):
             rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
-                                      ensemble=_ensemble())
+                                      ensemble=_ensemble(), l3_identity=IDENTITY)
 
 
 def test_contract_and_calibration_mismatches_fail_closed():
@@ -146,22 +150,33 @@ def test_contract_and_calibration_mismatches_fail_closed():
     ensemble = _ensemble()
     ensemble["variant"] = "mean_z_restandardized"
     with pytest.raises(ValueError, match="r33_rank_pool_contract_mismatch"):
-        rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[], ensemble=ensemble)
+        rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[], ensemble=ensemble, l3_identity=IDENTITY)
     ensemble = _ensemble()
     ensemble["source_bundle"]["source_calibration_checksum"] = "0" * 64
     with pytest.raises(ValueError, match="r33_serving_calibration_source_mismatch"):
-        rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[], ensemble=ensemble)
+        rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[], ensemble=ensemble, l3_identity=IDENTITY)
     symbols_, receipt = _pool(symbols)
     with pytest.raises(ValueError, match="r33_rank_pool_contract_mismatch"):
         rank_pool.build_rank_pool(signal_date=DAY, pool=(symbols_, dict(receipt, signal_date="2026-11-06")),
-                                  predictions=predictions, holdings=[], ensemble=_ensemble())
+                                  predictions=predictions, holdings=[], ensemble=_ensemble(), l3_identity=IDENTITY)
+
+
+def test_pipeline_identity_must_name_the_ensemble():
+    symbols, raws = _book()
+    predictions = {s: _prediction(raws[s]) for s in symbols}
+    with pytest.raises(ValueError, match="r33_rank_pool_l3_identity_mismatch"):
+        rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
+                                  ensemble=_ensemble(), l3_identity={**IDENTITY, "payload_checksum": "f" * 64})
+    snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
+                                         ensemble=_ensemble(), l3_identity=IDENTITY)
+    assert snapshot["l3_identity"] == IDENTITY
 
 
 def test_validation_catches_tampered_snapshot_or_evidence():
     symbols, raws = _book()
     predictions = {s: _prediction(raws[s]) for s in symbols}
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
-                                         ensemble=_ensemble())
+                                         ensemble=_ensemble(), l3_identity=IDENTITY)
     tampered = copy.deepcopy(snapshot)
     tampered["rows"][0]["expected_excess"] = 0.5
     with pytest.raises(ValueError, match="r33_rank_pool_checksum_invalid"):

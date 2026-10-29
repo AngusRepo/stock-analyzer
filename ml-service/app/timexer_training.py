@@ -16,6 +16,21 @@ from .timexer_runtime import official_model, validate_settings, SCORE_SEMANTIC
 
 TRAINING_SETTINGS = {"epochs": 10, "learning_rate": 0.0001, "batch_size": 64, "seed": 42}
 EQUIVALENCE_PROBE_ROWS = 256
+_capture_stream = None
+
+
+def graph_enabled(device, rows, batch_size, epochs):
+    """Full training batches replay one CUDA graph; there must be at least one to capture."""
+    return device == 'cuda' and rows >= batch_size and epochs > 0
+
+
+def _graph_stream():
+    # Every fit warms up and captures on this one stream: cuBLAS keeps a workspace per stream,
+    # so a new stream per fit would leave one behind each time.
+    global _capture_stream
+    if _capture_stream is None:
+        _capture_stream = torch.cuda.Stream()
+    return _capture_stream
 
 
 def _price_stats(prices):
@@ -261,6 +276,32 @@ def train(job, inputs, *, device="cuda", full_fit=False):
                                        shuffle=False) if validation else None
         fit_ids = device_ids(fit_rows)
         validation_ids = device_ids(validation) if validation else None
+
+        def train_step(ids):
+            x, y = data.batch(ids)
+            loss = torch.nn.functional.mse_loss(model(x, None, None, None).squeeze(-1), y)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 3.0)
+            return loss
+        graph = None
+        if graph_enabled(device, len(fit_rows), settings['batch_size'], epochs):
+            # Full batches replay one CUDA graph of train_step; Adam stays eager. Bit-identical
+            # to the eager step: the step is launch-bound, so this halves its time.
+            static_ids = fit_ids[:settings['batch_size']].clone()
+            side = _graph_stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                for _ in range(3):
+                    optimizer.zero_grad(set_to_none=True)
+                    train_step(static_ids)
+            torch.cuda.current_stream().wait_stream(side)
+            optimizer.zero_grad(set_to_none=True)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=side):
+                static_loss = train_step(static_ids)
+            static_grads = [p.grad for p in model.parameters()]
+            # Warm-up and capture drew dropout numbers; training starts the CUDA stream at the seed.
+            torch.cuda.manual_seed_all(settings['seed'])
         best, selected, stale, history = float('inf'), 0, 0, []
         for epoch in range(1, epochs + 1):
             started = time.monotonic()
@@ -270,15 +311,21 @@ def train(job, inputs, *, device="cuda", full_fit=False):
             losses = torch.empty(len(sizes), dtype=torch.float32, device=device)
             start = 0
             for step, size in enumerate(sizes):
-                x, y = data.batch(order[start:start + size])
-                start += size
+                if graph is not None and size == settings['batch_size']:
+                    static_ids.copy_(order[start:start + size])
+                    start += size
+                    graph.replay()
+                    optimizer.step()
+                    losses[step] = static_loss.detach()
+                    continue
                 optimizer.zero_grad(set_to_none=True)
-                forecast = model(x, None, None, None).squeeze(-1)
-                loss = torch.nn.functional.mse_loss(forecast, y)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 3.0)
+                loss = train_step(order[start:start + size])
+                start += size
                 optimizer.step()
                 losses[step] = loss.detach()
+                if graph is not None:  # the graph writes its own gradient buffers
+                    for parameter, grad in zip(model.parameters(), static_grads):
+                        parameter.grad = grad
             values = losses.tolist()
             if not all(math.isfinite(value) for value in values):
                 raise ValueError('nonfinite_timexer_loss')

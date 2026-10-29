@@ -90,9 +90,9 @@ def _job(rows, exogenous):
             'train_end': days[-12], 'test_start': days[-6], 'test_end': days[-1]}
 
 
-def _legacy_train(job, series, rows):
+def _legacy_train(job, series, rows, device='cpu'):
     """Frozen copy of the pre-change fit loop (8938d5e1) on the same splits, num_workers=0."""
-    settings, exogenous, device = job['settings'], job['exogenous'], 'cpu'
+    settings, exogenous = job['settings'], job['exogenous']
     training = [r for r in rows if r['date'] <= job['train_end'] and r['label_known_date'] < job['test_start']]
     testing = [r for r in rows if job['test_start'] <= r['date'] <= job['test_end']]
     days = sorted({r['date'] for r in training})
@@ -265,17 +265,173 @@ def test_fit_builds_no_per_sample_host_windows(monkeypatch):
     assert len(calls) == min(len(rows), tt.EQUIVALENCE_PROBE_ROWS) + report['test_rows']
 
 
-def test_nonfinite_training_loss_still_fails_closed(monkeypatch):
-    class NaNModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.ones(1))
+class _NaNModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(1))
 
-        def forward(self, x, *_):
-            return (self.weight * float('nan')).expand(len(x), 5, 1)
+    def forward(self, x, *_):
+        return (self.weight * float('nan')).expand(len(x), 5, 1)
+
+
+def test_nonfinite_training_loss_still_fails_closed(monkeypatch):
     series = _series(count=2)
     rows = _rows(series)
     monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
-    monkeypatch.setattr(tt, 'official_model', lambda *_: NaNModel())
+    monkeypatch.setattr(tt, 'official_model', lambda *_: _NaNModel())
     with pytest.raises(ValueError, match='nonfinite_timexer_loss'):
         tt.train(_job(rows, False), None, device='cpu')
+
+
+def test_graph_runs_only_on_cuda_with_a_full_batch_to_capture():
+    for device, rows, epochs, expected in (('cpu', 640, 10, False), ('cpu', 64, 1, False), ('cuda', 63, 10, False),
+                                           ('cuda', 64, 10, True), ('cuda', 65, 1, True), ('cuda', 640, 0, False)):
+        assert tt.graph_enabled(device, rows, 64, epochs) is expected
+
+
+# CUDA graph replay must be bit-identical to the eager step. These run on a GPU (Modal L4); CPU CI skips them.
+cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason='needs CUDA')
+
+
+def _outcome(result):
+    report = result['report']
+    return {'state_dict': result['checkpoint']['state_dict'], 'inner_history': report['inner_history'],
+            'refit_history': report['refit_history'], 'selected_epochs': report['selected_epochs'],
+            'scores': result['oof_scores']}
+
+
+def _assert_same(actual, expected):
+    for key in ('inner_history', 'refit_history', 'selected_epochs'):
+        assert actual[key] == expected[key], key
+    assert actual['state_dict'].keys() == expected['state_dict'].keys()
+    assert all(torch.equal(actual['state_dict'][k], expected['state_dict'][k]) for k in actual['state_dict'])
+    assert np.array_equal(actual['scores'], expected['scores'])
+
+
+def _count_replays(monkeypatch):
+    replays = []
+    original = torch.cuda.CUDAGraph.replay
+    monkeypatch.setattr(torch.cuda.CUDAGraph, 'replay', lambda self: replays.append(1) or original(self))
+    return replays
+
+
+def _full_batches(report):
+    """Replays train() must issue: every full training batch of every selection and refit epoch."""
+    return (len(report['inner_history']) * (report['inner_rows'] // 64)
+            + len(report['refit_history']) * (report['train_rows'] // 64))
+
+
+def _with_inner_rows(rows, job, count):
+    """Drop inner rows (keeping one per date, so the splits stay put) until inner has exactly count rows."""
+    training = [r for r in rows if r['date'] <= job['train_end'] and r['label_known_date'] < job['test_start']]
+    days = sorted({r['date'] for r in training})
+    inner = [r for r in training if r['label_known_date'] < days[int(len(days) * 0.8)]]
+    seen, extra = set(), []
+    for r in inner:
+        extra.append(id(r)) if r['date'] in seen else seen.add(r['date'])
+    drop = set(extra[:len(inner) - count])
+    assert len(inner) - len(drop) == count
+    return [r for r in rows if id(r) not in drop]
+
+
+@cuda
+@pytest.mark.parametrize('exogenous', [True, False])
+def test_training_is_bit_identical_to_legacy_loop_cuda(monkeypatch, exogenous):
+    series = _series(count=10)
+    rows = _rows(series)
+    job = _job(rows, exogenous)
+    expected = _legacy_train(job, series, rows, 'cuda')
+    expected_rng = torch.cuda.get_rng_state()
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    replays = _count_replays(monkeypatch)
+    result = tt.train(job, None, device='cuda')
+    assert torch.equal(torch.cuda.get_rng_state(), expected_rng)
+    _assert_same(_outcome(result), expected)
+    report = result['report']
+    assert len(replays) == _full_batches(report) > 0
+    assert report['inner_rows'] % 64 or report['train_rows'] % 64  # eager partial batches interleave replays
+
+
+@cuda
+@pytest.mark.parametrize('exogenous', [True, False])
+def test_graph_fit_is_bit_identical_to_eager_device_fit_cuda(monkeypatch, exogenous):
+    series = _series(count=10)
+    rows = _rows(series)
+    job = _job(rows, exogenous)
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    with monkeypatch.context() as eager:
+        eager.setattr(tt, 'graph_enabled', lambda *_: False)
+        expected = _outcome(tt.train(job, None, device='cuda'))
+    expected_rng = torch.cuda.get_rng_state()
+    replays = _count_replays(monkeypatch)
+    result = tt.train(job, None, device='cuda')
+    assert torch.equal(torch.cuda.get_rng_state(), expected_rng)
+    _assert_same(_outcome(result), expected)
+    assert len(replays) == _full_batches(result['report']) > 0
+
+
+@cuda
+@pytest.mark.parametrize('inner_rows', [63, 64, 65])
+def test_inner_batch_boundaries_are_bit_identical_cuda(monkeypatch, inner_rows):
+    series = _series(count=3)
+    rows = _rows(series)
+    job = _job(rows, True)
+    rows = _with_inner_rows(rows, job, inner_rows)
+    expected = _legacy_train(job, series, rows, 'cuda')
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    replays = _count_replays(monkeypatch)
+    result = tt.train(job, None, device='cuda')
+    _assert_same(_outcome(result), expected)
+    report = result['report']
+    assert report['inner_rows'] == inner_rows and len(replays) == _full_batches(report) > 0
+
+
+@cuda
+def test_repeated_training_is_identical_and_releases_graph_memory(monkeypatch):
+    import gc
+    series = _series(count=10)
+    rows = _rows(series)
+    job = _job(rows, True)
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    workspace = 32 * 2 ** 20  # one cuBLAS workspace under CUBLAS_WORKSPACE_CONFIG=:4096:8
+    gc.collect()
+    torch.cuda.empty_cache()
+    before = torch.cuda.memory_allocated()
+    outcomes, allocated, reserved = [], [], []
+    for _ in range(3):
+        outcomes.append(_outcome(tt.train(job, None, device='cuda')))
+        gc.collect()
+        torch.cuda.empty_cache()
+        allocated.append(torch.cuda.memory_allocated())
+        reserved.append(torch.cuda.memory_reserved())
+    print('TIMEXER_GRAPH_MEMORY', {'before': before, 'allocated': allocated, 'reserved': reserved})
+    for other in outcomes[1:]:
+        _assert_same(other, outcomes[0])
+    # The first run creates the per-stream handles and workspaces; later runs must leave nothing behind.
+    assert max(allocated[1:]) <= allocated[0] + workspace
+    assert reserved[2] <= reserved[1] + workspace
+
+
+@cuda
+def test_nonfinite_training_loss_fails_closed_on_the_graph_path(monkeypatch):
+    series = _series(count=3)  # 72 inner rows: the selection fit captures a graph
+    rows = _rows(series)
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    monkeypatch.setattr(tt, 'official_model', lambda *_: _NaNModel())
+    replays = _count_replays(monkeypatch)
+    with pytest.raises(ValueError, match='nonfinite_timexer_loss'):
+        tt.train(_job(rows, False), None, device='cuda')
+    assert replays
+
+
+@cuda
+def test_graph_fit_reads_device_once_per_phase_cuda(monkeypatch):
+    series = _series(count=3)
+    rows = _rows(series)
+    job = _job(rows, True)
+    monkeypatch.setattr(tt, 'load_windows', lambda *_: (series, rows, {}))
+    kinds = _epoch_kinds(monkeypatch)
+    replays = _count_replays(monkeypatch)
+    with _HostReads(tt.__file__) as mode:
+        tt.train(job, None, device='cuda')
+    assert replays and kinds and mode.reads == 2 * kinds.count('selection') + kinds.count('refit')

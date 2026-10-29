@@ -100,3 +100,22 @@ def test_r33_pool_keeps_a_row_with_one_model_missing():
     assert batch_prediction._feature_core_coverage_error(
         {batch_prediction.BATCH_CONTEXT_ERROR_KEY: "feature_context_failed:x", _BATCH_MODEL_POOL_KEY: r33_pool}
     ) == "feature_context_failed:x"
+
+
+def test_r33_non_finite_score_drops_only_that_model():
+    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY, _BATCH_MODEL_POOL_KEY, predict_stock_v2
+    from app.schemas import PredictRequest
+    pool = _full_model_pool({"XGBoost": "active", "LightGBM": "active"})
+    scores = {"LightGBM": 0.4, "XGBoost": float("nan")}
+
+    def request(snapshot):
+        return PredictRequest(**{**_predict_payload("2330", 2330, 100.0), "runtime_options": {
+            _BATCH_FEATURE_RANK_SCORES_KEY: dict(scores), _BATCH_MODEL_POOL_KEY: snapshot}})
+    with pytest.raises(ValueError, match="active8_base_score_non_finite:XGBoost"):
+        predict_stock_v2(request(pool))
+    out = predict_stock_v2(request({**pool, "active8_ensemble": {"kind": "r33_equal7_isotonic"}}))
+    assert out["rank_scores"] == {"LightGBM": 0.4}
+    assert out["model_errors"] == ["active8_base_score_non_finite:XGBoost"]
+    with pytest.raises(ValueError, match="active8_feature_evidence_empty"):
+        scores.update(LightGBM=float("inf"))
+        predict_stock_v2(request({**pool, "active8_ensemble": {"kind": "r33_equal7_isotonic"}}))

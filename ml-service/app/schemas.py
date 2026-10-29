@@ -42,3 +42,5 @@ class PredictRequest(BaseModel):
     night_session: NightSessionData | None = None
     context: str = "scheduled_daily"
     runtime_options: dict = Field(default_factory=dict)
+    # Serving must send the contract version its PIT-trained artifact was prepped with.
+    pit_contract_version: str | None = None

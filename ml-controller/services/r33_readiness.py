@@ -174,6 +174,22 @@ def check_challenger_slots(roster: dict) -> dict[str, Any]:
                         "reported as unsupported challenger metrics and never block the release folds."))
 
 
+def check_pit_certification(bucket, plan: dict | None) -> dict[str, Any]:
+    """The lifecycle's pit_vintage gate on the selected capture's receipt (C28-02)."""
+    if plan is None:
+        return _check("pit_certification", "blocked", reason="prep_plan_unavailable")
+    from services.pit_certification import verify_bound_receipt
+
+    try:
+        # The new prep does not exist yet here; the lifecycle also binds it before dispatch.
+        verified = verify_bound_receipt(bucket, sequence_gcs_prefix=plan["sequence_gcs_prefix"])
+    except Exception as exc:  # noqa: BLE001 - a read-only probe reports any error; the lifecycle retries GCS errors.
+        return _check("pit_certification", "fail", reason=f"pit_certification_unreadable:{exc}"[:500])
+    verified.pop("attached", None)
+    return _check("pit_certification", "pass" if verified["certified"] else "fail",
+                  prep_binding="checked_by_lifecycle_before_dispatch", **verified)
+
+
 async def run_r33_readiness(*, end_date: str | None, bucket, market_query: Callable | None = None,
                             ops_query: Callable | None = None) -> dict[str, Any]:
     from datetime import datetime, timedelta, timezone
@@ -202,6 +218,7 @@ async def run_r33_readiness(*, end_date: str | None, bucket, market_query: Calla
         check_l2_pool(cutoff, market_query, ops_query, roster),
         check_tabpack_closure_skipped(),
         check_challenger_slots(roster),
+        check_pit_certification(bucket, plan),
     ]
     blocking = [c["name"] for c in checks if c["status"] in {"fail", "blocked"}]
     return {"schema_version": SCHEMA_VERSION, "profile": R33_PROFILE, "cutoff": cutoff,

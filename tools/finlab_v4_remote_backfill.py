@@ -1046,8 +1046,30 @@ def source_key_report_row(
         "error_code": type(error).__name__ if error else None,
         "error_message": str(error)[:500] if error else None,
         "generated_at": generated_at,
+        # C28-02 C8: wall-clock time this run held the field (generated_at is the run start).
+        "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "metadata_json": json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True, default=str),
     }
+
+
+def lane_first_seen(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """C28-02 C8: when this capture itself first held each lane field's target-date rows.
+
+    Comparing these across daily captures lets a later month reach PIT level O
+    (observed vintage). Only a field that held target-date rows (status ok) is a
+    sighting; reused, empty, missing-target or failed fields are not.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for row in reports:
+        if (row.get("status") != "ok" or row.get("error_code") or not row.get("observed_at")
+                or int(row.get("target_rows") or 0) <= 0):
+            continue
+        key = f"{row.get('lane')}:{row.get('field')}"
+        if key not in seen or row["observed_at"] < seen[key]["observed_at"]:
+            seen[key] = {"target_date": row.get("target_date"), "observed_at": row["observed_at"],
+                         "status": row.get("status"), "rows": row.get("rows"), "target_rows": row.get("target_rows"),
+                         "latest_date": row.get("latest_date"), "artifact_checksum": row.get("artifact_checksum")}
+    return dict(sorted(seen.items()))
 
 
 def parse_gcs_uri(uri: str) -> tuple[str, str] | None:
@@ -4096,6 +4118,7 @@ def main() -> int:
         "datasets": dataset_summaries,
         "diff_reports": diff_reports,
         "source_key_reports": source_key_reports,
+        "lane_first_seen": lane_first_seen(source_key_reports),
         "source_key_blockers": source_key_blockers,
         "backfill_status": "partial_failed" if source_key_blockers else "ready",
         **sealed_raw_source_binding(run_dir),

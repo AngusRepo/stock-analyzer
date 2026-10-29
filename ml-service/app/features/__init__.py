@@ -200,11 +200,18 @@ def build_feature_matrix(
     barrier_params: dict | None = None,
     stock_meta: dict | None = None,
     historical_training: bool = False,
+    pit_contract_version: str | None = None,
 ) -> pl.DataFrame:
     """
     整合所有資料來源，建立特徵矩陣。
     回傳 Polars DataFrame，含 features + target_5d + target_dir。
+    pit_contract_version: apply that PIT contract's availability lags (C28-02);
+    None keeps the pre-contract output byte-identical.
     """
+    pit_lags = {}
+    if pit_contract_version is not None:
+        from ..pit_contract import feature_lags
+        pit_lags = feature_lags(pit_contract_version)
     # ── 1. Prices base frame ─────────────────────────────────────────────────
     # infer_schema_length=None: D1 JSON 混 int/float（如 close=106 vs 105.5），需掃全量推斷
     df = (
@@ -322,6 +329,12 @@ def build_feature_matrix(
             ).alias("dealer_ratio_5d")
         )
 
+    # A value first usable n price rows after its availability date (contract
+    # lag_sessions). Rows are this stock's sessions, so a suspension only delays.
+    lagged = [(name, lag) for name, lag in pit_lags.items() if name in df.columns]
+    if lagged:
+        df = df.with_columns([pl.col(name).forward_fill().shift(lag).alias(name) for name, lag in lagged])
+
     # margin_balance time-series features
     if "margin_balance" in df.columns:
         df = df.with_columns(pl.col("margin_balance").forward_fill().alias("margin_balance"))
@@ -413,7 +426,13 @@ def build_feature_matrix(
         ])
 
     # ── 5. VWAP features ────────────────────────────────────────────────────
-    if "avg_price" in df.columns and df["avg_price"].cast(pl.Float64, strict=False).is_not_null().sum() > len(df) * 0.1:
+    if pit_contract_version is not None:
+        # Per row under a PIT contract: a whole-window coverage test would let later
+        # rows decide how an earlier row was built (E6, PIT-P0 7).
+        _typical_p = (pl.col("high").fill_null(pl.col("close")) + pl.col("low").fill_null(pl.col("close")) + pl.col("close")) / 3.0
+        _avg_p = pl.col("avg_price").cast(pl.Float64, strict=False).forward_fill() if "avg_price" in df.columns else pl.lit(None, pl.Float64)
+        df = df.with_columns(_avg_p.fill_null(_typical_p).alias("_avg_p"))
+    elif "avg_price" in df.columns and df["avg_price"].cast(pl.Float64, strict=False).is_not_null().sum() > len(df) * 0.1:
         df = df.with_columns(pl.col("avg_price").cast(pl.Float64, strict=False).forward_fill().alias("_avg_p"))
     else:
         df = df.with_columns(
@@ -736,7 +755,8 @@ def build_feature_matrix(
             isinstance(values, dict) and values.get(name) is not None
             for values in per_stock_ts.values()
         )
-        if has_history or historical_training:
+        # A latest serving scalar is same-day; a lagged field never falls back to it.
+        if has_history or historical_training or name in pit_lags:
             return default
         return safe_float((market_env or {}).get(name), default)
 
@@ -756,7 +776,8 @@ def build_feature_matrix(
         "revenue_growth_yoy": _pit_default("revenue_growth_yoy"),
     }
     # Capture missing source values before compatibility defaults hide gaps.
-    source_masks = feature_missing_masks(df, market_env or {}, stock_meta or {}, historical_training)
+    source_masks = feature_missing_masks(df, market_env or {}, stock_meta or {}, historical_training,
+                                         no_scalar=frozenset(pit_lags))
     if "margin_balance" in df.columns and "margin_change_5d" not in df.columns:
         mb = pl.col("margin_balance").cast(pl.Float64, strict=False).forward_fill()
         df = df.with_columns(_clip_expr(_safe_div(mb - mb.shift(5), mb.shift(5)), -1.0, 1.0).alias("margin_change_5d"))
@@ -830,6 +851,13 @@ def build_feature_matrix(
         if historical_training:
             return pl.lit(default)
         return pl.lit(_series_scalar(name, default))
+
+    # Under a PIT contract the fallback is per row: whether a later indicator
+    # record exists must not change how an earlier row was built (E6, PIT-P0 7).
+    _vmd_expr = _feature_col("volumeMomentumDivergence132710", _feature_col("CORD_10"))
+    if pit_contract_version is not None and "volumeMomentumDivergence132710" in df.columns:
+        _vmd_source = pl.col("volumeMomentumDivergence132710").cast(pl.Float64, strict=False)
+        _vmd_expr = pl.when(_vmd_source.is_finite()).then(_vmd_source).otherwise(_feature_col("CORD_10"))
 
     def _add_missing(exprs: list[tuple[str, pl.Expr]]) -> None:
         nonlocal df
@@ -916,7 +944,7 @@ def build_feature_matrix(
         ("l1_squeezeMomentum", (bb_width_expr - bb_width_expr.rolling_mean(20)) * close_expr.sign()),
         ("l1_squeezeRelease", (bb_width_expr > bb_width_expr.rolling_mean(20)).cast(pl.Float64)),
         ("l1_volumeExpansion20", _safe_div(volume_expr, volume_expr.rolling_mean(20))),
-        ("l1_volumeMomentumDivergence132710", _feature_col("volumeMomentumDivergence132710", _feature_col("CORD_10"))),
+        ("l1_volumeMomentumDivergence132710", _vmd_expr),
         ("liq_amihud_21d", _safe_div(ret1_raw.abs(), dollar_volume).rolling_mean(21)),
         ("mom_12m_1m", ret252_raw - ret21_raw),
         ("mom_9m", ret189_raw),

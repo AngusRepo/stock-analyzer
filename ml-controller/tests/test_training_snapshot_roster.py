@@ -56,11 +56,12 @@ def install(monkeypatch,snap,path):
 def test_actual_prep_selector_uses_verified_snapshot_and_no_live_query(tmp_path,monkeypatch):
     from services.formal_feature_contract import PROFILES131
     snap,path=fixture(tmp_path);rt=install(monkeypatch,snap,path)
+    expected=select_training_stock_rows(sample(),start_date='2023-04-06',end_date='2026-10-08',with_listed_date=True)
     for profile in PROFILES131:
         req=rt.UniversalRetrainTriggerRequest(run_date='2026-10-08',prep_only=True,model_profile_schema_version=profile)
-        assert rt._training_stock_rows(req)==select(sample())
+        assert rt._training_stock_rows(req)==expected
     req=rt.UniversalRetrainTriggerRequest(run_date='2026-10-08',prep_only=True,limit=1)
-    assert rt._training_stock_rows(req)==select(sample())[:1]
+    assert rt._training_stock_rows(req)==expected[:1]
 
 @pytest.mark.parametrize('fault',['corrupt_stock_bytes','wrong_date','bad_envelope'])
 def test_real_prep_selector_rejects_before_live_db(tmp_path,monkeypatch,fault):
@@ -101,3 +102,79 @@ def test_invalid_full_history_start_precedes_no_external_calls(tmp_path,value):
     with pytest.raises(ValueError,match='training_capture_start_invalid'):
         tool.materialize_specs(years=3,run_dir=tmp_path,source_start_date='2026-10-08',source_end_date='2026-10-08',training_capture_start_date=value)
     assert list(tmp_path.iterdir())==[]
+
+
+def test_selected_rows_carry_listing_date_for_label_venue():
+    rows=select_training_stock_rows(sample(),start_date='2023-04-06',end_date='2026-10-08',with_listed_date=True)
+    assert {r['symbol']:r['listed_date'] for r in rows}=={'0050':None,'009801':'2026-01-01','5555':None}
+    # Other callers (L4 native roster checksums) keep the base row shape.
+    assert all(set(r)=={'id','symbol','market'} for r in select(sample()))
+
+
+class _SidecarBucket:
+    name='stockvision-models'
+    def __init__(self,files):self.files=files
+    def blob(self,name):
+        files=self.files
+        class Blob:
+            def exists(self):return name in files
+            def download_as_bytes(self):return files[name]
+            def download_as_text(self):return files[name].decode()
+            def __getattr__(self,attr):raise AssertionError('sidecar_wrote:'+attr)
+        return Blob()
+
+def _parquet(frame):
+    import io
+    buf=io.BytesIO();frame.write_parquet(buf);return buf.getvalue()
+
+def _sidecar_store(tamper=False):
+    days=['2026-01-02','2026-01-05','2026-01-06','2026-01-07']
+    close=pl.DataFrame({'date':days,'2330':[1.,2,3,4],'1234':[5.,6,None,None],'5678':[7.,None,None,None],
+                        '9999':[8.,9,None,None],'4321':[1.,None,None,None],'1111':[2.,None,None,None],
+                        '00631L':[3.,None,None,None],'0050':[4.,None,None,None],'2222':[6.,None,None,None],
+                        '7777':[5.,5,None,None],'8888':[5.,None,None,None]})
+    price,chip='cap/raw/daily_price_full_vintage','cap/raw/chip_diversity_full_vintage'
+    fields={f:close for f in ('open','high','low','close','volume','value','adj_open')}
+    fields['value']=close.drop('8888')  # one price field lacks the symbol's column
+    fields['adj_close']=close.with_columns(pl.when(pl.col('date')=='2026-01-05').then(None).otherwise(pl.col('7777')).alias('7777'))
+    files={f'{price}/{f}.parquet':_parquet(frame) for f,frame in fields.items()}
+    flows=('foreign_net','trust_net','dealer_self_net','dealer_hedge_net')
+    flow=pl.DataFrame({'date':days,**{s:[0.]*4 for s in ('2330','1234','4321','9999','7777','8888')}})
+    files.update({f'{chip}/{f}.parquet':_parquet(flow) for f in flows})
+    files[price+'/manifest.json']=json.dumps({'capture_id':'cap','checksums':{f:hashlib.sha256(files[f'{price}/{f}.parquet']).hexdigest() for f in fields}}).encode()
+    chip_sums={f:hashlib.sha256(files[f'{chip}/{f}.parquet']).hexdigest() for f in flows}
+    if tamper:chip_sums['trust_net']='0'*64
+    files[chip+'/manifest.json']=json.dumps({'checksums':chip_sums}).encode()
+    seq={'status':'ready','output_gcs_prefix':'seq','lane_reports':[{'lane':'daily_price','source_uri':{'close':'gs://stockvision-models/'+price+'/close.parquet'}}]}
+    seq['manifest_checksum']=hashlib.sha256(json.dumps(seq,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    files['seq/prep/sequence_manifest.json']=json.dumps(seq).encode()
+    return files
+
+def _core(sql,params):
+    assert sql.lstrip().upper().startswith('SELECT'),sql
+    core={'1234':[dict(id=11,symbol='1234',market='TWSE',listed_date='2010-01-01',delisted_date='2026-01-06')],
+          '9999':[dict(id=12,symbol='9999',market='OTC',listed_date=None,delisted_date=None)],
+          '4321':[dict(id=13,symbol='4321',market='ROTC',listed_date=None,delisted_date='2026-01-03')],
+          '1111':[dict(id=14,symbol='1111',market='TWSE',listed_date=None,delisted_date='2026-01-03')],
+          '2222':[dict(id=15,symbol='2222',market='TWSE',listed_date=None,delisted_date='2026-01-03')]*2,
+          '7777':[dict(id=16,symbol='7777',market='TWSE',listed_date=None,delisted_date='2026-01-06')],
+          '8888':[dict(id=17,symbol='8888',market='OTC',listed_date=None,delisted_date='2026-01-03')]}
+    return [r for s in params for r in core.get(s,[])]
+
+def test_capture_sidecar_admits_stopped_commons_from_capture_only():
+    from services.training_stock_roster import capture_sidecar_rows
+    roster=[dict(id=1,symbol='2330',market='TWSE')]
+    rows,proof=capture_sidecar_rows(_SidecarBucket(_sidecar_store()),sequence_gcs_prefix='seq',stock_rows=roster,
+                                    run_date='2026-01-07',query_fn=_core)
+    assert rows==[{'id':11,'symbol':'1234','market':'TWSE','listed_date':'2010-01-01'}]
+    # 00631L and 0050 are not 4-digit commons; 2222 has two core rows.
+    # Every symbol the price/institutional loaders would abort on stays out, recorded.
+    assert proof['excluded']=={'2222':'core_identity_ambiguous','1111':'institutional_columns_missing',
+                               '4321':'venue_not_tw','5678':'core_identity_missing','9999':'delisted_date_missing',
+                               '7777':'adjustment_incomplete','8888':'price_columns_missing'}
+    assert proof['admitted']==['1234'] and proof['admitted_symbol_days']==2 and proof['stopped_commons_absent_from_snapshot']==8
+    assert proof['core_identity']==[dict(id=11,symbol='1234',market='TWSE',listed_date='2010-01-01',delisted_date='2026-01-06')]
+    assert proof['d1_writes']==0 and proof['capture_writes']==0 and proof['capture_id']=='cap'
+    with pytest.raises(ValueError,match='training_sidecar_checksum_mismatch:trust_net'):
+        capture_sidecar_rows(_SidecarBucket(_sidecar_store(tamper=True)),sequence_gcs_prefix='seq',stock_rows=roster,
+                             run_date='2026-01-07',query_fn=_core)

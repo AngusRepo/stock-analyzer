@@ -1,0 +1,4775 @@
+{
+ "schema": "pit-cert-e2-revisions-v1",
+ "generated_at": "2026-10-28T13:05:23+00:00",
+ "tolerance": {
+  "relative": 1e-06,
+  "absolute": 1e-09
+ },
+ "final_vintage": "finlab-v4-3y-r33trial-20261022d",
+ "vintages": {
+  "V0517": {
+   "run": "finlab-v4-3y-20260517",
+   "as_of": "2026-05-17"
+  },
+  "rev_0605": {
+   "run": "finlab-v4-3y-20260605-1780719350546",
+   "as_of": "2026-06-05"
+  },
+  "V0603": {
+   "run": "finlab-v4-3y-20260603-011043",
+   "as_of": "2026-06-03"
+  },
+  "V0701": {
+   "run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "as_of": "2026-07-01"
+  },
+  "V1012": {
+   "run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "as_of": "2026-10-12"
+  },
+  "V1013": {
+   "run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "as_of": "2026-10-13"
+  },
+  "V1027": {
+   "run": "finlab-v4-daily-20261027-1793113295465 (full_vintage)",
+   "as_of": "2026-10-27"
+  },
+  "F": {
+   "run": "finlab-v4-3y-r33trial-20261022d",
+   "as_of": "2026-10-22"
+  }
+ },
+ "limitations": [
+  "No Aug/Sep 2026 full-history vintages exist for most lanes (daily runs Jul-Oct 11 store only the target-date row); 08/09 vintages from the plan were replaced by V1012/V1013 and first-seen checks.",
+  "V0603 fundamental quarter frames compared with r33trial availability events at (quarter,symbol) level.",
+  "Revisions observable only within the 2026-05-17..2026-10-27 archive window (old revisions before May 2026 are invisible)."
+ ],
+ "results": [
+  {
+   "field": "close_raw",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2740,
+   "only_old_symbols": 0,
+   "only_new_symbols": 49,
+   "overlap_cells": 1584613,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11730,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 35029,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 83443,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 418620,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1035791,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0517/daily_price__close.parquet",
+   "new_file": "F/daily_price_full_vintage__close.parquet"
+  },
+  {
+   "field": "close_raw",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2759,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1595513,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 14134,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 37629,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 91146,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 414622,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1037982,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0701/daily_price__close.parquet",
+   "new_file": "F/daily_price_full_vintage__close.parquet"
+  },
+  {
+   "field": "close_raw",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-12",
+   "date_max": "2026-10-12",
+   "common_symbols": 2784,
+   "only_old_symbols": 0,
+   "only_new_symbols": 5,
+   "overlap_cells": 1614641,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11799,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 30683,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 103516,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 415353,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1053290,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1012/daily_price_full_vintage__close.parquet",
+   "new_file": "F/daily_price_full_vintage__close.parquet"
+  },
+  {
+   "field": "adj_close",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2759,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1595513,
+   "changed_cells": 8058,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.50504,
+   "changed_symbols": 12,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 14134,
+     "changed": 72,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 37629,
+     "changed": 192,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 91146,
+     "changed": 468,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 414622,
+     "changed": 2180,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1037982,
+     "changed": 5146,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-11-21",
+     "symbol": "8101",
+     "o": 2.791644,
+     "n": 0.558329,
+     "rel": 4.0
+    },
+    {
+     "date": "2024-12-03",
+     "symbol": "8101",
+     "o": 5.939195,
+     "n": 1.187839,
+     "rel": 4.0
+    },
+    {
+     "date": "2025-08-26",
+     "symbol": "8101",
+     "o": 3.180917,
+     "n": 0.636183,
+     "rel": 4.0
+    },
+    {
+     "date": "2025-08-28",
+     "symbol": "8101",
+     "o": 3.180917,
+     "n": 0.636183,
+     "rel": 4.0
+    },
+    {
+     "date": "2026-04-16",
+     "symbol": "8101",
+     "o": 3.180917,
+     "n": 0.636183,
+     "rel": 4.0
+    }
+   ],
+   "examples_null_to_value": [],
+   "old_file": "V0701/daily_price__adj_close.parquet",
+   "new_file": "F/daily_price_full_vintage__adj_close.parquet"
+  },
+  {
+   "field": "adj_close",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "daily_return",
+   "date_min": "2023-07-04",
+   "date_max": "2026-07-01",
+   "common_symbols": 2759,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1593072,
+   "changed_cells": 2,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.00013,
+   "changed_symbols": 2,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 14130,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 37620,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 91119,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 414521,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1035682,
+     "changed": 2,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-11-19",
+     "symbol": "8101",
+     "o": 4.5,
+     "n": 0.1,
+     "rel": 44.0
+    },
+    {
+     "date": "2024-10-28",
+     "symbol": "8932",
+     "o": -0.014271,
+     "n": -0.001033,
+     "rel": 12.814475
+    }
+   ],
+   "examples_null_to_value": [],
+   "note": "adjusted series compared as day-over-day ratios; a vendor rebase (constant multiplier over history) leaves returns unchanged",
+   "old_file": "V0701/daily_price__adj_close.parquet",
+   "new_file": "F/daily_price_full_vintage__adj_close.parquet"
+  },
+  {
+   "field": "adj_close",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "daily_return",
+   "date_min": "2023-10-13",
+   "date_max": "2026-10-12",
+   "common_symbols": 2784,
+   "only_old_symbols": 0,
+   "only_new_symbols": 5,
+   "overlap_cells": 1612179,
+   "changed_cells": 1,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 6e-05,
+   "changed_symbols": 1,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11797,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 30680,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 103497,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 415241,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1050964,
+     "changed": 1,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-10-28",
+     "symbol": "8932",
+     "o": -0.014271,
+     "n": -0.001033,
+     "rel": 12.814475
+    }
+   ],
+   "examples_null_to_value": [],
+   "note": "adjusted series compared as day-over-day ratios; a vendor rebase (constant multiplier over history) leaves returns unchanged",
+   "old_file": "V1012/daily_price_full_vintage__adj_close.parquet",
+   "new_file": "F/daily_price_full_vintage__adj_close.parquet"
+  },
+  {
+   "field": "adj_close(F_vs_1027)",
+   "old_vintage": "F",
+   "old_run": "finlab-v4-3y-r33trial-20261022d",
+   "old_date": "2026-10-22",
+   "new_run": "V1027",
+   "compare": "daily_return",
+   "date_min": "2020-05-05",
+   "date_max": "2026-10-22",
+   "common_symbols": 2789,
+   "only_old_symbols": 0,
+   "only_new_symbols": 3,
+   "overlap_cells": 1608135,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 1719244,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 14150,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 33045,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 98844,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 418265,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1043831,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "note": "adjusted series compared as day-over-day ratios; a vendor rebase (constant multiplier over history) leaves returns unchanged",
+   "old_file": "F/daily_price_full_vintage__adj_close.parquet",
+   "new_file": "V1027/daily_price_full_vintage__adj_close.parquet"
+  },
+  {
+   "field": "adj_close(F_vs_1027)",
+   "old_vintage": "F",
+   "old_run": "finlab-v4-3y-r33trial-20261022d",
+   "old_date": "2026-10-22",
+   "new_run": "V1027",
+   "compare": "value",
+   "date_min": "2020-05-04",
+   "date_max": "2026-10-22",
+   "common_symbols": 2789,
+   "only_old_symbols": 0,
+   "only_new_symbols": 3,
+   "overlap_cells": 1610599,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 1719348,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 14154,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 33050,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 98860,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 418374,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1046161,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "F/daily_price_full_vintage__adj_close.parquet",
+   "new_file": "V1027/daily_price_full_vintage__adj_close.parquet"
+  },
+  {
+   "field": "market_value",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2088,
+   "only_old_symbols": 0,
+   "only_new_symbols": 56,
+   "overlap_cells": 1457124,
+   "changed_cells": 181531,
+   "null_to_value_cells": 3939,
+   "value_to_null_cells": 0,
+   "changed_pct": 12.45817,
+   "changed_symbols": 932,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11705,
+     "changed": 1300,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 31249,
+     "changed": 3156,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 87427,
+     "changed": 9855,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 370218,
+     "changed": 46356,
+     "null_to_value": 70
+    },
+    "age_366_100000d": {
+     "overlap": 956525,
+     "changed": 120864,
+     "null_to_value": 3869
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2023-12-11",
+     "symbol": "4904",
+     "o": 260028363840.0,
+     "n": 27706922850.6,
+     "rel": 8.38496
+    },
+    {
+     "date": "2025-09-03",
+     "symbol": "6996",
+     "o": 6413652900.0,
+     "n": 759695949.0,
+     "rel": 7.442394
+    },
+    {
+     "date": "2025-09-04",
+     "symbol": "6996",
+     "o": 6392693250.0,
+     "n": 757213282.5,
+     "rel": 7.442394
+    },
+    {
+     "date": "2023-07-10",
+     "symbol": "4192",
+     "o": 6962158500.0,
+     "n": 1860042250.0,
+     "rel": 2.743011
+    },
+    {
+     "date": "2023-07-11",
+     "symbol": "4192",
+     "o": 6421296600.0,
+     "n": 1715543100.0,
+     "rel": 2.743011
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-02-06",
+     "symbol": "7823",
+     "new": 4387306590.0
+    },
+    {
+     "date": "2026-02-05",
+     "symbol": "7823",
+     "new": 4956651720.0
+    },
+    {
+     "date": "2026-02-03",
+     "symbol": "6907",
+     "new": 2844460500.0
+    },
+    {
+     "date": "2026-02-02",
+     "symbol": "6907",
+     "new": 2748090800.0
+    },
+    {
+     "date": "2026-01-30",
+     "symbol": "6907",
+     "new": 2642395000.0
+    }
+   ],
+   "old_file": "V0701/daily_price__market_value.parquet",
+   "new_file": "F/daily_price_full_vintage__market_value.parquet"
+  },
+  {
+   "field": "market_value",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-12",
+   "date_max": "2026-10-12",
+   "common_symbols": 2141,
+   "only_old_symbols": 0,
+   "only_new_symbols": 3,
+   "overlap_cells": 1477690,
+   "changed_cells": 944,
+   "null_to_value_cells": 10,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.06388,
+   "changed_symbols": 56,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 9741,
+     "changed": 255,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 27257,
+     "changed": 533,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 95380,
+     "changed": 88,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 375333,
+     "changed": 0,
+     "null_to_value": 3
+    },
+    "age_366_100000d": {
+     "overlap": 969979,
+     "changed": 68,
+     "null_to_value": 7
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-09-15",
+     "symbol": "1799",
+     "o": 3597292075.0,
+     "n": 7177184541.900001,
+     "rel": 0.498788
+    },
+    {
+     "date": "2026-09-16",
+     "symbol": "1799",
+     "o": 3566119700.0,
+     "n": 7114990568.400001,
+     "rel": 0.498788
+    },
+    {
+     "date": "2026-09-17",
+     "symbol": "1799",
+     "o": 3553650750.0,
+     "n": 7090112979.0,
+     "rel": 0.498788
+    },
+    {
+     "date": "2026-09-18",
+     "symbol": "1799",
+     "o": 3597292075.0,
+     "n": 7177184541.900001,
+     "rel": 0.498788
+    },
+    {
+     "date": "2026-09-21",
+     "symbol": "1799",
+     "o": 3628464450.0,
+     "n": 7239378515.400001,
+     "rel": 0.498788
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2025-11-09",
+     "symbol": "3717",
+     "new": 3855534025.0
+    },
+    {
+     "date": "2025-11-02",
+     "symbol": "3717",
+     "new": 3917887675.0
+    },
+    {
+     "date": "2025-10-24",
+     "symbol": "3717",
+     "new": 4104948625.0
+    },
+    {
+     "date": "2025-08-30",
+     "symbol": "3717",
+     "new": 4084164075.0
+    },
+    {
+     "date": "2024-11-10",
+     "symbol": "3716",
+     "new": 5713557640.0
+    }
+   ],
+   "old_file": "V1012/daily_price_full_vintage__market_value.parquet",
+   "new_file": "F/daily_price_full_vintage__market_value.parquet"
+  },
+  {
+   "field": "foreign_net",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2660,
+   "only_old_symbols": 0,
+   "only_new_symbols": 49,
+   "overlap_cells": 1486550,
+   "changed_cells": 1,
+   "null_to_value_cells": 8,
+   "value_to_null_cells": 142,
+   "changed_pct": 7e-05,
+   "changed_symbols": 1,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11245,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 33363,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 79059,
+     "changed": 1,
+     "null_to_value": 8
+    },
+    "age_91_365d": {
+     "overlap": 391820,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 971063,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-04-07",
+     "symbol": "8464",
+     "o": 313000.0,
+     "n": 375000.0,
+     "rel": 0.165333
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-04-07",
+     "symbol": "00636K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00643K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00657K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00668K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-03-05",
+     "symbol": "00636K",
+     "new": 0.0
+    }
+   ],
+   "old_file": "V0517/chip_diversity__foreign_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__foreign_net.parquet"
+  },
+  {
+   "field": "foreign_net",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2679,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1499438,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 13526,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 36056,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 86907,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 388791,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 974158,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0701/chip_diversity__foreign_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__foreign_net.parquet"
+  },
+  {
+   "field": "foreign_net",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-12",
+   "date_max": "2026-10-12",
+   "common_symbols": 2704,
+   "only_old_symbols": 0,
+   "only_new_symbols": 5,
+   "overlap_cells": 1522398,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 29138,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 98656,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 393207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 990190,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1012/chip_diversity_full_vintage__foreign_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__foreign_net.parquet"
+  },
+  {
+   "field": "trust_net",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2660,
+   "only_old_symbols": 0,
+   "only_new_symbols": 49,
+   "overlap_cells": 1486550,
+   "changed_cells": 381,
+   "null_to_value_cells": 8,
+   "value_to_null_cells": 142,
+   "changed_pct": 0.02563,
+   "changed_symbols": 107,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11245,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 33363,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 79059,
+     "changed": 63,
+     "null_to_value": 8
+    },
+    "age_91_365d": {
+     "overlap": 391820,
+     "changed": 5,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 971063,
+     "changed": 313,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-05-15",
+     "symbol": "6138",
+     "o": -96909.0,
+     "n": -6000.0,
+     "rel": 15.1515
+    },
+    {
+     "date": "2026-02-11",
+     "symbol": "6274",
+     "o": 45000.0,
+     "n": -6000.0,
+     "rel": 8.5
+    },
+    {
+     "date": "2024-04-16",
+     "symbol": "8299",
+     "o": -81928.0,
+     "n": -10000.0,
+     "rel": 7.1928
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "2308",
+     "o": -115195.0,
+     "n": -14195.0,
+     "rel": 7.115181
+    },
+    {
+     "date": "2023-08-28",
+     "symbol": "5347",
+     "o": -3503.0,
+     "n": -506.0,
+     "rel": 5.922925
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-04-07",
+     "symbol": "00636K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00643K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00657K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00668K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-03-05",
+     "symbol": "00636K",
+     "new": 0.0
+    }
+   ],
+   "old_file": "V0517/chip_diversity__trust_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__trust_net.parquet"
+  },
+  {
+   "field": "trust_net",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2679,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1499438,
+   "changed_cells": 282,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.01881,
+   "changed_symbols": 46,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 13526,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 36056,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 86907,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 388791,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 974158,
+     "changed": 282,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-05-15",
+     "symbol": "6138",
+     "o": -96909.0,
+     "n": -6000.0,
+     "rel": 15.1515
+    },
+    {
+     "date": "2024-04-16",
+     "symbol": "8299",
+     "o": -81928.0,
+     "n": -10000.0,
+     "rel": 7.1928
+    },
+    {
+     "date": "2023-08-28",
+     "symbol": "5347",
+     "o": -3503.0,
+     "n": -506.0,
+     "rel": 5.922925
+    },
+    {
+     "date": "2024-03-20",
+     "symbol": "3324",
+     "o": -62924.0,
+     "n": 13000.0,
+     "rel": 5.840308
+    },
+    {
+     "date": "2023-08-10",
+     "symbol": "4966",
+     "o": 48933.0,
+     "n": -18000.0,
+     "rel": 3.7185
+    }
+   ],
+   "examples_null_to_value": [],
+   "old_file": "V0701/chip_diversity__trust_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__trust_net.parquet"
+  },
+  {
+   "field": "trust_net",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-12",
+   "date_max": "2026-10-12",
+   "common_symbols": 2704,
+   "only_old_symbols": 0,
+   "only_new_symbols": 5,
+   "overlap_cells": 1522398,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 29138,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 98656,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 393207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 990190,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1012/chip_diversity_full_vintage__trust_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__trust_net.parquet"
+  },
+  {
+   "field": "dealer_self_net",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2660,
+   "only_old_symbols": 0,
+   "only_new_symbols": 49,
+   "overlap_cells": 1486550,
+   "changed_cells": 0,
+   "null_to_value_cells": 8,
+   "value_to_null_cells": 142,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11245,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 33363,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 79059,
+     "changed": 0,
+     "null_to_value": 8
+    },
+    "age_91_365d": {
+     "overlap": 391820,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 971063,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [
+    {
+     "date": "2026-04-07",
+     "symbol": "00636K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00643K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00657K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00668K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-03-05",
+     "symbol": "00636K",
+     "new": 0.0
+    }
+   ],
+   "old_file": "V0517/chip_diversity__dealer_self_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__dealer_self_net.parquet"
+  },
+  {
+   "field": "dealer_self_net",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2679,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1499438,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 13526,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 36056,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 86907,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 388791,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 974158,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0701/chip_diversity__dealer_self_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__dealer_self_net.parquet"
+  },
+  {
+   "field": "dealer_self_net",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-12",
+   "date_max": "2026-10-12",
+   "common_symbols": 2704,
+   "only_old_symbols": 0,
+   "only_new_symbols": 5,
+   "overlap_cells": 1522398,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 29138,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 98656,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 393207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 990190,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1012/chip_diversity_full_vintage__dealer_self_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__dealer_self_net.parquet"
+  },
+  {
+   "field": "dealer_hedge_net",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2660,
+   "only_old_symbols": 0,
+   "only_new_symbols": 49,
+   "overlap_cells": 1486550,
+   "changed_cells": 0,
+   "null_to_value_cells": 8,
+   "value_to_null_cells": 142,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11245,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 33363,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 79059,
+     "changed": 0,
+     "null_to_value": 8
+    },
+    "age_91_365d": {
+     "overlap": 391820,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 971063,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [
+    {
+     "date": "2026-04-07",
+     "symbol": "00636K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00643K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00657K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-04-07",
+     "symbol": "00668K",
+     "new": 0.0
+    },
+    {
+     "date": "2026-03-05",
+     "symbol": "00636K",
+     "new": 0.0
+    }
+   ],
+   "old_file": "V0517/chip_diversity__dealer_hedge_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__dealer_hedge_net.parquet"
+  },
+  {
+   "field": "dealer_hedge_net",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2679,
+   "only_old_symbols": 0,
+   "only_new_symbols": 30,
+   "overlap_cells": 1499438,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 13526,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 36056,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 86907,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 388791,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 974158,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0701/chip_diversity__dealer_hedge_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__dealer_hedge_net.parquet"
+  },
+  {
+   "field": "dealer_hedge_net",
+   "old_vintage": "V1012",
+   "old_run": "finlab-v4-daily-20261012-1791810016796 (full_vintage)",
+   "old_date": "2026-10-12",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-12",
+   "date_max": "2026-10-12",
+   "common_symbols": 2704,
+   "only_old_symbols": 0,
+   "only_new_symbols": 5,
+   "overlap_cells": 1522398,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 126,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 29138,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 98656,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 393207,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 990190,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1012/chip_diversity_full_vintage__dealer_hedge_net.parquet",
+   "new_file": "F/chip_diversity_full_vintage__dealer_hedge_net.parquet"
+  },
+  {
+   "field": "margin_balance",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2424,
+   "only_old_symbols": 0,
+   "only_new_symbols": 64,
+   "overlap_cells": 1446754,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 10826,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 32399,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 77175,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 384174,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 942180,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0517/chip_diversity__margin_balance.parquet",
+   "new_file": "F/chip_diversity__margin_balance.parquet"
+  },
+  {
+   "field": "margin_balance",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2449,
+   "only_old_symbols": 0,
+   "only_new_symbols": 39,
+   "overlap_cells": 1457796,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 13119,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 34849,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 84274,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 381239,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 944315,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0701/chip_diversity__margin_balance.parquet",
+   "new_file": "F/chip_diversity__margin_balance.parquet"
+  },
+  {
+   "field": "margin_balance",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-04-06",
+   "date_max": "2026-10-13",
+   "common_symbols": 2484,
+   "only_old_symbols": 0,
+   "only_new_symbols": 4,
+   "overlap_cells": 1723753,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11086,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 31026,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 94982,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 386028,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1200631,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1013/margin_balance.parquet",
+   "new_file": "F/chip_diversity__margin_balance.parquet"
+  },
+  {
+   "field": "short_balance",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-05-17",
+   "date_max": "2026-05-15",
+   "common_symbols": 2424,
+   "only_old_symbols": 0,
+   "only_new_symbols": 64,
+   "overlap_cells": 1446754,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 10826,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 32399,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 77175,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 384174,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 942180,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0517/chip_diversity__short_balance.parquet",
+   "new_file": "F/chip_diversity__short_balance.parquet"
+  },
+  {
+   "field": "short_balance",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-03",
+   "date_max": "2026-07-01",
+   "common_symbols": 2449,
+   "only_old_symbols": 0,
+   "only_new_symbols": 39,
+   "overlap_cells": 1457796,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 13119,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 34849,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 84274,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 381239,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 944315,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V0701/chip_diversity__short_balance.parquet",
+   "new_file": "F/chip_diversity__short_balance.parquet"
+  },
+  {
+   "field": "short_balance",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-04-06",
+   "date_max": "2026-10-13",
+   "common_symbols": 2484,
+   "only_old_symbols": 0,
+   "only_new_symbols": 4,
+   "overlap_cells": 1723753,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 11086,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 31026,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 94982,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 386028,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1200631,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1013/short_balance.parquet",
+   "new_file": "F/chip_diversity__short_balance.parquet"
+  },
+  {
+   "field": "pe",
+   "old_vintage": "V0603",
+   "old_run": "finlab-v4-3y-20260603-011043",
+   "old_date": "2026-06-03",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-06-05",
+   "date_max": "2026-06-03",
+   "common_symbols": 2166,
+   "only_old_symbols": 0,
+   "only_new_symbols": 18,
+   "overlap_cells": 1018533,
+   "changed_cells": 4,
+   "null_to_value_cells": 1463,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.00039,
+   "changed_symbols": 4,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 7319,
+     "changed": 0,
+     "null_to_value": 1463
+    },
+    "age_8_30d": {
+     "overlap": 24795,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 56240,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 255825,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 674354,
+     "changed": 4,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-12-25",
+     "symbol": "4763",
+     "o": 14.555,
+     "n": 11.67,
+     "rel": 0.247215
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "8422",
+     "o": 17.945,
+     "n": 19.08,
+     "rel": 0.059486
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "2887",
+     "o": 12.685,
+     "n": 13.05,
+     "rel": 0.027969
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "2327",
+     "o": 13.485,
+     "n": 13.13,
+     "rel": 0.027037
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-06-03",
+     "symbol": "1102",
+     "new": 11.48
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1103",
+     "new": 16.94
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1104",
+     "new": 11.21
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1108",
+     "new": 6.93
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1109",
+     "new": 18.8
+    }
+   ],
+   "old_file": "V0603/fundamental_factor_diversity__pe.parquet",
+   "new_file": "F/fundamental_factor_diversity__pe.parquet"
+  },
+  {
+   "field": "pe",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-04-06",
+   "date_max": "2026-10-13",
+   "common_symbols": 2181,
+   "only_old_symbols": 0,
+   "only_new_symbols": 3,
+   "overlap_cells": 1212299,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 7713,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 21598,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 64866,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 257838,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 860284,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1013/pe.parquet",
+   "new_file": "F/fundamental_factor_diversity__pe.parquet"
+  },
+  {
+   "field": "pb",
+   "old_vintage": "V0603",
+   "old_run": "finlab-v4-3y-20260603-011043",
+   "old_date": "2026-06-03",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-06-05",
+   "date_max": "2026-06-03",
+   "common_symbols": 2166,
+   "only_old_symbols": 0,
+   "only_new_symbols": 18,
+   "overlap_cells": 1351636,
+   "changed_cells": 4,
+   "null_to_value_cells": 1964,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0003,
+   "changed_symbols": 4,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 9822,
+     "changed": 0,
+     "null_to_value": 1964
+    },
+    "age_8_30d": {
+     "overlap": 33314,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 76018,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 350004,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 882478,
+     "changed": 4,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-12-25",
+     "symbol": "6902",
+     "o": 10.505,
+     "n": 9.57,
+     "rel": 0.097701
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "4763",
+     "o": 6.965,
+     "n": 6.48,
+     "rel": 0.074846
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "2327",
+     "o": 1.735,
+     "n": 1.76,
+     "rel": 0.014205
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "2887",
+     "o": 1.105,
+     "n": 1.11,
+     "rel": 0.004505
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-06-03",
+     "symbol": "1101",
+     "new": 0.79
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1102",
+     "new": 0.68
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1103",
+     "new": 0.49
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1104",
+     "new": 0.79
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1108",
+     "new": 1.04
+    }
+   ],
+   "old_file": "V0603/fundamental_factor_diversity__pb.parquet",
+   "new_file": "F/fundamental_factor_diversity__pb.parquet"
+  },
+  {
+   "field": "pb",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-04-06",
+   "date_max": "2026-10-13",
+   "common_symbols": 2181,
+   "only_old_symbols": 0,
+   "only_new_symbols": 3,
+   "overlap_cells": 1601758,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 9844,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 27562,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 84671,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 351523,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1128158,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1013/pb.parquet",
+   "new_file": "F/fundamental_factor_diversity__pb.parquet"
+  },
+  {
+   "field": "dividend_yield",
+   "old_vintage": "V0603",
+   "old_run": "finlab-v4-3y-20260603-011043",
+   "old_date": "2026-06-03",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-06-05",
+   "date_max": "2026-06-03",
+   "common_symbols": 2166,
+   "only_old_symbols": 0,
+   "only_new_symbols": 18,
+   "overlap_cells": 1351790,
+   "changed_cells": 4,
+   "null_to_value_cells": 1964,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0003,
+   "changed_symbols": 4,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 9822,
+     "changed": 0,
+     "null_to_value": 1964
+    },
+    "age_8_30d": {
+     "overlap": 33314,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 76018,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 350081,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 882555,
+     "changed": 4,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-12-25",
+     "symbol": "2327",
+     "o": 2.95,
+     "n": 4.11,
+     "rel": 0.282238
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "4763",
+     "o": 1.29,
+     "n": 1.38,
+     "rel": 0.065217
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "2887",
+     "o": 5.55,
+     "n": 5.63,
+     "rel": 0.01421
+    },
+    {
+     "date": "2024-12-25",
+     "symbol": "8422",
+     "o": 5.59,
+     "n": 5.57,
+     "rel": 0.003591
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-06-03",
+     "symbol": "1101",
+     "new": 3.22
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1102",
+     "new": 6.73
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1103",
+     "new": 4.06
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1104",
+     "new": 6.45
+    },
+    {
+     "date": "2026-06-03",
+     "symbol": "1108",
+     "new": 7.14
+    }
+   ],
+   "old_file": "V0603/fundamental_factor_diversity__dividend_yield.parquet",
+   "new_file": "F/fundamental_factor_diversity__dividend_yield.parquet"
+  },
+  {
+   "field": "dividend_yield",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-04-06",
+   "date_max": "2026-10-13",
+   "common_symbols": 2181,
+   "only_old_symbols": 0,
+   "only_new_symbols": 3,
+   "overlap_cells": 1601913,
+   "changed_cells": 0,
+   "null_to_value_cells": 0,
+   "value_to_null_cells": 0,
+   "changed_pct": 0.0,
+   "changed_symbols": 0,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 9844,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 27562,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 84672,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_91_365d": {
+     "overlap": 351548,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 1128287,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [],
+   "examples_null_to_value": [],
+   "old_file": "V1013/dividend_yield.parquet",
+   "new_file": "F/fundamental_factor_diversity__dividend_yield.parquet"
+  },
+  {
+   "field": "revenue_locked",
+   "old_vintage": "V0517",
+   "old_run": "finlab-v4-3y-20260517",
+   "old_date": "2026-05-17",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-06-12",
+   "date_max": "2026-05-11",
+   "common_symbols": 2288,
+   "only_old_symbols": 0,
+   "only_new_symbols": 23,
+   "overlap_cells": 67229,
+   "changed_cells": 41,
+   "null_to_value_cells": 68,
+   "value_to_null_cells": 3,
+   "changed_pct": 0.06099,
+   "changed_symbols": 34,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 1947,
+     "changed": 4,
+     "null_to_value": 16
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 3886,
+     "changed": 23,
+     "null_to_value": 29
+    },
+    "age_91_365d": {
+     "overlap": 17283,
+     "changed": 14,
+     "null_to_value": 23
+    },
+    "age_366_100000d": {
+     "overlap": 44113,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-02-10",
+     "symbol": "6169",
+     "o": 1631.0,
+     "n": 31.0,
+     "rel": 51.612903
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "4530",
+     "o": 44242.0,
+     "n": 21585.0,
+     "rel": 1.049664
+    },
+    {
+     "date": "2026-02-10",
+     "symbol": "3666",
+     "o": 43012.0,
+     "n": 27301.0,
+     "rel": 0.575473
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "3712",
+     "o": 1489428.0,
+     "n": 3383462.0,
+     "rel": 0.559792
+    },
+    {
+     "date": "2026-02-10",
+     "symbol": "9946",
+     "o": 908579.0,
+     "n": 608728.0,
+     "rel": 0.492586
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-05-11",
+     "symbol": "1780",
+     "new": 103179.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2816",
+     "new": 1920778.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2850",
+     "new": 2791092.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2851",
+     "new": 3681428.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2852",
+     "new": 795443.0
+    }
+   ],
+   "old_file": "V0517/revenue__revenue.parquet",
+   "new_file": "F/revenue__revenue.parquet"
+  },
+  {
+   "field": "revenue_locked",
+   "old_vintage": "rev_0605",
+   "old_run": "finlab-v4-3y-20260605-1780719350546",
+   "old_date": "2026-06-05",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-06-12",
+   "date_max": "2026-05-11",
+   "common_symbols": 2289,
+   "only_old_symbols": 0,
+   "only_new_symbols": 22,
+   "overlap_cells": 67229,
+   "changed_cells": 41,
+   "null_to_value_cells": 71,
+   "value_to_null_cells": 3,
+   "changed_pct": 0.06099,
+   "changed_symbols": 34,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 1947,
+     "changed": 4,
+     "null_to_value": 17
+    },
+    "age_31_90d": {
+     "overlap": 3886,
+     "changed": 23,
+     "null_to_value": 30
+    },
+    "age_91_365d": {
+     "overlap": 17283,
+     "changed": 14,
+     "null_to_value": 24
+    },
+    "age_366_100000d": {
+     "overlap": 44113,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-02-10",
+     "symbol": "6169",
+     "o": 1631.0,
+     "n": 31.0,
+     "rel": 51.612903
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "4530",
+     "o": 44242.0,
+     "n": 21585.0,
+     "rel": 1.049664
+    },
+    {
+     "date": "2026-02-10",
+     "symbol": "3666",
+     "o": 43012.0,
+     "n": 27301.0,
+     "rel": 0.575473
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "3712",
+     "o": 1489428.0,
+     "n": 3383462.0,
+     "rel": 0.559792
+    },
+    {
+     "date": "2026-02-10",
+     "symbol": "9946",
+     "o": 908579.0,
+     "n": 608728.0,
+     "rel": 0.492586
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-05-11",
+     "symbol": "1780",
+     "new": 103179.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2816",
+     "new": 1920778.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2850",
+     "new": 2791092.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2851",
+     "new": 3681428.0
+    },
+    {
+     "date": "2026-05-11",
+     "symbol": "2852",
+     "new": 795443.0
+    }
+   ],
+   "old_file": "rev_0605/revenue.parquet",
+   "new_file": "F/revenue__revenue.parquet"
+  },
+  {
+   "field": "revenue_locked",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-07-10",
+   "date_max": "2026-06-10",
+   "common_symbols": 2296,
+   "only_old_symbols": 0,
+   "only_new_symbols": 15,
+   "overlap_cells": 67431,
+   "changed_cells": 27,
+   "null_to_value_cells": 68,
+   "value_to_null_cells": 3,
+   "changed_pct": 0.04004,
+   "changed_symbols": 24,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 1966,
+     "changed": 0,
+     "null_to_value": 7
+    },
+    "age_31_90d": {
+     "overlap": 3884,
+     "changed": 27,
+     "null_to_value": 61
+    },
+    "age_91_365d": {
+     "overlap": 17363,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 44218,
+     "changed": 0,
+     "null_to_value": 0
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-04-10",
+     "symbol": "4530",
+     "o": 44242.0,
+     "n": 21585.0,
+     "rel": 1.049664
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "3712",
+     "o": 1489428.0,
+     "n": 3383462.0,
+     "rel": 0.559792
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "1235",
+     "o": 27060.0,
+     "n": 19260.0,
+     "rel": 0.404984
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "5521",
+     "o": 965000.0,
+     "n": 1320962.0,
+     "rel": 0.269472
+    },
+    {
+     "date": "2026-04-10",
+     "symbol": "2392",
+     "o": 6121121.0,
+     "n": 8015155.0,
+     "rel": 0.236307
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-06-10",
+     "symbol": "1780",
+     "new": 92237.0
+    },
+    {
+     "date": "2026-06-10",
+     "symbol": "2816",
+     "new": 1450517.0
+    },
+    {
+     "date": "2026-06-10",
+     "symbol": "2850",
+     "new": 2558059.0
+    },
+    {
+     "date": "2026-06-10",
+     "symbol": "2851",
+     "new": 3084054.0
+    },
+    {
+     "date": "2026-06-10",
+     "symbol": "2880",
+     "new": 7272247.0
+    }
+   ],
+   "old_file": "V0701/revenue__revenue.parquet",
+   "new_file": "F/revenue__revenue.parquet"
+  },
+  {
+   "field": "revenue_locked(aux availability-dated)",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2007-05-10",
+   "date_max": "2026-10-12",
+   "common_symbols": 2228,
+   "only_old_symbols": 588,
+   "only_new_symbols": 83,
+   "overlap_cells": 378960,
+   "changed_cells": 32,
+   "null_to_value_cells": 9549,
+   "value_to_null_cells": 2975,
+   "changed_pct": 0.00844,
+   "changed_symbols": 8,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 1961,
+     "changed": 0,
+     "null_to_value": 19
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 3954,
+     "changed": 0,
+     "null_to_value": 3
+    },
+    "age_91_365d": {
+     "overlap": 19545,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 353500,
+     "changed": 32,
+     "null_to_value": 9527
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2017-09-11",
+     "symbol": "3584",
+     "o": 1629.0,
+     "n": 1630.0,
+     "rel": 0.000613
+    },
+    {
+     "date": "2017-12-11",
+     "symbol": "3584",
+     "o": 3599.0,
+     "n": 3600.0,
+     "rel": 0.000278
+    },
+    {
+     "date": "2018-06-11",
+     "symbol": "1469",
+     "o": 28199.0,
+     "n": 28200.0,
+     "rel": 3.5e-05
+    },
+    {
+     "date": "2018-07-10",
+     "symbol": "1469",
+     "o": 28299.0,
+     "n": 28300.0,
+     "rel": 3.5e-05
+    },
+    {
+     "date": "2016-03-10",
+     "symbol": "3584",
+     "o": 28999.0,
+     "n": 29000.0,
+     "rel": 3.4e-05
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-10-12",
+     "symbol": "2816",
+     "new": 1366606.0
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2832",
+     "new": 868102.0
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2850",
+     "new": 2194790.0
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2851",
+     "new": 1387696.0
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2880",
+     "new": 6206398.0
+    }
+   ],
+   "old_file": "V1013/revenue.parquet",
+   "new_file": "F_aux/training_auxiliary_full_vintage__revenue.parquet"
+  },
+  {
+   "field": "revenue_yoy(aux)",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2007-05-10",
+   "date_max": "2026-10-12",
+   "common_symbols": 2228,
+   "only_old_symbols": 588,
+   "only_new_symbols": 83,
+   "overlap_cells": 377589,
+   "changed_cells": 1,
+   "null_to_value_cells": 9474,
+   "value_to_null_cells": 2960,
+   "changed_pct": 0.00026,
+   "changed_symbols": 1,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 1955,
+     "changed": 0,
+     "null_to_value": 19
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 3942,
+     "changed": 1,
+     "null_to_value": 3
+    },
+    "age_91_365d": {
+     "overlap": 19470,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 352222,
+     "changed": 0,
+     "null_to_value": 9452
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-09-10",
+     "symbol": "2608",
+     "o": 18.64,
+     "n": 18.55,
+     "rel": 0.004852
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-10-12",
+     "symbol": "2816",
+     "new": 10.96
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2832",
+     "new": 0.49
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2850",
+     "new": -5.26
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2851",
+     "new": -14.94
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2880",
+     "new": 6.53
+    }
+   ],
+   "old_file": "V1013/revenue_yoy.parquet",
+   "new_file": "F_aux/training_auxiliary_full_vintage__revenue_yoy.parquet"
+  },
+  {
+   "field": "revenue_mom(aux)",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2007-05-10",
+   "date_max": "2026-10-12",
+   "common_symbols": 2228,
+   "only_old_symbols": 588,
+   "only_new_symbols": 83,
+   "overlap_cells": 376197,
+   "changed_cells": 1,
+   "null_to_value_cells": 9412,
+   "value_to_null_cells": 2958,
+   "changed_pct": 0.00027,
+   "changed_symbols": 1,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 1955,
+     "changed": 0,
+     "null_to_value": 19
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 3939,
+     "changed": 1,
+     "null_to_value": 3
+    },
+    "age_91_365d": {
+     "overlap": 19492,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_366_100000d": {
+     "overlap": 350811,
+     "changed": 0,
+     "null_to_value": 9390
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2026-09-10",
+     "symbol": "2608",
+     "o": 0.98,
+     "n": 40.18,
+     "rel": 0.97561
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-10-12",
+     "symbol": "2816",
+     "new": -16.28
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2832",
+     "new": -6.35
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2850",
+     "new": -18.48
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2851",
+     "new": -9.03
+    },
+    {
+     "date": "2026-10-12",
+     "symbol": "2880",
+     "new": -12.69
+    }
+   ],
+   "old_file": "V1013/revenue_mom.parquet",
+   "new_file": "F_aux/training_auxiliary_full_vintage__revenue_mom.parquet"
+  },
+  {
+   "field": "eps(aux availability-dated)",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2013-05-15",
+   "date_max": "2026-08-31",
+   "common_symbols": 2049,
+   "only_old_symbols": 439,
+   "only_new_symbols": 3,
+   "overlap_cells": 939642,
+   "changed_cells": 3710,
+   "null_to_value_cells": 7089,
+   "value_to_null_cells": 66810,
+   "changed_pct": 0.39483,
+   "changed_symbols": 13,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 8176,
+     "changed": 44,
+     "null_to_value": 20
+    },
+    "age_91_365d": {
+     "overlap": 61235,
+     "changed": 330,
+     "null_to_value": 4221
+    },
+    "age_366_100000d": {
+     "overlap": 870231,
+     "changed": 3336,
+     "null_to_value": 2848
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2022-05-16",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    },
+    {
+     "date": "2022-05-19",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    },
+    {
+     "date": "2022-05-20",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    },
+    {
+     "date": "2022-05-24",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    },
+    {
+     "date": "2022-05-25",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-08-31",
+     "symbol": "2938",
+     "new": 0.2503972194637537
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "4947",
+     "new": 2.926305185375708
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "6604",
+     "new": 0.6659120532345476
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "7812",
+     "new": -0.6711164743444704
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "7856",
+     "new": 12.150016558118997
+    }
+   ],
+   "old_file": "V1013/eps.parquet",
+   "new_file": "F_aux/training_auxiliary_full_vintage__eps.parquet"
+  },
+  {
+   "field": "roe(aux availability-dated)",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2013-05-15",
+   "date_max": "2026-08-31",
+   "common_symbols": 2049,
+   "only_old_symbols": 439,
+   "only_new_symbols": 3,
+   "overlap_cells": 940710,
+   "changed_cells": 352,
+   "null_to_value_cells": 7089,
+   "value_to_null_cells": 63883,
+   "changed_pct": 0.03742,
+   "changed_symbols": 45,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 8176,
+     "changed": 4,
+     "null_to_value": 20
+    },
+    "age_91_365d": {
+     "overlap": 61235,
+     "changed": 19,
+     "null_to_value": 4221
+    },
+    "age_366_100000d": {
+     "overlap": 871299,
+     "changed": 329,
+     "null_to_value": 2848
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2025-03-17",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 1.52937,
+     "rel": 2.516316
+    },
+    {
+     "date": "2025-03-31",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 1.52937,
+     "rel": 2.516316
+    },
+    {
+     "date": "2025-04-01",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 1.52937,
+     "rel": 2.516316
+    },
+    {
+     "date": "2025-04-02",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 1.52937,
+     "rel": 2.516316
+    },
+    {
+     "date": "2025-04-08",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 1.52937,
+     "rel": 2.516316
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-08-31",
+     "symbol": "2938",
+     "new": 0.7304815630538272
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "4947",
+     "new": 4.036143057132071
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "6604",
+     "new": 3.0347414904841923
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "7812",
+     "new": -11.199273114281361
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "7856",
+     "new": 19.93083381797144
+    }
+   ],
+   "old_file": "V1013/roe.parquet",
+   "new_file": "F_aux/training_auxiliary_full_vintage__roe.parquet"
+  },
+  {
+   "field": "revenue_growth_yoy(aux availability-dated)",
+   "old_vintage": "V1013",
+   "old_run": "finlab-v4-daily-20261013-1791896418503 (inference/auxiliary)",
+   "old_date": "2026-10-13",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2014-05-15",
+   "date_max": "2026-08-31",
+   "common_symbols": 2049,
+   "only_old_symbols": 439,
+   "only_new_symbols": 3,
+   "overlap_cells": 515388,
+   "changed_cells": 6,
+   "null_to_value_cells": 4529,
+   "value_to_null_cells": 68963,
+   "changed_pct": 0.00116,
+   "changed_symbols": 1,
+   "by_age_at_old_vintage": {
+    "age_0_7d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_8_30d": {
+     "overlap": 0,
+     "changed": 0,
+     "null_to_value": 0
+    },
+    "age_31_90d": {
+     "overlap": 8156,
+     "changed": 0,
+     "null_to_value": 16
+    },
+    "age_91_365d": {
+     "overlap": 24296,
+     "changed": 2,
+     "null_to_value": 4094
+    },
+    "age_366_100000d": {
+     "overlap": 482936,
+     "changed": 4,
+     "null_to_value": 419
+    }
+   },
+   "examples_largest_rel_change": [
+    {
+     "date": "2024-09-02",
+     "symbol": "2880",
+     "o": 131.130838,
+     "n": 19.10362,
+     "rel": 5.864188
+    },
+    {
+     "date": "2024-11-14",
+     "symbol": "2880",
+     "o": 131.130838,
+     "n": 19.10362,
+     "rel": 5.864188
+    },
+    {
+     "date": "2024-11-27",
+     "symbol": "2880",
+     "o": 131.130838,
+     "n": 19.10362,
+     "rel": 5.864188
+    },
+    {
+     "date": "2025-09-01",
+     "symbol": "2880",
+     "o": -52.528698,
+     "n": -7.877848,
+     "rel": 5.667899
+    },
+    {
+     "date": "2025-11-14",
+     "symbol": "2880",
+     "o": -52.528698,
+     "n": -7.877848,
+     "rel": 5.667899
+    }
+   ],
+   "examples_null_to_value": [
+    {
+     "date": "2026-08-31",
+     "symbol": "2938",
+     "new": -49.047738856834314
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "4947",
+     "new": 7.410905712271239
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "7812",
+     "new": -21.414154782781324
+    },
+    {
+     "date": "2026-08-31",
+     "symbol": "7856",
+     "new": 17.82576554129078
+    },
+    {
+     "date": "2026-08-24",
+     "symbol": "2938",
+     "new": -49.047738856834314
+    }
+   ],
+   "old_file": "V1013/revenue_growth_yoy.parquet",
+   "new_file": "F_aux/training_auxiliary_full_vintage__revenue_growth_yoy.parquet"
+  },
+  {
+   "field": "eps",
+   "old_vintage": "V0603",
+   "old_run": "finlab-v4-3y-20260603-011043",
+   "old_date": "2026-06-03",
+   "new_run": "finlab-v4-3y-r33trial-20261022d raw/financial_availability events",
+   "compare": "quarter_value",
+   "overlap_cells": 21339,
+   "changed_cells": 21337,
+   "changed_symbols": 2007,
+   "only_old_cells": 2843,
+   "by_quarter": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1843,
+     "changed": 1843
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1933,
+     "changed": 1933
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1858,
+     "changed": 1858
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1950,
+     "changed": 1949
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1895,
+     "changed": 1895
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1981,
+     "changed": 1981
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1934,
+     "changed": 1934
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1989,
+     "changed": 1988
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 1978
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 1992
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1986,
+     "changed": 1986
+    }
+   ],
+   "changed_pct": 99.99063,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q2",
+     "symbol": "6612",
+     "old": 0.37,
+     "new": -0.0002785748112655654,
+     "rel": 1329.189,
+     "disclosure_date": "2024-08-09"
+    },
+    {
+     "quarter": "2025-Q4",
+     "symbol": "7743",
+     "old": -0.010000000000000009,
+     "new": -2.740980119671192e-05,
+     "rel": 363.833,
+     "disclosure_date": "2026-03-31"
+    },
+    {
+     "quarter": "2025-Q3",
+     "symbol": "1235",
+     "old": 0.06,
+     "new": -0.00030226251446352644,
+     "rel": 199.502947,
+     "disclosure_date": "2025-11-13"
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "6168",
+     "old": 0.020000000000000018,
+     "new": 0.0001116126671642327,
+     "rel": 178.19113,
+     "disclosure_date": "2024-03-28"
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "1568",
+     "old": 0.01,
+     "new": -0.00010670650376140426,
+     "rel": 94.715,
+     "disclosure_date": "2025-08-08"
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "1806",
+     "old": -0.13,
+     "new": -0.0016495736850989451,
+     "rel": 77.808241,
+     "disclosure_date": "2024-03-29"
+    },
+    {
+     "quarter": "2025-Q1",
+     "symbol": "1338",
+     "old": -0.13,
+     "new": -0.0018845419847328244,
+     "rel": 67.982278,
+     "disclosure_date": "2025-05-14"
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "1762",
+     "old": 0.26,
+     "new": -0.004654461062403301,
+     "rel": 56.860388,
+     "disclosure_date": "2025-03-20"
+    }
+   ],
+   "dataset": "fundamental_features:每股稅後淨利",
+   "invalid_comparison": "V0603 raw eps is a different FinLab dataset (reported EPS, 2-decimal) than r33trial fundamental_features:每股稅後淨利; not a revision measure"
+  },
+  {
+   "field": "revenue_growth_yoy",
+   "old_vintage": "V0603",
+   "old_run": "finlab-v4-3y-20260603-011043",
+   "old_date": "2026-06-03",
+   "new_run": "finlab-v4-3y-r33trial-20261022d raw/financial_availability events",
+   "compare": "quarter_value",
+   "overlap_cells": 20734,
+   "changed_cells": 4,
+   "changed_symbols": 2,
+   "only_old_cells": 2483,
+   "by_quarter": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1790,
+     "changed": 0
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1911,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1807,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1912,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1832,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1921,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1845,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1941,
+     "changed": 2
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1888,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1970,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1917,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.01929,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2880",
+     "old": 131.13083754458253,
+     "new": 19.103620366345016,
+     "rel": 5.864188,
+     "disclosure_date": "2024-08-29"
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "2880",
+     "old": -52.52869788880924,
+     "new": -7.87784802390608,
+     "rel": 5.667899,
+     "disclosure_date": "2025-08-28"
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "2938",
+     "old": -15.412979174687285,
+     "new": 67.79419019429265,
+     "rel": 1.22735,
+     "disclosure_date": "2025-08-14"
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2938",
+     "old": 1.6835696344728146,
+     "new": -48.74011899754176,
+     "rel": 1.034542,
+     "disclosure_date": "2024-08-12"
+    }
+   ],
+   "dataset": "fundamental_features:營收成長率"
+  },
+  {
+   "field": "roe",
+   "old_vintage": "V0603",
+   "old_run": "finlab-v4-3y-20260603-011043",
+   "old_date": "2026-06-03",
+   "new_run": "finlab-v4-3y-r33trial-20261022d raw/financial_availability events",
+   "compare": "quarter_value",
+   "overlap_cells": 21338,
+   "changed_cells": 52,
+   "changed_symbols": 52,
+   "only_old_cells": 2821,
+   "by_quarter": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1843,
+     "changed": 0
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1933,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1858,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1950,
+     "changed": 21
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1895,
+     "changed": 4
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1981,
+     "changed": 11
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1934,
+     "changed": 3
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1988,
+     "changed": 9
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 2
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1986,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.2437,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6924",
+     "old": -2.137767220902613,
+     "new": 1.529370229960056,
+     "rel": 2.397809,
+     "disclosure_date": "2025-03-14"
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "6953",
+     "old": -0.9174874915962892,
+     "new": 1.690378248770884,
+     "rel": 1.542771,
+     "disclosure_date": "2024-03-16"
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6965",
+     "old": -0.23329118640875793,
+     "new": 2.727113191972207,
+     "rel": 1.085545,
+     "disclosure_date": "2025-03-14"
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2880",
+     "old": 5.392090814748187,
+     "new": 2.625812676950319,
+     "rel": 1.053494,
+     "disclosure_date": "2024-08-29"
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2938",
+     "old": 6.411712888429879,
+     "new": 3.1987481278604206,
+     "rel": 1.004444,
+     "disclosure_date": "2024-08-12"
+    },
+    {
+     "quarter": "2025-Q3",
+     "symbol": "7717",
+     "old": 0.3253231969014969,
+     "new": 5.453646823822359,
+     "rel": 0.940348,
+     "disclosure_date": "2025-11-17"
+    },
+    {
+     "quarter": "2024-Q3",
+     "symbol": "6862",
+     "old": 0.677713114458412,
+     "new": 6.474316178298012,
+     "rel": 0.895323,
+     "disclosure_date": "2024-11-12"
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "6957",
+     "old": 1.3581046399077124,
+     "new": 5.949222417782087,
+     "rel": 0.771717,
+     "disclosure_date": "2024-09-01"
+    }
+   ],
+   "dataset": "fundamental_features:ROE稅後"
+  },
+  {
+   "field": "eps",
+   "old_vintage": "S1013 sealed native finlab-v4-daily-20261013-1791896418503",
+   "new_vintage": "F events finlab-v4-3y-r33trial-20261022d",
+   "old_date": "2026-10-13",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 93168,
+   "changed_cells": 333,
+   "changed_symbols": 14,
+   "only_old_cells": 9719,
+   "only_new_cells": 10,
+   "only_new_cells_by_quarter": {
+    "2026-Q3": 10
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1846,
+     "changed": 11
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1935,
+     "changed": 11
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1881,
+     "changed": 11
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1955,
+     "changed": 13
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1907,
+     "changed": 12
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1984,
+     "changed": 11
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1945,
+     "changed": 11
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1991,
+     "changed": 11
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 11
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 11
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1987,
+     "changed": 11
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1988,
+     "changed": 11
+    }
+   ],
+   "changed_pct": 0.35742,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2022-Q1",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    },
+    {
+     "quarter": "2022-Q2",
+     "symbol": "2820",
+     "o": -1.055851,
+     "n": 0.129985,
+     "rel": 9.122848
+    },
+    {
+     "quarter": "2022-Q3",
+     "symbol": "2809",
+     "o": -1.588712,
+     "n": 0.222511,
+     "rel": 8.13992
+    },
+    {
+     "quarter": "2020-Q1",
+     "symbol": "2838",
+     "o": -0.832538,
+     "n": 0.119519,
+     "rel": 7.965721
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "2820",
+     "o": 1.159503,
+     "n": 0.148519,
+     "rel": 6.807104
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "2836",
+     "o": 0.994051,
+     "n": 0.136274,
+     "rel": 6.294488
+    }
+   ]
+  },
+  {
+   "field": "eps",
+   "old_vintage": "F events finlab-v4-3y-r33trial-20261022d",
+   "new_vintage": "S1027 sealed native finlab-v4-daily-20261027-1793113295465",
+   "old_date": "2026-10-22",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 93178,
+   "changed_cells": 281,
+   "changed_symbols": 30,
+   "only_old_cells": 0,
+   "only_new_cells": 9721,
+   "only_new_cells_by_quarter": {
+    "2025-Q1": 31,
+    "2025-Q2": 549,
+    "2025-Q3": 32,
+    "2025-Q4": 588,
+    "2026-Q1": 52,
+    "2026-Q2": 624
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1935,
+     "changed": 9
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1881,
+     "changed": 10
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1955,
+     "changed": 13
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1907,
+     "changed": 15
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1984,
+     "changed": 16
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1945,
+     "changed": 15
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1991,
+     "changed": 19
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 18
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 20
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1987,
+     "changed": 22
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1988,
+     "changed": 27
+    },
+    {
+     "quarter": "2026-Q3",
+     "overlap": 10,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.30157,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2022-Q3",
+     "symbol": "6548",
+     "o": 24.611621,
+     "n": 0.984736,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2023-Q2",
+     "symbol": "6548",
+     "o": 12.738321,
+     "n": 0.509673,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2024-Q1",
+     "symbol": "6548",
+     "o": 11.625817,
+     "n": 0.465161,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "6548",
+     "o": 13.671738,
+     "n": 0.54702,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6548",
+     "o": 14.09229,
+     "n": 0.563847,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2025-Q1",
+     "symbol": "6548",
+     "o": 11.16314,
+     "n": 0.446649,
+     "rel": 23.993103
+    }
+   ]
+  },
+  {
+   "field": "revenue_growth_yoy",
+   "old_vintage": "S1013 sealed native finlab-v4-daily-20261013-1791896418503",
+   "new_vintage": "F events finlab-v4-3y-r33trial-20261022d",
+   "old_date": "2026-10-13",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 84976,
+   "changed_cells": 4,
+   "changed_symbols": 2,
+   "only_old_cells": 7941,
+   "only_new_cells": 10,
+   "only_new_cells_by_quarter": {
+    "2026-Q3": 10
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1791,
+     "changed": 0
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1913,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1810,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1913,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1835,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1924,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1867,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1946,
+     "changed": 2
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1900,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1973,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1928,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1973,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.00471,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2880",
+     "o": 131.130838,
+     "n": 19.10362,
+     "rel": 5.864188
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "2880",
+     "o": -52.528698,
+     "n": -7.877848,
+     "rel": 5.667899
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "2938",
+     "o": -15.412979,
+     "n": 67.79419,
+     "rel": 1.22735
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2938",
+     "o": 1.68357,
+     "n": -48.740119,
+     "rel": 1.034542
+    }
+   ]
+  },
+  {
+   "field": "revenue_growth_yoy",
+   "old_vintage": "F events finlab-v4-3y-r33trial-20261022d",
+   "new_vintage": "S1027 sealed native finlab-v4-daily-20261027-1793113295465",
+   "old_date": "2026-10-22",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 84986,
+   "changed_cells": 0,
+   "changed_symbols": 0,
+   "only_old_cells": 0,
+   "only_new_cells": 7941,
+   "only_new_cells_by_quarter": {
+    "2025-Q1": 29,
+    "2025-Q2": 484,
+    "2025-Q3": 28,
+    "2025-Q4": 479,
+    "2026-Q1": 18,
+    "2026-Q2": 501
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1913,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1810,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1913,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1835,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1924,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1867,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1946,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1900,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1973,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1928,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1973,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q3",
+     "overlap": 10,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.0,
+   "examples_largest_rel_change": []
+  },
+  {
+   "field": "roe",
+   "old_vintage": "S1013 sealed native finlab-v4-daily-20261013-1791896418503",
+   "new_vintage": "F events finlab-v4-3y-r33trial-20261022d",
+   "old_date": "2026-10-13",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 92825,
+   "changed_cells": 46,
+   "changed_symbols": 46,
+   "only_old_cells": 9650,
+   "only_new_cells": 10,
+   "only_new_cells_by_quarter": {
+    "2026-Q3": 10
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1846,
+     "changed": 0
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1935,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1881,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1955,
+     "changed": 19
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1907,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1984,
+     "changed": 10
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1945,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1990,
+     "changed": 9
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 2
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1987,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1987,
+     "changed": 1
+    }
+   ],
+   "changed_pct": 0.04956,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 1.52937,
+     "rel": 2.516316
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "6953",
+     "o": -0.924999,
+     "n": 1.690378,
+     "rel": 1.547214
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6965",
+     "o": -0.239925,
+     "n": 2.727113,
+     "rel": 1.087978
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2880",
+     "o": 5.272001,
+     "n": 2.625813,
+     "rel": 1.00776
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2938",
+     "o": 6.297549,
+     "n": 3.198748,
+     "rel": 0.968754
+    },
+    {
+     "quarter": "2025-Q3",
+     "symbol": "7717",
+     "o": 0.340158,
+     "n": 5.453647,
+     "rel": 0.937627
+    }
+   ]
+  },
+  {
+   "field": "roe",
+   "old_vintage": "F events finlab-v4-3y-r33trial-20261022d",
+   "new_vintage": "S1027 sealed native finlab-v4-daily-20261027-1793113295465",
+   "old_date": "2026-10-22",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 92835,
+   "changed_cells": 4,
+   "changed_symbols": 4,
+   "only_old_cells": 0,
+   "only_new_cells": 9652,
+   "only_new_cells_by_quarter": {
+    "2025-Q1": 31,
+    "2025-Q2": 544,
+    "2025-Q3": 32,
+    "2025-Q4": 585,
+    "2026-Q1": 52,
+    "2026-Q2": 620
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1935,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1881,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1955,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1907,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1984,
+     "changed": 4
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1945,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1990,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1987,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1987,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q3",
+     "overlap": 10,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.00431,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6924",
+     "o": 1.52937,
+     "n": 3.893295,
+     "rel": 0.607178
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "7740",
+     "o": 5.289319,
+     "n": 3.787524,
+     "rel": 0.396511
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6965",
+     "o": 2.727113,
+     "n": 4.250242,
+     "rel": 0.358363
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6887",
+     "o": 13.404887,
+     "n": 16.032369,
+     "rel": 0.163886
+    }
+   ]
+  },
+  {
+   "field": "broker_daily(buy_shares,sell_shares)",
+   "old_vintage": "V0701",
+   "old_run": "finlab-v4-3y-20260701-1782951243148 (revenue: finlab-v4-3y-20260701-1782901803562)",
+   "old_date": "2026-07-01",
+   "new_run": "finlab-v4-3y-r33trial-20261022d",
+   "compare": "value",
+   "date_min": "2023-10-25",
+   "date_max": "2026-07-01",
+   "overlap_cells": 1311515,
+   "changed_cells": 528,
+   "changed_pct": 0.04026,
+   "only_old_rows": 122,
+   "only_new_rows": 128639,
+   "examples": [
+    {
+     "date": "2023-10-25",
+     "stock_id": "2023",
+     "ob": 361060.0,
+     "os": 369819.0,
+     "nb": 740.0,
+     "ns": 471.0
+    },
+    {
+     "date": "2023-10-26",
+     "stock_id": "2023",
+     "ob": 449086.0,
+     "os": 452241.0,
+     "nb": 1788.0,
+     "ns": 1288.0
+    },
+    {
+     "date": "2023-10-27",
+     "stock_id": "2023",
+     "ob": 366474.0,
+     "os": 368068.0,
+     "nb": 532.0,
+     "ns": 409.0
+    },
+    {
+     "date": "2023-10-30",
+     "stock_id": "2023",
+     "ob": 240988.0,
+     "os": 283866.0,
+     "nb": 505.0,
+     "ns": 404.0
+    },
+    {
+     "date": "2023-10-31",
+     "stock_id": "2023",
+     "ob": 442258.0,
+     "os": 447760.0,
+     "nb": 1200.0,
+     "ns": 696.0
+    }
+   ]
+  },
+  {
+   "field": "eps",
+   "old_vintage": "S1013 sealed native (cumulative 14d) finlab-v4-daily-20261013-1791896418503",
+   "new_vintage": "S1027 sealed native finlab-v4-daily-20261027-1793113295465",
+   "old_date": "2026-10-13",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 93168,
+   "changed_cells": 614,
+   "changed_symbols": 44,
+   "only_old_cells": 0,
+   "only_new_cells": 10,
+   "only_new_cells_by_quarter": {
+    "2026-Q3": 10
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1846,
+     "changed": 20
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1935,
+     "changed": 20
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1881,
+     "changed": 21
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1955,
+     "changed": 26
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1907,
+     "changed": 27
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1984,
+     "changed": 27
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1945,
+     "changed": 26
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1991,
+     "changed": 30
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1978,
+     "changed": 29
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1992,
+     "changed": 31
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1987,
+     "changed": 33
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1988,
+     "changed": 38
+    }
+   ],
+   "changed_pct": 0.65902,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2022-Q1",
+     "symbol": "2809",
+     "o": -1.820958,
+     "n": 0.032679,
+     "rel": 56.722306
+    },
+    {
+     "quarter": "2022-Q3",
+     "symbol": "6548",
+     "o": 24.611621,
+     "n": 0.984736,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2023-Q2",
+     "symbol": "6548",
+     "o": 12.738321,
+     "n": 0.509673,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2024-Q1",
+     "symbol": "6548",
+     "o": 11.625817,
+     "n": 0.465161,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "6548",
+     "o": 13.671738,
+     "n": 0.54702,
+     "rel": 23.993103
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6548",
+     "o": 14.09229,
+     "n": 0.563847,
+     "rel": 23.993103
+    }
+   ],
+   "scope": "symbols in r33trial training roster events only",
+   "symbols_with_changes": 44,
+   "symbols_whole_history_constant_factor": 2,
+   "constant_factor_examples": [
+    {
+     "symbol": "6741",
+     "rmin": 0.5,
+     "rmax": 0.5,
+     "q": 24
+    },
+    {
+     "symbol": "6875",
+     "rmin": 0.5,
+     "rmax": 0.5,
+     "q": 19
+    }
+   ]
+  },
+  {
+   "field": "roe",
+   "old_vintage": "S1013 sealed native (cumulative 14d) finlab-v4-daily-20261013-1791896418503",
+   "new_vintage": "S1027 sealed native finlab-v4-daily-20261027-1793113295465",
+   "old_date": "2026-10-13",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 92803,
+   "changed_cells": 46,
+   "changed_symbols": 46,
+   "only_old_cells": 0,
+   "only_new_cells": 10,
+   "only_new_cells_by_quarter": {
+    "2026-Q3": 10
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1846,
+     "changed": 0
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1935,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1881,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1955,
+     "changed": 19
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1907,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1983,
+     "changed": 11
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1945,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1989,
+     "changed": 9
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1975,
+     "changed": 2
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1987,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1981,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1981,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.04957,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6924",
+     "o": -2.319009,
+     "n": 3.893295,
+     "rel": 1.595642
+    },
+    {
+     "quarter": "2023-Q4",
+     "symbol": "6953",
+     "o": -0.924999,
+     "n": 1.690378,
+     "rel": 1.547214
+    },
+    {
+     "quarter": "2024-Q4",
+     "symbol": "6965",
+     "o": -0.239925,
+     "n": 4.250242,
+     "rel": 1.05645
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2880",
+     "o": 5.272001,
+     "n": 2.625813,
+     "rel": 1.00776
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2938",
+     "o": 6.297549,
+     "n": 3.198748,
+     "rel": 0.968754
+    },
+    {
+     "quarter": "2025-Q3",
+     "symbol": "7717",
+     "o": 0.340158,
+     "n": 5.453647,
+     "rel": 0.937627
+    }
+   ],
+   "scope": "symbols in r33trial training roster events only",
+   "symbols_with_changes": 46,
+   "symbols_whole_history_constant_factor": 0,
+   "constant_factor_examples": []
+  },
+  {
+   "field": "revenue_growth_yoy",
+   "old_vintage": "S1013 sealed native (cumulative 14d) finlab-v4-daily-20261013-1791896418503",
+   "new_vintage": "S1027 sealed native finlab-v4-daily-20261027-1793113295465",
+   "old_date": "2026-10-13",
+   "compare": "quarter_value (symbol x fiscal quarter)",
+   "overlap_cells": 84976,
+   "changed_cells": 4,
+   "changed_symbols": 2,
+   "only_old_cells": 0,
+   "only_new_cells": 10,
+   "only_new_cells_by_quarter": {
+    "2026-Q3": 10
+   },
+   "by_quarter_recent": [
+    {
+     "quarter": "2023-Q3",
+     "overlap": 1791,
+     "changed": 0
+    },
+    {
+     "quarter": "2023-Q4",
+     "overlap": 1913,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q1",
+     "overlap": 1810,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q2",
+     "overlap": 1913,
+     "changed": 2
+    },
+    {
+     "quarter": "2024-Q3",
+     "overlap": 1835,
+     "changed": 0
+    },
+    {
+     "quarter": "2024-Q4",
+     "overlap": 1924,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q1",
+     "overlap": 1867,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q2",
+     "overlap": 1946,
+     "changed": 2
+    },
+    {
+     "quarter": "2025-Q3",
+     "overlap": 1900,
+     "changed": 0
+    },
+    {
+     "quarter": "2025-Q4",
+     "overlap": 1973,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q1",
+     "overlap": 1928,
+     "changed": 0
+    },
+    {
+     "quarter": "2026-Q2",
+     "overlap": 1973,
+     "changed": 0
+    }
+   ],
+   "changed_pct": 0.00471,
+   "examples_largest_rel_change": [
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2880",
+     "o": 131.130838,
+     "n": 19.10362,
+     "rel": 5.864188
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "2880",
+     "o": -52.528698,
+     "n": -7.877848,
+     "rel": 5.667899
+    },
+    {
+     "quarter": "2025-Q2",
+     "symbol": "2938",
+     "o": -15.412979,
+     "n": 67.79419,
+     "rel": 1.22735
+    },
+    {
+     "quarter": "2024-Q2",
+     "symbol": "2938",
+     "o": 1.68357,
+     "n": -48.740119,
+     "rel": 1.034542
+    }
+   ],
+   "scope": "symbols in r33trial training roster events only",
+   "symbols_with_changes": 2,
+   "symbols_whole_history_constant_factor": 0,
+   "constant_factor_examples": []
+  },
+  {
+   "field": "eps",
+   "old_vintage": "S1013 -> S1027 cumulative split (roster only)",
+   "overlap_cells": 93168,
+   "changed_cells": 614,
+   "constant_factor_symbols": [
+    "6741",
+    "6875"
+   ],
+   "changed_cells_constant_factor_rebase": 43,
+   "changed_cells_excluding_rebases": 571,
+   "changed_pct_excluding_rebases": 0.61287,
+   "symbols_excluding_rebases": 42,
+   "quarters_affected_excluding_rebases": [
+    {
+     "quarter": "2024-Q3",
+     "len": 25
+    },
+    {
+     "quarter": "2024-Q4",
+     "len": 25
+    },
+    {
+     "quarter": "2025-Q1",
+     "len": 24
+    },
+    {
+     "quarter": "2025-Q2",
+     "len": 28
+    },
+    {
+     "quarter": "2025-Q3",
+     "len": 27
+    },
+    {
+     "quarter": "2025-Q4",
+     "len": 29
+    },
+    {
+     "quarter": "2026-Q1",
+     "len": 31
+    },
+    {
+     "quarter": "2026-Q2",
+     "len": 36
+    }
+   ]
+  }
+ ]
+}

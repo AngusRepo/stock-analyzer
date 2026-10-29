@@ -19,12 +19,15 @@ async function activatedPlan(env:Bindings,signalDate:string) {
   return {plan:JSON.parse(results[0].payload_json)}
 }
 
+// Dates already alerted for invalid R33 exit rules, per isolate: polls rebuild the evaluator,
+// so this caps the alert at one row per date per isolate rather than one per poll.
+const rulesAlertedDates=new Set<string>()
+
 /** One batch of daily prices per polling invocation; no LLM/optimizer calls. */
 export function swingExitEvaluator(env:Bindings, positions:{symbol:string;trade_lifecycle_json?:unknown}[], date:string,
   cfg:Parameters<typeof swingExitRules>[0]) {
   let evidence: ReturnType<typeof loadMarketPriceHistoryBySymbols> | undefined
   const plans=new Map<string,ReturnType<typeof activatedPlan>>()
-  let rulesAlerted=false
   return async (pos:{symbol:string;trade_lifecycle_json?:unknown}, price:number):Promise<ExitDecision|null> => {
     let state=readSwingState(pos.trade_lifecycle_json)
     if(!state) return null
@@ -33,9 +36,11 @@ export function swingExitEvaluator(env:Bindings, positions:{symbol:string;trade_
       // A malformed R33 exit config is never replaced by built-in values.
       const reason=String(error instanceof Error ? error.message : error)
       console.warn('[SwingExit] '+reason)
-      if(!rulesAlerted) {
-        rulesAlerted=true
-        await writeSystemLog(databaseForDataDomain(env,'ops'),'error','swing-exit','R33 swing exit rules invalid; swing exits held',{reason,date})
+      if(!rulesAlertedDates.has(date)) {
+        rulesAlertedDates.add(date)
+        try {
+          await writeSystemLog(databaseForDataDomain(env,'ops'),'error','swing-exit','R33 swing exit rules invalid; swing exits held',{reason,date})
+        } catch(logError) { console.warn('[SwingExit] alert not written: '+String(logError)) }
       }
       return {action:'hold',reason}
     }

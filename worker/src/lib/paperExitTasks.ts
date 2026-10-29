@@ -215,7 +215,7 @@ function s12TrailingSourceFromReason(reason: string): { source: string; method: 
   return { source: 's12_holding_defense', method: 's12_structure_trailing_stop_v1' }
 }
 
-function updateLifecycleS12TrailingStop(
+export function updateLifecycleS12TrailingStop(
   raw: unknown,
   nextTrailingStop: number | null,
   reason: string,

@@ -7,6 +7,7 @@ import { applySwingDecay, assessSwingExit, closeSwingSession, ORL_SWING_EXIT, sw
   SWING_POLICY_VERSION, type SwingPositionState } from './paperSwingPolicy'
 import { swingExitEvaluator } from './paperSwingRuntime'
 import { checkExitConditions } from './paperExitPolicy'
+import { updateLifecycleS12TrailingStop } from './paperExitTasks'
 
 const R33 = 'r33_equal7_isotonic_v1'
 const r33Config = (exit: unknown = { swingHardStopPct: -.08, swingMaxHoldSessions: 20 }) =>
@@ -138,6 +139,10 @@ test('runtime: a malformed R33 exit config holds and never substitutes built-in 
   try {
     await withPaperExecutionScope(f.ports, async () => {
       assert.match((await swingExitEvaluator(f.env, [pos], '2026-10-05', r33Config(null))(pos, 80))!.reason, /swing_exit_rules_invalid/)
+      // A second poll builds a new evaluator; the alert is still one row for the date.
+      assert.match((await swingExitEvaluator(f.env, [pos], '2026-10-05', r33Config(null))(pos, 80))!.reason, /swing_exit_rules_invalid/)
+      const alerts = f.sqls.ops.prepare("SELECT level,cron_name FROM system_logs WHERE cron_name='swing-exit'").all() as any[]
+      assert.deepEqual(alerts.map(r => [r.level, r.cron_name]), [['error', 'swing-exit']])
       const legacy = { ...f.cfg, l4Distribution: { ...(f.cfg as any).l4Distribution, operating_mode: R33 }, exit: { ...f.cfg.exit, swingHardStopPct: -.2, swingMaxHoldSessions: 20 } }
       const position = { symbol: '2340', shares: 1000, avg_cost: 100, entry_price: 100, trade_lifecycle_json: pos.trade_lifecycle_json } as any
       assert.equal(checkExitConditions(position, 85, 3, false, false, legacy as any).action, 'hold')
@@ -189,4 +194,15 @@ test('runtime: two activated plans for one date, or no plan after the close, are
       assert.equal(readSwingState(pos.trade_lifecycle_json)?.pendingExit, undefined)
     } finally { f.close() }
   }
+})
+
+
+test('S12 trailing-stop rewrite of a swing lifecycle takes the stop from the KV rules, never the ORL default', () => {
+  const raw = writeSwingState({ version: 'canonical_trade_lifecycle_v1' }, state)
+  const stop = (json: string | null) => JSON.parse(json!).exit.initialStop
+  assert.equal(stop(updateLifecycleS12TrailingStop(raw, 95, 's12', r33Config({ swingHardStopPct: -.2, swingMaxHoldSessions: 20 }))), 80)
+  assert.equal(stop(updateLifecycleS12TrailingStop(raw, 95, 's12', { exit: {} } as any)), 100 * ORL_SWING_EXIT.hardStopMultiplier)
+  // A malformed R33 config leaves the stored lifecycle untouched.
+  const wide = writeSwingState({ version: 'canonical_trade_lifecycle_v1' }, state, { ...ORL_SWING_EXIT, hardStopMultiplier: .7 })
+  assert.equal(updateLifecycleS12TrailingStop(wide, 95, 's12', r33Config(null)), wide)
 })

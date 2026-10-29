@@ -18,7 +18,8 @@ async function morningWithEmergingTarget(policyV2: boolean, heldShares = 0) {
   const f=l4NativeFixture()
   f.ports.allocateL4Private=async()=>{throw new Error('fixture_plan_already_supplied')}
   f.ports.fetchFrozen=async(input:RequestInfo|URL)=>{assert.match(String(input),/taifex/);return new Response('',{status:503})}
-  f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
+  // The single-name cap is KV-owned and fails closed to 0 when missing; 0.25 is the live value.
+  f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,position:{...DEFAULT_RISK_CONFIG.position,maxSingleNamePct:.25}}))
   f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
   f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
   f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES('2026-09-11',.6,60)")

@@ -2444,6 +2444,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       holdingSymbols: currentRiskHoldings.map((holding) => holding.symbol),
       priceRows: positionPriceRows,
       threshold: riskCfg.position.correlationThreshold,
+      minimumOverlappingReturns: riskCfg.position.minCorrelationOverlap,
     })
     if (correlationRisk.status === 'blocked') {
       const detail = JSON.stringify(correlationRisk)

@@ -319,6 +319,28 @@ def test_retention_failure_never_fails_a_verified_read(env, monkeypatch):
         assert cache.bundles == {} and not [n for n in os.listdir(cache.directory) if n.startswith('scan-')]
 
 
+def test_widened_rescan_replaces_bundle_without_leaking_files(env):
+    db, objects = env
+    sid = freeze(db, _content(11))['snapshot_id']
+    with once.scan_each_snapshot_once(**OVERSIZE_FILES) as cache:
+        read_inventory_snapshot(db.query, sid)
+        read_context_projection(db.query, sid, ('ev_candidate_selection', 'unused_history'))
+        names = [n for n in os.listdir(cache.directory) if n.startswith('scan-')]
+        assert cache.scans == 2 and len(names) == len(cache.bundles) == 1
+        assert cache.bundle_bytes == sum(size for _, size, _ in cache.bundles.values())
+        assert cache.bundle_bytes == os.path.getsize(os.path.join(cache.directory, names[0]))
+
+
+def test_retained_small_file_is_reparsed_without_download(env, monkeypatch):
+    db, objects = env
+    sid = freeze(db, _content(12))['snapshot_id']
+    with once.scan_each_snapshot_once(max_bytes=1 << 20, entry_bytes=1 << 19) as cache:
+        read_inventory_snapshot(db.query, sid)
+        downloads = _tracked(objects, monkeypatch)
+        read_context_projection(db.query, sid, ('recommendation_context',))  # Enclosing: not derivable.
+        assert downloads == [] and cache.scans == 1
+
+
 def test_root_prefix_encloses_everything():
     assert not once.derivable(frozenset({'a'}), frozenset({'', 'a'}))
     assert once.derivable(frozenset({'', 'a'}), frozenset({'', 'a'}))

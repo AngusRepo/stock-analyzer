@@ -3,6 +3,7 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { writeSystemLog } from '../lib/notify'
 import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
 import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
@@ -994,8 +995,15 @@ async function handleSchedulerCallback(c: any) {
     }
     body.summary = finLabCallbackSummary(String(body.summary ?? ''), fence.incomingAttempt, current?.summary)
     if (body.status === 'running' && callbackRunId) {
-      await c.env.KV.put(finLabStartMarkerKey(callbackRunDate, callbackRunId, fence.incomingAttempt),
-        new Date().toISOString(), { expirationTtl: 2 * 86400 })
+      // Best effort: losing the marker must not lose the start heartbeat written below.
+      try {
+        await c.env.KV.put(finLabStartMarkerKey(callbackRunDate, callbackRunId, fence.incomingAttempt),
+          new Date().toISOString(), { expirationTtl: 2 * 86400 })
+      } catch (error) {
+        const message = `finlab start marker write failed run_id=${callbackRunId}: ${error instanceof Error ? error.message : String(error)}`
+        console.warn(`[finlab-v4-backfill] ${message}`)
+        await writeSystemLog(databaseForDataDomain(c.env, 'ops'), 'warn', 'finlab-v4-backfill', message)
+      }
     }
   }
 

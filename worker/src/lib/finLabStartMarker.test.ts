@@ -134,3 +134,23 @@ test('the start heartbeat callback writes the per-attempt marker after the dispa
   assert(fence > 0 && marker > fence)
   assert(routes.slice(fence, marker).includes("body.status === 'running' && callbackRunId"))
 })
+
+test('a started head of an older attempt does not cover a newer triggered outcome', async (t) => {
+  const f = fixture(t)
+  f.setLog({ status: 'running', summary: 'running dispatch_attempt=1' })
+  const outcome = (attempt: number) =>
+    `triggered finlab-v4-backfill run_id=${runId} function_call_id=fc-${attempt} dispatch_attempt=${attempt} callback expected`
+  assert.equal(await finLabDispatchSupersededByStart(f.env, date, outcome(1)), true)
+  assert.equal(await finLabDispatchSupersededByStart(f.env, date, outcome(2)), false)
+  f.store.set(finLabStartMarkerKey(date, runId, 2), 'x')
+  assert.equal(await finLabDispatchSupersededByStart(f.env, date, outcome(2)), true)
+})
+
+test('a failed start marker write is reported and does not drop the start heartbeat', () => {
+  const routes = readFileSync(new URL('../routes/adminControlRoutes.ts', import.meta.url), 'utf8')
+  const marker = routes.indexOf('finLabStartMarkerKey(callbackRunDate, callbackRunId, fence.incomingAttempt)')
+  const block = routes.slice(routes.lastIndexOf('try {', marker), routes.indexOf('\n    }\n', marker))
+  assert.match(block, /catch \(error\)/)
+  assert.match(block, /console\.warn/)
+  assert.match(block, /writeSystemLog\(databaseForDataDomain\(c\.env, 'ops'\), 'warn', 'finlab-v4-backfill'/)
+})

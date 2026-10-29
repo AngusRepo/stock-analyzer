@@ -55,7 +55,7 @@ import {
   finLabLateRetryCutoffPassed,
   finLabLateRetryCutoffTw,
 } from './finlabSourceContract'
-import { FINLAB_DISPATCH_ATTEMPT_MAX, finLabStartMarkerKey } from './finLabDispatchFence'
+import { FINLAB_DISPATCH_ATTEMPT_MAX, finLabStartMarkerKey, resolveFinLabDispatchFence } from './finLabDispatchFence'
 import {
   loadSplitFusionSnapshotMissingReplaySymbols,
   loadSplitFusionSnapshotReplayCoverage,
@@ -2773,10 +2773,15 @@ export async function dispatchEveningFinLabRefresh(
   }
 }
 
-async function finLabStartObserved(env: Bindings, twDate: string, runId: string, attempt?: unknown): Promise<boolean> {
+async function finLabStartObserved(env: Bindings, twDate: string, runId: string, attempt: unknown): Promise<boolean> {
   const current = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
-  if (current?.run_id === runId && (current.status === 'running' || current.status === 'success')) return true
-  return attempt !== undefined && Boolean(await env.KV.get(finLabStartMarkerKey(twDate, runId, attempt)))
+  // A started head only covers this outcome when it is for the same or a newer attempt: a late start
+  // of an older, superseded attempt must not hide a newer dispatch that never started.
+  const head = resolveFinLabDispatchFence({ activeRunId: current?.run_id, activeSummary: current?.summary,
+    incomingRunId: runId, incomingAttempt: attempt })
+  if (current?.run_id === runId && (current.status === 'running' || current.status === 'success')
+    && head.activeAttempt >= head.incomingAttempt) return true
+  return Boolean(await env.KV.get(finLabStartMarkerKey(twDate, runId, attempt)))
 }
 
 /** R33-NEW-32: any `triggered` dispatch outcome (not only dispatch_unconfirmed) is older than a start

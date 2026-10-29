@@ -87,6 +87,43 @@ class RefreshTests(unittest.TestCase):
         for secret in ('plain-secret-value',token,token[:10],'abc'):self.assertNotIn(secret,text)
         self.assertIn('a'*64,text);self.assertIn('l4_forward_daily_price_source_missing',text)
         self.assertLessEqual(len(module.error_summary(RuntimeError('x'*999))),300)
+    def run_failing_projection(self,sha,reader=None):
+        def boom(frozen):raise KeyError('feature_rows')
+        with patch.dict('os.environ',{'STOCKVISION_SOURCE_SHA':sha}),patch.object(module,'project',side_effect=boom):
+            return module.refresh(query=lambda *a:[self.manifest],bucket=self.bucket,price_capture={},
+                expected_identity={'id':1},cutoff='2026-10-09T10:00:00+08:00',snapshot_reader=reader or self.reader,
+                price_loader=lambda *a,**k:(self.calendar,self.prices,{'verified':True}))
+    def test_projection_failure_is_remembered_per_deploy(self):
+        first=self.run_failing_projection('sha1');second=self.run_failing_projection('sha1')
+        self.assertEqual(self.reads,1);self.assertEqual(first,second)
+        self.assertEqual(first['items'][0]['status'],'failed');self.assertEqual(first['items'][0]['error_type'],'KeyError')
+        self.run_failing_projection('sha2');self.assertEqual(self.reads,2)
+    def test_projection_failure_not_remembered_without_source_sha(self):
+        self.run_failing_projection('');self.run_failing_projection('')
+        self.assertEqual(self.reads,2);self.assertFalse([k for k in self.bucket.data if 'projection_failures' in k])
+    def test_read_failure_is_not_remembered(self):
+        def broken(sid):
+            self.reads+=1;raise OSError('gcs read reset')
+        self.run_failing_projection('sha1',broken);r=self.run_failing_projection('sha1',broken)
+        self.assertEqual(self.reads,2);self.assertEqual(r['items'][0]['error_type'],'OSError')
+        self.assertFalse([k for k in self.bucket.data if 'projection_failures' in k])
+    def test_new_snapshot_checksum_retries_after_remembered_failure(self):
+        self.run_failing_projection('sha1');self.manifest['payload_checksum']='b'*64
+        self.run_failing_projection('sha1');self.assertEqual(self.reads,2)
+        self.snapshot['source_manifest']=self.manifest
+        with patch.dict('os.environ',{'STOCKVISION_SOURCE_SHA':'sha2'}):r=self.run_refresh()  # fixed deploy
+        self.assertEqual(self.reads,3);self.assertNotEqual(r['items'][0]['status'],'failed')
+    def test_manifest_row_change_retries_remembered_failure(self):
+        self.run_failing_projection('sha1');self.manifest['frozen_at']='2026-10-01T23:30:00+08:00'
+        self.run_failing_projection('sha1');self.assertEqual(self.reads,2)
+    def test_marker_upload_failure_keeps_projection_error(self):
+        upload=Blob.upload_from_string
+        def denied(blob,raw,**kwargs):
+            if 'projection_failures' in blob.key:raise PermissionError('403 forbidden')
+            return upload(blob,raw,**kwargs)
+        with patch.object(Blob,'upload_from_string',denied):r=self.run_failing_projection('sha1')
+        self.assertEqual(r['items'][0]['error_type'],'KeyError')
+        self.run_failing_projection('sha1');self.assertEqual(self.reads,2)
     def test_attach_daily_result_keeps_summary(self):
         def fail(*a):raise RuntimeError('boom detail')
         data=module.attach_daily_result({},{},'2026-10-09',runner=fail)['forward_learning_data']

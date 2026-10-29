@@ -34,6 +34,12 @@ def error_summary(exc,limit=300):
 NATIVE_POOL='native_non_etf_equity_v1'
 ROUTED_POOL='routed_available_l3_v1'
 
+class CachedProjectionFailure(Exception):
+    """FU3: this deploy already failed to project these exact snapshot bytes."""
+    def __init__(self,record):
+        self.record=record;super().__init__(record['error_summary'])
+
+
 def publish(bucket,kind,value):
     raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
     checksum=hashlib.sha256(raw).hexdigest();key=f'{PREFIX}{kind}/{checksum}.json'
@@ -131,10 +137,25 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                 snapshot=json.loads(raw)
                 if snapshot['source_manifest']!=manifest:raise ValueError('l4_forward_manifest_changed')
             else:
+                from google.api_core.exceptions import PreconditionFailed
+                # FU3: project() is deterministic in (manifest, snapshot bytes, code). A failure
+                # is remembered per deploy so retries skip the multi-GB cold read; any new
+                # deploy or manifest row retries. Read errors are never remembered.
+                source_sha=os.environ.get('STOCKVISION_SOURCE_SHA','').strip()
+                failure=(bucket.blob(PREFIX+'projection_failures/'+digest(dict(manifest=manifest,source_sha=source_sha))+'.json')
+                         if source_sha else None)
+                if failure is not None and failure.exists():
+                    raise CachedProjectionFailure(json.loads(failure.download_as_bytes()))
                 frozen=reader(manifest['snapshot_id'])
                 if frozen['manifest']!=manifest:raise ValueError('l4_forward_manifest_changed')
-                snapshot=project(frozen);ref=publisher(bucket,'projections',snapshot)
-                from google.api_core.exceptions import PreconditionFailed
+                try:snapshot=project(frozen)
+                except Exception as exc:
+                    if failure is not None and not isinstance(exc,(MemoryError,RecursionError)):
+                        record=dict(error_type=type(exc).__name__,error_summary=error_summary(exc))
+                        try:failure.upload_from_string(json.dumps(record,sort_keys=True),content_type='application/json',if_generation_match=0)
+                        except Exception:pass  # best effort: never mask the projection error
+                    raise
+                ref=publisher(bucket,'projections',snapshot)
                 raw=json.dumps(ref,sort_keys=True).encode()
                 try:cache.upload_from_string(raw,if_generation_match=0)
                 except PreconditionFailed:
@@ -147,8 +168,9 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
             record=publisher(bucket,'materializations',body)
             items.append({**item,**receipt,'materialization':record})
         except Exception as exc:
-            items.append({**item,'status':'failed','reason':'l4_forward_source_or_maturity_failed','error_type':type(exc).__name__,
-                'error_summary':error_summary(exc),'training_eligible':False})
+            recorded=({k:str(exc.record.get(k,'')) for k in ('error_type','error_summary')}
+                if isinstance(exc,CachedProjectionFailure) else dict(error_type=type(exc).__name__,error_summary=error_summary(exc)))
+            items.append({**item,'status':'failed','reason':'l4_forward_source_or_maturity_failed',**recorded,'training_eligible':False})
     if native_reader is not None:
         for snapshot,ref in native_reader(bucket,start=start,end=day,cutoff=cutoff):
             item=dict(snapshot_id=snapshot['snapshot_id'],signal_date=snapshot['signal_date'])

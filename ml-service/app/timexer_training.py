@@ -51,7 +51,7 @@ class Windows(Dataset):
 
 
 def load_windows(inputs, job):
-    from .sequence_training import canonical_session_calendar
+    from .sequence_training import CANONICAL_ROUNDTRIP_COST_BPS, canonical_session_calendar
     from .timexer_cutoff import admitted
     validate_settings(job['settings'], job['exogenous'])
     from .formal_feature_contract import feature_count, timexer_semantic
@@ -87,6 +87,8 @@ def load_windows(inputs, job):
     series, rows, coverage = [], [], {'missing_features_or_market': [], 'insufficient_aligned_context': 0,
                                      'windows_with_one_session_stale_features': 0}
     length = job['settings']['seq_len']
+    # Net label: the same round-trip cost the canonical prep labels and its manifest use.
+    roundtrip_cost = CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
     seen_symbols = set()
     for record in records:
         symbol = str(record['symbol'])
@@ -136,7 +138,7 @@ def load_windows(inputs, job):
             stale_points = int(stale_prefix[end + 1] - stale_prefix[end - length + 1])
             coverage['windows_with_one_session_stale_features'] += int(stale_points > 0)
             opening = float(record['open'][end + 1])
-            target = float(record['close'][end + 5]) / opening - 1 - 0.0018
+            target = float(record['close'][end + 5]) / opening - 1 - roundtrip_cost
             rows.append({'series': series_index, 'end': end, 'feature_end': fend, 'symbol': symbol,
                          'date': day, 'label_known_date': str(dates[end + 5]), 'market': markets[symbol],
                          'target': target, 'last_close': float(record['close'][end]), 'stale_feature_context_points': stale_points})

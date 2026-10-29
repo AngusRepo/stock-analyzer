@@ -448,6 +448,63 @@ def test_q02_consecutive_skips_count_nights_not_reruns(monkeypatch) -> None:
     assert [level for level, _, _ in d.logs()] == ["warn"] * 4
 
 
+def test_q03_sector_fallback_candidates_stay_out_of_owner_readers(tmp_path, monkeypatch) -> None:
+    from services.finlab_canonical_materializer import FinLabCanonicalOutputs
+
+    lane = tmp_path / "raw" / "security_master"
+    lane.mkdir(parents=True)
+    pl.DataFrame({"stock_id": ["2330"], "category": ["半導體業"]}).write_parquet(lane / "table.parquet")
+    pl.DataFrame({"symbol": ["2330", "3718", "7934"], "產業類別": ["半導體業", "電子零組件業", None],
+                  "__observed_at": ["2026-10-29T00:00:00+00:00"] * 3}).write_parquet(lane / "company_basic_info.parquet")
+    pl.DataFrame({"symbol": ["0050"], "__observed_at": ["2026-10-29T00:00:00+00:00"]}).write_parquet(
+        lane / "tw_etf_basic_info.parquet")
+    mid = "2026-10-29T00:00:00+00:00"
+    rows = build_taxonomy_rows(tmp_path, generated_at=mid)
+    fallback = sorted((row["symbol"], row["tag"], row["source"], json.loads(row["lineage_json"])["sector_source"])
+                      for row in rows if row["tag_type"] == "industry_fallback")
+    assert fallback == [
+        ("0050", "etf", "finlab.tw_etf_basic_info", "finlab.tw_etf_basic_info:membership"),
+        ("2330", "半導體業", "finlab.company_basic_info", "finlab.company_basic_info:產業類別"),
+        ("3718", "電子零組件業", "finlab.company_basic_info", "finlab.company_basic_info:產業類別"),
+    ]
+
+    # Applied on the market schema, the candidates get the Q02 guard like any owner group and
+    # are invisible to the owner-filtered readers (L3 sector encoding and payload sector tags).
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    d = _Q02Domains(monkeypatch)
+    empty = {name: [] for name in (
+        "canonical_market_daily", "canonical_chip_daily", "canonical_institutional_amount_daily",
+        "canonical_market_index_daily", "canonical_futures_daily", "canonical_market_summary_daily",
+        "canonical_regime_context_daily", "canonical_revenue_monthly", "canonical_fundamental_features",
+        "canonical_broker_flow_daily", "canonical_broker_rank_daily", "data_source_inventory", "source_quality_metrics")}
+    outputs = FinLabCanonicalOutputs(run_id="q03", generated_at=mid, artifact_root=str(tmp_path),
+                                     finlab_taxonomy_tags=rows, manifest={"filters": {}}, **empty)
+    _legacy, _ops, market = d.tool.partition_finlab_canonical_statements(build_d1_upsert_statements(outputs),
+                                                                          market_active=True)
+    for sql, params in market:
+        d.market.execute(sql, params)
+    assert {row[0] for row in d.market.execute(
+        "SELECT dataset FROM source_quality_metrics WHERE freshness_status='prune_applied'")} >= {
+        "finlab_taxonomy_tags.prune_guard:industry_fallback"}
+    assert [row[0] for row in d.market.execute(
+        "SELECT DISTINCT tag FROM finlab_taxonomy_tags "
+        "WHERE tag_type='industry' AND source='finlab.security_categories' ORDER BY tag")] == ["半導體業"]
+    assert d.market.execute("SELECT COUNT(*) FROM finlab_taxonomy_tags WHERE tag_type='industry_fallback'").fetchone()[0] == 3
+
+
+def test_q03_bad_fallback_files_never_stop_the_owner_taxonomy(tmp_path, capsys) -> None:
+    lane = tmp_path / "raw" / "security_master"
+    lane.mkdir(parents=True)
+    pl.DataFrame({"stock_id": ["2330"], "category": ["半導體業"]}).write_parquet(lane / "table.parquet")
+    pl.DataFrame({"symbol": ["3718"], "公司簡稱": ["新股"]}).write_parquet(lane / "company_basic_info.parquet")
+    (lane / "tw_etf_basic_info.parquet").write_bytes(b"not a parquet file")
+    rows = build_taxonomy_rows(tmp_path, generated_at="2026-10-29T00:00:00+00:00")
+    assert [(row["symbol"], row["tag_type"]) for row in rows] == [("2330", "industry")]
+    err = capsys.readouterr().err
+    assert "sector_fallback_field_missing company_basic_info.parquet:產業類別" in err
+    assert "sector_fallback_unreadable tw_etf_basic_info.parquet" in err
+
+
 def test_q02_skip_report_never_raises(monkeypatch, capsys) -> None:
     import tools.finlab_v4_remote_backfill as tool
 

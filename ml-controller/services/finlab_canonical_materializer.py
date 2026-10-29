@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2079,12 +2080,65 @@ def build_taxonomy_rows(
                         "as_of_date": generated_at[:10],
                     })
 
+    rows.extend(_sector_fallback_rows(artifact_root, generated_at=generated_at))
     deduped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for row in rows:
         key = (row["symbol"], row["tag"], row["tag_type"], row["source"])
         deduped[key] = row
     output = list(deduped.values())
     return output[:limit] if limit and limit > 0 else output
+
+
+SECTOR_FALLBACK_TAG_TYPE = "industry_fallback"
+# (raw security_master file, source, sector field); the TWSE ETF roster carries membership only.
+_SECTOR_FALLBACK_SOURCES = (
+    ("company_basic_info.parquet", "finlab.company_basic_info", "產業類別"),
+    ("tw_etf_basic_info.parquet", "finlab.tw_etf_basic_info", None),
+)
+
+
+def _sector_fallback_rows(artifact_root: Path, *, generated_at: str) -> list[dict[str, Any]]:
+    """Q03: sector candidates for stocks security_categories has not classified yet.
+
+    Their own tag_type keeps them out of every owner-filtered reader (L3 sector
+    features included); the Worker sector projection picks one per its
+    configured order and records the provenance.
+    """
+    rows: list[dict[str, Any]] = []
+    for filename, source, field in _SECTOR_FALLBACK_SOURCES:
+        # Candidates are optional: a bad or partial file must never stop the owner taxonomy write.
+        try:
+            frame = _read_parquet(artifact_root / "raw" / "security_master" / filename)
+        except Exception as exc:
+            print(f"[finlab-taxonomy] sector_fallback_unreadable {filename}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            continue
+        if frame.is_empty():
+            continue
+        if field and field not in frame.columns:
+            print(f"[finlab-taxonomy] sector_fallback_field_missing {filename}:{field}", file=sys.stderr)
+            continue
+        for row in _rows(frame):
+            symbol = normalize_symbol(row.get("symbol") or row.get("stock_id"))
+            raw_tag = str(row.get(field) or "") if field else "etf"
+            tag = _clean_taxonomy_tag(raw_tag)
+            if symbol and tag:
+                rows.append({
+                    "symbol": symbol,
+                    "tag": tag,
+                    "tag_type": SECTOR_FALLBACK_TAG_TYPE,
+                    "source": source,
+                    "weight": 1,
+                    "lineage_json": _json({
+                        "dataset_lane": "security_master",
+                        "raw_tag": raw_tag,
+                        "raw_emitted_tag": raw_tag,
+                        "normalized_tag": tag,
+                        "sector_source": f"{source}:{field or 'membership'}",
+                        "materialization_id": generated_at,
+                    }),
+                    "as_of_date": generated_at[:10],
+                })
+    return rows
 
 
 def build_inventory_rows(outputs: dict[str, list[dict[str, Any]]], *, generated_at: str) -> list[dict[str, Any]]:

@@ -3,7 +3,9 @@ import polars as pl
 
 from services.r33_calibration_job import fit_calibration, load_l2_pool, pool_score_table
 from services.r33_isotonic_calibration import MODELS, validate_payload
+from services.pit_certification import load_contract
 from services.r33_oof_checks import entry_limit_up_rows, run_checks
+from pit_certification_fixture import certified, pending
 
 DATES = [f"2026-{m:02d}-{d:02d}" for m in (7, 8) for d in range(1, 29)][:48]
 SYMBOLS = [str(1000 + i) for i in range(30)]
@@ -34,13 +36,35 @@ def _receipts(oof, leak=None):
 
 def test_informative_scores_pass_and_inverted_scores_fail():
     oof = _oof()
-    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=DATES[30])
+    attached, contract = certified()
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=DATES[30],
+                        pit_certification=attached, pit_contract=contract)
     assert report["status"] == "pass", report["checks"]
+    assert report["checks"]["pit_vintage"]["receipt_sha256"] == attached["receipt_sha256"]
     assert report["scope"]["horizon_sessions"] == 5 and report["new_folds_report"]["days"] > 0
     inverted = _oof(sign=-1.0)
     report = run_checks(oof=inverted, fold_receipts=_receipts(inverted), pool_by_date=None, new_fold_from=None)
     assert report["status"] == "fail" and not report["checks"]["inversion"]["passed"]
     assert report["checks"]["tail_guard"]["hard_failures"] == ["PatchTST", "TabM"]
+
+
+def test_pit_vintage_fails_closed_without_a_certified_receipt():
+    oof = _oof()
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None)
+    assert report["status"] == "fail" and report["checks"]["pit_vintage"]["reasons"] == ["receipt_missing"]
+    assert all(report["checks"][name]["passed"] for name in ("leakage", "inversion", "tail_guard"))
+    unapproved, contract = certified(contract=pending(load_contract()))
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None,
+                        pit_certification=unapproved, pit_contract=contract)
+    assert report["status"] == "fail" and report["checks"]["pit_vintage"]["reasons"] == ["contract_not_approved"]
+    # A certified receipt that does not bind to this capture/prep fails the same check.
+    attached, approved = certified()
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None,
+                        pit_certification=attached, pit_contract=approved,
+                        pit_binding_reasons=["prep_not_built_under_contract:adj"])
+    pit = report["checks"]["pit_vintage"]
+    assert report["status"] == "fail" and pit["passed"] is False and pit["certified"] is False
+    assert pit["reasons"] == ["prep_not_built_under_contract:adj"]
 
 
 def test_fold_whose_training_labels_reach_its_test_start_fails_leakage():

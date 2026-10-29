@@ -110,7 +110,25 @@ def test_r33_historical_broker_binds_every_date_and_clears_snapshot():
     binding=proof["historical_broker_binding"]
     assert binding["rows_bound"]==2 and binding["date_min"]=="2026-09-28"
     assert "known after the d-day close" in binding["policy"] and "not certified" in binding["policy"]
+    from services.pit_certification import contract_content_sha256,load_contract
+    assert (binding["availability_level"],binding["lag_sessions"])==("R",0)
+    assert binding["contract_sha256"]==contract_content_sha256(load_contract())
     assert "retail_pct" not in dated[1]["2026-09-28"]
+
+
+def test_broker_policy_refuses_a_contract_lag_the_feature_layer_would_not_apply(monkeypatch):
+    import copy
+    from services import pit_certification
+    from services.training_long_sources import historical_broker_policy
+    contract=copy.deepcopy(pit_certification.load_contract());contract["datasets"]["broker"]["lag_sessions"]=1
+    assert "same-day" in historical_broker_policy()["policy"]
+    monkeypatch.setattr(pit_certification,"load_contract",lambda *a,**k:contract)
+    with pytest.raises(ValueError,match="training_broker_contract_lag_unowned"):
+        historical_broker_policy()
+    contract["feature_lags"].update({f:1 for f in ("broker_net_shares","broker_estimated_amount","broker_concentration","broker_count")})
+    policy=historical_broker_policy()
+    assert policy["lag_sessions"]==1 and "same-day" not in policy["policy"]
+    assert "serving must build broker features with pit-availability-contract-v1" in policy["policy"]
 
 
 def test_non_r33_long_binding_is_unchanged():

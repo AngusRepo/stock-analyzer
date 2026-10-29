@@ -44,6 +44,7 @@ from services.active8_release_training_contract import (
 )
 from services.training_calendar import monthly_revenue_available_date, normalize_daily_source_date, shareholding_available_date
 from services.training_policy import R33_FEATURE_WARMUP_SESSIONS, TrainingPolicy
+from services.pit_certification import CONTRACT_VERSION as PIT_CONTRACT_VERSION
 from services.modal_client import prep_universal_batch, train_universal, shap_audit
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     candidate_type: str | None = Field(default=None, description="Candidate type. Formal releases must use oof_full_fit_release.")
     signal_date_max: str | None = None
     label_known_at_max: str | None = None
+    pit_certification: dict | None = Field(default=None, description="{receipt, receipt_sha256} from services.pit_certification; forwarded to trainers.")
     force_monthly: bool = Field(default=False, description="Explicit execution lineage. weekly_drift callers must remain false.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
@@ -542,6 +544,8 @@ def _verify_prebuilt_canonical_prep(
         "producer_source_sha": manifest.get("producer_source_sha"),
         "target_semantic_version": expected_target_semantic_version,
         "roundtrip_cost_bps": 18.0,
+        **({"pit_contract_version": manifest["pit_contract_version"]}
+           if manifest.get("pit_contract_version") is not None else {}),
     }
 
 def _verify_prebuilt_feature_pool(
@@ -673,7 +677,7 @@ def _training_stock_rows(req: UniversalRetrainTriggerRequest) -> list[dict]:
         metadata = json.loads(snapshot["metadata_json"])
         rows = select_training_stock_rows(
             _read_gcs_parquet_rows(components["stocks"]["gcs_uri"], integrity_meta=components["stocks"]),
-            start_date=metadata["start_date"], end_date=metadata["end_date"])
+            start_date=metadata["start_date"], end_date=metadata["end_date"], with_listed_date=True)
         return rows if full_pool else rows[:req.limit]
     # listing_market owns the venue; legacy OTC also contains emerging ROTC.
     sql = "SELECT id, symbol, COALESCE(listing_market,market) AS market FROM stocks WHERE COALESCE(listing_market,market) IN ('TW','TWO','TWSE','OTC') ORDER BY id"
@@ -1260,6 +1264,22 @@ async def _dispatch_prebuilt_oof_full_fit(
     from services.training_source_preflight import require_single_adjustment_capture
     require_single_adjustment_capture(bucket, prep_gcs_prefix=verified["gcs_prefix"],
                                       sequence_gcs_prefix=verified["sequence_gcs_prefix"])
+    pit_attached = None
+    if req.pit_certification is not None:
+        # Trainers record the flag from this receipt, so it is re-derived and bound to this
+        # capture and prep here; a receipt is never forwarded as given (C28-02 §4.4).
+        from services.pit_certification import verify_bound_receipt
+        bound = verify_bound_receipt(bucket, sequence_gcs_prefix=verified["sequence_gcs_prefix"],
+                                     prep_gcs_prefixes=[verified["gcs_prefix"]])
+        reasons = list(bound.get("reasons") or [])
+        if bound.get("receipt_sha256") != req.pit_certification.get("receipt_sha256"):
+            reasons.append("request_receipt_sha256_mismatch")
+        if not bound["certified"] or reasons:
+            raise ValueError(("pit_certification_not_verified:" + ",".join(reasons or ["not_certified"]))[:500])
+        pit_attached = bound["attached"]
+    elif verified.get("pit_contract_version") is not None:
+        # Without a receipt the artifact would not record the lags its features carry.
+        raise ValueError("pit_prep_requires_certification")
     sequence_verified = _verify_prebuilt_sequence_prep(
         bucket=bucket,
         prefix=str(req.sequence_gcs_prefix or ""),
@@ -1330,6 +1350,10 @@ async def _dispatch_prebuilt_oof_full_fit(
         "generation_mode": "oof_full_fit_release",
         "signal_date_max": req.signal_date_max,
         "label_known_at_max": req.label_known_at_max,
+        **({"pit_certification": pit_attached} if pit_attached is not None else {}),
+        # Trainers record the version the prep was built under (ml-service pit_contract.vintage_scope).
+        **({"pit_contract_version": verified["pit_contract_version"]}
+           if verified.get("pit_contract_version") is not None else {}),
         "cohort_id": str(req.prebuilt_prep_source_cohort_id),
         "label_horizon_days": 5,
         "training_policy": training_policy.to_dict(),
@@ -1418,6 +1442,9 @@ async def trigger_universal_retrain(
     prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
     if req.inference_only and (not req.prep_only or req.train_model_groups):
         return {"status":"rejected", "error":"inference_composition_cannot_train"}
+    if req.pit_certification is not None and not req.prebuilt_prep_gcs_prefix:
+        # Only an OOF full-fit from a verified prebuilt prep can carry a PIT receipt.
+        return {"status":"rejected", "error":"pit_certification_requires_prebuilt_prep"}
     if req.prep_only and (
         not prep_output_gcs_prefix
         or not prep_output_gcs_prefix.startswith("universal/oof_forward_prep_v2/")
@@ -1668,6 +1695,26 @@ async def trigger_universal_retrain(
             f"sentiment={len(sentiment_map)} per_stock_ts={len(per_stock_ts_map)}"
         )
 
+    roster_sidecar = None
+    if r33_prep:
+        # C28-02 C4: issuers the snapshot window dropped re-enter from the sealed capture.
+        from services.training_stock_roster import capture_sidecar_rows
+        try:
+            sidecar_rows, roster_sidecar = capture_sidecar_rows(
+                prep_bucket, sequence_gcs_prefix=req.sequence_gcs_prefix, stock_rows=stock_rows,
+                run_date=run_date, query_fn=CORE_D1_CLIENT.query)
+        except Exception as exc:
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            _upsert_retrain_status(run_id, status="prep_failed",
+                summary={"reason": "roster_sidecar_rejected", "error": str(exc)},
+                downstream_notes="aborted_before_batch_prep")
+            return {"status": "rejected", "error": "roster_sidecar_rejected", "detail": str(exc), "run_id": run_id}
+        stock_rows = [*stock_rows, *sidecar_rows]
+        stock_ids = [r["id"] for r in stock_rows]
+        symbols = [r["symbol"] for r in stock_rows]
+        id_to_sym = {r["id"]: r["symbol"] for r in stock_rows}
+        sym_to_id = {r["symbol"]: r["id"] for r in stock_rows}
+
     price_capture = None
     institutional_capture = None
     market_cap_capture = None
@@ -1884,6 +1931,9 @@ async def trigger_universal_retrain(
             "stock_id": sid,
             "symbol": sym,
             "market": row.get("market", "TW"),
+            # R33 label venue is per date (C28-02 C3): rows before the current venue's
+            # listing date carry no ranked market.
+            **({"market_since": row["listed_date"]} if r33_prep and row.get("listed_date") else {}),
             "prices": px,
             "indicators": indicators_map.get(sid, []),
             "chips": chips_map.get(sym, []),
@@ -2021,6 +2071,8 @@ async def trigger_universal_retrain(
             }
             if r33_prep:
                 prep_payload["feature_warmup_rows"] = R33_FEATURE_WARMUP_SESSIONS
+                prep_payload["pit_contract_version"] = PIT_CONTRACT_VERSION
+                prep_payload["pit_contract_sha256"] = source_bindings["pit_contract_sha256"]
             if active_features:
                 prep_payload["active_features"] = active_features
             result = await prep_universal_batch(prep_payload)
@@ -2038,6 +2090,12 @@ async def trigger_universal_retrain(
     source_bindings={"price_capture":price_capture,"institutional_capture":institutional_capture,
         "market_cap_capture":market_cap_capture,"auxiliary_capture":auxiliary_capture,
         "long_source_capture":long_source_capture,"global_capture":global_capture}
+    if r33_prep:
+        # The receipt names the availability lags its features were built under (C28-02 C2).
+        source_bindings["pit_contract_version"]=PIT_CONTRACT_VERSION
+        from services.pit_certification import contract_content_sha256, load_contract
+        source_bindings["pit_contract_sha256"]=contract_content_sha256(load_contract())
+        source_bindings["roster_sidecar"]=roster_sidecar
     from services.pipeline_input_events import current_context, defer_prep
     if req.prep_only and current_context():
         event_payloads = []
@@ -2050,6 +2108,8 @@ async def trigger_universal_retrain(
                        'feature_semantic_version': semantic_for_profile(req.model_profile_schema_version)}
             if r33_prep:
                 payload['feature_warmup_rows'] = R33_FEATURE_WARMUP_SESSIONS
+                payload['pit_contract_version'] = PIT_CONTRACT_VERSION
+                payload['pit_contract_sha256'] = source_bindings['pit_contract_sha256']
             if active_features:
                 payload['active_features'] = active_features
             event_payloads.append(payload)
@@ -2144,6 +2204,16 @@ async def trigger_universal_retrain(
                 "status": "rejected",
                 "error": "prep_only_output_inventory_incomplete",
                 "missing_paths": missing_paths,
+                "run_id": run_id,
+            }
+        from services.pit_certification import prep_batches_not_under_contract
+        unapplied = prep_batches_not_under_contract(prep_results, source_bindings)
+        if unapplied:
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            return {
+                "status": "rejected",
+                "error": "prep_pit_contract_not_applied",
+                "batch_indexes": unapplied,
                 "run_id": run_id,
             }
         prep_checksums = {

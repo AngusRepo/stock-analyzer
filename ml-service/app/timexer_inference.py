@@ -98,6 +98,9 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
         feature_source = projection['source']
         expected_source_semantic = LEGACY_SEMANTIC
     receipt = feature_receipt(bucket, feature_source, signal_date, expected_semantic=expected_source_semantic)
+    from .pit_contract import artifact_contract_version
+    if artifact_contract_version(metadata) != receipt.get('pit_contract_version'):
+        raise ValueError('pit_contract_version_serving_mismatch')
     if projection and receipt['feature_names_path'] not in receipt['output_checksums']:
         raise ValueError('timexer_projection_names_checksum_required')
     torch.set_float32_matmul_precision('high')

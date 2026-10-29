@@ -6,6 +6,8 @@
    fit's top-block edge (mean minus one standard error > 0).
 3. Tail-fold guard (policy v4): a model whose last-three-fold daily IC has a 90% HAC
    upper bound below zero fails hard for TabM and PatchTST and warns otherwise.
+4. PIT vintage (C28-02): the capture's certification receipt re-derives
+   point_in_time_vintage_certified=true; a missing or false receipt fails.
 Rows whose entry session opened limit-up are not buyable and are excluded from 2.
 Dates from new_fold_from on are reported separately and do not gate.
 """
@@ -61,7 +63,9 @@ def _score_checks(table: dict, days) -> dict:
 
 
 def run_checks(*, oof: pl.DataFrame, fold_receipts: list[dict], pool_by_date: dict[str, set[str]] | None,
-               new_fold_from: str | None) -> dict:
+               new_fold_from: str | None, pit_certification: dict | None = None,
+               pit_contract: dict | None = None, pit_binding_reasons=()) -> dict:
+    from services.pit_certification import verify_receipt
     receipts = {str(r["fold_id"]): r for r in fold_receipts}
     leaking = sorted(f for f, r in receipts.items() if not str(r["train_label_known_max"]) < str(r["test_start"]))
     unattested = sorted(set(oof["fold_id"].unique().to_list()) - set(receipts))
@@ -98,7 +102,12 @@ def run_checks(*, oof: pl.DataFrame, fold_receipts: list[dict], pool_by_date: di
     if new_fold_from:
         recent = {d for d in days if d >= new_fold_from}
         new_folds = dict(from_date=new_fold_from, days=len(recent), **(_score_checks(table, recent) if len(recent) > 1 else {}))
-    checks = dict(leakage=leakage, inversion=inversion, tail_guard=tail_guard)
+    verified = verify_receipt(pit_certification, pit_contract)
+    # Capture/prep bindings need the bucket; the caller reads them (pit_certification.verify_bound_receipt).
+    if "receipt_sha256" in verified and pit_binding_reasons:
+        verified = dict(verified, certified=False, reasons=[*verified["reasons"], *pit_binding_reasons])
+    pit_vintage = dict(verified, passed=verified["certified"])
+    checks = dict(leakage=leakage, inversion=inversion, tail_guard=tail_guard, pit_vintage=pit_vintage)
     return dict(schema_version=SCHEMA, status="pass" if all(c["passed"] for c in checks.values()) else "fail",
                 checks=checks, scope=dict(pool_days=len(days), horizon_sessions=table["horizon"],
                                           entry_limit_up_rows_excluded=table["entry_limit_up_rows"]),

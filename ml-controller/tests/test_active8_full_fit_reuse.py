@@ -101,3 +101,65 @@ def test_dispatch_cross_date_returns_original_failure_without_retraining(monkeyp
     assert len(writes) == int(legacy)
     if legacy:
         assert writes[0]['superseded_evaluations'][0]['release_registry'] == value['release_registry']
+
+
+def test_a_full_fit_reports_only_the_pit_receipt_it_was_dispatched_with():
+    # C28-02 §4.4: a prior fit dispatched under another (or no) PIT receipt is not this fit.
+    pit = 'r' * 64
+
+    def find(value, sha):
+        bucket = SimpleNamespace(list_blobs=lambda **_: [SimpleNamespace(name=PATH, download_as_text=lambda: json.dumps(value))])
+        return find_prior_full_fit_receipt(bucket=bucket, manifest=MANIFEST, plan=PLAN, cutoff='2026-09-13',
+                                           pit_certification_sha256=sha)
+    assert find(receipt(), pit) is None
+    assert find(receipt(pit_certification_sha256='s' * 64), pit) is None
+    assert find(receipt(pit_certification_sha256=pit), None) is None
+    assert find(receipt(pit_certification_sha256=pit), pit) == PATH
+
+
+def _dispatch_bucket(stored):
+    class Blob:
+        def __init__(self, path):
+            self.name = path
+
+        def exists(self):
+            return self.name in stored
+
+        def download_as_text(self):
+            return json.dumps(stored[self.name])
+
+        def upload_from_string(self, raw, **kwargs):
+            stored[self.name] = json.loads(raw)
+    return SimpleNamespace(blob=Blob, list_blobs=lambda **_: [Blob(name) for name in list(stored)])
+
+
+def test_a_full_fit_receipt_binds_the_pit_receipt_and_refuses_another(monkeypatch):
+    import asyncio
+    from routers import walk_forward, retrain_trigger
+    from services import training_source_preflight
+
+    plan = {**PLAN, 'status': 'ready', 'tree_models': [], 'train_model_groups': ['dlinear'],
+            'model_profile_schema_version': 'active8-release-model-profiles-v3', 'artifact_lifecycle_targets': [], 'promotion_evidence': {}}
+    monkeypatch.setattr(walk_forward, 'build_oof_full_fit_dispatch_plan', lambda _: plan)
+    monkeypatch.setattr(training_source_preflight, 'require_single_adjustment_capture', lambda *a, **k: None)
+    sent = []
+
+    async def trigger(req, **kwargs):
+        sent.append(req)
+        return {'status': 'dispatched', 'run_id': 'run-1'}
+    monkeypatch.setattr(retrain_trigger, 'trigger_universal_retrain', trigger)
+    path = 'walk_forward/oof_cohorts/cohort-a/full_fit/2026-09-13.json'
+    stored = {}
+
+    def dispatch(sha):
+        return asyncio.run(walk_forward.dispatch_oof_full_fit_training(
+            manifest=MANIFEST, knowledge_cutoff_date='2026-09-13', bucket=_dispatch_bucket(stored),
+            lifecycle_cadence='monthly', candidate_only=True,
+            pit_certification={'receipt': {}, 'receipt_sha256': sha} if sha else None))
+    first = dispatch('r' * 64)
+    assert first['status'] == 'dispatched' and stored[path]['pit_certification_sha256'] == 'r' * 64
+    assert sent[0].pit_certification['receipt_sha256'] == 'r' * 64
+    for sha in ('s' * 64, None):  # a regenerated receipt, or none, cannot adopt this fit
+        result = dispatch(sha)
+        assert result['status'] == 'blocked' and result['reason'] == 'full_fit_pit_certification_mismatch'
+    assert len(sent) == 1

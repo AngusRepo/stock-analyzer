@@ -1282,3 +1282,24 @@ def test_monthly_revenue_required_field_uses_release_window_only_when_asked():
     assert tool.required_wide_field_errors("revenue", {"revenue": stale}, target_date="2026-10-30",
                                            target_window_days=45) == ["revenue=missing_target_date:2026-10-30:window_days=45"]
     assert tool.MONTHLY_RELEASE_LANES == {"revenue"}
+
+
+def test_lane_first_seen_records_observed_wall_clock_per_field():
+    tool = _load_tool_module()
+    row = tool.source_key_report_row(run_id="r", target_date="2026-10-30", lane="margin",
+                                     field="margin_balance", api_key="k", status="ok", rows=3,
+                                     target_rows=2, latest_date="2026-10-30", generated_at="2026-10-30T13:00:00+00:00")
+    assert row["observed_at"].endswith("+00:00") and row["generated_at"] == "2026-10-30T13:00:00+00:00"
+    reports = [{**row, "observed_at": "2026-10-30T13:07:00+00:00"}, {**row, "observed_at": "2026-10-30T13:05:00+00:00"},
+               {**row, "field": "short_balance", "status": "skipped_reused", "observed_at": "2026-10-30T13:01:00+00:00"},
+               {**row, "field": "eps", "error_code": "KeyError", "observed_at": "2026-10-30T13:01:00+00:00"},
+               {**row, "field": "short_ratio", "status": "missing_target_date", "target_rows": 0,
+                "observed_at": "2026-10-30T13:01:00+00:00"},
+               {**row, "field": "roe", "status": "empty", "rows": 0, "target_rows": 0,
+                "observed_at": "2026-10-30T13:01:00+00:00"},
+               # status ok but nothing for the target date is not a first sighting either.
+               {**row, "field": "pe", "target_rows": 0, "observed_at": "2026-10-30T13:01:00+00:00"}]
+    seen = tool.lane_first_seen(reports)
+    assert list(seen) == ["margin:margin_balance"]
+    assert seen["margin:margin_balance"]["observed_at"] == "2026-10-30T13:05:00+00:00"
+    assert seen["margin:margin_balance"]["target_rows"] == 2

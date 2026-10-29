@@ -1176,6 +1176,7 @@ async def dispatch_oof_full_fit_training(
     allow_new_dispatch: bool = True,
     signal_date_max: str | None = None,
     candidate_only: bool = False,
+    pit_certification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     plan = build_oof_full_fit_dispatch_plan(manifest)
     if plan["status"] != "ready":
@@ -1229,9 +1230,12 @@ async def dispatch_oof_full_fit_training(
     from services.active8_full_fit_reuse import find_prior_full_fit_receipt, full_fit_input_identity
 
     input_identity = full_fit_input_identity(manifest, plan)
+    # A full fit reports the PIT flag of the receipt it was dispatched with (C28-02 §4.4).
+    pit_sha = (pit_certification or {}).get("receipt_sha256") or None
     if not receipt_blob.exists():
         prior_path = find_prior_full_fit_receipt(
             bucket=bucket, manifest=manifest, plan=plan, cutoff=knowledge_cutoff_date,
+            pit_certification_sha256=pit_sha,
         )
         if prior_path:
             # Re-enter the normal owner/poll/validation path with its original
@@ -1243,6 +1247,9 @@ async def dispatch_oof_full_fit_training(
             knowledge_cutoff_date = prior_path.rsplit('/', 1)[-1].removesuffix('.json')
     if receipt_blob.exists():
         receipt = json.loads(receipt_blob.download_as_text())
+        if (receipt.get("pit_certification_sha256") or None) != pit_sha:
+            return {**plan, "status": "blocked", "reason": "full_fit_pit_certification_mismatch",
+                    "receipt_path": receipt_path, "training_dispatched": False}
 
     release_registry = (
         receipt.get("release_registry")
@@ -1786,6 +1793,7 @@ async def dispatch_oof_full_fit_training(
         run_date=knowledge_cutoff_date,
         signal_date_max=signal_date_max or manifest.get("end_date") or None,
         label_known_at_max=knowledge_cutoff_date if (signal_date_max or manifest.get("end_date")) else None,
+        pit_certification=pit_certification,
         candidate_type="oof_full_fit_release",
         drift_target_models=plan["release_models"],
         train_model_groups=plan["train_model_groups"],
@@ -1847,6 +1855,7 @@ async def dispatch_oof_full_fit_training(
         "promotion_eligible_models": plan["promotion_eligible_models"],
         "feature_pool": feature_pool_contract,
         "dispatch": result,
+        **({"pit_certification_sha256": pit_sha} if pit_sha else {}),
     }
     receipt_blob.upload_from_string(
         json.dumps(dispatched, sort_keys=True),

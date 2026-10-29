@@ -227,3 +227,21 @@ test('a failed parent stops the current card even if its last receipt says runni
     assert.doesNotMatch(cards[1].lastDuration,/進行中/)
   }
 })
+test('FU8-A: a ticket runId that differs from the canonical run still shows the canonical progress',()=>{
+  const now=Date.parse('2026-10-16T14:06:00Z')
+  const ticket={...parent(),runId:'ticket-1',canonicalRunId:'run-a'} as SchedulerJob
+  assert.deepEqual(pipelineStageCards(ticket,now).map(c=>c.stageVisualStatus),['completed','waiting','waiting','waiting'])
+  assert.match(pipelineRunSummary(ticket,now),/^Pipeline · /)
+  // Without the canonical id the ticket id alone cannot claim the progress.
+  const legacy={...parent(),runId:'ticket-1'} as SchedulerJob
+  assert(pipelineStageCards(legacy,now).every(c=>c.stageVisualStatus==='not_started'))
+  // A stale canonical id is still rejected, and the run date check stays.
+  const stale={...parent(),runId:'run-a',canonicalRunId:'run-old'} as SchedulerJob
+  assert(pipelineStageCards(stale,now).every(c=>c.stageVisualStatus==='not_started'))
+  assert.equal(pipelineRunSummary(stale,now),'本輪階段紀錄尚未取得')
+  const otherDay={...parent(),runId:'ticket-1',canonicalRunId:'run-a',statusRunDate:'2026-10-15'} as SchedulerJob
+  assert(pipelineStageCards(otherDay,now).every(c=>c.stageVisualStatus==='not_started'))
+  // A null canonical id falls back to the ticket runId.
+  const fallback={...parent(),canonicalRunId:null} as SchedulerJob
+  assert.equal(pipelineStageCards(fallback,now)[0].stageVisualStatus,'completed')
+})

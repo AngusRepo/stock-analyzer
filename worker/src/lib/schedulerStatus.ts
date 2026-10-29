@@ -1236,6 +1236,10 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       ...watchdogDisplay,
       ...(producerDisplay ? {...producerDisplay, lastRun: formatTimestamp(producerDisplay.lastRunAt), lastRunBasis: 'updated' as const,
         recoveredFromStatus: producerDisplay.lastStatus !== baseLastStatus ? baseLastStatus : null} : {}),
+      // FU8-A: after the spreads so no display override can replace them. Stage cards match progress by these ids,
+      // never by the ticket runId, which differs from the canonical run whenever a ticket owns the display.
+      canonicalRunId: durableState?.canonical_run_id ?? null,
+      finlabRunId: def.id === 'finlab-v4-backfill' ? displayLog?.run_id ?? null : null,
     }
   }))
 

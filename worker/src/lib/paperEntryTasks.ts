@@ -11,7 +11,7 @@ import { getPrevTradingDay as getL4PreviousSession } from './paperMarketData'
 import { assertL4PlanCurrentPolicy, planIdFromWatchPoints, l4TargetExecutionDecision } from './l4PortfolioPlan'
 import { paperExecutionDate, paperExecutionNow, paperAccountId, paperExecutionFetch, paperExecutionUUID } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
-import { sendDiscordNotification } from './notify'
+import { sendDiscordNotification, writeSystemLog } from './notify'
 import { getCurrentRegime as getCurrentSltpRegime, getTradingConfig, resolveSltpForRegime } from './tradingConfig'
 import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
 import { executionBookTimingAges } from './executionBookTiming'
@@ -511,6 +511,10 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
     status === 'partially_filled' ||
     status === 'quote_unavailable'
 }
+
+// Live's buy denominator. A repeat for an order is a no-op; an invalid value throws (CHECK).
+export const PAPER_ORDER_SIZING_INSERT =
+  'INSERT INTO paper_order_sizing_v1 (order_id, portfolio_value) VALUES (?, ?) ON CONFLICT(order_id) DO NOTHING'
 
 async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
   const paperSwingOwner = env.PAPER_INTRADAY_ENTRY_OWNER === SWING_POLICY_VERSION
@@ -3223,6 +3227,22 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       }
     } catch (e) {
       console.warn('[L2] Decision log failed:', e)
+    }
+
+    // Live intake denominator (R33-NEW-37 §2): the portfolio value this buy was sized
+    // against. Written after every Paper write above; Paper never reads it, and a failed
+    // write only leaves that Live buy BLOCKED (paper_denominator_unavailable).
+    if (autoOrderId?.id != null) {
+      try {
+        await paperDomainDatabase(env).prepare(PAPER_ORDER_SIZING_INSERT)
+          .bind(autoOrderId.id, totalPortfolio).run()
+      } catch (error) {
+        console.warn(`[PaperEntry] paper_order_sizing_v1 write failed: order ${autoOrderId.id}`, error)
+        await writeSystemLog(opsDb, 'warn', 'paper-order-sizing',
+          'paper_order_sizing_v1 write failed', {
+            order_id: autoOrderId.id, error: error instanceof Error ? error.message : String(error),
+          })
+      }
     }
 
     const lotTag = isOddLot ? ' [odd-lot]' : ''

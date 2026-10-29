@@ -164,6 +164,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'paper_kelly_calibration_runs_v1', 'paper_kelly_calibration_artifacts_v1',
     'paper_kelly_calibration_head_v1',
     'paper_corporate_entitlements_v1', 'paper_corporate_sessions_v1',
+    'paper_order_sizing_v1',
   ]),
   research: new Set([
     'research_trial_sources_v1', 'research_trial_runs_v1', 'research_trial_observations_v1',
@@ -372,6 +373,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
     'l4_replan_requests_v1',
     'paper_corporate_entitlements_v1',
     'paper_corporate_sessions_v1',
+    'paper_order_sizing_v1',
   ]),
   research: new Set([
     'research_trial_observations_v1',

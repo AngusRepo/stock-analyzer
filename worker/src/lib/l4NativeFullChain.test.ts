@@ -50,6 +50,11 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     if(url.includes('taifex'))return new Response('',{status:503})
     throw new Error('unseeded_native_source:'+url)
   }
+  // Live's buy denominator: each auto_ml buy records the portfolio value it was sized against.
+  const sizedBuys=()=>f.sqls.paper.prepare('SELECT s.order_id,s.portfolio_value,o.note FROM paper_order_sizing_v1 s JOIN paper_orders o ON o.id=s.order_id ORDER BY s.order_id').all().map(row=>{
+    assert.equal(row.portfolio_value,JSON.parse(String(row.note)).order_intent.riskContext.sizingAuthorization.portfolioValue)
+    return Number(row.order_id)
+  })
   try {
     f.kvs.set('trading:risk_config',JSON.stringify(RISK_CONFIG_FIXTURE))
     f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
@@ -104,13 +109,21 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     assert.equal(f.sqls.paper.prepare('SELECT status FROM paper_order_intents').get()?.status,'partial')
     assert.equal(f.sqls.paper.prepare('SELECT amount FROM paper_settlements').get()?.amount,20028)
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,1)
+    assert.deepEqual(sizedBuys(),[1])
+    // A failed sizing write is logged and leaves every Paper fill below unchanged.
+    f.sqls.paper.exec("CREATE TRIGGER injected_sizing_failure BEFORE INSERT ON paper_order_sizing_v1 BEGIN SELECT RAISE(ABORT,'injected_sizing_failure'); END")
     const topupProgress={schema_version:'position-tp1-progress-v1',entry_date:'2026-09-14',target_shares:2000,filled_shares:1000}
     f.sqls.paper.prepare("UPDATE paper_positions SET trade_lifecycle_json=json_set(trade_lifecycle_json,'$.position_tp1_progress',json(?))").run(JSON.stringify(topupProgress))
     for(let index=0;index<2;index++) {
       f.ports.nowMs+=60_000
       await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     }
+    f.sqls.paper.exec('DROP TRIGGER injected_sizing_failure')
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3000)
+    assert.deepEqual(sizedBuys(),[1])
+    assert.deepEqual(f.sqls.ops.prepare("SELECT level,message,meta FROM system_logs WHERE cron_name='paper-order-sizing' ORDER BY id").all()
+      .map(row=>[row.level,row.message,JSON.parse(String(row.meta))]),[2,3].map(order_id=>
+        ['warn','paper_order_sizing_v1 write failed',{order_id,error:'injected_sizing_failure'}]))
     assert.deepEqual(JSON.parse(String(f.sqls.paper.prepare('SELECT trade_lifecycle_json FROM paper_positions').get()?.trade_lifecycle_json)).position_tp1_progress,topupProgress)
     f.sqls.paper.exec("UPDATE paper_positions SET trade_lifecycle_json=json_remove(trade_lifecycle_json,'$.position_tp1_progress')")
 
@@ -120,6 +133,7 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3999)
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,4)
+    assert.deepEqual(sizedBuys(),[1,4])
     // Completed target and fractional dust must not create another order or debate.
     f.ports.nowMs+=60_000
     await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))

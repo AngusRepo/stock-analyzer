@@ -4934,14 +4934,20 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         "missing_active_feature_ranks": dict(list(missing_active_feature_ranks.items())[:20]),
         "required_feature_models": required_feature_models,
     }
+    # R33: a symbol's row error or missing model rank is that symbol's coverage
+    # (prediction_missing / z=0, spec §3.2), not the day's failure; the structural
+    # closure (cardinality, duplicates, membership) stays fail-closed.
+    from services.r33_ensemble import is_r33
+    r33 = is_r33(expected_manifest.get("active8_ensemble"))
+    blockers["r33_unscored_not_blocking"] = r33
     if any((
         cardinality_mismatch,
         invalid_row_indexes,
         duplicate_symbols,
         missing_symbols,
         unexpected_symbols,
-        row_errors,
-        missing_active_feature_ranks,
+        row_errors and not r33,
+        missing_active_feature_ranks and not r33,
     )):
         raise RuntimeError(
             "pipeline_modal_active_feature_closure_failed:"
@@ -5026,7 +5032,7 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
             duplicates,
             model_blockers["missing_symbols"],
             model_blockers["unexpected_symbols"],
-            errors,
+            errors and not r33,
         )):
             raise RuntimeError(
                 f"pipeline_modal_{model_name.lower()}_closure_failed:"

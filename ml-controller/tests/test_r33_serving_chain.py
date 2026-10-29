@@ -170,3 +170,21 @@ def test_l3_audit_records_a_pool_name_without_any_prediction_as_unscored(monkeyp
                                         layer2_symbols=POOL, run_date=DAY, screener_run_id="run-1")
     decisions = {params[2]: (params[5], params[6]) for _sql, params in captured[1:]}
     assert decisions["P6"] == ("unscored", "r33_unscored:prediction_missing:not_in_final_rows")
+
+
+def test_a_model_missing_for_one_name_is_z0_for_that_name_only():
+    from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION, normalize_active8_cross_sectional_scores
+    ensemble = _ensemble()
+    versions = {m: ensemble["base_artifacts"][m]["version"] for m in MODELS}
+    predictions = {s: {"stock_meta": {"market_segment": "LISTED"},
+                       "rank_scores": {m: i / 10 + 0.01 * j for j, m in enumerate(MODELS)}} for i, s in enumerate(POOL)}
+    predictions["P3"]["rank_scores"].pop("ExtraTrees")
+    normalize_active8_cross_sectional_scores(
+        predictions, artifact_versions=versions, artifact_target_semantics={m: MODEL_TARGET_SEMANTIC_VERSION for m in MODELS},
+        run_date=DAY, active8_ensemble=ensemble, pool_models=POOL_MODELS)
+    receipt = {"source": POOL_SOURCE, "signal_date": DAY, "screener_run_id": "r", "membership_sha256": "p" * 64}
+    snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=(POOL, receipt), predictions=predictions, holdings=[],
+                                         ensemble=ensemble, l3_identity=IDENTITY, stale=None)
+    rows = {r["symbol"]: r for r in snapshot["rows"]}
+    assert rows["P3"]["available"]["ExtraTrees"] is False and rows["P3"]["z"]["ExtraTrees"] == 0.0
+    assert rows["P3"]["expected_excess"] is not None and rows["P2"]["available"]["ExtraTrees"] is True

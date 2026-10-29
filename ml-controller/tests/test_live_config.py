@@ -200,6 +200,10 @@ _ALLOWED = {
         2: "HH:MM slicing", 3: "HH:MM slicing", 3.0: "KV read timeout (seconds)", 5: "weekday() < 5 is Mon-Fri",
         1000: "TW board lot size (shares per lot)",
     },
+    "services/live_intake.py": {
+        1000: "TW board lot size (shares per lot)", 5.0: "D1 request timeout (seconds)",
+        200: "gateway reason length kept in status_reason",
+    },
     "services/execution_snapshot_revalidator.py": {
         0.1: "HTTP timeout floor", 0.75: "HTTP timeout default", 5: "order book depth kept in observations",
         200: "HTTP OK", 1000: "ms per second / source-time grace",

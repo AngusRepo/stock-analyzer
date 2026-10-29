@@ -53,6 +53,7 @@ class BrokerExecutionRepository(Protocol):
     def find_intent(self, idempotency_key: str) -> dict[str, Any] | None: ...
     def intent_lifecycle(self, idempotency_key: str) -> dict[str, Any] | None: ...
     def daily_side_order_count(self, trade_date: str, side: str) -> int: ...
+    def open_sell_shares(self, trade_date: str, symbol: str, *, exclude_key: str) -> int: ...
     def reserve_intent(self, packet: Mapping[str, Any]) -> dict[str, Any]: ...
     def list_legs(self, intent_id: str) -> list[dict[str, Any]]: ...
     def claim_leg(self, intent_id: str, leg_key: str) -> dict[str, Any] | None: ...
@@ -79,6 +80,22 @@ class D1BrokerExecutionRepository:
             """SELECT COUNT(*) AS n FROM broker_execution_intents
                WHERE trade_date=? AND side=? AND status NOT IN ('BLOCKED','REJECTED')""",
             [trade_date, side],
+            5.0,
+        )
+        return int((rows[0] if rows else {}).get("n") or 0)
+
+    def open_sell_shares(self, trade_date: str, symbol: str, *, exclude_key: str) -> int:
+        """Shares in other sell legs today that may still leave the account (not yet terminal).
+
+        Broker positions do not show open orders. Whole requested shares count, so a partial
+        fill the position already shows is counted twice: that only under-sells.
+        """
+        rows = self._query(
+            """SELECT COALESCE(SUM(l.requested_shares), 0) AS n FROM broker_execution_legs l
+               JOIN broker_execution_intents i ON i.intent_id=l.intent_id
+               WHERE i.trade_date=? AND i.symbol=? AND i.side='sell' AND i.idempotency_key!=?
+                 AND l.status IN ('RESERVED','SUBMITTING','ACKNOWLEDGED','PARTIALLY_FILLED','UNKNOWN')""",
+            [trade_date, symbol, exclude_key],
             5.0,
         )
         return int((rows[0] if rows else {}).get("n") or 0)

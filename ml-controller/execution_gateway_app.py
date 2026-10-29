@@ -119,6 +119,7 @@ def submission_state(authorization: str | None = Header(default=None)) -> dict[s
         # Only the chain position; approval scope, expiry and gate receipt values stay out.
         "status": state.get("status"), "reason": state.get("reason"),
         "durable_pause": state.get("durable_pause"), "policy": state.get("policy"),
+        "last_pause_at": state.get("last_pause_at"),
         "receipt": None if receipt is None else {key: receipt.get(key) for key in ("sequence", "action", "sha256")},
         "finlab_live_submit_enabled": flag("FINLAB_LIVE_SUBMIT_ENABLED"),
         "approval_values_present": {
@@ -128,13 +129,20 @@ def submission_state(authorization: str | None = Header(default=None)) -> dict[s
     }
 
 
+INTENT_STATUS_FIELDS = ("intent_id", "idempotency_key", "trade_date", "symbol", "side", "status",
+                        "requested_shares", "limit_price", "blocked_reason", "created_at", "updated_at")
+
+
 @app.get("/v1/intents/{idempotency_key}")
 def intent_status(idempotency_key: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _verify_service_token(authorization)
     lifecycle = repository.intent_lifecycle(idempotency_key)
     if lifecycle is None:
         raise HTTPException(404, "execution intent not found")
-    return {"status": "ok", **lifecycle}
+    intent = lifecycle.get("intent") if isinstance(lifecycle.get("intent"), dict) else {}
+    # Lifecycle only: the approval scope and the stored packet (with its approval) stay out.
+    return {"status": "ok", "intent": {key: intent.get(key) for key in INTENT_STATUS_FIELDS},
+            "legs": lifecycle.get("legs"), "execution_outcome": lifecycle.get("execution_outcome")}
 
 
 @app.post("/v1/account/observations")

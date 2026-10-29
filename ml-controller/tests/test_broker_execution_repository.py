@@ -202,3 +202,16 @@ def test_unknown_submit_recovers_by_six_character_client_tag() -> None:
     recovered = repo.list_legs(intent_id)[0]
     assert recovered["status"] == "ACKNOWLEDGED"
     assert recovered["broker_order_id"] == "late-order-id"
+
+
+def test_open_sell_shares_counts_other_open_sell_legs_of_the_symbol_today() -> None:
+    repo, conn = _repository()
+    repo.reserve_intent(_packet("repository-open-sell-001"))  # RESERVED legs: 3000 + 209
+    assert repo.open_sell_shares("2026-07-13", "4953", exclude_key="repository-open-sell-002") == 3209
+    assert repo.open_sell_shares("2026-07-13", "4953", exclude_key="repository-open-sell-001") == 0
+    assert repo.open_sell_shares("2026-07-14", "4953", exclude_key="x") == 0
+    assert repo.open_sell_shares("2026-07-13", "2330", exclude_key="x") == 0
+    conn.execute("UPDATE broker_execution_legs SET status='FILLED' WHERE lot_type='board_lot'")
+    assert repo.open_sell_shares("2026-07-13", "4953", exclude_key="x") == 209
+    conn.execute("UPDATE broker_execution_legs SET status='REJECTED'")
+    assert repo.open_sell_shares("2026-07-13", "4953", exclude_key="x") == 0

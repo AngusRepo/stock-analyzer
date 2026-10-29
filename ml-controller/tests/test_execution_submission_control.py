@@ -143,9 +143,11 @@ def test_env_drift_after_resume_reads_as_lapsed_not_durably_paused(key, value):
     _resume(control)
     assert control.state()["status"] == OPEN
     env[key] = value
+    genesis_pause = control.state()["last_pause_at"]
     assert control.state() | {"receipt": None} == {
         "status": PAUSED, "reason": "live_approval_changed_since_resume", "receipt": None,
-        "durable_pause": False, "policy": "stop_new_live_orders_preserve_broker_lifecycle_v1"}
+        "durable_pause": False, "policy": "stop_new_live_orders_preserve_broker_lifecycle_v1",
+        "last_pause_at": genesis_pause}
     assert control.closed_reason() is not None
     # The lapsed resume is not a stop: a pause still writes a durable row.
     paused = control.pause(request_id="pause-after-lapse", actor="admin", reason="stop")
@@ -316,3 +318,19 @@ def test_default_control_requires_execution_domain_without_legacy_fallback():
     control = D1SubmissionControl(env={})
     assert control._query.__self__.domain.value == "execution"
     assert control._query.__self__.require_specific is True
+
+
+def test_state_reports_when_the_latest_pause_was_written():
+    """D-7: the intake blocks orders that became sendable before this pause, even after a resume."""
+    control, _, clock = _control()
+    first = control.state()["last_pause_at"]
+    assert first is not None
+    clock["now"] = NOW + timedelta(minutes=1)
+    _resume(control)
+    assert control.state()["last_pause_at"] == first
+    clock["now"] = NOW + timedelta(minutes=2)
+    control.pause(request_id="p-2", actor="admin", reason="stop")
+    clock["now"] = NOW + timedelta(minutes=3)
+    _resume(control, request_id="resume-2")
+    state = control.state()
+    assert state["status"] == OPEN and state["last_pause_at"] == (NOW + timedelta(minutes=2)).isoformat()

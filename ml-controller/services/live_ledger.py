@@ -61,16 +61,64 @@ def _scope(value: Any) -> str:
     return scope
 
 
-def pending_settlement_total(observation: Mapping[str, Any], business_date: str) -> float:
+def pending_settlement_total(observation: Mapping[str, Any], business_date: str, *,
+                             include_business_date: bool = False) -> float:
     """Net amounts the bank balance does not hold yet: settlement dates after the business date.
 
     A settlement dated on or before the business date has already moved the
-    bank balance that the same post-close observation reports.
+    bank balance that the same post-close observation reports. An intraday
+    observation (include_business_date=True) also counts one due that day: the
+    bank may debit it after the observation.
     """
     day = date.fromisoformat(_iso_day(business_date, "business_date"))
     return sum(_finite(row.get("net_amount"), "settlement_amount")
                for row in observation.get("settlements") or []
-               if date.fromisoformat(str(row.get("date"))) > day)
+               if (settled := date.fromisoformat(str(row.get("date")))) > day
+               or (include_business_date and settled == day))
+
+
+def account_nav(observation: Mapping[str, Any], business_date: str,
+                marks: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Live NAV (Wei 3a): bank balance + holdings at dated authoritative marks + net unsettled.
+
+    Shared by the daily snapshot (R18) and the Live intake ratio (R21); the
+    observation must be a verified Live observation taken on business_date (Taiwan time).
+    """
+    _scope(observation.get("account_scope"))
+    if observation.get("schema_version") != "live-account-observation-v1":
+        raise ValueError("live_ledger_observation_schema_invalid")
+    if not _SHA256.fullmatch(str(observation.get("sha256") or "")):
+        raise ValueError("live_ledger_observation_unverified")
+    _iso_day(business_date, "business_date")
+    observed = datetime.fromisoformat(str(observation.get("observed_at")))
+    if observed.tzinfo is None or observed.astimezone(TW).date().isoformat() != business_date:
+        raise ValueError("live_ledger_observation_not_on_business_date")
+    used_marks: dict[str, dict[str, Any]] = {}
+    holdings: dict[str, int] = {}
+    positions_value = 0.0
+    for position in observation.get("positions") or []:
+        shares = int(position.get("shares") or 0)
+        if shares == 0:
+            continue
+        if str(position.get("direction") or "").lower() not in {"action.buy", "buy"}:
+            raise ValueError("live_ledger_position_direction_unsupported")
+        symbol = str(position.get("symbol") or "")
+        mark = marks.get(symbol)
+        if not isinstance(mark, Mapping) or str(mark.get("date")) != business_date or not str(mark.get("source") or ""):
+            raise ValueError(f"live_ledger_mark_missing:{symbol}")
+        price = _finite(mark.get("price"), "mark_price")
+        if price <= 0:
+            raise ValueError(f"live_ledger_mark_invalid:{symbol}")
+        used_marks[symbol] = {"price": price, "date": business_date, "source": str(mark["source"])}
+        holdings[symbol] = holdings.get(symbol, 0) + shares
+        positions_value += shares * price
+    cash = _finite(observation.get("bank_balance"), "cash")
+    unsettled = pending_settlement_total(observation, business_date)
+    nav = cash + unsettled + positions_value
+    if nav < 0:
+        raise ValueError("live_ledger_nav_negative")
+    return {"cash": cash, "unsettled": unsettled, "positions_value": positions_value, "nav": nav,
+            "marks": used_marks, "holdings": holdings}
 
 
 def build_daily_snapshot(
@@ -87,35 +135,10 @@ def build_daily_snapshot(
     observation_sha = str(observation.get("sha256") or "")
     if not _SHA256.fullmatch(observation_sha):
         raise ValueError("live_ledger_observation_unverified")
-    _iso_day(business_date, "business_date")
-    observed = datetime.fromisoformat(str(observation.get("observed_at")))
-    if observed.tzinfo is None or observed.astimezone(TW).date().isoformat() != business_date:
-        raise ValueError("live_ledger_observation_not_on_business_date")
-
-    used_marks: dict[str, dict[str, Any]] = {}
-    positions_value = 0.0
-    for position in observation.get("positions") or []:
-        shares = int(position.get("shares") or 0)
-        if shares == 0:
-            continue
-        if str(position.get("direction") or "").lower() not in {"action.buy", "buy"}:
-            raise ValueError("live_ledger_position_direction_unsupported")
-        symbol = str(position.get("symbol") or "")
-        mark = marks.get(symbol)
-        if not isinstance(mark, Mapping) or str(mark.get("date")) != business_date or not str(mark.get("source") or ""):
-            raise ValueError(f"live_ledger_mark_missing:{symbol}")
-        price = _finite(mark.get("price"), "mark_price")
-        if price <= 0:
-            raise ValueError(f"live_ledger_mark_invalid:{symbol}")
-        used_marks[symbol] = {"price": price, "date": business_date, "source": str(mark["source"])}
-        positions_value += shares * price
-
-    cash = _finite(observation.get("bank_balance"), "cash")
-    unsettled = pending_settlement_total(observation, business_date)
+    valuation = account_nav(observation, business_date, marks)
+    cash, unsettled = valuation["cash"], valuation["unsettled"]
+    positions_value, used_marks, nav = valuation["positions_value"], valuation["marks"], valuation["nav"]
     flow = _finite(net_external_flow, "flow")
-    nav = cash + unsettled + positions_value
-    if nav < 0:
-        raise ValueError("live_ledger_nav_negative")
 
     previous_date = previous_sha = None
     if previous is None:

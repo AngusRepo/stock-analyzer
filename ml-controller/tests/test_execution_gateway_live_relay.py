@@ -150,4 +150,29 @@ def test_paused_or_unreadable_submission_control_blocks_before_iam() -> None:
             post_fn=lambda *a, **k: (_ for _ in ()).throw(AssertionError("gateway called")),
             submission_control=control,
         )
-        assert result == {"status": "blocked", "reason": reason}
+        assert result == {"status": "blocked", "reason": reason, "blocked_before_reservation": True}
+
+
+def test_only_blocks_before_the_post_are_marked_not_sent() -> None:
+    """Wei 10/29: after the POST the gateway may have reached the broker; only its own payload can say not."""
+    packet, env = _packet(), _env()
+    for response in (TimeoutError("t"), ConnectionError("c"), Response(503, {}), Response(422, {"status": "blocked"}),
+                     Response(401, {}), Response(200, ["not", "a", "mapping"])):
+        def post(*args, **kwargs):
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        result = relay_execution_live_submit(
+            packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]),
+            allow_live_submit=True, env=env,
+            identity_token_provider=lambda _: "header.payload.signature", post_fn=post,
+            submission_control=OpenControl(),
+        )
+        assert "blocked_before_reservation" not in result and result["status"] in {"unknown", "error"}
+    gateway_answer = {"status": "blocked", "reason": "hub_stale", "blocked_before_reservation": True}
+    passed = relay_execution_live_submit(
+        packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]),
+        allow_live_submit=True, env=env, identity_token_provider=lambda _: "t",
+        post_fn=lambda *a, **k: Response(200, gateway_answer), submission_control=OpenControl())
+    assert passed == gateway_answer

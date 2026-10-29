@@ -54,7 +54,10 @@ def _blocked(
     reasons: str | list[str],
     *,
     env_status: dict[str, Any] | None = None,
+    before_reservation: bool = True,
 ) -> dict[str, Any]:
+    """A block before any intent was reserved. Only those set blocked_before_reservation=True,
+    the one answer that lets the Live intake treat the order as never sent (Wei 10/29)."""
     blocked_reasons = [reasons] if isinstance(reasons, str) else sorted(set(reasons))
     intent = packet.get("intent") if isinstance(packet, Mapping) and isinstance(packet.get("intent"), Mapping) else {}
     return {
@@ -69,6 +72,7 @@ def _blocked(
         "can_submit_real_order": False,
         "live_submit_enabled": False,
         "env_status": env_status,
+        "blocked_before_reservation": before_reservation,
     }
 
 
@@ -87,7 +91,25 @@ def _leg_map(intent: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
-def run_finlab_live_submit(
+def run_finlab_live_submit(**kwargs: Any) -> dict[str, Any]:
+    """Gateway submit. A block marked blocked_before_reservation keeps that mark only while no
+    intent exists for the packet's key: a replayed key may already have legs at the broker.
+    If that cannot be read (or no repository was given), the mark is dropped and the Live
+    intake only reconciles."""
+    result = _submit(**kwargs)
+    if result.get("blocked_before_reservation") is True:
+        packet, repo = kwargs.get("packet"), kwargs.get("repository")
+        key = str(packet.get("idempotency_key") or "") if isinstance(packet, Mapping) else ""
+        try:
+            exists = repo is None or (bool(key) and repo.find_intent(key) is not None)
+        except Exception:
+            exists = True
+        if exists:
+            result["blocked_before_reservation"] = False
+    return result
+
+
+def _submit(
     *,
     packet: Mapping[str, Any] | None = None,
     signature: str | None = None,
@@ -185,20 +207,32 @@ def run_finlab_live_submit(
         if side == "buy" and (required_cash is None
                               or float(actual_broker_truth.get("available_cash") or 0) < required_cash):
             broker_errors.append("broker_cash_insufficient_at_submit")
-        if side == "sell" and int(actual_broker_truth.get("position_shares") or 0) < int(packet_intent.get("requestedShares") or 0):
-            broker_errors.append("broker_position_insufficient_at_submit")
         if broker_errors:
             return _blocked(packet, broker_errors, env_status=env_status)
     except Exception as exc:
         return _blocked(packet, f"pre_submit_revalidation_failed:{exc.__class__.__name__}", env_status=env_status)
 
     with _SUBMIT_LOCK:
+        if side == "sell":
+            # Under the submit lock, so two concurrent sells cannot both count the same
+            # shares: other sell legs still open today hold theirs (the position does not show them).
+            try:
+                open_sells = repo.open_sell_shares(str(packet.get("trade_date") or ""), symbol,
+                                                   exclude_key=str(packet.get("idempotency_key") or ""))
+            except Exception as exc:
+                return _blocked(packet, f"pre_submit_revalidation_failed:{exc.__class__.__name__}",
+                                env_status=env_status)
+            if int(actual_broker_truth.get("position_shares") or 0) - int(open_sells) \
+                    < int(packet_intent.get("requestedShares") or 0):
+                return _blocked(packet, "broker_position_insufficient_at_submit", env_status=env_status)
         try:
             reservation = repo.reserve_intent(packet)
         except Exception as exc:
-            return _blocked(packet, f"execution_reservation_failed:{exc.__class__.__name__}", env_status=env_status)
+            return _blocked(packet, f"execution_reservation_failed:{exc.__class__.__name__}", env_status=env_status,
+                            before_reservation=False)  # the reservation write may have landed
         if reservation.get("status") == "conflict":
-            return _blocked(packet, "execution_idempotency_conflict", env_status=env_status)
+            return _blocked(packet, "execution_idempotency_conflict", env_status=env_status,
+                            before_reservation=False)  # this key already has an intent
 
         intent_id = str(reservation.get("intent_id") or "")
         source_legs = _leg_map(packet_intent)

@@ -153,6 +153,13 @@ class MemoryRepository:
     def daily_side_order_count(self, trade_date: str, side: str) -> int:
         return len([row for row in self.intents.values() if row["trade_date"] == trade_date and row["side"] == side])
 
+    def open_sell_shares(self, trade_date: str, symbol: str, *, exclude_key: str) -> int:
+        open_states = {"RESERVED", "SUBMITTING", "ACKNOWLEDGED", "PARTIALLY_FILLED", "UNKNOWN"}
+        return sum(int(leg["requested_shares"]) for key, row in self.intents.items()
+                   if key != exclude_key and row["trade_date"] == trade_date and row["side"] == "sell"
+                   and row["symbol"] == symbol
+                   for leg in self.legs[row["intent_id"]] if leg["status"] in open_states)
+
     def reserve_intent(self, packet: Mapping[str, Any]) -> dict[str, Any]:
         key = str(packet["idempotency_key"])
         digest = packet_hash(packet)
@@ -168,6 +175,7 @@ class MemoryRepository:
             "packet_hash": digest,
             "trade_date": packet["trade_date"],
             "side": intent["side"],
+            "symbol": intent["symbol"],
             "status": "RESERVED",
         }
         self.intents[key] = row
@@ -564,3 +572,129 @@ def test_a_live_config_loader_error_blocks_before_the_broker(tmp_path: Path) -> 
     gateway = FakeGateway()
     result = _run(tmp_path, MemoryRepository(), gateway, _packet(), live_config_loader=broken)
     assert result["reason"] == "execution_control_plane_unavailable:TimeoutError" and gateway.calls == []
+
+
+class _Position(FakeGateway):
+    def __init__(self, shares: int) -> None:
+        super().__init__()
+        self.shares = shares
+
+    def revalidate_broker_truth(self, *, symbol: str):
+        return {**super().revalidate_broker_truth(symbol=symbol), "position_shares": self.shares}
+
+
+def test_a_sell_above_the_broker_position_never_reaches_the_broker(tmp_path: Path) -> None:
+    assert _run(tmp_path, MemoryRepository(), _Position(3209), _packet())["status"] == "submitted"
+    gateway = _Position(3208)
+    result = _run(tmp_path, MemoryRepository(), gateway, _packet())
+    assert result["blocked_reasons"] == ["broker_position_insufficient_at_submit"] and gateway.calls == []
+
+
+@pytest.mark.parametrize("leg_status,blocked", [("ACKNOWLEDGED", True), ("UNKNOWN", True), ("RESERVED", True),
+                                                ("FILLED", False), ("REJECTED", False), ("CANCELLED", False)])
+def test_other_open_sells_today_hold_their_shares(tmp_path: Path, leg_status: str, blocked: bool) -> None:
+    repo = MemoryRepository()
+    earlier = _packet(idempotency_key="live-intake:paper_orders:earlier")
+    repo.reserve_intent(earlier)
+    for leg in repo.legs["intent-1"]:
+        leg["status"] = leg_status
+    gateway = _Position(5000)  # 3209 already in an earlier sell; 1791 left for this one
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert (result.get("blocked_reasons") == ["broker_position_insufficient_at_submit"]) is blocked
+    assert (gateway.calls == []) is blocked
+
+
+def test_a_replay_of_the_same_key_does_not_count_its_own_legs(tmp_path: Path) -> None:
+    repo, gateway = MemoryRepository(), _Position(3209)
+    packet = _packet()
+    assert _run(tmp_path, repo, gateway, packet)["status"] == "submitted"
+    assert _run(tmp_path, repo, gateway, packet)["status"] == "idempotent_replay"
+
+
+def test_a_packet_without_an_explicit_kill_switch_false_is_blocked(tmp_path: Path) -> None:
+    packet = _packet()
+    del packet["controls"]["kill_switch_active"]
+    assert "kill_switch_active_or_unknown" in _run(tmp_path, MemoryRepository(), FakeGateway(), packet)["blocked_reasons"]
+
+
+def test_pre_reservation_blocks_are_marked_only_while_the_key_has_no_intent(tmp_path: Path) -> None:
+    """Wei 10/29: blocked_before_reservation=True tells the Live intake no broker order exists."""
+    stale = {"snapshot_revalidator": lambda _: {"errors": ["hub_stale"], "observations": {}}}
+    hub = _run(tmp_path, MemoryRepository(), FakeGateway(), _packet(), **stale)
+    assert hub["status"] == "blocked" and hub["blocked_before_reservation"] is True
+
+    def boom(_):
+        raise TimeoutError("hub")
+
+    failed = _run(tmp_path, MemoryRepository(), FakeGateway(), _packet(), snapshot_revalidator=boom)
+    assert failed["reason"].startswith("pre_submit_revalidation_failed") and failed["blocked_before_reservation"] is True
+    signature = run_finlab_live_submit(packet=_packet(), signature="bad", allow_live_submit=True,
+                                       env=_ready_env(tmp_path / "cert.pfx"), repository=MemoryRepository(),
+                                       gateway=FakeGateway())  # type: ignore[arg-type]
+    assert signature["blocked_before_reservation"] is True
+
+    repo = MemoryRepository()
+    first = _run(tmp_path, repo, FakeGateway(), _packet())
+    assert first["status"] == "submitted"
+    again = _run(tmp_path, repo, FakeGateway(), _packet(), **stale)  # the key already reached the broker
+    assert again["status"] == "blocked" and again["blocked_before_reservation"] is False
+
+    class Unreadable(MemoryRepository):
+        calls = 0
+
+        def find_intent(self, key: str):
+            self.calls += 1
+            if self.calls > 1:  # readable for the submit path, not for the confirmation
+                raise TimeoutError("d1")
+            return None
+
+    unreadable = _run(tmp_path, Unreadable(), FakeGateway(), _packet(), **stale)
+    assert unreadable["status"] == "blocked" and unreadable["blocked_before_reservation"] is False
+    disabled = run_finlab_live_submit(packet=_packet(), allow_live_submit=True, env={"FINLAB_LIVE_SUBMIT_ENABLED": "0"})
+    assert disabled["blocked_before_reservation"] is False  # no repository to confirm with
+
+
+def test_post_reservation_answers_never_carry_the_pre_reservation_mark(tmp_path: Path) -> None:
+    repo = MemoryRepository()
+    reserved = _run(tmp_path, repo, FakeGateway(), _packet())
+    assert reserved.get("blocked_before_reservation") is not True
+    conflict = _run(tmp_path, repo, FakeGateway(), _packet(intent=_intent(requestedShares=7)))
+    assert conflict.get("blocked_before_reservation") is not True
+
+
+def test_the_open_sell_check_runs_under_the_submit_lock(tmp_path: Path, monkeypatch) -> None:
+    """Two concurrent sells cannot both pass the position check before either reserves."""
+    import services.finlab_live_submit_service as service
+
+    held = []
+
+    class Lock:
+        def __enter__(self):
+            held.append(True)
+
+        def __exit__(self, *exc):
+            held.pop()
+
+    class Repo(MemoryRepository):
+        seen: list[bool] = []
+
+        def open_sell_shares(self, trade_date: str, symbol: str, *, exclude_key: str) -> int:
+            self.seen.append(bool(held))
+            return super().open_sell_shares(trade_date, symbol, exclude_key=exclude_key)
+
+        def reserve_intent(self, packet):
+            assert held  # reservation also happens under the same lock
+            return super().reserve_intent(packet)
+
+    monkeypatch.setattr(service, "_SUBMIT_LOCK", Lock())
+    repo = Repo()
+    assert _run(tmp_path, repo, _Position(5000), _packet())["status"] == "submitted"
+    assert repo.seen == [True]
+
+    class Broken(MemoryRepository):
+        def open_sell_shares(self, trade_date: str, symbol: str, *, exclude_key: str) -> int:
+            raise TimeoutError("d1")
+
+    gateway = _Position(5000)
+    result = _run(tmp_path, Broken(), gateway, _packet())
+    assert result["reason"].startswith("pre_submit_revalidation_failed") and gateway.calls == []

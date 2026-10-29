@@ -147,15 +147,19 @@ class D1SubmissionControl:
             return {"status": PAUSED, "reason": reason, "receipt": None, "durable_pause": False, "policy": POLICY}
         latest = rows[-1]
         receipt = self._receipt(latest)
+        # D-7: an order that became sendable before the latest pause is never sent, even
+        # after a resume, so readers need when that pause was written.
+        pauses = [row["created_at"] for row in rows if row["action"] == "pause"]
+        base = {"receipt": receipt, "policy": POLICY, "last_pause_at": pauses[-1] if pauses else None}
         if latest["action"] == "pause":
-            return {"status": PAUSED, "reason": "paused", "receipt": receipt, "durable_pause": True, "policy": POLICY}
+            return {**base, "status": PAUSED, "reason": "paused", "durable_pause": True}
         # A resume that no longer authorizes Live reads as paused, but it is not a
         # durable pause: restoring the env would reopen Live, so the UI keeps the
         # one-click pause available until a pause row is written.
         invalid = self._resume_invalid_reason(latest)
         if invalid:
-            return {"status": PAUSED, "reason": invalid, "receipt": receipt, "durable_pause": False, "policy": POLICY}
-        return {"status": OPEN, "reason": None, "receipt": receipt, "durable_pause": False, "policy": POLICY}
+            return {**base, "status": PAUSED, "reason": invalid, "durable_pause": False}
+        return {**base, "status": OPEN, "reason": None, "durable_pause": False}
 
     def closed_reason(self) -> str | None:
         """None only when new Live orders may be submitted."""

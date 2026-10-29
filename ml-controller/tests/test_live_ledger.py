@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from services.live_ledger import LiveLedger, build_daily_snapshot, pending_settlement_total
+from services.live_ledger import LiveLedger, account_nav, build_daily_snapshot, pending_settlement_total
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPE = "live:sinopac:" + "f" * 64
@@ -270,3 +270,15 @@ def test_previous_snapshot_lookup_and_flow_amounts_are_strict():
     with pytest.raises(sqlite3.DatabaseError):
         conn.execute("INSERT INTO live_cash_flows_v1 VALUES ('raw',?,'2026-12-10','deposit',0.5,'wei_manual',?,'t')",
                      [SCOPE, EVIDENCE])
+
+
+def test_split_broker_rows_of_one_symbol_add_up():
+    day = "2026-12-10"
+    out = account_nav(_observation(day, 1000, positions=[("2330", 1000), ("2330", 37)]), day, {"2330": _mark(day, 10.0)})
+    assert out["holdings"] == {"2330": 1037} and out["nav"] == 1000 + 10_370
+
+
+def test_an_intraday_reader_also_counts_a_settlement_due_that_day():
+    obs = {"settlements": [{"date": "2026-12-10", "net_amount": -60_000}, {"date": "2026-12-11", "net_amount": -5}]}
+    assert pending_settlement_total(obs, "2026-12-10") == -5
+    assert pending_settlement_total(obs, "2026-12-10", include_business_date=True) == -60_005

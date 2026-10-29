@@ -32,6 +32,11 @@ def _headers(identity_token: str, service_token: str, signature: str | None = No
     return headers
 
 
+def _not_sent(reason: str) -> dict[str, Any]:
+    """A relay block before the POST: nothing reached the gateway, so no intent was reserved."""
+    return {"status": "blocked", "reason": reason, "blocked_before_reservation": True}
+
+
 def relay_execution_live_submit(
     *,
     packet: Mapping[str, Any],
@@ -44,20 +49,20 @@ def relay_execution_live_submit(
 ) -> dict[str, Any]:
     values = env or os.environ
     if not _truthy(values.get("EXECUTION_GATEWAY_LIVE_RELAY_ENABLED")):
-        return {"status": "blocked", "reason": "execution_gateway_live_relay_disabled"}
+        return _not_sent("execution_gateway_live_relay_disabled")
     if not allow_live_submit:
-        return {"status": "blocked", "reason": "allow_live_submit_required"}
+        return _not_sent("allow_live_submit_required")
     url, service_token, audience = _config(values)
     secret = str(values.get("LIVE_EXECUTION_HMAC_SECRET") or "")
     if not url or not service_token or not secret:
-        return {"status": "blocked", "reason": "execution_gateway_live_relay_config_incomplete"}
+        return _not_sent("execution_gateway_live_relay_config_incomplete")
     if not signature_valid(packet, signature, secret):
-        return {"status": "blocked", "reason": "execution_packet_signature_invalid"}
+        return _not_sent("execution_packet_signature_invalid")
     approval = packet.get("approval") if isinstance(packet.get("approval"), Mapping) else {}
     scope = str(values.get("LIVE_TRADING_APPROVAL_SCOPE") or "").strip()
     expiry = parse_time(values.get("LIVE_TRADING_APPROVAL_EXPIRES_AT"))
     if not scope or approval.get("scope") != scope or expiry is None or expiry <= datetime.now(timezone.utc):
-        return {"status": "blocked", "reason": "live_trading_approval_unavailable"}
+        return _not_sent("live_trading_approval_unavailable")
     # R17 controller lock: the durable pause/resume chain must read open.
     try:
         control = submission_control if submission_control is not None else D1SubmissionControl(
@@ -66,7 +71,7 @@ def relay_execution_live_submit(
     except Exception:
         closed = "live_submission_control_unavailable"
     if closed is not None:
-        return {"status": "blocked", "reason": str(closed)}
+        return _not_sent(str(closed))
     try:
         identity_token = (identity_token_provider or fetch_google_identity_token)(audience)
         timeout = max(0.25, min(float(values.get("EXECUTION_GATEWAY_LIVE_TIMEOUT_SECONDS") or 3.5), 4.5))

@@ -3,67 +3,15 @@ from hmm_test_support import certified_contract as _hmm_contract
 
 import sys
 import asyncio
-import inspect
 import types
 from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
-graph_mod = types.ModuleType("langgraph.graph")
-graph_mod.END = "__END__"
-
-
-class _StateGraph:
-    def __init__(self, *_args, **_kwargs):
-        self.nodes = []
-
-    def add_node(self, *args, **kwargs):
-        self.nodes.append((args, kwargs))
-
-    def set_entry_point(self, *_args, **_kwargs):
-        return None
-
-    def add_edge(self, *_args, **_kwargs):
-        return None
-
-    def compile(self, *_args, **_kwargs):
-        return self
-
-    async def ainvoke(self, initial_state):
-        state = dict(initial_state)
-        for args, _kwargs in self.nodes:
-            node = args[1]
-            update = node(state)
-            if inspect.isawaitable(update):
-                update = await update
-            if not update:
-                continue
-            for key, value in update.items():
-                if key == "errors" and key in state:
-                    state[key] = [*state[key], *value]
-                else:
-                    state[key] = value
-        return state
-
-
-graph_mod.StateGraph = _StateGraph
-types_mod = types.ModuleType("langgraph.types")
-
-
-class _RetryPolicy:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-
-
-types_mod.RetryPolicy = _RetryPolicy
-httpx_mod = types.ModuleType("httpx")
-httpx_mod.AsyncClient = object
-httpx_mod.RequestError = Exception
-httpx_mod.Timeout = lambda *_args, **_kwargs: None
-sys.modules.setdefault("langgraph.graph", graph_mod)
-sys.modules.setdefault("langgraph.types", types_mod)
-sys.modules.setdefault("httpx", httpx_mod)
+# NEW-93: no langgraph/httpx stubs here. They were installed with setdefault at import time, so the
+# fake StateGraph leaked into every later test of the same worker that imported daily_pipeline_v2
+# (e.g. test_paired_nav_pipeline, test_formal_night_without_atomic). Both are controller requirements.
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

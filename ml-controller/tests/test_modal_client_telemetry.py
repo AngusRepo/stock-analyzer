@@ -2,16 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import types
 from pathlib import Path
 
 import pytest
-
-httpx_mod = types.ModuleType("httpx")
-httpx_mod.AsyncClient = object
-httpx_mod.RequestError = Exception
-httpx_mod.Timeout = lambda *_args, **_kwargs: None
-sys.modules.setdefault("httpx", httpx_mod)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

@@ -20,7 +20,7 @@ def read(path):
 
 def main():
     root, out, suites = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3:]
-    flaky = set(read(root / 'flaky-controller' / 'flaky.txt') or [])
+    flaky = {i for name in ('flaky-controller', 'flaky-worker') for i in read(root / name / 'flaky.txt') or []}
     lists = {}
     for suite in suites:
         ids = read(root / f'failures-{suite}-head' / 'failures.txt')

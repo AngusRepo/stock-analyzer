@@ -1922,6 +1922,77 @@ def broker_source_observation(frame: pd.DataFrame, target_date: str) -> dict[str
         "target_date": target_date, "target_rows": int((dates == pd.Timestamp(target_date)).sum())}
 
 
+_SYMBOL_KEY_COLUMNS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
+_SYMBOL_PATTERN_CACHE: list[tuple[str, str]] = []
+
+
+def _symbol_pattern_for_polars() -> tuple[str, str]:
+    """(strip chars, anchored regex) equal to _clean_symbol's str.strip() and re.fullmatch.
+
+    Python's own whitespace and \\d sets are spelled out because the Rust regex engine
+    can ship a newer Unicode table than this interpreter.
+    """
+    if not _SYMBOL_PATTERN_CACHE:
+        chars = [chr(code) for code in range(0x110000)]
+        whitespace = "".join(ch for ch in chars if ch.isspace())
+        digit_codes = [ord(ch) for ch in chars if re.fullmatch(r"\d", ch)]
+        ranges, low = [], digit_codes[0]
+        for prev, code in zip(digit_codes, digit_codes[1:] + [-1]):
+            if code != prev + 1:
+                ranges.append(f"\\x{{{low:X}}}-\\x{{{prev:X}}}")
+                low = code
+        digit = "".join(ranges)
+        pattern = rf"^((?:[{digit}]){{4,6}}(?:[A-Z][A-Z0-9]?)?)(?:[ \t]+[^{digit}].*)?$"
+        _SYMBOL_PATTERN_CACHE.append((whitespace, pattern))
+    return _SYMBOL_PATTERN_CACHE[0]
+
+
+def _broker_symbol_candidates(series: pd.Series) -> Any:
+    """_clean_symbol(value) per row of one column, as a polars String series (null = no code)."""
+    import numpy as np
+    import polars as pl
+
+    dtype = series.dtype
+    kind = getattr(dtype, "kind", "O")
+    text = None
+    if isinstance(dtype, np.dtype) and kind in "iu":
+        text = pl.Series(series.to_numpy()).cast(pl.String)
+    elif kind in "fbmMc":
+        # str() of a float, bool, datetime, timedelta or complex value is never a code.
+        return pl.repeat(None, len(series), dtype=pl.String, eager=True)
+    elif isinstance(dtype, pd.StringDtype) or (
+        dtype == object and pd.api.types.infer_dtype(series, skipna=True) in ("string", "empty")
+    ):
+        try:
+            text = pl.from_pandas(series).cast(pl.String)
+        except Exception:  # e.g. lone surrogates Arrow cannot encode; the exact path below takes them
+            text = None
+    if text is None:
+        return pl.Series([_clean_symbol(value) or None for value in series.to_numpy(dtype=object)], dtype=pl.String)
+    whitespace, pattern = _symbol_pattern_for_polars()
+    symbols = text.str.strip_chars(whitespace).str.extract(pattern, 1)
+    return pl.select(pl.when(symbols.str.len_chars() <= 6).then(symbols)).to_series()
+
+
+def _broker_stock_ids(frame: pd.DataFrame, stock_col: str, keep: Any) -> list[str]:
+    """_clean_symbol(row[stock_col], row) for the kept rows, without building row dicts."""
+    import polars as pl
+
+    positions: dict[Any, int] = {}
+    for position, label in enumerate(frame.columns):
+        positions[label] = position  # duplicate labels: the last wins, as in to_dict records
+    names = list(dict.fromkeys(name for name in (stock_col, *_SYMBOL_KEY_COLUMNS) if name in positions))
+    if not names:
+        return [""] * int(keep.sum())
+    candidates = [_broker_symbol_candidates(frame.iloc[keep, positions[name]]) for name in names]
+    if len(candidates) == 1:
+        return candidates[0].fill_null("").to_list()
+    columns = pl.DataFrame({f"c{index}": values for index, values in enumerate(candidates)})
+    first = pl.coalesce(columns.columns)
+    agree = pl.all_horizontal([pl.col(name).is_null() | (pl.col(name) == first) for name in columns.columns])
+    return columns.select(pl.when(first.is_not_null() & agree).then(first).otherwise(pl.lit(""))).to_series().to_list()
+
+
 def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.DataFrame:
     """Normalize FinLab broker_transactions into daily symbol broker-flow evidence."""
     if frame.empty:
@@ -1941,16 +2012,18 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
-    out = frame.copy()
-    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
-    out = out[out["date"] >= pd.Timestamp(start)]
-    out["stock_id"] = [
-        _clean_symbol(row.get(stock_col), row)
-        for row in out.to_dict(orient="records")
-    ]
-    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
-    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
-    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    # The legacy body assigned these onto a frame copy and failed on a duplicated label; keep failing.
+    duplicated = set(frame.columns[frame.columns.duplicated()])
+    if duplicated & {"stock_id", "broker_code", "buy_shares_raw", "sell_shares_raw"}:
+        raise ValueError("broker_transactions_duplicate_output_columns")
+    # Only the columns the aggregation reads; no full-frame copy, no per-row dicts.
+    dates = pd.to_datetime(frame[date_col], errors="coerce")
+    keep = (dates >= pd.Timestamp(start)).to_numpy(dtype=bool)
+    out = pd.DataFrame({"date": dates[keep]})
+    out["stock_id"] = _broker_stock_ids(frame, stock_col, keep)
+    out["broker_code"] = frame[broker_col][keep].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(frame[buy_col][keep], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(frame[sell_col][keep], errors="coerce").fillna(0)
     out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
     out = out[(out["stock_id"] != "") & out["date"].notna()]
     if out.empty:

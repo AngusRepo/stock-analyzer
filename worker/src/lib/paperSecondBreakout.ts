@@ -70,9 +70,15 @@ export function assessSecondBreakout(input: SwingEntryInput, priorLastTR?: numbe
   return result
 }
 
-/** A live-observed completed signal gets a durable, bounded authorization. Never invent a past authorization. */
+/**
+ * A completed signal first observed live before its original recovery deadline gets a durable,
+ * bounded authorization (R14: a late first observation, e.g. a missed bar minute or a plan that
+ * arrived after the trigger bar, still authorizes within the same deadline). The structure is
+ * re-checked at the trigger time; the deadline is never extended and nothing is authorized after it.
+ */
 export function authorizeSecondBreakout(input:SwingEntryInput,evidence:SecondBreakoutEvidence):SecondBreakoutEvidence {
-  if(evidence.status!=='passed' || !evidence.triggerMs || input.nowMs<evidence.triggerMs || input.nowMs>=evidence.triggerMs+MIN)
+  if(evidence.status!=='passed' || !evidence.triggerMs || evidence.authorization || input.nowMs<evidence.triggerMs
+    || input.nowMs>=recoveryDeadline(input.tradeDate,evidence.triggerMs))
     return evidence
   const signal=assessSwingEntry({...input,nowMs:evidence.triggerMs,quote:{price:input.previousClose,observedAtMs:evidence.triggerMs}})
   if(['plan','position','bars','ma60','or_touch','vwap','relative_strength','opening_limit'].some(k=>signal.conditions?.[k]!==true)) return evidence

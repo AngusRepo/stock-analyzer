@@ -11,6 +11,7 @@ import {
   admitSchedulerExecutionTicket,
   schedulerDeliveryIdentity,
   schedulerTicketStatusForRunLog,
+  settleSchedulerHttpTicket,
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketAuthority,
   type SchedulerTicketAdmission,
@@ -182,6 +183,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       authority,
       summary,
       error,
+    })
+    // FU17: post-execution result; a blocked result keeps a ticket its owner already triggered.
+    const settleTicket = (status: SchedulerExecutionTicketStatus, summary: string) => settleSchedulerHttpTicket(ticketDb, {
+      ticketId: schedulerTicketId,
+      runId: executionRunId,
+      status,
+      summary,
     })
     if (!ticketAdmission.shouldExecute) {
       const terminal = ['success', 'error', 'skipped', 'blocked'].includes(ticketAdmission.ticket.status)
@@ -444,7 +452,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           // Maintenance's queue owns its ticket from admission through terminal receipt.
           const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
           if (!maintenanceOwned) {
-            await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
+            await settleTicket(schedulerTicketStatusForRunLog(status), summary)
           }
           if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
             status,
@@ -501,7 +509,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
       const status = classifySchedulerSummary(summary)
       const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-      if (!maintenanceOwned) await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
+      if (!maintenanceOwned) await settleTicket(schedulerTicketStatusForRunLog(status), summary)
       if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
         status,
         summary,

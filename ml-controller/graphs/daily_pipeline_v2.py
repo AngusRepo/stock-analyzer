@@ -1557,7 +1557,8 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
     C28-16 S3). Under R33 the attested rank pool is built from the OPS screener
     pool, the holdings read in load_market_env and the stale set, and the cost
     comes from trading:config.fees (LV5#2). The day's per-model coverage goes to ops
-    system_logs (warn on any gap; a name with a Modal row error is prediction_missing)."""
+    system_logs (warn on any gap; a name with a Modal row error is prediction_missing); a model
+    with no score on any pool row is an error line and aborts the day."""
     from services.r33_ensemble import is_r33, round_trip_cost
     from services.r33_serving_inputs import stale_inputs, staleness_report
     r33 = is_r33(ensemble)
@@ -1575,8 +1576,8 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
         l3_identity=baseline_model_identity(serving_manifest), stale=stale)
     cost = round_trip_cost((state.get('trading_config') or {})['fees'])
     logger.info("[Pipeline V2] R33 rank pool: %s", rank_pool['coverage'] | {'unscored': len(rank_pool['coverage']['unscored'])})
-    from services.r33_serving_inputs import write_coverage_log
-    write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger)
+    from services.r33_serving_inputs import require_full_day_coverage, write_coverage_log
+    require_full_day_coverage(write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger))
     return r33, staleness, rank_pool, cost
 
 

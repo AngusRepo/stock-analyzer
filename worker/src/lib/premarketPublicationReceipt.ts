@@ -18,6 +18,23 @@ function canonical(value:unknown):string {
   if(value && typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical((value as Record<string,unknown>)[k])).join(',')+'}'
   return JSON.stringify(value)
 }
+const tally=(value:unknown)=>Number.isSafeInteger(value) && (value as number)>=0
+/** R33 closes the seed with its unscored names, and its plan also carries held names outside
+ * the seed: those targets have no recommendation row, so they must be locked holdings. */
+function verifyR33Closure(p:ServingPublication,plan:L4PortfolioPlan,rows:Row[]) {
+  const c=p.closure, symbols=Object.keys(plan.targets), count=rows.length
+  const unscored=c.r33_unscored_missing_prediction_count ?? 0, heldOutside=c.r33_held_outside_seed_prediction_symbols ?? 0
+  const rowSymbols=new Set(rows.map(r=>r.symbol))
+  const outside=symbols.filter(s=>!rowSymbols.has(s))
+  if(!count || p.target_count!==symbols.length || !tally(unscored) || !tally(heldOutside)
+    || typeof c.predictions_written!=='number' || c.predictions_written<=0
+    || c.prediction_symbol_closure_passed!==true || c.incomplete_active_model_symbols!==0
+    || !tally(c.prediction_symbols) || (c.prediction_symbols as number)+(unscored as number)!==c.prediction_seed_symbols
+    || c.recommendation_seed_rows!==count || c.recommendation_closed_rows!==count
+    || c.recommendation_row_closure_passed!==true || rowSymbols.size!==count
+    || outside.some(s=>plan.targets[s].locked!==true || !(plan.targets[s].current_weight>0))
+    || (heldOutside as number)>outside.length)throw new Error('premarket_serving_receipt_closure_mismatch')
+}
 export async function verifyPublicationReceipt(input:{publication:ServingPublication;source:Source;context:Context;
   plan:L4PortfolioPlan;storedSnapshot:string;manifest:Manifest|null;rows:Row[]}):Promise<void> {
   const {publication:p,source,context,plan,manifest,rows}=input
@@ -34,7 +51,8 @@ export async function verifyPublicationReceipt(input:{publication:ServingPublica
   // The plan carries every served row (unselected rows keep weight 0), so the plan,
   // the receipt closure and the D1 readback must describe the same row set.
   const c=p.closure, count=Object.keys(plan.targets).length
-  if(!count || p.target_count!==count
+  if(Object.hasOwn(plan,'r33_projection'))verifyR33Closure(p,plan,rows)
+  else if(!count || p.target_count!==count
     || typeof c.predictions_written!=='number' || c.predictions_written<=0
     || c.prediction_symbol_closure_passed!==true || c.incomplete_active_model_symbols!==0
     || c.prediction_seed_symbols!==c.prediction_symbols

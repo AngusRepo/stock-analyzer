@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from services.broker_execution_contract import parse_time, signature_valid
+from services.execution_submission_control import D1SubmissionControl
 from services.execution_gateway_shadow_relay import _safe_gateway_url, _truthy, fetch_google_identity_token
 
 
@@ -39,6 +40,7 @@ def relay_execution_live_submit(
     env: Mapping[str, str] | None = None,
     identity_token_provider: Callable[[str], str] | None = None,
     post_fn: Callable[..., Any] = httpx.post,
+    submission_control: Any | None = None,
 ) -> dict[str, Any]:
     values = env or os.environ
     if not _truthy(values.get("EXECUTION_GATEWAY_LIVE_RELAY_ENABLED")):
@@ -56,6 +58,14 @@ def relay_execution_live_submit(
     expiry = parse_time(values.get("LIVE_TRADING_APPROVAL_EXPIRES_AT"))
     if not scope or approval.get("scope") != scope or expiry is None or expiry <= datetime.now(timezone.utc):
         return {"status": "blocked", "reason": "live_trading_approval_unavailable"}
+    # R17 controller lock: the durable pause/resume chain must read open.
+    try:
+        control = submission_control if submission_control is not None else D1SubmissionControl(env=values)
+        closed = control.closed_reason()
+    except Exception:
+        closed = "live_submission_control_unavailable"
+    if closed is not None:
+        return {"status": "blocked", "reason": str(closed)}
     try:
         identity_token = (identity_token_provider or fetch_google_identity_token)(audience)
         timeout = max(0.25, min(float(values.get("EXECUTION_GATEWAY_LIVE_TIMEOUT_SECONDS") or 3.5), 4.5))

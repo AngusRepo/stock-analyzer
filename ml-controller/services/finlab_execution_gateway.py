@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from services.broker_execution_repository import BrokerExecutionRepository
+from services.execution_submission_control import D1SubmissionControl
 
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 class BrokerOrderRejected(RuntimeError):
     """The broker explicitly rejected the order before acknowledgement."""
+
+
+class LiveSubmissionBlocked(BrokerOrderRejected):
+    """No broker call was made because submission admission is closed or unavailable."""
 
 
 def _truthy(value: Any) -> bool:
@@ -62,10 +67,13 @@ class PersistentFinlabExecutionGateway:
         *,
         env: Mapping[str, str] | None = None,
         account_factory: Callable[[], Any] | None = None,
+        submission_control: Any | None = None,
     ) -> None:
         self.repository = repository
         self.env = env or os.environ
         self.account_factory = account_factory
+        # R17: every leg re-reads the durable pause/resume chain under the broker lock.
+        self.submission_control = submission_control if submission_control is not None else D1SubmissionControl(env=self.env)
         self._account: Any | None = None
         self._lock = threading.RLock()
         self._started = False
@@ -298,6 +306,14 @@ class PersistentFinlabExecutionGateway:
             raise BrokerOrderRejected("broker_order_rejected")
         return str(_field(status, "id", "") or _field(_field(trade, "order", {}), "id", ""))
 
+    def assert_live_submission_allowed(self) -> None:
+        try:
+            reason = self.submission_control.closed_reason()
+        except Exception as exc:
+            raise LiveSubmissionBlocked("live_submission_control_unavailable") from exc
+        if reason is not None:
+            raise LiveSubmissionBlocked(str(reason))
+
     def submit_leg(
         self,
         *,
@@ -309,12 +325,18 @@ class PersistentFinlabExecutionGateway:
         exchange: str,
         client_tag: str,
     ) -> str:
-        self.ensure_started()
         if not re.fullmatch(r"[A-Za-z0-9]{6}", client_tag):
             raise RuntimeError("broker_client_tag_invalid")
         with self._lock:
+            self.assert_live_submission_allowed()
+            slow_path = not self._started  # broker login has no time bound
+            self.ensure_started()
             if self._trade_cache_degraded():
                 self.reconcile_once()
+                slow_path = True
+            if slow_path:
+                # A pause acknowledged during login or reconciliation must still stop this leg.
+                self.assert_live_submission_allowed()
             health = self.health()
             if not health["healthy"]:
                 raise RuntimeError(str(health["unhealthy_reason"] or "execution_gateway_unhealthy"))

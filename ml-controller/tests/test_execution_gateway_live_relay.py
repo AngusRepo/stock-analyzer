@@ -29,6 +29,21 @@ def _packet() -> dict:
     return {"idempotency_key": "live-relay-test-001", "approval": {"approved_by": "Wei", "scope": "pilot-scope"}}
 
 
+class OpenControl:
+    def closed_reason(self):
+        return None
+
+
+class ClosedControl:
+    def __init__(self, reason="live_submission_paused:paused"):
+        self.reason = reason
+
+    def closed_reason(self):
+        if isinstance(self.reason, Exception):
+            raise self.reason
+        return self.reason
+
+
 class Response:
     def __init__(self, status_code: int, payload: dict):
         self.status_code = status_code
@@ -58,6 +73,7 @@ def test_signed_live_relay_uses_both_auth_layers_and_submits_once() -> None:
         packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]),
         allow_live_submit=True, env=env,
         identity_token_provider=lambda audience: "header.payload.signature", post_fn=post,
+        submission_control=OpenControl(),
     )
     assert result["status"] == "submitted"
     assert len(captured) == 1
@@ -97,6 +113,7 @@ def test_timeout_or_server_error_is_unknown_without_retry() -> None:
             packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]),
             allow_live_submit=True, env=env,
             identity_token_provider=lambda _: "header.payload.signature", post_fn=post,
+            submission_control=OpenControl(),
         )
         assert result["status"] == "unknown"
         assert len(calls) == 1
@@ -118,3 +135,19 @@ def test_status_recovery_remains_readable_after_submit_relay_is_disabled() -> No
     assert result["status"] == "ok"
     assert captured["url"] == "https://gateway.invalid/v1/intents/live-relay-test-001"
     assert captured["headers"]["Authorization"] == "Bearer app-token"
+
+
+def test_paused_or_unreadable_submission_control_blocks_before_iam() -> None:
+    packet, env = _packet(), _env()
+    for control, reason in (
+        (ClosedControl(), "live_submission_paused:paused"),
+        (ClosedControl(RuntimeError("d1 down")), "live_submission_control_unavailable"),
+    ):
+        result = relay_execution_live_submit(
+            packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]),
+            allow_live_submit=True, env=env,
+            identity_token_provider=lambda _: (_ for _ in ()).throw(AssertionError("IAM called")),
+            post_fn=lambda *a, **k: (_ for _ in ()).throw(AssertionError("gateway called")),
+            submission_control=control,
+        )
+        assert result == {"status": "blocked", "reason": reason}

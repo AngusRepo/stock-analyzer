@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
-import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
+import { getBearerToken, verifyJWT, requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { buildStrategyFormalMatureCompatibilitySql } from '../lib/selectionReferenceEvidence'
 import {
@@ -16,8 +16,47 @@ import {
 } from '../lib/dataDomainFormalCutover'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
+import { executionSubmissionControl } from '../lib/executionSubmissionControl'
 
 export const adminWriteRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+async function executionActor(c: { req: { header: (name: string) => string | undefined }; env: Bindings }): Promise<string> {
+  const token = getBearerToken(c.req.header('Authorization'))
+  const payload = token ? await verifyJWT(token, c.env.JWT_SECRET) : null
+  return `admin:${String(payload?.sub ?? 'unknown').slice(0, 128)}`
+}
+
+// R17 one-click return to Paper: admin only, no approval needed (Wei D-8).
+adminWriteRoutes.post('/api/admin/execution/return-to-paper', async (c) => {
+  const authError = await requireAdminJWT(c)
+  if (authError) return authError
+  const body = await c.req.json<{ request_id?: unknown }>().catch(() => null)
+  if (!body || typeof body.request_id !== 'string') return c.json({ error: 'request_id_required' }, 400)
+  return c.json(await executionSubmissionControl(c.env, {
+    kind: 'pause', request_id: body.request_id, actor: await executionActor(c), reason: 'admin_return_to_paper',
+  }))
+})
+
+// R17 resume: Wei scope, expiry and R4-gate receipt; the controller checks them against the deployed values.
+adminWriteRoutes.post('/api/admin/execution/resume', async (c) => {
+  const authError = await requireAdminJWT(c)
+  if (authError) return authError
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  const fields = ['request_id', 'reason', 'approval_scope', 'approval_expires_at', 'gate_receipt_sha256'] as const
+  if (!body || fields.some((key) => typeof body[key] !== 'string')) return c.json({ error: 'resume_fields_required' }, 400)
+  return c.json(await executionSubmissionControl(c.env, {
+    kind: 'resume', actor: await executionActor(c),
+    request_id: String(body.request_id), reason: String(body.reason),
+    approval_scope: String(body.approval_scope), approval_expires_at: String(body.approval_expires_at),
+    gate_receipt_sha256: String(body.gate_receipt_sha256),
+  }))
+})
+
+adminWriteRoutes.get('/api/admin/execution/submission-state', async (c) => {
+  const authError = await requireAdminJWT(c)
+  if (authError) return authError
+  return c.json(await executionSubmissionControl(c.env, { kind: 'state' }))
+})
 
 adminWriteRoutes.post('/api/admin/pit-residual/funnel-enrichment/recover', async (c) => {
   const authError = await requireAdminOrServiceToken(c)

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import json
 import os
 import asyncio
 import re
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
 from services.finlab_live_submit_service import run_finlab_live_submit
 from services.execution_gateway_shadow_relay import relay_execution_shadow
 from services.execution_gateway_live_relay import relay_execution_live_submit, relay_execution_live_status
+from services.execution_submission_control import D1SubmissionControl, SubmissionControlConflict
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
     run_production_simulated_execution_loop,
@@ -106,6 +109,18 @@ class FinLabL5MarketDataRequest(BaseModel):
 class FinLabExecutionPreviewRequest(BaseModel):
     intent: dict[str, Any] = Field(default_factory=dict)
     allow_broker_login: bool = False
+
+
+class FinLabPaperReturnRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=128)
+    actor: str = Field(min_length=1, max_length=160)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class FinLabLiveResumeRequest(FinLabPaperReturnRequest):
+    approval_scope: str = Field(min_length=1, max_length=200)
+    approval_expires_at: str = Field(min_length=1, max_length=64)
+    gate_receipt_sha256: str = Field(min_length=64, max_length=64)
 
 
 class FinLabLiveSubmitRequest(BaseModel):
@@ -572,6 +587,50 @@ def relay_finlab_execution_live_route(
         signature=x_execution_signature,
         allow_live_submit=req.allow_live_submit,
     )
+
+
+@router.post("/execution/return-to-paper")
+def return_to_paper_route(req: FinLabPaperReturnRequest) -> dict:
+    """R17 one-click pause: no approval, stops new Live buys and sells, keeps reconciliation."""
+    control = D1SubmissionControl()
+    try:
+        return control.pause(request_id=req.request_id, actor=req.actor, reason=req.reason)
+    except SubmissionControlConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception:
+        # A lost write must never read as confirmed; the chain itself still reads paused.
+        return {**control.state(), "pause_confirmed": False,
+                "reason_detail": "paper_return_unconfirmed_read_submission_state"}
+
+
+@router.post("/execution/resume")
+async def resume_live_route(request: Request) -> dict:
+    """R17 resume (Wei D-8). The raw body is parsed in resume_live, not by FastAPI, whose
+    422 body echoes what was submitted (the approval values)."""
+    return await run_in_threadpool(resume_live, await request.body())
+
+
+def resume_live(body: Any) -> dict:
+    """Wei scope, expiry and R4-gate receipt must match the deployed values."""
+    try:
+        req = FinLabLiveResumeRequest.model_validate(json.loads(body) if isinstance(body, (bytes, str)) else body)
+    except ValueError:  # malformed JSON or a ValidationError
+        raise HTTPException(422, "live_resume_request_invalid") from None
+    control = D1SubmissionControl()
+    try:
+        return control.resume(request_id=req.request_id, actor=req.actor, reason=req.reason,
+                              approval_scope=req.approval_scope,
+                              approval_expires_at=req.approval_expires_at,
+                              gate_receipt_sha256=req.gate_receipt_sha256)
+    except SubmissionControlConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception:
+        return {**control.state(), "resume_confirmed": False}
+
+
+@router.get("/execution/submission-state")
+def submission_state_route() -> dict:
+    return D1SubmissionControl().state()
 
 
 @router.get("/execution/live-intents/{idempotency_key}")

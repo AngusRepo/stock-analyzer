@@ -37,7 +37,8 @@ import { computeAndStoreIndicators, computeTechnicalIndicators } from './technic
 import { applyScreenerTechnicalOverlay } from './screenerTechnicalOverlay'
 import { materializePostOverlayStrategySeed, dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity, buildScreenerL1MergeItem } from './screenerPostOverlaySeed'
 export { dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity } from './screenerPostOverlaySeed'
-import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety } from './screenerPostRouteOverlays'
+import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety,
+  DELISTING_MONITOR_DEFAULT_MAX_SESSIONS, delistingMonitorWindowWeekdays, resolveDelistingMonitorMaxSessions } from './screenerPostRouteOverlays'
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
 import {
@@ -3303,6 +3304,31 @@ export interface BottomUpScreenerRunOptions {
   evidenceMode?: StrategyEvidenceMode
 }
 
+/** HL1-4#a: DelistingMonitor threshold. The configured max is KV `trading:config.screener.
+ * delistingMonitorMaxRecentSessions` (default 2); the holiday:* KV lowers it after a long closure.
+ * An unreadable calendar keeps the configured max, i.e. the pre-HL1-4#a behaviour. */
+export async function resolveDelistingMonitorThreshold(env: Pick<Bindings, 'KV'>, endDate: string, sc: unknown, debugLog: string[]): Promise<number> {
+  const raw = (sc as { delistingMonitorMaxRecentSessions?: unknown } | null | undefined)?.delistingMonitorMaxRecentSessions
+  let configuredMax = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS
+  if (raw !== undefined && raw !== null) {
+    if (Number.isInteger(raw) && (raw as number) >= 0) configuredMax = raw as number
+    else console.warn('[Screener v2] screener.delistingMonitorMaxRecentSessions invalid; using default', raw)
+  }
+  try {
+    const weekdays = delistingMonitorWindowWeekdays(endDate)
+    const closed = await Promise.all(weekdays.map(async (date) => Boolean(await env.KV.get(`holiday:${date}`))))
+    const expected = closed.filter(isClosed => !isClosed).length
+    const threshold = resolveDelistingMonitorMaxSessions(expected, configuredMax)
+    if (threshold !== configuredMax) {
+      debugLog.push(`[Step 6] DelistingMonitor threshold ${threshold} (expected sessions ${expected}, configured ${configuredMax})`)
+    }
+    return threshold
+  } catch (error) {
+    console.warn('[Screener v2] DelistingMonitor holiday calendar unreadable; keeping configured threshold', error)
+    return configuredMax
+  }
+}
+
 function resolveScreenerProducerRunId(runDate: string, value?: string | null): string {
   const candidate = String(value ?? '').trim()
   if (!candidate) return `screener-${runDate}-${Date.now()}`
@@ -4776,6 +4802,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 6: 鞈??釭嚗elistingMonitor嚗??
+  let delistingMonitorMaxSessions = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
     { // Preserve an explicit no-hit day without inventing missing market rows.
@@ -4802,7 +4829,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           missing_identity_symbols: symbols.filter(symbol => !identities.has(symbol)) }
       })
       const recentRows = recentRead.rows
-      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols)
+      delistingMonitorMaxSessions = await resolveDelistingMonitorThreshold(env, endDate, sc, debugLog)
+      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols, delistingMonitorMaxSessions)
       for (const event of events) pushFunnelItem(funnelItems, event)
       if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
     }
@@ -5230,7 +5258,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
           highFreqPenalty: Number((sc as any).highFreqPenalty ?? 6),
           newMoneyBonus: Number((sc as any).newMoneyBonus ?? 2),
-          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: 2 },
+          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: delistingMonitorMaxSessions },
       }))
     }
     const l0DropReasonConservation = buildL0DropReasonConservation({

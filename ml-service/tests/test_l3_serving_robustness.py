@@ -88,3 +88,15 @@ def test_challenger_scores_stay_out_of_the_raw_report():
     batch_prediction._record_feature_score(ctx, "XGBoost", 2.0, challenger=True)
     batch_prediction._record_feature_score(ctx, "LightGBM", -0.5)
     assert ctx.raw_scores == {"LightGBM": -0.5} and ctx.challenger_rank_scores == {"XGBoost": 1.0}
+
+
+def test_r33_pool_keeps_a_row_with_one_model_missing():
+    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY, _BATCH_MODEL_POOL_KEY
+    pool = _full_model_pool({"XGBoost": "active", "LightGBM": "active"})
+    override = {_BATCH_FEATURE_RANK_SCORES_KEY: {"LightGBM": 0.4}, _BATCH_MODEL_POOL_KEY: pool}
+    assert "XGBoost" in (batch_prediction._feature_core_coverage_error(override) or "")
+    r33_pool = {**pool, "active8_ensemble": {"kind": "r33_equal7_isotonic"}}
+    assert batch_prediction._feature_core_coverage_error({**override, _BATCH_MODEL_POOL_KEY: r33_pool}) is None
+    assert batch_prediction._feature_core_coverage_error(
+        {batch_prediction.BATCH_CONTEXT_ERROR_KEY: "feature_context_failed:x", _BATCH_MODEL_POOL_KEY: r33_pool}
+    ) == "feature_context_failed:x"

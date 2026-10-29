@@ -63,10 +63,35 @@ def test_r33_ensemble_validates_whole_and_matches_serving_pool():
     other["GNN"]["version"] = "GNN-v0"
     with pytest.raises(RuntimeError, match="active8_ensemble_base_identity_mismatch:GNN"):
         validate_active8_ensemble_artifact(_ensemble(), other)
-    with pytest.raises(RuntimeError, match="r33_ensemble_nav_inference_unsupported"):
+    with pytest.raises(RuntimeError, match="active8_nav_inference_authority_invalid"):
         validate_active8_ensemble_artifact(_ensemble(), POOL_MODELS, nav_authority=object())
     with pytest.raises(ValueError, match="r33_round_trip_cost_invalid"):
         attach_ensemble_v2(_prediction(0.1), _ensemble(), POOL_MODELS)
+
+
+def _grant(ensemble, *, artifacts=None):
+    from services.active8_nav_inference import _INFERENCE_SEAL, _InferenceGrant
+    return _InferenceGrant(ensemble["payload_checksum"], json.dumps(artifacts or ensemble["observation_artifacts"],
+                                                                    sort_keys=True), "g" * 64, _INFERENCE_SEAL)
+
+
+def test_r33_paper_grant_must_name_this_object_and_is_stamped_on_every_row():
+    ensemble = _ensemble()
+    validate_active8_ensemble_artifact(ensemble, POOL_MODELS, nav_authority=_grant(ensemble))
+    stale = deepcopy(ensemble["base_artifacts"])
+    stale["GNN"] = {**stale["GNN"], "version": "GNN-v0"}
+    with pytest.raises(RuntimeError, match="active8_nav_inference_authority_invalid"):
+        validate_active8_ensemble_artifact(ensemble, POOL_MODELS, nav_authority=_grant(ensemble, artifacts=stale))
+    other = deepcopy(ensemble)
+    other["cohort_id"] = "c2"
+    with pytest.raises(ValueError, match="r33_ensemble_payload_checksum"):     # the object is validated first
+        validate_active8_ensemble_artifact(other, POOL_MODELS, nav_authority=_grant(ensemble))
+    predictions, _ = _chain(stale={"P6": "last_bar=2026-11-07"})
+    for prediction in predictions.values():
+        attach_ensemble_v2(prediction, ensemble, POOL_MODELS, round_trip_cost=COST, nav_authority=_grant(ensemble))
+        assert prediction["ensemble_v2"]["adoption_basis"] == "committed_paired_nav"
+        assert prediction["ensemble_v2"]["nav_inference_context_checksum"] == "g" * 64
+    assert predictions["P6"]["ensemble_v2"]["lineage_status"] == "unscored"
 
 
 def test_evidence_from_another_calibration_is_rejected():

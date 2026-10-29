@@ -184,14 +184,17 @@ R33_KIND = "r33_equal7_isotonic"
 
 def _validate_r33_ensemble(payload, *, pool_models, nav_authority) -> None:
     """R33 equal7 object: validated whole by its single owner (services.r33_ensemble, mounted
-    at /root/services in Modal); there is no stacker fit, conformal policy or NAV adoption."""
-    if nav_authority is not None:
-        raise Active8EnsembleContractError("r33_ensemble_nav_inference_unsupported")
+    at /root/services in Modal); there is no stacker fit or conformal policy. A paper/NAV
+    inference grant must also name exactly this object and its base artifacts."""
     from services.r33_ensemble import validate_ensemble
     try:
         validate_ensemble(payload)
     except ValueError as exc:
         raise Active8EnsembleContractError(str(exc)) from exc
+    if nav_authority is not None:
+        from services.active8_nav_inference import permits_inference
+        if not permits_inference(nav_authority, artifact=payload, pool_models=pool_models):
+            raise Active8EnsembleContractError("active8_nav_inference_authority_invalid")
     _validate_base_identity(payload["selected_models"], payload["base_artifacts"], pool_models)
 
 

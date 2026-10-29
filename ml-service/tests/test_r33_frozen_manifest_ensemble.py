@@ -35,5 +35,21 @@ def test_tampered_r33_object_and_nav_authority_are_rejected():
     tampered["variant"] = "mean_z_restandardized"
     with pytest.raises(Active8EnsembleContractError, match="r33_ensemble_"):
         validate_active8_ensemble_artifact(tampered, pool_models=_pool(ensemble))
-    with pytest.raises(Active8EnsembleContractError, match="r33_ensemble_nav_inference_unsupported"):
+    with pytest.raises(Active8EnsembleContractError, match="active8_nav_inference_authority_invalid"):
         validate_active8_ensemble_artifact(ensemble, pool_models=_pool(ensemble), nav_authority=object())
+
+
+def test_r33_paper_grant_is_checked_after_the_object():
+    import json
+    from services.active8_nav_inference import _INFERENCE_SEAL, _InferenceGrant
+    ensemble = r33_fixture._ensemble()
+    grant = _InferenceGrant(ensemble["payload_checksum"], json.dumps(ensemble["observation_artifacts"], sort_keys=True),
+                            "g" * 64, _INFERENCE_SEAL)
+    validate_active8_ensemble_artifact(ensemble, pool_models=_pool(ensemble), nav_authority=grant)
+    other = _InferenceGrant("0" * 64, grant.base_json, grant.context_checksum, _INFERENCE_SEAL)
+    with pytest.raises(Active8EnsembleContractError, match="active8_nav_inference_authority_invalid"):
+        validate_active8_ensemble_artifact(ensemble, pool_models=_pool(ensemble), nav_authority=other)
+    tampered = copy.deepcopy(ensemble)
+    tampered["cohort_id"] = "c2"
+    with pytest.raises(Active8EnsembleContractError, match="r33_ensemble_payload_checksum"):
+        validate_active8_ensemble_artifact(tampered, pool_models=_pool(ensemble), nav_authority=grant)

@@ -2410,6 +2410,54 @@ def train_gnn_graphsage_universal(payload: dict) -> dict:
     scaledown_window=60,
     max_containers=1,
 )
+def train_gnn_industry_universal(payload: dict) -> dict:
+    """R_PLAN §7 challenger: GraphSAGE on PIT same-industry edges (GNNIndustry / GNNIndustryCosine)."""
+    _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
+    from app.gnn_training import train_graphsage_universal
+
+    body = dict(payload or {})
+    if body.get("graph_variant") not in ("industry", "industry_plus_cosine"):
+        return {"error": "gnn_industry_graph_variant_required", "type": "train_gnn_industry_universal"}
+    result = train_graphsage_universal(body)
+    result["training_input_cache"] = cache_receipt
+    return result
+
+
+@app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
+    cpu=4,
+    memory=32768,
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=3,
+    retries=0,
+)
+def train_linear_neutral_universal(payload: dict) -> dict:
+    """R_PLAN §7 challenger: exposure-neutralized formal131 ridge (LinearNeutral)."""
+    _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
+    from app.linear_neutral_training import train_linear_neutral_universal as _train
+
+    try:
+        result = _train(payload or {})
+        result["training_input_cache"] = cache_receipt
+        return result
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_linear_neutral_universal",
+                "window_id": (payload or {}).get("window_id"), "training_input_cache": cache_receipt}
+
+
+@app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
+    cpu=4,
+    memory=16384,
+    gpu="L4",
+    timeout=7200,
+    scaledown_window=60,
+    max_containers=1,
+)
 def train_tabm_universal(payload: dict) -> dict:
     """Formal TabM torch artifact training and model_pool registration."""
     _setup_env()

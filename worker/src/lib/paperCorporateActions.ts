@@ -1,7 +1,9 @@
 import type { Bindings } from '../types'
 import { paperAccountId, paperExecutionDate } from './paperExecutionScope'
 import { paperDomainDatabase } from './paperDomainDatabase'
-import { batchGetLatestPricesByDomain } from './paperMarketDomainData'
+import { batchGetClosingPricesByDomain } from './paperMarketDomainData'
+import { getPrevTradingDay } from './paperMarketData'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { adjustCanonicalCorporatePriceBasis } from './canonicalTradeLifecycle'
 import { prepareCorporateOpeningBasis, readCorporateOpeningBasis } from './paperCorporateOpeningBasis'
 
@@ -192,13 +194,28 @@ export function corporateReceivableBounds(rows: CorporateEntitlement[], prices: 
   return { lower, upper, unpricedRights: unpricedRights.sort(), complete: unpricedRights.length === 0 }
 }
 
+/**
+ * AUD-20: a mark for a missing quote is a dated close — today's exact close once published,
+ * otherwise the previous trading session's exact close. Never an older close.
+ */
+async function datedCloseFallback(env: Pick<Bindings, 'DB'> & Partial<Bindings>, symbols: string[],
+  today: string): Promise<Map<string, number>> {
+  if (!symbols.length) return new Map()
+  const closes = await batchGetClosingPricesByDomain(env, symbols, today)
+  const remaining = symbols.filter(symbol => !closes.has(symbol))
+  if (!remaining.length) return closes
+  const previous = await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV, today)
+  for (const [symbol, price] of await batchGetClosingPricesByDomain(env, remaining, previous)) closes.set(symbol, price)
+  return closes
+}
+
 export async function corporateAccountRiskBounds(env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   accountId: number, quotePrices = new Map<string, number>()) {
   const rows = await outstandingCorporateEntitlements(paperDomainDatabase(env), accountId)
   const missing = [...new Set(rows.filter(r => (r.shares_due > 0 || r.kind === 'subscription')
     && !quotePrices.has(r.symbol)).map(r => r.symbol))]
   const today = new Date(paperExecutionDate().getTime() + 8 * 3600_000).toISOString().slice(0, 10)
-  const fallback = missing.length ? await batchGetLatestPricesByDomain(env, missing, today) : new Map<string, number>()
+  const fallback = await datedCloseFallback(env, missing, today)
   return corporateReceivableBounds(rows, new Map([...fallback, ...quotePrices]))
 }
 
@@ -208,9 +225,19 @@ export async function processCorporateActionsFromSource(env: Bindings, sessionDa
   const snapshot: CorporateActionSnapshot = JSON.parse(raw)
   validateCorporateSnapshot(snapshot, sessionDate, paperExecutionDate().getTime())
   const symbols = [...new Set(snapshot.actions.filter(a => a.ex_date === sessionDate).map(a => a.symbol))]
-  const previousDate = new Date(Date.parse(sessionDate + 'T00:00:00Z') - 86400_000).toISOString().slice(0, 10)
-  const closes = symbols.length ? await batchGetLatestPricesByDomain(env, symbols, previousDate) : new Map<string, number>()
-  await processPaperCorporateActions(env, sessionDate, snapshot, closes)
+  await processPaperCorporateActions(env, sessionDate, snapshot, await corporateReferenceCloses(env, symbols, sessionDate))
+}
+
+/**
+ * AUD-20: the reference close is the previous trading session's exact close (weekend and holiday:* aware).
+ * A gap (including a suspended symbol) fails closed in processPaperCorporateActions
+ * (paper_corporate_previous_close_missing); an older close is never used.
+ */
+export async function corporateReferenceCloses(env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>, symbols: string[],
+  sessionDate: string): Promise<Map<string, number>> {
+  if (!symbols.length) return new Map()
+  const previousSession = await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV, sessionDate)
+  return batchGetClosingPricesByDomain(env, symbols, previousSession)
 }
 
 /** Common NAV consumer. This never changes the available-cash calculation. */
@@ -219,7 +246,7 @@ export async function corporateAccountReceivablesValue(env: Pick<Bindings, 'DB'>
   const rows = await outstandingCorporateEntitlements(paperDomainDatabase(env), accountId)
   const missing = [...new Set(rows.filter(r => r.shares_due > 0 && !quotePrices.has(r.symbol)).map(r => r.symbol))]
   const today = new Date(paperExecutionDate().getTime() + 8 * 3600_000).toISOString().slice(0, 10)
-  const fallback = missing.length ? await batchGetLatestPricesByDomain(env, missing, today) : new Map<string, number>()
+  const fallback = await datedCloseFallback(env, missing, today)
   return corporateReceivableValue(rows, new Map([...fallback, ...quotePrices]))
 }
 
@@ -332,6 +359,7 @@ export async function processPaperCorporateActions(env: Bindings, sessionDate: s
           recognized_at: now.toISOString(), prospective_backfill_credit: 0 }),
         'paper_corporate_actions_v1', now.toISOString()))
   }
+  const conversionAudits: D1PreparedStatement[] = []
   for (const position of positions) {
     const actions = snapshot.actions.filter(a => a.symbol === position.symbol && a.ex_date === sessionDate)
     if (!actions.length) continue
@@ -366,6 +394,12 @@ export async function processPaperCorporateActions(env: Bindings, sessionDate: s
         : corporateStockQuantity(position.original_shares, conversion).whole
       statements.push(db.prepare('UPDATE paper_positions SET shares=?,original_shares=? WHERE account_id=? AND symbol=?')
         .bind(converted.whole, original, accountId, position.symbol))
+      // O04: an exchange has no entitlement row; record its share change so NAV reconciliation can explain it.
+      conversionAudits.push(db.prepare(`INSERT INTO paper_execution_events
+        (account_id,trade_date,symbol,event_type,status,reason,detail_json,source,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .bind(accountId, sessionDate, position.symbol, 'corporate_share_conversion', 'recorded', 'exchange',
+          JSON.stringify({ action_id: exchange.action_id, shares_before: position.shares, shares_after: converted.whole }),
+          'paper_corporate_actions_v1', now.toISOString()))
     }
     const previousClose = previousCloses.get(position.symbol)
     if (!nonnegative(previousClose) || previousClose <= cash) throw new Error('paper_corporate_previous_close_missing:' + position.symbol)
@@ -479,6 +513,8 @@ export async function processPaperCorporateActions(env: Bindings, sessionDate: s
   // must not turn an otherwise valid session into a new capacity failure.
   // D1's 100 bound-parameter limit is per statement, not per batch.
   statements.unshift(openingStatement)
+  // Audit rows ride in the same transaction without reducing the economic capacity above.
+  statements.push(...conversionAudits)
   const beforeCommit = paperExecutionDate()
   if (beforeCommit.getTime() < now.getTime()) throw new Error('paper_corporate_opening_clock_regressed')
   if (beforeCommit.toISOString() >= sessionDate + 'T01:00:00.000Z') throw new Error('paper_corporate_exdate_opening_state_required')

@@ -96,6 +96,39 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     assert.equal(snapshot.pendingBuys[0].ml_entry_price,20)
     assert.ok(snapshot.pendingBuys[0].watch_points.includes('l4_execution_reference:canonical_signal_close'))
     assert.equal(snapshot.pendingBuys[0].debate_verdict,'PENDING')
+    // AUD-21: an order from an earlier session without that session's close is a fail-closed P8 block, not a loss.
+    f.sqls.paper.exec("INSERT INTO paper_orders(id,account_id,symbol,side,shares,price,total_cost,created_at) VALUES(900,1,'9999','sell',1,20,20,'2026-09-10T05:00:00Z')")
+    f.ports.nowMs=Date.parse('2026-09-14T01:43:00Z')
+    await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
+    assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+    const p8=f.sqls.paper.prepare("SELECT symbol,reason,detail_json FROM paper_execution_events WHERE event_type='paper_order' AND status='blocked'").all() as any[]
+    assert.deepEqual(p8.map(row=>[row.symbol,row.reason]),[['2330','p8_fail_closed']])
+    assert.match(JSON.parse(p8[0].detail_json).risk.reason,/previous_session_snapshot_missing:2026-09-11/)
+    f.sqls.paper.exec("DELETE FROM paper_execution_events")
+    // With that close present and a measured loss beyond the limit, the block is a daily loss instead.
+    f.sqls.paper.exec("INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) SELECT id,'2026-09-11',cash*2,0,cash*2,0,0 FROM paper_accounts WHERE id=1")
+    await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
+    assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+    assert.deepEqual((f.sqls.paper.prepare("SELECT symbol,reason FROM paper_execution_events WHERE event_type='paper_order' AND status='blocked'").all() as any[])
+      .map(row=>[row.symbol,row.reason]),[['2330','p8_daily_loss']])
+    f.sqls.paper.exec("DELETE FROM paper_execution_events")
+    f.sqls.paper.exec("DELETE FROM paper_daily_snapshots WHERE date='2026-09-11'")
+    f.sqls.paper.exec("DELETE FROM paper_orders WHERE id=900")
+    // AUD-20: a holding with no broker quote and no previous-session (09-11) close never gets an older close
+    // (09-10) as its mark: new buys stop. In this chain the earlier holding-risk gate stops them first.
+    f.sqls.core.exec("INSERT INTO stocks(id,symbol,name,market) VALUES(2,'1101','stale','TWSE')")
+    f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,open,high,low,close,avg_price,volume) VALUES(2,'2026-09-10',30,30,30,30,30,1000)")
+    f.sqls.paper.exec("INSERT INTO paper_positions(account_id,symbol,name,shares,avg_cost) VALUES(1,'1101','stale',1000,30)")
+    f.ports.nowMs=Date.parse('2026-09-14T01:44:00Z')
+    await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
+    assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,0)
+    const blocked=f.sqls.paper.prepare("SELECT symbol,reason,detail_json FROM paper_execution_events WHERE event_type='paper_order' AND status='blocked'").all() as any[]
+    assert.deepEqual(blocked.map(row=>[row.symbol,row.reason]),[['2330','holding_risk_evidence_unavailable']])
+    assert.deepEqual(JSON.parse(blocked[0].detail_json).missing_symbols,['1101'])
+    f.sqls.paper.exec("DELETE FROM paper_execution_events")
+    f.sqls.paper.exec("DELETE FROM paper_positions WHERE symbol='1101'")
+    f.sqls.market.exec("DELETE FROM stock_prices WHERE stock_id=2")
+    f.sqls.core.exec("DELETE FROM stocks WHERE id=2")
     // Entry must use the sealed L4 plan while the advisory debate is pending.
     f.ports.nowMs=Date.parse('2026-09-14T01:45:00Z')
     const result=await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))

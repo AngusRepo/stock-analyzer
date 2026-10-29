@@ -60,11 +60,12 @@ test('a non-R33 plan still rejects a held name outside the rows',async()=>{
   const input=r33Fixture();delete input.plan.r33_projection
   await assert.rejects(verifyPublicationReceipt(input),/premarket_serving_receipt_closure_mismatch/)
 })
-for(const fault of ['unscored','unscored_negative','unlocked_outside','unheld_outside','held_count','target_count','seed_rows','duplicate_row'])
+for(const fault of ['unscored','unscored_negative','held_negative','unlocked_outside','unheld_outside','held_count','target_count','seed_rows','duplicate_row'])
   test('reject R33 closure mismatch: '+fault,async()=>{
     const input=r33Fixture(), c=input.publication.closure
     if(fault==='unscored')c.r33_unscored_missing_prediction_count=2
     if(fault==='unscored_negative'){c.r33_unscored_missing_prediction_count=-1;c.prediction_symbols=4}
+    if(fault==='held_negative')c.r33_held_outside_seed_prediction_symbols=-1
     if(fault==='unlocked_outside')input.plan.targets['9999'].locked=false
     if(fault==='unheld_outside')input.plan.targets['9999'].current_weight=0
       if(fault==='held_count')c.r33_held_outside_seed_prediction_symbols=2

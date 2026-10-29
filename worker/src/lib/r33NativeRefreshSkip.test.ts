@@ -5,7 +5,7 @@ import { R33_MONTHLY_MODEL_PROFILE, runActive8OofLifecycle } from './controllerR
 import { R33_EQUAL7_ISOTONIC, SINGLE_B_TABPACK } from './paperStrategyMode'
 
 // Major 3: under R33 the exo137 weekly/monthly cohort would only feed the native L4 refresh.
-async function run(mode: string, cadence: 'daily' | 'weekly' | 'monthly', flag?: string) {
+async function run(mode: string, cadence: 'daily' | 'weekly' | 'monthly', flag?: string, runDate: string | null = '2026-11-13') {
   const previousFetch = globalThis.fetch
   const requests: Record<string, unknown>[] = [], logs: unknown[][] = []
   globalThis.fetch = async (_input, init) => {
@@ -21,7 +21,7 @@ async function run(mode: string, cadence: 'daily' | 'weekly' | 'monthly', flag?:
     ...(flag === undefined ? {} : { R33_MONTHLY_PROFILE: flag }),
   } as unknown as Bindings
   let summary = ''
-  try { summary = await runActive8OofLifecycle(env, '2026-11-13', cadence) } finally { globalThis.fetch = previousFetch }
+  try { summary = await runActive8OofLifecycle(env, runDate ?? undefined, cadence) } finally { globalThis.fetch = previousFetch }
   return { summary, requests, logs }
 }
 
@@ -37,8 +37,9 @@ test('R33 weekly and monthly (without the R33 profile) skip the dispatch and wri
 })
 
 test('R33 daily closure and the R33 monthly lifecycle still dispatch; other modes are unchanged', async () => {
-  // Daily goes on to its own fences (the closure job), never to the R33 skip.
-  await assert.rejects(run(R33_EQUAL7_ISOTONIC, 'daily'), /active8_daily_blocked/)
+  // Daily (no run date: no date fences) dispatches the closure job, never the R33 skip.
+  const daily = await run(R33_EQUAL7_ISOTONIC, 'daily', undefined, null)
+  assert.equal(daily.requests.length, 1); assert.equal(daily.logs.length, 0)
   const monthly = await run(R33_EQUAL7_ISOTONIC, 'monthly', '1')
   assert.equal(monthly.requests[0].model_profile_schema_version, R33_MONTHLY_MODEL_PROFILE)
   assert.equal(monthly.logs.length, 0)

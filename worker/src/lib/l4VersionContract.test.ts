@@ -160,3 +160,14 @@ test('explicit 131 monthly profile keeps candidate-only controls for both roles'
     assert.equal(bodies.length,count)
   } finally {globalThis.fetch=original}
 })
+
+test('R33 config validates only with its operating mode, and the mode only with the R33 artifact', () => {
+  const f=fixture(), a:any=f.artifact
+  a.feature_schema=f.receipt.feature_schema='r33-seven-model-ranks-and-availability-v1'
+  a.model={schema_version:'r33-seven-model-equal-z-isotonic-v1',feature_names:['LightGBM','ExtraTrees','TabM','GNN','TimeXer','PatchTST','iTransformer']
+    .flatMap(m=>[`${m}_z`,`${m}_available`]).concat('score')}
+  Object.assign(f.config.l4Distribution!, {operating_mode:'r33_equal7_isotonic_v1',strategy_role:'B'})
+  assert.deepEqual(validateTradingConfig(f.config),[])
+  delete (f.config.l4Distribution as any).operating_mode; delete (f.config.l4Distribution as any).strategy_role
+  assert.ok(validateTradingConfig(f.config).includes('l4Distribution R33 feature schema and R33 operating_mode must appear together'))
+})

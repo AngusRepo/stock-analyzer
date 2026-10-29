@@ -1,4 +1,4 @@
-import { validSingleBModel } from './paperStrategyMode'
+import { l4OperatingModeError, validSingleBModel } from './paperStrategyMode'
 import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { evaluateBoundedLosses } from './riskChecks/p5Losses'
@@ -1654,6 +1654,7 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
           errors.push(`l4Distribution.sealedExecution requires measured ${checksum} and explicit sample minimum`)
     }
     if (policy.operating_mode != null && !validSingleBModel(policy)) errors.push('single B mode requires its matching complete Paper artifact')
+    if (l4OperatingModeError(policy)) errors.push('l4Distribution R33 feature schema and R33 operating_mode must appear together')
     if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'
     if ((!isolatedCandidate && policy.scope!=='paper') || a?.schema_version!=='l4-distribution-v1'

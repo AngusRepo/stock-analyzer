@@ -4071,7 +4071,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 test_window_days=test_sessions,
                 cohort_id=cohort_id,
                 confirm=not req.dry_run,
-                concurrent_windows=2,
+                concurrent_windows=7,
                 prep_gcs_prefix=prep_gcs_prefix,
                 sequence_gcs_prefix=sequence_gcs_prefix,
                 resume_manifest_path=resume_manifest_path,

@@ -14,7 +14,7 @@ import type { Bindings } from '../types'
 import { getCronLogs, type CronLogEntry } from './schedulerRunLogger'
 import { getNextRunApproxWithPolicy } from './schedulerPolicy'
 import { getSchedulerDependencySpec } from './schedulerDependencyMap'
-import { manifestRepeatingWindow, schedulerGovernanceSummary, schedulerJobAccounting } from './schedulerManifestGovernance'
+import { eodExitSchedule, manifestRepeatingWindow, schedulerGovernanceSummary, schedulerJobAccounting } from './schedulerManifestGovernance'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   loadSchedulerExecutionTickets,
@@ -52,9 +52,9 @@ type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 const JOB_DEF_METADATA: JobDef[] = [
   { id: 'pre-market-warmup', name: 'Pre-market Readiness', schedule: 'Event-driven; broker health from 08:30', cron: '', group: 'pipeline_chain', chainIndex: 0 },
   { id: 'market-close-refresh', name: 'Market Close Refresh', schedule: 'Weekdays 18:10', cron: '10 10 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
-  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:00', cron: '0 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
+  { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:45', cron: '45 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'finlab-v4-backfill', name: 'FinLab V4 Backfill', schedule: 'Inside evening chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },
-  { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:20-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 22:00-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'indicator-queue-watchdog', name: 'Indicator Queue Watchdog', schedule: 'Weekdays 21:00-01:55 / 5m', cron: '*/5 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'allocator-ev-lifecycle-watchdog', name: 'Allocator EV Lifecycle Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'daily' },
   { id: 'active8-oof-daily', name: 'Active-8 Daily Evidence', schedule: 'Snapshot-ready event + daily recovery (waits for premarket)', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
@@ -116,7 +116,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'rescore-11', name: 'Intraday Re-score 11:00', schedule: 'Weekdays 11:00', cron: '0 3 * * 1-5', group: 'intraday' },
   { id: 'rescore-12', name: 'Intraday Re-score 12:00', schedule: 'Weekdays 12:00', cron: '0 4 * * 1-5', group: 'intraday' },
   { id: 'rescore-1230', name: 'Intraday Re-score 12:30', schedule: 'Weekdays 12:30', cron: '30 4 * * 1-5', group: 'intraday' },
-  { id: 'eod-exit', name: 'EOD Exit', schedule: 'Weekdays 13:25', cron: '25 5 * * 1-5', group: 'intraday' },
+  { id: 'eod-exit', name: 'EOD Exit', schedule: `Weekdays ${eodExitSchedule().twTime}`, cron: eodExitSchedule().cron, group: 'intraday' },
   { id: 'post-close-price-refresh', name: 'Post-close Price Refresh', schedule: 'Weekdays 13:40', cron: '40 5 * * 1-5', group: 'intraday' },
 
   { id: 'weekly-audit', name: 'Weekly Audit', schedule: 'Friday 18:30', cron: '30 10 * * 5', group: 'weekly' },

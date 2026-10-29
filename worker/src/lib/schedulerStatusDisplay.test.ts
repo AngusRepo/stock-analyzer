@@ -91,7 +91,7 @@ function assert(condition: unknown, message: string): void {
       }],
     },
   })
-  assert(displayDate === today, 'today close refresh must start a current-day display chain before the 21:00 root begins')
+  assert(displayDate === today, 'today close refresh must start a current-day display chain before the 21:45 root begins')
 }
 
 {

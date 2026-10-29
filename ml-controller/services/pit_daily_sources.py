@@ -60,11 +60,15 @@ def required_versions(state: dict, *, query, bucket_factory) -> list[str]:
     Registered NAV pins are not read; a pinned PIT TimeXer outside them fails closed.
     """
     manifest = (state.get("pipeline_modal_serving_context") or {}).get("serving_manifest") or {}
+    from services.r33_ensemble import is_r33
+    # R33-NEW-11: under R33 the feature models and GNN also read the prep of their own version.
+    prep_models = {"TimeXer", "LightGBM", "ExtraTrees", "TabM", "GNN"} if is_r33(manifest.get("active8_ensemble")) \
+        else {"TimeXer"}
     paths = set()
     for section in ("models", "active8_shadow_candidates"):
         rows = manifest.get(section) or []
         for row in (rows.values() if isinstance(rows, dict) else rows):
-            if isinstance(row, dict) and row.get("model") == "TimeXer" and row.get("metadata_path"):
+            if isinstance(row, dict) and row.get("model") in prep_models and row.get("metadata_path"):
                 paths.add(str(row["metadata_path"]))
     from services.paper_strategy_mode import from_manifest
     if isinstance(manifest.get("active8_ensemble"), dict) and not from_manifest(manifest, signal_date=state["run_date"]):

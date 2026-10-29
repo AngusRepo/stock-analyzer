@@ -1965,7 +1965,15 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             f"(required={contract.get('seq_len') or 'unknown'} usable=0)"
         )
 
+    from app.r33_prep_rows import stage_runner
+    from app.model_store import _get_bucket
+    # R33-NEW-11: the feature and GNN stages read the sealed prep rows, loaded once.
+    _with_r33_prep = stage_runner(frozen_pool, payload, payloads, bucket_factory=_get_bucket)
+
     def _feature() -> list[dict]:
+        return _with_r33_prep(_feature_rows)
+
+    def _feature_rows() -> list[dict]:
         raw_chunk_size = payload.get("predict_batch_v2_chunk_size")
         try:
             chunk_size = int(raw_chunk_size or len(payloads) or 1)
@@ -1982,7 +1990,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     def _gnn() -> dict:
         if not _is_active("GNN"):
             return _skip("GNN retired by model_pool")
-        return predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool)
+        return _with_r33_prep(lambda: predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool))
 
     from app.pipeline_prediction_stages import SCOPE, namespace
     stage_journal = SCOPE.get()

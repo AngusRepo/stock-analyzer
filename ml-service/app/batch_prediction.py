@@ -39,6 +39,8 @@ class _FeatureBatchContext:
     # artifact needed that serving filled from training medians (NEW-76).
     raw_scores: dict[str, float] = field(default_factory=dict)
     median_filled: dict[str, list[str]] = field(default_factory=dict)
+    # R33-NEW-11: every view comes from the sealed prep; a missing one is never rebuilt per stock.
+    prep_only: bool = False
 
 
 def _runtime():
@@ -298,6 +300,17 @@ def _latest_feature_row(req: Any, pit_version: str | None) -> tuple[np.ndarray, 
 
 def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
     pit_version = getattr(req, "pit_contract_version", None)
+    from .r33_prep_rows import PREP_VIEWS, context_views
+    views = PREP_VIEWS.get()
+    if views is not None:
+        # R33-NEW-11: the serving row is the prep row the training rows came from.
+        per_version = context_views(views, str(req.symbol))
+        own = per_version.pop(pit_version, f"r33_prep_source_missing:{pit_version}")
+        if isinstance(own, str):
+            raise ValueError(own)
+        return _FeatureBatchContext(
+            req=req, x_latest=own[0], feature_names=own[1], pit_contract_version=pit_version,
+            serve_artifact_versions=pit_version is None, pit_views=per_version, prep_only=True)
     x_latest, feature_names = _latest_feature_row(req, pit_version)
     return _FeatureBatchContext(
         req=req,
@@ -393,6 +406,8 @@ def _feature_view(ctx: _FeatureBatchContext, version: str | None) -> tuple[np.nd
         return ctx.x_latest, ctx.feature_names
     if not ctx.serve_artifact_versions:
         raise ValueError("pit_contract_version_serving_mismatch")
+    if version not in ctx.pit_views and ctx.prep_only:
+        raise ValueError(f"r33_prep_source_missing:{version}")
     if version not in ctx.pit_views:
         try:
             ctx.pit_views[version] = _latest_feature_row(ctx.req, version)

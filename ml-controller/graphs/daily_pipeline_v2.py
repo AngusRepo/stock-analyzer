@@ -4415,6 +4415,20 @@ def _pit_feature_source_sets(state, semantics, *, research_only: bool) -> dict:
                                             for version, source in sorted(sources.items())}}
 
 
+def _r33_feature_prep_sources(state, serving_manifest) -> dict:
+    """R33-NEW-11: under R33 the feature models and GNN read their rows from the sealed prep
+    (the legacy daily capture and its PIT variants); absent in every other mode."""
+    from services.r33_ensemble import is_r33
+    if not is_r33(serving_manifest.get("active8_ensemble")):
+        return {}
+    base = state.get("timexer_feature_source")
+    if not isinstance(base, dict) or base.get("schema_version") != "timexer-feature-source-v1":
+        raise ValueError("r33_prep_source_missing")
+    pit = (state.get("timexer_pit_feature_sources") or {}).get("sources") or {}
+    return {"r33_feature_prep_sources": {"schema_version": "r33-feature-prep-sources-v1",
+                                         "base": base, "pit": dict(sorted(pit.items()))}}
+
+
 @artifact_reads
 async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str,
                                                   research_only: bool = False) -> dict:
@@ -4593,6 +4607,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "sequence_series": sequence_series,
         "timexer_feature_source": timexer_feature_source,
         **_pit_feature_source_sets(state, semantics if needs_timexer else None, research_only=research_only),
+        **_r33_feature_prep_sources(state, serving_manifest),
         "sequence_model_series_by_model": sequence_series_by_model,
         "sequence_model_contracts": _json_safe(sequence_contracts),
         "active8_shadow_sequence_series_by_model": active8_shadow_sequence_series_by_model,

@@ -407,3 +407,43 @@ def test_the_prediction_request_forwards_research_only_to_the_pit_key():
     source = inspect.getsource(inspect.unwrap(graph._build_pipeline_modal_prediction_payload))
     assert ("**_pit_feature_source_sets(state, semantics if needs_timexer else None, research_only=research_only)"
             in source)
+
+
+# ---- R33-NEW-11: the feature models and GNN read the prep of their own version ----
+R33_ENSEMBLE = {'kind': 'r33_equal7_isotonic'}
+
+
+def test_r33_reads_the_feature_model_and_gnn_versions_too(monkeypatch):
+    from services import paper_strategy_mode
+    monkeypatch.setattr(paper_strategy_mode, 'from_manifest', lambda *a, **k: {'mode': 'r33'})
+    models = [{'model': 'TimeXer', 'metadata_path': 'tx/legacy.json'},
+              {'model': 'LightGBM', 'metadata_path': 'tx/pit.json'},
+              {'model': 'PatchTST', 'metadata_path': 'tx/ambiguous.json'}]
+    bucket = MetaBucket(META)
+    assert pds.required_versions(_state({'models': models, 'active8_ensemble': R33_ENSEMBLE}),
+                                 query=lambda *a: pytest.fail('query'), bucket_factory=lambda: bucket) == [V]
+    assert sorted(bucket.reads) == ['tx/legacy.json', 'tx/pit.json']
+    for model in ('ExtraTrees', 'TabM', 'GNN'):
+        assert pds.required_versions(_state({'models': [{'model': model, 'metadata_path': 'tx/pit.json'}],
+                                             'active8_ensemble': R33_ENSEMBLE}),
+                                     query=None, bucket_factory=lambda: MetaBucket(META)) == [V]
+    # Outside R33 only TimeXer reads a prep.
+    assert pds.required_versions(_state({'models': models[1:2], 'active8_ensemble': {'kind': 'other'}}),
+                                 query=None, bucket_factory=lambda: pytest.fail('bucket')) == []
+
+
+def test_r33_prep_sources_ride_on_the_timexer_sources_only_under_r33():
+    from graphs.daily_pipeline_v2 import _r33_feature_prep_sources
+    base = {'schema_version': 'timexer-feature-source-v1', 'source_gcs_prefix': PREFIX}
+    pit = {'v-b': {'source_gcs_prefix': 'b'}, 'v-a': {'source_gcs_prefix': 'a'}}
+    state = {'timexer_feature_source': base, 'timexer_pit_feature_sources': {'sources': pit}}
+    assert _r33_feature_prep_sources(state, {'active8_ensemble': {'kind': 'other'}}) == {}
+    assert _r33_feature_prep_sources({}, {}) == {}
+    out = _r33_feature_prep_sources(state, {'active8_ensemble': R33_ENSEMBLE})['r33_feature_prep_sources']
+    assert out == {'schema_version': 'r33-feature-prep-sources-v1', 'base': base, 'pit': pit}
+    assert list(out['pit']) == ['v-a', 'v-b']
+    assert _r33_feature_prep_sources({'timexer_feature_source': base},
+                                     {'active8_ensemble': R33_ENSEMBLE})['r33_feature_prep_sources']['pit'] == {}
+    for broken in ({}, {'timexer_feature_source': {'schema_version': 'other'}}):
+        with pytest.raises(ValueError, match='r33_prep_source_missing'):
+            _r33_feature_prep_sources(broken, {'active8_ensemble': R33_ENSEMBLE})

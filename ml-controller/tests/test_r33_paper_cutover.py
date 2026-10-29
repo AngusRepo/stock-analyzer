@@ -34,7 +34,7 @@ OLD_IDENTITY = {'schema_version': 'paired-nav-formal-ml-baseline-v1', 'artifact_
 def _old_policy():
     return {'scope': 'paper', 'artifact': {'model_checksum': 'o' * 64, 'feature_schema': 'full-l3-30-timexer-signals-v4'},
             'operating_mode': MLP_MODE, 'strategy_role': 'B', 'constraints': {'exposure_cap': .9},
-            'opb': {'enabled': True, 'approved_policy_identity': 'p' * 64}}
+            'opb': {'enabled': True, 'approved_policy_identity': 'f0' * 32}}
 
 
 def _evidence(policy, ensemble):
@@ -58,7 +58,7 @@ def _evidence(policy, ensemble):
                                        'trading:config.l4Distribution.opb.approved_policy_identity',
                                        'trading:config.exit.swingHardStopPct',
                                        'trading:config.exit.swingMaxHoldSessions'],
-            'first_night': {'supersedes_plan_policy_identity': 'p' * 64, 'effective_signal_date': '2026-11-10'},
+            'first_night': {'supersedes_plan_policy_identity': 'f0' * 32, 'effective_signal_date': '2026-11-10'},
             'wei_approval': {'approved': True, 'scope': 'paper', 'approved_at': '2026-11-08T12:00:00Z',
                              'source_reference': 'SYNTHETIC TEST ONLY'}}
 
@@ -98,7 +98,7 @@ def test_valid_r33_cutover_checks_the_prior_chain(monkeypatch):
                                    'l4_checksum', 'feature_schema', 'rank_pool', 'calibration', 'oof_status', 'pit',
                                    'cohort', 'wei_scope', 'wei_order', 'first_night_identity', 'first_night_date',
                                    'first_night_format', 'extra_field', 'swing_exit_missing', 'swing_exit_value',
-                                   'swing_exit_scope', 'exit_other_field'])
+                                   'swing_exit_scope', 'exit_other_field', 'first_night_no_identity', 'swing_age_zero'])
 def test_r33_cutover_rejects_every_other_change(monkeypatch, fault):
     approval, admission, _, _ = _grant(monkeypatch)
     e, c = approval['approved_r33_cutover'], approval['configuration']
@@ -134,6 +134,10 @@ def test_r33_cutover_rejects_every_other_change(monkeypatch, fault):
         'first_night_identity': lambda: e['first_night'].update(supersedes_plan_policy_identity='n' * 64),
         'first_night_date': lambda: e['first_night'].update(effective_signal_date='2026-11-06'),
         'first_night_format': lambda: e['first_night'].update(effective_signal_date='2026/11/10'),
+        'first_night_no_identity': lambda: (e['first_night'].update(supersedes_plan_policy_identity=None),
+                                            approval['prior_runtime_approval']['configuration']['trading_config']
+                                            ['l4Distribution']['opb'].pop('approved_policy_identity')),
+        'swing_age_zero': lambda: admission['strategy_bundle']['candidate_trading_config']['exit'].update(swingMaxHoldSessions=0),
         'extra_field': lambda: e.update(maturity_transfer=True),
         'swing_exit_missing': lambda: admission['strategy_bundle']['candidate_trading_config']['exit'].pop('swingMaxHoldSessions'),
         'swing_exit_value': lambda: admission['strategy_bundle']['candidate_trading_config']['exit'].update(swingHardStopPct=0),
@@ -290,7 +294,7 @@ def test_publication_of_an_r33_object_needs_the_cutover_grant(monkeypatch):
 
 def _old_plan(**overrides):
     return {'plan_id': 'old-plan', 'signal_date': '2026-11-09', 'model_checksum': 'o' * 64,
-            'policy_identity': 'p' * 64, 'l3_identity': OLD_IDENTITY, **overrides}
+            'policy_identity': 'f0' * 32, 'l3_identity': OLD_IDENTITY, **overrides}
 
 
 def _closure_env(monkeypatch, approval, admission, plan):
@@ -320,7 +324,7 @@ def test_cutover_night_closes_the_old_plan_as_superseded(monkeypatch):
 
 
 @pytest.mark.parametrize('fault', ['no_cutover', 'effective_date', 'policy', 'model', 'no_admission', 'approval_revoked',
-                                   'nested_unpinned'])
+                                   'nested_unpinned', 'configured_model'])
 def test_model_change_without_a_matching_cutover_still_fails(monkeypatch, fault):
     from services import l4_oof_lifecycle, active8_paper_admission
     approval, admission, _, _ = _grant(monkeypatch)
@@ -337,6 +341,8 @@ def test_model_change_without_a_matching_cutover_still_fails(monkeypatch, fault)
         approval = {'admission': admission, 'configuration': approval['configuration'],
                     'prior_runtime_approval': approval, 'approved_other_change': {}}
     config, paper, _ = _closure_env(monkeypatch, approval, admission, plan)
+    if fault == 'configured_model':
+        config = {'l4Distribution': {**config['l4Distribution'], 'artifact': {'model_checksum': 'x' * 64}}}
     if fault == 'no_admission':
         from services import kv_client
         monkeypatch.setattr(kv_client, 'get_json', lambda key, **kw: None)
@@ -362,5 +368,40 @@ def test_the_first_r33_plan_closes_normally_after_the_cutover(monkeypatch):
 def test_superseded_closure_names_only_the_plan_for_that_signal_date(monkeypatch):
     approval, admission, _, _ = _grant(monkeypatch)
     _closure_env(monkeypatch, approval, admission, _old_plan())
-    assert r33_cutover.superseded_plan_closure(_old_plan(), '2026-11-08', approval=approval, admission=admission) is None
-    assert r33_cutover.superseded_plan_closure(_old_plan(), '2026-11-09', approval=approval, admission=admission)
+    current = approval['approved_r33_cutover']['l4_model_checksum']
+    assert r33_cutover.superseded_plan_closure(_old_plan(), '2026-11-08', approval=approval, admission=admission,
+                                               current_model_checksum=current) is None
+    assert r33_cutover.superseded_plan_closure(_old_plan(), '2026-11-09', approval=approval, admission=admission,
+                                               current_model_checksum=current)
+
+
+# --- the strategy bundle shares everything but the R33 cutover's own exit fields -------------
+
+def _strategy_bundle(monkeypatch, baseline_exit, candidate_exit, mode=R33_MODE):
+    from services import l4_distribution, l4_opb_selection, l4_distribution_runtime
+    from services.paired_nav_strategy_bundle import SCHEMA
+    monkeypatch.setattr(l4_distribution, 'validate_bundle', lambda *a, **k: None)
+    monkeypatch.setattr(l4_opb_selection, 'is_v2', lambda policy: True)
+    monkeypatch.setattr(l4_opb_selection, 'validate_constraints', lambda constraints: constraints)
+    monkeypatch.setattr(l4_distribution_runtime, 'validate_opb_policy', lambda *a, **k: None)
+    policy = {**_policy(), 'operating_mode': mode}
+    base = {'fees': {'commission': .001425}, 'l4Distribution': _old_policy(), 'exit': baseline_exit}
+    base['l4Distribution']['constraints'] = deepcopy(policy['constraints'])
+    bundle = {'schema_version': SCHEMA, 'comparison_unit': 'complete_l3_l4_strategy', 'production_effect': False,
+              'baseline_trading_config': base, 'baseline_l3_identity': OLD_IDENTITY, 'candidate_l3_identity': IDENTITY,
+              'candidate_trading_config': {'fees': {'commission': .001425}, 'l4Distribution': policy, 'exit': candidate_exit},
+              'declared_signal_date': '2026-11-09'}
+    bundle['bundle_checksum'] = digest(bundle)
+    return bundle
+
+
+def test_r33_strategy_bundle_may_add_only_its_scoped_exit_fields(monkeypatch):
+    from services.paired_nav_strategy_bundle import validate_strategy_bundle
+    swing = {'hardStopPct': -.1, 'swingHardStopPct': -.08, 'swingMaxHoldSessions': 20}
+    ok = _strategy_bundle(monkeypatch, {'hardStopPct': -.1}, swing)
+    assert validate_strategy_bundle(ok, signal_date='2026-11-09') == ok
+    for bundle in (_strategy_bundle(monkeypatch, {'hardStopPct': -.12}, swing),
+                   _strategy_bundle(monkeypatch, {'hardStopPct': -.1}, {**swing, 'timeStopDays': 5}),
+                   _strategy_bundle(monkeypatch, {'hardStopPct': -.1}, swing, mode=MLP_MODE)):
+        with pytest.raises(ValueError, match='paired_nav_strategy_unshared_risk_or_execution_config'):
+            validate_strategy_bundle(bundle, signal_date='2026-11-09')

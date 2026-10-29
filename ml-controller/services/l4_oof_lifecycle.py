@@ -156,7 +156,7 @@ def daily_plan_closure(config,as_of,paper):
         'model_checksum':plan['model_checksum'],'legacy_oof_maturity_requested':False,
         'training_dispatched':False,'promoted':False}
     if plan['model_checksum']!=bundle['model_checksum']:
-        superseded=_superseded_by_cutover(plan,as_of)
+        superseded=_superseded_by_cutover(plan,as_of,bundle['model_checksum'])
         if superseded is None:
             raise ValueError('l4_daily_plan_model_changed')
         return {**closure,'superseded_by_cutover':superseded}
@@ -164,7 +164,7 @@ def daily_plan_closure(config,as_of,paper):
     return closure
 
 
-def _superseded_by_cutover(plan,as_of):
+def _superseded_by_cutover(plan,as_of,current_model_checksum):
     """R3: the approved R33 cutover's first night closes the old model's plan instead of failing."""
     from services import kv_client
     from services.active8_paper_admission import KEY, verify_active_approval
@@ -173,7 +173,8 @@ def _superseded_by_cutover(plan,as_of):
         admission=kv_client.get_json(KEY,default=None,strict=True)
         if not isinstance(admission,dict):
             return None
-        return superseded_plan_closure(plan,as_of,approval=verify_active_approval(admission),admission=admission)
+        return superseded_plan_closure(plan,as_of,approval=verify_active_approval(admission),admission=admission,
+                                       current_model_checksum=current_model_checksum)
     except Exception as exc:
         raise ValueError('l4_daily_plan_model_changed') from exc
 

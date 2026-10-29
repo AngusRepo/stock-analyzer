@@ -18,6 +18,16 @@ def _without_ev(config):
     return {k: v for k, v in config.items() if k not in EV_FIELDS}
 
 
+def _shared(config, *, r33):
+    """Config both sides must share. An R33 cutover may also set the swing exit fields in its scope."""
+    shared = _without_ev(config)
+    if r33 and isinstance(shared.get('exit'), dict):
+        from services.r33_cutover import SCOPE_PATHS
+        fields = {p.rsplit('.', 1)[1] for p in SCOPE_PATHS if p.startswith('trading:config.exit.')}
+        shared['exit'] = {k: v for k, v in shared['exit'].items() if k not in fields}
+    return shared
+
+
 def validate_strategy_bundle(bundle, *, candidate_identity=None, signal_date):
     from services.l4_distribution import validate_bundle
     if (not isinstance(bundle, dict) or bundle.get('schema_version') != SCHEMA
@@ -38,7 +48,9 @@ def validate_strategy_bundle(bundle, *, candidate_identity=None, signal_date):
             raise ValueError('strategy_ab_primary_baseline_pairing_mismatch')
         validate_bundle(baseline_l4,l3_identity=bundle['baseline_l3_identity'],signal_date=signal_date)
 
-    if (not baseline or _without_ev(baseline) != _without_ev(target)
+    from services.paper_strategy_mode import R33_MODE
+    r33 = (target.get('l4Distribution') or {}).get('operating_mode') == R33_MODE
+    if (not baseline or _shared(baseline, r33=r33) != _shared(target, r33=r33)
             or any(k in target for k in ('l4AlphaEv','allocatorEvFusion'))
             or not target.get('l4Distribution')
             or any(k in target['l4Distribution'] for k in ('runtime','_account_rewards'))):

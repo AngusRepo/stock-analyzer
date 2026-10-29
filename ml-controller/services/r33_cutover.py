@@ -182,6 +182,7 @@ def validate_cutover(approval, admission, *, now):
     old_policy = prior['configuration']['trading_config'].get('l4Distribution') or {}
     first = evidence['first_night']
     if (not isinstance(first, dict) or set(first) != {'supersedes_plan_policy_identity', 'effective_signal_date'}
+            or not _hex(first['supersedes_plan_policy_identity'])
             or first['supersedes_plan_policy_identity'] != (old_policy.get('opb') or {}).get('approved_policy_identity')
             or not isinstance(first['effective_signal_date'], str)
             or date.fromisoformat(first['effective_signal_date']).isoformat() != first['effective_signal_date']
@@ -220,12 +221,13 @@ def cutover_evidence(approval, admission):
     return None if grant is None else grant['approved_r33_cutover']
 
 
-def superseded_plan_closure(plan, as_of, *, approval, admission):
+def superseded_plan_closure(plan, as_of, *, approval, admission, current_model_checksum):
     """R3: on the cutover night the activated plan still names the model the cutover replaced.
 
     It closes as superseded_by_cutover only when the active grant's first_night names this
-    plan's policy, the plan predates the first R33 signal date, and the plan's model is the
-    prior grant's model. Anything else returns None and the caller stays fail-closed.
+    plan's policy, the plan predates the first R33 signal date, the plan's model is the prior
+    grant's model and the configured model is the cutover's. Anything else returns None and
+    the caller stays fail-closed.
     """
     grant = cutover_grant(approval, admission)
     if grant is None:
@@ -233,7 +235,8 @@ def superseded_plan_closure(plan, as_of, *, approval, admission):
     evidence = grant['approved_r33_cutover']
     first = evidence['first_night']
     prior_bundle = grant['prior_runtime_approval']['configuration']['trading_config']['l4Distribution']['artifact']
-    if (plan.get('signal_date') != as_of or not as_of < first['effective_signal_date']
+    if (current_model_checksum != evidence['l4_model_checksum']
+            or plan.get('signal_date') != as_of or not as_of < first['effective_signal_date']
             or plan.get('policy_identity') != first['supersedes_plan_policy_identity']
             or plan.get('model_checksum') != prior_bundle.get('model_checksum')):
         return None

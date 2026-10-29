@@ -177,6 +177,15 @@ def test_fractional_and_non_finite_shares_keep_the_pandas_path(check):
     check(native_frame(rows=200, seed=6).assign(buy=2.0 ** 53), "2026-09-01", "pandas")
 
 
+
+@pytest.mark.parametrize("col", ["buy", "sell"])
+def test_signed_zero_shares_keep_the_pandas_path(check, col):
+    frame = pd.DataFrame({"date": pd.to_datetime(["2026-09-01"]), "symbol": ["2330"], "broker": ["a"],
+                          "buy": [0.0], "sell": [0.0]})
+    frame[col] = -0.0  # the parquet byte check catches the sign of a zero sum
+    check(frame, "2026-09-01", "pandas")
+
+
 @pytest.mark.parametrize("seed", range(8))
 def test_random_frames(check, seed):
     rng = np.random.default_rng(100 + seed)

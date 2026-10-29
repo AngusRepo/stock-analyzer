@@ -2049,26 +2049,23 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     import numpy as np
     import polars as pl
 
-    import numpy as np
-    import polars as pl
-
     columns = (date_col, stock_col, broker_col, buy_col, sell_col)
     if not frame.columns.is_unique:
-        return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+        return _broker_pandas_fallback("duplicate_columns", frame, start, columns)
     # Only the date column is read over the full frame; every other column is read for
     # the target rows alone (no frame copy, no per-row dicts).
     dates = frame[date_col]
     if not pd.api.types.is_datetime64_dtype(dates.dtype):  # naive datetime64 parses to itself
         dates = pd.to_datetime(dates, errors="coerce")
     if not pd.api.types.is_datetime64_dtype(dates.dtype):
-        return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+        return _broker_pandas_fallback("date_dtype", frame, start, columns)
     rows = np.flatnonzero((dates >= pd.Timestamp(start)).to_numpy())
     if not len(rows):
         return pd.DataFrame()
     buy = pd.to_numeric(frame[buy_col].iloc[rows], errors="coerce").fillna(0)
     sell = pd.to_numeric(frame[sell_col].iloc[rows], errors="coerce").fillna(0)
     if not _broker_shares_sum_exactly(buy, sell):
-        return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+        return _broker_pandas_fallback("shares_not_exact", frame, start, columns)
     net = buy - sell
     date_dtype = dates.to_numpy().dtype
     date_values = dates.to_numpy().view("i8")[rows]
@@ -2173,6 +2170,11 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     return _finish_broker_daily(grouped, broker_daily)
 
 
+def _broker_pandas_fallback(reason: str, frame: pd.DataFrame, start: str, columns: tuple) -> pd.DataFrame:
+    print(f"[finlab-backfill] broker normalize path=pandas reason={reason}", flush=True)
+    return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+
+
 def _broker_shares_sum_exactly(buy: pd.Series, sell: pd.Series) -> bool:
     """The polars path covers int64/float64 shares whose sums are exact in any order:
     integer-valued, finite, and far below 2**53. Anything else keeps the pandas path,
@@ -2188,6 +2190,8 @@ def _broker_shares_sum_exactly(buy: pd.Series, sell: pd.Series) -> bool:
     for values in (buy.to_numpy(), sell.to_numpy()):
         if values.dtype == np.float64 and not (np.isfinite(values).all() and (values == np.floor(values)).all()):
             return False
+        if values.dtype == np.float64 and np.signbit(values[values == 0]).any():
+            return False  # pandas sums -0.0 groups to +0.0, polars keeps -0.0
         bound += float(np.abs(values, dtype=np.float64).sum())
     return bound < 2.0 ** 52
 

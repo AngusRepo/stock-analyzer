@@ -94,6 +94,23 @@ async function run(): Promise<void> {
     assert(result.violations.some((v) => v.gate === 'G5'), 'fat-finger cap should remain active')
     assert(!result.violations.some((v) => v.gate === 'G7'), 'mixed board/odd sell quantity should be legal')
   }
+
+  // H1c: G7 never rejects odd lots. Any whole share count splits into board/odd legs, so
+  // the enforceRegularLots branch cannot fire; less than one whole share is G7 via the
+  // zero-share guard. Live sizes from floor(Paper shares x ratio): 1, 999, 1001 stay legal.
+  assert(RISK_CONFIG_FIXTURE.order.enforceRegularLots === true, 'fixture must keep G7 enabled')
+  for (const shares of [1, 999, 1000, 1001, 1999]) {
+    const result = await validateOrder({
+      symbol: '4953', side: 'sell', shares, limitPrice: 10, refClose: 10, avgVolume20d: 10_000_000,
+    }, RISK_CONFIG_FIXTURE)
+    assert(!result.violations.some((v) => v.gate === 'G7'), `G7 must not reject ${shares} shares`)
+  }
+  for (const shares of [0.5, 0.999]) {
+    const result = await validateOrder({
+      symbol: '4953', side: 'sell', shares, limitPrice: 10, refClose: 10, avgVolume20d: 10_000_000,
+    }, RISK_CONFIG_FIXTURE)
+    assert(result.violations.some((v) => v.gate === 'G7'), `G7 must reject ${shares} shares (no whole share)`)
+  }
 }
 
 run().catch((error) => {

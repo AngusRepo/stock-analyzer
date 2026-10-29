@@ -35,11 +35,16 @@ def validate_admission(admission, *, artifact, now=None):
         signal_date=admission['business_date'])
     tag=validate_tag(bundle.get('strategy_ab'))
     from services.paper_strategy_mode import single_b_policy
-    from services.strategy_ab import TABPACK_SCHEMA, MLP_MEDIAN_SCHEMA
-    from services.paper_strategy_mode import MODE, MLP_MODE, TABPACK_MEDIAN_MODE
+    from services.strategy_ab import TABPACK_SCHEMA, MLP_MEDIAN_SCHEMA, R33_SCHEMA
+    from services.paper_strategy_mode import MODE, MLP_MODE, TABPACK_MEDIAN_MODE, R33_MODE
+    from services.r33_ensemble import is_r33
     mode=single_b_policy(bundle['candidate_trading_config'],signal_date=admission['business_date'])
     matching_b=mode and tag['role']=='B' and ((mode['mode'] in (MODE,TABPACK_MEDIAN_MODE) and tag['schema_version']==TABPACK_SCHEMA)
-        or (mode['mode']==MLP_MODE and tag['schema_version']==MLP_MEDIAN_SCHEMA))
+        or (mode['mode']==MLP_MODE and tag['schema_version']==MLP_MEDIAN_SCHEMA)
+        or (mode['mode']==R33_MODE and tag['schema_version']==R33_SCHEMA))
+    # The R33 object, its mode and its tag occur together or not at all.
+    if is_r33(artifact) != bool(mode and mode['mode']==R33_MODE) or is_r33(artifact) != (tag['schema_version']==R33_SCHEMA):
+        raise ValueError('active8_paper_r33_identity_mismatch')
     if tag['role']!='A' and not matching_b:
         raise ValueError('active8_paper_primary_A_required')
     if mode and tag['role']!='B':raise ValueError('active8_paper_single_B_identity_required')
@@ -182,7 +187,15 @@ def validate_runtime_approval(approval, admission, *, now=None):
             or not _timestamp(admission['approved_at']) <= _timestamp(approval['approved_at']) <= clock
             or approval.get('approval_checksum') != digest({k:v for k,v in approval.items() if k!='approval_checksum'})):
         raise RuntimeError('active8_paper_runtime_approval_invalid')
-    if approval.get('approved_strategy_nav_source_change') is not None:
+    if approval.get('approved_r33_cutover') is not None:
+        # The R33 L3+L4 cutover: evidence and the prior authority chain are checked
+        # here, then the ordinary exact-configuration comparison below still applies.
+        if any(k.startswith('approved_') and k not in ('approved_r33_cutover', 'approved_at') and approval[k] is not None
+               for k in approval):
+            raise RuntimeError('active8_paper_r33_cutover_must_be_exclusive')
+        from services.r33_cutover import validate_cutover
+        validate_cutover(approval, admission, now=clock)
+    elif approval.get('approved_strategy_nav_source_change') is not None:
         from services.strategy_nav_runtime_approval import validate_source_release
         return validate_source_release(approval, admission, now=clock)
     if approval.get('approved_capture_provenance_source_change') is not None:

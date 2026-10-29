@@ -212,6 +212,8 @@ def load_committed_nav_serving_grant(*, query, now=None):
         from services.active8_paper_admission import verify_active_approval, verify_serving_configuration
         admission = receipt['paper_admission']
         approval = verify_active_approval(admission, now=clock)
+        from services.r33_cutover import verify_serving
+        verify_serving(approval, admission, json.loads(publication.payload_json))
         current = verify_serving_configuration(admission, approval,
             model_names=json.loads(publication.payload_json)['observation_artifacts'])
         if (load_committed_publication(query=query, now=clock, allow_paper=True) != publication

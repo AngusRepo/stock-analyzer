@@ -122,3 +122,12 @@ def test_bulk_capture_is_rule_presumed_and_gaps_are_reported():
     merged = {cls: cp.merge_observations([frame], cls)[0] for cls, frame in obs.items()}
     gaps = tool.coverage_gaps(merged, ["2023-06-30", "2023-07-03", "2023-07-04"])
     assert gaps["lending"]["missing_sessions"] == 1 and gaps["lending"]["missing_first"] == ["2023-06-30"]
+
+
+def test_chip_pit_daily_record_is_off_unless_explicitly_enabled(monkeypatch):
+    from tools import finlab_v4_remote_backfill as finlab
+    monkeypatch.delenv("CHIP_PIT_DAILY_RECORD", raising=False)
+    assert finlab.chip_pit_daily_enabled() is False
+    for value, enabled in (("0", False), ("", False), ("true", False), ("1", True)):
+        monkeypatch.setenv("CHIP_PIT_DAILY_RECORD", value)
+        assert finlab.chip_pit_daily_enabled() is enabled

@@ -5,7 +5,7 @@ R33 11/1 月訓的「籌碼模型」挑戰者專用。**不改** 7 個主模型�
 - Contract：`data/feature_registry/chip_pit_feature_contract_v1.json`（與 `services/chip_pit.py` 常數由測試綁定）
 - 程式：`ml-controller/services/chip_pit.py`（controller image 與 Modal image 都有 `services/`）
 - 回補：`tools/chip_pit_backfill.py`
-- 每日紀錄：`tools/finlab_v4_remote_backfill.py` daily refresh 結束時呼叫 `record_daily_capture`
+- 每日紀錄：`tools/finlab_v4_remote_backfill.py` daily refresh 結束時呼叫 `record_daily_capture`。**預設關閉**：只有 Modal env `CHIP_PIT_DAILY_RECORD=1` 才會寫 `daily/` 紀錄和 `raw/chip_pit_window/`；開啟需 Wei go
 
 ## 資料與來源
 
@@ -45,7 +45,7 @@ R33 11/1 月訓的「籌碼模型」挑戰者專用。**不改** 7 個主模型�
 
 - `history/<build_id>/{institutional,margin,lending,turnover}.parquet` + `manifest.json`（sha256、來源 capture、anchors、coverage gaps）
 - `features/<build_id>/features.parquet` + `manifest.json`（`panel_sha256`、`features_sha256`、history manifest sha256）
-- `daily/<business_date>/<capture_id>/<class>.parquet` + `receipt.json`（部署後每日，immutable）
+- `daily/<business_date>/<capture_id>/<class>.parquet` + `receipt.json`（`CHIP_PIT_DAILY_RECORD=1` 開啟後每日，immutable）
 
 panel 欄位：`stock_id, signal_date, <21 features>, chip_<class>_data_date, chip_<class>_basis`。
 
@@ -62,7 +62,7 @@ X_chip, names_chip, chip_proof = attach_chip_block(X, feature_names, dates_arr, 
 - `attach_chip_block` 依 (stock_id, signal_date) 逐列對齊；panel 沒有的列 → NaN；symbol 的 `.TW` 類後綴會去掉；名稱與既有特徵重疊直接拒絕。
 - 主 7 模型不呼叫這兩個函式；131 prep 與 `FEATURES131` 檢查不變。
 - 月訓的 build_id 與 manifest sha256 要寫進挑戰者 candidate 的 lineage。
-- 11/1 之後的月訓：每月重跑回補工具（同一指令，`--end` 改成訓練截止日），部署後的 `daily/` 紀錄會自動成為 observed 來源。
+- 11/1 之後的月訓：每月重跑回補工具（同一指令，`--end` 改成訓練截止日），`CHIP_PIT_DAILY_RECORD=1` 開啟後的 `daily/` 紀錄會自動成為 observed 來源；開啟前沒有 `daily/` 紀錄，只有回補的 rule-presumed 來源。
 
 ## 指令
 

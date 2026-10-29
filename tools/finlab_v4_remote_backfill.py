@@ -1429,6 +1429,11 @@ def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pat
     })
 
 
+def chip_pit_daily_enabled() -> bool:
+    """Off unless CHIP_PIT_DAILY_RECORD=1; when off the FinLab daily refresh path is unchanged."""
+    return os.environ.get("CHIP_PIT_DAILY_RECORD", "0") == "1"
+
+
 def chip_pit_lane_fields(lane: str) -> tuple[str, ...]:
     from services.chip_pit import lane_fields
     return lane_fields(lane)
@@ -2116,6 +2121,7 @@ def materialize_specs(
     price_venue_scope_sha256: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     start = source_start_date or start_date_for_years(years)
+    chip_pit_daily = daily_refresh and chip_pit_daily_enabled()
     if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
         raise ValueError("price_venue_scope_pair_required")
     if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
@@ -2335,7 +2341,7 @@ def materialize_specs(
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
                             or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
-                            or (daily_refresh and field in chip_pit_lane_fields(spec.lane))):
+                            or (chip_pit_daily and field in chip_pit_lane_fields(spec.lane))):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2418,7 +2424,7 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
-            if daily_refresh and chip_pit_lane_fields(spec.lane):
+            if chip_pit_daily and chip_pit_lane_fields(spec.lane):
                 write_chip_pit_window(unsliced_frames, lane=spec.lane, run_dir=run_dir, end_date=source_end_date)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
@@ -4123,7 +4129,7 @@ def main() -> int:
         write_json(run_dir / "manifest.json", manifest)
 
     # Chip challenger PIT log (chip-pit/v1/daily). Evidence only: a failure is recorded, never fatal.
-    if args.daily_refresh and args.gcs_bucket and os.environ.get("CHIP_PIT_DAILY_RECORD", "1") != "0":
+    if args.daily_refresh and args.gcs_bucket and chip_pit_daily_enabled():
         try:
             from google.cloud import storage
             from services.chip_pit import record_daily_capture

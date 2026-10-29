@@ -72,5 +72,36 @@ class RefreshTests(unittest.TestCase):
         self.assertIsNone(summary['latest_training_eligible_date'])
         self.assertFalse(summary['training_dispatched']);self.assertNotIn('items',summary)
         self.assertEqual(summary['training_blocker_counts'],{'pool_contract_mismatch_evaluation_only':1})
+    def test_failure_carries_redacted_exception_summary(self):
+        token='AbCdEf0123456789GhIjKl0123456789MnOp'
+        self.run_refresh();key=next(k for k in self.bucket.data if '/projections/' in k);self.bucket.data[key]=b'{}'
+        r=self.run_refresh();item=r['items'][0]
+        self.assertEqual((item['error_type'],item['error_summary']),('ValueError','l4_forward_projection_hash'))
+        self.assertEqual(module.callback_summary(r)['failure_samples'],[{'signal_date':'2026-10-01',
+            'reason':'l4_forward_source_or_maturity_failed','error_type':'ValueError','error_summary':'l4_forward_projection_hash'}])
+        with patch.dict('os.environ',{'CF_API_TOKEN':'plain-secret-value'}):
+            text=module.error_summary(RuntimeError(
+                f'HTTP 403 plain-secret-value Bearer {token} https://storage.googleapis.com/b/o?X-Goog-Signature=abc '
+                f'api_key={token[:10]} token: {token} gs://bucket/l4_distribution/forward_data/v1/{"a"*64}.json '
+                'l4_forward_daily_price_source_missing'))
+        for secret in ('plain-secret-value',token,token[:10],'abc'):self.assertNotIn(secret,text)
+        self.assertIn('a'*64,text);self.assertIn('l4_forward_daily_price_source_missing',text)
+        self.assertLessEqual(len(module.error_summary(RuntimeError('x'*999))),300)
+    def test_attach_daily_result_keeps_summary(self):
+        def fail(*a):raise RuntimeError('boom detail')
+        data=module.attach_daily_result({},{},'2026-10-09',runner=fail)['forward_learning_data']
+        self.assertEqual((data['reason'],data['error_summary']),('l4_forward_refresh_failed','boom detail'))
+        self.assertEqual(module.callback_summary(data)['error_summary'],'boom detail')
+    def test_error_summary_masks_quoted_keys_auth_and_padded_env(self):
+        with patch.dict('os.environ',{'STOCKVISION_AUTH_TOKEN':'0123456789abcdef'*4+'\n'}):
+            text=module.error_summary(RuntimeError(
+                "{'api_key': 'hunter2hunter2'} {\"password\": \"p@ss w0rd\"} Authorization: Basic dXNlcjpwYXNz "
+                +'0123456789abcdef'*4+' l4_forward_projection_hash'))
+        for secret in ('hunter2hunter2','p@ss','w0rd','dXNlcjpwYXNz','0123456789abcdef'):self.assertNotIn(secret,text)
+        self.assertIn('l4_forward_projection_hash',text)
+    def test_error_summary_is_bounded_on_long_tokens(self):
+        import time
+        started=time.monotonic();text=module.error_summary(RuntimeError('A1'*30000))
+        self.assertLess(time.monotonic()-started,1.0);self.assertLessEqual(len(text),300)
 
 if __name__=='__main__':unittest.main()

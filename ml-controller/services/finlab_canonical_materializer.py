@@ -2570,12 +2570,13 @@ def _taxonomy_prune_guard_baseline_statements(
 ) -> list[tuple[str, list[Any]]]:
     """Q02: open this run's prune receipt before the taxonomy upserts.
 
-    The comparison baseline is the row count of the last applied snapshot,
-    carried on the group's latest receipt (next_baseline_rows), so stale rows
-    left by skipped runs never raise it. With no receipt yet (first run) it
-    falls back to the group's current row count, the conservative original
-    rule. Each applied run resets the baseline, so a slow decline that stays
-    within the ratio per run is accepted. The receipt lives in
+    The comparison baseline is carried on the group's latest receipt
+    (next_baseline_rows), so stale rows left by skipped runs never raise it.
+    With no receipt yet (first run) it falls back to the group's current row
+    count, the conservative original rule. The baseline is fixed: an applied
+    run only raises it (a larger snapshot), never lowers it, so a slow decline
+    is skipped once it adds up past the ratio. Only an explicitly accepted run
+    (min_retained_ratio 0) resets it to that run's rows. The receipt lives in
     source_quality_metrics (no new table).
     """
     if not full_snapshot or not rows or not materialization_id:
@@ -2620,7 +2621,8 @@ def _taxonomy_owner_snapshot_cleanup_statements(
     _taxonomy_prune_guard_baseline_statements); otherwise the run is upsert
     only. The decision is taken in SQL at apply time and kept on the receipt
     as prune_applied / prune_skipped with consecutive_skips; an applied run
-    becomes the next baseline. A missing receipt never prunes.
+    only raises the next baseline, and only an accepted run (ratio 0) lowers
+    it. A missing receipt never prunes.
     """
     if not full_snapshot or not rows or not materialization_id:
         return []
@@ -2629,6 +2631,8 @@ def _taxonomy_owner_snapshot_cleanup_statements(
     total = "(SELECT COUNT(*) FROM finlab_taxonomy_tags WHERE source=? AND tag_type=?)"
     metric = "json_extract(metrics_json,'$.{}')".format
     applied = f"{metric('retained_rows')} >= {metric('min_retained_ratio')} * {metric('baseline_rows')}"
+    # Ratio 0 is the operator's explicit acceptance of this run's snapshot as the new baseline.
+    accepted = f"{metric('min_retained_ratio')} = 0"
     statements: list[tuple[str, list[Any]]] = []
     for source, tag_type in _taxonomy_prune_groups(rows):
         key = [*_taxonomy_receipt_key(source, tag_type, materialization_id), materialization_id]
@@ -2643,9 +2647,11 @@ def _taxonomy_owner_snapshot_cleanup_statements(
             f"UPDATE source_quality_metrics SET freshness_status=CASE WHEN {applied} "
             "THEN 'prune_applied' ELSE 'prune_skipped' END, metrics_json=json_set(metrics_json, "
             f"'$.consecutive_skips', CASE WHEN {applied} THEN 0 ELSE {metric('prior_consecutive_skips')} + 1 END, "
-            f"'$.next_baseline_rows', CASE WHEN {applied} THEN {metric('retained_rows')} "
+            f"'$.next_baseline_rows', CASE WHEN {accepted} THEN {metric('retained_rows')} "
+            f"WHEN {applied} THEN MAX({metric('retained_rows')}, {metric('baseline_rows')}) "
             f"ELSE {metric('baseline_rows')} END, "
-            f"'$.next_baseline_source', CASE WHEN {applied} THEN 'last_applied_snapshot' "
+            f"'$.next_baseline_source', CASE WHEN {accepted} THEN 'accepted_snapshot' "
+            f"WHEN {applied} AND {metric('retained_rows')} > {metric('baseline_rows')} THEN 'last_applied_snapshot' "
             f"ELSE {metric('baseline_source')} END) {pending}",
             key,
         ))

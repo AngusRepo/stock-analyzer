@@ -400,6 +400,8 @@ def test_q02_prune_guard_compares_with_the_last_applied_snapshot_and_logs_every_
     status, metrics = d.receipt("2026-09-06")
     assert status == "prune_applied"
     assert (metrics["group_rows_before"], metrics["baseline_rows"], metrics["consecutive_skips"]) == (105, 100, 0)
+    # The baseline is fixed: a smaller applied snapshot does not lower it.
+    assert (metrics["next_baseline_rows"], metrics["next_baseline_source"]) == (100, "last_applied_snapshot")
     assert d.count() == 96
 
     # A real shrink is accepted once with ratio 0; it then becomes the baseline and nothing stays stuck.
@@ -408,11 +410,39 @@ def test_q02_prune_guard_compares_with_the_last_applied_snapshot_and_logs_every_
     monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", "0")
     d.run({str(i): "A" for i in range(10, 100)}, "2026-09-08T00:00:00+00:00")
     assert d.receipt("2026-09-08")[0] == "prune_applied"
+    assert d.receipt("2026-09-08")[1]["next_baseline_rows"] == 90
     monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO")
     d.run({str(i): "A" for i in range(10, 100)}, "2026-09-09T00:00:00+00:00")
     assert d.receipt("2026-09-09")[0] == "prune_applied"
-    assert d.receipt("2026-09-09")[1]["baseline_rows"] == 90
+    assert (d.receipt("2026-09-09")[1]["baseline_rows"], d.receipt("2026-09-09")[1]["baseline_source"]) == (
+        90, "accepted_snapshot")
     assert d.count() == 90
+
+
+def test_q02_baseline_stays_fixed_so_a_slow_decline_skips_once_it_adds_up(monkeypatch) -> None:
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_SKIP_ESCALATE_AFTER", raising=False)
+    d = _Q02Domains(monkeypatch)
+    d.run({str(i): "A" for i in range(1000)}, "2026-09-01T00:00:00+00:00")
+    # Each night loses 4.9% of the previous night; the baseline stays at 1000.
+    assert d.run({str(i): "A" for i in range(951)}, "2026-09-02T00:00:00+00:00") == []
+    status, metrics = d.receipt("2026-09-02")
+    assert status == "prune_applied"
+    assert (metrics["baseline_rows"], metrics["retained_rows"], metrics["next_baseline_rows"]) == (1000, 951, 1000)
+    assert d.count() == 951
+    # 904 is 4.9% below 951 but 9.6% below the fixed baseline: skipped and logged.
+    skipped = d.run({str(i): "A" for i in range(904)}, "2026-09-03T00:00:00+00:00")
+    status, metrics = d.receipt("2026-09-03")
+    assert status == "prune_skipped"
+    assert (metrics["baseline_rows"], metrics["retained_rows"], metrics["next_baseline_rows"]) == (1000, 904, 1000)
+    assert [log["retained_rows"] for log in skipped] == [904]
+    assert [(level, cron) for level, cron, _ in d.logs()] == [("warn", "finlab-taxonomy-prune-guard")]
+    assert d.count() == 951
+    # Growth past the baseline raises it.
+    d.run({str(i): "A" for i in range(1010)}, "2026-09-04T00:00:00+00:00")
+    status, metrics = d.receipt("2026-09-04")
+    assert status == "prune_applied"
+    assert (metrics["next_baseline_rows"], metrics["next_baseline_source"]) == (1010, "last_applied_snapshot")
 
 
 def test_q02_first_run_without_a_receipt_uses_the_current_group_count(monkeypatch) -> None:

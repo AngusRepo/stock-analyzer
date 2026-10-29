@@ -686,6 +686,8 @@ class PipelineStateV2(TypedDict, total=False):
     snapshot_recovery_lineage: dict           # Explicit non-native PIT recovery evidence
     predictions: dict                       # symbol ??ml result
     r33_rank_pool: dict                     # R33 attested rank pool (z/score/E-hat owner) for this run
+    r33_holdings: list[str]                 # L4 account holdings read for the R33 inference scope
+    l2_input_staleness_report: dict         # C28-16 S3 stale-bar report (applied only under R33)
     nav_inference_receipt: dict             # Actual L3 outputs; not a publication or maturity grant
     l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate
     l3_predictions: dict                     # symbol -> formal L3 merged result
@@ -787,7 +789,20 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
         adaptive.get("computed_at") if isinstance(adaptive, dict) else None,
         adaptive_provenance.get("computed_at") if isinstance(adaptive_provenance, dict) else None,
     )
+    r33_scope = {}
+    from services.l3_equal_weight_bundle import is_equal7
+    if is_equal7(((trading_cfg or {}).get('l4Distribution') or {}).get('artifact')):
+        # R33-NEW-03: inference scope = L2 pool + holdings (a held name outside the
+        # pool needs E-hat for the decay exit); holdings join for inference only.
+        from services.l4_distribution_context import worker_request
+        from services.r33_serving_inputs import holding_stocks
+        added, held = await asyncio.to_thread(holding_stocks, signal_date=run_date,
+            active_stocks=state['active_stocks'], core_query=CORE_D1_CLIENT.query,
+            account_reader=lambda day: worker_request('/api/internal/l4-distribution/account', {'signal_date': day}))
+        r33_scope = {'r33_holdings': held, 'active_stocks': [*state['active_stocks'], *added]}
+        logger.info("[Pipeline V2] R33 inference scope: holdings=%s added_outside_pool=%s", len(held), len(added))
     return {
+        **r33_scope,
         "premarket_baseline": __import__('services.premarket_pipeline',fromlist=['capture_baseline']).capture_baseline(run_date,kv_client.get_json)
             if __import__('services.premarket_pipeline',fromlist=['enabled']).enabled() else {},
         "market_env": _to_dict(market_env),
@@ -1479,6 +1494,27 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
+    from services.r33_ensemble import is_r33, round_trip_cost
+    from services.r33_serving_inputs import stale_inputs, staleness_report
+    r33 = is_r33(active8_ensemble)
+    stale = stale_inputs(payloads, rank_run_date)
+    staleness = staleness_report(stale, payload_count=len(payloads), run_date=rank_run_date, applied=r33)
+    logger.info("[Pipeline V2] L2 input staleness: stale=%s/%s effect=%s",
+                staleness['stale_count'], len(payloads), staleness['effect'])
+    r33_rank_pool = None
+    r33_cost = None
+    if r33 and not evidence_only:
+        from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+        from services.paired_nav_collection import baseline_model_identity
+        from services.r33_rank_pool import build_rank_pool, load_serving_pool
+        pool = await asyncio.to_thread(load_serving_pool, client_proxy_for_domain(D1DataDomain.OPS).query,
+            signal_date=rank_run_date, screener_run_id=str(state.get('screener_run_id') or ''))
+        r33_rank_pool = build_rank_pool(signal_date=rank_run_date, pool=pool, predictions=pred_map,
+            holdings=state.get('r33_holdings') or [], ensemble=active8_ensemble,
+            l3_identity=baseline_model_identity(serving_manifest), stale=stale)
+        r33_cost = round_trip_cost((state.get('trading_config') or {})['fees'])
+        logger.info("[Pipeline V2] R33 rank pool: %s", r33_rank_pool['coverage'] | {'unscored': len(r33_rank_pool['coverage']['unscored'])})
+
     if evidence_only:
         if active8_ensemble is not None:
             raise RuntimeError("formal_layer3_evidence_only_ensemble_must_be_absent")
@@ -1494,7 +1530,9 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
             raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
         for sym, row in pred_map.items():
             try:
-                if nav_authority is None:
+                if r33:
+                    attach_ensemble_v2(row, active8_ensemble, pool_models, round_trip_cost=r33_cost)
+                elif nav_authority is None:
                     _attach_ensemble_v2(row, active8_ensemble, pool_models)
                 else:
                     _attach_ensemble_v2(row, active8_ensemble, pool_models, nav_authority=nav_authority)
@@ -1524,6 +1562,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         "nav_inference_receipt": nav_execution,
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": wait_telemetry,
+        "r33_rank_pool": r33_rank_pool,
+        "l2_input_staleness_report": staleness,
     }
 
 
@@ -1755,6 +1795,8 @@ async def _node_l3_formal_predict(state: PipelineStateV2) -> dict:
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
         "l3_modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
+        "r33_rank_pool": l3_result.get("r33_rank_pool"),
+        "l2_input_staleness_report": l3_result.get("l2_input_staleness_report"),
     }
 
 

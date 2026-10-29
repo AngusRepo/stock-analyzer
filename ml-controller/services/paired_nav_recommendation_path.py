@@ -29,7 +29,7 @@ def recommendation_source_identity() -> dict[str, str]:
         'paired_nav_atomic_policy.py', 'paired_nav_atomic_allocation.py', 'paired_nav_atomic_candidate.py',
         'fundamental_quality.py', 'pit_sector_alpha.py', 'sector_flow_pit_history.py',
         'active8_score_semantics.py', 'r33_ensemble.py', 'r33_rank_pool.py', 'r33_isotonic_calibration.py',
-        'r33_crossfit_serving.py', 'r33_calibration_job.py')}
+        'r33_crossfit_serving.py', 'r33_calibration_job.py', 'r33_serving_inputs.py')}
 
 
 def verify_screener_recommendation_source(inputs: dict) -> None:

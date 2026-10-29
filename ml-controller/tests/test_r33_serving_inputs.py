@@ -72,3 +72,64 @@ def test_market_env_adds_holdings_only_with_the_equal7_bundle(monkeypatch, equal
         assert out["active_stocks"][1]["eligible_for_pending_buy"] is False
     else:
         assert calls == [] and "r33_holdings" not in out and "active_stocks" not in out
+
+
+def _node_inputs(monkeypatch, *, ensemble, fees=FEES, holdings=("H7",), payload_days=None):
+    from graphs import daily_pipeline_v2 as pipeline
+    from services import paired_nav_collection, r33_rank_pool
+    from services.r33_calibration_job import POOL_SOURCE
+    from test_r33_l4_equal7 import IDENTITY, POOL, _prediction
+    receipt = {"source": POOL_SOURCE, "signal_date": DAY, "screener_run_id": "run-1", "membership_sha256": "p" * 64}
+    queried = []
+    monkeypatch.setattr(r33_rank_pool, "load_serving_pool",
+                        lambda query, **kw: queried.append(kw) or (list(POOL), receipt))
+    monkeypatch.setattr(paired_nav_collection, "baseline_model_identity", lambda manifest: dict(IDENTITY))
+    symbols = [*POOL, *holdings]
+    predictions = {s: _prediction(0.1 * i) for i, s in enumerate(symbols)}
+    days = payload_days or {}
+    payloads = [{"symbol": s, "prices": [{"date": days.get(s, DAY)}]} for s in symbols]
+    state = {"screener_run_id": "run-1", "r33_holdings": list(holdings), "trading_config": {"fees": fees}}
+    out = pipeline._r33_serving_inputs(state, payloads=payloads, predictions=predictions, ensemble=ensemble,
+                                       serving_manifest={}, run_date=DAY, evidence_only=False, ops_query=None)
+    return out, predictions, queried
+
+
+def test_node_r33_inputs_bind_pool_holdings_stale_and_the_fees_owner(monkeypatch):
+    from services.r33_ensemble import round_trip_cost
+    from test_r33_l4_equal7 import _ensemble
+    (r33, staleness, pool, cost), predictions, queried = _node_inputs(
+        monkeypatch, ensemble=_ensemble(), payload_days={"P2": "2026-11-07"})
+    assert r33 is True and queried == [{"signal_date": DAY, "screener_run_id": "run-1"}]
+    assert staleness["effect"] == "unscored_z0_for_the_day" and staleness["stale"] == {"P2": "last_bar=2026-11-07"}
+    assert pool["coverage"]["unscored"] == {"P2": "stale:last_bar=2026-11-07"}
+    assert {r["symbol"]: (r["role"], r["held"]) for r in pool["rows"]}["H7"] == ("holding_outside_pool", True)
+    assert predictions["H7"]["r33_rank_evidence"]["held"] is True
+    assert cost == round_trip_cost(FEES)
+    (_r, _s, _p, other), _pred, _q = _node_inputs(monkeypatch, ensemble=_ensemble(),
+                                                  fees={"commission": 0.001, "tax": 0.0015})
+    assert other == pytest.approx(0.0035)          # read from the owner, not a constant
+
+
+def test_node_inputs_only_report_stale_bars_outside_r33(monkeypatch):
+    (r33, staleness, pool, cost), predictions, queried = _node_inputs(
+        monkeypatch, ensemble={"kind": "active8"}, payload_days={"P2": "2026-11-07"})
+    assert (r33, pool, cost, queried) == (False, None, None, [])
+    assert staleness["effect"] == "report_only" and staleness["stale"] == {"P2": "last_bar=2026-11-07"}
+    assert all("r33_rank_evidence" not in p for p in predictions.values())
+
+
+def test_stale_report_survives_a_malformed_bar_date():
+    assert stale_inputs([{"symbol": "A", "prices": [{"date": "not-a-date"}]}], DAY) == {"A": "bad_bar_date"}
+
+
+def test_node_attaches_r33_rows_through_the_r33_view(monkeypatch):
+    from graphs import daily_pipeline_v2 as pipeline
+    from services.r33_ensemble import RUNTIME_SCHEMA
+    from test_r33_l4_equal7 import _ensemble
+    from test_r33_serving_chain import COST, POOL_MODELS, _chain
+    predictions, _snapshot = _chain()
+    row = predictions["P5"]
+    monkeypatch.setattr(pipeline, "_attach_ensemble_v2", lambda *a, **k: pytest.fail("legacy attach"))
+    pipeline._attach_formal_ensemble(row, _ensemble(), POOL_MODELS, r33=True, r33_cost=COST, nav_authority=None)
+    assert row["ensemble_v2"]["schema_version"] == RUNTIME_SCHEMA
+    assert row["ensemble_v2"]["signal_policy"]["round_trip_cost"] == COST

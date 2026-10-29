@@ -1494,26 +1494,11 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
-    from services.r33_ensemble import is_r33, round_trip_cost
-    from services.r33_serving_inputs import stale_inputs, staleness_report
-    r33 = is_r33(active8_ensemble)
-    stale = stale_inputs(payloads, rank_run_date)
-    staleness = staleness_report(stale, payload_count=len(payloads), run_date=rank_run_date, applied=r33)
-    logger.info("[Pipeline V2] L2 input staleness: stale=%s/%s effect=%s",
-                staleness['stale_count'], len(payloads), staleness['effect'])
-    r33_rank_pool = None
-    r33_cost = None
-    if r33 and not evidence_only:
-        from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
-        from services.paired_nav_collection import baseline_model_identity
-        from services.r33_rank_pool import build_rank_pool, load_serving_pool
-        pool = await asyncio.to_thread(load_serving_pool, client_proxy_for_domain(D1DataDomain.OPS).query,
-            signal_date=rank_run_date, screener_run_id=str(state.get('screener_run_id') or ''))
-        r33_rank_pool = build_rank_pool(signal_date=rank_run_date, pool=pool, predictions=pred_map,
-            holdings=state.get('r33_holdings') or [], ensemble=active8_ensemble,
-            l3_identity=baseline_model_identity(serving_manifest), stale=stale)
-        r33_cost = round_trip_cost((state.get('trading_config') or {})['fees'])
-        logger.info("[Pipeline V2] R33 rank pool: %s", r33_rank_pool['coverage'] | {'unscored': len(r33_rank_pool['coverage']['unscored'])})
+    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+    r33, staleness, r33_rank_pool, r33_cost = await asyncio.to_thread(
+        _r33_serving_inputs, state, payloads=payloads, predictions=pred_map, ensemble=active8_ensemble,
+        serving_manifest=serving_manifest, run_date=rank_run_date, evidence_only=evidence_only,
+        ops_query=client_proxy_for_domain(D1DataDomain.OPS).query)
 
     if evidence_only:
         if active8_ensemble is not None:
@@ -1530,12 +1515,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
             raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
         for sym, row in pred_map.items():
             try:
-                if r33:
-                    attach_ensemble_v2(row, active8_ensemble, pool_models, round_trip_cost=r33_cost)
-                elif nav_authority is None:
-                    _attach_ensemble_v2(row, active8_ensemble, pool_models)
-                else:
-                    _attach_ensemble_v2(row, active8_ensemble, pool_models, nav_authority=nav_authority)
+                _attach_formal_ensemble(row, active8_ensemble, pool_models, r33=r33, r33_cost=r33_cost,
+                                        nav_authority=nav_authority)
             except Exception as exc:
                 row["ensemble_v2_error"] = f"{type(exc).__name__}: {exc}"
                 raise RuntimeError(f"formal_layer3_active8_ensemble_failed:{sym}:{exc}") from exc
@@ -1565,6 +1546,42 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         "r33_rank_pool": r33_rank_pool,
         "l2_input_staleness_report": staleness,
     }
+
+
+def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manifest, run_date, evidence_only, ops_query):
+    """(r33, staleness report, rank pool, round-trip cost) for node_ml_predict.
+
+    Stale bars are reported in every mode and unscored only under R33 (HL2-1#a,
+    C28-16 S3). Under R33 the attested rank pool is built from the OPS screener
+    pool, the holdings read in load_market_env and the stale set, and the cost
+    comes from trading:config.fees (LV5#2)."""
+    from services.r33_ensemble import is_r33, round_trip_cost
+    from services.r33_serving_inputs import stale_inputs, staleness_report
+    r33 = is_r33(ensemble)
+    stale = stale_inputs(payloads, run_date)
+    staleness = staleness_report(stale, payload_count=len(payloads), run_date=run_date, applied=r33)
+    logger.info("[Pipeline V2] L2 input staleness: stale=%s/%s effect=%s stale_symbols=%s",
+                staleness['stale_count'], len(payloads), staleness['effect'], staleness['stale'])
+    if not r33 or evidence_only:
+        return r33, staleness, None, None
+    from services.paired_nav_collection import baseline_model_identity
+    from services.r33_rank_pool import build_rank_pool, load_serving_pool
+    pool = load_serving_pool(ops_query, signal_date=run_date, screener_run_id=str(state.get('screener_run_id') or ''))
+    rank_pool = build_rank_pool(signal_date=run_date, pool=pool, predictions=predictions,
+        holdings=state.get('r33_holdings') or [], ensemble=ensemble,
+        l3_identity=baseline_model_identity(serving_manifest), stale=stale)
+    cost = round_trip_cost((state.get('trading_config') or {})['fees'])
+    logger.info("[Pipeline V2] R33 rank pool: %s", rank_pool['coverage'] | {'unscored': len(rank_pool['coverage']['unscored'])})
+    return r33, staleness, rank_pool, cost
+
+
+def _attach_formal_ensemble(row, ensemble, pool_models, *, r33, r33_cost, nav_authority):
+    if r33:
+        attach_ensemble_v2(row, ensemble, pool_models, round_trip_cost=r33_cost)
+    elif nav_authority is None:
+        _attach_ensemble_v2(row, ensemble, pool_models)
+    else:
+        _attach_ensemble_v2(row, ensemble, pool_models, nav_authority=nav_authority)
 
 
 def _timesfm_l175_registry_release_policy() -> dict[str, Any]:

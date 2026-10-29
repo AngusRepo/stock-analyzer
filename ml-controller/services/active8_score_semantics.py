@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-from services.alpha_model_roster import model_order, validate_order, SUPPORTED_MODELS
+from services.alpha_model_roster import R33_MODELS, model_order, validate_order, SUPPORTED_MODELS
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
     CORE_CROSS_SECTIONAL_ALPHA_MODELS,
@@ -94,7 +94,12 @@ def normalize_active8_cross_sectional_scores(
     """
     order = (validate_order(active8_ensemble["model_order"]) if active8_ensemble is not None
              else model_order(artifact_versions))
-    if model_order(artifact_versions) != order:
+    if order == R33_MODELS:
+        # R33 is the TimeXer roster without XGBoost; a served XGBoost score is simply
+        # outside the order, and a missing model is z=0 downstream, so only the slot matters.
+        if "DLinear" in artifact_versions:
+            raise ValueError("active8_score_artifact_roster_mismatch")
+    elif model_order(artifact_versions) != order:
         raise ValueError("active8_score_artifact_roster_mismatch")
     normalized_versions = {
         model_name: str(artifact_versions.get(model_name) or "").strip()

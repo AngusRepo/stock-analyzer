@@ -117,3 +117,56 @@ def test_l3_audit_records_coverage_not_drop(monkeypatch):
     assert json.loads(captured[1 + POOL.index("P6")][1][10])["schema_version"] == "layer3_r33_coverage_audit_v1"
     assert decisions["P6"] == ("unscored", "r33_unscored:stale:no_bars:not_in_final_rows")
     assert all(decisions[s] == ("pass", "r33_scored") for s in POOL[:5])
+
+
+@pytest.mark.parametrize("with_xgboost", [False, True])
+def test_normalize_accepts_the_r33_roster_and_feeds_the_rank_pool(with_xgboost):
+    from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION, normalize_active8_cross_sectional_scores
+    ensemble = _ensemble()
+    names = [*MODELS, *(["XGBoost"] if with_xgboost else [])]
+    versions = {m: ensemble["base_artifacts"][m]["version"] if m in MODELS else "x" for m in names}
+    predictions = {s: {"stock_meta": {"market_segment": "LISTED"},
+                       "rank_scores": {m: i / 10 + 0.01 * j for j, m in enumerate(names)}} for i, s in enumerate(POOL)}
+    report = normalize_active8_cross_sectional_scores(
+        predictions, artifact_versions=versions, artifact_target_semantics={m: MODEL_TARGET_SEMANTIC_VERSION for m in names},
+        run_date=DAY, active8_ensemble=ensemble, pool_models=POOL_MODELS)
+    assert report
+    lineage = predictions["P1"]["model_score_lineage"]
+    assert lineage["coverage_policy"] == r33_ensemble.COVERAGE_POLICY and lineage["complete"] is True
+    receipt = {"source": POOL_SOURCE, "signal_date": DAY, "screener_run_id": "r", "membership_sha256": "p" * 64}
+    snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=(POOL, receipt), predictions=predictions, holdings=[],
+                                         ensemble=ensemble, l3_identity=IDENTITY, stale=None)
+    assert snapshot["coverage"]["pool_scored_rows"] == len(POOL)
+
+
+def test_normalize_rejects_a_dlinear_slot_under_r33():
+    from services.active8_score_semantics import normalize_active8_cross_sectional_scores
+    with pytest.raises(ValueError, match="active8_score_artifact_roster_mismatch"):
+        normalize_active8_cross_sectional_scores({}, artifact_versions={"DLinear": "v", "LightGBM": "v"},
+                                                 artifact_target_semantics={}, run_date=DAY,
+                                                 active8_ensemble=_ensemble(), pool_models=POOL_MODELS)
+
+
+def test_buy_needs_ehat_strictly_above_cost():
+    prediction = _prediction(0.0)
+    receipt = {"source": POOL_SOURCE, "signal_date": DAY, "screener_run_id": "r", "membership_sha256": "p" * 64}
+    predictions = {s: _prediction(v) for s, v in zip(POOL, (-0.5, -0.1, 0.2, 0.6, 1.0, 1.4))}
+    rank_pool.build_rank_pool(signal_date=DAY, pool=(POOL, receipt), predictions=predictions, holdings=[],
+                              ensemble=_ensemble(), l3_identity=IDENTITY)
+    prediction = predictions["P6"]
+    ehat = prediction[rank_pool.EVIDENCE_KEY]["expected_excess"]
+    assert ehat > 0
+    view = r33_ensemble.serving_view(prediction, _ensemble(), cost=float(ehat))
+    assert view["signal"] == "HOLD"
+    assert r33_ensemble.serving_view(prediction, _ensemble(), cost=float(ehat) * 0.999)["signal"] == "BUY"
+
+
+def test_l3_audit_records_a_pool_name_without_any_prediction_as_unscored(monkeypatch):
+    predictions, _ = _chain()
+    predictions.pop("P6")
+    captured = []
+    monkeypatch.setattr(reco, "OPS_D1_CLIENT", SimpleNamespace(batch_execute=captured.extend))
+    reco.write_layer3_formal_gate_audit(predictions=predictions, recommendations=[{"symbol": s} for s in POOL[:5]],
+                                        layer2_symbols=POOL, run_date=DAY, screener_run_id="run-1")
+    decisions = {params[2]: (params[5], params[6]) for _sql, params in captured[1:]}
+    assert decisions["P6"] == ("unscored", "r33_unscored:prediction_missing:not_in_final_rows")

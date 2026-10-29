@@ -4928,6 +4928,10 @@ def write_layer3_formal_gate_audit(
         for row in recommendations
         if row.get("symbol")
     }
+    # Under R33 a pool name with no prediction at all is coverage too (unscored), not an L3 drop.
+    r33_mode = any(isinstance(p, dict) and isinstance(p.get("ensemble_v2"), dict)
+                   and p["ensemble_v2"].get("schema_version") == R33_RUNTIME_SCHEMA
+                   for p in (predictions.values() if isinstance(predictions, dict) else []))
     statements: list[tuple[str, list[Any]]] = [
         (
             "DELETE FROM screener_funnel_items WHERE run_id = ? AND date = ? AND stage = ?",
@@ -4951,13 +4955,14 @@ def write_layer3_formal_gate_audit(
             else {}
         )
         active_family_count = int((vote or {}).get("active_family_count") or 0)
-        r33 = isinstance(ev2, dict) and ev2.get("schema_version") == R33_RUNTIME_SCHEMA
+        r33 = r33_mode and (not isinstance(pred, dict) or ev2.get("schema_version") == R33_RUNTIME_SCHEMA)
         if r33:
             # R4: under R33 the L3 gate is coverage telemetry. An unscored name stays a
             # candidate and L4 marks it unavailable for the day with this reason.
             contract = ev2.get("formal_model_input_contract") or {}
             decision = "pass" if contract.get("r33_scored") else "unscored"
-            reason_code = "r33_scored" if contract.get("r33_scored") else str(contract.get("r33_unscored_reason"))
+            reason_code = ("r33_scored" if contract.get("r33_scored")
+                           else str(contract.get("r33_unscored_reason") or "r33_unscored:prediction_missing"))
             if final_row is None:
                 reason_code += ":not_in_final_rows"
         elif not isinstance(pred, dict):

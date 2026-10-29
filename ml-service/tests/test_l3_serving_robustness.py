@@ -80,3 +80,11 @@ def test_with_metrics_carries_the_serving_report(monkeypatch):
     report = out["metrics"]["serving_report"]
     assert report["schema_version"] == "l3-serving-robustness-report-v1"
     assert isinstance(report["raw_score_dispersion"], dict) and report["feature_context_errors"] == 0
+
+
+def test_challenger_scores_stay_out_of_the_raw_report():
+    from types import SimpleNamespace
+    ctx = SimpleNamespace(rank_scores={}, challenger_rank_scores={}, raw_scores={})
+    batch_prediction._record_feature_score(ctx, "XGBoost", 2.0, challenger=True)
+    batch_prediction._record_feature_score(ctx, "LightGBM", -0.5)
+    assert ctx.raw_scores == {"LightGBM": -0.5} and ctx.challenger_rank_scores == {"XGBoost": 1.0}

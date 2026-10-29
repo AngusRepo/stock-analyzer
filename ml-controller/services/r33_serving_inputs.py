@@ -41,7 +41,8 @@ def holding_stocks(*, signal_date: str, active_stocks: list[dict], account_reade
 
 
 def stale_inputs(payloads: list[dict], run_date: str) -> dict[str, str]:
-    """{symbol: reason} for payloads whose last bar is before run_date (or that have none)."""
+    """{symbol: reason} for payloads whose last bar is before run_date, that have none,
+    or whose bar dates cannot be read (a fresh bar cannot be shown, and a report never raises)."""
     day = date.fromisoformat(run_date)
     stale = {}
     for payload in payloads:
@@ -49,8 +50,14 @@ def stale_inputs(payloads: list[dict], run_date: str) -> dict[str, str]:
         dates = [str(p["date"])[:10] for p in payload.get("prices") or [] if isinstance(p, dict) and p.get("date")]
         if not dates:
             stale[symbol] = "no_bars"
-        elif date.fromisoformat(max(dates)) < day:
-            stale[symbol] = "last_bar=" + max(dates)
+            continue
+        try:
+            last = max(date.fromisoformat(d) for d in dates)
+        except ValueError:
+            stale[symbol] = "bad_bar_date"
+            continue
+        if last < day:
+            stale[symbol] = "last_bar=" + last.isoformat()
     return stale
 
 

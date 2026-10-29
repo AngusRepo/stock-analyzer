@@ -4,9 +4,10 @@ import { writeSystemLog } from './notify'
 
 // NEW-47 / W0-4: any change to a champion pointer or the ensemble pointer is reported once,
 // after the close, whoever made it. Seven days of lookback cover weekends and holidays; the
-// message itself is the dedupe key, so a change seen on several runs is logged once.
+// message itself is the dedupe key, so a change seen on several runs is logged once. Fourteen
+// days outlast the longest market closure (Lunar New Year); the dedupe makes the margin free.
 const SOURCE = 'pointer-change'
-const LOOKBACK = '-7 days'
+const LOOKBACK = '-14 days'
 
 type Change = { pointer: string; artifact_id: string | null; version: string | null; promoted_at: string; reason: string | null }
 
@@ -34,4 +35,16 @@ export async function alertPointerChanges(env: Bindings): Promise<{ changes: num
     logged += 1
   }
   return { changes: changes.length, logged }
+}
+
+/** For the post-close task: never throws and never holds the dispatch longer than timeoutMs. */
+export async function alertPointerChangesGuarded(env: Bindings, timeoutMs = 10_000) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs) })
+  try {
+    return await Promise.race([alertPointerChanges(env), timeout])
+  } catch (error) {
+    console.warn('[PointerChange] check failed: ' + String(error))
+    return null
+  } finally { clearTimeout(timer) }
 }

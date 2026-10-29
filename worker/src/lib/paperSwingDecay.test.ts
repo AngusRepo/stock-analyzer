@@ -143,12 +143,18 @@ test('runtime: a malformed R33 exit config holds and never substitutes built-in 
       assert.match((await swingExitEvaluator(f.env, [pos], '2026-10-05', r33Config(null))(pos, 80))!.reason, /swing_exit_rules_invalid/)
       const alerts = f.sqls.ops.prepare("SELECT level,cron_name FROM system_logs WHERE cron_name='swing-exit'").all() as any[]
       assert.deepEqual(alerts.map(r => [r.level, r.cron_name]), [['error', 'swing-exit']])
+      // Another date is another alert; an alert that cannot be written still leaves the hold.
+      await swingExitEvaluator(f.env, [pos], '2026-10-07', r33Config(null))(pos, 80)
+      assert.equal((f.sqls.ops.prepare("SELECT COUNT(*) AS n FROM system_logs WHERE cron_name='swing-exit'").get() as any).n, 2)
       const legacy = { ...f.cfg, l4Distribution: { ...(f.cfg as any).l4Distribution, operating_mode: R33 }, exit: { ...f.cfg.exit, swingHardStopPct: -.2, swingMaxHoldSessions: 20 } }
       const position = { symbol: '2340', shares: 1000, avg_cost: 100, entry_price: 100, trade_lifecycle_json: pos.trade_lifecycle_json } as any
       assert.equal(checkExitConditions(position, 85, 3, false, false, legacy as any).action, 'hold')
       assert.equal(checkExitConditions(position, 80, 3, false, false, legacy as any).reason, 'swing_hard_stop_8')
       assert.match(checkExitConditions(position, 80, 3, false, false, { ...legacy, exit: f.cfg.exit } as any).reason, /swing_exit_rules_invalid/)
     })
+    // Outside the paper scope the ops lookup itself throws (no binding); the evaluator still holds.
+    const noOps = { ...f.env, OPS_DB: undefined }
+    assert.match((await swingExitEvaluator(noOps, [pos], '2026-10-08', r33Config(null))(pos, 80))!.reason, /swing_exit_rules_invalid/)
   } finally { f.close() }
 })
 

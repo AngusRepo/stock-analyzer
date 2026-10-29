@@ -5,16 +5,21 @@ from services.l4_distribution import validate_bundle,digest
 MODE='single_b_tabpack_v1'
 MLP_MODE='single_b_full_mlp_median_v1'
 TABPACK_MEDIAN_MODE='single_b_tabpack_core16_median_v1'
-MODES=(MODE,MLP_MODE,TABPACK_MEDIAN_MODE)
+# R33 seven-model equal z + isotonic E-hat: one Paper strategy (role B), like the single-B modes.
+R33_MODE='r33_equal7_isotonic_v1'
+MODES=(MODE,MLP_MODE,TABPACK_MEDIAN_MODE,R33_MODE)
 STATUS='disabled_by_single_b_policy'
 
 def refresh_family(config):
+    mode=((config or {}).get('l4Distribution') or {}).get('operating_mode')
+    if mode == R33_MODE:
+        # R33 has no residual L4 family; its monthly lifecycle owns the seven models.
+        raise ValueError('paper_r33_has_no_l4_refresh_family')
     override=((config or {}).get('l4Distribution') or {}).get('candidate_model_family')
     if override is not None:
         if override not in ('tabpack', 'tabpack_median16', 'full_mlp_median', 'tabpack_r2'):
             raise ValueError('paper_candidate_model_family_invalid')
         return override
-    mode=((config or {}).get('l4Distribution') or {}).get('operating_mode')
     return {MLP_MODE:'full_mlp_median',TABPACK_MEDIAN_MODE:'tabpack_median16'}.get(mode,'tabpack')
 
 def is_single_b(policy):
@@ -23,6 +28,13 @@ def is_single_b(policy):
 def validate_model_mode(policy):
     model=((policy or {}).get('artifact') or {}).get('model') or {}
     mode=(policy or {}).get('operating_mode')
+    from services.l3_equal_weight_bundle import is_equal7
+    if mode == R33_MODE:
+        if not is_equal7((policy or {}).get('artifact')) or model.get('residual_mlp') is not None or model.get('residual_tabpack') is not None:
+            raise ValueError('paper_r33_equal7_required')
+        return
+    if is_equal7((policy or {}).get('artifact')):
+        raise ValueError('paper_r33_mode_required')
     if mode == MODE:
         if model.get('residual_mlp') is not None or not model.get('residual_tabpack'):
             raise ValueError('paper_single_b_tabpack_required')

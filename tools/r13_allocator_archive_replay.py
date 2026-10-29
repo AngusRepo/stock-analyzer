@@ -152,11 +152,12 @@ def replay_date(signal_date, *, paper, learning, market, time_limits, run, read_
                   consistency='comparable' if comparable else 'not_applicable:v1_context', budgets=[])
     for limit in time_limits:
         replay, calls = measured(run, allocate_module, runtime_module, limit, pool)
-        budget = {'time_limit': limit, 'matches_stored': None}
+        budget = {'time_limit': limit, 'matches_stored': None, 'has_plan': False}
         try:
             output = replay(deepcopy(inputs['recommendations']), deepcopy(frozen),
                             return_history=deepcopy(inputs['return_history']), forced_arm=forced)
             plan = output[0]['_l4_portfolio_plan'] if output else None
+            budget['has_plan'] = plan is not None
             if comparable:
                 budget['matches_stored'] = plan is not None and plan.get('weights') == stored.get('weights')
         except Exception as error:  # the replay records any refusal; it never repairs it
@@ -187,7 +188,7 @@ def summarize(reports):
                 run_errors[budget['run_error']] = run_errors.get(budget['run_error'], 0) + 1
         seconds = sorted(s['seconds'] for s in solves)
         summary[f'budget_{limit:g}s'] = {
-            'days': len(budgets), 'days_with_plan': sum('run_error' not in b for b in budgets),
+            'days': len(budgets), 'days_with_plan': sum(bool(b['has_plan']) for b in budgets),
             'days_refused': sum('run_error' in b for b in budgets), 'run_errors': run_errors,
             'solves': len(solves), 'solve_plans': sum(s['status'] == 'plan' for s in solves),
             'allocate_errors': allocate_errors,

@@ -130,16 +130,17 @@ def test_replay_date_reports_a_refusal_without_repairing_it():
         runtime.allocate(**_kwargs(exposure_cap=0.))
         return []
 
-    snapshot = _snapshot({'runtime': RUNTIME}, recommendations=())
+    snapshot = _snapshot({'runtime': RUNTIME, 'opb': {'enabled': True}}, recommendations=())
     report = tool.replay_date(
         '2026-10-01', paper=_Db([]), learning=_Db([]), market=_Db([{'entry': '2026-10-02'}]), time_limits=[30.],
         run=run, read_snapshot=lambda query, sid: snapshot,
         first_formal_plan=lambda paper, day, entry: ({'plan_id': 'p', 'allocation_snapshot_id': 's'},
-                                                     {'weights': {}, 'l3_identity': 'l3'}),
+                                                     {'weights': {}, 'l3_identity': 'l3', 'opb': {'arm_id': 'tight'}}),
         allocate_module=l4_portfolio, runtime_module=runtime, is_v2=lambda policy: False)
     budget = report['budgets'][0]
     assert budget['run_error'].startswith('ValueError') and budget['solves'][0]['aud1_zero_cap_with_locked']
     assert report['consistency'] == 'not_applicable:v1_context' and budget['matches_stored'] is None
+    assert report['forced_arm'] is None, 'a v1 day is never forced, even with OPB enabled'
     summary = tool.summarize([report])['budget_30s']
     assert summary['aud1_zero_cap_with_locked_days'] == 1 and summary['days_refused'] == 1
     assert summary['not_comparable'] == 1 and sum(summary['allocate_errors'].values()) == 1
@@ -246,3 +247,50 @@ def test_main_stops_before_a_date_that_reaches_an_avoid_window():
                        clients={'paper': _Db([{'signal_date': '2026-10-01'}]), 'learning': _Db([]), 'market': _Db([])})
     assert result['aborted'] == {'reason': 'aborted_avoid_window', 'next_date': '2026-10-01'}
     assert result['dates'] == []
+
+
+def test_aud2_flag_needs_the_budget_to_be_spent():
+    tool, runtime = _tool(), _runtime()
+    clock = iter([0., 0.001, 10., 50.])
+    tool.time.perf_counter = lambda: next(clock)
+
+    def refuse(**kwargs):
+        raise ValueError(tool.NOT_CERTIFIED)
+
+    module = types.SimpleNamespace(allocate=refuse)
+    for expected in (False, True):
+        replay, calls = tool.measured(lambda: runtime.allocate(**_kwargs()), module, runtime, 30.)
+        with pytest.raises(ValueError):
+            replay()
+        assert calls[0]['aud2_budget_exhausted'] is expected
+
+
+def test_a_different_plan_is_counted_and_an_empty_output_is_not_a_plan():
+    tool, runtime = _tool(), _runtime()
+    outputs = iter([[{'_l4_portfolio_plan': {'weights': {'A': .1}}}], [], [{'_l4_portfolio_plan': {'weights': {'A': .1}}}]])
+
+    def run(recommendations, policy, *, return_history, forced_arm=None):
+        return next(outputs)
+
+    first = lambda *a: ({'plan_id': 'p', 'allocation_snapshot_id': 's'}, {'weights': {'A': .2}, 'l3_identity': 'l3'})
+    reports = [tool.replay_date('2026-10-01', paper=_Db([]), learning=_Db([]), market=_Db([{'entry': '2026-10-02'}]),
+                                time_limits=[30.], run=run, read_snapshot=lambda q, s: _snapshot({'version': 2, 'runtime': RUNTIME}),
+                                first_formal_plan=first, allocate_module=l4_portfolio, runtime_module=runtime,
+                                is_v2=lambda policy, v2=v2: v2) for v2 in (True, True, False)]
+    summary = tool.summarize(reports)['budget_30s']
+    assert summary['differs_from_stored'] == 2 and summary['not_comparable'] == 1
+    assert summary['days_with_plan'] == 2
+
+
+def test_main_hands_the_replay_query_only_clients(monkeypatch):
+    tool = _tool()
+    seen = []
+    monkeypatch.setattr(tool, 'replay_date', lambda day, **kw: seen.append(kw) or {'signal_date': day, 'status': 'no_formal_plan'})
+
+    class Writable(_Db):
+        def execute(self, *a, **k):
+            raise AssertionError('read-only tool')
+
+    tool.main(['--since', '2026-09-21', '--until', '2026-10-29'], clock=lambda: datetime(2026, 10, 30, 2, tzinfo=timezone.utc),
+              clients={'paper': Writable([{'signal_date': '2026-10-01'}]), 'learning': Writable([]), 'market': Writable([])})
+    assert all(isinstance(seen[0][name], tool.QueryOnly) for name in ('paper', 'learning', 'market'))

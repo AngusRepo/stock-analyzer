@@ -489,7 +489,8 @@ CREATE TABLE IF NOT EXISTS screener_momentum_snapshots (
 
   percentile_rank       REAL,
   zone                  TEXT NOT NULL DEFAULT 'GREEN',
-  created_at            TEXT DEFAULT (datetime('now'))
+  created_at            TEXT DEFAULT (datetime('now')),
+  pool_definition       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS screener_selection_history (
@@ -857,6 +858,9 @@ CREATE INDEX IF NOT EXISTS idx_sfs_date_class ON sector_flow_stocks(date, classi
 
 CREATE INDEX IF NOT EXISTS idx_momentum_snapshots_date
   ON screener_momentum_snapshots(date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_momentum_snapshots_pool_date
+  ON screener_momentum_snapshots(pool_definition, date DESC);
 
 CREATE INDEX IF NOT EXISTS idx_screener_hist_date   ON screener_selection_history(date DESC);
 

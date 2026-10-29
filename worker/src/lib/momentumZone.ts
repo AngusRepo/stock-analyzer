@@ -60,6 +60,12 @@ export const YELLOW_PERCENTILE = 0.30
 export const HISTORY_MONTHS = 36
 /** Minimum history points required to trust the percentile; below → GREEN default. */
 export const MIN_HISTORY = 60
+/**
+ * Identity of the candidate pool a snapshot aggregates (Wei 10/29 Q3). A percentile only
+ * compares snapshots with the same definition, so a change to how the screener builds
+ * `finalCandidates` (e.g. 25 → ~640 names) must bump this value instead of mixing pools.
+ */
+export const MOMENTUM_POOL_DEFINITION = 'screener-v2.final-candidates.v1'
 
 /** Position-size multiplier per zone (consumed by circuit breaker Layer 6). */
 export const ZONE_MULTIPLIER: Record<MomentumZone, number> = {
@@ -172,6 +178,7 @@ export function assessZone(
 export async function loadOversoldHistory(
   db: D1Database,
   today: string,
+  poolDefinition: string = MOMENTUM_POOL_DEFINITION,
 ): Promise<number[]> {
   try {
     const { results } = await db.prepare(`
@@ -179,9 +186,10 @@ export async function loadOversoldHistory(
         FROM screener_momentum_snapshots
        WHERE date < ?
          AND date >= date(?, '-${HISTORY_MONTHS} months')
+         AND pool_definition = ?
          AND pct_oversold IS NOT NULL
        ORDER BY date DESC
-    `).bind(today, today).all<{ pct_oversold: number }>()
+    `).bind(today, today, poolDefinition).all<{ pct_oversold: number }>()
     return (results ?? []).map(r => Number(r.pct_oversold))
   } catch (e) {
     console.warn('[MomentumZone] loadOversoldHistory failed (table may not exist yet):', e)
@@ -198,14 +206,16 @@ export async function writeMomentumSnapshot(
   date: string,
   indicator: CandidateIndicator,
   assessment: ZoneAssessment,
+  poolDefinition: string = MOMENTUM_POOL_DEFINITION,
 ): Promise<void> {
   try {
     await db.prepare(`
       INSERT INTO screener_momentum_snapshots (
         date, candidate_count, avg_5d_return, pct_oversold, pct_overbought,
-        avg_dist_from_high, breadth_score, percentile_rank, zone
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        avg_dist_from_high, breadth_score, percentile_rank, zone, pool_definition
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(date) DO UPDATE SET
+        pool_definition    = excluded.pool_definition,
         candidate_count    = excluded.candidate_count,
         avg_5d_return      = excluded.avg_5d_return,
         pct_oversold       = excluded.pct_oversold,
@@ -224,6 +234,7 @@ export async function writeMomentumSnapshot(
       indicator.breadth_score,
       assessment.percentile_rank,
       assessment.zone,
+      poolDefinition,
     ).run()
   } catch (e) {
     console.error('[MomentumZone] writeMomentumSnapshot failed:', e)

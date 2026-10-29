@@ -21,6 +21,9 @@ SCOPE_PATHS = (
     'trading:config.l4Distribution.operating_mode',
     'trading:config.l4Distribution.strategy_role',
     'trading:config.l4Distribution.opb.approved_policy_identity',
+    # R28: the swing stop (NEW-H1d owner) and holding limit the decay exit reads (Worker swingExitRules).
+    'trading:config.exit.swingHardStopPct',
+    'trading:config.exit.swingMaxHoldSessions',
 )
 _FIELDS = {'schema_version', 'mode', 'candidate_bundle', 'artifacts', 'base_artifact_set_checksum', 'ensemble',
            'calibration', 'rank_pool_schema', 'feature_schema', 'l4_model_checksum', 'economics_change_scope',
@@ -116,6 +119,10 @@ def validate_evidence(evidence, admission):
         raise _fail('artifacts')
     if (policy.get('opb') or {}).get('approved_policy_identity') != distribution_policy_identity(policy, identity):
         raise _fail('opb_policy_identity')
+    exit_rules = bundle['candidate_trading_config'].get('exit') or {}
+    stop, age = exit_rules.get('swingHardStopPct'), exit_rules.get('swingMaxHoldSessions')
+    if type(stop) not in (int, float) or not -1 < stop < 0 or type(age) is not int or age < 1:
+        raise _fail('swing_exit')
     approval = evidence['wei_approval']
     if (not isinstance(approval, dict) or set(approval) != {'approved', 'scope', 'approved_at', 'source_reference'}
             or approval['approved'] is not True or approval['scope'] != 'paper'

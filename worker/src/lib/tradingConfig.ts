@@ -1,4 +1,5 @@
-import { l4OperatingModeError, validSingleBModel } from './paperStrategyMode'
+import { l4OperatingModeError, R33_EQUAL7_ISOTONIC, validSingleBModel } from './paperStrategyMode'
+import { swingExitConfigError } from './paperSwingPolicy'
 import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { evaluateBoundedLosses } from './riskChecks/p5Losses'
@@ -169,6 +170,9 @@ export interface TradingConfig {
     // S12 structural exits are primary; the fixed paper SL/TP cascade remains
     // the safety fallback. Dynamic priority is comparison-only and inert.
     dynamicExitPriorityEnabled: boolean
+    // Swing −8% stop (NEW-H1d owner) and R33 holding limit; no default, required under R33.
+    swingHardStopPct?: number
+    swingMaxHoldSessions?: number
   }
   position: {
     dailyBuyLimit: number        // 每日自動買入上限 NT$
@@ -1655,6 +1659,8 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     }
     if (policy.operating_mode != null && !validSingleBModel(policy)) errors.push('single B mode requires its matching complete Paper artifact')
     if (l4OperatingModeError(policy)) errors.push('l4Distribution R33 feature schema and R33 operating_mode must appear together')
+    if (policy.operating_mode === R33_EQUAL7_ISOTONIC && swingExitConfigError(config.exit))
+      errors.push('R33 operating_mode requires exit.swingHardStopPct (-1..0) and exit.swingMaxHoldSessions (integer >= 1)')
     if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'
     if ((!isolatedCandidate && policy.scope!=='paper') || a?.schema_version!=='l4-distribution-v1'

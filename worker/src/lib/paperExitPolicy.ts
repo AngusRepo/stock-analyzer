@@ -1,5 +1,5 @@
 import { readSwingState } from './paperSwingLifecycle'
-import { assessSwingExit } from './paperSwingPolicy'
+import { assessSwingExit, swingExitRules } from './paperSwingPolicy'
 import { paperExecutionNow } from './paperExecutionScope'
 import type { MarketRegime } from './dynamicExitPriority'
 import type { TradingConfig } from './tradingConfig'
@@ -60,8 +60,10 @@ export function checkExitConditions(
   const swing=readSwingState(pos.trade_lifecycle_json)
   if(swing) {
     const nowMs=paperExecutionNow(), date=new Date(nowMs+8*3600_000).toISOString().slice(0,10)
-    if(currentPrice<=swing.entryPrice*.92 || (swing.pendingExit && nowMs>=swing.pendingExit.notBeforeMs))
-      return assessSwingExit(swing,{date,nowMs,price:currentPrice,calendar:[]})
+    let rules
+    try { rules=swingExitRules(cfg) } catch(error) { return {action:'hold',reason:String(error instanceof Error ? error.message : error)} }
+    if(currentPrice<=swing.entryPrice*rules.hardStopMultiplier || (swing.pendingExit && nowMs>=swing.pendingExit.notBeforeMs))
+      return assessSwingExit(swing,{date,nowMs,price:currentPrice,calendar:[]},rules)
     return {action:'hold',reason:'swing_hold_requires_daily_evidence'}
   }
   const ex = cfg.exit

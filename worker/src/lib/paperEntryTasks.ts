@@ -1,7 +1,7 @@
 import { createSwingEntryAssessor } from './paperSwingAssessment'
 import { shioajiBookObservation, validatedBookL5 } from './paperExecutionBook'
 import { getPrevTradingDay } from './paperMarketData'
-import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, type SwingEntryDecision } from './paperSwingPolicy'
+import { SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OPEN, swingExitRules, type SwingEntryDecision } from './paperSwingPolicy'
 import { executeContinuousPaperBatch } from './paperContinuousExecution'
 import { writeSwingState, readSwingFillExit } from './paperSwingLifecycle'
 import { swingExecutionAuthorization, swingExecutionRejection } from './paperSwingExecution'
@@ -2922,7 +2922,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
     const canonicalTradeLifecycleJson=paperSwingOwner ? writeSwingState(legacyLifecycleJson,{policy:SWING_POLICY_VERSION,
-      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAuthorization!.orLow}) : legacyLifecycleJson
+      entryDate:today,entryPrice:fillPrice,entryOrLow:swingAuthorization!.orLow},swingExitRules(cfg)) : legacyLifecycleJson
     let fillExit = readSwingFillExit(canonicalTradeLifecycleJson) ?? {
       initialStop: effectiveInitialStop, tp1: effectiveTp1Price, tp2: effectiveTp2Price,
       owner: canonicalTradeLifecycle.owners.exit, fallbackOwner: canonicalTradeLifecycle.owners.fallbackExit,

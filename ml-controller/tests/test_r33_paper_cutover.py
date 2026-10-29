@@ -16,7 +16,9 @@ NOW = datetime(2026, 11, 9, 8, tzinfo=timezone.utc)
 # --- R33-NEW-07: cutover grant -----------------------------------------------------------------
 
 def _config(policy, *, risk=None):
-    return {'trading_config': {'fees': {'commission': .001425, 'tax': .003}, 'l4Distribution': policy},
+    swing = {'swingHardStopPct': -.08, 'swingMaxHoldSessions': 20} if policy.get('operating_mode') == R33_MODE else {}
+    return {'trading_config': {'fees': {'commission': .001425, 'tax': .003}, 'l4Distribution': policy,
+                               'exit': {'hardStopPct': -.1, **swing}},
             'risk_config': risk or {'position': {'maxSingleNamePct': .1}},
             'allocator_source_identity': {'l4_portfolio.py': 'a' * 64},
             'l3_inference_source_identity': {'active8_paper_admission.py': 'b' * 64,
@@ -53,7 +55,9 @@ def _evidence(policy, ensemble):
             'l4_model_checksum': policy['artifact']['model_checksum'],
             'economics_change_scope': ['trading:config.l4Distribution.artifact',
                                        'trading:config.l4Distribution.operating_mode',
-                                       'trading:config.l4Distribution.opb.approved_policy_identity'],
+                                       'trading:config.l4Distribution.opb.approved_policy_identity',
+                                       'trading:config.exit.swingHardStopPct',
+                                       'trading:config.exit.swingMaxHoldSessions'],
             'first_night': {'supersedes_plan_policy_identity': 'p' * 64, 'effective_signal_date': '2026-11-10'},
             'wei_approval': {'approved': True, 'scope': 'paper', 'approved_at': '2026-11-08T12:00:00Z',
                              'source_reference': 'SYNTHETIC TEST ONLY'}}
@@ -93,7 +97,8 @@ def test_valid_r33_cutover_checks_the_prior_chain(monkeypatch):
                                    'baseline_identity', 'baseline_config', 'mode', 'role', 'l3_identity',
                                    'l4_checksum', 'feature_schema', 'rank_pool', 'calibration', 'oof_status', 'pit',
                                    'cohort', 'wei_scope', 'wei_order', 'first_night_identity', 'first_night_date',
-                                   'first_night_format', 'extra_field'])
+                                   'first_night_format', 'extra_field', 'swing_exit_missing', 'swing_exit_value',
+                                   'swing_exit_scope', 'exit_other_field'])
 def test_r33_cutover_rejects_every_other_change(monkeypatch, fault):
     approval, admission, _, _ = _grant(monkeypatch)
     e, c = approval['approved_r33_cutover'], approval['configuration']
@@ -130,6 +135,10 @@ def test_r33_cutover_rejects_every_other_change(monkeypatch, fault):
         'first_night_date': lambda: e['first_night'].update(effective_signal_date='2026-11-06'),
         'first_night_format': lambda: e['first_night'].update(effective_signal_date='2026/11/10'),
         'extra_field': lambda: e.update(maturity_transfer=True),
+        'swing_exit_missing': lambda: admission['strategy_bundle']['candidate_trading_config']['exit'].pop('swingMaxHoldSessions'),
+        'swing_exit_value': lambda: admission['strategy_bundle']['candidate_trading_config']['exit'].update(swingHardStopPct=0),
+        'swing_exit_scope': lambda: e['economics_change_scope'].remove('trading:config.exit.swingHardStopPct'),
+        'exit_other_field': lambda: c['trading_config']['exit'].update(hardStopPct=-.2),
     }
     edits[fault]()
     with pytest.raises((RuntimeError, ValueError)):

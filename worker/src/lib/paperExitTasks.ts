@@ -1437,7 +1437,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
     eodToday,
   ).catch(() => null)
 
-  const evaluateSwingExit=swingExitEvaluator(env,exitPositions,eodToday)
+  const evaluateSwingExit=swingExitEvaluator(env,exitPositions,eodToday,cfg)
   for (const pos of exitPositions) {
     const quote = exitQuoteMap.get(pos.symbol)
     if (!quote) continue
@@ -1877,7 +1877,7 @@ export async function pollIntradayStopLoss(
     })),
   )
 
-  const evaluateSwingExit=swingExitEvaluator(env,positions,intradayToday)
+  const evaluateSwingExit=swingExitEvaluator(env,positions,intradayToday,cfg)
   const previousMarketCloseSell = await loadPreviousMarketCloseBySymbols(env, symbols, intradayToday)
   const prevCloseMapSell = new Map([...previousMarketCloseSell].map(([symbol, row]) => [symbol, row.close]))
 

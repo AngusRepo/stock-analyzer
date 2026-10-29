@@ -172,6 +172,28 @@ def test_l3_audit_records_a_pool_name_without_any_prediction_as_unscored(monkeyp
     assert decisions["P6"] == ("unscored", "r33_unscored:prediction_missing:not_in_final_rows")
 
 
+def test_l3_audit_outside_r33_still_drops_a_name_without_prediction(monkeypatch):
+    predictions, _ = _chain()
+    for prediction in predictions.values():
+        prediction["ensemble_v2"] = {"schema_version": "active8-ensemble-runtime-v1"}
+    predictions.pop("P6")
+    captured = []
+    monkeypatch.setattr(reco, "OPS_D1_CLIENT", SimpleNamespace(batch_execute=captured.extend))
+    reco.write_layer3_formal_gate_audit(predictions=predictions, recommendations=[{"symbol": s} for s in POOL[:5]],
+                                        layer2_symbols=POOL, run_date=DAY, screener_run_id="run-1")
+    decisions = {params[2]: (params[5], params[6]) for _sql, params in captured[1:]}
+    assert decisions["P6"] == ("drop", "formal_family_prediction_missing")
+
+
+def test_normalize_keeps_the_roster_check_for_a_non_r33_ensemble_with_the_r33_order():
+    from services.active8_score_semantics import normalize_active8_cross_sectional_scores
+    ensemble = _ensemble()
+    versions = {m: ensemble["base_artifacts"][m]["version"] for m in MODELS}
+    with pytest.raises(ValueError, match="active8_score_artifact_roster_mismatch"):
+        normalize_active8_cross_sectional_scores({}, artifact_versions=versions, artifact_target_semantics={},
+                                                 run_date=DAY, active8_ensemble={"model_order": list(MODELS)},
+                                                 pool_models=POOL_MODELS)
+
 def test_a_model_missing_for_one_name_is_z0_for_that_name_only():
     from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION, normalize_active8_cross_sectional_scores
     ensemble = _ensemble()

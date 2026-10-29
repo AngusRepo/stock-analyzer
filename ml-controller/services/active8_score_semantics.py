@@ -94,7 +94,8 @@ def normalize_active8_cross_sectional_scores(
     """
     order = (validate_order(active8_ensemble["model_order"]) if active8_ensemble is not None
              else model_order(artifact_versions))
-    if order == R33_MODELS:
+    from services.r33_ensemble import is_r33
+    if order == R33_MODELS and is_r33(active8_ensemble):
         # R33 is the TimeXer roster without XGBoost; a served XGBoost score is simply
         # outside the order, and a missing model is z=0 downstream, so only the slot matters.
         if "DLinear" in artifact_versions:

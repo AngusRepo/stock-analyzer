@@ -81,7 +81,9 @@ export function planRollback({ options, liveVersionId, liveVersion, targetVersio
 // wrangler). ci-info reads dozens of vendor variables (TF_BUILD, GITLAB_CI, NODE for Heroku, ...),
 // so instead of mirroring that list, wrangler runs with only the variables it needs: no CI variable
 // reaches it, and the TTY check below is then the whole condition.
-const CHILD_ENV = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|LANG|LC_[A-Z]+|TMPDIR|TZ|XDG_[A-Z_]+|SystemRoot|WINDIR|APPDATA|LOCALAPPDATA|USERPROFILE|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|NODE_EXTRA_CA_CERTS|CLOUDFLARE_[A-Z_]+|WRANGLER_[A-Z_]+)$/
+// Case-insensitive: Windows keeps Path/Temp/Tmp in mixed case. CF_* are wrangler's deprecated
+// credential names (still honoured); a rollback planned with them must execute with them too.
+const CHILD_ENV = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|LANG|LC_[A-Z]+|TMPDIR|TEMP|TMP|TZ|XDG_[A-Z_]+|SystemRoot|WINDIR|APPDATA|LOCALAPPDATA|USERPROFILE|(HTTPS?|NO|ALL)_PROXY|NODE_EXTRA_CA_CERTS|CLOUDFLARE_[A-Z_]+|WRANGLER_[A-Z_]+|CF_(API_TOKEN|API_KEY|EMAIL|ACCOUNT_ID|API_BASE_URL))$/i
 const CI_ENV = ['CI', 'CONTINUOUS_INTEGRATION', 'BUILD_ID', 'BUILD_NUMBER', 'RUN_ID', 'CI_NAME',
   'CI_APP_ID', 'CI_BUILD_ID', 'CI_BUILD_NUMBER']
 
@@ -101,8 +103,9 @@ async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const workerDir = join(root, 'worker')
   const wrangler = join(workerDir, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
-  const run = (command, args) => {
-    const result = spawnSync(command, args, { cwd: workerDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  // wrangler reads (the plan) get the same environment as the rollback, so both use one identity
+  const run = (command, args, env = process.env) => {
+    const result = spawnSync(command, args, { cwd: workerDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env })
     if (result.error) throw result.error
     if (result.status !== 0) throw new Error(`${command} ${args.slice(0, 3).join(' ')} exited ${result.status}: ${result.stderr.trim().slice(-400)}`)
     return result.stdout
@@ -112,7 +115,7 @@ async function main() {
   if (!response.ok) throw new Error('production Worker health unavailable')
   const liveVersionId = String((await response.json())?.provenance?.versionId ?? '').toLowerCase()
   if (!UUID.test(liveVersionId ?? '')) throw new Error('live Worker version is not attested')
-  const view = id => JSON.parse(run(process.execPath, [wrangler, 'versions', 'view', id, '--json']))
+  const view = id => JSON.parse(run(process.execPath, [wrangler, 'versions', 'view', id, '--json'], wranglerEnv(process.env)))
   const gcloud = process.platform === 'win32' ? 'gcloud.cmd' : 'gcloud'
   const jobState = job => JSON.parse(run(gcloud, ['scheduler', 'jobs', 'describe', job, '--location=asia-east1', '--project=gen-lang-client-0602998820', '--format=json'])).state
   const plan = planRollback({ options, liveVersionId, liveVersion: view(liveVersionId), targetVersion: view(options.versionId), jobState })

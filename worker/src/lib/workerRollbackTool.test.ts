@@ -63,3 +63,11 @@ test('json vars count, and --execute refuses a shell where wrangler would auto-c
   assert.deepEqual(Object.keys(env).sort(), ['CLOUDFLARE_API_TOKEN', 'HOME', 'PATH', 'WRANGLER_LOG', 'https_proxy'])
   assert.doesNotThrow(() => requireInteractive({ ...tty, env: {} }))
 })
+
+test('wrangler env keeps the deprecated CF_* credentials and Windows mixed-case names, still no CI variable', () => {
+  const env = wranglerEnv({ CF_API_TOKEN: 't', CF_ACCOUNT_ID: 'a', CF_API_KEY: 'k', CF_EMAIL: 'e', CF_API_BASE_URL: 'u',
+    Path: 'C:/node', TEMP: 'C:/t', Tmp: 'C:/t2', SystemRoot: 'C:/Windows',
+    CF_PAGES: '1', CF_PAGES_BRANCH: 'main', WORKERS_CI: '1', CI: 'true', TF_BUILD: 'True', NODE: '/app/.heroku/node/bin/node' })
+  assert.deepEqual(Object.keys(env).sort(),
+    ['CF_ACCOUNT_ID', 'CF_API_BASE_URL', 'CF_API_KEY', 'CF_API_TOKEN', 'CF_EMAIL', 'Path', 'SystemRoot', 'TEMP', 'Tmp'])
+})

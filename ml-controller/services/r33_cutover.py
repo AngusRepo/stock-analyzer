@@ -76,6 +76,8 @@ def validate_evidence(evidence, admission):
     """Bind the evidence to the admission's candidate identity and L4 artifact."""
     from services.l3_equal_weight_bundle import FEATURE_SCHEMA, is_equal7
     from services.paper_strategy_mode import R33_MODE
+    from services.r33_crossfit_serving import TABLE_NAME
+    from services.r33_monthly_lifecycle import BUNDLE_PREFIX
     if not isinstance(evidence, dict) or set(evidence) != _FIELDS or evidence['schema_version'] != SCHEMA:
         raise _fail('schema')
     bundle = admission['strategy_bundle']
@@ -98,17 +100,22 @@ def validate_evidence(evidence, admission):
     if (not isinstance(candidate, dict) or set(candidate) != _BUNDLE
             or candidate['oof_checks_status'] != 'pass' or candidate['pit_certified'] is not True
             or candidate['cohort_id'] != identity['cohort_id']
-            or not isinstance(candidate['path'], str) or not candidate['path']
+            or candidate['path'] != f"{BUNDLE_PREFIX}/{identity['cohort_id']}/bundle.json"
             or not all(_hex(candidate[k]) for k in ('sha256', 'manifest_checksum', 'oof_checks_checksum'))):
         raise _fail('candidate_bundle')
     if (not isinstance(calibration, dict)
             or set(calibration) != {'source_payload_checksum', 'serving_table_path', 'serving_table_checksum'}
             or not _hex(calibration['source_payload_checksum']) or not _hex(calibration['serving_table_checksum'])
             or calibration['serving_table_checksum'] != artifact['model']['calibration_checksum']
-            or not isinstance(calibration['serving_table_path'], str) or not calibration['serving_table_path']):
+            or calibration['serving_table_path'] != f"{BUNDLE_PREFIX}/{identity['cohort_id']}/{TABLE_NAME}"):
         raise _fail('calibration')
-    if not isinstance(evidence['artifacts'], dict) or not evidence['artifacts']:
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.r33_isotonic_calibration import checksum
+    if (not isinstance(evidence['artifacts'], dict) or not evidence['artifacts']
+            or checksum(evidence['artifacts']) != identity['base_artifact_set_checksum']):
         raise _fail('artifacts')
+    if (policy.get('opb') or {}).get('approved_policy_identity') != distribution_policy_identity(policy, identity):
+        raise _fail('opb_policy_identity')
     approval = evidence['wei_approval']
     if (not isinstance(approval, dict) or set(approval) != {'approved', 'scope', 'approved_at', 'source_reference'}
             or approval['approved'] is not True or approval['scope'] != 'paper'
@@ -141,8 +148,10 @@ def validate_cutover(approval, admission, *, now):
     from services.active8_paper_admission import runtime_configuration_identity, validate_runtime_approval
     evidence = approval['approved_r33_cutover']
     validate_evidence(evidence, admission)
+    # The prior is the grant active when the switch tool ran (R33-NEW-15 checks it against KV
+    # before writing); a prior R33 cutover is allowed, so the next R33 cohort cuts over the same way.
     prior = approval.get('prior_runtime_approval')
-    if not isinstance(prior, dict) or prior.get('approved_r33_cutover') is not None:
+    if not isinstance(prior, dict):
         raise _fail('prior_runtime_required')
     old_admission = prior.get('admission')
     if not isinstance(old_admission, dict) or old_admission == admission:
@@ -177,16 +186,24 @@ def validate_cutover(approval, admission, *, now):
     return evidence
 
 
+# Grant kinds whose prior_runtime_approval the validator pins (release manifest checksum or
+# a reviewed provenance transition). Only through these may serving reach an older cutover.
+_PINNED_PRIOR = ('approved_strategy_nav_source_change', 'approved_capture_provenance_source_change')
+
+
 def cutover_evidence(approval, admission):
     """The cutover evidence behind an active approval for this admission.
 
     Later source releases embed the approval they replace as prior_runtime_approval,
     so the cutover grant stays reachable through that chain under the same admission.
+    Any other nested prior is unvalidated data and is never followed.
     """
     node = approval
     while isinstance(node, dict) and node.get('admission') == admission:
         if node.get('approved_r33_cutover') is not None:
             return node['approved_r33_cutover']
+        if not any(node.get(key) is not None for key in _PINNED_PRIOR):
+            return None
         node = node.get('prior_runtime_approval')
     return None
 

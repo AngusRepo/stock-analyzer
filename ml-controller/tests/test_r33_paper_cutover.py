@@ -221,3 +221,57 @@ def test_full_runtime_approval_accepts_the_cutover_and_still_pins_the_configurat
     _signed(tampered)
     with pytest.raises(RuntimeError, match='active8_paper_runtime_approval_invalid'):
         paper.validate_runtime_approval(tampered, admission, now=NOW)
+
+
+@pytest.mark.parametrize('fault', ['artifacts_junk', 'opb_identity_free', 'bundle_path', 'table_path',
+                                   'calibration_keys', 'wei_keys', 'wei_time'])
+def test_r33_cutover_binds_every_evidence_field_at_grant_time(monkeypatch, fault):
+    approval, admission, _, _ = _grant(monkeypatch)
+    e = approval['approved_r33_cutover']
+    candidate_policy = admission['strategy_bundle']['candidate_trading_config']['l4Distribution']
+    {'artifacts_junk': lambda: e.update(artifacts={'junk': 1}),
+     'opb_identity_free': lambda: candidate_policy['opb'].update(approved_policy_identity='z' * 64),
+     'bundle_path': lambda: e['candidate_bundle'].update(path='r33/monthly_candidates/c2/bundle.json'),
+     'table_path': lambda: e['calibration'].update(serving_table_path='r33/other/crossfit_serving_table.json'),
+     'calibration_keys': lambda: e['calibration'].update(extra='x'),
+     'wei_keys': lambda: e['wei_approval'].pop('source_reference'),
+     'wei_time': lambda: e['wei_approval'].update(approved_at='not-a-time')}[fault]()
+    with pytest.raises((RuntimeError, ValueError)):
+        r33_cutover.validate_cutover(approval, admission, now=NOW)
+
+
+def test_r33_can_cut_over_from_a_previous_r33_cutover(monkeypatch):
+    approval, admission, _, _ = _grant(monkeypatch)
+    approval['prior_runtime_approval']['approved_r33_cutover'] = {'schema_version': 'older'}
+    assert r33_cutover.validate_cutover(approval, admission, now=NOW) is approval['approved_r33_cutover']
+
+
+def test_serving_never_follows_an_unpinned_nested_prior(monkeypatch):
+    """A plain grant may not smuggle cutover evidence inside an unvalidated prior."""
+    approval, admission, ensemble, _ = _grant(monkeypatch)
+    plain = {'admission': admission, 'prior_runtime_approval': approval}
+    assert r33_cutover.cutover_evidence(plain, admission) is None
+    with pytest.raises(RuntimeError, match='serving_requires_cutover_evidence'):
+        r33_cutover.verify_serving(plain, admission, ensemble)
+    provenance = {'admission': admission, 'approved_capture_provenance_source_change': {'release': 'x'},
+                  'prior_runtime_approval': approval}
+    assert r33_cutover.cutover_evidence(provenance, admission) is approval['approved_r33_cutover']
+
+
+def test_publication_of_an_r33_object_needs_the_cutover_grant(monkeypatch):
+    from services import active8_paper_admission as paper, active8_nav_adoption
+    approval, admission, ensemble, _ = _grant(monkeypatch)
+    monkeypatch.setattr(paper, 'validate_admission', lambda adm, **kw: adm)
+    monkeypatch.setattr(active8_nav_adoption, 'verify_current_configuration', lambda config: config)
+    row = {'payload_json': __import__('json').dumps(ensemble)}
+    admission['business_date'] = '2026-11-10'
+    pointer = [{k: OLD_IDENTITY[k] for k in ('artifact_id', 'cohort_id', 'payload_checksum', 'base_artifact_set_checksum')}]
+    for active, ok in ((approval, True), ({**approval, 'approved_r33_cutover': None}, False)):
+        monkeypatch.setattr(paper, 'verify_active_approval', lambda adm, now=None, a=active: a)
+        call = lambda: paper.prepare_paper_adoption(ensemble_row=row, admission=admission,
+                                                    business_date='2026-11-10', query=lambda sql, args: pointer)
+        if ok:
+            assert call()['admission']['business_date'] == '2026-11-10'
+        else:
+            with pytest.raises(RuntimeError, match='serving_requires_cutover_evidence'):
+                call()

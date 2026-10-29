@@ -449,7 +449,10 @@ def prepare_paper_adoption(*, ensemble_row, admission, business_date, query):
     validate_admission(admission, artifact=artifact)
     if admission['business_date'] != business_date:
         raise ValueError('active8_paper_admission_date_mismatch')
-    verify_active_approval(admission)
+    approval = verify_active_approval(admission)
+    # An R33 object is published only under its cutover grant, never a plain one.
+    from services.r33_cutover import verify_serving
+    verify_serving(approval, admission, artifact)
     verify_current_configuration(admission['configuration'])
     pointers = query('SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id=1', [])
     baseline = admission['strategy_bundle']['baseline_l3_identity']

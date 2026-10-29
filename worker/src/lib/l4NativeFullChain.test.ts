@@ -120,6 +120,8 @@ for (const modelFamily of ['anchor','full_mlp_median']) test(`native ${modelFami
     await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))
     assert.equal(f.sqls.paper.prepare('SELECT shares FROM paper_positions').get()?.shares,3999)
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) n FROM paper_orders WHERE side='buy'").get()?.n,4)
+    // The last top-up is a single 999-share odd-lot order (lot sizing and relock are covered in paperEntryLotLock.test.ts).
+    assert.equal(f.sqls.paper.prepare("SELECT shares FROM paper_orders WHERE side='buy' ORDER BY rowid DESC LIMIT 1").get()?.shares,999)
     // Completed target and fractional dust must not create another order or debate.
     f.ports.nowMs+=60_000
     await withPaperExecutionScope(f.ports,()=>runIntradayCheck(f.env))

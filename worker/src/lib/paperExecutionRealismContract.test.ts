@@ -79,7 +79,7 @@ assert(
     entryTasks.indexOf("if (s12PrimaryOwnerEnabled && s12UnifiedDecision.action !== 'READY')") <
       entryTasks.indexOf('const finLabL5MarketDataSnapshot = paperSwingOwner') &&
     entryTasks.indexOf('const executionBook = (await batchGetExecutionOrderbooks([pending.symbol]') <
-      entryTasks.indexOf('const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({'),
+      entryTasks.indexOf('let authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({'),
   'Paper buys must gate on S12 before L5 and refresh the matching execution book before fill',
 )
 assert(

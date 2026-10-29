@@ -1,32 +1,95 @@
 """Official TimeXer training using the accepted causal windows and purged recipe.
 
 Only explicit training jobs call this module. Inference never fits a model.
-Window tensors are generated lazily to bound RAM for 137-channel histories.
+Fits gather windows on the device from resident source arrays (no per-sample
+host tensors); Windows remains the reference definition of every window.
 """
 from pathlib import Path
-import gc
 import json
-import multiprocessing
+import math
+import time
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data._utils.collate import default_collate
 from .timexer_runtime import official_model, validate_settings, SCORE_SEMANTIC
 
 TRAINING_SETTINGS = {"epochs": 10, "learning_rate": 0.0001, "batch_size": 64, "seed": 42}
-# The cpu=8 container used one core: window building ran serially between GPU steps.
-LOADER_WORKERS = 4
+EQUIVALENCE_PROBE_ROWS = 256
 
 
-def _freeze_inherited_objects(_worker_id):
-    gc.freeze()  # a forked worker's GC pass must not copy the parent's row dicts
+def _price_stats(prices):
+    return float(prices.mean()), float(prices.std()) + 1e-4
 
 
-def loader_options(device):
-    """Non-persistent forked workers: same sampler RNG draws, so every batch is unchanged."""
-    if device != 'cuda' or 'fork' not in multiprocessing.get_all_start_methods():
-        return {'num_workers': 0, 'pin_memory': device == 'cuda'}
-    return {'num_workers': LOADER_WORKERS, 'multiprocessing_context': 'fork', 'pin_memory': True,
-            'worker_init_fn': _freeze_inherited_objects}
+class _Positions(Dataset):
+    """Same length as the window dataset, so the sampler draws the same permutation."""
+
+    def __init__(self, size):
+        self.size = size
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, index):
+        return index
+
+
+class DeviceWindows:
+    """Every Windows sample, gathered on the device from resident close/feature arrays.
+
+    Gathers copy the same float32 values. The price transform keeps Windows'
+    float64 window statistics, rounded to float32 exactly as NumPy applies a
+    Python float to a float32 array, and repeats its float32 subtract/divide.
+    """
+
+    def __init__(self, series, rows, exogenous, device, length=168):
+        index = np.asarray([(r['series'], r['end']) for r in rows], dtype=np.int64).reshape(-1, 2)
+        lengths = np.asarray([len(s['close']) for s in series], dtype=np.int64)
+        price_offsets = np.concatenate([[0], np.cumsum(lengths)[:-1]]).astype(np.int64)
+        stats = np.asarray([_price_stats(series[s]['close'][end - length + 1:end + 1]) for s, end in index],
+                           dtype=np.float64).reshape(-1, 2)
+        self.exogenous, self.device = exogenous, device
+        end = price_offsets[index[:, 0]] + index[:, 1]
+        self.end = torch.from_numpy(end).to(device)
+        self.mean = torch.from_numpy(stats[:, 0].astype(np.float32)).to(device)
+        self.scale = torch.from_numpy(stats[:, 1].astype(np.float32)).to(device)
+        self.close = torch.from_numpy(np.concatenate([s['close'] for s in series]).astype(np.float32)
+                                      if series else np.empty(0, np.float32)).to(device)
+        self.window = torch.arange(-length + 1, 1, device=device)
+        self.horizon = torch.arange(1, 6, device=device)
+        if exogenous:
+            heights = [len(s['X']) for s in series]
+            feature_offsets = np.concatenate([[0], np.cumsum(heights)[:-1]]).astype(np.int64)
+            local = (np.concatenate([np.asarray(s['feature_indices'], dtype=np.int64) for s in series])
+                     if series else np.empty(0, np.int64))
+            invalid = np.r_[0, np.cumsum((local < 0) | (local >= np.repeat(heights, lengths)))]
+            # Windows indexes each series' own X; a window must never wrap into another series.
+            if np.any(invalid[end + 1] != invalid[end - length + 1]):
+                raise ValueError('timexer_window_feature_index_invalid')
+            self.feature_rows = torch.from_numpy(local + np.repeat(feature_offsets, lengths)).to(device)
+            width = series[0]['X'].shape[1] if series else 0
+            self.X = torch.empty((sum(heights), width), dtype=torch.float32, device=device)
+            for start, source in zip(feature_offsets, series):
+                self.X[start:start + len(source['X'])].copy_(torch.from_numpy(np.asarray(source['X'], dtype=np.float32)))
+
+    def batch(self, ids):
+        """ids: device int64 row numbers into the rows this table was built from."""
+        end = self.end[ids].unsqueeze(1)
+        mean, scale = self.mean[ids].unsqueeze(1), self.scale[ids].unsqueeze(1)
+        positions = end + self.window
+        price = ((self.close[positions] - mean) / scale).unsqueeze(-1)
+        x = torch.cat([self.X[self.feature_rows[positions]], price], dim=2) if self.exogenous else price
+        return x, (self.close[end + self.horizon] - mean) / scale
+
+    def assert_matches(self, reference, ids):
+        """Fail closed unless device batches equal the reference Windows bit for bit."""
+        if not len(ids):
+            return
+        expected_x, expected_y, _, _ = default_collate([reference[int(i)] for i in ids])
+        x, y = self.batch(torch.as_tensor(np.asarray(ids, dtype=np.int64), device=self.device))
+        if not (torch.equal(x.cpu(), expected_x) and torch.equal(y.cpu(), expected_y)):
+            raise ValueError('timexer_device_window_mismatch')
 
 
 class Windows(Dataset):
@@ -42,7 +105,7 @@ class Windows(Dataset):
         series_index, end = (int(v) for v in self.index[index])
         source = self.series[series_index]
         prices = source['close'][end - self.length + 1:end + 1]
-        mean, scale = float(prices.mean()), float(prices.std()) + 1e-4
+        mean, scale = _price_stats(prices)
         price = ((prices - mean) / scale).reshape(-1, 1)
         indices = source['feature_indices'][end - self.length + 1:end + 1]
         x = np.concatenate([source['X'][indices], price], axis=1) if self.exogenous else price
@@ -173,41 +236,73 @@ def train(job, inputs, *, device="cuda", full_fit=False):
     exogenous = job['exogenous']
     torch.set_num_threads(8)
     torch.set_float32_matmul_precision("high")
+    data = DeviceWindows(series, rows, exogenous, device)
+    data.assert_matches(Windows(series, rows, exogenous),
+                        np.unique(np.linspace(0, len(rows) - 1, min(len(rows), EQUIVALENCE_PROBE_ROWS)).astype(np.int64)))
+    row_number = {id(r): i for i, r in enumerate(rows)}
+
+    def device_ids(fit_rows):
+        return torch.as_tensor(np.fromiter((row_number[id(r)] for r in fit_rows), dtype=np.int64, count=len(fit_rows)),
+                               device=device)
+
+    def epoch_batches(loader, ids):
+        # Iterating the loader draws the same base and sampler seeds, in the same order, as
+        # iterating a DataLoader over Windows; the batches are then gathered on the device.
+        order = list(loader)
+        return ids[torch.cat(order).to(device)] if order else ids[:0], [len(b) for b in order]
 
     def fit(fit_rows, epochs, validation=None):
         torch.manual_seed(settings['seed'])
         torch.cuda.manual_seed_all(settings['seed']) if device == 'cuda' else None
         model = official_model(settings, exogenous).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=settings['learning_rate'])
-        loader = DataLoader(Windows(series, fit_rows, exogenous), batch_size=settings['batch_size'],
-                            shuffle=True, **loader_options(device))
-        validation_loader = DataLoader(Windows(series, validation, exogenous), batch_size=settings['batch_size'],
-                                       shuffle=False, **loader_options(device)) if validation else None
+        loader = DataLoader(_Positions(len(fit_rows)), batch_size=settings['batch_size'], shuffle=True)
+        validation_loader = DataLoader(_Positions(len(validation)), batch_size=settings['batch_size'],
+                                       shuffle=False) if validation else None
+        fit_ids = device_ids(fit_rows)
+        validation_ids = device_ids(validation) if validation else None
         best, selected, stale, history = float('inf'), 0, 0, []
         for epoch in range(1, epochs + 1):
+            started = time.monotonic()
             model.train()
-            total, count = 0.0, 0
-            for x, y, _, _ in loader:
+            order, sizes = epoch_batches(loader, fit_ids)
+            # Per-step losses stay on the device: one host read per epoch instead of two syncs per step.
+            losses = torch.empty(len(sizes), dtype=torch.float32, device=device)
+            start = 0
+            for step, size in enumerate(sizes):
+                x, y = data.batch(order[start:start + size])
+                start += size
                 optimizer.zero_grad(set_to_none=True)
-                forecast = model(x.to(device, non_blocking=True), None, None, None).squeeze(-1)
-                loss = torch.nn.functional.mse_loss(forecast, y.to(device, non_blocking=True))
-                if not torch.isfinite(loss):
-                    raise ValueError('nonfinite_timexer_loss')
+                forecast = model(x, None, None, None).squeeze(-1)
+                loss = torch.nn.functional.mse_loss(forecast, y)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 3.0)
                 optimizer.step()
-                total += float(loss.detach()) * len(x)
-                count += len(x)
+                losses[step] = loss.detach()
+            values = losses.tolist()
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError('nonfinite_timexer_loss')
+            total, count = 0.0, 0
+            for value, size in zip(values, sizes):
+                total += value * size
+                count += size
             item = {'epoch': epoch, 'training_mse': total / count}
+            trained = time.monotonic()
             if validation_loader:
                 model.eval()
-                total, count = 0.0, 0
+                order, sizes = epoch_batches(validation_loader, validation_ids)
+                sums = torch.empty(len(sizes), dtype=torch.float32, device=device)
+                start, count = 0, 0
                 with torch.inference_mode():
-                    for x, y, _, _ in validation_loader:
-                        forecast = model(x.to(device, non_blocking=True), None, None, None).squeeze(-1)
-                        total += float(torch.nn.functional.mse_loss(forecast, y.to(device, non_blocking=True),
-                                                                    reduction='sum'))
+                    for step, size in enumerate(sizes):
+                        x, y = data.batch(order[start:start + size])
+                        start += size
+                        forecast = model(x, None, None, None).squeeze(-1)
+                        sums[step] = torch.nn.functional.mse_loss(forecast, y, reduction='sum')
                         count += y.numel()
+                total = 0.0
+                for value in sums.tolist():
+                    total += value
                 score = total / count
                 item['validation_mse'] = score
                 if score < best:
@@ -218,6 +313,9 @@ def train(job, inputs, *, device="cuda", full_fit=False):
                 selected = epoch
             history.append(item)
             print('TIMEXER_EPOCH', job['name'], 'selection' if validation else 'refit', item, flush=True)
+            print('TIMEXER_EPOCH_TIMING', job['name'], {'epoch': epoch, 'train_steps': len(losses),
+                  'train_s': round(trained - started, 1), 'validation_s': round(time.monotonic() - trained, 1)},
+                  flush=True)
             if validation_loader and stale >= 3:
                 break
         return model, selected, history
@@ -227,6 +325,7 @@ def train(job, inputs, *, device="cuda", full_fit=False):
     if device == 'cuda':
         torch.cuda.empty_cache()
     model, _, history = fit(training, epochs)
+    del data
     model.eval()
     predictions = []
     with torch.inference_mode():

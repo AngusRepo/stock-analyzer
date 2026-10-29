@@ -77,6 +77,9 @@ def validate_active8_ensemble_artifact(
 ) -> None:
     if not isinstance(payload, dict):
         raise Active8EnsembleContractError("active8_ensemble_payload_not_object")
+    if payload.get("kind") == R33_KIND:
+        _validate_r33_ensemble(payload, pool_models=pool_models, nav_authority=nav_authority)
+        return
     if payload.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
         raise Active8EnsembleContractError("active8_ensemble_schema_invalid")
     if payload.get("ensemble_semantic_version") != ENSEMBLE_SEMANTIC_VERSION:
@@ -173,6 +176,26 @@ def validate_active8_ensemble_artifact(
             raise Active8EnsembleContractError(
                 f"active8_ensemble_excluded_model_has_weight:{model_name}"
             )
+    _validate_base_identity(selected, base, pool_models)
+
+
+R33_KIND = "r33_equal7_isotonic"
+
+
+def _validate_r33_ensemble(payload, *, pool_models, nav_authority) -> None:
+    """R33 equal7 object: validated whole by its single owner (services.r33_ensemble, mounted
+    at /root/services in Modal); there is no stacker fit, conformal policy or NAV adoption."""
+    if nav_authority is not None:
+        raise Active8EnsembleContractError("r33_ensemble_nav_inference_unsupported")
+    from services.r33_ensemble import validate_ensemble
+    try:
+        validate_ensemble(payload)
+    except ValueError as exc:
+        raise Active8EnsembleContractError(str(exc)) from exc
+    _validate_base_identity(payload["selected_models"], payload["base_artifacts"], pool_models)
+
+
+def _validate_base_identity(selected, base, pool_models) -> None:
     for model_name in selected:
         expected = base[model_name]
         actual = pool_models.get(model_name)

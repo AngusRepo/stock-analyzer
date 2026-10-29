@@ -59,7 +59,7 @@ def test_replay_entry_uses_previous_close_risk_not_todays_future_close(monkeypat
     assert result.mode=='B'
     assert len(captured)==1
     assert captured[0]['risk_score']==10 and captured[0]['risk_level']=='green'
-    assert captured[0]['bull_align_pct']==.7
+    assert 'bull_align_pct' not in captured[0]   # Wei 10/29 Q5: no bull-alignment trigger
     del dataset.replay_frames['signals']
     with pytest.raises(ValueError,match='frozen_components_missing'):
         engine.replay_period(dataset=dataset,start_date=dataset.start_date,end_date=dataset.end_date,params=params,mode='B')

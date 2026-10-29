@@ -13,24 +13,33 @@ assert.equal(buildMarketRiskQuality({...data,vix:NaN,twiiVol20:NaN,twiiBias:NaN,
 const date=data.date
 const base:any={marketRiskRows:[{date,twii_close:30000,risk_score:0,risk_level:'green'},{date:'2026-10-05',twii_close:29900,risk_score:0,risk_level:'green'}],
  factorPacket:{date,score:0,level:'green'},breadth:{date,advance_ratio:.6,bull_alignment_pct:60},
- regimeState:{source:'hmm',family:'volatile',run_date:date,regime_evidence:{hmm_provenance:fixtureProvenance(date,fixtureQuality(date,0).checksum),evidence:{
+ regimeState:{source:'hmm',family:'bull',run_date:date,regime_evidence:{hmm_provenance:fixtureProvenance(date,fixtureQuality(date,0).checksum),evidence:{
  price_trend:{status:'available',stance:'bullish',metrics:{twii_bias_20d:.01,twii_return_5d:.04}},
  global_risk:{status:'available',stance:'bullish'},atr_vturn:{metrics:{realized_vol_10d:.005}}}}},
  quality:fixtureQuality(date,0),policy:DEFAULT_RISK_CONFIG.portfolio,expectedSession:date}
 const healthy=buildCanonicalMarketRiskContext(base)
 assert.equal(healthy.status,'ready');assert.equal(healthy.targetExposureCap,DEFAULT_RISK_CONFIG.portfolio.greenTargetExposure)
-for(const patch of [{quality:null},{breadth:{...base.breadth,bull_alignment_pct:null}},{regimeState:{...base.regimeState,regime_evidence:{}}},
+for(const patch of [{quality:null},{regimeState:{...base.regimeState,regime_evidence:{}}},{factorPacket:null},{factorPacket:{...base.factorPacket,level:'unknown'}},
  {quality:{...base.quality,status:'blocked'}},{quality:{...base.quality,upper_score:99}}]){
  const result=buildCanonicalMarketRiskContext({...base,...patch})
  assert.equal(result.status,'blocked');assert.equal(result.haltNewBuys,true);assert.equal(result.deRiskExistingPositions,false)
 }
+// Wei 10/29 Q2: bull alignment is evidence only — neither a blocker nor a trigger.
+const noAlignment=buildCanonicalMarketRiskContext({...base,breadth:{...base.breadth,bull_alignment_pct:null}})
+assert.equal(noAlignment.status,'ready');assert.equal(noAlignment.bullAlignmentRatio,null)
 const onePct=buildCanonicalMarketRiskContext({...base,breadth:{...base.breadth,bull_alignment_pct:1}})
-assert.equal(onePct.bullAlignmentRatio,.01);assert.equal(onePct.level,'orange')
+assert.equal(onePct.bullAlignmentRatio,.01);assert.equal(onePct.level,'green')
 const bounded=buildCanonicalMarketRiskContext({...base,quality:{...base.quality,status:'bounded'}})
 assert.equal(bounded.level,'green','proven identical risk-score bounds do not impose an arbitrary cap')
-const uncertain=buildCanonicalMarketRiskContext({...base,marketRiskRows:[{...base.marketRiskRows[0],risk_score:10},base.marketRiskRows[1]],quality:{...base.quality,status:'bounded',upper_score:10}})
-assert.equal(uncertain.level,'orange')
-console.log('Market quality: known vs upper scores, missing critical inputs, model contract and bull relief PASS')
+// Wei 10/29: the level is the HMM effective label with the shock and breadth breakers; no evidence relief (Q1).
+const volatile=buildCanonicalMarketRiskContext({...base,regimeState:{...base.regimeState,family:'volatile'}})
+assert.equal(volatile.level,'orange','volatile stays orange whatever the trend/global evidence says')
+assert(!volatile.reasons.includes('volatile_direction_confirmed_no_stress'))
+const loudEvidence=buildCanonicalMarketRiskContext({...base,factorPacket:{...base.factorPacket,level:'red',score:90},
+ marketRiskRows:[{...base.marketRiskRows[0],risk_level:'red'},base.marketRiskRows[1]]})
+assert.equal(loudEvidence.status,'ready');assert.equal(loudEvidence.level,'green','packet and stored levels are evidence, not the level')
+assert(loudEvidence.reasons.includes('evidence_factor_packet=red:90'))
+console.log('Market quality: known vs upper scores, missing critical inputs, model contract and HMM-owned level PASS')
 
 const boundedMargin={status:'bounded',ratio_lower:0,ratio_upper:3.681}
 const scoreProven=buildMarketRiskQuality({...data,marginRatio:null},{margin:boundedMargin})

@@ -139,7 +139,8 @@ export interface TradingConfig {
     drawdownRaisedConf: number   // 回撤/低準確率時提高的信心門檻（預設 0.70）
     lowAccuracyThreshold: number // 模型準確率警戒線（預設 0.45）
     highVolReducedPosPct: number // 大盤高波動時縮減部位（預設 0.04）
-    bullAlignmentThreshold: number // Layer4 多頭排列警戒線（預設 20）
+    /** @deprecated Wei 10/29 Q5: P4 no longer triggers on bull alignment; removed with the next economics change. */
+    bullAlignmentThreshold: number
     // ── Sprint 4-1: L2 drawdown scaling 常數 ───────────────────────────────
     drawdownScaleStart: number   // 開始縮減部位的回撤起點（預設 0.03）
     mddMultFloor: number         // mddMultiplier 下限（預設 0.2 = 縮到 20%）

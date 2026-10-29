@@ -3196,14 +3196,12 @@ def simulate_entries_for_date(
     #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
     l2_formula_cfg: Optional[dict] = None,
     risk_score: Optional[int] = None,
-    # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling + bull align
+    # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling
     #   risk_level: market_risk.risk_level for `day` (green|yellow|orange|red|black)
     #     → drives compute_sltp_override (orange/red/black only modify SL/TP mults)
     #     → 'yellow' maps to paper.ts 'medium' for medium_risk_scale (#28 P5)
-    #   bull_align_pct: market_breadth.bull_alignment_pct for `day` (0-100 %)
-    #     → if < circuit.bullAlignmentThreshold → budget × 0.5 (paper.ts:347-352)
+    #   (The bull-alignment halving is gone: Paper P4 no longer triggers on it, Wei 10/29.)
     risk_level: Optional[str] = None,
-    bull_align_pct: Optional[float] = None,
     # 2026-04-20 #28 P5: night drop (US leading) + PF quality blend
     #   prev_night_drop: us_market_signals.gspc_return for most recent US close
     #     (as a ratio, e.g. -0.015 for -1.5%; matches D1 storage convention).
@@ -3529,13 +3527,6 @@ def simulate_entries_for_date(
                         (dd_halt - current_drawdown_30d) / (dd_halt - dd_scale_start),
                     )
                     budget *= mdd_mult
-
-            # Layer 4: bullAlignmentThreshold → halve position when breadth weak.
-            # Paper.ts source 347-352: position × 0.5 when < threshold.
-            if bull_align_pct is not None:
-                bull_thresh = float(circuit_cfg.get("bullAlignmentThreshold", 20))
-                if bull_align_pct < bull_thresh:
-                    budget *= 0.5
 
         # 2026-04-20 #28 P5: medium_risk_scale + PF quality blend (Mode B only).
         # Both live under L2_formula, applied on budget AFTER circuit-level mults.
@@ -5161,15 +5152,10 @@ def replay_period(
                     if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
                     else None
                 ),
-                # 2026-04-20 #28 P4 SLTP add + bull align
+                # 2026-04-20 #28 P4 SLTP add
                 risk_level=(
                     market_state.get_risk(prev_decision_date).risk_level
                     if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
-                    else None
-                ),
-                bull_align_pct=(
-                    market_state.get_breadth(prev_decision_date).bull_alignment_pct
-                    if (mode == "B" and market_state is not None and market_state.get_breadth(prev_decision_date))
                     else None
                 ),
                 # 2026-04-20 #28 P5 night drop + PF quality blend

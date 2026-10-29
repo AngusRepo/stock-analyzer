@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "optuna_scripts"))
 
 from optuna_l2_sensitivity import (  # noqa: E402
@@ -137,3 +139,15 @@ def test_l2_sensitivity_excludes_bandit_constants_until_objective_consumes_multi
     names = {str(dim["name"]) for dim in DEFAULT_SEARCH_SPACE}
 
     assert not any(name.startswith("bandit_") for name in names)
+
+
+def test_l2_sensitivity_never_searches_the_retired_bull_alignment_threshold():
+    # Wei 10/29 Q5: P4 no longer triggers on bull alignment, so the dimension is not searched,
+    # even when a KV-supplied space still lists it.
+    from optuna_l2_sensitivity import RETIRED_PATHS, run_l2_sensitivity_search
+    assert 'circuit.bullAlignmentThreshold' in RETIRED_PATHS
+    assert not any(dim['path'] in RETIRED_PATHS for dim in DEFAULT_SEARCH_SPACE)
+    retired = [{'name': 'bullAlignmentThreshold', 'path': 'circuit.bullAlignmentThreshold', 'type': 'int', 'low': 10, 'high': 40}]
+    with pytest.raises(ValueError, match='empty search_space'):
+        run_l2_sensitivity_search(search_space=retired, start_date='2026-01-01', end_date='2026-03-31',
+                                  baseline_config={}, n_trials=1)

@@ -108,6 +108,16 @@ async function run(): Promise<void> {
   }, DEFAULT_TRADING_CONFIG, deps)
   assert.equal(healthyBreadth, null, '0.35 ratio must be compared with configured 20% as 0.20, not 20')
 
+  const weakAlignment = await checkP4Breadth({
+    ...severeDrop,
+    level: 'yellow',
+    shockLevel: null,
+    breadthLevel: null,
+    advanceRatio: 0.55,
+    bullAlignmentRatio: 0.05,
+  }, DEFAULT_TRADING_CONFIG, deps)
+  assert.equal(weakAlignment, null, 'bull alignment far below the old 20% threshold no longer triggers P4 (Wei 10/29)')
+
   const missingBreadth = await checkP4Breadth({
     ...mismatched,
     blockers: ['market_breadth_advance_ratio_missing'],

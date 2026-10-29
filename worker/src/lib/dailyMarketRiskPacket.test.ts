@@ -31,8 +31,8 @@ const scoped=(execute:()=>Promise<any>)=>withPaperExecutionScope({environment:en
  databases:{core:core as any,market:market as any},fetchFrozen:async()=>{throw new Error('no_network')}},execute)
 async function main(){
  const {result:packet}=await scoped(()=>buildDailyMarketRiskPacket(env,'2026-10-07'))
- assert.equal(packet.content.market.status,'ready');assert.equal(packet.content.market.level,'yellow')
- assert.equal(packet.content.constraints.exposure_cap,.68);assert.equal(packet.content.constraints.name_cap,.25)
+ assert.equal(packet.content.market.status,'ready');assert.equal(packet.content.market.level,'orange')   // HMM volatile (v4)
+ assert.equal(packet.content.constraints.exposure_cap,.45);assert.equal(packet.content.constraints.name_cap,.125)
  assert.equal(packet.content.constraints.max_positions,5)
  assert.equal(packet.checksum,await riskPacketChecksum(packet.content))
  assert.deepEqual(JSON.parse(packet.canonical_json),packet.content)
@@ -44,7 +44,7 @@ async function main(){
  const alignment=raw.breadth[0].bull_alignment_pct
  raw.breadth[0].bull_alignment_pct=10
  const {result:weakAlignment}=await scoped(()=>buildDailyMarketRiskPacket(env,'2026-10-07'))
- assert.equal(weakAlignment.content.constraints.name_cap,.125,'formal P4 also constrains common packet')
+ assert.equal(weakAlignment.content.constraints.name_cap,packet.content.constraints.name_cap,'bull alignment no longer triggers P4 (Wei 10/29)')
  raw.breadth[0].bull_alignment_pct=alignment
  await assert.rejects(()=>scoped(()=>buildDailyMarketRiskPacket(env,'2026-10-06')),/current_decision/)
  console.log('Daily packet: exact Worker owner, live configuration inheritance, checksum, predecision clock, date scope and service auth passed')

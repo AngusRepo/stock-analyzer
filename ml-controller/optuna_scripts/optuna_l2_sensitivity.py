@@ -53,12 +53,15 @@ if str(_CONTROLLER_DIR) not in sys.path:
     sys.path.insert(0, str(_CONTROLLER_DIR))
 
 
-# Default search space — 28 dims. Caller (endpoint) should prefer KV override.
+# Default search space — 27 dims (bullAlignmentThreshold removed, Wei 10/29 Q5). Caller (endpoint) should prefer KV override.
 # Each entry: name, path (dot-notation into trading:config), type, low, high.
 # Ranges sourced from task_plan.md Item #28 with Bergstra (2012) log-uniform
 # for mult coefficients, uniform for threshold percentages / scores.
+# Paths that no longer drive a decision (Wei 10/29 Q5: P4 dropped the bull-alignment trigger).
+RETIRED_PATHS = frozenset({"circuit.bullAlignmentThreshold"})
+
 DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
-    # ── circuit.* (8 dims) ────────────────────────────────────────────────
+    # ── circuit.* (7 dims) ────────────────────────────────────────────────
     {"name": "buyConfThreshold",       "path": "circuit.buyConfThreshold",       "type": "uniform",     "low": 0.50,  "high": 0.75},
     {"name": "sellConfThreshold",      "path": "circuit.sellConfThreshold",      "type": "uniform",     "low": 0.55,  "high": 0.80},
     {"name": "lowAccuracyThreshold",   "path": "circuit.lowAccuracyThreshold",   "type": "uniform",     "low": 0.35,  "high": 0.55},
@@ -66,7 +69,6 @@ DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
     {"name": "drawdownScaleStart",     "path": "circuit.drawdownScaleStart",     "type": "uniform",     "low": 0.01,  "high": 0.08},
     {"name": "drawdownRaisedConf",     "path": "circuit.drawdownRaisedConf",     "type": "uniform",     "low": 0.65,  "high": 0.80},
     {"name": "mddMultFloor",           "path": "circuit.mddMultFloor",           "type": "log_uniform", "low": 0.10,  "high": 0.50},
-    {"name": "bullAlignmentThreshold", "path": "circuit.bullAlignmentThreshold", "type": "int",         "low": 10,    "high": 40},
 
     # ── L2_formula confidence (6 dims) ─────────────────────────────────────
     {"name": "confidence_risk_mult",          "path": "L2_formula.confidence_risk_mult",          "type": "log_uniform", "low": 0.05,  "high": 0.40},
@@ -330,7 +332,8 @@ def run_l2_sensitivity_search(
             pbo_min_partitions=policy.pbo_min_partitions,
         )
 
-    space = list(search_space or DEFAULT_SEARCH_SPACE)
+    # A KV-supplied space may still carry a retired dimension; it no longer changes any decision.
+    space = [dim for dim in (search_space or DEFAULT_SEARCH_SPACE) if dim.get("path") not in RETIRED_PATHS]
     if not space:
         raise ValueError("run_l2_sensitivity_search: empty search_space")
     from services.position_risk_owner import require_position_risk_contract

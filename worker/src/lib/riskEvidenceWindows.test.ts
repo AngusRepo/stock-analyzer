@@ -88,6 +88,7 @@ test('one market owner preserves old P3/P4 minima and hard halts without multipl
       blockers:[],breadthLevel:level==='green'?null:level,advanceRatio:.1,bullAlignmentRatio:.1}
     const [a,b,merged]=await Promise.all([checkP3MarketRisk(context,DEFAULT_TRADING_CONFIG,deps),
       checkP4Breadth(context,DEFAULT_TRADING_CONFIG,deps),checkCanonicalMarketRestriction(context,DEFAULT_TRADING_CONFIG,deps)])
+    if(!a && !b){assert.equal(merged,null,'bull alignment alone triggers nothing (Wei 10/29)');continue}
     assert.equal(merged?.maxPositionPct,Math.min(a?.maxPositionPct ?? .08,b?.maxPositionPct ?? .08))
     assert.equal(merged?.halt,Boolean(a?.halt||b?.halt))
     assert.equal(merged?.marketRestrictionEvidence.aggregation,'minimum_not_product')

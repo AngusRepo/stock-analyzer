@@ -30,11 +30,8 @@ export async function checkP4Breadth(
     }
   }
 
-  const thresholdRaw = Number(cc.bullAlignmentThreshold ?? 20)
-  const bullAlignmentThreshold = thresholdRaw > 1 ? thresholdRaw / 100 : thresholdRaw
-  const bullAlignment = marketRisk.bullAlignmentRatio
-  const bullAlignmentTriggered = bullAlignment != null && bullAlignment < bullAlignmentThreshold
-  if (!marketRisk.breadthLevel && !bullAlignmentTriggered) return null
+  // Wei 10/29: only breadth collapse triggers here; bull alignment is evidence, not a trigger.
+  if (!marketRisk.breadthLevel) return null
 
   const severe = marketRisk.breadthLevel === 'red' || marketRisk.breadthLevel === 'black'
   return {
@@ -47,6 +44,6 @@ export async function checkP4Breadth(
     ),
     targetExposurePct: marketRisk.targetExposureCap,
     deRiskExistingPositions: marketRisk.deRiskExistingPositions,
-    reason: `breadth ${marketRisk.breadthLevel ?? 'weak'}: advance_ratio=${marketRisk.advanceRatio?.toFixed(4) ?? 'na'} bull_alignment=${bullAlignment?.toFixed(4) ?? 'na'}`,
+    reason: `breadth ${marketRisk.breadthLevel}: advance_ratio=${marketRisk.advanceRatio?.toFixed(4) ?? 'na'} bull_alignment=${marketRisk.bullAlignmentRatio?.toFixed(4) ?? 'na'}`,
   }
 }

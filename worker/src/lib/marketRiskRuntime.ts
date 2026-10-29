@@ -29,7 +29,7 @@ export interface CanonicalMarketRiskContext {
   reasons: string[]
   blockers: string[]
   lineage: {
-    owner: 'canonical_market_risk_runtime_v1' | 'canonical_market_risk_runtime_v2' | 'canonical_market_risk_runtime_v3'
+    owner: 'canonical_market_risk_runtime_v1' | 'canonical_market_risk_runtime_v2' | 'canonical_market_risk_runtime_v3' | 'canonical_market_risk_runtime_v4'
     policyVersion?: string
     expectedPreviousSession?: string | null
     expectedSession?: string | null
@@ -129,34 +129,19 @@ function marketBreadthLevel(advanceRatio: number | null, policy: RiskConfig['por
   return null
 }
 
-function regimeRiskLevel(regimeState: MarketRegimeState | null, constructiveVolatile: boolean): CanonicalMarketRiskLevel | null {
+/** The HMM effective label is the only regime owner; `family` is derived from it. */
+function regimeRiskLevel(regimeState: MarketRegimeState | null): CanonicalMarketRiskLevel | null {
   if (regimeState?.family === 'bear') return 'red'
-  if (regimeState?.family === 'volatile') return constructiveVolatile ? 'green' : 'orange'
+  if (regimeState?.family === 'volatile') return 'orange'
   if (regimeState?.family === 'sideways') return 'yellow'
   if (regimeState?.family === 'bull') return 'green'
   return null
 }
 
-export const MARKET_RISK_POLICY_VERSION = 'market-direction-stress-v3'
+// v4 (Wei 10/29): exposure level = max(HMM effective label, one-day shock, breadth collapse).
+// The factor packet and stored market_risk level stay as integrity-checked evidence only.
+export const MARKET_RISK_POLICY_VERSION = 'hmm-regime-event-breakers-v4'
 export const HMM_INPUT_CONTRACT = '8b6542b50ea5c57c768e76bd517712e42579141cc1533169f2046cffce1a5e5f'
-
-function constructiveVolatile(input: CanonicalMarketRiskInputs, shock: CanonicalMarketRiskLevel | null,
-  breadth: CanonicalMarketRiskLevel | null): boolean {
-  if (input.regimeState?.family !== 'volatile' || shock || breadth || !(input.quality?.status==='complete'||input.quality?.status==='bounded'&&input.quality.known_score===input.quality.upper_score)) return false
-  const alignment=finiteNumber(input.breadth?.bull_alignment_pct)
-  const advances=finiteNumber(input.breadth?.advance_ratio)
-  if(alignment==null||alignment<55||alignment>100||advances==null||advances<.58||advances>1)return false
-  const ordinary = (value: unknown) => ['green','yellow'].includes(normalizeCanonicalMarketRiskLevel(value) ?? '')
-  if (!ordinary(input.factorPacket?.level) || !ordinary(input.marketRiskRows[0]?.risk_level)) return false
-  const evidence = (input.regimeState.regime_evidence as any)?.evidence
-  const trend = evidence?.price_trend, global = evidence?.global_risk
-  const bias = finiteNumber(trend?.metrics?.twii_bias_20d), return5d = finiteNumber(trend?.metrics?.twii_return_5d)
-  const vol10d=finiteNumber(evidence?.atr_vturn?.metrics?.realized_vol_10d)
-  if(vol10d==null || vol10d<=0 || 3*vol10d>=Math.abs(input.policy.marketShockOrangePct))return false
-  // This stress proxy is not a claimed portfolio VaR. Relief needs trend/global evidence and non-acute realized volatility.
-  return trend?.status === 'available' && trend?.stance === 'bullish' && bias != null && bias > 0
-    && return5d != null && return5d > 0 && global?.status === 'available' && global?.stance === 'bullish'
-}
 
 export function buildCanonicalMarketRiskContext(input: CanonicalMarketRiskInputs): CanonicalMarketRiskContext {
   const rows = [...input.marketRiskRows]
@@ -191,9 +176,9 @@ export function buildCanonicalMarketRiskContext(input: CanonicalMarketRiskInputs
   if (previousClose == null || previousClose <= 0) blockers.push('market_risk_previous_twii_close_missing')
   const advanceRatio = finiteNumber(input.breadth?.advance_ratio)
   const alignmentPct = finiteNumber(input.breadth?.bull_alignment_pct)
-  const bullAlignmentRatio = alignmentPct==null ? null : alignmentPct/100
+  // Evidence only (Wei Q2): no longer a blocker or a trigger.
+  const bullAlignmentRatio = alignmentPct==null || alignmentPct<0 || alignmentPct>100 ? null : alignmentPct/100
   if (advanceRatio == null || advanceRatio < 0 || advanceRatio > 1) blockers.push('market_breadth_advance_ratio_missing')
-  if(bullAlignmentRatio==null||bullAlignmentRatio<0||bullAlignmentRatio>1)blockers.push('market_breadth_alignment_missing')
 
   const quality=input.quality
   if(!quality||quality.schema_version!=='market-risk-quality-v1'||quality.date!==marketRiskDate||!['complete','bounded'].includes(quality.status)
@@ -221,19 +206,18 @@ export function buildCanonicalMarketRiskContext(input: CanonicalMarketRiskInputs
   if (storedRiskLevel == null) blockers.push('market_risk_level_invalid')
   const caps = ['black','red','orange','yellow','green'].map(level => targetExposureCap(level as CanonicalMarketRiskLevel,input.policy))
   if (caps.some((value,index) => !Number.isFinite(value) || value < 0 || value > 1 || index > 0 && value < caps[index-1])) blockers.push('risk_exposure_policy_invalid')
-  const relief = constructiveVolatile({...input,marketRiskRows:rows},shockLevel,breadthLevel)
-  const regimeLevel = regimeRiskLevel(input.regimeState,relief)
-  const level = maxLevel([factorPacketLevel, storedRiskLevel, shockLevel, breadthLevel, regimeLevel])
+  const regimeLevel = regimeRiskLevel(input.regimeState)
+  if (input.regimeState && regimeLevel == null) blockers.push('market_regime_family_invalid')
+  const level = maxLevel([regimeLevel, shockLevel, breadthLevel])
   const packetScore = finiteNumber(input.factorPacket?.score)
   const storedScore = finiteNumber(latest?.risk_score)
   const score = packetScore == null ? storedScore : storedScore == null ? packetScore : Math.max(packetScore, storedScore)
   const reasons = [
-    relief ? 'volatile_direction_confirmed_no_stress' : null,
-    factorPacketLevel ? `factor_packet=${factorPacketLevel}:${packetScore ?? 'na'}` : null,
-    storedRiskLevel ? `stored_risk=${storedRiskLevel}:${storedScore ?? 'na'}` : null,
+    regimeLevel ? `regime=${regimeLevel}:${input.regimeState?.family ?? 'unknown'}` : null,
     shockLevel ? `market_shock=${shockLevel}:return_1d=${dailyChangePct?.toFixed(2)}%` : null,
     breadthLevel ? `market_breadth=${breadthLevel}:advance_ratio=${advanceRatio?.toFixed(4)}` : null,
-    regimeLevel ? `regime=${regimeLevel}:${input.regimeState?.family ?? 'unknown'}` : null,
+    factorPacketLevel ? `evidence_factor_packet=${factorPacketLevel}:${packetScore ?? 'na'}` : null,
+    storedRiskLevel ? `evidence_stored_risk=${storedRiskLevel}:${storedScore ?? 'na'}` : null,
   ].filter((reason): reason is string => Boolean(reason))
   const status = blockers.length === 0 ? 'ready' : 'blocked'
 
@@ -256,7 +240,7 @@ export function buildCanonicalMarketRiskContext(input: CanonicalMarketRiskInputs
     reasons,
     blockers: [...new Set(blockers)],
     lineage: {
-      owner: 'canonical_market_risk_runtime_v3',
+      owner: 'canonical_market_risk_runtime_v4',
       qualityChecksum:quality?.checksum??null,
       hmmModelSha256:model?.sha256??null,
       hmmModelGeneration:model?.generation??null,

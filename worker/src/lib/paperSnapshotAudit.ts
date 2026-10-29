@@ -258,6 +258,12 @@ export async function reconcilePaperNavCashFlow(
       tradeDate: input.date, eventType: 'snapshot_audit', status: result.within_tolerance ? 'verified' : 'warn',
       reason: 'nav_cash_flow_residual', detail: { ...result }, source: 'daily_snapshot',
     })
+    if (!result.within_tolerance) {
+      // 17a: prod may have no alert channel; the ops system log keeps the residual visible.
+      const message = 'Paper NAV cash-flow residual over tolerance'
+      console.warn(`[paper-snapshot-audit] ${message}`, JSON.stringify({ date: input.date, ...result }))
+      await writeSystemLog(databaseForDataDomain(env, 'ops'), 'warn', 'paper-snapshot-audit', message, { date: input.date, ...result })
+    }
     if (!result.within_tolerance && input.notify) {
       await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL,
         `⚠️ Paper NAV 對帳差額 ${input.date}: residual=${result.residual} NTD (cash ${result.cash_residual}, ` +

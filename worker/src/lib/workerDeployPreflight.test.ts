@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged, PRODUCTION_WORKER_HEALTH_URL } from '../../../tools/worker_deploy_preflight.mjs'
+import { captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged, PRODUCTION_WORKER_HEALTH_URL, runD1Read } from '../../../tools/worker_deploy_preflight.mjs'
 
 const candidate = 'a'.repeat(40)
 const liveSource = 'b'.repeat(40)
@@ -158,3 +158,38 @@ for (const [key, mutate] of [
     assert.equal(state.gitCalls.filter(args => args[0] === 'ls-remote').length, 2)
   })
 }
+
+test('D1 preflight reads retry only a transient 7403, a bounded number of times (CD-NEW-22)', () => {
+  const args = ['wrangler.js', 'd1', 'execute', 'stockvision-ops-db', '--remote', '--command', 'SELECT 1;']
+  const sleeps: number[] = []
+  const quiet = { sleep: (ms: number) => { sleeps.push(ms) }, log: () => {} }
+  let calls = 0
+  const flaky = (_command: string, _args: string[], options: { capture: boolean }) => {
+    assert.equal(options.capture, true)
+    calls += 1
+    if (calls < 3) throw new Error('node exited 1: ✘ [ERROR] A request to the Cloudflare API failed. [code: 7403]')
+    return '[{"success":true}]'
+  }
+  assert.equal(runD1Read(flaky, 'node', args, { capture: true }, quiet), '[{"success":true}]')
+  assert.equal(calls, 3)
+  assert.deepEqual(sleeps, [5000, 5000])
+
+  calls = 0
+  const always7403 = () => { calls += 1; throw new Error('[code: 7403]') }
+  assert.throws(() => runD1Read(always7403, 'node', args, {}, quiet), /7403/)
+  assert.equal(calls, 3)
+
+  calls = 0
+  const missingTable = () => { calls += 1; throw new Error('no such table: scheduler_execution_tickets_v1 [code: 7500]') }
+  assert.throws(() => runD1Read(missingTable, 'node', args, {}, quiet), /no such table/)
+  assert.equal(calls, 1)
+
+  assert.throws(() => runD1Read(flaky, 'node', ['wrangler.js', 'deploy'], {}, quiet), /d1 execute only/)
+})
+
+test('every D1 preflight query of the Worker deploy goes through the 7403 retry, the deploy itself does not', () => {
+  const wrapper = readFileSync(new URL('../../../tools/deploy_worker_with_provenance.mjs', import.meta.url), 'utf8')
+  assert.equal((wrapper.match(/\brun\(process\.execPath/g) ?? []).length, 1)
+  assert.match(wrapper, /\brun\(process\.execPath, \[\s*wranglerCli, 'deploy'/)
+  assert.equal((wrapper.match(/runD1Read\(run, process\.execPath/g) ?? []).length, 4)
+})

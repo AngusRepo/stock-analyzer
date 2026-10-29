@@ -42,3 +42,10 @@ def test_non_r33_still_fails_on_one_row_error():
     bundle["predict_batch_v2_results"][0] = {"symbol": "2330", "error": "boom"}
     with pytest.raises(RuntimeError, match="row_errors"):
         pipeline._validate_pipeline_modal_feature_bundle_before_writes(fx._state(), bundle)
+
+
+def test_non_r33_still_fails_on_one_runtime_model_row_error_with_full_cardinality():
+    bundle = fx._bundle()
+    bundle["dlinear_raw"]["results"][1] = {"symbol": "2317", "error": "nan forecast"}
+    with pytest.raises(RuntimeError, match="pipeline_modal_dlinear_closure_failed.*nan forecast"):
+        pipeline._validate_pipeline_modal_feature_bundle_before_writes(fx._state(), bundle)

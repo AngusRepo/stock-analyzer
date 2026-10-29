@@ -1498,7 +1498,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
     r33, staleness, r33_rank_pool, r33_cost = await asyncio.to_thread(
         _r33_serving_inputs, state, payloads=payloads, predictions=pred_map, ensemble=active8_ensemble,
         serving_manifest=serving_manifest, run_date=rank_run_date, evidence_only=evidence_only,
-        ops_query=client_proxy_for_domain(D1DataDomain.OPS).query)
+        ops_query=client_proxy_for_domain(D1DataDomain.OPS).query, row_errors=feature_errors_by_symbol,
+        ops_execute=None if research_only else client_proxy_for_domain(D1DataDomain.OPS).execute)
 
     if evidence_only:
         if active8_ensemble is not None:
@@ -1548,13 +1549,15 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
     }
 
 
-def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manifest, run_date, evidence_only, ops_query):
+def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manifest, run_date, evidence_only, ops_query,
+                        row_errors=None, ops_execute=None):
     """(r33, staleness report, rank pool, round-trip cost) for node_ml_predict.
 
     Stale bars are reported in every mode and unscored only under R33 (HL2-1#a,
     C28-16 S3). Under R33 the attested rank pool is built from the OPS screener
     pool, the holdings read in load_market_env and the stale set, and the cost
-    comes from trading:config.fees (LV5#2)."""
+    comes from trading:config.fees (LV5#2). The day's per-model coverage goes to ops
+    system_logs (warn on any gap; a name with a Modal row error is prediction_missing)."""
     from services.r33_ensemble import is_r33, round_trip_cost
     from services.r33_serving_inputs import stale_inputs, staleness_report
     r33 = is_r33(ensemble)
@@ -1572,6 +1575,8 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
         l3_identity=baseline_model_identity(serving_manifest), stale=stale)
     cost = round_trip_cost((state.get('trading_config') or {})['fees'])
     logger.info("[Pipeline V2] R33 rank pool: %s", rank_pool['coverage'] | {'unscored': len(rank_pool['coverage']['unscored'])})
+    from services.r33_serving_inputs import write_coverage_log
+    write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger)
     return r33, staleness, rank_pool, cost
 
 
@@ -2951,10 +2956,22 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         str(symbol) for symbol, prediction in (state.get('predictions') or {}).items()
         if isinstance(prediction, dict) and not prediction.get('error')
     }
-    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols)
-    unexpected_prediction_symbols = sorted(set(state.get('predictions') or {}) - prediction_seed_symbols)
+    # R33 (spec §3.2, R33-NEW-03): a seed name the attested rank pool records as unscored
+    # is a per-name gap (non-buy downstream, prediction_missing in the pool and the L3
+    # audit), and a holding added for inference is expected outside the seed. Anything
+    # else still fails the closure.
+    r33_unscored, r33_held_outside_seed = set(), set()
+    if state.get('r33_rank_pool') is not None:
+        from services.r33_rank_pool import validate_rank_pool
+        r33_pool = validate_rank_pool(state['r33_rank_pool'], state.get('predictions') or {})
+        r33_unscored = set(r33_pool['coverage']['unscored'])
+        r33_held_outside_seed = {r['symbol'] for r in r33_pool['rows'] if r['held']} - prediction_seed_symbols
+    r33_tolerated_missing = sorted((prediction_seed_symbols - successful_prediction_symbols) & r33_unscored)
+    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols - r33_unscored)
+    unexpected_prediction_symbols = sorted(set(state.get('predictions') or {}) - prediction_seed_symbols
+                                           - r33_held_outside_seed)
     unmapped_seed_symbols = sorted(prediction_seed_symbols - set(stock_id_map))
-    foreign_stock_symbols = sorted(set(stock_id_map) - prediction_seed_symbols)
+    foreign_stock_symbols = sorted(set(stock_id_map) - prediction_seed_symbols - r33_held_outside_seed)
     prediction_symbol_closure_passed = bool(prediction_seed_symbols) and not any((
         missing_prediction_symbols, unexpected_prediction_symbols, unmapped_seed_symbols, foreign_stock_symbols))
     if not prediction_symbol_closure_passed:
@@ -3111,6 +3128,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "prediction_seed_symbols": len(prediction_seed_symbols),
         "prediction_symbol_closure_passed": prediction_symbol_closure_passed,
         "missing_prediction_symbols": missing_prediction_symbols[:20],
+        "r33_unscored_missing_prediction_symbols": r33_tolerated_missing,
         "unexpected_prediction_symbols": unexpected_prediction_symbols[:20],
         "full_active_model_symbols": full_active_model_symbols,
         "formal_evidence_prediction_symbols": len(formal_evidence_prediction_symbols),

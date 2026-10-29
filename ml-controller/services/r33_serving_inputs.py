@@ -66,3 +66,51 @@ def staleness_report(stale: dict[str, str], *, payload_count: int, run_date: str
     return {"schema_version": STALENESS_SCHEMA, "run_date": run_date, "payloads": payload_count,
             "stale_count": len(stale), "stale": dict(sorted(stale.items())),
             "effect": "unscored_z0_for_the_day" if applied else "report_only"}
+
+
+COVERAGE_SCHEMA = "r33-serving-coverage-v1"
+COVERAGE_LOG_CRON = "r33-serving-coverage"
+
+
+def coverage_log(rank_pool: dict, *, row_errors: dict[str, str]) -> tuple[str, str, dict]:
+    """(level, message, meta) for the daily ops system_log: per model, how many pool rows
+    it left without a score (unscored rows count as missing for every model).
+
+    No threshold: any gap, a model missing for the whole pool, or a Modal row error is a warn."""
+    coverage = rank_pool["coverage"]
+    total = int(coverage["pool_rows"])
+    by_model = {m: {"missing": total - int(n), "total": total} for m, n in coverage["by_model"].items()}
+    gaps = sorted(m for m, v in by_model.items() if v["missing"])
+    fully_missing = sorted(m for m, v in by_model.items() if v["missing"] == total)
+    reasons: dict[str, int] = {}
+    for reason in coverage["unscored"].values():
+        key = reason.split(":", 1)[0]
+        reasons[key] = reasons.get(key, 0) + 1
+    meta = {"schema_version": COVERAGE_SCHEMA, "signal_date": rank_pool["signal_date"],
+            "screener_run_id": rank_pool["screener_run_id"], "by_model": by_model,
+            "models_with_gaps": gaps, "models_fully_missing": fully_missing,
+            "uninformative_models": list(rank_pool["uninformative_models"]),
+            "pool_rows": total, "pool_scored_rows": int(coverage["pool_scored_rows"]),
+            "unscored_by_reason": dict(sorted(reasons.items())), "row_errors": dict(sorted(row_errors.items()))}
+    level = "warn" if gaps or row_errors else "info"
+    message = (f"R33 coverage {rank_pool['signal_date']}: scored {meta['pool_scored_rows']}/{total}; "
+               f"models with gaps {gaps or 'none'}; fully missing {fully_missing or 'none'}; "
+               f"Modal row errors {len(row_errors)}")
+    return level, message, meta
+
+
+def write_coverage_log(ops_execute, rank_pool: dict, *, row_errors: dict[str, str], logger) -> dict:
+    """Write the day's coverage line to ops system_logs and warn on any gap. A log write
+    failure is reported and never fails the run (same contract as Worker writeSystemLog)."""
+    import json
+    level, message, meta = coverage_log(rank_pool, row_errors=row_errors)
+    (logger.warning if level == "warn" else logger.info)("[R33 coverage] %s meta=%s", message,
+        {k: meta[k] for k in ("models_with_gaps", "models_fully_missing", "unscored_by_reason")})
+    if ops_execute is not None:
+        try:
+            ops_execute("INSERT INTO system_logs (level, cron_name, message, meta, created_at) "
+                        "VALUES (?, ?, ?, ?, datetime('now'))",
+                        [level, COVERAGE_LOG_CRON, message, json.dumps(meta, sort_keys=True)])
+        except Exception as exc:
+            logger.warning("[R33 coverage] system_log write failed: %s: %s", type(exc).__name__, exc)
+    return meta

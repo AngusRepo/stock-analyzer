@@ -87,6 +87,9 @@ class UniversalPrepRequest(BaseModel):
     feature_warmup_rows: int = 0  # Leading rows per stock that only feed long-window features.
     pit_contract_version: str | None = None  # C28-02 availability lags; None keeps pre-contract output.
     pit_contract_sha256: str | None = None  # Content sha256 the controller bound; must match the loaded contract.
+    # C28-02 P2 T1: daily inference prep also writes these PIT-lagged copies of the same batch,
+    # each {"gcs_prefix", "pit_contract_version", "pit_contract_sha256"}. Empty = unchanged output.
+    pit_variants: list[dict] = []
 
 
 class UniversalTrainRequest(BaseModel):
@@ -957,6 +960,48 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         "skipped": skipped,
         "elapsed_s": elapsed,
     }
+
+
+def prep_universal_batch_with_variants(req: UniversalPrepRequest, *, deadline: float | None = None) -> dict:
+    """Legacy batch first, then each PIT variant of the same payloads (C28-02 P2 T1).
+
+    A variant failure is reported under result["pit_variants"][prefix] and never touches
+    the legacy result. deadline (time.monotonic()) skips a variant that would risk the
+    function timeout, because a timeout would also lose the legacy batch.
+    """
+    if not req.pit_variants:
+        return prep_universal_batch(req)
+    started = time.monotonic()
+    result = prep_universal_batch(req.model_copy(update={"pit_variants": []}))
+    if not isinstance(result, dict) or result.get("error"):
+        return result
+    legacy_elapsed = time.monotonic() - started
+    variants: dict[str, dict] = {}
+    for spec in req.pit_variants:
+        spec = spec if isinstance(spec, dict) else {}
+        prefix = str(spec.get("gcs_prefix") or "").rstrip("/")
+        try:
+            version = spec.get("pit_contract_version")
+            if (req.pit_contract_version is not None or not req.retain_unlabeled_features or not version
+                    or not prefix.startswith("universal/oof_forward_prep_v2/") or ".." in prefix.split("/")
+                    or prefix == req.gcs_prefix.rstrip("/") or prefix in variants):
+                raise ValueError("pit_variant_spec_invalid")
+            if not req.per_stock_ts_map:
+                # Lagged fields would silently become 0 without their per-stock history.
+                raise ValueError("daily_prep_pit_history_missing")
+            if deadline is not None and time.monotonic() + legacy_elapsed * 1.25 > deadline:
+                raise ValueError("pit_variant_time_budget_exceeded")
+            out = prep_universal_batch(req.model_copy(update={
+                "pit_variants": [], "gcs_prefix": prefix, "pit_contract_version": version,
+                "pit_contract_sha256": spec.get("pit_contract_sha256")}))
+            if not isinstance(out, dict) or out.get("error"):
+                raise ValueError(str((out or {}).get("error") if isinstance(out, dict) else "pit_variant_invalid_result"))
+            report = out.get("cleaning_report") or {}
+            variants[prefix] = {"rows": out.get("rows"), "pit_contract_version": report.get("pit_contract_version"),
+                                "pit_contract_sha256": report.get("pit_contract_sha256")}
+        except Exception as exc:  # noqa: BLE001 - only this variant fails closed.
+            variants[prefix or "<missing>"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    return {**result, "pit_variants": variants}
 
 
 def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:

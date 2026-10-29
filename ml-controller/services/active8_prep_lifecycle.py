@@ -390,7 +390,10 @@ async def ensure_active8_daily_prep(
     feature_only: bool = False,
     model_profile_schema_version: str = "active8-release-model-profiles-v3",
     query_fn: Callable[..., list[dict[str, Any]]] = client_proxy_for_domain(D1DataDomain.MARKET).query,
+    pit_variant_versions: tuple[str, ...] = (),
 ) -> dict[str, Any]:
+    """pit_variant_versions: feature-only prep also writes PIT-lagged copies of the same
+    batches (services.pit_daily_sources). The returned legacy source is unchanged."""
     from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
     from services import modal_client
     from services.walk_forward_retrain import _get_bucket
@@ -398,6 +401,8 @@ async def ensure_active8_daily_prep(
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, SUPPORTED_MODEL_PROFILE_SCHEMAS
     if model_profile_schema_version not in SUPPORTED_MODEL_PROFILE_SCHEMAS:
         raise ValueError('active8_prep_profile_unknown')
+    if pit_variant_versions and not feature_only:
+        raise ValueError('pit_variant_requires_feature_only_prep')
     expanded = model_profile_schema_version in {TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131}
     feature_semantic = semantic_for_profile(model_profile_schema_version)
     required_history = 1280 if expanded else ACTIVE8_COMPUTE_SNAPSHOT_LOOKBACK_DAYS
@@ -554,6 +559,7 @@ async def ensure_active8_daily_prep(
             model_profile_schema_version=model_profile_schema_version,
             prep_output_gcs_prefix=source_prefix,
             train_model_groups=[],
+            pit_variant_versions=list(pit_variant_versions),
         ),
         request=None,
     )

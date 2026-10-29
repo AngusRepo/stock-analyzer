@@ -12,7 +12,7 @@ import {
 const schema = (domain: string) => readFileSync(new URL(`../../domain-schemas/${domain}.sql`, import.meta.url), 'utf8')
 
 /** A D1 stand-in over sqlite with the repo's core and market schemas (one legacy DB, as without MULTI_D1). */
-function fakeD1(faults = { insert: false, candidates: false }) {
+function fakeD1(faults = { insert: false, candidates: false, provenance: false }) {
   const db = new DatabaseSync(':memory:')
   db.exec(schema('market'))
   db.exec(schema('core'))
@@ -22,6 +22,7 @@ function fakeD1(faults = { insert: false, candidates: false }) {
       bind(...values: any[]) { binds = values; return statement },
       async all() {
         if (faults.candidates && binds[0] === 'industry_fallback') throw new Error('D1_ERROR: read failed')
+        if (faults.provenance && binds[0] === 'sector_provenance') throw new Error('D1_ERROR: read failed')
         return { results: db.prepare(sql).all(...binds) }
       },
       async first() { return db.prepare(sql).get(...binds) ?? null },
@@ -146,7 +147,7 @@ test('Q03: the order and the switch come from FINLAB_SECTOR_FALLBACK_ORDER', asy
 })
 
 test('Q03: a failed run holds the last recorded fallback and never lands an unrecorded one', async () => {
-  const faults = { insert: false, candidates: false }
+  const faults = { insert: false, candidates: false, provenance: false }
   const { db, d1 } = fakeD1(faults)
   seed(db)
   // Before any recorded run, a failure keeps the stock owner-only, as before Q03.
@@ -180,4 +181,25 @@ test('Q03: a failed run holds the last recorded fallback and never lands an unre
   await syncFinLabIndustryProjection(env(d1).env)
   assert.equal(sectors(db)['7934'], '醫療器材業')
   assert.equal(provenance(db).find((row) => row[0] === '7934')?.[1], '醫療器材業')
+})
+
+test('Q03: an unreadable provenance record leaves every stock the owner does not classify as it is', async () => {
+  const faults = { insert: false, candidates: false, provenance: false }
+  const { db, d1 } = fakeD1(faults)
+  seed(db)
+  await syncFinLabIndustryProjection(env(d1).env)
+  const before = provenance(db)
+
+  faults.provenance = true
+  db.prepare(`INSERT INTO finlab_taxonomy_tags (symbol, tag, tag_type, source, lineage_json, as_of_date)
+    VALUES ('3718', '光電業', 'industry', 'finlab.security_categories', '{}', '2026-10-29')`).run()
+  const held = await syncFinLabIndustryProjection(env(d1).env)
+  assert.equal(held.fallback.recorded, false)
+  assert.equal(held.updated, 1, 'only the owner change lands')
+  assert.equal(held.cleared, 0)
+  assert.deepEqual(sectors(db), {
+    '0050': 'domestic_etf', '00999': 'etf', '1230': null, '2330': '半導體業',
+    '3718': '光電業', '7934': '生技醫療業', NVDA: 'unclassified',
+  })
+  assert.deepEqual(provenance(db), before)
 })

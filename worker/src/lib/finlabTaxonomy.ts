@@ -207,8 +207,10 @@ export async function syncFinLabIndustryProjection(env: Bindings): Promise<{
   let previous: SectorProjection = new Map()
   let projected: SectorProjection = new Map()
   let recorded = true
+  let previousLoaded = false
   try {
     previous = await loadSectorProvenance(env)
+    previousLoaded = true
     const fallbacks = await loadSectorFallbacks(env, order)
     // Owner first; a listed stock the owner has not classified takes the first configured tier that has it.
     for (const row of results ?? []) {
@@ -232,16 +234,18 @@ export async function syncFinLabIndustryProjection(env: Bindings): Promise<{
     recorded = false
     projected = new Map([...previous].filter(([symbol]) => !canonical.has(symbol)))
   }
-  const next = (symbol: string) => canonical.get(symbol) ?? projected.get(symbol)?.sector ?? null
-  const changed = (results ?? []).filter((row) => {
-    const current = String(row.sector ?? '').trim() || null
-    return current !== next(String(row.symbol))
-  })
+  const currentSector = (row: { sector: string | null }) => String(row.sector ?? '').trim() || null
+  // Without the record nothing tells a fallback sector from a stale one, so stocks the owner
+  // does not classify keep their current sector.
+  const next = (row: { symbol: string; sector: string | null }) =>
+    canonical.get(String(row.symbol)) ??
+    (previousLoaded ? projected.get(String(row.symbol))?.sector ?? null : currentSector(row))
+  const changed = (results ?? []).filter((row) => currentSector(row) !== next(row))
   for (let offset = 0; offset < changed.length; offset += 80) {
     await coreDb.batch(changed.slice(offset, offset + 80).map((row) =>
       coreDb.prepare(
         "UPDATE stocks SET sector=?, updated_at=datetime('now') WHERE symbol=?",
-      ).bind(next(String(row.symbol)), row.symbol),
+      ).bind(next(row), row.symbol),
     ))
   }
   if (changed.length) {
@@ -258,7 +262,7 @@ export async function syncFinLabIndustryProjection(env: Bindings): Promise<{
     canonical_symbols: canonical.size,
     core_symbols: (results ?? []).length,
     updated: changed.length,
-    cleared: changed.filter((row) => next(String(row.symbol)) === null).length,
+    cleared: changed.filter((row) => next(row) === null).length,
     fallback: { order, projected: projected.size, by_tier: byTier, recorded },
   }
 }

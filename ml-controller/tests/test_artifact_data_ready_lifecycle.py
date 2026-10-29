@@ -68,8 +68,11 @@ def lifecycle(monkeypatch):
               "windows": [{}] * wf.OOF_PROMOTION_MIN_FOLDS}
     bucket = Bucket()
     monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
-    monkeypatch.setattr(wf, "_latest_ready_oof_manifest", lambda _b: ("parent/manifest.json", parent))
-    monkeypatch.setattr(wf, "_latest_canonical_prep_prefix", lambda _b: "immutable/prep")
+    monkeypatch.setattr(wf, "_latest_ready_oof_manifest",
+                        lambda _b, *, model_profile_schema_version=None: ("parent/manifest.json", parent))
+    # Mirror routers.walk_forward._latest_canonical_prep_prefix(bucket, *, expanded_history, expected_feature_semantic).
+    monkeypatch.setattr(wf, "_latest_canonical_prep_prefix",
+                        lambda _b, *, expanded_history=False, expected_feature_semantic=wf.LEGACY_SEMANTIC: "immutable/prep")
     monkeypatch.setattr(wf, "_oof_manifest_observed_core_dates", lambda _b, m: ([m["end_date"]], {}))
     monkeypatch.setenv("OOF_MATERIALIZE_JOB_EXECUTION", "1")
     materialize = AsyncMock(return_value={"status": "materialized", "candidate_artifacts": {},

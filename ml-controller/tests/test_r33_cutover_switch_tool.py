@@ -40,7 +40,8 @@ class Learning:
 def world(monkeypatch, tmp_path):
     inputs = _inputs()
     packet = r33_switch.prepare(**inputs)
-    packet.update(controller_source_sha='s' * 40, serving_table_stored=False)
+    packet.update(controller_source_sha='s', serving_table_stored=False)
+    r33_switch.seal(packet)
     (tmp_path / 'packet.json').write_text(json.dumps(packet))
     kv = {w['key']: deepcopy(w['before']) for w in packet['writes'].values()}
     learning = Learning(inputs['pointer'])
@@ -64,7 +65,9 @@ def world(monkeypatch, tmp_path):
         def upload_from_string(self, body, **kw): blobs.setdefault(self.name, body)
         def download_as_bytes(self): return blobs[self.name]
     monkeypatch.setattr(tool, '_bucket', lambda: types.SimpleNamespace(blob=Blob, name='b'))
-    monkeypatch.setitem(sys.modules, 'runtime_context', types.SimpleNamespace(load_environment=lambda: {'source_sha': 's'}))
+    deployed = {'source_sha': 's'}
+    monkeypatch.setitem(sys.modules, 'runtime_context', types.SimpleNamespace(load_environment=lambda: dict(deployed)))
+    monkeypatch.setattr(r33_switch, 'validate_packet', _validate_at(r33_switch.validate_packet))
     from services import active8_paper_admission, worker_config_client
     granted = packet['approval']['configuration']['trading_config']
     live = {'config': inputs['merged_config']}
@@ -83,7 +86,12 @@ def world(monkeypatch, tmp_path):
     run = lambda command, step, execute=False: tool.activate(
         Namespace(out=tmp_path, step=step, execute=execute), undo=command == 'rollback')
     return types.SimpleNamespace(packet=packet, kv=kv, learning=learning, writes=writes, run=run, live=live,
-                                 out=tmp_path, blobs=blobs)
+                                 out=tmp_path, blobs=blobs, deployed=deployed)
+
+
+def _validate_at(validate):
+    from test_r33_switch import NOW
+    return lambda packet, now: validate(packet, now=NOW)
 
 
 def test_steps_run_one_at_a_time_and_only_in_order(world):
@@ -154,3 +162,96 @@ def test_readbacks_must_show_the_granted_config_and_the_cutover_grant(world, mon
     monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', lambda admission, **kw: {'other': True})
     with pytest.raises(RuntimeError, match='active_grant_not_the_cutover_grant'):
         world.run('activate', 'grant', execute=True)
+
+
+def test_a_resealed_edit_is_still_refused_by_the_validators(world):
+    packet = json.loads((world.out / 'packet.json').read_text())
+    packet['writes']['kv-config']['after']['exit']['swingHardStopPct'] = 5
+    r33_switch.seal(packet)
+    (world.out / 'packet.json').write_text(json.dumps(packet))
+    with pytest.raises(RuntimeError, match='raw_config_not_the_granted_change'):
+        world.run('activate', 'kv-config', execute=True)
+    assert world.writes == []
+
+
+def test_a_new_controller_release_after_prepare_is_refused(world):
+    world.deployed['source_sha'] = 'other'
+    with pytest.raises(SystemExit, match='deployed controller source changed'):
+        world.run('activate', 'kv-config')
+
+
+def test_a_step_whose_readback_failed_is_rechecked_before_the_next_step(world, monkeypatch):
+    from services import active8_paper_admission, worker_config_client
+    stale, original = world.live['config'], worker_config_client.load_active_trading_config
+    monkeypatch.setattr(worker_config_client, 'load_active_trading_config', lambda: deepcopy(stale))
+    with pytest.raises(RuntimeError, match='worker_merged_config_not_the_granted_config'):
+        world.run('activate', 'kv-config', execute=True)
+    # KV holds the new value, so kv-config reads as done; the next step still refuses.
+    with pytest.raises(RuntimeError, match='worker_merged_config_not_the_granted_config'):
+        world.run('activate', 'admission', execute=True)
+    assert world.writes == ['trading:config']
+    monkeypatch.setattr(worker_config_client, 'load_active_trading_config', original)
+    world.run('activate', 'admission', execute=True)
+    verify = active8_paper_admission.verify_active_approval
+    monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', lambda admission, **kw: {'other': True})
+    with pytest.raises(RuntimeError, match='active_grant_not_the_cutover_grant'):
+        world.run('activate', 'grant', execute=True)
+    with pytest.raises(RuntimeError, match='active_grant_not_the_cutover_grant'):
+        world.run('activate', 'r33-row', execute=True)
+    assert world.learning.rows == {}
+    monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', verify)
+    world.run('activate', 'r33-row', execute=True)
+
+
+@pytest.mark.parametrize('race_at', [2, 3])   # 2: before the snapshot, 3: after it, right before the PUT
+def test_every_write_rechecks_the_live_value_right_before_it(world, monkeypatch, race_at):
+    reads = {'n': 0}
+    real = tool._kv_read
+
+    def racing(key):
+        value = real(key)
+        if key == 'trading:config':
+            reads['n'] += 1
+            if reads['n'] >= race_at:    # someone else wrote between the step check and the write
+                return {'raced': True}
+        return value
+    monkeypatch.setattr(tool, '_kv_read', racing)
+    with pytest.raises(RuntimeError, match='live_value_changed_before_write'):
+        world.run('activate', 'kv-config', execute=True)
+    assert world.writes == []
+
+
+def test_rollback_rechecks_and_reads_back(world, monkeypatch):
+    from services import worker_config_client
+    world.run('activate', 'kv-config', execute=True)
+    world.kv['trading:config'] = {'someone': 'else'}
+    with pytest.raises(RuntimeError, match='drift'):
+        world.run('rollback', 'kv-config', execute=True)
+    world.kv['trading:config'] = deepcopy(world.packet['writes']['kv-config']['after'])
+    granted = world.packet['approval']['configuration']['trading_config']
+    monkeypatch.setattr(worker_config_client, 'load_active_trading_config', lambda: deepcopy(granted))
+    with pytest.raises(RuntimeError, match='worker_merged_config_not_the_prior_config'):
+        world.run('rollback', 'kv-config', execute=True)
+
+
+def test_r33_row_needs_the_stored_table_and_the_row_readback(world, monkeypatch):
+    for step in r33_switch.STEPS[:3]:
+        world.run('activate', step, execute=True)
+    path = world.packet['approval']['approved_r33_cutover']['calibration']['serving_table_path']
+    world.blobs[path] = b'{"other":1}'
+    with pytest.raises(RuntimeError, match='stored_serving_table_differs'):
+        world.run('activate', 'r33-row', execute=True)
+    assert world.learning.rows == {}
+    del world.blobs[path]
+    monkeypatch.setattr(world.learning, 'execute', lambda sql, params: None)
+    with pytest.raises(RuntimeError, match='r33_row_readback_mismatch'):
+        world.run('activate', 'r33-row', execute=True)
+
+
+def test_a_packet_whose_writes_differ_from_its_validated_values_is_refused(world):
+    packet = json.loads((world.out / 'packet.json').read_text())
+    packet['writes']['grant']['after'] = {**packet['writes']['grant']['after'], 'source_reference': 'edited'}
+    r33_switch.seal(packet)
+    (world.out / 'packet.json').write_text(json.dumps(packet))
+    with pytest.raises(RuntimeError, match='packet_writes_not_the_validated_values'):
+        world.run('activate', 'kv-config')

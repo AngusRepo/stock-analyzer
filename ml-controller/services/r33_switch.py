@@ -220,8 +220,44 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
               'roster': roster_status(meta_layer),
               'e7_followup': 'trading:config is manifest-managed (E-7): upload the new raw value to GCS and '
                              'update the manifest digest by PR after the kv-config step; the drift alert is expected.'}
-    result['packet_checksum'] = digest(result)
-    return result
+    return seal(result)
+
+
+def seal(packet):
+    """Checksum over every packet field (the deployed controller source included)."""
+    packet['packet_checksum'] = digest({k: v for k, v in packet.items() if k != 'packet_checksum'})
+    return packet
+
+
+def validate_packet(packet, *, now):
+    """At every activation: the seal, and the same owners prepare ran, on the values about to be written.
+
+    The seal is an unkeyed digest, so it only catches accidents; re-validating means an edited
+    packet still cannot write anything the validators would not have accepted.
+    """
+    from services.active8_paper_admission import KEY, validate_admission, validate_runtime_approval
+    from services.paired_nav_l3_candidate import _validate_r33_row
+    from services.r33_cutover import _get, changed_paths, validate_against_ensemble
+    if digest({k: v for k, v in packet.items() if k != 'packet_checksum'}) != packet.get('packet_checksum'):
+        raise _fail('packet_checksum_mismatch')
+    writes, admission, approval = packet['writes'], packet['admission'], packet['approval']
+    ensemble, evidence = packet['ensemble'], approval['approved_r33_cutover']
+    if (writes['kv-config']['key'] != 'trading:config' or writes['admission']['key'] != KEY
+            or writes['admission']['after'] != admission or writes['grant']['after'] != approval
+            or writes['admission']['before'] != approval['prior_runtime_approval']['admission']):
+        raise _fail('packet_writes_not_the_validated_values')
+    validate_admission(admission, artifact=ensemble, now=now)
+    validate_runtime_approval(approval, admission, now=now)
+    validate_against_ensemble(evidence, ensemble)
+    _validate_r33_row(packet['ensemble_row'], ensemble)
+    if packet['serving_table'] != ensemble['serving_calibration']:
+        raise _fail('serving_table_not_the_ensemble_table')
+    before, after = writes['kv-config']['before'], writes['kv-config']['after']
+    granted = approval['configuration']['trading_config']
+    changed = changed_paths(before, after)
+    if (sorted(changed) != sorted(evidence['economics_change_scope'])
+            or any(_get(after, path) != _get(granted, path) for path in changed)):
+        raise _fail('raw_config_not_the_granted_change')
 
 
 def step_states(packet, observed):

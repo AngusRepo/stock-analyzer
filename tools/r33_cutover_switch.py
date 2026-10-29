@@ -97,6 +97,10 @@ def _observe(packet):
 def prepare(args):
     from runtime_context import load_environment
     release = load_environment()
+    # Validators and the runtime key come from this checkout; they must be the deployed ones.
+    local = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
+    if local != release['source_sha']:
+        raise SystemExit(f'checkout {local} is not the deployed controller source {release["source_sha"]}')
     from services import r33_switch
     from services.active8_paper_admission import KEY, verify_active_approval
     from services.d1_domain_client import client_for_domain
@@ -144,6 +148,7 @@ def prepare(args):
         raise RuntimeError('configuration_changed_during_prepare')
     packet['controller_source_sha'] = release['source_sha']
     packet['serving_table_stored'] = stored.exists()
+    r33_switch.seal(packet)
     _save(out / 'packet.json', packet, exclusive=True)
     print(json.dumps({'status': 'prepared_locally', 'cloud_writes': 0, 'packet_checksum': packet['packet_checksum'],
                       'ensemble_artifact_id': packet['ensemble']['artifact_id'],
@@ -163,11 +168,15 @@ def _execute(step, packet, observed):
         if step == 'kv-config':
             receipt['snapshot_id'] = _snapshot_config(write['before'], write['after'],
                                                       'r33_cutover_' + packet['packet_checksum'][:16])
+            if _kv_read(write['key']) != write['before']:
+                raise RuntimeError('live_value_changed_before_write:' + write['key'])
         _kv_write(write['key'], write['after'])
         if step == 'kv-config':
             from services.paired_nav_journal import digest
             from services.worker_config_client import load_active_trading_config
             if digest(load_active_trading_config()) != digest(packet['approval']['configuration']['trading_config']):
+                # The KV value is written; the Worker can serve the old value for about a minute.
+                # Every later step re-checks the merged config, so re-run the next step after that.
                 raise RuntimeError('worker_merged_config_not_the_granted_config')
             receipt['e7_followup'] = packet['e7_followup']
         if step == 'grant':
@@ -226,9 +235,9 @@ def activate(args, *, undo):
     out = args.out.resolve()
     packet = json.loads((out / 'packet.json').read_text())
     from services.paired_nav_journal import digest
-    if digest({k: v for k, v in packet.items() if k not in ('packet_checksum', 'controller_source_sha',
-                                                             'serving_table_stored')}) != packet['packet_checksum']:
-        raise RuntimeError('packet_checksum_mismatch')
+    r33_switch.validate_packet(packet, now=datetime.now(timezone.utc))
+    if release['source_sha'] != packet['controller_source_sha']:
+        raise SystemExit('deployed controller source changed since prepare; prepare a new packet')
     observed = _observe(packet)
     step, states = (r33_switch.rollback_step if undo else r33_switch.next_step)(packet, observed)
     if step != args.step:
@@ -241,6 +250,15 @@ def activate(args, *, undo):
         r33_switch.check_prior(packet['approval']['prior_runtime_approval'], live_prior=verify_active_approval(old),
                                merged_config=load_active_trading_config(), admission=old,
                                pointer=observed['pointer'])
+    if not undo and step != 'kv-config':
+        # A step whose post-write check failed still reads as done; its effect is re-checked here.
+        from services.worker_config_client import load_active_trading_config
+        if digest(load_active_trading_config()) != digest(packet['approval']['configuration']['trading_config']):
+            raise RuntimeError('worker_merged_config_not_the_granted_config')
+        if step in ('r33-row', 'promotion'):
+            from services.active8_paper_admission import verify_active_approval
+            if digest(verify_active_approval(packet['admission'])) != digest(packet['approval']):
+                raise RuntimeError('active_grant_not_the_cutover_grant')
     if undo and step == 'promotion':
         raise SystemExit('promotion rollback is the atomic publisher run for the prior ensemble under its own '
                          'admission (Wei go); this tool does not republish an older pointer.')
@@ -275,6 +293,11 @@ def activate(args, *, undo):
             receipt['snapshot_id'] = _snapshot_config(write['after'], write['before'],
                                                       'r33_cutover_rollback_' + packet['packet_checksum'][:16])
         _kv_write(write['key'], write['before'])
+        if step == 'kv-config':
+            from services.worker_config_client import load_active_trading_config
+            prior = packet['approval']['prior_runtime_approval']['configuration']['trading_config']
+            if digest(load_active_trading_config()) != digest(prior):
+                raise RuntimeError('worker_merged_config_not_the_prior_config')
     else:
         _learning().execute("DELETE FROM active8_ensemble_artifacts_v1 WHERE artifact_id=? AND state='candidate' "
                             "AND production_effect=0", [packet['ensemble_row']['artifact_id']])

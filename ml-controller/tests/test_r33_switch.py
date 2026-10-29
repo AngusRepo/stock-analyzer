@@ -104,7 +104,7 @@ def test_prepare_builds_a_cutover_that_serving_accepts():
 
 @pytest.mark.parametrize('fault', ['prior_not_live_config', 'prior_admission', 'pointer_moved', 'exit_rules_missing',
                                    'bundle_not_pass', 'pit', 'bundle_path', 'serving_table_source', 'label_after_signal',
-                                   'raw_without_policy', 'constraints'])
+                                   'raw_without_policy', 'constraints', 'raw_policy_differs'])
 def test_prepare_fails_closed(fault):
     inputs = _inputs()
     edits = {
@@ -119,6 +119,7 @@ def test_prepare_fails_closed(fault):
         'label_after_signal': lambda: inputs.update(training_label_known_max='2026-11-09'),
         'raw_without_policy': lambda: inputs['raw_config'].pop('l4Distribution'),
         'constraints': lambda: inputs['merged_config']['l4Distribution']['constraints'].update(max_positions=4),
+        'raw_policy_differs': lambda: inputs['raw_config']['l4Distribution'].update(scope='live'),
     }
     edits[fault]()
     with pytest.raises((RuntimeError, ValueError)):

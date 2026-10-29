@@ -477,6 +477,7 @@ export function excludeSourceAfterDate(item: MarketRegimeFactorTile, date: strin
     value: 'n/a',
     score: 45,
     status: 'missing',
+    source: 'excluded:source_after_packet_date',
     source_date: null,
     detail: `source dated ${item.source_date} is after ${date}; excluded`,
     missing_reason: 'source_after_packet_date',
@@ -707,6 +708,10 @@ export async function upsertMarketRegimeFactorPacket(
       (date, packet_checksum, packet_json, canonical_mode, recorded_at) VALUES (?, ?, ?, ?, ?)`)
       .bind(packet.date, checksum, packetJson, mode, paperExecutionDate().toISOString()),
   ])
+  const revision = await db.prepare('SELECT packet_json FROM market_regime_factor_packet_revisions_v1 WHERE date = ? AND packet_checksum = ?')
+    .bind(packet.date, checksum).first<{ packet_json: string }>()
+  const canonical = await db.prepare('SELECT date FROM market_regime_factor_packets WHERE date = ?').bind(packet.date).first()
+  if (revision?.packet_json !== packetJson || !canonical) throw new Error('market_regime_factor_packet_readback_failed:' + packet.date)
 }
 
 function parseJsonRecord(raw: unknown): Record<string, any> {

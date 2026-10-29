@@ -20,7 +20,9 @@ const base:any={marketRiskRows:[{date,twii_close:30000,risk_score:0,risk_level:'
 const healthy=buildCanonicalMarketRiskContext(base)
 assert.equal(healthy.status,'ready');assert.equal(healthy.targetExposureCap,DEFAULT_RISK_CONFIG.portfolio.greenTargetExposure)
 for(const patch of [{quality:null},{regimeState:{...base.regimeState,regime_evidence:{}}},{factorPacket:null},{factorPacket:{...base.factorPacket,level:'unknown'}},
- {quality:{...base.quality,status:'blocked'}},{quality:{...base.quality,upper_score:99}}]){
+ {quality:{...base.quality,status:'blocked'}},{quality:{...base.quality,upper_score:99}},
+ // Q2: the stored-risk integrity blocker stays even though the stored level is evidence only.
+ {marketRiskRows:[{...base.marketRiskRows[0],risk_level:'unknown'},base.marketRiskRows[1]]}]){
  const result=buildCanonicalMarketRiskContext({...base,...patch})
  assert.equal(result.status,'blocked');assert.equal(result.haltNewBuys,true);assert.equal(result.deRiskExistingPositions,false)
 }

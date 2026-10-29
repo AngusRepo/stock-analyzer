@@ -50,10 +50,11 @@ export async function recomputeDailyMarketRisk(env:Bindings,twDate:string) {
     && existingRisk.twii_ma20 != null
     && existingRisk.twii_bias != null
     && existingRisk.twii_vol20 != null
-  const mode=await canonicalWriteMode(env,marketDb,twDate)
+  let mode:CanonicalWriteMode='replace'
   let revisionChecksum:string|null=null
   if (!shouldRecomputeRisk && existingRiskComplete) {
     console.log(`[ML V2] Market risk preserved for backfill date=${twDate}; skip current-market overwrite`)
+    mode=await canonicalWriteMode(env,marketDb,twDate)
     const regimeState = await readMarketRegimeStateHistory(marketDb,twDate).catch(()=>null) ?? await readMarketRegimeStateForDate(env.KV,twDate).catch(()=>null)
     const packet = await buildMarketRegimeFactorPacket(marketDb, existingRisk, regimeState)
     await upsertMarketRegimeFactorPacket(marketDb, packet, mode)
@@ -73,6 +74,8 @@ export async function recomputeDailyMarketRisk(env:Bindings,twDate:string) {
       limit_down_pct:risk.limitDownPct,risk_score:risk.riskScore,risk_level:risk.riskLevel,risk_summary:risk.riskSummary,
       adl_value:risk.adlValue,adl_trend:risk.adlTrend,bull_alignment_count:risk.bullAlignmentCount,bull_alignment_pct:risk.bullAlignmentPct,
     }
+    // Decided after the slow source reads, right before the writes it governs.
+    mode=await canonicalWriteMode(env,marketDb,twDate)
     const verb=mode==='replace'?'INSERT OR REPLACE':'INSERT OR IGNORE'
     const columns=Object.keys(riskRow)
     const riskStatement=databaseForDataDomain(env, 'core').prepare(
@@ -88,12 +91,13 @@ export async function recomputeDailyMarketRisk(env:Bindings,twDate:string) {
       (date,revision_checksum,risk_json,quality_json,canonical_mode,recorded_at) VALUES (?,?,?,?,?,?)`).bind(
       risk.date,revisionChecksum,canonicalRiskJson(riskRow),qualityJson,mode,paperExecutionDate().toISOString())
     // An existing original row and its quality receipt stay as a pair; only the revision is added.
-    const keepExisting=mode==='keep_original'&&existingRisk!=null
+    const keepExisting=mode==='keep_original'&&(existingRisk!=null||existingQuality!=null)
     await databaseForDataDomain(env,'core').batch(keepExisting?[revisionStatement]:[riskStatement,qualityStatement,revisionStatement])
     await marketDb.prepare("UPDATE market_breadth SET bull_alignment_pct=? WHERE date=? AND (?='replace' OR bull_alignment_pct IS NULL)")
       .bind(risk.bullAlignmentPct,risk.date,mode).run()
     const regimeState = await readMarketRegimeStateHistory(marketDb,twDate).catch(()=>null) ?? await readMarketRegimeStateForDate(env.KV,twDate).catch(()=>null)
-    const packet = await buildMarketRegimeFactorPacket(marketDb, riskRow, regimeState)
+    // A missing packet beside a kept original is filled from that original, not the later recompute.
+    const packet = await buildMarketRegimeFactorPacket(marketDb, keepExisting&&existingRisk?existingRisk:riskRow, regimeState)
     await upsertMarketRegimeFactorPacket(marketDb, packet, mode)
     await clearMarketRiskLatestCaches(env)
     console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)

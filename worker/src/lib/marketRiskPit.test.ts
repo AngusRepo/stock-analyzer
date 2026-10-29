@@ -79,6 +79,12 @@ async function main(){try{
  await assert.rejects(()=>recomputeDailyMarketRisk(f.env,frozen.date),/market_risk_original_kept_unqualified:2026-10-06/)
  assert.deepEqual(core('SELECT * FROM market_risk_quality_v1 WHERE date=?'),kept)
 
+ // A receipt without its risk row is not completed from a post-open recompute (the pair never splits).
+ f.sqls.core.prepare('DELETE FROM market_risk WHERE date=?').run(frozen.date)
+ await assert.rejects(()=>recomputeDailyMarketRisk(f.env,frozen.date),/market_risk_original_kept_unqualified/)
+ assert.equal(core('SELECT * FROM market_risk WHERE date=?').length,0)
+ assert.deepEqual(core('SELECT * FROM market_risk_quality_v1 WHERE date=?'),kept)
+
  // Before the next open the past date may still be replaced.
  at('2026-10-07T00:30:00Z')
  const repaired=await recomputeDailyMarketRisk(f.env,frozen.date)
@@ -102,6 +108,14 @@ async function main(){try{
  const tile={id:'x',label:'x',value:'v',raw_value:1,score:80,weight:.1,contribution:8,status:'warn' as const,source:'s',source_date:'2026-10-07',detail:'d'}
  assert.equal(excludeSourceAfterDate(tile,'2026-10-06').contribution,4.5)
  assert.equal(excludeSourceAfterDate(tile,'2026-10-07'),tile)
+ // The new tables ship with their schema files and the deploy schema check.
+ const read=(path:string)=>fs.readFileSync(new URL(path,import.meta.url),'utf8')
+ assert.match(read('../../domain-schemas/core.sql'),/CREATE TABLE IF NOT EXISTS market_risk_revisions_v1/)
+ assert.match(read('../../domain-schemas/market.sql'),/CREATE TABLE IF NOT EXISTS market_regime_factor_packet_revisions_v1/)
+ assert.match(read('../../domain-schemas/market.sql'),/screener_momentum_snapshots[\s\S]*pool_definition\s+TEXT/)
+ const deploy=read('../../../tools/deploy_worker_with_provenance.mjs')
+ for(const table of ['market_risk_revisions_v1','market_regime_factor_packet_revisions_v1'])assert.match(deploy,new RegExp(`FROM ${table} LIMIT 0`))
+ assert.match(deploy,/SELECT pool_definition FROM screener_momentum_snapshots LIMIT 0/)
  console.log('market risk PIT: originals kept after the open, revisions appended, first observations filled, no later sources PASS')
 }finally{globalThis.fetch=realFetch;Date.now=realNow;f.close()}}
 main().catch(e=>{console.error(e);process.exitCode=1})

@@ -68,7 +68,7 @@ def full_cash_state(config):
         db.executescript(base_state())
         for path in ('core/0001_core_baseline.sql', 'core/0007_stock_listing_source.sql',
                      'core/0008_market_risk_quality.sql', 'market/0001_market_baseline.sql', 'market/0002_runtime_owned_tables.sql',
-                     'market/0004_legacy_schema_alignment.sql',
+                     'market/0004_legacy_schema_alignment.sql', 'market/0011_momentum_pool_definition.sql',
                      'learning/0001_learning_baseline.sql', 'learning/0006_data_domain_control_revision_fence.sql',
                      'learning/0027_active8_ensemble_serving_owner.sql',
                      'learning/0031_s12_profit_continuation_serving_owner.sql',

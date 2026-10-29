@@ -45,6 +45,9 @@ def propose(rows):
         if not reference / SIZE_FACTOR <= row['candidate_count'] <= reference * SIZE_FACTOR:
             break
         run.append(row)
+    if not run:
+        return {**summary, 'reference_candidate_count': reference, 'proposed_since': None,
+                'reason': 'newest row is already outside the reference pool size; wait for more rows'}
     since = run[-1]['date']
     return {**summary, 'reference_candidate_count': reference, 'proposed_since': since,
             'run_rows': len(run), 'first_excluded': next((r['date'] for r in reversed(sized)

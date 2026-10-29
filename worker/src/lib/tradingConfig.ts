@@ -449,6 +449,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     drawdownRaisedConf: 0.70,
     lowAccuracyThreshold: 0.45,
     highVolReducedPosPct: 0.04,
+    /** @deprecated Wei 10/29: bull alignment is evidence only; nothing reads this. Kept so stored configs still merge. */
     bullAlignmentThreshold: 20,
     // Sprint 4-1
     drawdownScaleStart: 0.03,

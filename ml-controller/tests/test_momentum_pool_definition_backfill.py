@@ -69,3 +69,15 @@ def test_execute_labels_only_null_rows_since_and_reads_back(market):
     assert 'pool_definition IS NULL' in market.writes[0][0]
     assert [r['pool_definition'] for r in market.rows] == [None, 'screener-v2.final-candidates.v1']
     assert result['after']['labelled_rows'] == 1
+
+
+def test_proposal_is_empty_on_the_day_the_pool_changes():
+    rows = ([{'date': f'2026-02-{d:02d}', 'candidate_count': 25, 'pool_definition': None} for d in range(1, 21)]
+            + [{'date': '2026-02-21', 'candidate_count': 640, 'pool_definition': None}])
+    assert _tool().propose(rows)['proposed_since'] is None
+
+
+def test_execute_fails_when_the_readback_still_has_null_rows(market):
+    market.execute = lambda sql, params: market.writes.append((sql, params))  # the write is lost
+    with pytest.raises(SystemExit, match='still NULL'):
+        _tool().main(['--execute', '--since', '2026-02-01'])

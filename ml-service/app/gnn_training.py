@@ -249,6 +249,20 @@ def _build_model(*, n_features: int, hidden_dim: int, dropout: float):
     return GraphSAGERankModel()
 
 
+TIE_GUARD_MIN_SHARE = 0.01
+TIE_GUARD_MIN_ROWS = 20
+TIE_GUARD_ATOL = 1e-7  # a few float32 ulps near 0.5; CPU sigmoid can split one logit by 1 ulp
+
+
+def _max_same_value_rows(pred: np.ndarray) -> int:
+    """Largest block of scores that differ from their sorted neighbour by <= TIE_GUARD_ATOL."""
+    if not len(pred):
+        return 0
+    ordered = np.sort(np.asarray(pred, dtype=np.float64))
+    starts = np.flatnonzero(np.diff(ordered) > TIE_GUARD_ATOL) + 1
+    return int(np.diff(np.concatenate(([0], starts, [len(ordered)]))).max())
+
+
 def _evaluate(
     model,
     *,
@@ -261,10 +275,20 @@ def _evaluate(
     threshold: float,
     graph_snapshots: list[tuple[np.ndarray, np.ndarray]] | None = None,
     include_predictions: bool = False,
+    dates: np.ndarray | None = None,
 ) -> dict:
+    """Score graph snapshots. C28-09 (report only): also counts rows whose conv2 output is
+    all <= 0 (the head then sees zeros and every such row scores sigmoid(head.bias)) and the
+    largest same-score block per date. Neither changes any prediction."""
     import torch
 
     model.eval()
+    dead_rows: list[int] = []
+    tie_days: list[dict[str, Any]] = []
+    hook = None
+    if isinstance(getattr(model, "conv2", None), torch.nn.Module):
+        hook = model.conv2.register_forward_hook(
+            lambda _module, _inputs, out: dead_rows.append(int((out <= 0).all(dim=-1).sum().item())))
     all_pred: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
     daily_ics: list[float] = []
@@ -298,6 +322,15 @@ def _evaluate(
                 "node_coverage": 1.0 if len(idx) else 0.0,
                 "edge_count": int(edge_np.shape[1]) if edge_np.ndim == 2 else 0,
             })
+            max_same = _max_same_value_rows(pred)
+            tie_days.append({
+                "signal_date": str(dates[idx[0]]) if dates is not None and len(idx) else f"graph_snapshot_{fold_idx}",
+                "rows": int(len(pred)),
+                "max_same_value_rows": max_same,
+                "max_same_value_share": round(max_same / len(pred), 6) if len(pred) else 0.0,
+            })
+    if hook is not None:
+        hook.remove()
     pred_all = np.concatenate(all_pred) if all_pred else np.asarray([], dtype=float)
     y_all = np.concatenate(all_y) if all_y else np.asarray([], dtype=float)
     result = {
@@ -307,6 +340,14 @@ def _evaluate(
         "samples": int(len(y_all)),
         "pred_std": round(float(np.std(pred_all)), 6) if len(pred_all) else 0.0,
         "fold_metrics": fold_metrics,
+        "dead_zone_share": round(sum(dead_rows) / len(pred_all), 6) if hook is not None and len(pred_all) else None,
+        "daily_max_same_value": {
+            "threshold_share": TIE_GUARD_MIN_SHARE,
+            "threshold_rows": TIE_GUARD_MIN_ROWS,
+            "max_share": max((d["max_same_value_share"] for d in tie_days), default=0.0),
+            "flagged_days": [d for d in tie_days
+                             if d["max_same_value_share"] > TIE_GUARD_MIN_SHARE and d["max_same_value_rows"] >= TIE_GUARD_MIN_ROWS],
+        },
     }
     if include_predictions:
         result["_predictions"] = pred_all
@@ -537,6 +578,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         threshold=edge_threshold,
         graph_snapshots=test_graphs,
         include_predictions=generation_mode == "purged_oof",
+        dates=dates,
     )
     oof_predictions = np.asarray(eval_metrics.pop("_predictions", []), dtype=float)
     oof_indices = np.asarray(eval_metrics.pop("_indices", []), dtype=np.int64)
@@ -556,6 +598,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     print(
         f"[GNNTrain] evaluated oos_ic={eval_metrics.get('oos_ic')} "
         f"daily_ic_count={eval_metrics.get('daily_ic_count')} "
+        f"dead_zone_share={eval_metrics.get('dead_zone_share')} "
+        f"tie_flagged_days={len(eval_metrics['daily_max_same_value']['flagged_days'])} "
         f"elapsed_s={stage_timings['evaluate_s']}",
         flush=True,
     )

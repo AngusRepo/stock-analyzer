@@ -283,9 +283,103 @@ def test_taxonomy_rows_strip_finlab_display_bullets_and_keep_raw_lineage() -> No
     assert ["3551", "\u25baSemiconductor", "industry_theme", "finlab.security_industry_themes"] in cleanup
     assert ["3551", "\u25baProcess Equipment", "subindustry", "finlab.security_industry_themes"] in cleanup
     assert ["3551", "\u200b\u25baAI", "industry_theme", "finlab.security_industry_themes"] in cleanup
-    assert ["finlab.security_categories", "industry", "2026-09-03T00:00:00+00:00"] in cleanup
-    assert ["finlab.security_industry_themes", "industry_theme", "2026-09-03T00:00:00+00:00"] in cleanup
-    assert ["finlab.security_industry_themes", "subindustry", "2026-09-03T00:00:00+00:00"] in cleanup
+    snapshot = [params[:3] for params in cleanup if len(params) == 7]
+    assert ["finlab.security_categories", "industry", "2026-09-03T00:00:00+00:00"] in snapshot
+    assert ["finlab.security_industry_themes", "industry_theme", "2026-09-03T00:00:00+00:00"] in snapshot
+    assert ["finlab.security_industry_themes", "subindustry", "2026-09-03T00:00:00+00:00"] in snapshot
+
+
+def _apply_taxonomy_snapshot(db, *, tags: dict[str, str], materialization_id: str, ratio: float) -> None:
+    from services.finlab_canonical_materializer import (
+        _taxonomy_owner_snapshot_cleanup_statements,
+        _taxonomy_prune_guard_baseline_statements,
+    )
+
+    rows = [{"symbol": symbol, "tag": tag, "tag_type": "industry_theme", "source": "finlab.security_industry_themes",
+             "lineage_json": json.dumps({"materialization_id": materialization_id})} for symbol, tag in tags.items()]
+    snapshot = {"materialization_id": materialization_id, "full_snapshot": True, "min_retained_ratio": ratio}
+    # Same order as build_d1_upsert_statements: baseline receipt, owner upserts, guarded prune.
+    for sql, params in _taxonomy_prune_guard_baseline_statements(rows, **snapshot):
+        db.execute(sql, params)
+    for row in rows:
+        db.execute(
+            "INSERT INTO finlab_taxonomy_tags (symbol, tag, tag_type, source, lineage_json, as_of_date) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(symbol, tag, tag_type, source) DO UPDATE SET "
+            "lineage_json=excluded.lineage_json",
+            [row["symbol"], row["tag"], row["tag_type"], row["source"], row["lineage_json"], materialization_id[:10]],
+        )
+    for sql, params in _taxonomy_owner_snapshot_cleanup_statements(rows, **snapshot)[:-1]:
+        db.execute(sql, params)  # the last one is the unguarded non-owner source cleanup
+
+
+def test_q02_taxonomy_prune_guard_skips_a_shrunken_snapshot_and_writes_a_receipt() -> None:
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE finlab_taxonomy_tags (symbol TEXT NOT NULL, tag TEXT NOT NULL, tag_type TEXT NOT NULL, "
+               "source TEXT NOT NULL, weight REAL NOT NULL DEFAULT 1, lineage_json TEXT NOT NULL, "
+               "as_of_date TEXT NOT NULL, PRIMARY KEY(symbol, tag, tag_type, source))")
+    db.execute("CREATE TABLE source_quality_metrics (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, "
+               "dataset TEXT NOT NULL, as_of_date TEXT NOT NULL, freshness_status TEXT NOT NULL, "
+               "missing_rate REAL NOT NULL DEFAULT 0, duplicate_rate REAL NOT NULL DEFAULT 0, "
+               "schema_drift_status TEXT NOT NULL DEFAULT 'ok', entity_link_confidence REAL, "
+               "latest_materialization TEXT, metrics_json TEXT NOT NULL, UNIQUE(source, dataset, as_of_date))")
+    count = lambda: db.execute("SELECT COUNT(*) FROM finlab_taxonomy_tags").fetchone()[0]
+    receipt = lambda day: (lambda row: (row[0], json.loads(row[1])))(db.execute(
+        "SELECT freshness_status, metrics_json FROM source_quality_metrics "
+        "WHERE dataset='finlab_taxonomy_tags.prune_guard:industry_theme' AND as_of_date=?", [day]).fetchone())
+
+    _apply_taxonomy_snapshot(db, tags={str(i): "A" for i in range(100)},
+                             materialization_id="2026-09-01T00:00:00+00:00", ratio=0.95)
+    assert count() == 100
+    assert receipt("2026-09-01")[0] == "prune_applied"
+    # Tag churn at an unchanged snapshot size: 10 symbols move from theme A to B -> stale A rows pruned.
+    _apply_taxonomy_snapshot(db, tags={str(i): ("B" if i < 10 else "A") for i in range(100)},
+                             materialization_id="2026-09-08T00:00:00+00:00", ratio=0.95)
+    assert count() == 100
+    assert receipt("2026-09-08") == ("prune_applied", {
+        "materialization_id": "2026-09-08T00:00:00+00:00", "group_rows_before": 100, "min_retained_ratio": 0.95,
+        "retained_rows": 100, "group_rows_after_upsert": 110})
+    # Normal listing churn: 2 symbols leave, 1 joins -> 99 of 100 kept, pruned.
+    _apply_taxonomy_snapshot(db, tags={str(i): "A" for i in range(2, 101)},
+                             materialization_id="2026-09-09T00:00:00+00:00", ratio=0.95)
+    assert count() == 99
+    # A vendor snapshot that lost half the symbols is upserted only; nothing is deleted.
+    _apply_taxonomy_snapshot(db, tags={str(i): "A" for i in range(2, 52)},
+                             materialization_id="2026-09-15T00:00:00+00:00", ratio=0.95)
+    assert count() == 99
+    status, metrics = receipt("2026-09-15")
+    assert status == "prune_skipped"
+    assert (metrics["group_rows_before"], metrics["retained_rows"]) == (99, 50)
+    # The threshold is configurable; 0 restores the unguarded prune.
+    _apply_taxonomy_snapshot(db, tags={str(i): "A" for i in range(2, 52)},
+                             materialization_id="2026-09-16T00:00:00+00:00", ratio=0.0)
+    assert count() == 50
+    assert receipt("2026-09-16")[0] == "prune_applied"
+
+
+def test_q02_prune_without_its_receipt_deletes_nothing() -> None:
+    from services.finlab_canonical_materializer import _taxonomy_owner_snapshot_cleanup_statements
+
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE finlab_taxonomy_tags (symbol TEXT, tag TEXT, tag_type TEXT, source TEXT, lineage_json TEXT)")
+    db.execute("CREATE TABLE source_quality_metrics (source TEXT, dataset TEXT, as_of_date TEXT, "
+               "freshness_status TEXT, latest_materialization TEXT, metrics_json TEXT)")
+    db.execute("INSERT INTO finlab_taxonomy_tags VALUES ('2330', 'old', 'industry', 'finlab.security_categories', '{}')")
+    rows = [{"symbol": "2317", "tag": "new", "tag_type": "industry", "source": "finlab.security_categories"}]
+    for sql, params in _taxonomy_owner_snapshot_cleanup_statements(
+            rows, materialization_id="2026-09-01T00:00:00+00:00", full_snapshot=True, min_retained_ratio=0.0)[:-1]:
+        db.execute(sql, params)
+    assert db.execute("SELECT COUNT(*) FROM finlab_taxonomy_tags").fetchone()[0] == 1
+
+
+def test_q02_taxonomy_prune_ratio_comes_from_the_environment(monkeypatch) -> None:
+    from services.finlab_canonical_materializer import taxonomy_prune_min_retained_ratio
+
+    monkeypatch.delenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", raising=False)
+    assert taxonomy_prune_min_retained_ratio() == 0.95
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", "0.9")
+    assert taxonomy_prune_min_retained_ratio() == 0.9
+    monkeypatch.setenv("FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO", "2")
+    assert taxonomy_prune_min_retained_ratio() == 0.95
 
 
 def test_single_day_materialization_does_not_carry_prior_financial_fields() -> None:

@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2522,34 +2523,103 @@ def _taxonomy_stale_row_cleanup_statements(
     return statements
 
 
+TAXONOMY_PRUNE_MIN_RETAINED_ENV = "FINLAB_TAXONOMY_PRUNE_MIN_RETAINED_RATIO"
+DEFAULT_TAXONOMY_PRUNE_MIN_RETAINED_RATIO = 0.95
+
+
+def taxonomy_prune_min_retained_ratio() -> float:
+    try:
+        value = float(os.environ.get(TAXONOMY_PRUNE_MIN_RETAINED_ENV, ""))
+    except ValueError:
+        return DEFAULT_TAXONOMY_PRUNE_MIN_RETAINED_RATIO
+    return value if 0 <= value <= 1 else DEFAULT_TAXONOMY_PRUNE_MIN_RETAINED_RATIO
+
+
+def _taxonomy_prune_groups(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return sorted({
+        (str(row.get("source") or ""), str(row.get("tag_type") or ""))
+        for row in rows
+        if row.get("source") and row.get("tag_type")
+    })
+
+
+_TAXONOMY_RECEIPT_KEY = "WHERE source=? AND dataset=? AND as_of_date=?"
+
+
+def _taxonomy_receipt_key(source: str, tag_type: str, materialization_id: str) -> list[Any]:
+    return [source, f"finlab_taxonomy_tags.prune_guard:{tag_type}", materialization_id[:10]]
+
+
+def _taxonomy_prune_guard_baseline_statements(
+    rows: list[dict[str, Any]],
+    *,
+    materialization_id: str,
+    full_snapshot: bool,
+    min_retained_ratio: float,
+) -> list[tuple[str, list[Any]]]:
+    """Q02: record each owner group's row count before this run's upserts.
+
+    Emitted before the taxonomy upserts; the receipt row in
+    source_quality_metrics (no new table) is what the guarded prune reads.
+    """
+    if not full_snapshot or not rows or not materialization_id:
+        return []
+    return [(
+        "INSERT INTO source_quality_metrics (source, dataset, as_of_date, freshness_status, "
+        "latest_materialization, metrics_json) "
+        "SELECT ?, ?, ?, 'prune_pending', ?, json_object('materialization_id', ?, 'group_rows_before', "
+        "(SELECT COUNT(*) FROM finlab_taxonomy_tags WHERE source=? AND tag_type=?), 'min_retained_ratio', ?) "
+        "WHERE 1 ON CONFLICT(source, dataset, as_of_date) DO UPDATE SET "
+        "freshness_status=excluded.freshness_status, latest_materialization=excluded.latest_materialization, "
+        "metrics_json=excluded.metrics_json",
+        [*_taxonomy_receipt_key(source, tag_type, materialization_id), materialization_id,
+         materialization_id, source, tag_type, float(min_retained_ratio)],
+    ) for source, tag_type in _taxonomy_prune_groups(rows)]
+
+
 def _taxonomy_owner_snapshot_cleanup_statements(
     rows: list[dict[str, Any]],
     *,
     materialization_id: str,
     full_snapshot: bool,
+    min_retained_ratio: float | None = None,
 ) -> list[tuple[str, list[Any]]]:
     """Retire rows absent from a completed FinLab owner snapshot.
 
     Upserts are emitted before these statements, so a failed or interrupted
     write cannot erase the prior canonical snapshot. Limited research runs are
     never allowed to prune production membership.
+
+    Q02 prune guard: a group is pruned only when this snapshot has at least
+    ``min_retained_ratio`` x the group's rows before the run (recorded by
+    _taxonomy_prune_guard_baseline_statements); otherwise the run is upsert
+    only. The decision is taken in SQL at apply time and kept on the receipt
+    as prune_applied / prune_skipped. A missing receipt never prunes.
     """
     if not full_snapshot or not rows or not materialization_id:
         return []
-    groups = sorted({
-        (str(row.get("source") or ""), str(row.get("tag_type") or ""))
-        for row in rows
-        if row.get("source") and row.get("tag_type")
-    })
-    statements = [
-        (
+    ratio = taxonomy_prune_min_retained_ratio() if min_retained_ratio is None else float(min_retained_ratio)
+    current = "COALESCE(json_extract(lineage_json,'$.materialization_id'),'')"
+    retained = f"(SELECT COUNT(*) FROM finlab_taxonomy_tags WHERE source=? AND tag_type=? AND {current}=?)"
+    total = "(SELECT COUNT(*) FROM finlab_taxonomy_tags WHERE source=? AND tag_type=?)"
+    statements: list[tuple[str, list[Any]]] = []
+    for source, tag_type in _taxonomy_prune_groups(rows):
+        key = _taxonomy_receipt_key(source, tag_type, materialization_id)
+        counts = [source, tag_type, materialization_id]
+        statements.append((
+            "UPDATE source_quality_metrics SET "
+            f"freshness_status=CASE WHEN {retained} >= ? * json_extract(metrics_json,'$.group_rows_before') "
+            "THEN 'prune_applied' ELSE 'prune_skipped' END, "
+            f"metrics_json=json_set(metrics_json, '$.retained_rows', {retained}, '$.group_rows_after_upsert', {total}) "
+            f"{_TAXONOMY_RECEIPT_KEY} AND latest_materialization=? AND freshness_status='prune_pending'",
+            [*counts, ratio, *counts, source, tag_type, *key, materialization_id],
+        ))
+        statements.append((
             "DELETE FROM finlab_taxonomy_tags "
-            "WHERE source=? AND tag_type=? "
-            "AND COALESCE(json_extract(lineage_json,'$.materialization_id'),'')<>?",
-            [source, tag_type, materialization_id],
-        )
-        for source, tag_type in groups
-    ]
+            f"WHERE source=? AND tag_type=? AND {current}<>? AND EXISTS (SELECT 1 FROM source_quality_metrics "
+            f"{_TAXONOMY_RECEIPT_KEY} AND latest_materialization=? AND freshness_status='prune_applied')",
+            [source, tag_type, materialization_id, *key, materialization_id],
+        ))
     statements.append((
         "DELETE FROM finlab_taxonomy_tags "
         "WHERE tag_type IN ('industry','industry_theme','subindustry') "
@@ -3038,6 +3108,12 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["market_segment", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots", "lineage_json", "as_of_date"],
     ))
     statements.extend(_taxonomy_stale_row_cleanup_statements(outputs.finlab_taxonomy_tags))
+    taxonomy_snapshot = {
+        "materialization_id": outputs.generated_at,
+        "full_snapshot": not bool(outputs.manifest.get("filters", {}).get("limit_per_dataset")),
+        "min_retained_ratio": taxonomy_prune_min_retained_ratio(),
+    }
+    statements.extend(_taxonomy_prune_guard_baseline_statements(outputs.finlab_taxonomy_tags, **taxonomy_snapshot))
     statements.extend(_row_statements(
         "finlab_taxonomy_tags",
         outputs.finlab_taxonomy_tags,
@@ -3045,11 +3121,7 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
         ["symbol", "tag", "tag_type", "source"],
         ["weight", "lineage_json", "as_of_date"],
     ))
-    statements.extend(_taxonomy_owner_snapshot_cleanup_statements(
-        outputs.finlab_taxonomy_tags,
-        materialization_id=outputs.generated_at,
-        full_snapshot=not bool(outputs.manifest.get("filters", {}).get("limit_per_dataset")),
-    ))
+    statements.extend(_taxonomy_owner_snapshot_cleanup_statements(outputs.finlab_taxonomy_tags, **taxonomy_snapshot))
     statements.extend(_row_statements(
         "data_source_inventory",
         outputs.data_source_inventory,

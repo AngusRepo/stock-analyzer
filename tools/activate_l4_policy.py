@@ -7,6 +7,10 @@
   activate        dry-run unless --execute: move one adjacent step to --to (source|1..n);
                   forward follows the packet write order, backward its rollback order
 
+grant and activate validate grants against the release's native Paper bundle: --admission-dir
+(the new-grant admission output of tools/release/release.py) sets NATIVE_PAPER_RUNNER to its
+native-paper.cjs after checking it against the admission receipt (CD-NEW-07).
+
 Ports audits/risk-review-20261014/activate_policy.py. Optimistic rechecks
 before every write and readback after it; KV has no CAS. Never rewrites a
 sealed plan, dispatches a job, stages or deletes a grant, or enables Live.
@@ -41,6 +45,19 @@ def save(out, name, value):
     (out / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n')
 
 
+def use_admission_bundle(admission: Path) -> Path:
+    """Point NATIVE_PAPER_RUNNER at the admission's native bundle, proven by its receipt checksum."""
+    import hashlib
+    receipt = load(admission / 'admission-receipt.json')
+    bundle = (admission / 'native-paper.cjs').resolve()
+    if receipt.get('mode') != 'new-grant' or not receipt.get('native_bundle_sha256'):
+        raise SystemExit('--admission-dir must be a new-grant admission with a native bundle')
+    if not bundle.is_file() or hashlib.sha256(bundle.read_bytes()).hexdigest() != receipt['native_bundle_sha256']:
+        raise RuntimeError('admission_native_bundle_checksum_mismatch')
+    os.environ['NATIVE_PAPER_RUNNER'] = str(bundle)
+    return bundle
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=('prepare', 'prepare-change', 'grant', 'activate'))
@@ -50,11 +67,17 @@ def main():
     parser.add_argument('--engineering-receipt', type=Path)
     parser.add_argument('--source-reference')
     parser.add_argument('--source-grant', type=Path)
+    parser.add_argument('--admission-dir', type=Path,
+                        help='grant/activate: new-grant admission dir; its native-paper.cjs becomes NATIVE_PAPER_RUNNER')
     parser.add_argument('--cost-objective', choices=('single_side_v1', 'entry_round_trip_v1'))
     parser.add_argument('--set', action='append', default=[], metavar='KEY=JSON')
     parser.add_argument('--to', help='source, or the 1-based grant index to step to')
     parser.add_argument('--execute', action='store_true')
     args = parser.parse_args()
+    if args.command in ('grant', 'activate'):
+        if not args.admission_dir:
+            raise SystemExit(args.command + ' needs --admission-dir (sets NATIVE_PAPER_RUNNER to the release bundle)')
+        use_admission_bundle(args.admission_dir)
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     sys.path[:0] = [str(args.workspace_root / 'audits/pipeline-nightly-20261013'), str(args.controller)]

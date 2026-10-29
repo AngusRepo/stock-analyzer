@@ -2,6 +2,10 @@
 # Native Paper tests bundle worker/src with esbuild, so the controller also needs the worker's node_modules;
 # test_nav_candidate_decision bundles a frontend render test, so it needs the frontend's too.
 # constraints.txt pins the live image's packages; a base commit from before it installs unpinned.
+# Test-only packages, shared with ci/controller_venv.sh (local venv).
+# loguru: test_tabpack_core16 imports the vendored TabPack `lib` (ml-service/vendor/tabpack,
+# pinned in its uv.lock); the controller image itself never imports it.
+CONTROLLER_TEST_DEPS=(pytest==9.0.3 pytest-asyncio==1.4.0 pytest-timeout==2.4.0 pytest-xdist==3.8.0 loguru==0.7.3)
 controller_deps() {
   local pins=()
   [ -f ml-controller/constraints.txt ] && pins=(-c ml-controller/constraints.txt)
@@ -10,8 +14,5 @@ controller_deps() {
     # ml-controller/scripts, so tests that run those scripts need the same compile here.
     (cd worker && npx tsc -p tsconfig.json --noEmit false --rootDir src --outDir ../ml-controller/worker-dist/src --module commonjs --moduleResolution node --ignoreDeprecations 6.0) &&
     (cd frontend && npm ci --no-audit --no-fund) &&
-    # loguru: test_tabpack_core16 imports the vendored TabPack `lib` (ml-service/vendor/tabpack,
-    # pinned in its uv.lock); the controller image itself never imports it.
-    python -m pip install -q -r ml-controller/requirements.txt "${pins[@]}" pytest==9.0.3 pytest-asyncio==1.4.0 \
-      pytest-timeout==2.4.0 pytest-xdist==3.8.0 loguru==0.7.3
+    python -m pip install -q -r ml-controller/requirements.txt "${pins[@]}" "${CONTROLLER_TEST_DEPS[@]}"
 }

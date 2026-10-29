@@ -3090,7 +3090,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         if str(symbol).strip()
     }
     if not formal_evidence_symbols:
-        formal_evidence_symbols = set(successful_prediction_symbols)
+        formal_evidence_symbols = successful_prediction_symbols & prediction_seed_symbols
     formal_evidence_prediction_symbols = successful_prediction_symbols & formal_evidence_symbols
     l3_ineligible_symbols = {
         symbol
@@ -3124,11 +3124,15 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "active8_action_authority": action_authority,
         "active8_observation_only": observation_only,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
-        "prediction_symbols": len(successful_prediction_symbols),
+        # Seed names with a prediction; under R33 the held names outside the seed and the
+        # unscored seed names are counted separately so the terminal check still closes the seed.
+        "prediction_symbols": len(successful_prediction_symbols & prediction_seed_symbols),
         "prediction_seed_symbols": len(prediction_seed_symbols),
+        "r33_unscored_missing_prediction_count": len(r33_tolerated_missing),
+        "r33_held_outside_seed_prediction_symbols": len(successful_prediction_symbols & r33_held_outside_seed),
         "prediction_symbol_closure_passed": prediction_symbol_closure_passed,
         "missing_prediction_symbols": missing_prediction_symbols[:20],
-        "r33_unscored_missing_prediction_symbols": r33_tolerated_missing,
+        "r33_unscored_missing_prediction_symbols": r33_tolerated_missing[:20],
         "unexpected_prediction_symbols": unexpected_prediction_symbols[:20],
         "full_active_model_symbols": full_active_model_symbols,
         "formal_evidence_prediction_symbols": len(formal_evidence_prediction_symbols),
@@ -5100,16 +5104,18 @@ def classify_pipeline_terminal_invariants(metrics: Any) -> list[str]:
 
     prediction_seed_symbols = _int("prediction_seed_symbols")
     prediction_symbols = _int("prediction_symbols")
+    # R33: a seed name the attested rank pool left unscored closes the seed as a per-name gap.
+    closed_seed_symbols = prediction_symbols + _int("r33_unscored_missing_prediction_count")
     if prediction_seed_symbols <= 0:
         blockers.append("pipeline_terminal_invariant:prediction_seed_symbols_missing")
     if _int("predictions_written") <= 0:
         blockers.append("pipeline_terminal_invariant:prediction_rows_missing")
     if prediction_symbols <= 0:
         blockers.append("pipeline_terminal_invariant:prediction_symbols_missing")
-    if prediction_seed_symbols > 0 and prediction_symbols != prediction_seed_symbols:
+    if prediction_seed_symbols > 0 and closed_seed_symbols != prediction_seed_symbols:
         blockers.append(
             "pipeline_terminal_invariant:prediction_symbol_count_mismatch:"
-            f"actual={prediction_symbols}:expected={prediction_seed_symbols}"
+            f"actual={closed_seed_symbols}:expected={prediction_seed_symbols}"
         )
     if values.get("prediction_symbol_closure_passed") is not True:
         blockers.append("pipeline_terminal_invariant:prediction_symbol_closure_failed")

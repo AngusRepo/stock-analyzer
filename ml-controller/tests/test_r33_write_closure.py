@@ -133,3 +133,52 @@ def test_coverage_log_writes_ops_system_logs_and_a_failed_write_never_fails(capl
     def boom(sql, params):
         raise RuntimeError("d1 down")
     write_coverage_log(boom, snapshot, row_errors={}, logger=logging.getLogger("t"))
+
+
+def _terminal_count_blockers(monkeypatch, predictions, holdings=()):
+    state = _state(monkeypatch, predictions, snapshot=_pool(predictions, holdings=holdings), holdings=holdings)
+    metrics = asyncio.run(pipeline.node_write_d1(state))["metrics"]
+    return metrics, [b for b in pipeline.classify_pipeline_terminal_invariants(metrics)
+                     if "prediction_symbol" in b]
+
+
+@pytest.mark.parametrize(("missing", "holdings"), [(("P3",), ()), ((), ("H7",)), (("P3",), ("H7",))])
+def test_terminal_invariant_closes_the_seed_with_unscored_and_held_names(monkeypatch, missing, holdings):
+    predictions = {**_predictions(missing=missing), **{h: _prediction(0.3) for h in holdings}}
+    metrics, blockers = _terminal_count_blockers(monkeypatch, predictions, holdings)
+    assert blockers == []
+    assert metrics["prediction_symbols"] == len(POOL) - len(missing)
+    assert metrics["r33_unscored_missing_prediction_count"] == len(missing)
+    assert metrics["r33_held_outside_seed_prediction_symbols"] == len(holdings)
+
+
+def test_terminal_invariant_without_r33_counts_are_unchanged():
+    base = {"prediction_seed_symbols": 6, "prediction_symbols": 5}
+    assert any("prediction_symbol_count_mismatch:actual=5:expected=6" in b
+               for b in pipeline.classify_pipeline_terminal_invariants(base))
+    closed = {**base, "r33_unscored_missing_prediction_count": 1}
+    assert not any("count_mismatch" in b for b in pipeline.classify_pipeline_terminal_invariants(closed))
+
+
+def test_write_node_rejects_prediction_evidence_drift(monkeypatch):
+    predictions = _predictions(missing=("P3",))
+    snapshot = _pool(predictions)
+    predictions["P1"]["r33_rank_evidence"] = dict(predictions["P1"]["r33_rank_evidence"], score=9.0)
+    state = _state(monkeypatch, predictions, snapshot=snapshot)
+    with pytest.raises(ValueError, match="r33_rank_pool_evidence_mismatch:P1"):
+        asyncio.run(pipeline.node_write_d1(state))
+
+
+def test_node_inputs_write_one_coverage_line_with_row_errors(monkeypatch):
+    import json
+    from services import paired_nav_collection
+    monkeypatch.setattr(rank_pool, "load_serving_pool", lambda query, **kw: (list(POOL), {**RECEIPT, "screener_run_id": "run-1"}))
+    monkeypatch.setattr(paired_nav_collection, "baseline_model_identity", lambda manifest: dict(IDENTITY))
+    calls = []
+    pipeline._r33_serving_inputs(
+        {"screener_run_id": "run-1", "r33_holdings": [], "trading_config": {"fees": {"commission": 0.001425, "tax": 0.003}}},
+        payloads=[{"symbol": s, "prices": [{"date": DAY}]} for s in POOL], predictions=_predictions(missing=("P3",)),
+        ensemble=_ensemble(), serving_manifest={}, run_date=DAY, evidence_only=False, ops_query=None,
+        row_errors={"P3": "feature_context_failed:" + "x" * 900}, ops_execute=lambda sql, params: calls.append(params))
+    assert len(calls) == 1 and calls[0][0] == "warn"
+    assert json.loads(calls[0][3])["row_errors"]["P3"] == ("feature_context_failed:" + "x" * 900)[:500]

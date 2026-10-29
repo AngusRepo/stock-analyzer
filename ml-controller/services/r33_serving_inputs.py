@@ -91,7 +91,7 @@ def coverage_log(rank_pool: dict, *, row_errors: dict[str, str]) -> tuple[str, s
             "models_with_gaps": gaps, "models_fully_missing": fully_missing,
             "uninformative_models": list(rank_pool["uninformative_models"]),
             "pool_rows": total, "pool_scored_rows": int(coverage["pool_scored_rows"]),
-            "unscored_by_reason": dict(sorted(reasons.items())), "row_errors": dict(sorted(row_errors.items()))}
+            "unscored_by_reason": dict(sorted(reasons.items())), "row_errors": {k: str(v)[:500] for k, v in sorted(row_errors.items())}}
     level = "warn" if gaps or row_errors else "info"
     message = (f"R33 coverage {rank_pool['signal_date']}: scored {meta['pool_scored_rows']}/{total}; "
                f"models with gaps {gaps or 'none'}; fully missing {fully_missing or 'none'}; "

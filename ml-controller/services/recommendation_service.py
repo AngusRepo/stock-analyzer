@@ -49,6 +49,7 @@ from services.active_model_policy import (
     gnn_return_history_lookback,
 )
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
+from services.r33_ensemble import RUNTIME_SCHEMA as R33_RUNTIME_SCHEMA
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import is_explicitly_enabled, normalize_segment, policy_for_segment
 from services.decision_owner_contract import resolve_decision_owner_contract
@@ -379,6 +380,8 @@ def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None,
     """
     if not isinstance(ev2, dict) or not ev2:
         return None, None
+    if ev2.get("schema_version") == R33_RUNTIME_SCHEMA:
+        return _r33_edge_seed30(ev2)
     probability = _finite_float_or_none(ev2.get("probability_positive_net_return"))
     validation = ev2.get("validation") if isinstance(ev2.get("validation"), dict) else {}
     checksum = str(ev2.get("artifact_checksum") or "").strip().lower()
@@ -411,6 +414,31 @@ def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None,
         "offline_diagnostic_decision": validation['decision'],
     }
 
+def _r33_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None, dict[str, Any] | None]:
+    """R33 has no probability: show E-hat's position inside the serving table's value range.
+
+    Presentation only (the allocator reads E-hat itself). An unscored name has no score.
+    """
+    position = _finite_float_or_none(ev2.get("ehat_range_position"))
+    checksum = str(ev2.get("artifact_checksum") or "")
+    if position is None or not 0.0 <= position <= 1.0 or len(checksum) != 64:
+        return None, None
+    score = _round1(30.0 * position)
+    return score, {
+        "schema_version": "score-v2-ml-edge-r33-ehat-range-position-v1",
+        "source": "ensemble_v2.ehat_range_position",
+        "artifact_checksum": checksum, "cohort_id": ev2.get("cohort_id"),
+        "calibration_checksum": ev2.get("calibration_checksum"),
+        "signal": ev2.get("signal"), "unqualified_signal": ev2.get("unqualified_signal"),
+        "signal_status": ev2.get("signal_status"), "signal_blockers": [], "qualifications": None,
+        "expected_excess": ev2.get("forecast_pct"), "ehat_range_position": position,
+        "score_seed30": score, "status": "scored", "decision_owner": "allocator_opb_policy",
+        "signal_role": "advisory_only", "advisory_signal": ev2.get("advisory_signal"),
+        "scale_role": "presentation_only",
+        "offline_diagnostic_decision": (ev2.get("validation") or {}).get("decision"),
+    }
+
+
 def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | None:
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
     _score, evidence = _ml_threshold_policy_edge_seed30(ev2)
@@ -422,6 +450,8 @@ def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | No
 def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> float:
     """Return the calibrated artifact probability on the existing 0-30 score scale."""
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
+    if ev2.get("schema_version") == R33_RUNTIME_SCHEMA and ev2.get("signal") == "NO_SIGNAL":
+        return 0.0      # the rank pool did not score this name; same as a missing prediction
     score, evidence = _ml_threshold_policy_edge_seed30(ev2)
     if score is None or not isinstance(evidence, dict):
         raise ValueError("active8_ensemble_calibrated_probability_required")
@@ -4921,7 +4951,16 @@ def write_layer3_formal_gate_audit(
             else {}
         )
         active_family_count = int((vote or {}).get("active_family_count") or 0)
-        if not isinstance(pred, dict):
+        r33 = isinstance(ev2, dict) and ev2.get("schema_version") == R33_RUNTIME_SCHEMA
+        if r33:
+            # R4: under R33 the L3 gate is coverage telemetry. An unscored name stays a
+            # candidate and L4 marks it unavailable for the day with this reason.
+            contract = ev2.get("formal_model_input_contract") or {}
+            decision = "pass" if contract.get("r33_scored") else "unscored"
+            reason_code = "r33_scored" if contract.get("r33_scored") else str(contract.get("r33_unscored_reason"))
+            if final_row is None:
+                reason_code += ":not_in_final_rows"
+        elif not isinstance(pred, dict):
             decision = "drop"
             reason_code = "formal_family_prediction_missing"
         elif eligibility.get("eligible") is False:
@@ -4961,6 +5000,10 @@ def write_layer3_formal_gate_audit(
             "contributing_models": ev2.get("contributing_models") if isinstance(ev2, dict) else [],
             "weights": ev2.get("weights") if isinstance(ev2, dict) else {},
         }
+        if r33:
+            evidence.update(schema_version="layer3_r33_coverage_audit_v1", r33=ev2.get("r33"),
+                            r33_signal=ev2.get("signal"), r33_calibration_checksum=ev2.get("calibration_checksum"),
+                            r33_artifact_checksum=ev2.get("artifact_checksum"))
         try:
             score_after = float((vote or {}).get("family_score"))
         except (TypeError, ValueError):

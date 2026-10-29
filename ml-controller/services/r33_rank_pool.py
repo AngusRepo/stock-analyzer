@@ -17,12 +17,11 @@ from scipy.stats import rankdata
 from services.active8_score_semantics import MODEL_SCORE_LINEAGE_SCHEMA_VERSION, MODEL_TARGET_SEMANTIC_VERSION
 from services.r33_calibration_job import POOL_SOURCE, load_l2_pool
 from services.r33_crossfit_serving import serving_expected_excess
-from services.r33_ensemble import validate_ensemble
+from services.r33_ensemble import EVIDENCE_KEY, validate_ensemble
 from services.r33_isotonic_calibration import MODELS, checksum, pool_scores
 
 SNAPSHOT_SCHEMA = "r33-attested-rank-pool-v1"
 EVIDENCE_SCHEMA = "r33-rank-evidence-v1"
-EVIDENCE_KEY = "r33_rank_evidence"
 
 
 def load_serving_pool(ops_query, *, signal_date: str, screener_run_id: str) -> tuple[list[str], dict]:

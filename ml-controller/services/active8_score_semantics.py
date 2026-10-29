@@ -118,6 +118,7 @@ def normalize_active8_cross_sectional_scores(
     ]
     selected_models = None
     minimum_core_models = MIN_REQUIRED_CROSS_SECTIONAL_MODELS
+    r33_coverage = None
     if active8_ensemble is not None:
         from services.ensemble_v2 import validate_active8_ensemble_artifact
         validate_active8_ensemble_artifact(active8_ensemble, pool_models or {}, nav_authority=nav_authority)
@@ -126,6 +127,11 @@ def normalize_active8_cross_sectional_scores(
         # Selection controls ensemble weights, not downstream information.
         # Preserve every verified available model score for full-signal L4.
         minimum_core_models = len(required_core_models)
+        from services.r33_ensemble import COVERAGE_POLICY, is_r33
+        if is_r33(active8_ensemble):
+            r33_coverage = COVERAGE_POLICY
+            # R33: a missing model is z=0 over a fixed denominator of seven, never a blocker.
+            required_core_models, minimum_core_models = [], 0
     ineligible_artifact_models = [
         model_name for model_name in order if model_name not in eligible_models
     ]
@@ -217,7 +223,9 @@ def normalize_active8_cross_sectional_scores(
             "optional_sequence_models": list(order[5:]),
             "optional_missing_models": optional_missing_models,
             "full_active8_coverage": not missing_scores,
-            "coverage_policy": "validated-bundle-selected-core-sequence-missingness-v1" if selected_models else "verified-core3-min-sequence-missingness-aware-oof-parity-v1",
+            "coverage_policy": (r33_coverage if r33_coverage
+                                else "validated-bundle-selected-core-sequence-missingness-v1" if selected_models
+                                else "verified-core3-min-sequence-missingness-aware-oof-parity-v1"),
             "model_set_signature": signature,
             "raw_scores": dict(raw_by_symbol.get(symbol, {})),
             "complete": not row_blockers,

@@ -162,12 +162,18 @@ def test_batch_predict_runs_only_on_features_built_under_the_artifacts_contract(
     monkeypatch.setattr(timexer_inference, 'load_checkpoint', lambda *a, **kw: (object(), {}))
     monkeypatch.setattr(timexer_inference, 'predict_asof', lambda *a, **kw: [{'symbol': '2330', 'raw_score': 0.1, 'available': True}])
 
-    def run():
+    def run(pit_sources=({artifact_version: reference} if artifact_version else None)):
         return timexer_inference.batch_predict(
             series_list=[{'symbol': '2330', 'price_basis': 'finlab_adjusted_close', 'dates': ['2026-10-05'], 'prices': [100.0]}],
             artifact_identity={'model': 'TimeXer', 'version': 'v1', 'artifact_id': 'test', 'artifact_path': 'model.pt',
                                'metadata_path': 'model.json', 'checksum': 'a' * 64},
-            feature_source=reference, signal_date='2026-10-05', version='v1', bucket=bucket)
+            feature_source=reference, signal_date='2026-10-05', version='v1', bucket=bucket,
+            pit_feature_sources=pit_sources)
+    if artifact_version:
+        # C28-02 P2: a PIT artifact reads only its version's daily source, never the legacy one.
+        with pytest.raises(ValueError, match='timexer_pit_feature_source_missing'):
+            run(None)
+        assert 'model.pt' not in bucket.downloads
     if artifact_version == feature_version:
         assert [row['symbol'] for row in run()] == ['2330']
     else:

@@ -1993,6 +1993,9 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         # expensive GPU allocation separate from CPU feature/graph stages.
         gpu_input = {**kwargs, "feature_source": payload.get("timexer_feature_source"),
             "signal_date": payload["run_date"]}
+        if payload.get("timexer_pit_feature_sources"):
+            # Only on days with a PIT-trained TimeXer, so legacy stage digests are unchanged.
+            gpu_input["pit_feature_sources"] = payload["timexer_pit_feature_sources"]
         result = (stage_journal.gpu(gpu_input) if stage_journal is not None
                   else timexer_universal_predict.remote(gpu_input))
         return result["results"]
@@ -2457,11 +2460,13 @@ def train_tabm_universal(payload: dict) -> dict:
 )
 def prep_universal_batch(payload: dict) -> dict:
     """Prepare universal feature batch and persist npz artifacts."""
+    import time
+    deadline = time.monotonic() + 600 * 0.9  # PIT variants never risk this function's timeout.
     _setup_env()
-    from app.use_cases import prep_universal_batch as _prep, UniversalPrepRequest
+    from app.use_cases import prep_universal_batch_with_variants as _prep, UniversalPrepRequest
     try:
         req = UniversalPrepRequest(**payload)
-        return _prep(req)
+        return _prep(req, deadline=deadline)
     except Exception as e:
         return {"error": str(e), "batch_index": payload.get("batch_index", -1)}
 
@@ -2469,12 +2474,14 @@ def prep_universal_batch(payload: dict) -> dict:
 @app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=3)
 def prep_universal_batch_event(payload: dict) -> dict:
     """Prepare one immutable batch, publish completion, notify the pipeline."""
+    import time
+    deadline = time.monotonic() + 1900 * 0.9  # PIT variants never risk this function's timeout.
     _setup_env()
     from google.cloud import storage
     from app.pipeline_input_prep import execute_event
-    from app.use_cases import prep_universal_batch as prepare, UniversalPrepRequest
+    from app.use_cases import prep_universal_batch_with_variants as prepare, UniversalPrepRequest
     return execute_event(payload, bucket=storage.Client().bucket(payload['bucket']),
-        prep=lambda request: prepare(UniversalPrepRequest(**request)), token=_controller_callback_token(),
+        prep=lambda request: prepare(UniversalPrepRequest(**request), deadline=deadline), token=_controller_callback_token(),
         input_id=modal.current_input_id(), function_call_id=modal.current_function_call_id())
 
 

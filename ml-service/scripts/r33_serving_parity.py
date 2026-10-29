@@ -221,6 +221,7 @@ out["prep_request"].pop("feature_warmup_rows", None)  # new field, default 0; be
 out["prep_warmup_noop"] = getattr(req, "feature_warmup_rows", 0) == 0
 out["prep_pit_contract_none"] = (out["prep_request"].pop("pit_contract_version", None) is None
                                  and out["prep_request"].pop("pit_contract_sha256", None) is None)
+out["prep_pit_variants_none"] = not out["prep_request"].pop("pit_variants", [])  # C28-02 P2 field, default []
 # C28-02: payloads without pit_contract_version keep the feature layer byte-identical.
 from app.features import build_feature_matrix
 fx = inputs["feature_fixture"]
@@ -245,6 +246,9 @@ nested = {"feature_names": list(ctx.feature_names)[1:], "feature_medians": {},
           "selection_evidence": {"folds": [{"window_id": 0, "selected": ["KMID"]}]}}
 aligned = batch_prediction._align_latest_features(ctx, nested)
 out["serving_aligned_features:nested_metadata"] = hashlib.sha256(aligned.tobytes()).hexdigest()
+# C28-02 P2: a legacy artifact builds no other version's view and adds no pit_serving metrics.
+out["serving_pit_views"] = sorted(getattr(ctx, "pit_views", {}))
+out["serving_pit_metrics"] = getattr(batch_prediction, "_pit_serving_metrics", lambda contexts: {})([ctx])
 from app import canonical_adjusted_prep as cap
 import numpy as np
 batch = {"symbols": np.array(fx["venue_symbols"]), "markets": np.array(fx["venue_markets"])}
@@ -373,7 +377,9 @@ def main() -> int:
                "_market_map", "_row_markets", "RANKED_MARKETS", "_align_latest_features",
                "artifact_contract_version", "feature_missing_masks", "_artifact_pit_version", "_PIT_VERSION_SLOT",
                # The context records the version the probe built features with (None) and the guard reads it.
-               "_FeatureBatchContext"}
+               "_FeatureBatchContext",
+               # C28-02 P2, run by the same probe (probes serving_pit_views, serving_pit_metrics).
+               "_feature_view", "_latest_feature_row", "_pit_serving_metrics"}
     r33_only = ("The controller sets it only when r33_prep = prep_only and not inference_only and profile == R33 "
                 "(ml-controller/routers/retrain_trigger.py:1497, :1936, :2072, :2109), so daily inference_only "
                 "prep never sees it.")
@@ -398,7 +404,9 @@ def main() -> int:
              "raises before any weight read (tests test_timexer_feature_receipt, test_timexer_identity_boundary, "
              "test_feature_alignment_precision). ")
     proven.update({
-        "batch_predict": "ml-service/app/timexer_inference.py:101-103 " + guard + r33_only,
+        "batch_predict": ("ml-service/app/timexer_inference.py:85-91 swaps feature_source for the request's "
+                          "timexer_pit_feature_sources only when the artifact records a pit_contract_version; :109 "
+                          + guard + r33_only),
         "predict_forward": "ml-service/app/timexer_forward.py:28-31 " + guard + r33_only,
         "_align_features": "ml-service/app/oof_forward_extension.py:166-169 " + guard + r33_only,
         "build_frozen_forward_extension": "ml-service/app/oof_forward_extension.py:282-283 " + guard + r33_only})
@@ -410,6 +418,30 @@ def main() -> int:
     proven.update({name: "ml-service/app/universal_training.py:724-727 hashes the contract only when "
                          "req.pit_contract_version is not None (probe prep_pit_contract_none). " + r33_only
                    for name in ("APPROVAL_KEYS", "canonical_sha256", "content_sha256")})
+    # C28-02 P2: per-artifact PIT views and PIT TimeXer daily prep act only for an artifact that records a version.
+    views = ("ml-service/app/batch_prediction.py:312-316 keeps only contexts whose pit_views is non-empty, and "
+             "_feature_view (:346-365) fills pit_views only for a version other than the request's; a legacy "
+             "artifact (no recorded version) on a request without one never does (probe serving_pit_views). :1066 "
+             "and :1373 add pit_serving only when _pit_serving_metrics is non-empty (probe serving_pit_metrics).")
+    proven.update({name: views for name in ("_record_pit_views", "_PIT_SERVING_TELEMETRY",
+                                            "predict_stock_v2_batch_with_metrics",
+                                            "_build_feature_model_batch_runtime_overrides",
+                                            "predict_gnn_graphsage_batch")})
+    proven.update({name: ("ml-service/app/batch_prediction.py:333-338 calls it only for a built non-request "
+                          "view inside _pit_serving_metrics; legacy contexts have none (probe serving_pit_metrics).")
+                   for name in ("revision_mask_cells", "reported_quarter")})
+    proven["_registry_file"] = ("ml-service/app/pit_contract.py:37-63 is the path lookup load() already used; "
+                                "load runs only when pit_contract_version is not None (features/__init__.py:212-214).")
+    proven["_compute_pipeline_prediction_bundle"] = (
+        "ml-service/modal_app.py:1996-1998 adds pit_feature_sources to the TimeXer GPU input only when the request "
+        "carries timexer_pit_feature_sources, which the controller sends only with a ready PIT TimeXer source "
+        "(daily_pipeline_v2._pit_feature_source_sets); otherwise the GPU stage input is unchanged.")
+    variants = ("ml-service/app/universal_training.py:972-973 returns prep_universal_batch(req) when req.pit_variants "
+                "is empty (default [], probe prep_pit_variants_none); deadline is read only for variants "
+                "(modal_app.py:2464-2484). The controller sends pit_variants only when a served TimeXer artifact "
+                "records a PIT version (ml-controller/services/pit_daily_sources.required_versions).")
+    proven.update({name: variants for name in ("prep_universal_batch_with_variants", "prep_universal_batch_event")})
+    proven["prep_universal_batch"] += " The Modal wrapper of the same name: " + variants
     uncovered = [row for row in reachable_changes if row["symbol"] not in covered | set(proven)]
     report = {"schema_version": "r33-serving-parity-v1", "base": args.base, "static": static,
               "dynamic": dynamic, "proven_by_code": proven, "uncovered_reachable_changes": uncovered,

@@ -1,0 +1,60 @@
+{
+  "schema_version": "r4-gate-policy-v1",
+  "status": "draft_pending_wei_approval_before_paper_day_1",
+  "paper": {
+    "min_trading_days_under_slice_a_identity": 20,
+    "identity_fields": [
+      "grant_key",
+      "execution_owner_version",
+      "l3_identity",
+      "allocator_identity"
+    ]
+  },
+  "health": {
+    "zero_count_fields": [
+      "pending_buys_after_0845",
+      "nav_quote_date_mismatch",
+      "paper_execution_scope_violation",
+      "evening_chain_incomplete",
+      "ledger_cross_write"
+    ]
+  },
+  "signal": {
+    "target_horizon_trading_days": 5,
+    "z_tails": [
+      "1.5",
+      "2.0"
+    ],
+    "ci_level": 0.95,
+    "hac": "newey_west_bartlett_lag_equals_horizon_minus_1",
+    "tail_gate": "same_sign_as_oof AND ci_overlaps_oof; days_with_names >= min_trading_days - horizon",
+    "tail_cost_report": "mean and HAC CI net of one round-trip cost (2 * commission + tax) per tail are reported, not gated (Wei 10/29); the after-cost gate is net_excess",
+    "realized_rule": "a signal day counts when the holiday-KV calendar shows >= horizon trading days after it up to as_of"
+  },
+  "net_excess": {
+    "cost_source": "trading:config.fees (2 * commission + tax per unit of one-way turnover)",
+    "gate": "point_estimate_above_zero"
+  },
+  "allocator_decisions_required": [
+    "R13",
+    "NEW-L08"
+  ],
+  "live_tests_required": [
+    "T1",
+    "T2",
+    "T3",
+    "T4",
+    "T5",
+    "T6",
+    "T7"
+  ],
+  "live_receipts_required": [
+    "T8",
+    "T9"
+  ],
+  "freshness": "as_of is the latest trading day on or before the Taiwan date of generated_at",
+  "calendar": {
+    "official_closures": [],
+    "note": "TWSE published market closures covering the gate window; filled from the TWSE announcement when Wei freezes this policy. Evidence may only add ad hoc closures (e.g. typhoon) that Wei confirmed one by one."
+  }
+}

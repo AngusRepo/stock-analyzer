@@ -163,7 +163,7 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
       metrics: [
         `source ${numberMetric(l0?.source_universe_count, 0)}`,
         `groups ${numberMetric(l0?.feature_group_count ?? l0?.feature_groups?.length, 0)}`,
-        `base ${numberMetric(l0?.base_score, 1)}`,
+        `base ${numberMetric(l0?.base_score, 1)}（僅顯示）`,
       ],
     },
     {

@@ -1734,7 +1734,7 @@ function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureS
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="universe" value={passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
         <MetricPill label="source count" value={countText(universe.source_universe_count)} />
-        <MetricPill label="base score" value={fmtNumber(universe.base_score, 1)} />
+        <MetricPill label="base score（僅顯示）" value={fmtNumber(universe.base_score, 1)} />
         <MetricPill label="feature groups" value={countText(universe.feature_group_count ?? universe.feature_groups?.length)} />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">

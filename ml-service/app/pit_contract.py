@@ -19,6 +19,11 @@ _FILES = {CONTRACT_VERSION: "pit_availability_contract_v1.json"}
 # Artifacts and serving bind the version string only, so a version's lag table is frozen here:
 # changing feature_lags needs a new contract version, never an edit under the same one.
 _FEATURE_LAGS_SHA256 = {CONTRACT_VERSION: "e82bdf6ab2be524070e6bc3bd07b520feda52d9d392ceb64a99304d5ea823ae7"}
+# Fixed lookback windows under a version (NEW-75): a separate file, so the approved contract
+# content is untouched, frozen per version exactly like the lags.
+_WINDOW_FILES = {CONTRACT_VERSION: "pit_feature_windows_v1.json"}
+_FEATURE_WINDOWS_SHA256 = {CONTRACT_VERSION: "50fd7fe3eeecc24ff1d64820ca5e99d276367d5729c8f6d63c28828347649b79"}
+_WINDOWED_FEATURES = ("tech_obv",)
 # Same text as ml-controller services/pit_certification.HISTORY_LIMITATION (test_pit_certification).
 HISTORY_LIMITATION = ("Original publication timestamps for 2020-05..2026-05 are not proven: no archived "
                       "vintage exists for that period and neither FinLab nor TWSE provides them.")
@@ -58,6 +63,31 @@ def feature_lags(version: str) -> dict[str, int]:
     if canonical_sha256(lags) != _FEATURE_LAGS_SHA256.get(version):
         raise ValueError("pit_contract_feature_lags_changed_without_new_version")
     return {name: lag for name, lag in lags.items() if lag}
+
+
+@lru_cache(maxsize=None)
+def feature_windows(version: str) -> dict[str, int]:
+    """Lookback rows for features that would otherwise depend on the payload's first row."""
+    load(version)
+    if version not in _WINDOW_FILES:
+        raise ValueError("pit_feature_windows_missing")
+    here = Path(__file__).resolve()
+    for root in (Path("/root/data/feature_registry"), Path("/app/data/feature_registry"),
+                 here.parents[2] / "data" / "feature_registry"):
+        path = root / _WINDOW_FILES[version]
+        if path.exists():
+            spec = json.loads(path.read_text(encoding="utf-8"))
+            break
+    else:
+        raise ValueError("pit_feature_windows_missing")
+    windows = spec.get("windows")
+    if (spec.get("contract_version") != version or not isinstance(windows, dict)
+            or set(windows) != set(_WINDOWED_FEATURES)
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 1 for v in windows.values())):
+        raise ValueError("pit_feature_windows_invalid")
+    if canonical_sha256(windows) != _FEATURE_WINDOWS_SHA256.get(version):
+        raise ValueError("pit_feature_windows_changed_without_new_version")
+    return dict(windows)
 
 
 def vintage_scope(payload: dict) -> dict:

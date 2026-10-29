@@ -347,7 +347,7 @@ def fetch_attempt(sha: str, attempt: str | None, out: Path) -> tuple[str, dict]:
 
 def verify_release(out: Path, *, publish: bool, sha: str | None = None) -> dict:
     """Read the live release back against its receipts; with publish, write <sha>/current.json."""
-    from runtime_context import gc, load_environment, request
+    from runtime_context import gc, load_environment, read_until_200, request
     from verify_cloud_run_release import verify_health, verify_paper_runtime, verify_traffic
     from application_job_inventory import read_live_inventory, verify_inventory
     import modal
@@ -367,7 +367,10 @@ def verify_release(out: Path, *, publish: bool, sha: str | None = None) -> dict:
     verify_traffic(service, release['revision'])
     if service['spec']['template']['spec']['containers'][0]['image'] != release['image']:
         raise RuntimeError('live_image_not_release_image')
-    verify_health(request(service['status']['url'] + '/health')['body'], {'sourceSha': packet['source_sha'],
+    health = read_until_200(lambda: request(service['status']['url'] + '/health'))
+    if health['http_status'] != 200:
+        raise RuntimeError('controller_health_http_' + str(health['http_status']))
+    verify_health(health['body'], {'sourceSha': packet['source_sha'],
                   'sourceTreeSha': packet['tree'], 'schedulerManifestSha256': packet['scheduler_sha256']})
     paper = request(live['url'].rstrip('/') + '/research_validation/production_bundle',
                     headers={'X-Controller-Token': os.environ['ML_CONTROLLER_SECRET']})

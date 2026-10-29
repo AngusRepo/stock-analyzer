@@ -742,3 +742,69 @@ def test_release_guard_allow_list_arguments_fail_before_any_read(argv, monkeypat
     monkeypatch.setattr(sys, 'argv', ['release_guard.py', *argv])
     with pytest.raises(SystemExit):
         guard.main()
+
+
+# E9-d: the Worker goes first or with the release; Modal is only ever deployed with the controller.
+def test_rollout_refuses_a_release_ahead_of_the_live_worker(manifest_repo):
+    repo, worker_live, _ = manifest_repo
+    controller_only = commit(repo, 'ml-controller/services/other.py', 'x = 3\n')
+    rollout.require_worker_not_behind(repo, worker_live, controller_only)      # no Worker input in between
+    rollout.require_worker_not_behind(repo, controller_only, controller_only)
+    worker_change = commit(repo, 'worker/src/lib/routes.ts', 'export const unrelated = 2;\n')
+    with pytest.raises(RuntimeError, match='worker_behind_release_deploy_worker_first'):
+        rollout.require_worker_not_behind(repo, worker_live, worker_change)
+    later = commit(repo, 'ml-controller/services/other.py', 'x = 4\n')
+    rollout.require_worker_not_behind(repo, later, worker_change)              # Worker already ahead
+    git(repo, 'checkout', '-q', '-b', 'side', worker_live)
+    side = commit(repo, 'ml-controller/services/m1.py', 'x = 9\n')
+    with pytest.raises(RuntimeError, match='worker_live_source_not_on_release_history'):
+        rollout.require_worker_not_behind(repo, side, worker_change)
+    for unknown in (None, '', 'not-a-sha'):
+        with pytest.raises(RuntimeError, match='worker_live_source_unknown'):
+            rollout.require_worker_not_behind(repo, unknown, worker_change)
+
+
+def test_modal_is_deployed_only_by_the_paired_controller_release_tools():
+    deployers = set()
+    for path in subprocess.run(['git', '-C', str(ROOT), 'ls-files', '*.py', '*.sh', '*.mjs', '*.ps1', '*.yml'],
+                               capture_output=True, text=True, check=True).stdout.splitlines():
+        if path.startswith(('audits/', 'output/')) or '/tests/' in path:
+            continue
+        text = (ROOT / path).read_text(encoding='utf-8', errors='replace')
+        if re.search(r"modal['\",\s]+deploy[^#]{0,160}?\bmodal_app\.py", text):
+            deployers.add(path)
+    # Each deploys Modal with --tag <source sha> in the same run as the controller (deploy_ml_controller.sh
+    # refuses a production run without --with-modal); modal_app.py itself only names the command in its docstring.
+    assert deployers == {'tools/release/release_rollout.py', 'tools/deploy_controller_modal_release.py',
+                         'deploy_ml_controller.sh', 'ml-service/modal_app.py'}
+
+
+# E9-e (followup #15): bounded retries for a non-200 or dropped /health read, none for a 200.
+def test_health_reads_retry_non_200_and_transport_errors_only():
+    import httpx
+    replies = iter([{'http_status': 503, 'body': ''}, httpx.ConnectError('reset'), {'http_status': 200, 'body': {'s': 1}}])
+    pauses = []
+
+    def read():
+        value = next(replies)
+        if isinstance(value, Exception):
+            raise value
+        return value
+    assert runtime_context.read_until_200(read, sleep=pauses.append) == {'http_status': 200, 'body': {'s': 1}}
+    assert pauses == [5.0, 5.0]
+    calls = []
+    assert runtime_context.read_until_200(lambda: calls.append(1) or {'http_status': 200, 'body': 'other source'},
+                                          sleep=pytest.fail)['body'] == 'other source'
+    assert calls == [1]
+    assert runtime_context.read_until_200(lambda: {'http_status': 502, 'body': ''}, sleep=lambda s: None)['http_status'] == 502
+    with pytest.raises(httpx.ConnectError):
+        runtime_context.read_until_200(lambda: (_ for _ in ()).throw(httpx.ConnectError('down')), sleep=lambda s: None)
+    with pytest.raises(KeyError):  # not a transport error: no retry
+        runtime_context.read_until_200(lambda: {}['http_status'], sleep=pytest.fail)
+
+
+def test_every_release_health_read_goes_through_the_retry():
+    for path in ('tools/release/release_rollout.py', 'tools/release/release.py'):
+        text = (ROOT / path).read_text(encoding='utf-8')
+        assert re.findall(r"request\([^)]*/health'\)\['body'\]", text) == []
+        assert "worker('/api/health')" not in text.replace("read_until_200(lambda: worker('/api/health'))", '')

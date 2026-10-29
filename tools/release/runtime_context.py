@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 PROJECT = 'gen-lang-client-0602998820'
 REGION = 'asia-east1'
@@ -85,6 +86,24 @@ def request(url: str, *, method: str = 'GET', body=None, headers=None, timeout: 
     except ValueError:
         value = response.content.decode(errors='replace')
     return {'http_status': response.status_code, 'body': value}
+
+
+def read_until_200(read, *, attempts: int = 3, pause: float = 5.0, sleep=time.sleep) -> dict:
+    """E9-e (followup #15): a read-only health GET that answers non-200 or drops the connection is
+    retried a bounded number of times. A 200 is returned as is: the caller compares its source at
+    once and stops on a mismatch, never retrying it. The last answer (or error) is final."""
+    import httpx
+    for attempt in range(1, attempts + 1):
+        try:
+            reply = read()
+        except httpx.TransportError:
+            if attempt == attempts:
+                raise
+        else:
+            if reply['http_status'] == 200 or attempt == attempts:
+                return reply
+        sleep(pause)
+    raise AssertionError('unreachable')
 
 
 def worker(path: str, *, method: str = 'GET', body=None) -> dict:

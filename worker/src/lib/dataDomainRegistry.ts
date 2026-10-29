@@ -259,6 +259,14 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 's12_calibration_work_lifecycle_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 's12_calibration_work_censor_v1', domain: 'learning', disposition: 'active_window', route_ready: true, shadow_ready: false },
   { table: 'execution_retention_releases_v1', domain: 'execution', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
+  // Live ledger (R17/R18/R21): written only by the controller and the execution gateway.
+  // route_ready stays false so storage readiness and the native manifest do not
+  // require these tables before the execution migrations 0005-0008 are applied.
+  { table: 'live_submission_control_v1', domain: 'execution', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'live_account_observations_v1', domain: 'execution', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'live_daily_snapshots_v1', domain: 'execution', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'live_cash_flows_v1', domain: 'execution', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'live_intake_orders_v1', domain: 'execution', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
   { table: 'ops_retention_releases_v1', domain: 'ops', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'research_retention_releases_v1', domain: 'research', disposition: 'full_scalar', route_ready: true, shadow_ready: false },
   { table: 'paired_nav_orphan_archives_v1', domain: 'learning', disposition: 'full_scalar', route_ready: true, shadow_ready: false },

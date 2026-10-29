@@ -1,6 +1,8 @@
 import test from 'node:test'
+import { R33_EQUAL7_ISOTONIC as L4_R33_OPERATING_MODE, l4OperatingModeError } from './paperStrategyMode'
 import assert from 'node:assert/strict'
-import { L4_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { L4_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS, L4_R33_FEATURE_SCHEMA, R33_MODELS,
+  l4ReleaseEvidenceError, validL4FeatureSchema } from './l4ReleaseEvidence'
 
 function fixture() {
   const model='b'.repeat(64), hash='a'.repeat(64)
@@ -71,4 +73,43 @@ test('Worker rejects every missing engineering proof and stale full-signal schem
   assert.equal(l4ReleaseEvidenceError(a),'l4_release_feature_schema_mismatch')
   const b=fixture();b.release.validation_receipt.feature_schema='full-l3-30-calibrated-probability-v2'
   assert.equal(l4ReleaseEvidenceError(b),'l4_release_feature_schema_mismatch')
+})
+
+
+function r33Fixture() {
+  const a:any=fixture(), r=a.release, receipt=r.validation_receipt
+  delete receipt.paired_account_comparison
+  r.acceptance_mode=receipt.acceptance_mode='paper_experiment';r.efficacy_status=receipt.efficacy_status='unproven'
+  receipt.experiment_authorization={scope:'paper',approved:true,source_reference:'synthetic-test-only',model_checksum:a.model_checksum}
+  a.feature_schema=receipt.feature_schema=L4_R33_FEATURE_SCHEMA
+  // The exact order l3_equal_weight_bundle.FEATURE_NAMES emits: z then available per model, score last.
+  a.model={feature_names:['LightGBM_z','LightGBM_available','ExtraTrees_z','ExtraTrees_available','TabM_z','TabM_available',
+    'GNN_z','GNN_available','TimeXer_z','TimeXer_available','PatchTST_z','PatchTST_available',
+    'iTransformer_z','iTransformer_available','score']}
+  return a
+}
+
+test('R33 feature schema is accepted only with the exact seven-model feature order',()=>{
+  const a=r33Fixture()
+  assert.equal(validL4FeatureSchema(a),true)
+  assert.equal(l4ReleaseEvidenceError(a),null)
+  assert.deepEqual([...R33_MODELS],['LightGBM','ExtraTrees','TabM','GNN','TimeXer','PatchTST','iTransformer'])
+  const swapped=r33Fixture();[swapped.model.feature_names[0],swapped.model.feature_names[2]]=[swapped.model.feature_names[2],swapped.model.feature_names[0]]
+  assert.equal(l4ReleaseEvidenceError(swapped),'l4_release_feature_schema_mismatch')
+  const xgb=r33Fixture();xgb.model.feature_names.splice(2,0,'XGBoost_z','XGBoost_available')
+  assert.equal(l4ReleaseEvidenceError(xgb),'l4_release_feature_schema_mismatch')
+  const noScore=r33Fixture();noScore.model.feature_names.pop()
+  assert.equal(l4ReleaseEvidenceError(noScore),'l4_release_feature_schema_mismatch')
+  const receiptOld=r33Fixture();receiptOld.release.validation_receipt.feature_schema=L4_FEATURE_SCHEMA
+  assert.equal(l4ReleaseEvidenceError(receiptOld),'l4_release_feature_schema_mismatch')
+})
+
+test('R33 operating mode and R33 feature schema must appear together',()=>{
+  const artifact=r33Fixture()
+  assert.equal(l4OperatingModeError({artifact,operating_mode:L4_R33_OPERATING_MODE}),null)
+  assert.equal(l4OperatingModeError({artifact,operating_mode:'single_b_full_mlp_median_v1'}),'l4_operating_mode_feature_schema_mismatch')
+  assert.equal(l4OperatingModeError({artifact}),'l4_operating_mode_feature_schema_mismatch')
+  assert.equal(l4OperatingModeError({artifact:fixture(),operating_mode:L4_R33_OPERATING_MODE}),'l4_operating_mode_feature_schema_mismatch')
+  assert.equal(l4OperatingModeError({artifact:fixture(),operating_mode:'single_b_full_mlp_median_v1'}),null)
+  assert.equal(l4OperatingModeError({artifact:fixture()}),null)
 })

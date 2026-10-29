@@ -104,8 +104,17 @@ all of the following at the same time:
 - `EXECUTION_GATEWAY_LIVE_RELAY_ENABLED=1` on the general ml-controller
 - `LIVE_TRADING_APPROVAL_SCOPE=<Wei-approved bounded scope>`
 - `LIVE_TRADING_APPROVAL_EXPIRES_AT=<short-lived UTC timestamp>`
+- `LIVE_GATE_RECEIPT_SHA256=<R4-gate receipt sha>` on both ml-controller and Gateway
+- the R17 chain in execution D1 (`live_submission_control_v1`) reads open: its
+  latest row is a Wei resume whose scope, expiry and receipt equal the values
+  above. Migration 0005 seeds it paused; both ml-controller and Gateway need
+  execution D1 credentials to read it, and an unreadable chain reads paused.
+  `LIVE_EXECUTION_CONTROL_READ_TIMEOUT_SECONDS` (default 1.0, clamped 0.25-2)
+  bounds that per-leg read inside the relay POST budget.
 
-Removing any one value fails closed. Do not store secret values in source,
+Removing any one value fails closed. Pausing (R17 return-to-paper) needs no
+approval and stops new buys and sells while submitted orders keep reconciling.
+Deployment steps: `docs/live/R19_GATEWAY_DEPLOY_CHECKLIST.md`. Do not store secret values in source,
 Wrangler vars, build logs or this document.
 
 ## Mandatory rollout evidence

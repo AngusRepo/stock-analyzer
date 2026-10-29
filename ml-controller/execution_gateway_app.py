@@ -108,6 +108,26 @@ def validate_shadow(
     )
 
 
+@app.get("/v1/control/submission-state")
+def submission_state(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """R19 deploy check: the gateway's own read of the R17 chain. Never logs in to the broker."""
+    _verify_service_token(authorization)
+    state = gateway.submission_control.state()  # never raises; unreadable reads paused
+    flag = lambda name: str(os.environ.get(name) or "").lower() in {"1", "true", "yes", "enabled"}  # noqa: E731
+    receipt = state.get("receipt") if isinstance(state.get("receipt"), dict) else None
+    return {
+        # Only the chain position; approval scope, expiry and gate receipt values stay out.
+        "status": state.get("status"), "reason": state.get("reason"),
+        "durable_pause": state.get("durable_pause"), "policy": state.get("policy"),
+        "receipt": None if receipt is None else {key: receipt.get(key) for key in ("sequence", "action", "sha256")},
+        "finlab_live_submit_enabled": flag("FINLAB_LIVE_SUBMIT_ENABLED"),
+        "approval_values_present": {
+            name: bool(str(os.environ.get(name) or "").strip())
+            for name in ("LIVE_TRADING_APPROVAL_SCOPE", "LIVE_TRADING_APPROVAL_EXPIRES_AT", "LIVE_GATE_RECEIPT_SHA256")
+        },
+    }
+
+
 @app.get("/v1/intents/{idempotency_key}")
 def intent_status(idempotency_key: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _verify_service_token(authorization)

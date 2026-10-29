@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from services.broker_execution_repository import BrokerExecutionRepository
-from services.execution_submission_control import D1SubmissionControl
+from services.execution_submission_control import D1SubmissionControl, order_path_read_timeout
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,8 @@ class PersistentFinlabExecutionGateway:
         self.env = env or os.environ
         self.account_factory = account_factory
         # R17: every leg re-reads the durable pause/resume chain under the broker lock.
-        self.submission_control = submission_control if submission_control is not None else D1SubmissionControl(env=self.env)
+        self.submission_control = submission_control if submission_control is not None else D1SubmissionControl(
+            env=self.env, read_timeout=order_path_read_timeout(self.env))
         self._account: Any | None = None
         self._lock = threading.RLock()
         self._started = False

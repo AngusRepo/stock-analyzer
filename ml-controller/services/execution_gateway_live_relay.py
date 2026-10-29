@@ -10,7 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from services.broker_execution_contract import parse_time, signature_valid
-from services.execution_submission_control import D1SubmissionControl
+from services.execution_submission_control import D1SubmissionControl, order_path_read_timeout
 from services.execution_gateway_shadow_relay import _safe_gateway_url, _truthy, fetch_google_identity_token
 
 
@@ -60,7 +60,8 @@ def relay_execution_live_submit(
         return {"status": "blocked", "reason": "live_trading_approval_unavailable"}
     # R17 controller lock: the durable pause/resume chain must read open.
     try:
-        control = submission_control if submission_control is not None else D1SubmissionControl(env=values)
+        control = submission_control if submission_control is not None else D1SubmissionControl(
+            env=values, read_timeout=order_path_read_timeout(values))
         closed = control.closed_reason()
     except Exception:
         closed = "live_submission_control_unavailable"

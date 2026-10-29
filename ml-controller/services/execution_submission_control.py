@@ -54,6 +54,18 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
+def order_path_read_timeout(env: Mapping[str, str]) -> float:
+    """Bound for the per-leg chain read on the order path, inside the relay POST budget.
+
+    A slow or failed read is a closed lock, never a late open one.
+    """
+    try:
+        value = float(env.get("LIVE_EXECUTION_CONTROL_READ_TIMEOUT_SECONDS") or 1.0)
+    except ValueError:
+        value = 1.0
+    return max(0.25, min(value, 2.0))
+
+
 def _text(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     if not text or len(text) > limit:
@@ -69,6 +81,7 @@ class D1SubmissionControl:
         execute: Callable | None = None,
         env: Mapping[str, str] | None = None,
         now: Callable[[], datetime] | None = None,
+        read_timeout: float = 5.0,
     ):
         if (query is None) != (execute is None):
             raise ValueError("both_submission_control_transports_required")
@@ -83,13 +96,14 @@ class D1SubmissionControl:
             env = os.environ
         self._query, self._execute, self._env = query, execute, env
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._read_timeout = float(read_timeout)
 
     # ---- reads -------------------------------------------------------------
     def _chain(self) -> list[dict[str, Any]]:
         rows = [dict(row) for row in self._query(
             "SELECT sequence,action,request_id,actor,reason,approval_scope,approval_expires_at,"
             "gate_receipt_sha256,created_at,previous_sha256,row_sha256 "
-            "FROM live_submission_control_v1 ORDER BY sequence", [], 5.0)]
+            "FROM live_submission_control_v1 ORDER BY sequence", [], self._read_timeout)]
         if not rows:
             raise RuntimeError("live_submission_control_empty")
         previous = GENESIS_SHA256

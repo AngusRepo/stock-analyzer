@@ -4794,7 +4794,7 @@ def timexer_universal_predict(payload: dict) -> dict:
             "n_success":sum(row.get("available") is True for row in results)}
 
 
-@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=2, scaledown_window=60)
+@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=7, scaledown_window=60)
 def train_timexer_universal(payload: dict) -> dict:
     """Official TimeXer OOF/full-fit; candidate files never confer serving authority."""
     _setup_env()

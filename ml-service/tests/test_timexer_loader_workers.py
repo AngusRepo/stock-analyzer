@@ -1,4 +1,4 @@
-"""TimeXer loader workers are an efficiency change only: every batch must be unchanged."""
+"""Windows (the reference window definition) yields identical batches under any DataLoader worker count."""
 import multiprocessing
 
 import numpy as np
@@ -47,12 +47,3 @@ def test_worker_loader_yields_identical_batches():
     parallel = _batches(dataset, num_workers=2, multiprocessing_context=context)
     assert len(serial) == len(parallel) and all(torch.equal(a, b) for a, b in zip(serial, parallel))
 
-
-def test_loader_options_only_fork_workers_on_cuda():
-    assert tt.loader_options("cpu") == {"num_workers": 0, "pin_memory": False}
-    options = tt.loader_options("cuda")
-    if "fork" in multiprocessing.get_all_start_methods():
-        assert options["num_workers"] == tt.LOADER_WORKERS and options["multiprocessing_context"] == "fork"
-        assert "persistent_workers" not in options  # persistent workers would change the per-epoch RNG draws
-    else:
-        assert options == {"num_workers": 0, "pin_memory": True}

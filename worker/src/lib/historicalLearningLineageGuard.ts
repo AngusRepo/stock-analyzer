@@ -11,6 +11,8 @@ export const HISTORICAL_CANONICAL_LINEAGE_WRITER_TASKS = new Set([
   'post-screener-pipeline',
   'screener-v2-watchdog',
   'indicator-queue-watchdog',
+  // PIT (Wei 10/29): market_risk and factor packets keep originals once the next session opens.
+  'market-risk-materialization',
 ])
 
 export interface HistoricalLearningLineageDecision {

@@ -72,7 +72,7 @@ export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
 }
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   core: new Set([
-    'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk', 'market_risk_quality_v1',
+    'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk', 'market_risk_quality_v1', 'market_risk_revisions_v1',
     'chat_sessions', 'chat_messages', 'alert_notifications', 'daily_recommendations',
   ]),
   market: new Set([
@@ -198,6 +198,7 @@ const EXTENDED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
   { table: 'finlab_taxonomy_tags', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'margin_data', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
   { table: 'market_regime_factor_packets', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: true },
+  { table: 'market_regime_factor_packet_revisions_v1', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'market_regime_state_history_v1', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'market_regime_state_revisions_v1', domain: 'market', disposition: 'compact_projection', route_ready: true, shadow_ready: false },
   { table: 'monthly_revenue', domain: 'market', disposition: 'full_scalar', route_ready: true, shadow_ready: true },
@@ -339,7 +340,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
     'ga_optimizer_shadow_runs_v1',
     'strategy_evidence_gap_dispositions_v1',
   ]),
-  core: new Set(['market_risk_quality_v1']),
+  core: new Set(['market_risk_quality_v1', 'market_risk_revisions_v1']),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
     'canonical_revenue_observations_v2',

@@ -1,4 +1,5 @@
 import { paperExecutionFetch, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
+import { canonicalRiskJson, riskPacketChecksum } from './riskPacketCodec'
 export interface MarketRegimeFactorTile {
   id: string
   label: string
@@ -420,8 +421,16 @@ function businessCycleContext(regimeState: any): { value: string; raw: number | 
   }
 }
 
-async function latestCnyesHeadlines(): Promise<{ value: string; sourceDate: string | null; detail: string; url: string | null; missing: boolean }> {
+function taipeiDate(ms: number): string {
+  return new Date(ms + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+async function latestCnyesHeadlines(packetDate: string): Promise<{ value: string; sourceDate: string | null; detail: string; url: string | null; missing: boolean }> {
   const url = 'https://news.cnyes.com/api/v3/news/category/headline?page=1&limit=5'
+  // The feed only serves today's headlines, which postdate any past packet date (PIT, Wei 10/29).
+  if (packetDate < taipeiDate(paperExecutionNow())) {
+    return { value: 'n/a', sourceDate: null, detail: '鉅亨頭條只有當日資料，回補日不引用', url: null, missing: true }
+  }
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 1500)
@@ -436,9 +445,7 @@ async function latestCnyesHeadlines(): Promise<{ value: string; sourceDate: stri
     const first = items.find((item: any) => item?.title)
     if (!first) throw new Error('cnyes_empty')
     const ts = Number(first.publishAt ?? first.publishedAt ?? 0)
-    const sourceDate = Number.isFinite(ts) && ts > 0
-      ? new Date(ts * 1000).toISOString().slice(0, 10)
-      : null
+    const sourceDate = Number.isFinite(ts) && ts > 0 ? taipeiDate(ts * 1000) : null
     const newsId = first.newsId ?? first.id
     return {
       value: String(first.title).slice(0, 52),
@@ -458,6 +465,24 @@ async function latestCnyesHeadlines(): Promise<{ value: string; sourceDate: stri
   }
 }
 
+/**
+ * PIT (Wei 10/29): a packet for `date` never cites a source dated after it. Such a factor
+ * scores neutral, as a missing one does, and keeps no value or text from the later source.
+ */
+export function excludeSourceAfterDate(item: MarketRegimeFactorTile, date: string): MarketRegimeFactorTile {
+  if (!item.source_date || item.source_date <= date) return item
+  return factor({
+    ...item,
+    raw_value: null,
+    value: 'n/a',
+    score: 45,
+    status: 'missing',
+    source_date: null,
+    detail: `source dated ${item.source_date} is after ${date}; excluded`,
+    missing_reason: 'source_after_packet_date',
+  })
+}
+
 export async function buildMarketRegimeFactorPacket(
   db: D1Database,
   marketRiskRow: Record<string, any>,
@@ -467,7 +492,7 @@ export async function buildMarketRegimeFactorPacket(
   const [canonicalChip, leverage, cnyesEvent] = await Promise.all([
     canonicalInstitutionalNet5d(db, date),
     canonicalLeverageStress(db, date),
-    latestCnyesHeadlines(),
+    latestCnyesHeadlines(date),
   ])
 
   const twiiBias = finiteNumber(marketRiskRow.twii_bias)
@@ -481,7 +506,7 @@ export async function buildMarketRegimeFactorPacket(
   const hawkes = monitorScore(regimeState?.monitors ?? {}, 'hawkes_contagion')
   const monitorRisk = Math.max(lppls ?? 0, hawkes ?? 0)
 
-  const factors: MarketRegimeFactorTile[] = [
+  const built: MarketRegimeFactorTile[] = [
     factor({
       id: 'price_trend',
       label: '趨勢 / 20MA',
@@ -598,6 +623,7 @@ export async function buildMarketRegimeFactorPacket(
     }),
   ]
 
+  const factors = built.map((item) => excludeSourceAfterDate(item, date))
   const score = clamp(Math.round(factors.reduce((sum, item) => sum + item.contribution, 0)), 0, 100)
   const missing: Record<string, string> = {}
   const contributions: Record<string, number> = {}
@@ -629,14 +655,19 @@ export async function buildMarketRegimeFactorPacket(
   }
 }
 
-export async function upsertMarketRegimeFactorPacket(db: D1Database, packet: MarketRegimeFactorPacket): Promise<void> {
-  await db.prepare(`
-    INSERT INTO market_regime_factor_packets (
-      date, schema_version, score, level, factor_json, contribution_json, source_json,
-      freshness_json, missing_reason_json, lineage_json, generated_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(date) DO UPDATE SET
+/**
+ * `replace` updates the canonical row; `keep_original` (a past date after its next session
+ * opened) only fills a missing row. Every packet is also appended to the revisions table.
+ */
+export type CanonicalWriteMode = 'replace' | 'keep_original'
+
+export async function upsertMarketRegimeFactorPacket(
+  db: D1Database,
+  packet: MarketRegimeFactorPacket,
+  mode: CanonicalWriteMode = 'replace',
+): Promise<void> {
+  const conflict = mode === 'replace'
+    ? `DO UPDATE SET
       schema_version=excluded.schema_version,
       score=excluded.score,
       level=excluded.level,
@@ -647,20 +678,35 @@ export async function upsertMarketRegimeFactorPacket(db: D1Database, packet: Mar
       missing_reason_json=excluded.missing_reason_json,
       lineage_json=excluded.lineage_json,
       generated_at=excluded.generated_at,
-      updated_at=CURRENT_TIMESTAMP
+      updated_at=CURRENT_TIMESTAMP`
+    : 'DO NOTHING'
+  const packetJson = canonicalRiskJson(packet)
+  const checksum = await riskPacketChecksum(packet)
+  await db.batch([
+    db.prepare(`
+    INSERT INTO market_regime_factor_packets (
+      date, schema_version, score, level, factor_json, contribution_json, source_json,
+      freshness_json, missing_reason_json, lineage_json, generated_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(date) ${conflict}
   `).bind(
-    packet.date,
-    packet.schema_version,
-    packet.score,
-    packet.level,
-    JSON.stringify(packet.factors),
-    JSON.stringify(packet.contributions),
-    JSON.stringify(packet.sources),
-    JSON.stringify(packet.freshness),
-    JSON.stringify(packet.missing_reasons),
-    JSON.stringify(packet.lineage),
-    packet.generated_at,
-  ).run()
+      packet.date,
+      packet.schema_version,
+      packet.score,
+      packet.level,
+      JSON.stringify(packet.factors),
+      JSON.stringify(packet.contributions),
+      JSON.stringify(packet.sources),
+      JSON.stringify(packet.freshness),
+      JSON.stringify(packet.missing_reasons),
+      JSON.stringify(packet.lineage),
+      packet.generated_at,
+    ),
+    db.prepare(`INSERT OR IGNORE INTO market_regime_factor_packet_revisions_v1
+      (date, packet_checksum, packet_json, canonical_mode, recorded_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(packet.date, checksum, packetJson, mode, paperExecutionDate().toISOString()),
+  ])
 }
 
 function parseJsonRecord(raw: unknown): Record<string, any> {

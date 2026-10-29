@@ -94,13 +94,25 @@ def _observe(packet):
     return observed
 
 
+def _local_head():
+    return subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
+
+
+def _behavior():
+    return json.loads((REPO / 'ml-controller/services/native_execution_behavior_release.json').read_text())
+
+
+def _require_deployed_checkout(release):
+    # Validators and the runtime key come from this checkout; they must be the deployed ones.
+    local = _local_head()
+    if local != release['source_sha']:
+        raise SystemExit(f'checkout {local} is not the deployed controller source {release["source_sha"]}')
+
+
 def prepare(args):
     from runtime_context import load_environment
     release = load_environment()
-    # Validators and the runtime key come from this checkout; they must be the deployed ones.
-    local = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
-    if local != release['source_sha']:
-        raise SystemExit(f'checkout {local} is not the deployed controller source {release["source_sha"]}')
+    _require_deployed_checkout(release)
     from services import r33_switch
     from services.active8_paper_admission import KEY, verify_active_approval
     from services.d1_domain_client import client_for_domain
@@ -114,8 +126,7 @@ def prepare(args):
     raw, old_admission = _kv_read('trading:config'), _kv_read(KEY)
     merged = load_active_trading_config()
     prior = verify_active_approval(old_admission)
-    behavior = json.loads((REPO / 'ml-controller/services/native_execution_behavior_release.json').read_text())
-    runtime_key = behavior['runtime_admission']
+    runtime_key = _behavior()['runtime_admission']
     pointers = _learning().query('SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id=1', [])
     heads = client_for_domain('paper').query('SELECT plan_id FROM l4_portfolio_head_v1 WHERE account_id=1', [])
     if len(pointers) != 1 or len(heads) != 1:
@@ -236,8 +247,14 @@ def activate(args, *, undo):
     packet = json.loads((out / 'packet.json').read_text())
     from services.paired_nav_journal import digest
     r33_switch.validate_packet(packet, now=datetime.now(timezone.utc))
-    if release['source_sha'] != packet['controller_source_sha']:
-        raise SystemExit('deployed controller source changed since prepare; prepare a new packet')
+    # Forward steps need the controller the packet was prepared against. A rollback only
+    # restores the recorded `before` values, so it stays available across a new release.
+    if not undo:
+        _require_deployed_checkout(release)
+        if release['source_sha'] != packet['controller_source_sha']:
+            raise SystemExit('deployed controller source changed since prepare; prepare a new packet')
+        if packet['writes']['grant']['key'] != _behavior()['runtime_admission']:
+            raise SystemExit('grant key is not the deployed runtime_admission key')
     observed = _observe(packet)
     step, states = (r33_switch.rollback_step if undo else r33_switch.next_step)(packet, observed)
     if step != args.step:
@@ -264,7 +281,7 @@ def activate(args, *, undo):
                          'admission (Wei go); this tool does not republish an older pointer.')
     plan = {'mode': 'execute' if args.execute else 'dry_run', 'action': 'rollback' if undo else 'activate',
             'step': step, 'states': states, 'controller_source': release['source_sha'],
-            'packet_checksum': packet['packet_checksum']}
+            'packet_controller_source': packet['controller_source_sha'], 'packet_checksum': packet['packet_checksum']}
     if step in packet['writes']:
         write = packet['writes'][step]
         before, after = (write['after'], write['before']) if undo else (write['before'], write['after'])

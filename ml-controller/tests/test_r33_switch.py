@@ -170,3 +170,39 @@ def test_check_prior_requires_the_live_grant():
     r33_switch.check_prior(inputs['prior'], live_prior=deepcopy(inputs['prior']), **args)
     with pytest.raises(RuntimeError, match='prior_not_active_grant'):
         r33_switch.check_prior(inputs['prior'], live_prior={**inputs['prior'], 'approved_at': 'later'}, **args)
+
+
+def _reapprove(packet, edit):
+    approval = packet['approval']
+    edit(approval)
+    approval.pop('approval_checksum')
+    approval['approval_checksum'] = digest(approval)
+    packet['writes']['grant']['after'] = approval
+
+
+RESEALED_EDITS = {
+    'admission_before': (lambda p: p['writes']['admission'].update(before={'other': True}),
+                         'packet_writes_not_the_validated_values'),
+    'kv_key': (lambda p: p['writes']['kv-config'].update(key='trading:config:v2'), 'packet_writes_not_the_validated_values'),
+    'admission_key': (lambda p: p['writes']['admission'].update(key='ml:active8:paper_admission:v2'),
+                      'packet_writes_not_the_validated_values'),
+    'serving_table': (lambda p: p.update(serving_table={**p['serving_table'], 'x': 1}), 'serving_table_not_the_ensemble_table'),
+    'ensemble_row': (lambda p: p['ensemble_row'].update(archive_uri=''), 'paired_nav_l3_artifact_registry_mismatch'),
+    'scope_subset': (lambda p: p['writes']['kv-config']['after']['exit'].pop('swingMaxHoldSessions'),
+                     'raw_config_not_the_granted_change'),
+    'runtime_approval': (lambda p: _reapprove(p, lambda a: a.update(efficacy_status='proven')),
+                         'active8_paper_runtime_approval_invalid'),
+    'evidence': (lambda p: _reapprove(p, lambda a: a['approved_r33_cutover']['candidate_bundle'].update(sha256='0' * 64)),
+                 'ensemble_mismatch'),
+}
+
+
+@pytest.mark.parametrize('edit', sorted(RESEALED_EDITS))
+def test_validate_packet_refuses_each_resealed_edit(edit):
+    packet = r33_switch.prepare(**_inputs())
+    r33_switch.validate_packet(deepcopy(packet), now=NOW)
+    change, message = RESEALED_EDITS[edit]
+    change(packet)
+    r33_switch.seal(packet)
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        r33_switch.validate_packet(packet, now=NOW)

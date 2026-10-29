@@ -66,6 +66,9 @@ def world(monkeypatch, tmp_path):
         def download_as_bytes(self): return blobs[self.name]
     monkeypatch.setattr(tool, '_bucket', lambda: types.SimpleNamespace(blob=Blob, name='b'))
     deployed = {'source_sha': 's'}
+    head = {'sha': 's'}
+    monkeypatch.setattr(tool, '_local_head', lambda: head['sha'])
+    monkeypatch.setattr(tool, '_behavior', lambda: {'runtime_admission': packet['writes']['grant']['key']})
     monkeypatch.setitem(sys.modules, 'runtime_context', types.SimpleNamespace(load_environment=lambda: dict(deployed)))
     monkeypatch.setattr(r33_switch, 'validate_packet', _validate_at(r33_switch.validate_packet))
     from services import active8_paper_admission, worker_config_client
@@ -86,7 +89,7 @@ def world(monkeypatch, tmp_path):
     run = lambda command, step, execute=False: tool.activate(
         Namespace(out=tmp_path, step=step, execute=execute), undo=command == 'rollback')
     return types.SimpleNamespace(packet=packet, kv=kv, learning=learning, writes=writes, run=run, live=live,
-                                 out=tmp_path, blobs=blobs, deployed=deployed)
+                                 out=tmp_path, blobs=blobs, deployed=deployed, head=head)
 
 
 def _validate_at(validate):
@@ -175,9 +178,32 @@ def test_a_resealed_edit_is_still_refused_by_the_validators(world):
 
 
 def test_a_new_controller_release_after_prepare_is_refused(world):
-    world.deployed['source_sha'] = 'other'
+    world.deployed['source_sha'] = world.head['sha'] = 'other'
     with pytest.raises(SystemExit, match='deployed controller source changed'):
         world.run('activate', 'kv-config')
+
+
+def test_a_checkout_that_is_not_the_deployed_source_is_refused(world):
+    world.head['sha'] = 'pulled'
+    with pytest.raises(SystemExit, match='is not the deployed controller source'):
+        world.run('activate', 'kv-config')
+    assert world.writes == []
+
+
+def test_a_grant_key_that_is_not_the_deployed_runtime_key_is_refused(world, monkeypatch):
+    monkeypatch.setattr(tool, '_behavior', lambda: {'runtime_admission': 'ml:active8:paper_runtime_approval:v1:other'})
+    with pytest.raises(SystemExit, match='runtime_admission'):
+        world.run('activate', 'kv-config')
+    assert world.writes == []
+
+
+def test_rollback_stays_available_after_a_new_controller_release(world):
+    world.run('activate', 'kv-config', execute=True)
+    world.deployed['source_sha'] = world.head['sha'] = 'later'
+    with pytest.raises(SystemExit, match='deployed controller source changed'):
+        world.run('activate', 'admission', execute=True)
+    world.run('rollback', 'kv-config', execute=True)
+    assert world.kv['trading:config'] == world.packet['writes']['kv-config']['before']
 
 
 def test_a_step_whose_readback_failed_is_rechecked_before_the_next_step(world, monkeypatch):
@@ -255,3 +281,20 @@ def test_a_packet_whose_writes_differ_from_its_validated_values_is_refused(world
     (world.out / 'packet.json').write_text(json.dumps(packet))
     with pytest.raises(RuntimeError, match='packet_writes_not_the_validated_values'):
         world.run('activate', 'kv-config')
+
+
+def test_promotion_needs_the_cutover_grant_active(world, monkeypatch):
+    for step in r33_switch.STEPS[:4]:
+        world.run('activate', step, execute=True)
+    from services import active8_paper_admission
+    monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', lambda admission, **kw: {'other': True})
+    with pytest.raises(RuntimeError, match='active_grant_not_the_cutover_grant'):
+        world.run('activate', 'promotion', execute=True)
+    assert {k: world.learning.pointer[k] for k in r33_switch.IDENTITY_KEYS} == world.packet['baseline_pointer']
+
+
+def test_prepare_needs_the_deployed_checkout(world, tmp_path):
+    world.head['sha'] = 'pulled'
+    with pytest.raises(SystemExit, match='is not the deployed controller source'):
+        tool.prepare(Namespace(out=tmp_path / 'new'))
+    assert not (tmp_path / 'new').exists()

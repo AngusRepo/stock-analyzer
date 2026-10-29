@@ -335,6 +335,8 @@ def prior_bootstrap(prior: dict, baseline_modal: dict, history: dict) -> tuple[s
 def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, prior: dict, python: str,
             resume_staged: bool = False, idle_wait=IDLE_WAIT, publish=None) -> dict:
     global OUT, PUBLISH
+    from release_admission import grant_size, grant_size_warn_bytes
+    warn_bytes = grant_size_warn_bytes()  # CD-NEW-09: a bad threshold stops here, before any wait
     OUT, PUBLISH = out, publish
     out.mkdir(parents=True, exist_ok=True)
     packet_path, build_start = build_dir / 'deployment-build-packet.json', build_dir / 'build-start.json'
@@ -452,6 +454,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         grant = load(admission_dir / 'source-grant.json')
         if admission['prior_key'] == admission['new_key'] or grant['approval_checksum'] != admission['approval_checksum']:
             raise RuntimeError('new_source_grant_packet_mismatch')
+        grant_size(grant, admission['new_key'], warn_bytes)  # CD-NEW-09: warning only
         os.environ['NATIVE_PAPER_RUNNER'] = str(admission_dir / 'native-paper.cjs')
         if sha(Path(os.environ['NATIVE_PAPER_RUNNER']).read_bytes()) != packet['native_bundle_sha256']:
             raise RuntimeError('native_bundle_checksum_mismatch')
@@ -470,8 +473,9 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
                     or set(keys) & {admission['new_key'], admission['prior_key']}
                     or any(g.get('approved_l4_execution_policy_change') is None for g in policy_grants)):
                 raise RuntimeError('policy_grant_packet_mismatch')
-            for policy_grant in policy_grants:
+            for key, policy_grant in zip(keys, policy_grants):
                 validate_runtime_approval(policy_grant, policy_grant['admission'])
+                grant_size(policy_grant, key, warn_bytes)
     kv_state = {}
     if use_kv:
         kv_state['config'] = {'http_status': 200, 'body': load(OUT / 'config-before.json')}

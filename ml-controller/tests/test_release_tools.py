@@ -808,3 +808,32 @@ def test_every_release_health_read_goes_through_the_retry():
         text = (ROOT / path).read_text(encoding='utf-8')
         assert re.findall(r"request\([^)]*/health'\)\['body'\]", text) == []
         assert "worker('/api/health')" not in text.replace("read_until_200(lambda: worker('/api/health'))", '')
+
+
+# CD-NEW-09: grant size warning, threshold from STOCKVISION_GRANT_SIZE_WARN_BYTES (default 20 MiB).
+def test_grant_size_warns_above_the_configured_threshold(monkeypatch, capsys):
+    inner = {'payload': 'x' * 1000, 'approval_checksum': 'a'}
+    grant = {'payload': 'y' * 1000, 'prior_runtime_approval': {'payload': 'z', 'prior_runtime_approval': inner}}
+    monkeypatch.delenv(admission.GRANT_SIZE_WARN_ENV, raising=False)
+    quiet = admission.grant_size(grant, 'k')
+    assert quiet['warn_bytes'] == 20 * 1024 * 1024 and quiet['over_warn'] is False and quiet['prior_depth'] == 2
+    assert quiet['bytes'] == len(json.dumps(grant, separators=(',', ':')).encode())
+    assert capsys.readouterr().err == ''
+    monkeypatch.setenv(admission.GRANT_SIZE_WARN_ENV, '1500')
+    loud = admission.grant_size(grant, 'ml:active8:paper_runtime_approval:v1:r')
+    assert loud['over_warn'] is True and loud['warn_bytes'] == 1500
+    assert '::warning::grant ml:active8:paper_runtime_approval:v1:r is' in capsys.readouterr().err
+    for bad in ('20MiB', '0', '²', str(26 * 1024 * 1024)):
+        monkeypatch.setenv(admission.GRANT_SIZE_WARN_ENV, bad)
+        with pytest.raises(SystemExit, match=admission.GRANT_SIZE_WARN_ENV):
+            admission.grant_size(grant, 'k')
+
+
+def test_grant_size_is_recorded_by_admission_and_checked_before_staging():
+    source = (ROOT / 'tools/release/release_admission.py').read_text(encoding='utf-8')
+    assert 'size = grant_size(grant, key)' in source and 'grant_size=size,' in source
+    staged = (ROOT / 'tools/release/release_rollout.py').read_text(encoding='utf-8')
+    assert "grant_size(grant, admission['new_key'], warn_bytes)" in staged and 'grant_size(policy_grant, key, warn_bytes)' in staged
+    # the threshold is read once at the start of rollout, before any wait, inventory or mutation
+    body = staged[staged.index('def rollout('):]
+    assert body.index('warn_bytes = grant_size_warn_bytes()') < body.index('out.mkdir(')

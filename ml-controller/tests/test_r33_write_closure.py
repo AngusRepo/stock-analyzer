@@ -182,3 +182,23 @@ def test_node_inputs_write_one_coverage_line_with_row_errors(monkeypatch):
         row_errors={"P3": "feature_context_failed:" + "x" * 900}, ops_execute=lambda sql, params: calls.append(params))
     assert len(calls) == 1 and calls[0][0] == "warn"
     assert json.loads(calls[0][3])["row_errors"]["P3"] == ("feature_context_failed:" + "x" * 900)[:500]
+
+
+def test_a_stale_seed_with_a_prediction_is_counted_once(monkeypatch):
+    predictions = _predictions(missing=("P3",))
+    snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=(POOL, RECEIPT), predictions=predictions, holdings=[],
+                                         ensemble=_ensemble(), l3_identity=IDENTITY, stale={"P6": "last_bar=2026-11-07"})
+    state = _state(monkeypatch, predictions, snapshot=snapshot)
+    metrics = asyncio.run(pipeline.node_write_d1(state))["metrics"]
+    assert metrics["prediction_symbols"] == 5 and metrics["r33_unscored_missing_prediction_count"] == 1
+    assert not [b for b in pipeline.classify_pipeline_terminal_invariants(metrics) if "prediction_symbol" in b]
+
+
+def test_held_names_outside_the_seed_stay_out_of_the_l3_model_closure(monkeypatch):
+    predictions = {**_predictions(), "H7": _prediction(0.3)}
+    for symbol in POOL:
+        predictions[symbol]["core_family_evidence"] = {"formal_model_contract_passed": True}
+    state = _state(monkeypatch, predictions, snapshot=_pool(predictions, holdings=("H7",)), holdings=("H7",))
+    state.pop("layer2_recommendation_symbols", None)
+    metrics = asyncio.run(pipeline.node_write_d1(state))["metrics"]
+    assert metrics["incomplete_active_model_symbols"] == 0 and metrics["formal_evidence_prediction_symbols"] == len(POOL)

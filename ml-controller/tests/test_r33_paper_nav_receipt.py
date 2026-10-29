@@ -107,7 +107,8 @@ def test_unscored_lineage_is_accepted_only_for_r33(monkeypatch):
     monkeypatch.setattr("services.active8_nav_inference.restore_frozen_nav_inference",
                         lambda *a, **k: calls.append(1))
     artifact = {"kind": "active8", "payload_checksum": "a" * 64}
-    context = {"context_checksum": "c" * 64}
+    context = {"context_checksum": "c" * 64, "captured_at": "2026-11-09T12:00:00Z",
+               "publication_receipt": {"paper_admission": {}}}
     predictions = {"S1": {"ensemble_v2": {"adoption_basis": "committed_paired_nav", "artifact_checksum": "a" * 64,
                                           "nav_inference_context_checksum": "c" * 64, "lineage_status": "unscored",
                                           "signal": "NO_SIGNAL"}}}
@@ -123,6 +124,26 @@ def test_restore_rejects_a_grant_for_another_r33_object(monkeypatch):
     tampered["cohort_id"] = "c2"
     with pytest.raises(ValueError, match="r33_ensemble_payload_checksum"):
         restore_frozen_nav_inference(_context(ensemble), artifact=tampered, pool_models=POOL_MODELS)
+
+
+def test_r33_restore_needs_a_paper_admission_receipt():
+    ensemble = _ensemble()
+    body = {k: v for k, v in _context(ensemble).items() if k != "context_checksum"}
+    body["publication_receipt"] = {"nav_validation": {"decision": "PASS"}}
+    with pytest.raises(ValueError, match="r33_nav_inference_requires_paper_admission"):
+        restore_frozen_nav_inference({**body, "context_checksum": digest(body)}, artifact=ensemble,
+                                     pool_models=POOL_MODELS)
+
+
+def test_the_object_is_validated_before_the_grant_when_both_fail():
+    from copy import deepcopy
+    from services.ensemble_v2 import validate_active8_ensemble_artifact
+    from test_r33_serving_chain import _grant
+    ensemble = _ensemble()
+    tampered = deepcopy(ensemble)
+    tampered["payload_checksum"] = "0" * 64           # the grant names the original checksum: both checks fail
+    with pytest.raises(ValueError, match="r33_ensemble_payload_checksum"):
+        validate_active8_ensemble_artifact(tampered, POOL_MODELS, nav_authority=_grant(ensemble))
 
 
 def test_the_r33_object_is_its_own_registry_id():

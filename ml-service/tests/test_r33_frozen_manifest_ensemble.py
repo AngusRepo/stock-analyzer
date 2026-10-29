@@ -53,3 +53,6 @@ def test_r33_paper_grant_is_checked_after_the_object():
     tampered["cohort_id"] = "c2"
     with pytest.raises(Active8EnsembleContractError, match="r33_ensemble_payload_checksum"):
         validate_active8_ensemble_artifact(tampered, pool_models=_pool(ensemble), nav_authority=grant)
+    tampered["payload_checksum"] = "0" * 64           # grant names the original checksum: object is checked first
+    with pytest.raises(Active8EnsembleContractError, match="r33_ensemble_payload_checksum"):
+        validate_active8_ensemble_artifact(tampered, pool_models=_pool(ensemble), nav_authority=grant)

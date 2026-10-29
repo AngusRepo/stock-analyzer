@@ -219,7 +219,10 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
                          'grant': {'key': runtime_key, 'before': runtime_before, 'after': approval}},
               'roster': roster_status(meta_layer),
               'e7_followup': 'trading:config is manifest-managed (E-7): upload the new raw value to GCS and '
-                             'update the manifest digest by PR after the kv-config step; the drift alert is expected.'}
+                             'update the manifest digest by PR after the kv-config step; the drift alert is expected.',
+              # NEW-L01#SliceA (Wei 10/28 Q40): accepted consequence, listed so nobody repairs it.
+              'expected_after_cutover': ['l4_opb_arm_replay returns not_applicable:l3_identity_changed for every '
+                                         'pre-cutover plan; the OPB replay ledger restarts from the first R33 plan.']}
     return seal(result)
 
 

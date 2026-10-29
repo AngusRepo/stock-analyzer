@@ -99,6 +99,7 @@ def test_prepare_builds_a_cutover_that_serving_accepts():
     row = packet['ensemble_row']
     assert row['knowledge_cutoff_date'] == '2026-10-26' and row['schema_version'] == 'active8-oof-ensemble-serving-artifact-v1'
     assert packet['roster']['matches'] is False
+    assert any('l3_identity_changed' in line for line in packet['expected_after_cutover'])
     assert packet['writes']['grant'] == {'key': RUNTIME_KEY, 'before': inputs['prior'], 'after': approval}
 
 

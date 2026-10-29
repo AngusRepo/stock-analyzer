@@ -204,3 +204,11 @@ def test_v2_halt_is_inert_and_forced_arm_is_counterfactual_only():
         run(recs, value, return_history=history, forced_arm='tight', evidence_sink=[].append)
     with pytest.raises(ValueError, match='policy_schema_invalid'):
         run(recs, {**value, 'policy_schema': 'l4-distribution-policy-v9'}, return_history=history)
+
+
+def test_non_complete_replay_rows_are_skipped_before_validation():
+    ledger = rows('tight', [.01] * 10)
+    expected = select(ledger)
+    inert = [dict(row, status='arm_inert', known_date='2027-01-05') for row in ledger]
+    assert select(ledger + inert) == expected
+    assert select(inert)[1]['status'] == 'cold_start_base'

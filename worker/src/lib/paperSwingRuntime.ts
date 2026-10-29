@@ -4,6 +4,8 @@ import { applySwingDecay, assessSwingExit, closeSwingSession, swingDecayEvidence
 import { readSwingState, writeSwingState } from './paperSwingLifecycle'
 import { paperAccountId, paperExecutionNow } from './paperExecutionScope'
 import { paperDomainDatabase } from './paperDomainDatabase'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { writeSystemLog } from './notify'
 import { loadMarketPriceHistoryBySymbols } from './stockIdentityMarketBridge'
 import type { ExitDecision } from './paperExitPolicy'
 
@@ -19,17 +21,23 @@ async function activatedPlan(env:Bindings,signalDate:string) {
 
 /** One batch of daily prices per polling invocation; no LLM/optimizer calls. */
 export function swingExitEvaluator(env:Bindings, positions:{symbol:string;trade_lifecycle_json?:unknown}[], date:string,
-  cfg?:Parameters<typeof swingExitRules>[0]) {
+  cfg:Parameters<typeof swingExitRules>[0]) {
   let evidence: ReturnType<typeof loadMarketPriceHistoryBySymbols> | undefined
   const plans=new Map<string,ReturnType<typeof activatedPlan>>()
+  let rulesAlerted=false
   return async (pos:{symbol:string;trade_lifecycle_json?:unknown}, price:number):Promise<ExitDecision|null> => {
     let state=readSwingState(pos.trade_lifecycle_json)
     if(!state) return null
     let rules:SwingExitRules
-    try { rules=swingExitRules(cfg ?? {}) } catch(error) {
+    try { rules=swingExitRules(cfg) } catch(error) {
       // A malformed R33 exit config is never replaced by built-in values.
-      console.warn('[SwingExit] '+String(error))
-      return {action:'hold',reason:String(error instanceof Error ? error.message : error)}
+      const reason=String(error instanceof Error ? error.message : error)
+      console.warn('[SwingExit] '+reason)
+      if(!rulesAlerted) {
+        rulesAlerted=true
+        await writeSystemLog(databaseForDataDomain(env,'ops'),'error','swing-exit','R33 swing exit rules invalid; swing exits held',{reason,date})
+      }
+      return {action:'hold',reason}
     }
     const nowMs=paperExecutionNow()
     // Price protection and already-durable exits survive missing daily data.
@@ -74,8 +82,10 @@ export function swingExitEvaluator(env:Bindings, positions:{symbol:string;trade_
       if(rules.decay && !state.pendingExit && signalDate && signalDate>=state.entryDate && state.decayCheckedSignalDate!==signalDate) {
         if(!plans.has(signalDate)) plans.set(signalDate,activatedPlan(env,signalDate))
         const found=await plans.get(signalDate)!
-        if(found) {
-          const decay=('ambiguous' in found) ? {skip:'ehat_plan_ambiguous'} : swingDecayEvidence(found.plan,pos.symbol,signalDate)
+        // A plan still missing after today's close is recorded as a skip rather than waited on forever.
+        if(found || nowMs>=Date.parse(date+'T13:30:00+08:00')) {
+          const decay=!found ? {skip:'ehat_plan_missing'} : ('ambiguous' in found) ? {skip:'ehat_plan_ambiguous'}
+            : swingDecayEvidence(found.plan,pos.symbol,signalDate)
           state=applySwingDecay(state,decay,{signalDate,openMs:Date.parse(date+'T09:05:00+08:00')})
           // The retired ORL rule is still computed every day as the comparison arm.
           const bar=rows.find(r=>r.symbol===pos.symbol && r.date===signalDate)

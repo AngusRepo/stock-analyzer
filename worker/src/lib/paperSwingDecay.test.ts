@@ -70,10 +70,10 @@ function seeded(nowIso: string) {
   const lifecycle = writeSwingState({ version: 'canonical_trade_lifecycle_v1' }, state)
   f.sqls.paper.prepare('INSERT INTO paper_positions(account_id,symbol,name,shares,avg_cost,trade_lifecycle_json) VALUES(1,?,?,?,?,?)')
     .run('2340', 'stock', 1000, 100, lifecycle)
-  const plan = (target: Record<string, unknown>) => f.sqls.paper.prepare(`INSERT INTO l4_portfolio_plans_v1
+  const plan = (target: Record<string, unknown>, signalDate = '2026-10-02', planId = 'p'.repeat(64)) => f.sqls.paper.prepare(`INSERT INTO l4_portfolio_plans_v1
     (plan_id,account_id,signal_date,policy_identity,activated,allocation_snapshot_id,payload_json) VALUES(?,1,?,?,1,?,?)`)
-    .run('p'.repeat(64), '2026-10-02', 'i'.repeat(64), 's'.repeat(64),
-      JSON.stringify({ signal_date: '2026-10-02', r33_projection: {}, targets: { '2340': target } }))
+    .run(planId, signalDate, 'i'.repeat(64), 's'.repeat(64),
+      JSON.stringify({ signal_date: signalDate, r33_projection: {}, targets: { '2340': target } }))
   const shadow = () => f.sqls.paper.prepare('SELECT caller,actual_action,actual_reason,hypothetical_order,hypothetical_mult FROM exit_shadow_log').all() as any[]
   return { f, pos: { symbol: '2340', trade_lifecycle_json: lifecycle as unknown }, plan, shadow }
 }
@@ -145,4 +145,48 @@ test('runtime: a malformed R33 exit config holds and never substitutes built-in 
       assert.match(checkExitConditions(position, 80, 3, false, false, { ...legacy, exit: f.cfg.exit } as any).reason, /swing_exit_rules_invalid/)
     })
   } finally { f.close() }
+})
+
+test('runtime: the decay exit waits for 09:05, and a non-default KV stop moves the hard stop', async () => {
+  const { f, pos, plan } = seeded('2026-10-05T09:00:00+08:00')
+  try {
+    plan({ expected_return_gross: -.01, ehat_missing_reason: null })
+    await withPaperExecutionScope(f.ports, async () => {
+      const wide = r33Config({ swingHardStopPct: -.2, swingMaxHoldSessions: 20 })
+      assert.equal((await swingExitEvaluator(f.env, [pos], '2026-10-05', wide)(pos, 85))?.reason, 'swing_hold')
+      assert.equal(readSwingState(pos.trade_lifecycle_json)?.pendingExit?.reason, 'swing_ehat_decay')
+      assert.equal((await swingExitEvaluator(f.env, [pos], '2026-10-05', wide)(pos, 80))?.reason, 'swing_hard_stop_8')
+    })
+  } finally { f.close() }
+})
+
+test('runtime: no decay check on the plan that preceded the entry', async () => {
+  const { f, plan, shadow } = seeded('2026-10-05T09:05:00+08:00')
+  try {
+    const entry = writeSwingState({ version: 'canonical_trade_lifecycle_v1' }, { ...state, entryDate: '2026-10-05' })
+    f.sqls.paper.prepare('UPDATE paper_positions SET trade_lifecycle_json=? WHERE symbol=?').run(entry, '2340')
+    const pos = { symbol: '2340', trade_lifecycle_json: entry as unknown }
+    plan({ expected_return_gross: -.01, ehat_missing_reason: null })
+    await withPaperExecutionScope(f.ports, async () => {
+      assert.equal((await swingExitEvaluator(f.env, [pos], '2026-10-05', r33Config())(pos, 105))?.reason, 'swing_hold')
+    })
+    assert.equal(shadow().length, 0)
+  } finally { f.close() }
+})
+
+test('runtime: two activated plans for one date, or no plan after the close, are recorded skips', async () => {
+  for (const kind of ['ambiguous', 'missing'] as const) {
+    const { f, pos, plan, shadow } = seeded(kind === 'missing' ? '2026-10-05T13:31:00+08:00' : '2026-10-05T09:05:00+08:00')
+    try {
+      if (kind === 'ambiguous') {
+        plan({ expected_return_gross: -.01, ehat_missing_reason: null })
+        plan({ expected_return_gross: -.01, ehat_missing_reason: null }, '2026-10-02', 'q'.repeat(64))
+      }
+      await withPaperExecutionScope(f.ports, async () => {
+        assert.equal((await swingExitEvaluator(f.env, [pos], '2026-10-05', r33Config())(pos, 105))?.action, 'hold')
+      })
+      assert.deepEqual(shadow().map(r => r.actual_reason), ['exit_skip_reason:ehat_plan_' + kind])
+      assert.equal(readSwingState(pos.trade_lifecycle_json)?.pendingExit, undefined)
+    } finally { f.close() }
+  }
 })

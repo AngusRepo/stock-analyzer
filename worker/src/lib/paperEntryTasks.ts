@@ -2823,7 +2823,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const twPriceBand = currentOhlc?.referencePrice
       ? resolveTwEquityPriceBand(currentOhlc.referencePrice)
       : null
-    const effectiveInitialStop = paperSwingOwner ? fillPrice*.92 : or15PricePlan?.stop ?? normalizeTwEquityStopPrice(effectiveExitInputs.initialStop, twPriceBand)
+    const effectiveInitialStop = paperSwingOwner ? fillPrice*swingExitRules(cfg).hardStopMultiplier : or15PricePlan?.stop ?? normalizeTwEquityStopPrice(effectiveExitInputs.initialStop, twPriceBand)
     let effectiveTp1Price = normalizeTwEquityTargetPrice(effectiveExitInputs.tp1, twPriceBand)
     let effectiveTp2Price = normalizeTwEquityTargetPrice(effectiveExitInputs.tp2, twPriceBand)
     if (or15PricePlan) {

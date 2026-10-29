@@ -31,9 +31,14 @@ def _sha(value) -> bool:
     return isinstance(value, str) and _HEX.fullmatch(value) is not None
 
 
+def r33_artifact_id(ensemble: dict) -> str:
+    """Derived from the claimed payload checksum, like the active8 id; validate_ensemble proves it."""
+    return f"r33-equal7:{ensemble.get('cohort_id')}:{str(ensemble.get('payload_checksum'))[:16]}"
+
+
 def _sealed(body: dict) -> dict:
     payload = checksum(body)
-    return {**body, "artifact_id": f"r33-equal7:{body['cohort_id']}:{payload[:16]}", "payload_checksum": payload}
+    return {**body, "artifact_id": r33_artifact_id({**body, "payload_checksum": payload}), "payload_checksum": payload}
 
 
 def build_ensemble(*, cohort_id: str, base_artifacts: dict, source_bundle: dict, serving_calibration: dict,

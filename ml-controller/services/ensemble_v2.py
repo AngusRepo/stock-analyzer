@@ -49,10 +49,10 @@ def _canonical_json(value: Any) -> str:
 def ensemble_artifact_id(payload: dict) -> str:
     """Registry ID is derived, not inserted into the checksummed model payload.
 
-    An R33 object carries its own derived id (r33-equal7:...), which is its identity everywhere."""
-    from services.r33_ensemble import is_r33
+    An R33 object's id is derived from its own cohort and checksum (r33-equal7:...)."""
+    from services.r33_ensemble import is_r33, r33_artifact_id
     if is_r33(payload):
-        return payload["artifact_id"]
+        return r33_artifact_id(payload)
     return f"active8-ensemble:{payload.get('cohort_id')}:{str(payload.get('payload_checksum'))[:16]}"
 
 

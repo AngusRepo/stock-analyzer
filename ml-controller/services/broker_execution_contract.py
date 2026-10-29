@@ -9,8 +9,11 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from services.live_config import LiveConfigInvalid, buy_cash_required, in_continuous_session, live_limits
+
 
 SCHEMA_VERSION = "stockvision-live-execution-packet-v1"
+CLOCK_SKEW_SECONDS = 2  # tolerance for timestamps slightly in the future
 SHADOW_SCHEMA_VERSION = "stockvision-execution-shadow-packet-v1"
 TERMINAL_LEG_STATES = {"FILLED", "CANCELLED", "REJECTED"}
 NON_RETRYABLE_LEG_STATES = TERMINAL_LEG_STATES | {
@@ -165,6 +168,15 @@ def _snapshot_errors(
     return errors
 
 
+def _limits(live_config: Mapping[str, Any] | None, env: Mapping[str, str], errors: list[str]):
+    """KV trading:live_config session/freshness bounded by env caps; failure leaves zero limits."""
+    try:
+        return live_limits(live_config, env)
+    except LiveConfigInvalid as exc:
+        errors.append(str(exc))
+        return None, {"max_packet_age_seconds": 0, "max_snapshot_age_ms": 0, "max_broker_truth_age_seconds": 0}
+
+
 def validate_execution_packet(
     packet: Mapping[str, Any],
     *,
@@ -172,10 +184,15 @@ def validate_execution_packet(
     env: Mapping[str, str],
     risk_config: Mapping[str, Any] | None,
     daily_side_order_count: int,
+    live_config: Mapping[str, Any] | None = None,
+    fees: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> list[str]:
     errors: list[str] = []
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    config, freshness = _limits(live_config, env, errors)
+    if config is not None and config["mode"] != "live":
+        errors.append("live_config_mode_not_live")
     if packet.get("schema_version") != SCHEMA_VERSION:
         errors.append("execution_packet_schema_invalid")
 
@@ -189,8 +206,8 @@ def validate_execution_packet(
 
     generated_at = parse_time(packet.get("generated_at"))
     expires_at = parse_time(packet.get("expires_at"))
-    max_packet_age_seconds = max(1, int(env.get("LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS") or 5))
-    if generated_at is None or (now - generated_at).total_seconds() < -2 or (now - generated_at).total_seconds() > max_packet_age_seconds:
+    max_packet_age_seconds = freshness["max_packet_age_seconds"]
+    if generated_at is None or (now - generated_at).total_seconds() < -CLOCK_SKEW_SECONDS or (now - generated_at).total_seconds() > max_packet_age_seconds:
         errors.append("execution_packet_stale_or_future")
     if expires_at is None or now >= expires_at:
         errors.append("execution_packet_expired")
@@ -215,8 +232,7 @@ def validate_execution_packet(
     if str(controls.get("market_phase") or "") != "continuous":
         errors.append("unsupported_market_phase")
     tw_now = now.astimezone(ZoneInfo("Asia/Taipei"))
-    minutes = tw_now.hour * 60 + tw_now.minute
-    if tw_now.weekday() >= 5 or not (9 * 60 <= minutes <= 13 * 60 + 30):
+    if config is None or not in_continuous_session(config, tw_now):
         errors.append("runtime_market_session_closed")
     if str(packet.get("trade_date") or "") != tw_now.date().isoformat():
         errors.append("execution_trade_date_mismatch")
@@ -238,8 +254,8 @@ def validate_execution_packet(
     if reference is None or limit_up is None or limit_down is None or not (limit_down <= price <= limit_up):
         errors.append("broker_price_band_invalid")
     broker_observed_at = parse_time(broker_truth.get("observed_at"))
-    max_broker_truth_age_seconds = max(1, int(env.get("LIVE_EXECUTION_MAX_BROKER_TRUTH_AGE_SECONDS") or 5))
-    if broker_observed_at is None or (now - broker_observed_at).total_seconds() < -2 or (now - broker_observed_at).total_seconds() > max_broker_truth_age_seconds:
+    max_broker_truth_age_seconds = freshness["max_broker_truth_age_seconds"]
+    if broker_observed_at is None or (now - broker_observed_at).total_seconds() < -CLOCK_SKEW_SECONDS or (now - broker_observed_at).total_seconds() > max_broker_truth_age_seconds:
         errors.append("broker_truth_stale")
 
     if risk_config is None:
@@ -266,7 +282,10 @@ def validate_execution_packet(
     shares = requested_shares(intent)
     if side == "buy":
         cash = _positive(broker_truth.get("available_cash"))
-        if cash is None or cash < shares * price * 1.005:
+        required = buy_cash_required(shares, price, fees)
+        if required is None:
+            errors.append("trading_fees_unavailable")
+        elif cash is None or cash < required:
             errors.append("broker_cash_insufficient")
     elif side == "sell":
         position = _integer(broker_truth.get("position_shares"))
@@ -279,7 +298,7 @@ def validate_execution_packet(
         _snapshot_errors(
             packet,
             intent,
-            max_snapshot_age_ms=max(100, int(env.get("LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS") or 500)),
+            max_snapshot_age_ms=freshness["max_snapshot_age_ms"],
         )
     )
     return sorted(set(errors))
@@ -292,6 +311,7 @@ def validate_execution_shadow_packet(
     env: Mapping[str, str],
     risk_config: Mapping[str, Any] | None,
     daily_side_order_count: int,
+    live_config: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> list[str]:
     """Validate market/risk parity without requiring broker login or live approval.
@@ -302,6 +322,7 @@ def validate_execution_shadow_packet(
     """
     errors: list[str] = []
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    config, freshness = _limits(live_config, env, errors)
     if packet.get("schema_version") != SHADOW_SCHEMA_VERSION:
         errors.append("execution_shadow_packet_schema_invalid")
     if not signature_valid(packet, signature, str(env.get("LIVE_EXECUTION_HMAC_SECRET") or "")):
@@ -316,8 +337,8 @@ def validate_execution_shadow_packet(
 
     generated_at = parse_time(packet.get("generated_at"))
     expires_at = parse_time(packet.get("expires_at"))
-    max_packet_age_seconds = max(1, int(env.get("LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS") or 5))
-    if generated_at is None or (now - generated_at).total_seconds() < -2 or (now - generated_at).total_seconds() > max_packet_age_seconds:
+    max_packet_age_seconds = freshness["max_packet_age_seconds"]
+    if generated_at is None or (now - generated_at).total_seconds() < -CLOCK_SKEW_SECONDS or (now - generated_at).total_seconds() > max_packet_age_seconds:
         errors.append("execution_packet_stale_or_future")
     if expires_at is None or now >= expires_at:
         errors.append("execution_packet_expired")
@@ -331,8 +352,7 @@ def validate_execution_shadow_packet(
     if str(controls.get("market_phase") or "") != "continuous":
         errors.append("unsupported_market_phase")
     tw_now = now.astimezone(ZoneInfo("Asia/Taipei"))
-    minutes = tw_now.hour * 60 + tw_now.minute
-    if tw_now.weekday() >= 5 or not (9 * 60 <= minutes <= 13 * 60 + 30):
+    if config is None or not in_continuous_session(config, tw_now):
         errors.append("runtime_market_session_closed")
     if str(packet.get("trade_date") or "") != tw_now.date().isoformat():
         errors.append("execution_trade_date_mismatch")
@@ -375,7 +395,7 @@ def validate_execution_shadow_packet(
         _snapshot_errors(
             packet,
             intent,
-            max_snapshot_age_ms=max(100, int(env.get("LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS") or 500)),
+            max_snapshot_age_ms=freshness["max_snapshot_age_ms"],
         )
     )
     return sorted(set(errors))

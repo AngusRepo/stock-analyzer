@@ -20,6 +20,7 @@ from services.finlab_execution_gateway import BrokerOrderRejected, LiveSubmissio
 from services.execution_snapshot_revalidator import revalidate_authoritative_snapshots
 from services.finlab_execution_preview_service import validate_stockvision_execution_intent
 from services.finlab_sinopac_l5_market_data import l5_market_data_env_status
+from services.live_config import buy_cash_required, live_limits, load_live_config, load_trading_fees
 
 
 SCHEMA_VERSION = "finlab-live-submit-service-v2"
@@ -95,6 +96,8 @@ def run_finlab_live_submit(
     repository: BrokerExecutionRepository | None = None,
     gateway: PersistentFinlabExecutionGateway | None = None,
     risk_loader: Callable[[], Mapping[str, Any] | None] | None = None,
+    live_config_loader: Callable[[], Mapping[str, Any] | None] | None = None,
+    fees_loader: Callable[[], Mapping[str, Any] | None] | None = None,
     snapshot_revalidator: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     now: datetime | None = None,
     # Legacy input is retained only to return an explicit fail-closed reason.
@@ -133,6 +136,8 @@ def run_finlab_live_submit(
         if existing is not None:
             daily_count = max(0, daily_count - 1)
         risk_config = (risk_loader or _default_risk_loader)()
+        live_config = (live_config_loader or load_live_config)()
+        fees = (fees_loader or load_trading_fees)()
     except Exception as exc:
         return _blocked(packet, f"execution_control_plane_unavailable:{exc.__class__.__name__}", env_status=env_status)
 
@@ -142,10 +147,14 @@ def run_finlab_live_submit(
         env=values,
         risk_config=risk_config,
         daily_side_order_count=daily_count,
+        live_config=live_config,
+        fees=fees,
         now=now,
     )
     if packet_errors:
         return _blocked(packet, packet_errors, env_status=env_status)
+    # Valid here: validate_execution_packet already refused any config error.
+    max_snapshot_age_ms = live_limits(live_config, values)[1]["max_snapshot_age_ms"]
 
     execution_gateway = gateway
     try:
@@ -163,7 +172,7 @@ def run_finlab_live_submit(
         hub_revalidation = (
             snapshot_revalidator(packet)
             if snapshot_revalidator is not None
-            else revalidate_authoritative_snapshots(packet, env=values)
+            else revalidate_authoritative_snapshots(packet, env=values, max_snapshot_age_ms=max_snapshot_age_ms)
         )
         hub_errors = list(hub_revalidation.get("errors") or [])
         if hub_errors:
@@ -172,7 +181,9 @@ def run_finlab_live_submit(
         broker_errors: list[str] = []
         if actual_broker_truth.get("account_match") is not True:
             broker_errors.append("broker_account_mismatch")
-        if side == "buy" and float(actual_broker_truth.get("available_cash") or 0) < int(packet_intent.get("requestedShares") or 0) * price * 1.005:
+        required_cash = buy_cash_required(int(packet_intent.get("requestedShares") or 0), price, fees)
+        if side == "buy" and (required_cash is None
+                              or float(actual_broker_truth.get("available_cash") or 0) < required_cash):
             broker_errors.append("broker_cash_insufficient_at_submit")
         if side == "sell" and int(actual_broker_truth.get("position_shares") or 0) < int(packet_intent.get("requestedShares") or 0):
             broker_errors.append("broker_position_insufficient_at_submit")
@@ -228,7 +239,8 @@ def run_finlab_live_submit(
                     leg_check = (
                         snapshot_revalidator(leg_packet)
                         if snapshot_revalidator is not None
-                        else revalidate_authoritative_snapshots(leg_packet, env=values)
+                        else revalidate_authoritative_snapshots(
+                            leg_packet, env=values, max_snapshot_age_ms=max_snapshot_age_ms)
                     )
                     leg_errors = list(leg_check.get("errors") or [])
                 except Exception as exc:

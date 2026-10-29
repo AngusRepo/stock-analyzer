@@ -22,8 +22,12 @@ def revalidate_authoritative_snapshots(
     *,
     env: Mapping[str, str] | None = None,
     post_fn: PostFn | None = None,
+    max_snapshot_age_ms: int | None = None,
 ) -> dict[str, Any]:
+    """max_snapshot_age_ms comes from the effective trading:live_config freshness."""
     values = env or os.environ
+    if isinstance(max_snapshot_age_ms, bool) or not isinstance(max_snapshot_age_ms, int) or max_snapshot_age_ms <= 0:
+        return {"errors": ["authoritative_hub_snapshot_age_limit_unavailable"], "observations": {}}
     base_url = str(values.get("SHIOAJI_PROXY_URL") or "").strip().rstrip("/")
     token = str(values.get("PROXY_SERVICE_TOKEN") or "").strip()
     if not base_url or not token:
@@ -37,7 +41,7 @@ def revalidate_authoritative_snapshots(
     symbol = str(intent.get("symbol") or "").strip()
     side = str(intent.get("side") or "").lower()
     price = limit_price(intent)
-    max_age_ms = max(100, int(values.get("LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS") or 500))
+    max_age_ms = max_snapshot_age_ms
     timeout = max(0.1, float(values.get("LIVE_EXECUTION_HUB_TIMEOUT_SECONDS") or 0.75))
     lot_types = []
     for leg in order_legs(intent):

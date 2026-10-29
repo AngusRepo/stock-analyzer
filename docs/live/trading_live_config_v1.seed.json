@@ -1,0 +1,21 @@
+{
+  "schema_version": "live-config-v1",
+  "mode": "paper",
+  "capital_source": "broker_nav_authoritative_marks",
+  "session": {
+    "timezone": "Asia/Taipei",
+    "continuous_open": "09:00",
+    "continuous_close": "13:30",
+    "deferred_sell_release": "09:00"
+  },
+  "freshness": {
+    "max_packet_age_seconds": 5,
+    "max_snapshot_age_ms": 500,
+    "max_broker_truth_age_seconds": 5
+  },
+  "pause": {
+    "enabled": false,
+    "daily_loss_pct": null,
+    "cumulative_drawdown_pct": null
+  }
+}

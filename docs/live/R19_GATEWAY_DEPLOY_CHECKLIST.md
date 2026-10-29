@@ -48,6 +48,13 @@ controller 和 gateway 都會讀同一條 R17 鏈，所以兩邊都需要 execut
     - `durable_pause=true`
     - `approval_values_present` 三項都是 true
     - `finlab_live_submit_enabled=false`
+- [ ] KV `trading:live_config` 已寫入，值和 `docs/live/trading_live_config_v1.seed.json` 相同（`mode='paper'`）。欄位說明見 `docs/live/TRADING_LIVE_CONFIG.md`。
+  - KV 缺這個 key 或格式錯時，gateway 會一律擋下（`live_config_unavailable`）。
+  - env `LIVE_EXECUTION_MAX_*` 只當上限用。要設的話必須是正整數，否則同樣會擋下。
+- [ ] 唯讀確認 KV `trading:config` 有 `fees.commission` 和 `fees.minCommission`。
+  - Worker 會用程式預設值補齊 fees，但 controller／gateway 不會，缺任何一個欄位，買單一律擋下（`trading_fees_unavailable`）。
+  - 確認時只看這兩個欄位，不要把整份 config 印出來。
+  - 缺欄位時要先有 Wei go 才能寫入，寫入後再由 merge/deploy owner 更新 E-7 manifest。
 - [ ] （選用）`LIVE_EXECUTION_CONTROL_READ_TIMEOUT_SECONDS`：預設 1.0 秒，程式會限制在 0.25–2 秒之間。
   - 原因：每條 leg 讀 R17 鏈的時間，必須落在 relay 的 POST 預算（`EXECUTION_GATEWAY_LIVE_TIMEOUT_SECONDS`，3.5–4.5 秒）之內。
   - 讀取逾時一律視為鎖住。

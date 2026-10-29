@@ -11,6 +11,7 @@ from services.broker_execution_repository import BrokerExecutionRepository, D1Br
 from services.execution_snapshot_revalidator import revalidate_authoritative_snapshots
 from services.finlab_execution_gateway import PersistentFinlabExecutionGateway
 from services.finlab_execution_preview_service import validate_stockvision_execution_intent
+from services.live_config import buy_cash_required, live_limits, load_live_config, load_trading_fees
 
 
 SCHEMA_VERSION = "finlab-execution-shadow-result-v1"
@@ -51,6 +52,8 @@ def run_finlab_execution_shadow(
     repository: BrokerExecutionRepository | None = None,
     gateway: PersistentFinlabExecutionGateway | None = None,
     risk_loader: Callable[[], Mapping[str, Any] | None] | None = None,
+    live_config_loader: Callable[[], Mapping[str, Any] | None] | None = None,
+    fees_loader: Callable[[], Mapping[str, Any] | None] | None = None,
     snapshot_revalidator: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -72,6 +75,7 @@ def run_finlab_execution_shadow(
         side = str(intent.get("side") or "").lower()
         daily_count = repo.daily_side_order_count(trade_date, side)
         risk_config = (risk_loader or _default_risk_loader)()
+        live_config = (live_config_loader or load_live_config)()
     except Exception as exc:
         return _result(packet, "blocked", [f"execution_control_plane_unavailable:{exc.__class__.__name__}"])
 
@@ -81,12 +85,15 @@ def run_finlab_execution_shadow(
         env=values,
         risk_config=risk_config,
         daily_side_order_count=daily_count,
+        live_config=live_config,
         now=now,
     )
     if errors:
         return _result(packet, "blocked", errors, broker_login_used=False)
+    max_snapshot_age_ms = live_limits(live_config, values)[1]["max_snapshot_age_ms"]
     try:
-        hub = snapshot_revalidator(packet) if snapshot_revalidator else revalidate_authoritative_snapshots(packet, env=values)
+        hub = snapshot_revalidator(packet) if snapshot_revalidator else revalidate_authoritative_snapshots(
+            packet, env=values, max_snapshot_age_ms=max_snapshot_age_ms)
     except Exception as exc:
         return _result(packet, "blocked", [f"authoritative_hub_revalidation_failed:{exc.__class__.__name__}"], broker_login_used=False)
     hub_errors = list(hub.get("errors") or [])
@@ -111,8 +118,12 @@ def run_finlab_execution_shadow(
             broker_errors.append("broker_account_mismatch")
         shares = int(intent.get("requestedShares") or 0)
         price = limit_price(intent)
-        if side == "buy" and float(broker.get("available_cash") or 0) < shares * price * 1.005:
-            broker_errors.append("broker_cash_insufficient_at_shadow")
+        if side == "buy":
+            required_cash = buy_cash_required(shares, price, (fees_loader or load_trading_fees)())
+            if required_cash is None:
+                broker_errors.append("trading_fees_unavailable")
+            elif float(broker.get("available_cash") or 0) < required_cash:
+                broker_errors.append("broker_cash_insufficient_at_shadow")
         if side == "sell" and int(broker.get("position_shares") or 0) < shares:
             broker_errors.append("broker_position_insufficient_at_shadow")
         if broker_errors:

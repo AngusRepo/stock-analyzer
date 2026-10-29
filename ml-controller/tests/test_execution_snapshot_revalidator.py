@@ -63,7 +63,6 @@ def _env() -> dict[str, str]:
     return {
         "SHIOAJI_PROXY_URL": "https://hub.invalid",
         "PROXY_SERVICE_TOKEN": "test-token",
-        "LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS": "500",
     }
 
 
@@ -74,7 +73,7 @@ def test_revalidation_requires_fresh_marketability_for_each_lot() -> None:
         calls.append(json["lot_type"])
         return Response(json["lot_type"])
 
-    result = revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post)
+    result = revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post, max_snapshot_age_ms=500)
     assert result["errors"] == []
     assert calls == ["board_lot", "odd_lot"]
 
@@ -84,7 +83,7 @@ def test_stale_odd_lot_book_blocks_entire_intent() -> None:
         age = 900 if json["lot_type"] == "odd_lot" else 100
         return Response(json["lot_type"], age_ms=age)
 
-    result = revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post)
+    result = revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post, max_snapshot_age_ms=500)
     assert result["errors"] == ["authoritative_hub_book_stale:odd_lot"]
 
 
@@ -92,7 +91,7 @@ def test_wrong_lot_book_blocks_submit() -> None:
     def post(url, headers, json, timeout):
         return Response("board_lot")
 
-    result = revalidate_authoritative_snapshots(_packet("buy"), env=_env(), post_fn=post)
+    result = revalidate_authoritative_snapshots(_packet("buy"), env=_env(), post_fn=post, max_snapshot_age_ms=500)
     assert "authoritative_hub_lot_type_mismatch:odd_lot" in result["errors"]
 
 
@@ -100,7 +99,7 @@ def test_buy_ask_above_limit_blocks_submit() -> None:
     def post(url, headers, json, timeout):
         return Response(json["lot_type"], bid=143, ask=143.5)
 
-    result = revalidate_authoritative_snapshots(_packet("buy"), env=_env(), post_fn=post)
+    result = revalidate_authoritative_snapshots(_packet("buy"), env=_env(), post_fn=post, max_snapshot_age_ms=500)
     assert "authoritative_hub_ask_above_limit:board_lot" in result["errors"]
     assert "authoritative_hub_ask_above_limit:odd_lot" in result["errors"]
 
@@ -112,7 +111,7 @@ def test_static_odd_lot_confirmation_allows_recent_unchanged_source_for_both_sid
                             confirmation_mode=mode if json["lot_type"] == "odd_lot" else None)
 
         for side in ("buy", "sell"):
-            result = revalidate_authoritative_snapshots(_packet(side), env=_env(), post_fn=post)
+            result = revalidate_authoritative_snapshots(_packet(side), env=_env(), post_fn=post, max_snapshot_age_ms=500)
             assert result["errors"] == []
 
 
@@ -126,5 +125,27 @@ def test_static_odd_lot_source_limit_and_confirmation_still_block_submit() -> No
                             confirmed_age_ms=confirmed_age_ms if json["lot_type"] == "odd_lot" else 0,
                             confirmation_mode="quote_session_static_book" if json["lot_type"] == "odd_lot" else None)
 
-        result = revalidate_authoritative_snapshots(_packet("buy"), env=_env(), post_fn=post)
+        result = revalidate_authoritative_snapshots(_packet("buy"), env=_env(), post_fn=post, max_snapshot_age_ms=500)
         assert expected in result["errors"]
+
+
+def test_revalidation_without_an_effective_snapshot_age_fails_closed() -> None:
+    calls: list[str] = []
+
+    def post(url, headers, json, timeout):
+        calls.append(json["lot_type"])
+        return Response(json["lot_type"])
+
+    for limit in (None, 0, -1, True, 500.0, "500"):
+        result = revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post, max_snapshot_age_ms=limit)
+        assert result["errors"] == ["authoritative_hub_snapshot_age_limit_unavailable"]
+    assert calls == []
+
+
+def test_the_snapshot_age_limit_is_the_one_passed_in() -> None:
+    def post(url, headers, json, timeout):
+        return Response(json["lot_type"], age_ms=300)
+
+    assert revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post, max_snapshot_age_ms=300)["errors"] == []
+    stale = revalidate_authoritative_snapshots(_packet(), env=_env(), post_fn=post, max_snapshot_age_ms=299)
+    assert "authoritative_hub_book_stale:board_lot" in stale["errors"]

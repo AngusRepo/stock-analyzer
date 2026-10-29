@@ -72,6 +72,22 @@ def _risk(kill_switch: bool = False) -> dict:
     }
 
 
+def _live_config(mode: str = "live") -> dict:
+    return {
+        "schema_version": "live-config-v1",
+        "mode": mode,
+        "capital_source": "broker_nav_authoritative_marks",
+        "session": {"timezone": "Asia/Taipei", "continuous_open": "09:00", "continuous_close": "13:30",
+                    "deferred_sell_release": "09:00"},
+        "freshness": {"max_packet_age_seconds": 5, "max_snapshot_age_ms": 500, "max_broker_truth_age_seconds": 5},
+        "pause": {"enabled": False, "daily_loss_pct": None, "cumulative_drawdown_pct": None},
+    }
+
+
+def _fees() -> dict:
+    return {"commission": 0.001425, "tax": 0.003, "dayTradeTax": 0.0015, "minCommission": 20}
+
+
 def _packet(intent: dict | None = None, **overrides: object) -> dict:
     now = TEST_NOW
     value = {
@@ -240,6 +256,8 @@ def _run(tmp_path: Path, repo: MemoryRepository, gateway: FakeGateway, packet: d
         repository=repo,
         gateway=gateway,  # type: ignore[arg-type]
         risk_loader=lambda: _risk(),
+        live_config_loader=kwargs.pop("live_config_loader", _live_config),
+        fees_loader=kwargs.pop("fees_loader", _fees),
         snapshot_revalidator=kwargs.pop("snapshot_revalidator", lambda _: {"errors": [], "observations": {}}),
         now=TEST_NOW,
         **kwargs,
@@ -273,6 +291,8 @@ def test_invalid_signature_blocks_before_reservation(tmp_path: Path) -> None:
         repository=repo,
         gateway=FakeGateway(),  # type: ignore[arg-type]
         risk_loader=lambda: _risk(),
+        live_config_loader=_live_config,
+        fees_loader=_fees,
         now=TEST_NOW,
     )
     assert result["status"] == "blocked"
@@ -381,6 +401,8 @@ def test_runtime_kill_switch_blocks_even_when_signed_packet_says_false(tmp_path:
         repository=MemoryRepository(),
         gateway=FakeGateway(),  # type: ignore[arg-type]
         risk_loader=lambda: _risk(kill_switch=True),
+        live_config_loader=_live_config,
+        fees_loader=_fees,
         now=TEST_NOW,
     )
     assert result["status"] == "blocked"
@@ -400,8 +422,145 @@ def test_general_ml_controller_role_cannot_submit(tmp_path: Path) -> None:
         repository=MemoryRepository(),
         gateway=gateway,  # type: ignore[arg-type]
         risk_loader=lambda: _risk(),
+        live_config_loader=_live_config,
+        fees_loader=_fees,
         snapshot_revalidator=lambda _: {"errors": [], "observations": {}},
         now=TEST_NOW,
     )
     assert result["reason"] == "dedicated_execution_gateway_service_required"
     assert gateway.calls == []
+
+
+# --- trading:live_config / trading:config.fees (plan §4.5, D-5) ---
+
+def _small_buy_packet(cash: float) -> dict:
+    intent = _intent(side="buy", limitPrice=143, minPrice=143, maxPrice=143, requestedShares=10,
+                     orderLegs=[{"lotType": "odd_lot", "shares": 10, "finlabQuantity": 10, "oddLot": True}])
+    packet = _packet(intent, idempotency_key="paper-to-live-test-4953-buy-001")
+    packet["broker_truth"]["available_cash"] = cash
+    return packet
+
+
+@pytest.mark.parametrize("fees", [
+    None,
+    {"tax": 0.003, "minCommission": 20},  # commission missing
+    {"commission": 0.001425, "tax": 0.003},  # minCommission missing
+    {"commission": -0.001, "minCommission": 20},
+    {"commission": True, "minCommission": 20},
+    {"commission": float("nan"), "minCommission": 20},
+])
+def test_a_buy_without_readable_fees_never_reaches_the_broker(tmp_path: Path, fees) -> None:
+    gateway = FakeGateway()
+    repo = MemoryRepository()
+    result = _run(tmp_path, repo, gateway, _small_buy_packet(2_000_000), fees_loader=lambda: fees)
+    assert result["status"] == "blocked"
+    assert "trading_fees_unavailable" in result["blocked_reasons"]
+    assert gateway.calls == [] and repo.intents == {}
+
+
+def test_the_buy_cash_buffer_includes_the_minimum_commission(tmp_path: Path) -> None:
+    # 10 x 143 = 1430; commission max(1430 x 0.001425, 20) = 20, so 1450 is needed.
+    # The old 1.005 buffer (1437.15) would have let 1440 through.
+    gateway = FakeGateway()
+    result = _run(tmp_path, MemoryRepository(), gateway, _small_buy_packet(1440))
+    assert "broker_cash_insufficient" in result["blocked_reasons"] and gateway.calls == []
+    gateway = FakeGateway()
+    assert _run(tmp_path, MemoryRepository(), gateway, _small_buy_packet(1450))["status"] == "submitted"
+    assert len(gateway.calls) == 1
+
+
+def test_the_broker_cash_recheck_at_submit_uses_the_same_fee_rule(tmp_path: Path) -> None:
+    class ShortCashGateway(FakeGateway):
+        def revalidate_broker_truth(self, *, symbol: str):
+            return {**super().revalidate_broker_truth(symbol=symbol), "available_cash": 1449}
+
+    gateway = ShortCashGateway()
+    result = _run(tmp_path, MemoryRepository(), gateway, _small_buy_packet(1450))
+    assert result["blocked_reasons"] == ["broker_cash_insufficient_at_submit"] and gateway.calls == []
+
+
+@pytest.mark.parametrize("config,reason", [
+    (None, "live_config_unavailable"),
+    ({**_live_config(), "mode": "paper"}, "live_config_mode_not_live"),
+    ({**_live_config(), "extra": 1}, "live_config_root_keys_invalid"),
+    ({**_live_config(), "freshness": {"max_packet_age_seconds": 5, "max_snapshot_age_ms": 500}},
+     "live_config_freshness_keys_invalid"),
+])
+def test_live_submit_requires_a_valid_live_config_in_live_mode(tmp_path: Path, config, reason) -> None:
+    gateway = FakeGateway()
+    result = _run(tmp_path, MemoryRepository(), gateway, _packet(), live_config_loader=lambda: config)
+    assert result["status"] == "blocked" and reason in result["blocked_reasons"]
+    assert gateway.calls == []
+
+
+def test_the_session_window_comes_from_live_config(tmp_path: Path) -> None:
+    config = _live_config()
+    config["session"] = {**config["session"], "continuous_open": "09:05", "deferred_sell_release": "09:05"}
+    gateway = FakeGateway()  # TEST_NOW is 09:01 Taiwan time
+    result = _run(tmp_path, MemoryRepository(), gateway, _packet(), live_config_loader=lambda: config)
+    assert "runtime_market_session_closed" in result["blocked_reasons"] and gateway.calls == []
+
+
+def test_freshness_comes_from_live_config_and_env_only_tightens_it(tmp_path: Path) -> None:
+    packet = _packet(generated_at=(TEST_NOW - timedelta(seconds=3)).isoformat())
+    loose = _run(tmp_path, MemoryRepository(), FakeGateway(), packet)
+    assert loose["status"] == "submitted"
+    config = _live_config()
+    config["freshness"] = {**config["freshness"], "max_packet_age_seconds": 2}
+    tight = _run(tmp_path, MemoryRepository(), FakeGateway(), packet, live_config_loader=lambda: config)
+    assert "execution_packet_stale_or_future" in tight["blocked_reasons"]
+
+
+@pytest.mark.parametrize("cap,blocked_reason", [
+    ("2", "execution_packet_stale_or_future"),  # env cap tighter than KV wins
+    ("60", None),  # a looser env cap never widens KV
+    ("abc", "live_config_env_cap_invalid:LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS"),
+    ("0", "live_config_env_cap_invalid:LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS"),
+])
+def test_the_env_freshness_value_is_only_an_upper_bound(tmp_path: Path, cap, blocked_reason) -> None:
+    env = _ready_env(tmp_path / "cert.pfx")
+    env["LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS"] = cap
+    packet = _packet(generated_at=(TEST_NOW - timedelta(seconds=3)).isoformat())
+    result = run_finlab_live_submit(
+        packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]), allow_live_submit=True,
+        env=env, repository=MemoryRepository(), gateway=FakeGateway(),  # type: ignore[arg-type]
+        risk_loader=lambda: _risk(), live_config_loader=_live_config, fees_loader=_fees,
+        snapshot_revalidator=lambda _: {"errors": [], "observations": {}}, now=TEST_NOW,
+    )
+    if blocked_reason is None:
+        assert result["status"] == "submitted"
+    else:
+        assert blocked_reason in result["blocked_reasons"]
+
+
+def test_the_hub_revalidation_gets_the_effective_snapshot_age(tmp_path: Path, monkeypatch) -> None:
+    import services.finlab_live_submit_service as service
+
+    seen: list[int] = []
+
+    def fake(packet, *, env=None, post_fn=None, max_snapshot_age_ms=None):
+        seen.append(max_snapshot_age_ms)
+        return {"errors": [], "observations": {}}
+
+    monkeypatch.setattr(service, "revalidate_authoritative_snapshots", fake)
+    config = _live_config()
+    config["freshness"] = {**config["freshness"], "max_snapshot_age_ms": 400}
+    env = _ready_env(tmp_path / "cert.pfx")
+    env["LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS"] = "300"
+    packet = _packet()
+    result = run_finlab_live_submit(
+        packet=packet, signature=sign_packet(packet, env["LIVE_EXECUTION_HMAC_SECRET"]), allow_live_submit=True,
+        env=env, repository=MemoryRepository(), gateway=FakeGateway(),  # type: ignore[arg-type]
+        risk_loader=lambda: _risk(), live_config_loader=lambda: config, fees_loader=_fees, now=TEST_NOW,
+    )
+    assert result["status"] == "submitted"
+    assert seen and set(seen) == {300}  # once before the legs and once per leg
+
+
+def test_a_live_config_loader_error_blocks_before_the_broker(tmp_path: Path) -> None:
+    def broken():
+        raise TimeoutError("kv")
+
+    gateway = FakeGateway()
+    result = _run(tmp_path, MemoryRepository(), gateway, _packet(), live_config_loader=broken)
+    assert result["reason"] == "execution_control_plane_unavailable:TimeoutError" and gateway.calls == []

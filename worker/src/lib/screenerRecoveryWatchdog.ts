@@ -10,6 +10,10 @@ import {
   enqueuePostScreenerPipelineContinuation,
   enqueuePostScreenerPipelineRecovery,
 } from './postScreenerContinuation'
+import { finLabLateRetryCutoffTw } from './finlabSourceContract'
+import { manifestRepeatingWindow } from './schedulerManifestGovernance'
+import { resolveTwTradingSession } from './schedulerPolicy'
+import { alertScreenerChipStale, type ScreenerChipFreshness } from './screenerMarketData'
 
 const SCREENER_STAGE = 'screener_v2'
 const SCREENER_LEASE_SECONDS = 6000
@@ -320,6 +324,90 @@ export async function recordCanonicalScreenerCallback(
   }
 }
 
+/**
+ * C28-18: the screener job records chip freshness in the funnel metadata; the Worker (which holds the
+ * webhook) sends the one-per-date stale warn when the watchdog verifies the canonical funnel. Never blocks.
+ */
+export async function alertScreenerChipStaleFromFunnel(env: Bindings, opsDb: D1Database, businessDate: string,
+  funnelRunId: string): Promise<boolean> {
+  try {
+    const row = await opsDb.prepare('SELECT metadata FROM screener_funnel_runs WHERE date=? AND run_id=?')
+      .bind(businessDate, funnelRunId).first<{ metadata?: string | null }>()
+    const freshness = row?.metadata ? JSON.parse(row.metadata)?.chipFreshness : null
+    if (!freshness || typeof freshness !== 'object' || typeof freshness.stale !== 'boolean') return false
+    return await alertScreenerChipStale(env, businessDate, freshness as ScreenerChipFreshness)
+  } catch {
+    return false
+  }
+}
+
+/** NEW-86: minutes after the FinLab late-lane retry cutoff before a missing screener run is reported. */
+export const SCREENER_MISSING_ALERT_GRACE_MINUTES = 30
+/** evening-chain states that can still legitimately start the screener (FinLab late-lane retries log `triggered`). */
+const EVENING_CHAIN_ACTIVE = new Set(['waiting', 'running', 'triggered'])
+
+const twDayStartMs = (businessDate: string) => Date.parse(`${businessDate}T00:00:00+08:00`)
+const twClock = (ms: number) => new Date(ms + 8 * 3600_000).toISOString().slice(11, 16)
+
+/** The alert opens at the contract cutoff + grace; an active chain defers it to the last same-day watchdog tick. */
+export function screenerMissingAlertTimes(businessDate: string): { alertAtMs: number; finalTickMs: number } {
+  const [hour, minute] = finLabLateRetryCutoffTw().split(':').map(Number)
+  const dayStart = twDayStartMs(businessDate)
+  return {
+    alertAtMs: dayStart + (hour * 60 + minute + SCREENER_MISSING_ALERT_GRACE_MINUTES) * 60_000,
+    finalTickMs: dayStart + manifestRepeatingWindow('screener-v2-watchdog').lastSameDayTwMinute * 60_000,
+  }
+}
+
+async function alertScreenerRunMissing(env: Bindings, businessDate: string, eveningChain: string): Promise<boolean> {
+  if (!env.DISCORD_WEBHOOK_URL) return false
+  const dedupKey = `cron:alert:screener-v2-missing:${businessDate}`
+  try {
+    if (await env.KV.get(dedupKey)) return false
+    // Claim before sending: a failing webhook must not re-alert on every tick.
+    await env.KV.put(dedupKey, '1', { expirationTtl: 86400 })
+    await fetch(env.DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: [
+          'Scheduler Warn: screener did not run (`screener-v2-missing`)',
+          `Date: ${businessDate}`,
+          'No canonical screener_v2 stage and no successful screener funnel for this trading day.',
+          `evening-chain: ${eveningChain}`,
+        ].join('\n'),
+      }),
+      signal: AbortSignal.timeout(5000),
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** NEW-86: a trading day with no screener run is reported once instead of being skipped silently. Never throws on alerting. */
+async function screenerRunMissingSummary(env: Bindings, opsDb: D1Database, businessDate: string, nowMs = Date.now()): Promise<string> {
+  const skipped = `SKIPPED canonical screener run missing for ${businessDate}`
+  const { alertAtMs, finalTickMs } = screenerMissingAlertTimes(businessDate)
+  if (nowMs < alertAtMs) return skipped
+  const manual = await opsDb.prepare(`
+    SELECT run_id
+      FROM screener_funnel_runs
+     WHERE date=? AND status='success' AND COALESCE(universe_count, 0) > 0
+     LIMIT 1
+  `).bind(businessDate).first<{ run_id?: string | null }>()
+  if (manual?.run_id) return `${skipped}; funnel=${manual.run_id} succeeded outside the canonical chain`
+  const session = await resolveTwTradingSession(env.KV, businessDate)
+  if (!session.trading) return `${skipped}; non_trading_day=${session.reason}`
+  const chain = await env.KV.get(`scheduler:run:evening-chain:${businessDate}`, 'json') as { status?: string } | null
+  const eveningChain = String(chain?.status ?? 'missing')
+  if (EVENING_CHAIN_ACTIVE.has(eveningChain) && nowMs < finalTickMs) {
+    return `${skipped}; evening-chain=${eveningChain}, alert deferred to ${twClock(finalTickMs)} TW`
+  }
+  await alertScreenerRunMissing(env, businessDate, eveningChain)
+  return `status=error screener_run_missing:${businessDate} evening_chain=${eveningChain}`
+}
+
 export async function runScreenerRecoveryWatchdog(
   env: Bindings,
   trigger: TriggerScreener,
@@ -330,7 +418,7 @@ export async function runScreenerRecoveryWatchdog(
   }
   const opsDb = databaseForDataDomain(env, 'ops')
   const canonicalRunId = await loadCanonicalChainRunId(opsDb, businessDate)
-  if (!canonicalRunId) return `SKIPPED canonical screener run missing for ${businessDate}`
+  if (!canonicalRunId) return screenerRunMissingSummary(env, opsDb, businessDate)
 
   const authority = await resolveEveningChainRunAuthority(env, {
     businessDate,
@@ -352,6 +440,7 @@ export async function runScreenerRecoveryWatchdog(
     ? await loadSuccessfulFunnel(opsDb, businessDate, producerRunId)
     : null
   if (funnel?.run_id) {
+    await alertScreenerChipStaleFromFunnel(env, opsDb, businessDate, funnel.run_id)
     const receipt = await recordCanonicalScreenerCallback(opsDb, {
       businessDate,
       canonicalRunId,

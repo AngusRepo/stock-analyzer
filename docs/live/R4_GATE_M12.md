@@ -67,9 +67,27 @@ G1 的 20 日、G3 的 z 尾端和 horizon、CI 水準都寫在 `r4_gate_policy_
 | `slippage_band` | 用 20 日 `paper_broker_reconciliation` expected_slippage 分布算出的帶寬產物 sha |
 | `d12_replay_receipts` | 沒有也要給空陣列 |
 
+### 4.1 Collector（`tools/live/r4_gate_collect.py`）
+- 只讀：D1 走 `shadow_client_for_domain`（只允許 SELECT），KV 只用 strict GET；唯一的寫入是本機 evidence 檔。不連券商、不讀寫 GCS。
+- 自動取得：
+  - 交易日曆與 `as_of`：policy 的公告休市日＋逐日讀 holiday KV。KV 有、policy 沒有的休市日一律列入 `ad_hoc_closures`；manual 沒有 Wei 確認（JSON `true`＋原因）就標 `wei_confirmed=false`，G1 會 FAIL。
+  - `paper_days[].identity` 的 `l3_identity`＝前一交易日 activated L4 plan 的 `payload.l3_identity` canonical sha256，`allocator_identity`＝該 plan 的 `policy_identity`。當天沒有、或有兩種以上 plan identity，整天不列（G1 連續段在此中斷）。
+  - `paper_days[].health`：`pending_buys_after_0845`（非 superseded run 中台灣 08:45 後建立的 item）、`nav_quote_date_mismatch`（沒有 verified `dated_marks_complete` 估值、`pending_valuation`、持股沒有 mark、mark 的 `price_date` 不是當天、報價時間的台灣日期不是當天或無法解析；沒有時區的報價時間視為台灣時間，與 Worker 一致）、`paper_execution_scope_violation`（代理值：當天 stage／ticket 的 `last_error` 含 scope 相關字樣）、`evening_chain_incomplete`（當天最新的 evening-chain root ticket 不是 success）。
+  - `net_excess_days`：單邊換手＝當天（台灣日期）Paper 成交額 ÷ 前一交易日 NAV；Paper 帳戶報酬＝NAV 相對前一交易日。
+  - `trading_config_fees`（只取 KV `trading:config.fees`，缺就不給，不用 Worker 預設值）、`live_config`、最新一筆 `live_account_observations_v1`（重驗 sha，對不上就中止）。
+- 由 manual 檔提供（`--manual`，Wei／parent 填寫並附出處）：`slice_a_identity`、`release_timeline`（每段的 `effective_from`、`grant_key`、`execution_owner_version`、`source_ref`；目前沒有逐日紀錄，來源是 GCS release receipts）、`ad_hoc_closures_confirmed`、`d12_replay_receipts`（沒有就空陣列）、`allocator_decisions`、`live_tests`、`slippage_band`、`net_excess_benchmark`。
+- `signal` 由另一份產物提供（`--signal`，要同時有 `oos_days` 和 `oof`）。
+- 沒有來源或還沒定義的欄位一律不填，並列在 `collector.gaps`，gate 因此 FAIL。目前固定會出現的 gap：
+  - `health_undefined:ledger_cross_write`：T3 交叉寫入的掃描還沒有定義。
+  - `net_excess_benchmark_undecided`：毛超額的基準（`benchmark_value`＝0050 或 `twii_value`）待 Wei 決定；決定前不算 `gross_excess`。決定後的算法是 Paper 報酬＋當天實付成本 ÷ 前一交易日 NAV − 基準報酬，也請 Wei 一併確認。
+  - `signal_artifact_missing`：z 尾端（z≥1.5／2.0）與「封存校準 blocks 分段」的對應尚未定案，訊號程式在 `sa/native`／`sa/serving`。
+
 ## 5. 執行（12/8（二）收盤後，plan §4.7）
 ```sh
 set -e
+# 只讀收集：D1 SELECT 與 KV GET；evidence 寫到本機。
+python tools/live/r4_gate_collect.py --calendar-start "<Slice A 第 1 個 Paper 交易日>" \
+  --manual manual.json --signal signal.json --out evidence.json
 # 只讀：policy 與 evidence 都是本機檔案；收據寫到本機。
 python tools/live/r4_gate_check.py --evidence evidence.json --out live_gate_receipt.json \
   --expected-policy-sha256 "<DECISIONS 記錄的 policy sha>"

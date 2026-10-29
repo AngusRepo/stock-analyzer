@@ -314,3 +314,58 @@ def test_rebuild_drops_evidence_from_an_earlier_build():
                                          ensemble=_ensemble(), l3_identity=IDENTITY)
     assert rank_pool.EVIDENCE_KEY not in predictions["9999"]
     assert rank_pool.validate_rank_pool(snapshot, predictions) is snapshot
+
+
+@pytest.mark.parametrize("changes", [
+    {"schema_version": "r33-equal7-ensemble-v0"},
+    {"kind": "active8"},
+    {"cohort_id": ""},
+    {"model_order": list(reversed(MODELS))},
+    {"validation": {"decision": "PASS", "oof_checks_status": "fail", "pit_certified": True,
+                    "pit_certification_sha256": "9" * 64}},
+    {"validation": {"decision": "PASS", "oof_checks_status": "pass", "pit_certified": True}},
+    {"validation": {"decision": "PASS", "oof_checks_status": "pass", "pit_certified": True,
+                    "pit_certification_sha256": "not-a-sha"}},
+], ids=["schema", "kind", "cohort", "order", "oof_checks", "pit_sha_missing", "pit_sha_format"])
+def test_a_self_consistent_but_malformed_ensemble_is_rejected(changes):
+    with pytest.raises(ValueError, match="r33_ensemble_contract"):
+        validate_ensemble(_reseal(_ensemble(), **changes))
+
+
+def _with_artifacts(mutate):
+    artifacts = copy.deepcopy(_ensemble()["base_artifacts"])
+    mutate(artifacts)
+    return _reseal(_ensemble(), base_artifacts=artifacts, observation_artifacts=copy.deepcopy(artifacts),
+                   base_artifact_set_checksum=checksum(artifacts))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda a: a.update(XGBoost={"artifact_id": "x", "version": "v", "checksum": "a" * 64}),
+    lambda a: a.pop("GNN"),
+    lambda a: a["TabM"].pop("checksum"),
+    lambda a: a["TabM"].update(checksum="sha256:" + "a" * 64),
+    lambda a: a["TabM"].update(version=""),
+], ids=["extra_model", "missing_model", "no_checksum", "checksum_format", "empty_version"])
+def test_the_artifact_roster_must_be_exactly_seven_well_formed_artifacts(mutate):
+    with pytest.raises(ValueError, match="r33_ensemble_contract"):
+        validate_ensemble(_with_artifacts(mutate))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda s: s.pop("sha256"), lambda s: s.pop("manifest_checksum"), lambda s: s.update(oof_checks_checksum="x"),
+    lambda s: s.update(path=""),
+], ids=["no_sha", "no_manifest", "bad_checks", "no_path"])
+def test_the_source_bundle_must_be_bound(mutate):
+    source = copy.deepcopy(_ensemble()["source_bundle"])
+    mutate(source)
+    with pytest.raises(ValueError, match="r33_ensemble_contract"):
+        validate_ensemble(_reseal(_ensemble(), source_bundle=source))
+
+
+def test_bool_is_not_a_raw_score():
+    symbols, raws = _book()
+    predictions = {s: _prediction(raws[s]) for s in symbols}
+    predictions[symbols[0]]["model_score_lineage"]["raw_scores"] = {m: True for m in MODELS}
+    snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
+                                         ensemble=_ensemble(), l3_identity=IDENTITY)
+    assert snapshot["coverage"]["unscored"] == {symbols[0]: "no_model_available"}

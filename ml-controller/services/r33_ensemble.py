@@ -7,6 +7,8 @@ roster or table.
 """
 from __future__ import annotations
 
+import re
+
 from services.r33_crossfit_serving import validate_serving
 from services.r33_isotonic_calibration import MODELS, checksum
 
@@ -17,6 +19,12 @@ _BODY = ("schema_version", "kind", "cohort_id", "model_order", "selected_models"
          "serving_calibration", "validation")
 _ARTIFACT = ("artifact_id", "version", "checksum")
 _SOURCE = ("path", "sha256", "manifest_checksum", "oof_checks_checksum", "source_calibration_checksum")
+_VALIDATION = ("decision", "oof_checks_status", "pit_certified", "pit_certification_sha256")
+_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _sha(value) -> bool:
+    return isinstance(value, str) and _HEX.fullmatch(value) is not None
 
 
 def _sealed(body: dict) -> dict:
@@ -32,7 +40,7 @@ def build_ensemble(*, cohort_id: str, base_artifacts: dict, source_bundle: dict,
                 observation_artifacts={m: dict(v) for m, v in artifacts.items()},
                 base_artifact_set_checksum=checksum(artifacts), variant=serving_calibration["variant"],
                 source_bundle={k: source_bundle[k] for k in _SOURCE}, serving_calibration=serving_calibration,
-                validation=dict(validation))
+                validation={k: validation[k] for k in _VALIDATION})
     ensemble = _sealed(body)
     validate_ensemble(ensemble)
     return ensemble
@@ -43,21 +51,30 @@ def is_r33(ensemble) -> bool:
 
 
 def validate_ensemble(ensemble: dict) -> dict:
-    """The whole object, recomputed: roster, artifact set, source, serving table, checksum, id."""
+    """The whole object, recomputed: roster, artifact set, source, serving table, checksum, id.
+
+    payload_checksum covers every field except artifact_id (derived from it) and
+    itself; this is not the active8 convention, so r33 objects are validated here only.
+    """
     if not isinstance(ensemble, dict) or set(ensemble) != {*_BODY, "artifact_id", "payload_checksum"}:
         raise ValueError("r33_ensemble_contract")
     artifacts, source = ensemble["base_artifacts"], ensemble["source_bundle"]
-    validation = ensemble["validation"] or {}
+    validation = ensemble["validation"]
     if (ensemble["schema_version"] != SCHEMA or ensemble["kind"] != KIND
             or not isinstance(ensemble["cohort_id"], str) or not ensemble["cohort_id"]
             or ensemble["model_order"] != list(MODELS) or ensemble["selected_models"] != list(MODELS)
             or not isinstance(artifacts, dict) or set(artifacts) != set(MODELS)
             or any(not isinstance(artifacts[m], dict) or set(artifacts[m]) != set(_ARTIFACT)
-                   or any(not isinstance(v, str) or not v for v in artifacts[m].values()) for m in MODELS)
+                   or not isinstance(artifacts[m]["artifact_id"], str) or not artifacts[m]["artifact_id"]
+                   or not isinstance(artifacts[m]["version"], str) or not artifacts[m]["version"]
+                   or not _sha(artifacts[m]["checksum"]) for m in MODELS)
             or ensemble["observation_artifacts"] != artifacts
             or not isinstance(source, dict) or set(source) != set(_SOURCE)
-            or validation.get("decision") != "PASS" or validation.get("oof_checks_status") != "pass"
-            or validation.get("pit_certified") is not True):
+            or not isinstance(source["path"], str) or not source["path"]
+            or not all(_sha(source[k]) for k in _SOURCE[1:])
+            or not isinstance(validation, dict) or set(validation) != set(_VALIDATION)
+            or validation["decision"] != "PASS" or validation["oof_checks_status"] != "pass"
+            or validation["pit_certified"] is not True or not _sha(validation["pit_certification_sha256"])):
         raise ValueError("r33_ensemble_contract")
     if ensemble["base_artifact_set_checksum"] != checksum(artifacts):
         raise ValueError("r33_ensemble_artifact_set_checksum")

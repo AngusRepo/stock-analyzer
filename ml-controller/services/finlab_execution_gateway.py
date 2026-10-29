@@ -7,13 +7,15 @@ Cloud Run single-instance/continuous-CPU runtime has been separately confirmed.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import queue
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
+from zoneinfo import ZoneInfo
 
 from services.broker_execution_repository import BrokerExecutionRepository
 from services.execution_submission_control import D1SubmissionControl, order_path_read_timeout
@@ -60,6 +62,31 @@ def _raw_payload(value: Any) -> dict[str, Any]:
     return {"repr": repr(value)}
 
 
+_TW = ZoneInfo("Asia/Taipei")
+# Login skips the contract download (finlab fetch_contract=False) and a persistent gateway stays
+# logged in across days, so reads download the table when it lacks a code or is not today's,
+# at most this often: a download holds the broker lock (broker plumbing, not a trading number).
+_CONTRACT_REFRESH_INTERVAL = timedelta(minutes=30)
+_CONTRACT_DOWNLOAD_TIMEOUT_MS = 10_000
+_SNAPSHOT_TIMEOUT_MS = 3_000  # inside the broker lock; the controller waits 5 s
+
+
+def _finite_positive(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+
+def _contract_day(value: Any) -> Any:
+    """Contract update_date as a date: a date object, or 'YYYY/MM/DD' / 'YYYY-MM-DD' text."""
+    if isinstance(value, datetime):
+        return value.date()
+    if hasattr(value, "isoformat") and hasattr(value, "year"):
+        return value
+    try:
+        return datetime.strptime(str(value).replace("-", "/"), "%Y/%m/%d").date()
+    except ValueError:
+        return None
+
+
 class PersistentFinlabExecutionGateway:
     def __init__(
         self,
@@ -68,6 +95,7 @@ class PersistentFinlabExecutionGateway:
         env: Mapping[str, str] | None = None,
         account_factory: Callable[[], Any] | None = None,
         submission_control: Any | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.repository = repository
         self.env = env or os.environ
@@ -76,6 +104,8 @@ class PersistentFinlabExecutionGateway:
         self.submission_control = submission_control if submission_control is not None else D1SubmissionControl(
             env=self.env, read_timeout=order_path_read_timeout(self.env))
         self._account: Any | None = None
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._contracts_refreshed_at: datetime | None = None
         self._lock = threading.RLock()
         self._started = False
         self._connected = False
@@ -379,6 +409,82 @@ class PersistentFinlabExecutionGateway:
                 "position_shares": position_shares,
                 "account_match": bool(actual_account_id and expected_account_id and actual_account_id == expected_account_id),
             }
+
+    def _read_admitted(self, symbols: list[str]) -> None:
+        if not _truthy(self.env.get("LIVE_EXECUTION_SHADOW_BROKER_READ_ENABLED")):
+            raise RuntimeError("live_account_broker_read_disabled")
+        if not 1 <= len(symbols) <= 50 or any(not re.fullmatch(r"[0-9A-Z]{4,6}", s or "") for s in symbols):
+            raise ValueError("broker_read_symbols_invalid")
+
+    def _contract(self, symbol: str, now: datetime, *, current: bool) -> Any:
+        """The broker's contract for symbol; current=True also needs today's (Taipei) table.
+        Call under the broker lock."""
+        api = self._account.api
+        contract = api.Contracts.Stocks.get(symbol)
+        stale = contract is None or (
+            current and _contract_day(_field(contract, "update_date")) != now.astimezone(_TW).date())
+        last = self._contracts_refreshed_at
+        if stale and (last is None or now - last >= _CONTRACT_REFRESH_INTERVAL):
+            self._contracts_refreshed_at = now  # a failed download is throttled too
+            try:
+                api.fetch_contracts(contract_download=True, contracts_timeout=_CONTRACT_DOWNLOAD_TIMEOUT_MS)
+            except Exception as exc:
+                raise RuntimeError(f"broker_contract_refresh_failed:{type(exc).__name__}") from None
+            contract = api.Contracts.Stocks.get(symbol)
+        if contract is None:
+            raise ValueError("broker_contract_missing")
+        return contract
+
+    def broker_truth(self, *, symbol: str) -> dict[str, Any]:
+        """Read-only broker truth for one Live packet: today's exchange and price band from the
+        broker's own contract table, plus cash and position. Same read admission as observations."""
+        self._read_admitted([symbol])
+        self.ensure_started()
+        now = self._clock()
+        today = now.astimezone(_TW).date()
+        with self._lock:
+            if self._account is None:
+                raise RuntimeError("execution_gateway_not_started")
+            contract = self._contract(symbol, now, current=True)
+            exchange = str(getattr(_field(contract, "exchange"), "value", _field(contract, "exchange")) or "")
+            band = {name: _field(contract, source) for name, source in (
+                ("reference_price", "reference"), ("limit_up", "limit_up"), ("limit_down", "limit_down"))}
+            updated, suspended = _field(contract, "update_date"), _field(contract, "trading_suspended")
+            account = self.revalidate_broker_truth(symbol=symbol)
+        if account.get("account_match") is not True:
+            raise ValueError("live_account_identity_mismatch")
+        # A band from an earlier day is not today's, even after a refresh.
+        if _contract_day(updated) != today or suspended is True:
+            raise ValueError("broker_truth_contract_not_current")
+        if (exchange not in {"TSE", "OTC"} or not all(_finite_positive(v) for v in band.values())
+                or not band["limit_down"] <= band["reference_price"] <= band["limit_up"]):
+            raise ValueError("broker_truth_contract_invalid")
+        return {"status": "ready", "observed_at": account["observed_at"], "exchange": exchange,
+                **{k: float(v) for k, v in band.items()},
+                "available_cash": float(account["available_cash"]), "position_shares": int(account["position_shares"])}
+
+    def marks(self, *, symbols: list[str]) -> dict[str, Any]:
+        """Read-only exchange snapshots (last trade and its Taiwan date) for valuing Live holdings."""
+        self._read_admitted(symbols)
+        self.ensure_started()
+        with self._lock:
+            if self._account is None:
+                raise RuntimeError("execution_gateway_not_started")
+            now = self._clock()
+            contracts = [self._contract(s, now, current=False) for s in symbols]
+            snapshots = list(self._account.api.snapshots(contracts, timeout=_SNAPSHOT_TIMEOUT_MS) or [])
+        marks: dict[str, Any] = {}
+        for snapshot in snapshots:
+            code, close, ts = _field(snapshot, "code"), _field(snapshot, "close"), _field(snapshot, "ts")
+            volume = _field(snapshot, "total_volume")
+            if (code not in symbols or not _finite_positive(close) or isinstance(ts, bool) or not isinstance(ts, int)
+                    or isinstance(volume, bool) or not isinstance(volume, int) or volume <= 0):
+                continue  # no trade that day: close would be an earlier day's price
+            # ts is nanoseconds; Taiwan session hours fall on the same calendar date whether it
+            # encodes UTC or Taiwan wall time, so only the date is used (sessions end 13:30).
+            marks[code] = {"price": float(close),
+                           "date": datetime.fromtimestamp(ts / 1e9, timezone.utc).date().isoformat()}
+        return {"status": "ready", "marks": marks}
 
     def capture_account_observation(self, *, request_id: str, repository: Any = None) -> dict[str, Any]:
         # Read admission is independent of order admission. A return to Paper

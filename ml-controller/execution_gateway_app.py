@@ -42,6 +42,14 @@ class AccountObservationRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=128)
 
 
+class BrokerTruthRequest(BaseModel):
+    symbol: str = Field(min_length=4, max_length=6)
+
+
+class MarksRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=50)
+
+
 def _verify_service_token(authorization: str | None) -> None:
     if SERVICE_ROLE != "dedicated_execution_gateway":
         raise HTTPException(503, "dedicated execution gateway role not configured")
@@ -155,3 +163,27 @@ def capture_account_observation(req: AccountObservationRequest,
         raise HTTPException(422, "live account source rejected") from exc
     except Exception as exc:
         raise HTTPException(503, "live account observation unavailable") from exc
+
+
+@app.post("/v1/broker-truth")
+def read_broker_truth(req: BrokerTruthRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """Read-only contract band, exchange, cash and position for one Live packet (never places an order)."""
+    _verify_service_token(authorization)
+    try:
+        return gateway.broker_truth(symbol=req.symbol)
+    except ValueError as exc:
+        raise HTTPException(422, "broker truth rejected") from exc
+    except Exception as exc:
+        raise HTTPException(503, "broker truth unavailable") from exc
+
+
+@app.post("/v1/marks")
+def read_marks(req: MarksRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """Read-only exchange snapshots for valuing Live holdings (never places an order)."""
+    _verify_service_token(authorization)
+    try:
+        return gateway.marks(symbols=req.symbols)
+    except ValueError as exc:
+        raise HTTPException(422, "marks rejected") from exc
+    except Exception as exc:
+        raise HTTPException(503, "marks unavailable") from exc

@@ -174,3 +174,25 @@ def test_formal_position_correlation_does_not_block_insufficient_overlap():
     assert _formal_position_correlation_skip(
         dataset, 'BBB', ['AAA'], '2026-06-12', risk
     ) is None
+
+
+@pytest.mark.parametrize('minimum, blocked', [(20, True), (24, True), (25, False), (30, False)])
+def test_formal_position_correlation_takes_the_overlap_minimum_from_the_contract(minimum, blocked):
+    # C28-01: the candidate has 30 returns but shares 24 with the holding; the pair is
+    # judged only when the KV minimum allows 24.
+    dataset = FormalFakeDataset({
+        'AAA': [100 + index for index in range(25)],
+        'BBB': [50 + (index * 0.5) for index in range(31)],
+    })
+    risk = FormalPositionRiskParams(2, 0.2, 0.7, 60, minimum)
+    skip = _formal_position_correlation_skip(dataset, 'BBB', ['AAA'], '2026-06-12', risk)
+    assert (skip is not None) is blocked
+
+
+def test_formal_position_correlation_judges_a_short_history_when_the_minimum_allows_it():
+    dataset = FormalFakeDataset({
+        'AAA': [100 + index for index in range(12)],
+        'BBB': [50 + (index * 0.5) for index in range(12)],
+    })
+    risk = FormalPositionRiskParams(2, 0.2, 0.7, 60, 10)
+    assert _formal_position_correlation_skip(dataset, 'BBB', ['AAA'], '2026-06-12', risk) is not None

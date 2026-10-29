@@ -2592,6 +2592,13 @@ def position_risk_contract(params: Optional[dict]) -> Optional[dict]:
     return params.get('positionRiskDistribution') or params.get('position_risk_distribution')
 
 
+def _whole_number(value) -> int:
+    """A KV count is a whole number; anything else (20.5, '20', True) is 0 and fails validation, as in the Worker."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value) if float(value).is_integer() else 0
+
+
 @dataclass(frozen=True)
 class FormalPositionRiskParams:
     max_per_sector: int
@@ -2609,7 +2616,7 @@ class FormalPositionRiskParams:
             max_single_name_pct=float(raw.get('maxSingleNamePct') or raw.get('max_single_name_pct') or 0),
             correlation_threshold=float(raw.get('correlationThreshold') or raw.get('correlation_threshold') or 0),
             correlation_window=int(raw.get('correlationWindow') or raw.get('correlation_window') or 0),
-            min_correlation_overlap=int(raw.get('minCorrelationOverlap') or raw.get('min_correlation_overlap') or 0),
+            min_correlation_overlap=_whole_number(raw.get('minCorrelationOverlap', raw.get('min_correlation_overlap'))),
         )
         result.validate()
         return result

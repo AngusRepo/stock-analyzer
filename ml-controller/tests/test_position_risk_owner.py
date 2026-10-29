@@ -59,7 +59,10 @@ def test_helper_reads_the_risk_config_owner(monkeypatch):
                                  {'position': {**RISK['position'], 'maxSingleNamePct': 'x'}},
                                  {'position': {k: v for k, v in RISK['position'].items() if k != 'minCorrelationOverlap'}},
                                  {'position': {**RISK['position'], 'minCorrelationOverlap': 2}},
-                                 {'position': {**RISK['position'], 'minCorrelationOverlap': 61}}])
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': 61}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': 20.5}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': '20'}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': True}}])
 def test_helper_fails_closed_without_a_valid_owner_value(monkeypatch, raw):
     kv(monkeypatch, raw)
     with pytest.raises(PositionRiskConfigUnavailable, match='position_risk_config_'):

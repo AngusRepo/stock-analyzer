@@ -123,7 +123,8 @@ def derivable(requested, scanned):
     if not requested <= scanned:
         return False
     extra = scanned - requested
-    return not any(p.startswith(q + '.') for p in requested for q in extra)
+    # The root prefix '' encloses every event, but its children are 'key', not '.key'.
+    return '' not in extra and not any(p.startswith(q + '.') for p in requested for q in extra)
 
 
 def project(found, requested):
@@ -166,8 +167,6 @@ class SnapshotScanCache(paired_nav_read_cache._Cache):
         if parsed is None:
             return False, None
         source_key, requested, row = parsed
-        if ('file', source_key) in self.entries:
-            return False, None  # Retained small file: the original reader is already cheap.
         bundle = self.bundles.get(source_key)
         if bundle is not None and derivable(requested, bundle[2]):
             self.bundles.move_to_end(source_key)
@@ -175,50 +174,75 @@ class SnapshotScanCache(paired_nav_read_cache._Cache):
                 selections = pickle.load(source)
             _event('projection_scan_hit')
             return True, project(selections, requested)
+        if ('file', source_key) in self.entries:
+            return False, None  # Retained small file: the original reader needs no download.
         scanned = STATIC_PREFIXES | requested | (bundle[2] if bundle is not None else frozenset())
         if not derivable(requested, scanned):
             return False, None  # Enclosing prefix: let the original exact reader parse.
         try:
-            selections = self._scan(row, scanned)
+            selections = self._scan(source_key, row, scanned)
         except Exception:
             # Never cache a failed or unverified scan; the original reader
             # re-runs and raises its own error (checksum, parse, locator).
             logging.getLogger(__name__).warning('[NavScanOnce] scan failed; original reader retries', exc_info=True)
             _event('projection_scan_failed')
             return False, None
-        self._keep(source_key, scanned, selections)
+        try:
+            self._keep(source_key, scanned, selections)
+        except Exception:
+            # Retention is an optimisation: a tmpfs failure never fails a verified read.
+            logging.getLogger(__name__).warning('[NavScanOnce] bundle not retained', exc_info=True)
+            _event('projection_scan_keep_failed')
         return True, project(selections, requested)
 
-    def _scan(self, row, scanned):
+    def _scan(self, source_key, row, scanned):
         store = paired_nav_cold.production_store()
         if store is None:
             raise RuntimeError('paired_nav_cold_store_unavailable')
         with paired_nav_cold._downloaded_file(store, row['object_key']) as path:
             found = verified_selections(path, scanned, checksum=row['payload_checksum'],
                                         byte_count=row['payload_bytes'])
+            # As the original reader: a verified file within entry_bytes is linked
+            # into the file cache, so a later full read of it needs no download.
+            self.save_file(('file', source_key), path)
         self.scans += 1
         _event('projection_scan')
         return found
 
     def _keep(self, source_key, scanned, selections):
+        # Measure without a document-sized buffer (as _Cache.save). An oversize
+        # (bulk) union is served once and keeps the snapshot's existing bundle.
+        counter = paired_nav_read_cache._CountingWriter(self.bundle_entry)
+        try:
+            self._write(counter, selections)
+        except paired_nav_read_cache._BudgetExceeded:
+            _event('projection_scan_oversize')
+            return
         previous = self.bundles.pop(source_key, None)
         if previous is not None:
             os.unlink(previous[0])
             self.bundle_bytes -= previous[1]
-        data = gzip.compress(pickle.dumps(selections, protocol=pickle.HIGHEST_PROTOCOL), compresslevel=1, mtime=0)
-        if len(data) > self.bundle_entry:
-            _event('projection_scan_oversize')
-            return
-        while self.bundles and self.bundle_bytes + len(data) > self.bundle_budget:
+        while self.bundles and self.bundle_bytes + counter.size > self.bundle_budget:
             _, (path, size, _) = self.bundles.popitem(last=False)
             os.unlink(path)
             self.bundle_bytes -= size
         self.serial += 1
         path = os.path.join(self.directory, 'scan-' + str(self.serial))
-        with open(path, 'wb') as output:
-            output.write(data)
-        self.bundles[source_key] = (path, len(data), scanned)
-        self.bundle_bytes += len(data)
+        try:
+            with open(path, 'wb') as raw:
+                self._write(paired_nav_read_cache._LimitedWriter(raw, counter.size), selections)
+        except BaseException:
+            if os.path.exists(path):
+                os.unlink(path)
+            raise
+        size = os.path.getsize(path)
+        self.bundles[source_key] = (path, size, scanned)
+        self.bundle_bytes += size
+
+    @staticmethod
+    def _write(output, selections):
+        with gzip.GzipFile(filename='', fileobj=output, mode='wb', compresslevel=1, mtime=0) as zipped:
+            pickle.dump(selections, zipped, protocol=pickle.HIGHEST_PROTOCOL)
 
 
 _DEFAULTS = inspect.signature(paired_nav_read_cache.reuse_verified_cold_reads).parameters

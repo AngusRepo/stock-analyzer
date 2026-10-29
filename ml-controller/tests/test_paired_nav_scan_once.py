@@ -31,6 +31,11 @@ def _content(seed=0):
     }
 
 
+# Production cold contexts (99-419 MB gz) exceed the 64 MiB file entry; fixture
+# objects are ~33 KB, so these budgets reproduce file_oversize at test scale.
+OVERSIZE_FILES = {'max_bytes': 4096, 'entry_bytes': 2048}
+
+
 def _tracked(objects, monkeypatch):
     downloads = []
     original = objects.download
@@ -142,7 +147,7 @@ def test_new_prefix_set_extends_union_once_and_full_reads_are_untouched(env, mon
     db, objects = env
     sid = freeze(db, _content(3))['snapshot_id']
     calls = _parses(monkeypatch)
-    with once.scan_each_snapshot_once():
+    with once.scan_each_snapshot_once(**OVERSIZE_FILES):
         read_inventory_snapshot(db.query, sid)
         late = read_context_projection(db.query, sid, ('unused_history',))
         read_context_projection(db.query, sid, ('unused_history', 'trading_config'))
@@ -241,6 +246,82 @@ def test_bulk_request_widens_only_its_own_snapshot(env, monkeypatch):
     widened = [s for s in scanned if 'content.unused_history' in s]
     assert len(scanned) == 2 and len(widened) == 1
     assert all(s - {'content.unused_history'} == once.STATIC_PREFIXES for s in scanned)
+
+
+def test_bundle_eviction_is_lru_bounded_and_leaks_no_files(env, monkeypatch):
+    db, objects = env
+    ids = [freeze(db, _content(i), run='e%d' % i)['snapshot_id'] for i in range(6)]
+    with once.scan_each_snapshot_once(bundle_budget=1500, bundle_entry=1000, **OVERSIZE_FILES) as cache:
+        for sid in ids + ids[-1:]:
+            read_inventory_snapshot(db.query, sid)
+            names = [n for n in os.listdir(cache.directory) if n.startswith('scan-')]
+            assert len(names) == len(cache.bundles)
+            assert sum(os.path.getsize(os.path.join(cache.directory, n)) for n in names) == cache.bundle_bytes
+            assert cache.bundle_bytes <= 1500
+        assert 1 < len(cache.bundles) < len(ids)  # Eviction ran and kept the most recent.
+        assert cache.scans == len(ids)
+        calls = _parses(monkeypatch)
+        read_inventory_snapshot(db.query, ids[-1])
+        assert calls == []
+        read_inventory_snapshot(db.query, ids[0])  # Evicted: re-verified, never assumed.
+        assert calls == ['scan']
+
+
+def test_oversize_union_is_served_once_and_keeps_existing_bundle(env, monkeypatch):
+    db, objects = env
+    sid = freeze(db, _content(7))['snapshot_id']
+    with once.scan_each_snapshot_once(bundle_entry=3000, **OVERSIZE_FILES) as cache:
+        read_inventory_snapshot(db.query, sid)
+        kept = dict(cache.bundles)
+        bulk = read_context_projection(db.query, sid, ('unused_history',))
+        assert bulk['payload']['content']['unused_history'] == _content(7)['unused_history']
+        assert cache.bundles == kept and cache.scans == 2
+        calls = _parses(monkeypatch)
+        read_inventory_snapshot(db.query, sid, owner='l15_route')
+        assert calls == []
+
+
+def test_nested_values_never_alias_the_bundle(env):
+    db, objects = env
+    sid = freeze(db, _content(8))['snapshot_id']
+    with once.scan_each_snapshot_once():
+        for _ in range(3):
+            saved = read_inventory_snapshot(db.query, sid)
+            recs = saved['payload']['content']['recommendation_context']['inputs']['screener_recs']
+            assert recs == [{'symbol': '2330', 'score': 0.8}]
+            recs[0]['symbol'] = 'mutated'
+            recs.append('extra')
+
+
+def test_scan_links_small_verified_file_like_the_original_reader(env, monkeypatch):
+    db, objects = env
+    sid = freeze(db, _content(9))['snapshot_id']
+    downloads = _tracked(objects, monkeypatch)
+    with once.scan_each_snapshot_once(max_bytes=1 << 20, entry_bytes=1 << 19):
+        read_inventory_snapshot(db.query, sid)
+        calls = _parses(monkeypatch)
+        read_inventory_snapshot(db.query, sid, owner='l15_route')
+        assert calls == []  # Bundle first, even though the file is retained.
+        assert read_snapshot(db.query, sid)['payload']['content'] == json.loads(json.dumps(_content(9)))
+    assert len(downloads) == 1
+
+
+def test_retention_failure_never_fails_a_verified_read(env, monkeypatch):
+    db, objects = env
+    sid = freeze(db, _content(10))['snapshot_id']
+    with reuse_verified_cold_reads():
+        expected = pickle.dumps(read_inventory_snapshot(db.query, sid))
+    def broken(*args, **kwargs):
+        raise OSError('tmpfs full')
+    monkeypatch.setattr(once.SnapshotScanCache, '_write', staticmethod(broken))
+    with once.scan_each_snapshot_once() as cache:
+        assert pickle.dumps(read_inventory_snapshot(db.query, sid)) == expected
+        assert cache.bundles == {} and not [n for n in os.listdir(cache.directory) if n.startswith('scan-')]
+
+
+def test_root_prefix_encloses_everything():
+    assert not once.derivable(frozenset({'a'}), frozenset({'', 'a'}))
+    assert once.derivable(frozenset({'', 'a'}), frozenset({'', 'a'}))
 
 
 def test_daily_nav_job_uses_scan_once_scope(monkeypatch):

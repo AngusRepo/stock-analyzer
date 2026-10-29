@@ -17,7 +17,7 @@ import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, batchGetIntradayPric
 import { executionBookTimingAges } from './executionBookTiming'
 import { INTRADAY_PRICE_DISPLAY_MAX_AGE_MS, putIntradayPrice } from './paperIntradayPriceCache'
 import { recordSellSettlement } from './paperMarketData'
-import { batchGetAtrByDomain, batchGetLatestPricesByDomain } from './paperMarketDomainData'
+import { batchGetAtrByDomain, batchGetClosingPricesByDomain } from './paperMarketDomainData'
 import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
 import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 import { buildSellOrderNote } from './paperOrderAccounting'
@@ -835,11 +835,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     if (price != null) posQuotePriceMap.set(symbol, price)
   }
   const quoteMissingPosSymbols = posSymbols.filter((symbol: string) => !posQuotePriceMap.has(symbol))
+  const previousSession = await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV, today)
+  // AUD-20: a holding without a live quote is marked only at the previous session's exact close.
   const posFallbackPriceMap = quoteMissingPosSymbols.length > 0
     ? await withD1ReadRetry(
       'position_price_fallback',
-      'stock_prices_latest',
-      () => batchGetLatestPricesByDomain(env, quoteMissingPosSymbols, today),
+      'stock_prices_session_close',
+      () => batchGetClosingPricesByDomain(env, quoteMissingPosSymbols, previousSession),
     )
     : new Map<string, number>()
   const positionValuation = computePaperPositionValuation({
@@ -851,6 +853,19 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     fallbackPrices: posFallbackPriceMap,
   })
   const posValueMap = positionValuation.symbolPrices
+  if (positionValuation.missingSymbols.length > 0) {
+    // No live quote and no dated previous-session close: the NAV is unknown, so no new buy
+    // may be sized against it. Exits are unaffected.
+    const detail = JSON.stringify({ missing_symbols: positionValuation.missingSymbols,
+      fallback_price_date: previousSession, fallback_symbols: positionValuation.fallbackSymbols })
+    await persistPendingBuyActiveState(env, today, pendingBuys,
+      { stage: 'intraday_nav_valuation', reason: 'intraday_nav_marks_missing', detail })
+    await Promise.all(pendingBuys.map(item => recordPaperExecutionEvent(env, { tradeDate: today, symbol: item.symbol,
+      side: 'buy', eventType: 'paper_order', status: 'blocked', reason: 'intraday_nav_marks_missing',
+      detail: { missing_symbols: positionValuation.missingSymbols, fallback_price_date: previousSession },
+      pendingRunId, source: 'intraday_nav_valuation' })))
+    return holdingPoll
+  }
   const positionValue = requireCompletePaperPositionValue(positions ?? [], posValueMap)
   if (positionValuation.fallbackSymbols.length > 0 || positionValuation.missingSymbols.length > 0) {
     console.warn(
@@ -872,12 +887,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   })
   const dailyLoss = await checkP8DailyPnl(paperDomainDatabase(env),riskCfg,
     {defaults:cb,effectiveBuy:cb.buyConfThreshold,effectiveSell:cb.sellConfThreshold},
-    {tradeDate:today,previousSession:await getPrevTradingDay(databaseForDataDomain(env,'core'),env.KV,today),
+    {tradeDate:today,previousSession,
       currentNav:totalPortfolio,netExternalFlow:0})
   if(dailyLoss?.halt) {
-    await persistPendingBuyActiveState(env,today,pendingBuys,{stage:'intraday_risk_gate',reason:'p8_daily_loss',detail:dailyLoss.reason})
+    // A missing/invalid previous-session baseline is a fail-closed block, not a measured loss.
+    const p8Reason=dailyLoss.reason.startsWith('P8 risk check unavailable:') ? 'p8_fail_closed' : 'p8_daily_loss'
+    await persistPendingBuyActiveState(env,today,pendingBuys,{stage:'intraday_risk_gate',reason:p8Reason,detail:dailyLoss.reason})
     await Promise.all(pendingBuys.map(item=>recordPaperExecutionEvent(env,{tradeDate:today,symbol:item.symbol,
-      side:'buy',eventType:'paper_order',status:'blocked',reason:'p8_daily_loss',detail:{risk:dailyLoss},pendingRunId,
+      side:'buy',eventType:'paper_order',status:'blocked',reason:p8Reason,detail:{risk:dailyLoss},pendingRunId,
       source:'p8_daily_nav'})))
     return holdingPoll
   }
@@ -1376,6 +1393,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
         net_unsettled_settlement: Math.round(settlement.netUnsettledSettlement),
         valuation_quote_symbols: positionValuation.quoteSymbols.join(','),
         valuation_fallback_symbols: positionValuation.fallbackSymbols.join(','),
+        valuation_fallback_price_date: positionValuation.fallbackSymbols.length > 0 ? previousSession : null,
         valuation_missing_symbols: positionValuation.missingSymbols.join(','),
         positions: holdings.length,
         max_positions: maxPos,

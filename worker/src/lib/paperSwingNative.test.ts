@@ -173,6 +173,8 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
       for (const pnl of [-2884,-93,-1852]) f.sqls.paper.prepare(`
         INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note,created_at)
         VALUES(1,'3374','sell',1,20,20,?,'2026-09-11')`).run(JSON.stringify({realized_pnl:pnl}))
+      // AUD-21: an account that traded in an earlier session needs that session's close for P8.
+      f.sqls.paper.exec("INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) SELECT id,'2026-09-11',cash,0,cash,0,0 FROM paper_accounts WHERE id=1")
       assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
     }
     const account=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-11'))).result

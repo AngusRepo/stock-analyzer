@@ -149,3 +149,36 @@ test('publication alone, another date or different L3 lineage cannot claim readi
   assert.equal(premarketReadinessDisplay('pre-market-warmup','2026-10-16',[row,allocate,health]),null)
   assert.equal(premarketReadinessDisplay('pre-market-warmup',date,[row,allocate,health],'2026-10-19 05:00:00'),null)
 })
+
+test('FU8-A: the payload carries the canonical run beside a ticket-owned runId, after every display override',async()=>{
+  const f=fixture()
+  try {
+    f.sql.prepare('INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,updated_at) VALUES(?,?,?,?,?,?,?)')
+      .run(date,'pipeline_execution','canon-1','running','execution-a',1,'2026-10-19 14:00:00')
+    f.sql.prepare(`INSERT INTO scheduler_execution_tickets_v1
+      (ticket_id,dedupe_key,root_ticket_id,task,business_date,run_id,attempt_id,ticket_kind,status,
+       status_authority,attempt_count,payload_checksum,last_summary,updated_at)
+      VALUES('ticket-1','ticket-1','ticket-1','pipeline',?,'ticket-1','ticket-1:attempt:1','manual','running','scheduler_http',1,?,'running pipeline','2026-10-19 14:01:00')`)
+      .run(date,'c'.repeat(64))
+    f.values.set('scheduler:run:evening-chain:'+date,{task:'evening-chain',status:'running',run_id:'evening-chain:'+date,run_date:date,
+      summary:'running',duration_ms:0,timestamp:'2026-10-19T13:00:00Z'})
+    f.values.set('scheduler:run:pipeline:'+date,{task:'pipeline',status:'running',run_id:'ticket-1',run_date:date,
+      summary:'running pipeline',duration_ms:0,timestamp:'2026-10-19T14:01:00Z'})
+    f.values.set('scheduler:run:finlab-v4-backfill:'+date,{task:'finlab-v4-backfill',status:'running',run_id:'finlab-run-1',run_date:date,
+      summary:'triggered finlab-v4-backfill dispatch_attempt=1',duration_ms:0,timestamp:'2026-10-19T13:01:00Z'})
+    const result=await getSchedulerStatus(f.env,date)
+    const pipeline=result.jobs.find(j=>j.id==='pipeline')! as any
+    assert.equal(pipeline.statusRunDate,date)
+    assert.equal(pipeline.runId,'ticket-1')
+    assert.equal(pipeline.canonicalRunId,'canon-1')
+    const finlab=result.jobs.find(j=>j.id==='finlab-v4-backfill')! as any
+    assert.equal(finlab.finlabRunId,'finlab-run-1')
+    assert.equal(finlab.canonicalRunId,null)
+    const other=result.jobs.find(j=>j.id==='screener-v2-watchdog')! as any
+    assert.equal(other.finlabRunId,null)
+    // The fields come after the display spreads, so no override can replace them.
+    const source=fs.readFileSync('src/lib/schedulerStatus.ts','utf8')
+    const spread=source.indexOf('...(producerDisplay ? {...producerDisplay')
+    assert.ok(spread>0 && source.indexOf('canonicalRunId: durableState?.canonical_run_id ?? null',spread)>spread)
+  } finally {f.sql.close()}
+})

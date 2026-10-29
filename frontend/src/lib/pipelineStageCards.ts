@@ -29,6 +29,8 @@ const PHASE_NAMES: Record<string,string> = {
 export const pipelinePhaseName = (phase: string): string => PHASE_NAMES[phase] ?? phase
 
 type Progress = NonNullable<SchedulerJob['pipelineProgress']>
+// FU8-A: progress belongs to the canonical run; the ticket runId is only a fallback for older payloads.
+const progressRunId = (parent: SchedulerJob) => parent.canonicalRunId ?? parent.runId
 const runHistory = (p: Progress) => Object.values(p.executions ?? {legacy:p.completed}).flat()
 const isSealed = (parent: SchedulerJob) => /\bawaiting_premarket\b/.test(parent.summary) && /\bl3_sealed=true\b/.test(parent.summary)
 const isTerminal = (parent: SchedulerJob) => isSealed(parent) || ['failed','blocked','success'].includes(parent.lastStatus)
@@ -42,7 +44,7 @@ function runClock(parent: SchedulerJob, p: Progress, now: number): number {
 export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): SchedulerJob[] {
   if (!parent) return []
   const p=parent.pipelineProgress
-  const progress=p?.run_id === parent.runId && p?.run_date === parent.statusRunDate ? p : null
+  const progress=p?.run_id === progressRunId(parent) && p?.run_date === parent.statusRunDate ? p : null
   const history=progress ? runHistory(progress) : []
   const sealed=isSealed(parent)
   const currentIndex=progress ? PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase)) : -1
@@ -52,7 +54,7 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
   const candidate=parent.pipelineWork
   // The Worker already enforces 30s server-clock freshness; here allow one 60s poll plus browser clock skew.
   const workAge=now-Date.parse(candidate?.observed_at??'')
-  const work=candidate && progress && candidate.run_id===parent.runId && candidate.run_date===parent.statusRunDate
+  const work=candidate && progress && candidate.run_id===progressRunId(parent) && candidate.run_date===parent.statusRunDate
     && candidate.phase===progress.phase && workAge>=-60_000 && workAge<=90_000 ? candidate : undefined
   return PIPELINE_STAGE_CARDS.map((card,index) => {
     const belongs=(phase:string)=>(card.phases as readonly string[]).includes(phase)
@@ -114,7 +116,7 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
 export function pipelineRunSummary(parent?: SchedulerJob, now=Date.now()): string {
   if (!parent) return '本輪尚無紀錄'
   const p=parent.pipelineProgress
-  if (!p || p.run_id!==parent.runId || p.run_date!==parent.statusRunDate) return '本輪階段紀錄尚未取得'
+  if (!p || p.run_id!==progressRunId(parent) || p.run_date!==parent.statusRunDate) return '本輪階段紀錄尚未取得'
   const start=new Date(p.started_at).toLocaleTimeString('zh-TW',{timeZone:'Asia/Taipei',hour12:false})
   const sealed=isSealed(parent)
   const end=runHistory(p).reverse().find(r=>r.phase==='seal_l3_results'&&r.status==='completed')?.completed_at

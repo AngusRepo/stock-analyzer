@@ -133,3 +133,16 @@ def test_node_attaches_r33_rows_through_the_r33_view(monkeypatch):
     pipeline._attach_formal_ensemble(row, _ensemble(), POOL_MODELS, r33=True, r33_cost=COST, nav_authority=None)
     assert row["ensemble_v2"]["schema_version"] == RUNTIME_SCHEMA
     assert row["ensemble_v2"]["signal_policy"]["round_trip_cost"] == COST
+    assert "adoption_basis" not in row["ensemble_v2"]
+
+
+def test_node_r33_attach_carries_the_paper_grant(monkeypatch):
+    from graphs import daily_pipeline_v2 as pipeline
+    from test_r33_l4_equal7 import _ensemble
+    from test_r33_serving_chain import COST, POOL_MODELS, _chain, _grant
+    predictions, _snapshot = _chain()
+    row = predictions["P5"]
+    pipeline._attach_formal_ensemble(row, _ensemble(), POOL_MODELS, r33=True, r33_cost=COST,
+                                     nav_authority=_grant(_ensemble()))
+    assert row["ensemble_v2"]["adoption_basis"] == "committed_paired_nav"
+    assert row["ensemble_v2"]["nav_inference_context_checksum"] == "g" * 64

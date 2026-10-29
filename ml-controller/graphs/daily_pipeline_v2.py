@@ -1582,7 +1582,7 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
 
 def _attach_formal_ensemble(row, ensemble, pool_models, *, r33, r33_cost, nav_authority):
     if r33:
-        attach_ensemble_v2(row, ensemble, pool_models, round_trip_cost=r33_cost)
+        attach_ensemble_v2(row, ensemble, pool_models, round_trip_cost=r33_cost, nav_authority=nav_authority)
     elif nav_authority is None:
         _attach_ensemble_v2(row, ensemble, pool_models)
     else:

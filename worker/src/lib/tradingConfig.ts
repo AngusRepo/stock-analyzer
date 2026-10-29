@@ -264,6 +264,9 @@ export interface TradingConfig {
     // #16 Sector leader correlation bonus (2026-04-21, dannyquant_tw 啟發)
     sectorLeaderBonusPoints: number  // 加分點數（預設 5）
     sectorLeaderCorrThreshold: number // avg 60d corr 觸發門檻（預設 0.7）
+    // HL1-4#a DelistingMonitor：近 8 日成交 session 數 <= 此值即剔除（未設定時預設 2；長休市時由 holiday:* 自動下修）。
+    // 資料品質門檻，不是 alpha 參數 → 不屬於 Optuna search space。
+    delistingMonitorMaxRecentSessions?: number
   }
   rrg: {
     leadingBonus: number         // Leading 象限加分（預設 10）
@@ -1976,5 +1979,9 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     )
       errors.push('alphaFramework.quality.minRegimeSamples must be <= minSamples')
   }
+  // HL1-4#a: data-quality threshold, not an alpha parameter (outside the Optuna search space).
+  const delistingMax = config.screener?.delistingMonitorMaxRecentSessions
+  if (delistingMax != null && (!Number.isInteger(delistingMax) || delistingMax < 0))
+    errors.push('screener.delistingMonitorMaxRecentSessions must be an integer >= 0')
   return errors
 }

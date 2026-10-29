@@ -247,14 +247,17 @@ export async function writeMomentumSnapshot(
  */
 export async function readCurrentZone(
   db: D1Database,
+  poolDefinition: string = MOMENTUM_POOL_DEFINITION,
 ): Promise<{ zone: MomentumZone; date: string | null; percentile_rank: number | null }> {
   try {
+    // A zone computed against another pool (or before pool_definition existed) is not current.
     const row = await db.prepare(`
       SELECT date, zone, percentile_rank
         FROM screener_momentum_snapshots
+       WHERE pool_definition = ?
        ORDER BY date DESC
        LIMIT 1
-    `).first<{ date: string; zone: string; percentile_rank: number }>()
+    `).bind(poolDefinition).first<{ date: string; zone: string; percentile_rank: number }>()
     if (!row) return { zone: 'GREEN', date: null, percentile_rank: null }
     const validZones = new Set(['RED', 'YELLOW', 'GREEN'])
     const rawZone = (row.zone ?? '').toUpperCase()

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { MOMENTUM_POOL_DEFINITION, assessZone, loadOversoldHistory, writeMomentumSnapshot } from './momentumZone'
+import { MOMENTUM_POOL_DEFINITION, assessZone, loadOversoldHistory, readCurrentZone, writeMomentumSnapshot } from './momentumZone'
 
 // Wei 10/29 Q3: the percentile compares only snapshots of the same candidate-pool definition.
 const sql = new DatabaseSync(':memory:')
@@ -40,6 +40,13 @@ async function main() {
   }, assessZone(0.3, history))
   assert.equal((sql.prepare('SELECT pool_definition FROM screener_momentum_snapshots WHERE date=?').get(today) as any).pool_definition,
     MOMENTUM_POOL_DEFINITION, 'a rewrite carries the current definition')
+  // The current zone ignores a later row of another (or no) pool.
+  sql.prepare(`INSERT INTO screener_momentum_snapshots (date, candidate_count, pct_oversold, zone, pool_definition)
+    VALUES ('2026-09-02', 25, 0.9, 'RED', NULL), ('2026-09-03', 25, 0.9, 'RED', 'old')`).run()
+  sql.prepare("UPDATE screener_momentum_snapshots SET zone='YELLOW' WHERE date=?").run(today)
+  const current = await readCurrentZone(db)
+  assert.equal(current.zone, 'YELLOW'); assert.equal(current.date, today)
+  assert.equal((await readCurrentZone(db, 'none')).zone, 'GREEN', 'no comparable row is neutral')
   console.log('momentum zone pool definition tests passed')
 }
 main().catch((error) => { console.error(error); process.exit(1) })

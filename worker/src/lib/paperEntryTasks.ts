@@ -1829,6 +1829,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       const oddL5 = odd?.lotType === 'odd_lot' ? validatedBookL5(pending.symbol,odd,optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500)) : null
       return { odd, oddL5, quality: quoteQualityFromL5(oddL5, l5Thresholds) }
     }
+    const fetchBoardLotL5 = async () => {
+      const book = (await batchGetExecutionOrderbooks([pending.symbol], {
+        SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL, PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
+        marketDataLotType: 'board_lot',
+      })).get(pending.symbol)
+      const l5 = (book?.lotType ?? 'board_lot') === 'board_lot' && book
+        ? validatedBookL5(pending.symbol,book,optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS,1500)) : null
+      return { book, l5, quality: quoteQualityFromL5(l5, l5Thresholds) }
+    }
     let oddLotBookChecked = false
     if (l4PlanId && finLabL5Quality?.status !== 'pass') {
       // Size the L4 target without the board-lot L5 veto; this decision cannot execute.
@@ -2348,7 +2357,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       continue
     }
     currentOhlc = { ...currentOhlc, ...executionBook }
-    const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({
+    let authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({
       limitPrice,
       lotType: currentOhlc.lotType ?? 'board_lot',
       maxAgeMs: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS, 1500),
@@ -2562,18 +2571,10 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       recordActiveExecutionStatus(pending.symbol, 'checked_waiting', 'or15_fill_below_structural_stop')
       continue
     }
-    const fullLots = Math.floor(budget / (fillPrice * 1000))
-    let shares: number
-    let isOddLot = false
-    if (fullLots >= 1) {
-      shares = fullLots * 1000
-    } else {
-      shares = Math.floor(budget / fillPrice)
-      isOddLot = true
-      if (shares < 1) {
-        console.log('[Intraday] shares<1, skip', pending.symbol)
-        continue
-      }
+    let { shares, isOddLot } = entrySizingLot(budget, fillPrice, entryContinuation?.remainingShares ?? null)
+    if (shares < 1) {
+      console.log('[Intraday] shares<1, skip', pending.symbol)
+      continue
     }
     const paperRiskValidation = await validateOrder({
       symbol: pending.symbol,
@@ -2621,8 +2622,34 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       if(!isOddLot) shares=Math.floor(shares/1000)*1000
       if(shares<1) continue
     }
-    const requestedShares = shares
     const lotType = isOddLot ? 'odd_lot' : 'board_lot'
+    if (authoritativeSnapshot.lotType !== lotType) {
+      // AUD-5: the lot type is decided once, here, from the sized budget at the order (fill) price.
+      // When the book checked earlier is the other lot, fetch the matching book once and size under
+      // the locked lot type; the decision price and the order price are then the same book's.
+      const relock = await relockEntryLot({
+        lotType, previousLotType: authoritativeSnapshot.lotType, currentOhlc, price, limitPrice,
+        authorizedShares: shares, budget, slippageTicks: cfg.position.fillSlippageTicks ?? 1,
+        maxAgeMs: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS, 1500),
+        maxDisagreementTicks: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_DISAGREEMENT_TICKS, 1),
+        fetchBook: (lot) => lot === 'odd_lot'
+          ? fetchOddLotL5().then(({ odd, oddL5, quality }) => ({ book: odd, l5: oddL5, quality }))
+          : fetchBoardLotL5(),
+      })
+      if (relock.status !== 'locked') {
+        recordActiveExecutionStatus(pending.symbol, relock.status, relock.reason, relock.detail)
+        continue
+      }
+      currentOhlc = relock.ohlc
+      finLabL5Quote = relock.l5
+      finLabL5Quality = relock.quality
+      authoritativeSnapshot = relock.snapshot
+      fillPrice = relock.fillPrice
+      shares = relock.shares
+      recordExecutionNote(pending.symbol, 'entry_lot_relocked', `lot_type=${lotType}`,
+        `fill=${fillPrice};shares=${shares}`)
+    }
+    const requestedShares = shares
     const twExecutionGate = resolveTwEquityExecutionGate({
       lotType,
       marketDataLotType: finLabL5Quote?.lotType ?? 'board_lot',
@@ -3103,7 +3130,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
             quote_total_volume: intradayExecutableVolume || null,
             partial_fill_liquidity_base_volume: liquidityBaseVolume || null,
             partial_fill_liquidity_base_source: avgVolume20dMap.has(pending.symbol) ? 'avg_volume_20d' : 'intraday_total_volume',
-            slippage_ticks: cfg.position.fillSlippageTicks ?? 1,
+            // AUD-24: the fill is the authoritative book's depth VWAP; the tick count only gated the precheck.
+            fill_model: 'authoritative_depth_vwap',
+            precheck_slippage_ticks: cfg.position.fillSlippageTicks ?? 1,
             market_price: price,
             pre_trade_action: preTrade.action,
             pre_trade_reason: preTrade.reason,
@@ -3288,6 +3317,114 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     for (const [planId, symbols] of groups) await requestL4Replan(env, planId, symbols, 'execution_hard_risk_veto')
   }
   return holdingPoll
+}
+
+type RelockL5 = ReturnType<typeof validatedBookL5>
+type RelockQuality = ReturnType<typeof quoteQualityFromL5>
+export type EntryLotRelock =
+  | { status: 'locked'; ohlc: IntradayOHLC; l5: RelockL5; quality: RelockQuality
+      snapshot: ReturnType<typeof resolveAuthoritativeBuyExecutionSnapshot>; fillPrice: number; shares: number }
+  | { status: 'quote_unavailable' | 'submitted' | 'checked_waiting'; reason: string; detail: string }
+
+/**
+ * Lot type from the sized budget at the fill price. AUD-5 edge: a continuation whose remaining
+ * authorized shares are below one board lot stays an odd-lot order (an original odd-lot entry keeps
+ * its lot type; a board lot cannot be bought for fewer than 1000 shares). A continuation is sized to
+ * its remaining shares here, before the order risk check sees it.
+ */
+export function entrySizingLot(budget: number, fillPrice: number, continuationRemainingShares: number | null) {
+  const remaining = continuationRemainingShares
+  const fullLots = Math.floor(budget / (fillPrice * 1000))
+  if (fullLots >= 1 && !(remaining != null && remaining < 1000)) {
+    const shares = fullLots * 1000
+    return { shares: remaining == null ? shares : Math.min(shares, Math.floor(remaining / 1000) * 1000), isOddLot: false }
+  }
+  const shares = Math.floor(budget / fillPrice)
+  return { shares: remaining == null ? shares : Math.min(shares, remaining), isOddLot: true }
+}
+
+/**
+ * AUD-5: the lot type is decided once at sizing. When the book checked earlier is the other lot, fetch the
+ * matching book exactly once (its L5 quality must pass, as the original selection requires), price the fill
+ * on that book and size under the locked lot. Never flips the lot type a second time.
+ */
+export async function relockEntryLot(input: {
+  lotType: 'odd_lot' | 'board_lot'; previousLotType: string; currentOhlc: IntradayOHLC | undefined
+  price: number; limitPrice: number; authorizedShares: number; budget: number; slippageTicks: number
+  maxAgeMs: number; maxDisagreementTicks: number
+  fetchBook: (lotType: 'odd_lot' | 'board_lot') => Promise<{ book: IntradayOHLC | undefined; l5: RelockL5; quality: RelockQuality }>
+}): Promise<EntryLotRelock> {
+  const { lotType } = input
+  const fetched = await input.fetchBook(lotType)
+  if (!fetched.book || fetched.quality?.status !== 'pass')
+    return { status: 'quote_unavailable', reason: lotType === 'odd_lot' ? 'l4_odd_lot_book_not_ready' : 'l4_board_lot_book_not_ready',
+      detail: JSON.stringify(fetched.quality) }
+  const book = fetched.book, l5 = fetched.l5
+  if (book.source !== 'shioaji' || (book.lotType ?? 'board_lot') !== lotType)
+    return { status: 'quote_unavailable', reason: 'execution_book_unavailable', detail: `required=${lotType};previous_snapshot=${input.previousLotType}` }
+  const ohlc = { ...input.currentOhlc, ...book } as IntradayOHLC
+  const snapshot = resolveAuthoritativeBuyExecutionSnapshot({
+    limitPrice: input.limitPrice,
+    lotType,
+    maxAgeMs: input.maxAgeMs,
+    maxDisagreementTicks: input.maxDisagreementTicks,
+    observations: [
+      shioajiBookObservation(ohlc),
+      l5 && l5.provider !== 'shioaji_proxy_live_stream_book'
+        ? {
+          source: 'finlab_l5',
+          lotType: l5.lotType ?? lotType,
+          bid: l5.bestBid ?? null,
+          ask: l5.bestAsk ?? null,
+          bidVolume: l5.bidVolumes[0] ?? null,
+          askVolume: l5.askVolumes[0] ?? null,
+          bidPrices: l5.bidPrices,
+          askPrices: l5.askPrices,
+          bidVolumes: l5.bidVolumes,
+          askVolumes: l5.askVolumes,
+          volumeUnit: l5.lotType === 'board_lot' ? 'lots' : 'shares',
+          sourceTime: l5.sourceTime ?? null,
+          receivedAt: l5.receivedAt ?? null,
+          ageMs: l5.quoteAgeMs ?? null,
+        }
+        : null,
+    ],
+  })
+  if (snapshot.status !== 'ready') {
+    const unavailable = ['execution_book_unavailable', 'execution_book_stale_or_incomplete'].includes(snapshot.reason)
+    return { status: unavailable ? 'quote_unavailable' : 'submitted', reason: snapshot.reason, detail: JSON.stringify(snapshot) }
+  }
+  const fill = resolveLimitBuyFill({
+    currentPrice: input.price,
+    limitPrice: input.limitPrice,
+    bestAsk: snapshot.ask,
+    bestBid: snapshot.bid,
+    intradayLow: ohlc?.low,
+    intradayHigh: ohlc?.high,
+    slippageTicks: input.slippageTicks,
+    requireBestAsk: true,
+  })
+  if (!fill.fillable || fill.fillPrice == null)
+    return { status: 'submitted', reason: fill.reason, detail: `price=${input.price};limit=${input.limitPrice};lot_type=${lotType}` }
+  const shares = lockedEntryShares({ lotType, authorizedShares: input.authorizedShares, budget: input.budget, fillPrice: fill.fillPrice })
+  if (shares == null)
+    return { status: 'checked_waiting',
+      reason: lotType === 'odd_lot' ? 'entry_lot_locked_budget_below_odd_share' : 'entry_lot_locked_budget_below_board_lot',
+      detail: `budget=${Math.round(input.budget)};fill=${fill.fillPrice};lot_type=${lotType}` }
+  return { status: 'locked', ohlc, l5, quality: fetched.quality, snapshot, fillPrice: fill.fillPrice, shares }
+}
+
+/**
+ * AUD-5: shares under a lot type locked at sizing. Never more than already authorized (risk and
+ * continuation caps), never above the budget at the locked book's fill price; null when the locked
+ * lot cannot be filled within the budget (never flip lot type a second time).
+ */
+export function lockedEntryShares(input: { lotType: 'odd_lot' | 'board_lot'; authorizedShares: number; budget: number; fillPrice: number }): number | null {
+  if (!(input.fillPrice > 0) || !(input.budget > 0) || !(input.authorizedShares > 0)) return null
+  const shares = input.lotType === 'odd_lot'
+    ? Math.min(input.authorizedShares, 999, Math.floor(input.budget / input.fillPrice))
+    : Math.min(Math.floor(input.authorizedShares / 1000) * 1000, Math.floor(input.budget / (input.fillPrice * 1000)) * 1000)
+  return shares >= (input.lotType === 'odd_lot' ? 1 : 1000) ? shares : null
 }
 
 export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossPollResult> {

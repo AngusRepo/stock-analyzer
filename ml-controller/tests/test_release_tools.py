@@ -672,3 +672,73 @@ def test_verify_can_be_rerun_from_receipts_by_dispatch():
     assert 'release.py verify --from-receipts --sha' in block
     with pytest.raises(SystemExit):
         release.main(['verify', '--from-receipts', '--out', 'x'])
+
+
+# CD-NEW-08/R07: release_guard --baseline with an expected-component allow-list.
+import release_guard as guard  # noqa: E402
+
+OLD, NEW = 'b' * 40, 'c' * 40
+
+
+def cloud_run(sha, image='img@sha256:1', memory='4Gi', updated='t0'):
+    return {'updateTime': updated, 'traffic': None, 'timeout': '600s', 'containers': [{
+        'image': image, 'resources': {'limits': {'memory': memory}}, 'command': None, 'args': None,
+        'source': {'STOCKVISION_SOURCE_SHA': sha, 'STOCKVISION_SOURCE_TREE_SHA': sha[:39] + 'f'}}]}
+
+
+def guard_inventory(sha, **overrides):
+    components = {'services/ml-controller': cloud_run(sha), 'jobs/pipeline-v2': cloud_run(sha),
+                  'jobs/unrelated-job': cloud_run(OLD), 'modal/stockvision-ml': {'source_sha': sha}}
+    components.update(overrides)
+    return {'observed_at': 'x', 'components': components}
+
+
+EXPECTED = {'services/ml-controller', 'jobs/pipeline-v2', 'modal/stockvision-ml'}
+
+
+def released(**overrides):
+    after = guard_inventory(NEW, **overrides)
+    for key in ('services/ml-controller', 'jobs/pipeline-v2'):
+        if key not in overrides:
+            after['components'][key] = cloud_run(NEW, image='img@sha256:2', updated='t1')
+    return after
+
+
+def test_release_guard_accepts_only_allow_listed_components_moving_to_the_release_source():
+    result = guard.compare_release(guard_inventory(OLD), released(), EXPECTED, NEW)
+    assert result == {'changed': sorted(EXPECTED), 'already_on_source': []}
+    with pytest.raises(RuntimeError, match='release_baseline_drift'):  # no allow-list: unchanged behaviour
+        guard.compare(guard_inventory(OLD), released())
+
+
+def test_release_guard_still_stops_on_unlisted_or_non_source_changes():
+    with pytest.raises(RuntimeError, match='release_baseline_drift.*jobs/unrelated-job'):
+        guard.compare_release(guard_inventory(OLD), released(**{'jobs/unrelated-job': cloud_run(NEW)}), EXPECTED, NEW)
+    with pytest.raises(RuntimeError, match='release_changed_more_than_image_and_source:jobs/pipeline-v2'):
+        guard.compare_release(guard_inventory(OLD), released(**{'jobs/pipeline-v2': cloud_run(NEW, memory='8Gi')}), EXPECTED, NEW)
+    with pytest.raises(RuntimeError, match='release_expected_component_not_on_source:modal/stockvision-ml'):
+        guard.compare_release(guard_inventory(OLD), released(**{'modal/stockvision-ml': {'source_sha': OLD}}), EXPECTED, NEW)
+    with pytest.raises(RuntimeError, match='release_expected_component_not_in_baseline:jobs/typo'):
+        guard.compare_release(guard_inventory(OLD), released(), EXPECTED | {'jobs/typo'}, NEW)
+    gone = released()
+    del gone['components']['jobs/pipeline-v2']
+    with pytest.raises(RuntimeError, match='release_expected_component_missing:jobs/pipeline-v2'):
+        guard.compare_release(guard_inventory(OLD), gone, EXPECTED, NEW)
+
+
+def test_release_guard_expect_release_is_what_the_rollout_changes():
+    assert guard.release_components() == ({'services/ml-controller', 'modal/stockvision-ml'}
+                                          | {'jobs/' + name for name in rollout.JOBS})
+
+
+@pytest.mark.parametrize('argv', [
+    ['--capture', 'x.json', '--expect-release', '--expect-source', NEW],
+    ['--baseline', 'x.json', '--expect-release'],
+    ['--baseline', 'x.json', '--expect-source', NEW],
+    ['--baseline', 'x.json', '--expect', 'jobs/x', '--expect-source', 'abc'],
+])
+def test_release_guard_allow_list_arguments_fail_before_any_read(argv, monkeypatch):
+    monkeypatch.setattr(guard, 'inventory', lambda: pytest.fail('read before argument check'))
+    monkeypatch.setattr(sys, 'argv', ['release_guard.py', *argv])
+    with pytest.raises(SystemExit):
+        guard.main()

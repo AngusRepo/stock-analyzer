@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 
 from services.l4_distribution import LABEL_SCHEMA, SCHEMA, digest
+from services.r33_ensemble import validate_ensemble
 from services.r33_isotonic_calibration import MODELS
 from services.r33_rank_pool import IDENTITY_FIELDS, validate_rank_pool
 
@@ -27,6 +28,7 @@ def is_equal7(bundle) -> bool:
 
 def build_bundle(*, l3_identity: dict, ensemble: dict, training_label_known_max: str) -> dict:
     """Unreleased bundle; the paper release is attached by the release owner."""
+    validate_ensemble(ensemble)
     if any(l3_identity.get(k) != ensemble.get(k) for k in IDENTITY_FIELDS):
         raise ValueError("r33_bundle_l3_identity")
     model = dict(schema_version=MODEL_SCHEMA, recipe_version=RECIPE, model_order=list(MODELS),

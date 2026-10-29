@@ -17,6 +17,7 @@ from scipy.stats import rankdata
 from services.active8_score_semantics import MODEL_SCORE_LINEAGE_SCHEMA_VERSION, MODEL_TARGET_SEMANTIC_VERSION
 from services.r33_calibration_job import POOL_SOURCE, load_l2_pool
 from services.r33_crossfit_serving import serving_expected_excess
+from services.r33_ensemble import validate_ensemble
 from services.r33_isotonic_calibration import MODELS, checksum, pool_scores
 
 SNAPSHOT_SCHEMA = "r33-attested-rank-pool-v1"
@@ -25,14 +26,21 @@ EVIDENCE_KEY = "r33_rank_evidence"
 
 
 def load_serving_pool(ops_query, *, signal_date: str, screener_run_id: str) -> tuple[list[str], dict]:
-    """The calibration pool for one day; the pipeline's screener run must be that pool."""
-    pool, receipt = load_l2_pool(ops_query, start=signal_date, end=signal_date)
+    """The calibration pool for one day; the pipeline's screener run must be the run that pool came from."""
+    seen: list[dict] = []
+
+    def recording(sql, params):
+        rows = ops_query(sql, params)
+        seen.extend(rows)
+        return rows
+
+    pool, receipt = load_l2_pool(recording, start=signal_date, end=signal_date)
     members = pool.get(signal_date)
     if not members:
         raise ValueError("r33_rank_pool_empty")
-    rows = ops_query("SELECT symbol FROM screener_funnel_items WHERE run_id=? AND date=? AND stage='final_selection'",
-                     [screener_run_id, signal_date])
-    if {str(row["symbol"]) for row in rows} != members:
+    # Same choice as load_l2_pool: the latest (created_at, run_id) of the day.
+    latest = max((str(r["created_at"]), str(r["run_id"])) for r in seen if r["date"] == signal_date)[1]
+    if latest != screener_run_id:
         raise ValueError("r33_rank_pool_screener_run_mismatch")
     return sorted(members), dict(receipt, signal_date=signal_date, screener_run_id=screener_run_id)
 
@@ -43,7 +51,8 @@ def _raw_scores(prediction: dict | None, *, signal_date: str, versions: dict[str
     if not isinstance(lineage, dict):
         return {}
     raw = lineage.get("raw_scores") or {}
-    scores = {m: float(v) for m in MODELS if isinstance(v := raw.get(m), (int, float)) and math.isfinite(v)}
+    scores = {m: float(v) for m in MODELS if isinstance(v := raw.get(m), (int, float, np.integer, np.floating))
+              and not isinstance(v, bool) and math.isfinite(v)}
     if not scores:
         return {}
     if (lineage.get("schema_version") != MODEL_SCORE_LINEAGE_SCHEMA_VERSION
@@ -94,6 +103,7 @@ def build_rank_pool(*, signal_date: str, pool: tuple[list[str], dict], predictio
 
     l3_identity is the pipeline's baseline_model_identity; it must name this ensemble."""
     symbols, receipt = pool
+    validate_ensemble(ensemble)
     if any(l3_identity.get(k) != ensemble.get(k) for k in IDENTITY_FIELDS):
         raise ValueError("r33_rank_pool_l3_identity_mismatch")
     calibration = ensemble["serving_calibration"]
@@ -148,6 +158,9 @@ def build_rank_pool(*, signal_date: str, pool: tuple[list[str], dict], predictio
         rows.append(row)
         evidence[symbol] = _evidence(row, signal_date=signal_date, pool_checksum=pool_checksum,
                                      calibration_checksum=calibration_checksum)
+    for prediction in predictions.values():
+        if isinstance(prediction, dict):
+            prediction.pop(EVIDENCE_KEY, None)    # a rebuild never inherits an earlier run's rows
     for symbol, item in evidence.items():
         if symbol in predictions:
             predictions[symbol][EVIDENCE_KEY] = item

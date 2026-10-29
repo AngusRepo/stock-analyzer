@@ -22,6 +22,16 @@ def refresh_family(config):
         return override
     return {MLP_MODE:'full_mlp_median',TABPACK_MEDIAN_MODE:'tabpack_median16'}.get(mode,'tabpack')
 
+def r33_native_refresh_skip(config, **context):
+    """Under R33 the native L4 refresh callers skip instead of failing: R33 has no residual
+    L4 family and its monthly lifecycle owns the seven models. None outside R33."""
+    if ((config or {}).get('l4Distribution') or {}).get('operating_mode') != R33_MODE:
+        return None
+    import logging
+    logging.getLogger(__name__).warning('[R33] native L4 refresh skipped: %s', context)
+    return {'status':'skipped','reason':'r33_has_no_native_l4_refresh','operating_mode':R33_MODE,
+            'training_dispatched':False,'promoted':False,**context}
+
 def is_single_b(policy):
     return (policy or {}).get('operating_mode') in MODES
 

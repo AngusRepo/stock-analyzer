@@ -2084,7 +2084,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.trading_config_loader import load_merged_trading_config_with_contract
     native_config=load_merged_trading_config_with_contract().config
     if native_config.get('l4Distribution') is not None:
-        from services.paper_strategy_mode import refresh_family
+        from services.paper_strategy_mode import refresh_family, r33_native_refresh_skip
+        if skipped := r33_native_refresh_skip(native_config, cohort_id=req.cohort_id, as_of=req.knowledge_cutoff_date):
+            return skipped
         from services.l4_oof_lifecycle import materialize_native_base
         from services.walk_forward_retrain import _get_bucket
         return await materialize_native_base(manifest_path=req.manifest_path or f'walk_forward/oof_cohorts/{req.cohort_id}/manifest.json',
@@ -4165,7 +4167,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.l4_oof_lifecycle import uses_native_l4
     if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base
-        from services.paper_strategy_mode import refresh_family
+        from services.paper_strategy_mode import refresh_family, r33_native_refresh_skip
+        if skipped := r33_native_refresh_skip(config, cohort_id=cohort_id, as_of=knowledge_cutoff_date, cadence=cadence):
+            return skipped
         if cadence == 'monthly':
             calendar_evidence['deferred_oof_dates'] = [d for d in dates if d > manifest['end_date']]
         return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,

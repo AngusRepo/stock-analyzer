@@ -55,7 +55,7 @@ import {
   finLabLateRetryCutoffPassed,
   finLabLateRetryCutoffTw,
 } from './finlabSourceContract'
-import { FINLAB_DISPATCH_ATTEMPT_MAX } from './finLabDispatchFence'
+import { FINLAB_DISPATCH_ATTEMPT_MAX, finLabStartMarkerKey } from './finLabDispatchFence'
 import {
   loadSplitFusionSnapshotMissingReplaySymbols,
   loadSplitFusionSnapshotReplayCoverage,
@@ -2753,7 +2753,7 @@ export async function dispatchEveningFinLabRefresh(
       ...scope,
       runId,
     }))
-    return { summary, startObserved: /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId) }
+    return { summary, startObserved: await finLabTriggeredOutcomeSuperseded(env, twDate, runId, summary) }
   } catch (error) {
     if (!isFinLabDispatchTransportError(error)) {
       // A deterministic failure must not leave a reservation for the watchdog to resend.
@@ -2768,14 +2768,23 @@ export async function dispatchEveningFinLabRefresh(
     }
     return {
       summary: `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${runId} function_call_id=unknown dispatch_attempt=1 error=${(error as Error).name}`,
-      startObserved: await finLabStartObserved(env, twDate, runId),
+      startObserved: await finLabStartObserved(env, twDate, runId, 1),
     }
   }
 }
 
-async function finLabStartObserved(env: Bindings, twDate: string, runId: string): Promise<boolean> {
+async function finLabStartObserved(env: Bindings, twDate: string, runId: string, attempt?: unknown): Promise<boolean> {
   const current = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
-  return current?.run_id === runId && (current.status === 'running' || current.status === 'success')
+  if (current?.run_id === runId && (current.status === 'running' || current.status === 'success')) return true
+  return attempt !== undefined && Boolean(await env.KV.get(finLabStartMarkerKey(twDate, runId, attempt)))
+}
+
+/** R33-NEW-32: any `triggered` dispatch outcome (not only dispatch_unconfirmed) is older than a start
+ * heartbeat that already arrived for that run and attempt, so it must not be written over it. */
+async function finLabTriggeredOutcomeSuperseded(env: Bindings, twDate: string, runId: string, summary: string): Promise<boolean> {
+  if (classifySchedulerSummary(summary) !== 'triggered') return false
+  const attempt = summary.match(/(?:^|\s)dispatch_attempt=([^\s;]+)/)?.[1] ?? 1
+  return finLabStartObserved(env, twDate, runId, attempt)
 }
 
 /**
@@ -2783,9 +2792,8 @@ async function finLabStartObserved(env: Bindings, twDate: string, runId: string)
  * Used by the manual trigger route, which logs the dispatch outcome generically.
  */
 export async function finLabDispatchSupersededByStart(env: Bindings, runDate: string | undefined, summary: string): Promise<boolean> {
-  if (!/(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary)) return false
   const runId = summary.match(/(?:^|\s)run_id=([^\s;]+)/)?.[1]
-  return Boolean(runId) && await finLabStartObserved(env, resolveUpdateDate(runDate), runId!)
+  return Boolean(runId) && await finLabTriggeredOutcomeSuperseded(env, resolveUpdateDate(runDate), runId!, summary)
 }
 
 export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string): Promise<string> {
@@ -2799,6 +2807,12 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
   if (finlabLog?.status === 'running') {
     return `skipped: FinLab start heartbeat received for ${twDate}`
+  }
+  // R33-NEW-32: a dispatcher in another colo may have written `triggered` over the start heartbeat.
+  const pendingRunId = finlabLog?.status === 'triggered' ? finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id') : null
+  if (pendingRunId && await env.KV.get(finLabStartMarkerKey(twDate, pendingRunId,
+    schedulerSummaryField(finlabLog!, 'dispatch_attempt') ?? 1))) {
+    return `skipped: FinLab start heartbeat received for ${twDate} (start marker run_id=${pendingRunId})`
   }
   if (finlabLog?.status === 'success') {
     const updateLog = await readSchedulerRunLog(env, 'update', twDate)
@@ -2946,7 +2960,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     }))
     const status = classifySchedulerSummary(summary)
     // A start heartbeat that arrived during an unconfirmed (HTML 5xx) dispatch is newer than this outcome.
-    const startObserved = /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId)
+    const startObserved = await finLabTriggeredOutcomeSuperseded(env, twDate, runId, summary)
     if (!startObserved) await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
       status,
       summary: `${summary}; watchdog_retriggered_from_attempt=${previousAttempt}${lateLane ? ' late_lane_retry=1' : ''}`,

@@ -39,6 +39,12 @@ export function resolveFinLabDispatchFence(params: {
   }
 }
 
+/** R33-NEW-32: per-attempt start marker. The scheduler head is one KV value that a dispatcher in another
+ * colo can overwrite with `triggered` after the start heartbeat landed; this key is never overwritten. */
+export function finLabStartMarkerKey(runDate: string, runId: string, attempt: unknown): string {
+  return `finlab:start-observed:${runDate}:${runId}:${boundedAttempt(attempt)}`
+}
+
 /** Preserve dispatch identity when a callback replaces the scheduler head. */
 export function finLabCallbackSummary(summary: string, attempt: unknown, activeSummary?: string | null): string {
   const call = String(activeSummary ?? '').match(/(?:^|\s)function_call_id=([^\s;]+)/)?.[1]

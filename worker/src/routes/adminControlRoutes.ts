@@ -3,7 +3,7 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
-import { resolveFinLabDispatchFence, finLabCallbackSummary } from '../lib/finLabDispatchFence'
+import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
 import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
@@ -993,6 +993,10 @@ async function handleSchedulerCallback(c: any) {
       })
     }
     body.summary = finLabCallbackSummary(String(body.summary ?? ''), fence.incomingAttempt, current?.summary)
+    if (body.status === 'running' && callbackRunId) {
+      await c.env.KV.put(finLabStartMarkerKey(callbackRunDate, callbackRunId, fence.incomingAttempt),
+        new Date().toISOString(), { expirationTtl: 2 * 86400 })
+    }
   }
 
   if (body.task === 'screener' && ['success', 'error', 'skipped'].includes(String(body.status))) {

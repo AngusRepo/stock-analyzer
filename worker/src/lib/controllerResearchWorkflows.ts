@@ -1123,10 +1123,13 @@ export function isFinLabDispatchOutcomeUnknown(status: number, body: string): bo
 }
 
 // Transport failures leave the spawn outcome unknown; config/policy errors do not.
+// R33-NEW-32: the Workers runtime also rejects fetch with a plain Error ("Network connection lost.",
+// "internal error; reference = ..."), so the class is matched by message, not only on TypeError.
+const FINLAB_TRANSPORT_ERROR_MESSAGE = /network|connection|fetch failed|socket hang up|ECONNRESET|ETIMEDOUT|EPIPE|internal error; reference/i
 export function isFinLabDispatchTransportError(error: unknown): boolean {
   const name = (error as { name?: unknown } | null)?.name
   return name === 'TimeoutError' || name === 'AbortError'
-    || (error instanceof TypeError && /network|connection|fetch failed/i.test(error.message))
+    || (error instanceof Error && !(error instanceof SyntaxError) && FINLAB_TRANSPORT_ERROR_MESSAGE.test(error.message))
 }
 
 function optionalString(value: unknown): string | undefined {

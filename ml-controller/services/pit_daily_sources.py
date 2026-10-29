@@ -61,11 +61,13 @@ def required_versions(state: dict, *, query, bucket_factory) -> list[str]:
     """
     manifest = (state.get("pipeline_modal_serving_context") or {}).get("serving_manifest") or {}
     from services.r33_ensemble import is_r33
-    # R33-NEW-11: under R33 the feature models and GNN also read the prep of their own version.
-    prep_models = {"TimeXer", "LightGBM", "ExtraTrees", "TabM", "GNN"} if is_r33(manifest.get("active8_ensemble")) \
-        else {"TimeXer"}
+    # R33-NEW-11: under R33 the served feature models and GNN also read the prep of their own
+    # version. Shadow candidates stay TimeXer-only: a shadow's bad metadata must not stop the
+    # roster's PIT variants from being sealed (a shadow without its prep only fails itself).
+    r33_roster = {"LightGBM", "ExtraTrees", "TabM", "GNN"} if is_r33(manifest.get("active8_ensemble")) else set()
     paths = set()
     for section in ("models", "active8_shadow_candidates"):
+        prep_models = {"TimeXer"} | (r33_roster if section == "models" else set())
         rows = manifest.get(section) or []
         for row in (rows.values() if isinstance(rows, dict) else rows):
             if isinstance(row, dict) and row.get("model") in prep_models and row.get("metadata_path"):

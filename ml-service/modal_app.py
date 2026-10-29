@@ -1844,6 +1844,44 @@ def _pipeline_runtime_expected_symbols(
     ]
 
 
+def _assert_pipeline_bundle_rows(model_name: str, rows: object, *, expected: list[str], feature_models: list[str],
+                                 require_rank: bool, r33: bool) -> None:
+    """Every expected symbol exactly once. Outside R33 any row error or missing feature rank
+    fails the bundle; under R33 they are that symbol's coverage (z=0 / prediction_missing,
+    same as the controller closure), and only the structure fails closed."""
+    model_expected_set = set(expected)
+    if not expected or len(model_expected_set) != len(expected):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
+    if not isinstance(rows, list):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
+    observed: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
+        symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+        if not symbol or (row.get("error") and not r33):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
+        observed.append(symbol)
+        if require_rank and not r33:
+            rank_scores = row.get("rank_scores")
+            for feature_model in feature_models:
+                value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
+                try:
+                    valid = value is not None and math.isfinite(float(value))
+                except (TypeError, ValueError):
+                    valid = False
+                if not valid:
+                    raise ValueError(
+                        f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
+                    )
+    if (
+        len(rows) != len(expected)
+        or len(set(observed)) != len(observed)
+        or set(observed) != model_expected_set
+    ):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+
+
 def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     """Same L3 engine without publication or callback side effects."""
     _setup_env()
@@ -2147,6 +2185,8 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         if _is_active(name)
     ]
 
+    r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == "r33_equal7_isotonic"
+
     def _assert_exact_rows(
         model_name: str,
         rows: object,
@@ -2154,39 +2194,8 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         expected: list[str] | None = None,
         require_rank: bool = False,
     ) -> None:
-        model_expected = expected_symbols if expected is None else expected
-        model_expected_set = set(model_expected)
-        if not model_expected or len(model_expected_set) != len(model_expected):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
-        if not isinstance(rows, list):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
-        observed: list[str] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
-            symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
-            if not symbol or row.get("error"):
-                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
-            observed.append(symbol)
-            if require_rank:
-                rank_scores = row.get("rank_scores")
-                for feature_model in feature_models:
-                    value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
-                    try:
-                        valid = value is not None and math.isfinite(float(value))
-                    except (TypeError, ValueError):
-                        valid = False
-                    if not valid:
-                        raise ValueError(
-                            f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
-                        )
-        if (
-            len(rows) != len(model_expected)
-            or len(observed) != len(model_expected)
-            or len(set(observed)) != len(observed)
-            or set(observed) != model_expected_set
-        ):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+        _assert_pipeline_bundle_rows(model_name, rows, expected=expected_symbols if expected is None else expected,
+                                     feature_models=feature_models, require_rank=require_rank, r33=r33_bundle)
 
     _assert_exact_rows("feature", feature_rows, require_rank=True)
     runtime_output_keys = {

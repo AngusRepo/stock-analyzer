@@ -97,6 +97,15 @@ def context_views(views: dict, symbol: str) -> dict:
     return out
 
 
+def require_bound(pool_snapshot) -> None:
+    """Under R33 the feature and GNN stages must run inside stage_runner; without the views
+    they would silently fall back to the per-stock rebuild (train != serve)."""
+    from .active8_ensemble_runtime import R33_KIND
+    ensemble = pool_snapshot.get("active8_ensemble") if isinstance(pool_snapshot, dict) else None
+    if isinstance(ensemble, dict) and ensemble.get("kind") == R33_KIND and PREP_VIEWS.get() is None:
+        raise ValueError("r33_prep_views_not_bound")
+
+
 def stage_runner(pool_snapshot: dict, payload: dict, payloads, *, bucket_factory):
     """run(fn) calls fn with PREP_VIEWS set to the day's views under R33 (one load shared by
     the feature and GNN stages; a failed load fails both); outside R33 it just calls fn."""

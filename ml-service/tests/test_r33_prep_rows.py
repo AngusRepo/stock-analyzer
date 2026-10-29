@@ -26,12 +26,12 @@ class Bucket:
 
 
 def _source(objects, *, tag="base", rows=(("2330", DAY, 1.0), ("2317", DAY, 2.0), ("2330", "2026-10-02", 9.0)),
-            pit_version=None):
+            pit_version=None, width=None):
     prefix = f"universal/oof_forward_prep_v2/{DAY}-{tag}"
     shard_path, names_path = f"{prefix}/prep/batch_0.npz", f"{prefix}/prep/feature_names.json"
     shard = io.BytesIO()
     np.savez_compressed(shard, symbols=np.array([r[0] for r in rows]), dates=np.array([r[1] for r in rows]),
-                        X=np.stack([np.full(len(FEATURE_COLS), r[2], dtype=np.float32) for r in rows]))
+                        X=np.stack([np.full(width or len(FEATURE_COLS), r[2], dtype=np.float32) for r in rows]))
     names = json.dumps(list(FEATURE_COLS)).encode()
     receipt = {"business_date": DAY, "output_gcs_prefix": prefix, "status": "ready", "training_dispatched": False,
                "feature_semantic_version": "formal137-pit-asof-source-quality-v3",
@@ -153,3 +153,78 @@ def test_stage_runner_outside_r33_reads_nothing():
     assert run(lambda: r33_prep_rows.PREP_VIEWS.get()) is None
     run = r33_prep_rows.stage_runner({}, {}, [], bucket_factory=lambda: pytest.fail("bucket"))
     assert run(lambda: "ok") == "ok"
+
+
+# ---- B-1: the Modal bundle keeps a symbol's error as that symbol's coverage under R33 ----
+def _rows():
+    return [{"symbol": "A", "rank_scores": {"LightGBM": 0.5, "TabM": 0.4}},
+            {"symbol": "B", "error": "feature_context_failed:ValueError:r33_prep_row_missing:None"},
+            {"symbol": "C", "rank_scores": {"LightGBM": 0.5, "TabM": float("nan")}}]
+
+
+def test_bundle_rows_under_r33_keep_row_errors_and_missing_ranks_but_not_structure():
+    import modal_app
+    check = lambda rows, **kw: modal_app._assert_pipeline_bundle_rows(
+        "feature", rows, expected=["A", "B", "C"], feature_models=["LightGBM", "TabM"], require_rank=True, **kw)
+    check(_rows(), r33=True)
+    with pytest.raises(ValueError, match="pipeline_modal_feature_row_error:B"):
+        check(_rows(), r33=False)
+    with pytest.raises(ValueError, match="pipeline_modal_feature_rank_missing:C:TabM"):
+        check([r for r in _rows() if r["symbol"] != "B"] + [{"symbol": "B", "rank_scores": {"LightGBM": 1, "TabM": 1}}],
+              r33=False)
+    for broken, reason in ((_rows()[:2], "cardinality_mismatch"), (_rows() + [_rows()[0]], "cardinality_mismatch"),
+                           ([*_rows()[:2], {"symbol": "Z"}], "cardinality_mismatch"),
+                           ([*_rows()[:2], {"error": "x"}], "row_error:<missing>"),
+                           ([*_rows()[:2], "C"], "row_invalid"), ({"results": []}, "results_not_list")):
+        with pytest.raises(ValueError, match=reason):
+            check(broken, r33=True)
+
+
+def test_feature_and_gnn_stages_refuse_an_r33_pool_without_prep_views(monkeypatch):
+    pool = {"active8_ensemble": {"kind": "r33_equal7_isotonic"}}
+    monkeypatch.setattr(batch_prediction, "predict_stock_v2_batch_with_metrics",
+                        lambda *a, **k: pytest.fail("rebuilt per stock"))
+    with pytest.raises(ValueError, match="r33_prep_views_not_bound"):
+        batch_prediction.predict_stock_v2_chunked_with_metrics([{"symbol": "2330"}], chunk_size=1, pool_snapshot=pool)
+    with pytest.raises(ValueError, match="r33_prep_views_not_bound"):
+        batch_prediction.predict_gnn_graphsage_batch([{"symbol": "2330"}], pool_snapshot=pool)
+    with pytest.raises(ValueError, match="r33_prep_views_not_bound"):
+        batch_prediction._build_feature_model_batch_runtime_overrides([], pool_snapshot=pool)
+    r33_prep_rows.require_bound({"active8_ensemble": {"kind": "other"}})
+    r33_prep_rows.require_bound(None)
+    token = r33_prep_rows.PREP_VIEWS.set({})
+    try:
+        r33_prep_rows.require_bound(pool)
+    finally:
+        r33_prep_rows.PREP_VIEWS.reset(token)
+
+
+def test_modal_bundle_runs_the_feature_and_gnn_stages_inside_the_prep_views():
+    import inspect
+    import modal_app
+    source = inspect.getsource(modal_app._compute_pipeline_prediction_bundle)
+    assert "_with_r33_prep = stage_runner(frozen_pool, payload, payloads, bucket_factory=_get_bucket)" in source
+    assert "return _with_r33_prep(_feature_rows)" in source
+    assert "return _with_r33_prep(lambda: predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool))" in source
+    assert "feature_models=feature_models, require_rank=require_rank, r33=r33_bundle" in source
+
+
+def test_view_width_and_dtype_and_a_pit_request_serves_only_its_own_version():
+    objects = {}
+    source = _source(objects, width=len(FEATURE_COLS) - 1)
+    with pytest.raises(ValueError, match="r33_prep_width_invalid"):
+        r33_prep_rows.load_view(Bucket(objects), source, signal_date=DAY, symbols=["2330"])
+    objects = {}
+    pit = _source(objects, tag="pit", pit_version="pit-v1")
+    views = r33_prep_rows.load_views(Bucket(objects), {"base": _source(objects), "pit": {"pit-v1": pit}},
+                                     signal_date=DAY, symbols=["2330"])
+    assert views[None]["rows"]["2330"].dtype == np.float64
+    from types import SimpleNamespace
+    token = r33_prep_rows.PREP_VIEWS.set(views)
+    try:
+        ctx = batch_prediction._build_feature_batch_context(SimpleNamespace(symbol="2330", pit_contract_version="pit-v1"))
+        assert not ctx.serve_artifact_versions and ctx.pit_contract_version == "pit-v1"
+        with pytest.raises(ValueError, match="pit_contract_version_serving_mismatch"):
+            batch_prediction._feature_view(ctx, None)
+    finally:
+        r33_prep_rows.PREP_VIEWS.reset(token)

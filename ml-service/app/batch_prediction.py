@@ -972,6 +972,8 @@ def _build_feature_model_batch_runtime_overrides(
         _FEATURE_MODEL_NAMES_V2,
     )
 
+    from .r33_prep_rows import require_bound
+    require_bound(pool_snapshot)
     # HL2-1b: one symbol whose feature row cannot be built is that symbol's error,
     # not the chunk's (the GNN path already isolates it the same way).
     contexts: list[_FeatureBatchContext] = []
@@ -1093,6 +1095,8 @@ def predict_gnn_graphsage_batch(
     This endpoint intentionally lives outside predict_batch_v2 chunking because
     GraphSAGE needs cross-stock batch context to build graph edges.
     """
+    from .r33_prep_rows import require_bound
+    require_bound(pool_snapshot)
     request_cls, _predict_fn = _runtime()
     contexts: list[_FeatureBatchContext] = []
     results: list[dict | None] = [None] * len(payloads or [])
@@ -1483,6 +1487,8 @@ def predict_stock_v2_chunked_with_metrics(
         if pool_snapshot is not None
         else _load_model_pool()
     ) if payloads else pool_snapshot
+    from .r33_prep_rows import require_bound
+    require_bound(resolved_pool)  # a stage-level failure, not one error row per chunk
 
     def chunk_error_rows(chunk: list[dict], reason: str) -> list[dict]:
         return [

@@ -427,6 +427,12 @@ def test_r33_reads_the_feature_model_and_gnn_versions_too(monkeypatch):
         assert pds.required_versions(_state({'models': [{'model': model, 'metadata_path': 'tx/pit.json'}],
                                              'active8_ensemble': R33_ENSEMBLE}),
                                      query=None, bucket_factory=lambda: MetaBucket(META)) == [V]
+    # A shadow feature model is not read: its metadata cannot stop the roster's variants.
+    shadows = {'models': models[:2], 'active8_ensemble': R33_ENSEMBLE,
+               'active8_shadow_candidates': {'s': {'model': 'ExtraTrees', 'metadata_path': 'tx/ambiguous.json'},
+                                             't': {'model': 'TimeXer', 'metadata_path': 'tx/pit.json'}}}
+    assert pds.required_versions(_state(shadows), query=lambda *a: pytest.fail('query'),
+                                 bucket_factory=lambda: MetaBucket(META)) == [V]
     # Outside R33 only TimeXer reads a prep.
     assert pds.required_versions(_state({'models': models[1:2], 'active8_ensemble': {'kind': 'other'}}),
                                  query=None, bucket_factory=lambda: pytest.fail('bucket')) == []
@@ -447,3 +453,10 @@ def test_r33_prep_sources_ride_on_the_timexer_sources_only_under_r33():
     for broken in ({}, {'timexer_feature_source': {'schema_version': 'other'}}):
         with pytest.raises(ValueError, match='r33_prep_source_missing'):
             _r33_feature_prep_sources(broken, {'active8_ensemble': R33_ENSEMBLE})
+
+
+def test_the_prediction_request_carries_the_r33_prep_sources():
+    import inspect
+    from graphs import daily_pipeline_v2 as graph
+    source = inspect.getsource(inspect.unwrap(graph._build_pipeline_modal_prediction_payload))
+    assert "**_r33_feature_prep_sources(state, serving_manifest)," in source

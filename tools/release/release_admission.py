@@ -306,6 +306,43 @@ def changed(before, after):
             for k in sorted(before.keys() | after.keys()) if before.get(k) != after.get(k)}
 
 
+SOURCE_ONLY_SECTIONS = ('allocator_source_identity', 'l3_inference_source_identity')
+
+
+def source_only_normalized(before: dict, after: dict) -> dict:
+    """`after` with the fields a source-only release may change put back to `before`."""
+    normalized = deepcopy(after)
+    for name in SOURCE_ONLY_SECTIONS:
+        normalized[name] = before[name]
+    normalized['native_execution_policy']['execution_owner_version'] = before['native_execution_policy']['execution_owner_version']
+    return normalized
+
+
+def match_live_step(candidates: list[str], reads: dict, after: dict, identity, digest) -> int:
+    """Index of the one live grant (S = 0, Pk = k) whose configuration equals the current one up
+    to the source-only fields. Once policy steps are activated the KV holds Pk, so the release
+    continues from Pk; zero or several matches fail closed."""
+    matches = []
+    for step, name in enumerate(candidates):
+        reply = reads[name]
+        if step and reply['http_status'] == 404:
+            continue  # a policy grant that was never staged cannot be live
+        if reply['http_status'] != 200:
+            raise RuntimeError('live_paper_grant_missing' if not step else 'live_policy_grant_unreadable:' + name)
+        try:
+            before = identity(reply['body']['configuration'])
+            same = digest(source_only_normalized(before, after)) == digest(before)
+        except (KeyError, TypeError, AttributeError):
+            same = False
+        if same:
+            matches.append(step)
+    if not matches:
+        raise RuntimeError('live_step_unmatched')
+    if len(matches) > 1:
+        raise RuntimeError('live_step_ambiguous:' + ','.join(map(str, matches)))
+    return matches[0]
+
+
 def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: bytes, prior_components: dict,
               new_bundle: Path, release_id: str, authorization: str, review: str,
               policy_chain: Path | None = None) -> dict:
@@ -348,25 +385,42 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
     live_behavior = json.loads(git(source, 'show', f'{expected_live}:{MANIFEST_PATHS[0]}', raw=True))
     if 'native-paper-v1:' + digest(old_parts) != live_behavior['execution_owner_version']:
         raise RuntimeError('existing_linux_bundle_does_not_prove_live_native_owner')
-    prior_key = live_behavior['runtime_admission']
-    prior_read = kv_get(prior_key)
-    if prior_read['http_status'] != 200:
-        raise RuntimeError('live_paper_grant_missing')
+    from services.l4_policy_activation import policy_keys as live_policy_keys
+    # Prior = the live grant whose configuration the KV holds: S, or Pk once step k is activated.
+    candidates = [live_behavior['runtime_admission'], *live_policy_keys(live_behavior)]
+    if len(set(candidates)) != len(candidates):
+        raise RuntimeError('live_grant_keys_not_distinct')
+    reads = {name: kv_get(name) for name in candidates}
+    current = current_execution_configuration()
+    after = runtime_configuration_identity(current)
+    live_step = match_live_step(candidates, reads, after, runtime_configuration_identity, digest)
+    prior_key = candidates[live_step]
+    prior_read = reads[prior_key]
     prior = prior_read['body']
     if (prior.get('scope') != 'paper' or prior.get('approved') is not True
             or prior.get('efficacy_status') != 'unproven' or prior.get('maturity_transfer') is not False
             or prior.get('approval_checksum') != digest({k: v for k, v in prior.items() if k != 'approval_checksum'})):
         raise RuntimeError('live_paper_grant_invalid')
     key = GRANT_PREFIX + release_id
-    if key == prior_key or kv_get(key)['http_status'] != 404:
+    if key in candidates or kv_get(key)['http_status'] != 404:
         raise RuntimeError('new_grant_key_not_empty')
     chain = json.loads(policy_chain.read_bytes()) if policy_chain else []
     policy_keys = [key + '-p' + str(n) for n in range(1, len(chain) + 1)]
-    if any(kv_get(name)['http_status'] != 404 for name in policy_keys):
+    if set(policy_keys) & set(candidates) or any(kv_get(name)['http_status'] != 404 for name in policy_keys):
         raise RuntimeError('policy_grant_key_not_empty')
-    current = current_execution_configuration()
+    # The release chain must start at the live step (activate_l4_policy prepare-change --continue-from --step k).
+    if chain and (chain[0]['activation'].get('previous_policy_checksum') != digest(current['trading_config'].get('l4Distribution'))
+                  or chain[0]['rollback_risk_config'] != current['risk_config']
+                  or (chain[0].get('continued_from') or {}).get('step', 0) != live_step):
+        raise RuntimeError('policy_chain_does_not_start_at_live_step')
+    if chain and live_step:
+        # ...and continue the live release's own chain, not another one with the same l4 / risk.
+        from services.l4_policy_activation import manifest_chain
+        live_chain = manifest_chain(json.loads(git(source, 'show', f'{expected_live}:{MANIFEST_PATHS[1]}', raw=True)))
+        if (len(live_chain) < live_step
+                or chain[0]['continued_from'].get('activation_checksum') != digest(live_chain[live_step - 1])):
+            raise RuntimeError('policy_chain_not_continued_from_live_release_chain')
     before = runtime_configuration_identity(prior['configuration'])
-    after = runtime_configuration_identity(current)
     if after['native_execution_policy']['execution_owner_version'] != owner:
         raise RuntimeError('new_native_owner_is_not_raw_exact_source_owner')
     source_delta = {name: changed(before[name], after[name]) for name in
@@ -388,6 +442,8 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
     behavior.update(execution_owner_version=owner, runtime_admission=key, authorization=authorization,
                     review=review, source_equivalence=False, maturity_transfer=False, efficacy_status='unproven')
     behavior.pop('policy_runtime_admission', None)
+    # The live release's P1..Pn grants are bound to its own manifest; a new release names only its own chain.
+    behavior.pop('policy_runtime_admissions', None)
     if chain:
         from services.l4_policy_activation import with_policy_activations
         manifest, behavior = with_policy_activations(manifest, behavior,
@@ -404,7 +460,8 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
         'native_pipeline': changed(old_parts['pipeline'], parts['pipeline']),
         'native_bundle': {'previous': sha(prior_bundle), 'approved': sha(bundle_raw)},
         'previous_native_owner': live_behavior['execution_owner_version'],
-        'new_native_owner': owner, 'economics_unchanged': True, 'source_equivalence': False, 'maturity_transfer': False})
+        'new_native_owner': owner, 'economics_unchanged': True, 'source_equivalence': False, 'maturity_transfer': False,
+        'live_step': live_step, 'prior_key': prior_key})
     for name, raw in originals.items():
         (out / (name + '.before')).write_bytes(raw)
     try:
@@ -413,14 +470,14 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
         validate_runtime_approval(grant, prior['admission'], now=now)
         again = runtime_baseline(source, expected_live)
         if again['service_spec_sha256'] != baseline['service_spec_sha256'] or again['jobs'] != baseline['jobs'] \
-                or kv_get(prior_key) != prior_read or kv_get(key)['http_status'] != 404 \
+                or any(kv_get(name) != reads[name] for name in candidates) or kv_get(key)['http_status'] != 404 \
                 or any(kv_get(name)['http_status'] != 404 for name in policy_keys):
             raise RuntimeError('live_baseline_or_grant_drift_during_preparation')
         save(out / 'source-grant.json', grant)
         (out / 'native-paper.cjs').write_bytes(bundle_raw)
         save(out / 'native-components.json', {'previous': old_parts, 'current': parts, 'owner': owner})
         receipt = dict(mode='new-grant', status='local_only_prepared_not_published', prepared_at=now.isoformat(),
-            preparation_source_sha=git(source, 'rev-parse', 'HEAD'), prior_key=prior_key, new_key=key,
+            preparation_source_sha=git(source, 'rev-parse', 'HEAD'), prior_key=prior_key, live_step=live_step, new_key=key,
             prior_approval_checksum=prior['approval_checksum'], approval_checksum=grant['approval_checksum'],
             release_manifest_checksum=digest(manifest), native_owner=owner, native_bundle_sha256=sha(bundle_raw),
             production_baseline_source=baseline['source_sha'], production_baseline_image=baseline['image'],

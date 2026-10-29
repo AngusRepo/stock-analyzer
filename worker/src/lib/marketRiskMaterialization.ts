@@ -96,9 +96,10 @@ export async function recomputeDailyMarketRisk(env:Bindings,twDate:string) {
     await marketDb.prepare("UPDATE market_breadth SET bull_alignment_pct=? WHERE date=? AND (?='replace' OR bull_alignment_pct IS NULL)")
       .bind(risk.bullAlignmentPct,risk.date,mode).run()
     const regimeState = await readMarketRegimeStateHistory(marketDb,twDate).catch(()=>null) ?? await readMarketRegimeStateForDate(env.KV,twDate).catch(()=>null)
-    // A missing packet beside a kept original is filled from that original, not the later recompute.
+    // A missing packet beside a kept original is filled from that original, not the later recompute;
+    // with no original risk row the packet is only recorded as a revision.
     const packet = await buildMarketRegimeFactorPacket(marketDb, keepExisting&&existingRisk?existingRisk:riskRow, regimeState)
-    await upsertMarketRegimeFactorPacket(marketDb, packet, mode)
+    await upsertMarketRegimeFactorPacket(marketDb, packet, keepExisting&&!existingRisk?'revision_only':mode)
     await clearMarketRiskLatestCaches(env)
     console.log(`[ML V2] Market risk: ${packet.level} (${packet.score}/100) date=${risk.date}`)
   }

@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { recomputeDailyMarketRisk } from './marketRiskMaterialization'
-import { buildMarketRegimeFactorPacket, excludeSourceAfterDate } from './marketRegimeFactorPacket'
+import { buildMarketRegimeFactorPacket, excludeSourceAfterDate, upsertMarketRegimeFactorPacket } from './marketRegimeFactorPacket'
+import { fixtureQuality } from './riskProtocol.testSupport'
 
 // PIT (Wei 10/29): after the next session opens, a past date keeps its original market_risk,
 // quality receipt and factor packet; recomputations are appended to the revisions tables.
@@ -73,23 +74,48 @@ async function main(){try{
  assert.equal(core('SELECT * FROM market_risk WHERE date=?').length,1)
  assert.equal(market('SELECT * FROM market_regime_factor_packets WHERE date=?').length,1)
 
- // An original whose quality receipt is unusable is kept, and the caller is told so.
+ // An original whose quality receipt is unusable is kept, and the caller is told so. A missing
+ // packet beside it is filled from that original, not from the later recompute.
+ const vixClose=(scale:number)=>{vix=JSON.parse(JSON.stringify(frozen.vix));const q=vix.chart.result[0].indicators.quote[0];q.close=q.close.map((v:any)=>typeof v==='number'?v*scale:v)}
+ vixClose(3)
  f.sqls.core.prepare('UPDATE market_risk_quality_v1 SET checksum=? WHERE date=?').run('0'.repeat(64),frozen.date)
- const kept=core('SELECT * FROM market_risk_quality_v1 WHERE date=?')
+ f.sqls.market.prepare('DELETE FROM market_regime_factor_packets WHERE date=?').run(frozen.date)
+ const kept=core('SELECT * FROM market_risk_quality_v1 WHERE date=?'),keptRisk=core('SELECT * FROM market_risk WHERE date=?')
  await assert.rejects(()=>recomputeDailyMarketRisk(f.env,frozen.date),/market_risk_original_kept_unqualified:2026-10-06/)
  assert.deepEqual(core('SELECT * FROM market_risk_quality_v1 WHERE date=?'),kept)
+ assert.deepEqual(core('SELECT * FROM market_risk WHERE date=?'),keptRisk)
+ const volatility=JSON.parse(market('SELECT factor_json FROM market_regime_factor_packets WHERE date=?')[0].factor_json).find((t:any)=>t.id==='volatility')
+ assert.equal(volatility.raw_value,keptRisk[0].vix,'the filled packet describes the kept original')
 
- // A receipt without its risk row is not completed from a post-open recompute (the pair never splits).
+ // A receipt without its risk row is not completed from a post-open recompute (the pair never
+ // splits), and no canonical packet is created from that recompute either.
  f.sqls.core.prepare('DELETE FROM market_risk WHERE date=?').run(frozen.date)
+ f.sqls.market.prepare('DELETE FROM market_regime_factor_packets WHERE date=?').run(frozen.date)
+ const packetRevisionsBefore=market('SELECT * FROM market_regime_factor_packet_revisions_v1 WHERE date=?').length
  await assert.rejects(()=>recomputeDailyMarketRisk(f.env,frozen.date),/market_risk_original_kept_unqualified/)
  assert.equal(core('SELECT * FROM market_risk WHERE date=?').length,0)
  assert.deepEqual(core('SELECT * FROM market_risk_quality_v1 WHERE date=?'),kept)
+ assert.equal(market('SELECT * FROM market_regime_factor_packets WHERE date=?').length,0)
+ assert.equal(market('SELECT * FROM market_regime_factor_packet_revisions_v1 WHERE date=?').length,packetRevisionsBefore+1)
 
  // Before the next open the past date may still be replaced.
  at('2026-10-07T00:30:00Z')
  const repaired=await recomputeDailyMarketRisk(f.env,frozen.date)
  assert.equal(repaired.canonical_mode,'replace')
  assert.notDeepEqual(core('SELECT * FROM market_risk_quality_v1 WHERE date=?'),kept)
+
+ // The common past-date path: a complete original is preserved after the open; only a revision is added.
+ const score=core('SELECT risk_score FROM market_risk WHERE date=?')[0].risk_score,q=fixtureQuality(frozen.date,score)
+ f.sqls.core.prepare('INSERT OR REPLACE INTO market_risk_quality_v1(date,schema_version,status,known_score,upper_score,json,checksum,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+   .run(frozen.date,q.schema_version,q.status,score,score,q.json,q.checksum,'2026-10-06T14:00:00Z')
+ const completeRisk=core('SELECT * FROM market_risk WHERE date=?'),completePacket=market('SELECT * FROM market_regime_factor_packets WHERE date=?')
+ const keptRevisions=market("SELECT * FROM market_regime_factor_packet_revisions_v1 WHERE date=? AND canonical_mode='keep_original'").length
+ at('2026-10-07T03:00:00Z')
+ const preserved=await recomputeDailyMarketRisk(f.env,frozen.date)
+ assert.equal(preserved.canonical_mode,'keep_original');assert.equal(preserved.quality_status,'complete')
+ assert.deepEqual(core('SELECT * FROM market_risk WHERE date=?'),completeRisk)
+ assert.deepEqual(market('SELECT * FROM market_regime_factor_packets WHERE date=?'),completePacket)
+ assert.equal(market("SELECT * FROM market_regime_factor_packet_revisions_v1 WHERE date=? AND canonical_mode='keep_original'").length,keptRevisions+1)
 
  // Factor packets never cite a source dated after the packet date.
  at('2026-10-07T02:00:00Z')
@@ -107,7 +133,13 @@ async function main(){try{
  assert.equal(cnyesCalls,1);assert.equal(sameDay.factors.find(t=>t.id==='event_monitors')!.source_date,'2026-10-07')
  const tile={id:'x',label:'x',value:'v',raw_value:1,score:80,weight:.1,contribution:8,status:'warn' as const,source:'s',source_date:'2026-10-07',detail:'d'}
  assert.equal(excludeSourceAfterDate(tile,'2026-10-06').contribution,4.5)
+ assert.equal(excludeSourceAfterDate(tile,'2026-10-06').source,'excluded:source_after_packet_date')
  assert.equal(excludeSourceAfterDate(tile,'2026-10-07'),tile)
+ // A replace whose canonical write was lost is caught by the readback (the old row still exists).
+ const fresh=await buildMarketRegimeFactorPacket(f.env.MARKET_DB,{date:frozen.date},null)
+ const lossy={...nativeMarket,batch:async(statements:any[])=>nativeMarket.batch(statements.slice(1))}
+ await assert.rejects(()=>upsertMarketRegimeFactorPacket(lossy as any,{...fresh,generated_at:'2026-10-07T09:09:09.000Z'},'replace'),/factor_packet_readback_failed/)
+
  // The new tables ship with their schema files and the deploy schema check.
  const read=(path:string)=>fs.readFileSync(new URL(path,import.meta.url),'utf8')
  assert.match(read('../../domain-schemas/core.sql'),/CREATE TABLE IF NOT EXISTS market_risk_revisions_v1/)

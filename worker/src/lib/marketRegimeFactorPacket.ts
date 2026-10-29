@@ -665,7 +665,7 @@ export type CanonicalWriteMode = 'replace' | 'keep_original'
 export async function upsertMarketRegimeFactorPacket(
   db: D1Database,
   packet: MarketRegimeFactorPacket,
-  mode: CanonicalWriteMode = 'replace',
+  mode: CanonicalWriteMode | 'revision_only' = 'replace',
 ): Promise<void> {
   const conflict = mode === 'replace'
     ? `DO UPDATE SET
@@ -683,8 +683,9 @@ export async function upsertMarketRegimeFactorPacket(
     : 'DO NOTHING'
   const packetJson = canonicalRiskJson(packet)
   const checksum = await riskPacketChecksum(packet)
+  const revisionMode: CanonicalWriteMode = mode === 'replace' ? 'replace' : 'keep_original'
   await db.batch([
-    db.prepare(`
+    ...(mode === 'revision_only' ? [] : [db.prepare(`
     INSERT INTO market_regime_factor_packets (
       date, schema_version, score, level, factor_json, contribution_json, source_json,
       freshness_json, missing_reason_json, lineage_json, generated_at, updated_at
@@ -703,15 +704,18 @@ export async function upsertMarketRegimeFactorPacket(
       JSON.stringify(packet.missing_reasons),
       JSON.stringify(packet.lineage),
       packet.generated_at,
-    ),
+    )]),
     db.prepare(`INSERT OR IGNORE INTO market_regime_factor_packet_revisions_v1
       (date, packet_checksum, packet_json, canonical_mode, recorded_at) VALUES (?, ?, ?, ?, ?)`)
-      .bind(packet.date, checksum, packetJson, mode, paperExecutionDate().toISOString()),
+      .bind(packet.date, checksum, packetJson, revisionMode, paperExecutionDate().toISOString()),
   ])
   const revision = await db.prepare('SELECT packet_json FROM market_regime_factor_packet_revisions_v1 WHERE date = ? AND packet_checksum = ?')
     .bind(packet.date, checksum).first<{ packet_json: string }>()
-  const canonical = await db.prepare('SELECT date FROM market_regime_factor_packets WHERE date = ?').bind(packet.date).first()
-  if (revision?.packet_json !== packetJson || !canonical) throw new Error('market_regime_factor_packet_readback_failed:' + packet.date)
+  const canonical = await db.prepare('SELECT generated_at, factor_json FROM market_regime_factor_packets WHERE date = ?')
+    .bind(packet.date).first<{ generated_at: string; factor_json: string }>()
+  const replaced = canonical?.generated_at === packet.generated_at && canonical?.factor_json === JSON.stringify(packet.factors)
+  if (revision?.packet_json !== packetJson || (mode === 'replace' && !replaced) || (mode === 'keep_original' && !canonical))
+    throw new Error('market_regime_factor_packet_readback_failed:' + packet.date)
 }
 
 function parseJsonRecord(raw: unknown): Record<string, any> {

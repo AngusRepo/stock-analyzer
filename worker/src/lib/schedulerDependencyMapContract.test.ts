@@ -122,7 +122,7 @@ assert(
     schedulerStatus.includes("id: 'evening-chain'") &&
     !schedulerStatus.includes("id: 'source-readiness-probe'") &&
     schedulerStatus.indexOf("id: 'market-close-refresh'") < schedulerStatus.indexOf("id: 'evening-chain'"),
-  'scheduler status must show market-close-refresh before the TW 21:00 primary evening-chain without source-readiness-probe',
+  'scheduler status must show market-close-refresh before the TW 21:45 primary evening-chain without source-readiness-probe',
 )
 assert(
   !schedulerStatus.includes('market-data-update') &&

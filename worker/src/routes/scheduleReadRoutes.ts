@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
+import { eodExitSchedule } from '../lib/schedulerManifestGovernance'
 
 export const scheduleReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -21,11 +22,11 @@ const schedule: ScheduleRow[] = [
   { task: 'premarket-evidence-watchdog', tw_time: '07:00-08:50', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Recover evidence then continue pending debates.' },
   { task: 'pre-market-warmup', tw_time: '08:50', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Control-plane warmup before market open.' },
   { task: 'intraday-check', tw_time: '09:00-13:30', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Market-hours quote sanity and execution guard.' },
-  { task: 'eod-exit', tw_time: '13:25', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Market close exit workflow.' },
+  { task: 'eod-exit', tw_time: eodExitSchedule().twTime, owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Market close exit workflow.' },
   { task: 'daily-snapshot', tw_time: '14:20', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Paper account, position, and PnL snapshot.' },
   { task: 'market-close-refresh', tw_time: '18:10', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Early post-close refresh for official prices, market breadth, futures snapshot, and close-data cache.' },
-  { task: 'evening-chain', tw_time: '21:00', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Primary post-market root for FinLab refresh, market data, indicators, screener, ML, recommendation, verify, and reporting.' },
-  { task: 'finlab-backfill-watchdog', tw_time: '21:20-23:50 / 10m', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Retries FinLab Modal calls that never emitted a start heartbeat.' },
+  { task: 'evening-chain', tw_time: '21:45', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Primary post-market root for FinLab refresh, market data, indicators, screener, ML, recommendation, verify, and reporting.' },
+  { task: 'finlab-backfill-watchdog', tw_time: '22:00-23:50 / 10m', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Retries FinLab Modal calls that never emitted a start heartbeat.' },
   { task: 'indicator-queue-watchdog', tw_time: '21:00-01:55 / 5m', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Re-enqueues stale or dead-lettered indicator shards from durable cursors and repairs orphaned finalizers.' },
   { task: 'allocator-ev-lifecycle-watchdog', tw_time: '21:00-01:50 / 10m', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'governance', description: 'Recovers interrupted native lineage, allocator snapshot, verify callback, and delayed replay stages.' },
   { task: 'active8-oof-daily', tw_time: 'Daily 01:55 (latest mature session)', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'L4 allocation', description: 'Extends the fixed Active-8 cohort for causal shadow monitoring and evaluates T+5 outcomes for the exact Fusion artifact that served; never trains or promotes.' },
@@ -34,7 +35,7 @@ const schedule: ScheduleRow[] = [
   { task: 'active8-oof-monthly', tw_time: 'First Sunday 02:00', owner: 'gcp_scheduler', parameter_mode: 'hard_boundary', layer: 'L3 model release', description: 'Owns the canonical immutable OOF cohort, eight-model full-fit release, validation, and atomic promotion lifecycle.' },
   { task: 'external-evidence', tw_time: '23:15', owner: 'gcp_scheduler', parameter_mode: 'reporting', layer: 'L0/L1 ops', description: 'Materializes formal-shadow GDELT/official external evidence for the latest available recommendation date.' },
   { task: 'update', tw_time: 'after source readiness', owner: 'worker_chain', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Market data update and readiness manifest.' },
-  { task: 'screener', tw_time: '22:00 chain', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Daily screener seed and candidate pool preparation.' },
+  { task: 'screener', tw_time: 'after 21:45 chain', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'L0/L1 ops', description: 'Daily screener seed and candidate pool preparation.' },
   { task: 'regime-compute', tw_time: 'before pipeline', owner: 'worker_chain', parameter_mode: 'adaptive_learning', layer: 'L4 allocation', description: 'Market-regime context for sizing, thresholds, and allocation.' },
   { task: 'pipeline', tw_time: 'after readiness', owner: 'controller_callback', parameter_mode: 'hard_boundary', layer: 'governance', description: 'LangGraph pipeline v2 after data, screener, and regime readiness.' },
   { task: 'ml-predict', tw_time: 'inside pipeline', owner: 'controller_callback', parameter_mode: 'adaptive_learning', layer: 'L2/L3 model evidence', description: 'TimesFM L2 sidecar enrichment, active-8 L3 ML prediction, and ensemble merge.' },

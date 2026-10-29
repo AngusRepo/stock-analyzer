@@ -11,12 +11,12 @@ const jobs = manifest.jobs as Array<{ id: string; task: string; schedule: string
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 
 assert(
-  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '0 13 * * 1-5'),
-  'GCP Scheduler must keep one TW 21:00 evening-chain primary job for the post-market DAG',
+  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '45 13 * * 1-5'),
+  'GCP Scheduler must keep one TW 21:45 evening-chain primary job for the post-market DAG',
 )
 assert(
   jobs.some((job) => job.id === 'market-close-refresh' && job.task === 'market-close-refresh' && job.query === 'sync=1' && job.schedule === '10 10 * * 1-5'),
-  'GCP Scheduler must trigger TW 18:10 market-close-refresh before the 21:00 evening chain',
+  'GCP Scheduler must trigger TW 18:10 market-close-refresh before the 21:45 evening chain',
 )
 assert(
   jobs.some((job) => job.id === 'finlab-backfill-watchdog' && job.task === 'finlab-backfill-watchdog' && job.query === 'sync=1' && job.schedule === '*/10 13-15 * * 1-5'),

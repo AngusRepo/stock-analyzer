@@ -212,13 +212,32 @@ def test_gcs_adapter_checks_checksum_and_generation_without_overwriting_first_re
     with pytest.raises(ValueError,match='checksum_mismatch'):store.read('fixture')
 
 
-def test_expired_gpu_queue_resumes_without_doing_work():
-    store,queue=Store(),[]
+def test_gpu_queued_past_its_lease_renews_it_and_runs_once():
+    store,queue,runs=Store(),[],[]
     journal=Journal(store,reference(),clock=lambda:0)
     with pytest.raises(Suspended) as pending:journal.gpu({'x':1})
-    assert run_gpu_stage(store,pending.value.dispatch,predict=lambda _:pytest.fail('expired'),
-        resume=queue.append,clock=lambda:1051)['status']=='expired_resumed'
-    assert queue==[reference()]
+    dispatch=pending.value.dispatch
+    def predict(payload):
+        runs.append(payload)
+        # While the renewed lease runs, a CPU resume waits instead of claiming again.
+        with pytest.raises(Suspended) as waiting:Journal(store,reference(),clock=lambda:1100).gpu({'x':1})
+        assert waiting.value.dispatch is None
+        return {'y':2}
+    assert run_gpu_stage(store,dispatch,predict=predict,resume=queue.append,clock=lambda:1051)['status']=='resumed'
+    assert runs==[{'x':1}] and queue==[reference()]
+    assert Journal(store,reference(),clock=lambda:5000).gpu({'x':1})=={'y':2}
+    # A redelivered container for the same token never runs the GPU twice.
+    run_gpu_stage(store,dispatch,predict=lambda _:pytest.fail('twice'),resume=queue.append,clock=lambda:5000)
+    assert len(runs)==1
+
+
+def test_newer_cpu_attempt_supersedes_an_expired_gpu_container():
+    store=Store()
+    with pytest.raises(Suspended) as first:Journal(store,reference(),clock=lambda:0).gpu({'x':1})
+    with pytest.raises(Suspended) as second:Journal(store,reference(),clock=lambda:1051).gpu({'x':1})
+    assert second.value.dispatch['token']!=first.value.dispatch['token']
+    assert run_gpu_stage(store,first.value.dispatch,predict=lambda _:pytest.fail('stale'),
+        resume=lambda _:pytest.fail('stale'),clock=lambda:1100)=={'status':'superseded'}
 
 def test_actual_cpu_entrypoint_does_not_send_terminal_error_for_lost_gpu_ack(monkeypatch):
     from types import SimpleNamespace

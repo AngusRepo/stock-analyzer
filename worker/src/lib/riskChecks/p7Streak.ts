@@ -60,7 +60,7 @@ export async function checkP7Streak(
     const wrongCount=cohorts.reduce((n,row)=>n+1-row.accuracy,0)
     if(wrongCount<4) return null
 
-    const layer7Scale = cc.layer7ScaleRatio ?? 0.3
+    const layer7Scale = cc.layer7ScaleRatio
     if(!Number.isFinite(layer7Scale) || layer7Scale<0 || layer7Scale>1) throw new Error('p7_scale_invalid')
     const adjusted = defaults.maxPositionPct * layer7Scale
     console.warn(

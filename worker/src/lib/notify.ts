@@ -13,7 +13,7 @@ import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { Bindings } from '../types'
 import { capturePaperNotification, paperExecutionDate, paperExecutionFetch } from './paperExecutionScope'
-import { assertPostVerifyEffectAllowed, recordPostVerifyOwnerAck, isPostVerifyTaskScope } from './postVerifyTaskCheckpoint'
+import { assertPostVerifyEffectAllowed, recordPostVerifyOwnerAck, isPostVerifyTaskScope } from './postVerifyEffectScope'
 
 type Env = Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>
 

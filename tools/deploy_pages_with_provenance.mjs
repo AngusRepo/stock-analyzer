@@ -63,10 +63,13 @@ const schedulerManifestSha256 = createHash('sha256').update(readFileSync(manifes
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const useShell = process.platform === 'win32'
 
+// The build runs third-party plugins; only wrangler pages deploy needs the Cloudflare token.
+const buildEnv = { ...process.env, VITE_STOCKVISION_SOURCE_SHA: sourceSha }
+delete buildEnv.CLOUDFLARE_API_TOKEN
 run(npm, ['run', 'build'], {
   cwd: frontendDir,
   shell: useShell,
-  env: { ...process.env, VITE_STOCKVISION_SOURCE_SHA: sourceSha },
+  env: buildEnv,
 })
 
 const provenance = {

@@ -61,13 +61,17 @@ async def _execute_lifecycle(**kwargs) -> dict[str, Any]:
         return await _execute_account_lifecycle(**kwargs, _daily_config=config)
     from services.l4_forward_refresh import attach_daily_result
     business_date = kwargs.get('end_date') or datetime.now(ZoneInfo('Asia/Taipei')).date().isoformat()
+    from services.l4_opb_arm_replay import attach_daily_replay
     data_task = asyncio.create_task(asyncio.to_thread(attach_daily_result, {}, config, business_date))
+    # OPB arm replay is research evidence; its outcome never changes closure status.
+    replay_task = asyncio.create_task(asyncio.to_thread(attach_daily_replay, config, business_date))
     try:
         result = await _execute_account_lifecycle(**kwargs, _daily_config=config)
     except Exception as exc:
         logger.exception('[OofMaterializeJob] account closure failed; independent label refresh continues')
         result = {'status': 'failed', 'reason': 'daily_account_closure_failed', 'error_type': type(exc).__name__}
     data_result = await data_task
+    result['opb_arm_replay'] = await replay_task
     result['forward_learning_data'] = data_result['forward_learning_data']
     if data_result.get('status') == 'failed':
         result.update(accounting_status=result.get('status'), status='failed',
@@ -177,12 +181,33 @@ async def _execute_account_lifecycle(
     return result
 
 
+def _nav_business_date(end_date: str | None, now=None) -> str:
+    from datetime import date, datetime, timedelta, timezone
+
+    today = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=8))).date()
+    business_date = end_date or today.isoformat()
+    parsed = date.fromisoformat(business_date)
+    if parsed.isoformat() != business_date or parsed > today:
+        raise ValueError("paired_nav_business_date_invalid_or_future")
+    return business_date
+
+
 def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False, strategy_only=False) -> dict[str, Any]:
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     started = time.monotonic()
-    from services.paired_nav_read_cache import reuse_verified_cold_reads
+    # An invalid or future cutoff fails before the receipt reuse, accounting or
+    # display publication can touch D1 or storage.
+    try:
+        _nav_business_date(end_date, now)
+    except ValueError as exc:
+        logger.error("[OofMaterializeJob] Independent NAV closure refused: %s", exc)
+        return {"status": "failed", "as_of_date": end_date, "accounting_status": None,
+                "reason": "paired_nav_daily_closure_incomplete", "error_type": type(exc).__name__}
+    from services.paired_nav_scan_once import scan_each_snapshot_once
     from services.runtime_phase_metrics import measured_phase
-    with measured_phase("daily_nav"), reuse_verified_cold_reads(), reuse_verified_nav_evidence():
+    # Census, owner and display sweeps re-read the same 0.7-2.4 GB contexts with
+    # different projections; scan each verified snapshot once for all of them.
+    with measured_phase("daily_nav"), scan_each_snapshot_once(), reuse_verified_nav_evidence():
         if retire_legacy_owners and end_date and now is None:
             from services.daily_nav_read_receipt import run_with_receipt, GcsReceiptStore
             from services.d1_domain_client import D1DataDomain, client_for_domain
@@ -216,18 +241,15 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
 
 
 def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None, strategy_only=False) -> dict[str, Any]:
-    from datetime import date, datetime, timedelta, timezone
+    from datetime import datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)
-    today = clock.astimezone(timezone(timedelta(hours=8))).date()
-    business_date = end_date or today.isoformat()
+    business_date = end_date or clock.astimezone(timezone(timedelta(hours=8))).date().isoformat()
     result = {}
     try:
         from routers.walk_forward import _materialize_nav_with_reviews
         from services.d1_domain_client import D1DataDomain, client_for_domain
-        parsed = date.fromisoformat(business_date)
-        if parsed.isoformat() != business_date or parsed > today:
-            raise ValueError("paired_nav_business_date_invalid_or_future")
+        business_date = _nav_business_date(end_date, clock)
         client = _client or client_for_domain(D1DataDomain.LEARNING)
         from services.paired_nav_daily_review import NavDailyReviewIncomplete
         review_incomplete = False

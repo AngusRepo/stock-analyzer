@@ -46,11 +46,19 @@ def validate_source_release(approval, admission, *, now):
     after['native_execution_policy']['execution_owner_version'] = before['native_execution_policy']['execution_owner_version']
     change = approval.get('approved_l4_execution_policy_change')
     if change is not None:
-        activation = manifest.get('policy_activation')
-        if (not isinstance(activation, dict)
-                or change != {'activation_checksum': digest(activation)}):
+        from services.l4_policy_activation import SCHEMAS, manifest_chain, named_chain, validate_activation_chain
+        chain, named = manifest_chain(manifest), named_chain(change)
+        # A grant names a prefix of this release's reviewed chain (P1 = 1, P2 = 1..2, ...).
+        if (not isinstance(chain, list) or not all(isinstance(a, dict) for a in chain)
+                or not isinstance(named, list) or not named or named != [digest(a) for a in chain[:len(named)]]):
             raise fail()
-        _validate_execution_policy_change(before, after, activation)
+        prefix = chain[:len(named)]
+        if any(a.get('schema_version') in SCHEMAS for a in prefix):
+            validate_activation_chain(before, after, prefix)
+        elif len(prefix) == 1:
+            _validate_execution_policy_change(before, after, prefix[0])
+        else:
+            raise fail()
     # Source-only releases cannot change economics. A separate exact policy
     # grant may normalize only the reviewed horizon/rotation delta above.
     # Pin the complete already-verified baseline; do not recursively reinterpret

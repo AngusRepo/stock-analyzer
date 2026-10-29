@@ -40,7 +40,17 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
     frozen['runtime']={'signal_date':signal_date,'l3_identity':identity,'account':account,'predictions':deepcopy(predictions)}
     from services.l4_execution_evidence import bind_calibration_packets
     frozen['runtime'].update(bind_calibration_packets(frozen,signal_date))
-    if reward_reader is None:
+    from services.l4_opb_selection import context_identity, is_v2
+    if reward_reader is None and is_v2(frozen):
+        # v2 learns only from the full-information arm replay ledger. Rows are
+        # frozen into the plan inputs, so replan/replay reproduce the choice.
+        def reward_reader():
+            from services.d1_domain_client import client_proxy_for_domain
+            return client_proxy_for_domain('learning').query(
+                'SELECT context_identity,signal_date,arm_digest,schema_version,known_date,delta,status '
+                'FROM l4_opb_arm_replay_v1 WHERE context_identity=? AND known_date<=? ORDER BY signal_date,arm_digest',
+                [context_identity(frozen, identity), signal_date])
+    elif reward_reader is None:
         def reward_reader():
             from services.d1_domain_client import client_proxy_for_domain
             import json

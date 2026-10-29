@@ -177,6 +177,8 @@ async def alpha_challenger_gate(req: AlphaChallengerRequest = Body(default=...))
         baseline_config = await fetch_worker_admin("/api/admin/config", method="GET")
         if not isinstance(baseline_config, dict):
             baseline_config = {}
+        from services.position_risk_owner import with_formal_position_risk
+        baseline_config = with_formal_position_risk(baseline_config)
 
         evidence = await anyio.to_thread.run_sync(
             lambda: run_alpha_candidate_evidence(
@@ -557,6 +559,8 @@ async def parameter_candidates_validation_chain(
         raise HTTPException(status_code=422, detail="parameter_validation_start_after_end")
     baseline_config = await fetch_worker_admin("/api/admin/config", method="GET")
     baseline_config = baseline_config if isinstance(baseline_config, dict) else {}
+    from services.position_risk_owner import with_formal_position_risk
+    baseline_config = with_formal_position_risk(baseline_config)
 
     results: list[dict[str, Any]] = []
     for row in rows:
@@ -774,13 +778,16 @@ async def weekly_eval(
         end_date=end_date,
     )
 
+    # Both arms replay under the one KV-owned position-risk contract (K16a).
+    from services.position_risk_owner import load_formal_position_risk, with_formal_position_risk
+    position_risk = load_formal_position_risk()
     champion_metrics = replay_period(
         dataset=dataset, start_date=start_date, end_date=end_date,
-        params=champion_config, mode="A", initial_capital=1_000_000,
+        params=with_formal_position_risk(champion_config, formal=position_risk), mode="A", initial_capital=1_000_000,
     )
     challenger_metrics = replay_period(
         dataset=dataset, start_date=start_date, end_date=end_date,
-        params=challenger_config, mode="A", initial_capital=1_000_000,
+        params=with_formal_position_risk(challenger_config, formal=position_risk), mode="A", initial_capital=1_000_000,
     )
 
     champion_perf = _perf_summary(champion_metrics)

@@ -11,6 +11,7 @@ from services.cloud_run_jobs_client import CloudRunJobsClient
 def client_fixture(monkeypatch):
     client=object.__new__(CloudRunJobsClient)
     client._parent='projects/test/locations/region/jobs/verify'
+    client._require_source_alignment=False  # __init__ default (8d43888b5); bypassed by __new__
     seen=[]
     def listing(**kwargs):seen.append(('list',kwargs));return []
     def run(**kwargs):

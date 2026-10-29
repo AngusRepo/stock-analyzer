@@ -14,6 +14,8 @@ PATHS=[
  'ml-service/modal_app.py',
  'ml-service/app/serving_resolver.py',
 ]
+CONTRACTS={'ml-controller':'ml-controller/services/formal_feature_contract.py',
+           'ml-service':'ml-service/app/formal_feature_contract.py'}
 
 def versions(path):
     return {n.value for n in ast.walk(ast.parse((ROOT/path).read_text(encoding='utf-8')))
@@ -23,4 +25,10 @@ def versions(path):
 def test_training_oof_and_serving_expect_current_feature_owner(path):
     owner=versions('ml-service/app/features/__init__.py')
     assert len(owner)==1
-    assert versions(path)==owner
+    found=versions(path)
+    if not found:
+        # b0fed84d9 moved these files onto their deploy unit's formal_feature_contract;
+        # that contract must then carry the owner literal itself.
+        assert 'formal_feature_contract import' in (ROOT/path).read_text(encoding='utf-8')
+        found=versions(CONTRACTS[path.split('/',1)[0]])
+    assert found==owner

@@ -150,6 +150,14 @@ test('watchdog ownership and entry-only readiness gate', () => {
   assert.ok(!exits.includes('readCurrentNewsReport') && !exits.includes('premarket_evidence_wait'))
 })
 
+// MIS CDate is the night session's opening date: a 00:00-05:00 quote belongs to the session opened
+// the day before (isReadyNight adds a day back), so a same-day CDate would read as a future quote.
+const nightQuoteTime = (tw: string) => {
+  const time = tw.slice(11, 19), early = time < '05:00:01'
+  const opened = early ? new Date(Date.parse(tw.slice(0, 10)) - 86_400_000).toISOString().slice(0, 10) : tw.slice(0, 10)
+  return { CDate: opened.replaceAll('-', ''), CTime: time.replaceAll(':', '') }
+}
+
 test('news producer retries bad JSON without writing neutral KV, then publishes and reuses valid evidence', async () => {
   const f = l4NativeFixture(), originalFetch = globalThis.fetch
   const now = new Date(), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -164,7 +172,7 @@ test('news producer retries bad JSON without writing neutral KV, then publishes 
   f.ports.fetchFrozen = async (input: any) => {
     if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
     if (String(input).includes('yahoo.com')) return new Response('<rss/>')
-    if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: tw.slice(0, 10).replaceAll('-', ''), CTime: tw.slice(11, 19).replaceAll(':', '') }] } })
+    if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', ...nightQuoteTime(tw) }] } })
     if (String(input) === 'https://controller.invalid/news/analyze') { calls++; return Response.json({ source: 'cloudflare_workers_ai:@cf/mistralai/mistral-small-3.1-24b-instruct', text: good ? JSON.stringify(valid) : 'not JSON' }) }
     throw new Error('unexpected test network')
   }
@@ -207,7 +215,7 @@ test('news producer repairs once with same evidence, then caches valid output', 
   f.ports.fetchFrozen = async (input: any, init: any) => {
     if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
     if (String(input).includes('yahoo.com')) return new Response('<rss/>')
-    if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: tw.slice(0, 10).replaceAll('-', ''), CTime: tw.slice(11, 19).replaceAll(':', '') }] } })
+    if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', ...nightQuoteTime(tw) }] } })
     if (String(input) === 'https://controller.invalid/news/analyze') { calls++; const body = JSON.parse(init.body); if (calls === 2) { assert.ok(JSON.stringify(body).includes('json_object_missing')); assert.ok(JSON.stringify(body).includes(row.title)); assert.equal(f.kvs.has(`market:news_analyst:${date}`), false) }; return Response.json({ source: 'cloudflare_workers_ai:@cf/mistralai/mistral-small-3.1-24b-instruct', text: calls === 2 ? JSON.stringify(valid) : 'not JSON' }) }
     throw new Error('unexpected test network')
   }

@@ -518,10 +518,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   const opsDb = databaseForDataDomain(env, 'ops')
   const cfg = await getTradingConfig(env.KV)
   const riskCfg = await getRiskConfig(env.KV)
-  const configuredMaxSingleNamePct = Math.min(
-    cfg.position.maxPctOfPortfolio,
-    riskCfg.position.maxSingleNamePct,
-  )
+  const configuredMaxSingleNamePct = riskCfg.position.maxSingleNamePct
   const { hour: twHour, minute: twMin } = getTwClockParts()
   const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
   const isMarketOpen = isTwIntradayTradingMinute()

@@ -3,6 +3,7 @@ import re
 from datetime import date
 import numpy as np
 from services.l4_distribution import digest
+from services.l4_numeric_contract import WEIGHT_SUPPORT
 
 SCHEMA='l4-sealed-execution-v1'
 
@@ -93,22 +94,23 @@ def seal_execution_evidence(config, symbols, current, gross, covariance, result,
     targets=np.array([result['weights'][s] for s in symbols]);c=result['constraints']
     parameters=result['utility_parameters']
     def feasible(w):
-        if w.sum()>c['exposure_cap']+1e-8 or (w>1e-7).sum()>(c['max_positions'] or len(symbols)):return False
+        if w.sum()>c['exposure_cap']+1e-8 or (w>WEIGHT_SUPPORT).sum()>(c['max_positions'] or len(symbols)):return False
         if any(w[i]>min(c['name_cap'],c.get('name_caps',{}).get(s,1.))+1e-8 for i,s in enumerate(symbols) if s not in locked_symbols):return False
-        if any(1e-7<w[i]<c['min_weight']-1e-8 for i,s in enumerate(symbols) if s not in locked_symbols):return False
+        if any(WEIGHT_SUPPORT<w[i]<c['min_weight']-1e-8 for i,s in enumerate(symbols) if s not in locked_symbols):return False
         for group in c.get('membership_groups',{}).values():
-            if sum(w[symbols.index(s)]>1e-7 for s in group['symbols'])>group['effective_count']:return False
+            if sum(w[symbols.index(s)]>WEIGHT_SUPPORT for s in group['symbols'])>group['effective_count']:return False
         for group in c.get('exposure_groups',{}).values():
             if sum(w[symbols.index(s)] for s in group['symbols'])>group['effective_cap']+1e-8:return False
         for pair in c.get('excluded_pairs',[]):
             i,j=[symbols.index(s) for s in pair]
-            if w[i]>0 and w[j]>0 and not (current[i]>0 and current[j]>0 and w[i]<=current[i]+1e-8 and w[j]<=current[j]+1e-8):return False
+            if w[i]>WEIGHT_SUPPORT and w[j]>WEIGHT_SUPPORT and not (current[i]>WEIGHT_SUPPORT and current[j]>WEIGHT_SUPPORT and w[i]<=current[i]+1e-8 and w[j]<=current[j]+1e-8):return False
         return True
     # Costed target and hold/cash candidates use the SAME sealed inputs.
     def utility(w):
         delta=w-current
-        buy_costs=np.asarray(result.get('_buy_costs',np.full(len(symbols),result['_buy_cost'])))
-        sell_costs=np.asarray(result.get('_sell_costs',np.full(len(symbols),result['_sell_cost'])))
+        # Hold/cash exits must price trades exactly as the MILP objective did.
+        buy_costs=np.asarray(result.get('_objective_entry_costs',result.get('_buy_costs',np.full(len(symbols),result['_buy_cost']))))
+        sell_costs=np.asarray(result.get('_objective_reduce_costs',result.get('_sell_costs',np.full(len(symbols),result['_sell_cost']))))
         costs=buy_costs@np.maximum(delta,0)+sell_costs@np.maximum(-delta,0)
         pressure=np.asarray(result.get('_turnover_pressure',np.zeros(len(symbols))),float)
         score=(parameters['alpha_strength']*mu-parameters['turnover_penalty']*pressure)@w

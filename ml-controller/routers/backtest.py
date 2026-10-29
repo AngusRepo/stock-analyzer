@@ -578,6 +578,8 @@ def post_alpha_evidence(req: AlphaEvidenceRequest = Body(...)):
             baseline_config = cfg_result.config
             if cfg_result.contract.degraded:
                 logger.warning("[AlphaEvidence] trading:config degraded: %s", cfg_result.contract.to_dict())
+        from services.position_risk_owner import with_formal_position_risk
+        baseline_config = with_formal_position_risk(baseline_config, keep_existing=True)
         return {
             "status": "ok",
             **run_alpha_candidate_evidence(
@@ -652,6 +654,9 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
             config_contract = cfg_result.contract.to_dict()
             if cfg_result.contract.degraded:
                 logger.warning("[Replay] trading:config degraded: %s", config_contract)
+        from services.position_risk_owner import with_formal_position_risk
+        # An explicitly supplied replay config may pin its own risk contract.
+        params = with_formal_position_risk(params, keep_existing=True)
         metrics = replay_period_loading(
             start_date=req.start_date,
             end_date=req.end_date,

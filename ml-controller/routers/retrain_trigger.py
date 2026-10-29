@@ -1508,6 +1508,7 @@ async def trigger_universal_retrain(
     r33_prep = req.prep_only and not req.inference_only and req.model_profile_schema_version == R33_PROFILE
     if req.prep_only:
         from services.capture_inventory import inspect_capture_inventory
+        inventory_started = time.time()
         try:
             inventory = inspect_capture_inventory(prep_bucket,
                 sequence_gcs_prefix=req.sequence_gcs_prefix, run_date=run_date, inference_only=req.inference_only,
@@ -1519,6 +1520,8 @@ async def trigger_universal_retrain(
             return {"status": "rejected", "error": "prep_source_inventory_incomplete",
                     "detail": json.dumps(inventory["issues"], sort_keys=True),
                     "source_inventory": inventory, "run_id": run_id}
+        logger.info("[retrain/universal] prep pre-lock checks receipt_seconds=%.1f inventory_seconds=%.1f",
+                    inventory_started - t0, time.time() - inventory_started)
     lock_scope = hashlib.sha256(prep_output_gcs_prefix.encode("utf-8")).hexdigest()[:12]
     lock_key = f"prep-only:{run_date}:{lock_scope}" if req.prep_only else f"retrain:{run_date}"
     lock_ttl_seconds = _PREP_ONLY_LOCK_TTL_SECONDS if req.prep_only else _UNIVERSAL_LOCK_TTL_SECONDS
@@ -1629,7 +1632,9 @@ async def trigger_universal_retrain(
     logger.info(f"[retrain/universal] {len(stock_rows)} stocks, run_date={run_date}")
 
     # ?? 2. Shared market env ????????????????????????????????????????????????
+    market_env_started = time.time()
     market_env, _adaptive, barrier_params, _lifecycle, _tc = load_market_env(run_date)
+    logger.info("[retrain/universal] market env loaded seconds=%.1f", time.time() - market_env_started)
 
     # 2a. B-lite regime-conditional training window.
     # VIX + TWII bias proxy decides prices lookback via TrainingPolicy.

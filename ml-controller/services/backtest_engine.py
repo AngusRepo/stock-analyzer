@@ -2532,9 +2532,13 @@ def diagnose_replay_for_date(
 
 @dataclass
 class PositionSizeParams:
-    """Subset of trading:config.position for sizing."""
+    """Subset of trading:config.position for sizing.
+
+    max_pct_of_portfolio has a single owner, trading:risk_config.position.maxSingleNamePct,
+    carried by the positionRiskDistribution contract (K16a). It has no default.
+    """
     risk_pct_per_trade: float = 0.015
-    max_pct_of_portfolio: float = 0.25
+    max_pct_of_portfolio: Optional[float] = None
     max_pct_of_cash: float = 0.30
     min_cash_to_trade: float = 10_000
     min_stop_pct: float = 0.03
@@ -2557,9 +2561,14 @@ class PositionSizeParams:
     def from_trading_config(cls, tc: dict) -> "PositionSizeParams":
         p = tc.get("position", {})
         k = p.get("kelly", {})
+        formal = FormalPositionRiskParams.from_config(position_risk_contract(tc))
+        if formal is None:
+            raise PositionRiskContractMissing(
+                'backtest_position_risk_contract_missing: inject trading:risk_config via '
+                'services.position_risk_owner before replay')
         return cls(
             risk_pct_per_trade=p.get("riskPctPerTrade", 0.015),
-            max_pct_of_portfolio=p.get("maxPctOfPortfolio", 0.25),
+            max_pct_of_portfolio=formal.max_single_name_pct,
             max_pct_of_cash=p.get("maxPctOfCash", 0.30),
             min_cash_to_trade=p.get("minCashToTrade", 10_000),
             min_stop_pct=p.get("minStopPct", 0.03),
@@ -2572,6 +2581,15 @@ class PositionSizeParams:
             kelly_conf_clip_hi=k.get("confClipHi", 0.75),
             kelly_max_pct=k.get("maxKellyPct", 0.15),
         )
+
+
+class PositionRiskContractMissing(RuntimeError):
+    """Replay needs the trading:risk_config position contract; there is no fallback cap."""
+
+
+def position_risk_contract(params: Optional[dict]) -> Optional[dict]:
+    params = params or {}
+    return params.get('positionRiskDistribution') or params.get('position_risk_distribution')
 
 
 @dataclass(frozen=True)
@@ -3227,13 +3245,9 @@ def simulate_entries_for_date(
     filled_entry_symbols: set[str] = set()
     formal_position_risk = FormalPositionRiskParams.from_config(position_risk_distribution_cfg)
     if formal_position_risk is not None:
-        pos = replace(
-            pos,
-            max_pct_of_portfolio=min(
-                pos.max_pct_of_portfolio,
-                formal_position_risk.max_single_name_pct,
-            ),
-        )
+        pos = replace(pos, max_pct_of_portfolio=formal_position_risk.max_single_name_pct)
+    if pos.max_pct_of_portfolio is None:
+        raise PositionRiskContractMissing('backtest_position_risk_contract_missing')
 
     # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
     # Only apply when Mode B is active (ml_predictions cache present) AND
@@ -5002,7 +5016,10 @@ def replay_period(
         params:           trading:config shape dict (KV JSON or equivalent).
                           All sub-sections optional — missing sub-sections use
                           dataclass defaults matching production Worker KV defaults.
-                          Expected keys: screener, ranking, position, sltp, exit, fees
+                          Expected keys: screener, ranking, position, sltp, exit, fees.
+                          Required: positionRiskDistribution (the trading:risk_config
+                          position contract, services.position_risk_owner); without it
+                          the replay raises PositionRiskContractMissing.
         initial_capital:  starting cash (default 1M TWD)
         mode:             'A' for Mode A (rule-based) or 'B' for Mode B (walk-forward ML)
         verbose:          log per-day progress if True
@@ -5169,10 +5186,7 @@ def replay_period(
                     compute_profit_factor(all_trades, day, window_days=90, min_trades=10)
                     if mode == "B" and circuit_cfg_b is not None else None
                 ),
-                position_risk_distribution_cfg=(
-                    (params or {}).get('positionRiskDistribution')
-                    or (params or {}).get('position_risk_distribution')
-                ),
+                position_risk_distribution_cfg=position_risk_contract(params),
                 correlation_dedup_cfg=(
                     (params or {}).get("correlationDedup")
                     or (params or {}).get("correlation_dedup")

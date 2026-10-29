@@ -1446,6 +1446,10 @@ export function buildAdminWorkerDomainTaskMap(
       if (!result.healthy) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
       return `storage_health_gate_legacy_alias ${JSON.stringify(result)}`
     },
+    'kv-config-drift': async () => {
+      const { runKvConfigDriftCheck } = await import('./kvConfigDigest')
+      return runKvConfigDriftCheck(c.env.KV)
+    },
     'storage-integrity-audit': async () => {
       const { runArtifactIntegrityAudit } = await import('./artifactLifecycle')
       const result = await runArtifactIntegrityAudit(c.env, {

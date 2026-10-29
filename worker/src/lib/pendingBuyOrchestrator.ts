@@ -18,7 +18,8 @@ import {
 } from './pendingBuyStore'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { capEntryToLatestClose } from './entryPricePolicy'
-import { classifyBoard } from './boardTradability'
+import { classifyBoard, normalizeBoardType } from './boardTradability'
+import { isL4PolicyV2 } from './l4PolicySchema'
 import {
   buildMarketStructureWatchPoint,
   buildSparseAllocationSummary,
@@ -667,6 +668,8 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     if (cfg.l4Distribution && (!activeL4Plan || activeL4Plan.signal_date !== sourceRecoDate)) {
       throw new Error('l4_distribution_pending_plan_unavailable')
     }
+    // v2 surfaces a non-executable board target as an error instead of a silent SQL drop.
+    const l4PolicyV2 = activeL4Plan !== null && isL4PolicyV2(cfg.l4Distribution)
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
     const { results: coreRecommendationRows } = await withD1Retry('buy_recommendations', () => databaseForDataDomain(env, 'core').prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
@@ -695,9 +698,9 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
          AND json_valid(dr.alpha_allocation)
          AND (?=1 OR json_extract(dr.alpha_allocation, '$.selected') = 1)
          AND json_extract(dr.alpha_allocation, '$.engine') = 'sparse_tangent_inverse_risk'
-         AND COALESCE(UPPER(COALESCE(s.listing_market, s.market)), '') NOT IN ('EMERGING', 'ESB', 'ROTC')
+         AND (?=1 OR COALESCE(UPPER(COALESCE(s.listing_market, s.market)), '') NOT IN ('EMERGING', 'ESB', 'ROTC'))
         ORDER BY CAST(json_extract(dr.alpha_allocation, '$.allocation_rank') AS INTEGER), dr.symbol
-    `).bind(sourceRecoDate, activeL4Plan ? 1 : 0, activeL4Plan ? 1 : 0).all<BuyRecommendationRow>())
+    `).bind(sourceRecoDate, activeL4Plan ? 1 : 0, activeL4Plan ? 1 : 0, l4PolicyV2 ? 1 : 0).all<BuyRecommendationRow>())
     for (const row of coreRecommendationRows ?? []) {
       const allocation = typeof row.alpha_allocation === 'string' ? JSON.parse(row.alpha_allocation) : row.alpha_allocation
       if (!sameHmmLineage(allocation?.hmm_lineage, cb.marketRiskHmmLineage)) {
@@ -712,14 +715,26 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const marketPriceBySymbol = new Map(marketPriceRows.map((row) => [row.symbol, row]))
     const actualL4Account=activeL4Plan ? await (await import('./l4AccountContext')).captureL4AccountContext(env,sourceRecoDate) : null
     if (actualL4Account && !actualL4Account.complete) throw new Error('l4_morning_account_incomplete')
+    const targetBuyGap = (row: BuyRecommendationRow) => {
+      if (!activeL4Plan || !actualL4Account) return true
+      const held=actualL4Account.holdings.find(position=>position.symbol===row.symbol)
+      const price=held?.price ?? Number(marketPriceBySymbol.get(row.symbol)?.close)
+      return Number.isFinite(price) && price>0 && l4HasTargetBuyGap(activeL4Plan,row.symbol,
+        {nav:actualL4Account.nav,shares:held?.shares ?? 0,price})
+    }
+    if (l4PolicyV2) {
+      const nonExecutable = (coreRecommendationRows ?? [])
+        .filter(row => normalizeBoardType(row.market) === 'EMERGING' && targetBuyGap(row)).map(row => row.symbol)
+      if (nonExecutable.length) {
+        const reason = `l4_plan_selected_non_executable:${nonExecutable.join(',')}`
+        await persistPendingBuys(env, pendingDate, [], {
+          status: 'error', reason, prev_day: sourceRecoDate, l4_plan_id: activeL4Plan!.plan_id,
+        })
+        throw new Error(reason)
+      }
+    }
     const buyRecs = (coreRecommendationRows ?? [])
-      .filter(row => {
-        if (!activeL4Plan || !actualL4Account) return true
-        const held=actualL4Account.holdings.find(position=>position.symbol===row.symbol)
-        const price=held?.price ?? Number(marketPriceBySymbol.get(row.symbol)?.close)
-        return Number.isFinite(price) && price>0 && l4HasTargetBuyGap(activeL4Plan,row.symbol,
-          {nav:actualL4Account.nav,shares:held?.shares ?? 0,price})
-      })
+      .filter(targetBuyGap)
       .map((originalRow) => {
         const row = activeL4Plan ? { ...originalRow, signal: 'BUY', has_buy_signal: 1,
           alpha_allocation: JSON.stringify({ engine:'sparse_tangent_inverse_risk', expected_return_owner:'l4_distribution',

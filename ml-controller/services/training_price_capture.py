@@ -165,8 +165,8 @@ def load_training_market_cap_capture(bucket, *, price_capture, stock_rows, price
     # Remove stale cap values, while preserving unrelated dated financial fields.
     result={sid:{d:{k:v for k,v in row.items() if k!="market_cap_proxy"} for d,row in dates.items()}
             for sid,dates in prior_ts.items()}
-    for row in frame.iter_rows(named=True):
-        result.setdefault(ids[row["symbol"]],{}).setdefault(row["date"],{})["market_cap_proxy"]=row["market_cap_proxy"]
+    for symbol,day,value in zip(frame["symbol"].to_list(),frame["date"].to_list(),frame["market_cap_proxy"].to_list()):
+        result.setdefault(ids[symbol],{}).setdefault(day,{})["market_cap_proxy"]=value
     proof={"schema_version":"training-market-cap-capture-binding-v1","capture_id":price_capture["capture_id"],
            "capture_manifest_sha256":price_capture["capture_manifest_sha256"],"market_value_sha256":expected,
            "actual_values_sha256":hashlib.sha256(frame.write_json().encode()).hexdigest(),"rows":frame.height,

@@ -781,6 +781,23 @@ export async function runAllocatorEvLifecycleWatchdog(
         + `verify_canonical_run_id=${verifyCanonicalRunId || 'missing'} `
         + `verify_cursor_key=${verifyCursorKey || 'missing'}`
     }
+    // Read before re-queueing: the queue transition clears last_error. A
+    // previous dispatch that ended in error or lost its lease did not complete,
+    // so this tick fails even though it redispatches again.
+    const previousStage = await opsDb.prepare(`
+      SELECT status, canonical_run_id, last_error, attempt_count,
+             CASE WHEN lease_expires_at < CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS lease_expired
+        FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='post_verify_chain'
+    `).bind(businessDate).first<{
+      status?: string | null
+      canonical_run_id?: string | null
+      last_error?: string | null
+      attempt_count?: number | string | null
+      lease_expired?: number | null
+    }>()
+    const previousIncomplete = previousStage?.canonical_run_id === lifecycleRunId
+      && (previousStage.status === 'error' || (previousStage.status === 'running' && Number(previousStage.lease_expired) === 1))
     const { queuePostVerifyStage } = await import('./pipelineStageLease')
     const continuation = await queuePostVerifyStage(env, {
       businessDate,
@@ -795,6 +812,12 @@ export async function runAllocatorEvLifecycleWatchdog(
       },
       attempt: Math.max(1, Number(lifecycle?.attempt_count ?? 0) + 1),
     })
+    if (previousIncomplete) {
+      return `status=failed allocator EV lifecycle post-verify dispatch incomplete date=${businessDate} run_id=${lifecycleRunId} `
+        + `previous_status=${previousStage?.status} previous_attempts=${Number(previousStage?.attempt_count ?? 0)} `
+        + `previous_error=${String(previousStage?.last_error ?? 'missing').replace(/status=/gi, 'status:').replace(/\s+/g, '_').slice(0, 300)} `
+        + `recovery_dispatch=${continuation.queued ? 'post_verify_queued' : `not_queued downstream_status=${continuation.status}`}`
+    }
     return continuation.queued
       ? `status=success allocator EV lifecycle recovery_dispatch=post_verify_queued date=${businessDate} run_id=${continuation.canonicalRunId}`
       : `status=success allocator EV lifecycle recovery_observation=post_verify_current date=${businessDate} downstream_status=${continuation.status}`

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_modal_app_exposes_breeze2_research_context_function():
-    modal_app = Path("ml-service/modal_app.py").read_text(encoding="utf-8")
+    modal_app = (REPO_ROOT / "ml-service/modal_app.py").read_text(encoding="utf-8")
 
     assert "def breeze2_research_context(payload: dict) -> dict:" in modal_app
     assert "@app.function" in modal_app
@@ -12,7 +14,7 @@ def test_modal_app_exposes_breeze2_research_context_function():
 
 
 def test_modal_app_exposes_breeze2_reason_generation_shadow_function():
-    modal_app = Path("ml-service/modal_app.py").read_text(encoding="utf-8")
+    modal_app = (REPO_ROOT / "ml-service/modal_app.py").read_text(encoding="utf-8")
 
     assert "def breeze2_reason_generation(payload: dict) -> dict:" in modal_app
     assert "gpu=\"L4\"" in modal_app
@@ -21,7 +23,7 @@ def test_modal_app_exposes_breeze2_reason_generation_shadow_function():
 
 
 def test_controller_modal_client_exposes_breeze2_reason_generation():
-    modal_client = Path("ml-controller/services/modal_client.py").read_text(encoding="utf-8")
+    modal_client = (REPO_ROOT / "ml-controller/services/modal_client.py").read_text(encoding="utf-8")
 
     assert '"breeze2_reason_generation": {"cpu": 2.0, "memory_mb": 16384, "gpu": "L4"}' in modal_client
     assert "async def _modal_breeze2_reason_generation(payload: dict) -> dict:" in modal_client

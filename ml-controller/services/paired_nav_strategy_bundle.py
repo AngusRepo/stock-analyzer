@@ -51,14 +51,19 @@ def validate_strategy_bundle(bundle, *, candidate_identity=None, signal_date):
         raise ValueError('paired_nav_strategy_paper_scope_required')
     validate_bundle(policy['artifact'],l3_identity=identity,signal_date=signal_date)
     from services.l4_allocation_contract import inherited_sparse_controls
-    from services.l4_distribution_runtime import distribution_policy_identity,choose_opb
+    from services.l4_distribution_runtime import distribution_policy_identity,validate_opb_policy
+    from services.l4_opb_selection import is_v2,validate_constraints
     constraints=policy['constraints']
-    if (constraints.get('max_positions') != baseline['position']['maxPositions']
+    if is_v2(policy):
+        # Risk owns count/fees; allocator params must match the formal policy.
+        if validate_constraints(constraints) != (baseline.get('l4Distribution') or {}).get('constraints'):
+            raise ValueError('paired_nav_strategy_constraint_mismatch')
+    elif (constraints.get('max_positions') != baseline['position']['maxPositions']
             or constraints.get('buy_cost') != baseline['fees']['commission']
             or abs(constraints.get('sell_cost',0)-baseline['fees']['commission']-baseline['fees']['tax'])>1e-12
             or any(constraints.get(k)!=v for k,v in inherited_sparse_controls(baseline).items())):
         raise ValueError('paired_nav_strategy_constraint_mismatch')
-    choose_opb(policy,[],distribution_policy_identity(policy,identity),signal_date)
+    validate_opb_policy(policy,distribution_policy_identity(policy,identity),signal_date)
     date.fromisoformat(bundle['declared_signal_date'])
     if bundle['declared_signal_date'] > signal_date:
         raise ValueError('paired_nav_strategy_future_declaration')
@@ -204,12 +209,11 @@ def publication_configuration(configuration, *, signal_date):
 
 
 def capture_strategy_context(*, selection, recommendation_context, signal_date, query, writer,
-                             formal_risk_context=None, capture_source=None):
+                             formal_risk_context=None, capture_source=None, lookback):
     """Freeze canonical risk for today's pool PLUS each private account's holdings."""
     from services.l4_distribution_context import worker_request
     from services.paired_nav_native_holdings import capture_native_holdings
     from services.l4_risk_history import load_held_risk_payloads,load_canonical_risk_payloads
-    from services.recommendation_service import gnn_return_history_lookback
     from services.paired_nav_collection import capture_allocator_return_history, replay_allocator_return_history
     from services.paired_nav_journal import _timestamp
     from datetime import datetime,timezone,timedelta
@@ -227,7 +231,6 @@ def capture_strategy_context(*, selection, recommendation_context, signal_date, 
     symbols={p['symbol'] for p in account['holdings']}
     symbols.update(s for d in holdings['definitions'].values() for arm in ('baseline','candidate') for s in d['arms'][arm])
     payloads=recommendation_context['inputs']['payloads']
-    lookback=gnn_return_history_lookback()
     held=load_held_risk_payloads(holdings=[{'symbol':s} for s in sorted(symbols)],
         payloads=payloads,signal_date=signal_date,lookback=lookback)
     # The formal allocator already sealed and replay-verified this complete
@@ -245,6 +248,6 @@ def capture_strategy_context(*, selection, recommendation_context, signal_date, 
         canonical=load_canonical_risk_payloads(payloads=payloads,held_payloads=held,signal_date=signal_date,lookback=lookback,
             capture_source=capture_source)
         risk=capture_allocator_return_history(payloads=payloads,signal_date=signal_date,
-            held_payloads=held,canonical_risk_payloads=canonical)
+            held_payloads=held,canonical_risk_payloads=canonical,lookback=lookback)
     return {'strategy_bundle_account':account,'strategy_bundle_native_holdings':holdings,
         'strategy_bundle_risk_context':risk}

@@ -71,5 +71,9 @@ def test_controller_deploy_reads_service_level_scaling_without_owning_dynamic_mi
     assert 'service_annotations.get("run.googleapis.com/minScale"' in deploy
     assert 'service_annotations.get("run.googleapis.com/maxScale"' in deploy
     service_deploy = deploy.split('gcloud run deploy "$SERVICE"', 1)[1].split("Step 2/4", 1)[0]
-    assert "--min" not in service_deploy
+    # a65defc5b pins the candidate revision floor to zero (scripts/runtime_min_policy.py
+    # then verifies every served revision floor is zero); the dynamic service-level min
+    # stays unowned by deploy.
+    assert service_deploy.count("--min-instances=0") == 1
+    assert "--min" not in service_deploy.replace("--min-instances=0", "")
     assert "--max" not in service_deploy

@@ -3,8 +3,9 @@ from datetime import date
 import math
 import numpy as np
 from services.l4_distribution import digest
+from services.l4_numeric_contract import DAILY_VOL_FLOOR, MIN_RETURN_OBSERVATIONS
 SCHEMA='l4-dated-risk-v1'
-MIN_OBSERVATIONS=20
+MIN_OBSERVATIONS=MIN_RETURN_OBSERVATIONS
 
 def build_dated_risk(payloads, *, signal_date, lookback):
     date.fromisoformat(signal_date)
@@ -47,7 +48,7 @@ def build_dated_risk(payloads, *, signal_date, lookback):
 
 def is_dated_risk(value):return isinstance(value,dict) and value.get('schema_version')==SCHEMA
 
-def estimate_risk(packet, symbols, *, daily_vol_floor=.01):
+def estimate_risk(packet, symbols, *, daily_vol_floor=DAILY_VOL_FLOOR):
     if not is_dated_risk(packet) or packet.get('checksum')!=digest({k:v for k,v in packet.items() if k!='checksum'}):
         raise ValueError('l4_risk_packet_checksum_invalid')
     if not symbols or len(symbols)!=len(set(symbols)) or set(symbols)-set(packet['returns']):raise ValueError('l4_risk_packet_symbols_invalid')

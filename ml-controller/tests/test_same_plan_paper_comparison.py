@@ -1,7 +1,7 @@
 import json,sqlite3
 from copy import deepcopy
 import pytest
-from tests.test_native_paper_sandbox import native_runner,base_state,frame,read_state,ROOT
+from test_native_paper_sandbox import native_runner,base_state,frame,read_state,ROOT
 from services.same_plan_paper_comparison import compare_same_plan,inspect_state
 
 def state():

@@ -72,3 +72,30 @@ def test_retired_failure_cannot_hide_active_source_corruption_or_wrong_execution
     db, *_ = fixture(monkeypatch, fault)
     with pytest.raises(ValueError):
         census.read_candidate_population(business_date='2026-09-08', query=db.query, series=[], now=NOW)
+
+
+def test_comparison_and_retired_check_share_one_decoded_parent(monkeypatch):
+    from services import paired_nav_journal, strategy_nav_retired_source
+    db, parent, allocation = fixture(monkeypatch)
+    seen = []
+    def comparison_reads_full_parent(*, query, allocation):
+        seen.append(paired_nav_journal.read_snapshot(query, allocation['payload']['content']['allocation_context_snapshot_id']))
+        raise ValueError('paired_nav_allocator_history_context_invalid')
+    original = strategy_nav_retired_source.retired_source_comparison
+    def retired(exc, *, parent, **kwargs):
+        seen.append(parent)
+        return original(exc, parent=parent, **kwargs)
+    monkeypatch.setattr(census, 'resolve_allocation_comparison', comparison_reads_full_parent)
+    monkeypatch.setattr(strategy_nav_retired_source, 'retired_source_comparison', retired)
+    decodes = []
+    hot = paired_nav_journal._hot_payload
+    monkeypatch.setattr(paired_nav_journal, '_hot_payload',
+        lambda query, manifest: decodes.append(manifest['snapshot_id']) or hot(query, manifest))
+    result = census.read_candidate_population(business_date='2026-09-08', query=db.query, series=[], now=NOW)
+    assert len(seen) == 2 and seen[0] is seen[1]
+    assert seen[0]['manifest']['snapshot_id'] == parent['snapshot_id']
+    # Same census as the unshared reader (test above): one retired, unavailable pair.
+    assert result['pair_count'] == 1 and result['pairs'][0]['comparison']['kind'] == 'unavailable_retired_source'
+    assert result['pairs'][0]['allocation_snapshot_ids'] == [allocation['snapshot_id']]
+    # Inventory may read the parent; the pair loop adds exactly one full decode.
+    assert decodes.count(parent['snapshot_id']) <= 2

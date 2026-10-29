@@ -5,6 +5,9 @@ import pytest
 from services import ga_candidate_validator
 from services.ga_optimizer_service import build_ga_candidate, evaluate_ga_population
 
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
+
 
 def _completed_evidence() -> dict:
     return {

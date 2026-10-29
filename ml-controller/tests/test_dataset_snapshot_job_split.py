@@ -12,9 +12,14 @@ try:
     import google.cloud as google_cloud
 except ImportError:
     google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
-setattr(google_cloud, "run_v2", run_v2_stub)
-sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
+    run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
+    setattr(google_cloud, "run_v2", run_v2_stub)
+    sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
 
 import dataset_snapshot_job_main  # noqa: E402
@@ -218,6 +223,11 @@ def test_deploy_provisions_detached_dataset_snapshot_job():
     dataset_snapshot_sync = deploy.split("sync_dataset_snapshot_job()", 1)[1].split("run_preflight()", 1)[0]
     assert '"roles/run.jobsExecutorWithOverrides"' in dataset_snapshot_sync
     assert '"roles/run.viewer"' in dataset_snapshot_sync
+    # input/status and reconcile run in the controller service and read snapshot executions.
+    controller_grant = dataset_snapshot_sync.split('local controller_member="serviceAccount:${SERVICE_RUNTIME_SERVICE_ACCOUNT}"', 1)[1]
+    assert '--member="$controller_member"' in controller_grant
+    assert '--role="roles/run.viewer"' in controller_grant
+    assert "jobsExecutorWithOverrides" not in controller_grant
     assert '--task-timeout="$PIPELINE_JOB_TIMEOUT"' in deploy
     assert 'PIPELINE_JOB_TIMEOUT="${PIPELINE_JOB_TIMEOUT:-6600s}"' in deploy
 

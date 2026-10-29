@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import json
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, asdict
 from datetime import date, timedelta
 from typing import Any, Optional
@@ -63,6 +65,7 @@ def _load_current_regime_label() -> str | None:
 
 ADAPTIVE_PARAMS_KV_KEY = "ml:adaptive_params"
 ADAPTIVE_PARAMS_LOOKBACK_DAYS = 7
+ADAPTIVE_PARAMS_PROBE_WAVE = 4
 
 
 def _adaptive_param_key_candidates(run_date: str | None = None) -> list[str]:
@@ -81,13 +84,21 @@ def _adaptive_param_key_candidates(run_date: str | None = None) -> list[str]:
 
 def load_effective_adaptive_params(run_date: str | None = None) -> dict:
     """Load KV adaptive params and resolve P8 regime overrides for ML runtime."""
+    from services.verified_read_observation import observation_active
     raw: dict | None = None
     source_key = ADAPTIVE_PARAMS_KV_KEY
-    for key in _adaptive_param_key_candidates(run_date):
-        candidate = kv_client.get_json(key, default=None)
-        if isinstance(candidate, dict) and candidate:
-            raw = candidate
-            source_key = key
+    candidates = _adaptive_param_key_candidates(run_date)
+    # Most dated keys are 404s, so probe a wave at a time; the first hit in
+    # candidate order still wins and no wave starts after one has a hit.
+    # UI observation scopes live in a ContextVar pool threads do not inherit.
+    wave = 1 if observation_active() else ADAPTIVE_PARAMS_PROBE_WAVE
+    for start in range(0, len(candidates), wave):
+        keys = candidates[start:start + wave]
+        with ThreadPoolExecutor(max_workers=len(keys)) as pool:
+            values = list(pool.map(lambda key: kv_client.get_json(key, default=None), keys))
+        hit = next(((key, value) for key, value in zip(keys, values) if isinstance(value, dict) and value), None)
+        if hit:
+            source_key, raw = hit
             break
     if not isinstance(raw, dict) or not raw:
         raise RuntimeError(f"adaptive params missing: {source_key}")
@@ -1389,9 +1400,11 @@ def build_payloads(
     except (TypeError, ValueError) as exc:
         raise ValueError("build_payloads requires an ISO decision_date") from exc
 
+    started = time.monotonic()
     source_packet = frozen_sources if frozen_sources is not None else capture_payload_sources(active_stocks, decision_date)
     raw = (verified_sources.read(source_packet, active_stocks, decision_date) if verified_sources
            else _read_frozen_payload_sources(source_packet, active_stocks, decision_date))
+    read_seconds = time.monotonic() - started
     prices_by_id, indicators_by_id = raw['prices_by_id'], raw['indicators_by_id']
     chips_by_sym, sentiment_by_id = raw['chips_by_sym'], raw['sentiment_by_id']
     real_acc_by_id, model_stats_by_id = raw['real_acc_by_id'], raw['model_stats_by_id']
@@ -1484,5 +1497,6 @@ def build_payloads(
             },
         ))
 
-    logger.info(f"[payload_builder] Built {len(payloads)} payloads")
+    logger.info("[payload_builder] Built %d payloads read_seconds=%.1f assemble_seconds=%.1f",
+                len(payloads), read_seconds, time.monotonic() - started - read_seconds)
     return payloads

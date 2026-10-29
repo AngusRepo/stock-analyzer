@@ -362,17 +362,27 @@ def verify_active_approval(admission, *, now=None):
     from pathlib import Path
     behavior = json.loads(Path(__file__).with_name('native_execution_behavior_release.json').read_text())
     runtime = kv_client.get_json(behavior['runtime_admission'], default=None, strict=True)
-    policy_key = behavior.get('policy_runtime_admission')
-    if policy_key:
+    from services.l4_policy_activation import policy_keys
+    raw = None
+    for policy_key in policy_keys(behavior):
         candidate = kv_client.get_json(policy_key, default=None, strict=True)
         if candidate is not None and candidate.get('approved_l4_execution_policy_change') is not None:
             # A staged grant does not switch an in-flight/old configuration.
             # Unknown drift still fails verify_serving_configuration below.
-            raw = kv_client.get_json('trading:config', default=None, strict=True)
-            current_policy = (raw or {}).get('l4Distribution')
+            if raw is None:
+                raw = kv_client.get_json('trading:config', default=None, strict=True) or {}
+            current_policy = raw.get('l4Distribution')
             target_policy = candidate.get('configuration', {}).get('trading_config', {}).get('l4Distribution')
-            if target_policy is not None and digest(current_policy) == digest(target_policy):
+            switched = target_policy is not None and digest(current_policy) == digest(target_policy)
+            from services.l4_opb_selection import is_v2
+            if switched and is_v2(target_policy):
+                # v2 also moves risk-owned fields; both KV writes must have landed.
+                risk = kv_client.get_json('trading:risk_config', default=None, strict=True)
+                switched = digest(risk) == digest(candidate['configuration'].get('risk_config'))
+            if switched:
+                # P1..Pn carry distinct policies, so at most one matches.
                 runtime = candidate
+                break
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:
         runtime = kv_client.get_json(ADVISORY_DEBATE_HMM_RUNTIME_RELEASE_KEY, default=None, strict=True)
     if runtime is None and release_key == SWING_RUNTIME_RELEASE_KEY:

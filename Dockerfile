@@ -6,7 +6,8 @@
 # already-deployed Modal functions, but it must not contain a deployment control
 # plane or the source bundle needed to publish a new Modal application.
 
-FROM python:3.11-slim
+# Pinned by digest (Python 3.11.17, as the live image); move it in a PR, with constraints.txt.
+FROM python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377
 
 WORKDIR /app
 
@@ -18,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (ml-controller only; ml-service deps live on Modal cloud).
-COPY ml-controller/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY ml-controller/requirements.txt ml-controller/constraints.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 RUN python -c "import numpy; import pyarrow; from finlab import data; import pandas as pd; import polars as pl; assert pl.from_pandas(pd.DataFrame({'probe': [1]})).to_dicts() == [{'probe': 1}]"
 
 # Worker screener job runtime. The Cloud Run Job compiles and runs the same

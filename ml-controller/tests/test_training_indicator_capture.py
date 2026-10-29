@@ -28,3 +28,22 @@ def test_missing_owner_never_silently_falls_back(monkeypatch):
     monkeypatch.setenv("TRAINING_INDICATOR_MODULE","missing-source-owner.js")
     with pytest.raises(ValueError,match="training_indicator_owner_failed"):
         rebuild_capture_indicators({1:bars(30)})
+
+def test_sharded_owners_match_single_owner_exactly(monkeypatch):
+    """F4 (10/28): parallel node shards keep the indicators, their order and every proof hash."""
+    prices={sid:bars(40+sid) for sid in range(1,8)}
+    monkeypatch.setenv("TRAINING_INDICATOR_SHARDS","1")
+    single,single_proof=rebuild_capture_indicators(prices)
+    for shards in ("3","8"):
+        monkeypatch.setenv("TRAINING_INDICATOR_SHARDS",shards)
+        sharded,proof=rebuild_capture_indicators(prices)
+        assert list(sharded)==list(single) and sharded==single and proof==single_proof
+    monkeypatch.setenv("TRAINING_INDICATOR_SHARDS","3")
+    empty,empty_proof=rebuild_capture_indicators({})
+    assert empty=={} and empty_proof["rows"]==0 and len(empty_proof["formula_sha256"])==64
+
+def test_bad_row_after_started_shards_fails_the_capture(monkeypatch):
+    monkeypatch.setenv("TRAINING_INDICATOR_SHARDS","3")
+    prices={sid:bars(30) for sid in range(1,7)}
+    prices[5][-1]["close"]=float("nan")
+    with pytest.raises(ValueError):rebuild_capture_indicators(prices)

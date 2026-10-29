@@ -157,7 +157,7 @@ def test_daily_prep_accepts_canonical_prefixed_snapshot_checksum(monkeypatch):
     ))
 
     assert result["snapshot_checksum"] == "a" * 64
-    assert result["source_gcs_prefix"].endswith(f"-aaaaaaaaaaaa-{TEST_SOURCE_SHA[:12]}-{result["sequence_manifest_checksum"][:12]}")
+    assert result["source_gcs_prefix"].endswith(f"-aaaaaaaaaaaa-{TEST_SOURCE_SHA[:12]}-{result['sequence_manifest_checksum'][:12]}")
 
 
 def test_daily_prep_rejects_sequence_behind_snapshot(monkeypatch):

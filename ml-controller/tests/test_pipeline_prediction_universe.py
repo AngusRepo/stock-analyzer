@@ -25,6 +25,9 @@ def batch(monkeypatch):
                          ('update_recommendations_in_d1',2), ('delete_filtered_recommendations',0),
                          ('re_rank_recommendations',0)):
         monkeypatch.setattr(graph, name, fake_effect(name, result))
+    # The fixed run_date ages into the past; the Worker write-window check is
+    # covered by test_dated_formal_publication, not by this batch-identity test.
+    monkeypatch.setattr(graph, 'assert_canonical_window_open', lambda *a, **kw: None)
     return state, effects
 
 

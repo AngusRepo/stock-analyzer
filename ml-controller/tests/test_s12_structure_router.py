@@ -9,8 +9,13 @@ import pytest
 from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-run_v2_stub = ModuleType("google.cloud.run_v2")
-sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
+    run_v2_stub = ModuleType("google.cloud.run_v2")
+    sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 
 
 from routers import s12_structure  # noqa: E402

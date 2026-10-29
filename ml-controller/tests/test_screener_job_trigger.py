@@ -6,15 +6,22 @@ import sys
 import types
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
     import google.cloud as google_cloud
 except ImportError:
     google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
-setattr(google_cloud, "run_v2", run_v2_stub)
-sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
+    run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
+    setattr(google_cloud, "run_v2", run_v2_stub)
+    sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 
 from routers import screener  # noqa: E402
 from screener_job_main import _diagnostic_excerpt  # noqa: E402
@@ -52,7 +59,7 @@ def test_screener_v2_trigger_passes_run_context_to_cloud_run_job(monkeypatch):
 
 
 def test_screener_job_main_callbacks_with_chain_metadata():
-    source = Path("ml-controller/screener_job_main.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "ml-controller/screener_job_main.py").read_text(encoding="utf-8")
 
     assert '"task": callback_task' in source
     assert '"continue_post_screener_pipeline": bool(chain_run_id)' in source

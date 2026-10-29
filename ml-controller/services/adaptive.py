@@ -591,7 +591,7 @@ def compute_adaptive_params(
             "immutable_risk_boundaries": [
                 "circuit",
                 "riskOverlay.hardGates",
-                "position.maxPctOfPortfolio",
+                "risk_config.position.maxSingleNamePct",
                 "paperExecution.impossibleFillGuard",
             ],
         },

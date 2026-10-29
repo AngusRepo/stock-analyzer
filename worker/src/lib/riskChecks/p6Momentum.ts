@@ -6,10 +6,12 @@
  */
 import type { LegacyLayerDeps, LegacyLayerResult, MomentumZone } from '../riskTypes'
 import { failClosedRiskCheck } from './failClosed'
+import { circuitPositionScales } from '../circuitPositionScales'
 
 export async function checkP6Momentum(
   db: D1Database,
   deps: LegacyLayerDeps,
+  circuit?: { positionScales?: unknown },
 ): Promise<LegacyLayerResult> {
   const { defaults } = deps
 
@@ -19,7 +21,8 @@ export async function checkP6Momentum(
     if (zoneInfo.zone === 'GREEN') return null
 
     const zone = zoneInfo.zone as MomentumZone
-    const mult = ZONE_MULTIPLIER[zone]
+    const scales = circuitPositionScales(circuit)
+    const mult = scales ? scales.momentumZone[zone as 'RED' | 'YELLOW'] : ZONE_MULTIPLIER[zone]
     const adjusted = defaults.maxPositionPct * mult
     console.warn(
       `[CircuitBreaker] Layer6: momentum zone ${zone} ` +

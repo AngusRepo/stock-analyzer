@@ -11,7 +11,17 @@ from test_l4_tabpack_monthly import Bucket
 from test_active8_paper_admission import approved, publish, ready, prepared, environment, SESSIONS
 
 
-def test_actual_upstream_factory_only_changes_search_count_for_each_seed():
+TABPACK_ROOT = Path(__file__).resolve().parents[2] / 'ml-service/vendor/tabpack'
+
+
+@pytest.fixture
+def tabpack_src(monkeypatch):
+    # Upstream `lib` is importable in the tabpack image because uv installs
+    # vendor/tabpack (src layout); a test process must put src on the path itself.
+    monkeypatch.syspath_prepend(str(TABPACK_ROOT / 'src'))
+
+
+def test_actual_upstream_factory_only_changes_search_count_for_each_seed(tabpack_src):
     from app.l4_tabpack_official import make_config, verify_source
     root = Path(__file__).resolve().parents[2] / 'ml-service/vendor/tabpack'
     verify_source(root)
@@ -30,7 +40,7 @@ def test_unknown_recipe_or_seed_rejected(recipe,seed):
 
 
 @pytest.mark.parametrize('fault',['optimizer','patience','ensemble','epochs','sampler','width','amp'])
-def test_completed_receipt_rejects_changed_official_core(fault):
+def test_completed_receipt_rejects_changed_official_core(fault, tabpack_src):
     from app.l4_tabpack_official import make_config
     from services.l4_tabpack_budget_protocol import validate_result
     root=Path(__file__).resolve().parents[2]/'ml-service/vendor/tabpack'

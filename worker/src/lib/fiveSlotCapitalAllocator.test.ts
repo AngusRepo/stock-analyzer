@@ -235,3 +235,23 @@ const baseConfig = {
     'available cash should not be geometrically throttled by the legacy maxPctOfCash cap',
   )
 }
+
+{
+  // K16a: the single-name cap has one owner and no fallback.
+  const plan = (maxPctOfPortfolio: unknown) => buildFiveSlotCapitalPlan({
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
+    marketRiskLevel: 'low',
+    config: { ...baseConfig, maxPctOfPortfolio: maxPctOfPortfolio as number },
+    holdings: [],
+    candidates: [{ symbol: 'CAP', confidence: 0.82, score: 80, riskPct: 0.015 }],
+  })
+  for (const bad of [undefined, Number.NaN, -0.1, 1.5, 'x']) {
+    let message = ''
+    try { plan(bad) } catch (error: any) { message = String(error?.message) }
+    assert(message === 'five_slot_single_name_cap_invalid', `single-name cap ${String(bad)} must fail closed with an explicit error`)
+  }
+  const capped = plan(0.1).decisions.get('CAP')
+  assert((capped?.budgetCap ?? Infinity) <= 100_000, 'budget cap must follow the supplied single-name cap')
+  const zero = plan(0).decisions.get('CAP')
+  assert((zero?.budgetCap ?? 0) === 0 && zero?.action !== 'buy', 'zero single-name cap must not allocate capital')
+}

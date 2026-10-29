@@ -51,6 +51,9 @@ def persona_db(monkeypatch):
     monkeypatch.setattr(graph.kv_client, 'get', lambda key, **kwargs: None)
     monkeypatch.setattr(graph, 'write_persona_opinions',
         lambda client, rows: writes.append(deepcopy(rows)) or len(rows))
+    # Fixed 2026-09 run dates age into the past; the Worker write-window check is
+    # covered by test_dated_formal_publication, not by these persona tests.
+    monkeypatch.setattr(graph, 'assert_canonical_window_open', lambda *a, **kw: None)
     yield graph, db, reads, writes
     db.close()
 

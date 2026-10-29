@@ -1,6 +1,7 @@
 """Pre-seal N1/N3 constraints. No candidate ranking or post-seal redistribution."""
 import math
 import numpy as np
+from services.l4_numeric_contract import MIN_RETURN_OBSERVATIONS
 
 def position_constraints(symbols, rows, holdings, history, limits):
     groups = {}
@@ -27,6 +28,6 @@ def position_constraints(symbols, rows, holdings, history, limits):
             cov=zero.T@zero-sums*sums.T/count
             variance=(zero*zero).T@mask-sums*sums/count
             corr=cov/np.sqrt(variance*variance.T)
-        for i,j in zip(*np.where(np.triu((count>=20)&np.isfinite(corr)&(corr>=threshold),1))):
+        for i,j in zip(*np.where(np.triu((count>=MIN_RETURN_OBSERVATIONS)&np.isfinite(corr)&(corr>=threshold),1))):
             pairs.append([symbols[i],symbols[j]])
     return groups,pairs

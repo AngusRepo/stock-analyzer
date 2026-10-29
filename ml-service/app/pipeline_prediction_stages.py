@@ -14,6 +14,8 @@ SCOPE = ContextVar('pipeline_prediction_stages', default=None)
 PREFIX = 'pipeline-v2/prediction-stages/v1/'
 REF_SCHEMA = 'pipeline-modal-prediction-request-ref-v1'
 GPU_SCHEMA = 'pipeline-gpu-stage-v1'
+# Outlives the GPU function's 900s hard timeout.
+GPU_LEASE_SECONDS = 1050
 
 
 def digest(value):
@@ -141,7 +143,7 @@ class Journal:
                 raise Suspended()
             if claim['attempt'] >= 3:
                 raise RuntimeError('pipeline_stage_gpu_attempts_exhausted')
-        claim = {'token': uuid.uuid4().hex, 'until': self.clock() + 1050,
+        claim = {'token': uuid.uuid4().hex, 'until': self.clock() + GPU_LEASE_SECONDS,
                  'attempt': (claim['attempt'] if claim else 0) + 1}
         # Source persisted before claim; an interruption is safe to resume.
         self.store.put(key + '/input', {'value': payload, 'input_checksum': stage})
@@ -167,12 +169,14 @@ def run_gpu_stage(store, envelope, *, predict, resume, clock=time.time):
            for value, length in ((root, 64), (stage, 64), (token, 32))):
         raise ValueError('pipeline_stage_identity_invalid')
     key = root + '/gpu/' + stage
-    claim, _ = store.read(key + '/claim')
+    claim, generation = store.read(key + '/claim')
     if not claim or claim['token'] != token:
         return {'status': 'superseded'}
-    if claim['until'] <= clock():
-        resume(reference)  # Expired while queued: CPU may acquire a fresh bounded attempt.
-        return {'status': 'expired_resumed'}
+    # The lease also covered the wait for a GPU worker. This container is that
+    # attempt, so renew it rather than queue again; a newer CPU attempt wins the CAS.
+    if claim['until'] <= clock() and not store.cas(
+            key + '/claim', {**claim, 'until': clock() + GPU_LEASE_SECONDS}, generation):
+        return {'status': 'superseded'}
     result_key = key + '/result/' + token
     result, _ = store.read(result_key)
     if result is None:

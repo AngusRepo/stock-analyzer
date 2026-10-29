@@ -191,6 +191,18 @@ test('resuming after the feature wait runs in the feature card and leaves input 
   assert.match(cards[1].summary,/L2 前輸入重新驗證/)
 })
 
+test('sequence input preparation runs in the L2 card instead of leaving it unstarted',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context'),
+    row('node_prepare_l2_inputs'),row('node_build_payloads')]} as any
+  progress.phase='node_prepare_sequence_inputs';progress.status='running'
+  progress.phase_started_at='2026-10-16T15:30:00Z';progress.observed_at='2026-10-16T15:30:05Z'
+  const cards=pipelineStageCards(p,Date.parse('2026-10-16T15:31:00Z'))
+  assert.equal(cards[2].stageVisualStatus,'running')
+  assert.match(cards[2].summary,/序列與 L2 輸入準備/)
+  assert.doesNotMatch(cards[2].summary,/本輪尚未開始/)
+})
+
 test('a finished run stops every clock at its last evidence',()=>{
   const p=parent(),progress=p.pipelineProgress!
   p.lastStatus='success'

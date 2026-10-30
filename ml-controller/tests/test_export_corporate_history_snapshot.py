@@ -132,8 +132,9 @@ def test_the_allocator_guard_would_turn_writes_into_no_ops_so_it_is_refused(arti
 def test_the_run_id_cannot_be_overridden_and_the_bucket_is_not_printed(artifact, monkeypatch, capsys):
     _routed(monkeypatch)
     monkeypatch.setenv('GCS_BUCKET_NAME', 'private-bucket')
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as refused:
         export.main(args(artifact, DAYS[-1], '--confirm-write', '--producer-run-id', 'reuse-me'))
+    assert refused.value.code == 2  # argparse: unknown option
     capsys.readouterr()
     import types
     monkeypatch.setitem(sys.modules, 'services.dataset_snapshot_exporter', types.SimpleNamespace(
@@ -142,3 +143,34 @@ def test_the_run_id_cannot_be_overridden_and_the_bucket_is_not_printed(artifact,
     assert export.main(args(artifact, DAYS[-1], '--confirm-write')) == 0
     out = capsys.readouterr().out
     assert 'private-bucket' not in out and json.loads(out)['gcs_uri'].startswith('gs://$GCS_BUCKET_NAME/snap/corporate-history-')
+
+
+def test_an_inactive_domain_is_never_specific_even_when_its_id_matches_the_legacy_one(artifact, monkeypatch, capsys):
+    _routed(monkeypatch)
+    monkeypatch.setenv('CF_D1_DB_ID', 'id-paper')
+    monkeypatch.setenv('MULTI_D1_ACTIVE_DOMAINS', 'core,market,learning,ops')
+    assert export.main(args(artifact, DAYS[-1], '--dry-run')) == 0
+    routing = json.loads(capsys.readouterr().out)['d1_routing']
+    assert routing['paper'] == 'legacy_fallback' and routing['core'] == 'specific'
+
+
+def test_a_legacy_fallback_landing_on_another_domains_database_is_shared(artifact, monkeypatch, capsys):
+    _routed(monkeypatch)
+    monkeypatch.setenv('CF_D1_DB_ID', 'id-core')
+    monkeypatch.setenv('MULTI_D1_ACTIVE_DOMAINS', 'core,market,learning,ops')
+    assert export.main(args(artifact, DAYS[-1], '--dry-run')) == 0
+    routing = json.loads(capsys.readouterr().out)['d1_routing']
+    assert routing['core'] == 'shared_database' and routing['paper'] == 'legacy_fallback'
+
+
+def test_a_failed_export_keeps_the_bucket_out_of_the_error(artifact, monkeypatch):
+    _routed(monkeypatch)
+    monkeypatch.setenv('GCS_BUCKET_NAME', 'private-bucket')
+    def boom(req):
+        raise RuntimeError('403 POST https://storage.googleapis.com/upload/storage/v1/b/private-bucket/o')
+    import types
+    monkeypatch.setitem(sys.modules, 'services.dataset_snapshot_exporter', types.SimpleNamespace(
+        DatasetSnapshotExportRequest=_Req, export_backtest_dataset_snapshot=boom))
+    with pytest.raises(SystemExit) as failed:
+        export.main(args(artifact, DAYS[-1], '--confirm-write'))
+    assert 'private-bucket' not in str(failed.value) and 'export_failed:RuntimeError' in str(failed.value)

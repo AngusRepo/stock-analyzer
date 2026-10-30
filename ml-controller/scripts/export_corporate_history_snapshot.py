@@ -18,6 +18,7 @@ runs on the operator's machine, never through the Cloud Run snapshot job.
 The export refuses to run when STOCKVISION_ALLOCATOR_CONTRACT_GUARD is on (D1 writes
 would silently become no-ops) or when two domains resolve to the same database.
 Env values are never printed: only names, routing states and a bucket-free GCS path.
+A failed GCS or D1 call is re-raised with the bucket name removed from its message.
 """
 from __future__ import annotations
 
@@ -45,8 +46,12 @@ def domain_routing() -> dict:
     the export would read the wrong database and write a manifest the resolver
     never sees. Values are never reported.
     """
-    from services.d1_domain_client import database_id_for_domain
+    from services.d1_domain_client import _active_domains, database_id_for_domain
     out, resolved_ids = {}, {}
+    try:
+        active = {d.value for d in _active_domains()}
+    except RuntimeError as exc:
+        return {domain: 'error:' + str(exc).split(':')[0] for domain in EXPORT_DOMAINS}
     for domain in EXPORT_DOMAINS:
         specific = os.environ.get(f'CF_D1_{domain.upper()}_DB_ID', '').strip()
         try:
@@ -55,7 +60,10 @@ def domain_routing() -> dict:
             out[domain] = 'error:' + str(exc).split(':')[0]
             continue
         resolved_ids[domain] = resolved
-        out[domain] = 'specific' if specific and resolved == specific else 'legacy_fallback'
+        if domain not in active:  # not in MULTI_D1_ACTIVE_DOMAINS: the legacy id, even when it matches
+            out[domain] = 'legacy_fallback'
+        else:
+            out[domain] = 'specific' if specific and resolved == specific else 'legacy_fallback'
     shared = {d for d in resolved_ids if list(resolved_ids.values()).count(resolved_ids[d]) > 1}
     for domain in shared:  # two domains on one database: the export would read or write the wrong one
         if out[domain] == 'specific':
@@ -66,6 +74,11 @@ def domain_routing() -> dict:
 def allocator_guard_on() -> bool:
     from services.allocator_contract_guard import allocator_contract_guard_enabled
     return allocator_contract_guard_enabled()
+
+
+def redact_bucket(text: str) -> str:
+    bucket = os.environ.get('GCS_BUCKET_NAME', '').strip()
+    return text.replace(bucket, '$GCS_BUCKET_NAME') if bucket else text
 
 
 def bucket_free(uri):
@@ -132,8 +145,11 @@ def main(argv=None) -> int:
         args.business_date, datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     from services.dataset_snapshot_exporter import DatasetSnapshotExportRequest, export_backtest_dataset_snapshot
     request = {k: v for k, v in report['request'].items() if k != 'kind'}
-    summary = export_backtest_dataset_snapshot(DatasetSnapshotExportRequest(
-        **request, producer_run_id=run_id))
+    try:
+        summary = export_backtest_dataset_snapshot(DatasetSnapshotExportRequest(
+            **request, producer_run_id=run_id))
+    except Exception as exc:  # client errors carry .../b/<bucket>/o URLs; keep the bucket out of stderr
+        raise SystemExit(f'export_failed:{type(exc).__name__}:' + redact_bucket(str(exc))[:500]) from None
     snapshot = summary.get('snapshot') or {}
     print(json.dumps({'status': summary.get('status'), 'snapshot_id': snapshot.get('snapshot_id'),
                       'kind': snapshot.get('kind'), 'business_date': snapshot.get('business_date'),

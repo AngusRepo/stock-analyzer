@@ -9,7 +9,7 @@ import {
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
 } from './strategyCandidatePool'
-import { ACTIVE_8_ML_TEACHERS, STRATEGY_AFFINITY_CHALLENGER_VERSION, STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION, assessStrategyThresholdMarginAffinity, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import { L15_ADMISSION_RULE_VERSION, L15_ROUTE_SCORE_FORMULA_VERSION, STRATEGY_AFFINITY_CHALLENGER_VERSION, STRATEGY_EVIDENCE_ALIGNED_ROUTE_VERSION, assessStrategyThresholdMarginAffinity, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 function assert(condition: unknown, message: string): void {
@@ -678,9 +678,6 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
 }
 
 {
-  assert(ACTIVE_8_ML_TEACHERS.length === 8, 'L1.5 router must preserve 8ML teacher-label contract')
-  assert(ACTIVE_8_ML_TEACHERS.includes('LightGBM') && !ACTIVE_8_ML_TEACHERS.includes('TimesFM' as any), '8ML teacher-label contract must keep TimesFM out of direct teachers')
-
   const strongCandidate: StrategyCandidatePoolCandidate = {
     symbol: '7701',
     name: 'Reliable Strategy Candidate',
@@ -724,40 +721,47 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     thesis: 'Crowded low-reliability strategy should be down-weighted by L1.25.',
     thresholds: { includeIndustries: ['Crowded'], minPrice: 10, minCloseAboveMa20Pct: 0.03 },
   }
+  const portfolioMetricsForTeacherTest = {
+    reliable_low_corr_v1: {
+      strategy_metric_status: 'ready',
+      metric_sources: ['immutable-test-artifact'],
+      rolling_sharpe: 1.4,
+      max_drawdown: 0.08,
+      recent_alpha: 0.08,
+      return_correlation: 0.15,
+      holding_overlap: 0.1,
+      turnover: 0.18,
+      factor_crowding: 0.12,
+      rank_ic: 0.12,
+      live_backtest_divergence: 0.05,
+    },
+    crowded_low_sharpe_v1: {
+      strategy_metric_status: 'ready',
+      metric_sources: ['immutable-test-artifact'],
+      rolling_sharpe: -0.4,
+      max_drawdown: 0.34,
+      recent_alpha: -0.04,
+      return_correlation: 0.82,
+      holding_overlap: 0.76,
+      turnover: 0.7,
+      factor_crowding: 0.78,
+      rank_ic: -0.03,
+      live_backtest_divergence: 0.32,
+    },
+  } as const
   const plan = buildMultiStrategyPleRoutingPlan([weakCandidate, strongCandidate], [crowdedSpec, reliableSpec], {
-    maxSlateSize: 2,
     regime: 'bull',
-    runtimeTeacherEvidence: {
-      '7701': { LightGBM: 0.8, XGBoost: 0.75, ExtraTrees: 0.72, TabM: 0.7, GNN: 0.68, DLinear: 0.66, PatchTST: 0.64, iTransformer: 0.62 },
-    },
-    strategyPortfolioMetrics: {
-      reliable_low_corr_v1: {
-        strategy_metric_status: 'ready',
-        metric_sources: ['immutable-test-artifact'],
-        rolling_sharpe: 1.4,
-        max_drawdown: 0.08,
-        recent_alpha: 0.08,
-        return_correlation: 0.15,
-        holding_overlap: 0.1,
-        turnover: 0.18,
-        factor_crowding: 0.12,
-        rank_ic: 0.12,
-        live_backtest_divergence: 0.05,
-      },
-      crowded_low_sharpe_v1: {
-        strategy_metric_status: 'ready',
-        metric_sources: ['immutable-test-artifact'],
-        rolling_sharpe: -0.4,
-        max_drawdown: 0.34,
-        recent_alpha: -0.04,
-        return_correlation: 0.82,
-        holding_overlap: 0.76,
-        turnover: 0.7,
-        factor_crowding: 0.78,
-        rank_ic: -0.03,
-        live_backtest_divergence: 0.32,
-      },
-    },
+    strategyPortfolioMetrics: portfolioMetricsForTeacherTest as any,
+  })
+  // Legacy ML teacher labels carried on the candidate must not move L1.5 priority (R33 O3).
+  const teacherCarryingStrong = {
+    ...strongCandidate,
+    runtime_teacher_evidence: { LightGBM: 0.8, ExtraTrees: 0.72, TabM: 0.7, GNN: 0.68, TimeXer: 0.66, PatchTST: 0.64, iTransformer: 0.62 },
+    ml_teacher_labels: { LightGBM: 0.8 },
+  } as StrategyCandidatePoolCandidate
+  const teacherCarryingPlan = buildMultiStrategyPleRoutingPlan([weakCandidate, teacherCarryingStrong], [crowdedSpec, reliableSpec], {
+    regime: 'bull',
+    strategyPortfolioMetrics: portfolioMetricsForTeacherTest as any,
   })
   const annotated = [...plan.mlSlate, ...plan.observeOnly] as any[]
   const reliable = annotated.find((candidate) => candidate.symbol === '7701') as any
@@ -770,16 +774,14 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(reliable.strategy_hit_vector.crowded_low_sharpe_v1 === 0, 'L1 matrix must encode non-hit strategies as zero instead of omitting the column')
   assert(reliable.strategy_router_decision === 'ml_slate', 'reliable low-correlation support should enter formal L1.5 slate')
   assert(reliable.candidate_route_score > crowded.candidate_route_score, 'L1.25 reliability/diversification prior should outrank crowded low-sharpe support')
-  assert(reliable.runtime_teacher_evidence.LightGBM === 0.8, 'L1.5 should carry optional historical runtime teacher evidence')
-  assert(reliable.runtime_teacher_evidence_source === 'historical_verified_cache', 'L1.5 runtime teacher evidence should expose historical verified cache source')
-  assert(reliable.ml_teacher_labels.LightGBM === 0.8, 'L1.5 should keep ml_teacher_labels only as legacy funnel alias')
   assert(plan.telemetry.min_route_score_source === 'adaptive_route_score_distribution', 'L1.5 should not silently default to hardcoded 20 when minRouteScore is absent')
-  assert(plan.telemetry.teacher_label_available_count === 1, 'L1.5 telemetry should count candidates with teacher evidence')
-  assert(plan.telemetry.teacher_label_missing_count === 1, 'L1.5 telemetry should count candidates missing teacher evidence')
-  assert(reliable.strategy_router_components.teacher_alignment > crowded.strategy_router_components.teacher_alignment, 'teacher labels should improve router evidence without replacing 8ML')
-  assert(crowded.strategy_router_components.teacher_alignment === 0, 'missing teacher labels must not receive neutral 0.5 alignment')
-  assert(crowded.strategy_router_components.teacher_alignment_contribution === 0, 'missing teacher labels must not add route-score contribution')
-  assert(crowded.strategy_router_components.teacher_alignment_missing === 1, 'missing teacher labels must be explicit telemetry')
+  assert(plan.telemetry.admission_rule_version === L15_ADMISSION_RULE_VERSION, 'L1.5 telemetry must expose the admission rule version')
+  assert(plan.telemetry.route_score_formula_version === L15_ROUTE_SCORE_FORMULA_VERSION, 'L1.5 telemetry must expose the route score formula version')
+  const teacherCarrying = teacherCarryingPlan.mlSlate.find((candidate) => candidate.symbol === '7701') as any
+  assert(teacherCarrying && teacherCarrying.strategy_router_score === reliable.strategy_router_score, 'candidate-carried ML teacher labels must not change the L1.5 route score')
+  assert(teacherCarrying.strategy_challenger_route_score === reliable.strategy_challenger_route_score, 'candidate-carried ML teacher labels must not change the challenger route score')
+  assert(teacherCarrying.uncertainty === reliable.uncertainty, 'candidate-carried ML teacher labels must not change router uncertainty')
+  assert(!Object.keys(reliable.strategy_router_components).some((key) => key.includes('teacher')), 'router components must not carry teacher terms')
   assert(reliable.strategy_portfolio_prior.strategy_reliability.reliable_low_corr_v1 > reliable.strategy_portfolio_prior.strategy_reliability.crowded_low_sharpe_v1, 'FinLab-style prior must expose strategy reliability spread')
   assert(Object.keys(reliable.strategy_portfolio_prior.strategy_cluster_crowding_score ?? {}).length === 0, 'missing Modal L1.25 evidence must not expose synthetic graph cluster crowding')
   assert(reliable.strategy_portfolio_prior.effective_strategy_count === 0, 'missing Modal L1.25 evidence must not expose synthetic graph effective strategy count')

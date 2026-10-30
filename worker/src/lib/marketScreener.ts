@@ -53,9 +53,16 @@ import { isEtfPatternSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { readExternalEvidenceRiskSnapshot } from './newsThemeRiskOverlay'
 import { buildPriceActionStructure } from './priceActionStructure'
-import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidencePayload, type StrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import {
+  FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
+  L15_ADMISSION_RULE_VERSION,
+  L15_ROUTE_SCORE_FORMULA_VERSION,
+  buildStrategySimilarityEvidencePayload,
+  resolveL15AdmissionStrategyIds,
+  type StrategySimilarityEvidencePayload,
+} from './multiStrategyPleRouter'
+import { buildL2PoolDefinitionReceipt } from './l2PoolDefinition'
 import { coerceModalStrategySimilarityGraphEvidence, modalStrategySimilarityBlockedReason, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
-import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'
 import {
   STRATEGY_FORMAL_LABELER_VERSIONS,
   isMonthlyRevenueDerivedSignal,
@@ -3782,6 +3789,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let runtimeStrategyAllocationWeights: Record<string, number> = {}
   let runtimeStrategyRoutingWeights: Record<string, number> = {}
   let runtimeStrategyPerformanceWeightOwner: 'ple_portfolio_metrics' | 'formal_evidence_owner' = 'ple_portfolio_metrics'
+  let l2PoolDefinitionContext: {
+    strategyRegistryChecksum: string
+    admissionStrategyIds: string[]
+    regimeActiveStrategyIds: string[]
+    evaluationStrategyWeights: Record<string, number>
+  } | null = null
   let selectionEvidence: {
     references: SelectionReferenceRowV1[]
     matrix: StrategyLabelMatrixRowV4[]
@@ -3847,7 +3860,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategyOofReturns,
     )
     const { loadPromotedStrategyRouteCalibration } = await import('./strategyRouteCalibration')
-    const [strategyPortfolioMetrics, strategySimilarityEvidence, runtimeTeacherEvidence, previousL15SlateLoad, promotedRouteCalibrationLoad] = await Promise.all([
+    const [strategyPortfolioMetrics, strategySimilarityEvidence, previousL15SlateLoad, promotedRouteCalibrationLoad] = await Promise.all([
       loadStrategyPortfolioMetricOverrides(databaseForDataDomain(env, 'learning'), {
         regime: currentRegime,
         marketSegment: 'all',
@@ -3857,15 +3870,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
       }),
       loadL125StrategySimilarityGraphEvidence(env, strategySimilarityPayload, endDate),
-      loadRuntimeTeacherEvidence(
-        env,
-        strategySourceUniverse.map((candidate: any) => String(candidate.symbol || '').trim()).filter(Boolean),
-        {
-          runDate: endDate,
-          lookbackDays: 30,
-          verifiedOnly: true,
-        },
-      ),
       loadPreviousCanonicalL15Slate(databaseForDataDomain(env, 'ops'), endDate)
         .then((value) => ({ value, error: null as string | null }))
         .catch((error) => ({
@@ -3896,7 +3900,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
         strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence,
-        runtimeTeacherEvidence: runtimeTeacherEvidence.labels,
         previousSlateSymbols: previousL15Slate.symbols,
         promotedRouteCalibration,
       },
@@ -3909,6 +3912,15 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     layer1AdaptiveTargetSize = Number(layer1BreadthPlan.telemetry.adaptive_target_size ?? layer1BreadthPlan.telemetry.target_size ?? screenerPolicy.sizing.candidatePoolSize)
     overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
     const strategyRegistryChecksum = await sha256Text(JSON.stringify(strategyRegistryFingerprintPayload(specs)))
+    l2PoolDefinitionContext = {
+      strategyRegistryChecksum,
+      ...resolveL15AdmissionStrategyIds(specs, {
+        regime: currentRegime,
+        strategyWeights: evaluationStrategyWeights,
+        productionStrategyWeights: runtimeStrategyRoutingWeights,
+      }),
+      evaluationStrategyWeights,
+    }
     const builtSelectionEvidence = buildSelectionEvidenceV4({
       signalDate: endDate,
       producerRunId: runId,
@@ -4003,13 +4015,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       l15_temporal_jaccard: layer1BreadthPlan.telemetry.temporal_jaccard ?? null,
       l15_previous_list_recall: layer1BreadthPlan.telemetry.previous_list_recall ?? null,
       l15_fresh_share: layer1BreadthPlan.telemetry.fresh_share ?? null,
-      teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
-      teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
-      teacher_label_contract: layer1BreadthPlan.telemetry.teacher_label_contract ?? null,
-      runtime_teacher_evidence_policy: layer1BreadthPlan.telemetry.runtime_teacher_evidence_policy ?? null,
-      runtime_teacher_evidence_available_count: layer1BreadthPlan.telemetry.runtime_teacher_evidence_available_count ?? null,
-      runtime_teacher_evidence_missing_count: layer1BreadthPlan.telemetry.runtime_teacher_evidence_missing_count ?? null,
-      runtime_teacher_evidence: runtimeTeacherEvidence.telemetry,
+      l15_admission_rule_version: layer1BreadthPlan.telemetry.l15_admission_rule_version ?? null,
+      l15_route_score_formula_version: layer1BreadthPlan.telemetry.l15_route_score_formula_version ?? null,
       strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,
       strategy_metric_ready_count: layer1BreadthPlan.telemetry.strategy_metric_ready_count ?? null,
       strategy_metric_no_evidence_count: layer1BreadthPlan.telemetry.strategy_metric_no_evidence_count ?? null,
@@ -4096,8 +4103,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
           route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
           route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
-          teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
-          teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
           strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,
           strategy_similarity_evidence_status: strategySimilarityEvidence.status,
           strategy_similarity_evidence_source: layer1BreadthPlan.telemetry.strategy_similarity_evidence_source ?? null,
@@ -4110,9 +4115,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           diversity_contribution: (candidate as any).diversity_contribution ?? null,
           risk_adjusted_affinity: (candidate as any).risk_adjusted_affinity ?? null,
           uncertainty: (candidate as any).uncertainty ?? null,
-          runtime_teacher_evidence: (candidate as any).runtime_teacher_evidence ?? null,
-          runtime_teacher_evidence_source: (candidate as any).runtime_teacher_evidence_source ?? null,
-          ml_teacher_labels: (candidate as any).ml_teacher_labels ?? null,
           strategy_affinity_vector: (candidate as any).strategy_affinity_vector ?? null,
           strategy_weak_label_vector: (candidate as any).strategy_weak_label_vector ?? null,
           strategy_hit_vector: (candidate as any).strategy_hit_vector ?? null,
@@ -4204,8 +4206,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
           route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
           route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
-          teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
-          teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
           strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,
           candidate_route_score: (candidate as any).candidate_route_score ?? null,
           ml_slate_eligibility: (candidate as any).ml_slate_eligibility ?? null,
@@ -4213,9 +4213,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           diversity_contribution: (candidate as any).diversity_contribution ?? null,
           risk_adjusted_affinity: (candidate as any).risk_adjusted_affinity ?? null,
           uncertainty: (candidate as any).uncertainty ?? null,
-          runtime_teacher_evidence: (candidate as any).runtime_teacher_evidence ?? null,
-          runtime_teacher_evidence_source: (candidate as any).runtime_teacher_evidence_source ?? null,
-          ml_teacher_labels: (candidate as any).ml_teacher_labels ?? null,
           strategy_affinity_vector: (candidate as any).strategy_affinity_vector ?? null,
           strategy_weak_label_vector: (candidate as any).strategy_weak_label_vector ?? null,
           strategy_hit_vector: (candidate as any).strategy_hit_vector ?? null,
@@ -4282,8 +4279,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           route_veto_applied: layer1BreadthPlan.telemetry.route_veto_applied ?? null,
           route_veto_candidate_count: layer1BreadthPlan.telemetry.route_veto_candidate_count ?? null,
           route_priority_only_candidate_count: layer1BreadthPlan.telemetry.route_priority_only_candidate_count ?? null,
-          teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
-          teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
           strategy_metric_status_counts: layer1BreadthPlan.telemetry.strategy_metric_status_counts ?? null,
           candidate_route_score: entry.candidate_route_score ?? null,
           ml_slate_eligibility: entry.ml_slate_eligibility ?? null,
@@ -4291,9 +4286,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           diversity_contribution: entry.diversity_contribution ?? null,
           risk_adjusted_affinity: entry.risk_adjusted_affinity ?? null,
           uncertainty: entry.uncertainty ?? null,
-          runtime_teacher_evidence: entry.runtime_teacher_evidence ?? null,
-          runtime_teacher_evidence_source: entry.runtime_teacher_evidence_source ?? null,
-          ml_teacher_labels: entry.ml_teacher_labels ?? null,
           strategy_affinity_vector: entry.strategy_affinity_vector ?? null,
           strategy_weak_label_vector: entry.strategy_weak_label_vector ?? null,
           strategy_hit_vector: entry.strategy_hit_vector ?? null,
@@ -4867,9 +4859,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       diversity_contribution: routeCandidate.diversity_contribution ?? null,
       risk_adjusted_affinity: routeCandidate.risk_adjusted_affinity ?? null,
       uncertainty: routeCandidate.uncertainty ?? null,
-      runtime_teacher_evidence: routeCandidate.runtime_teacher_evidence ?? null,
-      runtime_teacher_evidence_source: routeCandidate.runtime_teacher_evidence_source ?? null,
-      ml_teacher_labels: routeCandidate.ml_teacher_labels ?? null,
       strategy_affinity_vector: routeCandidate.strategy_affinity_vector ?? null,
       strategy_weak_label_vector: routeCandidate.strategy_weak_label_vector ?? null,
       strategy_hit_vector: routeCandidate.strategy_hit_vector ?? null,
@@ -5247,6 +5236,41 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const l0DropReasonConservationReceipt = compactL0DropReasonConservationReceipt(
       l0DropReasonConservation,
     )
+    if (!l2PoolDefinitionContext) throw new Error('l2_pool_definition_context_missing')
+    const l2PoolDefinition = await buildL2PoolDefinitionReceipt({
+      admissionRuleVersion: L15_ADMISSION_RULE_VERSION,
+      routeScoreFormulaVersion: L15_ROUTE_SCORE_FORMULA_VERSION,
+      strategyRegistryChecksum: l2PoolDefinitionContext.strategyRegistryChecksum,
+      admissionStrategyIds: l2PoolDefinitionContext.admissionStrategyIds,
+      regimeActiveStrategyIds: l2PoolDefinitionContext.regimeActiveStrategyIds,
+      staticPolicy: {
+        l0_min_price_rows: 3,
+        l0_etf_excluded: true,
+        l0_min_price: sc.minPrice,
+        l0_max_price: sc.maxPrice,
+        l0_zero_volume_excluded: true,
+        l0_hard_trading_restriction_excluded: true,
+        l05_liquidity_policy_checksum: L05_LIQUIDITY_CAPACITY_POLICY_CHECKSUM,
+        l05_min_median_daily_traded_value_twd: sc.minDailyTurnover,
+        post_route_external_risk_veto: true,
+        post_route_recent_sessions_max_excluded: 2,
+      },
+      dailyParams: {
+        regime: runtimeStrategyRegime,
+        evidenceMode: monthlyRevenue.evidenceMode ?? null,
+        productionStrategyWeights: runtimeStrategyRoutingWeights,
+        evaluationStrategyWeights: l2PoolDefinitionContext.evaluationStrategyWeights,
+      },
+      sourceUniverseCount: strategySourceUniverse.length,
+      l15SlateSymbols: layer2CoarseQueueSeed.map((candidate) => candidate.symbol),
+      safetyExcludedSymbols: [...postL15SafetyExcludedSymbols],
+      poolSymbols: finalCandidates.map((candidate) => candidate.symbol),
+    })
+    debugLog.push(
+      `[L2 pool definition] hash=${l2PoolDefinition.pool_definition_hash.slice(7, 19)} `
+      + `rule=${l2PoolDefinition.rule_hash.slice(7, 19)} size=${l2PoolDefinition.pool_size} `
+      + `strategies=${l2PoolDefinition.admission_strategy_ids.length}/${l2PoolDefinition.regime_active_strategy_ids.length}`,
+    )
     debugLog.push(
       `[Step 1 conservation] source=${l0DropReasonConservation.source_universe} `
       + `pass=${l0DropReasonConservation.pass} drop=${l0DropReasonConservation.drop} `
@@ -5280,6 +5304,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           min_median_daily_traded_value_twd: sc.minDailyTurnover,
         },
         l0DropReasonConservation: l0DropReasonConservationReceipt,
+        l2PoolDefinition,
         buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
         performance: {
           elapsed_before_funnel_ms: Date.now() - screenerStartedAt,

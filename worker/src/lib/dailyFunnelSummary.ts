@@ -16,7 +16,7 @@ export function buildFinalSignalLayer(signals: Row | null, expectedCount?: numbe
   const complete = total != null && buy != null && hold != null && sell != null && other != null
     && buy + hold + sell + other === total && (expectedCount === undefined || (expectedCount != null && total === expectedCount))
   return {
-    layer: '交易訊號', label: '當日最新交易訊號', stage: 'daily_recommendations.signal', mode: 'signals',
+    layer: 'L4', label: '配置與交易訊號', stage: 'daily_recommendations.signal', mode: 'signals',
     signal_scope: 'daily_snapshot_for_run_symbols',
     input_count: complete ? total : null, passed: complete ? buy : null, eliminated: null,
     availability: complete ? 'available' : 'unavailable',
@@ -48,12 +48,13 @@ export function buildDailyFunnelLayers(run: Row, stages: Row[], signals: Row | n
   const l1Ready = l0Ready && selected != null && observed != null
     && count(telemetry.source_universe_count) === pass && selected + observed === pass
     && count(seed?.selected_count) === selected && count(seed?.total_count) === selected
+  // L2 is gone (R33): the L1.5 queue receipt only proves the slate reached ML intact.
   const queue = stage('l15_ml_slate_queue')
   const queued = count(queue?.total_count)
-  const l2Ready = l1Ready && queued === selected && count(queue?.drop_count) === 0
+  const queueIntact = l1Ready && queued === selected && count(queue?.drop_count) === 0
   const ml = stage('layer3_formal_ml_gate')
   const evaluated = count(ml?.total_count), qualified = count(ml?.pass_count)
-  const l3Ready = l2Ready && evaluated === queued && evaluated != null && qualified != null && qualified <= evaluated
+  const l3Ready = queueIntact && evaluated === queued && evaluated != null && qualified != null && qualified <= evaluated
   return [
     { layer: 'L0', label: '股票母體與硬性篩選', stage: 'universe', mode: 'gate',
       input_count: l0Ready ? total : null, passed: l0Ready ? pass : null, eliminated: l0Ready ? drop : null,
@@ -66,15 +67,13 @@ export function buildDailyFunnelLayers(run: Row, stages: Row[], signals: Row | n
       availability: l1Ready ? 'available' : 'unavailable', reason_code: l1Ready ? null : 'candidate_conservation_incomplete',
       metrics: [metric('入選 ML 名單', l1Ready ? selected : null), metric('僅觀察', l1Ready ? observed : null)],
       note: '僅觀察仍保留策略證據，不等於硬性淘汰。' },
-    { layer: 'L2', label: 'ML 評估佇列', stage: 'l15_ml_slate_queue', mode: 'queue',
-      input_count: l2Ready ? selected : null, passed: l2Ready ? queued : null, eliminated: null,
-      availability: l2Ready ? 'available' : 'unavailable', reason_code: l2Ready ? null : 'ml_queue_coverage_incomplete',
-      metrics: [metric('已入列', l2Ready ? queued : null), metric('未入列', l2Ready ? 0 : null)], note: null },
-    { layer: 'L3', label: '正式 ML 證據', stage: 'layer3_formal_ml_gate', mode: 'evidence_only',
+    { layer: 'L3', label: 'ML 模型評分', stage: 'layer3_formal_ml_gate', mode: 'evidence_only',
       input_count: l3Ready ? queued : null, evaluated: l3Ready ? evaluated : null, passed: l3Ready ? qualified : null, eliminated: null,
-      availability: l3Ready ? 'available' : 'unavailable', reason_code: l3Ready ? null : 'ml_evidence_coverage_incomplete',
-      metrics: [metric('完成評估', l3Ready ? evaluated : null), metric('證據合格', l3Ready ? qualified : null),
-        metric('證據未合格', l3Ready ? evaluated! - qualified! : null)], note: '證據合格表示模型輸出可用，不代表買進訊號。' },
-    buildFinalSignalLayer(signals, l2Ready ? queued : null),
+      availability: l3Ready ? 'available' : 'unavailable',
+      reason_code: l3Ready ? null : queueIntact ? 'ml_evidence_coverage_incomplete' : 'ml_queue_coverage_incomplete',
+      metrics: [metric('已評分', l3Ready ? evaluated : null), metric('模型輸出完整', l3Ready ? qualified : null),
+        metric('模型輸出不完整', l3Ready ? evaluated! - qualified! : null)],
+      note: 'L1 名單全部進模型評分，這一層不篩選；輸出完整不代表買進訊號。' },
+    buildFinalSignalLayer(signals, queueIntact ? queued : null),
   ]
 }

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { resolveEveningWatchdogBusinessDate } from '../lib/eveningWatchdogBusinessDate'
 import { resolveActive8DailyBusinessDate } from '../lib/active8DailyBusinessDate'
@@ -9,6 +9,7 @@ import { resolveNextTwSessionClosure, shouldRunScheduledTask } from '../lib/sche
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import {
   admitSchedulerExecutionTicket,
+  failAcceptedSchedulerTicket,
   schedulerDeliveryIdentity,
   schedulerTicketStatusForRunLog,
   settleSchedulerHttpTicket,
@@ -126,7 +127,27 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     })
   })
 
+  type TriggerContext = Context<{ Bindings: Bindings; Variables: Variables }>
+  type AdmittedTicket = { db?: D1Database; ticketId?: string; runId?: string }
   routes.post('/api/admin/trigger/:task', async (c) => {
+    // FU1: a throw after admission and before execution (rate limit KV, lineage guard,
+    // scheduler policy, storage admission, ticket writes) must not leave the ticket `accepted`,
+    // where it shows as running and swallows Scheduler retries as duplicate_inflight. Only a
+    // ticket that is still accepted and never started is settled; the response is unchanged.
+    const admitted: AdmittedTicket = {}
+    try {
+      return await handleTrigger(c, admitted)
+    } catch (error) {
+      if (admitted.db && admitted.ticketId && admitted.runId) {
+        const message = error instanceof Error ? error.message : String(error)
+        await failAcceptedSchedulerTicket(admitted.db, { ticketId: admitted.ticketId, runId: admitted.runId, error: message })
+          .catch((settleError) => console.error('[admin-trigger] admitted ticket settlement failed:', settleError))
+      }
+      throw error
+    }
+  })
+
+  const handleTrigger = async (c: TriggerContext, admitted: AdmittedTicket): Promise<Response> => {
     const authError = await requireServiceToken(c)
     if (authError) return authError
 
@@ -203,6 +224,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       }
       return terminal ? c.json(response, 200) : c.json(response, 202)
     }
+    // From here this request owns the admitted ticket.
+    Object.assign(admitted, { db: ticketDb, ticketId: schedulerTicketId, runId: executionRunId })
 
     const rlCount = parseInt((await c.env.KV.get(rlKey)) ?? '0', 10)
     if (rlCount >= rateLimit) {
@@ -546,7 +569,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       )
       return c.json({ success: false, message: `${task} 執行失敗`, error: e.message, run_id: syncRunId, ticket_id: schedulerTicketId }, 500)
     }
-  })
+  }
 
   routes.get('/api/admin/trigger-health', async (c) => {
     const authError = await requireServiceToken(c)

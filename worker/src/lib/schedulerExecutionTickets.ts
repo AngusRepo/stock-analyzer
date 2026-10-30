@@ -63,6 +63,39 @@ const MANIFEST_BY_ID = new Map(MANIFEST_JOBS.map((job) => [job.id, job]))
 const TERMINAL_STATUSES = new Set<SchedulerExecutionTicketStatus>(['success', 'error', 'skipped', 'blocked'])
 const MAX_ATTEMPTS = 3
 const SCHEDULER_CLOCK_SKEW_MS = 5 * 60_000
+// FU1: a ticket is `accepted` only while its pre-execution gates run (seconds), then turns running.
+// 300 s (the manifest's default attemptDeadline) is far beyond the gates, so an `accepted` ticket
+// that never started has no live request behind it: a later retry of the same delivery may
+// re-admit it (bounded by MAX_ATTEMPTS), and the next delivery of the task settles it as error.
+// A retry that arrives sooner still gets duplicate_inflight, as before.
+const ABANDONED_ACCEPTED_AFTER = '-300 seconds'
+const ABANDONED_SUMMARY = 'admitted delivery ended before execution started'
+
+/** Settle an admitted ticket whose pre-execution gates failed; never touches a started ticket. */
+export async function failAcceptedSchedulerTicket(
+  db: D1Database,
+  input: { ticketId: string; runId: string; error: string },
+): Promise<boolean> {
+  const result = await db.prepare(`
+    UPDATE scheduler_execution_tickets_v1
+       SET status='error', status_authority='scheduler_http', last_summary=?, last_error=?,
+           completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE ticket_id=? AND run_id=? AND status='accepted' AND started_at IS NULL
+  `).bind(`pre-execution gate failed: ${input.error}`.slice(0, 500), input.error.slice(0, 2_000),
+    input.ticketId, input.runId).run()
+  return Number(result.meta?.changes ?? 0) === 1
+}
+
+// updated_at is left as is: "latest ticket" readers order by it, and the new delivery must stay latest.
+async function settleAbandonedAcceptedTickets(db: D1Database, task: string, currentTicketId: string): Promise<void> {
+  await db.prepare(`
+    UPDATE scheduler_execution_tickets_v1
+       SET status='error', last_summary=?, last_error=?, completed_at=CURRENT_TIMESTAMP
+     WHERE task=? AND ticket_id<>? AND ticket_kind IN ('physical_root','manual')
+       AND status_authority='scheduler_http' AND status='accepted' AND started_at IS NULL
+       AND accepted_at <= datetime('now', ?)
+  `).bind(ABANDONED_SUMMARY, 'abandoned_before_execution', task, currentTicketId, ABANDONED_ACCEPTED_AFTER).run()
+}
 
 function persistedUtcMs(value: string | null): number {
   if (!value) return Number.NaN
@@ -201,6 +234,9 @@ export async function admitSchedulerExecutionTicket(
     JSON.stringify(input.metadata ?? {}),
   ).run()
   if (Number(insert.meta?.changes ?? 0) === 1) {
+    // Housekeeping only: a failed sweep must not block this delivery.
+    await settleAbandonedAcceptedTickets(db, input.task, ticketId)
+      .catch((error) => console.warn('[schedulerExecutionTickets] abandoned accepted sweep failed:', error))
     return { ticket: await readTicket(db, ticketId), shouldExecute: true, reason: 'admitted' }
   }
 
@@ -213,6 +249,31 @@ export async function admitSchedulerExecutionTicket(
     // Do not acknowledge an unexecuted schedule as completed, or silently
     // launch another training job over an unverified historical attempt.
     throw new Error(`${closureDefect}: ${ticketId}; audited ticket repair required`)
+  }
+  if (existing.status === 'accepted' && !existing.started_at) {
+    // A retry of a delivery whose request ended inside the gates: re-admit within the
+    // attempt budget, otherwise settle it as error so it is not shown as running forever.
+    const nextAttempt = existing.attempt_count + 1
+    const retry = await db.prepare(`
+      UPDATE scheduler_execution_tickets_v1
+         SET attempt_count=?, attempt_id=?, last_summary=NULL, last_error=NULL,
+             accepted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+       WHERE ticket_id=? AND run_id=? AND payload_checksum=? AND status='accepted'
+         AND started_at IS NULL AND attempt_count=? AND attempt_count<?
+         AND accepted_at <= datetime('now', ?)
+    `).bind(nextAttempt, ticketAttemptId(ticketId, nextAttempt), ticketId, existing.run_id, payloadChecksum,
+      existing.attempt_count, MAX_ATTEMPTS, ABANDONED_ACCEPTED_AFTER).run()
+    if (Number(retry.meta?.changes ?? 0) === 1) {
+      return { ticket: await readTicket(db, ticketId), shouldExecute: true, reason: 'retry_admitted' }
+    }
+    await db.prepare(`
+      UPDATE scheduler_execution_tickets_v1
+         SET status='error', last_summary=?, last_error=?,
+             completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+       WHERE ticket_id=? AND run_id=? AND status='accepted' AND started_at IS NULL
+         AND attempt_count>=? AND accepted_at <= datetime('now', ?)
+    `).bind(ABANDONED_SUMMARY, 'abandoned_before_execution', ticketId, existing.run_id,
+      MAX_ATTEMPTS, ABANDONED_ACCEPTED_AFTER).run()
   }
   if ((existing.status === 'error' || existing.status === 'blocked') && existing.attempt_count < MAX_ATTEMPTS) {
     const nextAttempt = existing.attempt_count + 1

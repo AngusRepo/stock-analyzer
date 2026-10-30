@@ -57,7 +57,38 @@ def test_driver_compiles_sealed_sources_and_reports_the_gap(tmp_path):
     frame.write_parquet(out)
     load_history_artifact(out, hashlib.sha256(out.read_bytes()).hexdigest())
     report = gap_report(frame, days=days, calendar=spec['days'], target_end='2026-11-06')
-    assert report['sessions_short_of_target'] == ['2026-10-05'] and report['target_end_reached'] is False
+    assert report['status'] == 'TARGET_END_NOT_REACHED' and report['target_end_reached'] is False
+    assert report['sessions_short_in_calendar'] == ['2026-10-05']
+    beyond = report['sessions_short_beyond_calendar_weekday_estimate']
+    assert beyond[0] == '2026-10-06' and beyond[-1] == '2026-11-06' and '2026-10-10' not in beyond  # a Saturday
+    assert report['sessions_short_of_target'] == ['2026-10-05', *beyond]
+    assert gap_report(frame, days=days, calendar=spec['days'], target_end=DAYS[-1])['status'] == 'ok'
+
+
+def test_a_calendar_ending_before_target_is_never_reported_as_nothing_missing(tmp_path):
+    # 10/30: days.json ended 2026-10-29 and the report said [] while six sessions were short.
+    from compile_corporate_history import gap_report, _weekdays_after
+    assert _weekdays_after('2026-10-29', '2026-11-06') == [
+        '2026-10-30', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06']
+    spec = spec_fixture(tmp_path)
+    from compile_corporate_history import compile_history
+    frame, days, _, _ = compile_history(spec, base=tmp_path, captured_at='2026-10-03T01:00:00+00:00')
+    report = gap_report(frame, days=days, calendar=DAYS, target_end='2026-09-09')
+    assert report['sessions_short_of_target'] == ['2026-09-08', '2026-09-09']
+    assert report['sessions_short_in_calendar'] == [] and report['calendar_end'] == DAYS[-1]
+
+
+def test_the_cli_fails_when_target_end_is_not_reached(tmp_path, capsys):
+    from compile_corporate_history import main
+    spec = spec_fixture(tmp_path)
+    spec['captured_at'] = '2026-10-03T01:00:00+00:00'
+    (tmp_path / 'spec.json').write_text(json.dumps(spec), encoding='utf-8')
+    out = tmp_path / 'h.parquet'
+    assert main([str(tmp_path / 'spec.json'), '--output', str(out), '--target-end', '2026-11-06']) == 3
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)['status'] == 'TARGET_END_NOT_REACHED' and 'TARGET_END_NOT_REACHED' in captured.err
+    out.unlink()
+    assert main([str(tmp_path / 'spec.json'), '--output', str(out), '--target-end', DAYS[-1]]) == 0
 
 
 def test_driver_refuses_missing_or_late_sources(tmp_path):

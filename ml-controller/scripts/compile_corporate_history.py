@@ -146,17 +146,40 @@ def compile_history(spec: dict, *, base: Path, captured_at: str | None = None):
     return frame, days, [*company, *etf], unscoped
 
 
+def _weekdays_after(last: str, end: str) -> list[str]:
+    from datetime import date, timedelta
+    day, stop, out = date.fromisoformat(last) + timedelta(days=1), date.fromisoformat(end), []
+    while day <= stop:
+        if day.weekday() < 5:
+            out.append(day.isoformat())
+        day += timedelta(days=1)
+    return out
+
+
 def gap_report(frame: pl.DataFrame, *, days: list[str], calendar: list[str], target_end: str | None) -> dict:
+    """Coverage against target_end, the calendar tail included.
+
+    Sessions after the last calendar day cannot come from days.json; they are
+    counted as weekdays (no holiday calendar) and named as an estimate, so a
+    short calendar never reads as "nothing missing".
+    """
     tape = load_history_tape(frame)
     reasons, issuers = Counter(), set()
     for snap in tape.values():
         for symbol, items in snap['blockers'].items():
             issuers.add(symbol)
             reasons.update(item.split(':')[0] for item in items)
-    short = sorted(d for d in calendar if days[-1] < d <= (target_end or days[-1]))
-    return {'history_start': days[0], 'history_end': days[-1], 'sessions': len(days),
-            'target_end': target_end, 'sessions_short_of_target': short,
-            'target_end_reached': not target_end or days[-1] >= target_end,
+    end = target_end or days[-1]
+    in_calendar = sorted(d for d in calendar if days[-1] < d <= end)
+    beyond = _weekdays_after(max(calendar[-1], days[-1]), end) if calendar and end > calendar[-1] else []
+    reached = days[-1] >= end
+    return {'status': 'ok' if reached else 'TARGET_END_NOT_REACHED',
+            'history_start': days[0], 'history_end': days[-1], 'sessions': len(days),
+            'target_end': target_end, 'target_end_reached': reached,
+            'sessions_short_of_target': [*in_calendar, *beyond],
+            'sessions_short_in_calendar': in_calendar,
+            'sessions_short_beyond_calendar_weekday_estimate': beyond,
+            'calendar_end': calendar[-1] if calendar else None,
             'blocked_issuers': len(issuers), 'blocker_reason_counts': dict(sorted(reasons.items()))}
 
 
@@ -176,6 +199,10 @@ def main(argv=None) -> int:
                   sha256=hashlib.sha256(args.output.read_bytes()).hexdigest(),
                   scoped_symbols=len(scoped), unscoped_symbols=unscoped)
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report['target_end_reached']:
+        print(f"TARGET_END_NOT_REACHED: history ends {report['history_end']}, target {report['target_end']}, "
+              f"{len(report['sessions_short_of_target'])} session(s) short", file=sys.stderr)
+        return 3
     return 0
 
 

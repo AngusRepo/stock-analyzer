@@ -1221,8 +1221,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series_by_model.get('DLinear') or [])} succeeded"
             )
         else:
-            if (_active_required_model("DLinear", sequence_series_by_model.get("DLinear") or [])
-                    and not r33_day_outage_to_coverage):
+            # Not an R33 model (model_order rejects DLinear beside TimeXer); never yields to the coverage abort.
+            if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
                 raise RuntimeError("DLinear active model returned zero usable predictions")
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(dlinear_raw, dict) and dlinear_raw.get("results") == []:

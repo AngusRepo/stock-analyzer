@@ -71,6 +71,8 @@ from services.research_data_access import ResearchDataMode, resolve_research_dat
 from services.similarity_evidence import similarity_components, symbol_cluster_evidence
 
 logger = logging.getLogger(__name__)
+# Same rule as Worker boardTradability.ts isEtfPatternSymbol (C28-27); parity in test_backtest_etf_universe.py.
+ETF_PATTERN_SYMBOL_REGEXES = (r'^00\d{2,}[A-Z]*$', r'^0[2-9]\d{3,}[A-Z]*$')
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 
@@ -850,7 +852,8 @@ class BacktestDataset:
         A symbol is tradable at `date` if:
           - it was listed (listed_date <= date or listed_date is NULL), AND
           - it was not yet delisted (delisted_date IS NULL or delisted_date > date), AND
-          - it has a price bar in the dataset for that date
+          - it has a price bar in the dataset for that date, AND
+          - it is a TWSE/OTC listing and not an ETF (Worker isEtfPatternSymbol)
         """
         if date in self._universe_cache:
             return self._universe_cache[date]
@@ -864,12 +867,13 @@ class BacktestDataset:
             ((pl.col("listed_date").is_null()) | (pl.col("listed_date") <= date))
             & ((pl.col("delisted_date").is_null()) | (pl.col("delisted_date") > date))
         )
-        active = set(active_df.get_column("symbol").to_list())
         # The existing emerging lane is watchlist/shadow only, not a paper-buy
         # universe. Preserve exact FinLab venue instead of treating ROTC as OTC.
         if 'market' in active_df.columns:
-            active = set(active_df.filter(pl.col('market').is_in(['TWSE', 'OTC']))
-                         .get_column('symbol').to_list())
+            active_df = active_df.filter(pl.col('market').is_in(['TWSE', 'OTC']))
+        # Paper L0 hard-gates ETFs (market=='ETF' or ETF symbol pattern), so research replay does too.
+        etf = pl.col('symbol').cast(pl.Utf8).str.strip_chars().str.to_uppercase().str.contains('|'.join(ETF_PATTERN_SYMBOL_REGEXES))
+        active = set(active_df.filter(~etf.fill_null(False)).get_column('symbol').to_list())
 
         universe = has_bar & active
         self._universe_cache[date] = universe

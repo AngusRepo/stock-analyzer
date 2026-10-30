@@ -23,11 +23,14 @@ def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices
     dates={r["date"] for rows in prices_map.values() for r in rows}
     if not dates:raise ValueError("root_auxiliary_price_keys_empty")
     fields={}
+    if inference_composition is None:
+        from services.training_price_capture import prefetched_blobs
+        downloads=prefetched_blobs(bucket,[root+"/"+field+".parquet" for field in FIELDS])
     for field in FIELDS:
         meta=manifest.get("fields",{}).get(field)
         if not meta:raise ValueError("root_auxiliary_field_missing:"+field)
         if inference_composition is None:
-            data=bucket.blob(root+"/"+field+".parquet").download_as_bytes()
+            data=next(downloads)
             if hashlib.sha256(data).hexdigest()!=meta.get("sha256"):raise ValueError("root_auxiliary_checksum_mismatch:"+field)
             wide=pl.read_parquet(io.BytesIO(data))
         else:

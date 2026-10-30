@@ -2027,7 +2027,8 @@ async def trigger_universal_retrain(
             if active_features:
                 payload['active_features'] = active_features
             event_payloads.append(payload)
-        defer_prep(payloads=event_payloads, lock_key=lock_key, lock_run_id=run_id,
+        # PERF-D6: GCS uploads and per-batch Modal spawn are blocking; keep them off the event loop.
+        await asyncio.to_thread(defer_prep, payloads=event_payloads, lock_key=lock_key, lock_run_id=run_id,
                    receipt_template={**source_bindings, 'schema_version': ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
                      'run_id': run_id, 'business_date': run_date, 'output_gcs_prefix': prep_output_gcs_prefix,
                      'feature_semantic_version': semantic_for_profile(req.model_profile_schema_version),

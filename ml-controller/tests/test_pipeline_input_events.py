@@ -609,3 +609,20 @@ def test_parallel_prep_persistence_keeps_batch_order_bytes_and_conflict_guard(st
     with events.input_context({'producer_run_id':'run-2','run_date':'2026-10-02'},'gs://fixture/sealed-l2'):
         with pytest.raises(ValueError,match='pipeline_input_batch_conflict'):
             events.defer_prep(payloads=payloads,receipt_template={},lock_key='lock',lock_run_id='prep-2')
+
+
+def test_router_defers_prep_off_the_event_loop_with_input_context(store, monkeypatch):
+    """PERF-D6: blocking GCS/Modal dispatch runs in a worker thread, context intact."""
+    import inspect, threading
+    from routers import retrain_trigger as trigger
+    assert 'await asyncio.to_thread(defer_prep,' in inspect.getsource(trigger)
+    loop_thread, seen = threading.get_ident(), []
+    monkeypatch.setattr(events, '_launch_missing_prep',
+                        lambda bucket, path, stage: seen.append((threading.get_ident(), stage['spec']['lock_run_id'])))
+    async def run():
+        with events.input_context({'producer_run_id': 'run-1', 'run_date': '2026-10-02'}, 'gs://fixture/sealed-l2'):
+            await asyncio.to_thread(events.defer_prep, payloads=[{'batch_index': 0}], receipt_template={},
+                                    lock_key='lock', lock_run_id='prep-1')
+    with pytest.raises(events.InputDeferred):
+        asyncio.run(run())
+    assert len(seen) == 1 and seen[0][0] != loop_thread and seen[0][1] == 'prep-1'

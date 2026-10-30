@@ -67,7 +67,7 @@ from services.technical_signal_math import macd_histogram_last
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.dataset_snapshots import latest_dataset_snapshot
-from services.research_data_access import ResearchDataMode, ResearchSnapshotNotReadyError, resolve_research_data_access
+from services.research_data_access import ResearchDataMode, resolve_research_data_access
 from services.similarity_evidence import similarity_components, symbol_cluster_evidence
 
 logger = logging.getLogger(__name__)
@@ -198,6 +198,8 @@ class BacktestDataset:
 
     # Optional sealed daily source component; absence is not proof of no action.
     corporate_sources: dict[str, dict] = field(default_factory=dict)
+    # Research-history datasets only: accounting assumption used when params carry none.
+    research_accounting: Optional[dict[str, str]] = None
     replay_frames: Optional[dict[str, pl.DataFrame]] = field(default=None, repr=False)
 
     # Lazy-computed universe cache — point-in-time tradable set per date
@@ -430,8 +432,9 @@ class BacktestDataset:
         """
         if corporate_history:
             if mode not in (None, "snapshot", "auto"):
-                raise ResearchSnapshotNotReadyError(f"corporate_history_requires_snapshot:{mode}")
-            from services.research_corporate_history import COMPONENT, OWNER
+                # A configuration error, not a snapshot that may still arrive.
+                raise ValueError(f"corporate_history_requires_snapshot:{mode}")
+            from services.research_corporate_history import COMPONENT, OWNER, RESEARCH_ACCOUNTING_DEFAULTS
             from services.research_corporate_preflight import exclude_history_blocked_symbols
             data_access = resolve_research_data_access(
                 lane=lane,
@@ -451,8 +454,11 @@ class BacktestDataset:
             )
             if any(s.get("schema_version") != OWNER for s in dataset.corporate_sources.values()):
                 raise ValueError("corporate_history_tape_not_loaded")
+            # Search params stay untouched (nothing here can reach a KV push).
+            dataset.research_accounting = dict(RESEARCH_ACCOUNTING_DEFAULTS)
             access = data_access.to_dict()
             access["corporate_source"] = COMPONENT
+            access["research_accounting_assumption"] = dict(RESEARCH_ACCOUNTING_DEFAULTS)
             access["corporate_history_exclusion"] = exclude_history_blocked_symbols(dataset, start_date, end_date)
             return dataset, access
         data_access = resolve_research_data_access(
@@ -5156,9 +5162,10 @@ def replay_period(
         attempts = []
         # Step 0: T+2 settle matured settlements
         account.settle_matured(day)
+        accounting = params.get('researchAccounting') or getattr(dataset, 'research_accounting', None) or {}
         _apply_daily_corporate(account, dataset, day,
-            research_cash_mode=(params.get('researchAccounting') or {}).get('cashRoundingMode'),
-            research_subscription_policy=(params.get('researchAccounting') or {}).get('subscriptionPolicy'))
+            research_cash_mode=accounting.get('cashRoundingMode'),
+            research_subscription_policy=accounting.get('subscriptionPolicy'))
 
         # Step 1: exit sweep on existing positions
         trades_today = step_all_positions(account, dataset, day, exit_p, fees_p, replay_days)

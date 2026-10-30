@@ -12,7 +12,7 @@ class CorporateCoverageError(ValueError):
 
 def is_corporate_data_error(exc):
     return isinstance(exc, (CorporateCoverageError, CorporateHistoryGap)) or str(exc).startswith((
-        'backtest_corporate_', 'corporate_history_', 'backtest_research_cash_',
+        'backtest_corporate_', 'corporate_history_', 'backtest_research_cash_', 'backtest_subscription_',
     ))
 
 

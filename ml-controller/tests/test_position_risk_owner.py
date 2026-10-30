@@ -322,3 +322,19 @@ def test_l2_route_logs_the_dims_it_searches_without_retired_ones(monkeypatch, ca
         optuna.run_l2_sensitivity(optuna.L2SensitivityReq())
     line = next(r.getMessage() for r in caplog.records if '[Optuna/l2_sensitivity] n_trials=' in r.getMessage())
     assert ' dims=1 ' in line and 'source=KV' in line
+
+
+def test_l2_route_falls_back_to_the_default_space_when_kv_lists_only_retired_dims(monkeypatch, caplog):
+    import logging
+    from routers import optuna
+    from optuna_l2_sensitivity import DEFAULT_SEARCH_SPACE
+    space = {'dims': [{'name': 'buyConfThreshold', 'path': 'circuit.buyConfThreshold', 'type': 'uniform',
+                       'low': .5, 'high': .75}]}
+    loaded(monkeypatch, {**POST_P1, 'optuna_l2': {'search_space': space}})
+    kv(monkeypatch, RISK)
+    captured = {}
+    _route(monkeypatch, 'optuna_l2_sensitivity', 'run_l2_sensitivity_search', captured)
+    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError, match='captured'):
+        optuna.run_l2_sensitivity(optuna.L2SensitivityReq())
+    line = next(r.getMessage() for r in caplog.records if '[Optuna/l2_sensitivity] n_trials=' in r.getMessage())
+    assert f' dims={len(DEFAULT_SEARCH_SPACE)} ' in line and 'source=DEFAULT_SEARCH_SPACE' in line

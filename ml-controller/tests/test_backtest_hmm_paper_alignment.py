@@ -279,6 +279,7 @@ def test_any_confidence_enters_even_against_a_raised_threshold(kv_position_risk,
     # 09-09+ rows carry the placeholder 0 (findings_sell_to_hold §8): they still enter, as in Paper.
     attempt, account = entry(kv_position_risk, conf=conf)
     assert attempt.status == 'filled' and shares(account) > 0
+    # Equal size only because PositionSizeParams() has Kelly off; with Kelly on, conf still sizes.
     assert shares(account) == shares(entry(kv_position_risk, conf=.9, circuit={})[1])
 
 
@@ -321,6 +322,8 @@ def test_the_l2_search_never_tunes_the_retired_dimensions():
     retired = {f'L2_formula.sltp_add_{lv}_{sd}' for lv in ('orange', 'red', 'black') for sd in ('sl', 'tp')}
     retired |= {'L2_formula.medium_risk_scale', 'circuit.sellConfThreshold'} | CONFIDENCE_PATHS
     assert retired <= RETIRED_PATHS
+    from optuna_scripts.optuna_l2_sensitivity import SELL_COUPLED_CONFIDENCE_PATHS
+    assert SELL_COUPLED_CONFIDENCE_PATHS == CONFIDENCE_PATHS | {'circuit.sellConfThreshold'}   # restored together
     assert not {dim['path'] for dim in DEFAULT_SEARCH_SPACE} & RETIRED_PATHS
     assert {dim['path'] for dim in DEFAULT_SEARCH_SPACE if dim['path'].startswith('circuit.')} == {
         'circuit.drawdownHalt', 'circuit.drawdownScaleStart', 'circuit.mddMultFloor'}

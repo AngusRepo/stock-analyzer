@@ -13,7 +13,9 @@ Remaining 10 Mode-B-consumable dims split into:
   (PF 90d_weight = 1 - 30d_weight constrained, so 3 search dims cover 4 consumers).
   The confidence dims are retired (Wei 10/30, replay aligned to Paper): Paper computes
   a buy confidence threshold but no buy reads it since 06-14 (the L4 sparse BUY
-  decides), so the replay has no confidence entry gate and these cannot move it.
+  decides), so the replay has no confidence entry gate. They also feed Paper's sell
+  threshold, read only by the EOD ML SELL exit, which has no SELL rows: they come
+  back with sellConfThreshold (SELL_COUPLED_CONFIDENCE_PATHS) if SELL rows return.
   SLTP-add and medium scale are retired (Wei 10/30 B): Paper applies neither.
   circuit.sellConfThreshold is retired for now (Wei 10/30): Paper's EOD ML SELL exit
   has had no SELL row to act on since 2026-03-31, so the dimension cannot move the
@@ -71,17 +73,24 @@ if str(_CONTROLLER_DIR) not in sys.path:
 # consumer of circuit.sellConfThreshold is the EOD ML SELL exit (paperExitTasks.ts),
 # which has had no SELL recommendation to read since 2026-03-31; the KV field stays.
 # Wei 10/30 (replay aligned to Paper): buyConfThreshold, the accuracy raise
-# (lowAccuracyThreshold, drawdownRaisedConf) and the six L2 confidence terms only
-# produce Paper's buy threshold, which no buy reads (pendingBuyOrchestrator dropped
-# the confidence filter on 06-14); the KV fields stay for logs and audit.
-RETIRED_PATHS = frozenset({
-    "circuit.bullAlignmentThreshold",
+# (lowAccuracyThreshold, drawdownRaisedConf) and the six L2 confidence terms produce
+# Paper's buy threshold, which no buy reads (pendingBuyOrchestrator dropped the
+# confidence filter on 06-14), and Paper's sell threshold (effectiveSell = clip(
+# sellConfThreshold + confidence_delta); P1/P2 raise it to max(effectiveBuy,
+# drawdownRaisedConf)), which only the EOD ML SELL exit reads. So they share
+# sellConfThreshold's premise: retired while no SELL recommendation exists, and
+# restored together with it if SELL rows return. The KV fields stay.
+SELL_COUPLED_CONFIDENCE_PATHS = frozenset({
     "circuit.sellConfThreshold",
     "circuit.buyConfThreshold",
     "circuit.lowAccuracyThreshold",
     "circuit.drawdownRaisedConf",
     *(f"L2_formula.confidence_{name}" for name in (
         "risk_mult", "perf_mult", "delta_clip_lo", "delta_clip_hi", "effective_clip_lo", "effective_clip_hi")),
+})
+RETIRED_PATHS = frozenset({
+    "circuit.bullAlignmentThreshold",
+    *SELL_COUPLED_CONFIDENCE_PATHS,
     *(f"L2_formula.sltp_add_{level}_{side}" for level in ("orange", "red", "black") for side in ("sl", "tp")),
     "L2_formula.medium_risk_scale",
 })

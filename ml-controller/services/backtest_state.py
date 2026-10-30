@@ -282,7 +282,8 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
     """Pull predictions.direction_correct rows (NULL filtered) for the replay period.
 
     One-shot D1 call (D6 pattern). Returns rows sorted by generated_at ASC so
-    `compute_rolling_accuracy_30d` can slice by tail without re-sorting.
+    `compute_rolling_accuracy_30d` can slice by tail without re-sorting. The snapshot
+    exporter seals them; the replay no longer reads them (no accuracy raise, Wei 10/30).
 
     NULL `direction_correct` rows (未驗證) are excluded — accuracy only counts
     already-resolved predictions.

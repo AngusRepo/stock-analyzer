@@ -1114,8 +1114,8 @@ class Candidate:
 
 class MLPredictionsCache:
     """Pre-loads ensemble-row predictions from D1 for the entire backtest
-    date range so simulate_entries_for_date can apply realistic confidence
-    filters + Kelly sizing instead of the ml_conf_placeholder=0.60 hardcode.
+    date range so simulate_entries_for_date can use the real confidence for
+    Kelly sizing (no entry gate) instead of the ml_conf_placeholder=0.60 hardcode.
 
     Storage: dict {(symbol, date) → confidence float in [0,1]}.
     Returns None on miss (caller decides skip vs default behavior).
@@ -3188,7 +3188,11 @@ def simulate_entries_for_date(
     # Only the drawdown halt and the drawdown position scale remain. Paper computes a
     # buy confidence threshold (circuit.buyConfThreshold, adaptive delta, accuracy
     # raise) but no buy reads it since 06-14: the L4 sparse BUY decides. The replay
-    # has no confidence entry gate either.
+    # has no confidence entry gate either. (The same inputs set Paper's sell threshold
+    # for the EOD ML SELL exit, which the replay does not model.)
+    # Not modeled here (pre-existing gap): Paper's P3 canonical market-risk halt,
+    # circuit.positionScales, the targetExposurePct cap and P2's fail-closed halt
+    # when accuracy evidence is missing.
     circuit_cfg: Optional[dict] = None,
     current_drawdown_30d: Optional[float] = None,
     #   l2_formula_cfg: dict view of trading:config.L2_formula (night drop, PF blend).

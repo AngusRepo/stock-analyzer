@@ -263,8 +263,9 @@ class BacktestMarketState:
         """The pipeline regime contract (alpha_regime + regime_surface) for decisions made at `session`.
 
         None before the HMM era. Inside it, None unless the latest state visible
-        before the entry open is HMM and is `session`'s own: the pipeline's
-        decision_lineage refuses a contract whose run_date is not the signal date.
+        before the entry open is HMM and is `session`'s own: Worker marketScreener
+        throws screener_regime_pit_unavailable unless source is hmm and run_date
+        is the signal date (since 07-29; decision_lineage adds the same rule).
         """
         state = self.hmm_state(session, entry_date)
         if state is None or state.get('run_date') != session:

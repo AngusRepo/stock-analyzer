@@ -20,6 +20,7 @@ import { runScreenerV2 } from './lib/screenerJobTrigger'
 import { runDailySnapshot, runPaperAutoTrade } from './lib/paperWorkerTasks'
 import { runEODExit } from './lib/paperExitTasks'
 import { handleScheduledCron } from './lib/cronOrchestrator'
+import { isPipelineStageLeaseBusy } from './lib/pipelineStageLease'
 import {
   runWeeklyAudit as runWeeklyAuditWorkflow,
   runWeeklyOptunaResearch as runWeeklyOptunaResearchWorkflow,
@@ -204,6 +205,12 @@ export default {
         msg.ack()
       } catch (e) {
         const attempts = Math.max(1, Number(msg.attempts ?? 1))
+        if (isPipelineStageLeaseBusy(e)) {
+          // Another owner's live stage lease: redeliver after it instead of acknowledging the message away.
+          console.warn(`[Queue] ${e.message} (attempt=${attempts})`)
+          msg.retry({ delaySeconds: e.delaySeconds })
+          continue
+        }
         console.error(`[Queue] Message failed, will retry (attempt=${attempts}):`, e)
         if (msg.body.type === 'update_batch') {
           await recordIndicatorQueueMessageFailure(env, msg.body, e, attempts).catch((logError) => {

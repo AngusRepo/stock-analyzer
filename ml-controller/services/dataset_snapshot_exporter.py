@@ -346,6 +346,25 @@ def _query_prices(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.D
     )
 
 
+P7_LOOKBACK_DAYS = 60
+
+
+def with_formal_contract_flag(signals: pl.DataFrame) -> pl.DataFrame:
+    """Add `formal_model_contract_passed`: Paper's per-candidate formal model contract verdict.
+
+    recommendation_service drops a candidate whose formal contract failed
+    (formal_family_prediction_missing); the verdict rides in forecast_data's
+    core_family_vote. Rows that never recorded it stay null, and the replay
+    names them as approximated rather than guessing.
+    """
+    if "forecast_data" not in signals.columns or signals.schema["forecast_data"] != pl.String:
+        return signals.with_columns(pl.lit(None, dtype=pl.Boolean).alias("formal_model_contract_passed"))
+    raw = pl.col("forecast_data").str.json_path_match("$.core_family_vote.formal_model_contract_passed")
+    flag = (pl.when(raw == "true").then(pl.lit(True)).when(raw == "false").then(pl.lit(False))
+            .otherwise(pl.lit(None, dtype=pl.Boolean)))
+    return signals.with_columns(flag.alias("formal_model_contract_passed"))
+
+
 def _query_market_risk(start_date: str, end_date: str) -> pl.DataFrame:
     return _frame(CORE_D1_CLIENT.query(
         """
@@ -680,9 +699,20 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         regime_rows = load_regime_observations(req.end_date, MARKET_D1_CLIENT)
         components['market_regime_state'] = (_frame(regime_rows) if regime_rows
                                               else _empty_frame(list(REGIME_OBSERVATION_COLUMNS)))
-        verified = load_verified_predictions(req.start_date, req.end_date)
+        # P7 reads five disjoint mature cohorts before each open: seal outcomes from
+        # P7_LOOKBACK_DAYS before the window so its first sessions are judged too.
+        from datetime import date as _date, timedelta as _timedelta
+        verified_start = (_date.fromisoformat(req.start_date[:10]) - _timedelta(days=P7_LOOKBACK_DAYS)).isoformat()
+        verified = load_verified_predictions(verified_start, req.end_date)
         components['verified_predictions'] = _frame(verified) if verified else _empty_frame(
             ['generated_at', 'verified_at', 'direction_correct'])
+        # Paper's P6 momentum zone: the table is small and P6 reads the latest row
+        # before the open, which may predate the window, so every row through end_date.
+        momentum = MARKET_D1_CLIENT.query(
+            'SELECT date, zone, percentile_rank, pool_definition, created_at FROM screener_momentum_snapshots '
+            'WHERE date <= ? ORDER BY date', [req.end_date])
+        components['screener_momentum_snapshots'] = _frame(momentum) if momentum else _empty_frame(
+            ['date', 'zone', 'percentile_rank', 'pool_definition', 'created_at'])
     signal_queries = 0
     if req.include_signals:
         signals, signal_queries = _query_date_range(
@@ -713,7 +743,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         if signals.is_empty():
             raise RuntimeError("dataset_export_no_ensemble_signals")
         signals = signals.sort(["stock_id", "generated_at", "id"]).select(columns)
-        components["signals"] = signals
+        components["signals"] = with_formal_contract_flag(signals)
 
     return _write_compute_snapshot(
         req=req,
@@ -733,7 +763,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             "margin_data": margin_queries,
             "shareholding": shareholding_queries,
             "signals": signal_queries,
-            **({"market_regime_state": 1} if req.include_signals else {}),
+            **({"market_regime_state": 1, "screener_momentum_snapshots": 1} if req.include_signals else {}),
         },
         started=started,
     )

@@ -51,6 +51,13 @@ def frozen_mode_b(dataset):
     sessions = sorted(set(dataset.trading_days))
     next_session = dict(zip(sessions, sessions[1:]))
     cache = {}
+    # Paper keeps a candidate only when its formal model contract passed
+    # (recommendation_service, formal_family_prediction_missing). Snapshots exported
+    # before the flag, and rows that never recorded it, keep the replay's older test
+    # (an ensemble row with a confidence) and are counted as approximated (Wei 10/30 §5-4).
+    has_flag = 'formal_model_contract_passed' in signals.columns
+    formal = {'contract_failed_rows': 0, 'contract_passed_without_confidence_rows': 0, 'unflagged_rows': 0,
+              'flag_component': has_flag}
     for row in signals.sort(['generated_at', 'stock_id']).iter_rows(named=True):
         symbol = identities.get(row['stock_id'])
         day = str(row['prediction_date'])
@@ -63,8 +70,16 @@ def frozen_mode_b(dataset):
         cutoff = datetime.fromisoformat(entry_day + 'T09:00:00+08:00')
         if not symbol or timestamp(row['generated_at']) >= cutoff:
             continue
+        flag = row.get('formal_model_contract_passed') if has_flag else None
+        if flag is False:
+            formal['contract_failed_rows'] += 1
+            continue
+        if flag is None:
+            formal['unflagged_rows'] += 1
         conf = row['direction_accuracy']
         if conf is None:
+            if flag is True:
+                formal['contract_passed_without_confidence_rows'] += 1
             continue
         if not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
             raise ValueError('backtest_mode_b_confidence_invalid')
@@ -92,6 +107,7 @@ def frozen_mode_b(dataset):
     momentum = frames.get(MOMENTUM_COMPONENT)
     state._momentum = momentum.to_dicts() if momentum is not None else None
     state._ensemble_identities = ensemble_identity_changes(signals)
+    state.formal_contract = formal
     verified = frames['verified_predictions']
     if not {'generated_at', 'verified_at', 'direction_correct'} <= set(verified.columns):
         raise ValueError('backtest_mode_b_verified_schema_invalid')

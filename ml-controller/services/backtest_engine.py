@@ -5193,6 +5193,7 @@ def replay_period(
     if mode == "B":
         from services.backtest_paper_risk import summarize
         metrics.paper_risk = summarize(paper_risk_records)
+        metrics.paper_risk['formal_contract'] = getattr(market_state, 'formal_contract', None) or {'flag_component': False}
         metrics.realism_warnings.append('paper_risk: deRisk 未模擬（持股減碼屬 SELL 側，延到 R33）')
         metrics.realism_warnings.append('paper_risk: unmodeled ' + ','.join(metrics.paper_risk['unmodeled']))
     logger.info(

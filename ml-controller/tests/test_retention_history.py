@@ -44,7 +44,10 @@ def test_backtest_rolling_accuracy_reads_original_cold_period(monkeypatch):
  monkeypatch.setattr(retention_history.LEARNING,'query',lambda *a:[])
  monkeypatch.setattr(retention_history,'download_archive',lambda manifest,**kwargs:raw)
  rows=backtest_state.load_verified_predictions('2025-01-01','2025-01-02')
- assert rows==[{'generated_at':'2025-01-01T00:00:00','direction_correct':1,'verified_at':None,'verification_label_known_date':None}]*2
+ core={'generated_at':'2025-01-01T00:00:00','direction_correct':1,'verified_at':None,'verification_label_known_date':None}
+ assert [{k:r[k] for k in core} for r in rows]==[core]*2
+ # P7 columns ride along; a legacy cold row without them stays null instead of guessed.
+ assert all(r['ensemble_artifact_id'] is None and r['forecast_horizon_bars'] is None for r in rows)
  # Legacy retained labels have no proof of when the answer became available.
  assert backtest_state.compute_rolling_accuracy_30d(rows,'2025-01-02',min_samples=1)==0.6
 
@@ -99,6 +102,9 @@ def test_compute_snapshot_export_keeps_archived_signals(monkeypatch):
  def market(sql,params,**kw):
   if 'market_regime_state' in sql:   # the frozen HMM history, up to the end date
    assert params==['2025-01-02','2025-01-02']
+   return []
+  if 'FROM screener_momentum_snapshots' in sql:   # P6 zone: every row through the end date
+   assert params==['2025-01-02']
    return []
   assert ('FROM us_market_signals' in sql or 'FROM market_breadth' in sql) and params==['2025-01-01','2025-01-02']
   return []

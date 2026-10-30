@@ -312,8 +312,14 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
     NULL `direction_correct` rows (未驗證) are excluded — accuracy only counts
     already-resolved predictions.
     """
+    ensemble = ", ".join(
+        f"CASE WHEN model_name = 'ensemble' AND json_valid(forecast_data) "
+        f"THEN json_extract(forecast_data, '$.ensemble_v2.{name}') END AS {alias}"
+        for name, alias in P7_FORECAST_FIELDS)
     rows = LEARNING_D1_CLIENT.query(
-        "SELECT id, generated_at, direction_correct, verified_at, verification_label_known_date "
+        "SELECT id, stock_id, model_name, prediction_date, generated_at, direction_correct, verified_at, "
+        "       verification_label_known_date, verification_label_end_date, verification_label_schema_version, "
+        f"      {ensemble} "
         "FROM predictions "
         "WHERE generated_at BETWEEN ? AND ? "
         "  AND direction_correct IN (0, 1) "
@@ -321,11 +327,36 @@ def load_verified_predictions(start_date: str, end_date: str) -> list[dict]:
         [start_date, end_date],
     )
     from services.retention_history import archived_predictions
-    cold = [row for row in archived_predictions(start_date, end_date, date_column='generated_at',
-                hot_ids=[row['id'] for row in rows]) if row.get('direction_correct') in (0, 1)]
-    return [{'generated_at': row['generated_at'], 'direction_correct': row['direction_correct'],
-             'verified_at':row.get('verified_at'), 'verification_label_known_date':row.get('verification_label_known_date')}
+    cold = [{**row, **_p7_forecast_fields(row)} for row in archived_predictions(
+                start_date, end_date, date_column='generated_at', hot_ids=[row['id'] for row in rows])
+            if row.get('direction_correct') in (0, 1)]
+    keep = ('generated_at', 'direction_correct', 'verified_at', 'verification_label_known_date', 'stock_id',
+            'model_name', 'prediction_date', 'verification_label_end_date', 'verification_label_schema_version',
+            *(alias for _, alias in P7_FORECAST_FIELDS))
+    return [{name: row.get(name) for name in keep}
             for row in sorted([*rows, *cold], key=lambda row: (row['generated_at'], row['id']))]
+
+
+# P7 (p7Streak.ts) reads these from each ensemble row's forecast_data.ensemble_v2.
+P7_FORECAST_FIELDS = (('forecast_horizon_bars', 'forecast_horizon_bars'),
+                      ('artifact_id', 'ensemble_artifact_id'), ('cohort_id', 'ensemble_cohort_id'),
+                      ('artifact_checksum', 'ensemble_artifact_checksum'),
+                      ('base_artifact_set_checksum', 'ensemble_base_artifact_set_checksum'))
+
+
+def _p7_forecast_fields(row: dict) -> dict:
+    """The same fields for a cold-archive row, which keeps forecast_data whole."""
+    out = {alias: None for _, alias in P7_FORECAST_FIELDS}
+    if row.get('model_name') != 'ensemble':
+        return out
+    try:
+        forecast = json.loads(row.get('forecast_data') or '')
+    except (TypeError, ValueError):
+        return out
+    ensemble = forecast.get('ensemble_v2') if isinstance(forecast, dict) else None
+    if isinstance(ensemble, dict):
+        out.update({alias: ensemble.get(name) for name, alias in P7_FORECAST_FIELDS})
+    return out
 
 
 def compute_rolling_accuracy_30d(

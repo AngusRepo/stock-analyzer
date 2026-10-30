@@ -721,7 +721,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
 ) {
   requireController(env)
   const nextSessionDate = params.startDate === params.endDate
-    ? await nextTwTradingDate(env.KV, params.endDate, env.DB)
+    ? await nextTwTradingDate(env.KV, params.endDate, databaseForDataDomain(env, 'market'))
     : undefined
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {
@@ -767,6 +767,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),
       coreDb: databaseForDataDomain(env, 'core'),
+      marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     })
     if (!closure.ready) {

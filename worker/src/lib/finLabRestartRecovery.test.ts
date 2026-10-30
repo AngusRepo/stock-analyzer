@@ -971,6 +971,111 @@ test('M1 counter: before the cutoff a stale dispatch is resent, and past it a Fi
   assert.notEqual(g.log('evening-chain')?.status, 'error')
 })
 
+test('M1 boundary (Wei 10/30): a dispatch sent after 22:55:00 TW gets no resend; at or before 22:55:00 it keeps the 23:10 rescue', async (t) => {
+  const sentAt = (ms: number) => ({ ...pendingDispatch('22:00'), timestamp: new Date(ms).toISOString() })
+  // Rescue side: 22:40 and exactly 22:55:00 (stale by the 23:10 run) are resent as attempt 2.
+  for (const ms of [at('22:40'), at('22:55')]) {
+    const f = await fixture(t, { twoiiMissing: true })
+    f.setLog('finlab-v4-backfill', sentAt(ms))
+    f.clock(at('23:10'))
+    await runFinLabBackfillWatchdog(f.env, date)
+    t.mock.timers.reset()
+    assert.equal(f.dispatches.length, 1, new Date(ms).toISOString())
+    assert.equal(f.dispatches[0].dispatch_attempt, 2)
+    assert.notEqual(f.log('evening-chain')?.status, 'error')
+    // The rescue resend (sent 23:10, after 22:55) is the only one: still pending at 23:30 it closes, no further resend.
+    f.clock(at('23:30'))
+    await runFinLabBackfillWatchdog(f.env, date)
+    t.mock.timers.reset()
+    assert.equal(f.dispatches.length, 1)
+    assert.equal(f.log('evening-chain').status, 'error')
+    assert.equal(f.log('update').status, 'blocked')
+  }
+  // No-resend side: 22:55:01 and 22:56 are only skipped at 23:10 and close at the cutoff once stale, never resent.
+  for (const ms of [at('22:55') + 1000, at('22:56')]) {
+    const f = await fixture(t, { twoiiMissing: true })
+    f.setLog('finlab-v4-backfill', sentAt(ms))
+    f.clock(at('23:10'))
+    assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab triggered past the 23:00 TW cutoff for 2026-10-29; no post-cutoff resend$/)
+    t.mock.timers.reset()
+    f.clock(at('23:20'))
+    await runFinLabBackfillWatchdog(f.env, date)
+    t.mock.timers.reset()
+    assert.equal(f.dispatches.length, 0, new Date(ms).toISOString())
+    assert.match(f.log('evening-chain').summary, /^FinLab canonical lanes not ready by 23:00 TW cutoff .*FinLab got no callback; no post-cutoff readiness refetch was sent; no resend$/)
+    assert.equal(f.log('update').status, 'blocked')
+  }
+})
+
+test('M1 boundary: past the cutoff no resend once the attempts are spent, nor for a date past its midnight', async (t) => {
+  // Attempt 3 (the last) sent at 22:50: closes at the cutoff instead of the exhausted error, with the ops log.
+  const f = await fixture(t, { twoiiMissing: true })
+  f.setLog('finlab-v4-backfill', { ...pendingDispatch('22:50'),
+    summary: `triggered finlab-v4-backfill run_id=${finlabRunId} function_call_id=fc-1 dispatch_attempt=3` })
+  f.clock(at('23:10'))
+  await runFinLabBackfillWatchdog(f.env, date)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 0)
+  assert.match(f.log('evening-chain').summary, /^FinLab canonical lanes not ready by 23:00 TW cutoff .*FinLab got no callback; no post-cutoff readiness refetch was sent; no resend$/)
+  assert.equal(f.log('update').status, 'blocked')
+  assert.equal((await f.systemLogs()).length, 1)
+  // A manual watchdog run for a date already past its midnight resends nothing, even for a 21:30 dispatch.
+  const g = await fixture(t, { twoiiMissing: true })
+  g.setLog('finlab-v4-backfill', pendingDispatch('21:30'))
+  g.clock(at('10:00', '2026-10-30'))
+  await runFinLabBackfillWatchdog(g.env, date)
+  t.mock.timers.reset()
+  assert.equal(g.dispatches.length, 0)
+  assert.equal(g.log('evening-chain').status, 'error')
+  assert.equal(g.log('update').status, 'blocked')
+})
+
+test('M1 warn (Wei 10/30): a lost callback with canonical lanes ready writes one ops warn in the date\'s last watchdog run', async (t) => {
+  const f = await fixture(t)
+  f.setLog('finlab-v4-backfill', pendingDispatch('23:42'))
+  f.clock(at('23:50'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /canonical lanes ready; no post-cutoff resend$/)
+  t.mock.timers.reset()
+  const warns = async () => (await f.systemLogs()).filter((row: any) => row.level === 'warn')
+  assert.equal((await f.systemLogs()).length, 1)
+  assert.equal((await warns()).length, 1)
+  assert.equal((await warns())[0].cron_name, 'evening-chain')
+  assert.match((await warns())[0].message, new RegExp(`^FinLab run_id=${finlabRunId} past the 23:00 TW cutoff got no callback by the last watchdog run of 2026-10-29 while the canonical lanes are ready`))
+  assert.equal(f.dispatches.length, 0)
+  assert.notEqual(f.log('evening-chain')?.status, 'error')
+  assert.equal(f.store.has(`source-readiness:canonical-cutoff-logged:${date}`), false)
+  // A second watchdog run of the same date (manual, still in the last window) writes no second warn.
+  f.clock(at('23:55'))
+  await runFinLabBackfillWatchdog(f.env, date)
+  t.mock.timers.reset()
+  assert.equal((await f.systemLogs()).length, 1)
+  // Counter: a canonical lane still missing takes the terminal path, with no lost-callback warn.
+  const g = await fixture(t, { twoiiMissing: true })
+  g.setLog('finlab-v4-backfill', pendingDispatch('23:42'))
+  g.clock(at('23:50'))
+  await runFinLabBackfillWatchdog(g.env, date)
+  t.mock.timers.reset()
+  assert.equal(g.log('evening-chain').status, 'error')
+  assert.equal(g.store.has(`finlab:lost-callback-canonical-ready-warned:${date}`), false)
+  assert.equal((await g.systemLogs()).filter((row: any) => row.level === 'warn').length, 0)
+  // Counter: before the last run (23:20) a lost callback with canonical lanes ready writes nothing.
+  const h = await fixture(t)
+  h.setLog('finlab-v4-backfill', pendingDispatch('23:02'))
+  h.clock(at('23:20'))
+  await runFinLabBackfillWatchdog(h.env, date)
+  t.mock.timers.reset()
+  assert.equal((await h.systemLogs()).length, 0)
+  // Counter: an official-source terminal already closed the chain: no lost-callback warn either.
+  const k = await fixture(t)
+  k.kvSet(`source-readiness:official-cutoff-logged:${date}`, '2026-10-29T15:00:00.000Z')
+  k.setLog('finlab-v4-backfill', pendingDispatch('23:42'))
+  k.clock(at('23:50'))
+  await runFinLabBackfillWatchdog(k.env, date)
+  t.mock.timers.reset()
+  assert.equal(k.store.has(`finlab:lost-callback-canonical-ready-warned:${date}`), false)
+  assert.equal((await k.systemLogs()).length, 0)
+})
+
 test('M1: a lost callback whose data already landed is not closed; a pending full capture past the cutoff is', async (t) => {
   // Readiness is complete (the callback was lost after the data landed): no terminal, no resend.
   const f = await fixture(t)

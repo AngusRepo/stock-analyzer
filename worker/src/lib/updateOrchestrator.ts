@@ -83,6 +83,12 @@ const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_POST_CANONICAL_WATCHDOG_STALE_MS = 2 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
+/**
+ * A FinLab dispatch sent less than this before the contract cutoff (after 22:55:00 TW with the 23:00 cutoff) and
+ * never called back gets no watchdog resend (Wei 10/30, r7 Minor 1). One sent at or before it keeps its rescue
+ * resend: stale (15 min) by the 23:10 watchdog run at the latest.
+ */
+const FINLAB_NO_RESEND_BEFORE_CUTOFF_MS = 5 * 60_000
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
 
@@ -2582,6 +2588,38 @@ async function finLabStartedRefetchTerminal(env: Bindings, twDate: string): Prom
   return `skipped: FinLab canonical cutoff terminal already recorded for ${twDate}; post-cutoff refetch started but did not complete`
 }
 
+/** Sent strictly after cutoff - 5 min (22:55:00 TW itself keeps the resend); a missing timestamp is not. */
+function finLabDispatchedInNoResendWindow(twDate: string, timestamp: string | undefined): boolean {
+  const sentAt = timestamp ? Date.parse(timestamp) : Number.NaN
+  return Number.isFinite(sentAt)
+    && sentAt > Date.parse(`${twDate}T${finLabLateRetryCutoffTw()}:00+08:00`) - FINLAB_NO_RESEND_BEFORE_CUTOFF_MS
+}
+
+/**
+ * The date's last watchdog run finds a FinLab dispatch past the cutoff that never called back while the canonical
+ * lanes are ready: the watchdog neither closes nor continues the chain, so it says so once per date (ops warn).
+ */
+async function warnFinLabLostCallbackCanonicalReadyOnce(env: Bindings, twDate: string, runId: string | null | undefined): Promise<void> {
+  const summary = `FinLab run_id=${runId ?? 'unknown'} past the ${finLabLateRetryCutoffTw()} TW cutoff got no callback by the `
+    + `last watchdog run of ${twDate} while the canonical lanes are ready; the watchdog neither closes nor continues the chain`
+  // Never throws: a KV or ops-log outage must not fail the watchdog run (same as logFinLabLateLaneFailureOnce).
+  let dedupError: string | null = null
+  try {
+    const key = `finlab:lost-callback-canonical-ready-warned:${twDate}`
+    if (await env.KV.get(key)) return
+    await env.KV.put(key, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+  } catch (error) {
+    dedupError = error instanceof Error ? error.message : String(error)
+  }
+  const logged = dedupError == null ? summary : `${summary}; dedup unavailable: ${dedupError}`
+  console.warn(`[FinLab] ${logged}`)
+  try {
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'warn', 'evening-chain', logged, { run_date: twDate })
+  } catch (error) {
+    console.warn(`[FinLab] ${logged}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 /** A FinLab dispatch writes a reservation with a new run_id first; a skip without one is no dispatch. */
 function finLabRunIdAdvanced(before: string | undefined, after: string | undefined): boolean {
   return Boolean(after) && after !== before
@@ -3074,7 +3112,8 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   const lateLane = lateLaneNotReady || lateLaneRetryPending
   const retriableFailure = retriablePartialFailure || lateLaneNotReady
   // Past the cutoff the watchdog sends no FinLab (late lanes keep their own cutoff path) for a date closed at
-  // the cutoff, a date whose one post-cutoff refetch is out, or a dispatch still pending without a callback.
+  // the cutoff, a date whose one post-cutoff refetch is out, or a dispatch sent after 22:55 TW still pending
+  // without a callback (one sent at or before 22:55 keeps its rescue resend).
   // A FinLab that failed or never called back is written back as terminal: refetch_cap only when the
   // post-cutoff refetch went out, otherwise the cutoff terminal.
   const cutoffPassed = finLabLateRetryCutoffPassed(twDate)
@@ -3083,7 +3122,11 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   // Only a canonical terminal (cutoff or refetch_cap) already says the canonical lanes were missing.
   const canonicalClosed = terminalRecorded && Boolean(await env.KV.get(finLabCanonicalCutoffTerminalKey('cutoff', twDate))
     || await env.KV.get(finLabCanonicalCutoffTerminalKey('refetch_cap', twDate)))
-  if (!lateLane && cutoffPassed && (terminalRecorded || refetchOut || finlabLog?.status === 'triggered')) {
+  // Also no resend (none is left to rescue) once its attempts are spent or no watchdog run of the date is left.
+  const noResendPending = finlabLog?.status === 'triggered' && (finLabDispatchedInNoResendWindow(twDate, finlabLog.timestamp)
+    || finLabNoWatchdogRunLeft(twDate)
+    || Number.parseInt(schedulerSummaryField(finlabLog, 'dispatch_attempt') ?? '1', 10) >= FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS)
+  if (!lateLane && cutoffPassed && (terminalRecorded || refetchOut || noResendPending)) {
     const pendingAt = finlabLog?.timestamp ? Date.parse(finlabLog.timestamp) : Number.NaN
     const pendingAged = !Number.isFinite(pendingAt) || Date.now() - pendingAt >= FINLAB_PENDING_WATCHDOG_STALE_MS
     // The date's last watchdog run closes a dispatch still pending, even before it is stale.
@@ -3093,6 +3136,10 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     // Without a canonical terminal the date is only closed while a FinLab canonical lane is still missing: a lost
     // callback whose data already landed (readiness moved on) must not overwrite the chain with a terminal.
     if (!canonicalClosed && closes && !hasFinLabRefreshableMissing(await checkEveningChainSourceReadiness(env, twDate))) {
+      // An official-source terminal already closed the chain (error, blocked): nothing is left stuck to warn about.
+      if (lastRun && finlabLog?.status === 'triggered' && !terminalRecorded) {
+        await warnFinLabLostCallbackCanonicalReadyOnce(env, twDate, finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id'))
+      }
       return `skipped: FinLab ${finlabLog?.status ?? 'unlogged'} past the ${finLabLateRetryCutoffTw()} TW cutoff for ${twDate}`
         + '; canonical lanes ready; no post-cutoff resend'
     }

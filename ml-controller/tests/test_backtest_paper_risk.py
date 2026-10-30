@@ -254,7 +254,8 @@ def test_a_quiet_morning_runs_every_layer_with_nothing_triggered():
     state = morning()
     assert not state.halt and state.max_position_pct == .08 and state.exposure_cap == .95
     assert state.triggered_layers == () and state.approximations == ('market_breadth_rewrite_after_created_at_untracked',
-                                                                       'p6_zone_rewrite_after_created_at_untracked')
+                                                                       'p6_zone_rewrite_after_created_at_untracked',
+                                                                       'p7_identity_from_newest_prediction_before_open')
 
 
 def test_the_first_snapshot_session_has_no_previous_close_and_says_so_instead_of_halting():

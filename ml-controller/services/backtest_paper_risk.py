@@ -521,6 +521,8 @@ def replay_morning_state(*, decision_date: str, entry_date: str, circuit: dict, 
     elif identity is None:
         approximations.append('p7_ensemble_identity_unavailable')
     else:
+        # Paper reads the live ensemble pointer, which keeps no history.
+        approximations.append('p7_identity_from_newest_prediction_before_open')
         results.append(p7_streak(verified_rows, identity=identity, entry_date=entry_date, cutoff=cutoff,
                                  circuit=circuit))
     if previous_nav is not None and current_nav is None:

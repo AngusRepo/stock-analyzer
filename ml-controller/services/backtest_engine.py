@@ -90,6 +90,12 @@ def _snapshot_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# Mode B replay inputs read whole from the sealed snapshot (never today's mutable D1).
+# screener_momentum_snapshots is Paper's P6 zone (services.backtest_snapshot_state.MOMENTUM_COMPONENT).
+SNAPSHOT_REPLAY_COMPONENTS = ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals',
+                              'market_regime_state', 'screener_momentum_snapshots')
+
+
 def _snapshot_component_uris(manifest: dict[str, Any]) -> dict[str, str]:
     metadata = _snapshot_metadata(manifest)
     components = metadata.get("components")
@@ -338,7 +344,7 @@ class BacktestDataset:
                     stocks=stocks_df if name != "market_risk" else None))
         frames = {name: load_market_component(name) for name in ("prices", "indicators", "chips", "market_risk")}
         # Mode B must use the same immutable inputs, never today's mutable D1.
-        for name in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals', 'market_regime_state'):
+        for name in SNAPSHOT_REPLAY_COMPONENTS:
             if name in component_uris:
                 frames[name] = _read_snapshot_parquet(component_uris[name])
 
@@ -381,7 +387,7 @@ class BacktestDataset:
             start_date=start_date,
             end_date=end_date,
             corporate_sources=corporate_sources,
-            replay_frames={k: frames[k] for k in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals', 'market_regime_state') if k in frames},
+            replay_frames={k: frames[k] for k in SNAPSHOT_REPLAY_COMPONENTS if k in frames},
         )
         ds._build_hot_caches()
         return ds
@@ -5030,6 +5036,10 @@ def replay_period(
             research_cash_mode=(params.get('researchAccounting') or {}).get('cashRoundingMode'),
             research_subscription_policy=(params.get('researchAccounting') or {}).get('subscriptionPolicy'))
 
+        # P8's NAV at the open, before today's exits fill at intraday prices.
+        open_nav = (_mark_to_open(account, dataset, day, prev_decision_date)
+                    if mode == "B" and prev_decision_date is not None else None)
+
         # Step 1: exit sweep on existing positions
         trades_today = step_all_positions(account, dataset, day, exit_p, fees_p, replay_days)
         all_trades.extend(trades_today)
@@ -5051,7 +5061,7 @@ def replay_period(
                 momentum_rows=getattr(market_state, '_momentum', None), verified_rows=verified_rows,
                 identity=market_state.ensemble_identity_at(entry_open(day)),
                 previous_nav=equity_curve[-1][1] if equity_curve else None,
-                current_nav=_mark_to_open(account, dataset, day, prev_decision_date),
+                current_nav=open_nav,
                 first_snapshot_session=first_market_risk_date is not None and prev_decision_date <= first_market_risk_date)
             paper_risk_records.append(state_record(paper_risk_state, day))
         if prev_candidates and prev_decision_date is not None:
@@ -5196,6 +5206,8 @@ def replay_period(
         metrics.paper_risk['formal_contract'] = getattr(market_state, 'formal_contract', None) or {'flag_component': False}
         metrics.realism_warnings.append('paper_risk: deRisk 未模擬（持股減碼屬 SELL 側，延到 R33）')
         metrics.realism_warnings.append('paper_risk: unmodeled ' + ','.join(metrics.paper_risk['unmodeled']))
+        metrics.realism_warnings.append('paper_risk: exposure cap uses cost-basis holdings and cash (Paper L4: market-value '
+                                        'weights); commission is outside the exposure budget')
     logger.info(
         f"[BacktestEngine] Done: trades={metrics.total_trades} "
         f"sharpe={metrics.sharpe} max_dd={metrics.max_drawdown:.3f} "

@@ -149,3 +149,24 @@ def test_sealed_momentum_and_p7_rows_reach_the_morning_state():
     assert state.ensemble_identity_at(entry_open('2026-09-02')) == ('art', 'c', 's', 'b')
     _, bare, _ = frozen_mode_b(dataset(signal_rows([True], [.6])))
     assert bare._momentum is None
+
+
+def test_the_snapshot_loader_carries_the_momentum_component(monkeypatch):
+    import services.backtest_engine as engine
+    import services.research_corporate_history as corporate
+    from services.backtest_snapshot_state import MOMENTUM_COMPONENT
+    zone = pl.DataFrame({'date': ['2026-08-18'], 'zone': ['RED'], 'percentile_rank': [.9],
+                         'pool_definition': [risk.MOMENTUM_POOL_DEFINITION], 'created_at': ['2026-08-18T09:00:00Z']})
+    frames = {'stocks': pl.DataFrame({'symbol': ['2330'], 'listed_date': [None], 'delisted_date': [None]}),
+              'prices': pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18'], 'open': [1.], 'high': [1.],
+                                      'low': [1.], 'close': [1.], 'volume': [1]}),
+              'indicators': pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18']}),
+              'chips': pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18']}),
+              'market_risk': pl.DataFrame({'date': ['2026-08-18']}),
+              MOMENTUM_COMPONENT: zone}
+    monkeypatch.setattr(engine, '_snapshot_component_uris', lambda manifest: {name: name for name in frames})
+    monkeypatch.setattr(engine, '_read_snapshot_parquet', lambda uri, transform=None: frames[uri])
+    monkeypatch.setattr(corporate, 'load_research_corporate_components', lambda *a, **k: {})
+    data = engine.BacktestDataset.load_from_snapshot_manifest({'snapshot_id': 's'}, '2026-08-18', '2026-08-18')
+    assert data.replay_frames[MOMENTUM_COMPONENT].to_dicts() == zone.to_dicts()
+    assert MOMENTUM_COMPONENT in engine.SNAPSHOT_REPLAY_COMPONENTS

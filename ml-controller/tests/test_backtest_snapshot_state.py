@@ -61,12 +61,17 @@ def test_replay_entries_read_market_risk_only_through_paper_s_morning_state(monk
     monkeypatch.setattr(engine,'replay_screener_for_date',lambda **kw:[object()])
     def entries(**kw):captured.append(kw);return []
     monkeypatch.setattr(engine,'simulate_entries_for_date',entries)
+    # P8 marks the open before the day's exits fill at intraday prices.
+    order=[];mark,step=engine._mark_to_open,engine.step_all_positions
+    monkeypatch.setattr(engine,'_mark_to_open',lambda *a:order.append(('mark',a[2])) or mark(*a))
+    monkeypatch.setattr(engine,'step_all_positions',lambda *a:order.append(('exits',a[2])) or step(*a))
     params={'positionRiskDistribution':kv_position_risk,'portfolioRiskPolicy':position_risk_owner.formal_portfolio_risk({}),
             'circuit':{'maxPositionPct':.08,'drawdownHalt':.15,'drawdownScaleStart':.03,'mddMultFloor':.2,
                        'highVolReducedPosPct':.04,'layer7ScaleRatio':.3}}
     result=engine.replay_period(dataset=dataset,start_date=dataset.start_date,end_date=dataset.end_date,params=params,mode='B')
     assert result.mode=='B'
     assert len(captured)==1
+    assert order==[('exits','2026-09-01'),('mark','2026-09-02'),('exits','2026-09-02')]
     assert not {'risk_score','risk_level','regime_family','buy_conf_threshold'} & set(captured[0])
     state=captured[0]['paper_risk']
     assert state.market.date=='2026-09-01' and state.market.level=='green' and not state.halt

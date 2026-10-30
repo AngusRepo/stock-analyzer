@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {DAILY_READINESS_PHASES, READINESS_MAIN_STAGES, PREMARKET_READINESS_IDS, dailyPhaseForStage} from '../components/observability/dailyReadinessPhases'
+import {DAILY_READINESS_PHASES, READINESS_MAIN_STAGES, PREMARKET_READINESS_IDS, dailyPhaseForStage, stageReceiptDateLabel} from '../components/observability/dailyReadinessPhases'
 import {buildAttemptAwareJobMap} from '../components/observability/executionChainAttemptState'
 import type {SchedulerJob} from './api'
 const ids=DAILY_READINESS_PHASES.flatMap(p=>[...p.stages])
@@ -38,3 +38,12 @@ for (const phase of DAILY_READINESS_PHASES) {
   const members: readonly string[] = phase.stages
   for (const id of READINESS_MAIN_STAGES[phase.id]) assert.ok(members.includes(id),id+' rendered under its receipt phase')
 }
+
+// C28-12 (LV7): the pre-market recommendation receipt stays on business date X and says it serves X+1.
+assert.equal(stageReceiptDateLabel('recommendation','2026-10-27'),'業務日 2026-10-27 的收據 · 供次交易日盤前使用')
+assert.equal(stageReceiptDateLabel('recommendation',null),'業務日 —')
+assert.equal(stageReceiptDateLabel('ml-predict','2026-10-27'),'業務日 2026-10-27')
+assert.equal(stageReceiptDateLabel('news-analyst','2026-10-28'),'業務日 2026-10-28')
+const card=readFileSync('src/components/SchedulerPipelineChain.tsx','utf8')
+assert.equal(card.split('stageReceiptDateLabel(id, job?.statusRunDate)').length,3,'both stage card layouts use the receipt date label')
+assert.ok(!card.includes("業務日 {job?.statusRunDate"),'no stage card renders the bare business date')

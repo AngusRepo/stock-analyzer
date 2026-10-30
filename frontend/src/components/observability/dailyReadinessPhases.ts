@@ -26,3 +26,10 @@ export const READINESS_MAIN_STAGES: Record<string, readonly string[]> = {
 export function dailyPhaseForStage(id: string) {
   return DAILY_READINESS_PHASES.find(phase => (phase.stages as readonly string[]).includes(id))?.id
 }
+
+/** C28-12 (LV7): the pre-market L4 recommendation continues the pipeline run of business date X, so
+ * its receipt stays on X. Say that it serves the next trading day's pre-market instead of looking stale. */
+export function stageReceiptDateLabel(id: string, runDate?: string | null): string {
+  if (!runDate) return '業務日 —'
+  return id === 'recommendation' ? `業務日 ${runDate} 的收據 · 供次交易日盤前使用` : `業務日 ${runDate}`
+}

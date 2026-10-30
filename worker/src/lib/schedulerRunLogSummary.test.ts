@@ -81,7 +81,8 @@ test('NEW-94: the admin trigger route still classifies and matches on the legacy
   assert.equal(source.split('const logSummary = schedulerRunLogSummary(result, c.env)').length - 1, 2)
   assert.equal(source.split('const status = classifySchedulerSummary(summary)').length - 1, 2)
   assert.equal(source.split('summary: logSummary,').length - 1, 3)
-  assert.equal(source.split("updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)").length - 1, 2)
+  // FU17 settles the ticket through settleTicket; it still receives the prefix summary, not logSummary.
+  assert.equal(source.split('settleTicket(schedulerTicketStatusForRunLog(status), summary)').length - 1, 2)
   // A status word past the old prefix is stored, but the status is still decided on the prefix.
   const result = { pad: 'p'.repeat(220), outcome: 'failed_validation' }
   const prefix = JSON.stringify(result).slice(0, 200)

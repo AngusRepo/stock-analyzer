@@ -1,4 +1,4 @@
-"""Replay uses Paper's market-regime inputs once HMM history exists (Wei 10/30).
+"""Replay uses Paper's market-regime inputs once an HMM row was visible before an open (Wei 10/30).
 
 - The screener's alpha framework gets the pipeline HMM contract (family + surface).
 - The P3 adaptive delta uses Paper's inputs and moves the buy THRESHOLD.
@@ -6,6 +6,7 @@
 """
 import hashlib
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import polars as pl
@@ -86,12 +87,46 @@ def edited(row, **changes):
     return {**row, 'state_json': text, 'state_checksum': hashlib.sha256(text.encode()).hexdigest()}
 
 
-@pytest.mark.parametrize('changes', [{'run_date': '2026-08-17'}, {'computed_at': '2026-08-19T02:00:00Z'},
+@pytest.mark.parametrize('changes', [{'run_date': '2026-08-19'}, {'run_date': None}, {'computed_at': '2026-08-19T02:00:00Z'},
                                      {'schema_version': 'v0'}, {'label': 'calm'}])
 def test_a_payload_the_worker_rejects_stops_the_replay(changes):
     history = RegimeHistory([edited(obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z'), **changes)])
     with pytest.raises(ValueError, match='payload_invalid'):
         history.latest_on_or_before('2026-08-18', entry_open('2026-08-19'))
+
+
+def test_a_payload_run_date_up_to_the_session_is_accepted_like_the_worker_latest_before_read():
+    history = RegimeHistory([edited(obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z'), run_date='2026-08-17')])
+    assert history.latest_on_or_before('2026-08-18', entry_open('2026-08-19'))['family'] == 'bear'
+
+
+def test_a_state_that_is_not_an_object_stops_the_replay():
+    text = '[]'
+    row = {**obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z'), 'state_json': text,
+           'state_checksum': hashlib.sha256(text.encode()).hexdigest()}
+    with pytest.raises(ValueError, match='payload_invalid'):
+        RegimeHistory([row])
+
+
+def test_visibility_needs_both_instants_by_the_open_inclusive():
+    open_0819 = entry_open('2026-08-19')
+    assert open_0819 == datetime(2026, 8, 19, 1, tzinfo=timezone.utc)                # 09:00 TW
+    computed_late = obs('2026-08-18', 'bear', '2026-08-19T01:00:01Z', '2026-08-19T00:30:00Z')
+    history = RegimeHistory([computed_late])
+    assert not history.hmm_visible('2026-08-18', open_0819)
+    assert history.latest_on_or_before('2026-08-18', open_0819) is None
+    at_open = RegimeHistory([obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', '2026-08-19T01:00:00Z')])
+    assert at_open.hmm_visible('2026-08-18', open_0819)
+    assert at_open.latest_on_or_before('2026-08-18', open_0819)['family'] == 'bear'
+
+
+def test_a_naive_persisted_at_is_read_as_utc():
+    # The Worker compares with julianday(), which reads a zoneless timestamp as UTC.
+    open_0819 = entry_open('2026-08-19')
+    after = RegimeHistory([obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', '2026-08-19 01:00:01')])
+    before = RegimeHistory([obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', '2026-08-19 00:59:59')])
+    assert not after.hmm_visible('2026-08-18', open_0819)
+    assert before.hmm_visible('2026-08-18', open_0819)
 
 
 @pytest.mark.parametrize('column', COLUMNS)
@@ -312,7 +347,8 @@ def test_the_research_snapshot_freezes_every_hmm_observation(monkeypatch):
     monkeypatch.setattr(corporate, 'export_original_corporate_records', lambda days: pl.DataFrame())
     monkeypatch.setattr(retention, 'archived_predictions', lambda *a, **k: [])
     monkeypatch.setattr(backtest_state, 'load_verified_predictions', lambda *a: [])
-    rows = [obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z')]
+    rows = [obs('2026-08-01', 'bull', '2026-08-01T13:00:00Z'),                      # before start_date: kept
+            obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z')]
     asked = []
     monkeypatch.setattr(backtest_state, 'load_regime_observations',
                         lambda end, client=None: asked.append((end, client)) or rows)
@@ -350,6 +386,16 @@ def test_layer_two_raises_the_adjusted_threshold_after_the_delta(kv_position_ris
                  **kw)[0].status != 'skipped_low_conf'
     assert entry(kv_position_risk, conf=paper - .001, regime_family='sideways', circuit=circuit,
                  **kw)[0].status == 'skipped_low_conf'
+
+
+def test_before_the_hmm_era_there_is_no_delta_only_the_clip(kv_position_risk):
+    # Paper has no adaptive params without an HMM family (adaptive_regime_evidence_unknown).
+    kw = dict(risk_level='orange', risk_score=61, accuracy=.55)
+    delta = paper_delta(regime='bear', **kw)
+    assert delta > .001
+    assert entry(kv_position_risk, conf=.6 + .001, regime_family=None, **kw)[0].status != 'skipped_low_conf'
+    assert entry(kv_position_risk, conf=.6 - .001, regime_family=None, **kw)[0].status == 'skipped_low_conf'
+    assert entry(kv_position_risk, conf=.76, regime_family=None, threshold=.8, **kw)[0].status != 'skipped_low_conf'
 
 
 def test_missing_inputs_drop_the_delta_but_keep_the_clip(kv_position_risk):

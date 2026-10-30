@@ -100,6 +100,10 @@ class RegimeHistory:
     computed) before an entry open, not with the earliest run_date: rows
     backfilled later carry early run_dates but were not there to decide on
     (Wei 10/30). No date is written in code.
+
+    Stricter than the Worker on purpose: every row's checksum is verified at
+    load, not only the selected one, because the era test reads every row's
+    source. A corrupt row anywhere stops the replay (fail closed).
     """
 
     def __init__(self, rows: Iterable[dict]):
@@ -123,15 +127,18 @@ class RegimeHistory:
                    for run_date, computed, recorded, _checksum, _state in self._hmm_rows)
 
     def latest_on_or_before(self, session: str, as_of: datetime) -> Optional[dict]:
-        """The newest observation for `session` or earlier that existed at `as_of`; None if it is not HMM."""
+        """The newest observation for `session` or earlier that existed at `as_of`.
+
+        None when nothing is visible or the newest visible state is not HMM (a fallback).
+        """
         visible = [row for row in self._rows if row[0] <= session and row[1] <= as_of and row[2] <= as_of]
         if not visible:
             return None
         run_date, _computed, _recorded, _checksum, state = max(visible, key=lambda row: row[:4])
-        # Worker parseMarketRegimeState + readRegimeObservation reject these payloads.
+        # Worker parseMarketRegimeState + readRegimeObservation(latestBefore) reject these payloads.
         from services.market_regime_state import normalize_regime_label
         if (state.get('schema_version') != 'market-regime-state-v1' or normalize_regime_label(state.get('label')) is None
-                or state.get('run_date') != run_date or not state.get('computed_at')
+                or not state.get('run_date') or str(state['run_date']) > session or not state.get('computed_at')
                 or _instant(state.get('computed_at')) > as_of):
             raise ValueError('market_regime_history_payload_invalid:' + run_date)
         return state if state.get('source') == 'hmm' else None
@@ -249,8 +256,8 @@ class BacktestMarketState:
     def hmm_regime_contract(self, session: str, entry_date: str) -> Optional[dict]:
         """The pipeline regime contract (alpha_regime + regime_surface) for decisions made at `session`.
 
-        None before the HMM era, and None inside it when no HMM observation was
-        visible before the entry open (Paper then has no regime contract either).
+        None before the HMM era, and None inside it when the latest state visible
+        before the entry open is not HMM (Paper then has no regime contract either).
         """
         if not self.in_hmm_era(session, entry_date):
             return None

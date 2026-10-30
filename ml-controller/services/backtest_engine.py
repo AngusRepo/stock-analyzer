@@ -3258,7 +3258,9 @@ def simulate_entries_for_date(
     # Missing inputs mean no adaptive delta (Paper: no adaptive params), never no clip.
     effective_delta: float = 0.0
     if ml_predictions is not None and l2_formula_cfg is not None and buy_conf_threshold is not None:
-        if risk_score is not None and recent_accuracy_30d is not None:
+        # Paper has no adaptive params without an HMM family (compute_adaptive_params
+        # raises adaptive_regime_evidence_unknown), so pre-era entries get the clip only.
+        if risk_score is not None and recent_accuracy_30d is not None and regime_family is not None:
             from services.adaptive import compute_confidence_components
             effective_delta = compute_confidence_components(
                 float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,

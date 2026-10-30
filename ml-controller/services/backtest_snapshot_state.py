@@ -62,7 +62,7 @@ def frozen_mode_b(dataset):
         if len({r['date'] for r in rows}) != len(rows):
             raise ValueError('backtest_mode_b_duplicate_market_date:' + attr)
         setattr(state, attr, {r['date']: row_type(**{f.name:r.get(f.name) for f in fields(row_type)}) for r in rows})
-    # The HMM regime owner, frozen with the rest; an empty frame means the range predates HMM.
+    # The HMM regime owner, frozen with the rest; the era starts at the first HMM row visible before an open.
     state._regime = RegimeHistory(frames['market_regime_state'].to_dicts())
     verified = frames['verified_predictions']
     if not {'generated_at', 'verified_at', 'direction_correct'} <= set(verified.columns):

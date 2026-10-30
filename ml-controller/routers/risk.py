@@ -117,9 +117,10 @@ def post_risk_assess(req: RiskAssessRequest):
         regime_source=req.market.regime_source,
     )
 
-    sl_tp = params.get("sl_tp_override")
+    sl_tp = params.get("sltp_add")
     bandit_str = "explore!" if params["bandit_force_explore"] else f"maxMult={params['bandit_max_mult']}"
-    sl_str = f"sl+{sl_tp['sl_add']}/tp+{sl_tp['tp_add']}" if sl_tp else "sl/tp=default"
+    # Paper never applies the SL/TP add (Wei 10/30 B): the summary must not read as if it did.
+    sl_str = f"sltp_add_unused=sl+{sl_tp['sl_add']}/tp+{sl_tp['tp_add']}" if sl_tp else "sltp_add=none"
     summary = " | ".join([
         f"v{params['version']}",
         f"conf={params['confidence_threshold']:.2f}",

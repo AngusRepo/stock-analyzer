@@ -54,6 +54,30 @@ def test_risk_assess_consumes_worker_l2_formula():
     assert params["bandit_max_mult"] == 1.4
     assert params["bandit_context"]["decision"] == "medium_recent_loss_rate_cap_exposure"
     assert params["threshold_components"]["effective_delta"] <= 0.04
+    # Paper never applies the SL/TP add (Wei 10/30 B); the summary says so.
+    assert "sltp_add_unused=sl+0.77/tp+0.66" in response["summary"]
+    assert "sl+0.77/tp+0.66" not in response["summary"].replace("sltp_add_unused=sl+0.77/tp+0.66", "")
+
+
+def test_risk_assess_summary_without_an_sltp_add_says_none():
+    response = post_risk_assess(
+        RiskAssessRequest(
+            date="2026-06-08",
+            market=MarketData(
+                risk_score=20, risk_level="green", regime="sideways",
+                regime_as_of_date="2026-06-08", regime_source="hmm",
+            ),
+            accuracy=AccuracyData(global_30d=0.60, rows_30d=[], rows_90d=[]),
+            trading=TradingData(losses_5d=0, total_5d=4),
+            adaptive_config=AdaptiveConfigData(
+                L2_formula={"confidence_risk_mult": 0.01, "confidence_perf_mult": 0.01},
+                baseline_buy_signal_score=0.50,
+            ),
+        )
+    )
+    assert response["adaptive_params"]["sltp_add"] is None
+    assert response["summary"].endswith("sltp_add=none")
+    assert "sl/tp=default" not in response["summary"]
 
 
 def test_risk_assess_preserves_ga_optimizer_adaptive_context():

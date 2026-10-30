@@ -1591,8 +1591,8 @@ function AdaptiveParamsCard() {
           </div>
         </div>
         {slOverride && (
-          <div className="text-xs text-amber-400/80 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1">
-            SL +{slOverride.sl_add} ATR / TP +{slOverride.tp_add} ATR（高風險 regime 加寬）
+          <div className="text-xs text-muted-foreground/70 bg-white/[0.03] border border-white/[0.06] rounded px-2 py-1">
+            SL +{slOverride.sl_add} / TP +{slOverride.tp_add} 加寬建議（未套用：Paper 不使用此欄位）
           </div>
         )}
       </CardContent>

@@ -9,7 +9,7 @@ GET  /walk_forward/report/{start}/{end}  fetch persisted run
 All endpoints require X-Controller-Token via main.py verify_token dependency.
 """
 from __future__ import annotations
-from services.formal_feature_contract import PROFILES131, EXO131_PROFILE, FEATURE131_SEMANTIC, FEATURES131, LEGACY_SEMANTIC, cohort_semantic, semantic_for_profile, feature_count
+from services.formal_feature_contract import PROFILES131, EXO131_PROFILE, R33_PROFILE, FEATURE131_SEMANTIC, FEATURES131, LEGACY_SEMANTIC, cohort_semantic, semantic_for_profile, feature_count
 import asyncio
 import hashlib
 import json
@@ -53,6 +53,8 @@ class WalkForwardRequest(BaseModel):
     resume_manifest_path: str | None = None
     knowledge_cutoff_date: str | None = None
     expected_producer_source_sha: str | None = None
+    # OOF-only challengers: fold artifacts stay in GCS, outside model_set, D1 and full-fit.
+    challenger_models: list[str] = Field(default_factory=list)
 
 
 def _window_split_key(window) -> tuple[str, str, str, str]:
@@ -271,6 +273,8 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
     models = req.models or list(selected_order)
     if set(models)-set(selected_order):
         raise HTTPException(status_code=422,detail="walk_forward_roster_profile_mismatch")
+    if set(req.challenger_models) & set(selected_order):
+        raise HTTPException(status_code=422,detail="walk_forward_challenger_in_release_roster")
     coverage = walk_forward_model_coverage(models)
     resume_plan = _load_resume_plan(
         req.resume_manifest_path,
@@ -378,6 +382,8 @@ async def walk_forward_run(req: WalkForwardRequest):
     models = req.models or list(selected_order)
     if set(models)-set(selected_order):
         raise HTTPException(status_code=422,detail="walk_forward_roster_profile_mismatch")
+    if set(req.challenger_models) & set(selected_order):
+        raise HTTPException(status_code=422,detail="walk_forward_challenger_in_release_roster")
     cohort_id = req.cohort_id or (
         f"active8-oof-{req.start_date}-{req.end_date}-"
         f"tr{req.train_window_days}-te{req.test_window_days}"
@@ -412,6 +418,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
             "fs_force_refresh": req.fs_force_refresh,
+            **({"challenger_models": list(req.challenger_models)} if req.challenger_models else {}),
         })
         fn_call_id = getattr(fn_call, "object_id", None) or str(fn_call)
     except Exception as e:
@@ -673,7 +680,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         }
         promotion_evidence[name] = evidence
 
-    tree_models = sorted(_ACTIVE8_TREE_MODELS)
+    tree_models = sorted(_ACTIVE8_TREE_MODELS & expected_models)
     train_groups = ["tree", "timexer" if "TimeXer" in expected_models else "dlinear", "patchtst"]
     lifecycle_targets = sorted(_ACTIVE8_LIFECYCLE_MODELS - {"PatchTST"})
     feature_consensus = build_oof_full_fit_feature_consensus(manifest)
@@ -1167,10 +1174,33 @@ async def dispatch_oof_full_fit_training(
     bucket: Any,
     lifecycle_cadence: str,
     allow_new_dispatch: bool = True,
+    signal_date_max: str | None = None,
+    candidate_only: bool = False,
 ) -> dict[str, Any]:
     plan = build_oof_full_fit_dispatch_plan(manifest)
     if plan["status"] != "ready":
         return plan
+
+    def _registry_complete(registry: dict[str, Any] | None) -> bool:
+        if candidate_only:
+            from services.r33_monthly_lifecycle import candidate_registry_complete
+            return candidate_registry_complete(registry, plan["release_models"])
+        return _oof_release_registry_matches_active_policy(registry)
+
+    def _release_registry(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
+        if candidate_only:
+            # Seven independent candidates for Wei; no learned ensemble or alias rows.
+            from services.r33_monthly_lifecycle import register_candidates
+            return register_candidates(rows, release_models=plan["release_models"], expected_run_id=run_id)
+        return _materialize_completed_oof_release_aliases(
+            manifest=manifest,
+            registry_rows=rows,
+            expected_run_id=run_id,
+            knowledge_cutoff_date=knowledge_cutoff_date,
+            lifecycle_cadence=lifecycle_cadence,
+            release_models=plan["release_models"],
+            bucket=bucket,
+        )
 
     cohort_id = str(manifest.get("cohort_id") or "")
     feature_pool_contract: dict[str, Any] = {}
@@ -1238,7 +1268,7 @@ async def dispatch_oof_full_fit_training(
         and receipt_promotion_models == set(plan["promotion_eligible_models"])
         and not receipt.get("missing_models")
         and not receipt.get("training_failed_models")
-        and _oof_release_registry_matches_active_policy(release_registry)
+        and _registry_complete(release_registry)
     )
     artifact_states = (
         receipt.get("artifact_states")
@@ -1258,7 +1288,7 @@ async def dispatch_oof_full_fit_training(
             state in {"offline_failed", "offline_passed", "offline_strong_pass"}
             for state in artifact_states.values()
         )
-        and _oof_release_registry_matches_active_policy(release_registry)
+        and _registry_complete(release_registry)
     )
     if recoverable_retry_limit:
         terminal_path = str(receipt.get("terminal_payload_path") or "")
@@ -1427,15 +1457,7 @@ async def dispatch_oof_full_fit_training(
             if model_name in plan["release_models"] and state == "offline_failed"
         )
         if not missing and not training_failed:
-            release_registry = _materialize_completed_oof_release_aliases(
-                manifest=manifest,
-                registry_rows=rows,
-                expected_run_id=prior_run_id,
-                knowledge_cutoff_date=knowledge_cutoff_date,
-                lifecycle_cadence=lifecycle_cadence,
-                release_models=plan["release_models"],
-                bucket=bucket,
-            )
+            release_registry = _release_registry(rows, prior_run_id)
             if _oof_release_registry_is_terminal_validation_blocked(release_registry):
                 blocked = {
                     **receipt,
@@ -1650,15 +1672,7 @@ async def dispatch_oof_full_fit_training(
                     if model_name in plan["release_models"] and state == "offline_failed"
                 )
                 if not missing and not training_failed:
-                    release_registry = _materialize_completed_oof_release_aliases(
-                        manifest=manifest,
-                        registry_rows=rows,
-                        expected_run_id=prior_run_id,
-                        knowledge_cutoff_date=knowledge_cutoff_date,
-                        lifecycle_cadence=lifecycle_cadence,
-                        release_models=plan["release_models"],
-                        bucket=bucket,
-                    )
+                    release_registry = _release_registry(rows, prior_run_id)
                     if _oof_release_registry_is_terminal_validation_blocked(release_registry):
                         blocked = {
                             **receipt,
@@ -1770,6 +1784,8 @@ async def dispatch_oof_full_fit_training(
     request = UniversalRetrainTriggerRequest(
         limit=2500,
         run_date=knowledge_cutoff_date,
+        signal_date_max=signal_date_max or manifest.get("end_date") or None,
+        label_known_at_max=knowledge_cutoff_date if (signal_date_max or manifest.get("end_date")) else None,
         candidate_type="oof_full_fit_release",
         drift_target_models=plan["release_models"],
         train_model_groups=plan["train_model_groups"],
@@ -2799,6 +2815,9 @@ class OofLifecycleRequest(BaseModel):
 
 OOF_TRAIN_SESSIONS = 60
 OOF_TEST_SESSIONS = 10
+# R33 candidates serve about one month (~21 sessions) after their full-fit. Each
+# OOF test window spans the same distance so OOF is not more optimistic than serving.
+R33_OOF_TEST_SESSIONS = 21
 OOF_PROMOTION_MIN_FOLDS = 5
 OOF_LABEL_PURGE_SESSIONS = 5
 
@@ -2810,6 +2829,12 @@ def _oof_training_min_folds(profile: str) -> int:
     # This is training support, NOT a change to the five-fold offline/NAV gate.
     from services.active8_release_model_profiles import TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA
     return 7 if profile in (TIMEXER_PRICE_PROFILE_SCHEMA, TIMEXER_EXO_PROFILE_SCHEMA, *PROFILES131) else OOF_PROMOTION_MIN_FOLDS
+def _oof_test_sessions(profile: str) -> int:
+    return R33_OOF_TEST_SESSIONS if profile == R33_PROFILE else OOF_TEST_SESSIONS
+
+
+def _r33_challenger_models() -> list[str]:
+    return [name.strip() for name in os.environ.get("R33_OOF_CHALLENGER_MODELS", "").split(",") if name.strip()]
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
@@ -3157,7 +3182,9 @@ _OOF_TARGET_SEMANTIC_VERSION = (
 _OOF_PREP_SCHEMAS = {"active8-canonical-adjusted-prep-v3"}
 
 
-def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = False, expected_feature_semantic: str = LEGACY_SEMANTIC) -> str | None:
+def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = False, expected_feature_semantic: str = LEGACY_SEMANTIC,
+                                  required_suffix: str | None = None) -> str | None:
+    suffix = required_suffix or ("-expanded1280" if expanded_history else None)
     candidates: list[tuple[str, str, str]] = []
     for blob in bucket.list_blobs(prefix="universal/canonical_adjusted"):
         if not str(blob.name).endswith("/prep/manifest.json"):
@@ -3175,7 +3202,7 @@ def _latest_canonical_prep_prefix(bucket: object, *, expanded_history: bool = Fa
             and manifest.get("producer_source_sha") == _runtime_source_sha()
             and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
             and str(manifest.get("signal_date_max") or "")[:10]
-            and (not expanded_history or str(manifest.get("output_gcs_prefix") or "").endswith("-expanded1280"))
+            and (not suffix or str(manifest.get("output_gcs_prefix") or "").endswith(suffix))
         ):
             candidates.append((
                 str(manifest["signal_date_max"])[:10],
@@ -3396,7 +3423,8 @@ def _oof_forward_parent_contract(
         except Exception as exc:  # noqa: BLE001 - storage preflight must fail closed.
             reasons.append(f"{reason}:storage_error:{type(exc).__name__}")
 
-    for model_name in ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"):
+    roster = set(manifest.get("model_set") or ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"))
+    for model_name in [m for m in ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN") if m in roster]:
         metric = metrics.get(model_name) if isinstance(metrics.get(model_name), dict) else {}
         if metric.get("status") != "ready":
             reasons.append(f"core_oof_metric_not_ready:{model_name}")
@@ -3410,7 +3438,7 @@ def _oof_forward_parent_contract(
         if isinstance(tree_result.get("artifact_registrations"), dict)
         else {}
     )
-    for model_name in ("LightGBM", "XGBoost", "ExtraTrees"):
+    for model_name in [m for m in ("LightGBM", "XGBoost", "ExtraTrees") if m in roster]:
         artifact = registrations.get(model_name) if isinstance(registrations.get(model_name), dict) else {}
         if artifact.get("status") != "shadow_source" or artifact.get("promotion_eligible") is not False:
             reasons.append(f"exact_tree_source_state_invalid:{model_name}")
@@ -3455,6 +3483,8 @@ def _latest_ready_oof_manifest(bucket: object, *, model_profile_schema_version: 
             continue
         if model_profile_schema_version is not None and manifest.get("model_profile_schema_version", "active8-release-model-profiles-v3") != model_profile_schema_version:
             continue
+        if model_profile_schema_version is None and manifest.get("model_profile_schema_version") == R33_PROFILE:
+            continue  # R33 cohorts are visible only to callers that request them.
         producer_source_sha = str(
             (manifest.get("prep_manifest") or {}).get("producer_source_sha") or ""
         ).strip().lower()
@@ -3621,6 +3651,22 @@ def _pre_dispatch_completed_oof_lifecycle(
     }
 
 
+class R33ReadinessRequest(BaseModel):
+    end_date: str | None = None
+
+
+@router.post("/walk_forward/oof/r33-readiness")
+async def r33_readiness(req: R33ReadinessRequest):
+    """Read-only R33 monthly preflight: no Modal/Cloud Run dispatch, no GCS/D1/KV write."""
+    from services.r33_readiness import run_r33_readiness
+    from services.walk_forward_retrain import _get_bucket
+
+    bucket = _get_bucket()
+    if bucket is None:
+        raise HTTPException(status_code=500, detail="GCS unavailable")
+    return await run_r33_readiness(end_date=req.end_date, bucket=bucket)
+
+
 @router.post("/walk_forward/oof/lifecycle")
 async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     """Idempotent cadence owner for OOF generation, materialization and promotion."""
@@ -3649,7 +3695,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.active8_release_model_profiles import TIMEXER_EXO_PROFILE_SCHEMA
     if single_b and 'model_profile_schema_version' not in req.model_fields_set:
         req.model_profile_schema_version = TIMEXER_EXO_PROFILE_SCHEMA
-    if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE):
+    if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE, R33_PROFILE):
         raise HTTPException(409, 'single_b_oof_requires_exogenous_profile')
     # Daily data maturity is independent of Paper plan activation. The durable
     # job owns both results; a pre-dispatch account check cannot skip data work.
@@ -3750,12 +3796,19 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         parent = (exact_path, exact_manifest)
         # An exact continuation keeps its immutable cohort's recipe.
         req.model_profile_schema_version = exact_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION)
-        if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE):
+        if single_b and req.model_profile_schema_version not in (TIMEXER_EXO_PROFILE_SCHEMA, EXO131_PROFILE, R33_PROFILE):
             raise HTTPException(409, 'single_b_oof_continuation_profile_mismatch')
     else:
         parent = (_latest_ready_oof_manifest(bucket) if req.model_profile_schema_version == MODEL_PROFILE_SCHEMA_VERSION
                   else _latest_ready_oof_manifest(bucket, model_profile_schema_version=req.model_profile_schema_version))
     parent_manifest = parent[1] if parent is not None else {}
+    if cadence != "monthly" and R33_PROFILE in (req.model_profile_schema_version,
+                                                parent_manifest.get("model_profile_schema_version")):
+        # R33 cohorts are candidate-only and owned by the monthly lifecycle. Daily
+        # dispatch_full_fit continuations must not materialize or train from them.
+        return {"status": "skipped", "reason": "r33_cohort_monthly_owner_only", "cadence": cadence,
+                "cohort_id": parent_manifest.get("cohort_id"), "training_dispatched": False,
+                "promotion_attempted": False}
     cohort_version = OOF_COHORT_ID_VERSION
     if req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
         cohort_version += "-" + req.model_profile_schema_version.removeprefix("active8-release-model-profiles-")
@@ -3766,7 +3819,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     pinned_prep = bool(exact_producer_source_sha and cadence != "daily")
     prep_gcs_prefix = "" if pinned_prep else (_latest_canonical_prep_prefix(bucket, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or "")
     if not pinned_prep and req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
-        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket, expanded_history=True, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version)) or ""
+        from services.training_policy import R33_PREP_SUFFIX
+        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket, expanded_history=True, expected_feature_semantic=semantic_for_profile(req.model_profile_schema_version),
+                                                        required_suffix=R33_PREP_SUFFIX if req.model_profile_schema_version == R33_PROFILE else None) or ""
     if not prep_gcs_prefix:
         prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
     if not prep_gcs_prefix or prep_gcs_prefix == "universal":
@@ -3783,7 +3838,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     training_min_folds = (OOF_PROMOTION_MIN_FOLDS if req.continuation_only
         else _oof_training_min_folds(req.model_profile_schema_version))
-    training_min_sessions = OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * training_min_folds
+    test_sessions = _oof_test_sessions(req.model_profile_schema_version)
+    training_min_sessions = OOF_TRAIN_SESSIONS + test_sessions * training_min_folds
     if len(dates) < training_min_sessions:
         raise HTTPException(
             status_code=422,
@@ -3861,8 +3917,10 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         if parent is not None:
             parent_path, parent_manifest = parent
             parent_start = str(parent_manifest.get("start_date") or "")[:10]
+            # R33 builds a fresh cohort ending at the latest mature date every month.
             compatible_parent = (
-                parent_start in mature_dates
+                req.model_profile_schema_version != R33_PROFILE
+                and parent_start in mature_dates
                 and parent_manifest.get("model_profile_schema_version", MODEL_PROFILE_SCHEMA_VERSION) == req.model_profile_schema_version
                 and int(parent_manifest.get("train_window_days") or 0) == 60
                 and int(parent_manifest.get("test_window_days") or 0) == 10
@@ -3927,7 +3985,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             signal_end_date = cohort_dates[-1]
             cohort_id = (
                 f"active8-oof-{cohort_version}-{start_date}-{signal_end_date}-"
-                f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
+                f"tr{OOF_TRAIN_SESSIONS}-te{test_sessions}"
             )
             manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
         manifest_blob = bucket.blob(manifest_path)
@@ -4010,15 +4068,17 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 start_date=start_date,
                 end_date=signal_end_date,
                 train_window_days=OOF_TRAIN_SESSIONS,
-                test_window_days=OOF_TEST_SESSIONS,
+                test_window_days=test_sessions,
                 cohort_id=cohort_id,
                 confirm=not req.dry_run,
-                concurrent_windows=2,
+                concurrent_windows=7,
                 prep_gcs_prefix=prep_gcs_prefix,
                 sequence_gcs_prefix=sequence_gcs_prefix,
                 resume_manifest_path=resume_manifest_path,
                 knowledge_cutoff_date=knowledge_cutoff_date,
                 expected_producer_source_sha=exact_producer_source_sha,
+                challenger_models=(_r33_challenger_models()
+                                   if req.model_profile_schema_version == R33_PROFILE else []),
             )
             if req.dry_run:
                 preview = await walk_forward_dry_run(plan)
@@ -4086,6 +4146,13 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 f"expected={req.expected_cohort_id} selected={cohort_id}"
             ),
         )
+    if manifest.get("model_profile_schema_version") == R33_PROFILE:
+        # Candidate-only: no P3 ensemble, TabPack refresh or monthly L4 closure.
+        from services.r33_monthly_lifecycle import run_r33_monthly_lifecycle
+        return await run_r33_monthly_lifecycle(
+            manifest_path=manifest_path, cohort_id=cohort_id, as_of=knowledge_cutoff_date,
+            cadence=cadence, calendar=calendar_evidence, dry_run=req.dry_run,
+            poll_only=req.continuation_only, bucket=bucket, client=LEARNING_D1_CLIENT)
     from services.l4_oof_lifecycle import uses_native_l4
     if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base

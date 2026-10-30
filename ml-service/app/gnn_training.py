@@ -433,7 +433,8 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     feature_semantic = payload_semantic(payload)
     if feature_semantic == FEATURE131_SEMANTIC and list(feature_names) != list(FEATURES131):
         raise ValueError("formal131_training_inventory_mismatch")
-    finite_mask = np.isfinite(y) & np.isfinite(target_returns)
+    from .full_fit_scope import row_mask
+    finite_mask = np.isfinite(y) & np.isfinite(target_returns) & row_mask(payload, dates, label_known_dates)
     x_raw = x_raw[finite_mask]
     y = np.clip(y[finite_mask], 0.0, 1.0).astype(np.float32)
     target_returns = target_returns[finite_mask]
@@ -489,6 +490,9 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         signal_dates=dates, label_known_dates=label_known_dates,
         cutoff=payload.get("as_of_date") or payload.get("run_date"),
     ) if full_fit else None
+    if deployment_fit is not None:
+        from .full_fit_scope import bounds
+        deployment_fit["input_scope"] = bounds(payload)
     stage_t0 = time.time()
     x, medians, scales = _robust_standardize(x_raw[train_idx], x_raw, clip_value=standardization_clip)
     stage_timings["standardize_s"] = round(time.time() - stage_t0, 3)

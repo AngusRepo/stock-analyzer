@@ -8,7 +8,7 @@ then calls Modal retrain_single_stock for each stock.
 Unlike /batch-retrain (which needs caller to supply payloads),
 this endpoint builds everything server-side from D1.
 """
-from services.formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, LEGACY_SEMANTIC, semantic_for_profile, feature_count
+from services.formal_feature_contract import PROFILES131, FEATURE131_SEMANTIC, LEGACY_SEMANTIC, R33_PROFILE, semantic_for_profile, feature_count
 import os
 import time
 import json
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Iterator, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from dataclasses import asdict
 
 from services import d1_client, retrain_lock
@@ -43,7 +43,7 @@ from services.active8_release_training_contract import (
     normalize_release_execution_scope,
 )
 from services.training_calendar import monthly_revenue_available_date, normalize_daily_source_date, shareholding_available_date
-from services.training_policy import TrainingPolicy
+from services.training_policy import R33_FEATURE_WARMUP_SESSIONS, TrainingPolicy
 from services.modal_client import prep_universal_batch, train_universal, shap_audit
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,8 @@ class UniversalRetrainTriggerRequest(BaseModel):
     limit: int = 2500  # max stocks
     run_date: str | None = Field(default=None, description="Business date for scheduler/manual trigger lineage.")
     candidate_type: str | None = Field(default=None, description="Candidate type. Formal releases must use oof_full_fit_release.")
+    signal_date_max: str | None = None
+    label_known_at_max: str | None = None
     force_monthly: bool = Field(default=False, description="Explicit execution lineage. weekly_drift callers must remain false.")
     drift_target_models: list[str] = Field(default_factory=list)
     drift_target_families: list[str] = Field(default_factory=list)
@@ -163,6 +165,17 @@ class UniversalRetrainTriggerRequest(BaseModel):
         default=None,
         description="New immutable GCS prefix required by prep_only.",
     )
+
+    @model_validator(mode="after")
+    def validate_full_fit_cutoff(self):
+        if (self.signal_date_max is None) != (self.label_known_at_max is None):
+            raise ValueError("training_dual_cutoff_requires_both_bounds")
+        if self.signal_date_max is not None:
+            from services.training_dual_cutoff import TrainingCutoff
+            TrainingCutoff(self.signal_date_max, self.label_known_at_max)
+            if self.candidate_type != "oof_full_fit_release" or self.run_date != self.label_known_at_max:
+                raise ValueError("full_fit_scope_cutoff_mismatch")
+        return self
 
 
 def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
@@ -1315,6 +1328,8 @@ async def _dispatch_prebuilt_oof_full_fit(
         "oof_promotion_evidence": req.oof_promotion_evidence,
         "oof_lifecycle_resume": req.oof_lifecycle_resume,
         "generation_mode": "oof_full_fit_release",
+        "signal_date_max": req.signal_date_max,
+        "label_known_at_max": req.label_known_at_max,
         "cohort_id": str(req.prebuilt_prep_source_cohort_id),
         "label_horizon_days": 5,
         "training_policy": training_policy.to_dict(),
@@ -1451,12 +1466,15 @@ async def trigger_universal_retrain(
                 "status": "idempotent_ready",
                 "receipt_path": f"{prep_output_gcs_prefix}/prep/immutable_receipt.json",
             }
+    # R33 training prep: per-field latest sealed auxiliary captures and a 252-session feature warmup.
+    r33_prep = req.prep_only and not req.inference_only and req.model_profile_schema_version == R33_PROFILE
     if req.prep_only:
         from services.capture_inventory import inspect_capture_inventory
         inventory_started = time.time()
         try:
             inventory = inspect_capture_inventory(prep_bucket,
-                sequence_gcs_prefix=req.sequence_gcs_prefix, run_date=run_date, inference_only=req.inference_only)
+                sequence_gcs_prefix=req.sequence_gcs_prefix, run_date=run_date, inference_only=req.inference_only,
+                **({"per_field_auxiliary": True, "require_aligned_history": True} if r33_prep else {}))
         except Exception as exc:
             return {"status": "rejected", "error": "prep_source_inventory_unreadable",
                     "detail": str(exc), "run_id": run_id}
@@ -1587,6 +1605,8 @@ async def trigger_universal_retrain(
     vix = getattr(market_env, "us_vix", 18) or 18
     twii_bias = getattr(market_env, "twii_bias", 0) or 0
     regime, prices_lookback = training_policy.resolve_history(vix=float(vix), twii_bias=float(twii_bias), model_profile_schema_version=req.model_profile_schema_version)
+    if r33_prep:
+        prices_lookback += R33_FEATURE_WARMUP_SESSIONS  # warmup rows are sliced off after features
     logger.info(f"[retrain/universal] Regime={regime} (VIX={vix:.1f}, bias={twii_bias:.3f}) -> prices_lookback={prices_lookback}d")
 
     # Native retrain is research/drift only. Formal releases enter through the immutable OOF full-fit dispatcher.
@@ -1676,13 +1696,20 @@ async def trigger_universal_retrain(
             from services.training_auxiliary_capture import load_training_auxiliary_capture
             from services.daily_inference_composition import load_composition
             composition = load_composition(prep_bucket,price_capture=price_capture,run_date=run_date) if req.inference_only else None
+            if r33_prep:
+                from services.training_auxiliary_capture import select_field_captures
+                aux_options = {"field_captures": select_field_captures(prep_bucket, price_capture=price_capture, run_date=run_date)}
+            else:
+                aux_options = {}
             per_stock_ts_map, chips_map, auxiliary_capture = load_training_auxiliary_capture(
                 prep_bucket, price_capture=price_capture, stock_rows=stock_rows, prices_map=prices_map,
-                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date,inference_composition=composition)
+                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date,inference_composition=composition,
+                **aux_options)
             from services.training_long_sources import bind_long_sources
             per_stock_ts_map, chips_map, long_source_capture = bind_long_sources(
                 prep_bucket, price_capture=price_capture, stock_rows=stock_rows, prices_map=prices_map,
-                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date,inference_composition=composition)
+                prior_ts=per_stock_ts_map, prior_chips=chips_map, run_date=run_date,inference_composition=composition,
+                **({"historical_broker": True} if r33_prep else {}))
             from services.training_global_capture import read_market_history
             verified_market_history, global_capture = read_market_history(prep_bucket,price_capture=price_capture,
                 us_component=dataset_snapshot_info["source_integrity"]["component_meta"]["us_market_signals"])
@@ -1997,6 +2024,8 @@ async def trigger_universal_retrain(
                 "retain_unlabeled_features": req.prep_only,
                 "feature_semantic_version": semantic_for_profile(req.model_profile_schema_version),
             }
+            if r33_prep:
+                prep_payload["feature_warmup_rows"] = R33_FEATURE_WARMUP_SESSIONS
             if active_features:
                 prep_payload["active_features"] = active_features
             result = await prep_universal_batch(prep_payload)
@@ -2024,6 +2053,8 @@ async def trigger_universal_retrain(
                        'per_stock_ts_map': {key: value for key, value in ps_ts_str.items() if key in stock_ids},
                        'gcs_prefix': prep_output_gcs_prefix, 'retain_unlabeled_features': True,
                        'feature_semantic_version': semantic_for_profile(req.model_profile_schema_version)}
+            if r33_prep:
+                payload['feature_warmup_rows'] = R33_FEATURE_WARMUP_SESSIONS
             if active_features:
                 payload['active_features'] = active_features
             event_payloads.append(payload)

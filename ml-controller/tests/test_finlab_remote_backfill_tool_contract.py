@@ -4,7 +4,9 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -797,6 +799,8 @@ def test_reuse_ready_field_artifacts_completes_partial_institutional_lane(monkey
     net_path = previous_dir / "net_amount.parquet"
     pd.DataFrame({"foreign": [70.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(sell_path)
     pd.DataFrame({"foreign": [30.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(net_path)
+    for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"):  # reuse lookup needs D1 credentials
+        monkeypatch.setenv(key, "test-only")
 
     def fake_d1_query(_sql, params=None, **kwargs):
         assert kwargs.get("domain") == "ops"
@@ -1027,3 +1031,254 @@ def test_daily_materialize_retains_auxiliary_history_before_daily_canonical_clip
     canonical = pd.read_parquet(tmp_path / 'raw/fundamental_factor_diversity/pe.parquet')
     assert full['2330'].tolist() == [0., 2.]
     assert canonical['2330'].tolist() == [2.]
+
+
+def _legacy_normalize_broker(tool, frame, start):
+    """Pre-window implementation, kept verbatim as the output oracle."""
+    date_col = tool._first_existing_column(frame, ("date", "日期", "trade_date"))
+    stock_col = tool._first_existing_column(frame, ("stock_id", "symbol", "股票代號", "證券代號"))
+    broker_col = tool._first_existing_column(frame, ("broker", "broker_code", "securities_broker", "分點", "券商", "證券商"))
+    buy_col = tool._first_existing_column(frame, ("buy_shares", "buy_volume", "buy_qty", "buy", "買進股數", "買進張數"))
+    sell_col = tool._first_existing_column(frame, ("sell_shares", "sell_volume", "sell_qty", "sell", "賣出股數", "賣出張數"))
+    out = frame.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
+    out = out[out["date"] >= pd.Timestamp(start)]
+    out["stock_id"] = [tool._clean_symbol(row.get(stock_col), row) for row in out.to_dict(orient="records")]
+    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
+    out = out[(out["stock_id"] != "") & out["date"].notna()]
+    if out.empty:
+        return pd.DataFrame()
+    broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
+        broker_buy_shares=("buy_shares_raw", "sum"), broker_sell_shares=("sell_shares_raw", "sum"),
+        broker_net=("broker_net", "sum")).reset_index()
+    broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+    dominant = (broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+        .groupby(["date", "stock_id"], observed=True).head(1)[["date", "stock_id", "broker_code", "broker_net", "abs_broker_net"]]
+        .rename(columns={"broker_code": "dominant_broker_code", "broker_net": "dominant_net_shares",
+                         "abs_broker_net": "dominant_abs_net_shares"}))
+    pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+        gross_imbalance_shares=("abs_broker_net", "sum"),
+        directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum()))).reset_index()
+    grouped = out.groupby(["date", "stock_id"], observed=True).agg(
+        buy_shares=("buy_shares_raw", "sum"), sell_shares=("sell_shares_raw", "sum"),
+        broker_count=("broker_code", "nunique")).reset_index()
+    grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    grouped.attrs["broker_rank_daily"] = tool.build_broker_rank_daily(
+        broker_daily, market_segment="LISTED_OTC", source="finlab.broker_transactions")
+    return grouped
+
+
+def _synthetic_broker_frame(string_dates=False):
+    import numpy as np
+    rng = np.random.default_rng(7)
+    days = pd.bdate_range("2026-07-20", "2026-09-30")
+    symbols = ["2330", "2330 台積電", "00878", "6488", "invalid", None]
+    brokers = ["1020", " 1020", "9A00", "1030", "8440 "]
+    rows = []
+    for day in days:
+        for symbol in symbols:
+            for broker in brokers:
+                buy, sell = float(rng.integers(0, 6) * 1000), float(rng.integers(0, 6) * 1000)
+                rows.append([day, symbol, broker, buy, sell])
+        # Exact |net| tie with opposite signs on the same symbol/day.
+        rows.append([day, "3008", "1020", 5000.0, 0.0])
+        rows.append([day, "3008", "9A00", 0.0, 5000.0])
+    frame = pd.DataFrame(rows, columns=["date", "symbol", "broker", "buy", "sell"])
+    frame.loc[3, "buy"] = float("nan")
+    frame.loc[11, "sell"] = None
+    frame.loc[17, "date"] = pd.NaT
+    frame = frame.sample(frac=1.0, random_state=3).reset_index(drop=True)
+    frame["stock_id"] = frame["symbol"]
+    if string_dates:
+        frame["date"] = frame["date"].dt.strftime("%Y-%m-%d")
+    return frame
+
+
+@pytest.mark.parametrize("string_dates", [False, True])
+def test_windowed_broker_normalization_matches_single_pass(tmp_path, string_dates):
+    import hashlib
+    tool = _load_tool_module()
+    frame = _synthetic_broker_frame(string_dates)
+    before = frame.copy()
+    expected = _legacy_normalize_broker(tool, frame, "2026-08-03")
+    actual = tool.normalize_broker_transactions_daily(frame, "2026-08-03")
+    pd.testing.assert_frame_equal(frame, before)
+    pd.testing.assert_frame_equal(actual, expected)
+    pd.testing.assert_frame_equal(actual.attrs["broker_rank_daily"], expected.attrs["broker_rank_daily"])
+    assert expected["date"].nunique() > 14
+    for name, left, right in (("daily", actual, expected),
+                              ("rank", actual.attrs["broker_rank_daily"], expected.attrs["broker_rank_daily"])):
+        a, b = tmp_path / f"{name}-new.parquet", tmp_path / f"{name}-old.parquet"
+        tool.write_parquet(a, tool.filter_rows_date_range(left, start_date="2026-08-03", end_date="2026-09-29"))
+        tool.write_parquet(b, tool.filter_rows_date_range(right, start_date="2026-08-03", end_date="2026-09-29"))
+        assert hashlib.sha256(a.read_bytes()).hexdigest() == hashlib.sha256(b.read_bytes()).hexdigest()
+    assert tool.normalize_broker_transactions_daily(frame, "2026-12-01").empty
+
+
+def test_filter_rows_date_range_matches_copy_first_version():
+    import warnings
+    tool = _load_tool_module()
+    frame = _synthetic_broker_frame()
+
+    def legacy(df, start_date=None, end_date=None):
+        out = pd.DataFrame(df).copy()
+        if out.empty or "date" not in out.columns or (not start_date and not end_date):
+            return out
+        parsed = pd.to_datetime(out["date"], errors="coerce")
+        mask = parsed.notna()
+        if start_date:
+            mask &= parsed >= pd.Timestamp(start_date)
+        if end_date:
+            mask &= parsed <= pd.Timestamp(end_date)
+        return out[mask.to_numpy()].copy()
+
+    for start, end in (("2026-08-03", "2026-09-29"), (None, None), ("2026-09-01", None)):
+        actual = tool.filter_rows_date_range(frame, start_date=start, end_date=end)
+        pd.testing.assert_frame_equal(actual, legacy(frame, start, end))
+        assert actual is not frame
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            actual["buy"] = -1.0
+        assert (frame["buy"] != -1.0).all()
+
+
+_D1_ENV = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID", "FINLAB_CONTROLLER_TOKEN", "ML_CONTROLLER_TOKEN",
+           "ML_CONTROLLER_SECRET", "FINLAB_CONTROLLER_D1_QUERY_URL", "ML_CONTROLLER_D1_QUERY_URL")
+
+
+def _no_d1_env(monkeypatch, tmp_path, *extra):
+    for key in (*_D1_ENV, "GCS_BUCKET_NAME", "FINLAB_DAILY_HISTORY_BOOTSTRAP_REF"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("FINLAB_API_KEY", "test-only")
+    monkeypatch.setattr(sys, "argv", ["finlab_v4_remote_backfill.py", "--years", "3", "--run-id", "no-d1",
+                                      "--output-dir", str(tmp_path), *extra])
+
+
+def test_read_only_run_without_d1_credentials_skips_d1_and_records_it(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    _no_d1_env(monkeypatch, tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("d1_touched_without_credentials")
+
+    for name in ("market_d1_query", "ops_d1_query", "d1_query", "d1_request", "d1_exec"):
+        monkeypatch.setattr(tool, name, forbidden)
+
+    def materialize(**kwargs):
+        assert tool.d1_counts("2023-10-25") is None
+        assert tool.read_ready_source_key_artifacts(target_date="2026-10-28", lane="broker", fields=["x"]) == {}
+        diff = {"summary": {"missing_in_stockvision": None, "value_conflicts": 0}}
+        return [{"finlab_rows": 3, "stockvision_rows": None}], [diff], [], []
+
+    monkeypatch.setattr(tool, "materialize_specs", materialize)
+    assert tool.main() == 0
+    manifest = json.loads((tmp_path / "no-d1" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["d1_unavailable"] == {"reason": "no_d1_credentials", "stockvision_rows_observed": False,
+                                          "skipped": ["d1_counts", "source_key_report_reuse"]}
+    assert manifest["summary"]["missing_in_stockvision"] == 0 and "gcs_upload" not in manifest
+
+
+@pytest.mark.parametrize("flag", ["--write-d1", "--apply-canonical-d1"])
+def test_d1_writing_run_without_credentials_still_exits_missing_env(monkeypatch, tmp_path, flag):
+    tool = _load_tool_module()
+    _no_d1_env(monkeypatch, tmp_path, flag)
+    monkeypatch.setattr(tool, "materialize_specs", lambda **kwargs: pytest.fail("must exit before fetching"))
+    with pytest.raises(SystemExit, match="missing env vars: CF_API_TOKEN,CF_ACCOUNT_ID,CF_D1_DB_ID"):
+        tool.main()
+
+
+def test_d1_counts_unchanged_when_credentials_exist(monkeypatch):
+    tool = _load_tool_module()
+    for key in _D1_ENV:
+        monkeypatch.delenv(key, raising=False)
+    for key in ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"):
+        monkeypatch.setenv(key, "test-only")
+    monkeypatch.setattr(tool, "market_d1_query", lambda sql, params: [{"n": 7}])
+    counts = tool.d1_counts("2023-10-25")
+    assert counts["daily_price"] == 7 and tool.D1_UNAVAILABLE_SKIPS == []
+
+
+SIX_LANES = "daily_price,chip_diversity,revenue,fundamental_factor_diversity,training_shareholding,broker_flow_diversity"
+
+
+def test_fundamental_training_fields_only_keeps_every_requested_lane(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    _no_d1_env(monkeypatch, tmp_path, "--lanes", SIX_LANES, "--fundamental-training-fields-only")
+    seen = {}
+
+    def materialize(**kwargs):
+        seen.update(kwargs)
+        return [], [], [], []
+
+    monkeypatch.setattr(tool, "materialize_specs", materialize)
+    assert tool.main() == 0
+    lanes = SIX_LANES.split(",")
+    assert set(seen["key_scope"]) == set(lanes) and set(seen["lanes"]) == set(lanes)
+    fundamental = {"eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy"}
+    assert seen["key_scope"]["fundamental_factor_diversity"] == fundamental
+    for spec in tool.CORE_SPECS:
+        if spec.lane not in lanes:
+            continue
+        keys = tool.spec_keys_for_scope(spec, seen["key_scope"])
+        if spec.lane == "fundamental_factor_diversity":
+            financial = {k for k in keys.values() if k.startswith(tool.PIT_DEADLINE_NAMESPACES)}
+            assert financial == {"fundamental_features:每股稅後淨利", "fundamental_features:ROE稅後", "fundamental_features:營收成長率"}
+            assert "fundamental_features:營業費用率" not in keys.values()  # unconsumed ratio with vendor inf
+        else:
+            assert keys == dict(spec.keys)  # every other requested lane keeps all its keys
+
+    for extra, reason in ((["--key-scope-json", '{"fundamental_factor_diversity":["eps"]}'],
+                           "fundamental_training_fields_only_conflicts_with_key_scope_json"),
+                          ([], "fundamental_training_fields_only_requires_explicit_fundamental_lane")):
+        lanes_arg = SIX_LANES if extra else "daily_price"
+        _no_d1_env(monkeypatch, tmp_path, "--lanes", lanes_arg, "--fundamental-training-fields-only", *extra)
+        with pytest.raises(SystemExit, match=reason):
+            tool.main()
+
+
+def test_training_capture_fails_closed_when_requested_lane_is_skipped(monkeypatch, tmp_path):
+    """A key_scope naming only one lane used to skip the rest and still report ready."""
+    tool = _load_tool_module()
+    sessions = pd.bdate_range("2026-10-01", "2026-10-22")
+    frames = {}
+
+    def get(key):
+        if key not in frames:
+            frames[key] = pd.DataFrame({"2330": np.arange(len(sessions), dtype=float) + 100.0}, index=sessions)
+        return frames[key]
+
+    monkeypatch.setitem(sys.modules, "finlab", SimpleNamespace(data=SimpleNamespace(get=get), login=lambda *a: None))
+    monkeypatch.setattr(tool, "login_finlab_sdk", lambda fn: None)
+    monkeypatch.setattr(tool, "d1_counts", lambda *a: None)
+    for name in ("write_official_training_calendar", "write_training_breadth_capture"):
+        monkeypatch.setattr(tool, name, lambda **kwargs: None)
+    common = dict(years=3, lanes=["chip_diversity", "fundamental_factor_diversity"], source_start_date="2026-10-01",
+                  source_end_date="2026-10-22", training_capture_start_date="2026-10-01")
+    only_fundamental = {"fundamental_factor_diversity": {"pe", "pb"}}
+    summaries, _, _, blockers = tool.materialize_specs(run_dir=tmp_path / "skipped", key_scope=only_fundamental, **common)
+    assert [s["lane"] for s in summaries] == ["fundamental_factor_diversity"]
+    assert {"lane": "chip_diversity", "reason": "requested_lane_produced_no_dataset"} in blockers
+    both = {"chip_diversity": set(), **only_fundamental}
+    summaries, _, _, blockers = tool.materialize_specs(run_dir=tmp_path / "both", key_scope=both, **common)
+    assert sorted(s["lane"] for s in summaries) == ["chip_diversity", "fundamental_factor_diversity"]
+    assert not [b for b in blockers if b.get("reason") == "requested_lane_produced_no_dataset"]
+
+
+def test_monthly_revenue_required_field_uses_release_window_only_when_asked():
+    tool = _load_tool_module()
+    frame = pd.DataFrame({"2330": [1.0, 2.0]}, index=pd.to_datetime(["2026-09-10", "2026-10-12"]))
+    target = "2026-10-22"
+    assert tool.required_wide_field_errors("revenue", {"revenue": frame}, target_date=target) == [
+        "revenue=missing_target_date:2026-10-22"]  # daily semantics unchanged
+    assert tool.required_wide_field_errors("revenue", {"revenue": frame}, target_date=target,
+                                           target_window_days=tool.MONTHLY_RELEASE_WINDOW_DAYS) == []
+    stale = frame.loc[:"2026-09-10"]
+    assert tool.required_wide_field_errors("revenue", {"revenue": stale}, target_date="2026-10-30",
+                                           target_window_days=45) == ["revenue=missing_target_date:2026-10-30:window_days=45"]
+    assert tool.MONTHLY_RELEASE_LANES == {"revenue"}

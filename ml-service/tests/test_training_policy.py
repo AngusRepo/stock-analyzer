@@ -674,6 +674,74 @@ def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
         validate_release_training_dataset_binding(contract, tampered)
 
 
+def test_scoped_full_fit_keeps_archive_count_and_admitted_cutoffs_separate(monkeypatch):
+    import io
+    import json
+    import pytest
+    from types import SimpleNamespace
+
+    snapshot = {
+        "schema_version": "active8-oof-full-fit-prep-lineage-v2",
+        "snapshot_id": "oof_full_fit:cohort-1:" + "b" * 64,
+        "business_date": "2026-10-01", "gcs_prefix": "immutable",
+        "target_semantic_version": universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "feature_semantic_version": universal_training.FEATURE_SEMANTIC_VERSION,
+        "feature_imputation_semantic": universal_training.FEATURE_IMPUTATION_SEMANTIC_VERSION,
+        "producer_source_sha": TEST_SOURCE_SHA,
+        "manifest_checksum": "a" * 64, "source_manifest_checksum": "b" * 64,
+        "source_cohort_id": "cohort-1", "total_rows": 3,
+        "feature_pool": {"schema_version": "active8-oof-full-fit-feature-consensus-v1",
+                         "path": "immutable/pool.json", "artifact_checksum": "c" * 64},
+        "sequence": {"manifest_checksum": "d" * 64},
+    }
+    contract = _release_binding_contract(snapshot)
+    args = dict(snapshot=snapshot, gcs_prefix="immutable", rows=2,
+                dates=np.array(["2026-09-21", "2026-09-22"]),
+                label_known_dates=np.array(["2026-09-30", "2026-10-01"]),
+                run_date="2026-10-01", release_training_contract=contract,
+                source_rows=3,
+                input_scope={"signal_date_max": "2026-09-22", "label_known_at_max": "2026-10-01"})
+    result = universal_training.validate_immutable_oof_snapshot_for_registration(**args)
+    assert (result["source_rows"], result["rows"], result["excluded_rows"]) == (3, 2, 1)
+    assert snapshot["total_rows"] == 3
+    for change, reason in [
+        ({"source_rows": 4}, "row_count_mismatch"),
+        ({"input_scope": None}, "scope_missing_or_invalid"),
+        ({"dates": np.array(["2026-09-21", "2026-09-23"])}, "scope_cutoff_mismatch"),
+        ({"label_known_dates": np.array(["2026-09-30", "2026-10-02"])}, "future_label_detected"),
+    ]:
+        with pytest.raises(RuntimeError, match=reason):
+            universal_training.validate_immutable_oof_snapshot_for_registration(**{**args, **change})
+
+    # Exercise the real training entry: receipt validation sees the complete
+    # archive plus scoped rows, and must run before training can start.
+    buf = io.BytesIO()
+    np.savez(buf, X=np.zeros((3, 1)), y=np.zeros(3), target_returns=np.arange(3),
+             dates=np.array(["2026-09-21", "2026-09-22", "2026-09-23"]),
+             label_known_dates=np.array(["2026-09-30", "2026-10-01", "2026-10-02"]),
+             symbols=np.array(["2330"] * 3), markets=np.array(["TW"] * 3),
+             missingness_rates=np.zeros(1))
+    monkeypatch.setattr(universal_training, "_get_bucket", lambda: SimpleNamespace(
+        blob=lambda name: SimpleNamespace(exists=lambda: True,
+            download_as_text=lambda: json.dumps(["feature"] if name.endswith("feature_names.json") else {}))))
+    monkeypatch.setattr(universal_training, "download_existing_blobs",
+                        lambda *a, **k: [("batch_0.npz", buf.getvalue())])
+    class BeforeFit(Exception):
+        pass
+    def before_fit(*a, **kwargs):
+        report = universal_training_validator(*a, **kwargs)
+        assert report["source_rows"] == 3 and report["rows"] == 2
+        raise BeforeFit()
+    universal_training_validator = universal_training.validate_immutable_oof_snapshot_for_registration
+    monkeypatch.setattr(universal_training, "validate_immutable_oof_snapshot_for_registration", before_fit)
+    req = UniversalTrainRequest(batch_count=1, gcs_prefix="immutable", skip_feature_pool=True,
+        candidate_type="oof_full_fit_release", generation_mode="oof_full_fit_release",
+        signal_date_max="2026-09-22", label_known_at_max="2026-10-01", run_date="2026-10-01",
+        dataset_snapshot=snapshot, release_training_contract=contract)
+    with pytest.raises(BeforeFit):
+        universal_training.train_universal_from_gcs(req)
+
+
 def test_native_monthly_compute_snapshot_does_not_claim_immutable_oof_lineage():
     req = universal_training.UniversalTrainRequest(
         generation_mode="native",

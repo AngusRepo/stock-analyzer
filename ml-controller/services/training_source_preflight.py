@@ -26,6 +26,29 @@ def _sealed_manifest(bucket, prefix: str, filename: str, *, compact: bool):
     return value
 
 
+def verify_per_field_auxiliary(bucket, auxiliary: dict, *, capture_id: str) -> None:
+    """R33 prep: every field names its own content-addressed capture manifest.
+
+    sealed_raw_source_sha256 is recorded when the capture has one, never required.
+    """
+    from services.training_auxiliary_capture import FIELDS, is_sha256, sealed_raw_sha
+    if auxiliary.get("capture_id")!=capture_id or set(auxiliary.get("field_captures") or {})!=set(FIELDS):
+        raise ValueError("training_source_auxiliary_binding_required")
+    for name in FIELDS:
+        owner=auxiliary["field_captures"][name]
+        aux_raw=bucket.blob(owner["capture_manifest_path"]).download_as_bytes()
+        if hashlib.sha256(aux_raw).hexdigest()!=owner.get("capture_manifest_sha256"):
+            raise ValueError("training_source_auxiliary_manifest_mismatch:"+name)
+        manifest=json.loads(aux_raw)
+        if (manifest.get("schema_version")!="finlab-training-auxiliary-single-capture-v1"
+                or manifest.get("capture_id")!=owner.get("capture_id") or manifest.get("end_date")!=owner.get("end_date")
+                or sealed_raw_sha(manifest)!=owner.get("sealed_raw_source_sha256")):
+            raise ValueError("training_source_auxiliary_owner_identity_mismatch:"+name)
+        expected=manifest.get("fields",{}).get(name,{}).get("sha256")
+        if not is_sha256(expected) or auxiliary.get("fields",{}).get(name,{}).get("sha256")!=expected:
+            raise ValueError("training_source_auxiliary_field_binding_required:"+name)
+
+
 def require_single_adjustment_capture(bucket, *, prep_gcs_prefix: str, sequence_gcs_prefix: str) -> dict:
     if bucket is None:
         raise ValueError("training_source_bucket_unavailable")
@@ -80,19 +103,22 @@ def require_single_adjustment_capture(bucket, *, prep_gcs_prefix: str, sequence_
             or any(len(str(cap.get(k) or ""))!=64 for k in ("market_value_sha256","actual_values_sha256"))):
         raise ValueError("training_source_market_cap_binding_required")
     auxiliary=prep.get("auxiliary_capture") or {}
-    if (auxiliary.get("schema_version")!="training-auxiliary-capture-binding-v1"
-            or auxiliary.get("capture_id")!=source["capture_id"]
-            or len(str(auxiliary.get("capture_manifest_sha256") or ""))!=64):
-        raise ValueError("training_source_auxiliary_binding_required")
-    aux_raw=bucket.blob(auxiliary["capture_manifest_path"]).download_as_bytes()
-    if hashlib.sha256(aux_raw).hexdigest()!=auxiliary["capture_manifest_sha256"]:
-        raise ValueError("training_source_auxiliary_manifest_mismatch")
-    aux_manifest=json.loads(aux_raw)
     from services.training_auxiliary_capture import FIELDS
-    for name in FIELDS:
-        expected=aux_manifest.get("fields",{}).get(name,{}).get("sha256")
-        if not expected or auxiliary.get("fields",{}).get(name,{}).get("sha256")!=expected:
-            raise ValueError("training_source_auxiliary_field_binding_required:"+name)
+    if auxiliary.get("schema_version")=="training-auxiliary-capture-binding-v2-per-field":
+        verify_per_field_auxiliary(bucket,auxiliary,capture_id=source["capture_id"])
+    else:
+        if (auxiliary.get("schema_version")!="training-auxiliary-capture-binding-v1"
+                or auxiliary.get("capture_id")!=source["capture_id"]
+                or len(str(auxiliary.get("capture_manifest_sha256") or ""))!=64):
+            raise ValueError("training_source_auxiliary_binding_required")
+        aux_raw=bucket.blob(auxiliary["capture_manifest_path"]).download_as_bytes()
+        if hashlib.sha256(aux_raw).hexdigest()!=auxiliary["capture_manifest_sha256"]:
+            raise ValueError("training_source_auxiliary_manifest_mismatch")
+        aux_manifest=json.loads(aux_raw)
+        for name in FIELDS:
+            expected=aux_manifest.get("fields",{}).get(name,{}).get("sha256")
+            if not expected or auxiliary.get("fields",{}).get(name,{}).get("sha256")!=expected:
+                raise ValueError("training_source_auxiliary_field_binding_required:"+name)
     long_source=prep.get("long_source_capture") or {}
     if long_source.get("schema_version")!="training-long-source-binding-v1" or long_source.get("capture_id")!=source["capture_id"]:
         raise ValueError("training_source_long_source_binding_required")

@@ -4,10 +4,58 @@ import hashlib,io,json
 import polars as pl
 FIELDS=("margin_balance","short_balance","pe","pb","dividend_yield","revenue","revenue_yoy","revenue_mom","eps","roe","revenue_growth_yoy")
 DAILY_FIELDS=frozenset({"margin_balance","short_balance","pe","pb","dividend_yield"})
+AUX_FOLDER="training_auxiliary_full_vintage"
 
-def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices_map, prior_ts, prior_chips, run_date, inference_composition=None):
+
+def is_sha256(value):
+    return isinstance(value,str) and len(value)==64 and all(c in "0123456789abcdef" for c in value)
+
+
+def sealed_raw_sha(manifest):
+    """Vendor sealed-raw receipt when the capture has one; content addressing does not need it."""
+    value=manifest.get("sealed_raw_source_sha256")
+    return value if is_sha256(value) else None
+
+
+def select_field_captures(bucket, *, price_capture, run_date):
+    """R33: each auxiliary field from its own latest content-addressed capture ending by run_date.
+
+    A partial vendor refresh may write only some fields. Each field is admitted by its
+    parquet sha256 (re-verified by the loader); daily fields still must cover every price
+    session (checked by the loader), so an old capture cannot go stale silently.
+    """
+    raw_root=price_capture["capture_manifest_path"].rsplit("/daily_price_full_vintage/",1)[0]
+    parent=raw_root.rsplit("/",2)[0]
+    own=raw_root+"/"+AUX_FOLDER+"/manifest.json"
+    blobs={b.name:b for b in bucket.list_blobs(prefix=parent+"/",match_glob=parent+"/*/raw/"+AUX_FOLDER+"/manifest.json")}
+    if own not in blobs and bucket.blob(own).exists():blobs[own]=bucket.blob(own)
+    candidates=[]
+    for name,blob in blobs.items():
+        raw=blob.download_as_bytes();manifest=json.loads(raw)
+        if (manifest.get("schema_version")!="finlab-training-auxiliary-single-capture-v1"
+                or not manifest.get("capture_id") or str(manifest.get("end_date") or "9999")>run_date):
+            continue
+        # Same end_date: the price capture's own field wins, so its history matches the price sessions.
+        candidates.append(((manifest["end_date"],name==own,manifest["capture_id"]),name,hashlib.sha256(raw).hexdigest(),manifest))
+    selected={}
+    for field in FIELDS:
+        owners=[c for c in candidates if (c[3].get("fields") or {}).get(field)]
+        if not owners:raise ValueError("root_auxiliary_field_capture_missing:"+field)
+        _,path,sha,manifest=max(owners,key=lambda c:c[0])
+        # Fail closed: a corrupt latest owner must not fall back to an older vintage.
+        if not is_sha256(manifest["fields"][field].get("sha256")):raise ValueError("root_auxiliary_field_checksum_invalid:"+field)
+        selected[field]={"capture_id":manifest["capture_id"],"capture_manifest_path":path,"capture_manifest_sha256":sha,
+            "sealed_raw_source_sha256":sealed_raw_sha(manifest),"end_date":manifest["end_date"],
+            "financial_value_vintage":manifest.get("financial_value_vintage"),"meta":manifest["fields"][field]}
+    return selected
+
+
+def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices_map, prior_ts, prior_chips, run_date, inference_composition=None, field_captures=None):
     root=price_capture["capture_manifest_path"].rsplit("/daily_price_full_vintage/",1)[0]+"/training_auxiliary_full_vintage"
-    if inference_composition is None:
+    if field_captures is not None:
+        manifest={"capture_id":price_capture["capture_id"],"fields":{k:v["meta"] for k,v in field_captures.items()},
+                  "financial_value_vintage":"per_field_latest_sealed_capture"}
+    elif inference_composition is None:
         raw=bucket.blob(root+"/manifest.json").download_as_bytes();manifest=json.loads(raw)
         if (manifest.get("schema_version")!="finlab-training-auxiliary-single-capture-v1" or manifest.get("capture_id")!=price_capture["capture_id"] or manifest.get("end_date")!=run_date):
             raise ValueError("root_auxiliary_capture_identity_mismatch")
@@ -25,7 +73,8 @@ def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices
     fields={}
     if inference_composition is None:
         from services.training_price_capture import prefetched_blobs
-        downloads=prefetched_blobs(bucket,[root+"/"+field+".parquet" for field in FIELDS])
+        # #78 per-field captures keep their own roots; PERF-D5 prefetch keeps the download order.
+        downloads=prefetched_blobs(bucket,[(field_captures[field]["capture_manifest_path"].rsplit("/",1)[0] if field_captures and field in field_captures else root)+"/"+field+".parquet" for field in FIELDS])
     for field in FIELDS:
         meta=manifest.get("fields",{}).get(field)
         if not meta:raise ValueError("root_auxiliary_field_missing:"+field)
@@ -62,6 +111,11 @@ def load_training_auxiliary_capture(bucket, *, price_capture, stock_rows, prices
             margin,short=row.get("margin_balance"),row.get("short_balance")
             if "margin_balance" in row or "short_balance" in row:
                 row["short_ratio"]=short/margin if margin is not None and margin>0 and short is not None else None
+    if field_captures is not None:
+        return dated,chips,{"schema_version":"training-auxiliary-capture-binding-v2-per-field","capture_id":manifest["capture_id"],
+            "field_captures":{k:{key:v[key] for key in ("capture_id","capture_manifest_path","capture_manifest_sha256","sealed_raw_source_sha256","end_date")}
+                              for k,v in field_captures.items()},
+            "fields":fields,"financial_value_vintage":manifest["financial_value_vintage"],"original_financial_revision_certified":False}
     proof={"schema_version":"inference-auxiliary-composition-binding-v1" if inference_composition else "training-auxiliary-capture-binding-v1","capture_id":manifest["capture_id"],
         "capture_manifest_path":inference_composition["manifest_path"] if inference_composition else root+"/manifest.json",
         "capture_manifest_sha256":inference_composition["manifest_sha256"] if inference_composition else hashlib.sha256(raw).hexdigest(),

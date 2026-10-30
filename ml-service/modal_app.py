@@ -434,6 +434,15 @@ def _tree_model_split_enabled(payload: dict) -> bool:
     return _truthy(payload.get("tree_model_split")) or _truthy(os.environ.get("UNIVERSAL_TREE_MODEL_SPLIT"))
 
 
+def _tree_group_function(payload: dict, release_profile_schema: str | None):
+    """R33 full-fit tree children (nested CPCV, ~40-45 min each at 1280 sessions) outlive the
+    1800 s split parent; train_tree_models fans out the same children under its 5400 s budget."""
+    from app.formal_feature_contract import R33_PROFILE
+    if release_profile_schema == R33_PROFILE or not _tree_model_split_enabled(payload):
+        return train_tree_models
+    return train_tree_models_split_parent
+
+
 def _save_oos_rank_payload_to_gcs(path: str, payload: dict) -> dict:
     """Persist a combined OOS rank payload with the same npz contract."""
     import io
@@ -732,6 +741,10 @@ def retrain_orchestrator(payload: dict) -> dict:
     if is_release_train:
         base_train_payload.update(_release_model_payload("LightGBM"))
         base_train_payload["run_id"] = run_id
+        from app.training_policy import TREE_MODEL_NAMES
+        release_tree_models = [m for m in TREE_MODEL_NAMES if m in verified_release_contract["models"]]
+        if release_tree_models != list(TREE_MODEL_NAMES):
+            base_train_payload["tree_models"] = release_tree_models
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -745,14 +758,12 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     train_group_specs = {
         "tree": {
-            "spawn": lambda p: (
-                train_tree_models_split_parent.spawn(p)
-                if _tree_model_split_enabled(p)
-                else train_tree_models.spawn(p)
-            ),
+            "spawn": lambda p: _tree_group_function(
+                p, verified_release_contract["model_profile_schema_version"] if is_release_train else None,
+            ).spawn(p),
             "payload": lambda: build_group_train_payload(base_train_payload, "tree"),
             "mergeable": training_group_feature_policy("tree").mergeable_oos,
-            "models": models_for_training_group("tree"),
+            "models": base_train_payload.get("tree_models") or models_for_training_group("tree"),
             "note": training_group_feature_policy("tree").note,
         },
         "timexer": {
@@ -770,6 +781,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -789,6 +802,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -952,6 +967,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "release_training_contract": release_training_contract,
                     "dataset_snapshot": payload.get("dataset_snapshot"),
                     "as_of_date": payload.get("as_of_date"),
+                    "signal_date_max": payload.get("signal_date_max"),
+                    "label_known_at_max": payload.get("label_known_at_max"),
                     "max_prep_stale_days": payload.get("max_prep_stale_days"),
                     "label_horizon_days": label_horizon_days,
                 }
@@ -2566,6 +2583,7 @@ def train_tree_models_split_parent(payload: dict) -> dict:
             child_results,
             combined_oos_artifact=combined_artifact,
             oos_artifact_error=artifact_error,
+            required_models=list(child_payloads),
         )
         print(
             "[TrainTreeSplitParent] reduced children="
@@ -2610,6 +2628,7 @@ def train_tree_models(payload: dict) -> dict:
                 child_results,
                 combined_oos_artifact=combined_artifact,
                 oos_artifact_error=artifact_error,
+                required_models=list(child_payloads),
             )
         req = UniversalTrainRequest(**build_group_train_payload(payload, "tree"))
         result = _train(req)
@@ -2645,7 +2664,7 @@ def train_wf_tree_window(payload: dict) -> dict:
         req = UniversalTrainRequest(
             feature_semantic_version=payload_semantic(payload),
             batch_count=payload.get("batch_count", 5),
-            models_filter=["XGBoost", "ExtraTrees", "LightGBM"],
+            models_filter=payload.get("tree_models") or ["XGBoost", "ExtraTrees", "LightGBM"],
             skip_feature_pool=payload.get("skip_feature_pool", False),
             feature_release_mode=payload.get("feature_release_mode"),
             train_start=payload["train_start"],
@@ -2660,6 +2679,7 @@ def train_wf_tree_window(payload: dict) -> dict:
             cohort_id=payload.get("cohort_id"),
             fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
             output_model_version=payload.get("output_model_version"),
+            fold_model_cpcv=str(payload.get("fold_model_cpcv") or "nested_cpcv"),
         )
         result = _train(req)
         result["training_input_cache"] = cache_receipt
@@ -2895,6 +2915,35 @@ def _load_verified_oof_resume_windows(
         "verification": "split_model_semantic_artifact_sha256_metadata_v1",
     }
 
+def _r33_outer_test_fold_evidence(profile_schema: str) -> bool:
+    """R33 OOF tree folds use outer-test evidence; nested CPCV stays on full-fit/legacy profiles.
+
+    R33 checks (leakage/inversion/tail guard) never read fold CPCV, and the manifest only needs
+    its coverage contract; the two nested 15-split CPCVs were ~88% of a 3356 s smoke tree fold.
+    """
+    from app.formal_feature_contract import R33_PROFILE
+    return profile_schema == R33_PROFILE
+
+
+def _oof_challenger_slots(profile_schema: str) -> dict:
+    """R33 lifecycle challenger slots. Single source: app.challenger_models.LIFECYCLE_SLOTS
+    (W2, PR #71); until that module ships, R33 schedules no challenger slot."""
+    from app.formal_feature_contract import R33_PROFILE
+    if profile_schema != R33_PROFILE:
+        return {}
+    try:
+        from app.challenger_models import LIFECYCLE_SLOTS
+    except ImportError:
+        return {}
+    return LIFECYCLE_SLOTS
+
+
+def _oof_challenger_trainers(slots: dict | None = None) -> dict:
+    """Slot -> (Modal fold trainer, slot payload_config); slots whose function is absent stay unsupported."""
+    found = globals()
+    return {name: (found[spec["modal_function"]], dict(spec.get("payload_config") or {}))
+            for name, spec in (slots or {}).items() if spec.get("modal_function") in found}
+
 def _oof_coverage_contract(model_cpcv: object) -> dict | None:
     if not isinstance(model_cpcv, dict):
         return None
@@ -2984,6 +3033,12 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             else "active8_purged_oof_retrain"
         ),
     }
+    from app.oof_challengers import normalize_challengers, challenger_metric
+    challenger_slots = _oof_challenger_slots(payload.get("model_profile_schema_version") or "")
+    # An explicit list (controller R33_OOF_CHALLENGER_MODELS) overrides the profile's slots.
+    challenger_models = normalize_challengers(payload.get("challenger_models") or list(challenger_slots), active8_models)
+    if challenger_models:
+        model_coverage["challenger_models"] = challenger_models
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]
     end_date = payload["end_date"]
@@ -3153,6 +3208,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             sequence_prefix=sequence_prefix,
             sequence_manifest_checksum=sequence_manifest_evidence["artifact_checksum"],
             model_coverage=model_coverage,
+            # R33: every family must carry the full attestation for this runtime and prep.
+            r33_lineage=({"producer_source_sha": producer_source_sha, "feature_semantic_version": feature_semantic}
+                         if _r33_outer_test_fold_evidence(profile_schema) else None),
         )
         reused_windows.update(artifact_recovered)
     except Exception as exc:
@@ -3285,6 +3343,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 # explicit per-window pool path; train_wf_tree_window also defaults
                 # to walk_forward/w{id}/feature_pool.json so this is belt-and-suspenders
                 tree_payload["feature_pool_path"] = f"{gcs_prefix}/feature_pool.json"
+                fold_tree_models = [m for m in ("XGBoost", "ExtraTrees", "LightGBM") if m in requested]
+                if len(fold_tree_models) != 3:
+                    tree_payload["tree_models"] = fold_tree_models
+                if _r33_outer_test_fold_evidence(profile_schema):
+                    tree_payload["fold_model_cpcv"] = "outer_test_date_panel"
                 tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
             else:
                 result["tree_result"] = {
@@ -3308,9 +3371,22 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     model_payload.update(run_date=payload.get("knowledge_cutoff_date") or prep_manifest["source_business_date"],dataset_snapshot={
                         "manifest_path":prep_manifest_path,"manifest_checksum":prep_manifest_checksum})
                 tasks.append((model_name, fn.remote.aio(model_payload)))
+        challenger_trainers = _oof_challenger_trainers(challenger_slots)
+        challenger_results = {}
+        for name in challenger_models:
+            if name in challenger_trainers:
+                trainer, slot_config = challenger_trainers[name]
+                # The slot trainer reports the model it resolved (e.g. LinearNeutralSize) in result["model"].
+                tasks.append(("challenger:" + name, trainer.remote.aio(
+                    {**train_payload, **slot_config, "oof_challenger": True})))
+            else:
+                challenger_results[name] = {"status": "unsupported", "reason": "challenger_trainer_not_registered"}
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
+                if kind.startswith("challenger:"):
+                    challenger_results[kind.removeprefix("challenger:")] = challenger_metric(r)
+                    continue
                 if isinstance(r, BaseException):
                     print(f"[WF-Orchestrator] w{wid} {kind} crashed: {r}")
                     result[f"{kind}_result"] = {"error": str(r)}
@@ -3384,6 +3460,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         result["fold_blockers"] = list(forward_source_contract["reasons"])
         result["oof_fold_ready"] = not missing_models and forward_source_contract["ready"]
         result["missing_oof_models"] = missing_models
+        if challenger_results:
+            # GCS-only evidence; never a release-model metric or fold readiness vote.
+            result["challenger_metrics"] = challenger_results
         return result
 
     async def _orchestrate() -> list[dict]:
@@ -3955,7 +4034,10 @@ def train_patchtst_universal(payload: dict) -> dict:
             max_prep_stale_days=payload.get("max_prep_stale_days"),
             run_date=payload.get("run_date"),
             as_of_date=payload.get("as_of_date"),
+            signal_date_max=payload.get("signal_date_max"),
+            label_known_at_max=payload.get("label_known_at_max"),
             generation_mode=payload.get("generation_mode"),
+            feature_semantic_version=payload.get("feature_semantic_version"),
             persist_oof_artifact=payload.get("persist_oof_artifact", True),
             research_source_bundle_checksum=payload.get("research_source_bundle_checksum"),
             oof_training_history_mode=payload.get("oof_training_history_mode"),
@@ -3990,6 +4072,11 @@ def train_patchtst_universal(payload: dict) -> dict:
             "type": result.get("type", "neuralforecast_patchtst_universal"),
 
             "oof_artifact": result.get("oof_artifact"),
+            "oof_evidence_path": result.get("oof_evidence_path"),
+            "oof_evidence_checksum": result.get("oof_evidence_checksum"),
+            "asof_prediction_artifact": result.get("asof_prediction_artifact"),
+            "fold_model_artifact": result.get("fold_model_artifact"),
+            "model_cpcv": result.get("model_cpcv"),
             "allowed_use": result.get("allowed_use"),
             "production_effect": result.get("production_effect"),
             "research_source_bundle_checksum": result.get("research_source_bundle_checksum"),
@@ -4709,7 +4796,7 @@ def timexer_universal_predict(payload: dict) -> dict:
             "n_success":sum(row.get("available") is True for row in results)}
 
 
-@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=2, scaledown_window=60)
+@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=7, scaledown_window=60)
 def train_timexer_universal(payload: dict) -> dict:
     """Official TimeXer OOF/full-fit; candidate files never confer serving authority."""
     _setup_env()

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -433,6 +434,24 @@ def controller_d1_proxy_configured() -> bool:
     return bool(controller_proxy_token() and controller_d1_query_url())
 
 
+CF_D1_ENV = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID")
+# Read-only D1 steps skipped because this run has no D1 credentials (recorded in the manifest).
+D1_UNAVAILABLE_SKIPS: list[str] = []
+
+
+def d1_credentials_available() -> bool:
+    return controller_d1_proxy_configured() or all(os.environ.get(key) for key in CF_D1_ENV)
+
+
+def d1_unavailable(step: str) -> bool:
+    """True (and recorded) when a read-only D1 step must be skipped for missing credentials."""
+    if d1_credentials_available():
+        return False
+    if step not in D1_UNAVAILABLE_SKIPS:
+        D1_UNAVAILABLE_SKIPS.append(step)
+    return True
+
+
 def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> dict[str, Any] | None:
     url = controller_d1_query_url()
     token = controller_proxy_token()
@@ -709,6 +728,12 @@ TRAINING_AUX_FIELDS = {
     "fundamental_factor_diversity": {"eps":"eps", "roe":"roe", "pe":"pe", "pb":"pb",
         "dividend_yield":"dividend_yield", "revenue_growth_yoy":"revenue_growth_yoy"},
 }
+# Training (training_auxiliary_full_vintage) and serving (canonical_fundamental_features /
+# daily composition) consume only these fundamental fields; the other ~60 lane fields
+# feed neither, so a training capture need not fetch or gate them.
+MONTHLY_RELEASE_LANES = frozenset({"revenue"})
+MONTHLY_RELEASE_WINDOW_DAYS = 45
+FUNDAMENTAL_TRAINING_KEY_SCOPE = {"fundamental_factor_diversity": set(TRAINING_AUX_FIELDS["fundamental_factor_diversity"])}
 
 def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None, requested_fields=None):
     """Preserve full vendor windows before daily-tail materialization clips them."""
@@ -809,16 +834,18 @@ def filter_rows_date_range(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.DataFrame:
-    out = pd.DataFrame(df).copy()
+    out = pd.DataFrame(df)
     if out.empty or date_col not in out.columns or (not start_date and not end_date):
-        return out
+        return out.copy()
+    # take() equals out[mask].copy() (same rows/labels, no is_copy flag) but makes
+    # one row-filtered copy instead of full copy + masked copy + copy.
     parsed = pd.to_datetime(out[date_col], errors="coerce")
     mask = parsed.notna()
     if start_date:
         mask &= parsed >= pd.Timestamp(start_date)
     if end_date:
         mask &= parsed <= pd.Timestamp(end_date)
-    return out[mask.to_numpy()].copy()
+    return out.take(np.flatnonzero(mask.to_numpy()))
 
 
 def non_null_cells(df: pd.DataFrame) -> int:
@@ -1091,7 +1118,7 @@ def read_ready_source_key_artifacts(
     fields: Iterable[str],
 ) -> dict[str, dict[str, Any]]:
     wanted = sorted({str(field).strip() for field in fields if str(field).strip()})
-    if not wanted:
+    if not wanted or d1_unavailable("source_key_report_reuse"):
         return {}
     placeholders = ",".join("?" for _ in wanted)
     try:
@@ -1223,6 +1250,7 @@ def required_wide_field_errors(
     *,
     target_date: str | None = None,
     requested_fields: set[str] | None = None,
+    target_window_days: int = 0,
 ) -> list[str]:
     required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
     if not required:
@@ -1237,9 +1265,12 @@ def required_wide_field_errors(
             errors.append(f"{field}=missing")
             continue
         if target_date:
-            target = filter_date_range(frame, start_date=target_date, end_date=target_date)
+            window_start = (str((pd.Timestamp(target_date) - pd.Timedelta(days=target_window_days)).date())
+                            if target_window_days else target_date)
+            target = filter_date_range(frame, start_date=window_start, end_date=target_date)
             if non_null_cells(target) <= 0:
-                errors.append(f"{field}=missing_target_date:{target_date}")
+                errors.append(f"{field}=missing_target_date:{target_date}"
+                              + (f":window_days={target_window_days}" if target_window_days else ""))
                 continue
         elif non_null_cells(frame) <= 0:
             errors.append(f"{field}=empty")
@@ -1368,7 +1399,7 @@ def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: b
                     cached=read_cached(cache_key)
                     if cached is None and not allow_historical_fetch and ym not in {end[:7], previous_month}:
                         raise ValueError(f"daily_official_history_cache_missing:{cache_key}")
-                    body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
+                    body=json.loads(cached) if cached is not None else official_history_json_get(url,label=f"training_calendar_{market}_{ym}")
                     official_month_sessions(body,market,ym)
                     write_json(path,body)
                     if cached is None:
@@ -1400,7 +1431,7 @@ def write_training_breadth_capture(*,run_dir: Path, allow_historical_fetch: bool
             key="breadth/TWSE-"+day+".json";raw=read_cached(key)
             if raw is None and not allow_historical_fetch and day != manifest["end_date"]:
                 raise ValueError(f"daily_official_history_cache_missing:{key}")
-            body=json.loads(raw) if raw is not None else official_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
+            body=json.loads(raw) if raw is not None else official_history_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
             parse_breadth(body,day);write_json(path,body)
             if raw is None:write_cached(key,path.read_bytes());time.sleep(4)
         raw=path.read_bytes();parse_breadth(json.loads(raw),day)
@@ -1452,6 +1483,21 @@ def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
     except Exception as exc:
         print(f"[finlab-backfill] official_fetch_failed label={label} error={type(exc).__name__}:{exc}", flush=True)
         return None
+
+
+# A full training capture fetches ~1600 uncached history days; one throttled
+# non-JSON reply used to abort it. Bounded backoff, then fail closed.
+OFFICIAL_HISTORY_RETRY_SLEEPS = (30, 90)
+
+
+def official_history_json_get(url: str, *, label: str) -> Any:
+    for pause in (*OFFICIAL_HISTORY_RETRY_SLEEPS, None):
+        body = official_json_get(url, label=label)
+        if body is not None:
+            return body
+        if pause is not None:
+            time.sleep(pause)
+    raise ValueError(f"official_history_fetch_failed:{label}:attempts={len(OFFICIAL_HISTORY_RETRY_SLEEPS) + 1}")
 
 
 def parse_official_number(value: Any) -> float | None:
@@ -1802,7 +1848,10 @@ def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str,
                           uploaded_files=uploaded_files if uploaded_files is not None else {})
 
 
-def d1_counts(start: str) -> dict[str, int]:
+def d1_counts(start: str) -> dict[str, int] | None:
+    """StockVision row counts for the diff report; None when D1 is not observable."""
+    if d1_unavailable("d1_counts"):
+        return None
     queries = {
         "daily_price": "SELECT COUNT(*) AS n FROM stock_prices WHERE date >= ?",
         "chip_diversity": "SELECT COUNT(*) AS n FROM chip_data WHERE date >= ?",
@@ -1944,6 +1993,11 @@ def build_broker_rank_daily(
     ]
     if broker_daily.empty:
         return pd.DataFrame(columns=columns)
+    buy, sell = _broker_rank_sides(broker_daily)
+    return _finish_broker_rank([buy], [sell], market_segment=market_segment, source=source)
+
+
+def _broker_rank_sides(broker_daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     base = broker_daily.copy()
     base["broker_code"] = base["broker_code"].astype(str).str.strip()
     base["broker_name"] = None
@@ -1961,17 +2015,24 @@ def build_broker_rank_daily(
     ).groupby(["date", "stock_id"], observed=True).head(3).copy()
     sell["rank_side"] = "sell"
     sell["rank_no"] = sell.groupby(["date", "stock_id"], observed=True).cumcount() + 1
+    return buy, sell
 
-    ranked = pd.concat([buy, sell], ignore_index=True)
+
+def _finish_broker_rank(buys: list[pd.DataFrame], sells: list[pd.DataFrame], *, market_segment: str, source: str) -> pd.DataFrame:
+    columns = ["date", "stock_id", "market_segment", "rank_side", "rank_no", "broker_code",
+               "broker_name", "buy_lots", "sell_lots", "net_lots", "source"]
+    # Date-ordered window pieces concatenate to the same rows as one global pass.
+    ranked = pd.concat([*buys, *sells], ignore_index=True)
+    buys.clear(), sells.clear()  # release window pieces before the column copy below
     if ranked.empty:
         return pd.DataFrame(columns=columns)
     ranked["market_segment"] = market_segment
     ranked["source"] = source
-    ranked = ranked.rename(columns={
+    ranked.rename(columns={
         "broker_buy_shares": "buy_lots",
         "broker_sell_shares": "sell_lots",
         "broker_net": "net_lots",
-    })
+    }, inplace=True)
     return ranked[columns]
 
 
@@ -2009,20 +2070,68 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
-    out = frame.copy()
-    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
-    out = out[out["date"] >= pd.Timestamp(start)]
-    out["stock_id"] = [
-        _clean_symbol(row.get(stock_col), row)
-        for row in out.to_dict(orient="records")
-    ]
+    # Groups never span dates, so 7-day windows give the same rows as one pass
+    # while only one window is copied; the vendor archive itself is never copied.
+    parsed = pd.to_datetime(frame[date_col], errors="coerce")
+    first = pd.Timestamp(start)
+    if not (parsed >= first).any():
+        return pd.DataFrame()
+    values = parsed.to_numpy()
+    keys = [key for key in _SYMBOL_ROW_KEYS if key in frame.columns]
+    columns = list(dict.fromkeys([date_col, stock_col, *([broker_col] if broker_col else []), buy_col, sell_col, *keys]))
+    positions = [frame.columns.get_loc(column) for column in columns]
+    pieces, buys, sells = [], [], []
+    lower, last = first, parsed.max()
+    while lower <= last:
+        upper = lower + pd.Timedelta(days=7)
+        rows = np.flatnonzero((values >= lower.to_datetime64()) & (values < upper.to_datetime64()))
+        lower = upper
+        if not len(rows):
+            continue
+        # take() rows first: iloc[rows, cols] copies the chosen columns in full first.
+        out = frame.take(rows).iloc[:, positions].copy()
+        out["date"] = values[rows]
+        piece = _normalize_broker_window(out, stock_col=stock_col, broker_col=broker_col,
+                                         buy_col=buy_col, sell_col=sell_col, keys=keys)
+        if piece is not None:
+            pieces.append(piece[0]);buys.append(piece[1]);sells.append(piece[2])
+    if not pieces:
+        return pd.DataFrame()
+    grouped = pd.concat(pieces, ignore_index=True)
+    pieces.clear()
+    grouped.attrs["broker_rank_daily"] = _finish_broker_rank(
+        buys, sells, market_segment="LISTED_OTC", source="finlab.broker_transactions")
+    return grouped
+
+
+_SYMBOL_ROW_KEYS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
+
+
+def _clean_symbol_column(out: pd.DataFrame, stock_col: str, keys: list[str]) -> list[str]:
+    """_clean_symbol(row[stock_col], row) memoized on the identity fields it reads."""
+    memo: dict[tuple, str] = {}
+    result = []
+    for item in zip(out[stock_col].tolist(), *(out[key].tolist() for key in keys)):
+        try:
+            symbol = memo[item]
+        except KeyError:
+            symbol = memo[item] = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        except TypeError:
+            symbol = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        result.append(symbol)
+    return result
+
+
+def _normalize_broker_window(out: pd.DataFrame, *, stock_col: str, broker_col: str | None,
+                             buy_col: str, sell_col: str, keys: list[str]):
+    out["stock_id"] = _clean_symbol_column(out, stock_col, keys)
     out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
     out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
     out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
     out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
     out = out[(out["stock_id"] != "") & out["date"].notna()]
     if out.empty:
-        return pd.DataFrame()
+        return None
 
     broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
         broker_buy_shares=("buy_shares_raw", "sum"),
@@ -2053,12 +2162,7 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
     grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
     grouped["source"] = "finlab.broker_transactions"
     grouped["market_segment"] = "LISTED_OTC"
-    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
-        broker_daily,
-        market_segment="LISTED_OTC",
-        source="finlab.broker_transactions",
-    )
-    return grouped
+    return (grouped, *_broker_rank_sides(broker_daily))
 
 
 def write_source_session_calendar(source_close: pd.DataFrame, *, run_dir: Path, years: int, end_date: str | None) -> Path:
@@ -2188,7 +2292,8 @@ def materialize_specs(
     if financial_keys:
         date_owners = (data.get("etl:financial_statements_disclosure_dates"),
                        data.get("etl:financial_statements_deadline"))
-        financial_sessions = data.get("price:收盤價").index
+        financial_prices = data.get("price:收盤價")
+        financial_sessions = financial_prices.index
         financial_native = {}
         for key in sorted(financial_keys):
             financial_native[key] = data.get(key)
@@ -2199,6 +2304,20 @@ def materialize_specs(
                 selected_native, scope_proof = scope_financial_history(
                     selected_native, date_owners, financial_sessions,
                     symbols=sealed_source.roster, start_date=start, lifecycle=lifecycle)
+            elif training_capture_start_date is not None:
+                # Live training capture: gate the requested window, not 2013+ delisted history.
+                from services.financial_scope import live_price_universe_symbols, scope_financial_history
+                symbols, roster_proof = live_price_universe_symbols(
+                    selected_native, financial_prices,
+                    start_date=training_capture_start_date, end_date=target_date)
+                selected_native, scope_proof = scope_financial_history(
+                    selected_native, date_owners, financial_sessions, symbols=symbols,
+                    start_date=training_capture_start_date, omit_deadline_absent_from_start=True)
+                scope_proof["live_roster"] = roster_proof
+                if scope_proof["remaining_unresolved_cells"]:
+                    raise ValueError("financial_request_unresolved_cells:%s:%d:%s" % (
+                        key, scope_proof["remaining_unresolved_cells"],
+                        json.dumps(scope_proof["remaining_unresolved_sample"][:5], ensure_ascii=False)))
             financial_frames[key] = normalize_finlab_wide_field(
                 selected_native, api_key_name=key, date_owners=date_owners, sessions=financial_sessions)
             if scope_proof is not None:
@@ -2411,6 +2530,10 @@ def materialize_specs(
                 spec.lane,
                 field_frames,
                 target_date=target_date,
+                # Monthly revenue is indexed by release date (~10th); a training capture ending
+                # on any other session still requires a release within the last 45 days.
+                target_window_days=(MONTHLY_RELEASE_WINDOW_DAYS
+                                    if training_capture_start_date and spec.lane in MONTHLY_RELEASE_LANES else 0),
                 requested_fields=(
                     set(spec_keys)
                     if key_scope and spec.lane in key_scope
@@ -2654,9 +2777,13 @@ def materialize_specs(
             if not frame.empty:
                 from services.training_long_sources import write_broker_capture
                 write_broker_capture(frame,run_dir=run_dir,
-                    start=start if daily_refresh else start_date_for_years(years),end=source_end_date or target_date)
+                    start=start if daily_refresh else (training_capture_start_date or start_date_for_years(years)),
+                    end=source_end_date or target_date)
             source_observation = broker_source_observation(frame, target_date)
-            grouped = normalize_broker_transactions_daily(frame, start)
+            # broker_daily/broker_rank_daily feed only canonical D1 windows, never
+            # training (that reads training_long_full_vintage/broker.parquet), so a
+            # longer --source-start-date does not widen them past --years.
+            grouped = normalize_broker_transactions_daily(frame, max(start, start_date_for_years(years)))
             rank_rows = grouped.attrs.get("broker_rank_daily")
             grouped = filter_rows_date_range(
                 grouped,
@@ -2830,8 +2957,9 @@ def materialize_specs(
         else:
             raise ValueError(f"unsupported spec kind: {spec.kind}")
 
-        stockvision_rows = stockvision_count_for_lane(counts, spec.lane)
-        missing = max(finlab_rows - stockvision_rows, 0)
+        # Without D1 the StockVision side is unobserved: report None, never a fake zero.
+        stockvision_rows = None if counts is None else stockvision_count_for_lane(counts, spec.lane)
+        missing = None if stockvision_rows is None else max(finlab_rows - stockvision_rows, 0)
         conflicts = 0
         diff = {
             "schema_version": "finlab-remote-diff-aggregate-v1",
@@ -2845,9 +2973,9 @@ def materialize_specs(
             "summary": {
                 "finlab_rows": finlab_rows,
                 "stockvision_rows": stockvision_rows,
-                "matched": min(finlab_rows, stockvision_rows),
+                "matched": None if stockvision_rows is None else min(finlab_rows, stockvision_rows),
                 "missing_in_stockvision": missing,
-                "missing_in_finlab": max(stockvision_rows - finlab_rows, 0),
+                "missing_in_finlab": None if stockvision_rows is None else max(stockvision_rows - finlab_rows, 0),
                 "value_conflicts": conflicts,
                 "schema_extra_fields": schema_fields,
             },
@@ -2868,6 +2996,13 @@ def materialize_specs(
             flush=True,
         )
 
+    if training_capture_start_date is not None:
+        # Training captures fail closed: a requested lane that was skipped or came back empty
+        # without its own recorded blocker makes the run partial_failed (exit 2), never ready.
+        produced = {s["lane"] for s in dataset_summaries if s["artifacts"] or s["finlab_rows"]}
+        blocked = {str(b.get("lane")) for b in source_key_blockers}
+        for lane in sorted({spec.lane for spec in specs} - produced - blocked):
+            source_key_blockers.append({"lane": lane, "reason": "requested_lane_produced_no_dataset"})
     return dataset_summaries, diff_reports, source_key_reports, source_key_blockers
 
 
@@ -3958,6 +4093,8 @@ def main() -> int:
     parser.add_argument("--canonical-dry-run", action="store_true")
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
     parser.add_argument("--key-scope-json", default="", help="JSON object/list limiting data.get calls to lane fields.")
+    parser.add_argument("--fundamental-training-fields-only", action="store_true",
+                        help="Limit fundamental_factor_diversity to the fields training/serving consume.")
     parser.add_argument("--reuse-successful-artifacts", action="store_true", help="Allow materializer repair to reuse previous successful key artifacts.")
     parser.add_argument("--sealed-raw-root", default="", help="Explicit sealed daily numeric capture; no SDK fallback.")
     parser.add_argument("--sealed-raw-receipt-sha256", default="", help="Exact SHA256 of the sealed capture.json.")
@@ -3975,8 +4112,10 @@ def main() -> int:
     args = parser.parse_args()
 
     required_env = [] if args.sealed_raw_root else ["FINLAB_API_KEY"]
-    if not controller_d1_proxy_configured():
-        required_env.extend(["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"])
+    # D1 credentials are required only when this run writes D1; read-only D1 steps
+    # skip cleanly without them and are listed under manifest["d1_unavailable"].
+    if (args.write_d1 or args.apply_canonical_d1) and not controller_d1_proxy_configured():
+        required_env.extend(CF_D1_ENV)
     missing = [key for key in required_env if not os.environ.get(key)]
     if missing:
         raise SystemExit(f"missing env vars: {','.join(missing)}")
@@ -3993,6 +4132,14 @@ def main() -> int:
     requested_lanes = parse_lanes(args.lanes)
     if key_scope and not requested_lanes:
         requested_lanes = sorted(key_scope)
+    if args.fundamental_training_fields_only:
+        if key_scope:
+            raise SystemExit("fundamental_training_fields_only_conflicts_with_key_scope_json")
+        if "fundamental_factor_diversity" not in requested_lanes:
+            raise SystemExit("fundamental_training_fields_only_requires_explicit_fundamental_lane")
+        # A key_scope skips every lane it does not name; an empty field set keeps all of a lane's keys.
+        key_scope = {lane: set() for lane in requested_lanes}
+        key_scope.update({lane: set(fields) for lane, fields in FUNDAMENTAL_TRAINING_KEY_SCOPE.items()})
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
     effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())
@@ -4035,9 +4182,9 @@ def main() -> int:
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
-        "gap_fill_rows": sum(1 for item in diff_reports if item["summary"]["missing_in_stockvision"] > 0),
+        "gap_fill_rows": sum(1 for item in diff_reports if (item["summary"]["missing_in_stockvision"] or 0) > 0),
         "value_conflicts": sum(int(item["summary"]["value_conflicts"]) for item in diff_reports),
-        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"]) for item in diff_reports),
+        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"] or 0) for item in diff_reports),
     }
     manifest = {
         "schema_version": "finlab-v4-remote-backfill-v1",
@@ -4059,6 +4206,8 @@ def main() -> int:
         "source_key_blockers": source_key_blockers,
         "backfill_status": "partial_failed" if source_key_blockers else "ready",
         **sealed_raw_source_binding(run_dir),
+        **({"d1_unavailable": {"reason": "no_d1_credentials", "skipped": list(D1_UNAVAILABLE_SKIPS),
+                               "stockvision_rows_observed": False}} if D1_UNAVAILABLE_SKIPS else {}),
     }
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)

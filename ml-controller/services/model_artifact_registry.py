@@ -593,8 +593,8 @@ def _artifact_record_from_registration(
         and len(release_contract_checksum) == 64
         and all(char in "0123456789abcdef" for char in release_contract_checksum)
         and release_completion_stage.get("status") == "complete"
-        and release_completion_stage.get("models_completed") == len(ACTIVE8_MODEL_NAMES)
-        and release_completion_stage.get("models_required") == len(ACTIVE8_MODEL_NAMES)
+        and release_completion_stage.get("models_completed") == len(release_contract_stage.get("models") or ())
+        and release_completion_stage.get("models_required") == len(release_contract_stage.get("models") or ())
         and str(release_completion_stage.get("contract_checksum") or "").lower() == release_contract_checksum
         and is_complete_roster(_nested_dict(release_completion_stage.get("receipts")))
         and set(_nested_dict(release_completion_stage.get("receipts"))) == set(release_contract_stage.get("models") or [])
@@ -1257,8 +1257,8 @@ def _offline_oof_full_fit_base_artifact(row: dict[str, Any] | None) -> bool:
             or release_contract_validation.get("dlinear_single_holdout_is_diagnostic_only") is True
         )
         and release_completion.get("status") == "complete"
-        and int(_as_float(release_completion.get("models_completed")) or 0) == len(ACTIVE8_MODEL_NAMES)
-        and int(_as_float(release_completion.get("models_required")) or 0) == len(ACTIVE8_MODEL_NAMES)
+        and int(_as_float(release_completion.get("models_completed")) or 0) == len(release_contract.get("models") or ())
+        and int(_as_float(release_completion.get("models_required")) or 0) == len(release_contract.get("models") or ())
         and resume.get("schema_version") == "active8-oof-lifecycle-resume-v1"
         and bool(str(resume.get("cohort_id") or "").strip())
         and len(str(resume.get("source_manifest_checksum") or "")) == 64

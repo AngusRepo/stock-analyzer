@@ -121,7 +121,7 @@ PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
-from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS
+from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS, R33_MODELS
 
 ACTIVE_ALPHA_MODEL_SET = set(SUPPORTED_MODELS)
 MODEL_POOL_REQUIRED_MODEL_SET = set(SUPPORTED_MODELS)
@@ -1345,6 +1345,11 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
 
     pred_map: dict[str, dict] = {}
     feature_missing_count = 0
+    # R33 (NEW-1030-06): a failed or absent feature row loses only the three feature models;
+    # the name keeps a skeleton row so its GNN and sequence scores still count.
+    r33_feature_models = tuple(m for m in R33_MODELS if m != "GNN" and m not in SUPPORTED_SEQUENCE_MODELS)
+    feature_schemas = {str(r.get("feature_version") or "").split(":", 1)[0] for r in feature_by_symbol.values()} - {""}
+    r33_feature_schema = next(iter(feature_schemas)) if len(feature_schemas) == 1 else None
     for payload in payloads:
         sym = payload.get("symbol") if isinstance(payload, dict) else None
         if not sym:
@@ -1352,7 +1357,11 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         row = feature_by_symbol.get(sym)
         if row is None:
             feature_missing_count += 1
-            continue
+            if not r33_day_outage_to_coverage:
+                continue
+            from services.r33_serving_inputs import feature_gap_row
+            row = feature_gap_row(payload, feature_errors_by_symbol.get(sym), r33_feature_models,
+                                  feature_schema=r33_feature_schema)
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
         sequence_model_eligibility = {}

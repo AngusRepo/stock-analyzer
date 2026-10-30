@@ -10,6 +10,7 @@ for the day with that reason (z=0, no E-hat); in any other mode it is only repor
 """
 from __future__ import annotations
 
+import math
 from datetime import date
 
 STALENESS_SCHEMA = "l2-input-staleness-report-v1"
@@ -70,7 +71,51 @@ def staleness_report(stale: dict[str, str], *, payload_count: int, run_date: str
 
 COVERAGE_SCHEMA = "r33-serving-coverage-v1"
 COVERAGE_LOG_CRON = "r33-serving-coverage"
-MODEL_ERROR_SAMPLE = 20   # telemetry only: names whose model_errors text is kept in the line
+MODEL_ERROR_SAMPLE = 20   # telemetry only: names whose model_errors / row error text is kept in the line
+FEATURE_ROW_ABSENT = "feature_row_absent"
+
+
+def row_error_code(text: str) -> str:
+    """Short attributable code of one Modal feature row error ("Exc: code:detail" or "code:detail").
+    A wrapped cause ("code:Exc:inner:...") keeps its inner code: feature_context_failed.r33_prep_row_missing."""
+    text = str(text or "").strip() or "unknown_error"
+    head, sep, body = text.partition(": ")
+    if not (sep and head.isidentifier()):
+        head, body = None, text
+    code, _, rest = body.partition(":")
+    code = code.strip()
+    if not code.isidentifier():
+        return (head or code)[:80]
+    parts = rest.split(":")
+    inner = parts[1].strip() if len(parts) > 1 else ""
+    if parts[0].strip().isidentifier() and inner.isidentifier() and "_" in inner:  # a snake_case code, not prose
+        code += "." + inner
+    return code[:80]
+
+
+def feature_gap_row(payload: dict, error: str | None, feature_models, *, feature_schema: str | None) -> dict:
+    """R33 row for a name whose Modal feature row failed or never came back (NEW-1030-06).
+
+    No feature score and no fill: each feature model's gap is named with the row error's
+    code (the full text stays on the in-memory row; the coverage line keeps counts and a
+    sample), and GNN / sequence scores attach to it like any row. The rank pool unscores the
+    name only when none of the seven scored it. feature_version is the day's ml-service
+    feature schema with zero features used, as ml-service writes it ("<schema>:<n>"); None
+    when the day's feature rows do not agree on one schema, and the writer then fails closed."""
+    error = str(error) if error else FEATURE_ROW_ABSENT
+    code = row_error_code(error)
+    prices = payload.get("prices") or []
+    last = prices[-1] if prices and isinstance(prices[-1], dict) else {}
+    try:
+        price = float(last["close"] if last.get("close") is not None else last.get("adj_close"))
+    except (TypeError, ValueError):
+        price = None
+    price = price if price is not None and math.isfinite(price) and price > 0 else None
+    return {"stock_id": payload.get("stock_id", 0), "symbol": payload["symbol"], "current_price": price,
+            "entry_price": price, "signal": "HOLD", "direction": "neutral", "confidence": 0.0, "models": [],
+            "rank_scores": {}, "model_errors": [f"{model}: {code}" for model in feature_models],
+            "feature_row_error": error[:500], "features_used": [], "feature_count": 0,
+            "feature_version": f"{feature_schema}:0" if feature_schema else None, "production_effect": False}
 
 
 def _model_error(text: str) -> tuple[str, str] | None:
@@ -114,12 +159,17 @@ def coverage_log(rank_pool: dict, *, row_errors: dict[str, str],
             per_name[symbol] = "; ".join(kept)[:500]
     # Counts cover every name; the per-name text is a sample so a whole-day outage line stays small.
     sample = dict(list(per_name.items())[:MODEL_ERROR_SAMPLE])
+    row_reasons: dict[str, int] = {}
+    for error in row_errors.values():
+        code = row_error_code(error)
+        row_reasons[code] = row_reasons.get(code, 0) + 1
     meta = {"schema_version": COVERAGE_SCHEMA, "signal_date": rank_pool["signal_date"],
             "screener_run_id": rank_pool["screener_run_id"], "by_model": by_model,
             "models_with_gaps": gaps, "models_fully_missing": fully_missing,
             "uninformative_models": list(rank_pool["uninformative_models"]),
             "day_aborted": bool(fully_missing), "pool_rows": total, "pool_scored_rows": int(coverage["pool_scored_rows"]),
-            "unscored_by_reason": dict(sorted(reasons.items())), "row_errors": {k: str(v)[:500] for k, v in sorted(row_errors.items())},
+            "unscored_by_reason": dict(sorted(reasons.items())), "row_errors": {k: str(v)[:500] for k, v in sorted(row_errors.items())[:MODEL_ERROR_SAMPLE]},
+            "row_error_names": len(row_errors), "row_errors_by_reason": dict(sorted(row_reasons.items())),
             "model_errors_by_model": {m: dict(sorted(r.items())) for m, r in sorted(by_reason.items())},
             "model_error_names": len(per_name), "model_errors_sample": sample}
     level = "error" if fully_missing else "warn" if gaps or row_errors or per_name else "info"

@@ -808,3 +808,58 @@ def test_the_shadow_candidate_runner_records_a_skipped_shadow_and_routes_timexer
     source = (Path(modal_app.__file__)).read_text()
     assert '"TimeXer": lambda **kwargs: _timexer_predict(shadow=True, **kwargs),' in source
     assert 'stage_journal.gpu(gpu_input, shadow=shadow)' in source
+
+
+def test_after_one_shadow_is_skipped_later_shadows_of_the_run_skip_without_queueing():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as first:
+        journal.gpu({'shadow': 1}, shadow=True)
+    journal.dispatched(first.value.dispatch, 'fc-s1')
+    now[0] = 3600
+    with pytest.raises(GpuStageUnavailable, match='shadow_queue_exhausted'):
+        journal.gpu({'shadow': 1}, shadow=True)
+    with pytest.raises(GpuStageUnavailable, match='shadow_queue_exhausted'):
+        journal.gpu({'shadow': 2}, shadow=True)  # No new request, no second hour.
+    assert not any(key.endswith('/claim') and '/gpu/' + digest_of({'shadow': 2}) in key for key in store.rows)
+    with pytest.raises(Suspended) as formal:
+        journal.gpu({'formal': 1})  # Formal stages are unaffected by the shadow skip.
+    assert formal.value.dispatch is not None
+
+
+def test_a_request_that_started_after_its_deadline_and_failed_is_not_queued_again():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    journal.dispatched(pending.value.dispatch, 'fc-1')
+    late = 4 * 3600 + 10  # Started before the driver got to abandon it.
+    with pytest.raises(SystemExit):
+        run_gpu_stage(store, pending.value.dispatch, predict=_crash, resume=pytest.fail, clock=lambda: late)
+    now[0] = late + GPU_LEASE_SECONDS
+    with pytest.raises(GpuStageUnavailable, match='^pipeline_stage_gpu_queue_exhausted$'):
+        journal.gpu({'x': 1})
+    claim = _claim(store, journal, pending.value.dispatch)
+    assert claim['abandoned'] is True and claim['tokens'] == [pending.value.dispatch['token']]
+
+
+def test_each_resend_waits_its_own_grace():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended):
+        journal.gpu({'x': 1})
+    sent = []
+    for t in (600, 700, 1199, 1200):
+        now[0] = t
+        with pytest.raises(Suspended) as again:
+            journal.gpu({'x': 1})
+        sent.append(again.value.dispatch is not None)
+    assert sent == [True, False, False, True]
+
+
+@pytest.mark.parametrize('raw', ['+60', '14_400', ' 60x', '６０'])
+def test_queue_limits_accept_plain_decimal_seconds_only(monkeypatch, raw):
+    from app import pipeline_prediction_stages as stages
+    monkeypatch.setenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', raw)
+    with pytest.raises(ValueError, match='queue_max_seconds_invalid'):
+        stages.queue_max_seconds()

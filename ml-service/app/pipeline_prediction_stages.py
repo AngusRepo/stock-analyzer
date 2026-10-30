@@ -37,10 +37,8 @@ def queue_max_seconds(shadow=False):
     raw = os.environ.get(name, '').strip()
     if not raw:
         return default
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 0
+    # Plain decimal seconds only: no sign, underscore or other Python int spellings.
+    value = int(raw) if raw.isascii() and raw.isdigit() else 0
     if value <= 0:
         raise ValueError(('pipeline_gpu_shadow_queue_max_seconds_invalid' if shadow
                           else 'pipeline_gpu_queue_max_seconds_invalid'))
@@ -193,9 +191,9 @@ class Journal:
                 return late['value']
             if claim.get('abandoned'):
                 if claim.get('role') == 'shadow':
-                    print('[PipelineStages] WARNING shadow GPU stage skipped for the day: queue limit reached',
-                          flush=True)
-                    return self._settle(key, stage, claim, 'pipeline_stage_gpu_shadow_queue_exhausted')
+                    # Later shadow stages of this run skip at once instead of each queueing an hour.
+                    self.store.put(self.root + '/shadow-skipped', {'at': now})
+                    return self._skip_shadow(key, stage, claim)
                 return self._settle(key, stage, claim, 'pipeline_stage_gpu_queue_exhausted')
             if 'started' not in claim:
                 return self._queued(payload, key, stage, claim, generation, now, shadow)
@@ -205,15 +203,22 @@ class Journal:
             if claim['attempt'] >= GPU_ATTEMPTS:
                 return self._settle(key, stage, claim, 'pipeline_stage_gpu_attempts_exhausted')
         role = claim.get('role', 'formal') if claim else ('shadow' if shadow else 'formal')
+        if role == 'shadow' and self.store.read(self.root + '/shadow-skipped')[0] is not None:
+            return self._skip_shadow(key, stage, claim or {'tokens': []})
         try:
             limit = queue_max_seconds(role == 'shadow')
         except ValueError as exc:
             raise self._unsealed(exc)
         queued_before = (claim['queued_before'] + claim['started'] - claim['queued_at']) if claim else 0
+        if claim and queued_before >= limit:
+            # Started after its deadline and then failed: no queue time is left for another request.
+            self.store.cas(key + '/claim', {**claim, 'abandoned': True}, generation)
+            return self.gpu(payload, shadow=shadow)
         token = uuid.uuid4().hex
         claim = {'v': CLAIM_VERSION, 'token': token, 'tokens': (claim['tokens'] if claim else []) + [token],
                  'role': role,
                  'attempt': claim['attempt'] if claim else 0, 'dispatches': 1, 'queued_at': now,
+                 'dispatched_at': now,
                  'queued_before': queued_before, 'queue_deadline': now + limit - queued_before}
         # Source persisted before claim; an interruption is safe to resume.
         self.store.put(key + '/input', {'value': payload, 'input_checksum': stage})
@@ -235,10 +240,11 @@ class Journal:
         self.progress({'gpu': key, 'token': claim['token']})
         receipt, _ = self.store.read(key + '/dispatch/' + claim['token'])
         if (receipt is not None or claim['dispatches'] >= GPU_DISPATCHES
-                or now - claim['queued_at'] < GPU_RESEND_GRACE_SECONDS):
+                or now - claim['dispatched_at'] < GPU_RESEND_GRACE_SECONDS):
             raise Suspended()
         # The spawn acknowledgement was lost: resend the same token; execution CAS runs it once.
-        if not self.store.cas(key + '/claim', {**claim, 'dispatches': claim['dispatches'] + 1}, generation):
+        if not self.store.cas(key + '/claim', {**claim, 'dispatches': claim['dispatches'] + 1,
+                                               'dispatched_at': now}, generation):
             raise Suspended()
         raise Suspended(self._dispatch(stage, claim['token']))
 
@@ -277,6 +283,10 @@ class Journal:
             if result is not None and result.get('input_checksum') == stage and not result.get('error'):
                 return result
         return None
+
+    def _skip_shadow(self, key, stage, claim):
+        print('[PipelineStages] WARNING shadow GPU stage skipped for the day: queue limit reached', flush=True)
+        return self._settle(key, stage, claim, 'pipeline_stage_gpu_shadow_queue_exhausted')
 
     def _unsealed(self, exc):
         self.unsealable = True

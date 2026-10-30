@@ -301,7 +301,7 @@ def test_a_failed_legacy_batch_runs_no_variant(monkeypatch):
 
 def test_timexer_request_carries_pit_sources_only_when_present():
     source = (open(__file__.replace("tests/test_pit_daily_serving.py", "modal_app.py")).read())
-    start = source.index("    def _timexer_predict(**kwargs):")
+    start = source.index("    def _timexer_predict(*, shadow: bool = False, **kwargs):")
     block = source[start:source.index("    def _timexer() -> dict:", start)]
     assert 'if payload.get("timexer_pit_feature_sources"):' in block
     assert 'gpu_input["pit_feature_sources"] = payload["timexer_pit_feature_sources"]' in block

@@ -1431,6 +1431,10 @@ def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pat
 
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
+# Ops pacing for a late exchange index publication; not a trading parameter.
+OFFICIAL_INDEX_FETCH_ATTEMPTS = max(1, int(os.environ.get("OFFICIAL_INDEX_FETCH_ATTEMPTS", "3")))
+OFFICIAL_INDEX_RETRY_DELAYS_SECONDS = tuple(
+    max(0.0, float(part)) for part in os.environ.get("OFFICIAL_INDEX_RETRY_DELAYS_SECONDS", "2,5").split(",") if part.strip())
 
 
 def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
@@ -1492,8 +1496,9 @@ def recent_calendar_dates(days: int) -> list[str]:
     return [(today - timedelta(days=offset)).isoformat() for offset in range(max(1, days))]
 
 
-def fetch_official_twse_index_frame() -> pd.DataFrame:
-    query_day = taipei_today().replace("-", "")
+def fetch_official_twse_index_frame(target_date: str | None = None) -> pd.DataFrame:
+    # A gated daily read queries the target month and never stamps an unparsed row as today.
+    query_day = (target_date or taipei_today()).replace("-", "")
     body = official_json_get(
         f"https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date={query_day}&response=json",
         label="twse_mi_5mins_hist",
@@ -1503,7 +1508,7 @@ def fetch_official_twse_index_frame() -> pd.DataFrame:
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, list) or len(row) < 5:
             continue
-        date = parse_official_date(row[0], taipei_today())
+        date = parse_official_date(row[0], None if target_date else taipei_today())
         close = parse_official_number(row[4])
         if close is None:
             continue
@@ -1557,11 +1562,11 @@ def fetch_official_board_frame() -> pd.DataFrame:
     return pd.DataFrame(output, columns=columns).drop_duplicates(["symbol", "board"])
 
 
-def fetch_official_tpex_index_frame() -> pd.DataFrame:
+def fetch_official_tpex_index_frame(target_date: str | None = None) -> pd.DataFrame:
     body = official_json_get("https://www.tpex.org.tw/openapi/v1/tpex_index", label="tpex_index")
     rows = body if isinstance(body, list) else []
     output: list[dict[str, Any]] = []
-    fallback = taipei_today()
+    fallback = None if target_date else taipei_today()
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1586,6 +1591,68 @@ def fetch_official_tpex_index_frame() -> pd.DataFrame:
     frame = frame[frame["date"].notna()].sort_values("date")
     frame["date"] = frame["date"].dt.strftime("%Y-%m-%d")
     return frame
+
+
+def official_index_frame_for_target(fetch, *, field: str, api_key: str, target_date: str | None,
+                                    report: dict[str, Any], reports: list, blockers: list) -> pd.DataFrame:
+    """Daily refresh needs the target session; a failed or stale exchange read is a not-ready lane."""
+    if not target_date:
+        return fetch()
+    frame = pd.DataFrame()
+    for attempt in range(OFFICIAL_INDEX_FETCH_ATTEMPTS):
+        if attempt:
+            delays = OFFICIAL_INDEX_RETRY_DELAYS_SECONDS or (0.0,)
+            time.sleep(delays[min(attempt, len(delays)) - 1])
+        frame = fetch(target_date)
+        if not frame.empty and (frame["date"] == target_date).any():
+            return frame
+    latest = str(frame["date"].max()) if not frame.empty else None
+    reports.append({**source_key_report_row(**report, target_date=target_date, field=field, api_key=api_key,
+        status="missing_target_date", rows=len(frame), latest_date=latest,
+        metadata={"kind": "official_index", "attempts": OFFICIAL_INDEX_FETCH_ATTEMPTS}), "source": "official"})
+    blockers.append({"lane": report["lane"], "kind": "official_index", "reason": "official_index_target_date_missing",
+                     "field": field, "target_date": target_date, "latest_date": latest,
+                     "attempts": OFFICIAL_INDEX_FETCH_ATTEMPTS})
+    return frame.iloc[0:0]
+
+
+# Lanes whose materialization writes the local inputs read by
+# produce_daily_inference_composition (raw/daily_price_full_vintage,
+# raw/training_auxiliary_full_vintage, raw/training_long_full_vintage).
+COMPOSITION_INPUT_LANES = frozenset({"daily_price", "training_shareholding", *TRAINING_AUX_FIELDS}
+                                    | {spec.lane for spec in CORE_SPECS if spec.kind == "broker_aggregate"})
+
+
+def composition_seal_allowed(blockers: Iterable[dict[str, Any]], failed_datasets: Iterable[str] = ()) -> bool:
+    """The daily composition may be sealed and its head published only when every blocker names a
+    known lane outside its inputs (e.g. regime_context waiting on TPEx) and no canonical apply failed."""
+    sealable = {spec.lane for spec in CORE_SPECS} - COMPOSITION_INPUT_LANES
+    return not list(failed_datasets or []) and all(
+        isinstance(blocker, dict) and blocker.get("lane") in sealable for blocker in blockers or [])
+
+
+def reuse_sealed_daily_inference_head(bucket, business_date: str | None, run_id: str) -> dict[str, Any]:
+    """A lane repair without composition inputs may only point at a head sealed by this same run_id:
+    the sequence refresh after a success callback reads the price vintage under the callback's run prefix."""
+    from services.daily_inference_composition import read_frame, read_verified, validate_composition
+    from services.daily_inference_producer import HEAD_PREFIX
+    if not business_date:
+        raise ValueError("daily_inference_head_business_date_missing")
+    blob = bucket.blob(HEAD_PREFIX + business_date + ".json")
+    if not blob.exists():
+        raise FileNotFoundError("daily_inference_head_missing:" + business_date)
+    reference = json.loads(blob.download_as_bytes())
+    value = json.loads(read_verified(bucket, reference))
+    if reference.get("business_date") != business_date:
+        raise ValueError("daily_composition_head_date_mismatch")
+    if reference.get("capture_id") != run_id:
+        raise ValueError("daily_composition_head_capture_mismatch")
+    validated = validate_composition(bucket, value, source=reference, run_date=business_date, price_capture={
+        "capture_id": reference.get("capture_id"), "capture_manifest_sha256": value.get("price_manifest_sha256")})
+    for item in (*validated["auxiliary"].values(), *validated["long"].values()):
+        read_frame(bucket, item, run_date=business_date)
+    return {"status": "reused_sealed_head", "business_date": business_date, "capture_id": reference.get("capture_id"),
+            "path": reference.get("path"), "sha256": reference.get("sha256")}
 
 
 def _sum_values(rows: list[Any], column_index: int) -> float | None:
@@ -2441,7 +2508,11 @@ def materialize_specs(
                     metadata={"kind": spec.kind, "shape": list(frame.shape)},
                 ))
             if spec.lane == "regime_context":
-                frame = fetch_official_twse_index_frame()
+                index_target = source_end_date if daily_refresh else None
+                index_check = {"target_date": index_target, "reports": source_key_reports, "blockers": source_key_blockers,
+                               "report": {"run_id": run_dir.name, "generated_at": generated_at, "lane": spec.lane}}
+                frame = official_index_frame_for_target(fetch_official_twse_index_frame, field="official_twse_index",
+                                                        api_key="twse.mi_5mins_hist.official", **index_check)
                 if not frame.empty:
                     field = "official_twse_index"
                     path = lane_dir / f"{field}.parquet"
@@ -2456,7 +2527,8 @@ def materialize_specs(
                         "shape": list(frame.shape),
                         "non_null_cells": non_null_cells(frame),
                     })
-                frame = fetch_official_tpex_index_frame()
+                frame = official_index_frame_for_target(fetch_official_tpex_index_frame, field="official_tpex_index",
+                                                        api_key="tpex.openapi.tpex_index", **index_check)
                 if not frame.empty:
                     field = "official_tpex_index"
                     path = lane_dir / f"{field}.parquet"
@@ -2471,6 +2543,15 @@ def materialize_specs(
                         "shape": list(frame.shape),
                         "non_null_cells": non_null_cells(frame),
                     })
+                for artifact in artifacts if index_target else []:
+                    if artifact["field"] in {"official_twse_index", "official_tpex_index"}:
+                        written = pd.read_parquet(artifact["path"])
+                        source_key_reports.append({**source_key_report_row(
+                            run_id=run_dir.name, generated_at=generated_at, target_date=index_target, lane=spec.lane,
+                            field=artifact["field"], api_key=artifact["api_key"], status="ok", rows=len(written),
+                            target_rows=int((written["date"] == index_target).sum()), latest_date=latest_index(written),
+                            path=Path(artifact["path"]), run_dir=run_dir, gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
+                            metadata={"kind": "official_index"}), "source": "official"})
         elif spec.kind == "table":
             # Multiple source tables share one lane/manifest, but never a path
             # or field receipt. Do not overwrite the taxonomy table with a master.
@@ -3984,15 +4065,31 @@ def main() -> int:
 
     # A daily canonical success must also provide all inference inputs for the
     # same capture; never leave the pipeline relying on a manually dated registry.
-    if args.daily_refresh and not source_key_blockers:
+    if args.daily_refresh and composition_seal_allowed(source_key_blockers):
         if not args.gcs_bucket:
             raise ValueError("daily_inference_composition_requires_gcs_bucket")
         from google.cloud import storage
         from services.daily_inference_producer import produce_daily_inference_composition
-        manifest["inference_composition"] = produce_daily_inference_composition(
-            run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket),
-            capture_prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
-        )
+        scoped_lanes = set(requested_lanes) | set(key_scope)
+        if scoped_lanes and not scoped_lanes & COMPOSITION_INPUT_LANES:
+            # A lane-only repair wrote no composition inputs: reuse the sealed head or fail closed.
+            try:
+                manifest["inference_composition"] = reuse_sealed_daily_inference_head(
+                    storage.Client().bucket(args.gcs_bucket), source_end_date, run_id)
+            except Exception as exc:
+                # One blocker per scoped lane also blocks its canonical apply: readiness must not
+                # turn green for a date without a sealed composition.
+                source_key_blockers.extend({
+                    "lane": lane, "kind": "daily_inference_composition",
+                    "reason": "daily_inference_composition_requires_full_capture",
+                    "business_date": source_end_date, "requested_lanes": sorted(scoped_lanes),
+                    "error": f"{type(exc).__name__}:{exc}"[:500]} for lane in sorted(scoped_lanes))
+                manifest["backfill_status"] = "partial_failed"
+        else:
+            manifest["inference_composition"] = produce_daily_inference_composition(
+                run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket),
+                capture_prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
+            )
         write_json(run_dir / "manifest.json", manifest)
 
     start_phase('publish', previous_status='failed' if source_key_blockers else 'completed')
@@ -4065,7 +4162,8 @@ def main() -> int:
         manifest["gcs_upload"] = gcs
         write_json(run_dir / "manifest.json", manifest)
 
-        if manifest.get("backfill_status") == "ready" and manifest.get("inference_composition"):
+        if (manifest.get("inference_composition") and manifest["inference_composition"].get("status") != "reused_sealed_head"
+                and composition_seal_allowed(source_key_blockers, manifest.get("failed_datasets"))):
             from services.daily_inference_producer import publish_daily_inference_head
             publish_daily_inference_head(storage.Client().bucket(args.gcs_bucket), manifest["inference_composition"])
 

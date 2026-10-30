@@ -197,6 +197,8 @@ class IntakeRepository(Protocol):
     def sent_rows(self, sent_on: str) -> list[dict[str, Any]]: ...
     def first_trade_date(self) -> str | None: ...
     def symbol_rows(self, symbol: str) -> list[dict[str, Any]]: ...
+    def raise_alert(self, alert: str, day: str, reason: str) -> bool: ...
+    def clear_alert(self, alert: str) -> None: ...
 
 
 class D1IntakeRepository:
@@ -217,6 +219,27 @@ class D1IntakeRepository:
             query, execute = client.query, client.execute
         self._query, self._execute = query, execute
         self._now = now or (lambda: datetime.now(timezone.utc))
+
+    def raise_alert(self, alert: str, day: str, reason: str) -> bool:
+        """Record that the alert holds on day for reason; True only for the pass that added the
+        (day, reason) row, so the ops log gets each reason once a day even if reasons alternate."""
+        token, reason = uuid.uuid4().hex, reason[:300]
+        self._execute(
+            "INSERT INTO live_intake_alert_state_v1 (alert,alert_day,reason,token,updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(alert,alert_day,reason) DO NOTHING",  # a CHECK failure still raises: then logged
+            [alert, day, reason, token, self._now().isoformat()], 5.0)
+        rows = self._query("SELECT token FROM live_intake_alert_state_v1 WHERE alert=? AND alert_day=? AND reason=?",
+                           [alert, day, reason], 5.0)
+        added = bool(rows) and rows[0]["token"] == token
+        if added:  # earlier days are over; keep the table to the current condition
+            self._execute("DELETE FROM live_intake_alert_state_v1 WHERE alert=? AND alert_day<?", [alert, day], 5.0)
+        return added
+
+    def clear_alert(self, alert: str) -> None:
+        """The condition is over: the next failure is logged again. Reads first, so a healthy
+        pass writes nothing."""
+        if self._query("SELECT 1 FROM live_intake_alert_state_v1 WHERE alert=?", [alert], 5.0):
+            self._execute("DELETE FROM live_intake_alert_state_v1 WHERE alert=?", [alert], 5.0)
 
     def get(self, ref: str) -> dict[str, Any] | None:
         rows = self._query(f"SELECT {','.join(self._COLUMNS)} FROM live_intake_orders_v1 WHERE paper_order_ref=?",
@@ -524,9 +547,7 @@ def run_live_intake(
             return {**summary, "status": "blocked", "reason": f"live_account_unavailable:{type(exc).__name__}"}
         symbol = str(order["symbol"])
         if order["side"] == "buy" and account.nav is None:  # no Live NAV: record no buy yet; sells go on
-            if not summary.get("nav_unavailable"):
-                summary["nav_unavailable"] = account.nav_error
-                emit("live_intake_nav_unavailable", {"reason": account.nav_error})
+            summary["nav_unavailable"] = account.nav_error  # alerted once, at the end of the pass
             _hold(ref, summary, "live_nav_unavailable")
             continue
         not_ready, timed_out = None, None  # timed_out: the alert for a sendable buy whose day closed
@@ -608,7 +629,29 @@ def run_live_intake(
             _block(repository, row, summary, reason="live_paused_before_send", control=control.get("reason"))
         elif paused is False and open_ and in_session:
             _send(row, **ctx)
+    _nav_alert(account, repository, today, summary, emit)
     return {**summary, "status": "ok", "control": control.get("reason")}
+
+
+NAV_ALERT = "live_intake_nav_unavailable"
+
+
+def _nav_alert(account: _Account, repository: IntakeRepository, today: str, summary: Mapping[str, Any],
+               emit: Callable[[str, Mapping[str, Any]], None]) -> None:
+    """Wei 10/30: the NAV alert goes to the console every pass, to the ops log once per day and
+    reason (ops_log); a pass that valued the account again ends it, so a later failure is logged."""
+    reason = summary.get("nav_unavailable")
+    if reason:
+        try:
+            ops_log = repository.raise_alert(NAV_ALERT, today, reason)
+        except Exception:  # unknown alert state: log it rather than stay silent
+            ops_log = True
+        emit(NAV_ALERT, {"reason": reason, "ops_log": ops_log})
+    elif account.nav is not None:  # set only by a load that valued the account
+        try:
+            repository.clear_alert(NAV_ALERT)
+        except Exception as exc:  # the next failure may then go unlogged until another day or reason
+            _LOG.warning("live_intake_alert_state_unavailable:%s", type(exc).__name__)
 
 
 _LOG = logging.getLogger(__name__)

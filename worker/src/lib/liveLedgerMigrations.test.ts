@@ -11,6 +11,7 @@ const LIVE_TABLES = [
   'live_daily_snapshots_v1',
   'live_cash_flows_v1',
   'live_intake_orders_v1',
+  'live_intake_alert_state_v1',
 ]
 const ZERO = '0'.repeat(64)
 
@@ -148,6 +149,21 @@ for (const file of fs.readdirSync(path.join('domain-migrations', 'paper'))) {
     throwsSql(db, `UPDATE live_intake_orders_v1 SET status='${back}' WHERE paper_order_ref='paper_orders:4'`, [], /immutable/)
   }
   db.prepare("UPDATE live_intake_orders_v1 SET status='DEFERRED', sent_on='2026-12-10' WHERE paper_order_ref='paper_orders:4'").run()
+}
+
+// Alert state (Wei 10/30): one row per alert, day and reason; a repeat is ignored.
+{
+  const db = migrated()
+  const up = 'INSERT INTO live_intake_alert_state_v1 (alert,alert_day,reason,token,updated_at) VALUES (?,?,?,?,?) '
+    + 'ON CONFLICT(alert,alert_day,reason) DO NOTHING'
+  const token = (reason: string) => (db.prepare(
+    'SELECT token FROM live_intake_alert_state_v1 WHERE alert=? AND alert_day=? AND reason=?').get('nav', '2026-12-10', reason) as { token: string }).token
+  db.prepare(up).run('nav', '2026-12-10', 'r1', 't1', 'x')
+  db.prepare(up).run('nav', '2026-12-10', 'r1', 't2', 'x')
+  assert.equal(token('r1'), 't1')
+  db.prepare(up).run('nav', '2026-12-10', 'r2', 't3', 'x')
+  assert.equal(token('r2'), 't3')
+  throwsSql(db, up, ['nav', '2026-12', 'r', 't', 'x'], /CHECK/)
 }
 
 // The generated domain schema carries the same Live tables.

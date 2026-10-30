@@ -4,9 +4,10 @@ Composes run_live_intake from: committed Paper orders and their sizing rows (D1P
 deadline per Wei 10/30 A), KV trading:live_config / trading:config fees / trading:risk_config /
 holiday:<date>, the R17 submission-control chain, the gateway read routes (GatewayLiveMarket)
 and the live relay. The caller (the L0 cron seam, after W-REL) passes allow_live_submit and
-turns summary["warnings"] into ops logs. Without allow_live_submit, or with an empty env, the
-pass reads nothing and records no row; once it runs, rows are recorded under the R21 rules
-even when the locks keep them from being sent.
+turns each summary["warnings"] entry into console.warn, and into an ops log unless the entry
+says ops_log=False. Without allow_live_submit, or with an empty env, the pass reads nothing
+and records no row; once it runs, rows are recorded under the R21 rules even when the locks
+keep them from being sent.
 """
 
 from __future__ import annotations

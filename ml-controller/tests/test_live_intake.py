@@ -44,6 +44,7 @@ def _repo(now=None):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript((ROOT / "worker/domain-migrations/execution/0008_live_intake_orders.sql").read_text())
+    conn.executescript((ROOT / "worker/domain-migrations/execution/0009_live_intake_alert_state.sql").read_text())
 
     def query(sql, params, timeout):
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -2064,7 +2065,7 @@ def test_without_a_nav_exits_still_go_and_buys_wait():
     assert json.loads(sell["conversion_json"])["inputs"]["live_nav"] is None
     assert repo.get("paper_orders:3") is None and "paper_orders:3" in out["deferred"]
     assert out["nav_unavailable"] == "live_ledger_mark_missing:2330"
-    assert warned == [("live_intake_nav_unavailable", {"reason": "live_ledger_mark_missing:2330"})]
+    assert warned == [("live_intake_nav_unavailable", {"reason": "live_ledger_mark_missing:2330", "ops_log": True})]
     assert [p["intent"]["side"] for p in gw.calls] == ["sell"]
     broker.unmarked = set()  # the mark is back: the buy is recorded and sent
     out = _run(repo, broker, gw, orders, _tw(DAY, "10:03"))
@@ -2226,3 +2227,89 @@ def test_a_buy_without_a_usable_sizing_value_is_blocked_at_once_without_an_alert
     row = repo.get("paper_orders:1")
     assert (row["status"], row["status_reason"]) == ("BLOCKED", "paper_denominator_unavailable")
     assert out["status"] == "ok" and out["waiting"] == [] and warned == [] and out["warnings"] == []
+
+
+# --- the NAV alert: console every pass, ops log once per day and reason (Wei 10/30) ---
+
+def _nav_pass(repo, broker, now, warned, orders=None):
+    orders = orders or [_order(1, "buy", 1000, 100.0, symbol="2317", hhmm="09:30")]
+    return _run(repo, broker, Gateway(repo), orders, now, warn=lambda e, d: warned.append(dict(d)))
+
+
+def test_the_nav_alert_reaches_the_ops_log_once_per_day_and_reason():
+    repo, _ = _repo()
+    broker, warned = Unmarked(holdings={"2330": 1000}), []
+    for hhmm in ("10:00", "10:05", "10:10"):
+        _nav_pass(repo, broker, _tw(DAY, hhmm), warned)
+    assert [d["ops_log"] for d in warned] == [True, False, False]  # console every pass
+    _nav_pass(repo, Unmarked(holdings={"2330": 1000, "6488": 100}, unmarked=("6488",)), _tw(DAY, "10:15"), warned)
+    assert warned[-1] == {"reason": "live_ledger_mark_missing:6488", "ops_log": True}  # another reason
+    _nav_pass(repo, broker, _tw(DAY, "10:20"), warned)
+    assert warned[-1] == {"reason": "live_ledger_mark_missing:2330", "ops_log": False}  # A, B, A: logged once a day
+    _nav_pass(repo, broker, _tw("2026-12-11", "10:00"), warned,
+              orders=[_order(9, "buy", 1000, 100.0, symbol="2317", day="2026-12-11", hhmm="09:30")])
+    assert warned[-1] == {"reason": "live_ledger_mark_missing:2330", "ops_log": True}  # same reason, another day
+
+
+def test_a_valued_account_ends_the_alert_and_the_next_failure_is_logged_again():
+    repo, _ = _repo()
+    broker, warned = Unmarked(holdings={"2330": 1000}), []
+    _nav_pass(repo, broker, _tw(DAY, "10:00"), warned)
+    _nav_pass(repo, FakeBroker(holdings={"2330": 1000}), _tw(DAY, "10:05"), [],
+              orders=[_order(2, "buy", 1000, 100.0, symbol="2454", hhmm="10:01")])  # NAV is back
+    _nav_pass(repo, broker, _tw(DAY, "10:10"), warned,
+              orders=[_order(3, "buy", 1000, 100.0, symbol="2603", hhmm="10:06")])
+    assert [d["ops_log"] for d in warned] == [True, True]
+
+
+def test_a_pass_without_a_nav_and_without_a_buy_keeps_the_alert():
+    repo, _ = _repo()
+    broker, warned = Unmarked(holdings={"2330": 1000}), []
+    _nav_pass(repo, broker, _tw(DAY, "10:00"), warned)
+    _run(repo, broker, Gateway(repo), [_order(2, "buy", 2000, 100.0, day="2026-12-09"),
+                                       _order(3, "sell", 1000, 100.0, hhmm="10:04")], _tw(DAY, "10:05"))
+    _nav_pass(repo, broker, _tw(DAY, "10:10"), warned)
+    assert [d["ops_log"] for d in warned] == [True, False]
+
+
+def test_an_unreadable_alert_state_logs_and_never_stops_exits():
+    repo, _ = _repo()
+
+    class Broken:
+        def __getattr__(self, name):
+            return getattr(repo, name)
+
+        def raise_alert(self, *a):
+            raise TimeoutError("d1")
+
+        def clear_alert(self, *a):
+            raise TimeoutError("d1")
+    warned = []
+    orders = [_order(1, "buy", 2000, 100.0, day="2026-12-09"), _order(2, "sell", 1000, 100.0),
+              _order(3, "buy", 1000, 100.0, symbol="2317", hhmm="10:01")]
+    out = _run(Broken(), Unmarked(holdings={"2330": 1000}), Gateway(repo), orders, _tw(DAY, "10:02"),
+               warn=lambda e, d: warned.append(d["ops_log"]))
+    assert warned == [True] and out["status"] == "ok" and repo.get("paper_orders:2")["status"] == "RELAYED"
+    out = _run(Broken(), FakeBroker(holdings={"2330": 1000}), Gateway(repo), orders, _tw(DAY, "10:03"))
+    assert out["status"] == "ok" and repo.get("paper_orders:3")["status"] == "RELAYED"
+
+
+def test_the_alert_state_upsert_reports_only_a_change():
+    repo, conn = _repo()
+    writes = []
+    execute = repo._execute
+    repo._execute = lambda sql, params, timeout: writes.append(sql.split()[0]) or execute(sql, params, timeout)
+    assert repo.raise_alert("a", DAY, "r1") is True
+    assert repo.raise_alert("a", DAY, "r1") is False
+    assert repo.raise_alert("a", DAY, "r2") is True and repo.raise_alert("a", DAY, "r1") is False
+    assert repo.raise_alert("a", "2026-12-11", "r2") is True
+    rows = conn.execute("SELECT alert_day, reason FROM live_intake_alert_state_v1").fetchall()
+    assert [tuple(row) for row in rows] == [("2026-12-11", "r2")]  # earlier days are dropped
+    with pytest.raises(sqlite3.IntegrityError):  # a refused row is an error (logged), never a silent False
+        repo.raise_alert("a", "2026-12", "r3")
+    writes.clear()
+    repo.clear_alert("a")
+    repo.clear_alert("a")
+    assert writes == ["DELETE"]  # a healthy pass with no alert writes nothing
+    assert repo.raise_alert("a", "2026-12-11", "r2") is True
+    assert repo.raise_alert("b", DAY, "x" * 400) is True  # a long reason is cut, not refused by the CHECK

@@ -203,6 +203,7 @@ _ALLOWED = {
     "services/live_intake.py": {
         1000: "TW board lot size (shares per lot)", 5.0: "D1 request timeout (seconds)",
         200: "gateway reason length kept in status_reason",
+        300: "alert reason length (execution 0009 CHECK)",
     },
     "services/execution_snapshot_revalidator.py": {
         0.1: "HTTP timeout floor", 0.75: "HTTP timeout default", 5: "order book depth kept in observations",

@@ -22,7 +22,7 @@ const extensions = {
   market: ['0008_retention_source_release.sql', '0009_retention_anchor_index.sql'],
   execution: ['0003_retention_source_release.sql', '0004_retention_reference_indexes.sql',
     '0005_live_submission_control.sql', '0006_live_account_observations.sql', '0007_live_ledger.sql',
-    '0008_live_intake_orders.sql'],
+    '0008_live_intake_orders.sql', '0009_live_intake_alert_state.sql'],
   research: ['0005_retention_source_release.sql', '0006_retention_release_lookup.sql'],
   learning: ['0040_paired_nav_shadow_journal.sql', '0043_paired_nav_lifecycle.sql',
     '0046_route_nav_diagnostic_floor.sql', '0047_atomic_nav_adoption.sql',

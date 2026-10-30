@@ -658,6 +658,27 @@ def market_d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     return d1_exec(sql, params, domain=market_owner_domain())
 
 
+def report_taxonomy_prune_skips(materialization_id: str) -> list[dict[str, Any]]:
+    """Q02: record each skipped taxonomy prune in ops system_logs; warn-only, never raises."""
+    try:
+        from services.finlab_canonical_materializer import (
+            taxonomy_prune_guard_receipt_query,
+            taxonomy_prune_skip_escalate_after,
+            taxonomy_prune_skip_log_statements,
+        )
+
+        receipts = market_d1_query(*taxonomy_prune_guard_receipt_query(materialization_id))
+        logs = taxonomy_prune_skip_log_statements(receipts, escalate_after=taxonomy_prune_skip_escalate_after())
+        for _, params in logs:
+            print(f"[finlab-taxonomy] {params[0]} {params[2]}", file=sys.stderr)
+        if logs and int((ops_d1_batch_execute(logs, timeout=60.0) or {}).get("error_count") or 0):
+            print("[finlab-taxonomy] prune_guard_report_failed system_logs write errors", file=sys.stderr)
+        return [json.loads(params[3]) for _, params in logs]
+    except Exception as exc:
+        print(f"[finlab-taxonomy] prune_guard_report_failed {type(exc).__name__}: {exc}", file=sys.stderr)
+        return []
+
+
 def market_d1_batch_execute(
     statements: list[tuple[str, list[Any]]],
     *,
@@ -3651,6 +3672,10 @@ def materialize_canonical_to_d1(
             "error_count": int(apply_result.get("error_count") or 0) + int(market_result.get("error_count") or 0),
             "changes_total": int(apply_result.get("changes_total") or 0) + int(market_result.get("changes_total") or 0),
         }
+    taxonomy_prune_skips = (
+        report_taxonomy_prune_skips(outputs.generated_at)
+        if not dry_run and outputs.finlab_taxonomy_tags else []
+    )
     # Publish metadata only after all data-domain writes have succeeded.
     if not dry_run and ops_statements:
         require_finlab_write_ack(apply_result, len(statements) + len(core_statements) + len(market_statements), phase="data")
@@ -3667,6 +3692,7 @@ def materialize_canonical_to_d1(
         "end_date": end_date,
         "datasets": datasets,
         "row_counts": outputs.manifest.get("row_counts", {}),
+        "taxonomy_prune_skips": taxonomy_prune_skips,
         "statement_count": len(statements) + len(core_statements) + len(ops_statements) + len(market_statements),
         "writes_by_domain": writes_by_domain,
         "apply_result": apply_result,

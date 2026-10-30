@@ -271,6 +271,10 @@ def compute_sltp_override(risk_level: str, L2_formula: dict | None = None) -> Op
 
     orange/red/black 市況下擴大 SL+TP buffer（點數 %）。
     green/yellow → None（不調整）。
+
+    Deprecated (Wei 10/30 B): the Worker never consumes `sl_tp_override`, the replay
+    dropped it and Optuna retired the sltp_add_* dimensions. Still written to
+    ml:adaptive_params for readback only.
     """
     L2 = L2_formula or {}
     if risk_level == "orange":

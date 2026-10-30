@@ -370,6 +370,8 @@ export interface TradingConfig {
     confidence_effective_clip_lo: number  // 預設 0.45（注意：原 hardcode 0.55）
     confidence_effective_clip_hi: number  // 預設 0.75
     // SL/TP 加碼（per market_risk_level）
+    /** @deprecated Wei 10/30 (B): Paper never applies the risk-level SL/TP add, replay no longer
+     *  reads it and Optuna retired it. The six sltp_add_* fields stay so stored KV still merges. */
     sltp_add_orange_sl: number     // 預設 0.3
     sltp_add_orange_tp: number     // 預設 0.3
     sltp_add_red_sl: number        // 預設 0.5
@@ -392,6 +394,9 @@ export interface TradingConfig {
     night_drop_mild_pct: number        // 夜盤中度跌幅（預設 -0.8 = -0.8%）
     night_drop_severe_adjust: number   // 嚴重跌 entry 調整（預設 0.98 = -2%）
     night_drop_mild_adjust: number     // 中度跌 entry 調整（預設 0.99 = -1%）
+    /** @deprecated Wei 10/30 (B): the canonical level is never 'medium', so Paper never scales by it;
+     *  risk sizing is owned by circuit.positionScales + the allocator riskScore. Replay no longer
+     *  reads it and Optuna retired it. Kept so stored KV still merges. */
     medium_risk_scale: number          // market_risk=medium 時倉位縮放（預設 0.5）
   }
   // ── #28b T1.3/T1.4 (2026-04-21): Risk event trigger thresholds ────────────

@@ -8,9 +8,10 @@ NeuralTS / NeuCB family-routing policies. It is not a substitute for searching
 `bandit_loss_thresh_*` or `bandit_max_mult_*` constants; those are evaluated
 by the separate read-only LinUCB multiplier replay until this Optuna objective
 explicitly consumes that replay evidence.
-Remaining 25 Mode-B-consumable dims split into:
-  8 circuit + 6 L2-confidence + 6 SLTP-add + 4 night + 1 medium + 3 PF-search
-  (PF 90d_weight = 1 - 30d_weight constrained, so 3 search dims cover 4 consumers)
+Remaining 20 Mode-B-consumable dims split into:
+  7 circuit + 6 L2-confidence + 4 night + 3 PF-search
+  (PF 90d_weight = 1 - 30d_weight constrained, so 3 search dims cover 4 consumers).
+  SLTP-add and medium scale are retired (Wei 10/30 B): Paper applies neither.
 
 Design citations (see task_plan.md Item #28):
   D3 NSGA-II — Deb et al. (2002) IEEE Trans. Evol. Comp
@@ -53,12 +54,19 @@ if str(_CONTROLLER_DIR) not in sys.path:
     sys.path.insert(0, str(_CONTROLLER_DIR))
 
 
-# Default search space — 27 dims (bullAlignmentThreshold removed, Wei 10/29 Q5). Caller (endpoint) should prefer KV override.
+# Default search space — 20 dims (bullAlignmentThreshold removed, Wei 10/29 Q5; SLTP-add and medium scale retired, Wei 10/30 B). Caller (endpoint) should prefer KV override.
 # Each entry: name, path (dot-notation into trading:config), type, low, high.
 # Ranges sourced from task_plan.md Item #28 with Bergstra (2012) log-uniform
 # for mult coefficients, uniform for threshold percentages / scores.
-# Paths that no longer drive a decision (Wei 10/29 Q5: P4 dropped the bull-alignment trigger).
-RETIRED_PATHS = frozenset({"circuit.bullAlignmentThreshold"})
+# Paths that no longer drive a decision. Wei 10/29 Q5: P4 dropped the bull-alignment
+# trigger. Wei 10/30 (B): Paper applies no risk-level SL/TP add and no medium scale
+# (risk sizing is owned by circuit.positionScales + the allocator riskScore), so the
+# replay dropped both and the search must not tune them.
+RETIRED_PATHS = frozenset({
+    "circuit.bullAlignmentThreshold",
+    *(f"L2_formula.sltp_add_{level}_{side}" for level in ("orange", "red", "black") for side in ("sl", "tp")),
+    "L2_formula.medium_risk_scale",
+})
 
 DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
     # ── circuit.* (7 dims) ────────────────────────────────────────────────
@@ -78,20 +86,11 @@ DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
     {"name": "confidence_effective_clip_lo",  "path": "L2_formula.confidence_effective_clip_lo",  "type": "uniform",     "low": 0.35,  "high": 0.55},
     {"name": "confidence_effective_clip_hi",  "path": "L2_formula.confidence_effective_clip_hi",  "type": "uniform",     "low": 0.65,  "high": 0.85},
 
-    # ── L2_formula SLTP risk-level add (6 dims) ────────────────────────────
-    {"name": "sltp_add_orange_sl", "path": "L2_formula.sltp_add_orange_sl", "type": "log_uniform", "low": 0.10, "high": 0.80},
-    {"name": "sltp_add_orange_tp", "path": "L2_formula.sltp_add_orange_tp", "type": "log_uniform", "low": 0.10, "high": 0.80},
-    {"name": "sltp_add_red_sl",    "path": "L2_formula.sltp_add_red_sl",    "type": "log_uniform", "low": 0.20, "high": 1.20},
-    {"name": "sltp_add_red_tp",    "path": "L2_formula.sltp_add_red_tp",    "type": "log_uniform", "low": 0.20, "high": 1.20},
-    {"name": "sltp_add_black_sl",  "path": "L2_formula.sltp_add_black_sl",  "type": "log_uniform", "low": 0.50, "high": 2.00},
-    {"name": "sltp_add_black_tp",  "path": "L2_formula.sltp_add_black_tp",  "type": "log_uniform", "low": 0.20, "high": 1.20},
-
-    # ── L2_formula night drop + medium + PF quality (8 dims, 3 PF derived) ─
+    # ── L2_formula night drop + PF quality (7 dims, 3 PF derived) ─────────
     {"name": "night_drop_severe_pct",     "path": "L2_formula.night_drop_severe_pct",     "type": "uniform", "low": -0.030, "high": -0.005},
     {"name": "night_drop_mild_pct",       "path": "L2_formula.night_drop_mild_pct",       "type": "uniform", "low": -0.020, "high": -0.002},
     {"name": "night_drop_severe_adjust",  "path": "L2_formula.night_drop_severe_adjust",  "type": "uniform", "low": 0.95,   "high": 1.00},
     {"name": "night_drop_mild_adjust",    "path": "L2_formula.night_drop_mild_adjust",    "type": "uniform", "low": 0.97,   "high": 1.00},
-    {"name": "medium_risk_scale",         "path": "L2_formula.medium_risk_scale",         "type": "uniform", "low": 0.30,   "high": 0.80},
     {"name": "pf_quality_30d_weight",     "path": "L2_formula.pf_quality_30d_weight",     "type": "uniform", "low": 0.40,   "high": 0.90},
     {"name": "pf_quality_clip_lo",        "path": "L2_formula.pf_quality_clip_lo",        "type": "uniform", "low": 0.20,   "high": 0.50},
     {"name": "pf_quality_clip_hi",        "path": "L2_formula.pf_quality_clip_hi",        "type": "uniform", "low": 1.30,   "high": 2.50},

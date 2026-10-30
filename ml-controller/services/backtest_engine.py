@@ -3196,11 +3196,10 @@ def simulate_entries_for_date(
     #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
     l2_formula_cfg: Optional[dict] = None,
     risk_score: Optional[int] = None,
-    # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling
-    #   risk_level: market_risk.risk_level for `day` (green|yellow|orange|red|black)
-    #     → drives compute_sltp_override (orange/red/black only modify SL/TP mults)
-    #     → 'yellow' maps to paper.ts 'medium' for medium_risk_scale (#28 P5)
-    #   (The bull-alignment halving is gone: Paper P4 no longer triggers on it, Wei 10/29.)
+    #   risk_level: stored market_risk.risk_level for the decision date (P3 evidence).
+    #   There is no risk-level SL/TP add and no medium scale: Paper applies neither, and
+    #   risk sizing has one owner there (circuit.positionScales + allocator riskScore).
+    #   Wei 10/30 (B). The bull-alignment halving is gone too (Wei 10/29).
     risk_level: Optional[str] = None,
     # 2026-04-20 #28 P5: night drop (US leading) + PF quality blend
     #   prev_night_drop: us_market_signals.gspc_return for most recent US close
@@ -3306,21 +3305,6 @@ def simulate_entries_for_date(
         )
         effective_clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
         effective_clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
-
-    # 2026-04-20 #28 P4: SLTP risk-level add (adaptive.compute_sltp_override port)
-    # Compute once per day — same risk_level modifies sl_mult_base / tp_mult_base
-    # for every candidate today. orange/red/black only; green/yellow return None.
-    # Source: paper.ts pollIntradayStopLoss SL/TP × ATR reads these post-override.
-    effective_sl_mult: float = sltp.sl_mult_base
-    effective_tp_mult: float = sltp.tp_mult_base
-    if (ml_predictions is not None
-            and l2_formula_cfg is not None
-            and risk_level in ("orange", "red", "black")):
-        from services.adaptive import compute_sltp_override
-        override = compute_sltp_override(risk_level, l2_formula_cfg)
-        if override:
-            effective_sl_mult = sltp.sl_mult_base + float(override.get("sl_add", 0.0))
-            effective_tp_mult = sltp.tp_mult_base + float(override.get("tp_add", 0.0))
 
     for cand in buy_candidates:
         # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
@@ -3430,10 +3414,9 @@ def simulate_entries_for_date(
             atr14 = cand.close * 0.02
 
         # Synthesize stop/target from ATR × sltp params (Optuna-searchable)
-        # #28 P4: use effective_sl_mult / effective_tp_mult (includes L2 risk-level add)
         ml_entry = cand.close
         ml_stop, ml_tp1, _ = _synth_stop_target(
-            ml_entry, atr14, effective_sl_mult, effective_tp_mult
+            ml_entry, atr14, sltp.sl_mult_base, sltp.tp_mult_base
         )
 
         # Gap-aware adjustment
@@ -3528,17 +3511,9 @@ def simulate_entries_for_date(
                     )
                     budget *= mdd_mult
 
-        # 2026-04-20 #28 P5: medium_risk_scale + PF quality blend (Mode B only).
-        # Both live under L2_formula, applied on budget AFTER circuit-level mults.
+        # 2026-04-20 #28 P5: PF quality blend (Mode B only), applied on budget
+        # AFTER circuit-level mults. (No medium_risk_scale: Wei 10/30 B.)
         if ml_predictions is not None and l2_formula_cfg is not None:
-            # medium_risk_scale: yellow is our D1 mapping of paper.ts's 'medium'
-            # (paper.ts runtime fetches from Shioaji proxy whose domain is
-            # 'low/medium/high/extreme'; we use D1 market_risk.risk_level whose
-            # yellow tier is the semantic equivalent of paper.ts 'medium').
-            if risk_level == "yellow":
-                medium_scale = float(l2_formula_cfg.get("medium_risk_scale", 0.5))
-                budget *= medium_scale
-
             # PF quality blend: weight 30d + 90d rolling PF then clip.
             # Port of adaptive.compute_pf_quality_mults simplified for Mode B
             # (production version is per-model; backtest has single portfolio).
@@ -5152,7 +5127,7 @@ def replay_period(
                     if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
                     else None
                 ),
-                # 2026-04-20 #28 P4 SLTP add
+                # stored level (P3 evidence only)
                 risk_level=(
                     market_state.get_risk(prev_decision_date).risk_level
                     if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))

@@ -315,6 +315,50 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   assert.equal(activeCritical.legacy_capacity_role, 'frozen_rollback_source')
   assert.deepEqual(activeCritical.blocking_capacity_domains, ['learning'])
 
+  // D7a runway: days to 90% per domain; frozen legacy is reported but never alerted.
+  const runwayHistory = (bindingName: string, latest: number, perDay: number) =>
+    Array.from({ length: 8 }, (_, index) => ({
+      binding_name: bindingName,
+      used_bytes: latest - (7 - index) * perDay,
+      observed_date: `2026-10-${String(20 + index).padStart(2, '0')}`,
+    }))
+  // Without active split routing the ops ledger reads from DB.
+  const runwayLegacyDb = new MockDb()
+  runwayLegacyDb.queryMeta = frozenLegacyDb.queryMeta
+  runwayLegacyDb.firstHandler = frozenLegacyDb.firstHandler
+  runwayLegacyDb.allHandler = (statement) => statement.sql.includes('FROM storage_capacity_daily')
+    ? [...runwayHistory('LEARNING_DB', 8_085_000_000, 55_000_000), ...runwayHistory('DB', 8_864_489_472, 50_000_000)]
+    : []
+  const runwayLearningDb = new MockDb()
+  runwayLearningDb.queryMeta = { size_after: 8_085_000_000 }
+  const runway = await runStorageHealthCheck({
+    DB: runwayLegacyDb as any,
+    LEARNING_DB: runwayLearningDb as any,
+    ...splitBindings,
+  })
+  assert.deepEqual(runway.blocking_capacity_domains, ['learning'], 'runway never changes the capacity judgement')
+  assert.equal(runway.capacity_runway_error, null)
+  assert.equal(runway.capacity_runway_alert_days, 30)
+  const learningRunway = runway.capacity_runway.find(row => row.domain === 'learning')
+  assert.equal(learningRunway?.forecast_status, 'ready')
+  assert.equal(learningRunway?.projected_days_to_critical_90pct, 16)
+  const legacyRunway = runway.capacity_runway.find(row => row.domain === 'legacy')
+  assert.equal(legacyRunway?.projected_days_to_critical_90pct, 2)
+  assert.deepEqual(runway.capacity_runway_alert_domains, ['learning'])
+
+  // A runway read failure is reported and leaves the judgement untouched.
+  const brokenRunwayDb = new MockDb()
+  brokenRunwayDb.queryMeta = frozenLegacyDb.queryMeta
+  brokenRunwayDb.firstHandler = frozenLegacyDb.firstHandler
+  brokenRunwayDb.allHandler = (statement) => {
+    if (statement.sql.includes('FROM storage_capacity_daily')) throw new Error('history_unavailable')
+    return []
+  }
+  const brokenRunway = await runStorageHealthCheck({ DB: brokenRunwayDb as any, ...splitBindings })
+  assert.equal(brokenRunway.healthy, true)
+  assert.match(String(brokenRunway.capacity_runway_error), /history_unavailable/)
+  assert.deepEqual(brokenRunway.capacity_runway_alert_domains, [])
+
   const missingAllocatorDb = new MockDb()
   missingAllocatorDb.queryMeta = { size_after: 7_000_000_000 }
   missingAllocatorDb.firstHandler = (statement) => {

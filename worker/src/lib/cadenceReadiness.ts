@@ -1,6 +1,7 @@
 import type { Bindings } from '../types'
 import { getSchedulerStatus } from './schedulerStatus'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { schedulerJobAccounting } from './schedulerManifestGovernance'
 
 export type CadenceReadiness = 'weekly' | 'monthly'
 
@@ -31,6 +32,17 @@ const OBSERVED_OPTIONAL_TASKS: Record<CadenceReadiness, string[]> = {
     'linucb-multiplier-replay',
   ],
   monthly: [],
+}
+
+// D7c: a job the scheduler manifest keeps PAUSED cannot close a cycle; report it instead of requiring it.
+export function cadenceRequiredTasks(
+  cadence: CadenceReadiness,
+  isPaused: (task: string) => boolean = (task) => schedulerJobAccounting(task).desiredState === 'PAUSED',
+): { required: string[]; pausedExpected: string[] } {
+  return {
+    required: REQUIRED_TASKS[cadence].filter((task) => !isPaused(task)),
+    pausedExpected: REQUIRED_TASKS[cadence].filter(isPaused),
+  }
 }
 
 export function cadenceJobClosureProblem(job: {
@@ -89,7 +101,7 @@ export async function runCadenceReadiness(
 ): Promise<string> {
   const scheduler = await getSchedulerStatus(env, runDate)
   const jobs = new Map(scheduler.jobs.map((job) => [job.id, job]))
-  const required = REQUIRED_TASKS[cadence]
+  const { required, pausedExpected } = cadenceRequiredTasks(cadence)
   const asOfDate = runDate ?? new Date(Date.now() + 8 * 3_600_000).toISOString().slice(0, 10)
   const missing = required.filter((task) => !jobs.has(task))
   const blockers = required.flatMap((task) => {
@@ -105,7 +117,7 @@ export async function runCadenceReadiness(
   })
   const active8Task = `active8-oof-${cadence}`
   const active8Job = jobs.get(active8Task)
-  if (active8Job && !blockers.some(row => row.task === active8Task)) {
+  if (active8Job && required.includes(active8Task) && !blockers.some(row => row.task === active8Task)) {
     const problem = await active8CadenceReceiptProblem(databaseForDataDomain(env, 'learning'), active8Job)
     if (problem) blockers.push({ task: active8Task, status: active8Job.lastStatus, reason: problem })
   }
@@ -122,8 +134,10 @@ export async function runCadenceReadiness(
       missing,
       blockers,
       optional,
+      paused_expected: pausedExpected,
     }))
   }
 
   return cadence + '_readiness_closed required=' + required.length + '/' + required.length + ' optional=' + JSON.stringify(optional)
+    + ' paused_expected=' + JSON.stringify(pausedExpected)
 }

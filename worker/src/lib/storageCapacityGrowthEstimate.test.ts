@@ -18,6 +18,7 @@ assert.equal(migrationWindow.daily_growth_bytes, null)
 assert.equal(migrationWindow.median_daily_growth_bytes, null)
 assert.equal(migrationWindow.net_daily_growth_bytes, null)
 assert.equal(migrationWindow.projected_days_to_warning_65pct, null)
+assert.equal(migrationWindow.projected_days_to_critical_90pct, null)
 
 const stableWindow = buildStorageCapacityGrowthEstimate({
   currentUsedBytes: 1_060_000_000,
@@ -37,6 +38,7 @@ assert.equal(stableWindow.daily_growth_bytes, 10_000_000)
 assert.equal(stableWindow.median_daily_growth_bytes, 10_000_000)
 assert.equal(stableWindow.net_daily_growth_bytes, 10_000_000)
 assert.equal(stableWindow.projected_days_to_warning_65pct, 544)
+assert.equal(stableWindow.projected_days_to_critical_90pct, 794)
 assert.equal(stableWindow.projected_days_to_max, 894)
 
 const robustMedian = buildStorageCapacityGrowthEstimate({
@@ -133,6 +135,7 @@ const full = buildStorageCapacityGrowthEstimate({
   })),
 })
 assert.equal(full.projected_days_to_warning_65pct, 0)
+assert.equal(full.projected_days_to_critical_90pct, 0)
 assert.equal(full.projected_days_to_max, 0)
 
 console.log('storage capacity growth estimate tests passed')

@@ -169,9 +169,12 @@ def test_the_real_sdk_is_wired_fresh_in_memory_and_never_logs_in(monkeypatch):
         get=lambda key, **kwargs: record.update(get=(key, kwargs)))
     finlab = types.ModuleType('finlab'); finlab.data = data; finlab.login = lambda *a: pytest.fail('login')
     auth = types.ModuleType('finlab.auth'); auth.get_id_token = lambda: 'id-token'
+    data_auth = types.ModuleType('finlab.data.auth')
+    finlab.auth, data.auth = auth, data_auth
     monkeypatch.setitem(sys.modules, 'finlab', finlab)
     monkeypatch.setitem(sys.modules, 'finlab.data', data)
     monkeypatch.setitem(sys.modules, 'finlab.auth', auth)
+    monkeypatch.setitem(sys.modules, 'finlab.data.auth', data_auth)
     token, get, role = fetcher._sdk()
     assert isinstance(record['storage'], CacheStorage) and token() == 'id-token' and role() == 'vip'
     get('dividend_announcement')
@@ -209,4 +212,36 @@ def test_dry_run_lists_calls_without_network(out, monkeypatch, capsys):
     assert len(plan['finlab_calls']) == 7 and len(plan['twse_calls']) == 1
     assert plan['days']['present'] and plan['universe']['present'] and plan['already_present'] == []
     assert SECRET not in json.dumps(plan)
+    assert sorted(p.name for p in out.iterdir()) == ['days.json', 'universe.json']
+
+
+def test_the_real_sdk_never_persists_or_refreshes_an_env_session(monkeypatch, tmp_path):
+    import finlab
+    import finlab.auth as sdk_auth
+    import finlab.data.auth as sdk_data_auth
+    monkeypatch.setenv('HOME', str(tmp_path))
+    for module, name in ((finlab, 'login'), (sdk_auth, 'save_session'), (sdk_data_auth, '_refresh_id_token')):
+        monkeypatch.setattr(module, name, getattr(module, name))  # restored after the test
+    monkeypatch.setattr(sdk_data_auth._context._default_context, '_last_token_type', 'id_token')
+    fetcher.harden_sdk()
+    # token_expired: the SDK refreshes (saving env values to ~/.finlab) and retries without bound.
+    # SystemExit passes the SDK's `except Exception` wrapper untouched.
+    with pytest.raises(SystemExit, match='finlab_token_expired'):
+        sdk_data_auth._handle_fetch_batch_error('token_expired', {})
+    with pytest.raises(SystemExit, match='session_write_refused'):
+        sdk_auth.save_session({'refresh_token': SECRET})
+    with pytest.raises(SystemExit, match='server rejected'):
+        finlab.login()
+    assert not (tmp_path / '.finlab').exists()
+
+
+def test_a_failed_link_unlinks_what_it_already_placed(out, monkeypatch):
+    real = fetcher.os.link
+    def link(source, target):
+        if Path(target).name == fetcher.SPEC_NAME:
+            raise OSError('disk full')
+        real(source, target)
+    monkeypatch.setattr(fetcher.os, 'link', link)
+    with pytest.raises(OSError):
+        run(out)
     assert sorted(p.name for p in out.iterdir()) == ['days.json', 'universe.json']

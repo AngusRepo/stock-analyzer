@@ -12,8 +12,12 @@ the result carries only data and env names, and any error comes back as a
 type name plus a message with every FINLAB_* value scrubbed, without a
 traceback.
 
+The remote result (bytes and clocks only) is kept in OUT_DIR/.modal-recovery
+until sealing succeeds; `--resume` seals it again without another Modal call.
+
 Run from ml-controller (ephemeral app, stops when done):
-  ../ml-service/.venv/bin/modal run scripts/modal_fetch_corporate_history.py --out-dir OUT_DIR
+  /Volumes/FireCuda/CloudCode/stockvision-cloudflare-v12/ml-service/.venv/bin/modal run \
+    scripts/modal_fetch_corporate_history.py --out-dir OUT_DIR [--resume]
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ ML_CONTROLLER = HERE.parents[1]
 
 image = (
     modal.Image.debian_slim(python_version='3.12')
-    .pip_install('finlab==2.0.13', 'pandas[pyarrow]>=2.2.0', 'polars==1.44.2')
+    .pip_install('finlab==2.0.13', 'pandas==3.0.6', 'pyarrow==24.0.0', 'polars==1.44.2')
     .add_local_file(str(ML_CONTROLLER / 'services' / 'finlab_auth.py'), remote_path='/root/services/finlab_auth.py')
     .add_local_file(str(HERE.parent / 'fetch_corporate_history_sources.py'),
                     remote_path='/root/scripts/fetch_corporate_history_sources.py')
@@ -41,12 +45,21 @@ finlab_secret = modal.Secret.from_name('stockvision-finlab')
 FINLAB_ENV_NAMES = ('FINLAB_API_KEY', 'FINLAB_REFRESH_TOKEN', 'FINLAB_SESSION_ID', 'FINLAB_API_TOKEN', 'FINLAB_ID_TOKEN')
 
 
-def scrub(text: str, env) -> str:
-    """Remove every FINLAB_* value (and long substrings of it) from a message."""
-    out = str(text)
+def scrub(error, env) -> str:
+    """A message safe to return: no FINLAB_* value, prefix or 16-character piece of one, no URL query."""
+    import re
+    try:
+        out = str(error)
+    except Exception:
+        return 'unprintable'
+    out = re.sub(r'\?[^\s\'"]*', '?<query removed>', out) if '?' in out else out
     for name, value in env.items():
-        if name.startswith('FINLAB') and value and len(str(value)) >= 4:
-            out = out.replace(str(value), '***')
+        value = str(value or '')
+        if not name.startswith('FINLAB') or len(value) < 4:
+            continue
+        out = out.replace(value, '***').replace(value[:64], '***')
+        if any(value[i:i + 16] in out for i in range(0, max(1, len(value) - 15))):
+            return 'redacted'
     return out[:300]
 
 
@@ -93,13 +106,13 @@ def _real_sdk(env, fetcher):
     from finlab.auth import get_id_token
     from services.finlab_auth import finlab_session_auth_available, login_finlab_sdk
     if finlab_session_auth_available(env):
-        finlab.login = fetcher._refuse_login
+        fetcher.harden_sdk()  # before any SDK call that could log in or save a session
         if not get_id_token():
             raise SystemExit('finlab_session_rejected')
         mode = 'session_env'
     else:
         mode = login_finlab_sdk(finlab.login, env=env)  # legacy token; raises when auth is absent or partial
-        finlab.login = fetcher._refuse_login  # a server rejection must stop, never loop
+        fetcher.harden_sdk()  # a later rejection or expiry must stop, never loop or persist
     data.set_storage(data.CacheStorage())
     return mode, (lambda key: data.get(key, force_download=True)), data.get_role
 
@@ -110,18 +123,61 @@ def fetch_finlab_sources() -> dict:
     return remote_fetch(dict(os.environ))
 
 
+RECOVERY = '.modal-recovery'
+
+
+def save_recovery(out: Path, result: dict) -> Path:
+    """Keep the remote bytes and clocks (no env values exist in them) until sealing succeeds."""
+    folder = out / RECOVERY
+    folder.mkdir()
+    for name, data in result['blobs'].items():
+        (folder / name).write_bytes(data)
+    meta = {k: result[k] for k in ('auth_mode', 'env_names_present', 'sources', 'described', 'role', 'finlab_calls')}
+    (folder / 'result.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+    return folder
+
+
+def load_recovery(out: Path) -> dict:
+    import hashlib
+    folder = out / RECOVERY
+    meta = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
+    blobs = {}
+    for entry in meta['sources'].values():
+        data = (folder / entry['path']).read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry['sha256']:
+            raise SystemExit('modal_recovery_corrupt:' + entry['path'])
+        blobs[entry['path']] = data
+    return {**meta, 'blobs': blobs, 'ok': True}
+
+
+def finish(out: Path, result: dict, *, days_path: Path, universe_path: Path, http_get=None) -> dict:
+    report = _fetcher().seal_fetch(out, result, days_path=days_path, universe_path=universe_path,
+                                   auth_mode='modal:' + result['auth_mode'], http_get=http_get,
+                                   report_extra={'modal_app': APP_NAME,
+                                                 'finlab_env_names_present': result['env_names_present']})
+    import shutil
+    shutil.rmtree(out / RECOVERY, ignore_errors=True)
+    return report
+
+
 @app.local_entrypoint()
-def main(out_dir: str, days: str = '', universe: str = ''):
+def main(out_dir: str, days: str = '', universe: str = '', resume: bool = False):
     fetcher = _fetcher()
     out = Path(out_dir).resolve()
+    out.mkdir(parents=True, exist_ok=True)
     days_path = Path(days).resolve() if days else out / 'days.json'
     universe_path = Path(universe).resolve() if universe else out / 'universe.json'
     fetcher.check_targets(out, days_path=days_path, universe_path=universe_path)  # before any remote call
-    result = fetch_finlab_sources.remote()
-    if not result.get('ok'):
-        print(json.dumps({k: result.get(k) for k in ('error_type', 'error', 'env_names_present')}, ensure_ascii=False))
-        raise SystemExit(1)
-    report = fetcher.seal_fetch(out, result, days_path=days_path, universe_path=universe_path,
-                                auth_mode='modal:' + result['auth_mode'],
-                                report_extra={'modal_app': APP_NAME, 'finlab_env_names_present': result['env_names_present']})
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if resume:
+        result = load_recovery(out)
+    else:
+        if (out / RECOVERY).exists():
+            raise SystemExit('a previous Modal result is waiting: rerun with --resume (no new Modal call)')
+        result = fetch_finlab_sources.remote()
+        if not result.get('ok'):
+            print(json.dumps({k: result.get(k) for k in ('error_type', 'error', 'env_names_present')},
+                             ensure_ascii=False))
+            raise SystemExit(1)
+        save_recovery(out, result)
+    print(json.dumps(finish(out, result, days_path=days_path, universe_path=universe_path),
+                     ensure_ascii=False, indent=2))

@@ -84,9 +84,12 @@ def test_real_sdk_session_mode_checks_the_token_and_never_logs_in(monkeypatch):
                                  get=lambda key, **kwargs: record.update(get=(key, kwargs)))
     finlab = types.ModuleType('finlab'); finlab.data = data; finlab.login = lambda *a: pytest.fail('login')
     auth = types.ModuleType('finlab.auth'); auth.get_id_token = lambda: None
+    data_auth = types.ModuleType('finlab.data.auth')
+    finlab.auth, data.auth = auth, data_auth
     monkeypatch.setitem(sys.modules, 'finlab', finlab)
     monkeypatch.setitem(sys.modules, 'finlab.data', data)
     monkeypatch.setitem(sys.modules, 'finlab.auth', auth)
+    monkeypatch.setitem(sys.modules, 'finlab.data.auth', data_auth)
     with pytest.raises(SystemExit, match='finlab_session_rejected'):
         entry._real_sdk(ENV, entry._fetcher())
     auth.get_id_token = lambda: 'id-token'
@@ -95,3 +98,69 @@ def test_real_sdk_session_mode_checks_the_token_and_never_logs_in(monkeypatch):
     assert mode == 'session_env' and record['get'] == ('dividend_announcement', {'force_download': True})
     with pytest.raises(SystemExit, match='server rejected'):
         finlab.login()
+    with pytest.raises(SystemExit, match='finlab_token_expired'):
+        data_auth._refresh_id_token()
+    with pytest.raises(SystemExit, match='session_write_refused'):
+        auth.save_session({})
+
+
+def test_real_sdk_legacy_mode_logs_in_first_then_hardens(monkeypatch):
+    import types
+    order = []
+    data = types.SimpleNamespace(CacheStorage=type('CacheStorage', (), {}), get_role=lambda: 'vip',
+                                 set_storage=lambda storage: None, get=lambda key, **kwargs: None)
+    finlab = types.ModuleType('finlab'); finlab.data = data
+    finlab.login = lambda *a: order.append(('login', len(a)))
+    auth = types.ModuleType('finlab.auth'); auth.get_id_token = lambda: pytest.fail('session check')
+    data_auth = types.ModuleType('finlab.data.auth')
+    finlab.auth, data.auth = auth, data_auth
+    for name, module in (('finlab', finlab), ('finlab.data', data), ('finlab.auth', auth), ('finlab.data.auth', data_auth)):
+        monkeypatch.setitem(sys.modules, name, module)
+    mode, _, _ = entry._real_sdk({'FINLAB_API_KEY': SECRET}, entry._fetcher())
+    assert mode == 'legacy_api_token' and order == [('login', 1)]
+    with pytest.raises(SystemExit, match='server rejected'):
+        finlab.login()
+
+
+def test_sdk_logging_is_silenced_inside_the_function(caplog):
+    import logging
+    def noisy(env, fetcher):
+        logging.getLogger('finlab').warning('Token refresh failed: 400 %s', env['FINLAB_REFRESH_TOKEN'])
+        return 'session_env', chatty_get([]), lambda: 'vip'
+    with caplog.at_level(logging.DEBUG):
+        assert entry.remote_fetch(ENV, sdk_loader=noisy, clock=clock())['ok']
+    assert SECRET not in caplog.text
+    logging.getLogger('after').warning('visible')  # silencing ends with the function
+    assert 'visible' in caplog.text
+
+
+def test_scrub_removes_prefixes_pieces_and_url_queries():
+    env = {'FINLAB_API_TOKEN': 'A' * 10 + SECRET * 8, 'OTHER': 'keep'}
+    assert entry.scrub('token=' + env['FINLAB_API_TOKEN'][:64] + ' end', env) == 'token=*** end'
+    assert entry.scrub('piece ' + env['FINLAB_API_TOKEN'][20:40], env) == 'redacted'
+    assert entry.scrub('403 for url: https://x.example/a.feather?X-Goog-Signature=abc&k=1 done', env) == \
+        '403 for url: https://x.example/a.feather?<query removed> done'
+    class Unprintable(Exception):
+        def __str__(self):
+            raise RuntimeError('boom')
+    assert entry.scrub(Unprintable(), env) == 'unprintable'
+
+
+def test_a_local_seal_failure_keeps_the_remote_result_for_resume(tmp_path):
+    (tmp_path / 'days.json').write_text(json.dumps([*DAYS, '2026-10-05']))
+    (tmp_path / 'universe.json').write_text(json.dumps(['0056', '2330', '1101', '020000']))
+    result = entry.remote_fetch(ENV, sdk_loader=loader(), clock=clock())
+    entry.save_recovery(tmp_path, result)
+    def down(url):
+        raise RuntimeError('twse timeout')
+    with pytest.raises(RuntimeError):
+        entry.finish(tmp_path, result, days_path=tmp_path / 'days.json', universe_path=tmp_path / 'universe.json',
+                     http_get=down)
+    assert (tmp_path / entry.RECOVERY / 'result.json').exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [entry.RECOVERY, 'days.json', 'universe.json']
+    resumed = entry.load_recovery(tmp_path)
+    assert resumed['blobs'] == result['blobs'] and resumed['sources'] == result['sources']
+    entry.finish(tmp_path, resumed, days_path=tmp_path / 'days.json', universe_path=tmp_path / 'universe.json',
+                 http_get=lambda url: b'["0050","0056"]')
+    assert not (tmp_path / entry.RECOVERY).exists() and (tmp_path / 'spec.json').exists()
+    assert all(SECRET.encode() not in p.read_bytes() for p in tmp_path.iterdir() if p.is_file())

@@ -675,8 +675,8 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         from services.backtest_state import (
             REGIME_OBSERVATION_COLUMNS, load_regime_observations, load_verified_predictions,
         )
-        # Every HMM observation up to end_date: replay finds the HMM era's first
-        # date and the point-in-time state from it, never from live D1.
+        # Every HMM observation up to end_date, with its recorded time: replay
+        # finds when the HMM era began and the point-in-time state, never from live D1.
         regime_rows = load_regime_observations(req.end_date, MARKET_D1_CLIENT)
         components['market_regime_state'] = (_frame(regime_rows) if regime_rows
                                               else _empty_frame(list(REGIME_OBSERVATION_COLUMNS)))

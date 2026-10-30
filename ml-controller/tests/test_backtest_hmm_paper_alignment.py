@@ -33,11 +33,16 @@ def frame(rows):
 
 # ── point-in-time selection ──────────────────────────────────────────────────
 
-def test_the_hmm_era_starts_at_the_first_hmm_row_not_a_coded_date():
-    history = RegimeHistory([obs('2026-08-14', 'sideways', '2026-08-14T13:00:00Z', source='market_env_fallback'),
-                             obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z')])
-    assert history.first_hmm_date == '2026-08-18'
-    assert RegimeHistory([]).first_hmm_date is None
+def test_the_hmm_era_starts_when_an_hmm_row_was_visible_not_at_its_run_date():
+    backfilled = obs('2026-08-14', 'bear', '2026-08-14T13:00:00Z', '2026-08-27T02:19:00Z')
+    history = RegimeHistory([obs('2026-08-13', 'sideways', '2026-08-13T13:00:00Z', source='market_env_fallback'),
+                             backfilled, obs('2026-08-24', 'bull', '2026-08-24T13:30:00Z')])
+    assert not history.hmm_visible('2026-08-13', entry_open('2026-08-14'))      # fallback rows never count
+    assert not history.hmm_visible('2026-08-21', entry_open('2026-08-24'))      # the 08-14 row came later
+    assert history.hmm_visible('2026-08-24', entry_open('2026-08-25'))
+    assert history.hmm_visible('2026-08-26', entry_open('2026-08-27')) is True
+    assert not RegimeHistory([]).hmm_visible('2026-08-24', entry_open('2026-08-25'))
+    assert not history.hmm_visible('2026-08-13', entry_open('2026-08-30'))      # later run_dates never count
 
 
 def test_selection_is_latest_on_or_before_and_ignores_rows_written_after_the_open():
@@ -147,6 +152,30 @@ def test_hmm_days_use_the_pipeline_contract_and_earlier_days_keep_the_stored_lev
     assert entries['2026-08-20']['regime_family'] == 'volatile'
     # 08-19 has no market_risk row: Paper's adaptive reads the latest stored row (08-18).
     assert entries['2026-08-20']['risk_level'] == 'orange' and entries['2026-08-20']['risk_score'] == 61
+
+
+def test_backfilled_rows_keep_the_stored_path_until_an_hmm_row_was_visible(monkeypatch, kv_position_risk):
+    rows = [obs('2026-08-14', 'bear', '2026-08-14T13:00:00Z', '2026-08-19T13:00:00Z'),   # backfilled on 08-19
+            obs('2026-08-18', 'volatile', '2026-08-18T13:00:00Z'),                       # on time
+            obs('2026-08-19', 'sideways', '2026-08-19T13:00:00Z', source='market_env_fallback')]
+    screens, entries = run(monkeypatch, kv_position_risk, rows)
+    assert screens['2026-08-14']['regime_label'] == 'green' and screens['2026-08-14']['regime_surface'] is None
+    assert screens['2026-08-17']['regime_label'] == 'yellow'
+    assert entries['2026-08-17']['regime_family'] is None and entries['2026-08-18']['regime_family'] is None
+    assert screens['2026-08-18']['regime_label'] == 'volatile'
+    assert entries['2026-08-19']['regime_family'] == 'volatile'
+    # Inside the era, a day whose latest visible state is not HMM still gets no candidates.
+    assert '2026-08-19' not in screens and '2026-08-20' not in entries
+
+
+def test_the_era_is_judged_at_the_open_the_candidates_are_for(monkeypatch, kv_position_risk):
+    # The first HMM row lands during 08-19 (after its open): the 08-19 screen, for the 08-20 open,
+    # is in the era; its latest visible state is a fallback, so it gets no candidates.
+    rows = [obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', '2026-08-19T05:00:00Z'),
+            obs('2026-08-19', 'sideways', '2026-08-19T13:00:00Z', source='market_env_fallback')]
+    screens, entries = run(monkeypatch, kv_position_risk, rows)
+    assert screens['2026-08-18']['regime_label'] == 'orange'
+    assert '2026-08-19' not in screens
 
 
 def test_an_hmm_day_without_a_contract_has_no_candidates(monkeypatch, kv_position_risk):
@@ -292,6 +321,7 @@ def test_the_research_snapshot_freezes_every_hmm_observation(monkeypatch):
                                          include_signals=True)
     result = e.export_backtest_dataset_snapshot(req)
     assert asked == [('2026-08-19', e.MARKET_D1_CLIENT)]
+    assert result['d1_query_counts']['market_regime_state'] == 1
     assert result['components']['market_regime_state'].to_dicts() == rows
     monkeypatch.setattr(backtest_state, 'load_regime_observations', lambda end, client=None: [])
     empty = e.export_backtest_dataset_snapshot(req)['components']['market_regime_state']

@@ -23,4 +23,5 @@ def test_input_only_actual_export_includes_us_source_without_outcome_reads(monke
     result=e.export_backtest_dataset_snapshot(req)
     assert result['components']['us_market_signals']['vix_close'].to_list()==[20.]
     assert 'signals' not in result['components']
+    assert 'market_regime_state' not in result['components'] and 'market_regime_state' not in result['d1_query_counts']
     assert calls==[['2023-07-01','2026-10-07']]

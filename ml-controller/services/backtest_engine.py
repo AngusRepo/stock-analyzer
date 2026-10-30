@@ -5166,7 +5166,8 @@ def replay_period(
             # replay keeps the stored market_risk level.
             hmm_contract = (market_state.hmm_regime_contract(day, replay_days[i + 1])
                             if mode == "B" and market_state is not None else None)
-            if hmm_contract is None and mode == "B" and market_state is not None and market_state.in_hmm_era(day):
+            if (hmm_contract is None and mode == "B" and market_state is not None
+                    and market_state.in_hmm_era(day, replay_days[i + 1])):
                 # The pipeline refuses to recommend without a regime contract.
                 logger.warning("[replay] no HMM regime contract for %s: no candidates", day)
                 prev_candidates = []

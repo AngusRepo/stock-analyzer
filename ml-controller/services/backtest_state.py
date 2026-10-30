@@ -96,8 +96,10 @@ def load_regime_observations(end_date: str, client: Any = None) -> list[dict]:
 class RegimeHistory:
     """Point-in-time HMM state, selected like Worker `readLatestMarketRegimeStateOnOrBefore`.
 
-    The cut between the stored market_risk era and the HMM era is the first
-    HMM run_date in the data; no date is written in code.
+    The HMM era starts with the first HMM row that was visible (recorded and
+    computed) before an entry open, not with the earliest run_date: rows
+    backfilled later carry early run_dates but were not there to decide on
+    (Wei 10/30). No date is written in code.
     """
 
     def __init__(self, rows: Iterable[dict]):
@@ -113,8 +115,12 @@ class RegimeHistory:
                 raise ValueError('market_regime_history_payload_invalid:' + str(row['run_date']))
             self._rows.append((str(row['run_date']), _instant(row['computed_at']), _instant(row['recorded_at']),
                                str(row['state_checksum']), state))
-        hmm_dates = [run_date for run_date, *_rest, state in self._rows if state.get('source') == 'hmm']
-        self.first_hmm_date: Optional[str] = min(hmm_dates) if hmm_dates else None
+        self._hmm_rows = [row for row in self._rows if row[4].get('source') == 'hmm']
+
+    def hmm_visible(self, session: str, as_of: datetime) -> bool:
+        """Whether any HMM row for `session` or earlier was recorded by `as_of`: the HMM era test."""
+        return any(run_date <= session and computed <= as_of and recorded <= as_of
+                   for run_date, computed, recorded, _checksum, _state in self._hmm_rows)
 
     def latest_on_or_before(self, session: str, as_of: datetime) -> Optional[dict]:
         """The newest observation for `session` or earlier that existed at `as_of`; None if it is not HMM."""
@@ -236,10 +242,9 @@ class BacktestMarketState:
         dates = [day for day in self._risk if day <= date]
         return self._risk[max(dates)] if dates else None
 
-    def in_hmm_era(self, session: str) -> bool:
-        """True from the first HMM run_date in the data; earlier sessions keep the stored path."""
-        first = self._regime.first_hmm_date
-        return first is not None and session >= first
+    def in_hmm_era(self, session: str, entry_date: str) -> bool:
+        """True once an HMM row was visible before the entry open; earlier sessions keep the stored path."""
+        return self._regime.hmm_visible(session, entry_open(entry_date))
 
     def hmm_regime_contract(self, session: str, entry_date: str) -> Optional[dict]:
         """The pipeline regime contract (alpha_regime + regime_surface) for decisions made at `session`.
@@ -247,7 +252,7 @@ class BacktestMarketState:
         None before the HMM era, and None inside it when no HMM observation was
         visible before the entry open (Paper then has no regime contract either).
         """
-        if not self.in_hmm_era(session):
+        if not self.in_hmm_era(session, entry_date):
             return None
         state = self._regime.latest_on_or_before(session, entry_open(entry_date))
         if state is None:

@@ -164,8 +164,8 @@ test('news producer retries bad JSON without writing neutral KV, then publishes 
   f.ports.nowMs = now.getTime(); f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
   f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
     source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
-  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
-    .run(row.title, row.summary, row.url, row.source, now.toISOString())
+  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at,created_at) VALUES(1,1,?,?,?,?,?,?)')
+    .run(row.title, row.summary, row.url, row.source, now.toISOString(), now.toISOString())
   const tw = new Date(now.getTime() + 8 * 3600_000 - 60_000).toISOString()
   let calls = 0, good = false
   globalThis.fetch = async () => new Response('<rss/>')
@@ -207,8 +207,8 @@ test('news producer repairs once with same evidence, then caches valid output', 
   f.ports.nowMs = now.getTime(); f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
   f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
     source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
-  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
-    .run(row.title, row.summary, row.url, row.source, now.toISOString())
+  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at,created_at) VALUES(1,1,?,?,?,?,?,?)')
+    .run(row.title, row.summary, row.url, row.source, now.toISOString(), now.toISOString())
   const tw = new Date(now.getTime() + 8 * 3600_000 - 60_000).toISOString()
   let calls = 0
   globalThis.fetch = async () => new Response('<rss/>')

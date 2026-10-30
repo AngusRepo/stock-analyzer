@@ -49,7 +49,7 @@ jobs:
 
       # Controller tests read older committed sources (git show <sha>:path), so controller
       # suites fetch full history without blobs; other suites keep the one-commit checkout.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.ref.outputs.sha }}
           fetch-depth: ${{ startsWith(matrix.suite, 'controller') && '0' || '1' }}
@@ -58,7 +58,7 @@ jobs:
       # The comparison tooling comes from github.sha: on pull_request that is the
       # base+head merge commit, so a branch older than ci/ still gets the tools and a
       # PR that edits ci/ is tested with its own version. On push it is the commit itself.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .ci-tools
@@ -72,7 +72,7 @@ jobs:
         if: matrix.side == 'base'
         shell: bash
         run: echo "key=$(bash .ci-tools/ci/base_cache_key.sh .ci-tools '${{ steps.ref.outputs.sha }}')" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: matrix.side == 'base'
         with:
           path: ${{ runner.temp }}/base-cache
@@ -87,15 +87,16 @@ jobs:
           list="$RUNNER_TEMP/base-cache/failures-${{ matrix.suite }}.txt"
           if [ -f "$list" ]; then cp "$list" "$RUNNER_TEMP/failures.txt"; echo "hit=true" >> "$GITHUB_OUTPUT"; fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.suite != 'hygiene' && steps.cached.outputs.hit != 'true'
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.cached.outputs.hit != 'true'
         with:
-          python-version: '3.12'
+          # Same minor as the controller image (Dockerfile: Python 3.11.17).
+          python-version: '3.11'
           # Only the controller suite installs pip packages; caching elsewhere fails the post step.
           cache: ${{ startsWith(matrix.suite, 'controller') && 'pip' || '' }}
           cache-dependency-path: |
@@ -107,7 +108,7 @@ jobs:
         shell: bash
         run: bash .ci-tools/ci/run_suite.sh "${{ matrix.suite }}" "$RUNNER_TEMP/failures.txt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: failures-${{ matrix.suite }}-${{ matrix.side }}
@@ -115,7 +116,7 @@ jobs:
           if-no-files-found: error
 
       # Per-file seconds for ci/controller_durations.py (refreshes the shard weights).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && startsWith(matrix.suite, 'controller')
         with:
           name: junit-${{ matrix.suite }}-${{ matrix.side }}
@@ -133,18 +134,18 @@ jobs:
     steps:
       # Code under rerun is the head; the rerun tooling comes from github.sha like the suites.
       # Same history as the controller suites: reruns may read older committed sources.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           filter: blob:none
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .ci-tools
           sparse-checkout: ci
           fetch-depth: 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: failures-controller-*
           path: failures
@@ -152,16 +153,16 @@ jobs:
         run: python .ci-tools/ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: List head-only failures
         run: python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       # No pip cache here: most runs install nothing, and an unused cache fails the post step.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Rerun them
         run: bash .ci-tools/ci/rerun_controller.sh "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: flaky-controller
           path: ${{ runner.temp }}/flaky.txt
@@ -181,11 +182,11 @@ jobs:
           if [ "${{ needs.suite.result }}" != success ] || [ "${{ needs.confirm.result }}" != success ]; then
             echo "suite result: ${{ needs.suite.result }}, confirm result: ${{ needs.confirm.result }}"; exit 1
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           sparse-checkout: ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: failures
       - name: Merge controller shards
@@ -201,7 +202,7 @@ jobs:
           set -e
           python ci/base_cache.py failures "$RUNNER_TEMP/base-cache" worker             $(seq -f 'controller-%g' 1 "$CONTROLLER_SHARDS") frontend hygiene
           [ -d "$RUNNER_TEMP/base-cache" ] && echo "key=$(bash ci/base_cache_key.sh . '${{ github.sha }}')" >> "$GITHUB_OUTPUT" || true
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.pack.outputs.key != ''
         with:
           path: ${{ runner.temp }}/base-cache

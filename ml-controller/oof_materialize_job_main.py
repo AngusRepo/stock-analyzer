@@ -203,9 +203,11 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
         logger.error("[OofMaterializeJob] Independent NAV closure refused: %s", exc)
         return {"status": "failed", "as_of_date": end_date, "accounting_status": None,
                 "reason": "paired_nav_daily_closure_incomplete", "error_type": type(exc).__name__}
-    from services.paired_nav_read_cache import reuse_verified_cold_reads
+    from services.paired_nav_scan_once import scan_each_snapshot_once
     from services.runtime_phase_metrics import measured_phase
-    with measured_phase("daily_nav"), reuse_verified_cold_reads(), reuse_verified_nav_evidence():
+    # Census, owner and display sweeps re-read the same 0.7-2.4 GB contexts with
+    # different projections; scan each verified snapshot once for all of them.
+    with measured_phase("daily_nav"), scan_each_snapshot_once(), reuse_verified_nav_evidence():
         if retire_legacy_owners and end_date and now is None:
             from services.daily_nav_read_receipt import run_with_receipt, GcsReceiptStore
             from services.d1_domain_client import D1DataDomain, client_for_domain

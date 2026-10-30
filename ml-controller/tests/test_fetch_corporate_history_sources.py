@@ -219,7 +219,9 @@ def test_the_real_sdk_never_persists_or_refreshes_an_env_session(monkeypatch, tm
     import finlab
     import finlab.auth as sdk_auth
     import finlab.data.auth as sdk_data_auth
-    monkeypatch.setenv('HOME', str(tmp_path))
+    # CREDENTIALS_FILE is fixed at import; point it here so a regression cannot touch the real ~/.finlab.
+    monkeypatch.setattr(sdk_auth, 'CREDENTIALS_DIR', str(tmp_path / '.finlab'))
+    monkeypatch.setattr(sdk_auth, 'CREDENTIALS_FILE', str(tmp_path / '.finlab' / 'credentials.json'))
     for module, name in ((finlab, 'login'), (sdk_auth, 'save_session'), (sdk_data_auth, '_refresh_id_token')):
         monkeypatch.setattr(module, name, getattr(module, name))  # restored after the test
     monkeypatch.setattr(sdk_data_auth._context._default_context, '_last_token_type', 'id_token')

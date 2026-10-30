@@ -74,8 +74,6 @@ def _fetcher():
 
 def remote_fetch(env, *, sdk_loader=None, clock=None) -> dict:
     """Body of the Modal function; returns data or a scrubbed error, never env values."""
-    import contextlib
-    import io
     import logging
     logging.disable(logging.CRITICAL)  # SDK loggers may hold handlers bound before redirection
     try:
@@ -140,6 +138,8 @@ def save_recovery(out: Path, result: dict) -> Path:
 def load_recovery(out: Path) -> dict:
     import hashlib
     folder = out / RECOVERY
+    if not (folder / 'result.json').exists():  # written last: without it the save was interrupted
+        raise SystemExit(f'modal_recovery_incomplete: remove {folder} and rerun without --resume')
     meta = json.loads((folder / 'result.json').read_text(encoding='utf-8'))
     blobs = {}
     for entry in meta['sources'].values():
@@ -171,8 +171,10 @@ def main(out_dir: str, days: str = '', universe: str = '', resume: bool = False)
     if resume:
         result = load_recovery(out)
     else:
-        if (out / RECOVERY).exists():
+        if (out / RECOVERY / 'result.json').exists():
             raise SystemExit('a previous Modal result is waiting: rerun with --resume (no new Modal call)')
+        if (out / RECOVERY).exists():
+            raise SystemExit(f'an interrupted recovery save is left at {out / RECOVERY}: remove it and rerun')
         result = fetch_finlab_sources.remote()
         if not result.get('ok'):
             print(json.dumps({k: result.get(k) for k in ('error_type', 'error', 'env_names_present')},

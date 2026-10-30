@@ -164,3 +164,9 @@ def test_a_local_seal_failure_keeps_the_remote_result_for_resume(tmp_path):
                  http_get=lambda url: b'["0050","0056"]')
     assert not (tmp_path / entry.RECOVERY).exists() and (tmp_path / 'spec.json').exists()
     assert all(SECRET.encode() not in p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
+
+
+def test_an_interrupted_recovery_save_explains_itself(tmp_path):
+    (tmp_path / entry.RECOVERY).mkdir()
+    with pytest.raises(SystemExit, match='modal_recovery_incomplete'):
+        entry.load_recovery(tmp_path)

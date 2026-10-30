@@ -32,6 +32,7 @@
 
 ## 2. 資金與股數換算（D-6）
 - **實盤 NAV（3a）**：券商現金＋持股市值（當下權威報價）−未交割。KV：`trading:live_config.capital_source='broker_nav_authoritative_marks'`。
+  - 持股報價（Wei 10/30 Q1）：用券商 snapshot 當天的最後成交價。snapshot 顯示當天還沒成交（成交量 0，或最後成交在更早的日子）時，改用券商合約表 `update_date` 為今天的參考價（`shioaji_contract_reference_price`）。合約表不是今天的、`trading_suspended`，或 snapshot 根本沒回來，都不給報價。
 - **Paper 分母（3b，只用在買單）**：Paper 下單當下的 `portfolioValue`（就是 `sizingAuthorization.portfolioValue` 那個值）。
   - 來源（Wei 10/29 方案 A）：Paper 在買進寫入點把已算好的值另寫一列到 `paper_order_sizing_v1(order_id, portfolio_value)`。
   - 這是 native 改動，獨立 commit、搭 Slice A；Paper 的決策、寫入順序和失敗行為不變，這列寫失敗也不擋 Paper。

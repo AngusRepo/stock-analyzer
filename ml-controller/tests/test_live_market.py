@@ -163,13 +163,14 @@ def _held(symbols_shares):
 def test_account_reads_a_verified_observation_and_todays_marks():
     http = Http({"/v1/account/observations": _held([("2330", 1000), ("0050", 0), ("6488", 2000)]),
                  "/v1/marks": lambda body: (200, {"status": "ready", "marks": {
-                     "2330": {"price": 101.0, "date": "2026-12-10"}, "6488": {"price": 50.5, "date": "2026-12-10"}}})})
+                     "2330": {"price": 101.0, "date": "2026-12-10", "source": "snapshot_last_trade"},
+                     "6488": {"price": 50.5, "date": "2026-12-10", "source": "contract_reference"}}})})
     observation, marks = _market(http).account("2026-12-10")
     assert http.calls[0][2]["request_id"].startswith("live-intake-2026-12-10-")
     assert http.calls[1][0] == "https://gateway.example.test/v1/marks"
     assert http.calls[1][2] == {"symbols": ["2330", "6488"]} and http.calls[1][1]["Authorization"] == "Bearer svc"
     assert marks == {"2330": {"price": 101.0, "date": "2026-12-10", "source": lm.MARK_SOURCE},
-                     "6488": {"price": 50.5, "date": "2026-12-10", "source": lm.MARK_SOURCE}}
+                     "6488": {"price": 50.5, "date": "2026-12-10", "source": lm.REFERENCE_MARK_SOURCE}}
     assert account_nav(observation, "2026-12-10", marks)["nav"] == 400_000.0 + 101_000.0 + 101_000.0
 
 
@@ -188,7 +189,10 @@ def test_no_holdings_needs_no_marks():
 
 
 @pytest.mark.parametrize("mark", [
-    {"price": 101.0, "date": "2026-12-09"},  # the last trade was yesterday
+    {"price": 101.0, "date": "2026-12-09", "source": "snapshot_last_trade"},  # the last trade was yesterday
+    {"price": 101.0, "date": "2026-12-10"},  # no source
+    {"price": 101.0, "date": "2026-12-10", "source": "hub_quote"},  # not a gateway mark kind
+    {"price": 101.0, "date": "2026-12-10", "source": ["snapshot_last_trade"]},  # unhashable: no mark, no TypeError
     {"price": 0, "date": "2026-12-10"},
     {"price": True, "date": "2026-12-10"},
     {"price": math.inf, "date": "2026-12-10"},
@@ -373,12 +377,17 @@ def test_gateway_marks_are_dated_last_trades():
                  # no trade today: close is an earlier day's price
                  _snap("2412", 120.0, _ts(today, "13:30"), total_volume=0),
                  _snap("2882", 45.0, _ts(today, "13:30"), total_volume=True),
-                 _snap("2891", 30.0, _ts(today, "13:30"), total_volume=None)]
-    symbols = ["2330", "6488", "3008", "2454", "2317", "2303", "1101", "2412", "2882", "2891"]
+                 _snap("2891", 30.0, _ts(today, "13:30"), total_volume=None),
+                 _snap("2603", 60.0, _ts(today, "13:30"), total_volume=-5)]
+    symbols = ["2330", "6488", "3008", "2454", "2317", "2303", "1101", "2412", "2882", "2891", "2603"]
     gateway, started, calls = _gateway({s: _contract() for s in symbols}, snapshots=snapshots)
     out = gateway.marks(symbols=symbols)
-    assert out == {"status": "ready", "marks": {"2330": {"price": 101.0, "date": today},
-                                                "6488": {"price": 50.5, "date": "2026-01-02"}}}
+    snap, ref = "snapshot_last_trade", "contract_reference"
+    # 6488 last traded on an earlier day and 2412 has no trade today: today's reference price
+    # (Wei 10/30 Q1). Malformed snapshots (2882, 2891, ...) prove nothing and get no mark.
+    assert out == {"status": "ready", "marks": {"2330": {"price": 101.0, "date": today, "source": snap},
+                                                "6488": {"price": 50.0, "date": today, "source": ref},
+                                                "2412": {"price": 50.0, "date": today, "source": ref}}}
     assert started == [True] and len(calls[0][0]) == len(symbols)
     assert calls[0][1] == 3000  # bounded: snapshots run inside the broker lock
 
@@ -509,3 +518,39 @@ def test_broker_truth_route_authenticates_and_sanitizes(monkeypatch):
         with pytest.raises(HTTPException) as error:
             app.read_broker_truth(request, authorization="Bearer unit-test-truth-token")
         assert (error.value.status_code, error.value.detail) == (code, detail)
+
+
+@pytest.mark.parametrize("contract,downloaded", [
+    (_contract(update_date=STALE), {"2330": _contract(update_date=STALE)}),  # still an earlier day's table
+    (_contract(trading_suspended=True), None),
+    (_contract(reference=0.0), None),
+    (_contract(reference=True), None),
+    (_contract(reference=math.nan), None),
+    (_contract(update_date=STALE), OSError("acct 123")),  # the refresh fails
+])
+def test_no_reference_mark_without_todays_usable_contract(contract, downloaded):
+    snapshots = [_snap("2330", 101.0, _ts("2026-12-09", "13:30"), total_volume=0)]
+    gateway, _, _ = _gateway({"2330": contract}, snapshots=snapshots, downloaded=downloaded)
+    assert gateway.marks(symbols=["2330"]) == {"status": "ready", "marks": {}}
+
+
+def test_a_stale_table_is_refreshed_for_a_reference_mark():
+    snapshots = [_snap("2330", 101.0, _ts(TODAY.isoformat(), "10:00"), total_volume=0)]
+    gateway, _, _ = _gateway({"2330": _contract(update_date=STALE)}, snapshots=snapshots,
+                             downloaded={"2330": _contract(reference=48.5)})
+    assert gateway.marks(symbols=["2330"])["marks"] == {
+        "2330": {"price": 48.5, "date": TODAY.isoformat(), "source": "contract_reference"}}
+    assert len(gateway._account.api.downloads) == 1
+
+
+def test_a_missing_snapshot_never_falls_back_to_the_reference():
+    gateway, _, _ = _gateway({"2330": _contract()}, snapshots=[])
+    assert gateway.marks(symbols=["2330"])["marks"] == {}
+
+
+def test_a_trade_today_wins_over_a_zero_volume_duplicate():
+    today = TODAY.isoformat()
+    snapshots = [_snap("2330", 0.0, _ts(today, "09:00"), total_volume=0), _snap("2330", 101.0, _ts(today, "10:00"))]
+    gateway, _, _ = _gateway({"2330": _contract()}, snapshots=snapshots)
+    assert gateway.marks(symbols=["2330"])["marks"]["2330"] == {"price": 101.0, "date": today,
+                                                                "source": "snapshot_last_trade"}

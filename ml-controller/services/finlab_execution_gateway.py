@@ -464,7 +464,9 @@ class PersistentFinlabExecutionGateway:
                 "available_cash": float(account["available_cash"]), "position_shares": int(account["position_shares"])}
 
     def marks(self, *, symbols: list[str]) -> dict[str, Any]:
-        """Read-only exchange snapshots (last trade and its Taiwan date) for valuing Live holdings."""
+        """Read-only marks for valuing Live holdings: the last trade and its Taiwan date, or, for a
+        holding with no trade yet today, today's reference price from the broker's contract table
+        (Wei 10/30 Q1; an earlier day's table or a suspended contract gives no mark)."""
         self._read_admitted(symbols)
         self.ensure_started()
         with self._lock:
@@ -473,18 +475,43 @@ class PersistentFinlabExecutionGateway:
             now = self._clock()
             contracts = [self._contract(s, now, current=False) for s in symbols]
             snapshots = list(self._account.api.snapshots(contracts, timeout=_SNAPSHOT_TIMEOUT_MS) or [])
+        today = now.astimezone(_TW).date()
+        marks, untraded = self._snapshot_marks(symbols, snapshots, today.isoformat())
+        for symbol in sorted(untraded):  # only a snapshot that shows no trade today; a missing one gives nothing
+            with self._lock:
+                try:
+                    contract = self._contract(symbol, now, current=True)
+                except Exception:
+                    continue  # no current table: no mark, so the controller has no NAV and buys nothing
+                reference, updated = _field(contract, "reference"), _field(contract, "update_date")
+                suspended = _field(contract, "trading_suspended")
+            if _contract_day(updated) == today and suspended is not True and _finite_positive(reference):
+                marks[symbol] = {"price": float(reference), "date": today.isoformat(), "source": "contract_reference"}
+        return {"status": "ready", "marks": marks}
+
+    @staticmethod
+    def _snapshot_marks(symbols: list[str], snapshots: list[Any], today: str) -> tuple[dict[str, Any], set[str]]:
+        """Dated last trades, and the codes whose snapshot shows no trade today (zero volume, or
+        a last trade from an earlier day)."""
         marks: dict[str, Any] = {}
+        untraded: set[str] = set()
         for snapshot in snapshots:
             code, close, ts = _field(snapshot, "code"), _field(snapshot, "close"), _field(snapshot, "ts")
             volume = _field(snapshot, "total_volume")
-            if (code not in symbols or not _finite_positive(close) or isinstance(ts, bool) or not isinstance(ts, int)
-                    or isinstance(volume, bool) or not isinstance(volume, int) or volume <= 0):
-                continue  # no trade that day: close would be an earlier day's price
+            if code not in symbols or isinstance(volume, bool) or not isinstance(volume, int):
+                continue
+            if volume == 0:
+                untraded.add(code)  # no trade yet: close would be an earlier day's price
+                continue
+            if volume < 0 or not _finite_positive(close) or isinstance(ts, bool) or not isinstance(ts, int):
+                continue
             # ts is nanoseconds; Taiwan session hours fall on the same calendar date whether it
             # encodes UTC or Taiwan wall time, so only the date is used (sessions end 13:30).
-            marks[code] = {"price": float(close),
-                           "date": datetime.fromtimestamp(ts / 1e9, timezone.utc).date().isoformat()}
-        return {"status": "ready", "marks": marks}
+            day = datetime.fromtimestamp(ts / 1e9, timezone.utc).date().isoformat()
+            marks[code] = {"price": float(close), "source": "snapshot_last_trade", "date": day}
+            if day < today:
+                untraded.add(code)
+        return marks, untraded - {code for code, mark in marks.items() if mark["date"] == today}
 
     def capture_account_observation(self, *, request_id: str, repository: Any = None) -> dict[str, Any]:
         # Read admission is independent of order admission. A return to Paper

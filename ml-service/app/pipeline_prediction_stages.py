@@ -150,11 +150,15 @@ class Journal:
         saved, _ = self.store.read(key)
         if saved is not None:
             return saved['value']
-        self.unsealable = False
-        value = compute()  # Suspended propagates; incomplete stages are never sealed.
-        if self.unsealable:
-            # A GPU stage without a result fails this run but is not a recorded outcome.
-            self.unsealable = False
+        outer, self.unsealable = self.unsealable, False
+        try:
+            value = compute()  # Suspended propagates; incomplete stages are never sealed.
+        finally:
+            inner, self.unsealable = self.unsealable, outer
+        if inner:
+            # A GPU stage without a result fails this run but is not a recorded outcome;
+            # an enclosing stage built from it is not one either.
+            self.unsealable = True
             return value
         saved = self.store.put(key, {'value': value})
         self.progress({'cpu': key})
@@ -166,34 +170,39 @@ class Journal:
         claim, generation = self.store.read(key + '/claim')
         now = self.clock()
         if claim:
+            if claim.get('v') != CLAIM_VERSION:
+                raise self._unsealed(ValueError('pipeline_stage_gpu_claim_schema_invalid'))
             result, _ = self.store.read(key + '/result/' + claim['token'])
             if result is not None:
                 if result['input_checksum'] != stage:
                     raise ValueError('pipeline_stage_gpu_input_mismatch')
                 if result.get('error'):
+                    late = self._valid_result(key, stage, claim)
+                    if late is not None:
+                        return late['value']
                     raise RuntimeError('pipeline_stage_gpu_failed:' + result['error'])
                 return result['value']
-            if claim.get('v') != CLAIM_VERSION:
-                raise ValueError('pipeline_stage_gpu_claim_schema_invalid')
+            late = self._valid_result(key, stage, claim)
+            if late is not None:
+                return late['value']
             if claim.get('abandoned'):
                 return self._settle(key, stage, claim, 'pipeline_stage_gpu_queue_exhausted')
-            if 'started' in claim:
-                if claim['until'] > now:
-                    self.progress({'gpu': key, 'token': claim['token']})
-                    raise Suspended()
-                if claim['attempt'] >= GPU_ATTEMPTS:
-                    return self._settle(key, stage, claim, 'pipeline_stage_gpu_attempts_exhausted')
-                late = self._valid_result(key, stage, claim)
-                if late is not None:
-                    return late['value']
-            else:
+            if 'started' not in claim:
                 return self._queued(payload, key, stage, claim, generation, now)
+            if claim['until'] > now:
+                self.progress({'gpu': key, 'token': claim['token']})
+                raise Suspended()
+            if claim['attempt'] >= GPU_ATTEMPTS:
+                return self._settle(key, stage, claim, 'pipeline_stage_gpu_attempts_exhausted')
+        try:
+            limit = queue_max_seconds()
+        except ValueError as exc:
+            raise self._unsealed(exc)
         queued_before = (claim['queued_before'] + claim['started'] - claim['queued_at']) if claim else 0
         token = uuid.uuid4().hex
         claim = {'v': CLAIM_VERSION, 'token': token, 'tokens': (claim['tokens'] if claim else []) + [token],
                  'attempt': claim['attempt'] if claim else 0, 'dispatches': 1, 'queued_at': now,
-                 'queued_before': queued_before,
-                 'queue_deadline': now + queue_max_seconds() - queued_before}
+                 'queued_before': queued_before, 'queue_deadline': now + limit - queued_before}
         # Source persisted before claim; an interruption is safe to resume.
         self.store.put(key + '/input', {'value': payload, 'input_checksum': stage})
         if not self.store.cas(key + '/claim', claim, generation):
@@ -204,16 +213,13 @@ class Journal:
     def _queued(self, payload, key, stage, claim, generation, now):
         # Queued in Modal: keep the same request. A new token would only queue again.
         if now >= claim['queue_deadline']:
-            if not self.store.cas(key + '/claim', {**claim, 'abandoned': True}, generation):
-                return self.gpu(payload)  # The container started first; its lease now applies.
-            receipt, _ = self.store.read(key + '/dispatch/' + claim['token'])
-            if receipt and self.cancel is not None:
-                try:
-                    self.cancel(receipt['function_call_id'])
-                except Exception as exc:
-                    # A late container sees the abandoned claim and does not run.
-                    print(f'[PipelineStages] gpu_cancel_failed {type(exc).__name__}', flush=True)
-            return self._settle(key, stage, claim, 'pipeline_stage_gpu_queue_exhausted')
+            # Re-read either way: a CAS can report a conflict for a write that landed, and a
+            # container that started first keeps its lease.
+            self.store.cas(key + '/claim', {**claim, 'abandoned': True}, generation)
+            current, _ = self.store.read(key + '/claim')
+            if current and current['token'] == claim['token'] and current.get('abandoned'):
+                self._cancel_queued(key, claim['token'])
+            return self.gpu(payload)
         self.progress({'gpu': key, 'token': claim['token']})
         receipt, _ = self.store.read(key + '/dispatch/' + claim['token'])
         if (receipt is not None or claim['dispatches'] >= GPU_DISPATCHES
@@ -224,14 +230,32 @@ class Journal:
             raise Suspended()
         raise Suspended(self._dispatch(stage, claim['token']))
 
+    def _cancel_queued(self, key, token):
+        receipt, _ = self.store.read(key + '/dispatch/' + token)
+        for function_call_id in (receipt or {}).get('function_call_ids', []):
+            if self.cancel is None:
+                return
+            try:
+                self.cancel(function_call_id)
+            except Exception as exc:
+                # A late container sees the abandoned claim and does not run.
+                print(f'[PipelineStages] gpu_cancel_failed {type(exc).__name__}', flush=True)
+
     def _dispatch(self, stage, token):
         return {'schema_version': GPU_SCHEMA, 'root': self.root,
                 'stage': stage, 'token': token, 'reference': self.reference}
 
     def dispatched(self, dispatch, function_call_id):
-        """Receipt that Modal accepted this token; without it the next resume re-sends it."""
-        self.store.put(self.root + '/gpu/' + dispatch['stage'] + '/dispatch/' + dispatch['token'],
-                       {'function_call_id': function_call_id, 'at': self.clock()})
+        """Receipt that Modal accepted this token; without it the next resume re-sends it.
+        Every accepted call is kept so an abandon can cancel all of them."""
+        key = self.root + '/gpu/' + dispatch['stage'] + '/dispatch/' + dispatch['token']
+        for _ in range(GPU_DISPATCHES + 1):
+            receipt, generation = self.store.read(key)
+            ids = (receipt or {}).get('function_call_ids', [])
+            if self.store.cas(key, {'function_call_ids': ids + [function_call_id], 'at': self.clock()},
+                              generation):
+                return
+        raise RuntimeError('pipeline_stage_gpu_receipt_conflict')
 
     def _valid_result(self, key, stage, claim):
         for token in claim['tokens']:
@@ -240,13 +264,16 @@ class Journal:
                 return result
         return None
 
+    def _unsealed(self, exc):
+        self.unsealable = True
+        return exc
+
     def _settle(self, key, stage, claim, reason):
         # Re-check every token before failing: any valid result for this input wins.
         result = self._valid_result(key, stage, claim)
         if result is not None:
             return result['value']
-        self.unsealable = True
-        raise GpuStageUnavailable(reason)
+        raise self._unsealed(GpuStageUnavailable(reason))
 
 
 def namespace(payload):
@@ -272,12 +299,14 @@ def run_gpu_stage(store, envelope, *, predict, resume, clock=time.time):
         return {'status': 'terminal'}
     if claim.get('abandoned'):
         return {'status': 'abandoned'}
+    leased = False
     while 'started' not in claim:
         # The lease starts here, when this container runs, not when it was queued.
         # Losing the CAS means the driver changed the claim (re-send or abandon): re-read.
         now = clock()
         if store.cas(key + '/claim', {**claim, 'started': now, 'until': now + GPU_LEASE_SECONDS,
                                       'attempt': claim['attempt'] + 1}, generation):
+            leased = True
             break
         claim, generation = store.read(key + '/claim')
         if not claim or claim['token'] != token:
@@ -293,6 +322,11 @@ def run_gpu_stage(store, envelope, *, predict, resume, clock=time.time):
         execution_key = key + '/execution/' + token
         if not store.cas(execution_key, {'started': clock()}, 0):
             return {'status': 'already_running'}
+        if not leased:
+            # Another container of this token started and died before executing: this run
+            # needs its own lease. A lost CAS (a newer token) leaves this result to the scan.
+            now = clock()
+            store.cas(key + '/claim', {**claim, 'until': now + GPU_LEASE_SECONDS}, generation)
         try:
             packet, _ = store.read(key + '/input')
             if not packet or packet.get('input_checksum') != stage or digest(packet['value']) != stage:

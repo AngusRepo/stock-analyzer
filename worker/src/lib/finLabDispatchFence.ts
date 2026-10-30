@@ -45,3 +45,21 @@ export function finLabCallbackSummary(summary: string, attempt: unknown, activeS
   const clean = summary.replace(/(?:^|\s)(?:dispatch_attempt|function_call_id)=[^\s;]+/g, '').trim()
   return `${clean} dispatch_attempt=${boundedAttempt(attempt)}${call ? ` function_call_id=${call}` : ''}`
 }
+
+/**
+ * The FinLab job reports a composition fail-closed (daily_inference_composition_*) only in the canonical
+ * apply blockers of the callback result; the run log keeps it as a summary field the watchdog can read.
+ */
+export function finLabCompositionBlockerSuffix(result: unknown): string {
+  const perDataset = (result as { canonical_d1_apply?: { per_dataset?: unknown } } | null)?.canonical_d1_apply?.per_dataset
+  const reasons = new Set<string>()
+  for (const dataset of perDataset && typeof perDataset === 'object' ? Object.values(perDataset) : []) {
+    const blockers = (dataset as { blockers?: unknown } | null)?.blockers
+    for (const blocker of Array.isArray(blockers) ? blockers : []) {
+      const reason = (blocker as { kind?: unknown; reason?: unknown } | null)
+      if (reason?.kind === 'daily_inference_composition' && typeof reason.reason === 'string'
+        && /^[a-z0-9_]+$/.test(reason.reason)) reasons.add(reason.reason)
+    }
+  }
+  return reasons.size ? ` composition_blockers=${[...reasons].sort().join(',')}` : ''
+}

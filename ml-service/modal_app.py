@@ -1988,15 +1988,16 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     stage_journal = SCOPE.get()
     stage_namespace = namespace(payload) if stage_journal is not None else None
 
-    def _timexer_predict(**kwargs):
+    def _timexer_predict(*, shadow: bool = False, **kwargs):
         # The validated research recipe is CUDA/high precision. Keep the
         # expensive GPU allocation separate from CPU feature/graph stages.
+        # A shadow candidate waits for the GPU only up to its shorter limit.
         gpu_input = {**kwargs, "feature_source": payload.get("timexer_feature_source"),
             "signal_date": payload["run_date"]}
         if payload.get("timexer_pit_feature_sources"):
             # Only on days with a PIT-trained TimeXer, so legacy stage digests are unchanged.
             gpu_input["pit_feature_sources"] = payload["timexer_pit_feature_sources"]
-        result = (stage_journal.gpu(gpu_input) if stage_journal is not None
+        result = (stage_journal.gpu(gpu_input, shadow=shadow) if stage_journal is not None
                   else timexer_universal_predict.remote(gpu_input))
         return result["results"]
 
@@ -2054,7 +2055,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             candidate_identities=active8_shadow_identities,
             predictors={
                 "DLinear": dlinear_batch_predict,
-                "TimeXer": _timexer_predict,
+                "TimeXer": lambda **kwargs: _timexer_predict(shadow=True, **kwargs),
                 "PatchTST": patchtst_batch_predict,
                 "iTransformer": itransformer_batch_predict,
             },

@@ -25,20 +25,25 @@ GPU_DISPATCHES = 3
 GPU_RESEND_GRACE_SECONDS = 600
 CLAIM_VERSION = 2
 QUEUE_ENV = 'PIPELINE_GPU_QUEUE_MAX_SECONDS'
-# Ops timing (Wei 10/30): total time a stage may wait for a GPU worker before the run fails.
+SHADOW_QUEUE_ENV = 'PIPELINE_GPU_SHADOW_QUEUE_MAX_SECONDS'
+# Ops timing (Wei 10/30): total time a stage may wait for a GPU worker. A formal stage
+# then fails the run; a shadow stage (no production effect) is skipped for the day.
 GPU_QUEUE_MAX_SECONDS = 4 * 3600
+GPU_SHADOW_QUEUE_MAX_SECONDS = 3600
 
 
-def queue_max_seconds():
-    raw = os.environ.get(QUEUE_ENV, '').strip()
+def queue_max_seconds(shadow=False):
+    name, default = (SHADOW_QUEUE_ENV, GPU_SHADOW_QUEUE_MAX_SECONDS) if shadow else (QUEUE_ENV, GPU_QUEUE_MAX_SECONDS)
+    raw = os.environ.get(name, '').strip()
     if not raw:
-        return GPU_QUEUE_MAX_SECONDS
+        return default
     try:
         value = int(raw)
     except ValueError:
         value = 0
     if value <= 0:
-        raise ValueError('pipeline_gpu_queue_max_seconds_invalid')
+        raise ValueError(('pipeline_gpu_shadow_queue_max_seconds_invalid' if shadow
+                          else 'pipeline_gpu_queue_max_seconds_invalid'))
     return value
 
 
@@ -154,17 +159,18 @@ class Journal:
         try:
             value = compute()  # Suspended propagates; incomplete stages are never sealed.
         finally:
-            inner, self.unsealable = self.unsealable, outer
+            # Kept on the raise path too, so an enclosing stage that catches it stays unsealed.
+            inner = self.unsealable
+            self.unsealable = outer or inner
         if inner:
-            # A GPU stage without a result fails this run but is not a recorded outcome;
-            # an enclosing stage built from it is not one either.
-            self.unsealable = True
+            # A GPU stage without a result is not a recorded outcome; neither is a stage built on it.
             return value
         saved = self.store.put(key, {'value': value})
         self.progress({'cpu': key})
         return saved['value']
 
-    def gpu(self, payload):
+    def gpu(self, payload, *, shadow=False):
+        """`shadow`: a no-production-effect stage with the shorter queue limit; a new claim only."""
         stage = digest(payload)
         key = self.root + '/gpu/' + stage
         claim, generation = self.store.read(key + '/claim')
@@ -186,21 +192,27 @@ class Journal:
             if late is not None:
                 return late['value']
             if claim.get('abandoned'):
+                if claim.get('role') == 'shadow':
+                    print('[PipelineStages] WARNING shadow GPU stage skipped for the day: queue limit reached',
+                          flush=True)
+                    return self._settle(key, stage, claim, 'pipeline_stage_gpu_shadow_queue_exhausted')
                 return self._settle(key, stage, claim, 'pipeline_stage_gpu_queue_exhausted')
             if 'started' not in claim:
-                return self._queued(payload, key, stage, claim, generation, now)
+                return self._queued(payload, key, stage, claim, generation, now, shadow)
             if claim['until'] > now:
                 self.progress({'gpu': key, 'token': claim['token']})
                 raise Suspended()
             if claim['attempt'] >= GPU_ATTEMPTS:
                 return self._settle(key, stage, claim, 'pipeline_stage_gpu_attempts_exhausted')
+        role = claim.get('role', 'formal') if claim else ('shadow' if shadow else 'formal')
         try:
-            limit = queue_max_seconds()
+            limit = queue_max_seconds(role == 'shadow')
         except ValueError as exc:
             raise self._unsealed(exc)
         queued_before = (claim['queued_before'] + claim['started'] - claim['queued_at']) if claim else 0
         token = uuid.uuid4().hex
         claim = {'v': CLAIM_VERSION, 'token': token, 'tokens': (claim['tokens'] if claim else []) + [token],
+                 'role': role,
                  'attempt': claim['attempt'] if claim else 0, 'dispatches': 1, 'queued_at': now,
                  'queued_before': queued_before, 'queue_deadline': now + limit - queued_before}
         # Source persisted before claim; an interruption is safe to resume.
@@ -210,7 +222,7 @@ class Journal:
         self.progress({'gpu': key, 'token': token})
         raise Suspended(self._dispatch(stage, token))
 
-    def _queued(self, payload, key, stage, claim, generation, now):
+    def _queued(self, payload, key, stage, claim, generation, now, shadow):
         # Queued in Modal: keep the same request. A new token would only queue again.
         if now >= claim['queue_deadline']:
             # Re-read either way: a CAS can report a conflict for a write that landed, and a
@@ -219,7 +231,7 @@ class Journal:
             current, _ = self.store.read(key + '/claim')
             if current and current['token'] == claim['token'] and current.get('abandoned'):
                 self._cancel_queued(key, claim['token'])
-            return self.gpu(payload)
+            return self.gpu(payload, shadow=shadow)
         self.progress({'gpu': key, 'token': claim['token']})
         receipt, _ = self.store.read(key + '/dispatch/' + claim['token'])
         if (receipt is not None or claim['dispatches'] >= GPU_DISPATCHES
@@ -252,6 +264,8 @@ class Journal:
         for _ in range(GPU_DISPATCHES + 1):
             receipt, generation = self.store.read(key)
             ids = (receipt or {}).get('function_call_ids', [])
+            if function_call_id in ids:
+                return  # A write that landed although its CAS reported a conflict.
             if self.store.cas(key, {'function_call_ids': ids + [function_call_id], 'at': self.clock()},
                               generation):
                 return

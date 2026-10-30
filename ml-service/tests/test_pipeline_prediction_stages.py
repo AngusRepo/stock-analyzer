@@ -663,3 +663,148 @@ def test_entrypoint_queue_limit_closes_the_run_through_the_error_callback(monkey
     assert errors == ['pipeline_modal_timexer_cardinality_mismatch'] and cancelled == ['fc-77']
     assert any(k.endswith('/terminal') and v[0]['status'] == 'error_callback_accepted' for k, v in store.rows.items())
     assert not any('/cpu/ns/' in k for k in store.rows)
+
+
+def test_an_enclosing_stage_that_catches_a_raised_unavailable_child_is_not_sealed():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    journal.dispatched(pending.value.dispatch, 'fc-1')
+    now[0] = 4 * 3600
+    def outer():
+        try:
+            return journal.cpu('ns', 'child', lambda: journal.gpu({'x': 1}))
+        except GpuStageUnavailable as exc:
+            return {'error': str(exc)}
+    assert journal.cpu('atomic', 'slate', outer) == {'error': 'pipeline_stage_gpu_queue_exhausted'}
+    assert not any('/cpu/' in k for k in store.rows)
+
+
+def test_a_receipt_write_that_landed_despite_a_conflict_is_not_recorded_twice():
+    class Ghost(Store):
+        once = True
+        def cas(self, key, value, generation):
+            ok = super().cas(key, value, generation)
+            if ok and '/dispatch/' in key and self.once:
+                self.once = False
+                return False
+            return ok
+    store = Ghost()
+    journal = Journal(store, reference(), clock=lambda: 0)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    journal.dispatched(pending.value.dispatch, 'fc-1')
+    receipt = next(v[0] for k, v in store.rows.items() if '/dispatch/' in k)
+    assert receipt['function_call_ids'] == ['fc-1']
+
+
+def test_two_concurrent_containers_of_one_token_run_the_gpu_once():
+    store, runs, resumed = Store(), [], []
+    journal = Journal(store, reference(), clock=lambda: 0)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    dispatch = pending.value.dispatch
+    def first(payload):
+        runs.append('first')
+        # The duplicate arrives while the first is executing, after its start.
+        assert run_gpu_stage(store, dispatch, predict=lambda _: runs.append('second'),
+                             resume=resumed.append, clock=lambda: 20) == {'status': 'already_running'}
+        return {'ok': 1}
+    assert run_gpu_stage(store, dispatch, predict=first, resume=resumed.append, clock=lambda: 10)['status'] == 'resumed'
+    assert runs == ['first'] and resumed == [reference()]
+    assert journal.gpu({'x': 1}) == {'ok': 1}
+
+
+def test_a_shadow_stage_that_gets_a_gpu_within_its_hour_runs_normally():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'shadow': 1}, shadow=True)
+    journal.dispatched(pending.value.dispatch, 'fc-s')
+    claim = _claim(store, journal, pending.value.dispatch)
+    assert claim['role'] == 'shadow' and claim['queue_deadline'] == 3600
+    now[0] = 3599
+    run_gpu_stage(store, pending.value.dispatch, predict=lambda _: {'shadow': 'ok'}, resume=lambda _: None,
+                  clock=lambda: now[0])
+    now[0] = 9000
+    assert journal.gpu({'shadow': 1}, shadow=True) == {'shadow': 'ok'}
+
+
+def test_a_shadow_stage_is_skipped_at_one_hour_while_a_formal_stage_keeps_queueing(capsys):
+    store, now, cancelled = Store(), [0.], []
+    journal = Journal(store, reference(), clock=lambda: now[0], cancel=cancelled.append)
+    with pytest.raises(Suspended) as formal:
+        journal.gpu({'formal': 1})
+    journal.dispatched(formal.value.dispatch, 'fc-f')
+    with pytest.raises(Suspended) as shadow:
+        journal.gpu({'shadow': 1}, shadow=True)
+    journal.dispatched(shadow.value.dispatch, 'fc-s')
+    now[0] = 3599
+    with pytest.raises(Suspended):
+        journal.gpu({'shadow': 1}, shadow=True)
+    now[0] = 3600
+    def shadow_stage():
+        try:
+            return journal.gpu({'shadow': 1}, shadow=True)
+        except GpuStageUnavailable as exc:
+            return {'status': 'failed', 'error': str(exc)}
+    assert journal.cpu('ns', 'shadow', shadow_stage) == {
+        'status': 'failed', 'error': 'pipeline_stage_gpu_shadow_queue_exhausted'}
+    assert cancelled == ['fc-s'] and 'shadow GPU stage skipped' in capsys.readouterr().out
+    assert not any('/cpu/' in k for k in store.rows)
+    with pytest.raises(Suspended) as still:
+        journal.gpu({'formal': 1})  # The formal stage keeps its four hours.
+    assert still.value.dispatch is None and 'abandoned' not in _claim(store, journal, formal.value.dispatch)
+    now[0] = 4 * 3600
+    with pytest.raises(GpuStageUnavailable, match='^pipeline_stage_gpu_queue_exhausted$'):
+        journal.gpu({'formal': 1})
+
+
+def test_a_shadow_keeps_its_role_and_limit_across_tokens_and_the_flag_cannot_relabel_a_claim():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as first:
+        journal.gpu({'shadow': 1}, shadow=True)
+    with pytest.raises(SystemExit):
+        run_gpu_stage(store, first.value.dispatch, predict=_crash, resume=pytest.fail, clock=lambda: 600)
+    now[0] = 600 + GPU_LEASE_SECONDS
+    with pytest.raises(Suspended) as second:
+        journal.gpu({'shadow': 1})  # Even without the flag, the stage stays a shadow.
+    claim = _claim(store, journal, second.value.dispatch)
+    assert claim['role'] == 'shadow' and claim['queue_deadline'] == now[0] + 3600 - 600
+
+
+def test_shadow_queue_limit_env_override(monkeypatch):
+    from app import pipeline_prediction_stages as stages
+    monkeypatch.delenv('PIPELINE_GPU_SHADOW_QUEUE_MAX_SECONDS', raising=False)
+    monkeypatch.setenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', '99')
+    assert stages.queue_max_seconds(True) == 3600 and stages.queue_max_seconds() == 99
+    monkeypatch.setenv('PIPELINE_GPU_SHADOW_QUEUE_MAX_SECONDS', '120')
+    assert stages.queue_max_seconds(True) == 120
+    for bad in ('0', '-1', 'an hour'):
+        monkeypatch.setenv('PIPELINE_GPU_SHADOW_QUEUE_MAX_SECONDS', bad)
+        with pytest.raises(ValueError, match='^pipeline_gpu_shadow_queue_max_seconds_invalid$'):
+            stages.queue_max_seconds(True)
+
+
+def test_the_shadow_candidate_runner_records_a_skipped_shadow_and_routes_timexer_as_shadow():
+    from pathlib import Path
+    import modal_app
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'series_list': [{'symbol': '2330'}]}, shadow=True)
+    journal.dispatched(pending.value.dispatch, 'fc-s')
+    now[0] = 3600
+    out = modal_app._run_active8_sequence_shadow_candidates(
+        candidate_series_by_model={'TimeXer': [{'symbol': '2330'}]},
+        candidate_entries={'TimeXer': {'candidate_type': 'shadow'}},
+        candidate_identities={'TimeXer': {'version': 'v9', 'artifact_id': 'a', 'checksum': 'c'}},
+        predictors={'TimeXer': lambda **kw: journal.gpu({'series_list': kw['series_list']}, shadow=True)})
+    candidate = out['candidates']['TimeXer']
+    assert candidate['status'] == 'failed' and out['production_effect'] is False
+    assert candidate['error'] == 'GpuStageUnavailable: pipeline_stage_gpu_shadow_queue_exhausted'
+    source = (Path(modal_app.__file__)).read_text()
+    assert '"TimeXer": lambda **kwargs: _timexer_predict(shadow=True, **kwargs),' in source
+    assert 'stage_journal.gpu(gpu_input, shadow=shadow)' in source

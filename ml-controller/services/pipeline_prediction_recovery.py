@@ -108,7 +108,8 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     if driver and driver['until'] > clock():
         return {'reason': 'cpu_lease_active'}
     progress, _ = store.read(root + '/progress')
-    result_generation = 0
+    recovery, generation = store.read(key + '/dispatch')
+    result_generation = current_generation = older_generation = 0
     queue_note = {}
     gpu_claim = None
     if progress and progress.get('gpu'):
@@ -118,9 +119,13 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
         claim, claim_generation = store.read(PREFIX + gpu + '/claim')
         if claim:
             gpu_claim = (claim, claim_generation, PREFIX + gpu)
-            # Any token's result lets a driver finish; an older one can land after a newer token.
-            tokens = claim['tokens'] if claim.get('v') == GPU_CLAIM_VERSION else [claim['token']]
-            result_generation = max(store.generation(PREFIX + gpu + '/result/' + token) for token in tokens)
+            current_generation = store.generation(PREFIX + gpu + '/result/' + claim['token'])
+            # An older token's result can land after a newer token: it gets one driver per
+            # generation (a valid one finishes the stage); otherwise the current token decides.
+            older = claim['tokens'][:-1] if claim.get('v') == GPU_CLAIM_VERSION else []
+            older_generation = max([store.generation(PREFIX + gpu + '/result/' + t) for t in older] or [0])
+            older_unseen = older_generation and (recovery or {}).get('older_result_generation') != older_generation
+            result_generation = current_generation or (older_generation if older_unseen else 0)
             if not result_generation:
                 waiting = _gpu_wait(store, PREFIX + gpu, claim, clock())
                 if waiting.get('reason'):
@@ -131,12 +136,12 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     if source_sha != reference.get('expected_source_sha') or not source_sha:
         if queue_note.get('gpu_queue_exhausted'):
             # No driver can run on this release: keep a late GPU request from running either.
-            _abandon_queued(store, gpu_claim)
+            if _abandon_queued(store, gpu_claim) == 'started':
+                return {'reason': 'gpu_lease_active'}
         return _with_log(store, key, {'reason': 'source_changed', 'recovery_blocked': True, **queue_note},
                          blocked=True, clock=clock)
     if clock() - registered['created_at'] < 600:
         return {'reason': 'initial_dispatch_grace'}
-    recovery, generation = store.read(key + '/dispatch')
     if recovery and recovery['until'] > clock():
         return {'reason': 'recovery_dispatch_grace'}
     # Retry accounting resets only on durable computational progress, never on
@@ -146,12 +151,13 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     if attempt > 3:
         # The run fails now: a queued GPU request that still arrives must not run. If it
         # started meanwhile, its lease decides instead.
-        if not result_generation and _abandon_queued(store, gpu_claim) == 'started':
+        if not current_generation and _abandon_queued(store, gpu_claim) == 'started':
             return {'reason': 'gpu_lease_active'}
         return {'reason': 'attempts_exhausted', 'error': 'pipeline_modal_recovery_attempts_exhausted'}
     if not callback_url or not callback_token:
         raise ValueError('pipeline_recovery_callback_credentials_missing')
-    claim = {'until': clock() + 600, 'marker': marker, 'attempt': attempt}
+    claim = {'until': clock() + 600, 'marker': marker, 'attempt': attempt,
+             'older_result_generation': older_generation}
     if not store.cas(key + '/dispatch', claim, generation):
         return {'reason': 'recovery_cas_not_acquired'}
     payload = {**reference, 'callback_url': callback_url, 'callback_token': callback_token}
@@ -188,9 +194,15 @@ def _gpu_wait(store, gpu_key, claim, now):
         return {'reason': 'gpu_lease_active'} if claim['until'] > now else {}
     if claim.get('abandoned'):
         return {}
-    if 'started' in claim:
-        return {'reason': 'gpu_lease_active'} if claim['until'] > now else {}
     role = claim.get('role', 'formal')
+    if 'started' in claim:
+        if claim['until'] > now:
+            return {'reason': 'gpu_lease_active'}
+        if claim['started'] >= claim['queue_deadline']:
+            # Started only after its deadline and then failed: the driver ends the queue now.
+            return {'gpu_queue_exhausted': True, 'gpu_role': role,
+                    'gpu_queued_s': round(claim['queued_before'] + claim['started'] - claim['queued_at'], 3)}
+        return {}
     queued_s = round(claim['queued_before'] + now - claim['queued_at'], 3)
     if now >= claim['queue_deadline']:
         # The driver abandons the request: a formal stage fails the run, a shadow one is skipped.
@@ -199,7 +211,7 @@ def _gpu_wait(store, gpu_key, claim, now):
         # Queued in Modal: a redispatch would only queue again. Not a recovery attempt.
         return {'reason': 'gpu_queued', 'gpu_role': role, 'gpu_queued_s': queued_s,
                 'gpu_queue_remaining_s': round(claim['queue_deadline'] - now, 3)}
-    if now - claim['queued_at'] < GPU_DISPATCH_GRACE_SECONDS:
+    if now - claim.get('dispatched_at', claim['queued_at']) < GPU_DISPATCH_GRACE_SECONDS:
         return {'reason': 'gpu_dispatch_grace'}
     return {}
 

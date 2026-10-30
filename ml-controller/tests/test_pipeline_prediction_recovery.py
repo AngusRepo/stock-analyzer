@@ -426,3 +426,87 @@ def test_shadow_lines_are_once_per_run_not_once_overall():
         now[0] = 2400
         assert 'gpu_log' not in recover(run_id=run_id)
     assert logged == ['gpu_shadow_queued', 'gpu_shadow_queued']
+
+
+def test_a_late_error_of_an_older_token_dispatches_once_and_then_the_queue_decides():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, first = _queued_gpu(ref, store, now)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, first, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: 700)
+    now[0] = 700 + stages.GPU_LEASE_SECONDS
+    _queued_gpu(ref, store, now, dispatch_id='fc-2')
+    stage_store.put(journal.root + '/gpu/' + first['stage'] + '/result/' + first['token'],
+                    {'input_checksum': first['stage'], 'error': 'OSError'})
+    now[0] += 1200
+    assert recover()['reason'] == 'same_request_resumed'
+    for _ in range(6):
+        now[0] += 1200
+        assert recover()['reason'] == 'gpu_queued'
+    assert len(queue) == 1
+
+
+def test_a_release_blocked_limit_yields_to_a_container_that_won_the_start():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now)
+    real_cas = store.cas
+    def racing(key, value, generation):
+        if key.endswith('/claim') and value.get('abandoned'):
+            with pytest.raises(SystemExit):
+                stages.run_gpu_stage(stage_store, dispatch, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                                     resume=pytest.fail, clock=lambda: now[0])
+        return real_cas(key, value, generation)
+    store.cas = racing
+    now[0] = 14400
+    assert recover(source_sha='c'*40) == {'reason': 'gpu_lease_active'}
+
+
+@pytest.mark.parametrize('shadow,log', [(False, 'gpu_queue_exhausted'), (True, 'gpu_shadow_queue_skipped')])
+def test_a_start_after_the_deadline_that_failed_is_logged_as_the_queue_limit(shadow, log):
+    ref, store, now, queue, recover = fixture()
+    limit = 3600 if shadow else 14400
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now, shadow=shadow)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, dispatch, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: limit + 5)
+    now[0] = limit + 5 + stages.GPU_LEASE_SECONDS
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and out['gpu_log'] == log
+    assert out['gpu_role'] == ('shadow' if shadow else 'formal') and out['gpu_queued_s'] == limit + 5
+
+
+def test_a_release_change_before_the_limit_never_abandons_the_request():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now, dispatch_id=None)
+    now[0] = 1200  # No receipt, past the grace, well inside four hours.
+    assert recover(source_sha='c'*40) == {'reason': 'source_changed', 'recovery_blocked': True}
+    claim_key = PREFIX + journal.root + '/gpu/' + dispatch['stage'] + '/claim'
+    assert 'abandoned' not in store.read(claim_key)[0]
+
+
+def test_recovery_exhaustion_never_writes_a_claim_from_before_the_queue_split():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
+    gpu = journal.root + '/gpu/' + 'c'*64
+    journal.progress({'gpu': gpu, 'token': 'd'*32})
+    legacy = {'token': 'd'*32, 'until': 0, 'attempt': 1}
+    stage_store.put(gpu + '/claim', legacy)
+    for attempt in (1, 2, 3):
+        now[0] += 601
+        assert recover()['attempt'] == attempt
+    now[0] += 601
+    assert recover()['error'] == 'pipeline_modal_recovery_attempts_exhausted'
+    assert stage_store.read(gpu + '/claim')[0] == legacy
+
+
+def test_the_dispatch_grace_restarts_at_each_resend():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now, dispatch_id=None)
+    claim_key = PREFIX + journal.root + '/gpu/' + dispatch['stage'] + '/claim'
+    claim, generation = store.read(claim_key)
+    store.cas(claim_key, {**claim, 'dispatches': 2, 'dispatched_at': 1000}, generation)
+    now[0] = 1500
+    assert recover() == {'reason': 'gpu_dispatch_grace'}
+    now[0] = 1600
+    assert recover()['reason'] == 'same_request_resumed'

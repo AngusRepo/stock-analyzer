@@ -204,7 +204,8 @@ def test_financial_scope_preserves_late_old_quarters_and_current_missing_date_ga
     frame = pd.DataFrame({'2330':[99.,7.,0.],'7947':[1.,1.,1.]},
                          index=['2013-Q1','2026-Q2','2026-Q3'])
     disclosure = pd.DataFrame({'2330':pd.to_datetime(['2013-05-15','2026-10-13','2026-10-13'])},index=frame.index)
-    deadline = pd.DataFrame({'2330':pd.to_datetime([None,'2026-08-14',None])},index=frame.index)
+    deadline = pd.DataFrame({'2330':pd.to_datetime([None,'2026-08-14',None]),
+                             '2303':pd.to_datetime([None,'2026-08-14','2026-11-16'])},index=frame.index)
     scoped, proof = financial_observation_scope(frame,[disclosure,deadline],
         roster=['2330'],calendar_start='2026-10-08')
     assert list(scoped.columns) == ['2330']
@@ -212,8 +213,14 @@ def test_financial_scope_preserves_late_old_quarters_and_current_missing_date_ga
     assert scoped.loc['2026-Q2','2330'] == 7.
     assert scoped.loc['2026-Q3','2330'] == 0.
     assert proof['out_of_calendar_cells_not_admitted'] == 1
+    # A disclosed current quarter whose deadline is not published yet waits (10/30 6026);
+    # a value with no disclosure still fails the owner gate.
+    held = align_financial_availability(scoped,[disclosure,deadline],pd.to_datetime(['2026-10-08','2026-10-13']))
+    assert held.attrs['financial_availability_proof']['deadline_unpublished_pending_cells'] == 1
+    assert not (held['2330'] == 0.).any()
     with pytest.raises(ValueError,match='financial_publication_owner_missing'):
-        align_financial_availability(scoped,[disclosure,deadline],pd.to_datetime(['2026-10-08','2026-10-13']))
+        align_financial_availability(scoped,[disclosure.drop(index='2026-Q3'),deadline],
+                                     pd.to_datetime(['2026-10-08','2026-10-13']))
 
 
 def test_two_new_days_producer_to_consumer_and_real_auxiliary_reader_preserve_history(tmp_path):

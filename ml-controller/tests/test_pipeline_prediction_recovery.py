@@ -2,7 +2,7 @@ from copy import deepcopy
 import importlib.util
 from pathlib import Path
 import pytest
-from services.pipeline_prediction_recovery import register_request, recover_request, digest, PREFIX
+from services.pipeline_prediction_recovery import register_request, recover_request, registry_key, digest, PREFIX
 
 spec = importlib.util.spec_from_file_location('modal_stage_contract',
     Path(__file__).resolve().parents[2] / 'ml-service/app/pipeline_prediction_stages.py')
@@ -36,6 +36,10 @@ class StageStore:
     def put(self, key, value): return self.store.put(PREFIX + key, value)
 
 
+def registry(ref):
+    return registry_key(ref['run_date'], ref['run_id'])
+
+
 def fixture():
     reference = {'schema_version': stages.REF_SCHEMA, 'run_date': '2026-09-29',
         'run_id': 'exact-run', 'expected_source_sha': 'a'*40, 'request_generation': '7',
@@ -52,37 +56,126 @@ def fixture():
     return reference, store, now, queue, recover
 
 
-def test_watchdog_resumes_after_lost_gpu_ack_with_exact_input_and_no_repeated_cpu():
-    ref, store, now, queue, recover = fixture()
-    stage_store = StageStore(store)
-    calls = []
+def _driver(ref, stage_store, now, calls):
     def driver():
         journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
         with journal.driver():
             cpu = journal.cpu('formal', 'feature', lambda: calls.append('cpu') or [1.,2.])
             return cpu, journal.gpu({'series': ['2330']})
+    return driver
+
+
+def test_watchdog_resumes_after_lost_gpu_ack_with_exact_input_and_no_repeated_cpu():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    calls = []
+    driver = _driver(ref, stage_store, now, calls)
     with pytest.raises(stages.Suspended) as waiting: driver()
-    first = waiting.value.dispatch
-    now[0] = 601
-    assert recover()['reason'] == 'gpu_lease_active'
+    first = waiting.value.dispatch  # The spawn acknowledgement is lost: no receipt.
+    now[0] = 300
+    assert recover()['reason'] == 'gpu_dispatch_grace'
     assert not queue
-    now[0] = 1051
+    now[0] = 601
     assert recover()['reason'] == 'same_request_resumed'
     assert stages.reference_identity(queue[0]) == stages.reference_identity(ref)
     assert queue[0]['callback_token'] == 'current-private'
     with pytest.raises(stages.Suspended) as retry: driver()
-    assert calls == ['cpu'] and retry.value.dispatch['token'] != first['token']
-    assert stages.run_gpu_stage(stage_store, first, predict=lambda _: pytest.fail('old attempt'),
-        resume=queue.append, clock=lambda:now[0])['status'] == 'superseded'
+    assert calls == ['cpu'] and retry.value.dispatch == first  # Same request, re-sent.
     def lost_ack(_): raise OSError('fixture')
     with pytest.raises(OSError):
-        stages.run_gpu_stage(stage_store, retry.value.dispatch, predict=lambda _: [3.,4.],
+        stages.run_gpu_stage(stage_store, first, predict=lambda _: [3.,4.],
             resume=lost_ack, clock=lambda:now[0])
+    assert stages.run_gpu_stage(stage_store, retry.value.dispatch, predict=lambda _: pytest.fail('twice'),
+        resume=queue.append, clock=lambda:now[0])['status'] == 'resumed'
     now[0] += 601
     assert recover()['reason'] == 'same_request_resumed'
     assert driver() == ([1.,2.], [3.,4.])
     assert calls == ['cpu']
     assert 'private' not in str(store.rows)
+
+
+def test_a_queued_gpu_request_is_left_alone_until_the_limit_then_the_driver_closes_the_run():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    driver = _driver(ref, stage_store, now, [])
+    with pytest.raises(stages.Suspended) as waiting: driver()
+    stages.Journal(stage_store, ref, clock=lambda: now[0]).dispatched(waiting.value.dispatch, 'fc-gpu')
+    for tick in range(1200, 14400, 1200):
+        now[0] = tick
+        out = recover()
+        assert out == {'reason': 'gpu_queued', 'gpu_queued_s': tick, 'gpu_queue_remaining_s': 14400 - tick}
+    assert not queue and store.read(registry(ref) + '/dispatch')[0] is None
+    now[0] = 14400
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and out['attempt'] == 1
+    assert out['gpu_queue_exhausted'] is True and out['gpu_queued_s'] == 14400
+    with pytest.raises(stages.GpuStageUnavailable, match='queue_exhausted'): driver()
+
+
+def test_a_started_gpu_lease_runs_from_execution_and_counts_no_queue_time():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    driver = _driver(ref, stage_store, now, [])
+    with pytest.raises(stages.Suspended) as waiting: driver()
+    stages.Journal(stage_store, ref, clock=lambda: now[0]).dispatched(waiting.value.dispatch, 'fc-gpu')
+    def killed(_): raise SystemExit('container killed')
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, waiting.value.dispatch, predict=killed, resume=pytest.fail,
+                             clock=lambda: 7600)
+    now[0] = 7600 + 1049
+    assert recover() == {'reason': 'gpu_lease_active'}
+    now[0] = 7600 + 1050
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and 'gpu_queue_exhausted' not in out
+
+
+def test_claims_written_before_the_queue_split_keep_the_old_lease_rule():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
+    gpu = journal.root + '/gpu/' + 'c'*64
+    journal.progress({'gpu': gpu, 'token': 'd'*32})
+    stage_store.put(gpu + '/claim', {'token': 'd'*32, 'until': 1050, 'attempt': 1})
+    now[0] = 1049
+    assert recover() == {'reason': 'gpu_lease_active'}
+    now[0] = 1050
+    assert recover()['reason'] == 'same_request_resumed'
+
+
+def test_gpu_queue_ops_lines_are_warn_while_queued_error_at_the_limit_and_never_fail():
+    import logging
+    from services.pipeline_prediction_recovery import GPU_QUEUE_LOG_CRON, write_gpu_queue_log
+    rows, log = [], logging.getLogger('fixture')
+    kw = dict(run_date='2026-10-29', run_id='exact-run', logger=log)
+    def execute(sql, params):
+        assert 'INSERT INTO system_logs' in sql
+        rows.append(params)
+    assert write_gpu_queue_log({'reason': 'gpu_queued', 'gpu_queued_s': 3600., 'gpu_queue_remaining_s': 10800.},
+                               ops_execute=execute, **kw) == 'warn'
+    assert write_gpu_queue_log({'reason': 'same_request_resumed', 'attempt': 1, 'gpu_queue_exhausted': True,
+                                'gpu_queued_s': 14400.}, ops_execute=execute, **kw) == 'error'
+    assert write_gpu_queue_log({'reason': 'gpu_lease_active'}, ops_execute=execute, **kw) is None
+    assert [r[:2] for r in rows] == [['warn', GPU_QUEUE_LOG_CRON], ['error', GPU_QUEUE_LOG_CRON]]
+    assert 'queue_exhausted' in rows[1][2] and '"gpu_queued_s": 14400.0' in rows[1][3]
+    assert 'token' not in str(rows)
+    def down(*_): raise OSError('d1 down')
+    assert write_gpu_queue_log({'reason': 'gpu_queued', 'gpu_queued_s': 1., 'gpu_queue_remaining_s': 2.},
+                               ops_execute=down, **kw) == 'warn'
+
+
+def test_reconcile_hook_writes_the_gpu_queue_line_to_ops(monkeypatch):
+    from services import d1_domain_client
+    from services.pipeline_prediction_recovery import log_gpu_queue
+    rows = []
+    class Ops:
+        def execute(self, sql, params): rows.append(params)
+    monkeypatch.setattr(d1_domain_client, 'client_proxy_for_domain', lambda domain: Ops())
+    kw = dict(run_date='2026-10-29', run_id='exact-run')
+    assert log_gpu_queue({'reason': 'gpu_queued', 'gpu_queued_s': 60., 'gpu_queue_remaining_s': 5.}, **kw) == 'warn'
+    assert rows and rows[0][0] == 'warn'
+    assert log_gpu_queue({'reason': 'gpu_lease_active'}, **kw) is None and len(rows) == 1
+    route = (Path(__file__).resolve().parents[1] / 'routers/pipeline.py').read_text()
+    assert 'await asyncio.to_thread(log_gpu_queue, recovery, run_date=date, run_id=run_id)' in route
 
 
 def test_hard_killed_cpu_lease_and_bounded_recovery():

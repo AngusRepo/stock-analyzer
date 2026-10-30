@@ -13,6 +13,10 @@ from google.api_core.exceptions import NotFound, PreconditionFailed
 
 PREFIX = 'pipeline-v2/prediction-stages/v1/'
 REGISTRY = 'pipeline-v2/prediction-recovery/v1/'
+GPU_CLAIM_VERSION = 2
+# Same as the Modal journal's receipt grace and this module's initial dispatch grace.
+GPU_DISPATCH_GRACE_SECONDS = 600
+GPU_QUEUE_LOG_CRON = 'pipeline-gpu-queue'
 
 
 def digest(value):
@@ -105,6 +109,7 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
         return {'reason': 'cpu_lease_active'}
     progress, _ = store.read(root + '/progress')
     result_generation = 0
+    queue_note = {}
     if progress and progress.get('gpu'):
         gpu = progress['gpu']
         if not gpu.startswith(root[len(PREFIX):] + '/gpu/'):
@@ -112,8 +117,11 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
         claim, _ = store.read(PREFIX + gpu + '/claim')
         if claim:
             result_generation = store.generation(PREFIX + gpu + '/result/' + claim['token'])
-            if not result_generation and claim['until'] > clock():
-                return {'reason': 'gpu_lease_active'}
+            if not result_generation:
+                waiting = _gpu_wait(store, PREFIX + gpu, claim, clock())
+                if waiting.get('reason'):
+                    return waiting
+                queue_note = waiting
     # Release drift prevents redispatch on this runtime; it does not prove
     # that an already-dispatched immutable request failed. Preserve its callback.
     if source_sha != reference.get('expected_source_sha') or not source_sha:
@@ -139,9 +147,57 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
         result = spawn(payload)
     except Exception:
         # Accepted-but-unacknowledged dispatch is not a terminal model failure.
-        return {'reason': 'recovery_dispatch_uncertain', 'attempt': attempt}
+        return {'reason': 'recovery_dispatch_uncertain', 'attempt': attempt, **queue_note}
     return {'reason': 'same_request_resumed', 'attempt': attempt,
-            'function_call_id': result.get('function_call_id')}
+            'function_call_id': result.get('function_call_id'), **queue_note}
+
+
+def _gpu_wait(store, gpu_key, claim, now):
+    """Why the GPU stage needs no driver now, or a note for the driver dispatch that follows."""
+    if claim.get('v') != GPU_CLAIM_VERSION:
+        # Claims written before the queue/lease split: the lease covered the queue.
+        return {'reason': 'gpu_lease_active'} if claim['until'] > now else {}
+    if claim.get('abandoned'):
+        return {}
+    if 'started' in claim:
+        return {'reason': 'gpu_lease_active'} if claim['until'] > now else {}
+    queued_s = round(claim['queued_before'] + now - claim['queued_at'], 3)
+    if now >= claim['queue_deadline']:
+        # The driver abandons the request and closes the run with an error callback.
+        return {'gpu_queue_exhausted': True, 'gpu_queued_s': queued_s}
+    if store.generation(gpu_key + '/dispatch/' + claim['token']):
+        # Queued in Modal: a redispatch would only queue again. Not a recovery attempt.
+        return {'reason': 'gpu_queued', 'gpu_queued_s': queued_s,
+                'gpu_queue_remaining_s': round(claim['queue_deadline'] - now, 3)}
+    if now - claim['queued_at'] < GPU_DISPATCH_GRACE_SECONDS:
+        return {'reason': 'gpu_dispatch_grace'}
+    return {}
+
+
+def write_gpu_queue_log(recovery, *, run_date, run_id, ops_execute, logger):
+    """One ops line per reconcile while a GPU stage waits; error once it hits the limit.
+    A log write failure is reported and never fails the reconcile."""
+    if recovery.get('reason') == 'gpu_queued':
+        level = 'warn'
+        message = (f"pipeline {run_date} GPU stage queued {recovery['gpu_queued_s']:.0f}s, "
+                   f"{recovery['gpu_queue_remaining_s']:.0f}s left before the run fails")
+    elif recovery.get('gpu_queue_exhausted'):
+        level = 'error'
+        message = (f"pipeline {run_date} GPU stage queued {recovery['gpu_queued_s']:.0f}s and hit the "
+                   "queue limit; the run closes with pipeline_stage_gpu_queue_exhausted")
+    else:
+        return None
+    meta = {'run_date': run_date, 'run_id': run_id,
+            **{k: recovery[k] for k in ('gpu_queued_s', 'gpu_queue_remaining_s', 'reason', 'attempt')
+               if k in recovery}}
+    (logger.error if level == 'error' else logger.warning)('[GPU queue] %s', message)
+    try:
+        ops_execute("INSERT INTO system_logs (level, cron_name, message, meta, created_at) "
+                    "VALUES (?, ?, ?, ?, datetime('now'))",
+                    [level, GPU_QUEUE_LOG_CRON, message, json.dumps(meta, sort_keys=True)])
+    except Exception as exc:
+        logger.warning('[GPU queue] system_log write failed: %s: %s', type(exc).__name__, exc)
+    return level
 
 
 def reconcile_modal_request(*, run_date, run_id):
@@ -154,3 +210,14 @@ def reconcile_modal_request(*, run_date, run_id):
         callback_url=base + '/pipeline/v2/modal-prediction/callback' if base else '',
         callback_token=token, source_sha=os.environ.get('STOCKVISION_SOURCE_SHA', ''),
         spawn=spawn_pipeline_prediction_bundle)
+
+
+def log_gpu_queue(recovery, *, run_date, run_id):
+    """Reconcile hook: the ops line for a waiting or exhausted GPU queue, if any."""
+    import logging
+
+    def ops_execute(sql, params):
+        from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+        return client_proxy_for_domain(D1DataDomain.OPS).execute(sql, params)
+    return write_gpu_queue_log(recovery, run_date=run_date, run_id=run_id, ops_execute=ops_execute,
+                               logger=logging.getLogger(__name__))

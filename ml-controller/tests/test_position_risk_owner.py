@@ -145,6 +145,8 @@ def test_l2_route_injects_the_owner_cap_and_fails_closed(monkeypatch):
     loaded(monkeypatch, POST_P1)
     captured = {}
     _route(monkeypatch, 'optuna_l2_sensitivity', 'run_l2_sensitivity_search', captured)
+    from services import research_data_access
+    monkeypatch.setattr(research_data_access, 'resolve_research_end_date', lambda **_: '2026-10-01')
     kv(monkeypatch, RISK)
     with pytest.raises(RuntimeError, match='captured'):
         optuna.run_l2_sensitivity(optuna.L2SensitivityReq())
@@ -193,7 +195,10 @@ def test_per_regime_search_injects_and_fails_closed_before_data(monkeypatch):
         captured['baseline'] = baseline
         raise Stop
     monkeypatch.setattr(per_regime, 'select_stratified_subset', lambda **_: ['2330'])
+    monkeypatch.setattr(per_regime, 'latest_snapshot_business_end_date', lambda **_: '2026-03-31')
     monkeypatch.setattr(per_regime.BacktestDataset, 'load_for_research', lambda **_: (None, {}))
+    from services import research_corporate_preflight
+    monkeypatch.setattr(research_corporate_preflight, 'require_corporate_coverage', lambda *_: None)
     monkeypatch.setattr(per_regime, 'create_robust_objective', objective)
     with pytest.raises(Stop):
         per_regime.run_search(n_trials=1, as_of_date='2026-03-31')

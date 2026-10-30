@@ -274,6 +274,7 @@ def run_search(
     end_date: Optional[str] = None,
     baseline_params: Optional[dict] = None,
     data_mode: ResearchDataMode | None = None,
+    corporate_history: bool = True,
 ) -> dict:
     """
     Sprint 5.2 entry point. Loads stratified subset + BacktestDataset, runs NSGA-II
@@ -282,10 +283,12 @@ def run_search(
     # ── Date defaults: 90 day window ending today (TW) ──────────────────────
     if end_date is None:
         tw_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
+        # Research history (reconstructed corporate accounting) lives only in
+        # ga_research_dataset snapshots, so its window ends at that snapshot.
         snapshot_end_date = latest_snapshot_business_end_date(
-            kind="backtest_dataset",
+            kind="ga_research_dataset" if corporate_history else "backtest_dataset",
             as_of_business_date=tw_today,
-        ) if data_mode == "snapshot" else None
+        ) if corporate_history or data_mode == "snapshot" else None
         end_date = snapshot_end_date or tw_today
     if start_date is None:
         start_date = (
@@ -325,6 +328,7 @@ def run_search(
         symbols=symbols,
         business_date=end_date,
         mode=data_mode,
+        corporate_history=corporate_history,
     )
 
     from services.research_corporate_preflight import require_corporate_coverage

@@ -1622,7 +1622,17 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
         search_space = DEFAULT_SEARCH_SPACE
 
     # ── Resolve date range ──────────────────────────────────────────────────
-    end_date = req.end_date or datetime.now(TW).strftime("%Y-%m-%d")
+    # The replay reads research corporate history, so the default window ends
+    # at the latest ga_research_dataset snapshot, never at a calendar day.
+    # The owner cap fails closed before any data lookup.
+    from services.position_risk_owner import with_formal_position_risk
+    baseline_config = with_formal_position_risk(baseline_config)
+    from services.research_data_access import resolve_research_end_date
+    try:
+        end_date = resolve_research_end_date(kind="ga_research_dataset",
+            as_of_date=datetime.now(TW).strftime("%Y-%m-%d"), explicit_end_date=req.end_date)
+    except ResearchSnapshotNotReadyError as e:
+        raise HTTPException(409, f"l2_corporate_history_snapshot_not_ready: {e}")
     start_date = req.start_date or (
         datetime.fromisoformat(end_date) - timedelta(days=90)
     ).strftime("%Y-%m-%d")
@@ -1634,12 +1644,11 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     )
 
     # ── Run search ──────────────────────────────────────────────────────────
-    from services.position_risk_owner import with_formal_position_risk
     result = run_l2_sensitivity_search(
         search_space=search_space,
         start_date=start_date,
         end_date=end_date,
-        baseline_config=with_formal_position_risk(baseline_config),
+        baseline_config=baseline_config,
         n_trials=req.n_trials,
         dd_penalty=req.dd_penalty,
         sampler_name=req.sampler,

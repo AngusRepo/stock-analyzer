@@ -284,29 +284,32 @@ def run_search(
     data_mode: ResearchDataMode | None = None,
     push_kv: bool = False,
     as_of_date: str | None = None,
+    corporate_history: bool = True,
 ) -> dict:
     """Execute per-regime robust search."""
     wall_clock_date = as_of_date or datetime.now(
         timezone(timedelta(hours=8))
     ).date().strftime("%Y-%m-%d")
-    if data_mode in {"snapshot", "auto"}:
+    # The single-name cap and sector/correlation rule come from trading:risk_config (K16a);
+    # the owner cap fails closed before any data lookup.
+    from services.position_risk_owner import with_formal_position_risk
+    baseline = with_formal_position_risk(_default_sltp_baseline() if target == "sltp" else {})
+    if corporate_history or data_mode in {"snapshot", "auto"}:
+        # Research history lives only in ga_research_dataset snapshots.
+        kind = "ga_research_dataset" if corporate_history else "backtest_dataset"
         end_date = latest_snapshot_business_end_date(
-            kind="backtest_dataset",
+            kind=kind,
             as_of_business_date=wall_clock_date,
         )
         if not end_date:
             raise ResearchSnapshotNotReadyError(
                 "optuna_per_regime_snapshot_not_ready:"
-                f"as_of={wall_clock_date} kind=backtest_dataset"
+                f"as_of={wall_clock_date} kind={kind}"
             )
     else:
         end_date = wall_clock_date
     end_day = datetime.strptime(end_date, "%Y-%m-%d").date()
     start_date = (end_day - timedelta(days=window_days)).strftime("%Y-%m-%d")
-
-    # The single-name cap and sector/correlation rule come from trading:risk_config (K16a).
-    from services.position_risk_owner import with_formal_position_risk
-    baseline = with_formal_position_risk(_default_sltp_baseline() if target == "sltp" else {})
 
     symbols = select_stratified_subset(target_size=subset_size, end_date=end_date)
     dataset, data_access = BacktestDataset.load_for_research(
@@ -316,7 +319,10 @@ def run_search(
         symbols=symbols,
         business_date=end_date,
         mode=data_mode,
+        corporate_history=corporate_history,
     )
+    from services.research_corporate_preflight import require_corporate_coverage
+    require_corporate_coverage(dataset, start_date, end_date)
 
     objective = create_robust_objective(dataset, start_date, end_date, baseline, target)
 

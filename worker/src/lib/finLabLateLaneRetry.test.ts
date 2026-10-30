@@ -21,11 +21,16 @@ test('T-W1: late-lane not-ready is only the contract late_publication fields', (
     'finlab_source_not_ready lane=chip_diversity fields=margin_balance,short_balance target_date=2026-10-22 latest=2026-10-21',
     'ValueError: daily_composition_market_dates_missing:margin_balance dispatch_attempt=1',
     'daily_composition_market_dates_missing:short_balance',
+    // NEW-1030-12: the producer lists every field missing market dates, in FIELDS order.
+    'ValueError: daily_composition_market_dates_missing:margin_balance,short_balance dispatch_attempt=1',
   ]) assert.equal(classifyFinLabLateLaneNotReady(summary), true, summary)
   for (const summary of [
     'ValueError: daily_composition_market_dates_missing:pe dispatch_attempt=1',
     'daily_composition_market_dates_missing:pb',
     'daily_composition_market_dates_missing:dividend_yield',
+    // A non-late field in the list is terminal, even next to a late field.
+    'ValueError: daily_composition_market_dates_missing:margin_balance,pb dispatch_attempt=1',
+    'daily_composition_market_dates_missing:short_balance,pe,pb',
     'daily_composition_history_changed:margin_balance',
     'daily_composition_current_field_missing:margin_balance',
     'FinLab quota exceeded: daily limit reached',

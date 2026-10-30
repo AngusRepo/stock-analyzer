@@ -103,7 +103,7 @@ def write(path, raw):
     path.write_bytes(raw)
 
 
-def current_capture(tmp_path, day, *, omit_session=False):
+def current_capture(tmp_path, day, *, omit_session=False, omit_fields=()):
     root = tmp_path / ('daily-' + day)
     sessions = ['2026-10-08', '2026-10-12', '2026-10-13']
     if day == '2026-10-14': sessions.append(day)
@@ -126,7 +126,8 @@ def current_capture(tmp_path, day, *, omit_session=False):
     auxiliary = {'capture_id': root.name, 'end_date': day, 'fields': {}}
     for field in ('margin_balance', 'short_balance', 'pe', 'pb'):
         delta = prices.with_columns(pl.lit(99.).alias('2330'))
-        if omit_session: delta = delta.filter(pl.col('date') != '2026-10-13')
+        if omit_session or field in omit_fields:
+            delta = delta.filter(pl.col('date') != '2026-10-13')
         raw = parquet(delta)
         write(root / ('raw/training_auxiliary_full_vintage/' + field + '.parquet'), raw)
         auxiliary['fields'][field] = {'sha256': sha(raw)}
@@ -285,6 +286,67 @@ def test_missing_observation_calendar_gap_and_corruption_never_publish_ready_ref
         produce(bucket, root, '2026-10-14', missing=failure == 'missing')
     assert not (root / 'inference/reference.json').exists()
     assert HEAD_PREFIX + '2026-10-14.json' not in bucket.files
+
+
+def contract_late_fields():
+    contract = json.loads((Path(__file__).resolve().parents[2] / 'data/finlab_source_contract.json').read_text())
+    return {f for lane in contract['lanes'].values() for f in (lane.get('late_publication') or {}).get('fields', [])}
+
+
+def worker_late_lane(message):
+    """Mirror of classifyFinLabLateLaneNotReady (worker/src/lib/finlabSourceContract.ts); the TS
+    tests in finLabLateLaneRetry.test.ts are the authority for the Worker rule."""
+    import re
+    missing = [f for m in re.findall(r'daily_composition_market_dates_missing:([A-Za-z0-9_,]+)', message)
+               for f in m.split(',') if f]
+    return bool(missing) and all(f in contract_late_fields() for f in missing)
+
+
+def test_producer_late_fields_match_the_worker_contract():
+    from services.daily_inference_producer import LATE_PUBLICATION_FIELDS
+    assert set(LATE_PUBLICATION_FIELDS) == contract_late_fields()
+
+
+@pytest.mark.parametrize('omitted,message,late', [
+    (('margin_balance',), 'daily_composition_market_dates_missing:margin_balance', True),
+    (('short_balance', 'margin_balance'), 'daily_composition_market_dates_missing:margin_balance,short_balance', True),
+    # NEW-1030-12: a late field no longer hides a missing non-late field behind the late-lane retry.
+    (('pb', 'margin_balance'), 'daily_composition_market_dates_missing:margin_balance,pb', False),
+    (('pe', 'pb'), 'daily_composition_market_dates_missing:pe,pb', False),
+])
+def test_every_field_missing_market_dates_is_reported_in_field_order(tmp_path, omitted, message, late):
+    bucket = Bucket()
+    baseline(bucket)
+    root, _ = current_capture(tmp_path, '2026-10-14', omit_fields=omitted)
+    with pytest.raises(ValueError) as raised:
+        produce(bucket, root, '2026-10-14')
+    assert str(raised.value) == message
+    assert worker_late_lane(str(raised.value)) is late
+    assert not (root / 'inference/reference.json').exists()
+    assert HEAD_PREFIX + '2026-10-14.json' not in bucket.files
+
+
+def test_a_later_field_error_is_not_masked_by_a_late_field_missing_dates(tmp_path):
+    # The loop now reaches every field, so a deterministic error in a later field ends the
+    # run at once instead of waiting behind margin_balance's late-lane retries.
+    bucket = Bucket()
+    baseline(bucket)
+    root, _ = current_capture(tmp_path, '2026-10-14', omit_fields=('margin_balance',))
+    path = root / 'raw/training_auxiliary_full_vintage/manifest.json'
+    manifest = json.loads(path.read_bytes())
+    del manifest['fields']['pe']
+    path.write_bytes(encoded(manifest))
+    with pytest.raises(ValueError, match='^daily_composition_current_field_missing:pe$') as raised:
+        produce(bucket, root, '2026-10-14')
+    assert not worker_late_lane(str(raised.value))
+
+
+def test_no_missing_market_dates_does_not_raise(tmp_path):
+    bucket = Bucket()
+    baseline(bucket)
+    root, _ = current_capture(tmp_path, '2026-10-14')
+    reference = produce(bucket, root, '2026-10-14')
+    assert reference['business_date'] == '2026-10-14'
 
 
 def test_broken_dynamic_reference_cannot_fall_back_to_legacy_registry(tmp_path):

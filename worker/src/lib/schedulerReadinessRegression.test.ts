@@ -72,6 +72,71 @@ test('FinLab failed callback blocks unexecuted market work while retaining the r
   } finally {f.sql.close()}
 })
 
+test('C28-25: a late-lane callback before 23:00 TW waits for the watchdog instead of failing the chain',async(t)=>{
+  const callback=async(f:any,clock:string,summary:string,extra:Record<string,unknown>={})=>{
+    t.mock.timers.enable({apis:['Date'],now:Date.parse(`${date}T${clock}:00+08:00`)})
+    try {
+      return await adminControlRoutes.request('/api/admin/scheduler-callback',{
+        method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer local-fixture-only'},
+        body:JSON.stringify({task:'finlab-v4-backfill',status:'error',run_date:date,run_id:'source-run',
+          continue_evening_chain:true,error:summary,summary,...extra}),
+      },{...f.env,DISCORD_WEBHOOK_URL:'https://discord.invalid/webhook'},{waitUntil:()=>{}} as any)
+    } finally {t.mock.timers.reset()}
+  }
+  const alerts:string[]=[]
+  t.mock.method(globalThis,'fetch',async(_url:string,init:RequestInit)=>{
+    alerts.push(JSON.parse(String(init.body)).content); return new Response(null,{status:204})})
+  for (const summary of ['daily_composition_market_dates_missing:margin_balance',
+    'finlab_source_not_ready lane=chip_diversity fields=margin_balance,short_balance target_date=2026-10-19 latest=2026-10-16']) {
+    const f=fixture()
+    try {
+      f.env.STOCKVISION_AUTH_TOKEN='local-fixture-only'
+      assert.equal((await callback(f,'21:16',summary)).status,200)
+      const chain=f.values.get('scheduler:run:evening-chain:'+date), update=f.values.get('scheduler:run:update:'+date)
+      assert.equal(chain.status,'waiting')
+      assert.equal(update.status,'waiting')
+      assert.match(chain.summary,/awaiting_late_lane fields=margin_balance,short_balance cutoff=23:00 TW/)
+      assert.equal(f.values.get('scheduler:run:finlab-v4-backfill:'+date).status,'error')
+      assert.equal(resolveSchedulerLogStatus(chain,{id:'evening-chain',group:'pipeline_chain'}).status,'waiting')
+      assert.equal(alerts.length,0)
+    } finally {f.sql.close()}
+  }
+  {
+    // A callback that reports not-ready at or after the cutoff keeps the terminal path and alerts.
+    const f=fixture()
+    try {
+      f.env.STOCKVISION_AUTH_TOKEN='local-fixture-only'
+      assert.equal((await callback(f,'23:05','daily_composition_market_dates_missing:margin_balance')).status,200)
+      assert.equal(f.values.get('scheduler:run:update:'+date).status,'blocked')
+      assert.equal(f.values.get('scheduler:run:evening-chain:'+date).status,'error')
+      assert.ok(alerts.length>=1)
+    } finally {f.sql.close()}
+  }
+  {
+    // A watchdog retry (attempt > 1) that is still not ready before the cutoff is waiting, not a watchdog error.
+    const f=fixture()
+    try {
+      f.env.STOCKVISION_AUTH_TOKEN='local-fixture-only'
+      assert.equal((await callback(f,'21:40','daily_composition_market_dates_missing:margin_balance',{dispatch_attempt:3})).status,200)
+      const watchdog=f.values.get('scheduler:run:finlab-backfill-watchdog:'+date)
+      assert.equal(watchdog.status,'waiting')
+      assert.match(watchdog.summary,/late lane not ready dispatch_attempt=3; retrying until 23:00 TW/)
+      assert.equal((await callback(f,'23:05','daily_composition_market_dates_missing:margin_balance',{dispatch_attempt:4})).status,200)
+      assert.equal(f.values.get('scheduler:run:finlab-backfill-watchdog:'+date).status,'error')
+    } finally {f.sql.close()}
+  }
+  {
+    // Non-late fields fail before the cutoff as before.
+    const f=fixture()
+    try {
+      f.env.STOCKVISION_AUTH_TOKEN='local-fixture-only'
+      assert.equal((await callback(f,'21:16','daily_composition_market_dates_missing:pe')).status,200)
+      assert.equal(f.values.get('scheduler:run:update:'+date).status,'blocked')
+      assert.equal(f.values.get('scheduler:run:evening-chain:'+date).status,'error')
+    } finally {f.sql.close()}
+  }
+})
+
 test('OBS uses a direct completed premarket receipt when the daily aggregate lost it',async()=>{
   const f=fixture()
   try {
@@ -148,4 +213,37 @@ test('publication alone, another date or different L3 lineage cannot claim readi
   }
   assert.equal(premarketReadinessDisplay('pre-market-warmup','2026-10-16',[row,allocate,health]),null)
   assert.equal(premarketReadinessDisplay('pre-market-warmup',date,[row,allocate,health],'2026-10-19 05:00:00'),null)
+})
+
+test('FU8-A: the payload carries the canonical run beside a ticket-owned runId, after every display override',async()=>{
+  const f=fixture()
+  try {
+    f.sql.prepare('INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,updated_at) VALUES(?,?,?,?,?,?,?)')
+      .run(date,'pipeline_execution','canon-1','running','execution-a',1,'2026-10-19 14:00:00')
+    f.sql.prepare(`INSERT INTO scheduler_execution_tickets_v1
+      (ticket_id,dedupe_key,root_ticket_id,task,business_date,run_id,attempt_id,ticket_kind,status,
+       status_authority,attempt_count,payload_checksum,last_summary,updated_at)
+      VALUES('ticket-1','ticket-1','ticket-1','pipeline',?,'ticket-1','ticket-1:attempt:1','manual','running','scheduler_http',1,?,'running pipeline','2026-10-19 14:01:00')`)
+      .run(date,'c'.repeat(64))
+    f.values.set('scheduler:run:evening-chain:'+date,{task:'evening-chain',status:'running',run_id:'evening-chain:'+date,run_date:date,
+      summary:'running',duration_ms:0,timestamp:'2026-10-19T13:00:00Z'})
+    f.values.set('scheduler:run:pipeline:'+date,{task:'pipeline',status:'running',run_id:'ticket-1',run_date:date,
+      summary:'running pipeline',duration_ms:0,timestamp:'2026-10-19T14:01:00Z'})
+    f.values.set('scheduler:run:finlab-v4-backfill:'+date,{task:'finlab-v4-backfill',status:'running',run_id:'finlab-run-1',run_date:date,
+      summary:'triggered finlab-v4-backfill dispatch_attempt=1',duration_ms:0,timestamp:'2026-10-19T13:01:00Z'})
+    const result=await getSchedulerStatus(f.env,date)
+    const pipeline=result.jobs.find(j=>j.id==='pipeline')! as any
+    assert.equal(pipeline.statusRunDate,date)
+    assert.equal(pipeline.runId,'ticket-1')
+    assert.equal(pipeline.canonicalRunId,'canon-1')
+    const finlab=result.jobs.find(j=>j.id==='finlab-v4-backfill')! as any
+    assert.equal(finlab.finlabRunId,'finlab-run-1')
+    assert.equal(finlab.canonicalRunId,null)
+    const other=result.jobs.find(j=>j.id==='screener-v2-watchdog')! as any
+    assert.equal(other.finlabRunId,null)
+    // The fields come after the display spreads, so no override can replace them.
+    const source=fs.readFileSync('src/lib/schedulerStatus.ts','utf8')
+    const spread=source.indexOf('...(producerDisplay ? {...producerDisplay')
+    assert.ok(spread>0 && source.indexOf('canonicalRunId: durableState?.canonical_run_id ?? null',spread)>spread)
+  } finally {f.sql.close()}
 })

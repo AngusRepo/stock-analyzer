@@ -37,12 +37,15 @@ export function buildAdminGcpTriggerTaskMap(
     'regime-compute': async () => runRegimeCompute(c.env, requestedRunDate()),
     'hmm-maintenance': async () => runHmmMaintenance(c.env),
     'model-ic-full-check': async () => runModelIcFullCheck(c.env, requestedRunDate(), schedulerContext),
-    'finlab-v4-backfill': async () => runFinLabV4Backfill(
-      c.env,
-      requestedRunDate(),
-      c.req.query('force') === '1',
-      { continueEveningChain: c.req.query('continue_evening_chain') === '1' },
-    ),
+    'finlab-v4-backfill': async () => {
+      const continueEveningChain = c.req.query('continue_evening_chain') === '1'
+      const summary = await runFinLabV4Backfill(c.env, requestedRunDate(), c.req.query('force') === '1', { continueEveningChain })
+      // R8-a: only an evening-chain dispatch is handed to the FinLab watchdog when its outcome is unknown.
+      // A manual archive dispatch keeps the pre-R8-a terminal outcome so the watchdog never resends it.
+      return !continueEveningChain && /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary)
+        ? `failed (dispatch_unconfirmed): ${summary}; archive dispatch is not resent by the watchdog`
+        : summary
+    },
     'finlab-backfill-watchdog': async () => {
       const { runFinLabBackfillWatchdog } = await import('./updateOrchestrator')
       return runFinLabBackfillWatchdog(c.env, requestedRunDate())

@@ -71,6 +71,8 @@ type DrainPolicyResult = {
   deleted_rows: number
   archived_bytes: number
   backlog_remaining: boolean
+  // Archive-only sources without a verified cold reader: not drained, not a policy error.
+  blocked_datasets: string[]
   datasets: DrainDatasetResult[]
   error?: string
 }
@@ -214,21 +216,22 @@ async function runPolicy(
   let deletedRows = 0
   let archivedBytes = 0
   const errors: string[] = []
+  const blockedDatasets: string[] = []
 
   if (!dryRun) await beginRetentionRun(opsDb, { runId, policyId, businessDate })
 
   const drainSources = config.sources.filter(source => source.deleteTable && source.deleteKeyColumn)
   for (const source of config.sources.filter(source => !source.deleteTable || !source.deleteKeyColumn)) {
     const message = `cold_reader_not_verified:${source.datasetId}`
-    errors.push(message)
+    blockedDatasets.push(source.datasetId)
     datasets.push({ dataset_id: source.datasetId, source_domain: source.sourceDomain,
       cutoff_date: cutoffDate, candidates: 0, archived_rows: 0, deleted_rows: 0,
       archived_bytes: 0, artifact_id: null, checksum: null, backlog_remaining: true,
       status: 'blocked', error: message })
     if (!dryRun) await checkpointRetentionItem(opsDb, {
-      runId, policyId, datasetId: `hot-drain:${source.datasetId}`, status: 'error',
+      runId, policyId, datasetId: `hot-drain:${source.datasetId}`, status: 'skipped',
       backlogRemaining: true, error: message,
-      evidence: { delete_executor: false, candidate_count_known: false, dry_run: false },
+      evidence: { delete_executor: false, candidate_count_known: false, dry_run: false, blocked: true, reason: message },
     })
   }
   for (const configured of drainSources) {
@@ -436,6 +439,7 @@ async function runPolicy(
     deleted_rows: deletedRows,
     archived_bytes: archivedBytes,
     backlog_remaining: datasets.some((item) => item.backlog_remaining),
+    blocked_datasets: blockedDatasets,
     datasets,
     ...(errors.length ? { error: errors.join('; ') } : {}),
   }
@@ -486,6 +490,8 @@ export async function runRetentionHotWindowDrain(
     deleted_rows: rounds.attempts.reduce((sum, policy) => sum + policy.deleted_rows, 0),
     archived_bytes: rounds.attempts.reduce((sum, policy) => sum + policy.archived_bytes, 0),
     backlog_remaining: rounds.pendingPolicyIds.length > 0,
+    blocked_datasets: [...new Set(policies.flatMap((policy) =>
+      policy.blocked_datasets.map((dataset) => `${policy.policy_id}:${dataset}`)))],
     policies,
   }
 }
@@ -504,5 +510,6 @@ export function summarizeRetentionHotWindowDrain(
     `deleted=${result.deleted_rows}`,
     `backlog=${result.backlog_remaining}`,
     `failed=${result.failed_policies.join(',') || 'none'}`,
+    `blocked=${result.blocked_datasets.length}`,
   ].join(' ')
 }

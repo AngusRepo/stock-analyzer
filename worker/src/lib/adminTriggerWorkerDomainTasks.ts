@@ -3,6 +3,7 @@ import { DATA_DOMAINS, databaseForDataDomain, databaseForTable, shadowDatabaseFo
 import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
+import { eodExitSchedule, eodExitWindowLabel } from './schedulerManifestGovernance'
 import { runPremarketProducerTask } from './premarketProducerStatus'
 import { runMorningWarmup } from './localMaintenance'
 import { runCadenceReadiness } from './cadenceReadiness'
@@ -15,6 +16,7 @@ import {
 } from './eveningChainRunAuthority'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
+import { runEodExitUnderIntradayLease } from './eodExitLease'
 
 const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
   '0 2 * * 1-5': 'rescore-10',
@@ -806,12 +808,12 @@ export function buildAdminWorkerDomainTaskMap(
       return deps.runIntradayCheck()
     },
     'eod-exit': () => {
-      const h = (new Date().getUTCHours() + 8) % 24
-      const m = new Date().getUTCMinutes()
-      const twTime = h * 100 + m
-      const validEod = twTime >= 1325 && twTime <= 1335
-      if (!validEod && !c.req.query('force')) return Promise.resolve('SKIPPED: 僅限 EOD 13:25-13:35 TW，請加 force=1')
-      return deps.runEODExit()
+      // AUD-4: the window starts at the manifest's scheduled minute (single owner) and spans 10 minutes.
+      const schedule = eodExitSchedule()
+      const twMinute = ((new Date().getUTCHours() + 8) % 24) * 60 + new Date().getUTCMinutes()
+      const validEod = twMinute >= schedule.twMinute && twMinute < schedule.windowEndTwMinute
+      if (!validEod && !c.req.query('force')) return Promise.resolve(`SKIPPED: 僅限 EOD ${eodExitWindowLabel(schedule)} TW，請加 force=1`)
+      return runEodExitUnderIntradayLease(c.env, () => deps.runEODExit())
     },
     'post-close-price-refresh': async () => {
       const { refreshOpenPositionPostClosePriceCache } = await import('./paperIntradayPriceCache')

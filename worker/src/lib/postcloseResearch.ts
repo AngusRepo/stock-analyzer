@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import { controllerJson } from './controllerClient'
 import { queuePostPipelineStage } from './pipelineStageLease'
 import { paperExecutionNow } from './paperExecutionScope'
+import { databaseForDataDomain } from './dataDomainRegistry'
 
 /** A serving callback closes publication, not the after-close research chain. */
 export async function verifyServingOnlyCallback(env: Bindings, day: string, runId: string, checksum: unknown) {
@@ -36,5 +37,24 @@ export async function runPostcloseResearch(env: Bindings, tradeDate: string) {
   }
   if (errors.length || ['error','reconciliation_required'].includes(result.status))
     throw new Error('postclose_dispatch_incomplete:'+errors.join(';'))
+  if (result.status==='no_published_work') return `${result.status}; research_jobs=0; ${await verifyNoPublicationForTradeDate(env,tradeDate)}`
   return `${result.status}; research_jobs=${result.results.length}; research_completion=awaiting_callback`
+}
+
+/** NEW-35: "no work" is only a success when this trade date has no published plan; an unverifiable state fails loud. */
+async function verifyNoPublicationForTradeDate(env: Bindings, tradeDate: string): Promise<string> {
+  const stage=await databaseForDataDomain(env,'ops').prepare(
+    "SELECT business_date, canonical_run_id FROM pipeline_stage_runs WHERE stage='pipeline_execution' AND business_date<? ORDER BY business_date DESC LIMIT 1")
+    .bind(tradeDate).first<{business_date: string; canonical_run_id: string}>()
+  if (!stage?.business_date) return 'publication_check=no_prior_pipeline_execution'
+  // A prior execution row without its run id cannot be checked: fail loudly rather than assume none.
+  if (!stage.canonical_run_id) throw new Error(`postclose_publication_state_unverifiable:${stage.business_date}:canonical_run_id_missing`)
+  let state: {publication?: {trade_date?: string} | null}
+  try {
+    state=await controllerJson(env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:stage.business_date,run_id:stage.canonical_run_id}))
+  } catch(error) {
+    throw new Error(`postclose_publication_state_unverifiable:${stage.canonical_run_id}:${error instanceof Error?error.message:String(error)}`)
+  }
+  if (state?.publication?.trade_date===tradeDate) throw new Error('postclose_work_missing_for_publication:'+stage.canonical_run_id)
+  return `publication_check=none_for_trade_date signal_run=${stage.canonical_run_id}`
 }

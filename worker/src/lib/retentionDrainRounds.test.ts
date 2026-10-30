@@ -55,3 +55,22 @@ test('round upper bound and default prevent unbounded paid work', async () => {
     assert.equal(result.stopReason, 'round_limit')
   }
 })
+
+test('M1-d: a policy with blocked archive-only sources keeps draining its deletable rows across rounds', async () => {
+  // learning_lineage_v1 always carries blocked-source backlog; predictions deletes 250 per round until empty.
+  const deletes = [250, 250, 120, 0]
+  const calls: string[] = []
+  const result = await runRetentionDrainRounds({ policyIds: ['learning_lineage_v1', 'price_horizon_rejections_v1'],
+    dryRun: false, maxRounds: 10,
+    run: async id => {
+      calls.push(id)
+      if (id !== 'learning_lineage_v1') return pass(id, { deleted_rows: 0 })
+      return pass(id, { backlog_remaining: true, deleted_rows: deletes.shift() ?? 0 })
+    },
+  })
+  assert.deepEqual(calls, ['learning_lineage_v1', 'price_horizon_rejections_v1',
+    'learning_lineage_v1', 'learning_lineage_v1', 'learning_lineage_v1'])
+  assert.equal(result.attempts.reduce((n, r) => n + r.deleted_rows, 0), 620)
+  assert.equal(result.stopReason, 'blocked_or_no_progress')
+  assert.deepEqual(result.pendingPolicyIds, ['learning_lineage_v1'])
+})

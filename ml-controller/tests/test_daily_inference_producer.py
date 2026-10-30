@@ -244,6 +244,11 @@ def test_two_new_days_producer_to_consumer_and_real_auxiliary_reader_preserve_hi
         assert dates['id2330'][day]['pe'] == 99.
         assert proof['schema_version'] == 'inference-auxiliary-composition-binding-v1'
         assert result['training_admitted'] is False
+        # HL3-4#a: late fields carry a report-only coverage record in the sealed manifest, read
+        # back here from the bucket: the durable record does not depend on any notify channel.
+        assert result['auxiliary']['margin_balance']['run_date_coverage']['run_date'] == day
+        assert result['auxiliary']['short_balance']['run_date_coverage']['blocking'] is False
+        assert 'run_date_coverage' not in result['auxiliary']['pe']
         from services.capture_inventory import inspect_capture_inventory
         checksums = json.loads(bucket.files[price_path])['checksums']
         seq = {'status': 'ready', 'output_gcs_prefix': 'seq', 'lane_reports': [{'lane': 'daily_price',
@@ -341,3 +346,32 @@ def test_upload_publishes_consumer_reference_after_all_files(monkeypatch, tmp_pa
         write(tmp_path / name, b'bytes')
     tool.upload_dir_to_gcs(tmp_path, bucket_name='test', prefix='daily')
     assert uploaded[-1] == 'daily/inference/reference.json'
+
+
+def test_late_field_coverage_reports_a_partial_run_date_row_without_blocking(monkeypatch):
+    from services.daily_inference_producer import (
+        late_field_baseline_sessions, late_field_min_coverage, run_date_coverage,
+    )
+    frame = pl.DataFrame({'date': ['2026-10-24', '2026-10-27', '2026-10-28'], '2330': [9., 10., 11.],
+                          '2317': [4., 5., None], '0050': [None, None, None], '6488': [2., 3., None]})
+    report = run_date_coverage(frame, run_date='2026-10-28', min_ratio=0.95)
+    assert report == {'run_date': '2026-10-28', 'non_null_symbols': 1, 'baseline_date': '2026-10-27',
+                      'baseline_non_null_symbols': 3, 'baseline_sessions': 5, 'roster_symbols': 4,
+                      'ratio': 0.3333, 'min_ratio': 0.95, 'status': 'warn', 'blocking': False}
+    assert run_date_coverage(frame, run_date='2026-10-28', min_ratio=0.3)['status'] == 'ok'
+    # A first-ever row has no baseline to compare against.
+    assert run_date_coverage(frame.head(1), run_date='2026-10-24', min_ratio=0.95)['status'] == 'unknown'
+    # An early partial capture yesterday does not lower today's baseline.
+    early = pl.DataFrame({'date': ['2026-10-26', '2026-10-27', '2026-10-28'], 'a': [1., None, None],
+                          'b': [1., 1., 1.], 'c': [1., None, 1.]})
+    assert run_date_coverage(early, run_date='2026-10-28', min_ratio=0.95)['baseline_date'] == '2026-10-26'
+    assert run_date_coverage(early, run_date='2026-10-28', min_ratio=0.95, baseline_sessions=1)['status'] == 'ok'
+    monkeypatch.delenv('DAILY_COMPOSITION_LATE_FIELD_MIN_COVERAGE', raising=False)
+    monkeypatch.delenv('DAILY_COMPOSITION_LATE_FIELD_BASELINE_SESSIONS', raising=False)
+    assert (late_field_min_coverage(), late_field_baseline_sessions()) == (0.95, 5)
+    monkeypatch.setenv('DAILY_COMPOSITION_LATE_FIELD_MIN_COVERAGE', '0.8')
+    monkeypatch.setenv('DAILY_COMPOSITION_LATE_FIELD_BASELINE_SESSIONS', '3')
+    assert (late_field_min_coverage(), late_field_baseline_sessions()) == (0.8, 3)
+    monkeypatch.setenv('DAILY_COMPOSITION_LATE_FIELD_MIN_COVERAGE', 'bad')
+    monkeypatch.setenv('DAILY_COMPOSITION_LATE_FIELD_BASELINE_SESSIONS', '0')
+    assert (late_field_min_coverage(), late_field_baseline_sessions()) == (0.95, 5)

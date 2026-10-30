@@ -42,7 +42,7 @@ assert(
 )
 assert(
   workerTasks.includes('missingFinalSymbols') &&
-    workerTasks.includes('batchGetClosingPricesByDomain(env, missingFinalSymbols, valuationSession)') &&
+    workerTasks.includes('batchGetClosingMarksByDomain(env, missingFinalSymbols, valuationSession)') &&
     !workerTasks.includes('batchGetLatestPricesByDomain(env, missingFinalSymbols') &&
     !workerTasks.includes('if (finalPriceMap.size === 0) finalPriceMap = await batchGetLatestPrices'),
   'daily snapshot must fill missing post-close quotes from the exact valuation-session close, never from an earlier day, and never treat partial coverage as complete',
@@ -79,7 +79,7 @@ assert(
     entryTasks.indexOf("if (s12PrimaryOwnerEnabled && s12UnifiedDecision.action !== 'READY')") <
       entryTasks.indexOf('const finLabL5MarketDataSnapshot = paperSwingOwner') &&
     entryTasks.indexOf('const executionBook = (await batchGetExecutionOrderbooks([pending.symbol]') <
-      entryTasks.indexOf('const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({'),
+      entryTasks.indexOf('let authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({'),
   'Paper buys must gate on S12 before L5 and refresh the matching execution book before fill',
 )
 assert(

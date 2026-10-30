@@ -74,7 +74,8 @@ console.log('retention hot-window drain contract tests passed')
 
 // Exercise the real dry-run path: an empty predictions table cannot hide ten unverified readers.
 import { test } from 'node:test'
-import { runRetentionHotWindowDrain } from './retentionHotWindowDrain'
+import { runRetentionHotWindowDrain, summarizeRetentionHotWindowDrain } from './retentionHotWindowDrain'
+import { classifySchedulerSummary } from './schedulerRunLogger'
 import type { Bindings } from '../types'
 test('dry-run reports every Learning source and never touches unsupported readers', async () => {
   const db = { prepare(sql: string) {
@@ -98,10 +99,82 @@ test('dry-run reports every Learning source and never touches unsupported reader
     businessDate: '2026-09-26', maxRounds: 10 })
   assert.equal(result.dry_run, true)
   assert.equal(result.complete, false)
-  assert.equal(result.status, 'error')
+  // M1-d: ten archive-only sources are blocked datasets, not a policy failure.
+  assert.equal(result.status, 'dry_run')
+  assert.deepEqual(result.failed_policies, [])
+  assert.equal(result.policies[0].status, 'dry_run')
+  assert.equal(result.policies[0].error, undefined)
   assert.equal(result.policy_attempts, 1)
   assert.equal(result.deleted_rows, 0)
   assert.equal(result.backlog_remaining, true)
+  assert.deepEqual(result.pending_policies, ['learning_lineage_v1'])
   assert.equal(result.policies[0].datasets.length, learningConfig!.sources.length)
   assert.equal(result.policies[0].datasets.filter(d => d.status === 'blocked').length, 10)
+  const archiveOnly = learningConfig!.sources.filter(source => !source.deleteTable || !source.deleteKeyColumn).map(source => source.datasetId)
+  assert.equal(archiveOnly.length, 10)
+  assert.deepEqual(result.policies[0].blocked_datasets, archiveOnly)
+  assert.deepEqual(result.blocked_datasets, archiveOnly.map(dataset => `learning_lineage_v1:${dataset}`))
+  assert.match(summarizeRetentionHotWindowDrain(result), /status=dry_run .* failed=none blocked=10$/)
+  assert.equal(classifySchedulerSummary(summarizeRetentionHotWindowDrain(result)), 'success')
+})
+
+// A permissive D1 stand-in: the Learning policy row, predictions columns, and no eligible rows.
+function confirmedFixture(failPredictions = false) {
+  const writes: Array<{ sql: string; args: unknown[] }> = []
+  const db = { prepare(sql: string) {
+    let args: unknown[] = []
+    const statement = {
+      bind(...values: unknown[]) { args = values; return statement },
+      async first() {
+        if (sql.includes('FROM data_retention_policies')) return { policy_id: 'learning_lineage_v1',
+          hot_retention_days: 120, cold_retention_days: 3650, archive_store: 'r2', action: 'archive_delete',
+          hard_reference_protected: 1, status: 'active' }
+        return null
+      },
+      async all() {
+        if (sql.includes('pragma_table_info')) return { results: [{ name: 'date' }, { name: 'symbol' }] }
+        if (failPredictions && sql.includes('WITH candidates AS MATERIALIZED')) throw new Error('predictions_reader_failed')
+        return { results: [] }
+      },
+      async run() { writes.push({ sql, args }); return { success: true, meta: { changes: 1 } } },
+    }
+    return statement
+  }, async batch(statements: any[]) { return Promise.all(statements.map(s => s.run())) } }
+  const env = { DB: db, ARTIFACTS: {} } as unknown as Bindings
+  return { env, writes }
+}
+
+test('M1-d: a confirmed Learning drain succeeds on its deletable sources while blocked sources stay pending', async () => {
+  const { env, writes } = confirmedFixture()
+  const result = await runRetentionHotWindowDrain(env, { policyIds: ['learning_lineage_v1'],
+    businessDate: '2026-10-29', maxRounds: 10, confirmPhrase: RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE })
+  assert.equal(result.dry_run, false)
+  assert.equal(result.status, 'success')
+  assert.equal(result.policies[0].status, 'success')
+  assert.deepEqual(result.failed_policies, [])
+  assert.equal(result.complete, false)
+  assert.equal(result.stop_reason, 'blocked_or_no_progress')
+  assert.equal(result.blocked_datasets.length, 10)
+  const drained = result.policies[0].datasets.filter(d => d.status !== 'blocked')
+  assert.ok(drained.length >= 1 && drained.every(d => d.status === 'skipped'))
+  // Ledger: blocked items are skipped with backlog, and the run itself finishes as success.
+  const blockedItems = writes.filter(w => /data_retention_run_items/.test(w.sql)
+    && String(w.args[1]).startsWith('hot-drain:') && /cold_reader_not_verified/.test(JSON.stringify(w.args)))
+  assert.equal(blockedItems.length, 10)
+  assert.ok(blockedItems.every(w => w.args[2] === 'skipped'))
+  const finished = writes.filter(w => /UPDATE data_retention_runs/.test(w.sql))
+  assert.equal(finished.length, 1)
+  assert.ok(finished[0].args.includes('success'))
+  assert.match(summarizeRetentionHotWindowDrain(result), /status=success .* failed=none blocked=10$/)
+})
+
+test('M1-d: a failing deletable source still fails the policy and the route', async () => {
+  const { env } = confirmedFixture(true)
+  const result = await runRetentionHotWindowDrain(env, { policyIds: ['learning_lineage_v1'],
+    businessDate: '2026-10-29', maxRounds: 10, confirmPhrase: RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE })
+  assert.equal(result.status, 'error')
+  assert.deepEqual(result.failed_policies, ['learning_lineage_v1'])
+  assert.match(String(result.policies[0].error), /predictions_reader_failed/)
+  assert.doesNotMatch(String(result.policies[0].error), /cold_reader_not_verified/)
+  assert.equal(result.blocked_datasets.length, 10)
 })

@@ -39,6 +39,7 @@ def test_strict_kv_error_cannot_be_misreported_as_missing(monkeypatch, status):
     class Response:
         status_code = status
         text = 'sensitive synthetic response'
+    monkeypatch.setattr('services.d1_client.pooled_http_client', lambda *a: None)
     monkeypatch.setattr(kv_client.httpx, 'get', lambda *args, **kwargs: Response())
     with pytest.raises(RuntimeError, match=f'^kv_read_http_failed:{status}$'):
         kv_client.get('test', strict=True)
@@ -54,6 +55,7 @@ def test_strict_json_transport_and_decode_failure_are_not_missing(monkeypatch):
         raise kv_client.httpx.ReadTimeout('synthetic URL must not be printed')
     monkeypatch.undo()
     monkeypatch.setattr(kv_client, '_check_env', lambda: None)
+    monkeypatch.setattr('services.d1_client.pooled_http_client', lambda *a: None)
     monkeypatch.setattr(kv_client.httpx, 'get', fail)
     with pytest.raises(RuntimeError, match='^kv_read_transport_failed$'):
         kv_client.get_json('trading:risk_config', strict=True)

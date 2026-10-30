@@ -79,6 +79,7 @@ interface RestrictionMockOptions {
   failD1?: boolean
   kvValues?: Record<string, unknown>
   historicalRows?: boolean
+  governanceRows?: Array<{ symbol: string; restriction_type: string; source: string }>
 }
 
 function restrictionMockEnv(options: RestrictionMockOptions = {}): {
@@ -96,6 +97,9 @@ function restrictionMockEnv(options: RestrictionMockOptions = {}): {
           return {
             async all() {
               if (options.failD1) throw new Error('d1 unavailable')
+              if (options.governanceRows && statement.includes('stock_trading_restrictions') && statement.includes('restriction_type')) {
+                return { results: options.governanceRows }
+              }
               if (!options.historicalRows) return { results: [] }
               if (statement.includes('canonical_trading_restrictions') && statement.includes('MAX(source_date)')) {
                 return {
@@ -187,9 +191,23 @@ async function runBehaviorTests(): Promise<void> {
   const liveBuckets = await loadTradingRestrictionBuckets(live.env, '2026-08-15', {
     evidenceMode: 'live_current',
   })
-  for (const symbol of ['1111', '3333', '5555']) {
+  for (const symbol of ['1111', '3333']) {
     assert(liveBuckets.hardBlockedSymbols.has(symbol), `live D1 failure must hard-block KV safety symbol ${symbol}`)
   }
+  // C28-15 (A): market:delisting_risk has no writer; the dead reader is gone and the key is ignored.
+  assert(!liveBuckets.hardBlockedSymbols.has('5555'), 'market:delisting_risk must not be read')
+  assert(!liveBuckets.riskEvidenceSymbols.has('5555'), 'market:delisting_risk must not be read')
+  assert(!('market:delisting_risk' in liveBuckets.hardSourceCounts), 'market:delisting_risk must not be a hard source')
+  // The 'delisting' restriction type stays a hard block when a D1 governance row carries it.
+  const delistedRow = restrictionMockEnv({
+    governanceRows: [{ symbol: '7777', restriction_type: 'delisting', source: 'official.delisting' }],
+    kvValues: { 'market:delisting_risk': ['5555'] },
+  })
+  const delistedBuckets = await loadTradingRestrictionBuckets(delistedRow.env, '2026-08-15', { evidenceMode: 'live_current' })
+  assert(delistedBuckets.hardBlockedSymbols.has('7777'), 'a delisting D1 row must hard-block')
+  assert(delistedBuckets.hardSourceCounts['official.delisting'] === 1, 'the delisting row is counted under its source')
+  assert(!delistedBuckets.hardBlockedSymbols.has('5555') && !delistedRow.kvReads.includes('market:delisting_risk'),
+    'market:delisting_risk is never read')
   for (const symbol of ['2222', '4444', '009801', '00679B', '2887Z1', '07637U']) {
     assert(liveBuckets.riskEvidenceSymbols.has(symbol), `live attention/notice ${symbol} must remain risk evidence`)
     assert(!liveBuckets.hardBlockedSymbols.has(symbol), `live attention/notice ${symbol} must remain soft`)

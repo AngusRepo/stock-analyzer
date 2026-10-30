@@ -4,6 +4,7 @@ import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { resolveFinLabDispatchFence, finLabCallbackSummary } from '../lib/finLabDispatchFence'
+import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
@@ -1195,9 +1196,15 @@ async function handleSchedulerCallback(c: any) {
       ?? 1,
     )
     if (Number.isFinite(dispatchAttempt) && dispatchAttempt > 1) {
+      // C28-25: a late lane still unpublished before the cutoff is not a watchdog failure; it retries.
+      const lateLaneWaiting = body.status === 'error'
+        && classifyFinLabLateLaneNotReady(`${String(body.summary ?? '')} ${String(body.error ?? '')}`)
+        && !finLabLateRetryCutoffPassed(callbackRunDate)
       await logSchedulerResult(c.env.KV, 'finlab-backfill-watchdog', {
-        status: body.status === 'success' ? 'success' : body.status === 'skipped' ? 'skipped' : 'error',
-        summary: `FinLab watchdog terminal callback status=${body.status} dispatch_attempt=${dispatchAttempt}`,
+        status: body.status === 'success' ? 'success' : body.status === 'skipped' ? 'skipped' : lateLaneWaiting ? 'waiting' : 'error',
+        summary: lateLaneWaiting
+          ? `FinLab watchdog late lane not ready dispatch_attempt=${dispatchAttempt}; retrying until ${finLabLateRetryCutoffTw()} TW`
+          : `FinLab watchdog terminal callback status=${body.status} dispatch_attempt=${dispatchAttempt}`,
         duration_ms: Number(body.duration_ms ?? 0),
         error: body.error != null ? String(body.error) : undefined,
         run_id: callbackRunId,
@@ -1321,6 +1328,19 @@ async function handleSchedulerCallback(c: any) {
     } else if (body.status === 'success' && callbackRunDate && callbackRunId) {
       const { queueFinLabCompletion } = await import('../lib/finlabCompletionOutbox')
       await queueFinLabCompletion(c.env, callbackRunDate, callbackRunId, forceContinuation, false)
+    } else if (body.status === 'error' && continueEveningChain && callbackRunDate
+      && classifyFinLabLateLaneNotReady(`${String(body.summary ?? '')} ${String(body.error ?? '')}`)
+      && !finLabLateRetryCutoffPassed(callbackRunDate)) {
+      const waiting = `status=waiting awaiting_late_lane fields=${finLabLatePublicationFields().join(',')} `
+        + `cutoff=${finLabLateRetryCutoffTw()} TW; FinLab watchdog retries run_id=${callbackRunId ?? 'unknown'}; `
+        + String(body.summary ?? body.status)
+      await logSchedulerResult(c.env.KV, 'update', {
+        status: 'waiting', summary: waiting, duration_ms: 0, run_id: callbackRunId, run_date: callbackRunDate,
+      })
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: 'waiting', summary: waiting, duration_ms: 0, run_id: callbackRunId, run_date: callbackRunDate,
+        supersedePrevious: true,
+      })
     } else if (body.status !== 'success' && continueEveningChain) {
       await logSchedulerResult(c.env.KV, 'update', {
         status: 'blocked',

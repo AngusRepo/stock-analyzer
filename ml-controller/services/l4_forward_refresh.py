@@ -5,13 +5,40 @@ Never choose a fixed training parquet, manufacture OOF lineage, or infer full
 native-pool coverage from a smaller routed prediction set.
 """
 from datetime import datetime,timedelta
-import hashlib,io,json
+import hashlib,io,json,os,re
 import polars as pl
 from services.l4_forward_materialization import digest,materialize,timestamp
 
 PREFIX='l4_distribution/forward_data/v1/'
+_SECRET_ENV=re.compile(r'TOKEN|SECRET|PASSWORD|KEY|PRIVATE|CREDENTIAL|AUTH|WEBHOOK')
+_SECRET_KEY=r'(?i)\b((?:access_)?token|secret|password|api[_-]?key|signature|sig|key|x-goog-[a-z-]+)'
+_SECRET_TEXT=(
+    (re.compile(r'(?i)\b(authorization[\'"]?\s*[=:]\s*[\'"]?)(?:[A-Za-z-]+\s+)?[^\s\'",}]+'),r'\1***'),
+    (re.compile(r'(?i)(bearer\s+)\S+'),r'\1***'),
+    (re.compile(_SECRET_KEY+r'([\'"]?\s*[=:]\s*)([\'"])(?:(?!\3).)*\3'),r'\1\2\3***\3'),
+    (re.compile(_SECRET_KEY+r'([\'"]?\s*[=:]\s*)[^&\s\'",}]+'),r'\1\2***'),
+    (re.compile(r'(https?://[^\s?\'"]+)\?[^\s\'"]*'),r'\1?***'),
+    # Opaque credentials mix upper case and digits; snake_case codes and hex digests stay readable.
+    (re.compile(r'(?=[A-Za-z0-9+/_.=-]*[A-Z])(?=[A-Za-z0-9+/_.=-]*\d)[A-Za-z0-9+/_.=-]{32,}'),'***'))
+
+
+def error_summary(exc,limit=300):
+    """FU4: bounded, secret-redacted exception text for callbacks and logs."""
+    text=' '.join(str(exc)[:4096].split())  # bound regex work; only `limit` chars survive anyway
+    for name,value in os.environ.items():
+        value=value.strip()
+        if len(value)>=8 and _SECRET_ENV.search(name):text=text.replace(value,'***')
+    for pattern,replacement in _SECRET_TEXT:text=pattern.sub(replacement,text)
+    return text[:limit]
+
 NATIVE_POOL='native_non_etf_equity_v1'
 ROUTED_POOL='routed_available_l3_v1'
+
+class CachedProjectionFailure(Exception):
+    """FU3: this deploy already failed to project these exact snapshot bytes."""
+    def __init__(self,record):
+        self.record=record;super().__init__(record['error_summary'])
+
 
 def publish(bucket,kind,value):
     raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
@@ -110,10 +137,25 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                 snapshot=json.loads(raw)
                 if snapshot['source_manifest']!=manifest:raise ValueError('l4_forward_manifest_changed')
             else:
+                from google.api_core.exceptions import PreconditionFailed
+                # FU3: project() is deterministic in (manifest, snapshot bytes, code). A failure
+                # is remembered per deploy so retries skip the multi-GB cold read; any new
+                # deploy or manifest row retries. Read errors are never remembered.
+                source_sha=os.environ.get('STOCKVISION_SOURCE_SHA','').strip()
+                failure=(bucket.blob(PREFIX+'projection_failures/'+digest(dict(manifest=manifest,source_sha=source_sha))+'.json')
+                         if source_sha else None)
+                if failure is not None and failure.exists():
+                    raise CachedProjectionFailure(json.loads(failure.download_as_bytes()))
                 frozen=reader(manifest['snapshot_id'])
                 if frozen['manifest']!=manifest:raise ValueError('l4_forward_manifest_changed')
-                snapshot=project(frozen);ref=publisher(bucket,'projections',snapshot)
-                from google.api_core.exceptions import PreconditionFailed
+                try:snapshot=project(frozen)
+                except Exception as exc:
+                    if failure is not None and not isinstance(exc,(MemoryError,RecursionError)):
+                        record=dict(error_type=type(exc).__name__,error_summary=error_summary(exc))
+                        try:failure.upload_from_string(json.dumps(record,sort_keys=True),content_type='application/json',if_generation_match=0)
+                        except Exception:pass  # best effort: never mask the projection error
+                    raise
+                ref=publisher(bucket,'projections',snapshot)
                 raw=json.dumps(ref,sort_keys=True).encode()
                 try:cache.upload_from_string(raw,if_generation_match=0)
                 except PreconditionFailed:
@@ -126,7 +168,9 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
             record=publisher(bucket,'materializations',body)
             items.append({**item,**receipt,'materialization':record})
         except Exception as exc:
-            items.append({**item,'status':'failed','reason':'l4_forward_source_or_maturity_failed','error_type':type(exc).__name__,'training_eligible':False})
+            recorded=({k:str(exc.record.get(k,'')) for k in ('error_type','error_summary')}
+                if isinstance(exc,CachedProjectionFailure) else dict(error_type=type(exc).__name__,error_summary=error_summary(exc)))
+            items.append({**item,'status':'failed','reason':'l4_forward_source_or_maturity_failed',**recorded,'training_eligible':False})
     if native_reader is not None:
         for snapshot,ref in native_reader(bucket,start=start,end=day,cutoff=cutoff):
             item=dict(snapshot_id=snapshot['snapshot_id'],signal_date=snapshot['signal_date'])
@@ -137,7 +181,7 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                 items.append({**item,**receipt,'materialization':record})
             except Exception as exc:
                 items.append({**item,'status':'failed','reason':'l4_native_maturity_failed',
-                    'error_type':type(exc).__name__,'training_eligible':False})
+                    'error_type':type(exc).__name__,'error_summary':error_summary(exc),'training_eligible':False})
     eligible=[r['signal_date'] for r in items if r['training_eligible']]
     ready=[r['signal_date'] for r in items if r['status']=='ready']
     result=dict(schema_version='l4-forward-refresh-v1',cutoff=cutoff,status='failed' if any(r['status']=='failed' for r in items) else 'refreshed',
@@ -201,7 +245,7 @@ def refresh_daily(config,business_date,*,now=None):
             import re
             reason=str(exc)
             if not re.fullmatch('l4_(?:native|r2)_[a-z_]+',reason):reason='l4_native_collection_failed'
-            observation=dict(status='failed',reason=reason,error_type=type(exc).__name__)
+            observation=dict(status='failed',reason=reason,error_type=type(exc).__name__,error_summary=error_summary(exc))
         clock=datetime.now(timezone.utc)
     result=refresh(query=learning.query,bucket=bucket,price_capture=capture,
         expected_identity=identity,cutoff=clock.isoformat(),native_reader=discover)
@@ -240,7 +284,7 @@ def component_failure(result,component,exc):
     import re
     code=str(exc)
     if not re.fullmatch('l4_(?:forward|native|r2)_[a-z_]+',code):code='l4_'+component+'_failed'
-    result[component]=dict(status='failed',reason=code,error_type=type(exc).__name__)
+    result[component]=dict(status='failed',reason=code,error_type=type(exc).__name__,error_summary=error_summary(exc))
     result.update(status='failed',reason=code)
     return result
 
@@ -252,7 +296,8 @@ def attach_daily_result(result,config,business_date,*,runner=None):
         code=str(exc)
         import re
         if not re.fullmatch('l4_(?:forward|native|r2)_[a-z_]+',code):code='l4_forward_refresh_failed'
-        data=dict(status='failed',reason=code,error_type=type(exc).__name__,training_dispatched=False,promoted=False)
+        data=dict(status='failed',reason=code,error_type=type(exc).__name__,error_summary=error_summary(exc),
+            training_dispatched=False,promoted=False)
     result['forward_learning_data']=data
     if data['status']=='failed':
         result.update(status='failed',dependency_retry_required=True,reason='l4_forward_refresh_failed')
@@ -265,9 +310,11 @@ def attach_daily_result(result,config,business_date,*,runner=None):
 def callback_summary(result):
     """Bounded observability: data dates cannot masquerade as model-fit dates."""
     from collections import Counter
-    return {k:result[k] for k in ('status','reason','error_type','business_date','cutoff',
+    return {k:result[k] for k in ('status','reason','error_type','error_summary','business_date','cutoff',
         'latest_observed_signal_date','latest_mature_evaluation_date','latest_training_eligible_date',
         'source_count','registry_receipt','training_dispatched','promoted','native_observation','r2_shadow','r2_evaluation','r2_paired') if k in result} | {
         'status_counts':dict(Counter(r['status'] for r in result.get('items',[]))),
+        'failure_samples':[{k:r.get(k) for k in ('signal_date','reason','error_type','error_summary')}
+            for r in result.get('items',[]) if r['status']=='failed'][:3],
         'training_blocker_counts':dict(Counter(r['training_blocker'] for r in result.get('items',[])
             if r.get('training_blocker')))}

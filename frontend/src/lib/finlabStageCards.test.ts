@@ -21,3 +21,13 @@ test('sequential cards use own timing and preserve failure without three spinner
   assert.equal(cards[1].lastDuration,'0 分 30 秒（進行中）')
   assert.deepEqual(finlabStageCards({...job,lastStatus:'failed'}).map(c=>c.lastStatus),['success','failed','waiting'])
 })
+test('FU8-A: FinLab cards match the run the Worker selected, not the ticket runId',()=>{
+  const finlabProgress={run_id:'finlab-run',run_date:'2026-10-16',dispatch_attempt:1,sequence:1,observed_at:'2026-10-16T14:01:00Z',phases:[
+    {phase:'acquire',status:'completed',started_at:'2026-10-16T14:00:00Z',completed_at:'2026-10-16T14:00:30Z',elapsed_ms:30000}]} as any
+  const job:SchedulerJob={...parent,runId:'ticket-1',finlabRunId:'finlab-run',finlabProgress}
+  assert.equal(finlabStageCards(job)[0].lastStatus,'success')
+  assert(finlabStageCards({...job,finlabRunId:'older-run'}).every(c=>c.lastStatus==='waiting' && c.lastDuration==='N/A'))
+  assert(finlabStageCards({...job,finlabRunId:null}).every(c=>c.lastStatus==='waiting'), 'null falls back to the ticket runId')
+  assert.equal(finlabStageCards({...job,runId:'finlab-run',finlabRunId:undefined})[0].lastStatus,'success')
+  assert(finlabStageCards({...job,statusRunDate:'2026-10-15'}).every(c=>c.lastStatus==='waiting'))
+})

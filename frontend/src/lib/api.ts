@@ -287,6 +287,10 @@ export const cronApi = {
 
 // 2026-04-21 Scheduler Dashboard API
 export type SchedulerJob = {
+  /** FU8-A: canonical run id of the durable stage (the pipeline progress owner); null when none. */
+  canonicalRunId?: string|null
+  /** FU8-A: FinLab run id the Worker used to select finlabProgress. */
+  finlabRunId?: string|null
   pipelineWork?: {run_id:string;run_date:string;phase:string;stage_id:string;
     status:'running'|'waiting'|'failed'|'unknown';active:number;completed:number;total:number;
     observed_at:string;execution_id?:string;started_at?:string|null}

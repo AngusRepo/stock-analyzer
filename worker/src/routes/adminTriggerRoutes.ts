@@ -446,11 +446,11 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           if (!maintenanceOwned) {
             await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
           }
-          if (!maintenanceOwned) await logSchedulerResult(c.env.KV, task, {
+          if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
             status,
             summary,
             duration_ms: Date.now() - t0,
-            run_id: runId,
+            run_id: finLabRunLogId(task, summary) ?? runId,
             run_date: requestedRunDate,
           })
           if (!maintenanceOwned) await putRunLog(c.env.KV, task, runId, {
@@ -502,11 +502,11 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const status = classifySchedulerSummary(summary)
       const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
       if (!maintenanceOwned) await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-      if (!maintenanceOwned) await logSchedulerResult(c.env.KV, task, {
+      if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
         status,
         summary,
         duration_ms: Date.now() - t0,
-        run_id: syncRunId,
+        run_id: finLabRunLogId(task, summary) ?? syncRunId,
         run_date: requestedRunDate,
         strict: task === 'data-domain-shadow-backfill-next',
       })
@@ -544,4 +544,21 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
   })
 
   return routes
+}
+
+/** R8-a: a manual FinLab dispatch left unconfirmed by an HTML 5xx never overwrites a start heartbeat that already arrived. */
+/**
+ * The FinLab flow keeps its own run log when (a) a start heartbeat already superseded an unconfirmed
+ * dispatch, or (b) a root run was suppressed because the late-lane watchdog owns tonight's chain (C28-25).
+ */
+async function finLabOwnsRunLog(env: Bindings, task: string, runDate: string | undefined, summary: string): Promise<boolean> {
+  const { FINLAB_LATE_LANE_WATCHDOG_OWNER, finLabDispatchSupersededByStart } = await import('../lib/updateOrchestrator')
+  if (summary.includes(FINLAB_LATE_LANE_WATCHDOG_OWNER)) return true
+  if (task !== 'finlab-v4-backfill') return false
+  return finLabDispatchSupersededByStart(env, runDate, summary)
+}
+
+/** The FinLab scheduler log is keyed by the FinLab run_id (the watchdog resend and the callback fence read it), not the ticket id. */
+function finLabRunLogId(task: string, summary: string): string | null {
+  return task === 'finlab-v4-backfill' ? summary.match(/(?:^|\s)run_id=([^\s;]+)/)?.[1] ?? null : null
 }

@@ -113,3 +113,77 @@ export function schedulerGovernanceSummary(internalLogicalSteps = 0): SchedulerG
 export function schedulerManifestJobs(): readonly ManifestJob[] {
   return manifestJobs
 }
+export type ManifestRepeatingWindow = {
+  /** Manifest cron (UTC). */
+  cron: string
+  intervalMinutes: number
+  /** Minutes of the Taiwan day of the first and last tick (the last may fall after midnight). */
+  firstTwMinute: number
+  lastTwMinute: number
+  /** Last tick on the same Taiwan calendar day as the first one. */
+  lastSameDayTwMinute: number
+  label: string
+}
+
+const twHhMm = (minute: number) => {
+  const m = ((minute % 1440) + 1440) % 1440
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+}
+
+/** NEW-86: a weekday repeating window (`*\/N H1-H2 * * 1-5`, UTC) read from the scheduler manifest. */
+export function manifestRepeatingWindow(
+  jobId: string,
+  source: { timeZone?: string; jobs: Array<{ id: string; schedule?: string; timeZone?: string }> } = schedulerManifest as any,
+): ManifestRepeatingWindow {
+  const job = source.jobs.find((row) => row.id === jobId)
+  const match = /^\*\/(\d{1,2}) (\d{1,2})-(\d{1,2}) \* \* 1-5$/.exec(job?.schedule ?? '')
+  // A per-job timeZone overrides the manifest default.
+  if (!job || !match || (job.timeZone ?? source.timeZone) !== 'UTC') throw new Error(`manifest_repeating_window_invalid:${jobId}`)
+  const [interval, startHour, endHour] = match.slice(1).map(Number)
+  if (interval < 1 || interval > 59 || startHour > endHour || endHour > 23) throw new Error(`manifest_repeating_window_invalid:${jobId}`)
+  const lastMinuteInHour = Math.floor(59 / interval) * interval
+  const offset = startHour + 8 >= 24 ? 8 * 60 - 1440 : 8 * 60
+  const firstTwMinute = startHour * 60 + offset
+  const lastTwMinute = endHour * 60 + lastMinuteInHour + offset
+  // Ticks run at minutes 0, N, 2N... of each hour, so the last same-day tick is in TW hour 23.
+  const lastSameDayTwMinute = lastTwMinute < 1440 ? lastTwMinute : 23 * 60 + lastMinuteInHour
+  return {
+    cron: job.schedule!,
+    intervalMinutes: interval,
+    firstTwMinute,
+    lastTwMinute,
+    lastSameDayTwMinute,
+    label: `Weekdays ${twHhMm(firstTwMinute)}-${twHhMm(lastTwMinute)} / ${interval}m`,
+  }
+}
+
+export type EodExitSchedule = {
+  /** Manifest cron (UTC), the single owner of the EOD exit time. */
+  cron: string
+  /** Minute of the Taiwan day when the scheduled run fires. */
+  twMinute: number
+  /** HH:MM Taiwan time. */
+  twTime: string
+  /** Manual/scheduled trigger window [twMinute, windowEndTwMinute). */
+  windowEndTwMinute: number
+}
+
+export const EOD_EXIT_TRIGGER_WINDOW_MINUTES = 10
+
+const twClock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`
+
+/** AUD-4: the EOD exit time is owned by the scheduler manifest; every Worker reader derives from it. */
+export function eodExitSchedule(manifest: { timeZone?: string; jobs: Array<{ id: string; schedule?: string; timeZone?: string }> } = schedulerManifest as any): EodExitSchedule {
+  const job = manifest.jobs.find(row => row.id === 'eod-exit')
+  const match = /^(\d{1,2}) (\d{1,2}) \* \* 1-5$/.exec(job?.schedule ?? '')
+  // A per-job timeZone overrides the manifest default.
+  if (!job || !match || (job.timeZone ?? manifest.timeZone) !== 'UTC') throw new Error('eod_exit_schedule_invalid')
+  const utcMinute = Number(match[2]) * 60 + Number(match[1])
+  if (Number(match[1]) > 59 || Number(match[2]) > 23) throw new Error('eod_exit_schedule_invalid')
+  const twMinute = (utcMinute + 8 * 60) % (24 * 60)
+  return { cron: job.schedule!, twMinute, twTime: twClock(twMinute), windowEndTwMinute: twMinute + EOD_EXIT_TRIGGER_WINDOW_MINUTES }
+}
+
+export function eodExitWindowLabel(schedule: EodExitSchedule = eodExitSchedule()): string {
+  return `${schedule.twTime}-${twClock(schedule.windowEndTwMinute - 1)}`
+}

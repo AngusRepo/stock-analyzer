@@ -1,15 +1,15 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:bbf7b8480af603f389e52aa461b755ca5247fb796a12c950b2edccfeba8f400e",
+  "execution_owner_version": "native-paper-v1:533930fa1edb436637b62cec506a8477f196b0f2c2be142d1b3dc8f719e4f184",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-10-28 21:0x TW in merge/deploy owner session: \"go：10/31 release r31-20261031 變體 B（#93＋#95＋#91＋monthly／weekly PAUSED），由你跑正式 admission 和 re-pin 後推\"",
-  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/k9_release_20261031.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r31-20261031",
+  "authorization": "Wei 2026-10-30 09:2x TW in parent session: \"go：照 W-REL 清單執行 wrel-20261029\"",
+  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/wrel/plan_WREL.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:wrel-20261029",
   "policy_runtime_admissions": [
-    "ml:active8:paper_runtime_approval:v1:r31-20261031-p1",
-    "ml:active8:paper_runtime_approval:v1:r31-20261031-p2"
+    "ml:active8:paper_runtime_approval:v1:wrel-20261029-p1",
+    "ml:active8:paper_runtime_approval:v1:wrel-20261029-p2"
   ]
 }

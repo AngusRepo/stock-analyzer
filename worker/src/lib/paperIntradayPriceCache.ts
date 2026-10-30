@@ -37,6 +37,8 @@ export type PostClosePriceRefreshResult = {
   refreshed: number
   failed: number
   prices: Map<string, PostClosePriceSnapshot>
+  /** O04: quotes that came back with a price but do not belong to tradeDate; never used as marks. */
+  rejected: Map<string, { price: number; source: string; quote_time: string | null }>
   summary: string
 }
 
@@ -182,6 +184,7 @@ export async function refreshOpenPositionPostClosePriceCache(
       refreshed: 0,
       failed: 0,
       prices: new Map(),
+      rejected: new Map(),
       summary: `post_close_price_cache_refreshed=0/0 date=${tradeDate}`,
     }
   }
@@ -191,6 +194,14 @@ export async function refreshOpenPositionPostClosePriceCache(
     PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN,
   })
   const updatedAt = paperExecutionDate().toISOString()
+  const rejected = new Map<string, { price: number; source: string; quote_time: string | null }>()
+  for (const symbol of symbols) {
+    const quote = quoteMap.get(symbol)
+    const price = finitePositive(quote?.last)
+    if (price != null && !quoteBelongsToSession(quote?.quoteTime, tradeDate)) {
+      rejected.set(symbol, { price, source: quote?.source ?? 'unknown', quote_time: quote?.quoteTime ?? null })
+    }
+  }
   const snapshots = symbols
     .map((symbol): PostClosePriceSnapshot | null => {
       const quote = quoteMap.get(symbol)
@@ -228,6 +239,7 @@ export async function refreshOpenPositionPostClosePriceCache(
     refreshed,
     failed,
     prices,
+    rejected,
     summary: `post_close_price_cache_refreshed=${refreshed}/${symbols.length} date=${tradeDate}${failed ? ` failed=${failed}` : ''}${sourceSummary ? ` sources=${sourceSummary}` : ''}`,
   }
 }

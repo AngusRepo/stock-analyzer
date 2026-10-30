@@ -447,6 +447,75 @@ export async function loadScreenerPriceRowsPaged(
     }]
   })
 }
+export interface ScreenerChipFreshness {
+  latestInstitutionalChipDate: string | null
+  latestBrokerFlowDate: string | null
+  priceMaxDate: string | null
+  // Price sessions after the latest chip date (price dates are trading sessions; no holiday lookup).
+  institutionalStaleSessions: number
+  brokerFlowStaleSessions: number
+  staleSessions: number
+  stale: boolean
+}
+
+const INSTITUTIONAL_CHIP_NAMES = new Set(['foreign', 'trust', 'dealer', '外資', '投信'])
+
+export function screenerChipFreshness(chips: readonly CanonicalScreenerChip[], tradingDates: readonly string[]): ScreenerChipFreshness {
+  let latestInstitutionalChipDate: string | null = null
+  let latestBrokerFlowDate: string | null = null
+  for (const chip of chips) {
+    if (INSTITUTIONAL_CHIP_NAMES.has(chip.name) && (!latestInstitutionalChipDate || chip.date > latestInstitutionalChipDate))
+      latestInstitutionalChipDate = chip.date
+    if (chip.name === 'broker_flow' && (!latestBrokerFlowDate || chip.date > latestBrokerFlowDate))
+      latestBrokerFlowDate = chip.date
+  }
+  const sessions = [...tradingDates].sort()
+  const priceMaxDate = sessions.at(-1) ?? null
+  const lag = (latest: string | null) => sessions.filter((date) => !latest || date > latest).length
+  const institutionalStaleSessions = lag(latestInstitutionalChipDate)
+  const brokerFlowStaleSessions = lag(latestBrokerFlowDate)
+  const staleSessions = Math.max(institutionalStaleSessions, brokerFlowStaleSessions)
+  return {
+    latestInstitutionalChipDate, latestBrokerFlowDate, priceMaxDate,
+    institutionalStaleSessions, brokerFlowStaleSessions, staleSessions,
+    stale: priceMaxDate != null && staleSessions > 0,
+  }
+}
+
+/** One warn per business date (screener attempts and manual reruns share the key); never blocks the run. */
+export async function alertScreenerChipStale(
+  env: { KV: KVNamespace; DISCORD_WEBHOOK_URL?: string },
+  endDate: string,
+  freshness: ScreenerChipFreshness,
+): Promise<boolean> {
+  if (!freshness.stale || !env.DISCORD_WEBHOOK_URL) return false
+  const dedupKey = `cron:alert:screener-chip-stale:${endDate}`
+  try {
+    if (await env.KV.get(dedupKey)) return false
+    // Claim before sending: a failing webhook must not re-alert on every attempt.
+    await env.KV.put(dedupKey, '1', { expirationTtl: 86400 })
+    await fetch(env.DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: [
+          'Scheduler Warn: screener chip data stale (`screener-chip-stale`)',
+          `Date: ${endDate}`,
+          `Price session: ${freshness.priceMaxDate}`,
+          `Institutional chips: ${freshness.latestInstitutionalChipDate ?? 'missing'} (${freshness.institutionalStaleSessions} sessions behind)`,
+          `Broker flow: ${freshness.latestBrokerFlowDate ?? 'missing'} (${freshness.brokerFlowStaleSessions} sessions behind)`,
+          'Chip scores used the latest available dates; scoring is unchanged.',
+        ].join('\n'),
+      }),
+      signal: AbortSignal.timeout(5000),
+    })
+    return true
+  } catch {
+    // Alerting must never block the screener.
+    return false
+  }
+}
+
 export async function loadMarketDataFromD1(
   env: Bindings,
   priceDays: number = 20,
@@ -459,6 +528,7 @@ export async function loadMarketDataFromD1(
   tpexSymbols: Set<string>
   laneCounts: { tradable: number; emerging_watchlist: number; research_only: number; stale_excluded: number }
   chipSourceSummary: Record<string, number>
+  chipFreshness: ScreenerChipFreshness
 }> {
   const lookbackDays = Math.ceil(priceDays * 1.5) + 7
   const chipLookback = Math.ceil(chipDays * 1.5) + 5
@@ -482,6 +552,7 @@ export async function loadMarketDataFromD1(
       tpexSymbols: new Set(),
       laneCounts: { tradable: 0, emerging_watchlist: 0, research_only: 0, stale_excluded: 0 },
       chipSourceSummary: {},
+      chipFreshness: screenerChipFreshness([], []),
     }
   }
   const maxDate = tradingDates[tradingDates.length - 1]
@@ -567,5 +638,6 @@ export async function loadMarketDataFromD1(
     tpexSymbols,
     laneCounts,
     chipSourceSummary,
+    chipFreshness: screenerChipFreshness(allChips, tradingDates),
   }
 }

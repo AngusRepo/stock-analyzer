@@ -1059,6 +1059,7 @@ export async function seedDefaultStrategySpecRegistry(
       continue
     }
     const row = strategySpecToRegistryRow(spec, nowIso)
+    // H6: re-seeding an unchanged row is a no-op, so updated_at keeps the last real change.
     await db.prepare(`
       INSERT INTO strategy_spec_registry (
         strategy_id, version, name, status, owner, alpha_bucket,
@@ -1094,6 +1095,31 @@ export async function seedDefaultStrategySpecRegistry(
         risk_notes_json=excluded.risk_notes_json,
         source_refs_json=excluded.source_refs_json,
         updated_at=excluded.updated_at
+      WHERE strategy_spec_registry.name IS NOT excluded.name
+        OR strategy_spec_registry.status IS NOT (CASE
+          WHEN strategy_spec_registry.status='active' THEN 'active'
+          WHEN strategy_spec_registry.status='retired' THEN 'retired'
+          ELSE 'candidate'
+        END)
+        OR strategy_spec_registry.alpha_bucket IS NOT excluded.alpha_bucket
+        OR strategy_spec_registry.family_id IS NOT excluded.family_id
+        OR strategy_spec_registry.variant_id IS NOT excluded.variant_id
+        OR strategy_spec_registry.owner_type IS NOT (CASE
+          WHEN strategy_spec_registry.owner_type IN ('strategy','feature','observe','retired')
+          THEN strategy_spec_registry.owner_type
+          ELSE excluded.owner_type
+        END)
+        OR strategy_spec_registry.promotion_status IS NOT (CASE
+          WHEN strategy_spec_registry.status='active' THEN 'production'
+          WHEN strategy_spec_registry.status='retired' THEN 'retired'
+          ELSE 'candidate'
+        END)
+        OR strategy_spec_registry.supported_regimes_json IS NOT excluded.supported_regimes_json
+        OR strategy_spec_registry.thesis IS NOT excluded.thesis
+        OR strategy_spec_registry.thresholds_json IS NOT excluded.thresholds_json
+        OR strategy_spec_registry.candidate_policy_json IS NOT excluded.candidate_policy_json
+        OR strategy_spec_registry.risk_notes_json IS NOT excluded.risk_notes_json
+        OR strategy_spec_registry.source_refs_json IS NOT excluded.source_refs_json
     `).bind(
       row.strategy_id,
       row.version,

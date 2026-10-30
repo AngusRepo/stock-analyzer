@@ -22,7 +22,8 @@ def test_payload_builder_uses_canonical_revenue_monthly() -> None:
     assert "FROM canonical_revenue_monthly" in source
     assert "FROM monthly_revenue" not in source
     assert "canonical_revenue_monthly: latest row known by the decision date" in source
-    assert "r.revenue_month <= substr(?, 1, 7)" in source
+    assert "r.revenue_month <= ? " in source
+    assert "substr(?, 1, 7)" not in source
     assert "r.as_of_date <= ?" in source
 
 

@@ -4,7 +4,10 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
 import { sha256Text } from './datasetSnapshots'
-import { collectStorageCapacityTelemetry, type StorageCapacityRow } from './storageCapacityTelemetry'
+import {
+  collectStorageCapacityTelemetry, loadStorageCapacityRunway, STORAGE_CAPACITY_RUNWAY_ALERT_DAYS,
+  type StorageCapacityRow, type StorageCapacityRunway,
+} from './storageCapacityTelemetry'
 import { inspectSplitDomainSchemaReadiness, type DomainSchemaReadiness } from './storageReadiness'
 import type {
   EvidenceArtifactManifest,
@@ -694,6 +697,10 @@ export interface StorageHealthResult {
   legacy_capacity_role: 'active_source' | 'frozen_rollback_source'
   blocking_capacity_domains: string[]
   capacity_domains: Array<{ domain: string; binding_name: string; utilization_pct: number; status: string }>
+  capacity_runway: StorageCapacityRunway[]
+  capacity_runway_alert_days: number
+  capacity_runway_alert_domains: string[]
+  capacity_runway_error: string | null
 }
 
 export async function runStorageHealthCheck(
@@ -703,11 +710,21 @@ export async function runStorageHealthCheck(
   const learningDb = databaseForDataDomain(env, 'learning')
   let capacityRows: StorageCapacityRow[] = []
   let capacityError: string | null = null
+  const observedDate = paperExecutionDate().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })
   try {
-    const observedDate = paperExecutionDate().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })
     capacityRows = await collectStorageCapacityTelemetry(env, observedDate)
   } catch (error) {
     capacityError = error instanceof Error ? error.message : String(error)
+  }
+  // D7a: runway is observation only and never changes `healthy`.
+  let capacityRunway: StorageCapacityRunway[] = []
+  let capacityRunwayError: string | null = null
+  if (capacityRows.length) {
+    try {
+      capacityRunway = await loadStorageCapacityRunway(env, capacityRows, observedDate)
+    } catch (error) {
+      capacityRunwayError = error instanceof Error ? error.message : String(error)
+    }
   }
   const counts = await opsDb.prepare(`
     SELECT
@@ -874,11 +891,15 @@ export async function runStorageHealthCheck(
   const utilization = d1Bytes == null ? null : d1Bytes / 10_000_000_000
   const capacityStatus = legacyCapacity?.status ?? 'unknown'
   const legacyFrozenRollbackSource = Number(frozenDomainReceipt?.frozen_domains ?? 0) === 7
+  // A frozen legacy rollback source is reported but never judged with the live domains.
+  const judgedDomain = (domain: string) => !(domain === 'legacy' && legacyFrozenRollbackSource)
   const blockingCapacityDomains = capacityRows
-    .filter((row) => (
-      (row.status === 'drain' || row.status === 'critical')
-      && !(row.domain === 'legacy' && legacyFrozenRollbackSource)
-    ))
+    .filter((row) => (row.status === 'drain' || row.status === 'critical') && judgedDomain(row.domain))
+    .map((row) => row.domain)
+  const capacityRunwayAlertDomains = capacityRunway
+    .filter((row) => judgedDomain(row.domain)
+      && row.projected_days_to_critical_90pct != null
+      && row.projected_days_to_critical_90pct < STORAGE_CAPACITY_RUNWAY_ALERT_DAYS)
     .map((row) => row.domain)
   const capacityDrain = blockingCapacityDomains.length > 0
   const integrityBlocked = Number(counts?.integrity_blocked ?? 0)
@@ -939,6 +960,10 @@ export async function runStorageHealthCheck(
       utilization_pct: row.utilization_pct,
       status: row.status,
     })),
+    capacity_runway: capacityRunway,
+    capacity_runway_alert_days: STORAGE_CAPACITY_RUNWAY_ALERT_DAYS,
+    capacity_runway_alert_domains: capacityRunwayAlertDomains,
+    capacity_runway_error: capacityRunwayError,
   }
 }
 

@@ -12,7 +12,8 @@ const duration = (ms: number) => `${Math.floor(ms / 60000)} 分 ${Math.floor(ms 
 export function finlabStageCards(parent?: SchedulerJob, now = Date.now()): SchedulerJob[] {
   if (!parent) return []
   const p = parent.finlabProgress
-  const progress = p?.run_id === parent.runId && p?.run_date === parent.statusRunDate ? p : null
+  // FU8-A: the Worker names the FinLab run it selected; the ticket runId is only a fallback for older payloads.
+  const progress = p?.run_id === (parent.finlabRunId ?? parent.runId) && p?.run_date === parent.statusRunDate ? p : null
   // A stage receipt describes the selected run only; never inherit a parent's timer.
   return FINLAB_STAGE_CARDS.map(card => {
     const row = progress?.phases.find(r => r.phase === card.phase)

@@ -116,6 +116,92 @@ def test_r33_non_finite_score_drops_only_that_model():
     out = predict_stock_v2(request({**pool, "active8_ensemble": {"kind": "r33_equal7_isotonic"}}))
     assert out["rank_scores"] == {"LightGBM": 0.4}
     assert out["model_errors"] == ["active8_base_score_non_finite:XGBoost"]
+
+
+def test_r33_every_feature_model_non_finite_keeps_the_row_for_gnn_and_sequence():
+    """NEW-1030-06 (A1 m-c): the controller builds a symbol's row only from its feature row, so a
+    raise here dropped the GNN and sequence scores too. Under R33 the row survives with no
+    feature score and names each model's gap; the controller's rank pool unscores it only when
+    none of the seven scored. Other modes still fail the row."""
+    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY, _BATCH_MODEL_POOL_KEY, predict_stock_v2
+    from app.schemas import PredictRequest
+    pool = _full_model_pool({"LightGBM": "active", "ExtraTrees": "active", "TabM": "active"})
+    r33_pool = {**pool, "active8_ensemble": {"kind": "r33_equal7_isotonic"}}
+
+    def request(snapshot, scores, errors=()):
+        return PredictRequest(**{**_predict_payload("2330", 2330, 100.0), "runtime_options": {
+            _BATCH_FEATURE_RANK_SCORES_KEY: scores, _BATCH_MODEL_POOL_KEY: snapshot,
+            "__batch_feature_model_errors": list(errors)}})
+    nan = float("nan")
+    out = predict_stock_v2(request(r33_pool, {"LightGBM": nan, "ExtraTrees": float("inf"), "TabM": nan}))
+    assert out["rank_scores"] == {} and out["models"] == [] and "error" not in out
+    assert out["model_errors"] == ["active8_base_score_non_finite:LightGBM", "active8_base_score_non_finite:ExtraTrees",
+                                   "active8_base_score_non_finite:TabM"]
+    gap = "ExtraTrees: r33_feature_input_non_finite:count=1:fields=pe"
+    out = predict_stock_v2(request(r33_pool, {}, [gap]))
+    assert out["rank_scores"] == {} and out["model_errors"] == [gap]
     with pytest.raises(ValueError, match="active8_feature_evidence_empty"):
-        scores.update(LightGBM=float("inf"))
-        predict_stock_v2(request({**pool, "active8_ensemble": {"kind": "r33_equal7_isotonic"}}))
+        predict_stock_v2(request(pool, {}, [gap]))
+
+
+class _NonFiniteRejectingModel(_Model):
+    """sklearn 1.9 ExtraTrees raises on an inf anywhere in the batch, failing every symbol's score."""
+
+    def predict(self, x_batch):
+        if np.isinf(x_batch).any():
+            raise ValueError("Input X contains infinity.")
+        return super().predict(x_batch)
+
+
+def _prep_contexts(rows, *, prep_only):
+    from app.schemas import PredictRequest
+    names = ["pe", "pb", "roe"]
+    return [batch_prediction._FeatureBatchContext(
+        req=PredictRequest(**_predict_payload(s, int(s), 100.0)), x_latest=np.asarray([row], dtype=float),
+        feature_names=names, prep_only=prep_only) for s, row in rows]
+
+
+def test_r33_non_finite_input_is_only_that_model_and_symbols_gap(monkeypatch):
+    """NEW-1030-06: one symbol's non-finite prep input is that model's gap for that symbol, named
+    by field and count; the batch's other symbols keep their scores and nothing is imputed."""
+    rows = [("2330", [1.0, 2.0, 3.0]), ("2317", [np.nan, 2.0, np.inf]), ("2454", [1.5, 2.5, 3.5])]
+    model = _NonFiniteRejectingModel([0.2, 0.7])
+    contexts = _prep_contexts(rows, prep_only=True)
+    batch_prediction._apply_artifact_batch_predictions(contexts, "ExtraTrees", model, {"feature_names": ["pe", "pb", "roe"]})
+    assert model.calls == [(2, 3)]
+    assert [c.rank_scores for c in contexts] == [{"ExtraTrees": 0.2}, {}, {"ExtraTrees": 0.7}]
+    assert contexts[1].model_errors == ["ExtraTrees: r33_feature_input_non_finite:count=2:fields=pe,roe"]
+    assert contexts[0].model_errors == contexts[2].model_errors == []
+
+
+def test_outside_r33_a_non_finite_input_still_reaches_the_model(monkeypatch):
+    model = _NonFiniteRejectingModel([0.2, 0.7, 0.9])
+    contexts = _prep_contexts([("2330", [1.0, 2.0, 3.0]), ("2317", [np.inf, 2.0, 3.0])], prep_only=False)
+    batch_prediction._apply_artifact_batch_predictions(contexts, "ExtraTrees", model, {"feature_names": ["pe", "pb", "roe"]})
+    assert all(c.model_errors and "batch_contract_failed" in c.model_errors[0] for c in contexts)
+
+
+def test_r33_non_finite_input_never_reaches_tabm_imputation(monkeypatch):
+    """TabM's standardization zero-fills non-finite inputs; under R33 such a row is TabM's gap."""
+    import types
+    from app import tabm_batch_runtime
+    seen = []
+    artifact = types.SimpleNamespace(metadata={"feature_names": ["pe", "pb", "roe"]})
+    monkeypatch.setattr(tabm_batch_runtime, "load_tabm_artifact", lambda pool=None: artifact)
+    monkeypatch.setattr(batch_prediction, "_require_runtime_artifact_identity", lambda *a: None)
+    monkeypatch.setattr(tabm_batch_runtime, "predict_tabm_scores",
+                        lambda art, *, features: seen.append(features.copy()) or np.full(len(features), 0.4))
+    contexts = _prep_contexts([("2330", [1.0, 2.0, 3.0]), ("2317", [1.0, np.nan, 3.0])], prep_only=True)
+    batch_prediction._apply_tabm_torch_batch_predictions(contexts, {}, {"TabM": "active"})
+    assert len(seen) == 1 and seen[0].shape == (1, 3) and np.isfinite(seen[0]).all()
+    assert contexts[0].rank_scores == {"TabM": pytest.approx(0.4)} and contexts[1].rank_scores == {}
+    assert contexts[1].model_errors == ["TabM: r33_feature_input_non_finite:count=1:fields=pb"]
+
+
+def test_r33_non_finite_input_names_fields_by_position_without_matching_names():
+    ctx = _prep_contexts([("2330", [1.0, np.nan, 3.0])], prep_only=True)[0]
+    with pytest.raises(ValueError, match="count=1:fields=pb$"):
+        batch_prediction._require_finite_r33_input(ctx, ctx.x_latest, {"feature_names": ["only_one"]})
+    ctx.feature_names = ["a"]
+    with pytest.raises(ValueError, match="count=1:fields=#1$"):
+        batch_prediction._require_finite_r33_input(ctx, ctx.x_latest, None)

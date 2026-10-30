@@ -1587,7 +1587,9 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
     cost = round_trip_cost((state.get('trading_config') or {})['fees'])
     logger.info("[Pipeline V2] R33 rank pool: %s", rank_pool['coverage'] | {'unscored': len(rank_pool['coverage']['unscored'])})
     from services.r33_serving_inputs import require_full_day_coverage, write_coverage_log
-    require_full_day_coverage(write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger))
+    model_errors = {s: p['model_errors'] for s, p in predictions.items() if isinstance(p, dict) and p.get('model_errors')}
+    require_full_day_coverage(write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger,
+                                                 model_errors=model_errors))
     return r33, staleness, rank_pool, cost
 
 

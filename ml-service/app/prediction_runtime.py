@@ -339,7 +339,10 @@ def predict_stock_v2(req: PredictRequest) -> dict:
             non_finite.append(f"active8_base_score_non_finite:{model_name}")
             continue
         rank_scores[model_name] = float(np.clip(score, 0.0, 1.0))
-    if not rank_scores:
+    # R33 (NEW-1030-06): the controller builds a symbol's row from this one, so raising here
+    # would drop its GNN and sequence scores too; the row carries each model's gap in
+    # model_errors and the rank pool unscores it only when none of the seven scored.
+    if not rank_scores and not r33:
         raise ValueError("active8_feature_evidence_empty")
 
     errors = [

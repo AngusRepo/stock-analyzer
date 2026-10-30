@@ -468,6 +468,24 @@ def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None, model_n
     return x_latest
 
 
+def _require_finite_r33_input(ctx: _FeatureBatchContext, row: np.ndarray, meta: dict | None) -> np.ndarray:
+    """NEW-1030-06: under R33 (prep rows) a non-finite input is this model's gap for this symbol,
+    named by field and count. The prep rows are finite by construction, so this is a guard:
+    the model never scores a value its training rows could not contain (LightGBM and sklearn
+    1.9 ExtraTrees route NaN down a learned branch; an inf fails ExtraTrees' whole batch; TabM
+    standardization zero-fills both)."""
+    if not getattr(ctx, "prep_only", False):
+        return row
+    bad = ~np.isfinite(np.asarray(row, dtype=float).reshape(-1))
+    if not bad.any():
+        return row
+    names = list((meta or {}).get("feature_names") or [])
+    if len(names) != bad.size:
+        names = list(ctx.feature_names) if len(ctx.feature_names) == bad.size else [f"#{i}" for i in range(bad.size)]
+    fields = [names[i] for i in np.flatnonzero(bad)]
+    raise ValueError(f"r33_feature_input_non_finite:count={len(fields)}:fields={','.join(fields[:8])}")
+
+
 def _clip_rank(value: Any) -> float:
     return float(np.clip(float(value), 0.0, 1.0))
 
@@ -638,7 +656,8 @@ def _apply_artifact_batch_predictions(
     rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
     for ctx in contexts:
         try:
-            rows.append((ctx, _align_latest_features(ctx, meta, None if challenger else model_name)))
+            row = _align_latest_features(ctx, meta, None if challenger else model_name)
+            rows.append((ctx, row if challenger else _require_finite_r33_input(ctx, row, meta)))
         except Exception as exc:  # noqa: BLE001 - keep one bad symbol/model local.
             prefix = "challenger " if challenger else ""
             _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
@@ -733,7 +752,8 @@ def _apply_tabm_torch_batch_predictions(
         rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
         for ctx in contexts:
             try:
-                rows.append((ctx, _align_latest_features(ctx, artifact.metadata, "TabM")))
+                row = _align_latest_features(ctx, artifact.metadata, "TabM")
+                rows.append((ctx, _require_finite_r33_input(ctx, row, artifact.metadata)))
             except Exception as exc:  # noqa: BLE001
                 _record_feature_error(ctx, f"TabM: {exc}")
         if not rows:
@@ -942,7 +962,8 @@ def _feature_core_coverage_error(override: dict) -> str | None:
     from .active8_ensemble_runtime import R33_KIND
     if isinstance(ensemble, dict) and ensemble.get("kind") == R33_KIND:
         # R33: a model missing for this symbol is z=0 downstream (denominator seven), so the
-        # row keeps its other scores; a row with no score at all still fails in finalize.
+        # row keeps its other scores; the controller's rank pool unscores a name none of the
+        # seven scored (NEW-1030-06).
         return None
     missing_or_invalid = [
         name

@@ -77,13 +77,8 @@ def pending_settlement_total(observation: Mapping[str, Any], business_date: str,
                or (include_business_date and settled == day))
 
 
-def account_nav(observation: Mapping[str, Any], business_date: str,
-                marks: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    """Live NAV (Wei 3a): bank balance + holdings at dated authoritative marks + net unsettled.
-
-    Shared by the daily snapshot (R18) and the Live intake ratio (R21); the
-    observation must be a verified Live observation taken on business_date (Taiwan time).
-    """
+def _verified_positions(observation: Mapping[str, Any], business_date: str) -> list[tuple[str, int]]:
+    """The long positions of a verified Live observation taken on business_date (Taiwan time)."""
     _scope(observation.get("account_scope"))
     if observation.get("schema_version") != "live-account-observation-v1":
         raise ValueError("live_ledger_observation_schema_invalid")
@@ -93,16 +88,40 @@ def account_nav(observation: Mapping[str, Any], business_date: str,
     observed = datetime.fromisoformat(str(observation.get("observed_at")))
     if observed.tzinfo is None or observed.astimezone(TW).date().isoformat() != business_date:
         raise ValueError("live_ledger_observation_not_on_business_date")
-    used_marks: dict[str, dict[str, Any]] = {}
-    holdings: dict[str, int] = {}
-    positions_value = 0.0
+    positions = []
     for position in observation.get("positions") or []:
         shares = int(position.get("shares") or 0)
         if shares == 0:
             continue
         if str(position.get("direction") or "").lower() not in {"action.buy", "buy"}:
             raise ValueError("live_ledger_position_direction_unsupported")
-        symbol = str(position.get("symbol") or "")
+        positions.append((str(position.get("symbol") or ""), shares))
+    return positions
+
+
+def account_holdings(observation: Mapping[str, Any], business_date: str) -> dict[str, Any]:
+    """Cash, unsettled and holdings of a verified observation, without marks or a NAV.
+
+    For exits when a holding has no mark (Wei 10/30 Q2): sells convert from Live shares only.
+    """
+    holdings: dict[str, int] = {}
+    for symbol, shares in _verified_positions(observation, business_date):
+        holdings[symbol] = holdings.get(symbol, 0) + shares
+    return {"cash": _finite(observation.get("bank_balance"), "cash"),
+            "unsettled": pending_settlement_total(observation, business_date), "holdings": holdings}
+
+
+def account_nav(observation: Mapping[str, Any], business_date: str,
+                marks: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Live NAV (Wei 3a): bank balance + holdings at dated authoritative marks + net unsettled.
+
+    Shared by the daily snapshot (R18) and the Live intake ratio (R21); the
+    observation must be a verified Live observation taken on business_date (Taiwan time).
+    """
+    used_marks: dict[str, dict[str, Any]] = {}
+    holdings: dict[str, int] = {}
+    positions_value = 0.0
+    for symbol, shares in _verified_positions(observation, business_date):
         mark = marks.get(symbol)
         if not isinstance(mark, Mapping) or str(mark.get("date")) != business_date or not str(mark.get("source") or ""):
             raise ValueError(f"live_ledger_mark_missing:{symbol}")

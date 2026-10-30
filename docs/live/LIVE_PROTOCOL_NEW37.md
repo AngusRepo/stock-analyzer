@@ -33,6 +33,7 @@
 ## 2. 資金與股數換算（D-6）
 - **實盤 NAV（3a）**：券商現金＋持股市值（當下權威報價）−未交割。KV：`trading:live_config.capital_source='broker_nav_authoritative_marks'`。
   - 持股報價（Wei 10/30 Q1）：用券商 snapshot 當天的最後成交價。snapshot 顯示當天還沒成交（成交量 0，或最後成交在更早的日子）時，改用券商合約表 `update_date` 為今天的參考價（`shioaji_contract_reference_price`）。合約表不是今天的、`trading_suspended`，或 snapshot 根本沒回來，都不給報價。
+  - NAV 算不出來時（Wei 10/30 Q2）：只擋買單。這一輪不記錄新的買單（下一輪再試，過了當天就照漏掉日子的規則 SKIPPED），已記錄的買單也不送；賣單和出場照常，依 Live 持股換算，不需要 NAV。每輪發一次 `live_intake_nav_unavailable` 告警。gateway `/v1/marks` 讀不到（503、逾時）也算 NAV 算不出來：持股全部沒有 mark，只擋買單。帳戶觀測本身讀不到或驗證不過時，照舊整輪不做。
 - **Paper 分母（3b，只用在買單）**：Paper 下單當下的 `portfolioValue`（就是 `sizingAuthorization.portfolioValue` 那個值）。
   - 來源（Wei 10/29 方案 A）：Paper 在買進寫入點把已算好的值另寫一列到 `paper_order_sizing_v1(order_id, portfolio_value)`。
   - 這是 native 改動，獨立 commit、搭 Slice A；Paper 的決策、寫入順序和失敗行為不變，這列寫失敗也不擋 Paper。
@@ -42,6 +43,7 @@
   - 盤前或收盤後才下的 Paper 買單本來就不送，所以不等這列、不告警，照舊記 SKIPPED `paper_buy_outside_session`。
   - 等這列的期間，如果同一檔較晚的 Paper 賣單已經入列（較晚的買單不算），這筆買單記 BLOCKED `paper_buy_superseded_while_waiting` 並告警（`live_intake_paper_buy_superseded`），不送，避免 Paper 已出場後 Live 才進場。
   - 已知缺口：Live 第一天如果只有等待中的買單、收盤後又沒有再跑一輪，隔天這筆會被略過（沒有 row、沒有告警；不會送出）。要補需要 Live 起始日的來源，待決定。
+  - 同一個缺口也涵蓋 NAV：Live 第一天因為 NAV 算不出來而沒記錄的買單，隔天同樣被略過、沒有 row（當天每輪都有 `live_intake_nav_unavailable` 告警）。
   - 賣單不讀這列，不受影響。
   - 已接受的副作用：等待中的買單還沒入列，不佔現金保留額；同日較晚的買單可能先用掉現金，這筆入列時被現金截短。只會少買，不會超買。
 - **買進**：

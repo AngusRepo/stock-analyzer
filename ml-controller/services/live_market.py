@@ -2,7 +2,9 @@
 
 Reads only. The broker account, contract truth and holding marks come from the private execution
 gateway (service token plus IAM), order books from the Market Data Hub; nothing here places an
-order. Every gap raises LiveMarketUnavailable, so the intake records or sends nothing it cannot verify.
+order. Every gap raises LiveMarketUnavailable, so the intake records or sends nothing it cannot verify;
+the one exception is an unreadable marks route, which leaves the holdings unmarked (no NAV, so
+only buys stop; Wei 10/30 Q2).
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ class GatewayLiveMarket:
         self._post = post_fn
         self._identity = identity_token_provider or fetch_google_identity_token
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self.marks_error: str | None = None  # why the last account() read has no marks at all
 
     # --- private execution gateway (read routes only) ---
 
@@ -95,7 +98,14 @@ class GatewayLiveMarket:
             symbols = sorted({str(p["symbol"]) for p in observation.get("positions") or [] if int(p["shares"]) > 0})
         except (KeyError, TypeError, ValueError):
             raise LiveMarketUnavailable("live_account_observation_unverified") from None
-        return observation, self._marks(symbols, business_date) if symbols else {}
+        self.marks_error = None
+        if not symbols:
+            return observation, {}
+        try:
+            marks = self._marks(symbols, business_date)
+        except LiveMarketUnavailable as exc:  # unmarked holdings stop buys only; exits use the observation (Q2)
+            self.marks_error, marks = str(exc), {}
+        return observation, marks
 
     def _marks(self, symbols: list[str], business_date: str) -> dict[str, dict[str, Any]]:
         """Each holding's mark from business_date: the last trade, or today's contract reference

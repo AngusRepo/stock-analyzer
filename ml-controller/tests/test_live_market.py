@@ -183,6 +183,26 @@ def test_each_pass_asks_for_a_new_observation():
     assert first != second  # a reused id would return the cached earlier observation
 
 
+@pytest.mark.parametrize("route", [lambda body: (503, {"detail": "marks unavailable"}),
+                                   lambda body: (_ for _ in ()).throw(TimeoutError("marks"))])
+def test_an_unreadable_marks_route_leaves_the_holdings_unmarked(route):
+    http = Http({"/v1/account/observations": _held([("2330", 1000)]), "/v1/marks": route})
+    market = _market(http)
+    observation, marks = market.account("2026-12-10")
+    assert marks == {} and observation["positions"][0]["symbol"] == "2330"
+    assert market.marks_error.startswith("execution_gateway_")
+    http.routes["/v1/marks"] = lambda body: (200, {"marks": {}})
+    market.account("2026-12-10")
+    assert market.marks_error is None  # a later read that reached the route clears it
+
+
+def test_an_unreadable_observation_still_stops_the_pass():
+    http = Http({"/v1/account/observations": lambda body: (503, {}),
+                 "/v1/marks": lambda body: pytest.fail("no marks without an observation")})
+    with pytest.raises(lm.LiveMarketUnavailable, match="execution_gateway_http_503"):
+        _market(http).account("2026-12-10")
+
+
 def test_no_holdings_needs_no_marks():
     http = Http({"/v1/account/observations": _held([])})
     assert _market(http).account("2026-12-10")[1] == {} and len(http.calls) == 1

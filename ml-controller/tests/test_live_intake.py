@@ -2035,3 +2035,82 @@ def test_a_later_sell_of_another_symbol_does_not_supersede_a_waiting_buy():
     sizing.ready.add(1)
     _run(repo, broker, gw, orders, _tw(DAY, "10:32"), denominator=sizing)
     assert repo.get("paper_orders:1")["status"] == "RELAYED"
+
+
+# --- no Live NAV (a holding without a mark): only buys stop (Wei 10/30 Q2) ---
+
+class Unmarked(FakeBroker):
+    """The observation is verified, but one holding has no usable mark today."""
+
+    def __init__(self, *a, unmarked=("2330",), **kw):
+        super().__init__(*a, **kw)
+        self.unmarked = set(unmarked)
+
+    def account(self, business_date):
+        observation, marks = super().account(business_date)
+        return observation, {s: m for s, m in marks.items() if s not in self.unmarked}
+
+
+def test_without_a_nav_exits_still_go_and_buys_wait():
+    repo, _ = _repo()
+    broker, gw, warned = Unmarked(holdings={"2330": 1000}), Gateway(repo), []
+    orders = [_order(1, "buy", 2000, 100.0, day="2026-12-09"), _order(2, "sell", 1000, 100.0),
+              _order(3, "buy", 1000, 100.0, symbol="2317", hhmm="10:01"),
+              _order(4, "buy", 100, 100.0, symbol="2454", hhmm="10:01")]
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:02"), warn=lambda e, d: warned.append((e, dict(d))))
+    assert repo.get("paper_orders:4") is None  # both buys wait; the alert is sent once per pass
+    sell = repo.get("paper_orders:2")
+    assert sell["status"] == "RELAYED" and sell["live_shares"] == 500
+    assert json.loads(sell["conversion_json"])["inputs"]["live_nav"] is None
+    assert repo.get("paper_orders:3") is None and "paper_orders:3" in out["deferred"]
+    assert out["nav_unavailable"] == "live_ledger_mark_missing:2330"
+    assert warned == [("live_intake_nav_unavailable", {"reason": "live_ledger_mark_missing:2330"})]
+    assert [p["intent"]["side"] for p in gw.calls] == ["sell"]
+    broker.unmarked = set()  # the mark is back: the buy is recorded and sent
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:03"))
+    assert repo.get("paper_orders:3")["status"] == "RELAYED" and "nav_unavailable" not in out
+
+
+def test_a_failed_marks_route_is_named_in_the_nav_alert():
+    class RouteDown(Unmarked):
+        def account(self, business_date):
+            self.marks_error = "execution_gateway_http_503"
+            return super().account(business_date)
+    repo, _ = _repo()
+    warned = []
+    out = _run(repo, RouteDown(holdings={"2330": 1000}), Gateway(repo), [_order(1, "buy", 1000, 100.0, symbol="2317")],
+               _tw(DAY, "10:02"), warn=lambda e, d: warned.append((e, d["reason"])))
+    assert out["nav_unavailable"] == "live_marks_unavailable:execution_gateway_http_503"
+    assert warned == [("live_intake_nav_unavailable", "live_marks_unavailable:execution_gateway_http_503")]
+
+
+def test_a_recorded_buy_is_not_sent_while_the_nav_is_unavailable():
+    repo, _ = _repo()
+    gw = Gateway(repo)
+    orders = [_order(1, "buy", 1000, 100.0, symbol="2317")]
+    _run(repo, FakeBroker(holdings={"2330": 100}), gw, orders, _tw(DAY, "10:01"), trading_day=False)
+    assert repo.get("paper_orders:1")["status"] == "RECEIVED" and gw.calls == []
+    out = _run(repo, Unmarked(holdings={"2330": 100}), gw, orders, _tw(DAY, "10:02"))
+    assert repo.get("paper_orders:1")["status"] == "RECEIVED" and gw.calls == []
+    assert "paper_orders:1:live_nav_unavailable" in out["errors"]
+
+
+def test_a_sell_converts_without_a_nav():
+    out = _convert(_order(1, "sell", 500, 100.0), paper_position_before=1000, live_position_shares=300,
+                   live_nav=None)
+    assert (out["status"], out["live_shares"]) == ("RECEIVED", 150)
+
+
+@pytest.mark.parametrize("price,error", [("n/a", "ValueError"), ([101.0], "TypeError")])
+def test_a_non_ledger_valuation_error_still_only_stops_buys(price, error):
+    class Garbage(FakeBroker):
+        def account(self, business_date):
+            observation, marks = super().account(business_date)
+            return observation, {s: {**m, "price": price} for s, m in marks.items()}
+    repo, _ = _repo()
+    gw = Gateway(repo)
+    orders = [_order(1, "buy", 2000, 100.0, day="2026-12-09"), _order(2, "sell", 1000, 100.0),
+              _order(3, "buy", 1000, 100.0, symbol="2317", hhmm="10:01")]
+    out = _run(repo, Garbage(holdings={"2330": 1000}), gw, orders, _tw(DAY, "10:02"))
+    assert out["nav_unavailable"] == f"live_ledger_nav_invalid:{error}"
+    assert repo.get("paper_orders:2")["status"] == "RELAYED" and repo.get("paper_orders:3") is None

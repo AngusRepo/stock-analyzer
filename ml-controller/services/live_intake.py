@@ -29,7 +29,7 @@ from services.live_config import (
     session_close_at,
     validate_live_config,
 )
-from services.live_ledger import account_nav, pending_settlement_total
+from services.live_ledger import account_holdings, account_nav, pending_settlement_total
 from services.live_paper_reader import PaperDenominatorNotReady
 
 SCHEMA_VERSION = "live-intake-conversion-v1"
@@ -131,9 +131,9 @@ def convert_paper_order(
 
     if side not in {"buy", "sell"} or not paper_shares or price is None or not inputs["symbol"]:
         return done("BLOCKED", 0, "paper_order_invalid")
-    if _whole(live_position_shares) is None or _positive(live_nav) is None:
+    if _whole(live_position_shares) is None:
         return done("BLOCKED", 0, "live_account_invalid")
-    if side == "sell":
+    if side == "sell":  # converts from Live shares only: no NAV needed (Wei 10/30 Q2)
         if _whole(paper_position_before) is None or paper_shares > paper_position_before:
             return done("BLOCKED", 0, "paper_position_inconsistent")
         flatten = paper_shares == paper_position_before
@@ -145,6 +145,8 @@ def convert_paper_order(
             return done("RECEIVED", shares, None)
         return done("SKIPPED", 0, "live_position_empty" if not live_position_shares else "live_shares_zero")
 
+    if _positive(live_nav) is None:
+        return done("BLOCKED", 0, "live_account_invalid")
     denominator = _positive(paper_portfolio_value)
     if denominator is None:
         return done("BLOCKED", 0, "paper_denominator_unavailable")
@@ -350,7 +352,8 @@ class _Account:
                  reserved: Callable[[], tuple[float, dict[str, int]]]) -> None:
         self._market, self._today, self._reserved = market, today, reserved
         self.observation: Mapping[str, Any] | None = None
-        self.nav = 0.0
+        self.nav: float | None = None  # None with nav_error set: no NAV, so no buys (Wei 10/30 Q2)
+        self.nav_error: str | None = None
         self.spendable = 0.0  # broker cash net of payables, before any reservation
         self.held: dict[str, int] = {}  # broker holdings, before any reservation
         self.cash_left = 0.0
@@ -360,9 +363,17 @@ class _Account:
         if self.observation is not None:
             return
         observation, marks = self._market.account(self._today)
-        valuation = account_nav(observation, self._today, marks)
+        valuation = account_holdings(observation, self._today)  # an unverified observation stops everything
+        try:
+            nav, nav_error = account_nav(observation, self._today, marks)["nav"], None
+        except (ValueError, TypeError) as exc:  # a holding without a usable mark: exits still go
+            nav, nav_error = None, (str(exc) if str(exc).startswith("live_ledger_")
+                                    else f"live_ledger_nav_invalid:{type(exc).__name__}")
+            marks_error = getattr(self._market, "marks_error", None)
+            if marks_error:  # the marks route failed: say so, not which holding came first
+                nav_error = f"live_marks_unavailable:{marks_error}"
         cash_reserved, shares_reserved = self._reserved()
-        self.observation, self.nav = observation, valuation["nav"]
+        self.observation, self.nav, self.nav_error = observation, nav, nav_error
         # Spendable cash: the bank balance net of every payable not yet debited, including one
         # due today (the bank may debit it after this observation). NAV keeps the R18 rule.
         due = pending_settlement_total(observation, self._today, include_business_date=True)
@@ -510,6 +521,12 @@ def run_live_intake(
         except Exception as exc:  # no Live NAV: record nothing more, send nothing
             return {**summary, "status": "blocked", "reason": f"live_account_unavailable:{type(exc).__name__}"}
         symbol = str(order["symbol"])
+        if order["side"] == "buy" and account.nav is None:  # no Live NAV: record no buy yet; sells go on
+            if not summary.get("nav_unavailable"):
+                summary["nav_unavailable"] = account.nav_error
+                emit("live_intake_nav_unavailable", {"reason": account.nav_error})
+            _hold(ref, summary, "live_nav_unavailable")
+            continue
         not_ready, timed_out = None, None  # timed_out: the alert for a sendable buy whose day closed
         try:
             denominator = paper_portfolio_value(order)
@@ -754,6 +771,8 @@ def _send(row: Mapping[str, Any], *, market: LiveMarket, repository: IntakeRepos
                  else float(conversion["inputs"]["paper_price"]))
     except Exception as exc:
         return _hold(ref, summary, f"revalidation_failed:{type(exc).__name__}")
+    if row["side"] == "buy" and account.nav is None:
+        return _hold(ref, summary, "live_nav_unavailable")
     if row["side"] == "sell":
         free = account.held.get(symbol, 0) - other_shares.get(symbol, 0)
         # Wei 3c: a released exit sells what the broker holds now; a flatten sells all of it.

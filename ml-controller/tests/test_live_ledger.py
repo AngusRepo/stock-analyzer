@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from services.live_ledger import LiveLedger, account_nav, build_daily_snapshot, pending_settlement_total
+from services.live_ledger import LiveLedger, account_holdings, account_nav, build_daily_snapshot, pending_settlement_total
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPE = "live:sinopac:" + "f" * 64
@@ -282,3 +282,17 @@ def test_an_intraday_reader_also_counts_a_settlement_due_that_day():
     obs = {"settlements": [{"date": "2026-12-10", "net_amount": -60_000}, {"date": "2026-12-11", "net_amount": -5}]}
     assert pending_settlement_total(obs, "2026-12-10") == -5
     assert pending_settlement_total(obs, "2026-12-10", include_business_date=True) == -60_005
+
+
+def test_account_holdings_need_no_marks_but_a_verified_observation():
+    obs = _observation("2026-12-10", 500_000, positions=[("2330", 1000), ("2330", 500), ("2317", 0)],
+                       settlements=[("2026-12-11", -120_000)])
+    got = account_holdings(obs, "2026-12-10")
+    assert got == {"cash": 500_000.0, "unsettled": -120_000.0, "holdings": {"2330": 1500}}
+    with pytest.raises(ValueError, match="live_ledger_mark_missing:2330"):
+        account_nav(obs, "2026-12-10", {})
+    for bad in ({"sha256": ""}, {"observed_at": "2026-12-09T06:00:00+00:00"}, {"schema_version": "x"}):
+        with pytest.raises(ValueError):
+            account_holdings({**obs, **bad}, "2026-12-10")
+    with pytest.raises(ValueError, match="direction_unsupported"):
+        account_holdings({**obs, "positions": [{"symbol": "2330", "shares": 1, "direction": "Sell"}]}, "2026-12-10")

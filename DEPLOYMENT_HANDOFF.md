@@ -57,8 +57,7 @@ Run the test suite to confirm your local env is in sync:
 ```bash
 cd ml-service   && python3 -m pytest tests/ -q
 cd ml-controller && python3 -m pytest tests/ -q
-cd ml-controller && python3 tests/test_cascade_parity.py --mode local
-cd ml-controller && python3 tests/test_screener_parity.py --mode local
+cd ml-controller && python3 -m pytest tests/test_cascade_parity.py tests/test_screener_parity.py -q
 ```
 Expected: 86 passed, 15 skipped (cross-runtime, needs Worker URL).
 

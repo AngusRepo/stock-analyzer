@@ -403,7 +403,7 @@ test('C28-25: without a Discord webhook the cutoff and resend failures still rea
   ])
   assert.ok(f.warns.includes(`[FinLab] ${resend}`))
   assert.ok(f.warns.includes(`[FinLab] ${cutoff}`))
-  assert.ok(f.fetched.every((url) => url.startsWith('https://controller.invalid')), f.fetched.join(','))
+  assert.ok(f.fetched.every((url) => new URL(url).origin === 'https://controller.invalid'), f.fetched.join(','))
   assert.equal(f.alerts.length, 0)
 })
 

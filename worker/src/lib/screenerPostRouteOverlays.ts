@@ -214,10 +214,35 @@ export function applyScreenerForeignFlow(scored: OverlayCandidate[], foreignRows
   return foreignBuyRatio
 }
 
+/** DelistingMonitor reads stock_prices over the 8 calendar days endDate-7..endDate. */
+export const DELISTING_MONITOR_WINDOW_DAYS = 8
+export const DELISTING_MONITOR_DEFAULT_MAX_SESSIONS = 2
+
+/** Weekdays of the DelistingMonitor window, oldest first. */
+export function delistingMonitorWindowWeekdays(endDate: string): string[] {
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? Date.parse(`${endDate}T00:00:00Z`) : NaN
+  if (!Number.isFinite(end)) throw new Error(`delisting_monitor_end_date_invalid:${endDate}`)
+  const dates: string[] = []
+  for (let back = DELISTING_MONITOR_WINDOW_DAYS - 1; back >= 0; back--) {
+    const day = new Date(end - back * 86400_000)
+    if (day.getUTCDay() !== 0 && day.getUTCDay() !== 6) dates.push(day.toISOString().slice(0, 10))
+  }
+  return dates
+}
+
+/** HL1-4#a: drop a symbol that printed at most min(configuredMax, expected - 1) sessions in the
+ * window, where expected = window weekdays not marked `holiday:*`. A normal week expects >= 5
+ * sessions, so the threshold stays configuredMax; a long closure lowers it so a window that holds
+ * only one or two real sessions cannot clear the slate. */
+export function resolveDelistingMonitorMaxSessions(expectedSessions: number, configuredMax: number): number {
+  return Math.min(configuredMax, expectedSessions - 1)
+}
+
 export function applyScreenerRecentSessionSafety<T extends OverlayCandidate>(finalCandidates: T[],
-  recentRows: Array<{ symbol: string; days_count: number }>, postL15SafetyExcludedSymbols: Set<string>) {
+  recentRows: Array<{ symbol: string; days_count: number }>, postL15SafetyExcludedSymbols: Set<string>,
+  maxExcludedSessions: number = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS) {
   const delistRisk = new Set<string>()
-  for (const r of recentRows) if (r.days_count <= 2) delistRisk.add(r.symbol)
+  for (const r of recentRows) if (r.days_count <= maxExcludedSessions) delistRisk.add(r.symbol)
   const removed = finalCandidates.filter(c => delistRisk.has(c.symbol))
   const events: OverlayEvent[] = []
   for (const candidate of removed) {
@@ -226,7 +251,7 @@ export function applyScreenerRecentSessionSafety<T extends OverlayCandidate>(fin
     postL15SafetyExcludedSymbols.add(symbol)
     events.push({ symbol, name: candidate.name, stage: 'l1_post_route_safety_gate', decision: 'drop',
       reasonCode: 'delisting_monitor_insufficient_recent_sessions', scoreBefore: Number(candidate.score ?? 0), scoreAfter: null,
-      evidence: { canonical_l15_route_present: true, recent_market_sessions_max: 2 } })
+      evidence: { canonical_l15_route_present: true, recent_market_sessions_max: maxExcludedSessions } })
   }
   for (let i = finalCandidates.length - 1; i >= 0; i--) {
     if (delistRisk.has(finalCandidates[i].symbol)) finalCandidates.splice(i, 1)

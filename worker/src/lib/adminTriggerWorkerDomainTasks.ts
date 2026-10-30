@@ -1438,15 +1438,20 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const { reportStorageHealthSeverity } = await import('./storageHealthSeverity')
       const result = await runStorageHealthCheck(c.env)
-      if (!result.healthy) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
-      return `storage_health_check ${JSON.stringify(result)}`
+      // D7a A-2: a drain-band (75-90%) domain is a warning; everything else that fails `healthy` fails the run.
+      const warning = await reportStorageHealthSeverity(c.env, 'storage-health-check', result)
+      if (warning == null) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
+      return `storage_health_check ${warning}${JSON.stringify(result)}`
     },
     'storage-health-gate': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const { reportStorageHealthSeverity } = await import('./storageHealthSeverity')
       const result = await runStorageHealthCheck(c.env)
-      if (!result.healthy) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
-      return `storage_health_gate_legacy_alias ${JSON.stringify(result)}`
+      const warning = await reportStorageHealthSeverity(c.env, 'storage-health-gate', result)
+      if (warning == null) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
+      return `storage_health_gate_legacy_alias ${warning}${JSON.stringify(result)}`
     },
     'kv-config-drift': async () => {
       const { runKvConfigDriftCheck } = await import('./kvConfigDigest')

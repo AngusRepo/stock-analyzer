@@ -341,7 +341,7 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert(marketScreener.includes('assertCanonicalL15SeedIdentity({')
     && postOverlaySeed.includes('l15_canonical_seed_identity_mismatch'), 'L1/L1.5 identity mismatch must fail closed through the shared identity owner')
   assert(marketScreener.includes('postL15SafetyExcludedSymbols'), 'post-route safety exclusions must carry explicit identity receipts')
-  assert(marketScreener.includes('applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols)')
+  assert(marketScreener.includes('applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols, delistingMonitorMaxSessions)')
     && marketScreener.includes('for (const event of events) pushFunnelItem(funnelItems, event)')
     && postRouteOverlays.includes("stage: 'l1_post_route_safety_gate'"), 'post-route safety exclusions must be written to funnel evidence')
   assert(marketScreener.includes('l15_canonical_route_missing'), 'missing per-symbol L1.5 lineage must fail closed')

@@ -340,6 +340,27 @@ export async function updateSchedulerExecutionTicket(
   return row
 }
 
+/**
+ * FU17: settle a scheduler_http execution result. When the result is `blocked` but the same run's
+ * ticket was already handed to its owner as `triggered` (for example the evening-root L3 seal
+ * acceptance), the ticket stays with that owner. Rethrowing would make the caller write `error`
+ * (which triggered accepts) and answer 5xx, and Cloud Scheduler would redispatch.
+ */
+export async function settleSchedulerHttpTicket(
+  db: D1Database,
+  input: { ticketId: string; runId: string; status: SchedulerExecutionTicketStatus; summary?: string },
+): Promise<SchedulerExecutionTicketRow> {
+  try {
+    return await updateSchedulerExecutionTicket(db, { ...input, authority: 'scheduler_http' })
+  } catch (error) {
+    if (input.status !== 'blocked') throw error
+    const row = await readTicket(db, input.ticketId)
+    if (row.run_id !== input.runId || row.status !== 'triggered') throw error
+    console.warn(`[scheduler] ticket ${input.ticketId} already triggered by ${row.status_authority}; keeping its owner over blocked`)
+    return row
+  }
+}
+
 export async function admitSchedulerChildTicket(
   db: D1Database,
   input: {

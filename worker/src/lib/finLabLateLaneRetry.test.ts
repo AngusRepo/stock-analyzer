@@ -233,12 +233,14 @@ test('R8-a: the manual trigger route keeps a start heartbeat over an unconfirmed
   assert.equal(await finLabDispatchSupersededByStart(f.env, date, unconfirmed), false)
   f.setLog('finlab-v4-backfill', { status: 'running', timestamp: new Date(at('21:16')).toISOString(), summary: 'running' })
   assert.equal(await finLabDispatchSupersededByStart(f.env, date, unconfirmed), true)
-  // A confirmed outcome, another run, or no run_id never suppresses the log.
-  assert.equal(await finLabDispatchSupersededByStart(f.env, date, unconfirmed.replace(' dispatch_unconfirmed', '')), false)
+  // R33-NEW-32: a confirmed `triggered` outcome is also older than that heartbeat.
+  assert.equal(await finLabDispatchSupersededByStart(f.env, date, unconfirmed.replace(' dispatch_unconfirmed', '')), true)
+  // A terminal outcome, another run, or no run_id never suppresses the log.
+  assert.equal(await finLabDispatchSupersededByStart(f.env, date, `failed: FinLab dispatch run_id=${runId}: boom`), false)
   assert.equal(await finLabDispatchSupersededByStart(f.env, date, unconfirmed.replace(runId, 'other-run')), false)
   assert.equal(await finLabDispatchSupersededByStart(f.env, date, 'triggered finlab-v4-backfill dispatch_unconfirmed error=html_502'), false)
   const route = readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
-  assert.equal(route.split('if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(').length, 3,
+  assert.equal(route.split('if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(').length, 3,
     'both the async and sync trigger paths are guarded')
 })
 

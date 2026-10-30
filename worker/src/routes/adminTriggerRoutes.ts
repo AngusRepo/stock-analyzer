@@ -11,6 +11,7 @@ import {
   admitSchedulerExecutionTicket,
   schedulerDeliveryIdentity,
   schedulerTicketStatusForRunLog,
+  settleSchedulerHttpTicket,
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketAuthority,
   type SchedulerTicketAdmission,
@@ -183,6 +184,12 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       summary,
       error,
     })
+    // FU17: post-execution result. A blocked result keeps a ticket its owner already triggered; true
+    // then means the owner keeps the ticket and its scheduler run log, so the caller skips that log.
+    const settleTicket = async (status: SchedulerExecutionTicketStatus, summary: string): Promise<boolean> => {
+      const settled = await settleSchedulerHttpTicket(ticketDb, { ticketId: schedulerTicketId, runId: executionRunId, status, summary })
+      return status === 'blocked' && settled.status === 'triggered'
+    }
     if (!ticketAdmission.shouldExecute) {
       const terminal = ['success', 'error', 'skipped', 'blocked'].includes(ticketAdmission.ticket.status)
       const response = {
@@ -446,10 +453,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           const status = classifySchedulerSummary(summary)
           // Maintenance's queue owns its ticket from admission through terminal receipt.
           const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-          if (!maintenanceOwned) {
-            await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-          }
-          if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
+          const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)
+          if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
             status,
             summary: logSummary,
             duration_ms: Date.now() - t0,
@@ -506,8 +511,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       const logSummary = schedulerRunLogSummary(result, c.env)
       const status = classifySchedulerSummary(summary)
       const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-      if (!maintenanceOwned) await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-      if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
+      const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)
+      if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
         status,
         summary: logSummary,
         duration_ms: Date.now() - t0,

@@ -7,6 +7,7 @@ Triple Barrier Label (Prado 2018) 保留作為 SLTP 執行層使用。
 """
 import os
 import json
+from functools import reduce
 from pathlib import Path
 import numpy as np
 import polars as pl
@@ -205,13 +206,15 @@ def build_feature_matrix(
     """
     整合所有資料來源，建立特徵矩陣。
     回傳 Polars DataFrame，含 features + target_5d + target_dir。
-    pit_contract_version: apply that PIT contract's availability lags (C28-02);
+    pit_contract_version: apply that PIT contract's availability lags (C28-02) and fixed
+    feature windows (NEW-75);
     None keeps the pre-contract output byte-identical.
     """
-    pit_lags = {}
+    pit_lags, pit_windows = {}, {}
     if pit_contract_version is not None:
-        from ..pit_contract import feature_lags
+        from ..pit_contract import feature_lags, feature_windows
         pit_lags = feature_lags(pit_contract_version)
+        pit_windows = feature_windows(pit_contract_version)
     # ── 1. Prices base frame ─────────────────────────────────────────────────
     # infer_schema_length=None: D1 JSON 混 int/float（如 close=106 vs 105.5），需掃全量推斷
     df = (
@@ -891,7 +894,18 @@ def build_feature_matrix(
     neg_flow = pl.when(typical_price < typical_price.shift(1)).then(money_flow).otherwise(0.0).rolling_sum(14)
     cmo_num = ret1_raw.clip(0, None).rolling_sum(14) - (-ret1_raw.clip(None, 0)).rolling_sum(14)
     cmo_den = ret1_raw.abs().rolling_sum(14)
-    obv_expr = pl.when(close_expr > close_expr.shift(1)).then(volume_expr).when(close_expr < close_expr.shift(1)).then(-volume_expr).otherwise(0.0).cum_sum()
+    obv_flow = pl.when(close_expr > close_expr.shift(1)).then(volume_expr).when(close_expr < close_expr.shift(1)).then(-volume_expr).otherwise(0.0)
+    if pit_windows:
+        # Under a PIT contract OBV is the last N rows' signed volume (NEW-75), added in a fixed
+        # order per row: a running rolling_sum would carry rounding from where the history starts.
+        # The oldest flow needs its previous close, so a value needs N + 1 rows.
+        obv_window = pit_windows["tech_obv"]
+        obv_flow = obv_flow.fill_nan(0.0).fill_null(0.0)
+        obv_expr = pl.when(pl.int_range(pl.len()) >= obv_window).then(
+            reduce(lambda total, lag: total + obv_flow.shift(lag), range(1, obv_window), obv_flow))
+    else:
+        # Pre-contract: cumulative from the payload's first row, so the level depends on its start.
+        obv_expr = obv_flow.cum_sum()
     kd_low9 = low_expr.rolling_min(9)
     kd_high9 = high_expr.rolling_max(9)
     kd_k_expr = _safe_div(close_expr - kd_low9, (kd_high9 - kd_low9).clip(1e-9, None)) * 100.0

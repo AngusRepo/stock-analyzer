@@ -410,11 +410,12 @@ def main() -> int:
         "predict_forward": "ml-service/app/timexer_forward.py:28-31 " + guard + r33_only,
         "_align_features": "ml-service/app/oof_forward_extension.py:166-169 " + guard + r33_only,
         "build_frozen_forward_extension": "ml-service/app/oof_forward_extension.py:282-283 " + guard + r33_only})
-    # pit_contract runs only when a caller passes pit_contract_version (features/__init__.py:212-214).
-    proven.update({name: "ml-service/app/features/__init__.py:212-214 calls app.pit_contract only when "
+    # pit_contract runs only when a caller passes pit_contract_version (features/__init__.py:214-217).
+    proven.update({name: "ml-service/app/features/__init__.py:214-217 calls app.pit_contract only when "
                          "pit_contract_version is not None; PredictRequest defaults it to None (probe "
                          "predict_pit_contract_none) and the Worker does not send it."
-                   for name in ("CONTRACT_VERSION", "_FILES", "load", "feature_lags", "_FEATURE_LAGS_SHA256")})
+                   for name in ("CONTRACT_VERSION", "_FILES", "load", "feature_lags", "_FEATURE_LAGS_SHA256",
+                                "feature_windows", "_WINDOW_FILES", "_FEATURE_WINDOWS_SHA256", "_WINDOWED_FEATURES")})
     proven.update({name: "ml-service/app/universal_training.py:724-727 hashes the contract only when "
                          "req.pit_contract_version is not None (probe prep_pit_contract_none). " + r33_only
                    for name in ("APPROVAL_KEYS", "canonical_sha256", "content_sha256")})

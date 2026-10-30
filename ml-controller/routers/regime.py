@@ -60,15 +60,12 @@ class RegimePreflightRequest(BaseModel):
 
 @router.post('/regime/preflight')
 async def regime_preflight(req: RegimePreflightRequest):
-    # The daily maintenance tick (incl. holidays) also runs the read-only Modal
-    # ephemeral-app inventory beside it; it never changes this result.
-    from services import modal_app_inventory
-    inventory = asyncio.create_task(modal_app_inventory.run_inventory_alert()) if req.maintenance_only else None
-    try:
-        return await _regime_preflight(req)
-    finally:
-        if inventory is not None:
-            await modal_app_inventory.settle(inventory)
+    # The maintenance tick (TW 14:00 and 20:00, holidays included) also starts the
+    # read-only Modal ephemeral-app inventory in the background; this response never waits for it.
+    if req.maintenance_only:
+        from services import modal_app_inventory
+        modal_app_inventory.start_background()
+    return await _regime_preflight(req)
 
 
 async def _regime_preflight(req: RegimePreflightRequest):

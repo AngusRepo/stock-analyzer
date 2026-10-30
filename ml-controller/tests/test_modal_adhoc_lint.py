@@ -134,3 +134,35 @@ def test_cli_exit_codes(tmp_path, capsys):
 def test_deployed_names_come_from_the_repo():
     assert lint.deployed_apps()['modal_app'] == 'stockvision-ml'
     assert {'stockvision-ml', 'stockvision-strategy-mining', 'quantaalpha-poc'} <= set(lint.deployed_apps().values())
+
+
+def test_aliases_annotated_names_and_reversed_main_guard_pass(tmp_path):
+    source = '''
+    from modal import App as A, Image as I, is_local as local
+    import modal
+
+    APP_NAME: str = "adhoc-alias-check-20261030"
+    app = A(APP_NAME, image=I.debian_slim())
+
+    @app.function()
+    def f():
+        return 1
+
+    if "__main__" == __name__:
+        print(open(__file__).read())
+    '''
+    assert run(source, tmp_path) == []
+    assert rules('from modal import App as A, is_local as local\napp = A("adhoc-a-20261030")\n'
+                 'if local():\n    b = A("adhoc-b-20261030")\n', tmp_path) == ['local_branch']
+
+
+def test_unparseable_files_are_reported_and_the_next_file_is_checked(tmp_path, capsys):
+    broken, binary, good = tmp_path / 'broken.py', tmp_path / 'binary.py', tmp_path / 'good.py'
+    broken.write_text('def (:\n', encoding='utf-8')
+    binary.write_bytes(b'\xff\xfe\x00bad')
+    good.write_text(GOOD, encoding='utf-8')
+    assert lint.main([str(broken), str(binary), str(good)]) == 1
+    out = capsys.readouterr().out
+    assert 'broken.py:1: parse_error: SyntaxError' in out
+    assert 'binary.py:0: parse_error: UnicodeDecodeError' in out
+    assert 'FAIL (3 file(s))' in out

@@ -292,7 +292,13 @@ def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
 async def modal_app_inventory_view():
     """Read-only Modal app inventory for an operator check; writes no system log."""
     import asyncio
+    import os
     from services import modal_app_inventory as inventory
 
-    apps = await asyncio.to_thread(inventory.list_modal_apps)
-    return {"apps": len(apps), "flagged": inventory.evaluate_apps(apps, datetime.now(timezone.utc))}
+    if not os.environ.get("MODAL_TOKEN_ID"):
+        return {"status": "skipped", "reason": "modal_token_unset"}
+    try:
+        apps = await asyncio.wait_for(asyncio.to_thread(inventory.list_modal_apps), inventory.INVENTORY_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "modal_app_inventory_timeout")
+    return {"status": "ok", "apps": len(apps), "flagged": inventory.evaluate_apps(apps, datetime.now(timezone.utc))}

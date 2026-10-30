@@ -212,7 +212,7 @@ ml-service/.venv/bin/python tools/modal_adhoc_lint.py <script.py>   # exit 1 = �
 - **不在 `modal.is_local()`／`is_remote()` 分支裡定義 Modal 物件**（App、Function、Image、Secret、decorator）；local 與 container 必須看到同一份定義。
 - **避免 `--detach`**：detached ephemeral app 不會自己結束。真的要用，script／runbook 最後必須 `modal app stop <app_id>`，並在交接寫明 app_id。
 - **App 名稱一律 `adhoc-<purpose>-<YYYYMMDD>`**（小寫、`-` 分隔），不可用 `stockvision-ml` 或任何已部署 app 名稱，也不可 `modal_app.app.run()` 借用已部署 app。
-- 每日 HMM maintenance tick 會唯讀盤點 Modal app：存活 >24 h 的 ephemeral／detached app、或沿用已部署名稱的 ephemeral app，寫入 ops `system_logs`（`cron_name='modal-app-inventory'`）warn。看到就查明後停掉。
+- HMM maintenance tick（每天 TW 14:00 和 20:00 兩次，假日照跑）會在背景唯讀盤點 Modal app：存活 >24 h 的 ephemeral／detached app、或沿用已部署名稱的 ephemeral app，寫入 ops `system_logs`（`cron_name='modal-app-inventory'`）warn。看到就查明後停掉。
 
 ## Authoritative Docs
 

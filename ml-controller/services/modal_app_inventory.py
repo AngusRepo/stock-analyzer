@@ -2,9 +2,10 @@
 
 Two `modal run --detach` repair apps crash-looped for two weeks unnoticed, and
 129 one-off runs reused the `stockvision-ml` name so billing could not tell them
-apart. The daily HMM maintenance tick calls run_inventory_alert(); it lists the
-workspace's apps and flags ephemeral/detached apps alive longer than 24 h or
-running under a deployed app's name.
+apart. The HMM maintenance tick (TW 14:00 and 20:00, twice a day, holidays
+included) calls start_background(); it lists the workspace's apps and flags
+ephemeral/detached apps alive longer than 24 h or running under a deployed
+app's name. The tick's response never waits for it.
 
 Read-only: it never stops, runs or deploys anything. The alert is an ops
 `system_logs` warn row plus a logging warning; no Discord / webhook channel.
@@ -45,10 +46,18 @@ def list_modal_apps() -> list[dict[str, Any]]:
     return [{
         'app_id': item.app_id,
         'name': item.name or item.description,
-        'state': api_pb2.AppState.Name(item.state).removeprefix('APP_STATE_').lower(),
+        'state': state_name(api_pb2.AppState, item.state),
         'created_at': float(item.created_at or 0),
         'tasks': int(item.n_running_tasks),
     } for item in _list()]
+
+
+def state_name(enum: Any, value: int) -> str:
+    """'APP_STATE_DETACHED' -> 'detached'; an enum value newer than the SDK -> 'unknown_<n>'."""
+    try:
+        return enum.Name(value).removeprefix('APP_STATE_').lower()
+    except ValueError:
+        return f'unknown_{value}'
 
 
 def evaluate_apps(apps: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
@@ -76,14 +85,25 @@ def evaluate_apps(apps: list[dict[str, Any]], now: datetime) -> list[dict[str, A
 
 
 def _write_system_log(level: str, message: str, meta: dict[str, Any]) -> None:
-    # Same row shape as the Worker's writeSystemLog (ops domain, SystemStatusBar reads it).
-    from services.d1_domain_client import D1DataDomain, client_for_domain
-    client_for_domain(D1DataDomain.OPS).execute(
-        "INSERT INTO system_logs (level, cron_name, message, meta, created_at) "
-        "VALUES (?, ?, ?, ?, datetime('now'))",
-        [level, CRON_NAME, message, json.dumps(meta)],
-        timeout=10.0,
-    )
+    """One ops system_logs row, same shape as the Worker's writeSystemLog (SystemStatusBar
+    reads it). A single attempt: the retrying D1 client could land duplicate warn rows."""
+    import httpx
+    from services import d1_client
+    from services.allocator_contract_guard import allocator_contract_guard_enabled
+    from services.d1_domain_client import D1DataDomain, database_id_for_domain
+    if allocator_contract_guard_enabled():  # the same no-write guard DomainD1Client honours
+        return
+    if not d1_client.CF_ACCOUNT_ID or not d1_client.CF_API_TOKEN:
+        raise RuntimeError('system_logs insert skipped: CF env unset')
+    url = (f'https://api.cloudflare.com/client/v4/accounts/{d1_client.CF_ACCOUNT_ID}'
+           f'/d1/database/{database_id_for_domain(D1DataDomain.OPS)}/query')
+    response = httpx.post(url, timeout=10.0, headers={'Authorization': f'Bearer {d1_client.CF_API_TOKEN}'}, json={
+        'sql': "INSERT INTO system_logs (level, cron_name, message, meta, created_at) "
+               "VALUES (?, ?, ?, ?, datetime('now'))",
+        'params': [level, CRON_NAME, message, json.dumps(meta)],
+    })
+    if response.status_code != 200 or not response.json().get('success'):
+        raise RuntimeError(f'system_logs insert failed: HTTP {response.status_code}')
 
 
 def run_inventory(
@@ -111,15 +131,30 @@ def run_inventory(
 
 
 async def run_inventory_alert() -> dict[str, Any]:
-    """Async entry for the daily tick; skipped where the process has no Modal token."""
+    """Async entry for the maintenance tick; skipped where the process has no Modal token."""
     if not os.environ.get('MODAL_TOKEN_ID'):
         return {'status': 'skipped', 'reason': 'modal_token_unset'}
     return await asyncio.to_thread(run_inventory)
 
 
-async def settle(task: asyncio.Task, timeout: float = INVENTORY_TIMEOUT_SEC) -> None:
-    """Wait for a side inventory without letting it fail or stall its host request."""
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+async def _bounded_inventory() -> dict[str, Any]:
     try:
-        await asyncio.wait_for(task, timeout)
-    except Exception as exc:  # noqa: BLE001 - ops telemetry must never block the caller.
+        return await asyncio.wait_for(run_inventory_alert(), INVENTORY_TIMEOUT_SEC)
+    except Exception as exc:  # noqa: BLE001 - ops telemetry never fails its host.
+        # A timed-out AppList thread cannot be cancelled; it may still finish and log later.
         logger.warning('[modal_app_inventory] inventory failed (non-fatal): %r', exc)
+        return {'status': 'failed', 'error': type(exc).__name__}
+
+
+def start_background() -> asyncio.Task | None:
+    """Fire-and-forget inventory on the running loop; at most one in flight. The set keeps
+    a reference so the task is not garbage-collected before it ends."""
+    if _BACKGROUND:
+        return None
+    task = asyncio.get_running_loop().create_task(_bounded_inventory())
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+    return task

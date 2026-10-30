@@ -1,8 +1,9 @@
 """Fetch and seal the raw sources for the research corporate-history compile.
 
 Read-only against vendors: seven FinLab `data.get` calls (fresh, in-memory SDK
-storage) and one public TWSE `/rwd/api/codeEtf` call. Nothing goes to GCS, D1,
-KV or Modal. Each source is sealed once under OUT_DIR with its sha256 and the
+storage) and one public TWSE `/rwd/api/codeEtf` call. Nothing goes to GCS, D1
+or KV. modal_fetch_corporate_history.py may run the FinLab half (collect_finlab)
+in a one-off Modal app and seal its bytes here with seal_fetch. Each source is sealed once under OUT_DIR with its sha256 and the
 clock taken before its request (the conservative fetch time), then a spec.json
 that `compile_corporate_history.py` reads.
 

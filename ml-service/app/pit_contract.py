@@ -39,11 +39,19 @@ def content_sha256(contract: dict) -> str:
     return canonical_sha256({k: v for k, v in contract.items() if k not in APPROVAL_KEYS})
 
 
+def _exists(path: Path) -> bool:
+    # A non-root host (CI runner) cannot stat /root; that root is then simply not this host's registry.
+    try:
+        return path.exists()
+    except PermissionError:
+        return False
+
+
 def _registry_file(name: str) -> Path | None:
     here = Path(__file__).resolve()
     for root in (Path("/root/data/feature_registry"), Path("/app/data/feature_registry"),
                  here.parents[2] / "data" / "feature_registry"):
-        if (root / name).exists():
+        if _exists(root / name):
             return root / name
     return None
 
@@ -109,7 +117,7 @@ def feature_windows(version: str) -> dict[str, int]:
     for root in (Path("/root/data/feature_registry"), Path("/app/data/feature_registry"),
                  here.parents[2] / "data" / "feature_registry"):
         path = root / _WINDOW_FILES[version]
-        if path.exists():
+        if _exists(path):
             spec = json.loads(path.read_text(encoding="utf-8"))
             break
     else:

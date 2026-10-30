@@ -93,14 +93,34 @@ def _refuse_login(*_args, **_kwargs):
                      '(no browser login, no stored credential fallback).')
 
 
+def _refuse_token_refresh(*_args, **_kwargs):
+    raise SystemExit('finlab_token_expired: rerun with a fresh FINLAB_REFRESH_TOKEN / FINLAB_SESSION_ID')
+
+
+def _refuse_session_write(*_args, **_kwargs):
+    raise SystemExit('finlab_session_write_refused')
+
+
+def harden_sdk() -> None:
+    """No path of the SDK may log in, loop on a rejected session or persist credentials.
+
+    A server-side rejection makes the SDK call finlab.login() (browser login or an
+    unbounded retry); token_expired makes it save the session, env values included,
+    to ~/.finlab/credentials.json and retry without bound. Both stop instead.
+    """
+    import finlab
+    import finlab.auth as sdk_auth
+    import finlab.data.auth as sdk_data_auth
+    finlab.login = _refuse_login
+    sdk_auth.save_session = _refuse_session_write
+    sdk_data_auth._refresh_id_token = _refuse_token_refresh
+
+
 def _sdk():
     """Real FinLab callables: env-session token check, fresh download, role."""
-    import finlab
     from finlab import data
     from finlab.auth import get_id_token
-    # The SDK re-calls finlab.login() when the server rejects a session (and as its
-    # last token fallback); that would loop or open a browser. Stop instead.
-    finlab.login = _refuse_login
+    harden_sdk()
     data.set_storage(data.CacheStorage())  # in memory; FileStorage would cache on the system disk
     return get_id_token, (lambda key: data.get(key, force_download=True)), data.get_role
 
@@ -200,11 +220,17 @@ def seal_fetch(out: Path, finlab: dict, *, days_path: Path, universe_path: Path,
     # leaves only the staging directory, never a half-sealed OUT_DIR.
     staging = out / f'.partial-{os.getpid()}'
     staging.mkdir()
+    linked: list[Path] = []
     try:
         for name, data in blobs.items():
             _seal(staging / name, data)
         for name in blobs:
             os.link(staging / name, out / name)  # fails instead of replacing an existing file
+            linked.append(out / name)
+    except BaseException:
+        for path in linked:  # never leave a half-sealed OUT_DIR behind
+            path.unlink(missing_ok=True)
+        raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return report

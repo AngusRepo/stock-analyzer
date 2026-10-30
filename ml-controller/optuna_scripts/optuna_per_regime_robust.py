@@ -293,6 +293,9 @@ def run_search(
     wall_clock_date = as_of_date or datetime.now(
         timezone(timedelta(hours=8))
     ).date().strftime("%Y-%m-%d")
+    if corporate_history and data_mode == "d1_chunked":
+        # A configuration error, not a snapshot that may still arrive (D1 has no history tape).
+        raise ValueError("corporate_history_requires_snapshot:d1_chunked")
     # The single-name cap and sector/correlation rule come from trading:risk_config (K16a);
     # the owner cap fails closed before any data lookup.
     from services.position_risk_owner import with_formal_position_risk

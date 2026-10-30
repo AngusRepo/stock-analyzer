@@ -282,6 +282,9 @@ def run_search(
     Sprint 5.2 entry point. Loads stratified subset + BacktestDataset, runs NSGA-II
     Development-only Pareto search, followed by one locked-candidate audit.
     """
+    if corporate_history and data_mode == "d1_chunked":
+        # A configuration error, not a snapshot that may still arrive (D1 has no history tape).
+        raise ValueError("corporate_history_requires_snapshot:d1_chunked")
     # The owner cap fails closed before any data lookup.
     if baseline_params is None:
         baseline_params = _default_baseline_params()

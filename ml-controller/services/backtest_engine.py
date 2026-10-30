@@ -5162,7 +5162,9 @@ def replay_period(
         attempts = []
         # Step 0: T+2 settle matured settlements
         account.settle_matured(day)
-        accounting = params.get('researchAccounting') or getattr(dataset, 'research_accounting', None) or {}
+        # Per key: an explicit params choice wins over the dataset's research default.
+        accounting = {**(getattr(dataset, 'research_accounting', None) or {}),
+                      **(params.get('researchAccounting') or {})}
         _apply_daily_corporate(account, dataset, day,
             research_cash_mode=accounting.get('cashRoundingMode'),
             research_subscription_policy=accounting.get('subscriptionPolicy'))

@@ -118,3 +118,17 @@ def test_l2_trial_never_scores_a_corporate_data_error(monkeypatch, capture_load)
     monkeypatch.setattr(engine, 'replay_period', _data_error)
     with pytest.raises(ValueError, match='cash_rounding_missing'):
         mod.run_l2_sensitivity_search(None, DAYS[0], DAYS[-1], {}, n_trials=1)
+
+
+@pytest.mark.parametrize('module,call', [
+    ('optuna_sltp', lambda mod: mod.run_search(n_trials=1, data_mode='d1_chunked',
+                                               baseline_params={'screener': {'minDailyTurnover': 1}})),
+    ('optuna_screener', lambda mod: mod.run_search(n_trials=1, data_mode='d1_chunked',
+                                                   baseline_params={'screener': {'minDailyTurnover': 1}})),
+    ('optuna_per_regime_robust', lambda mod: mod.run_search(n_trials=1, data_mode='d1_chunked', as_of_date='2026-10-03')),
+])
+def test_d1_mode_is_a_configuration_error_before_any_snapshot_lookup(module, call, monkeypatch, capture_load):
+    mod = __import__(module)
+    monkeypatch.setattr(mod, 'latest_snapshot_business_end_date', lambda **_: pytest.fail('snapshot lookup'))
+    with pytest.raises(ValueError, match='requires_snapshot:d1_chunked'):
+        call(mod)

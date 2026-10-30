@@ -6,7 +6,7 @@ import pytest
 
 from services import backtest_engine as engine
 from services.research_corporate_history import (
-    CorporateHistoryGap, make_history_record,
+    CorporateHistoryGap, RESEARCH_ACCOUNTING_DEFAULTS, make_history_record,
 )
 from services.research_corporate_preflight import (
     CorporateCoverageError, exclude_history_blocked_symbols, require_corporate_coverage,
@@ -137,6 +137,8 @@ def test_history_opt_in_reads_only_ga_research_snapshot(monkeypatch):
     assert seen['load']['allow_corporate_history'] is True
     assert access['corporate_source'] == 'corporate_history_records'
     assert access['corporate_history_exclusion']['excluded_count'] == 0
+    assert data.research_accounting == RESEARCH_ACCOUNTING_DEFAULTS
+    assert access['research_accounting_assumption'] == RESEARCH_ACCOUNTING_DEFAULTS
 
 
 def test_history_opt_in_refuses_d1_and_a_receipt_tape(monkeypatch):
@@ -211,7 +213,19 @@ def test_ready_history_replays_with_the_research_accounting_assumption(monkeypat
     assert require_corporate_coverage(data, days[0], days[-1])['status'] == 'ready'
     with pytest.raises(ValueError, match='cash_rounding_missing'):
         engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
-    data.research_accounting = {'cashRoundingMode': 'exact_accrual', 'subscriptionPolicy': 'do_not_subscribe_zero_value'}
-    result = engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
-    assert result.final_equity > 0
+    data.research_accounting = dict(RESEARCH_ACCOUNTING_DEFAULTS)
+    booked = []
+    real_apply = engine._apply_daily_corporate
+    def apply(account, *args, **kwargs):
+        real_apply(account, *args, **kwargs)
+        booked.append(dict(getattr(account, 'corporate_receivables', {})))
+    monkeypatch.setattr(engine, '_apply_daily_corporate', apply)
+    engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
+    assert booked[2]['cash-ev']['cash_due'] == pytest.approx(123.45)  # 100 shares x 1.2345, exact accrual
     assert 'researchAccounting' not in params  # nothing can reach a KV push
+    # A partial params choice keeps the dataset's other research default.
+    seen = {}
+    monkeypatch.setattr(engine, '_apply_daily_corporate', lambda account, dataset, day, **kw: seen.update(kw))
+    engine.replay_period(data, days[0], days[-1], {**params, 'researchAccounting': {'cashRoundingMode': 'minus_one_twd'}},
+                         initial_capital=109000.)
+    assert seen == {'research_cash_mode': 'minus_one_twd', 'research_subscription_policy': 'do_not_subscribe_zero_value'}

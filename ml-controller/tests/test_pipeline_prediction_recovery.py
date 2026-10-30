@@ -103,12 +103,14 @@ def test_a_queued_gpu_request_is_left_alone_until_the_limit_then_the_driver_clos
     for tick in range(1200, 14400, 1200):
         now[0] = tick
         out = recover()
-        assert out == {'reason': 'gpu_queued', 'gpu_queued_s': tick, 'gpu_queue_remaining_s': 14400 - tick}
+        assert out == {'reason': 'gpu_queued', 'gpu_role': 'formal', 'gpu_queued_s': tick,
+                       'gpu_queue_remaining_s': 14400 - tick, 'gpu_log': 'gpu_queued'}
     assert not queue and store.read(registry(ref) + '/dispatch')[0] is None
     now[0] = 14400
     out = recover()
     assert out['reason'] == 'same_request_resumed' and out['attempt'] == 1
     assert out['gpu_queue_exhausted'] is True and out['gpu_queued_s'] == 14400
+    assert out['gpu_log'] == 'gpu_queue_exhausted'
     with pytest.raises(stages.GpuStageUnavailable, match='queue_exhausted'): driver()
 
 
@@ -137,8 +139,11 @@ def test_an_abandoned_claim_still_gets_a_driver_to_close_the_run_and_deploys_kee
     journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
     journal.dispatched(waiting.value.dispatch, 'fc-gpu')
     now[0] = 14400
-    assert recover(source_sha='c'*40) == {'reason': 'source_changed', 'recovery_blocked': True,
-                                          'gpu_queue_exhausted': True, 'gpu_queued_s': 14400}
+    blocked = {'reason': 'source_changed', 'recovery_blocked': True, 'gpu_queue_exhausted': True,
+               'gpu_role': 'formal', 'gpu_queued_s': 14400}
+    assert recover(source_sha='c'*40) == {**blocked, 'gpu_log': 'gpu_queue_limit_blocked'}
+    now[0] = 15600
+    assert recover(source_sha='c'*40) == {**blocked, 'gpu_queued_s': 15600}  # Logged once per run.
     with pytest.raises(stages.GpuStageUnavailable): driver()  # The driver abandoned the claim.
     out = recover()
     assert out['reason'] == 'same_request_resumed' and 'gpu_queue_exhausted' not in out and len(queue) == 1
@@ -171,7 +176,7 @@ def test_claims_written_before_the_queue_split_keep_the_old_lease_rule():
     assert recover()['reason'] == 'same_request_resumed'
 
 
-def test_gpu_queue_ops_lines_are_warn_while_queued_error_at_the_limit_and_never_fail():
+def test_gpu_queue_ops_lines_by_reason_never_fail_the_reconcile():
     import logging
     from services.pipeline_prediction_recovery import GPU_QUEUE_LOG_CRON, write_gpu_queue_log
     rows, log = [], logging.getLogger('fixture')
@@ -179,17 +184,26 @@ def test_gpu_queue_ops_lines_are_warn_while_queued_error_at_the_limit_and_never_
     def execute(sql, params):
         assert 'INSERT INTO system_logs' in sql
         rows.append(params)
-    assert write_gpu_queue_log({'reason': 'gpu_queued', 'gpu_queued_s': 3600., 'gpu_queue_remaining_s': 10800.},
-                               ops_execute=execute, **kw) == 'warn'
-    assert write_gpu_queue_log({'reason': 'same_request_resumed', 'attempt': 1, 'gpu_queue_exhausted': True,
-                                'gpu_queued_s': 14400.}, ops_execute=execute, **kw) == 'error'
-    assert write_gpu_queue_log({'reason': 'gpu_lease_active'}, ops_execute=execute, **kw) is None
-    assert [r[:2] for r in rows] == [['warn', GPU_QUEUE_LOG_CRON], ['error', GPU_QUEUE_LOG_CRON]]
-    assert 'queue_exhausted' in rows[1][2] and '"gpu_queued_s": 14400.0' in rows[1][3]
-    assert 'token' not in str(rows)
+    cases = [
+        ({'reason': 'gpu_queued', 'gpu_role': 'formal', 'gpu_queued_s': 3600., 'gpu_queue_remaining_s': 10800.,
+          'gpu_log': 'gpu_queued'}, 'warn', 'left before the run fails'),
+        ({'reason': 'same_request_resumed', 'attempt': 1, 'gpu_queue_exhausted': True, 'gpu_role': 'formal',
+          'gpu_queued_s': 14400., 'gpu_log': 'gpu_queue_exhausted'}, 'error', 'pipeline_stage_gpu_queue_exhausted'),
+        ({'reason': 'gpu_queued', 'gpu_role': 'shadow', 'gpu_queued_s': 60., 'gpu_queue_remaining_s': 3540.,
+          'gpu_log': 'gpu_shadow_queued'}, 'warn', 'no production effect'),
+        ({'reason': 'same_request_resumed', 'gpu_queue_exhausted': True, 'gpu_role': 'shadow',
+          'gpu_queued_s': 3600., 'gpu_log': 'gpu_shadow_queue_skipped'}, 'warn', 'formal results are unaffected'),
+        ({'reason': 'source_changed', 'recovery_blocked': True, 'gpu_queue_exhausted': True, 'gpu_role': 'formal',
+          'gpu_queued_s': 14400., 'gpu_log': 'gpu_queue_limit_blocked'}, 'error', 'recovery is blocked'),
+    ]
+    for recovery, level, text in cases:
+        assert write_gpu_queue_log(recovery, ops_execute=execute, **kw) == level
+        assert rows[-1][:2] == [level, GPU_QUEUE_LOG_CRON] and text in rows[-1][2]
+    assert '"gpu_queued_s": 14400.0' in rows[1][3] and '"gpu_role": "shadow"' in rows[3][3]
+    assert write_gpu_queue_log({'reason': 'gpu_queued'}, ops_execute=execute, **kw) is None  # Not named.
+    assert len(rows) == 5 and 'token' not in str(rows)
     def down(*_): raise OSError('d1 down')
-    assert write_gpu_queue_log({'reason': 'gpu_queued', 'gpu_queued_s': 1., 'gpu_queue_remaining_s': 2.},
-                               ops_execute=down, **kw) == 'warn'
+    assert write_gpu_queue_log(cases[0][0], ops_execute=down, **kw) == 'warn'
 
 
 def test_reconcile_hook_writes_the_gpu_queue_line_to_ops(monkeypatch):
@@ -200,11 +214,42 @@ def test_reconcile_hook_writes_the_gpu_queue_line_to_ops(monkeypatch):
         def execute(self, sql, params): rows.append(params)
     monkeypatch.setattr(d1_domain_client, 'client_proxy_for_domain', lambda domain: Ops())
     kw = dict(run_date='2026-10-29', run_id='exact-run')
-    assert log_gpu_queue({'reason': 'gpu_queued', 'gpu_queued_s': 60., 'gpu_queue_remaining_s': 5.}, **kw) == 'warn'
+    assert log_gpu_queue({'reason': 'gpu_queued', 'gpu_queued_s': 60., 'gpu_queue_remaining_s': 5.,
+                          'gpu_log': 'gpu_queued'}, **kw) == 'warn'
     assert rows and rows[0][0] == 'warn'
     assert log_gpu_queue({'reason': 'gpu_lease_active'}, **kw) is None and len(rows) == 1
     route = (Path(__file__).resolve().parents[1] / 'routers/pipeline.py').read_text()
     assert 'await asyncio.to_thread(log_gpu_queue, recovery, run_date=date, run_id=run_id)' in route
+
+
+def _shadow_driver(ref, stage_store, now):
+    def driver():
+        journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
+        with journal.driver():
+            formal = journal.cpu('formal', 'feature', lambda: [1.])
+            try:
+                shadow = journal.gpu({'series': ['shadow']}, shadow=True)
+            except stages.GpuStageUnavailable as exc:
+                shadow = str(exc)
+            return formal, shadow
+    return driver
+
+
+def test_a_shadow_gpu_queue_logs_once_and_is_skipped_at_its_limit_without_failing_the_run():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    driver = _shadow_driver(ref, stage_store, now)
+    with pytest.raises(stages.Suspended) as waiting: driver()
+    stages.Journal(stage_store, ref, clock=lambda: now[0]).dispatched(waiting.value.dispatch, 'fc-shadow')
+    now[0] = 1200
+    assert recover()['gpu_log'] == 'gpu_shadow_queued'
+    now[0] = 2400
+    out = recover()
+    assert out['reason'] == 'gpu_queued' and out['gpu_role'] == 'shadow' and 'gpu_log' not in out
+    now[0] = 3600
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and out['gpu_log'] == 'gpu_shadow_queue_skipped'
+    assert driver() == ([1.], 'pipeline_stage_gpu_shadow_queue_exhausted')
 
 
 def test_hard_killed_cpu_lease_and_bounded_recovery():

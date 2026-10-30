@@ -5130,7 +5130,7 @@ def replay_period(
                     else None
                 ),
                 regime_family=(
-                    (market_state.hmm_regime_contract(prev_decision_date, day) or {}).get("alpha_regime")
+                    market_state.hmm_family(prev_decision_date, day)
                     if (mode == "B" and market_state is not None)
                     else None
                 ),
@@ -5164,8 +5164,8 @@ def replay_period(
         # (Skip on the last day since there's no T+1 to enter on)
         if i < len(replay_days) - 1:
             # The pipeline hands the alpha framework the HMM contract (family +
-            # surface, daily_pipeline_v2.node_recommend); before the HMM era the
-            # replay keeps the stored market_risk level.
+            # surface, daily_pipeline_v2.node_recommend) for that day only; before
+            # the HMM era the replay keeps the stored market_risk level.
             hmm_contract = (market_state.hmm_regime_contract(day, replay_days[i + 1])
                             if mode == "B" and market_state is not None else None)
             if (hmm_contract is None and mode == "B" and market_state is not None

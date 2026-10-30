@@ -220,6 +220,23 @@ def test_an_hmm_day_without_a_contract_has_no_candidates(monkeypatch, kv_positio
     assert '2026-08-20' not in entries
 
 
+def test_a_day_without_its_own_hmm_row_has_no_candidates_but_p3_reads_the_latest(monkeypatch, kv_position_risk):
+    # The pipeline's decision_lineage needs contract.run_date == the signal date;
+    # Paper's adaptive reads the latest HMM state on or before it.
+    screens, entries = run(monkeypatch, kv_position_risk, [HMM_ROWS[0]])
+    assert screens['2026-08-18']['regime_label'] == 'bear'
+    assert '2026-08-19' not in screens and '2026-08-20' not in entries
+    from services import backtest_state
+    def query(sql, params):
+        return [HMM_ROWS[0]] if 'market_regime_state' in sql else []
+    for client in (backtest_state.CORE_D1_CLIENT, backtest_state.MARKET_D1_CLIENT):
+        monkeypatch.setattr(client, 'query', query)
+    state = backtest_state.BacktestMarketState('2026-08-14', '2026-08-20')
+    assert state.hmm_regime_contract('2026-08-19', '2026-08-20') is None
+    assert state.hmm_family('2026-08-19', '2026-08-20') == 'bear'
+    assert state.hmm_family('2026-08-17', '2026-08-18') is None                 # before the era
+
+
 def test_a_range_before_the_hmm_era_is_unchanged(monkeypatch, kv_position_risk):
     screens, entries = run(monkeypatch, kv_position_risk, [])
     assert [screens[d]['regime_label'] for d in DAYS[:3]] == ['green', 'yellow', 'orange']
@@ -235,7 +252,7 @@ L2 = {'confidence_risk_mult': .15, 'confidence_perf_mult': .2, 'confidence_delta
 
 
 def entry(kv_position_risk, *, conf, risk_level, risk_score=61, regime_family='bear', accuracy=.55,
-          circuit=None, threshold=.6):
+          circuit=None, threshold=.6, l2=L2):
     prices = pl.DataFrame([{'symbol': '2330', 'date': d, 'open': 100., 'high': 101., 'low': 99., 'close': 100.,
                             'volume': 10_000_000} for d in ('2026-08-18', '2026-08-19')])
     indicators = pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18'], 'atr14': [10.]})
@@ -251,7 +268,7 @@ def entry(kv_position_risk, *, conf, risk_level, risk_score=61, regime_family='b
         pos=engine.PositionSizeParams(), sltp=engine.SLTPParams(), fees=engine.FeeParams(),
         replay_days=['2026-08-18', '2026-08-19'],
         ml_predictions=engine.MLPredictionsCache({('2330', '2026-08-18'): conf}), buy_conf_threshold=threshold,
-        circuit_cfg=circuit or {}, current_drawdown_30d=0., recent_accuracy_30d=accuracy, l2_formula_cfg=L2,
+        circuit_cfg=circuit or {}, current_drawdown_30d=0., recent_accuracy_30d=accuracy, l2_formula_cfg=l2,
         risk_score=risk_score, risk_level=risk_level, regime_family=regime_family,
         position_risk_distribution_cfg=kv_position_risk)
     assert candidate.confidence == conf, 'sizing keeps the raw confidence, as Paper Kelly does'
@@ -396,6 +413,16 @@ def test_before_the_hmm_era_there_is_no_delta_only_the_clip(kv_position_risk):
     assert entry(kv_position_risk, conf=.6 + .001, regime_family=None, **kw)[0].status != 'skipped_low_conf'
     assert entry(kv_position_risk, conf=.6 - .001, regime_family=None, **kw)[0].status == 'skipped_low_conf'
     assert entry(kv_position_risk, conf=.76, regime_family=None, threshold=.8, **kw)[0].status != 'skipped_low_conf'
+
+
+def test_the_clip_defaults_match_the_worker(kv_position_risk):
+    # pendingBuyOrchestrator: effective_clip_lo ?? 0.45, effective_clip_hi ?? 0.75.
+    bare = {k: v for k, v in L2.items() if not k.startswith('confidence_effective_clip')}
+    kw = dict(risk_level=None, risk_score=None, l2=bare)
+    assert entry(kv_position_risk, conf=.751, threshold=.8, **kw)[0].status != 'skipped_low_conf'
+    assert entry(kv_position_risk, conf=.749, threshold=.8, **kw)[0].status == 'skipped_low_conf'
+    assert entry(kv_position_risk, conf=.451, threshold=.3, **kw)[0].status != 'skipped_low_conf'
+    assert entry(kv_position_risk, conf=.449, threshold=.3, **kw)[0].status == 'skipped_low_conf'
 
 
 def test_missing_inputs_drop_the_delta_but_keep_the_clip(kv_position_risk):

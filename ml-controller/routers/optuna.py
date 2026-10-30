@@ -1601,7 +1601,7 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     """
     try:
         from optuna_l2_sensitivity import (  # type: ignore
-            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE, _l2_push_allowed, _l2_push_blockers,
+            run_l2_sensitivity_search, DEFAULT_SEARCH_SPACE, RETIRED_PATHS, _l2_push_allowed, _l2_push_blockers,
         )
     except ImportError as e:
         raise HTTPException(500, f"optuna_l2_sensitivity import failed: {e}")
@@ -1630,7 +1630,8 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
 
     logger.info(
         f"[Optuna/l2_sensitivity] n_trials={req.n_trials} "
-        f"range={start_date}~{end_date} dims={len(search_space)} "
+        f"range={start_date}~{end_date} "
+        f"dims={sum(1 for dim in search_space if dim.get('path') not in RETIRED_PATHS)} "
         f"source={used_source} sampler={req.sampler}"
     )
 

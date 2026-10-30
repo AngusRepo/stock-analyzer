@@ -253,19 +253,32 @@ class BacktestMarketState:
         """True once an HMM row was visible before the entry open; earlier sessions keep the stored path."""
         return self._regime.hmm_visible(session, entry_open(entry_date))
 
+    def hmm_state(self, session: str, entry_date: str) -> Optional[dict]:
+        """The latest HMM state visible at the entry open, as Paper's adaptive reads it; None before the era."""
+        if not self.in_hmm_era(session, entry_date):
+            return None
+        return self._regime.latest_on_or_before(session, entry_open(entry_date))
+
     def hmm_regime_contract(self, session: str, entry_date: str) -> Optional[dict]:
         """The pipeline regime contract (alpha_regime + regime_surface) for decisions made at `session`.
 
-        None before the HMM era, and None inside it when the latest state visible
-        before the entry open is not HMM (Paper then has no regime contract either).
+        None before the HMM era. Inside it, None unless the latest state visible
+        before the entry open is HMM and is `session`'s own: the pipeline's
+        decision_lineage refuses a contract whose run_date is not the signal date.
         """
-        if not self.in_hmm_era(session, entry_date):
-            return None
-        state = self._regime.latest_on_or_before(session, entry_open(entry_date))
-        if state is None:
+        state = self.hmm_state(session, entry_date)
+        if state is None or state.get('run_date') != session:
             return None
         from services.market_regime_state import _contract_from_state
         return _contract_from_state(state, source='market_regime_state_history_v1')
+
+    def hmm_family(self, session: str, entry_date: str) -> Optional[str]:
+        """The HMM family Paper's adaptive P3 uses: latest on or before `session`, not only its own."""
+        state = self.hmm_state(session, entry_date)
+        if state is None:
+            return None
+        from services.market_regime_state import normalize_regime_label
+        return normalize_regime_label(state.get('label'))[1]     # Worker parseMarketRegimeState family
 
     def dates_with_risk(self) -> list[str]:
         """Deterministic sorted dates — for tests / debugging (M14 discipline)."""

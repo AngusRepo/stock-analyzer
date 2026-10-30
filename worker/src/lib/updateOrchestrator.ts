@@ -2615,6 +2615,35 @@ async function finLabCanonicalCutoffTerminal(
   return summary
 }
 
+/**
+ * C28-25: a terminal late-lane failure (cutoff, or a definite resend failure) writes one ops error and one
+ * console.warn per date and reason. The key is claimed before the write so a failing insert is not retried
+ * every tick. When the KV claim itself fails the row is still written, marked dedup unavailable (so a KV
+ * outage logs once per call until KV recovers). Never throws.
+ */
+async function logFinLabLateLaneFailureOnce(
+  env: Bindings, twDate: string, kind: 'cutoff' | 'resend_failed', summary: string, runId: string,
+): Promise<void> {
+  let dedupError: string | null = null
+  try {
+    const loggedKey = `finlab:late-lane-${kind}-logged:${twDate}`
+    if (await env.KV.get(loggedKey)) return
+    await env.KV.put(loggedKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+  } catch (error) {
+    dedupError = error instanceof Error ? error.message : String(error)
+  }
+  const logged = dedupError == null ? summary : `${summary}; dedup unavailable: ${dedupError}`
+  console.warn(`[FinLab] ${logged}`)
+  try {
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', 'evening-chain', logged, {
+      run_date: twDate, run_id: runId, reason: `late_lane_${kind}`,
+      ...(dedupError == null ? {} : { dedup_unavailable: dedupError }),
+    })
+  } catch (error) {
+    console.warn(`[FinLab] ${logged}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 export async function runMarketCloseRefresh(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   const lockKey = `cron:market-close-refresh:${twDate}`
@@ -3052,13 +3081,14 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     for (const task of ['finlab-v4-backfill', 'evening-chain']) {
       await logSchedulerResult(env.KV, task, {
         status: 'error', summary, duration_ms: durationMs, run_id: runId, run_date: twDate,
-      }, env as any)
+      })
     }
-    // Same terminal state as a failed FinLab callback; the two alerts above already carry it.
+    // Same terminal state as a failed FinLab callback.
     await logSchedulerResult(env.KV, 'update', {
       status: 'blocked', summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${summary}`,
       duration_ms: durationMs, run_id: runId, run_date: twDate,
     })
+    await logFinLabLateLaneFailureOnce(env, twDate, 'cutoff', summary, runId)
     return summary
   }
   // From the cutoff no new attempt is sent; an attempt sent before it may still call back.
@@ -3155,12 +3185,13 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
         run_id: runId,
         run_date: twDate,
         supersedePrevious: true,
-      }, env as any)
-      // Same terminal state as the cutoff failure; the evening-chain alert above already carries it.
+      })
+      // Same terminal state as the cutoff failure.
       await logSchedulerResult(env.KV, 'update', {
         status: 'blocked', summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${failed}`,
         duration_ms: 0, run_id: runId, run_date: twDate,
       })
+      await logFinLabLateLaneFailureOnce(env, twDate, 'resend_failed', failed, runId)
       return summary
     }
     await logSchedulerResult(env.KV, 'evening-chain', {

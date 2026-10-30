@@ -101,7 +101,7 @@ test('multi-page proofs seek from the cursor and still detect a change on a late
   const prepare=f.env.DB.prepare.bind(f.env.DB), pages:string[]=[]
   f.env.DB.prepare=(query:string)=>{if(/LIMIT \d+$/.test(query.trim()))pages.push(query);return prepare(query)}
   const proof=await capturePostVerifyLabelEvidence(f.env,input)
-  const labels=proof.tables.filter(t=>t.table==='price_horizon_labels_v1'&&t.kind!=='group-count')
+  const labels=(proof.tables as Array<Record<string,any>>).filter(t=>t.table==='price_horizon_labels_v1'&&t.kind!=='group-count')
   assert.deepEqual([labels.reduce((n,t)=>n+Number(t.rows),0),labels.reduce((n,t)=>n+Number(t.pages),0)],[4200,2])
   const later=pages.filter(query=>query.includes('FROM price_horizon_labels_v1')).map(query=>query.replace(/\s+/g,' '))
   assert.equal(later.length,2)

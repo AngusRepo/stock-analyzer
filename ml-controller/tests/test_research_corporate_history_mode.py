@@ -25,7 +25,8 @@ def tiny_universe_share_gate(request, monkeypatch):
     The share gate has its own test at a 1000-symbol scale; elsewhere it is lifted
     so each test exercises the exclusion mechanics it names.
     """
-    if request.node.originalname != 'test_more_than_a_fifth_excluded_stops_the_search':
+    if request.node.originalname not in ('test_more_than_a_fifth_excluded_stops_the_search',
+                                         'test_the_share_gate_stops_the_research_loader'):
         from fractions import Fraction
         from services import research_corporate_preflight
         monkeypatch.setattr(research_corporate_preflight, 'MAX_EXCLUDED_SYMBOL_SHARE', Fraction(1))
@@ -174,6 +175,19 @@ def test_history_opt_in_reads_only_ga_research_snapshot(monkeypatch):
     assert access['corporate_history_exclusion']['excluded_count'] == 0
     assert data.research_accounting == RESEARCH_ACCOUNTING_DEFAULTS
     assert access['research_accounting_assumption'] == RESEARCH_ACCOUNTING_DEFAULTS
+
+
+def test_the_share_gate_stops_the_research_loader(monkeypatch):
+    # One of two symbols uncovered = 50% > 20%: every search caller stops at load, before any trial.
+    from services.research_corporate_preflight import CorporateExclusionTooHigh, is_corporate_data_error
+    monkeypatch.setattr(engine, 'resolve_research_data_access', lambda **_: SimpleNamespace(
+        snapshot={}, source='snapshot', to_dict=lambda: {}))
+    monkeypatch.setattr(engine.BacktestDataset, 'load_from_snapshot_manifest', classmethod(
+        lambda cls, **_: dataset({d: history(d, symbols=('1101',)) for d in DAYS})))
+    with pytest.raises(CorporateExclusionTooHigh, match='1/2 > 1/5') as err:
+        engine.BacktestDataset.load_for_research(lane='optuna.sltp', start_date=DAYS[0], end_date=DAYS[-1],
+                                                 corporate_history=True)
+    assert is_corporate_data_error(err.value)
 
 
 def test_history_opt_in_refuses_d1_and_a_receipt_tape(monkeypatch):

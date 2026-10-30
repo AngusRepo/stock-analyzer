@@ -168,14 +168,27 @@ def canonical_market_risk(*, session: str, cutoff: datetime, market_risk_rows: l
     snapshot carries, so the previous close Paper compares against was never
     exported. The one-day shock is then not evaluated (named), instead of a
     blocker that would halt the replay's first session for a reason Paper never had.
+
+    market_risk is written with INSERT OR REPLACE, so `calculated_at` is the last
+    write, not the first: a 10/07 backfill restamped every row back to 08-03. A
+    row dated on or before the session is therefore read whatever its clock, and
+    a clock at or after the open is named: a late first write (which Paper would
+    not have seen) cannot be told apart from a later rewrite. market_breadth keeps
+    its first-write `created_at` on upsert, so that clock still selects; a value
+    rewritten later is untracked and named.
     """
-    risk = _visible(market_risk_rows, session=session, cutoff=cutoff, clock='calculated_at')
+    risk = sorted((row for row in market_risk_rows if str(row.get('date') or '') and str(row['date']) <= session),
+                  key=lambda row: str(row['date']), reverse=True)
     latest, previous = (risk[0] if risk else None), (risk[1] if len(risk) > 1 else None)
     breadth_visible = _visible(breadth_rows, session=session, cutoff=cutoff, clock='created_at')
     breadth = breadth_visible[0] if breadth_visible else None
     risk_date = str(latest['date']) if latest else None
     blockers: list[str] = []
     approximations: list[str] = []
+    if any(row is not None and not (_instant(row.get('calculated_at')) or cutoff) < cutoff for row in (latest, previous)):
+        approximations.append('market_risk_written_after_open_untracked')
+    if breadth is not None:
+        approximations.append('market_breadth_rewrite_after_created_at_untracked')
     if latest is None:
         blockers.append('market_risk_missing')
     if previous is None and previous_close_outside_window:
@@ -491,8 +504,15 @@ def replay_morning_state(*, decision_date: str, entry_date: str, circuit: dict, 
     if momentum_rows is None:
         approximations.append('p6_momentum_component_missing')
     else:
-        zone, _ = current_momentum_zone(momentum_rows, session=decision_date, cutoff=cutoff)
+        zone, zone_date = current_momentum_zone(momentum_rows, session=decision_date, cutoff=cutoff)
         results.append(p6_momentum(zone, circuit))
+        # Paper skips a zone without the current pool definition (Wei 10/29 Q3). Rows written before
+        # market migration 0011 stay NULL until the one-time backfill, so a newer unlabelled row may
+        # be a current-pool zone Paper would have read on that day.
+        unlabelled = _visible((r for r in momentum_rows if r.get('pool_definition') is None),
+                              session=decision_date, cutoff=cutoff, clock='created_at')
+        if unlabelled and (zone_date is None or str(unlabelled[0]['date']) > zone_date):
+            approximations.append('p6_newer_zone_row_without_pool_definition')
         # The worker upserts a date's zone without touching created_at, so a same-day
         # rewrite after the open cannot be told apart from the first write.
         approximations.append('p6_zone_rewrite_after_created_at_untracked')
@@ -517,6 +537,8 @@ def state_record(state: PaperRiskState, entry_date: str) -> dict:
             'level': state.market.level if state.market else None,
             'market_status': state.market.status if state.market else None,
             'market_blockers': list(state.market.blockers) if state.market else [],
+            'market_components': ({'regime': state.market.regime_level, 'shock': state.market.shock_level,
+                                   'breadth': state.market.breadth_level} if state.market else None),
             'triggered_layers': list(state.triggered_layers), 'reasons': list(state.reasons),
             'approximations': list(state.approximations)}
 

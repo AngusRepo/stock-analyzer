@@ -66,11 +66,28 @@ def test_a_regime_state_not_visible_at_the_open_blocks_and_halts():
     assert market(regime_run='2026-10-27').status == 'blocked'
 
 
-def test_a_market_risk_row_written_after_the_open_is_invisible():
+def test_a_market_risk_row_stamped_after_the_open_is_read_and_named():
+    # INSERT OR REPLACE restamps calculated_at: a 10/07 backfill moved every row since 08-03 past its open.
     ctx = market(calc='2026-10-29T02:00:00Z')
-    assert ctx.status == 'blocked' and ctx.date == '2026-10-27'
-    assert 'market_risk_expected_session_mismatch' in ctx.blockers
-    assert state_for(ctx).halt
+    assert ctx.status == 'ready' and ctx.date == D
+    assert ctx.approximations == ('market_risk_written_after_open_untracked',
+                                  'market_breadth_rewrite_after_created_at_untracked')
+    assert 'market_risk_written_after_open_untracked' in market(calc=None).approximations
+    assert 'market_risk_written_after_open_untracked' not in market().approximations
+
+
+def test_a_breadth_row_first_written_after_the_open_is_invisible_and_later_risk_rows_never_count():
+    rows = [{'date': '2026-10-27', 'twii_close': 100., 'risk_level': 'green', 'calculated_at': '2026-10-27T10:00:00Z'},
+            {'date': D, 'twii_close': 100., 'risk_level': 'green', 'calculated_at': '2026-10-28T10:00:00Z'}]
+    ctx = risk.canonical_market_risk(session=D, cutoff=CUTOFF, market_risk_rows=rows,
+                                     breadth_rows=[{'date': D, 'advance_ratio': .5, 'created_at': '2026-10-29T02:00:00Z'}],
+                                     regime_state={'run_date': D, 'label': 'bull_market'}, hmm_era=True, policy=POLICY)
+    assert ctx.status == 'blocked' and 'market_breadth_missing' in ctx.blockers
+    later = rows + [{'date': ENTRY, 'twii_close': 50., 'risk_level': 'black', 'calculated_at': '2026-10-28T12:00:00Z'}]
+    ctx = risk.canonical_market_risk(session=D, cutoff=CUTOFF, market_risk_rows=later,
+                                     breadth_rows=[{'date': D, 'advance_ratio': .5, 'created_at': '2026-10-28T09:00:00Z'}],
+                                     regime_state={'run_date': D, 'label': 'bull_market'}, hmm_era=True, policy=POLICY)
+    assert ctx.status == 'ready' and ctx.date == D and ctx.level == 'green'   # a row dated after the session never counts
 
 
 @pytest.mark.parametrize('circuit,cap', [(SCALED, 0.08 * 0.5 * 0.5), (CIRCUIT, 0.04 * 0.5)])
@@ -138,6 +155,11 @@ def test_p6_reads_the_last_zone_visible_at_the_open():
     assert risk.current_momentum_zone(rows, session=D, cutoff=CUTOFF) == ('YELLOW', '2026-10-27')
     assert risk.p6_momentum('YELLOW', CIRCUIT).max_position_pct == pytest.approx(0.056)
     assert risk.current_momentum_zone(rows[2:], session=D, cutoff=CUTOFF) == ('GREEN', None)
+    # The newer row without a pool (pre-backfill) is skipped like Paper does, and named.
+    state = morning(momentum_rows=rows)
+    assert state.max_position_pct == pytest.approx(0.056)
+    assert 'p6_newer_zone_row_without_pool_definition' in state.approximations
+    assert 'p6_newer_zone_row_without_pool_definition' not in morning(momentum_rows=rows[:2]).approximations
 
 
 # ── P7 / P8 ──────────────────────────────────────────────────────────────────
@@ -231,7 +253,8 @@ def morning(**overrides):
 def test_a_quiet_morning_runs_every_layer_with_nothing_triggered():
     state = morning()
     assert not state.halt and state.max_position_pct == .08 and state.exposure_cap == .95
-    assert state.triggered_layers == () and state.approximations == ('p6_zone_rewrite_after_created_at_untracked',)
+    assert state.triggered_layers == () and state.approximations == ('market_breadth_rewrite_after_created_at_untracked',
+                                                                       'p6_zone_rewrite_after_created_at_untracked')
 
 
 def test_the_first_snapshot_session_has_no_previous_close_and_says_so_instead_of_halting():
@@ -266,6 +289,7 @@ def test_each_layer_reaches_the_session_state():
 def test_the_session_record_and_summary_carry_what_was_not_simulated():
     records = [risk.state_record(morning(), ENTRY), risk.state_record(morning(regime_state=None), '2026-10-30')]
     assert records[1]['halt'] and records[1]['market_status'] == 'blocked'
+    assert records[0]['market_components'] == {'regime': 'green', 'shock': None, 'breadth': None}
     summary = risk.summarize(records)
     assert summary['sessions'] == 2 and summary['halt_sessions'] == 1 and summary['layer_trigger_sessions'] == {'P3': 1}
     assert 'deRisk 未模擬' in summary['not_simulated'] and 'P3:market_regime_factor_packet' in summary['unmodeled']

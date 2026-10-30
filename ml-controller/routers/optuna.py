@@ -1593,8 +1593,8 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
     Search space source-of-truth:
       trading:config.optuna_l2.search_space.dims (KV-driven, D4 citation)
 
-    Falls back to DEFAULT_SEARCH_SPACE when the KV key is missing or lists only
-    retired dims, so smoke-test
+    Falls back to DEFAULT_SEARCH_SPACE when the KV key is missing (a KV space with
+    only retired dims is refused with 422), so smoke-test
     bootstrapping doesn't block on Wei seeding KV first.
 
     Results push (source='l2_sensitivity') writes nested params into
@@ -1619,12 +1619,12 @@ def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq()))
         logger.warning("[Optuna/l2_sensitivity] trading:config degraded: %s", cfg_result.contract.to_dict())
     kv_space = (baseline_config.get("optuna_l2") or {}).get("search_space")
     kv_dims = (kv_space or {}).get("dims") if isinstance(kv_space, dict) else None
-    # Retired paths no longer change any decision; a KV space left with none to search
-    # falls back like a missing one instead of failing the run.
+    # Retired paths no longer change any decision. A KV space left with none to search
+    # fails closed: silently searching the defaults would widen what the KV owner chose.
     search_space = [dim for dim in kv_dims or [] if dim.get("path") not in RETIRED_PATHS]
-    used_source = "KV" if search_space else "DEFAULT_SEARCH_SPACE"
     if kv_dims and not search_space:
-        logger.warning("[Optuna/l2_sensitivity] KV search_space has only retired dims; using DEFAULT_SEARCH_SPACE")
+        raise HTTPException(422, "l2_search_space_all_retired")
+    used_source = "KV" if search_space else "DEFAULT_SEARCH_SPACE"
     if not search_space:
         search_space = DEFAULT_SEARCH_SPACE
 

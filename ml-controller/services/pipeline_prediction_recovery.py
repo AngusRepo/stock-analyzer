@@ -118,7 +118,9 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
         claim, claim_generation = store.read(PREFIX + gpu + '/claim')
         if claim:
             gpu_claim = (claim, claim_generation, PREFIX + gpu)
-            result_generation = store.generation(PREFIX + gpu + '/result/' + claim['token'])
+            # Any token's result lets a driver finish; an older one can land after a newer token.
+            tokens = claim['tokens'] if claim.get('v') == GPU_CLAIM_VERSION else [claim['token']]
+            result_generation = max(store.generation(PREFIX + gpu + '/result/' + token) for token in tokens)
             if not result_generation:
                 waiting = _gpu_wait(store, PREFIX + gpu, claim, clock())
                 if waiting.get('reason'):
@@ -127,6 +129,9 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     # Release drift prevents redispatch on this runtime; it does not prove
     # that an already-dispatched immutable request failed. Preserve its callback.
     if source_sha != reference.get('expected_source_sha') or not source_sha:
+        if queue_note.get('gpu_queue_exhausted'):
+            # No driver can run on this release: keep a late GPU request from running either.
+            _abandon_queued(store, gpu_claim)
         return _with_log(store, key, {'reason': 'source_changed', 'recovery_blocked': True, **queue_note},
                          blocked=True, clock=clock)
     if clock() - registered['created_at'] < 600:
@@ -139,10 +144,10 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     marker = digest({'progress': progress, 'gpu_result_generation': result_generation})
     attempt = recovery['attempt'] + 1 if recovery and recovery['marker'] == marker else 1
     if attempt > 3:
-        if (gpu_claim and not result_generation and 'started' not in gpu_claim[0]
-                and gpu_claim[0].get('v') == GPU_CLAIM_VERSION):
-            # The run fails now: a queued GPU request that still arrives must not run.
-            store.cas(gpu_claim[2] + '/claim', {**gpu_claim[0], 'abandoned': True}, gpu_claim[1])
+        # The run fails now: a queued GPU request that still arrives must not run. If it
+        # started meanwhile, its lease decides instead.
+        if not result_generation and _abandon_queued(store, gpu_claim) == 'started':
+            return {'reason': 'gpu_lease_active'}
         return {'reason': 'attempts_exhausted', 'error': 'pipeline_modal_recovery_attempts_exhausted'}
     if not callback_url or not callback_token:
         raise ValueError('pipeline_recovery_callback_credentials_missing')
@@ -159,6 +164,21 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     return _with_log(store, key, {'reason': 'same_request_resumed', 'attempt': attempt,
                                   'function_call_id': result.get('function_call_id'), **queue_note},
                      blocked=False, clock=clock)
+
+
+def _abandon_queued(store, gpu_claim):
+    """Mark a still-queued v2 GPU claim abandoned. Returns 'started' when a container won."""
+    if not gpu_claim:
+        return None
+    claim, generation, gpu_key = gpu_claim
+    if claim.get('v') != GPU_CLAIM_VERSION or 'started' in claim or claim.get('abandoned'):
+        return None
+    if store.cas(gpu_key + '/claim', {**claim, 'abandoned': True}, generation):
+        return 'abandoned'
+    current, _ = store.read(gpu_key + '/claim')
+    if current and current.get('token') == claim['token'] and 'started' in current:
+        return 'started'
+    return 'abandoned' if current and current.get('abandoned') else None
 
 
 def _gpu_wait(store, gpu_key, claim, now):
@@ -204,9 +224,23 @@ def _with_log(store, key, out, *, blocked, clock):
                   else 'gpu_shadow_queue_skipped' if role == 'shadow' else 'gpu_queue_exhausted')
     else:
         return out
-    if GPU_LOGS[reason][1] and not store.cas(key + '/ops-log/' + reason, {'at': clock()}, 0):
+    if GPU_LOGS[reason][1] and not _claim_once(store, key + '/ops-log/' + reason, clock):
         return out
     return {**out, 'gpu_log': reason}
+
+
+def _claim_once(store, marker_key, clock):
+    """At most once per run: the marker is taken before the D1 write, so a failed write is
+    not retried (the Cloud Logging line still appears). Never fails the reconcile."""
+    import uuid
+    mine = {'at': clock(), 'nonce': uuid.uuid4().hex}
+    try:
+        if store.cas(marker_key, mine, 0):
+            return True
+        current, _ = store.read(marker_key)  # A write that landed despite a reported conflict.
+        return current == mine
+    except Exception:
+        return False
 
 
 def write_gpu_queue_log(recovery, *, run_date, run_id, ops_execute, logger):

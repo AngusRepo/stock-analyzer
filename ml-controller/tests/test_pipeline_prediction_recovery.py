@@ -142,8 +142,10 @@ def test_an_abandoned_claim_still_gets_a_driver_to_close_the_run_and_deploys_kee
     blocked = {'reason': 'source_changed', 'recovery_blocked': True, 'gpu_queue_exhausted': True,
                'gpu_role': 'formal', 'gpu_queued_s': 14400}
     assert recover(source_sha='c'*40) == {**blocked, 'gpu_log': 'gpu_queue_limit_blocked'}
+    claim_key = PREFIX + journal.root + '/gpu/' + waiting.value.dispatch['stage'] + '/claim'
+    assert store.read(claim_key)[0]['abandoned'] is True  # A late GPU request cannot run.
     now[0] = 15600
-    assert recover(source_sha='c'*40) == {**blocked, 'gpu_queued_s': 15600}  # Logged once per run.
+    assert recover(source_sha='c'*40) == {'reason': 'source_changed', 'recovery_blocked': True}  # Once.
     with pytest.raises(stages.GpuStageUnavailable): driver()  # The driver abandoned the claim.
     out = recover()
     assert out['reason'] == 'same_request_resumed' and 'gpu_queue_exhausted' not in out and len(queue) == 1
@@ -334,3 +336,93 @@ def test_release_overlap_preserves_active_cpu_and_gpu_and_never_dispatches_wrong
     assert not queue
     store.put(root + '/terminal', {'status': 'callback_accepted'})
     assert recover(source_sha='c'*40) == {'reason': 'callback_accepted'}
+
+
+def _queued_gpu(ref, store, now, dispatch_id='fc-gpu', shadow=False):
+    stage_store = StageStore(store)
+    journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
+    with pytest.raises(stages.Suspended) as waiting:
+        with journal.driver():
+            journal.gpu({'series': ['2330']}, shadow=shadow)
+    if dispatch_id:
+        journal.dispatched(waiting.value.dispatch, dispatch_id)
+    return stage_store, journal, waiting.value.dispatch
+
+
+def test_recovery_exhaustion_yields_to_a_container_that_started_during_the_fence():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now, dispatch_id=None)
+    for attempt in (1, 2, 3):
+        now[0] += 601
+        assert recover()['attempt'] == attempt
+    real_cas = store.cas
+    def racing(key, value, generation):
+        if key.endswith('/claim') and value.get('abandoned'):
+            with pytest.raises(SystemExit):
+                stages.run_gpu_stage(stage_store, dispatch, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                                     resume=pytest.fail, clock=lambda: now[0])
+        return real_cas(key, value, generation)
+    store.cas = racing
+    now[0] += 601
+    assert recover() == {'reason': 'gpu_lease_active'}
+
+
+def test_an_older_tokens_result_gets_a_driver_even_while_a_newer_token_queues():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, first = _queued_gpu(ref, store, now)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, first, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: 700)
+    now[0] = 700 + stages.GPU_LEASE_SECONDS
+    _, _, second = _queued_gpu(ref, store, now, dispatch_id='fc-2')
+    assert second['token'] != first['token']
+    now[0] += 1200
+    out = recover()
+    assert out['reason'] == 'gpu_queued' and out['gpu_queued_s'] == 700 + 1200  # Queue time over tokens.
+    stage_store.put(journal.root + '/gpu/' + first['stage'] + '/result/' + first['token'],
+                    {'input_checksum': first['stage'], 'value': {'late': 1}})
+    assert recover()['reason'] == 'same_request_resumed'
+
+
+def test_the_once_marker_survives_a_landed_conflict_and_never_fails_the_reconcile():
+    ref, store, now, queue, recover = fixture()
+    _queued_gpu(ref, store, now, shadow=True)
+    now[0] = 1200
+    real_cas = store.cas
+    def ghost(key, value, generation):
+        ok = real_cas(key, value, generation)
+        return False if ok and '/ops-log/' in key else ok
+    store.cas = ghost
+    assert recover()['gpu_log'] == 'gpu_shadow_queued'
+    def broken(key, value, generation):
+        if '/ops-log/' in key:
+            raise OSError('gcs 503')
+        return real_cas(key, value, generation)
+    store.cas = broken
+    now[0] = 3600
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and 'gpu_log' not in out
+
+
+def test_an_uncertain_dispatch_at_the_limit_still_names_the_ops_line():
+    ref, store, now, queue, recover = fixture()
+    _queued_gpu(ref, store, now)
+    now[0] = 14400
+    def lost(_): raise OSError('ack lost')
+    out = recover(spawn=lost)
+    assert out['reason'] == 'recovery_dispatch_uncertain' and out['gpu_log'] == 'gpu_queue_exhausted'
+
+
+def test_shadow_lines_are_once_per_run_not_once_overall():
+    base, store, now, queue, recover = fixture()  # One store: the marker must be keyed by run.
+    logged = []
+    for run_id in ('run-a', 'run-b'):
+        ref = {**base, 'run_id': run_id}
+        register_request(ref, store=store, clock=lambda: 0)
+        now[0] = 0
+        _queued_gpu(ref, store, now, shadow=True)
+        now[0] = 1200
+        logged.append(recover(run_id=run_id).get('gpu_log'))
+        now[0] = 2400
+        assert 'gpu_log' not in recover(run_id=run_id)
+    assert logged == ['gpu_shadow_queued', 'gpu_shadow_queued']

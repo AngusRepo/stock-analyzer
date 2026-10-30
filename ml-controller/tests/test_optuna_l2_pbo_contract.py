@@ -151,3 +151,33 @@ def test_l2_sensitivity_never_searches_the_retired_bull_alignment_threshold():
     with pytest.raises(ValueError, match='empty search_space'):
         run_l2_sensitivity_search(search_space=retired, start_date='2026-01-01', end_date='2026-03-31',
                                   baseline_config={}, n_trials=1)
+
+
+def test_the_sell_threshold_is_retired_and_never_reaches_the_push_payload(monkeypatch, kv_position_risk):
+    # Wei 10/30: Paper's ML SELL exit has no SELL rows to act on; the KV field stays, the
+    # search stops tuning it, even when a KV-supplied space still lists it.
+    import optuna_l2_sensitivity as l2
+    from types import SimpleNamespace
+    from services import backtest_engine
+    assert 'circuit.sellConfThreshold' in l2.RETIRED_PATHS
+    assert 'circuit.sellConfThreshold' not in {dim['path'] for dim in DEFAULT_SEARCH_SPACE}
+    assert len(DEFAULT_SEARCH_SPACE) == 19
+    monkeypatch.delenv('CF_D1_RESEARCH_DB_ID', raising=False)
+    monkeypatch.setattr(backtest_engine.BacktestDataset, 'load_for_research',
+                        lambda **_: (object(), {'source': 'snapshot'}))
+    seen = []
+    def replay(**kw):
+        seen.append(kw['params'])
+        return SimpleNamespace(sharpe=1.0, max_drawdown=.1, total_trades=50, partition_returns=[])
+    monkeypatch.setattr(backtest_engine, 'replay_period', replay)
+    kv_space = [{'name': 'sellConfThreshold', 'path': 'circuit.sellConfThreshold', 'type': 'uniform',
+                 'low': .55, 'high': .8},
+                {'name': 'buyConfThreshold', 'path': 'circuit.buyConfThreshold', 'type': 'uniform',
+                 'low': .5, 'high': .75}]
+    baseline = {'positionRiskDistribution': kv_position_risk,
+                'circuit': {'sellConfThreshold': .66, 'buyConfThreshold': .6}}
+    result = l2.run_l2_sensitivity_search(search_space=kv_space, start_date='2026-01-01', end_date='2026-03-31',
+                                          baseline_config=baseline, n_trials=2)
+    assert set(result['best_params']) == {'buyConfThreshold'}
+    assert result['best_params_nested'] == {'circuit': {'buyConfThreshold': result['best_params']['buyConfThreshold']}}
+    assert all(params['circuit']['sellConfThreshold'] == .66 for params in seen)   # baseline untouched

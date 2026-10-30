@@ -8,10 +8,13 @@ NeuralTS / NeuCB family-routing policies. It is not a substitute for searching
 `bandit_loss_thresh_*` or `bandit_max_mult_*` constants; those are evaluated
 by the separate read-only LinUCB multiplier replay until this Optuna objective
 explicitly consumes that replay evidence.
-Remaining 20 Mode-B-consumable dims split into:
-  7 circuit + 6 L2-confidence + 4 night + 3 PF-search
+Remaining 19 Mode-B-consumable dims split into:
+  6 circuit + 6 L2-confidence + 4 night + 3 PF-search
   (PF 90d_weight = 1 - 30d_weight constrained, so 3 search dims cover 4 consumers).
   SLTP-add and medium scale are retired (Wei 10/30 B): Paper applies neither.
+  circuit.sellConfThreshold is retired for now (Wei 10/30): Paper's EOD ML SELL exit
+  has had no SELL row to act on since 2026-03-31, so the dimension cannot move the
+  objective of a Paper-faithful replay (plan_replay_sellconf.md option C).
 
 Design citations (see task_plan.md Item #28):
   D3 NSGA-II — Deb et al. (2002) IEEE Trans. Evol. Comp
@@ -54,24 +57,26 @@ if str(_CONTROLLER_DIR) not in sys.path:
     sys.path.insert(0, str(_CONTROLLER_DIR))
 
 
-# Default search space — 20 dims (bullAlignmentThreshold removed, Wei 10/29 Q5; SLTP-add and medium scale retired, Wei 10/30 B). Caller (endpoint) should prefer KV override.
+# Default search space — 19 dims (bullAlignmentThreshold removed, Wei 10/29 Q5; SLTP-add and medium scale retired, Wei 10/30 B; sellConfThreshold retired, Wei 10/30). Caller (endpoint) should prefer KV override.
 # Each entry: name, path (dot-notation into trading:config), type, low, high.
 # Ranges sourced from task_plan.md Item #28 with Bergstra (2012) log-uniform
 # for mult coefficients, uniform for threshold percentages / scores.
 # Paths that no longer drive a decision. Wei 10/29 Q5: P4 dropped the bull-alignment
 # trigger. Wei 10/30 (B): Paper applies no risk-level SL/TP add and no medium scale
 # (risk sizing is owned by circuit.positionScales + the allocator riskScore), so the
-# replay dropped both and the search must not tune them.
+# replay dropped both and the search must not tune them. Wei 10/30: Paper's only
+# consumer of circuit.sellConfThreshold is the EOD ML SELL exit (paperExitTasks.ts),
+# which has had no SELL recommendation to read since 2026-03-31; the KV field stays.
 RETIRED_PATHS = frozenset({
     "circuit.bullAlignmentThreshold",
+    "circuit.sellConfThreshold",
     *(f"L2_formula.sltp_add_{level}_{side}" for level in ("orange", "red", "black") for side in ("sl", "tp")),
     "L2_formula.medium_risk_scale",
 })
 
 DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
-    # ── circuit.* (7 dims) ────────────────────────────────────────────────
+    # ── circuit.* (6 dims) ────────────────────────────────────────────────
     {"name": "buyConfThreshold",       "path": "circuit.buyConfThreshold",       "type": "uniform",     "low": 0.50,  "high": 0.75},
-    {"name": "sellConfThreshold",      "path": "circuit.sellConfThreshold",      "type": "uniform",     "low": 0.55,  "high": 0.80},
     {"name": "lowAccuracyThreshold",   "path": "circuit.lowAccuracyThreshold",   "type": "uniform",     "low": 0.35,  "high": 0.55},
     {"name": "drawdownHalt",           "path": "circuit.drawdownHalt",           "type": "uniform",     "low": 0.08,  "high": 0.25},
     {"name": "drawdownScaleStart",     "path": "circuit.drawdownScaleStart",     "type": "uniform",     "low": 0.01,  "high": 0.08},

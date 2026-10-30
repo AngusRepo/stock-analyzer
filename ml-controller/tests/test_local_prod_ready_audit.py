@@ -590,7 +590,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     )
     _write(
         tmp_path / "ml-controller/routers/optuna.py",
-        'Synchronous Optuna research sweep is disabled\n@router.post("/research_sweep/run")\nCloud Run Job\n20-dim L2/circuit Optuna search against Mode B replay\n',
+        'Synchronous Optuna research sweep is disabled\n@router.post("/research_sweep/run")\nCloud Run Job\n19-dim L2/circuit Optuna search against Mode B replay\n',
     )
     _write(
         tmp_path / "worker/src/lib/schedulerPolicy.ts",

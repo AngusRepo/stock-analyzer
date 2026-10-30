@@ -318,7 +318,7 @@ def test_the_l2_search_never_tunes_the_retired_dimensions():
     retired.add('L2_formula.medium_risk_scale')
     assert retired <= RETIRED_PATHS
     assert not {dim['path'] for dim in DEFAULT_SEARCH_SPACE} & retired
-    assert len(DEFAULT_SEARCH_SPACE) == 20
+    assert len(DEFAULT_SEARCH_SPACE) == 19
 
 
 # ── data sources ─────────────────────────────────────────────────────────────

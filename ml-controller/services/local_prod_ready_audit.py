@@ -486,7 +486,7 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
                 "Synchronous Optuna research sweep is disabled",
                 "@router.post(\"/research_sweep/run\")",
                 "Cloud Run Job",
-                "20-dim L2/circuit Optuna search against Mode B replay",
+                "19-dim L2/circuit Optuna search against Mode B replay",
             ),
             "roadmap:p1:optuna_controller_boundary",
             "controller owns long-running research sweep and separates L2/circuit search from bandit dims",

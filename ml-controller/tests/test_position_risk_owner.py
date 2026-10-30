@@ -302,3 +302,21 @@ def test_research_causal_configuration_carries_the_owner_cap(monkeypatch):
     kv(monkeypatch, None)
     with pytest.raises(PositionRiskConfigUnavailable):
         asyncio.run(research_validation.candidate_configuration('c'))
+
+
+def test_l2_route_logs_the_dims_it_searches_without_retired_ones(monkeypatch, caplog):
+    # A KV space that still lists the retired sell threshold logs only the searched dims.
+    import logging
+    from routers import optuna
+    space = {'dims': [{'name': 'sellConfThreshold', 'path': 'circuit.sellConfThreshold', 'type': 'uniform',
+                       'low': .55, 'high': .8},
+                      {'name': 'buyConfThreshold', 'path': 'circuit.buyConfThreshold', 'type': 'uniform',
+                       'low': .5, 'high': .75}]}
+    loaded(monkeypatch, {**POST_P1, 'optuna_l2': {'search_space': space}})
+    kv(monkeypatch, RISK)
+    captured = {}
+    _route(monkeypatch, 'optuna_l2_sensitivity', 'run_l2_sensitivity_search', captured)
+    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError, match='captured'):
+        optuna.run_l2_sensitivity(optuna.L2SensitivityReq())
+    line = next(r.getMessage() for r in caplog.records if '[Optuna/l2_sensitivity] n_trials=' in r.getMessage())
+    assert ' dims=1 ' in line and 'source=KV' in line

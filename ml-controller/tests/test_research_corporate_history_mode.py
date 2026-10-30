@@ -11,7 +11,6 @@ from services.research_corporate_history import (
 from services.research_corporate_preflight import (
     CorporateCoverageError, exclude_history_blocked_symbols, require_corporate_coverage,
 )
-from services.research_data_access import ResearchSnapshotNotReadyError
 
 DAYS = ['2026-09-03', '2026-09-04', '2026-09-07']
 CAPTURED = '2026-10-03T01:00:00+00:00'
@@ -26,15 +25,15 @@ def history(day, *, symbols=('1101', '2330'), actions=(), blockers=None):
                                history_start=DAYS[0], history_end=DAYS[-1])['snapshot']
 
 
-def dataset(tape, symbols=('1101', '2330')):
+def dataset(tape, symbols=('1101', '2330'), days=DAYS, suspended=()):
     rows = [{'symbol': s, 'date': d, 'open': 100., 'high': 100., 'low': 100., 'close': 100., 'volume': 1e6}
-            for s in symbols for d in DAYS]
+            for s in symbols for d in days if (s, d) not in suspended]
     stocks = pl.DataFrame({'symbol': list(symbols), 'listed_date': [None] * len(symbols),
                            'delisted_date': [None] * len(symbols), 'market': ['TWSE'] * len(symbols)},
                           schema={'symbol': pl.String, 'listed_date': pl.String,
                                   'delisted_date': pl.String, 'market': pl.String})
     return engine.BacktestDataset(prices=pl.DataFrame(rows), indicators=pl.DataFrame(), chips=pl.DataFrame(),
-        market_risk=pl.DataFrame(), stocks=stocks, trading_days=DAYS, start_date=DAYS[0], end_date=DAYS[-1],
+        market_risk=pl.DataFrame(), stocks=stocks, trading_days=list(days), start_date=days[0], end_date=days[-1],
         corporate_sources=tape)
 
 
@@ -141,7 +140,7 @@ def test_history_opt_in_reads_only_ga_research_snapshot(monkeypatch):
 
 
 def test_history_opt_in_refuses_d1_and_a_receipt_tape(monkeypatch):
-    with pytest.raises(ResearchSnapshotNotReadyError, match='requires_snapshot:d1_chunked'):
+    with pytest.raises(ValueError, match='requires_snapshot:d1_chunked'):
         engine.BacktestDataset.load_for_research(lane='x', start_date=DAYS[0], end_date=DAYS[-1],
                                                  mode='d1_chunked', corporate_history=True)
     monkeypatch.setattr(engine, 'resolve_research_data_access', lambda **_: SimpleNamespace(
@@ -164,3 +163,55 @@ def test_default_loader_path_is_unchanged(monkeypatch):
         engine.BacktestDataset.load_for_research(lane='x', start_date=DAYS[0], end_date=DAYS[-1])
     assert seen['kind'] == 'backtest_dataset'
     assert seen['required_components'] == ('signals', 'corporate_source_records')
+
+
+def test_issuer_blocked_while_suspended_is_still_excluded():
+    # 2330 has no bar on the blocked session; a position bought earlier would still be held.
+    tape = {d: history(d) for d in DAYS}
+    tape[DAYS[2]] = history(DAYS[2], blockers={'2330': ['economic_terms_incomplete:cash:KeyError']})
+    data = dataset(tape, suspended={('2330', DAYS[2])})
+    report = exclude_history_blocked_symbols(data, DAYS[0], DAYS[-1])
+    assert report['excluded_first_blocked_session'] == {'2330': DAYS[2]}
+    assert data.get_universe_at(DAYS[0]) == {'1101'}
+
+
+def test_revision_of_an_earlier_entitlement_excludes_its_issuer():
+    # The entitlement (ex on the first session) is listed from the second session on,
+    # and its terms vanish on the third: every past ex_date in the window counts.
+    event = {'action_id': 'ev', 'symbol': '2330', 'kind': 'cash', 'ex_date': DAYS[0],
+             'payable_date': '2026-10-01', 'cash_per_share': 1., 'stock_per_share': 0., 'cash_rounding': 'floor_twd'}
+    tape = {DAYS[0]: history(DAYS[0]), DAYS[1]: history(DAYS[1], actions=[event])}
+    tape[DAYS[2]] = history(DAYS[2], blockers={'2330': ['outstanding_event_revision_unresolved']})
+    tape[DAYS[2]]['unresolved_outstanding_action_ids'] = {'2330': ['ev']}
+    data = dataset(tape)
+    report = exclude_history_blocked_symbols(data, DAYS[0], DAYS[-1])
+    assert report['excluded_first_blocked_session'] == {'2330': DAYS[2]}
+
+
+def test_ready_history_replays_with_the_research_accounting_assumption(monkeypatch, kv_position_risk):
+    # Preflight cannot see an unrounded issuer cash term; the history dataset carries the
+    # research accounting assumption so the replay books it instead of raising mid-search.
+    days = [*DAYS, '2026-09-08']
+    cash = {'action_id': 'cash-ev', 'symbol': '2330', 'kind': 'cash', 'ex_date': days[2],
+            'payable_date': days[3], 'cash_per_share': 1.2345, 'stock_per_share': 0.}
+    tape = {d: make_history_record({'session_date': d, 'covered_symbols': ['1101', '2330'],
+        'actions': [cash] if d >= days[2] else [], 'blockers': {}, 'source_checksum': 'a' * 64,
+        'tax_basis': 'gross_before_personal_tax'}, captured_at=CAPTURED, source_refs=REFS,
+        history_start=days[0], history_end=days[-1])['snapshot'] for d in days}
+    from test_backtest_corporate_accounting import account
+    def buy(**kwargs):
+        if kwargs['entry_date'] == days[1]:
+            kwargs['account'].positions['2330'] = account().positions['2330']
+        return []
+    monkeypatch.setattr(engine, 'replay_screener_for_date', lambda **_: ['fixture'])
+    monkeypatch.setattr(engine, 'simulate_entries_for_date', buy)
+    params = {'positionRiskDistribution': kv_position_risk}
+    data = dataset(tape, days=days)
+    assert exclude_history_blocked_symbols(data, days[0], days[-1])['excluded_count'] == 0
+    assert require_corporate_coverage(data, days[0], days[-1])['status'] == 'ready'
+    with pytest.raises(ValueError, match='cash_rounding_missing'):
+        engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
+    data.research_accounting = {'cashRoundingMode': 'exact_accrual', 'subscriptionPolicy': 'do_not_subscribe_zero_value'}
+    result = engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
+    assert result.final_equity > 0
+    assert 'researchAccounting' not in params  # nothing can reach a KV push

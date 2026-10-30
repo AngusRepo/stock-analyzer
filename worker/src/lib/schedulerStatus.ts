@@ -705,7 +705,7 @@ export function resolveSchedulerLogStatus(
 ): SchedulerResolvedStatus {
   if (!log) return { status: null, staleRunning: false }
   if (def?.id === 'active8-oof-daily' && ['triggered', 'skipped'].includes(log.status)
-    && log.summary?.includes('reason=awaiting_premarket job_dispatched=false')) {
+    && /reason=awaiting_(premarket|pipeline) job_dispatched=false/.test(log.summary ?? '')) {
     return { status: 'waiting', staleRunning: false }
   }
   if (log.status === 'waiting') return { status: 'waiting', staleRunning: false }

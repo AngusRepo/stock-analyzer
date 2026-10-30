@@ -40,6 +40,7 @@ G1 的 20 日、G3 的 z 尾端和 horizon、CI 水準都寫在 `r4_gate_policy_
 - **Paper 端分母（3b，只用在買單）**：Paper 下單當下的 `portfolioValue`，不讀 Paper 的 NAV 表。
   - 來源用方案 A：Paper 在買進寫入點另寫 `paper_order_sizing_v1(order_id, portfolio_value)`（native，搭 Slice A，寫失敗不擋 Paper）。
   - 接上之前，買單一律 BLOCKED（`paper_denominator_unavailable`）。
+  - 這列還讀不到時，最多等到該筆買單當日的 `session.continuous_close`（Wei 10/30 A 案），之後 BLOCKED 並告警。細節見 `LIVE_PROTOCOL_NEW37.md` §2。
 - **13:30 後才產生的 Paper 出場（3c）**：
   - 記成待送賣單（`live_intake_orders_v1.status='DEFERRED'`），下一交易日 09:00 後用新報價重驗再送。
   - 每筆都可以對帳。還沒送出就 pause 時，照 D-7 不送。

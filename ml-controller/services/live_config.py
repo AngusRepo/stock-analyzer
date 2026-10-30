@@ -150,6 +150,12 @@ def in_continuous_session(config: Mapping[str, Any], tw_time: datetime) -> bool:
         <= _clock(session["continuous_close"], "close")
 
 
+def session_close_at(config: Mapping[str, Any], tw_time: datetime) -> datetime:
+    """The continuous-session close (inclusive, Taiwan time) on tw_time's date."""
+    close = _clock(config["session"]["continuous_close"], "close")
+    return tw_time.replace(hour=close.hour, minute=close.minute, second=0, microsecond=0)
+
+
 def buy_cash_required(shares: int, price: float, fees: Mapping[str, Any] | None) -> float | None:
     """Notional plus the buy commission from trading:config.fees, per market leg.
 

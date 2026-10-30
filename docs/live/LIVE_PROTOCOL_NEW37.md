@@ -36,6 +36,13 @@
   - 來源（Wei 10/29 方案 A）：Paper 在買進寫入點把已算好的值另寫一列到 `paper_order_sizing_v1(order_id, portfolio_value)`。
   - 這是 native 改動，獨立 commit、搭 Slice A；Paper 的決策、寫入順序和失敗行為不變，這列寫失敗也不擋 Paper。
   - 分母接上之前（或某筆沒有這列），買單一律 BLOCKED，原因 `paper_denominator_unavailable`。
+  - 這列還讀不到時（Wei 10/30 A 案）：這一輪不記錄這筆買單、不送單（summary `waiting`），下一輪再讀。期限是該筆 Paper 買單當日的 `trading:live_config.session.continuous_close`（含 13:30:00），不新增常數。
+  - 過了期限仍讀不到：記 BLOCKED `paper_denominator_unavailable`（漏掉日子的買單也是這個原因，不記 SKIPPED），conversion 帶 `paper_denominator_not_ready`，並發出 `live_intake_paper_denominator_unavailable` 告警（summary `warnings`，由 cron 呼叫端寫 writeSystemLog(ops, warn)＋console.warn）。告警在寫入成功後才發，每筆只發一次；告警端失敗不影響這一輪。
+  - 盤前或收盤後才下的 Paper 買單本來就不送，所以不等這列、不告警，照舊記 SKIPPED `paper_buy_outside_session`。
+  - 等這列的期間，如果同一檔較晚的 Paper 賣單已經入列（較晚的買單不算），這筆買單記 BLOCKED `paper_buy_superseded_while_waiting` 並告警（`live_intake_paper_buy_superseded`），不送，避免 Paper 已出場後 Live 才進場。
+  - 已知缺口：Live 第一天如果只有等待中的買單、收盤後又沒有再跑一輪，隔天這筆會被略過（沒有 row、沒有告警；不會送出）。要補需要 Live 起始日的來源，待決定。
+  - 賣單不讀這列，不受影響。
+  - 已接受的副作用：等待中的買單還沒入列，不佔現金保留額；同日較晚的買單可能先用掉現金，這筆入列時被現金截短。只會少買，不會超買。
 - **買進**：
   - 比例 ＝ 實盤 NAV ÷ Paper `portfolio_value`，兩者都取委託當下的值。
   - 實盤股數 ＝ floor(Paper 股數 × 比例)，再依券商可用現金與 `trading:risk_config.order.maxSingleOrderValue` 截斷。

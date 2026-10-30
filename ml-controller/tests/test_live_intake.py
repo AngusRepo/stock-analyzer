@@ -114,7 +114,7 @@ LAPSED = {"status": "live_submission_paused", "reason": "live_approval_expired",
 
 
 def _run(repo, broker, gateway, orders, now, *, control=OPEN, trading_day=True, denominator=2_000_000.0,
-         config=None, status=None, clock=None):
+         config=None, status=None, clock=None, warn=None):
     def state():
         if isinstance(control, Exception):
             raise control
@@ -124,8 +124,8 @@ def _run(repo, broker, gateway, orders, now, *, control=OPEN, trading_day=True, 
         paper_orders=orders, live_config=config or _config(), trading_day_confirmed=trading_day,
         submission_state=state, market=broker, repository=repo, relay=gateway.relay,
         status=status or (lambda key: {"status": "error", "reason": "execution_gateway_status_http_404"}),
-        fees=FEES, risk_config=RISK, paper_portfolio_value=lambda order: denominator, now=now,
-        clock=clock or (lambda: now))
+        fees=FEES, risk_config=RISK, now=now, clock=clock or (lambda: now), warn=warn,
+        paper_portfolio_value=denominator if callable(denominator) else (lambda order: denominator))
 
 
 # --- conversion (pure) ---
@@ -1795,3 +1795,243 @@ def test_a_pause_early_on_the_send_day_or_an_unreadable_pause_time_withholds_the
     broker.holdings = {"2330": 500}
     _run(repo, broker, gw, orders, _tw(NEXT, "09:05"), control={**OPEN, "last_pause_at": pause_at})
     assert repo.get(TOPUP) is None and len(_sells(gw)) == 2
+
+
+# --- the Paper sizing row is not ready yet (Wei 10/30 A: wait until that day's continuous_close) ---
+
+class Sizing:
+    """Fake D1PaperReader.portfolio_value: buys raise PaperDenominatorNotReady until marked ready."""
+
+    def __init__(self, value=160_000.0):
+        self.value, self.ready = value, set()
+
+    def __call__(self, order):
+        if order["side"] != "buy":
+            return None
+        if order["id"] not in self.ready:
+            raise li.PaperDenominatorNotReady("missing")
+        return self.value
+
+
+def test_a_buy_waits_for_its_sizing_row_and_is_sent_once_the_row_appears():
+    repo, _ = _repo()
+    broker, gw, sizing, warned = FakeBroker(cash=80_000.0), Gateway(repo), Sizing(), []
+    orders = [_order(1, "buy", 1000, 100.0)]
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:01"), denominator=sizing,
+               warn=lambda *a: warned.append(a))
+    assert out["waiting"] == ["paper_orders:1"] and out["recorded"] == [] and out["warnings"] == []
+    assert repo.get("paper_orders:1") is None and gw.calls == [] and warned == []
+    sizing.ready.add(1)
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:02"), denominator=sizing,
+               warn=lambda *a: warned.append(a))
+    assert out["waiting"] == [] and out["recorded"] == ["paper_orders:1"] and len(gw.calls) == 1
+    assert repo.get("paper_orders:1")["live_shares"] == 500 and warned == []
+
+
+@pytest.mark.parametrize("after_close,waiting", [(0, True), (1, False), (3600, False)])
+def test_the_wait_ends_at_that_days_continuous_close(after_close, waiting):
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(), Gateway(repo), []
+    clock = _tw(DAY, "13:30") + timedelta(seconds=after_close)
+    out = _run(repo, broker, gw, [_order(1, "buy", 1000, 100.0)], clock, denominator=Sizing(),
+               warn=lambda event, detail: warned.append((event, dict(detail))))
+    if waiting:  # 13:30:00 is still inside the session (inclusive close)
+        assert out["waiting"] == ["paper_orders:1"] and repo.get("paper_orders:1") is None and warned == []
+        return
+    row = repo.get("paper_orders:1")
+    assert row["status"] == "BLOCKED" and row["status_reason"] == "paper_denominator_unavailable"
+    assert json.loads(row["conversion_json"])["paper_denominator_not_ready"] == "missing"
+    detail = {"paper_order_ref": "paper_orders:1", "cause": "missing", "deadline": "2026-12-10T13:30:00+08:00"}
+    assert warned == [("live_intake_paper_denominator_unavailable", detail)]
+    assert out["warnings"] == [{"event": "live_intake_paper_denominator_unavailable", **detail}]
+    assert gw.calls == [] and out["waiting"] == []
+
+
+def test_a_blocked_denominator_is_warned_once():
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(), Gateway(repo), []
+    orders = [_order(1, "buy", 1000, 100.0)]
+    for hhmm in ("13:31", "13:40"):
+        _run(repo, broker, gw, orders, _tw(DAY, hhmm), denominator=Sizing(), warn=lambda *a: warned.append(a))
+    assert len(warned) == 1 and repo.get("paper_orders:1")["status"] == "BLOCKED"
+
+
+@pytest.mark.parametrize("hhmm,now", [("13:40", "13:41"), ("08:30", "08:31")])
+def test_a_buy_placed_outside_the_session_never_waits_or_alerts(hhmm, now):
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(), Gateway(repo), []
+    out = _run(repo, broker, gw, [_order(1, "buy", 1000, 100.0, hhmm=hhmm)], _tw(DAY, now),
+               denominator=Sizing(), warn=lambda *a: warned.append(a))
+    row = repo.get("paper_orders:1")
+    assert row["status"] == "SKIPPED" and row["status_reason"] == "paper_buy_outside_session"
+    assert json.loads(row["conversion_json"])["paper_denominator_not_ready"] == "missing"
+    assert warned == [] and out["waiting"] == [] and gw.calls == []
+
+
+def test_a_missed_days_buy_without_its_row_is_blocked_not_skipped():
+    repo, _ = _repo()
+    broker, gw, sizing, warned = FakeBroker(), Gateway(repo), Sizing(), []
+    sizing.ready.add(1)
+    _run(repo, broker, gw, [_order(1, "buy", 1000, 100.0)], _tw(DAY, "10:01"), denominator=sizing)
+    orders = [_order(1, "buy", 1000, 100.0), _order(2, "buy", 1000, 100.0, day=NEXT, hhmm="10:00")]
+    day_after = "2026-12-14"  # Monday: the intake missed the 11th
+    _run(repo, broker, gw, orders, _tw(day_after, "10:01"), denominator=sizing, warn=lambda *a: warned.append(a))
+    row = repo.get("paper_orders:2")
+    assert row["status"] == "BLOCKED" and row["status_reason"] == "paper_denominator_unavailable"
+    assert len(warned) == 1
+
+
+def test_sells_never_wait_for_a_sizing_row():
+    repo, _ = _repo()
+    broker, gw = FakeBroker(holdings={"2330": 1000}), Gateway(repo)
+    orders = [_order(1, "buy", 2000, 100.0, day="2026-12-09"), _order(2, "sell", 1000, 100.0),
+              _order(3, "buy", 1000, 100.0, symbol="2317", hhmm="10:01")]
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:02"), denominator=Sizing())
+    assert out["waiting"] == ["paper_orders:3"]
+    assert repo.get("paper_orders:2")["status"] == "RELAYED" and repo.get("paper_orders:2")["live_shares"] == 500
+
+
+def test_a_waiting_buy_recorded_later_only_gets_the_cash_left():
+    """Accepted side effect (Wei 10/30): a later buy may use the cash first; the waiting one only buys less."""
+    repo, _ = _repo()
+    broker, gw, sizing = FakeBroker(cash=80_000.0), Gateway(repo), Sizing()
+    sizing.ready.add(2)
+    orders = [_order(1, "buy", 1000, 100.0, symbol="2330"), _order(2, "buy", 1000, 100.0, symbol="2317")]
+    _run(repo, broker, gw, orders, _tw(DAY, "10:01"), denominator=sizing)
+    assert repo.get("paper_orders:1") is None and repo.get("paper_orders:2")["live_shares"] == 500
+    sizing.ready.add(1)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:02"), denominator=sizing)
+    first = repo.get("paper_orders:1")
+    assert first["live_shares"] == 298 and first["status"] == "RELAYED" and len(gw.calls) == 2
+    assert json.loads(first["conversion_json"])["truncations"][0]["by"] == "broker_cash"
+    used = sum(li.buy_cash_required(repo.get(f"paper_orders:{i}")["live_shares"], 100.0, FEES) for i in (1, 2))
+    assert used <= 80_000
+
+
+def test_the_default_warning_goes_to_the_log(caplog):
+    repo, _ = _repo()
+    with caplog.at_level("WARNING", logger="services.live_intake"):
+        _run(repo, FakeBroker(), Gateway(repo), [_order(1, "buy", 1000, 100.0)], _tw(DAY, "13:31"),
+             denominator=Sizing())
+    assert "live_intake_paper_denominator_unavailable" in caplog.text and "paper_orders:1" in caplog.text
+
+
+def test_a_waiting_buy_overtaken_by_a_later_paper_exit_is_never_sent():
+    repo, _ = _repo()
+    broker, gw, sizing, warned = FakeBroker(cash=1_000_000.0), Gateway(repo), Sizing(), []
+    orders = [_order(1, "buy", 1000, 100.0, hhmm="10:00"), _order(2, "sell", 1000, 100.0, hhmm="10:05"),
+              _order(3, "buy", 1000, 100.0, symbol="2317", hhmm="10:05")]
+    sizing.ready.add(3)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:06"), denominator=sizing)
+    assert repo.get("paper_orders:1") is None and repo.get("paper_orders:2") is not None
+    sizing.ready.add(1)
+    calls = len(gw.calls)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:07"), denominator=sizing, warn=lambda *a: warned.append(a))
+    buy = repo.get("paper_orders:1")
+    assert buy["status"] == "BLOCKED" and buy["status_reason"] == "paper_buy_superseded_while_waiting"
+    assert len(gw.calls) == calls
+    assert warned == [("live_intake_paper_buy_superseded", {"paper_order_ref": "paper_orders:1", "cause": None})]
+    assert repo.get("paper_orders:3")["status"] == "RELAYED"  # another symbol is not affected
+
+
+def test_a_failing_alert_sink_never_stops_the_pass():
+    repo, _ = _repo()
+    broker, gw = FakeBroker(holdings={"2330": 1000}), Gateway(repo)
+    orders = [_order(1, "buy", 2000, 100.0, day="2026-12-09"), _order(2, "buy", 1000, 100.0, symbol="2317"),
+              _order(3, "sell", 2000, 100.0, hhmm="13:00")]
+
+    def sizing(order):
+        if order["side"] == "buy" and order["id"] == 2:
+            raise li.PaperDenominatorNotReady("read_failed:TimeoutError")
+        return 2_000_000.0 if order["side"] == "buy" else None
+
+    def broken(*a):
+        raise RuntimeError("system log down")
+    out = _run(repo, broker, gw, orders, _tw(DAY, "13:30") + timedelta(seconds=1), denominator=sizing, warn=broken,
+               clock=lambda: _tw(DAY, "13:29"))
+    assert repo.get("paper_orders:2")["status_reason"] == "paper_denominator_unavailable"
+    assert out["warnings"][0]["paper_order_ref"] == "paper_orders:2"
+    assert repo.get("paper_orders:3") is not None and out["status"] == "ok"
+
+
+def test_the_alert_follows_a_successful_insert_only():
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(), Gateway(repo), []
+    orders = [_order(1, "buy", 1000, 100.0)]
+    original = repo.insert
+
+    def failing(row):
+        raise TimeoutError("d1")
+    repo.insert = failing
+    with pytest.raises(TimeoutError):
+        _run(repo, broker, gw, orders, _tw(DAY, "13:31"), denominator=Sizing(), warn=lambda *a: warned.append(a))
+    assert warned == []
+    repo.insert = original
+    _run(repo, broker, gw, orders, _tw(DAY, "13:32"), denominator=Sizing(), warn=lambda *a: warned.append(a))
+    assert len(warned) == 1
+
+
+def test_the_deadline_is_the_close_whatever_second_the_order_was_placed():
+    repo, _ = _repo()
+    order = _order(1, "buy", 1000, 100.0)
+    order["created_at"] = order["created_at"][:-2] + "37"  # 10:00:37
+    out = _run(repo, FakeBroker(), Gateway(repo), [order], _tw(DAY, "13:30") + timedelta(seconds=10),
+               denominator=Sizing())
+    assert out["waiting"] == [] and repo.get("paper_orders:1")["status"] == "BLOCKED"
+
+
+def test_other_reader_errors_are_not_treated_as_not_ready():
+    repo, _ = _repo()
+
+    def broken(order):
+        raise KeyError("id")
+    with pytest.raises(KeyError):
+        _run(repo, FakeBroker(), Gateway(repo), [_order(1, "buy", 1000, 100.0)], _tw(DAY, "10:01"),
+             denominator=broken)
+    assert repo.get("paper_orders:1") is None
+
+
+def test_a_ready_row_leaves_no_not_ready_mark():
+    repo, _ = _repo()
+    _run(repo, FakeBroker(), Gateway(repo), [_order(1, "buy", 1000, 100.0)], _tw(DAY, "10:01"))
+    assert "paper_denominator_not_ready" not in json.loads(repo.get("paper_orders:1")["conversion_json"])
+
+
+def test_an_invalid_buy_without_its_row_is_blocked_for_what_it_is_without_an_alert():
+    repo, _ = _repo()
+    warned = []
+    order = _order(1, "buy", 1000, 0.0)  # no usable price
+    _run(repo, FakeBroker(), Gateway(repo), [order], _tw(DAY, "13:31"), denominator=Sizing(),
+         warn=lambda *a: warned.append(a))
+    assert repo.get("paper_orders:1")["status_reason"] == "paper_order_invalid" and warned == []
+
+
+@pytest.mark.parametrize("ref,later", [("paper_orders:12", True), ("paper_orders:12:topup:2026-12-10", True),
+                                       ("paper_orders:11", False), ("paper_orders:11:topup:2026-12-10", False),
+                                       ("manual-1", True), ("paper_orders:x", True)])
+def test_which_intake_rows_follow_a_paper_order(ref, later):
+    assert li._later_than(ref, 11) is later
+
+
+def test_a_later_buy_of_the_symbol_does_not_supersede_a_waiting_buy():
+    repo, _ = _repo()
+    broker, gw, sizing = FakeBroker(cash=1_000_000.0), Gateway(repo), Sizing(value=2_000_000.0)
+    orders = [_order(1, "buy", 1000, 100.0, hhmm="10:00"), _order(2, "buy", 1000, 100.0, hhmm="10:30")]
+    sizing.ready.add(2)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:31"), denominator=sizing)
+    sizing.ready.add(1)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:32"), denominator=sizing)
+    assert repo.get("paper_orders:1")["status"] == "RELAYED" and len(gw.calls) == 2
+
+
+def test_a_later_sell_of_another_symbol_does_not_supersede_a_waiting_buy():
+    repo, _ = _repo()
+    broker, gw, sizing = FakeBroker(cash=1_000_000.0, holdings={"2317": 1000}), Gateway(repo), Sizing(value=2_000_000.0)
+    orders = [_order(1, "buy", 1000, 100.0, hhmm="10:00"),
+              _order(2, "buy", 2000, 100.0, symbol="2317", day="2026-12-09"),
+              _order(3, "sell", 1000, 100.0, symbol="2317", hhmm="10:30")]
+    _run(repo, broker, gw, orders, _tw(DAY, "10:31"), denominator=sizing)
+    assert repo.get("paper_orders:3")["status"] == "RELAYED" and repo.get("paper_orders:1") is None
+    sizing.ready.add(1)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:32"), denominator=sizing)
+    assert repo.get("paper_orders:1")["status"] == "RELAYED"

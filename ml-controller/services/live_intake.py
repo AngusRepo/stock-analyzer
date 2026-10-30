@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,9 +26,11 @@ from services.live_config import (
     LiveConfigInvalid,
     buy_cash_required,
     in_continuous_session,
+    session_close_at,
     validate_live_config,
 )
 from services.live_ledger import account_nav, pending_settlement_total
+from services.live_paper_reader import PaperDenominatorNotReady
 
 SCHEMA_VERSION = "live-intake-conversion-v1"
 TW = ZoneInfo("Asia/Taipei")
@@ -387,6 +390,7 @@ def run_live_intake(
     paper_portfolio_value: Callable[[Mapping[str, Any]], float | None],
     now: datetime,
     clock: Callable[[], datetime] | None = None,
+    warn: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """One pull pass over every committed Paper order (full history, for Paper holdings).
 
@@ -394,10 +398,23 @@ def run_live_intake(
     exits, record new Paper orders, then send them. Releasing first means new conversions
     see the shares the released exits will use. Each send re-reads the submission control
     and the clock (`clock`, default the system clock) just before it is marked UNKNOWN.
+
+    A buy whose Paper sizing row is not readable yet (PaperDenominatorNotReady) is not
+    recorded until that order's day closes (Wei 10/30 A: session.continuous_close of
+    trading:live_config); after that it is BLOCKED paper_denominator_unavailable and `warn`
+    gets an event, also listed in summary["warnings"] for the caller's ops log.
     """
     now_tw = now.astimezone(TW)
     today = now_tw.date().isoformat()
-    summary: dict[str, Any] = {"recorded": [], "relayed": [], "blocked": [], "unknown": [], "deferred": []}
+    summary: dict[str, Any] = {"recorded": [], "relayed": [], "blocked": [], "unknown": [], "deferred": [],
+                               "waiting": [], "warnings": []}
+
+    def emit(event: str, detail: Mapping[str, Any]) -> None:
+        summary["warnings"].append({"event": event, **detail})
+        try:
+            (warn or _log_warning)(event, detail)
+        except Exception:  # an alert sink failure must never stop exits; the event stays in the summary
+            pass
     try:
         live_config = validate_live_config(live_config) if live_config is not None else None
     except LiveConfigInvalid as exc:
@@ -493,11 +510,22 @@ def run_live_intake(
         except Exception as exc:  # no Live NAV: record nothing more, send nothing
             return {**summary, "status": "blocked", "reason": f"live_account_unavailable:{type(exc).__name__}"}
         symbol = str(order["symbol"])
+        not_ready, timed_out = None, None  # timed_out: the alert for a sendable buy whose day closed
+        try:
+            denominator = paper_portfolio_value(order)
+        except PaperDenominatorNotReady as exc:
+            not_ready, denominator = str(exc), None
+            if in_continuous_session(live_config, placed):  # outside it the buy is skipped anyway
+                deadline = session_close_at(live_config, placed)
+                if now_tw <= deadline:  # Paper writes the row just after the order: record nothing yet
+                    summary["waiting"].append(ref)
+                    continue
+                timed_out = {"paper_order_ref": ref, "cause": not_ready, "deadline": deadline.isoformat()}
 
         def convert(live_position: int) -> dict[str, Any]:
             return convert_paper_order(
                 order=order, paper_position_before=before[int(order["id"])],
-                paper_portfolio_value=paper_portfolio_value(order), live_nav=account.nav,
+                paper_portfolio_value=denominator, live_nav=account.nav,
                 live_position_shares=max(0, live_position),
                 live_available_cash=max(0.0, account.cash_left), fees=fees, risk_config=risk_config)
 
@@ -512,8 +540,17 @@ def run_live_intake(
             status_value, reason = result["status"], result["reason"]
             if status_value == "RECEIVED":
                 status_value, reason = "DEFERRED", "exit_waits_for_open_sells"
-        if day != today and order["side"] == "buy":
+        superseded = order["side"] == "buy" and any(
+            row["side"] == "sell" and _later_than(row["paper_order_ref"], int(order["id"]))
+            for row in repository.symbol_rows(symbol))
+        if superseded:
+            # A buy that waited for its sizing row while a later Paper sell of the symbol was
+            # recorded: sending it now could open a position Paper has already left.
+            status_value, reason = "BLOCKED", "paper_buy_superseded_while_waiting"
+        elif day != today and order["side"] == "buy" and timed_out is None:
             status_value, reason = "SKIPPED", "paper_buy_missed_by_intake"  # never sent a day late
+        elif not_ready is not None and timed_out is None and reason == "paper_denominator_unavailable":
+            status_value, reason = "SKIPPED", "paper_buy_outside_session"  # never sendable: no wait, no alert
         elif status_value == "RECEIVED":
             if day != today:
                 status_value, reason = "DEFERRED", "paper_exit_missed_by_intake"
@@ -526,12 +563,18 @@ def run_live_intake(
             account.holdings_left[symbol] = account.holdings_left.get(symbol, 0) - result["live_shares"]
         conversion = {**result["conversion"], "observation_sha256": (account.observation or {}).get("sha256"),
                       "paper_order_time_tw": placed.isoformat()}
+        if not_ready is not None:
+            conversion["paper_denominator_not_ready"] = not_ready
         repository.insert({
             "paper_order_ref": ref, "trade_date": day, "symbol": symbol, "side": str(order["side"]),
             "paper_shares": int(order["shares"]), "live_shares": result["live_shares"], "idempotency_key": None,
             "conversion_json": _canonical(conversion), "conversion_sha256": _sha(conversion),
             "status": status_value, "status_reason": reason})
         summary["recorded"].append(ref)
+        if timed_out is not None and reason == "paper_denominator_unavailable":
+            emit("live_intake_paper_denominator_unavailable", timed_out)  # after the insert: once per order
+        elif superseded:
+            emit("live_intake_paper_buy_superseded", {"paper_order_ref": ref, "cause": not_ready})
 
     for row in repository.pending():  # 5. send today's RECEIVED orders
         if row["status"] != "RECEIVED" or row["trade_date"] != today:
@@ -542,6 +585,22 @@ def run_live_intake(
         elif paused is False and open_ and in_session:
             _send(row, **ctx)
     return {**summary, "status": "ok", "control": control.get("reason")}
+
+
+_LOG = logging.getLogger(__name__)
+
+
+def _later_than(ref: str, paper_order_id: int) -> bool:
+    """Whether an intake row (paper_orders:<id>, or paper_orders:<id>:topup:<day> for a liquidation
+    top-up) follows that Paper order; a ref it cannot read counts as later (fail-closed)."""
+    try:
+        return int(str(ref).split(":")[1]) > paper_order_id
+    except (IndexError, ValueError):
+        return True
+
+
+def _log_warning(event: str, detail: Mapping[str, Any]) -> None:
+    _LOG.warning("%s %s", event, _canonical(dict(detail)))
 
 
 TOPUP_MARK = ":topup:"

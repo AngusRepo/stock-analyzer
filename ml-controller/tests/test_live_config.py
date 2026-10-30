@@ -222,3 +222,10 @@ def test_the_live_order_path_has_no_hardcoded_trading_numbers(path):
             found.setdefault(node.value, []).append(node.lineno)
     unexpected = {value: lines for value, lines in found.items() if value not in _ALLOWED[path]}
     assert unexpected == {}, f"{path}: move these to trading:live_config / trading:config: {unexpected}"
+
+
+def test_session_close_at_is_that_days_close_to_the_second():
+    from datetime import datetime
+    config = lc.validate_live_config(_with(("session", "continuous_close"), "12:00"))
+    moment = datetime.fromisoformat("2026-12-10T10:00:37.250000+08:00")
+    assert lc.session_close_at(config, moment) == datetime.fromisoformat("2026-12-10T12:00:00+08:00")

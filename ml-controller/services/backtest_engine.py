@@ -67,7 +67,7 @@ from services.technical_signal_math import macd_histogram_last
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.dataset_snapshots import latest_dataset_snapshot
-from services.research_data_access import ResearchDataMode, resolve_research_data_access
+from services.research_data_access import ResearchDataMode, ResearchSnapshotNotReadyError, resolve_research_data_access
 from services.similarity_evidence import similarity_components, symbol_cluster_evidence
 
 logger = logging.getLogger(__name__)
@@ -418,7 +418,43 @@ class BacktestDataset:
         symbols: Optional[list[str]] = None,
         business_date: Optional[str] = None,
         mode: ResearchDataMode | None = None,
+        corporate_history: bool = False,
     ) -> tuple["BacktestDataset", dict[str, Any]]:
+        """Research replay inputs.
+
+        corporate_history=True reads reconstructed economic history
+        (`ga_research_dataset` with `corporate_history_records`) instead of the
+        live Paper receipts, which only cover Paper's own holdings. It needs an
+        immutable snapshot (D1 has no history tape) and drops issuers whose
+        terms are unresolved; the exclusion report rides in the access dict.
+        """
+        if corporate_history:
+            if mode not in (None, "snapshot", "auto"):
+                raise ResearchSnapshotNotReadyError(f"corporate_history_requires_snapshot:{mode}")
+            from services.research_corporate_history import COMPONENT, OWNER
+            from services.research_corporate_preflight import exclude_history_blocked_symbols
+            data_access = resolve_research_data_access(
+                lane=lane,
+                kind="ga_research_dataset",
+                business_date=business_date or end_date,
+                required_start_date=start_date,
+                required_end_date=end_date,
+                mode="snapshot",
+                required_components=("signals", COMPONENT),
+            )
+            dataset = cls.load_from_snapshot_manifest(
+                manifest=data_access.snapshot,
+                start_date=start_date,
+                end_date=end_date,
+                symbols=symbols,
+                allow_corporate_history=True,
+            )
+            if any(s.get("schema_version") != OWNER for s in dataset.corporate_sources.values()):
+                raise ValueError("corporate_history_tape_not_loaded")
+            access = data_access.to_dict()
+            access["corporate_source"] = COMPONENT
+            access["corporate_history_exclusion"] = exclude_history_blocked_symbols(dataset, start_date, end_date)
+            return dataset, access
         data_access = resolve_research_data_access(
             lane=lane,
             kind="backtest_dataset",
@@ -843,6 +879,11 @@ class BacktestDataset:
     # ─────────────────────────────────────────────────────────────────────────
     # Accessors (hot path — replay loop calls these every day for every stock)
     # ─────────────────────────────────────────────────────────────────────────
+    def exclude_symbols(self, symbols: set[str]) -> None:
+        """Remove symbols from the tradable universe; their price bars stay for reference reads."""
+        self.stocks = self.stocks.filter(~pl.col("symbol").is_in(sorted(symbols)))
+        self._universe_cache = {}
+
     def get_universe_at(self, date: str) -> set[str]:
         """
         Point-in-time tradable universe for a given date.

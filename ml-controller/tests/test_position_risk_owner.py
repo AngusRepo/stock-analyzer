@@ -62,10 +62,20 @@ def test_helper_fails_closed_without_a_valid_owner_value(monkeypatch, raw):
 
 def test_keep_existing_validates_a_pinned_contract_without_reading_kv(monkeypatch):
     pinned = position_risk_owner.formal_position_risk(RISK)
+    policy = position_risk_owner.formal_portfolio_risk(RISK)
     reads = kv(monkeypatch, None)
+    kept = position_risk_owner.with_formal_position_risk(
+        {**POST_P1, 'positionRiskDistribution': pinned, 'portfolioRiskPolicy': policy}, keep_existing=True)
+    assert reads == [] and kept['positionRiskDistribution'] == pinned and kept['portfolioRiskPolicy'] == policy
+    # A baseline pinned before the portfolio policy existed reads only that policy, and fails closed without it.
+    with pytest.raises(PositionRiskConfigUnavailable, match='portfolio_risk_config_unavailable'):
+        position_risk_owner.with_formal_position_risk({**POST_P1, 'positionRiskDistribution': pinned},
+                                                      keep_existing=True)
+    reads = kv(monkeypatch, {'portfolio': {'dailyPnlLossLimit': -1}})
     kept = position_risk_owner.with_formal_position_risk({**POST_P1, 'positionRiskDistribution': pinned},
                                                          keep_existing=True)
-    assert reads == [] and kept['positionRiskDistribution'] == pinned
+    assert reads == ['trading:risk_config'] and kept['positionRiskDistribution'] == pinned
+    assert kept['portfolioRiskPolicy']['dailyPnlLossLimit'] == -1
     with pytest.raises(PositionRiskConfigUnavailable, match='position_risk_contract_invalid'):
         position_risk_owner.with_formal_position_risk(
             {**POST_P1, 'positionRiskDistribution': {**pinned, 'maxSingleNamePct': 0}}, keep_existing=True)
@@ -246,10 +256,12 @@ def test_backtest_replay_route_injects_and_keeps_a_pinned_contract(monkeypatch):
     asyncio.run(backtest.trigger_replay(req))
     assert cap_of(captured[-1]) == 0.12
     pinned = position_risk_owner.formal_position_risk({'position': {**RISK['position'], 'maxSingleNamePct': 0.2}})
+    policy = position_risk_owner.formal_portfolio_risk({'portfolio': {}})
     kv(monkeypatch, None)
     asyncio.run(backtest.trigger_replay(backtest.ReplayRequest(
-        start_date='2025-12-01', end_date='2026-01-01', params={**POST_P1, 'positionRiskDistribution': pinned})))
-    assert cap_of(captured[-1]) == 0.2
+        start_date='2025-12-01', end_date='2026-01-01',
+        params={**POST_P1, 'positionRiskDistribution': pinned, 'portfolioRiskPolicy': policy})))
+    assert cap_of(captured[-1]) == 0.2 and captured[-1]['portfolioRiskPolicy'] == policy
     before = len(captured)
     failed = asyncio.run(backtest.trigger_replay(req))
     assert len(captured) == before
@@ -337,3 +349,16 @@ def test_l2_route_refuses_a_kv_space_with_only_retired_dims(monkeypatch):
         optuna.run_l2_sensitivity(optuna.L2SensitivityReq())
     assert refused.value.status_code == 422 and refused.value.detail == 'l2_search_space_all_retired'
     assert captured == {}
+
+
+def test_portfolio_policy_records_which_fields_kv_owns():
+    formal = position_risk_owner.formal_portfolio_risk({'portfolio': {'dailyPnlLossLimit': -30000, 'intradayDrawdownHalt': 0.05}})
+    assert formal['kvFields'] == ['dailyPnlLossLimit'] and 'greenTargetExposure' in formal['programValueFields']
+    assert formal['greenTargetExposure'] == position_risk_owner.PAPER_PORTFOLIO_PROGRAM_VALUES['greenTargetExposure']
+    assert position_risk_owner.formal_portfolio_risk({'position': {}})['kvFields'] == []  # `raw.portfolio ?? {}`
+    for bad in ({'portfolio': {'redTargetExposure': 'x'}}, {'portfolio': {'redTargetExposure': True}},
+                {'portfolio': {'redTargetExposure': float('nan')}}, {'portfolio': []}, None):
+        with pytest.raises(PositionRiskConfigUnavailable):
+            position_risk_owner.formal_portfolio_risk(bad)
+    with pytest.raises(PositionRiskConfigUnavailable, match='policy_missing'):
+        position_risk_owner.portfolio_risk_policy({'contractVersion': 'other'})

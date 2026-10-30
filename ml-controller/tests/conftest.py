@@ -15,5 +15,8 @@ def kv_position_risk(monkeypatch):
     from services import position_risk_owner
     formal = position_risk_owner.formal_position_risk({'position': {
         'maxPerSector': 2, 'maxSingleNamePct': 0.25, 'correlationThreshold': 0.7, 'correlationWindow': 60}})
+    portfolio = position_risk_owner.formal_portfolio_risk({'portfolio': {}})
     monkeypatch.setattr(position_risk_owner, 'load_formal_position_risk', lambda **_: formal)
+    monkeypatch.setattr(position_risk_owner, 'load_formal_portfolio_risk', lambda **_: portfolio)
+    monkeypatch.setattr(position_risk_owner, 'load_risk_contracts', lambda **_: (formal, portfolio))
     return formal

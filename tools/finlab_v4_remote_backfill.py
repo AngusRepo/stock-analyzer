@@ -3556,6 +3556,51 @@ def require_finlab_write_ack(result: dict[str, Any], expected: int, *, phase: st
         raise RuntimeError(f"finlab_canonical_{phase}_write_incomplete_before_receipt")
 
 
+def plan_adjusted_rebase_repair(
+    manifest: dict[str, Any],
+    *,
+    end_date: str | None,
+    query: Any = None,
+) -> tuple[dict[str, Any], list[tuple[str, list[Any]]]]:
+    """Compare the last stored adjusted close with this run's sealed capture.
+
+    A stock whose anchor moved is rewritten in canonical_market_daily and in the
+    legacy stock_prices mirror, which only ever copies the current date. A run
+    without a sealed capture stays unverified; the next sealed run still sees
+    the stale anchor and repairs it.
+    """
+    from services.finlab_canonical_materializer import build_adjusted_rebase_repair, load_adjusted_price_vintage
+
+    query = query or d1_query
+    if not end_date:
+        return {"status": "not_requested", "reason": "end_date_missing"}, []
+    vintage = load_adjusted_price_vintage(Path(manifest["artifact_root"]), end_date=end_date)
+    if vintage.is_empty():
+        return {"status": "unverified_no_full_vintage"}, []
+    anchor = query(
+        "SELECT stock_id, date, adj_close FROM canonical_market_daily WHERE source='finlab.price' "
+        "AND adj_close IS NOT NULL AND date=(SELECT MAX(date) FROM canonical_market_daily "
+        "WHERE source='finlab.price' AND adj_close IS NOT NULL AND date<?)",
+        [end_date], domain="market")
+    repair = build_adjusted_rebase_repair(vintage, anchor, run_id=manifest["run_id"])
+    statements = list(repair.pop("statements"))
+    rows = repair.pop("repair_rows")
+    repair["canonical_rows"] = len(statements)
+    repair["legacy_mirror_rows"] = 0
+    symbols = [item["stock_id"] for item in repair["rebased"]]
+    if symbols:
+        placeholders = ",".join("?" * len(symbols))
+        identities = query(f"SELECT id, symbol FROM stocks WHERE symbol IN ({placeholders})", symbols, domain="core")
+        ids = {str(item["symbol"]): item["id"] for item in identities}
+        mirror = [("UPDATE stock_prices SET adj_close=? WHERE stock_id=? AND date=?",
+                   [row["adj_close"], ids[row["stock_id"]], row["date"]])
+                  for row in rows.iter_rows(named=True) if row["stock_id"] in ids]
+        repair["legacy_mirror_rows"] = len(mirror)
+        repair["legacy_mirror_unmapped"] = sorted(set(symbols) - set(ids))
+        statements += mirror
+    return {"status": "checked", **repair}, statements
+
+
 def materialize_canonical_to_d1(
     manifest: dict[str, Any],
     *,
@@ -3566,6 +3611,7 @@ def materialize_canonical_to_d1(
     chunk_size: int = 250,
     dry_run: bool = False,
     canonical_outputs: Any | None = None,
+    rebase_query: Any = None,
 ) -> dict[str, Any]:
     from services.finlab_canonical_materializer import (
         build_d1_upsert_statements,
@@ -3596,6 +3642,11 @@ def materialize_canonical_to_d1(
     # Calendar observations precede canonical prices. A partial data write must
     # leave a visible session gap, not erase the date from the checking calendar.
     market_statements = build_market_domain_insert_statements(outputs) + routed_market_statements
+    # Rebase repairs follow today's rows; a dry run checks only with an injected reader.
+    adjusted_rebase: dict[str, Any] = {"status": "not_requested"}
+    if "canonical_market_daily" in datasets and (not dry_run or rebase_query is not None):
+        adjusted_rebase, rebase_statements = plan_adjusted_rebase_repair(manifest, end_date=end_date, query=rebase_query)
+        market_statements += rebase_statements
     apply_result = {"total": len(statements) + len(core_statements) + len(ops_statements) + len(market_statements), "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": True}
     writes_by_domain = {"legacy": len(statements), "ops": len(ops_statements), "market": len(market_statements)}
     if core_statements:
@@ -3670,6 +3721,7 @@ def materialize_canonical_to_d1(
         "statement_count": len(statements) + len(core_statements) + len(ops_statements) + len(market_statements),
         "writes_by_domain": writes_by_domain,
         "apply_result": apply_result,
+        "adjusted_rebase": adjusted_rebase,
         "checksum": outputs.manifest.get("checksum"),
     }
 

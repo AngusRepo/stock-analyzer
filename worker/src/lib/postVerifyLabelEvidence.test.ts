@@ -96,6 +96,22 @@ test('formal label/status/run contents are paged and conserved without per-row R
   f.sql.close()
 })
 
+test('multi-page proofs seek from the cursor and still detect a change on a later page',async()=>{
+  const f=fixture(4200),input={...f.input,task:'price-horizon-projection' as const}
+  const prepare=f.env.DB.prepare.bind(f.env.DB), pages:string[]=[]
+  f.env.DB.prepare=(query:string)=>{if(/LIMIT \d+$/.test(query.trim()))pages.push(query);return prepare(query)}
+  const proof=await capturePostVerifyLabelEvidence(f.env,input)
+  const labels=proof.tables.filter(t=>t.table==='price_horizon_labels_v1'&&t.kind!=='group-count')
+  assert.deepEqual([labels.reduce((n,t)=>n+Number(t.rows),0),labels.reduce((n,t)=>n+Number(t.pages),0)],[4200,2])
+  const later=pages.filter(query=>query.includes('FROM price_horizon_labels_v1')).map(query=>query.replace(/\s+/g,' '))
+  assert.equal(later.length,2)
+  assert.match(later[1],/WHERE stock_id>=\? AND \(stock_id,price_date\) > \(\?,\?\) AND \(/)
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),true)
+  f.sql.exec('UPDATE price_horizon_labels_v1 SET exit_raw_close=12 WHERE stock_id=4150')
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),false)
+  f.sql.close()
+})
+
 test('missing labels and wrong processed provenance reject first capture',async()=>{
   const f=fixture(),input={...f.input,task:'price-horizon-projection' as const}
   f.sql.exec('DELETE FROM price_horizon_labels_v1 WHERE stock_id=1')

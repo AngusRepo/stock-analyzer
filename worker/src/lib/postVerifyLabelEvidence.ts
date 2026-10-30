@@ -29,8 +29,10 @@ export type PostVerifyLabelEvidence = Record<string, unknown> & {
   algorithm: 'sha256-page-chain-v1+group-count-v1'; pageSize: number; tables: Array<TableProof | GroupProof>;
   rowScope: Record<string, string[]>; checksum: string
 }
-const PAGE_SIZE = 512
-const MAX_PAGES = 1024
+// D1 round trips, not row volume, bound the capture: 4096-row pages keep the
+// 120-day outcome proof to ~75 queries. Same 524,288-row budget as 1024x512.
+const PAGE_SIZE = 4096
+const MAX_PAGES = 128
 const LABEL_COLUMNS = ['stock_id','price_date','entry_date','entry_raw_open','entry_adjustment_factor',
   'exit_date','exit_raw_close','exit_adjustment_factor','outcome_known_date','source','projection_version','materialized_at']
 const REJECTION_COLUMNS = ['stock_id','price_date','entry_date','exit_date','rejection_reason','source','projection_version','updated_at']
@@ -117,10 +119,13 @@ async function tableProof(db: D1Database, options: {
   let cursor: unknown[] | null = null, firstKey: unknown[] | null = null, checksum = await digest(options)
   let rows = 0, pages = 0, complete = false
   for (let page=0; page<MAX_PAGES; page++) {
-    const extra = cursor ? ` AND (${options.keys.join(',')}) > (${options.keys.map(()=>'?').join(',')})` : ''
+    // The cursor bound leads the predicate. Behind the window's own lower
+    // bound, D1 seeks from the window start and only filters on the cursor,
+    // so every page re-read all earlier rows (94,823 rows for one deep page).
+    const seek = cursor ? `${options.keys[0]}>=? AND (${options.keys.join(',')}) > (${options.keys.map(()=>'?').join(',')}) AND ` : ''
     const result = await db.prepare(`SELECT ${options.columns.join(',')} FROM ${options.table}
-      WHERE ${options.where}${extra} ORDER BY ${options.keys.join(',')} LIMIT ${PAGE_SIZE}`)
-      .bind(...options.binds,...(cursor ?? [])).all<Row>()
+      WHERE ${seek}(${options.where}) ORDER BY ${options.keys.join(',')} LIMIT ${PAGE_SIZE}`)
+      .bind(...(cursor ? [cursor[0],...cursor] : []),...options.binds).all<Row>()
     if (result.success === false) throw new Error(`post_verify_evidence_read_failed:${options.table}`)
     const pageRows = result.results ?? []
     if (!pageRows.length) { complete = true; break }

@@ -37,6 +37,44 @@ export const RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS = [
 export type RetentionHotWindowDrainPolicyId =
   typeof RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS[number]
 
+// NEW-D08: drain size per call comes from Worker vars `<env>_DEFAULT` / `<env>_MAX` instead of
+// literals. Unset vars keep 100/250 rows, 1/10 rounds and a 60/120 s budget. The per-pass row
+// ceiling stays 250 because buildExactRetentionDelete deletes at most 250 rows per statement.
+// Vars alone do not raise nightly throughput (~8.4k predictions rows/night from 2027-01): the
+// nightly job is a dry-run preflight (one round) and pins limit_per_dataset in its query. Using
+// the vars needs them in wrangler.toml [vars] (dashboard vars are dropped on deploy), a scheduler
+// query change, and a separately approved confirm_drain. Budget is checked between passes, so its
+// ceiling stays within the default 180 s Cloud Scheduler attempt deadline of a sync job.
+const HOT_DRAIN_SETTINGS = {
+  limitPerDataset: { env: 'RETENTION_HOT_DRAIN_LIMIT_PER_DATASET', default: 100, max: 250, ceiling: 250 },
+  maxRounds: { env: 'RETENTION_HOT_DRAIN_MAX_ROUNDS', default: 1, max: 10, ceiling: 100 },
+  budgetMs: { env: 'RETENTION_HOT_DRAIN_BUDGET_MS', default: 60_000, max: 120_000, ceiling: 180_000 },
+} as const
+
+export type RetentionHotDrainSettings = Record<keyof typeof HOT_DRAIN_SETTINGS, { default: number; max: number }>
+
+/** Resolve drain settings from Worker vars; a malformed or out-of-range value fails closed. */
+export function retentionHotDrainSettings(env: object): RetentionHotDrainSettings {
+  const vars = env as Record<string, unknown>
+  const read = (name: string, fallback: number, ceiling: number) => {
+    const raw = vars[name]
+    if (raw === undefined || raw === null || String(raw).trim() === '') return fallback
+    const text = String(raw).trim()
+    const value = /^\d+$/.test(text) ? Number(text) : NaN
+    if (!Number.isSafeInteger(value) || value < 1 || value > ceiling) {
+      throw new Error(`retention_hot_drain_setting_invalid:${name}`)
+    }
+    return value
+  }
+  const settings = {} as RetentionHotDrainSettings
+  for (const key of Object.keys(HOT_DRAIN_SETTINGS) as (keyof typeof HOT_DRAIN_SETTINGS)[]) {
+    const spec = HOT_DRAIN_SETTINGS[key]
+    const max = read(`${spec.env}_MAX`, spec.max, spec.ceiling)
+    settings[key] = { default: read(`${spec.env}_DEFAULT`, Math.min(spec.default, max), max), max }
+  }
+  return settings
+}
+
 type PolicyRow = {
   policy_id: string
   hot_retention_days: number
@@ -458,7 +496,9 @@ export async function runRetentionHotWindowDrain(
 ) {
   if (!env.ARTIFACTS) throw new Error('retention_hot_drain_r2_binding_missing')
   const businessDate = normalizeBusinessDate(options.businessDate)
-  const limit = Math.max(1, Math.min(Math.floor(options.limitPerDataset ?? 100), 250))
+  const settings = retentionHotDrainSettings(env)
+  const limit = Math.max(1, Math.min(Math.floor(options.limitPerDataset ?? settings.limitPerDataset.default),
+    settings.limitPerDataset.max))
   const dryRun = options.confirmPhrase !== RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE
   const policyIds = [...new Set(options.policyIds ?? RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)]
   const allowed = new Set<string>(RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)
@@ -466,7 +506,9 @@ export async function runRetentionHotWindowDrain(
   if (unknown.length) throw new Error(`retention_hot_drain_policy_not_allowed:${unknown.join(',')}`)
   const opsDb = databaseForDataDomain(env, 'ops')
   const rounds = await runRetentionDrainRounds({
-    policyIds, dryRun, maxRounds: options.maxRounds, budgetMs: options.budgetMs,
+    policyIds, dryRun,
+    maxRounds: options.maxRounds ?? settings.maxRounds.default, roundsCap: settings.maxRounds.max,
+    budgetMs: options.budgetMs ?? settings.budgetMs.default, budgetCapMs: settings.budgetMs.max,
     run: policyId => runPolicy(env, opsDb, policyId as RetentionHotWindowDrainPolicyId, businessDate, limit, dryRun),
   })
   const policies = rounds.latest

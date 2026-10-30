@@ -1565,6 +1565,7 @@ export function buildAdminWorkerDomainTaskMap(
     'retention-hot-window-drain': async () => {
       const {
         RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS,
+        retentionHotDrainSettings,
         runRetentionHotWindowDrain,
         summarizeRetentionHotWindowDrain,
       } = await import('./retentionHotWindowDrain')
@@ -1575,13 +1576,15 @@ export function buildAdminWorkerDomainTaskMap(
       const allowed = new Set<string>(RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)
       const unknown = requestedPolicies.filter((policy: string) => !allowed.has(policy))
       if (unknown.length) throw new Error(`retention_hot_drain_unknown_policy:${unknown.join(',')}`)
+      const settings = retentionHotDrainSettings(c.env)
       const result = await runRetentionHotWindowDrain(c.env, {
         businessDate: requestedRunDate() || twToday(),
         policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
-        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
+        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'),
+          settings.limitPerDataset.default, settings.limitPerDataset.max),
         confirmPhrase: c.req.query('confirm_drain'),
-        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), 1, 10),
-        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), 60_000, 120_000),
+        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), settings.maxRounds.default, settings.maxRounds.max),
+        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), settings.budgetMs.default, settings.budgetMs.max),
       })
       if (result.status === 'error') throw new Error(`retention hot window drain failed ${JSON.stringify(result)}`)
       return summarizeRetentionHotWindowDrain(result)

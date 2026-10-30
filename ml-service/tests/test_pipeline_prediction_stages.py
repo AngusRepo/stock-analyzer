@@ -808,6 +808,12 @@ def test_the_shadow_candidate_runner_records_a_skipped_shadow_and_routes_timexer
     source = (Path(modal_app.__file__)).read_text()
     assert '"TimeXer": lambda **kwargs: _timexer_predict(shadow=True, **kwargs),' in source
     assert 'stage_journal.gpu(gpu_input, shadow=shadow)' in source
+    import ast
+    formal = next(node for node in ast.walk(ast.parse(source))
+                  if isinstance(node, ast.FunctionDef) and node.name == '_timexer')
+    calls = [node for node in ast.walk(formal) if isinstance(node, ast.Call)
+             and getattr(node.func, 'id', None) == '_timexer_predict']
+    assert calls and all(keyword.arg != 'shadow' for call in calls for keyword in call.keywords)
 
 
 def test_after_one_shadow_is_skipped_later_shadows_of_the_run_skip_without_queueing():

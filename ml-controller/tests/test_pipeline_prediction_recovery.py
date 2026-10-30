@@ -546,6 +546,57 @@ def test_an_older_results_one_driver_is_retried_when_its_dispatch_was_uncertain(
     assert recover()['reason'] == 'gpu_queued'  # Seen once a dispatch went out.
 
 
+def test_an_uncertain_dispatch_not_sent_for_an_older_result_keeps_recovery_attempts_counting():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, first = _queued_gpu(ref, store, now)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, first, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: 700)
+    now[0] = 700 + stages.GPU_LEASE_SECONDS
+    _queued_gpu(ref, store, now, dispatch_id=None)  # The newer token's ack is lost.
+    stage_store.put(journal.root + '/gpu/' + first['stage'] + '/result/' + first['token'],
+                    {'input_checksum': first['stage'], 'error': 'OSError'})
+    flaky = [True]
+    def spawn(_):
+        flaky[0] = not flaky[0]
+        if flaky[0]:
+            raise OSError('uncertain')
+        return {'function_call_id': 'drv'}
+    seen = []
+    for _ in range(8):
+        now[0] += 601
+        out = recover(spawn=spawn)
+        seen.append((out['reason'], out.get('attempt')))
+    assert ('attempts_exhausted', None) in seen, seen
+
+
+def test_a_valid_result_landing_after_three_recovery_attempts_still_gets_a_driver():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, first = _queued_gpu(ref, store, now, dispatch_id=None)
+    for attempt in (1, 2, 3):
+        now[0] += 601
+        assert recover()['attempt'] == attempt
+    stages.run_gpu_stage(stage_store, first, predict=lambda _: {'ok': 1}, resume=lambda _: None,
+                         clock=lambda: now[0])
+    now[0] += 601
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and out['attempt'] == 1, out
+
+
+def test_a_shadow_queued_line_during_release_drift_does_not_promise_a_skip():
+    import logging
+    from services.pipeline_prediction_recovery import write_gpu_queue_log
+    ref, store, now, queue, recover = fixture()
+    _queued_gpu(ref, store, now, shadow=True)
+    now[0] = 1200
+    out = recover(source_sha='c'*40)
+    assert out['gpu_log'] == 'gpu_shadow_queued' and out['recovery_blocked'] is True
+    rows = []
+    write_gpu_queue_log(out, run_date='2026-10-29', run_id='exact-run',
+                        ops_execute=lambda sql, params: rows.append(params), logger=logging.getLogger('t'))
+    assert 'recovery is blocked' in rows[0][2] and 'skipped for the day' not in rows[0][2]
+
+
 def test_a_queued_line_during_release_drift_does_not_promise_a_failed_run():
     import logging
     from services.pipeline_prediction_recovery import write_gpu_queue_log

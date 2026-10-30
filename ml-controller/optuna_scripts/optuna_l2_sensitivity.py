@@ -383,6 +383,9 @@ def run_l2_sensitivity_search(
                 initial_capital=initial_capital,
             )
         except Exception as e:
+            from services.research_corporate_preflight import is_corporate_data_error
+            if is_corporate_data_error(e):
+                raise  # missing corporate evidence is never a fitness score
             trial.set_user_attr("replay_error", type(e).__name__)
             logger.warning(f"[L2 Optuna] trial {trial.number} replay crashed: {e}")
             return -1e9

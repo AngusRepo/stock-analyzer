@@ -235,6 +235,9 @@ def create_robust_objective(
                 dataset, start_date=start_date, end_date=end_date, params=params,
             )
         except Exception as e:
+            from services.research_corporate_preflight import is_corporate_data_error
+            if is_corporate_data_error(e):
+                raise  # missing corporate evidence is never a fitness score
             logger.warning(f"[per-regime-robust] trial {trial.number} replay failed: {e}")
             return (PENALTY_ROBUST, 1.0, -1e9)
 

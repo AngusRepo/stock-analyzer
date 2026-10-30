@@ -59,7 +59,9 @@ except ImportError:
     sys.exit(1)
 
 from services.backtest_engine import replay_period, BacktestDataset  # noqa: E402
-from services.research_data_access import ResearchDataMode, latest_snapshot_business_end_date  # noqa: E402
+from services.research_data_access import (  # noqa: E402
+    ResearchDataMode, ResearchSnapshotNotReadyError, latest_snapshot_business_end_date,
+)
 from services.stratified_subset import select_stratified_subset  # noqa: E402
 from services.screener_search_evidence import (
     ScreenerSearchBlocked, assess_metrics, relative_comparison,
@@ -280,6 +282,12 @@ def run_search(
     Sprint 5.2 entry point. Loads stratified subset + BacktestDataset, runs NSGA-II
     Development-only Pareto search, followed by one locked-candidate audit.
     """
+    # The owner cap fails closed before any data lookup.
+    if baseline_params is None:
+        baseline_params = _default_baseline_params()
+    from services.position_risk_owner import require_position_risk_contract
+    require_position_risk_contract(baseline_params)
+
     # ── Date defaults: 90 day window ending today (TW) ──────────────────────
     if end_date is None:
         tw_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
@@ -289,16 +297,14 @@ def run_search(
             kind="ga_research_dataset" if corporate_history else "backtest_dataset",
             as_of_business_date=tw_today,
         ) if corporate_history or data_mode == "snapshot" else None
+        if corporate_history and not snapshot_end_date:
+            raise ResearchSnapshotNotReadyError(
+                f"corporate_history_snapshot_missing:as_of={tw_today} kind=ga_research_dataset")
         end_date = snapshot_end_date or tw_today
     if start_date is None:
         start_date = (
             datetime.fromisoformat(end_date) - timedelta(days=90)
         ).date().isoformat()
-
-    if baseline_params is None:
-        baseline_params = _default_baseline_params()
-    from services.position_risk_owner import require_position_risk_contract
-    require_position_risk_contract(baseline_params)
 
     logger.info(
         f"[optuna_screener] Sprint 5.2 search: n_trials={n_trials} "

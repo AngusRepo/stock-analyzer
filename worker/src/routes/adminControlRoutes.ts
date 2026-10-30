@@ -4,7 +4,7 @@ import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { writeSystemLog } from '../lib/notify'
-import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
+import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabCompositionBlockerSuffix, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
 import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
@@ -994,6 +994,7 @@ async function handleSchedulerCallback(c: any) {
       })
     }
     body.summary = finLabCallbackSummary(String(body.summary ?? ''), fence.incomingAttempt, current?.summary)
+      + finLabCompositionBlockerSuffix(body.result)
     if (body.status === 'running' && callbackRunId) {
       // Best effort: losing the marker must not lose the start heartbeat written below.
       try {

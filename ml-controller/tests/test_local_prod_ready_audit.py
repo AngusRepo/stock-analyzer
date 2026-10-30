@@ -1171,3 +1171,12 @@ def test_production_cutover_packet_checks_fail_when_packet_is_stale(tmp_path):
     statuses = {row["id"]: row["status"] for row in checks}
 
     assert statuses["roadmap:p12:production_cutover_packet_artifact_fresh"] == "fail"
+
+
+def test_the_real_optuna_router_matches_the_controller_boundary_needles():
+    # The fixture above uses a temporary copy; this pins the needle to the real docstring.
+    from services import local_prod_ready_audit as audit
+    root = Path(__file__).resolve().parents[2]
+    check = next(c for c in audit._optuna_scheduler_checks(root)
+                 if c.get('id') == 'roadmap:p1:optuna_controller_boundary')
+    assert check['status'] == 'pass', check

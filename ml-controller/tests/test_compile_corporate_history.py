@@ -74,3 +74,12 @@ def test_driver_refuses_missing_or_late_sources(tmp_path):
     spec['sources']['finlab.dividend_announcement']['fetched_at'] = '2026-10-03T00:00:00'
     with pytest.raises(ValueError, match='fetch_clock_timezone_missing'):
         compile_history(spec, base=tmp_path, captured_at=CAPTURED)
+
+
+def test_sessions_after_the_oldest_source_fetch_are_a_gap_not_no_action(tmp_path):
+    from compile_corporate_history import compile_history
+    spec = spec_fixture(tmp_path)
+    # One catalog fetched 08:30 TW on 09-04, before that session's 09:00 vendor cutoff.
+    spec['sources']['finlab.capital_reduction_otc:恢復買賣日期']['fetched_at'] = '2026-09-04T00:30:00+00:00'
+    _, days, _, _ = compile_history(spec, base=tmp_path, captured_at=CAPTURED)
+    assert days == DAYS[:1]

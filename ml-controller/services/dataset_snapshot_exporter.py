@@ -672,7 +672,14 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             rows = MARKET_D1_CLIENT.query(f'SELECT * FROM {name} WHERE date BETWEEN ? AND ? ORDER BY date',
                 [req.start_date, req.end_date])
             components[name] = _frame(rows) if rows else _empty_frame(['date'])
-        from services.backtest_state import load_verified_predictions
+        from services.backtest_state import (
+            REGIME_OBSERVATION_COLUMNS, load_regime_observations, load_verified_predictions,
+        )
+        # Every HMM observation up to end_date: replay finds the HMM era's first
+        # date and the point-in-time state from it, never from live D1.
+        regime_rows = load_regime_observations(req.end_date, MARKET_D1_CLIENT)
+        components['market_regime_state'] = (_frame(regime_rows) if regime_rows
+                                              else _empty_frame(list(REGIME_OBSERVATION_COLUMNS)))
         verified = load_verified_predictions(req.start_date, req.end_date)
         components['verified_predictions'] = _frame(verified) if verified else _empty_frame(
             ['generated_at', 'verified_at', 'direction_correct'])

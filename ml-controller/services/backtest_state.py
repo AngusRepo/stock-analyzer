@@ -17,6 +17,8 @@ Design citations:
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 from dataclasses import dataclass, field
@@ -68,6 +70,69 @@ class USMarketRow:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# HMM regime history — the Paper/pipeline regime owner, read point-in-time
+# ═════════════════════════════════════════════════════════════════════════════
+
+REGIME_OBSERVATION_COLUMNS = ('run_date', 'state_json', 'state_checksum', 'computed_at', 'recorded_at')
+
+
+def _instant(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def load_regime_observations(end_date: str, client: Any = None) -> list[dict]:
+    """Every published HMM observation up to `end_date` (both tables, as the Worker reads them)."""
+    return (client or MARKET_D1_CLIENT).query(
+        "SELECT run_date, state_json, state_checksum, computed_at, recorded_at "
+        "FROM market_regime_state_revisions_v1 WHERE run_date <= ? "
+        "UNION ALL "
+        "SELECT run_date, state_json, state_checksum, computed_at, persisted_at AS recorded_at "
+        "FROM market_regime_state_history_v1 WHERE run_date <= ? ORDER BY run_date",
+        [end_date, end_date],
+    ) or []
+
+
+class RegimeHistory:
+    """Point-in-time HMM state, selected like Worker `readLatestMarketRegimeStateOnOrBefore`.
+
+    The cut between the stored market_risk era and the HMM era is the first
+    HMM run_date in the data; no date is written in code.
+    """
+
+    def __init__(self, rows: Iterable[dict]):
+        self._rows: list[tuple] = []
+        for row in rows:
+            if any(row.get(name) in (None, '') for name in REGIME_OBSERVATION_COLUMNS):
+                raise ValueError('market_regime_history_row_invalid')
+            text = str(row['state_json'])
+            if hashlib.sha256(text.encode('utf-8')).hexdigest() != row['state_checksum']:
+                raise ValueError('market_regime_history_checksum_mismatch:' + str(row['run_date']))
+            state = json.loads(text)
+            if not isinstance(state, dict):
+                raise ValueError('market_regime_history_payload_invalid:' + str(row['run_date']))
+            self._rows.append((str(row['run_date']), _instant(row['computed_at']), _instant(row['recorded_at']),
+                               str(row['state_checksum']), state))
+        hmm_dates = [run_date for run_date, *_rest, state in self._rows if state.get('source') == 'hmm']
+        self.first_hmm_date: Optional[str] = min(hmm_dates) if hmm_dates else None
+
+    def latest_on_or_before(self, session: str, as_of: datetime) -> Optional[dict]:
+        """The newest observation for `session` or earlier that existed at `as_of`; None if it is not HMM."""
+        visible = [row for row in self._rows if row[0] <= session and row[1] <= as_of and row[2] <= as_of]
+        if not visible:
+            return None
+        run_date, _computed, _recorded, _checksum, state = max(visible, key=lambda row: row[:4])
+        if state.get('run_date') != run_date or _instant(state.get('computed_at')) > as_of:
+            raise ValueError('market_regime_history_payload_invalid:' + run_date)
+        return state if state.get('source') == 'hmm' else None
+
+
+def entry_open(entry_date: str) -> datetime:
+    """09:00 TW on the entry session: the latest moment a decision for it may observe."""
+    return datetime.fromisoformat(entry_date + 'T09:00:00+08:00')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # BacktestMarketState — load-once preloader (D6 citation)
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -89,6 +154,7 @@ class BacktestMarketState:
         self._risk: dict[str, MarketRiskRow] = self._load_risk(start_date, end_date)
         self._breadth: dict[str, MarketBreadthRow] = self._load_breadth(start_date, end_date)
         self._us: dict[str, USMarketRow] = self._load_us(start_date, end_date)
+        self._regime = RegimeHistory(load_regime_observations(end_date))
 
         logger.info(
             f"[BacktestMarketState] preloaded {start_date}~{end_date}: "
@@ -160,6 +226,22 @@ class BacktestMarketState:
 
     def get_us(self, date: str) -> Optional[USMarketRow]:
         return self._us.get(date)
+
+    def hmm_regime_contract(self, session: str, entry_date: str) -> Optional[dict]:
+        """The pipeline regime contract (alpha_regime + regime_surface) for decisions made at `session`.
+
+        None before the first HMM run_date (the stored market_risk era) and when no
+        HMM observation existed before the entry open; callers keep the stored path then.
+        """
+        history = getattr(self, '_regime', None)
+        if history is None or history.first_hmm_date is None or session < history.first_hmm_date:
+            return None
+        state = history.latest_on_or_before(session, entry_open(entry_date))
+        if state is None:
+            logger.warning('[BacktestMarketState] no HMM state visible for %s before %s open', session, entry_date)
+            return None
+        from services.market_regime_state import _contract_from_state
+        return _contract_from_state(state, source='market_regime_state_history_v1')
 
     def dates_with_risk(self) -> list[str]:
         """Deterministic sorted dates — for tests / debugging (M14 discipline)."""

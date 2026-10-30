@@ -97,6 +97,9 @@ def test_compute_snapshot_export_keeps_archived_signals(monkeypatch):
  monkeypatch.setattr(exporter,'_write_compute_snapshot',lambda **kw:kw)
  # b0fed84d9 added direct MARKET reads (us_market_signals, market_breadth); keep them local like the others.
  def market(sql,params,**kw):
+  if 'market_regime_state' in sql:   # the frozen HMM history, up to the end date
+   assert params==['2025-01-02','2025-01-02']
+   return []
   assert ('FROM us_market_signals' in sql or 'FROM market_breadth' in sql) and params==['2025-01-01','2025-01-02']
   return []
  monkeypatch.setattr(exporter,'MARKET_D1_CLIENT',SimpleNamespace(query=market))

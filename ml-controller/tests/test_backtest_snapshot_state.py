@@ -13,6 +13,7 @@ def data():
             'generated_at':['2026-09-01T13:00:00Z','2026-09-03T13:00:00Z'],'direction_accuracy':[.6,.9]}),
             'market_breadth':pl.DataFrame({'date':['2026-09-01'],'advance_ratio':[.5]}),
             'us_market_signals':pl.DataFrame({'date':['2026-09-01'],'gspc_return':[.01]}),
+            'market_regime_state':pl.DataFrame(schema={c:pl.Utf8 for c in ('run_date','state_json','state_checksum','computed_at','recorded_at')}),
             'verified_predictions':pl.DataFrame({'generated_at':['2026-09-01T13:00:00Z'],
                 'verified_at':['2026-09-08T13:00:00Z'],'direction_correct':[1]})})
 
@@ -29,7 +30,7 @@ def test_frozen_inputs_use_original_prediction_and_never_d1(monkeypatch):
     assert compute_rolling_accuracy_30d(outcomes,'2026-09-09',min_samples=1)==1.
 
 
-@pytest.mark.parametrize('component',['signals','verified_predictions','market_breadth','us_market_signals'])
+@pytest.mark.parametrize('component',['signals','verified_predictions','market_breadth','us_market_signals','market_regime_state'])
 def test_missing_component_stops_instead_of_silent_mode_a(component):
     dataset=data();del dataset.replay_frames[component]
     with pytest.raises(ValueError,match='components_missing'):frozen_mode_b(dataset)

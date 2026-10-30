@@ -338,7 +338,7 @@ class BacktestDataset:
                     stocks=stocks_df if name != "market_risk" else None))
         frames = {name: load_market_component(name) for name in ("prices", "indicators", "chips", "market_risk")}
         # Mode B must use the same immutable inputs, never today's mutable D1.
-        for name in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals'):
+        for name in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals', 'market_regime_state'):
             if name in component_uris:
                 frames[name] = _read_snapshot_parquet(component_uris[name])
 
@@ -381,7 +381,7 @@ class BacktestDataset:
             start_date=start_date,
             end_date=end_date,
             corporate_sources=corporate_sources,
-            replay_frames={k: frames[k] for k in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals') if k in frames},
+            replay_frames={k: frames[k] for k in ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals', 'market_regime_state') if k in frames},
         )
         ds._build_hot_caches()
         return ds
@@ -3196,11 +3196,15 @@ def simulate_entries_for_date(
     #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
     l2_formula_cfg: Optional[dict] = None,
     risk_score: Optional[int] = None,
-    #   risk_level: stored market_risk.risk_level for the decision date (P3 evidence).
+    #   risk_level: stored market_risk.risk_level for the decision date. Paper's
+    #     adaptive P3 reads the same stored row (adaptiveEngine) for its volatility term.
+    #   regime_family: the HMM family Paper's adaptive P3 reads (latest on or before the
+    #     decision date); None before the HMM era.
     #   There is no risk-level SL/TP add and no medium scale: Paper applies neither, and
     #   risk sizing has one owner there (circuit.positionScales + allocator riskScore).
     #   Wei 10/30 (B). The bull-alignment halving is gone too (Wei 10/29).
     risk_level: Optional[str] = None,
+    regime_family: Optional[str] = None,
     # 2026-04-20 #28 P5: night drop (US leading) + PF quality blend
     #   prev_night_drop: us_market_signals.gspc_return for most recent US close
     #     (as a ratio, e.g. -0.015 for -1.5%; matches D1 storage convention).
@@ -3246,6 +3250,23 @@ def simulate_entries_for_date(
     if pos.max_pct_of_portfolio is None:
         raise PositionRiskContractMissing('backtest_position_risk_contract_missing')
 
+    # 2026-04-20 #28 P3, aligned with Paper 10/30: the adaptive delta moves the buy
+    # THRESHOLD, as pendingBuyOrchestrator.checkCircuitBreakers does
+    # (effectiveBuy = clip(buyConfThreshold + confidence_delta, lo, hi)), and the
+    # delta is adaptive.compute_confidence_components with Paper's inputs (stored
+    # risk score and level, HMM family). Layer 2 below then raises that threshold.
+    effective_delta: float = 0.0
+    if (ml_predictions is not None and l2_formula_cfg is not None and risk_score is not None
+            and recent_accuracy_30d is not None and buy_conf_threshold is not None):
+        from services.adaptive import compute_confidence_components
+        effective_delta = compute_confidence_components(
+            float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
+            risk_level=risk_level, regime=regime_family,
+        )["effective_delta"]
+        clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
+        clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
+        buy_conf_threshold = max(clip_lo, min(clip_hi, buy_conf_threshold + effective_delta))
+
     # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
     # Only apply when Mode B is active (ml_predictions cache present) AND
     # circuit_cfg explicitly provided. Mode A skips entirely to preserve
@@ -3285,27 +3306,6 @@ def simulate_entries_for_date(
     for p_open in account.positions.values():
         industry_count[p_open.industry] = industry_count.get(p_open.industry, 0) + 1
 
-    # 2026-04-20 #28 P3: effective confidence delta formula (adaptive.py port)
-    # Compute once per day — same risk_score + acc for every candidate today.
-    # effective_conf = clip(real_conf + delta(risk_score, acc, L2), lo, hi)
-    # See adaptive.py compute_confidence_delta source of truth.
-    effective_delta: float = 0.0
-    effective_clip_lo: float = 0.0
-    effective_clip_hi: float = 1.0
-    apply_effective_conf = (
-        ml_predictions is not None
-        and l2_formula_cfg is not None
-        and risk_score is not None
-        and recent_accuracy_30d is not None
-    )
-    if apply_effective_conf:
-        from services.adaptive import compute_confidence_delta
-        effective_delta = compute_confidence_delta(
-            float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
-        )
-        effective_clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
-        effective_clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
-
     for cand in buy_candidates:
         # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
         # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
@@ -3320,24 +3320,14 @@ def simulate_entries_for_date(
                 ))
                 continue
 
-            # 2026-04-20 #28 P3: apply effective confidence delta (adaptive.py formula)
-            if apply_effective_conf:
-                effective_conf = max(
-                    effective_clip_lo,
-                    min(effective_clip_hi, real_conf + effective_delta),
-                )
-            else:
-                effective_conf = real_conf
-            cand.confidence = effective_conf
-
-            if buy_conf_threshold is not None and effective_conf < buy_conf_threshold:
+            cand.confidence = real_conf
+            if buy_conf_threshold is not None and real_conf < buy_conf_threshold:
                 attempts.append(EntryAttempt(
                     symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
                     status="skipped_low_conf", adjusted_entry=cand.close,
                     reason=(
-                        f"Mode B: eff_conf {effective_conf:.3f} "
-                        f"(raw {real_conf:.3f} + delta {effective_delta:+.3f}) "
-                        f"< threshold {buy_conf_threshold:.3f}"
+                        f"Mode B: conf {real_conf:.3f} < threshold {buy_conf_threshold:.3f} "
+                        f"(adaptive delta {effective_delta:+.3f})"
                     ),
                 ))
                 continue
@@ -5127,10 +5117,15 @@ def replay_period(
                     if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
                     else None
                 ),
-                # stored level (P3 evidence only)
+                # P3 inputs, as Paper's adaptive reads them: stored level + HMM family
                 risk_level=(
                     market_state.get_risk(prev_decision_date).risk_level
                     if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
+                    else None
+                ),
+                regime_family=(
+                    (market_state.hmm_regime_contract(prev_decision_date, day) or {}).get("alpha_regime")
+                    if (mode == "B" and market_state is not None)
                     else None
                 ),
                 # 2026-04-20 #28 P5 night drop + PF quality blend
@@ -5162,6 +5157,11 @@ def replay_period(
         # Step 4: run screener at today's close → tomorrow's candidates
         # (Skip on the last day since there's no T+1 to enter on)
         if i < len(replay_days) - 1:
+            # The pipeline hands the alpha framework the HMM contract (family +
+            # surface, daily_pipeline_v2.node_recommend); before the HMM era the
+            # replay keeps the stored market_risk level.
+            hmm_contract = (market_state.hmm_regime_contract(day, replay_days[i + 1])
+                            if mode == "B" and market_state is not None else None)
             prev_candidates = replay_screener_for_date(
                 dataset=dataset,
                 date=day,
@@ -5169,10 +5169,12 @@ def replay_period(
                 ranking=ranking_p,
                 alpha_policy=(params or {}).get("alphaFramework") or (params or {}).get("alpha_framework"),
                 regime_label=(
-                    market_state.get_risk(day).risk_level
+                    hmm_contract["alpha_regime"] if hmm_contract
+                    else market_state.get_risk(day).risk_level
                     if (mode == "B" and market_state is not None and market_state.get_risk(day))
                     else regime_label
                 ),
+                regime_surface=hmm_contract["regime_surface"] if hmm_contract else None,
             )
             prev_decision_date = day
 

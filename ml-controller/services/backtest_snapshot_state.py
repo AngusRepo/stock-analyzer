@@ -3,7 +3,7 @@ from dataclasses import fields
 from datetime import datetime, timezone
 import math
 
-COMPONENTS = ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals')
+COMPONENTS = ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals', 'market_regime_state')
 
 
 def timestamp(value):
@@ -13,7 +13,8 @@ def timestamp(value):
 
 def frozen_mode_b(dataset):
     from services.backtest_engine import MLPredictionsCache
-    from services.backtest_state import BacktestMarketState, MarketRiskRow, MarketBreadthRow, USMarketRow
+    from services.backtest_state import (BacktestMarketState, MarketRiskRow, MarketBreadthRow, USMarketRow,
+                                         RegimeHistory)
     frames = dataset.replay_frames
     missing = [name for name in COMPONENTS if name not in frames]
     if missing:
@@ -61,6 +62,8 @@ def frozen_mode_b(dataset):
         if len({r['date'] for r in rows}) != len(rows):
             raise ValueError('backtest_mode_b_duplicate_market_date:' + attr)
         setattr(state, attr, {r['date']: row_type(**{f.name:r.get(f.name) for f in fields(row_type)}) for r in rows})
+    # The HMM regime owner, frozen with the rest; an empty frame means the range predates HMM.
+    state._regime = RegimeHistory(frames['market_regime_state'].to_dicts())
     verified = frames['verified_predictions']
     if not {'generated_at', 'verified_at', 'direction_correct'} <= set(verified.columns):
         raise ValueError('backtest_mode_b_verified_schema_invalid')

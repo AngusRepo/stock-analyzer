@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { Miniflare } from 'miniflare'
 import { finLabRequiresFullCapture, processUpdateBatch, runDailyUpdate, runFinLabBackfillWatchdog } from './updateOrchestrator'
 import { finLabCompositionBlockerSuffix } from './finLabDispatchFence'
+import { queueFinLabCompletion } from './finlabCompletionOutbox'
 import type { Bindings } from '../types'
 
 // Bug 3 (restart stuck at the serving-table gate / superseded stage), Bug 4 (canonical not-ready burns the
@@ -13,12 +14,18 @@ const finlabRunId = 'finlab-v4-daily-20261029-1793282705129'
 const at = (clock: string, day = date) => Date.parse(`${day}T${clock}:00+08:00`)
 const FULL_CAPTURE = 'daily_inference_composition_requires_full_capture'
 
-type Market = { chipMissing?: boolean; twoiiMissing?: boolean; summaryMissing?: boolean; brokerReadsBeforeD1Error?: number }
+type Market = { chipMissing?: boolean; twoiiMissing?: boolean; summaryMissing?: boolean; brokerReadsBeforeD1Error?: number; staleFromRead?: { table: string; read: number } }
 
 /** Market/Core/legacy D1: answers the readiness queries by shape; writes are accepted and ignored. */
 function marketDb(m: Market) {
   let brokerReads = 0
+  let staleReads = 0
   const first = (sql: string, args: unknown[]) => {
+    // A serving table can go stale between the readiness reads of one continuation.
+    if (m.staleFromRead && sql.match(/FROM (\w+)/)?.[1] === m.staleFromRead.table) {
+      if (/MAX\(date\) AS latest_date/.test(sql) && staleReads > m.staleFromRead.read) return { latest_date: prev }
+      if (/COUNT\(/.test(sql) && args[0] === date && staleReads++ >= m.staleFromRead.read) return { count: 0 }
+    }
     if (m.brokerReadsBeforeD1Error !== undefined && /canonical_broker_flow_daily/.test(sql)
       && brokerReads++ >= m.brokerReadsBeforeD1Error) throw new Error('D1_ERROR: simulated market read failure')
     const table = sql.match(/FROM (\w+)/)?.[1] ?? ''
@@ -65,6 +72,7 @@ async function fixture(t: any, market: Market = {}) {
     ops.prepare(`CREATE TABLE source_key_report(target_date TEXT,lane TEXT,field TEXT,api_key TEXT,required INTEGER,status TEXT,
       rows INTEGER,target_rows INTEGER,latest_date TEXT,updated_at TEXT)`),
     ops.prepare(`CREATE TABLE source_diff_report(run_id TEXT,source TEXT,dataset_lane TEXT,finlab_rows INTEGER)`),
+    ops.prepare('CREATE TABLE scheduler_locks(lock_key TEXT PRIMARY KEY,owner TEXT,run_date TEXT,run_id TEXT,created_at TEXT,expires_at TEXT)'),
     ops.prepare(`CREATE TABLE system_logs(id INTEGER PRIMARY KEY,level TEXT,cron_name TEXT,message TEXT,meta TEXT,created_at TEXT)`),
     ...['pe', 'pb'].map((field) => ops.prepare(`INSERT INTO source_key_report VALUES (?,?,?,?,1,'ok',5000,5000,?,?)`)
       .bind(date, 'fundamental_factor_diversity', field, field, date, `${date}T13:00:00Z`)),
@@ -89,7 +97,10 @@ async function fixture(t: any, market: Market = {}) {
     OFFICIAL_SUPPLEMENTAL_FETCH_MODE: 'disabled',
     ML_CONTROLLER_URL: 'https://controller.invalid', FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED: 'true',
     KV, DB: db, CORE_DB: db, MARKET_DB: db, LEARNING_DB: db, EXECUTION_DB: db, PAPER_DB: db, RESEARCH_DB: db, OPS_DB: ops,
-    UPDATE_QUEUE: { send: async (msg: any, options?: any) => { sent.push({ ...msg, delaySeconds: options?.delaySeconds ?? 0 }) } },
+    UPDATE_QUEUE: {
+      send: async (msg: any, options?: any) => { sent.push({ ...msg, delaySeconds: options?.delaySeconds ?? 0 }) },
+      sendBatch: async (batch: any[]) => { for (const item of batch) sent.push({ ...item.body, delaySeconds: item.delaySeconds ?? 0 }) },
+    },
   } as unknown as Bindings
   const dispatches: any[] = []
   t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
@@ -414,4 +425,194 @@ test('B3-10: with readiness fully ok a completed stage is left alone and no warn
   assert.match(summary, /^triggered evening-chain: source readiness already ready for 2026-10-29; status=pending finlab_stage=finlab_market superseded_delivery/)
   assert.equal((await f.stage()).status, 'success')
   assert.equal((await f.systemLogs()).length, 0)
+})
+
+// ---------------- 10/30 follow-up: ① pending full capture, ⑥ post-cutoff bound ----------------
+
+/** Controller fetch: answers each dispatch in order (html = Cloud Run 502 page, i.e. dispatch_unconfirmed). */
+function controllerReplies(t: any, f: Awaited<ReturnType<typeof fixture>>, replies: Array<'spawned' | 'html'>, onDispatch?: () => void) {
+  let n = 0
+  t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    if (!String(url).startsWith('https://controller.invalid/finlab/backfill/run')) return new Response('unavailable', { status: 503 })
+    const body = JSON.parse(String(init?.body))
+    f.dispatches.push(body)
+    onDispatch?.()
+    if ((replies[n++] ?? 'spawned') === 'html') return new Response('<!DOCTYPE html><html><title>Error 502</title></html>', { status: 502 })
+    return Response.json({ status: 'spawned', run_id: body.run_id, function_call_id: `fc-${body.dispatch_attempt}` })
+  })
+}
+const isFull = (body: any) => String(body.lanes).split(',').includes('daily_price') && body.reuse_successful_artifacts === false
+
+test('F-1: an unconfirmed watchdog full capture is resent as a full capture, not narrowed and not terminal', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  controllerReplies(t, f, ['html', 'spawned'])
+  f.setLog('finlab-v4-backfill', partial(1))
+  f.clock(at('21:40'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /dispatch_unconfirmed/)
+  assert.match(f.log('finlab-v4-backfill').summary, /dispatch_unconfirmed .*full_capture_retry=1/)
+  t.mock.timers.reset()
+  f.clock(at('22:00'))
+  const resent = await runFinLabBackfillWatchdog(f.env, date)
+  assert.doesNotMatch(resent, /^failed/)
+  assert.equal(f.dispatches.length, 2)
+  assert.ok(f.dispatches.every(isFull), JSON.stringify(f.dispatches.map((d) => d.lanes)))
+  assert.equal(f.dispatches[1].dispatch_attempt, 3)
+  assert.match(f.log('finlab-v4-backfill').summary, /full_capture_retry=1/)
+  assert.equal((await f.systemLogs()).length, 0)
+  // Still inside the 3-attempt cap: a third pending attempt is exhausted, not resent.
+  t.mock.timers.reset()
+  f.clock(at('22:20'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^failed: FinLab pending watchdog exhausted/)
+  assert.equal(f.dispatches.length, 2)
+})
+
+test('F-2: a root full capture reserves with the marker, so a lost dispatch is resent as a full capture', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  let reservation = ''
+  controllerReplies(t, f, ['spawned', 'spawned'], () => { if (!reservation) reservation = f.log('finlab-v4-backfill').summary })
+  f.setLog('finlab-v4-backfill', partial(1))
+  f.clock(at('22:00'))
+  await runDailyUpdate(f.env, true, date)
+  assert.match(reservation, /^triggered FinLab dispatch reservation .*dispatch_attempt=1 full_capture_retry=1$/)
+  // The Worker stopped after the reservation: the watchdog only sees the reservation and no callback.
+  f.setLog('finlab-v4-backfill', { status: 'triggered', summary: reservation, timestamp: new Date(at('22:00')).toISOString(),
+    run_id: reservation.match(/run_id=(\S+)/)![1] })
+  t.mock.timers.reset()
+  f.clock(at('22:20'))
+  await runFinLabBackfillWatchdog(f.env, date)
+  assert.equal(f.dispatches.length, 2)
+  assert.ok(isFull(f.dispatches[1]), f.dispatches[1].lanes)
+  assert.equal((await f.systemLogs()).length, 0)
+})
+
+test('G-1: past the cutoff the consumer queues no readiness retry and ends the date terminal', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  for (const clock of ['23:05', '23:07']) {
+    f.clock(at(clock))
+    await processUpdateBatch(completion(), f.env, deps)
+    t.mock.timers.reset()
+  }
+  assert.equal(f.sent.filter((msg) => msg.type === 'source_readiness_retry').length, 0)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /not ready by 23:00 TW cutoff/)
+  assert.equal(f.log('update').status, 'blocked')
+  assert.notEqual(f.log('finlab-v4-backfill')?.status, 'running')
+  assert.equal((await f.systemLogs()).length, 1)
+})
+
+const readinessRetry = (attempt = 1) => ({ type: 'source_readiness_retry', triggerTime: date, cursor: 0, attempt }) as any
+
+test('G-2: past the cutoff a readiness retry refetches FinLab once per date, then ends terminal', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  assert.equal(f.dispatches.length, 1)
+  t.mock.timers.reset()
+  f.setLog('finlab-v4-backfill', { status: 'success', summary: 'FinLab V4 backfill status=ready dispatch_attempt=1' })
+  f.clock(at('23:25'))
+  await processUpdateBatch(readinessRetry(2), f.env, deps)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /after the post-cutoff refetch/)
+  assert.ok((await f.systemLogs()).some((row: any) => /after the post-cutoff refetch/.test(row.message)))
+})
+
+test('G-3: before the cutoff a readiness retry still refetches without using the post-cutoff budget', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.clock(at('22:40'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), false)
+  assert.equal((await f.systemLogs()).length, 0)
+})
+
+test('G-4: the post-cutoff loop (stage failures, readiness retries, refetch callbacks) drains with a bounded FinLab spend', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  let now = at('23:02')
+  // One readiness retry queued before the cutoff and the market stage failing past it.
+  const queue: any[] = [readinessRetry(), completion()]
+  let processed = 0
+  while (queue.length && processed < 200) {
+    const msg = queue.shift()
+    processed += 1
+    f.clock(now)
+    const before = f.sent.length
+    await processUpdateBatch(msg, f.env, deps).catch(() => {})
+    // Every dispatched refetch calls back successfully (route: queueFinLabCompletion with force) with the lane still missing.
+    for (const sent of f.dispatches.filter((d) => !d.called)) {
+      sent.called = true
+      await queueFinLabCompletion(f.env, date, sent.run_id, true)
+    }
+    t.mock.timers.reset()
+    queue.push(...f.sent.slice(before).filter((m) => m.type === 'source_readiness_retry' || m.type === 'finlab_backfill_complete'))
+    now += 3 * 60_000
+  }
+  assert.ok(processed < 200, `queue did not drain (${processed})`)
+  assert.equal(f.dispatches.length, 1)
+  // The refetch callback re-ran the market stage under its own run id.
+  assert.equal((await f.stage()).runId, f.dispatches[0].run_id)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.equal(f.log('update').status, 'blocked')
+})
+
+test('G-5: after the cutoff terminal the post-canonical watchdog does not rerun the continuation', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.setLog('finlab-v4-backfill', { status: 'success', summary: 'FinLab V4 backfill status=ready dispatch_attempt=1',
+    timestamp: new Date(at('22:30')).toISOString() })
+  f.clock(at('23:05'))
+  await processUpdateBatch(completion(), f.env, deps)
+  t.mock.timers.reset()
+  const before = await f.stage()
+  for (const clock of ['23:10', '23:20']) {
+    f.clock(at(clock))
+    assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab canonical cutoff terminal already recorded/)
+    t.mock.timers.reset()
+  }
+  assert.deepEqual(await f.stage(), before)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.equal(f.dispatches.length, 0)
+})
+
+test('G-6: a refetch-cap terminal also stops the post-canonical watchdog', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  for (const [clock, attempt] of [['23:05', 1], ['23:25', 2]] as const) {
+    f.clock(at(clock))
+    await processUpdateBatch(readinessRetry(attempt), f.env, deps)
+    t.mock.timers.reset()
+  }
+  f.setLog('finlab-v4-backfill', { status: 'success', summary: 'FinLab V4 backfill status=ready dispatch_attempt=1',
+    timestamp: new Date(at('23:20')).toISOString() })
+  f.clock(at('23:40'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab canonical cutoff terminal already recorded/)
+  assert.equal(await f.stage(), null)
+})
+
+test('G-7: past the cutoff a serving gap found after the refresh keeps the bounded readiness retry', async (t) => {
+  // A table read stale only from its third read (the check after the bulk refresh) gives the
+  // 'source readiness not ready after refresh' error, which is not a canonical not-ready error.
+  const f = await fixture(t, { staleFromRead: { table: 'canonical_broker_flow_daily', read: 2 } })
+  f.clock(at('23:05'))
+  await processUpdateBatch(completion(), f.env, deps)
+  assert.match((await f.stage()).last_error, /source readiness not ready after refresh/)
+  assert.equal(f.sent.filter((msg) => msg.type === 'source_readiness_retry').length, 1)
+  assert.notEqual(f.log('update')?.status, 'blocked')
+  assert.equal((await f.systemLogs()).length, 0)
+})
+
+test('F-3: a watchdog full capture reserves with the marker, so a Worker stop mid-dispatch still resends a full capture', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  let reservation = ''
+  controllerReplies(t, f, ['spawned', 'spawned'], () => { if (!reservation) reservation = f.log('finlab-v4-backfill').summary })
+  f.setLog('finlab-v4-backfill', partial(1))
+  f.clock(at('21:40'))
+  await runFinLabBackfillWatchdog(f.env, date)
+  assert.match(reservation, /^triggered FinLab watchdog dispatch reservation .*dispatch_attempt=2 full_capture_retry=1$/)
+  // The Worker stopped after the reservation: only the reservation is left, with no callback.
+  f.setLog('finlab-v4-backfill', { status: 'triggered', summary: reservation, timestamp: new Date(at('21:40')).toISOString() })
+  t.mock.timers.reset()
+  f.clock(at('22:00'))
+  await runFinLabBackfillWatchdog(f.env, date)
+  assert.equal(f.dispatches.length, 2)
+  assert.ok(isFull(f.dispatches[1]), f.dispatches[1].lanes)
+  assert.equal(f.dispatches[1].dispatch_attempt, 3)
 })

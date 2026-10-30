@@ -2518,13 +2518,7 @@ async function continueAfterFinLabBackfillWork(
 async function waitForFinLabCanonicalOrCutoff(env: Bindings, twDate: string, error: unknown): Promise<string> {
   const message = error instanceof Error ? error.message : String(error)
   if (finLabLateRetryCutoffPassed(twDate)) {
-    const summary = `FinLab canonical lanes not ready by ${finLabLateRetryCutoffTw()} TW cutoff for ${twDate}; ${message}`
-    const loggedKey = `source-readiness:canonical-cutoff-logged:${twDate}`
-    if (!await env.KV.get(loggedKey)) {
-      await env.KV.put(loggedKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
-      await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', 'evening-chain', summary, { run_date: twDate })
-    }
-    console.warn(`[FinLab] ${summary}`)
+    await finLabCanonicalCutoffTerminal(env, twDate, 'cutoff', message)
     throw error
   }
   const claimKey = `source-readiness:canonical-wait:${twDate}`
@@ -2535,6 +2529,41 @@ async function waitForFinLabCanonicalOrCutoff(env: Bindings, twDate: string, err
     await scheduleSourceReadinessRetry(env, twDate, 1, message)
   }
   return `source waiting; FinLab canonical lanes waiting for ${twDate} until ${finLabLateRetryCutoffTw()} TW cutoff; ${message}`
+}
+
+function finLabCanonicalCutoffTerminalKey(kind: 'cutoff' | 'refetch_cap', twDate: string): string {
+  return kind === 'cutoff'
+    ? `source-readiness:canonical-cutoff-logged:${twDate}`
+    : `source-readiness:canonical-refetch-cap-logged:${twDate}`
+}
+
+async function finLabCanonicalCutoffTerminalRecorded(env: Bindings, twDate: string): Promise<boolean> {
+  return Boolean(await env.KV.get(finLabCanonicalCutoffTerminalKey('cutoff', twDate))
+    || await env.KV.get(finLabCanonicalCutoffTerminalKey('refetch_cap', twDate)))
+}
+
+/**
+ * Past the cutoff the date ends in a terminal state instead of more readiness retries and FinLab refetches.
+ * The system log is written once per date and reason; the chain logs are rewritten so the last state is the error.
+ */
+async function finLabCanonicalCutoffTerminal(
+  env: Bindings, twDate: string, kind: 'cutoff' | 'refetch_cap', detail: string,
+): Promise<string> {
+  const summary = kind === 'cutoff'
+    ? `FinLab canonical lanes not ready by ${finLabLateRetryCutoffTw()} TW cutoff for ${twDate}; ${detail}`
+    : `FinLab canonical lanes still not ready after the post-cutoff refetch for ${twDate}; no further refetch; ${detail}`
+  const loggedKey = finLabCanonicalCutoffTerminalKey(kind, twDate)
+  if (!await env.KV.get(loggedKey)) {
+    await env.KV.put(loggedKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', 'evening-chain', summary, { run_date: twDate })
+  }
+  await logSchedulerResult(env.KV, 'evening-chain', { status: 'error', summary, duration_ms: 0, run_date: twDate })
+  await logSchedulerResult(env.KV, 'update', {
+    status: 'blocked', summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${summary}`,
+    duration_ms: 0, run_date: twDate,
+  })
+  console.warn(`[FinLab] ${summary}`)
+  return summary
 }
 
 export async function runMarketCloseRefresh(env: Bindings, force = false, runDate?: string): Promise<string> {
@@ -2736,7 +2765,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
         canonicalDatasets: refreshScope.canonicalDatasets,
         keyScopeJson: refreshScope.keyScopeJson,
         reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson),
-      }).catch(async (error) => {
+      }, fullCapture ? ' full_capture_retry=1' : '').catch(async (error) => {
     if (fullCapture) await env.KV.delete(finLabFullCaptureKey(twDate))
     throw error
   })
@@ -2786,11 +2815,12 @@ export async function dispatchEveningFinLabRefresh(
   twDate: string,
   force: boolean,
   scope: { lanes?: string, canonicalDatasets?: string, keyScopeJson?: string, reuseSuccessfulArtifacts: boolean },
+  reservationNote = '',
 ): Promise<{ summary: string, startObserved: boolean }> {
   const runId = buildFinLabDailyRunId(twDate)
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: 'triggered',
-    summary: `triggered FinLab dispatch reservation run_id=${runId} function_call_id=unknown dispatch_attempt=1`,
+    summary: `triggered FinLab dispatch reservation run_id=${runId} function_call_id=unknown dispatch_attempt=1${reservationNote}`,
     duration_ms: 0,
     run_id: runId,
     run_date: twDate,
@@ -2858,6 +2888,10 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     if (updateLog?.status === 'running' || updateLog?.status === 'triggered') {
       return `status=pending FinLab canonical handoff already progressing market update for ${twDate}`
     }
+    // The continuation already ended the date at the cutoff; rerunning it would only fail again.
+    if (finLabLateRetryCutoffPassed(twDate) && await finLabCanonicalCutoffTerminalRecorded(env, twDate)) {
+      return `skipped: FinLab canonical cutoff terminal already recorded for ${twDate}`
+    }
 
     const handoffTimestamp = updateLog?.timestamp ?? finlabLog.timestamp
     const handoffAt = handoffTimestamp ? Date.parse(handoffTimestamp) : Number.NaN
@@ -2898,6 +2932,10 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   // Late-published fields (contract late_publication) are retried until the cutoff, not by attempt count.
   // A late-lane retry still pending (dispatch_unconfirmed or no callback) keeps that class via its marker.
   const fullCapture = retriablePartialFailure && finLabRequiresFullCapture(`${finlabLog.summary ?? ''} ${finlabLog.error ?? ''}`)
+  // A full capture still pending (dispatch_unconfirmed or no callback) is resent as a full capture.
+  const fullCapturePending = finlabLog?.status === 'triggered'
+    && /(?:^|\s)full_capture_retry=1(?:$|[\s;])/.test(finlabLog.summary ?? '')
+  const fullCaptureDispatch = fullCapture || fullCapturePending
   const lateLaneNotReady = finlabLog?.status === 'error' && !retriablePartialFailure
     && classifyFinLabLateLaneNotReady(`${finlabLog.summary ?? ''} ${finlabLog.error ?? ''}`)
   const lateLaneRetryPending = finlabLog?.status === 'triggered'
@@ -2971,7 +3009,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   // superseded call cannot overwrite the active dispatch while HTTP is in flight.
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: 'triggered',
-    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCapture ? ' full_capture_retry=1' : ''}`,
+    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCaptureDispatch ? ' full_capture_retry=1' : ''}`,
     duration_ms: 0,
     run_id: runId,
     run_date: twDate,
@@ -2980,10 +3018,10 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
 
   try {
     const readiness = await checkEveningChainSourceReadiness(env, twDate)
-    const refreshScope = fullCapture ? emptyFinLabRetryScope({}, []) : await finLabRetryScopeForReadiness(env, twDate, readiness, {
+    const refreshScope = fullCaptureDispatch ? emptyFinLabRetryScope({}, []) : await finLabRetryScopeForReadiness(env, twDate, readiness, {
       allowFetchedLaneRefetch: retriablePartialFailure || lateLane,
     })
-    if (!fullCapture && !refreshScope.lanes) {
+    if (!fullCaptureDispatch && !refreshScope.lanes) {
       await env.KV.delete(retryKey)
       return `skipped: FinLab watchdog found no source keys eligible for refetch${finLabRetryScopeSuffix(refreshScope)}`
     }
@@ -2994,7 +3032,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
       lanes: refreshScope.lanes,
       canonicalDatasets: refreshScope.canonicalDatasets,
       keyScopeJson: refreshScope.keyScopeJson,
-      reuseSuccessfulArtifacts: !fullCapture,
+      reuseSuccessfulArtifacts: !fullCaptureDispatch,
       runId,
       dispatchAttempt: nextAttempt,
       supersedeFunctionCallId: functionCallId ?? undefined,
@@ -3005,7 +3043,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     const startObserved = /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId)
     if (!startObserved) await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
       status,
-      summary: `${summary}; watchdog_retriggered_from_attempt=${previousAttempt}${lateLane ? ' late_lane_retry=1' : ''}`,
+      summary: `${summary}; watchdog_retriggered_from_attempt=${previousAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCaptureDispatch ? ' full_capture_retry=1' : ''}`,
       duration_ms: 0,
       run_id: runId,
       run_date: twDate,
@@ -3896,6 +3934,12 @@ export async function processUpdateBatch(
       }
       if (isFinLabCanonicalReadinessError(e)) {
         const message = e instanceof Error ? e.message : String(e)
+        // Past the cutoff a readiness retry would only start another FinLab refetch round. A serving gap
+        // found after the refresh ('source readiness not ready after refresh') keeps the bounded retry path.
+        if (finLabLateRetryCutoffPassed(triggerTime) && /FinLab canonical daily not ready/i.test(message)) {
+          await finLabCanonicalCutoffTerminal(env, triggerTime, 'cutoff', message)
+          return
+        }
         await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
           status: 'running',
           summary: `FinLab callback completed but target-date canonical lanes are still waiting; ${message}`,
@@ -4615,6 +4659,15 @@ export async function processUpdateBatch(
       }
       const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
       if (hasFinLabRefreshableMissing(readiness)) {
+        // Past the cutoff one more FinLab refetch per date (a publication just before it), then terminal.
+        if (finLabLateRetryCutoffPassed(triggerTime)) {
+          const refetchKey = `finlab:post-cutoff-refetch:${triggerTime}`
+          if (await env.KV.get(refetchKey)) {
+            await finLabCanonicalCutoffTerminal(env, triggerTime, 'refetch_cap', readiness.summary)
+            return
+          }
+          await env.KV.put(refetchKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+        }
         const retrySummary = await runDailyUpdate(env, true, triggerTime)
         await logSchedulerResult(env.KV, 'evening-chain', {
           status: 'running',

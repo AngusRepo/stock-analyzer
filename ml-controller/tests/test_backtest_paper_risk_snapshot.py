@@ -206,6 +206,10 @@ def test_only_a_day_from_before_the_evidence_runs_unflagged_rows():
     assert [cache.get(s, d) for s, d in (('2330', '2026-08-31'), ('1101', '2026-08-31'), ('2317', '2026-09-01'),
                                          ('2454', '2026-09-01'))] == [.6, .7, .8, None]
     assert state.formal_contract['unflagged_rows'] == 2 and state.formal_contract['evidence_missing_rows'] == 1
+    # Evidence first recorded after the entry open does not make the day's earlier rows missing.
+    late = signal_rows([None, True], [.6, .7], stocks=[1, 2], generated=['2026-09-01T13:00:00Z', '2026-09-02T02:00:00Z'])
+    cache, state, _ = frozen_mode_b(dataset(late))
+    assert cache.get('2330', '2026-09-01') == .6 and state.formal_contract['unflagged_rows'] == 1
 
 
 def test_the_newest_revision_decides_even_when_it_is_blocked():

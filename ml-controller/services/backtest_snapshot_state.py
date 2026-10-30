@@ -128,8 +128,14 @@ def frozen_mode_b(dataset):
               'contract_passed_without_confidence_rows': 0, 'unflagged_rows': 0, 'evidence_unrecorded_rows': 0,
               'flag_component': has_flag,
               'evidence_source': 'sealed_columns' if has_flag else ('forecast_data' if readable else 'none')}
-    recorded_days = set(signals.filter(pl.col(FORMAL_EVIDENCE_COLUMNS[0]).is_not_null())
-                        .get_column('prediction_date').cast(pl.Utf8).to_list())
+
+    def entry_cutoff(day):
+        entry_day = next_session.get(day)
+        return datetime.fromisoformat(entry_day + 'T09:00:00+08:00') if entry_day else None
+    # A day counts as recorded only from evidence visible before its entry open.
+    recorded_days = {str(day) for day, generated in signals.filter(pl.col(FORMAL_EVIDENCE_COLUMNS[0]).is_not_null())
+                     .select('prediction_date', 'generated_at').iter_rows()
+                     if entry_cutoff(str(day)) is not None and timestamp(generated) < entry_cutoff(str(day))}
     for row in signals.sort(['generated_at', 'stock_id']).iter_rows(named=True):
         symbol = identities.get(row['stock_id'])
         day = str(row['prediction_date'])

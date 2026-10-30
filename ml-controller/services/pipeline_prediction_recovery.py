@@ -113,6 +113,7 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     progress, _ = store.read(root + '/progress')
     recovery, generation = store.read(key + '/dispatch')
     result_generation = current_generation = older_generation = 0
+    older_unseen = False
     queue_note = {}
     gpu_claim = None
     if progress and progress.get('gpu'):
@@ -171,11 +172,13 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
         result = spawn(payload)
     except Exception:
         # Accepted-but-unacknowledged dispatch is not a terminal model failure. An older
-        # result's one driver did not certainly start: let the next reconcile try again.
-        if older_generation:
+        # result's one driver did not certainly start: let the next reconcile try again. Only a
+        # dispatch sent for that result is undone; any other leaves the seen generation alone.
+        if older_unseen and not current_generation:
             sent, sent_generation = store.read(key + '/dispatch')
             if sent == claim:
-                store.cas(key + '/dispatch', {**claim, 'older_result_generation': 0}, sent_generation)
+                store.cas(key + '/dispatch', {**claim, 'older_result_generation':
+                                              (recovery or {}).get('older_result_generation', 0)}, sent_generation)
         return _with_log(store, key, {'reason': 'recovery_dispatch_uncertain', 'attempt': attempt, **queue_note},
                          blocked=False, clock=clock)
     return _with_log(store, key, {'reason': 'same_request_resumed', 'attempt': attempt,

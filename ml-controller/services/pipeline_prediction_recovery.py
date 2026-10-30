@@ -287,7 +287,11 @@ def write_gpu_queue_log(recovery, *, run_date, run_id, ops_execute, logger):
                                 "unless the GPU started meanwhile, the driver abandons it and the run fails "
                                 "with pipeline_stage_gpu_queue_exhausted"),
         'gpu_shadow_queued': (f"pipeline {run_date} shadow GPU stage (no production effect) is queued; "
-                              f"it is skipped for the day unless the GPU starts within {left:.0f}s"),
+                              f"it is skipped for the day unless the GPU starts within {left:.0f}s"
+                              if not recovery.get('recovery_blocked') else
+                              f"pipeline {run_date} shadow GPU stage (no production effect) is queued "
+                              f"({left:.0f}s to its limit) while recovery is blocked by a release change; "
+                              "at the limit the run stays open for manual handling"),
         'gpu_shadow_queue_skipped': (f"pipeline {run_date} shadow GPU stage queued {queued:.0f}s and reached its "
                                      "limit; unless the GPU started meanwhile, today's shadow is skipped and "
                                      "formal results are unaffected"),

@@ -966,6 +966,8 @@ class UniversalTrainingPolicy:
             "as_of_date",
             "signal_date_max",
             "label_known_at_max",
+            "pit_certification",
+            "pit_contract_version",
             "max_prep_stale_days",
             "gcs_prefix",
             "feature_pool_path",

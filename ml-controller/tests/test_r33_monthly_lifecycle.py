@@ -167,13 +167,13 @@ def _manifest():
             "manifest_checksum": "m" * 64, "sequence_gcs_prefix": "seq", "windows": []}
 
 
-def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None):
+def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None, manifest=None):
     from services import active8_oof_cohort_materializer as mat, l4_oof_index_receipt, l4_oof_lifecycle
     from services import r33_calibration_job, r33_monthly_lifecycle as life, r33_oof_checks, training_source_preflight
     import polars as pl
     import routers.walk_forward as wf
     calls = {"dispatch": [], "persist": 0}
-    monkeypatch.setattr(mat, "load_verified_oof_manifest", lambda path, **kw: (_manifest(), b""))
+    monkeypatch.setattr(mat, "load_verified_oof_manifest", lambda path, **kw: (manifest or _manifest(), b""))
     monkeypatch.setattr(training_source_preflight, "require_oof_training_sources", lambda bucket, manifest: {})
     preds = [{"prediction_date": "2026-10-20", "symbol": "2330", "market_segment": "TWSE", "model_name": m,
               "raw_score": 0.1, "target_return": 0.01, "label_known_date": "2026-10-27", "fold_id": "w0"} for m in R33_MODELS]
@@ -192,10 +192,31 @@ def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None):
     monkeypatch.setattr(r33_calibration_job, "load_l2_pool", lambda query, start, end: ({"2026-10-20": {"2330"}}, {"days": 1}))
     seen_oof = {}
 
+    from services import pit_certification
+    receipt = {"receipt": {"capture": "c", "contract_version": "pit-availability-contract-v1"}, "receipt_sha256": "r" * 64}
+
     def checks(**kwargs):
         seen_oof["frame"] = kwargs["oof"]
-        return {"status": checks_status}
+        seen_oof["pit_certification"] = kwargs["pit_certification"]
+        seen_oof["checks_runs"] = seen_oof.get("checks_runs", 0) + 1
+        # Same contract as r33_oof_checks: no receipt or a binding reason fails pit_vintage.
+        attached = kwargs["pit_certification"]
+        passed = attached is not None and not kwargs.get("pit_binding_reasons")
+        result = {**{name: {"passed": checks_status == "pass"} for name in ("leakage", "inversion", "tail_guard")},
+                  "pit_vintage": {"passed": passed, "receipt_sha256": (attached or {}).get("receipt_sha256")}}
+        return {"status": "pass" if all(c["passed"] for c in result.values()) else "fail", "checks": result}
     monkeypatch.setattr(r33_oof_checks, "run_checks", checks)
+    def bound(bucket, *, sequence_gcs_prefix, prep_gcs_prefixes=(), contract=None):
+        seen_oof["pit_bound"] = {"sequence": sequence_gcs_prefix, "preps": list(prep_gcs_prefixes)}
+        if seen_oof.get("unreadable"):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        attached, extra = seen_oof["receipt"], list(seen_oof.get("binding_reasons") or ())
+        if attached is None:
+            return {"certified": False, "reasons": ["receipt_missing"], "attached": None}
+        return {"certified": not extra, "reasons": extra, "binding_reasons": extra,
+                "receipt_sha256": attached["receipt_sha256"], "attached": attached}
+    monkeypatch.setattr(pit_certification, "verify_bound_receipt", bound)
+    seen_oof["receipt"] = receipt
     monkeypatch.setattr(r33_calibration_job, "fit_calibration",
                         lambda **kw: {"schema": "cal", "cost": kw["round_trip_cost"], "min_block_weight": kw["min_block_weight"]})
 
@@ -232,13 +253,27 @@ def test_failed_oof_checks_never_dispatch_full_fit(monkeypatch):
     assert "r33/monthly_candidates/c-r33/bundle.json" not in bucket.store
 
 
+def _pit_scope(**changes):
+    return {"dataset": {"deployment_fit": {"input_scope": {
+        "point_in_time_vintage_certified": True, "pit_certification_sha256": "r" * 64,
+        "pit_contract_version": "pit-availability-contract-v1", **changes}}}}
+
+
+def _registry_with_metadata(bucket, **per_model):
+    artifacts = {m: {"artifact_id": f"{m}:v1", "checksum": "c" * 64, "metadata_path": f"meta/{m}.json"}
+                 for m in R33_MODELS}
+    for m in R33_MODELS:
+        bucket.store[f"meta/{m}.json"] = json.dumps(per_model.get(m, _pit_scope())).encode()
+    return {"status": "r33_candidates_registered", "promotion_decision": "r33_candidate_pending_wei",
+            "training_run_id": "run-1", "artifacts": artifacts, "ensemble_candidate": None}
+
+
 def test_passing_checks_seal_a_candidate_bundle(monkeypatch):
     from services.r33_monthly_lifecycle import ROUND_TRIP_COST
-    artifacts = {m: {"artifact_id": f"{m}:v1", "checksum": "c" * 64} for m in R33_MODELS}
-    registry = {"status": "r33_candidates_registered", "promotion_decision": "r33_candidate_pending_wei",
-                "training_run_id": "run-1", "artifacts": artifacts, "ensemble_candidate": None}
-    calls, _ = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False, "release_registry": registry})
     bucket = Bucket()
+    registry = _registry_with_metadata(bucket)
+    artifacts = registry["artifacts"]
+    calls, _ = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False, "release_registry": registry})
     result = _run(bucket)
     assert result["status"] == "materialized" and result["promoted"] is False and result["serving_pointer_changed"] is False
     assert calls["dispatch"][0]["signal_date_max"] == "2026-10-23"
@@ -252,7 +287,101 @@ def test_passing_checks_seal_a_candidate_bundle(monkeypatch):
     assert result["physical_prediction_coverage"]["max_date"] == "2026-10-23"
     # Replays reuse both write-once receipts.
     assert _run(bucket)["r33_candidate_bundle"] == result["r33_candidate_bundle"]
+    # The full-fit carries the PIT receipt the checks verified (C28-02 C6).
+    assert calls["dispatch"][0]["pit_certification"]["receipt_sha256"] == "r" * 64
+    # The bundle records the gate that admitted it and the receipt it was verified against.
+    assert bundle["oof_checks"]["status"] == "pass" and bundle["oof_checks"]["pit_certification_sha256"] == "r" * 64
 
+
+@pytest.mark.parametrize("metadata", [{}, _pit_scope(point_in_time_vintage_certified=False),
+                                      _pit_scope(pit_certification_sha256="s" * 64), _pit_scope(pit_contract_version=None),
+                                      {"a": _pit_scope(), "b": _pit_scope(pit_contract_version="v0")}, None])
+def test_a_full_fit_artifact_without_the_pit_binding_is_not_sealed(monkeypatch, metadata):
+    # e.g. an older trainer image that dropped pit_certification / pit_contract_version.
+    bucket = Bucket()
+    first = sorted(R33_MODELS)[0]
+    registry = _registry_with_metadata(bucket, **{first: metadata})
+    if metadata is None:
+        bucket.store[f"meta/{first}.json"] = b"not json"
+    _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False, "release_registry": registry})
+    result = _run(bucket)
+    assert result["status"] == "failed" and result["reason"] == "r33_full_fit_pit_metadata_missing"
+    assert result["full_fit_dispatch"]["pit_metadata_missing"] == [first]
+    assert "r33/monthly_candidates/c-r33/bundle.json" not in bucket.store
+
+
+@pytest.mark.parametrize("sealed", [{}, {"pit_vintage": {"passed": True}},
+                                    {"leakage": {"passed": True}, "inversion": {"passed": True}}])
+def test_sealed_checks_missing_a_required_check_fail_closed(monkeypatch, sealed):
+    calls, _ = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False})
+    bucket = Bucket()
+    bucket.store["r33/monthly_candidates/c-r33/oof_checks.json"] = json.dumps(
+        {"manifest_checksum": _manifest()["manifest_checksum"], "result": {"status": "pass", "checks": sealed}}).encode()
+    result = _run(bucket)
+    assert result["status"] == "failed" and result["reason"] == "r33_oof_checks_failed" and calls["dispatch"] == []
+
+
+@pytest.mark.parametrize("change", ["missing", "unbound", "unreadable", "replaced", "pre_gate_checks"])
+def test_the_pit_gate_is_reverified_on_every_run(monkeypatch, change):
+    calls, seen = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False})
+    bucket = Bucket()
+    # Checks sealed earlier: before the PIT gate existed, or against the original receipt.
+    gate = {name: {"passed": True} for name in ("leakage", "inversion", "tail_guard")}
+    if change != "pre_gate_checks":
+        gate["pit_vintage"] = {"passed": True, "receipt_sha256": "r" * 64}
+    bucket.store["r33/monthly_candidates/c-r33/oof_checks.json"] = json.dumps(
+        {"manifest_checksum": _manifest()["manifest_checksum"], "result": {"status": "pass", "checks": gate}}).encode()
+    if change == "missing":
+        seen["receipt"] = None
+    if change == "unbound":
+        seen["binding_reasons"] = ["lane_manifest_changed:daily_price"]
+    if change == "unreadable":  # a stored receipt that is not JSON fails the gate, not the job
+        seen["unreadable"] = True
+    if change == "replaced":  # a regenerated receipt for the same capture
+        seen["receipt"] = {"receipt": {"capture": "c", "contract_version": "pit-availability-contract-v1", "generated_at": "later"},
+                           "receipt_sha256": "s" * 64}
+    result = _run(bucket)
+    assert result["r33_oof_checks"]["pit_certified"] is (change in ("replaced", "pre_gate_checks"))
+    if change in ("missing", "unbound", "unreadable"):
+        assert result["status"] == "failed" and result["reason"] == "r33_pit_certification_unbound"
+        assert calls["dispatch"] == [] and result["training_dispatched"] is False
+        assert result["r33_oof_checks"]["status"] == "fail" and result["r33_oof_checks"]["sealed_status"] == "pass"
+        if change == "unreadable":
+            assert result["pit_certification"]["reasons"] == [
+                "receipt_unreadable:ValueError:Expecting value: line 1 column 1 (char 0)"]
+    else:
+        # The full-fit carries the receipt verified now, not the one recorded at seal time.
+        assert calls["dispatch"][0]["pit_certification"] == seen["receipt"]
+    assert "checks_runs" not in seen  # sealed checks are never re-run
+
+
+
+@pytest.mark.parametrize("missing", ["receipt", "binding"])
+def test_a_failed_pit_check_is_sealed_and_recovers_once_the_receipt_binds(monkeypatch, missing):
+    windows = [{"source_prep_gcs_prefix": "universal/prep/w0"}, {"source_prep_gcs_prefix": "universal/prep/w1"}]
+    calls, seen = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False},
+                                   manifest={**_manifest(), "prep_gcs_prefix": "universal/prep/full", "windows": windows})
+    if missing == "receipt":
+        seen["receipt"] = None
+    else:
+        seen["binding_reasons"] = ["prep_not_built_under_contract:universal/prep/w0"]
+    bucket = Bucket()
+    result = _run(bucket)
+    assert result["status"] == "failed" and result["reason"] == "r33_pit_certification_unbound"
+    assert calls["dispatch"] == [] and result["r33_oof_checks"]["pit_certified"] is False
+    # The OOF checks are sealed regardless, so leakage/inversion/tail-guard cannot be re-rolled.
+    sealed = bucket.store["r33/monthly_candidates/c-r33/oof_checks.json"]
+    assert result["r33_oof_checks"]["checksum"] == hashlib.sha256(sealed).hexdigest()
+    # Every prep the cohort trained on is bound: the full-fit prep and each window's source prep.
+    assert seen["pit_bound"] == {"sequence": "seq", "preps": ["universal/prep/full", "universal/prep/w0", "universal/prep/w1"]}
+    seen["receipt"], seen["binding_reasons"] = {"receipt": {"capture": "c", "contract_version": "pit-availability-contract-v1"},
+                                                "receipt_sha256": "r" * 64}, []
+    result = _run(bucket)
+    assert bucket.store["r33/monthly_candidates/c-r33/oof_checks.json"] == sealed and seen["checks_runs"] == 1
+    assert calls["dispatch"][0]["pit_certification"]["receipt_sha256"] == "r" * 64
+    # The file still says fail (its pit_vintage is from seal time); the gate applied now passed.
+    assert result["r33_oof_checks"]["sealed_status"] == "fail" and result["r33_oof_checks"]["status"] == "pass"
+    assert result["r33_oof_checks"]["pit_certification_sha256"] == "r" * 64
 
 
 @pytest.mark.parametrize("calendar", [{}, {"mature_max_date": None}, {"oof_max_date": "2026-10-23"}])
@@ -555,6 +684,22 @@ def test_r33_prep_wiring_is_profile_gated():
     assert source.count("feature_warmup_rows") == 2 and source.count("if r33_prep:") >= 4
     assert '**({"per_field_auxiliary": True, "require_aligned_history": True} if r33_prep else {})' in source
     assert '**({"historical_broker": True} if r33_prep else {}))' in source
+    # C28-02: both prep paths build under the contract, the receipt binds it, rows carry the
+    # venue's listing date and the capture sidecar joins the roster.
+    assert source.count('prep_payload["pit_contract_version"] = PIT_CONTRACT_VERSION') == 1
+    assert source.count("payload['pit_contract_version'] = PIT_CONTRACT_VERSION") == 1
+    assert 'source_bindings["pit_contract_version"]=PIT_CONTRACT_VERSION' in source
+    assert 'source_bindings["pit_contract_sha256"]=contract_content_sha256(load_contract())' in source
+    # ml-service refuses another contract file and each batch reports what it applied.
+    assert 'prep_payload["pit_contract_sha256"] = source_bindings["pit_contract_sha256"]' in source
+    assert "payload['pit_contract_sha256'] = source_bindings['pit_contract_sha256']" in source
+    assert "unapplied = prep_batches_not_under_contract(prep_results, source_bindings)" in source
+    events = (ROOT / "services" / "pipeline_input_events.py").read_text(encoding="utf-8")
+    assert "if prep_batches_not_under_contract(results, template):" in events
+    assert 'source_bindings["roster_sidecar"]=roster_sidecar' in source
+    assert '**({"market_since": row["listed_date"]} if r33_prep and row.get("listed_date") else {}),' in source
+    assert 'start_date=metadata["start_date"], end_date=metadata["end_date"], with_listed_date=True)' in source
+    assert "stock_rows = [*stock_rows, *sidecar_rows]" in source
     from services.training_policy import R33_FEATURE_WARMUP_SESSIONS
     assert R33_FEATURE_WARMUP_SESSIONS == 252
     job = (ROOT / "oof_materialize_job_main.py").read_text(encoding="utf-8")

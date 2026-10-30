@@ -12,7 +12,7 @@ import json
 import os
 import time
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 from importlib.metadata import version as package_version
 
 import numpy as np
@@ -85,6 +85,8 @@ class UniversalPrepRequest(BaseModel):
     retain_unlabeled_features: bool = False  # Immutable source stage; canonical prep owns label eligibility.
     gcs_prefix: str = "universal"
     feature_warmup_rows: int = 0  # Leading rows per stock that only feed long-window features.
+    pit_contract_version: str | None = None  # C28-02 availability lags; None keeps pre-contract output.
+    pit_contract_sha256: str | None = None  # Content sha256 the controller bound; must match the loaded contract.
 
 
 class UniversalTrainRequest(BaseModel):
@@ -122,6 +124,8 @@ class UniversalTrainRequest(BaseModel):
     as_of_date: str | None = None
     signal_date_max: str | None = None
     label_known_at_max: str | None = None
+    pit_certification: dict | None = None  # {receipt, receipt_sha256} from controller pit_certification
+    pit_contract_version: str | None = None  # Version the prep was built under; recorded in the artifact.
     max_prep_stale_days: int | None = None
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
@@ -714,6 +718,15 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     from .sequence_training import build_sequence_record
 
     t0 = time.time()
+    pit_contract_sha256 = None
+    if req.pit_contract_sha256 is not None and req.pit_contract_version is None:
+        raise ValueError("pit_contract_sha256_without_version")
+    if req.pit_contract_version is not None:
+        # The lags come from this image's contract file; refuse one the controller did not bind.
+        from .pit_contract import content_sha256, load
+        pit_contract_sha256 = content_sha256(load(req.pit_contract_version))
+        if req.pit_contract_sha256 != pit_contract_sha256:
+            raise ValueError("pit_contract_sha256_mismatch")
     payloads = req.payloads
     shared_history = req.shared_market_history or {}
     ps_ts_map = req.per_stock_ts_map or {}
@@ -747,6 +760,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 req.barrier_params or None,
                 payload.get("stock_meta"),
                 historical_training=True,
+                pit_contract_version=req.pit_contract_version,
             )
             if "date" not in df.columns and len(prices_data) > 0:
                 dates = [p.get("date", "") for p in prices_data]
@@ -758,9 +772,15 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 df = df.with_columns(pl.lit("").alias("_date"))
             symbol = str(payload.get("symbol") or payload.get("stock_id") or "").strip()
             market = str(payload.get("market") or "TW").strip().upper()
+            market_expr = pl.lit(market)
+            if payload.get("market_since"):
+                # C28-02 C3: before the current venue's listing date the venue is not
+                # proven; UNKNOWN keeps lineage but is never a ranked label market.
+                market_since = date.fromisoformat(str(payload["market_since"])).isoformat()
+                market_expr = pl.when(pl.col("_date") < market_since).then(pl.lit("UNKNOWN")).otherwise(market_expr)
             df = df.with_columns(
                 pl.lit(symbol).alias("_symbol"),
-                pl.lit(market).alias("_market"),
+                market_expr.alias("_market"),
                 (pl.col("sector").cast(pl.String).fill_null("unknown") if "sector" in df.columns else pl.lit("unknown")).alias("_sector"),
                 pl.col("_date").shift(-5).alias("_label_known_date"),
             )
@@ -871,6 +891,9 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     if df_clean.unique(["_market", "_symbol", "_date"]).height != df_clean.height:
         raise ValueError("feature_data_quality_duplicate_training_keys")
     cleaning_report["canonical_targets_required"] = req.retain_unlabeled_features
+    if req.pit_contract_version is not None:
+        cleaning_report["pit_contract_version"] = req.pit_contract_version
+        cleaning_report["pit_contract_sha256"] = pit_contract_sha256
     cleaning_report["source_missingness_by_feature"] = missingness_by_feature
     cleaning_report["source_coverage_complete"] = all(rate < 1.0 for rate in missingness_by_feature.values())
     cleaning_report["sector_unknown_rows"] = int(np.isin(np.char.lower(sectors_arr.astype(str)), ["unknown", "", "0", "0.0"]).sum())

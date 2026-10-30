@@ -27,6 +27,8 @@ class _FeatureBatchContext:
     model_errors: list[str] = field(default_factory=list)
     challenger_rank_scores: dict[str, float] = field(default_factory=dict)
     challenger_errors: list[str] = field(default_factory=list)
+    # The PIT contract version build_feature_matrix applied to x_latest (C28-02 C2).
+    pit_contract_version: str | None = None
 
 
 def _runtime():
@@ -265,6 +267,10 @@ def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
     from .features import build_feature_matrix, get_features
 
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    pit_version = getattr(req, "pit_contract_version", None)
+    if pit_version is not None and "per_stock_ts" not in (req.market_env or {}):
+        # Lagged fields never fall back to same-day scalars; without history they would be 0.
+        raise ValueError("pit_lagged_history_missing")
     df = build_feature_matrix(
         req.prices,
         req.indicators,
@@ -273,6 +279,7 @@ def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
         req.market_env,
         barrier_params=req.barrier_params or None,
         stock_meta=getattr(req, "stock_meta", None),
+        pit_contract_version=pit_version,
     )
     x, _y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
     if len(x) == 0:
@@ -281,13 +288,32 @@ def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
         req=req,
         x_latest=x[-1].reshape(1, -1),
         feature_names=feature_names,
+        pit_contract_version=pit_version,
     )
+
+
+_PIT_VERSION_SLOT: tuple = (None, None)
+
+
+def _artifact_pit_version(meta: dict | None) -> str | None:
+    # Batches align many stocks against one metadata object; the slot keeps it alive,
+    # so identity cannot be reused by another object while cached.
+    global _PIT_VERSION_SLOT
+    cached, version = _PIT_VERSION_SLOT
+    if meta is None or cached is not meta:
+        from .pit_contract import artifact_contract_version
+        version = artifact_contract_version(meta)
+        _PIT_VERSION_SLOT = (meta, version)
+    return version
 
 
 def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None) -> np.ndarray:
     from .artifact_contract import ArtifactValidationError, validate_serving_feature_compatibility
     from .features import safe_float
 
+    # Train/serve skew guard (C28-02 C2): features must carry the artifact's contract lags.
+    if _artifact_pit_version(meta) != ctx.pit_contract_version:
+        raise ValueError("pit_contract_version_serving_mismatch")
     training_features = (meta or {}).get("feature_names", [])
     training_medians = (meta or {}).get("feature_medians", {})
     if training_features and training_features != ctx.feature_names:

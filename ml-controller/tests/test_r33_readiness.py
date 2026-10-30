@@ -61,8 +61,12 @@ def _plan():
                                        "candidates": [{"sequence_gcs_prefix": PREFIX, "price_sessions": required}]}}
 
 
-def _patch(monkeypatch, *, plan=None, pending=None, inventory="inventory_ready", sealed=None):
+def _patch(monkeypatch, *, plan=None, pending=None, inventory="inventory_ready", sealed=None, certified=True):
+    from services import pit_certification
     calls = {}
+    monkeypatch.setattr(pit_certification, "verify_bound_receipt", lambda bucket, **kw: {
+        "certified": certified, "reasons": [] if certified else ["contract_not_approved"], "receipt_sha256": "r" * 64,
+        "binding_reasons": [], "attached": {"receipt_sha256": "r" * 64}})
 
     async def prep(**kwargs):
         calls["prep"] = kwargs
@@ -102,7 +106,8 @@ def test_ready_verdict_uses_dry_run_owners_and_never_writes(monkeypatch):
     assert calls["inventory"] == {"sequence_gcs_prefix": PREFIX, "run_date": "2026-10-23", "inference_only": False,
                                   "per_field_auxiliary": True, "require_aligned_history": True}
     assert set(checks) == {"profile_roster", "sequence_selection", "prep_plan", "capture_inventory", "l2_pool",
-                           "tabpack_closure_skipped", "challenger_slots"}
+                           "tabpack_closure_skipped", "challenger_slots", "pit_certification"}
+    assert checks["pit_certification"]["status"] == "pass"
     assert checks["profile_roster"]["model_count"] == 7
     assert checks["sequence_selection"]["required_price_sessions"] == 1532
     assert checks["prep_plan"]["source_prep"] == "build" and checks["prep_plan"]["adjusted_prep"] == "reuse_latest"
@@ -139,6 +144,17 @@ def test_missing_pool_days_warn_and_challenger_overlap_fails(monkeypatch):
     report = _run()
     assert _by_name(report)["challenger_slots"]["overlap_with_release"] == ["TimeXer"]
     assert "challenger_slots" in report["blocking_checks"]
+
+
+def test_uncertified_or_unreadable_pit_receipt_blocks(monkeypatch):
+    _patch(monkeypatch, certified=False)
+    report = _run()
+    assert _by_name(report)["pit_certification"]["reasons"] == ["contract_not_approved"]
+    assert "pit_certification" in report["blocking_checks"]
+    # Real owners: no sealed sequence manifest in the bucket fails closed, without writes.
+    monkeypatch.undo()
+    check = r33_readiness.check_pit_certification(NoWriteBucket(), _plan())
+    assert check["status"] == "fail" and check["reason"].startswith("pit_certification_unreadable:")
 
 
 def test_readiness_route_is_registered():

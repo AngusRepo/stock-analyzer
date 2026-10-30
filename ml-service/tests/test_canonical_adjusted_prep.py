@@ -96,8 +96,9 @@ def test_source_receipt_inventory_uses_same_order_for_multi_digit_batches(monkey
         prep._verified_source_receipt(Bucket(), "features", batch_count)
 
 
+@pytest.mark.parametrize("unknown_rows", [0, 100])
 @pytest.mark.parametrize("use131", [False, True])
-def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeypatch, tmp_path, use131):
+def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeypatch, tmp_path, use131, unknown_rows):
     import hashlib
     import io
     import json
@@ -116,10 +117,12 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
     semantic = FEATURE131_SEMANTIC if use131 else LEGACY_SEMANTIC
     sha = "a" * 40
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", sha)
-    n = 10000
+    n = 10000 + unknown_rows  # full-fit admits at least 10000 labeled rows
     buffer = io.BytesIO()
     np.savez_compressed(buffer, dates=np.array(["2026-01-01"] * n),
-        symbols=np.array(["2330"] * n), markets=np.array(["LISTED"] * n),
+        # C28-02 C3: rows before market_since arrive UNKNOWN and must not get a label,
+        # even though the symbol's modal venue is LISTED.
+        symbols=np.array(["2330"] * n), markets=np.array(["UNKNOWN"] * unknown_rows + ["LISTED"] * (n - unknown_rows)),
         X=np.zeros((n, len(names)), dtype=np.float32), missingness_rates=np.zeros(len(names)))
     objects = {"features/prep/batch_0.npz": buffer.getvalue(),
         "features/prep/feature_names.json": json.dumps(names).encode(),
@@ -150,6 +153,9 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
     receipt["auxiliary_capture"]={"schema_version":"training-auxiliary-capture-binding-v1","capture_id":"capture-1","capture_manifest_sha256":"a"*64}
     receipt["long_source_capture"]={"schema_version":"training-long-source-binding-v1","capture_id":"capture-1",**{k:{"manifest_sha256":"a"*64} for k in ("broker","holding")}}
     receipt["global_capture"]={"schema_version":"training-global-capture-binding-v1","capture_id":"capture-1","history_sha256":"a"*64}
+    pit = "pit-availability-contract-v1" if unknown_rows else None  # R33 source preps carry the contract
+    if pit:
+        receipt["pit_contract_version"] = pit
     receipt.pop("receipt_checksum")
     receipt["receipt_checksum"]=hashlib.sha256(json.dumps(receipt,sort_keys=True).encode()).hexdigest()
     objects["features/prep/immutable_receipt.json"]=json.dumps(receipt).encode()
@@ -171,14 +177,17 @@ def test_event_inventory_survives_adjustment_and_both_training_consumers(monkeyp
         "output_gcs_prefix": "adjusted", "feature_semantic_version":semantic, "batch_count": 1, "sequence_batch_count": 1}
     manifest = prep.rebuild_canonical_adjusted_prep(payload)
     assert manifest["source_checksums"] == receipt["output_checksums"]
+    # The adjusted prep names the contract its source features were built under; legacy is unchanged.
+    assert manifest.get("pit_contract_version") == pit and ("pit_contract_version" in manifest) is bool(pit)
     training = {"run_date": "2026-01-07", "settings":{"feature_history_schema":semantic}, "dataset_snapshot": {
         "manifest_path": "adjusted/prep/manifest.json", "manifest_checksum": manifest["manifest_checksum"]}}
     _, counts = materialize_inputs(bucket, training, tmp_path)
-    assert counts == {"2026-01-01": n}
+    assert counts == {"2026-01-01": n - unknown_rows}
     full_fit = _verify_prebuilt_canonical_prep(bucket=bucket, prefix="adjusted",
         expected_manifest_checksum=manifest["manifest_checksum"],
         expected_target_semantic_version=manifest["target_semantic_version"], expected_producer_source_sha=sha, expected_feature_semantic=semantic)
-    assert full_fit["total_rows"] == n
+    assert full_fit["total_rows"] == n - unknown_rows
+    assert full_fit.get("pit_contract_version") == pit and ("pit_contract_version" in full_fit) is bool(pit)
     assert full_fit["feature_semantic_version"] == semantic
     with pytest.raises(ValueError,match="feature_semantic|source_receipt"):
         _verify_prebuilt_canonical_prep(bucket=bucket,prefix="adjusted",
@@ -204,3 +213,16 @@ def test_missingness_is_not_sliced_when_rows_equal_feature_width():
     np.testing.assert_array_equal(result["missingness_rates"],rates)
     source.pop("missingness_rates")
     with pytest.raises(ValueError,match="missingness_required"):_slice_feature_batch(source,mask)
+
+
+def test_label_venue_is_each_rows_own_market_not_the_symbols_mode():
+    import numpy as np
+    from app.canonical_adjusted_prep import _market_map, _row_markets
+    # ROTC/TPEX -> listed mover: rows before market_since arrive as UNKNOWN (C28-02 C3).
+    batch = {"symbols": np.array(["6467"] * 5 + ["2330"] * 2),
+             "markets": np.array(["UNKNOWN", "UNKNOWN", "TPEX", "TWSE", "LISTED", "TWSE", "TWSE"])}
+    assert _row_markets(batch["markets"]).tolist() == ["", "", "OTC", "LISTED", "LISTED", "LISTED", "LISTED"]
+    # One venue per symbol: identical to the previous mode-based labels.
+    single = {"symbols": np.array(["2330", "2330", "8069"]), "markets": np.array(["TWSE", "TWSE", "TPEX"])}
+    mode = _market_map([single])
+    assert _row_markets(single["markets"]).tolist() == [mode[s] for s in single["symbols"]]

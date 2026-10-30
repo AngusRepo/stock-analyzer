@@ -2,7 +2,8 @@
 
 prep (job) -> fold OOF (Modal) -> D1 fold index -> OOF checks -> full-fit -> calibration
 -> sealed candidate bundle. A failed check never dispatches full-fit. Full-fit trains
-through the latest mature signal date, not the fold-aligned manifest end.
+through the latest mature signal date, not the fold-aligned manifest end. Full-fit also
+needs the capture's PIT vintage receipt, re-verified on every run, and carries it (C28-02).
 
 Candidate-only: no P3 stacker/ensemble, no TabPack L4 refresh, no monthly L4 closure,
 and never a write to model_champion_pointers or active8_ensemble_pointer_v1. The seven
@@ -89,6 +90,46 @@ def candidate_registry_complete(registry: dict | None, release_models) -> bool:
             and registry.get("promotion_decision") == PROMOTION_DECISION
             and set(artifacts) == set(release_models)
             and all(item.get("artifact_id") and item.get("checksum") for item in artifacts.values()))
+
+
+SEALED_CHECKS = ("leakage", "inversion", "tail_guard")
+
+
+def _scope_values(node, key: str) -> list:
+    """Every value stored under key anywhere in an artifact's metadata."""
+    found, stack = [], [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if key in item:
+                found.append(item[key])
+            stack.extend(v for v in item.values() if isinstance(v, (dict, list)))
+        elif isinstance(item, list):
+            stack.extend(v for v in item if isinstance(v, (dict, list)))
+    return found
+
+
+def artifacts_missing_pit_binding(bucket, registry: dict, *, receipt_sha256: str, contract_version) -> list[str]:
+    """Models whose full-fit metadata does not record this run's PIT receipt and contract version.
+
+    The prep echoes the contract it applied; trainers do not. A trainer that dropped the
+    fields (e.g. an older Modal image) would leave an artifact trained on lagged features
+    that serving, seeing no version, would feed unlagged ones (C28-02 C2/C6).
+    """
+    missing = []
+    for name, item in sorted((registry.get("artifacts") or {}).items()):
+        path = str((item or {}).get("metadata_path") or "")
+        try:
+            blob = bucket.blob(path)
+            meta = json.loads(blob.download_as_text()) if path and blob.exists() else None
+        except (ValueError, TypeError):
+            meta = None
+        flags = _scope_values(meta, "point_in_time_vintage_certified")
+        if (not isinstance(meta, dict) or not flags or any(flag is not True for flag in flags)
+                or set(_scope_values(meta, "pit_certification_sha256")) != {receipt_sha256}
+                or set(_scope_values(meta, "pit_contract_version")) != {contract_version}):
+            missing.append(name)
+    return missing
 
 
 def _artifact_train_label_known_max(metadata: dict) -> str | None:
@@ -182,6 +223,7 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
     from services.training_source_preflight import require_oof_training_sources
     from routers.walk_forward import R33_OOF_TEST_SESSIONS, dispatch_oof_full_fit_training
     from services import r33_calibration_job, r33_oof_checks
+    from services.pit_certification import verify_bound_receipt
 
     manifest, _ = load_verified_oof_manifest(manifest_path, bucket=bucket, require_formal_lineage=True)
     if (manifest["cohort_id"] != cohort_id or tuple(manifest.get("model_set") or ()) != R33_MODELS
@@ -223,6 +265,17 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
 
     prefix = f"{BUNDLE_PREFIX}/{cohort_id}"
     checks_blob = bucket.blob(prefix + "/oof_checks.json")
+    # The receipt must sit next to this capture and cover every prep the cohort trained on:
+    # the full-fit prep and each window's source prep (a recovered pre-contract window fails).
+    try:
+        pit = verify_bound_receipt(bucket, sequence_gcs_prefix=manifest["sequence_gcs_prefix"],
+                                   prep_gcs_prefixes=[manifest.get("prep_gcs_prefix"),
+                                                      *[w.get("source_prep_gcs_prefix") for w in manifest.get("windows") or []]])
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        # An unreadable stored receipt fails the gate; GCS transport errors still propagate (retry).
+        # The message names which input failed (contract file, capture root, sequence manifest).
+        pit = {"certified": False, "attached": None,
+               "reasons": [f"receipt_unreadable:{type(exc).__name__}:{str(exc)[:200]}"]}
     if checks_blob.exists():
         report, checks_checksum = _read(checks_blob)
     else:
@@ -231,16 +284,32 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
         report = {"schema_version": CHECKS_SCHEMA, "cohort_id": cohort_id,
                   "manifest_checksum": manifest["manifest_checksum"], "knowledge_cutoff_date": as_of,
                   "fold_receipts": receipts, "pool": data["pool_receipt"], "prices": data["price_receipt"],
-                  "result": r33_oof_checks.run_checks(oof=data["oof"], fold_receipts=receipts,
-                                                      pool_by_date=data["pool"], new_fold_from=None)}
+                  "result": r33_oof_checks.run_checks(
+                      oof=data["oof"], fold_receipts=receipts, pool_by_date=data["pool"], new_fold_from=None,
+                      pit_certification=pit["attached"], pit_binding_reasons=pit.get("binding_reasons") or ())}
         report, checks_checksum = _write_once(checks_blob, report)
     if report.get("manifest_checksum") != manifest["manifest_checksum"]:
         raise ValueError("r33_oof_checks_manifest_mismatch")
+    # The sealed OOF checks are write-once; their pit_vintage entry is the result at seal time.
+    # The PIT gate is re-verified on every run, so a receipt uploaded or regenerated later
+    # is judged freshly while leakage/inversion/tail-guard can never be re-rolled.
+    sealed = report["result"].get("checks") or {}
+    sealed_pass = all((sealed.get(k) or {}).get("passed") is True for k in SEALED_CHECKS)
+    # status is the gate this run applied (sealed non-PIT checks + this run's PIT verification);
+    # sealed_status is the file's own status, whose pit_vintage may predate the current receipt.
     checks = {"path": checks_blob.name, "checksum": checks_checksum,
-              "status": report["result"].get("status")}
-    if checks["status"] != "pass":
+              "status": "pass" if sealed_pass and pit["certified"] else "fail",
+              "sealed_status": report["result"].get("status"), "pit_certified": pit["certified"],
+              "pit_certification_sha256": pit.get("receipt_sha256")}
+    if not sealed_pass:
         return {**base, "status": "failed", "reason": "r33_oof_checks_failed", "r33_oof_checks": checks,
                 "full_fit_dispatch": {"status": "not_dispatched", "reason": "r33_oof_checks_failed"},
+                "training_dispatched": False}
+    pit_certification = pit["attached"]
+    if not pit["certified"]:
+        return {**base, "status": "failed", "reason": "r33_pit_certification_unbound", "r33_oof_checks": checks,
+                "pit_certification": {k: pit.get(k) for k in ("certified", "reasons", "receipt_sha256")},
+                "full_fit_dispatch": {"status": "not_dispatched", "reason": "r33_pit_certification_unbound"},
                 "training_dispatched": False}
 
     # Wei: the full-fit learns through the latest mature signal, not the fold-aligned end.
@@ -252,7 +321,8 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
                 "training_dispatched": False}
     full_fit = await dispatch_oof_full_fit_training(
         manifest=manifest, knowledge_cutoff_date=as_of, bucket=bucket, lifecycle_cadence=cadence,
-        allow_new_dispatch=not poll_only, signal_date_max=signal_date_max, candidate_only=True)
+        allow_new_dispatch=not poll_only, signal_date_max=signal_date_max, candidate_only=True,
+        pit_certification=pit_certification)
     summary = {**full_fit, "signal_date_max": signal_date_max}  # continuation_limit reads modal_poll/dispatch.
     if full_fit.get("retry_required"):
         return {**base, "status": "pending", "dependency_retry_required": True, "r33_oof_checks": checks,
@@ -261,6 +331,11 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
     if full_fit.get("status") != "completed" or not candidate_registry_complete(registry, R33_MODELS):
         return {**base, "status": "failed", "reason": full_fit.get("reason") or "r33_full_fit_incomplete",
                 "r33_oof_checks": checks, "full_fit_dispatch": summary}
+    unbound = artifacts_missing_pit_binding(bucket, registry, receipt_sha256=pit["receipt_sha256"],
+                                            contract_version=pit_certification["receipt"].get("contract_version"))
+    if unbound:
+        return {**base, "status": "failed", "reason": "r33_full_fit_pit_metadata_missing", "r33_oof_checks": checks,
+                "full_fit_dispatch": {**summary, "pit_metadata_missing": unbound}}
 
     bundle_blob = bucket.blob(prefix + "/bundle.json")
     if bundle_blob.exists():

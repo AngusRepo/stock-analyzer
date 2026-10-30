@@ -2,6 +2,7 @@
 from datetime import date
 import numpy as np
 from .deployment_refit import requested
+from .pit_contract import vintage_scope
 
 
 def bounds(payload):
@@ -15,8 +16,9 @@ def bounds(payload):
             raise ValueError("full_fit_scope_dates_required")
     if signal >= known or known != (payload.get("as_of_date") or payload.get("run_date")):
         raise ValueError("full_fit_scope_cutoff_mismatch")
+    # The flag comes only from a controller-derived PIT receipt (C28-02 C6).
     return {"signal_date_max": signal, "label_known_at_max": known,
-            "scope": "explicit_full_fit_samples", "point_in_time_vintage_certified": False}
+            "scope": "explicit_full_fit_samples", **vintage_scope(payload)}
 
 
 def row_mask(payload, signals, known):

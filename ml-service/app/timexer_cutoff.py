@@ -1,5 +1,6 @@
 """Separate immutable archive vintage from the samples admitted to an OOF fit."""
 from datetime import date
+from .pit_contract import vintage_scope
 
 def input_scope(manifest, payload):
     signal = payload.get('signal_date_max')
@@ -24,7 +25,7 @@ def input_scope(manifest, payload):
         raise ValueError('timexer_dual_cutoff_invalid')
     return {'signal_date_max': signal, 'label_known_at_max': known,
             'archive_source_feature_date_max': manifest.get('source_feature_date_max'),
-            'scope': 'explicit_purged_oof_samples', 'point_in_time_vintage_certified': False}
+            'scope': 'explicit_purged_oof_samples', **vintage_scope(payload)}
 
 def admitted(signal_date, label_known_date, scope):
     if scope is None:

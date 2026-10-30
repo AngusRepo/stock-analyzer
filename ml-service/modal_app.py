@@ -783,6 +783,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "run_date": run_date,
                 "signal_date_max": payload.get("signal_date_max"),
                 "label_known_at_max": payload.get("label_known_at_max"),
+                **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+                **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -804,6 +806,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "run_date": run_date,
                 "signal_date_max": payload.get("signal_date_max"),
                 "label_known_at_max": payload.get("label_known_at_max"),
+                **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+                **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -969,6 +973,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "as_of_date": payload.get("as_of_date"),
                     "signal_date_max": payload.get("signal_date_max"),
                     "label_known_at_max": payload.get("label_known_at_max"),
+                    **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+                    **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
                     "max_prep_stale_days": payload.get("max_prep_stale_days"),
                     "label_horizon_days": label_horizon_days,
                 }
@@ -3110,6 +3116,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "producer_source_sha": prep_manifest["producer_source_sha"],
             "roundtrip_cost_bps": float(prep_manifest["roundtrip_cost_bps"]),
             "verification": "manifest_and_all_batch_sha256_v1",
+            # C28-02: the availability contract the cohort's windows were trained under.
+            **({"pit_contract_version": prep_manifest["pit_contract_version"]}
+               if prep_manifest.get("pit_contract_version") is not None else {}),
         }
         prep_blob = prep_bucket.blob(f"{prep_prefix}/prep/batch_0.npz")
         if not prep_blob.exists():
@@ -4036,6 +4045,8 @@ def train_patchtst_universal(payload: dict) -> dict:
             as_of_date=payload.get("as_of_date"),
             signal_date_max=payload.get("signal_date_max"),
             label_known_at_max=payload.get("label_known_at_max"),
+            **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+            **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
             generation_mode=payload.get("generation_mode"),
             feature_semantic_version=payload.get("feature_semantic_version"),
             persist_oof_artifact=payload.get("persist_oof_artifact", True),

@@ -136,3 +136,41 @@ def test_batch_predict_reads_only_npz_shards(monkeypatch, names_in_inventory):
     assert [row['symbol'] for row in rows] == ['2330']
     assert bucket.downloads.count(shard_path) == 1
     assert bucket.downloads.count(names_path) == 1
+
+
+@pytest.mark.parametrize('artifact_version, feature_version', [
+    ('pit-availability-contract-v1', None), (None, 'pit-availability-contract-v1'),
+    ('pit-availability-contract-v1', 'pit-availability-contract-v1')])
+def test_batch_predict_runs_only_on_features_built_under_the_artifacts_contract(monkeypatch, artifact_version, feature_version):
+    # C28-02 B1: a TimeXer trained with availability lags must not score un-lagged features.
+    import torch
+
+    bucket, reference, receipt, _, _ = source()
+    receipt = {k: v for k, v in receipt.items() if k != 'receipt_checksum'}
+    if feature_version:
+        receipt['pit_contract_version'] = feature_version
+    receipt['receipt_checksum'] = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+    reference['source_receipt_checksum'] = receipt['receipt_checksum']
+    bucket.objects[f"{reference['source_gcs_prefix']}/prep/immutable_receipt.json"] = json.dumps(receipt).encode()
+    metadata = json.loads(bucket.objects['model.json'])
+    if artifact_version:
+        metadata['input_scope'] = {'pit_contract_version': artifact_version}
+    bucket.objects['model.json'] = json.dumps(metadata).encode()
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: None)
+    monkeypatch.setattr(timexer_inference, 'metadata_contract', lambda _: {'variant': 'price', 'feature_history_schema': 'formal137-pit-asof-source-quality-v3'})
+    monkeypatch.setattr(timexer_inference, 'load_checkpoint', lambda *a, **kw: (object(), {}))
+    monkeypatch.setattr(timexer_inference, 'predict_asof', lambda *a, **kw: [{'symbol': '2330', 'raw_score': 0.1, 'available': True}])
+
+    def run():
+        return timexer_inference.batch_predict(
+            series_list=[{'symbol': '2330', 'price_basis': 'finlab_adjusted_close', 'dates': ['2026-10-05'], 'prices': [100.0]}],
+            artifact_identity={'model': 'TimeXer', 'version': 'v1', 'artifact_id': 'test', 'artifact_path': 'model.pt',
+                               'metadata_path': 'model.json', 'checksum': 'a' * 64},
+            feature_source=reference, signal_date='2026-10-05', version='v1', bucket=bucket)
+    if artifact_version == feature_version:
+        assert [row['symbol'] for row in run()] == ['2330']
+    else:
+        with pytest.raises(ValueError, match='pit_contract_version_serving_mismatch'):
+            run()
+        assert 'model.pt' not in bucket.downloads

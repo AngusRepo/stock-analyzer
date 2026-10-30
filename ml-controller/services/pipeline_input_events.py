@@ -355,6 +355,9 @@ def _complete_prep(store, stage, path):
     rows = [int(result.get('rows') or 0) for result in results]
     if any(row <= 0 for row in rows) or sum(rows) < 10000:
         raise ValueError('pipeline_input_prep_rows_insufficient')
+    from services.pit_certification import prep_batches_not_under_contract
+    if prep_batches_not_under_contract(results, template):
+        raise ValueError('pipeline_input_prep_pit_contract_not_applied')
     paths = [f'{prefix}/prep/batch_{idx}.npz' for idx in range(len(results))]
     paths.append(f'{prefix}/prep/feature_names.json')
     checksums = {key: digest(store.blob(key).download_as_bytes()) for key in paths}

@@ -1,0 +1,529 @@
+{
+ "schema_version": "pit-availability-contract-v1",
+ "contract_version": "pit-availability-contract-v1",
+ "plan": "output/herdr-handoff-20261018/sys-cleanup-20261028/plan_C28-02_pit_vintage.md (C28-02 Phase 1)",
+ "anchor": {
+  "name": "K(t)",
+  "definition": "21:00 Asia/Taipei serving capture seal on session t"
+ },
+ "definition": "point_in_time_vintage_certified=true iff a pit-vintage-certification-v1 receipt binds the capture_id, every lane manifest sha256 and this contract's content sha256; every source of the 131 features, the label and the universe has a level in {V,O,R,I,N/A}; this contract is approved; and T1, T2, T4, T5 passed. It does not prove original publication timestamps for 2020-05..2026-05 (Q1 hybrid).",
+ "levels": {
+  "V": "vendor vintage guaranteed and spot-checked unchanged",
+  "O": "first seen in our own archived capture (observed_at)",
+  "R": "conservative lag rule with measured same-day availability and revision rate under the thresholds",
+  "I": "revision cannot change the model input (math property plus test)",
+  "N/A": "not an input of the 7 main models (E5)",
+  "U": "none of the above; certification fails"
+ },
+ "thresholds": {
+  "same_day_availability_min": 0.95,
+  "announcement_day_coverage_min": 0.99,
+  "financial_revision_max": 0.005,
+  "sequence_scale_tolerance": {
+   "max_abs_score_diff_over_score_std": 0.001,
+   "min_rank_corr": 0.9999
+  }
+ },
+ "session_calendar": "capture price sessions (training_calendar.json / stock price rows); never KV holiday:*",
+ "lag_semantics": "lag_sessions n: a value whose availability date is d lands on the stock's first price row dated on or after d (d's own row when d is a session of that stock) and is first used n price rows of the same stock later; n = 0 uses that first row. Applied in ml-service build_feature_matrix only when the payload carries pit_contract_version equal to contract_version; without it serving output is unchanged. Sessions are the stock's own price rows, not a market calendar: a suspension only delays a value, never makes it earlier. Availability-dated history (per_stock_ts) joins backward as of each price row; margin/short rows from chips join on their exact date, so a chip row dated on a day the stock has no price row is dropped, not moved. The same margin/short values also reach per_stock_ts history, where a value dated on a non-price day lands on the next price row and then takes its lag, so that path is later, never earlier. Under a version the feature layer also refuses same-day serving scalars for lagged fields and computes the avg_price (VWAP) and volumeMomentumDivergence fallbacks per row; batch_prediction refuses a versioned serving request without per_stock_ts (pit_lagged_history_missing). A version's feature_lags are frozen in ml-service pit_contract._FEATURE_LAGS_SHA256; changing them needs a new contract version.",
+ "feature_lags": {
+  "margin_balance": 1,
+  "short_balance": 1,
+  "short_ratio": 1,
+  "revenue": 1,
+  "revenue_yoy": 1,
+  "revenue_mom": 1,
+  "eps": 1,
+  "roe": 1,
+  "revenue_growth_yoy": 1
+ },
+ "datasets": {
+  "price_raw": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "daily_price_full_vintage/{open,high,low,close,volume,value}"
+   ],
+   "evidence": [
+    "E1 21:00 same-day 59/59",
+    "E2 raw close 0 changed cells (V0517, V0701, V1012 vs F)"
+   ],
+   "limitations": [],
+   "features": [
+    "BETA_60",
+    "CNTD_20",
+    "CNTD_5",
+    "CNTN_20",
+    "CNTN_5",
+    "CNTP_20",
+    "CNTP_5",
+    "CORR_10",
+    "IMIN_20",
+    "IMXD_20",
+    "KLEN",
+    "KLOW",
+    "KLOW2",
+    "KMID",
+    "KSFT",
+    "KSFT2",
+    "KUP",
+    "KUP2",
+    "RESI_10",
+    "RESI_20",
+    "RESI_5",
+    "RESI_60",
+    "RSQR_10",
+    "RSQR_20",
+    "RSQR_60",
+    "VSTD_10",
+    "VSTD_20",
+    "l1_bbBandwidthPct",
+    "l1_bestFvgStrength",
+    "l1_bosBullish",
+    "l1_displacementPct",
+    "l1_smcBullishScore",
+    "l1_smcNetScore",
+    "l1_squeezeMomentum",
+    "l1_squeezeRelease",
+    "l1_volumeExpansion20",
+    "mom_close_to_52w_high",
+    "mom_hl52",
+    "mom_ma50_200_ratio",
+    "rsi5_dulling",
+    "tech_bbands_pctb_20",
+    "tech_bbi",
+    "tech_bullish_streak_5",
+    "tech_dma_10_50",
+    "tech_donchian_pos_20",
+    "tech_ema_12_pos",
+    "tech_emv_14",
+    "tech_gap_down",
+    "tech_gap_up",
+    "tech_granville_score",
+    "tech_kd9_k",
+    "tech_kdj_j_9",
+    "tech_locked_open_up_10",
+    "tech_ma_convergence",
+    "tech_mfi_14",
+    "tech_mtm_10",
+    "tech_obv",
+    "tech_psy_12",
+    "tech_roc_10",
+    "tech_slow_kd_14",
+    "tech_tower_3",
+    "tech_trix_12",
+    "tech_volume_ratio_5",
+    "tech_vr_26",
+    "tech_williams_r_14",
+    "vol_chg_turnover_1y",
+    "vol_cv_volprice_20d",
+    "vol_money_flow_5d",
+    "vol_ratio_20d",
+    "vol_share_turnover_21d",
+    "vol_signal_5d",
+    "vwap_bias"
+   ]
+  },
+  "indicator": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "training indicators computed from daily_price raw OHLCV"
+   ],
+   "evidence": [
+    "E5: computed only from raw OHLCV rows <= t",
+    "E6 causal; l1_volumeMomentumDivergence132710 fixed (PIT-P0 7)"
+   ],
+   "limitations": [],
+   "features": [
+    "l1_bestOrderBlockStrength",
+    "l1_closeAboveMa60Pct",
+    "l1_diTrend",
+    "l1_macdHist",
+    "l1_volumeMomentumDivergence132710",
+    "ma10_bias",
+    "ma60_bias",
+    "mom_macd_trend_10",
+    "mom_rsi_14",
+    "tech_adx_14",
+    "tech_atr_14",
+    "tech_bias_20",
+    "tech_keltner_pos_20",
+    "tech_sar",
+    "tech_sma_20_pos",
+    "tech_wma_10_pos"
+   ]
+  },
+  "price_adjusted": {
+   "level": "I",
+   "lag_sessions": 0,
+   "sources": [
+    "daily_price_full_vintage/{adj_close,adj_open}"
+   ],
+   "evidence": [
+    "E2 adj_close level 0.505% changed (rebase); daily returns 2 cells (V0701), 1 cell (V1012)",
+    "E7 TimeXer score diff <= 1.5e-7 with only the price channel scaled (the rebase case); scaling the 131 exogenous channels as well gives <= 7.7e-6 (synthetic N(0,1) exogenous input)",
+    "E7 max |score diff| / cross-sectional score std (RevIN/use_norm eps=1e-5): PatchTST <= 4.7e-5 for every c; iTransformer 7.7e-5 (c=0.95), 1.4e-5 (c=0.99), 5.3e-4 (c=2), 7.1e-4 (c=1000) inside sequence_scale_tolerance, but 2.1e-3 at c=0.5, above the 1e-3 tolerance"
+   ],
+   "limitations": [
+    "Vendor rebases whole adjusted history by a constant; invariance is a model property (T4), not a vintage proof",
+    "iTransformer at a whole-history halving (c=0.5) exceeds sequence_scale_tolerance (2.1e-3 of score std, E7); within tolerance only for the measured c = 0.95, 0.99, 2 and 1000. PIT-P0 4 was decided on the '<= 0.21%' summary; Wei decides whether level I stands for iTransformer.",
+    "T4 checks the RevIN/use_norm property on randomly initialised models; E7 magnitudes come from the r32 artifacts and depend on trained weights."
+   ],
+   "model_levels": {
+    "TimeXer": "I",
+    "PatchTST": "I",
+    "iTransformer": "I"
+   },
+   "features": [
+    "CORD_10",
+    "l1_return20d",
+    "linear_factor",
+    "liq_amihud_21d",
+    "mom_12m_1m",
+    "mom_9m",
+    "mom_reversal_1m",
+    "mom_reversal_6m",
+    "mom_vol_adj_12m",
+    "return_3d",
+    "return_5d",
+    "tech_cmo_14",
+    "tech_limit_up_streak_10",
+    "vola_cv_90d",
+    "vola_min_130d",
+    "vola_realized_12m",
+    "vola_realized_1m",
+    "volatility_20d",
+    "volatility_5d"
+   ]
+  },
+  "market_value": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "daily_price_full_vintage/market_value"
+   ],
+   "evidence": [
+    "E1 21:00 same-day 59/59",
+    "E2 market_value V0701 -> F: 12.46% of cells changed (932 symbols, up to ~8x; presumed share-count back-fill); V1012 -> F: 0.064%"
+   ],
+   "limitations": [
+    "PIT-P0 2: latest vendor values accepted; the 2026-07 vs 2026-10 difference has no vendor notice"
+   ],
+   "features": [
+    "size_log_mktcap"
+   ]
+  },
+  "institutional": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "chip_diversity_full_vintage/{foreign_net,trust_net,dealer_self_net,dealer_hedge_net}"
+   ],
+   "evidence": [
+    "E1 21:00 same-day 58/59 = 98.3% >= 0.95",
+    "E2 trust 0.019-0.026%, foreign 1 cell, dealer 0"
+   ],
+   "limitations": [],
+   "features": [
+    "chip_5d",
+    "dealer_ratio_5d",
+    "foreign_5d",
+    "institutional_net",
+    "l1_dealerNet5d",
+    "l1_foreignTrustNet5d"
+   ]
+  },
+  "margin_short": {
+   "level": "R",
+   "lag_sessions": 1,
+   "sources": [
+    "training_auxiliary_full_vintage/{margin_balance,short_balance}"
+   ],
+   "evidence": [
+    "E1 margin is not available at 21:00 on any observed day: 2/59 21:00-chain runs (10-12, 10-13) had same-day margin only because they waited for the late lane (written 22:19 and 21:51); earliest same-day write ever 21:50 -> lag 1",
+    "E2 0 changed cells"
+   ],
+   "limitations": [],
+   "features": [
+    "margin_balance",
+    "margin_change_5d_ts",
+    "margin_ratio",
+    "short_squeeze_proxy"
+   ]
+  },
+  "valuation": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "training_auxiliary_full_vintage/{pe,pb,dividend_yield}"
+   ],
+   "evidence": [
+    "E1 21:00 same-day 59/59",
+    "E2 4 cells (~0.0003%)"
+   ],
+   "limitations": [],
+   "features": [
+    "val_bp",
+    "val_dp",
+    "val_ep"
+   ]
+  },
+  "monthly_revenue": {
+   "level": "R",
+   "lag_sessions": 1,
+   "sources": [
+    "training_auxiliary_full_vintage/{revenue,revenue_yoy,revenue_mom} (FinLab locked, key_date session)"
+   ],
+   "evidence": [
+    "E1/E4 key_date-night coverage 98.94% < 0.99 -> +1 session (99.19%)",
+    "E2 locked values rewritten 0.04-0.06% (not V)"
+   ],
+   "limitations": [
+    "PIT-P0 3: late filings back-filled into an old key_date row (0.7-1.9% of a month's rows) remain; first-seen observed_at (C8) lets later months reach level O"
+   ],
+   "features": [
+    "l1_monthlyRevenueMoM",
+    "l1_monthlyRevenueYoY",
+    "val_sp"
+   ]
+  },
+  "eps": {
+   "level": "R",
+   "lag_sessions": 1,
+   "sources": [
+    "training_auxiliary_full_vintage/eps (max(disclosure, deadline) session)"
+   ],
+   "evidence": [
+    "E1 deadline-day coverage unmeasurable -> +1 session (Q3 fail-closed)",
+    "E2 S1013 -> S1027: 0.659% > 0.5% -> mask (Q4 ii); full universe 1442 cells / 101 symbols / 2019-Q1..2026-Q2"
+   ],
+   "limitations": [
+    "PIT-P0 1: revisions older than 2026-10-13 cannot be measured; a masked quarter falls back to the last unrevised value already known",
+    "Mask scope is the full-universe S1013 -> S1027 diff (1442 cells, 101 symbols, 2019-Q1..2026-Q2, 12 constant rebases); DECISIONS PIT-P0 1 names 42 symbols, 2024-Q3..2026-Q2. A conservative superset; Wei to confirm at approval"
+   ],
+   "revision_mask": "eps",
+   "features": [
+    "l1_eps"
+   ]
+  },
+  "roe": {
+   "level": "R",
+   "lag_sessions": 1,
+   "sources": [
+    "training_auxiliary_full_vintage/roe"
+   ],
+   "evidence": [
+    "E2 0.050% of cells changed <= financial_revision_max 0.5%",
+    "Q3 +1 session"
+   ],
+   "limitations": [],
+   "features": [
+    "l1_roe"
+   ]
+  },
+  "revenue_growth_yoy": {
+   "level": "R",
+   "lag_sessions": 1,
+   "sources": [
+    "training_auxiliary_full_vintage/revenue_growth_yoy"
+   ],
+   "evidence": [
+    "E2 0.005% of cells changed <= financial_revision_max 0.5%",
+    "Q3 +1 session"
+   ],
+   "limitations": [],
+   "features": [
+    "l1_revenueGrowthYoY"
+   ]
+  },
+  "broker": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "training_long_full_vintage/broker"
+   ],
+   "evidence": [
+    "E1 21:00 same-day 58/59 = 98.3% (strict 57/59 = 96.6%) >= 0.95",
+    "E2 V0701 -> F 0.040%"
+   ],
+   "limitations": [
+    "Before 2026-10-12 the daily broker lane held ~90% of the symbols the full-vintage capture has for the same dates (lane universe expanded on 10-12 and was back-filled); about 10% of Jul-Oct symbol-days used in training were not in the daily capture at the time (E1 broker_coverage_note)."
+   ],
+   "features": [
+    "l1_brokerConcentration",
+    "l1_brokerNetAmount5d"
+   ]
+  },
+  "breadth": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "daily_price_full_vintage/training_breadth.json (official MI_INDEX, sha256 sealed)"
+   ],
+   "evidence": [
+    "Official file sealed by sha256; published after close"
+   ],
+   "limitations": [],
+   "features": [
+    "advance_ratio"
+   ]
+  },
+  "us_quotes": {
+   "level": "R",
+   "lag_sessions": 0,
+   "sources": [
+    "us_quotes (US date strictly before TW date)"
+   ],
+   "evidence": [
+    "services/training_global_capture.py: US date < TW date by construction"
+   ],
+   "limitations": [],
+   "features": [
+    "us_sentiment_score"
+   ]
+  },
+  "holding": {
+   "level": "N/A",
+   "lag_sessions": null,
+   "sources": [
+    "training_long_full_vintage/holding"
+   ],
+   "evidence": [
+    "E5: retail_pct not in formal131"
+   ],
+   "limitations": []
+  },
+  "trading_calendar": {
+   "level": "N/A",
+   "lag_sessions": null,
+   "sources": [
+    "daily_price_full_vintage/training_calendar.json"
+   ],
+   "evidence": [
+    "Not a value; sessions come from the capture calendar, never KV holiday:* (2026-07-10 typhoon closure)"
+   ],
+   "limitations": []
+  },
+  "snapshot_meta": {
+   "level": "N/A",
+   "lag_sessions": null,
+   "sources": [
+    "D1 snapshot per_stock_ts sector/disposal/limit-down fields, stock_meta"
+   ],
+   "evidence": [
+    "E5 perturbation: none of the 6 excluded snapshot features enters formal131"
+   ],
+   "limitations": []
+  },
+  "universe": {
+   "level": "R",
+   "lag_sessions": null,
+   "sources": [
+    "D1 snapshot stocks roster + capture sidecar for stopped commons absent from it (Q5 i, C4)"
+   ],
+   "evidence": [
+    "E3: 41 delisted symbols / 13,425 symbol-days missing from the snapshot; sidecar admits them from the capture"
+   ],
+   "limitations": [
+    "PIT-P0 5 deviation: DECISIONS counts 41 symbols including 4947; 4947 has no core stocks identity or venue, so the sidecar records it as core_identity_missing and admits 40. Its 13 sessions fall inside feature warmup (0 training rows either way). Wei to confirm at approval",
+    "28 stopped commons with NULL delisted_date stay on the snapshot roster; their history is used through their last price row (E3; PIT-P0 5 noted, not fixed)"
+   ]
+  },
+  "label": {
+   "level": "I",
+   "lag_sessions": null,
+   "sources": [
+    "daily_price_full_vintage/{adj_open,adj_close} forward return; per-row PIT venue (C3)"
+   ],
+   "evidence": [
+    "#78 dual cutoff: label_known_at <= next fold test_start; r33_oof_checks leakage unattested_folds=[]",
+    "C3: label market denominator uses the venue on each date, not the symbol's modal venue"
+   ],
+   "limitations": [
+    "C3 per-row venue: rows before market_since (stocks.listed_date of the current venue) carry venue UNKNOWN and get no label (~9,090 symbol-days, E3 8,677 + 413). Fail-closed instead of the plan's ROTC->listed venue-scope evidence; Wei to confirm at approval",
+    "Sequence models (PatchTST, iTransformer, TimeXer) still group OOF evaluation by the per-symbol symbol_market.json (current venue); C3 covers the tabular label denominator only"
+   ]
+  }
+ },
+ "revision_masks": {
+  "eps": {
+   "file": "pit_eps_revision_mask_v1.json",
+   "sha256": "f5996c8142d8b19da6abe74d1bbc2afbf5fbffbb8e715440532c1c630b0c4e96",
+   "applied_by": "ml-controller/services/training_auxiliary_capture.py (R33 per-field capture)"
+  }
+ },
+ "evidence": {
+  "e1": {
+   "path": "audits/pit-cert-20261028/e1_availability.json",
+   "sha256": "f76f7fd4038193c9b76a9a4afa71cef91774dcd7a6b9fa2e66cf4e0186c4bbb0"
+  },
+  "e2": {
+   "path": "audits/pit-cert-20261028/e2_revisions.json",
+   "sha256": "e8beab1fa37cfd2b8f7ea560c08929a2dac0947e883225536c56a3f084e47bd5"
+  },
+  "e3": {
+   "path": "audits/pit-cert-20261028/e3_universe.json",
+   "sha256": "803bf54c07c2943e0ebccb7e7c1bf9e795f423b4e78d85d119dbc6c00c5977ab"
+  },
+  "e4": {
+   "path": "audits/pit-cert-20261028/e4_revenue_keydate.md",
+   "sha256": "5e92346213e97ec3b62d7035fb8ba701e22dd29a40a86e6ade43bdb630bd1750"
+  },
+  "e5": {
+   "path": "audits/pit-cert-20261028/e5_lineage.csv",
+   "sha256": "45d082d1d12c50feeffb06bbd1c206e85a0fa2e362ba840f472537cc7cd4dbfb"
+  },
+  "e6": {
+   "path": "audits/pit-cert-20261028/e6_truncation.json",
+   "sha256": "65319cd25fd1210da468d638abdb4434d404019d09b0d49539d19722b8d97175"
+  },
+  "e7": {
+   "path": "audits/pit-cert-20261028/e7_scale.json",
+   "sha256": "ecd362ca63180925034bdf1340147e4df3fe1ba1c11f227510fca63beb1af118"
+  },
+  "report": {
+   "path": "audits/pit-cert-20261028/pit_cert_evidence_report.md",
+   "sha256": "b7a76b85a11704ff39f8cd30492d94879c7189f9acbc952458a9521192f9d455"
+  }
+ },
+ "required_tests": {
+  "T1": {
+   "file": "ml-controller/tests/test_pit_truncation_equivalence.py",
+   "sha256": "59a65bc67ebc525bed474b48fe85a822a124a42e8e16ab79a864f8a5be4829ba",
+   "cases": 2
+  },
+  "T2": {
+   "file": "ml-service/tests/test_pit_lag_contract.py",
+   "sha256": "d7b0025a7e1ed2ab33bdd845b1f9a5008e0bf66e3a15d84149a8233c15bf0fba",
+   "cases": 11
+  },
+  "T4": {
+   "file": "ml-service/tests/test_sequence_scale_invariance.py",
+   "sha256": "599416fbd8e92e8714459b7bf29be53d239a7455961008f90035251f909685fa",
+   "cases": 4
+  },
+  "T5": {
+   "file": "ml-controller/tests/test_pit_revision_fixture.py",
+   "sha256": "3d2b43fbe4b841714c500e6111033c37ab5e933987de06e607f1f2925fbf8119",
+   "cases": 8
+  }
+ },
+ "limitations": [
+  "Revisions are observable only inside the 2026-05-17..2026-10-27 archive window; older revisions are invisible (E2).",
+  "eps revisions older than 2026-10-13 cannot be measured; the mask covers the S1013 -> S1027 diff only.",
+  "Monthly revenue late filings back-filled into old key_date rows (~0.7-1.9% of a month's rows) are accepted at level R.",
+  "market_value: latest vendor values accepted; 2026-07 vintage differed on 12.46% of cells (E2).",
+  "21:00 availability is measured from run start times (proxy), not a wall-clock observation (E1).",
+  "Financial deadline-day 21:00 coverage is unmeasurable; +1 session is the fail-closed choice (E1).",
+  "Symbol 4947 (delisted, absent from core stocks) has no identity or venue and is not admitted (E3).",
+  "Serving: an artifact whose training input_scope records pit_contract_version must be served with the same version and with per_stock_ts history for lagged fields; batch_prediction refuses a mismatch (pit_contract_version_serving_mismatch). Forwarding the version from the Worker and daily inference prep is promotion work outside Phase 1.",
+  "The Cloud Run ml-service image does not copy data/feature_registry; a request with pit_contract_version there fails closed (pit_contract_missing). The Modal image mounts it.",
+  "eps revisions published after the S1027 vintage are not in pit_eps_revision_mask_v1; a later restatement is masked only after a new mask version is measured and approved.",
+  "Receipts are not signed. ml-controller re-derives the flag from the recorded evidence, test results and file sha256 values that the local CLI wrote; whoever runs the CLI and uploads the receipt is trusted for those inputs."
+ ],
+ "approved_by": "Wei",
+ "approved_at": "2026-10-29T08:27:00+08:00",
+ "approved_content_sha256": "0815bb72b9389ee2c082f70d1fa7e1ea668dfdb0cb7af8750437038427778fac",
+ "approval_status": "approved"
+}

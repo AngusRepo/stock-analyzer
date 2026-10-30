@@ -100,18 +100,35 @@ BROKER_FIELDS=("broker_net_shares","broker_estimated_amount","broker_concentrati
 # broker-ordered groupby output with a multi-key sort_values (stable np.lexsort), so
 # it also keeps the lowest code. They can differ only where canonical's inputs
 # differ: it strips broker codes and cleans symbols, the capture casts them raw.
-HISTORICAL_BROKER_POLICY=("d-day broker branch rows are treated as known after the d-day close, matching serving's "
-    "same-day canonical_broker_flow_daily rows; historic publication time is not certified")
+def historical_broker_policy():
+    """Broker availability from the PIT contract (C28-02 C7), never declared here.
+
+    A non-zero contract lag must also be a feature-layer lag on every broker field,
+    or the rows would be bound earlier than the contract says they are known.
+    """
+    from services.pit_certification import contract_content_sha256,load_contract
+    contract=load_contract();spec=contract["datasets"]["broker"];lag=spec["lag_sessions"]
+    lags=contract.get("feature_lags") or {}
+    if any(lags.get(field,0)!=lag for field in BROKER_FIELDS):
+        raise ValueError("training_broker_contract_lag_unowned")
+    serving=("matching serving's same-day canonical_broker_flow_daily rows" if lag==0 else
+             f"so serving must build broker features with {contract['contract_version']} to match")
+    text=(f"d-day broker branch rows are treated as known after the d-day close plus {lag} session(s) "
+          f"({contract['contract_version']} broker, level {spec['level']}), {serving}; "
+          "historic publication time is not certified")
+    return {"policy":text,"availability_level":spec["level"],"lag_sessions":lag,
+            "contract_version":contract["contract_version"],"contract_sha256":contract_content_sha256(contract)}
 
 
 def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,prior_chips,run_date,inference_composition=None,historical_broker=False):
     """Keep dated evidence; a fresh capture cannot make old reports known earlier.
 
     historical_broker (R33 only) replaces snapshot broker history with every capture
-    row up to run_date under HISTORICAL_BROKER_POLICY.
+    row up to run_date under historical_broker_policy().
     """
     if historical_broker and inference_composition is not None:
         raise ValueError("training_historical_broker_requires_capture")
+    broker_policy=historical_broker_policy() if historical_broker else None
     if inference_composition is None:
         broker,broker_proof=inspect_long_capture(bucket,price_capture=price_capture,name="broker",run_date=run_date)
         holding,holding_proof=inspect_long_capture(bucket,price_capture=price_capture,name="holding",run_date=run_date)
@@ -153,6 +170,6 @@ def bind_long_sources(bucket, *,price_capture,stock_rows,prices_map,prior_ts,pri
         "historical_broker_rows_without_publication_attestation":broker.filter(pl.col("date")<run_date).height,
         "historical_holding_rows_without_publication_attestation":holding.filter(pl.col("date")<run_date).height}
     if historical_broker:
-        proof["historical_broker_binding"]={"policy":HISTORICAL_BROKER_POLICY,"rows_bound":bound.height,
+        proof["historical_broker_binding"]={**broker_policy,"rows_bound":bound.height,
             "date_min":bound["date"].min() if bound.height else None,"snapshot_broker_fields_cleared":list(BROKER_FIELDS)}
     return dated,{s:sorted(rows.values(),key=lambda r:r["date"]) for s,rows in index.items()},proof

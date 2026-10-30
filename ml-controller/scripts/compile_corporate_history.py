@@ -8,6 +8,7 @@ that `dataset_snapshot_exporter` accepts as `corporate_history_path`.
 Spec (JSON):
   days            JSON list of trading sessions (the exchange calendar)
   universe        JSON list of symbols the research universe may hold
+  days_sha256 / universe_sha256   optional; checked when days/universe are file paths
   sources         dataset -> {path, fetched_at[, sha256]} for finlab.dividend_announcement,
                   the four finlab company event catalogs, finlab.tw_etf_dividend_events,
                   finlab.etf_split:恢復買賣日期 and official.etf_registry
@@ -74,8 +75,14 @@ def _json(raw: dict, ref: dict):
     return json.loads(raw[ref['uri']].decode('utf-8'))
 
 
-def _json_list(base: Path, value, name: str) -> list:
-    data = json.loads((base / value).read_text(encoding='utf-8')) if isinstance(value, str) else value
+def _json_list(base: Path, value, name: str, sha256: str | None = None) -> list:
+    if isinstance(value, str):
+        raw = (base / value).read_bytes()
+        if sha256 is not None and hashlib.sha256(raw).hexdigest() != sha256:
+            raise ValueError('corporate_history_spec_file_changed_since_fetch:' + name)
+        data = json.loads(raw.decode('utf-8'))
+    else:
+        data = value
     if not isinstance(data, list):
         raise ValueError('corporate_history_spec_list_required:' + name)
     return data
@@ -104,9 +111,9 @@ def compile_history(spec: dict, *, base: Path, captured_at: str | None = None):
     # session's vendor cutoff (09:00 TW); an event announced after the oldest fetch
     # would otherwise become "no action". Later sessions stay a named gap.
     oldest_fetch = min(datetime.fromisoformat(ref['fetched_at']) for ref in refs.values())
-    days = sorted({d for d in _json_list(base, spec['days'], 'days')
+    days = sorted({d for d in _json_list(base, spec['days'], 'days', spec.get('days_sha256'))
                    if datetime.fromisoformat(d + 'T09:00:00+08:00') <= oldest_fetch})
-    universe = sorted(set(_json_list(base, spec['universe'], 'universe')))
+    universe = sorted(set(_json_list(base, spec['universe'], 'universe', spec.get('universe_sha256'))))
     if not days or not universe:
         raise ValueError('corporate_history_spec_scope_empty')
     registry = _registry(_json(raw, refs['official.etf_registry']))
@@ -163,7 +170,7 @@ def main(argv=None) -> int:
     base = args.spec.resolve().parent
     frame, days, scoped, unscoped = compile_history(spec, base=base)
     frame.write_parquet(args.output)
-    report = gap_report(frame, days=days, calendar=sorted(_json_list(base, spec['days'], 'days')),
+    report = gap_report(frame, days=days, calendar=sorted(_json_list(base, spec['days'], 'days', spec.get('days_sha256'))),
                         target_end=args.target_end)
     report.update(artifact=str(args.output.resolve()),
                   sha256=hashlib.sha256(args.output.read_bytes()).hexdigest(),

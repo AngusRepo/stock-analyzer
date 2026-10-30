@@ -1401,8 +1401,8 @@ export async function syncLegacyRevenueFromFinLabCanonical(
       SELECT stock_id, revenue_month, revenue, yoy, mom
         FROM canonical_revenue_monthly
        WHERE stock_id IN (${marks}) AND source LIKE 'finlab.%'
-         AND revenue_month >= strftime('%Y-%m', date(?, '-18 months'))
-         AND revenue_month <= strftime('%Y-%m', ?) AND revenue IS NOT NULL
+         AND revenue_month >= date(?, 'start of month', '-18 months')
+         AND revenue_month <= date(?) AND revenue IS NOT NULL
     `).bind(...symbols, targetDate, targetDate).all<any>()
     for (const row of results ?? []) {
       const identity = identities.get(String(row.stock_id))

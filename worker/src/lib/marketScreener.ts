@@ -1577,7 +1577,7 @@ function finalizeRawFundamentalTelemetry(
   }
 }
 
-async function loadStrategyRawFundamentalSignals(
+export async function loadStrategyRawFundamentalSignals(
   env: Bindings,
   symbols: string[],
   endDate: string,
@@ -1587,7 +1587,6 @@ async function loadStrategyRawFundamentalSignals(
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
   const telemetry = createRawFundamentalTelemetry(uniqueSymbols.length, monthlyRevenue)
   if (!uniqueSymbols.length) return { fundamentals, telemetry }
-  const revenueMonth = endDate.slice(0, 7)
 
   for (const chunk of chunkArray(uniqueSymbols, D1_IN_CHUNK_SIZE)) {
     const placeholders = chunk.map(() => '?').join(',')
@@ -1659,6 +1658,8 @@ async function loadStrategyRawFundamentalSignals(
 
     if (monthlyRevenue.queryAllowed) {
     try {
+      // revenue_month is FinLab's publication-deadline index (2026-10-12 = September),
+      // so the PIT bound is the full signal date, not its YYYY-MM prefix.
       const { results } = await databaseForDataDomain(env, 'market').prepare(`
         SELECT r.stock_id AS symbol, r.yoy, r.mom
           FROM canonical_revenue_monthly r
@@ -1670,7 +1671,7 @@ async function loadStrategyRawFundamentalSignals(
               WHERE r2.stock_id = r.stock_id
                 AND r2.revenue_month <= ?
            )
-      `).bind(...chunk, revenueMonth, revenueMonth).all<{
+      `).bind(...chunk, endDate, endDate).all<{
         symbol: string
         yoy: number | null
         mom: number | null
@@ -1942,7 +1943,6 @@ function deriveStrategyRawSignals(
   const latestBroker = [...chipRows].reverse().find((row) => row.brokerCount != null || row.concentration != null)
   const latestMargin = [...chipRows].reverse().find((row) => row.marginBalance != null || row.shortBalance != null)
   const monthlyRevenueUsable = monthlyRevenueEvidence?.status === 'LIVE_CURRENT_ONLY'
-    && monthlyRevenueEvidence.signalDate === monthlyRevenueEvidence.observedTaipeiDate
   const fundamentalSources = String(fundamentals?.source ?? '')
     .split('+')
     .map((value) => value.trim())
@@ -2414,7 +2414,6 @@ export function applyFinLabStyleFactorNormalization<T extends { raw_signals?: St
     }
 
     const liveMonthlyRevenueCompositeEvidence = raw.monthlyRevenueEvidence?.status === 'LIVE_CURRENT_ONLY'
-      && raw.monthlyRevenueEvidence.signalDate === raw.monthlyRevenueEvidence.observedTaipeiDate
     if (!liveMonthlyRevenueCompositeEvidence) {
       delete raw.factorSignals.finlabQualityCompositeRank
       delete raw.factorSignals.finlabSectorQualityCompositeRank

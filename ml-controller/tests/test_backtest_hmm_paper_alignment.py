@@ -1,8 +1,8 @@
 """Replay uses Paper's market-regime inputs once an HMM row was visible before an open (Wei 10/30).
 
 - The screener's alpha framework gets the pipeline HMM contract (family + surface).
-- No confidence entry gate: Paper reads no buy threshold since 06-14 (Wei 10/30); only the
-  drawdown halt and the drawdown position scale remain.
+- No confidence entry gate: Paper reads no buy threshold since 06-14 (Wei 10/30); entries follow
+  Paper's morning risk chain (services.backtest_paper_risk): halt, single-name cap, exposure cap.
 - No risk-level SL/TP add and no medium scale (Wei 10/30 B): Paper applies neither.
 """
 import hashlib
@@ -156,6 +156,15 @@ def dataset(regime_rows):
             'market_regime_state': frame(regime_rows)})
 
 
+PAPER_CIRCUIT = {'maxPositionPct': .08, 'drawdownHalt': .15, 'drawdownScaleStart': .03, 'mddMultFloor': .2,
+                 'highVolReducedPosPct': .04, 'layer7ScaleRatio': .3}
+
+
+def portfolio_contract():
+    from services import position_risk_owner
+    return position_risk_owner.formal_portfolio_risk({'portfolio': {}})
+
+
 def run(monkeypatch, kv_position_risk, regime_rows):
     from services import backtest_state
     def forbidden(*a, **kw): raise AssertionError('live D1 read')
@@ -166,7 +175,8 @@ def run(monkeypatch, kv_position_risk, regime_rows):
     monkeypatch.setattr(engine, 'simulate_entries_for_date', lambda **kw: entries.setdefault(kw['entry_date'], kw) and [])
     data = dataset(regime_rows)
     engine.replay_period(dataset=data, start_date=data.start_date, end_date=data.end_date,
-                         params={'positionRiskDistribution': kv_position_risk}, mode='B')
+                         params={'positionRiskDistribution': kv_position_risk, 'circuit': PAPER_CIRCUIT,
+                                 'portfolioRiskPolicy': portfolio_contract()}, mode='B')
     return screens, entries
 
 
@@ -181,11 +191,12 @@ def test_hmm_days_use_the_pipeline_contract_and_earlier_days_keep_the_stored_lev
     assert screens['2026-08-18']['regime_label'] == 'bear'
     assert screens['2026-08-18']['regime_surface'] == SURFACE
     assert screens['2026-08-19']['regime_label'] == 'volatile'
-    # Entries get the drawdown inputs only: no threshold, accuracy or adaptive (P3) inputs.
-    gate_inputs = {'buy_conf_threshold', 'recent_accuracy_30d', 'risk_score', 'risk_level', 'regime_family'}
+    # Entries get Paper's morning risk state only: no threshold, accuracy or adaptive inputs.
+    gate_inputs = {'buy_conf_threshold', 'recent_accuracy_30d', 'risk_score', 'risk_level', 'regime_family',
+                   'circuit_cfg', 'current_drawdown_30d', 'pf_30d', 'pf_90d'}
     assert set(entries) == {'2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20'}
     assert not any(gate_inputs & set(kw) for kw in entries.values())
-    assert all(kw['current_drawdown_30d'] is not None for kw in entries.values())
+    assert all(kw['paper_risk'] is not None for kw in entries.values())
 
 
 def test_backfilled_rows_keep_the_stored_path_until_an_hmm_row_was_visible(monkeypatch, kv_position_risk):
@@ -240,13 +251,20 @@ def test_a_range_before_the_hmm_era_is_unchanged(monkeypatch, kv_position_risk):
     assert set(entries) == set(DAYS[1:])
 
 
-# ── no confidence gate; halt and drawdown scale kept; no SL/TP add or medium scale ──
+# ── no confidence gate; Paper's halt, name cap and exposure cap; no SL/TP add or medium scale ──
 
 L2 = {'sltp_add_orange_sl': 5., 'sltp_add_orange_tp': 5., 'medium_risk_scale': .01}
 GATE = {'buyConfThreshold': .99, 'lowAccuracyThreshold': .99, 'drawdownRaisedConf': .99}
 
 
-def entry(kv_position_risk, *, conf, circuit=None, drawdown=0., l2=L2, **extra):
+def risk_state(*, halt=False, cap=.08, exposure=.95):
+    from services.backtest_paper_risk import PaperRiskState
+    return PaperRiskState(halt=halt, max_position_pct=0. if halt else cap, baseline_position_pct=.08,
+                          target_exposure=None if halt else exposure, market=None,
+                          triggered_layers=('P1',) if halt else (), reasons=('[P1] test halt',) if halt else ())
+
+
+def entry(kv_position_risk, *, conf, risk=None, l2=L2, account=None, **extra):
     prices = pl.DataFrame([{'symbol': '2330', 'date': d, 'open': 100., 'high': 101., 'low': 99., 'close': 100.,
                             'volume': 10_000_000} for d in ('2026-08-18', '2026-08-19')])
     indicators = pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18'], 'atr14': [10.]})
@@ -256,14 +274,13 @@ def entry(kv_position_risk, *, conf, circuit=None, drawdown=0., l2=L2, **extra):
                                   trading_days=['2026-08-18', '2026-08-19'], start_date='2026-08-18', end_date='2026-08-19')
     candidate = engine.Candidate(symbol='2330', date='2026-08-18', close=100., industry='semi', base_score=1.,
                                  chip_score=1., tech_score=1., momentum_score=1., combined_score=1., has_buy_signal=1)
-    account = engine.AccountState(cash=1_000_000., initial_capital=1_000_000.)
+    account = account or engine.AccountState(cash=1_000_000., initial_capital=1_000_000.)
     attempts = engine.simulate_entries_for_date(
         dataset=data, decision_date='2026-08-18', entry_date='2026-08-19', candidates=[candidate], account=account,
         pos=engine.PositionSizeParams(), sltp=engine.SLTPParams(), fees=engine.FeeParams(),
         replay_days=['2026-08-18', '2026-08-19'],
         ml_predictions=engine.MLPredictionsCache({('2330', '2026-08-18'): conf}),
-        circuit_cfg=circuit if circuit is not None else dict(GATE), current_drawdown_30d=drawdown,
-        l2_formula_cfg=l2, position_risk_distribution_cfg=kv_position_risk, **extra)
+        paper_risk=risk if risk is not None else risk_state(), l2_formula_cfg=l2, position_risk_distribution_cfg=kv_position_risk, **extra)
     if attempts[0].status != 'skipped_circuit_halt':
         assert candidate.confidence == conf, 'sizing keeps the raw confidence, as Paper Kelly does'
     return attempts[0], account
@@ -280,28 +297,57 @@ def test_any_confidence_enters_even_against_a_raised_threshold(kv_position_risk,
     attempt, account = entry(kv_position_risk, conf=conf)
     assert attempt.status == 'filled' and shares(account) > 0
     # Equal size only because PositionSizeParams() has Kelly off; with Kelly on, conf still sizes.
-    assert shares(account) == shares(entry(kv_position_risk, conf=.9, circuit={})[1])
+    assert shares(account) == shares(entry(kv_position_risk, conf=.9)[1])
 
 
 @pytest.mark.parametrize('removed', ['buy_conf_threshold', 'recent_accuracy_30d', 'risk_score', 'risk_level',
-                                     'regime_family'])
+                                     'regime_family', 'circuit_cfg', 'current_drawdown_30d', 'pf_30d', 'pf_90d'])
 def test_the_entry_simulation_has_no_confidence_gate_inputs(kv_position_risk, removed):
     with pytest.raises(TypeError):
         entry(kv_position_risk, conf=.6, **{removed: None})
 
 
-def test_the_drawdown_halt_still_stops_every_entry(kv_position_risk):
-    circuit = {**GATE, 'drawdownHalt': .15, 'drawdownScaleStart': .15}     # no scale below the halt
-    attempt, account = entry(kv_position_risk, conf=.9, circuit=circuit, drawdown=.151)
-    assert attempt.status == 'skipped_circuit_halt' and not account.positions
-    assert entry(kv_position_risk, conf=.9, circuit=circuit, drawdown=.15)[0].status == 'filled'
+def test_a_paper_risk_halt_stops_every_entry(kv_position_risk):
+    attempt, account = entry(kv_position_risk, conf=.9, risk=risk_state(halt=True))
+    assert attempt.status == 'skipped_circuit_halt' and not account.positions and 'P1' in attempt.reason
+    assert entry(kv_position_risk, conf=.9)[0].status == 'filled'
 
 
-def test_the_drawdown_position_scale_still_shrinks_the_size(kv_position_risk):
-    circuit = {**GATE, 'drawdownHalt': .15, 'drawdownScaleStart': .03, 'mddMultFloor': .2}
-    full = shares(entry(kv_position_risk, conf=.9, circuit=circuit, drawdown=.03)[1])
-    scaled = shares(entry(kv_position_risk, conf=.9, circuit=circuit, drawdown=.09)[1])
-    assert 0 < scaled < full
+def test_the_circuit_cap_shrinks_the_single_name_cap_and_never_the_whole_budget(kv_position_risk):
+    # name cap = maxSingleNamePct (0.25) x min(1, maxPositionPct / circuit.maxPositionPct)
+    full = entry(kv_position_risk, conf=.9)[1]
+    scaled = entry(kv_position_risk, conf=.9, risk=risk_state(cap=.024))[1]     # x0.3, e.g. P6 RED
+    assert shares(full) > 0 and 0 < shares(scaled) < shares(full)
+    value = scaled.positions['2330'].shares * scaled.positions['2330'].entry_price
+    assert value <= .25 * .3 * 1_000_000 + 1
+
+
+def held(value):
+    account = engine.AccountState(cash=1_000_000. - value, initial_capital=1_000_000.)
+    account.positions['1101'] = engine.OpenPosition(
+        symbol='1101', industry='cement', entry_date='2026-08-01', entry_price=100., shares=int(value // 100),
+        initial_stop=90., tp1_price=120., tp2_price=130., atr14=2., sl_mult=2., highest_since_entry=100.)
+    return account
+
+
+def test_the_exposure_cap_limits_new_buys_to_the_room_left(kv_position_risk):
+    # Holdings 0.40 of NAV under orange (0.45): new buys at most 0.05 of NAV.
+    attempt, account = entry(kv_position_risk, conf=.9, risk=risk_state(exposure=.45), account=held(400_000.))
+    assert attempt.status == 'filled'
+    bought = account.positions['2330'].shares * account.positions['2330'].entry_price
+    assert 0 < bought <= .05 * 1_000_000 + 1
+
+
+def test_no_new_buy_once_holdings_reach_the_exposure_cap(kv_position_risk):
+    attempt, account = entry(kv_position_risk, conf=.9, risk=risk_state(exposure=.45), account=held(500_000.))
+    assert attempt.status == 'skipped_exposure_cap' and '2330' not in account.positions
+    assert '1101' in account.positions   # deRisk of held positions is not simulated
+
+
+def test_green_exposure_does_not_bind(kv_position_risk):
+    capped = entry(kv_position_risk, conf=.9, risk=risk_state(exposure=.95), account=held(100_000.))[1]
+    free = entry(kv_position_risk, conf=.9, risk=risk_state(exposure=1.), account=held(100_000.))[1]
+    assert shares(capped) == shares(free) > 0
 
 
 def test_no_risk_level_sltp_add_and_no_medium_scale(kv_position_risk):
@@ -321,13 +367,14 @@ def test_the_l2_search_never_tunes_the_retired_dimensions():
     from optuna_scripts.optuna_l2_sensitivity import DEFAULT_SEARCH_SPACE, RETIRED_PATHS
     retired = {f'L2_formula.sltp_add_{lv}_{sd}' for lv in ('orange', 'red', 'black') for sd in ('sl', 'tp')}
     retired |= {'L2_formula.medium_risk_scale', 'circuit.sellConfThreshold'} | CONFIDENCE_PATHS
+    retired |= {f'L2_formula.pf_quality_{n}' for n in ('30d_weight', '90d_weight', 'clip_lo', 'clip_hi')}
     assert retired <= RETIRED_PATHS
     from optuna_scripts.optuna_l2_sensitivity import SELL_COUPLED_CONFIDENCE_PATHS
     assert SELL_COUPLED_CONFIDENCE_PATHS == CONFIDENCE_PATHS | {'circuit.sellConfThreshold'}   # restored together
     assert not {dim['path'] for dim in DEFAULT_SEARCH_SPACE} & RETIRED_PATHS
     assert {dim['path'] for dim in DEFAULT_SEARCH_SPACE if dim['path'].startswith('circuit.')} == {
         'circuit.drawdownHalt', 'circuit.drawdownScaleStart', 'circuit.mddMultFloor'}
-    assert len(DEFAULT_SEARCH_SPACE) == 10
+    assert len(DEFAULT_SEARCH_SPACE) == 7   # 3 drawdown + 4 night drop (PF quality retired, Wei 10/30 §5-3)
 
 
 # ── data sources ─────────────────────────────────────────────────────────────

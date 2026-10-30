@@ -169,7 +169,7 @@ def test_retired_confidence_dims_never_reach_the_replay_or_the_push_payload(monk
     from services import backtest_engine
     assert set(RETIRED_CONFIDENCE) <= l2.RETIRED_PATHS
     assert not set(RETIRED_CONFIDENCE) & {dim['path'] for dim in DEFAULT_SEARCH_SPACE}
-    assert len(DEFAULT_SEARCH_SPACE) == 10
+    assert len(DEFAULT_SEARCH_SPACE) == 7   # 3 drawdown + 4 night drop (PF quality retired, Wei 10/30 §5-3)
     monkeypatch.delenv('CF_D1_RESEARCH_DB_ID', raising=False)
     monkeypatch.setattr(backtest_engine.BacktestDataset, 'load_for_research',
                         lambda **_: (object(), {'source': 'snapshot'}))

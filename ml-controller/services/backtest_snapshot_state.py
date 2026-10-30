@@ -4,11 +4,36 @@ from datetime import datetime, timezone
 import math
 
 COMPONENTS = ('signals', 'verified_predictions', 'market_breadth', 'us_market_signals', 'market_regime_state')
+# Optional: snapshots exported before it carry no momentum zone; the replay names P6 as not evaluated.
+MOMENTUM_COMPONENT = 'screener_momentum_snapshots'
 
 
 def timestamp(value):
     parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def ensemble_identity_changes(signals) -> list[tuple]:
+    """(generated_at, identity) each time the published ensemble identity changes, oldest first.
+
+    P7 judges the ensemble Paper serves at the open; the replay takes the identity
+    of the newest ensemble prediction generated before it. Read with JSON path
+    matches so a long signal tape is not parsed row by row.
+    """
+    import polars as pl
+    from services.backtest_paper_risk import P7_IDENTITY_FIELDS
+    if 'forecast_data' not in signals.columns or signals.schema['forecast_data'] != pl.String:
+        return []
+    fields_ = [pl.col('forecast_data').str.json_path_match('$.ensemble_v2.' + name).alias(name)
+               for name in P7_IDENTITY_FIELDS]
+    frame = (signals.select('generated_at', *fields_).drop_nulls()
+             .filter(pl.all_horizontal(pl.col(n).str.len_chars() > 0 for n in P7_IDENTITY_FIELDS)))
+    changes: list[tuple] = []
+    for row in sorted(frame.iter_rows(), key=lambda r: (timestamp(r[0]), r[1:])):
+        identity = tuple(str(v) for v in row[1:])
+        if not changes or changes[-1][1] != identity:
+            changes.append((timestamp(row[0]), identity))
+    return changes
 
 
 def frozen_mode_b(dataset):
@@ -64,6 +89,9 @@ def frozen_mode_b(dataset):
         setattr(state, attr, {r['date']: row_type(**{f.name:r.get(f.name) for f in fields(row_type)}) for r in rows})
     # The HMM regime owner, frozen with the rest; the era starts at the first HMM row visible before an open.
     state._regime = RegimeHistory(frames['market_regime_state'].to_dicts())
+    momentum = frames.get(MOMENTUM_COMPONENT)
+    state._momentum = momentum.to_dicts() if momentum is not None else None
+    state._ensemble_identities = ensemble_identity_changes(signals)
     verified = frames['verified_predictions']
     if not {'generated_at', 'verified_at', 'direction_correct'} <= set(verified.columns):
         raise ValueError('backtest_mode_b_verified_schema_invalid')

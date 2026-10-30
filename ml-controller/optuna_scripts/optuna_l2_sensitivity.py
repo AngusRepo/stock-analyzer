@@ -88,11 +88,15 @@ SELL_COUPLED_CONFIDENCE_PATHS = frozenset({
     *(f"L2_formula.confidence_{name}" for name in (
         "risk_mult", "perf_mult", "delta_clip_lo", "delta_clip_hi", "effective_clip_lo", "effective_clip_hi")),
 })
+# Wei 10/30 §5-3: Paper sizes no buy by a portfolio PF-quality multiplier, so the replay
+# dropped pf_mult and the search must not tune its four terms. The KV fields stay.
+PF_QUALITY_PATHS = frozenset(f"L2_formula.pf_quality_{name}" for name in ("30d_weight", "90d_weight", "clip_lo", "clip_hi"))
 RETIRED_PATHS = frozenset({
     "circuit.bullAlignmentThreshold",
     *SELL_COUPLED_CONFIDENCE_PATHS,
     *(f"L2_formula.sltp_add_{level}_{side}" for level in ("orange", "red", "black") for side in ("sl", "tp")),
     "L2_formula.medium_risk_scale",
+    *PF_QUALITY_PATHS,
 })
 
 DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
@@ -101,14 +105,11 @@ DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
     {"name": "drawdownScaleStart",     "path": "circuit.drawdownScaleStart",     "type": "uniform",     "low": 0.01,  "high": 0.08},
     {"name": "mddMultFloor",           "path": "circuit.mddMultFloor",           "type": "log_uniform", "low": 0.10,  "high": 0.50},
 
-    # ── L2_formula night drop + PF quality (7 dims, 3 PF derived) ─────────
+    # ── L2_formula night drop (4 dims) ──────────────────────────────────
     {"name": "night_drop_severe_pct",     "path": "L2_formula.night_drop_severe_pct",     "type": "uniform", "low": -0.030, "high": -0.005},
     {"name": "night_drop_mild_pct",       "path": "L2_formula.night_drop_mild_pct",       "type": "uniform", "low": -0.020, "high": -0.002},
     {"name": "night_drop_severe_adjust",  "path": "L2_formula.night_drop_severe_adjust",  "type": "uniform", "low": 0.95,   "high": 1.00},
     {"name": "night_drop_mild_adjust",    "path": "L2_formula.night_drop_mild_adjust",    "type": "uniform", "low": 0.97,   "high": 1.00},
-    {"name": "pf_quality_30d_weight",     "path": "L2_formula.pf_quality_30d_weight",     "type": "uniform", "low": 0.40,   "high": 0.90},
-    {"name": "pf_quality_clip_lo",        "path": "L2_formula.pf_quality_clip_lo",        "type": "uniform", "low": 0.20,   "high": 0.50},
-    {"name": "pf_quality_clip_hi",        "path": "L2_formula.pf_quality_clip_hi",        "type": "uniform", "low": 1.30,   "high": 2.50},
 ]
 
 
@@ -381,10 +382,6 @@ def run_l2_sensitivity_search(
             flat[dim["name"]] = v
             _set_nested(params, dim["path"], v)
 
-        # PF 90d_weight constraint: if 30d_weight suggested, derive 90d = 1 - 30d
-        if "pf_quality_30d_weight" in flat:
-            _set_nested(params, "L2_formula.pf_quality_90d_weight", 1.0 - flat["pf_quality_30d_weight"])
-
         try:
             result = replay_period(
                 dataset=dataset,
@@ -447,10 +444,6 @@ def run_l2_sensitivity_search(
     for dim in space:
         if dim["name"] in best.params:
             _set_nested(nested, dim["path"], best.params[dim["name"]])
-    # Apply PF constraint again in nested payload
-    if "pf_quality_30d_weight" in best.params:
-        _set_nested(nested, "L2_formula.pf_quality_90d_weight",
-                    1.0 - best.params["pf_quality_30d_weight"])
 
     strategy_returns_by_partition = _strategy_returns_by_partition_from_trials(
         study.trials,

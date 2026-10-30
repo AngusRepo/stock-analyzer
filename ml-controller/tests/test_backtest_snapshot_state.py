@@ -43,13 +43,17 @@ def test_missing_known_at_and_after_open_labels_cannot_enter_accuracy():
     assert compute_rolling_accuracy_30d(rows,'2026-09-03',min_samples=1)==1.
 
 
-def test_replay_entries_read_no_market_risk_level_or_score(monkeypatch, kv_position_risk):
-    # Wei 10/30: the adaptive P3 threshold is gone with the confidence gate, so entries
-    # take no market-risk input (nothing from today's future close can leak in).
-    from services import backtest_engine as engine, backtest_state
+def test_replay_entries_read_market_risk_only_through_paper_s_morning_state(monkeypatch, kv_position_risk):
+    # Wei 10/30: no adaptive P3 threshold and no raw market-risk input; the only market
+    # input is Paper's canonical market risk as of the previous close, written before the
+    # open (nothing from the entry day's own close can leak in).
+    from services import backtest_engine as engine, backtest_state, position_risk_owner
     dataset=data();dataset.trading_days=['2026-09-01','2026-09-02']
-    dataset.market_risk=pl.DataFrame({'date':dataset.trading_days,'risk_level':['green','red'],'risk_score':[10,99]})
-    dataset.replay_frames['market_breadth']=pl.DataFrame({'date':dataset.trading_days,'bull_alignment_pct':[.7,.1]})
+    dataset.market_risk=pl.DataFrame({'date':['2026-08-31',*dataset.trading_days],'risk_level':['green','green','red'],
+        'risk_score':[10,10,99],'twii_close':[100.,100.,50.],
+        'calculated_at':['2026-08-31T08:00:00Z','2026-09-01T08:00:00Z','2026-09-02T08:00:00Z']})
+    dataset.replay_frames['market_breadth']=pl.DataFrame({'date':dataset.trading_days,'bull_alignment_pct':[.7,.1],
+        'advance_ratio':[.5,.01],'created_at':['2026-09-01T08:00:00Z','2026-09-02T08:00:00Z']})
     def forbidden(*a,**kw):raise AssertionError('unexpected D1 access')
     for client in (backtest_state.CORE_D1_CLIENT,backtest_state.LEARNING_D1_CLIENT,backtest_state.MARKET_D1_CLIENT):
         monkeypatch.setattr(client,'query',forbidden)
@@ -57,11 +61,18 @@ def test_replay_entries_read_no_market_risk_level_or_score(monkeypatch, kv_posit
     monkeypatch.setattr(engine,'replay_screener_for_date',lambda **kw:[object()])
     def entries(**kw):captured.append(kw);return []
     monkeypatch.setattr(engine,'simulate_entries_for_date',entries)
-    params={'positionRiskDistribution':kv_position_risk}
+    params={'positionRiskDistribution':kv_position_risk,'portfolioRiskPolicy':position_risk_owner.formal_portfolio_risk({}),
+            'circuit':{'maxPositionPct':.08,'drawdownHalt':.15,'drawdownScaleStart':.03,'mddMultFloor':.2,
+                       'highVolReducedPosPct':.04,'layer7ScaleRatio':.3}}
     result=engine.replay_period(dataset=dataset,start_date=dataset.start_date,end_date=dataset.end_date,params=params,mode='B')
     assert result.mode=='B'
     assert len(captured)==1
     assert not {'risk_score','risk_level','regime_family','buy_conf_threshold'} & set(captured[0])
+    state=captured[0]['paper_risk']
+    assert state.market.date=='2026-09-01' and state.market.level=='green' and not state.halt
+    assert state.target_exposure==.95 and 'pre_hmm_era_stored_risk_level' in state.approximations
+    assert result.paper_risk['sessions']==1 and result.paper_risk['halt_sessions']==0
+    assert 'deRisk' in result.paper_risk['not_simulated'] and any('deRisk' in w for w in result.realism_warnings)
     assert 'bull_align_pct' not in captured[0]   # Wei 10/29 Q5: no bull-alignment trigger
     del dataset.replay_frames['signals']
     with pytest.raises(ValueError,match='frozen_components_missing'):

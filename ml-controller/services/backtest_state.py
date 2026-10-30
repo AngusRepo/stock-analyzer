@@ -48,6 +48,9 @@ class MarketRiskRow:
     foreign_consecutive_sell: Optional[int]
     twii_vol20: Optional[float]
     bull_alignment_pct: Optional[float]  # duplicated in market_breadth; market_risk is canonical
+    # Paper's canonical market risk (P3 shock) and its visibility clock: written before the open?
+    twii_close: Optional[float] = None
+    calculated_at: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,7 @@ class MarketBreadthRow:
     advance_ratio: Optional[float]
     new_high_count: Optional[int]
     new_low_count: Optional[int]
+    created_at: Optional[str] = None     # P4 visibility clock
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,9 @@ class BacktestMarketState:
         self._breadth: dict[str, MarketBreadthRow] = self._load_breadth(start_date, end_date)
         self._us: dict[str, USMarketRow] = self._load_us(start_date, end_date)
         self._regime = RegimeHistory(load_regime_observations(end_date))
+        # Live D1 has no point-in-time momentum or ensemble identity history: P6 and P7 are named as not evaluated.
+        self._momentum = None
+        self._ensemble_identities = []
 
         logger.info(
             f"[BacktestMarketState] preloaded {start_date}~{end_date}: "
@@ -182,7 +189,7 @@ class BacktestMarketState:
     def _load_risk(start: str, end: str) -> dict[str, MarketRiskRow]:
         rows = CORE_D1_CLIENT.query(
             "SELECT date, risk_level, risk_score, vix, foreign_consecutive_sell, "
-            "       twii_vol20, bull_alignment_pct "
+            "       twii_vol20, bull_alignment_pct, twii_close, calculated_at "
             "FROM market_risk WHERE date BETWEEN ? AND ? ORDER BY date",
             [start, end],
         )
@@ -195,6 +202,8 @@ class BacktestMarketState:
                 foreign_consecutive_sell=r.get("foreign_consecutive_sell"),
                 twii_vol20=r.get("twii_vol20"),
                 bull_alignment_pct=r.get("bull_alignment_pct"),
+                twii_close=r.get("twii_close"),
+                calculated_at=r.get("calculated_at"),
             )
             for r in rows
         }
@@ -202,7 +211,7 @@ class BacktestMarketState:
     @staticmethod
     def _load_breadth(start: str, end: str) -> dict[str, MarketBreadthRow]:
         rows = MARKET_D1_CLIENT.query(
-            "SELECT date, bull_alignment_pct, advance_ratio, new_high_count, new_low_count "
+            "SELECT date, bull_alignment_pct, advance_ratio, new_high_count, new_low_count, created_at "
             "FROM market_breadth WHERE date BETWEEN ? AND ? ORDER BY date",
             [start, end],
         )
@@ -213,6 +222,7 @@ class BacktestMarketState:
                 advance_ratio=r.get("advance_ratio"),
                 new_high_count=r.get("new_high_count"),
                 new_low_count=r.get("new_low_count"),
+                created_at=r.get("created_at"),
             )
             for r in rows
         }
@@ -267,6 +277,20 @@ class BacktestMarketState:
             return None
         from services.market_regime_state import _contract_from_state
         return _contract_from_state(state, source='market_regime_state_history_v1')
+
+    def paper_risk_rows(self) -> tuple[list[dict], list[dict]]:
+        """market_risk and market_breadth rows as Paper's canonical market risk reads them."""
+        from dataclasses import asdict
+        return ([asdict(r) for r in self._risk.values()], [asdict(r) for r in self._breadth.values()])
+
+    def ensemble_identity_at(self, cutoff: datetime) -> Optional[tuple]:
+        """Identity of the newest ensemble prediction generated before `cutoff` (P7)."""
+        current = None
+        for generated, identity in getattr(self, '_ensemble_identities', []):
+            if generated >= cutoff:
+                break
+            current = identity
+        return current
 
     def dates_with_risk(self) -> list[str]:
         """Deterministic sorted dates — for tests / debugging (M14 discipline)."""

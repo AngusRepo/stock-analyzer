@@ -451,3 +451,78 @@ def aggregate(results: Iterable[Optional[LayerResult]], *, circuit: dict, market
         target_exposure=market.target_exposure if market is not None else None, market=market,
         triggered_layers=tuple(r.layer for r in fired), reasons=tuple(f'[{r.layer}] {r.reason}' for r in fired),
         approximations=tuple(dict.fromkeys([*(market.approximations if market else ()), *approximations])))
+
+
+# ── one entry session ─────────────────────────────────────────────────────────
+
+P7_REQUIRED_COLUMNS = frozenset({
+    'model_name', 'stock_id', 'prediction_date', 'generated_at', 'verified_at', 'direction_correct',
+    'verification_label_known_date', 'verification_label_end_date', 'verification_label_schema_version',
+    'forecast_horizon_bars', *('ensemble_' + name for name in P7_IDENTITY_FIELDS)})
+
+
+def replay_morning_state(*, decision_date: str, entry_date: str, circuit: dict, policy: dict,
+                         market_risk_rows: list[dict], breadth_rows: list[dict], regime_state: Optional[dict],
+                         hmm_era: bool, equity: list[float], sells: list[dict],
+                         momentum_rows: Optional[list[dict]], verified_rows: Optional[list[dict]],
+                         identity: Optional[tuple], previous_nav: Optional[float],
+                         current_nav: Optional[float]) -> PaperRiskState:
+    """Paper's checks for the session `entry_date`, decided after `decision_date`'s close.
+
+    Inputs the sealed snapshot does not carry are named, never assumed green:
+    no momentum component -> P6 not evaluated; verified rows without the
+    ensemble identity columns, or no ensemble identity before the open -> P7
+    not evaluated.
+    """
+    from services.backtest_state import entry_open
+    cutoff = entry_open(entry_date)
+    approximations: list[str] = []
+    market = canonical_market_risk(session=decision_date, cutoff=cutoff, market_risk_rows=market_risk_rows,
+                                   breadth_rows=breadth_rows, regime_state=regime_state, hmm_era=hmm_era,
+                                   policy=policy)
+    results = [p1_drawdown(equity, circuit), p3_p4_market(market, circuit), p5_losses(sells, circuit)]
+    if momentum_rows is None:
+        approximations.append('p6_momentum_component_missing')
+    else:
+        zone, _ = current_momentum_zone(momentum_rows, session=decision_date, cutoff=cutoff)
+        results.append(p6_momentum(zone, circuit))
+    if verified_rows is None or (verified_rows and not P7_REQUIRED_COLUMNS <= set(verified_rows[0])):
+        approximations.append('p7_verified_columns_missing')
+    elif identity is None:
+        approximations.append('p7_ensemble_identity_unavailable')
+    else:
+        results.append(p7_streak(verified_rows, identity=identity, entry_date=entry_date, cutoff=cutoff,
+                                 circuit=circuit))
+    if previous_nav is not None and current_nav is None:
+        approximations.append('p8_open_mark_missing')
+    results.append(p8_daily_loss(previous_nav=previous_nav, current_nav=current_nav, policy=policy))
+    return aggregate(results, circuit=circuit, market=market, approximations=approximations)
+
+
+def state_record(state: PaperRiskState, entry_date: str) -> dict:
+    """The per-session audit line, comparable with Paper's risk_audit_log morning_setup."""
+    return {'entry_date': entry_date, 'halt': state.halt, 'max_position_pct': state.max_position_pct,
+            'name_cap_scale': state.name_cap_scale, 'target_exposure': state.target_exposure,
+            'exposure_cap': state.exposure_cap,
+            'level': state.market.level if state.market else None,
+            'market_status': state.market.status if state.market else None,
+            'market_blockers': list(state.market.blockers) if state.market else [],
+            'triggered_layers': list(state.triggered_layers), 'reasons': list(state.reasons),
+            'approximations': list(state.approximations)}
+
+
+def summarize(records: list[dict]) -> dict:
+    """Replay-level summary: what ran, what was approximated, what is not simulated."""
+    layers: dict[str, int] = {}
+    approximations: dict[str, int] = {}
+    for record in records:
+        for layer in dict.fromkeys(record['triggered_layers']):
+            layers[layer] = layers.get(layer, 0) + 1
+        for item in record['approximations']:
+            approximations[item] = approximations.get(item, 0) + 1
+    return {'sessions': len(records), 'halt_sessions': sum(1 for r in records if r['halt']),
+            'layer_trigger_sessions': dict(sorted(layers.items())),
+            'approximation_sessions': dict(sorted(approximations.items())),
+            'unmodeled': list(PaperRiskState.__dataclass_fields__['unmodeled'].default),
+            'not_simulated': 'deRisk 未模擬（SELL 側減碼，延到 R33 恢復 SELL；Wei 10/30 §5-5）',
+            'records': records}

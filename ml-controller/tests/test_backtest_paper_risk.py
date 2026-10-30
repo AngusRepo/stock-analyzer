@@ -214,3 +214,82 @@ def test_portfolio_program_values_match_the_worker_defaults():
         assert defaults[name] == value, name
     shock_and_breadth = re.findall(r"(black|red|orange)TargetExposure|marketShock(\w+)Pct", _ts('marketRiskRuntime.ts'))
     assert shock_and_breadth  # the runtime still reads these policy fields
+
+
+# ── one entry session (S3) ────────────────────────────────────────────────────
+
+def morning(**overrides):
+    rows = [{'date': '2026-10-27', 'twii_close': 100., 'risk_level': 'green', 'calculated_at': '2026-10-27T10:00:00Z'},
+            {'date': D, 'twii_close': 100., 'risk_level': 'green', 'calculated_at': '2026-10-28T10:00:00Z'}]
+    args = dict(decision_date=D, entry_date=ENTRY, circuit=CIRCUIT, policy=POLICY, market_risk_rows=rows,
+                breadth_rows=[{'date': D, 'advance_ratio': .5, 'created_at': '2026-10-28T09:00:00Z'}],
+                regime_state={'run_date': D, 'label': 'bull_market'}, hmm_era=True, equity=[1e6] * 5, sells=[],
+                momentum_rows=[], verified_rows=[], identity=IDENTITY, previous_nav=1e6, current_nav=1e6)
+    return risk.replay_morning_state(**{**args, **overrides})
+
+
+def test_a_quiet_morning_runs_every_layer_with_nothing_triggered():
+    state = morning()
+    assert not state.halt and state.max_position_pct == .08 and state.exposure_cap == .95
+    assert state.triggered_layers == () and state.approximations == ()
+
+
+def test_inputs_the_snapshot_lacks_are_named_never_assumed_green():
+    assert 'p6_momentum_component_missing' in morning(momentum_rows=None).approximations
+    assert 'p7_verified_columns_missing' in morning(verified_rows=None).approximations
+    assert 'p7_verified_columns_missing' in morning(verified_rows=[{'generated_at': 'x'}]).approximations
+    assert 'p7_ensemble_identity_unavailable' in morning(identity=None).approximations
+    assert 'p8_open_mark_missing' in morning(current_nav=None).approximations
+
+
+def test_each_layer_reaches_the_session_state():
+    assert morning(equity=[1e6, 1e6, .84e6]).halt                                           # P1
+    assert morning(regime_state=None).halt                                                  # P3 blocked
+    stops = [{'exit_reason': 'HardStop @ 90', 'pnl': -1}] * 3
+    assert morning(sells=stops).max_position_pct == pytest.approx(.04)                      # P5 legacy 0.5
+    zone = [{'date': D, 'zone': 'RED', 'pool_definition': risk.MOMENTUM_POOL_DEFINITION,
+             'created_at': '2026-10-28T09:00:00Z'}]
+    assert morning(momentum_rows=zone).max_position_pct == pytest.approx(.024)              # P6
+    streak = [prediction(d, e, 0) for d, e in COHORTS]
+    assert morning(verified_rows=streak).max_position_pct == pytest.approx(.024)            # P7
+    assert morning(current_nav=.96e6).halt                                                  # P8 at the open
+
+
+def test_the_session_record_and_summary_carry_what_was_not_simulated():
+    records = [risk.state_record(morning(), ENTRY), risk.state_record(morning(regime_state=None), '2026-10-30')]
+    assert records[1]['halt'] and records[1]['market_status'] == 'blocked'
+    summary = risk.summarize(records)
+    assert summary['sessions'] == 2 and summary['halt_sessions'] == 1 and summary['layer_trigger_sessions'] == {'P3': 1}
+    assert 'deRisk 未模擬' in summary['not_simulated'] and 'P3:market_regime_factor_packet' in summary['unmodeled']
+
+
+def test_the_ensemble_identity_is_the_newest_published_before_the_open():
+    import json
+    import polars as pl
+    from services.backtest_snapshot_state import ensemble_identity_changes
+    from services.backtest_state import BacktestMarketState
+    def forecast(art):
+        return json.dumps({'ensemble_v2': dict(zip(risk.P7_IDENTITY_FIELDS, (art, 'c', 's', 'b')))})
+    signals = pl.DataFrame({'generated_at': ['2026-10-27T13:00:00Z', '2026-10-28T13:00:00Z', '2026-10-29T02:00:00Z',
+                                             '2026-10-28T14:00:00Z'],
+                            'forecast_data': [forecast('a'), forecast('b'), forecast('c'), '{}']})
+    state = BacktestMarketState.__new__(BacktestMarketState)
+    state._ensemble_identities = ensemble_identity_changes(signals)
+    assert [i[0] for _, i in state._ensemble_identities] == ['a', 'b', 'c']
+    assert state.ensemble_identity_at(CUTOFF) == ('b', 'c', 's', 'b')        # 'c' came after the 10-29 open
+    assert state.ensemble_identity_at(entry_open('2026-10-27')) is None
+    assert ensemble_identity_changes(signals.drop('forecast_data')) == []
+
+
+def test_the_open_mark_never_reads_the_entry_day_close():
+    from types import SimpleNamespace
+    from services import backtest_engine as engine
+    account = engine.AccountState(cash=100., initial_capital=100.)
+    account.positions['2330'] = engine.OpenPosition(
+        symbol='2330', industry='semi', entry_date='2026-10-01', entry_price=10., shares=10, initial_stop=9.,
+        tp1_price=12., tp2_price=13., atr14=1., sl_mult=2., highest_since_entry=10.)
+    bars = {('2330', ENTRY): {'open': 11., 'close': 50.}}
+    data = SimpleNamespace(get_bar=lambda symbol, day: bars.get((symbol, day)))
+    assert engine._mark_to_open(account, data, ENTRY, D) == 100. + 110.
+    bars[('2330', ENTRY)] = {'open': None, 'close': 50.}
+    assert engine._mark_to_open(account, data, ENTRY, D) is None

@@ -3182,19 +3182,16 @@ def simulate_entries_for_date(
     replay_days: list[str] | None = None,
     # 2026-04-20 #31 Mode B params (None = Mode A behavior; backward compat)
     ml_predictions: Optional["MLPredictionsCache"] = None,
-    # Mode B circuit breakers, as Paper applies them (Wei 10/30, replay aligned to Paper):
-    #   circuit_cfg: dict view of trading:config.circuit
-    #   current_drawdown_30d: from compute_drawdown_30d(equity_curve, day)
-    # Only the drawdown halt and the drawdown position scale remain. Paper computes a
-    # buy confidence threshold (circuit.buyConfThreshold, adaptive delta, accuracy
-    # raise) but no buy reads it since 06-14: the L4 sparse BUY decides. The replay
-    # has no confidence entry gate either. (The same inputs set Paper's sell threshold
-    # for the EOD ML SELL exit, which the replay does not model.)
-    # Not modeled here (pre-existing gap): Paper's P3 canonical market-risk halt,
-    # circuit.positionScales, the targetExposurePct cap and P2's fail-closed halt
-    # when accuracy evidence is missing.
-    circuit_cfg: Optional[dict] = None,
-    current_drawdown_30d: Optional[float] = None,
+    # Mode B: Paper's morning risk chain for this entry session
+    # (services.backtest_paper_risk.replay_morning_state: P1, P3/P4, P5, P6, P7, P8,
+    # halt = any, cap = min). It acts as Paper's L4 limits do (l4AccountContext):
+    #   halt          -> no entry (skipped_circuit_halt)
+    #   name cap      -> single-name cap x min(1, maxPositionPct / circuit.maxPositionPct)
+    #   exposure cap  -> holdings + new buys <= targetExposure x portfolio
+    # There is no confidence entry gate: Paper computes a buy threshold but no buy
+    # reads it since 06-14 (the L4 sparse BUY decides). deRisk of held positions is a
+    # SELL action and is not simulated (Wei 10/30 §5-5).
+    paper_risk: Optional["PaperRiskState"] = None,
     #   l2_formula_cfg: dict view of trading:config.L2_formula (night drop, PF blend).
     #   There is no risk-level SL/TP add and no medium scale: Paper applies neither, and
     #   risk sizing has one owner there (circuit.positionScales + allocator riskScore).
@@ -3205,12 +3202,8 @@ def simulate_entries_for_date(
     #     (as a ratio, e.g. -0.015 for -1.5%; matches D1 storage convention).
     #     Conservative Mode B: apply adjust factor by magnitude alone, without
     #     paper.ts's debate-verdict gate (backtest has no debate runtime).
-    #   pf_30d / pf_90d: rolling portfolio profit factor from replay's own
-    #     all_trades (Mode B self-generates). Blended via pf_quality_*_weight
-    #     + clipped by pf_quality_clip_lo/hi per adaptive.compute_pf_quality_mults.
+    # No PF quality multiplier: Paper never reads one (Wei 10/30 §5-3).
     prev_night_drop: Optional[float] = None,
-    pf_30d: Optional[float] = None,
-    pf_90d: Optional[float] = None,
     correlation_dedup_cfg: Optional[dict] = None,
     position_risk_distribution_cfg: Optional[dict] = None,
 ) -> list[EntryAttempt]:
@@ -3245,20 +3238,18 @@ def simulate_entries_for_date(
     if pos.max_pct_of_portfolio is None:
         raise PositionRiskContractMissing('backtest_position_risk_contract_missing')
 
-    # Layer 1 (Mode B only, circuit_cfg provided): rolling 30d drawdown >
-    # drawdownHalt halts ALL entries today, as Paper's P1 does. Mode A skips it.
-    if ml_predictions is not None and circuit_cfg is not None:
-        dd_halt_thresh = float(circuit_cfg.get("drawdownHalt", 0.15))
-        if current_drawdown_30d is not None and current_drawdown_30d > dd_halt_thresh:
-            halt_reason = (f"L1 halt: dd_30d {current_drawdown_30d:.1%} "
-                           f"> drawdownHalt {dd_halt_thresh:.1%}")
+    if paper_risk is not None:
+        if paper_risk.halt:
+            halt_reason = '; '.join(r for r in paper_risk.reasons if r) or 'halt'
             for c in buy_candidates:
                 attempts.append(EntryAttempt(
                     symbol=c.symbol, decision_date=decision_date, entry_date=entry_date,
                     status="skipped_circuit_halt", adjusted_entry=c.close,
-                    reason=f"Mode B: {halt_reason}",
+                    reason=f"Mode B Paper risk halt: {halt_reason}"[:500],
                 ))
             return attempts
+        # riskPositionSizing.resolveCircuitAdjustedSingleNameCap: the circuit only shrinks the cap.
+        pos = replace(pos, max_pct_of_portfolio=pos.max_pct_of_portfolio * paper_risk.name_cap_scale)
 
     # Gap proxy (shared across all candidates today)
     gap_pct = _gap_pct_from_benchmark(dataset, decision_date, entry_date)
@@ -3433,41 +3424,20 @@ def simulate_entries_for_date(
             )
             sizing_mode = "risk_parity"
 
-        # 2026-04-20 #28 P4: Mode B budget multipliers (dd scale, bull align).
-        # Applied AFTER Kelly/risk-parity so confidence-based sizing stays primary.
-        if ml_predictions is not None and circuit_cfg is not None:
-            # Layer 3: drawdownScaleStart → mddMultFloor linear scaling.
-            # Paper.ts source 269-279: mdd_mult = max(floor, (halt-dd)/(halt-start)).
-            # Applied only inside (dd_scale_start, dd_halt]; outside this range no
-            # scaling (> dd_halt is caught by Layer 1 halt; ≤ dd_scale_start = 1.0).
-            if current_drawdown_30d is not None:
-                dd_scale_start = float(circuit_cfg.get("drawdownScaleStart", 0.03))
-                dd_halt = float(circuit_cfg.get("drawdownHalt", 0.15))
-                mdd_floor = float(circuit_cfg.get("mddMultFloor", 0.2))
-                if (current_drawdown_30d > dd_scale_start
-                        and current_drawdown_30d <= dd_halt
-                        and dd_halt > dd_scale_start):
-                    mdd_mult = max(
-                        mdd_floor,
-                        (dd_halt - current_drawdown_30d) / (dd_halt - dd_scale_start),
-                    )
-                    budget *= mdd_mult
-
-        # 2026-04-20 #28 P5: PF quality blend (Mode B only), applied on budget
-        # AFTER circuit-level mults. (No medium_risk_scale: Wei 10/30 B.)
-        if ml_predictions is not None and l2_formula_cfg is not None:
-            # PF quality blend: weight 30d + 90d rolling PF then clip.
-            # Port of adaptive.compute_pf_quality_mults simplified for Mode B
-            # (production version is per-model; backtest has single portfolio).
-            if pf_30d is not None and pf_90d is not None:
-                w30 = float(l2_formula_cfg.get("pf_quality_30d_weight", 0.7))
-                w90 = float(l2_formula_cfg.get("pf_quality_90d_weight", 0.3))
-                clip_lo = float(l2_formula_cfg.get("pf_quality_clip_lo", 0.3))
-                clip_hi = float(l2_formula_cfg.get("pf_quality_clip_hi", 1.8))
-                pf30_c = max(clip_lo, min(clip_hi, pf_30d))
-                pf90_c = max(clip_lo, min(clip_hi, pf_90d))
-                pf_mult = max(clip_lo, min(clip_hi, pf30_c * w30 + pf90_c * w90))
-                budget *= pf_mult
+        # Paper's exposure cap (l4_sealed_execution: holdings + new weights <= cap),
+        # on the same cost-basis portfolio the sizing above uses.
+        if paper_risk is not None:
+            holdings = total_portfolio - account.settlement_adjusted_cash
+            exposure_room = max(0., paper_risk.exposure_cap * total_portfolio - holdings)
+            if exposure_room <= 0:
+                attempts.append(EntryAttempt(
+                    symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
+                    status="skipped_exposure_cap", adjusted_entry=adjusted_entry,
+                    reason=(f"holdings {holdings:.0f} >= exposure cap {paper_risk.exposure_cap:.2f}"
+                            f" x portfolio {total_portfolio:.0f}"),
+                ))
+                continue
+            budget = min(budget, exposure_room)
 
         if budget <= 0:
             attempts.append(EntryAttempt(
@@ -4244,6 +4214,8 @@ class BacktestMetrics:
     final_equity: float = 0.0
     corporate_rounding_assumptions: list[dict] = field(default_factory=list)
     corporate_subscription_assumptions: list[dict] = field(default_factory=list)
+    # Mode B: Paper's morning risk chain per session (services.backtest_paper_risk.summarize).
+    paper_risk: dict = field(default_factory=dict)
 
     # Core return metrics
     total_return: float = 0.0                    # (final / initial) - 1
@@ -4869,6 +4841,33 @@ def _mark_to_market(account: AccountState, dataset: BacktestDataset, date: str) 
     return total
 
 
+def _mark_to_open(account: AccountState, dataset: BacktestDataset, date: str, previous_session: str) -> Optional[float]:
+    """NAV when the session opens (P8's entry-time context): held positions at today's open.
+
+    Corporate receivables have no open price; they keep the previous close (never today's).
+
+    None when a held symbol has no usable open (P8 is then not evaluated that session,
+    as Paper skips P8 without a valid context).
+    """
+    total = account.settlement_adjusted_cash
+    for symbol, pos in account.positions.items():
+        bar = dataset.get_bar(symbol, date)
+        raw = bar.get('open') if bar else None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(raw, bool) or not math.isfinite(value) or value <= 0:
+            return None
+        total += value * pos.shares
+    from services.backtest_corporate_accounting import receivables_value
+    try:
+        total += receivables_value(account, lambda symbol: _valuation_price(dataset, symbol, previous_session))
+    except ValueError:
+        return None
+    return total
+
+
 def _apply_daily_corporate(account: AccountState, dataset: BacktestDataset, day: str, *, research_cash_mode=None, research_subscription_policy=None) -> None:
     from services.backtest_corporate_accounting import apply_corporate_session
     snapshot = getattr(dataset, 'corporate_sources', {}).get(day)
@@ -4980,25 +4979,32 @@ def replay_period(
     # confidence (Kelly sizing input; no entry gate). Mode A keeps ml_conf_placeholder.
     ml_cache: Optional[MLPredictionsCache] = None
     circuit_cfg_b: Optional[dict] = None   # #28 P2: shared across days
-    from services.backtest_state import (
-        BacktestMarketState, compute_drawdown_30d,
-        compute_profit_factor, get_prev_night_drop,
-    )
+    from services.backtest_state import BacktestMarketState, entry_open, get_prev_night_drop
     market_state: Optional[BacktestMarketState] = None
+    verified_rows: Optional[list[dict]] = None
+    portfolio_policy: Optional[dict] = None
+    paper_risk_records: list[dict] = []
 
     if mode == "B":
+        from services.backtest_paper_risk import position_scales
+        from services.position_risk_owner import PORTFOLIO_CONTRACT_FIELD, portfolio_risk_policy
         circuit_cfg_b = (params or {}).get("circuit", {}) or {}
+        position_scales(circuit_cfg_b)  # a malformed positionScales stops the run before any day
+        # Paper's market exposure caps, shock/breadth thresholds and daily-loss limits
+        # (trading:risk_config.portfolio, injected by position_risk_owner): required.
+        portfolio_policy = portfolio_risk_policy((params or {}).get(PORTFOLIO_CONTRACT_FIELD))
         if dataset.replay_frames is not None:
             from services.backtest_snapshot_state import frozen_mode_b
-            # Verified outcomes stay part of the sealed input contract; the replay no
-            # longer reads them (the accuracy raise only moved Paper's unused threshold).
-            ml_cache, market_state, _verified = frozen_mode_b(dataset)
+            # Verified outcomes feed P7's prediction streak (when the sealed rows carry
+            # the ensemble identity); P2's accuracy raise only moved an unused threshold.
+            ml_cache, market_state, verified_rows = frozen_mode_b(dataset)
         else:
             # Fail closed on source errors: Mode A cannot be labeled Mode B.
             ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
             if ml_cache._n == 0:
                 raise ValueError('backtest_mode_b_predictions_empty')
             market_state = BacktestMarketState(start_date, end_date)
+        market_risk_rows, breadth_rows = market_state.paper_risk_rows()
 
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
@@ -5028,13 +5034,25 @@ def replay_period(
         all_trades.extend(trades_today)
 
         # Step 2: attempt entries from prev day's candidates (T-1 → T fill)
+        paper_risk_state = None
+        if mode == "B" and prev_decision_date is not None:
+            # Paper's morning chain for this session, from what existed before its open:
+            # snapshots through the previous close, sells before today, NAV at today's open.
+            from services.backtest_paper_risk import replay_morning_state, state_record
+            paper_risk_state = replay_morning_state(
+                decision_date=prev_decision_date, entry_date=day, circuit=circuit_cfg_b, policy=portfolio_policy,
+                market_risk_rows=market_risk_rows, breadth_rows=breadth_rows,
+                regime_state=market_state.hmm_state(prev_decision_date, day),
+                hmm_era=market_state.in_hmm_era(prev_decision_date, day),
+                equity=[value for _, value in equity_curve],
+                sells=[{'exit_reason': t.exit_reason, 'pnl': t.profit_amount}
+                       for t in all_trades if t.exit_date < day],
+                momentum_rows=getattr(market_state, '_momentum', None), verified_rows=verified_rows,
+                identity=market_state.ensemble_identity_at(entry_open(day)),
+                previous_nav=equity_curve[-1][1] if equity_curve else None,
+                current_nav=_mark_to_open(account, dataset, day, prev_decision_date))
+            paper_risk_records.append(state_record(paper_risk_state, day))
         if prev_candidates and prev_decision_date is not None:
-            # 2026-04-20 #28 P2: per-day rolling drawdown for the Mode B halt and
-            # position scale, from the equity curve already in memory.
-            current_dd_b: Optional[float] = None
-            if mode == "B" and circuit_cfg_b is not None:
-                current_dd_b = compute_drawdown_30d(equity_curve, day, window_days=30)
-
             attempts = simulate_entries_for_date(
                 dataset=dataset,
                 decision_date=prev_decision_date,
@@ -5047,23 +5065,13 @@ def replay_period(
                 replay_days=replay_days,
                 # 2026-04-20 #31 Mode B
                 ml_predictions=ml_cache,
-                # 2026-04-20 #28 P2 circuit breakers (halt + drawdown scale)
-                circuit_cfg=circuit_cfg_b,
-                current_drawdown_30d=current_dd_b,
+                paper_risk=paper_risk_state,
                 l2_formula_cfg=(params or {}).get("L2_formula") if mode == "B" else None,
                 # 2026-04-20 #28 P5 night drop + PF quality blend
                 prev_night_drop=(
                     get_prev_night_drop(market_state, day, lookback_days=3)
                     if (mode == "B" and market_state is not None)
                     else None
-                ),
-                pf_30d=(
-                    compute_profit_factor(all_trades, day, window_days=30, min_trades=5)
-                    if mode == "B" and circuit_cfg_b is not None else None
-                ),
-                pf_90d=(
-                    compute_profit_factor(all_trades, day, window_days=90, min_trades=10)
-                    if mode == "B" and circuit_cfg_b is not None else None
                 ),
                 position_risk_distribution_cfg=position_risk_contract(params),
                 correlation_dedup_cfg=(
@@ -5115,6 +5123,7 @@ def replay_period(
             decision_observer({'date': day,
                 'candidates': [asdict(c) for c in prev_candidates] if i < len(replay_days)-1 else [],
                 'entries': [asdict(a) for a in attempts], 'exits': [asdict(t) for t in trades_today],
+                'paper_risk': paper_risk_records[-1] if paper_risk_state is not None else None,
                 'cash': account.cash, 'equity': equity,
                 'positions': {symbol: asdict(position) for symbol, position in sorted(account.positions.items())}})
 
@@ -5179,6 +5188,11 @@ def replay_period(
 
     metrics.corporate_rounding_assumptions = account.corporate_rounding_assumptions
     metrics.corporate_subscription_assumptions = account.corporate_subscription_assumptions
+    if mode == "B":
+        from services.backtest_paper_risk import summarize
+        metrics.paper_risk = summarize(paper_risk_records)
+        metrics.realism_warnings.append('paper_risk: deRisk 未模擬（持股減碼屬 SELL 側，延到 R33）')
+        metrics.realism_warnings.append('paper_risk: unmodeled ' + ','.join(metrics.paper_risk['unmodeled']))
     logger.info(
         f"[BacktestEngine] Done: trades={metrics.total_trades} "
         f"sharpe={metrics.sharpe} max_dd={metrics.max_drawdown:.3f} "

@@ -38,30 +38,47 @@ test('T-W1: late-lane not-ready is only the contract late_publication fields', (
   assert.equal(finLabLateRetryCutoffPassed(date, Date.parse('2026-10-23T00:10:00+08:00')), true)
 })
 
-function fixture(t: any) {
+function fixture(t: any, options: { webhook?: boolean, syslogFails?: boolean } = {}) {
   const store = new Map<string, string>()
   const KV = {
     async get(key: string, type?: string) { const v = store.get(key); return v == null ? null : type === 'json' ? JSON.parse(v) : v },
     async put(key: string, value: string) { store.set(key, value) },
     async delete(key: string) { store.delete(key) },
   }
-  // Empty D1: no source rows and no source key report rows for the target date.
-  const statement: any = {
-    bind: () => statement,
-    first: async () => null,
-    all: async () => ({ success: true, results: [] }),
-    run: async () => ({ success: true, meta: { changes: 0 } }),
+  // Empty D1: no source rows and no source key report rows for the target date. system_logs inserts are recorded.
+  const syslogs: { level: string, cron: string, message: string, meta: any }[] = []
+  const db = {
+    prepare: (sql: string) => {
+      let args: any[] = []
+      const statement: any = {
+        bind: (...values: any[]) => { args = values; return statement },
+        first: async () => null,
+        all: async () => ({ success: true, results: [] }),
+        run: async () => {
+          if (/INSERT INTO system_logs/.test(sql)) {
+            if (options.syslogFails) throw new Error('D1_ERROR: ops unavailable')
+            syslogs.push({ level: args[0], cron: args[1], message: args[2], meta: args[3] ? JSON.parse(args[3]) : null })
+          }
+          return { success: true, meta: { changes: 0 } }
+        },
+      }
+      return statement
+    },
+    batch: async () => [],
   }
-  const db = { prepare: () => statement, batch: async () => [] }
   const env = {
     ML_CONTROLLER_URL: 'https://controller.invalid', FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED: 'true',
-    DISCORD_WEBHOOK_URL: 'https://discord.invalid/webhook', KV,
+    ...(options.webhook === false ? {} : { DISCORD_WEBHOOK_URL: 'https://discord.invalid/webhook' }), KV,
     DB: db, CORE_DB: db, MARKET_DB: db, LEARNING_DB: db, OPS_DB: db, EXECUTION_DB: db, PAPER_DB: db, RESEARCH_DB: db,
     UPDATE_QUEUE: { send: async () => {} },
   } as unknown as Bindings
   const dispatches: any[] = []
   const alerts: string[] = []
+  const fetched: string[] = []
+  const warns: string[] = []
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warns.push(args.map(String).join(' ')) })
   t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    fetched.push(String(url))
     if (String(url).startsWith('https://discord.invalid')) {
       alerts.push(JSON.parse(String(init.body)).content)
       return new Response(null, { status: 204 })
@@ -87,7 +104,8 @@ function fixture(t: any) {
     t.mock.timers.enable({ apis: ['Date'], now: at(clock) })
     try { return await runFinLabBackfillWatchdog(env, date) } finally { t.mock.timers.reset() }
   }
-  return { env, store, log, setLog, notReady, watchdogAt, dispatches, alerts, controller }
+  const lateLaneLogs = () => syslogs.filter((entry) => /^late_lane_/.test(entry.meta?.reason ?? ''))
+  return { env, store, log, setLog, notReady, watchdogAt, dispatches, alerts, fetched, warns, syslogs, lateLaneLogs, controller }
 }
 
 test('T-W2: the watchdog retries a late lane with the same run_id past the 3-attempt cap until 23:00', async (t) => {
@@ -117,8 +135,9 @@ test('T-W2: the watchdog retries a late lane with the same run_id past the 3-att
   await f.watchdogAt('22:50')
   assert.equal(f.dispatches.at(-1).dispatch_attempt, 4)
   assert.equal(f.alerts.length, 0)
+  assert.equal(f.lateLaneLogs().length, 0, 'retries before the cutoff are not reported')
 
-  // From 23:00 no new attempt: terminal error and one alert per task.
+  // From 23:00 no new attempt: terminal error and one ops error (no Discord, even with a webhook set).
   f.notReady(4, '22:45')
   const failed = await f.watchdogAt('23:00')
   assert.equal(f.dispatches.length, 2)
@@ -126,12 +145,20 @@ test('T-W2: the watchdog retries a late lane with the same run_id past the 3-att
   assert.equal(f.log('finlab-v4-backfill').status, 'error')
   assert.equal(f.log('evening-chain').status, 'error')
   assert.equal(f.log('evening-chain').summary, failed)
-  assert.equal(f.alerts.length, 2)
-  assert.ok(f.alerts.every((message) => message.includes('late lane not published by 23:00')))
-  // The terminal head is no longer pending: later ticks neither dispatch nor alert again.
+  assert.equal(f.alerts.length, 0)
+  assert.deepEqual(f.lateLaneLogs(), [{ level: 'error', cron: 'evening-chain', message: failed,
+    meta: { run_date: date, run_id: runId, reason: 'late_lane_cutoff' } }])
+  assert.equal(f.warns.filter((line) => line === `[FinLab] ${failed}`).length, 1)
+  // The terminal head is no longer pending: later ticks neither dispatch nor log again.
   assert.match(await f.watchdogAt('23:10'), /^skipped: no pending FinLab trigger/)
   assert.equal(f.dispatches.length, 2)
-  assert.equal(f.alerts.length, 2)
+  assert.equal(f.lateLaneLogs().length, 1)
+  // The same date and reason reached again (a not-ready head rewritten after the cutoff) is not logged twice.
+  f.notReady(4, '22:45')
+  assert.equal(await f.watchdogAt('23:20'), failed)
+  assert.equal(f.lateLaneLogs().length, 1)
+  assert.equal(f.warns.filter((line) => line === `[FinLab] ${failed}`).length, 1)
+  assert.equal(f.alerts.length, 0)
 })
 
 test('T-W2: real failures keep the old path and a succeeded chain is left alone', async (t) => {
@@ -151,6 +178,7 @@ test('T-W2: real failures keep the old path and a succeeded chain is left alone'
   assert.match(await f.watchdogAt('21:40'), /^skipped: evening-chain already succeeded/)
   assert.equal(f.dispatches.length, 0)
   assert.equal(f.alerts.length, 0)
+  assert.equal(f.lateLaneLogs().length, 0)
 })
 
 test('T-W2: the generic 3-attempt cap still applies to partial failures', async (t) => {
@@ -186,7 +214,8 @@ test('Q9: a late-lane retry left dispatch_unconfirmed by an HTML 5xx is still bo
   assert.match(failed, /^failed: FinLab late lane not published by 23:00 TW cutoff .* dispatch_attempt=4 /)
   assert.equal(f.dispatches.length, 2)
   assert.equal(f.log('evening-chain').status, 'error')
-  assert.equal(f.alerts.length, 2)
+  assert.equal(f.alerts.length, 0)
+  assert.deepEqual(f.lateLaneLogs().map((entry) => [entry.message, entry.meta.reason]), [[failed, 'late_lane_cutoff']])
   // A plain pending dispatch without the marker keeps the generic cap.
   f.setLog('finlab-v4-backfill', { status: 'triggered', timestamp: new Date(at('21:20')).toISOString(),
     summary: 'triggered finlab-v4-backfill dispatch_unconfirmed function_call_id=unknown dispatch_attempt=3 error=html_502' })
@@ -203,6 +232,7 @@ test('T-W2: a late lane stops at the controller dispatch_attempt limit (5) and t
   assert.match(await f.watchdogAt('22:50'), /^skipped: FinLab late lane at dispatch attempt limit dispatch_attempt=5; awaiting 23:00 TW cutoff/)
   assert.equal(f.dispatches.length, 1)
   assert.equal(f.alerts.length, 0)
+  assert.equal(f.lateLaneLogs().length, 0)
   // Attempt 5 lost (still pending) before the cutoff: also no resend.
   f.setLog('finlab-v4-backfill', { status: 'triggered', timestamp: new Date(at('22:20')).toISOString(),
     summary: 'triggered finlab-v4-backfill dispatch_unconfirmed function_call_id=unknown dispatch_attempt=5 error=html_502; watchdog_retriggered_from_attempt=4 late_lane_retry=1' })
@@ -213,7 +243,8 @@ test('T-W2: a late lane stops at the controller dispatch_attempt limit (5) and t
   assert.match(failed, /^failed: FinLab late lane not published by 23:00 TW cutoff .* dispatch_attempt=5 /)
   assert.equal(f.log('update').status, 'blocked')
   assert.equal(f.log('update').summary, `status=blocked blocked_by=finlab-v4-backfill executed=false; ${failed}`)
-  assert.equal(f.alerts.length, 2, 'update blocked adds no third alert')
+  assert.equal(f.alerts.length, 0)
+  assert.equal(f.lateLaneLogs().length, 1, 'update blocked adds no second ops log')
 })
 
 test('R8-a: a start heartbeat that arrives behind an HTML 5xx is not overwritten by the watchdog', async (t) => {
@@ -327,7 +358,78 @@ test('C28-25: a definite late-lane resend failure alerts at once instead of wait
   assert.equal(f.log('evening-chain').status, 'error')
   assert.match(f.log('evening-chain').summary, /^failed: FinLab watchdog late lane resend failed run_id=\S+ dispatch_attempt=2; /)
   assert.ok(f.log('evening-chain').summary.endsWith(summary))
-  assert.equal(f.alerts.length, 1)
+  assert.equal(f.alerts.length, 0)
+  const failed = f.log('evening-chain').summary
+  assert.deepEqual(f.lateLaneLogs(), [{ level: 'error', cron: 'evening-chain', message: failed,
+    meta: { run_date: date, run_id: runId, reason: 'late_lane_resend_failed' } }])
+  assert.equal(f.warns.filter((line) => line === `[FinLab] ${failed}`).length, 1)
   assert.equal(f.log('update').status, 'blocked')
   assert.match(f.log('update').summary, /^status=blocked blocked_by=finlab-v4-backfill executed=false; failed: FinLab watchdog late lane resend failed /)
+  // A second resend failure the same date is not logged again.
+  f.notReady(2, '21:45')
+  await f.watchdogAt('22:10')
+  assert.equal(f.dispatches.length, 2)
+  assert.match(f.log('evening-chain').summary, /^failed: FinLab watchdog late lane resend failed run_id=\S+ dispatch_attempt=3; /)
+  assert.equal(f.lateLaneLogs().length, 1)
+  assert.equal(f.warns.filter((line) => /^\[FinLab\] failed: FinLab watchdog late lane resend failed/.test(line)).length, 1)
+  // The cutoff is another reason and is logged once on its own.
+  f.notReady(3, '22:45')
+  const cutoff = await f.watchdogAt('23:00')
+  assert.match(cutoff, /^failed: FinLab late lane not published by 23:00 TW cutoff /)
+  assert.deepEqual(f.lateLaneLogs().map((entry) => entry.meta.reason), ['late_lane_resend_failed', 'late_lane_cutoff'])
+  assert.equal(f.alerts.length, 0)
+})
+
+test('C28-25: without a Discord webhook the cutoff and resend failures still reach the ops log and console.warn', async (t) => {
+  const f = fixture(t, { webhook: false })
+  assert.equal((f.env as any).DISCORD_WEBHOOK_URL, undefined)
+  f.controller.appError = true
+  f.notReady(1, '21:15')
+  await f.watchdogAt('21:40')
+  const resend = f.log('evening-chain').summary
+  assert.match(resend, /^failed: FinLab watchdog late lane resend failed /)
+  f.notReady(2, '22:45')
+  const cutoff = await f.watchdogAt('23:00')
+  assert.deepEqual(f.lateLaneLogs().map((entry) => [entry.level, entry.cron, entry.message, entry.meta.reason]), [
+    ['error', 'evening-chain', resend, 'late_lane_resend_failed'],
+    ['error', 'evening-chain', cutoff, 'late_lane_cutoff'],
+  ])
+  assert.ok(f.warns.includes(`[FinLab] ${resend}`))
+  assert.ok(f.warns.includes(`[FinLab] ${cutoff}`))
+  assert.ok(f.fetched.every((url) => url.startsWith('https://controller.invalid')), f.fetched.join(','))
+  assert.equal(f.alerts.length, 0)
+})
+
+test('C28-25: a failing ops log or KV never fails the watchdog and still warns', async (t) => {
+  const f = fixture(t, { webhook: false, syslogFails: true })
+  f.notReady(4, '22:45')
+  const failed = await f.watchdogAt('23:00')
+  assert.match(failed, /^failed: FinLab late lane not published by 23:00 TW cutoff /)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.equal(f.lateLaneLogs().length, 0)
+  assert.ok(f.warns.includes(`[FinLab] ${failed}`))
+  // A KV failure on the dedup claim is swallowed as well.
+  const g = fixture(t, { webhook: false })
+  const get = g.env.KV.get.bind(g.env.KV)
+  ;(g.env.KV as any).get = async (key: string, type?: string) => {
+    if (key.startsWith('finlab:late-lane-')) throw new Error('KV unavailable')
+    return get(key, type as any)
+  }
+  g.notReady(4, '22:45')
+  assert.equal(await g.watchdogAt('23:00'), failed)
+  assert.equal(g.lateLaneLogs().length, 0)
+  assert.ok(g.warns.some((line) => line.startsWith(`[FinLab] ${failed}; ops log failed: KV unavailable`)))
+  // An ops binding that cannot be resolved (it throws, unlike a failed insert) is swallowed too.
+  // It is dropped only once the dedup key is claimed, so the watchdog's own ops reads are unaffected.
+  const h = fixture(t, { webhook: false })
+  const put = h.env.KV.put.bind(h.env.KV)
+  ;(h.env.KV as any).put = async (key: string, value: string, opts?: any) => {
+    if (key.startsWith('finlab:late-lane-')) Object.assign(h.env as any, { OPS_DB: undefined, MULTI_D1_ACTIVE_DOMAINS: 'ops' })
+    return put(key, value, opts)
+  }
+  h.notReady(4, '22:45')
+  assert.equal(await h.watchdogAt('23:00'), failed)
+  assert.equal(h.log('evening-chain').status, 'error')
+  assert.equal(h.lateLaneLogs().length, 0)
+  assert.ok(h.warns.includes(`[FinLab] ${failed}; ops log failed: data_domain_binding_missing:ops`))
 })

@@ -13,7 +13,7 @@ import {
 import { finLabLateRetryCutoffTw } from './finlabSourceContract'
 import { manifestRepeatingWindow } from './schedulerManifestGovernance'
 import { resolveTwTradingSession } from './schedulerPolicy'
-import { alertScreenerChipStale, type ScreenerChipFreshness } from './screenerMarketData'
+import { alertScreenerChipStale, logScreenerAlertOnce, type ScreenerChipFreshness } from './screenerMarketData'
 
 const SCREENER_STAGE = 'screener_v2'
 const SCREENER_LEASE_SECONDS = 6000
@@ -325,8 +325,8 @@ export async function recordCanonicalScreenerCallback(
 }
 
 /**
- * C28-18: the screener job records chip freshness in the funnel metadata; the Worker (which holds the
- * webhook) sends the one-per-date stale warn when the watchdog verifies the canonical funnel. Never blocks.
+ * C28-18: the screener job records chip freshness in the funnel metadata; the Worker writes the
+ * one-per-date ops stale warn when the watchdog verifies the canonical funnel. Never blocks.
  */
 export async function alertScreenerChipStaleFromFunnel(env: Bindings, opsDb: D1Database, businessDate: string,
   funnelRunId: string): Promise<boolean> {
@@ -360,29 +360,9 @@ export function screenerMissingAlertTimes(businessDate: string): { alertAtMs: nu
 }
 
 async function alertScreenerRunMissing(env: Bindings, businessDate: string, eveningChain: string): Promise<boolean> {
-  if (!env.DISCORD_WEBHOOK_URL) return false
-  const dedupKey = `cron:alert:screener-v2-missing:${businessDate}`
-  try {
-    if (await env.KV.get(dedupKey)) return false
-    // Claim before sending: a failing webhook must not re-alert on every tick.
-    await env.KV.put(dedupKey, '1', { expirationTtl: 86400 })
-    await fetch(env.DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: [
-          'Scheduler Warn: screener did not run (`screener-v2-missing`)',
-          `Date: ${businessDate}`,
-          'No canonical screener_v2 stage and no successful screener funnel for this trading day.',
-          `evening-chain: ${eveningChain}`,
-        ].join('\n'),
-      }),
-      signal: AbortSignal.timeout(5000),
-    })
-    return true
-  } catch {
-    return false
-  }
+  return logScreenerAlertOnce(env, `cron:alert:screener-v2-missing:${businessDate}`, 'screener-v2-missing',
+    `screener did not run for ${businessDate}: no canonical screener_v2 stage and no successful screener funnel; evening-chain=${eveningChain}`,
+    { run_date: businessDate, evening_chain: eveningChain })
 }
 
 /** NEW-86: a trading day with no screener run is reported once instead of being skipped silently. Never throws on alerting. */

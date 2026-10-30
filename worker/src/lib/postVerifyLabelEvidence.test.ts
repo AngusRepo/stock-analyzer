@@ -78,7 +78,7 @@ function fixture(size=3) {
     deferredSignalDates:0,candidateCount:size*3,materializedCount:size*3,rejectedCount:0,status:'success' as const,summary:'terminal',
     processedHorizonKeys:size?[3,5,10].map(horizonDays=>({signalDate:signal,horizonDays})):[]}
   const outcomes={asOfDate:businessDate,referenceRows:size,horizons:[3,5,10].map(horizonDays=>({horizonDays,matureRows:size,
-    pendingRows:0,unavailableRows:0,persistedRows:size,retiredRows:0})),summary:'terminal'}
+    pendingRows:0,unavailableRows:0,persistedRows:size,writtenRows:size,retiredRows:0})),summary:'terminal'}
   const input={businessDate,canonicalRunId:'finlab-A',projectionRunId:'projection-A',producerResult:{canonical,multiHorizon,outcomes}}
   return{sql,env,input,root,queries:()=>queries,writes:()=>writes}
 }

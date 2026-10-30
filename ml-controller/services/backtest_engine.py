@@ -5005,6 +5005,7 @@ def replay_period(
                 raise ValueError('backtest_mode_b_predictions_empty')
             market_state = BacktestMarketState(start_date, end_date)
         market_risk_rows, breadth_rows = market_state.paper_risk_rows()
+        first_market_risk_date = min((str(r['date']) for r in market_risk_rows), default=None)
 
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
@@ -5050,7 +5051,8 @@ def replay_period(
                 momentum_rows=getattr(market_state, '_momentum', None), verified_rows=verified_rows,
                 identity=market_state.ensemble_identity_at(entry_open(day)),
                 previous_nav=equity_curve[-1][1] if equity_curve else None,
-                current_nav=_mark_to_open(account, dataset, day, prev_decision_date))
+                current_nav=_mark_to_open(account, dataset, day, prev_decision_date),
+                first_snapshot_session=first_market_risk_date is not None and prev_decision_date <= first_market_risk_date)
             paper_risk_records.append(state_record(paper_risk_state, day))
         if prev_candidates and prev_decision_date is not None:
             attempts = simulate_entries_for_date(

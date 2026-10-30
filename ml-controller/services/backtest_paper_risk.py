@@ -157,12 +157,17 @@ def _target_exposure(level: str, policy: dict) -> float:
 
 def canonical_market_risk(*, session: str, cutoff: datetime, market_risk_rows: list[dict],
                           breadth_rows: list[dict], regime_state: Optional[dict], hmm_era: bool,
-                          policy: dict) -> MarketRiskContext:
+                          policy: dict, previous_close_outside_window: bool = False) -> MarketRiskContext:
     """marketRiskRuntime.buildCanonicalMarketRiskContext (v4) on sealed rows.
 
     `session` is the expected session (the decision date, the entry's previous
     trading day). Before the HMM era the stored market_risk level stands in for
     the regime level, and the day is marked as an approximation.
+
+    `previous_close_outside_window`: the session is the first one the sealed
+    snapshot carries, so the previous close Paper compares against was never
+    exported. The one-day shock is then not evaluated (named), instead of a
+    blocker that would halt the replay's first session for a reason Paper never had.
     """
     risk = _visible(market_risk_rows, session=session, cutoff=cutoff, clock='calculated_at')
     latest, previous = (risk[0] if risk else None), (risk[1] if len(risk) > 1 else None)
@@ -173,7 +178,9 @@ def canonical_market_risk(*, session: str, cutoff: datetime, market_risk_rows: l
     approximations: list[str] = []
     if latest is None:
         blockers.append('market_risk_missing')
-    if previous is None:
+    if previous is None and previous_close_outside_window:
+        approximations.append('market_risk_previous_close_outside_window')
+    elif previous is None:
         blockers.append('market_risk_previous_close_missing')
     if breadth is None:
         blockers.append('market_breadth_missing')
@@ -201,7 +208,7 @@ def canonical_market_risk(*, session: str, cutoff: datetime, market_risk_rows: l
     previous_close = _finite(previous.get('twii_close')) if previous else None
     if current_close is None or current_close <= 0:
         blockers.append('market_risk_twii_close_missing')
-    if previous_close is None or previous_close <= 0:
+    if (previous_close is None or previous_close <= 0) and not (previous is None and previous_close_outside_window):
         blockers.append('market_risk_previous_twii_close_missing')
     advance_ratio = _finite(breadth.get('advance_ratio')) if breadth else None
     if advance_ratio is None or advance_ratio < 0 or advance_ratio > 1:
@@ -466,7 +473,7 @@ def replay_morning_state(*, decision_date: str, entry_date: str, circuit: dict, 
                          hmm_era: bool, equity: list[float], sells: list[dict],
                          momentum_rows: Optional[list[dict]], verified_rows: Optional[list[dict]],
                          identity: Optional[tuple], previous_nav: Optional[float],
-                         current_nav: Optional[float]) -> PaperRiskState:
+                         current_nav: Optional[float], first_snapshot_session: bool = False) -> PaperRiskState:
     """Paper's checks for the session `entry_date`, decided after `decision_date`'s close.
 
     Inputs the sealed snapshot does not carry are named, never assumed green:
@@ -479,13 +486,16 @@ def replay_morning_state(*, decision_date: str, entry_date: str, circuit: dict, 
     approximations: list[str] = []
     market = canonical_market_risk(session=decision_date, cutoff=cutoff, market_risk_rows=market_risk_rows,
                                    breadth_rows=breadth_rows, regime_state=regime_state, hmm_era=hmm_era,
-                                   policy=policy)
+                                   policy=policy, previous_close_outside_window=first_snapshot_session)
     results = [p1_drawdown(equity, circuit), p3_p4_market(market, circuit), p5_losses(sells, circuit)]
     if momentum_rows is None:
         approximations.append('p6_momentum_component_missing')
     else:
         zone, _ = current_momentum_zone(momentum_rows, session=decision_date, cutoff=cutoff)
         results.append(p6_momentum(zone, circuit))
+        # The worker upserts a date's zone without touching created_at, so a same-day
+        # rewrite after the open cannot be told apart from the first write.
+        approximations.append('p6_zone_rewrite_after_created_at_untracked')
     if verified_rows is None or (verified_rows and not P7_REQUIRED_COLUMNS <= set(verified_rows[0])):
         approximations.append('p7_verified_columns_missing')
     elif identity is None:

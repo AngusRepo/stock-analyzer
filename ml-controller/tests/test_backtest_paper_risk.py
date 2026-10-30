@@ -231,7 +231,15 @@ def morning(**overrides):
 def test_a_quiet_morning_runs_every_layer_with_nothing_triggered():
     state = morning()
     assert not state.halt and state.max_position_pct == .08 and state.exposure_cap == .95
-    assert state.triggered_layers == () and state.approximations == ()
+    assert state.triggered_layers == () and state.approximations == ('p6_zone_rewrite_after_created_at_untracked',)
+
+
+def test_the_first_snapshot_session_has_no_previous_close_and_says_so_instead_of_halting():
+    first = [{'date': D, 'twii_close': 100., 'risk_level': 'green', 'calculated_at': '2026-10-28T10:00:00Z'}]
+    assert morning(market_risk_rows=first).halt                               # Paper-like: missing close blocks
+    state = morning(market_risk_rows=first, first_snapshot_session=True)
+    assert not state.halt and state.market.shock_level is None
+    assert 'market_risk_previous_close_outside_window' in state.approximations
 
 
 def test_inputs_the_snapshot_lacks_are_named_never_assumed_green():

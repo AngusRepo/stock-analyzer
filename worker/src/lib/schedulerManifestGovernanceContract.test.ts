@@ -60,7 +60,7 @@ assert(summary.physicalRoots === 57, 'summary physical root count mismatch')
 assert(summary.uniqueLogicalTasks === 53 && summary.accountedLogicalTasks === 53, 'logical task accounting must be 53/53')
 assert(summary.reviewedDependencies === 35, 'reviewed dependencies include the post-close dispatcher and exclude retired jobs')
 assert(summary.unmappedDependencies === 18 && summary.unmappedTasks.length === 18, 'unreviewed non-daily dependency debt must remain fail-visible')
-assert(summary.pausedPhysicalRoots === 3, 'paper shadow backfill and the paused weekly/monthly Active-8 OOF cohorts stay paused')
+assert(summary.pausedPhysicalRoots === 5, 'paper shadow backfill, the weekly/monthly Active-8 OOF cohorts and the weekly/monthly Optuna sweeps stay paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 
 const paused = manifest.jobs.filter((job) => 'desiredState' in job && job.desiredState === 'PAUSED')
@@ -69,6 +69,8 @@ assert(
     'active8-oof-monthly',
     'active8-oof-weekly',
     'data-domain-shadow-backfill-paper',
+    'monthly-optuna',
+    'weekly-optuna',
   ]),
   'production PAUSED truth must be represented in manifest',
 )

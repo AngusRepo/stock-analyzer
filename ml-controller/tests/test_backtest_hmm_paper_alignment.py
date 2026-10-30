@@ -62,22 +62,55 @@ def test_a_non_hmm_latest_state_is_not_used_and_a_bad_checksum_stops_the_replay(
         RegimeHistory([broken])
 
 
+def test_ties_break_like_the_worker_query():
+    a = obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', '2026-08-18T13:05:00Z')
+    later_computed = obs('2026-08-18', 'bull', '2026-08-18T13:01:00Z', '2026-08-18T13:01:00Z')
+    later_recorded = obs('2026-08-18', 'volatile', '2026-08-18T13:00:00Z', '2026-08-18T13:06:00Z')
+    open_ = entry_open('2026-08-19')
+    assert RegimeHistory([a, later_computed]).latest_on_or_before('2026-08-18', open_)['family'] == 'bull'
+    assert RegimeHistory([a, later_recorded]).latest_on_or_before('2026-08-18', open_)['family'] == 'volatile'
+    twin = obs('2026-08-18', 'sideways', '2026-08-18T13:00:00Z', '2026-08-18T13:05:00Z')
+    winner = max((a, twin), key=lambda row: row['state_checksum'])
+    assert RegimeHistory([a, twin]).latest_on_or_before('2026-08-18', open_)['family'] == \
+        json.loads(winner['state_json'])['family']
+
+
+def edited(row, **changes):
+    state = {**json.loads(row['state_json']), **changes}
+    text = json.dumps(state)
+    return {**row, 'state_json': text, 'state_checksum': hashlib.sha256(text.encode()).hexdigest()}
+
+
+@pytest.mark.parametrize('changes', [{'run_date': '2026-08-17'}, {'computed_at': '2026-08-19T02:00:00Z'},
+                                     {'schema_version': 'v0'}, {'label': 'calm'}])
+def test_a_payload_the_worker_rejects_stops_the_replay(changes):
+    history = RegimeHistory([edited(obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z'), **changes)])
+    with pytest.raises(ValueError, match='payload_invalid'):
+        history.latest_on_or_before('2026-08-18', entry_open('2026-08-19'))
+
+
+@pytest.mark.parametrize('column', COLUMNS)
+def test_an_incomplete_row_stops_the_replay(column):
+    with pytest.raises(ValueError, match='row_invalid'):
+        RegimeHistory([{**obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z'), column: None}])
+
+
 # ── replay wiring ────────────────────────────────────────────────────────────
 
-DAYS = ['2026-08-14', '2026-08-17', '2026-08-18', '2026-08-19']
+DAYS = ['2026-08-14', '2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20']
 SURFACE = {'bear_market': .7, 'sideways': .3}
 
 
 def dataset(regime_rows):
     return SimpleNamespace(
         stocks=pl.DataFrame({'id': [1], 'symbol': ['2330']}), start_date=DAYS[0], end_date=DAYS[-1], trading_days=DAYS,
-        market_risk=pl.DataFrame({'date': DAYS, 'risk_level': ['green', 'yellow', 'orange', 'green'],
-                                  'risk_score': [10, 40, 61, 20]}),
+        market_risk=pl.DataFrame({'date': DAYS[:3] + DAYS[4:], 'risk_level': ['green', 'yellow', 'orange', 'red'],
+                                  'risk_score': [10, 40, 61, 80]}),
         replay_frames={
-            'signals': pl.DataFrame({'stock_id': [1] * 4, 'prediction_date': DAYS,
-                                     'generated_at': [d + 'T13:00:00Z' for d in DAYS], 'direction_accuracy': [.6] * 4}),
-            'market_breadth': pl.DataFrame({'date': DAYS, 'advance_ratio': [.5] * 4}),
-            'us_market_signals': pl.DataFrame({'date': DAYS, 'gspc_return': [.0] * 4}),
+            'signals': pl.DataFrame({'stock_id': [1] * 5, 'prediction_date': DAYS,
+                                     'generated_at': [d + 'T13:00:00Z' for d in DAYS], 'direction_accuracy': [.6] * 5}),
+            'market_breadth': pl.DataFrame({'date': DAYS, 'advance_ratio': [.5] * 5}),
+            'us_market_signals': pl.DataFrame({'date': DAYS, 'gspc_return': [.0] * 5}),
             'verified_predictions': pl.DataFrame({'generated_at': ['2026-08-01T13:00:00Z'],
                                                   'verified_at': ['2026-08-08T13:00:00Z'], 'direction_correct': [1]}),
             'market_regime_state': frame(regime_rows)})
@@ -97,21 +130,36 @@ def run(monkeypatch, kv_position_risk, regime_rows):
     return screens, entries
 
 
+HMM_ROWS = [obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', surface=SURFACE),
+            obs('2026-08-18', 'bull', '2026-08-18T14:00:00Z', '2026-08-19T02:00:00Z'),   # after the 08-19 open
+            obs('2026-08-19', 'volatile', '2026-08-19T13:00:00Z')]
+
+
 def test_hmm_days_use_the_pipeline_contract_and_earlier_days_keep_the_stored_level(monkeypatch, kv_position_risk):
-    rows = [obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z', surface=SURFACE),
-            obs('2026-08-18', 'bull', '2026-08-18T14:00:00Z', '2026-08-19T02:00:00Z')]   # after the open
-    screens, entries = run(monkeypatch, kv_position_risk, rows)
+    screens, entries = run(monkeypatch, kv_position_risk, HMM_ROWS)
     assert screens['2026-08-17']['regime_label'] == 'yellow' and screens['2026-08-17']['regime_surface'] is None
     assert screens['2026-08-18']['regime_label'] == 'bear'
     assert screens['2026-08-18']['regime_surface'] == SURFACE
+    assert screens['2026-08-19']['regime_label'] == 'volatile'
     assert entries['2026-08-18']['regime_family'] is None and entries['2026-08-18']['risk_level'] == 'yellow'
     assert entries['2026-08-19']['regime_family'] == 'bear'
     assert entries['2026-08-19']['risk_level'] == 'orange' and entries['2026-08-19']['risk_score'] == 61
+    assert entries['2026-08-20']['regime_family'] == 'volatile'
+    # 08-19 has no market_risk row: Paper's adaptive reads the latest stored row (08-18).
+    assert entries['2026-08-20']['risk_level'] == 'orange' and entries['2026-08-20']['risk_score'] == 61
+
+
+def test_an_hmm_day_without_a_contract_has_no_candidates(monkeypatch, kv_position_risk):
+    rows = [HMM_ROWS[0], obs('2026-08-19', 'sideways', '2026-08-19T13:00:00Z', source='market_env_fallback')]
+    screens, entries = run(monkeypatch, kv_position_risk, rows)
+    assert '2026-08-18' in screens and '2026-08-19' not in screens
+    assert '2026-08-20' not in entries
 
 
 def test_a_range_before_the_hmm_era_is_unchanged(monkeypatch, kv_position_risk):
     screens, entries = run(monkeypatch, kv_position_risk, [])
     assert [screens[d]['regime_label'] for d in DAYS[:3]] == ['green', 'yellow', 'orange']
+    assert screens['2026-08-19']['regime_label'] is None
     assert all(kw['regime_family'] is None for kw in entries.values())
 
 
@@ -122,7 +170,8 @@ L2 = {'confidence_risk_mult': .15, 'confidence_perf_mult': .2, 'confidence_delta
       'sltp_add_orange_sl': 5., 'sltp_add_orange_tp': 5., 'medium_risk_scale': .01}
 
 
-def entry(kv_position_risk, *, conf, risk_level, risk_score=61, regime_family='bear', accuracy=.55):
+def entry(kv_position_risk, *, conf, risk_level, risk_score=61, regime_family='bear', accuracy=.55,
+          circuit=None, threshold=.6):
     prices = pl.DataFrame([{'symbol': '2330', 'date': d, 'open': 100., 'high': 101., 'low': 99., 'close': 100.,
                             'volume': 10_000_000} for d in ('2026-08-18', '2026-08-19')])
     indicators = pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18'], 'atr14': [10.]})
@@ -137,10 +186,11 @@ def entry(kv_position_risk, *, conf, risk_level, risk_score=61, regime_family='b
         dataset=data, decision_date='2026-08-18', entry_date='2026-08-19', candidates=[candidate], account=account,
         pos=engine.PositionSizeParams(), sltp=engine.SLTPParams(), fees=engine.FeeParams(),
         replay_days=['2026-08-18', '2026-08-19'],
-        ml_predictions=engine.MLPredictionsCache({('2330', '2026-08-18'): conf}), buy_conf_threshold=.6,
-        circuit_cfg={}, current_drawdown_30d=0., recent_accuracy_30d=accuracy, l2_formula_cfg=L2,
+        ml_predictions=engine.MLPredictionsCache({('2330', '2026-08-18'): conf}), buy_conf_threshold=threshold,
+        circuit_cfg=circuit or {}, current_drawdown_30d=0., recent_accuracy_30d=accuracy, l2_formula_cfg=L2,
         risk_score=risk_score, risk_level=risk_level, regime_family=regime_family,
         position_risk_distribution_cfg=kv_position_risk)
+    assert candidate.confidence == conf, 'sizing keeps the raw confidence, as Paper Kelly does'
     return attempts[0], account
 
 
@@ -205,6 +255,7 @@ def test_live_mode_b_reads_both_hmm_tables_up_to_the_end_date(monkeypatch):
     state = backtest_state.BacktestMarketState('2026-08-14', '2026-08-19')
     regime_sql, params = next((sql, p) for sql, p in seen if 'market_regime_state' in sql)
     assert 'market_regime_state_revisions_v1' in regime_sql and 'market_regime_state_history_v1' in regime_sql
+    assert regime_sql.count('run_date <= ?') == 2 and 'persisted_at AS recorded_at' in regime_sql
     assert params == ['2026-08-19', '2026-08-19']
     contract = state.hmm_regime_contract('2026-08-18', '2026-08-19')
     assert contract['alpha_regime'] == 'bear' and contract['regime_surface'] == SURFACE
@@ -245,3 +296,50 @@ def test_the_research_snapshot_freezes_every_hmm_observation(monkeypatch):
     monkeypatch.setattr(backtest_state, 'load_regime_observations', lambda end, client=None: [])
     empty = e.export_backtest_dataset_snapshot(req)['components']['market_regime_state']
     assert empty.is_empty() and tuple(empty.columns) == COLUMNS
+
+
+def test_the_stored_level_feeds_the_volatility_term_even_at_a_low_score(kv_position_risk):
+    orange, green = paper_delta(risk_score=20, risk_level='orange', regime='sideways', accuracy=.7), \
+        paper_delta(risk_score=20, risk_level='green', regime='sideways', accuracy=.7)
+    assert orange > green
+    conf = .6 + (orange + green) / 2
+    kw = dict(conf=conf, risk_score=20, regime_family='sideways', accuracy=.7)
+    assert entry(kv_position_risk, risk_level='orange', **kw)[0].status == 'skipped_low_conf'
+    assert entry(kv_position_risk, risk_level='green', **kw)[0].status != 'skipped_low_conf'
+
+
+def test_layer_two_raises_the_adjusted_threshold_after_the_delta(kv_position_risk):
+    circuit = {'lowAccuracyThreshold': .5, 'drawdownRaisedConf': .7}
+    kw = dict(risk_score=20, risk_level='green', accuracy=.49)
+    delta = paper_delta(regime='sideways', **kw)
+    paper = max(min(.75, max(.45, .6 + delta)), .7)         # max(clip(base + delta), raised)
+    wrong_order = min(.75, max(.45, .7 + delta))             # clip(max(base, raised) + delta)
+    assert wrong_order > paper
+    conf = (paper + wrong_order) / 2
+    assert entry(kv_position_risk, conf=conf, regime_family='sideways', circuit=circuit,
+                 **kw)[0].status != 'skipped_low_conf'
+    assert entry(kv_position_risk, conf=paper - .001, regime_family='sideways', circuit=circuit,
+                 **kw)[0].status == 'skipped_low_conf'
+
+
+def test_missing_inputs_drop_the_delta_but_keep_the_clip(kv_position_risk):
+    # Paper always clips the threshold; without adaptive inputs the delta is zero.
+    attempt, _ = entry(kv_position_risk, conf=.76, risk_level=None, risk_score=None, threshold=.8)
+    assert attempt.status != 'skipped_low_conf'
+
+
+def test_the_snapshot_loader_carries_the_regime_component(monkeypatch):
+    import services.research_corporate_history as corporate
+    rows = [obs('2026-08-18', 'bear', '2026-08-18T13:00:00Z')]
+    frames = {'stocks': pl.DataFrame({'symbol': ['2330'], 'listed_date': [None], 'delisted_date': [None]}),
+              'prices': pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18'], 'open': [1.], 'high': [1.],
+                                      'low': [1.], 'close': [1.], 'volume': [1]}),
+              'indicators': pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18']}),
+              'chips': pl.DataFrame({'symbol': ['2330'], 'date': ['2026-08-18']}),
+              'market_risk': pl.DataFrame({'date': ['2026-08-18']}),
+              'market_regime_state': frame(rows)}
+    monkeypatch.setattr(engine, '_snapshot_component_uris', lambda manifest: {name: name for name in frames})
+    monkeypatch.setattr(engine, '_read_snapshot_parquet', lambda uri, transform=None: frames[uri])
+    monkeypatch.setattr(corporate, 'load_research_corporate_components', lambda *a, **k: {})
+    data = engine.BacktestDataset.load_from_snapshot_manifest({'snapshot_id': 's'}, '2026-08-18', '2026-08-18')
+    assert data.replay_frames['market_regime_state'].to_dicts() == rows

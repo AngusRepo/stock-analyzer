@@ -1587,7 +1587,8 @@ class L2SensitivityReq(BaseModel):
 
 @router.post("/l2_sensitivity")
 def run_l2_sensitivity(req: L2SensitivityReq = Body(default=L2SensitivityReq())):
-    """25-dim (minus 5 bandit defer) L2/circuit Optuna search against Mode B replay.
+    """20-dim L2/circuit Optuna search against Mode B replay (bandit deferred; SLTP-add and
+    medium scale retired, Wei 10/30 B).
 
     Search space source-of-truth:
       trading:config.optuna_l2.search_space.dims (KV-driven, D4 citation)

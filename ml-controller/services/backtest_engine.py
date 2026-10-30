@@ -3255,14 +3255,15 @@ def simulate_entries_for_date(
     # (effectiveBuy = clip(buyConfThreshold + confidence_delta, lo, hi)), and the
     # delta is adaptive.compute_confidence_components with Paper's inputs (stored
     # risk score and level, HMM family). Layer 2 below then raises that threshold.
+    # Missing inputs mean no adaptive delta (Paper: no adaptive params), never no clip.
     effective_delta: float = 0.0
-    if (ml_predictions is not None and l2_formula_cfg is not None and risk_score is not None
-            and recent_accuracy_30d is not None and buy_conf_threshold is not None):
-        from services.adaptive import compute_confidence_components
-        effective_delta = compute_confidence_components(
-            float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
-            risk_level=risk_level, regime=regime_family,
-        )["effective_delta"]
+    if ml_predictions is not None and l2_formula_cfg is not None and buy_conf_threshold is not None:
+        if risk_score is not None and recent_accuracy_30d is not None:
+            from services.adaptive import compute_confidence_components
+            effective_delta = compute_confidence_components(
+                float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
+                risk_level=risk_level, regime=regime_family,
+            )["effective_delta"]
         clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
         clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
         buy_conf_threshold = max(clip_lo, min(clip_hi, buy_conf_threshold + effective_delta))
@@ -5112,15 +5113,18 @@ def replay_period(
                 recent_accuracy_30d=recent_acc_b,
                 # 2026-04-20 #28 P3 effective confidence delta
                 l2_formula_cfg=(params or {}).get("L2_formula") if mode == "B" else None,
+                # Paper's adaptive reads the latest stored market_risk row.
                 risk_score=(
-                    market_state.get_risk(prev_decision_date).risk_score
-                    if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
+                    market_state.get_risk_on_or_before(prev_decision_date).risk_score
+                    if (mode == "B" and market_state is not None
+                        and market_state.get_risk_on_or_before(prev_decision_date))
                     else None
                 ),
                 # P3 inputs, as Paper's adaptive reads them: stored level + HMM family
                 risk_level=(
-                    market_state.get_risk(prev_decision_date).risk_level
-                    if (mode == "B" and market_state is not None and market_state.get_risk(prev_decision_date))
+                    market_state.get_risk_on_or_before(prev_decision_date).risk_level
+                    if (mode == "B" and market_state is not None
+                        and market_state.get_risk_on_or_before(prev_decision_date))
                     else None
                 ),
                 regime_family=(
@@ -5162,20 +5166,25 @@ def replay_period(
             # replay keeps the stored market_risk level.
             hmm_contract = (market_state.hmm_regime_contract(day, replay_days[i + 1])
                             if mode == "B" and market_state is not None else None)
-            prev_candidates = replay_screener_for_date(
-                dataset=dataset,
-                date=day,
-                screener=screener_p,
-                ranking=ranking_p,
-                alpha_policy=(params or {}).get("alphaFramework") or (params or {}).get("alpha_framework"),
-                regime_label=(
-                    hmm_contract["alpha_regime"] if hmm_contract
-                    else market_state.get_risk(day).risk_level
-                    if (mode == "B" and market_state is not None and market_state.get_risk(day))
-                    else regime_label
-                ),
-                regime_surface=hmm_contract["regime_surface"] if hmm_contract else None,
-            )
+            if hmm_contract is None and mode == "B" and market_state is not None and market_state.in_hmm_era(day):
+                # The pipeline refuses to recommend without a regime contract.
+                logger.warning("[replay] no HMM regime contract for %s: no candidates", day)
+                prev_candidates = []
+            else:
+                prev_candidates = replay_screener_for_date(
+                    dataset=dataset,
+                    date=day,
+                    screener=screener_p,
+                    ranking=ranking_p,
+                    alpha_policy=(params or {}).get("alphaFramework") or (params or {}).get("alpha_framework"),
+                    regime_label=(
+                        hmm_contract["alpha_regime"] if hmm_contract
+                        else market_state.get_risk(day).risk_level
+                        if (mode == "B" and market_state is not None and market_state.get_risk(day))
+                        else regime_label
+                    ),
+                    regime_surface=hmm_contract["regime_surface"] if hmm_contract else None,
+                )
             prev_decision_date = day
 
         if decision_observer is not None:

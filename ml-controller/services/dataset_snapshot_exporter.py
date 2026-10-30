@@ -733,6 +733,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             "margin_data": margin_queries,
             "shareholding": shareholding_queries,
             "signals": signal_queries,
+            **({"market_regime_state": 1} if req.include_signals else {}),
         },
         started=started,
     )

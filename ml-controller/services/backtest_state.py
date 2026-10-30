@@ -122,7 +122,11 @@ class RegimeHistory:
         if not visible:
             return None
         run_date, _computed, _recorded, _checksum, state = max(visible, key=lambda row: row[:4])
-        if state.get('run_date') != run_date or _instant(state.get('computed_at')) > as_of:
+        # Worker parseMarketRegimeState + readRegimeObservation reject these payloads.
+        from services.market_regime_state import normalize_regime_label
+        if (state.get('schema_version') != 'market-regime-state-v1' or normalize_regime_label(state.get('label')) is None
+                or state.get('run_date') != run_date or not state.get('computed_at')
+                or _instant(state.get('computed_at')) > as_of):
             raise ValueError('market_regime_history_payload_invalid:' + run_date)
         return state if state.get('source') == 'hmm' else None
 
@@ -227,18 +231,26 @@ class BacktestMarketState:
     def get_us(self, date: str) -> Optional[USMarketRow]:
         return self._us.get(date)
 
+    def get_risk_on_or_before(self, date: str) -> Optional[MarketRiskRow]:
+        """The latest market_risk row at or before `date` (Paper's adaptive reads the latest row)."""
+        dates = [day for day in self._risk if day <= date]
+        return self._risk[max(dates)] if dates else None
+
+    def in_hmm_era(self, session: str) -> bool:
+        """True from the first HMM run_date in the data; earlier sessions keep the stored path."""
+        first = self._regime.first_hmm_date
+        return first is not None and session >= first
+
     def hmm_regime_contract(self, session: str, entry_date: str) -> Optional[dict]:
         """The pipeline regime contract (alpha_regime + regime_surface) for decisions made at `session`.
 
-        None before the first HMM run_date (the stored market_risk era) and when no
-        HMM observation existed before the entry open; callers keep the stored path then.
+        None before the HMM era, and None inside it when no HMM observation was
+        visible before the entry open (Paper then has no regime contract either).
         """
-        history = getattr(self, '_regime', None)
-        if history is None or history.first_hmm_date is None or session < history.first_hmm_date:
+        if not self.in_hmm_era(session):
             return None
-        state = history.latest_on_or_before(session, entry_open(entry_date))
+        state = self._regime.latest_on_or_before(session, entry_open(entry_date))
         if state is None:
-            logger.warning('[BacktestMarketState] no HMM state visible for %s before %s open', session, entry_date)
             return None
         from services.market_regime_state import _contract_from_state
         return _contract_from_state(state, source='market_regime_state_history_v1')

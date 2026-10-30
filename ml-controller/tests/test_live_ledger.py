@@ -71,6 +71,21 @@ def test_nav_uses_dated_marks_and_pending_settlements_only():
     assert snap["marks"] == {"2330": {"price": 1000.0, "date": "2026-12-10", "source": "twse_close"}}
 
 
+def test_a_snapshot_values_an_untraded_holding_at_todays_contract_reference_price():
+    """Wei 10/30: the daily snapshot takes the same marks as the intake (Q1), labelled by source."""
+    from services.live_market import MARK_SOURCE, REFERENCE_MARK_SOURCE
+    obs = _observation("2026-12-10", 50_000, positions=[("2330", 10), ("6488", 20)])
+    marks = {"2330": {"price": 1000.0, "date": "2026-12-10", "source": MARK_SOURCE},
+             "6488": {"price": 50.0, "date": "2026-12-10", "source": REFERENCE_MARK_SOURCE}}
+    snap = build_daily_snapshot(observation=obs, business_date="2026-12-10", marks=marks,
+                                net_external_flow=0, previous=None)
+    assert snap["nav"] == 50_000 + 10_000 + 1_000 and snap["marks"] == marks
+    stale = {**marks, "6488": {**marks["6488"], "date": "2026-12-09"}}  # a table from another day: no mark
+    with pytest.raises(ValueError, match="live_ledger_mark_missing:6488"):
+        build_daily_snapshot(observation=obs, business_date="2026-12-10", marks=stale, net_external_flow=0,
+                             previous=None)
+
+
 @pytest.mark.parametrize("marks", [{}, {"2330": _mark("2026-12-09", 1000)}, {"2330": {"price": 0, "date": "2026-12-10", "source": "x"}},
                                    {"2330": {"price": 1000, "date": "2026-12-10", "source": ""}}])
 def test_missing_stale_or_unsourced_marks_fail_closed(marks):

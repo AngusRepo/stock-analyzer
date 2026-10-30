@@ -32,7 +32,7 @@
 
 ## 2. 資金與股數換算（D-6）
 - **實盤 NAV（3a）**：券商現金＋持股市值（當下權威報價）−未交割。KV：`trading:live_config.capital_source='broker_nav_authoritative_marks'`。
-  - 持股報價（Wei 10/30 Q1）：用券商 snapshot 當天的最後成交價。snapshot 顯示當天還沒成交（成交量 0，或最後成交在更早的日子）時，改用券商合約表 `update_date` 為今天的參考價（`shioaji_contract_reference_price`）。合約表不是今天的、`trading_suspended`，或 snapshot 根本沒回來，都不給報價。
+  - 持股報價（Wei 10/30 Q1）：用券商 snapshot 當天的最後成交價。snapshot 顯示當天還沒成交（成交量 0，或最後成交在更早的日子）時，改用券商合約表 `update_date` 為今天的參考價（`shioaji_contract_reference_price`）。合約表不是今天的、`trading_suspended`，或 snapshot 根本沒回來，都不給報價。每日帳本 snapshot（R18）也用同一套報價（Wei 10/30），`marks` 逐檔記下來源：`shioaji_snapshot_last_trade` 或 `shioaji_contract_reference_price`（gateway 回的類別是 `snapshot_last_trade`／`contract_reference`）。
   - NAV 算不出來時（Wei 10/30 Q2）：只擋買單。這一輪不記錄新的買單（下一輪再試，過了當天就照漏掉日子的規則 SKIPPED），已記錄的買單也不送；賣單和出場照常，依 Live 持股換算，不需要 NAV。每輪發一次 `live_intake_nav_unavailable` 告警。gateway `/v1/marks` 讀不到（503、逾時）也算 NAV 算不出來：持股全部沒有 mark，只擋買單。帳戶觀測本身讀不到或驗證不過時，照舊整輪不做。
 - **Paper 分母（3b，只用在買單）**：Paper 下單當下的 `portfolioValue`（就是 `sizingAuthorization.portfolioValue` 那個值）。
   - 來源（Wei 10/29 方案 A）：Paper 在買進寫入點把已算好的值另寫一列到 `paper_order_sizing_v1(order_id, portfolio_value)`。

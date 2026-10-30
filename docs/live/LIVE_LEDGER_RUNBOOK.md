@@ -19,6 +19,10 @@
 | `source` | `wei_manual` 或 `broker_statement`。 |
 | `evidence_sha256` | 對帳單或轉帳憑證檔案的 sha256（64 位 hex）。原始檔自己保存，不放進 repo。 |
 
+## 2a. snapshot 的持股報價
+- 和 Live intake 同一套（Wei 10/30 Q1）：當天有成交用券商 snapshot 的最後成交價；當天沒成交，用券商合約表 `update_date` 為當天的參考價。合約表不是當天的或 `trading_suspended` 不給報價，那一天的 snapshot 就不寫（`live_ledger_mark_missing:<代號>`）。
+- snapshot 的 `marks` 逐檔記下價格、日期和來源（`shioaji_snapshot_last_trade` 或 `shioaji_contract_reference_price`），事後可以查是哪一種報價。
+
 ## 3. 記錯或漏記
 - 已經寫入的出入金和 snapshot 都**不能改、不能刪**（append-only）。
 - 當天還沒關帳就發現記錯：不要再送一筆同 `flow_id` 的不同內容，先停下來回報，由 parent 判斷。

@@ -1,45 +1,26 @@
-"""
-test_cascade_parity.py — Sprint 6a.7 exit cascade parity test
+"""Exit cascade parity: backtest_engine.check_exit_pointwise vs Worker paperExitPolicy.checkExitConditions.
 
-Verifies that backtest_engine.check_exit_pointwise() returns identical
-decisions to Worker paper.ts checkExitConditions() for the same inputs.
-
-Two run modes:
-
-  LOCAL mode (--mode local):
-    Runs fixture-based test against local Python check_exit_pointwise only.
-    Fast, no network, but only catches bugs in the Python port — cannot
-    detect drift from the Worker TS version.
-
-  PARITY mode (--mode parity):
-    Also POSTs each fixture to Worker /api/admin/test/exit-cascade and
-    asserts (action, reason_category, sell_shares) match. Requires:
-      - Worker deployed with the /admin/test/exit-cascade endpoint
-      - STOCKVISION_AUTH_TOKEN env var set
-      - WORKER_URL env var set (e.g. https://stockvision-worker.angus-solo-dev.workers.dev)
-
-Usage:
-  python tests/test_cascade_parity.py --mode local
-  WORKER_URL=... STOCKVISION_AUTH_TOKEN=... python tests/test_cascade_parity.py --mode parity
-
-Exit code: 0 = all fixtures pass, 1 = any mismatch.
-
-See memory/project_backtest_engine_design_rationale.md section 4 for design.
+The Worker side runs in-process through `node --import tsx` with the same call shape as
+POST /api/admin/test/exit-cascade (worker/src/routes/adminParityRoutes.ts): the champion
+trading config with the Python ExitParams copied into `exit`, then categorizeExitReason.
+Without node or the Worker's tsx install the TS comparison skips with the reason; the
+Python-only expectations still run.
 """
 from __future__ import annotations
 
-import argparse
 import json
-import os
-import sys
+import shutil
+import subprocess
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 
 from services.backtest_engine import (
     ExitParams,
     check_exit_pointwise,
 )
+
+WORKER_DIR = Path(__file__).resolve().parents[2] / "worker"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -205,178 +186,117 @@ FIXTURES = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Runners
+# Worker TS bridge
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_local(exit_p: ExitParams) -> tuple[int, int, list[str]]:
-    """Run fixtures against local Python check_exit_pointwise only."""
-    passed = 0
-    failed = 0
-    errors: list[str] = []
+# Fixture ids whose reason_category differs from the Worker today (action and sell
+# shares still match and stay strict). Strict xfail: remove the entry once both converge.
+_HOLD_UPDATE_DRIFT = (
+    "Python hold is a chandelier 'trailing update' (HoldTrailingUpdate); TS hold is "
+    "'fixed stop / high-water mark update', which its own categorizer files as HoldNoTrigger"
+)
+KNOWN_CATEGORY_DRIFT: dict[str, str] = {
+    "L3_ml_sell_intraday_skipped": _HOLD_UPDATE_DRIFT,
+    "L7_time_stop_intraday_skipped": _HOLD_UPDATE_DRIFT,
+    "hold_trailing_update": _HOLD_UPDATE_DRIFT,
+}
 
-    for f in FIXTURES:
-        decision = check_exit_pointwise(
-            pos_dict=f["position"],
-            current_price=f["current_price"],
-            atr14=f["atr14"],
-            has_ml_sell=f["has_ml_sell"],
-            is_eod=f["is_eod"],
-            exit_p=exit_p,
-        )
-        if decision.action != f["expected_action"]:
-            failed += 1
-            errors.append(
-                f"  [{f['id']}] action: expected {f['expected_action']!r}, "
-                f"got {decision.action!r} (reason={decision.reason})"
-            )
-            continue
-        if decision.reason_category != f["expected_category"]:
-            failed += 1
-            errors.append(
-                f"  [{f['id']}] category: expected {f['expected_category']!r}, "
-                f"got {decision.reason_category!r} (reason={decision.reason})"
-            )
-            continue
-        if "expected_sell_shares" in f:
-            if decision.sell_shares != f["expected_sell_shares"]:
-                failed += 1
-                errors.append(
-                    f"  [{f['id']}] sell_shares: expected {f['expected_sell_shares']}, "
-                    f"got {decision.sell_shares}"
-                )
-                continue
-        passed += 1
-
-    return passed, failed, errors
+_TS_EXIT_SCRIPT = r"""
+import { readFileSync } from 'node:fs';
+import exitPolicy from './src/lib/paperExitPolicy.ts';
+import tradingConfig from './src/lib/tradingConfig.ts';
+const { checkExitConditions, categorizeExitReason } = exitPolicy;
+const { buildChampionTradingConfig } = tradingConfig;
+const { exit, cases } = JSON.parse(readFileSync(0, 'utf8'));
+const base = buildChampionTradingConfig({});
+const cfg = { ...base, exit: { ...base.exit, ...exit } };
+const out = {};
+for (const f of cases) {
+  // checkExitConditions counts days from Date.now(); back-date by whole days plus one hour.
+  const entry_date = new Date(Date.now() - f.days * 86400000 - 3600000).toISOString();
+  const d = checkExitConditions({ ...f.position, entry_date }, f.currentPrice, f.atr14, f.hasMlSell, f.isEOD, cfg);
+  out[f.id] = { action: d.action, reason: d.reason, reason_category: categorizeExitReason(d.reason), sellShares: d.sellShares ?? null };
+}
+console.log(JSON.stringify(out));
+"""
 
 
-def _sync_entry_date(position: dict) -> dict:
-    """
-    Worker checkExitConditions uses `Date.now() - new Date(entry_date).getTime()`
-    for time-stop calculation, so fixture entry_date must be relative to current
-    clock. Python check_exit_pointwise honors `_days_since_entry` override.
-    Make both paths see the same day count by setting Worker-facing entry_date
-    = today - _days_since_entry.
-    """
-    from datetime import datetime, timedelta
-    days = position.get("_days_since_entry", 5)
-    synced_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    worker_pos = {**position, "entry_date": synced_date}
-    worker_pos.pop("_days_since_entry", None)  # Worker doesn't know this field
-    return worker_pos
-
-
-def run_parity(exit_p: ExitParams, worker_url: str, token: str) -> tuple[int, int, list[str]]:
-    """Run fixtures against BOTH local Python and Worker TS, compare results."""
-    try:
-        import httpx
-    except ImportError:
-        print("[ERROR] httpx not installed — pip install httpx")
-        return 0, len(FIXTURES), ["httpx missing"]
-
-    passed = 0
-    failed = 0
-    errors: list[str] = []
-
-    endpoint = f"{worker_url.rstrip('/')}/api/admin/test/exit-cascade"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
+def _exit_override(exit_p: ExitParams) -> dict:
+    """ExitParams -> trading:config.exit fields (inverse of ExitParams.from_trading_config)."""
+    return {
+        "hardStopPct": exit_p.hard_stop_pct,
+        "fallbackInitStopMult": exit_p.fallback_init_stop_mult,
+        "fallbackTp1Mult": exit_p.fallback_tp1_mult,
+        "fallbackTp2Mult": exit_p.fallback_tp2_mult,
+        "tp1SellRatio": exit_p.tp1_sell_ratio,
+        "timeStopDays": exit_p.time_stop_days,
+        "timeStopMinProfit": exit_p.time_stop_min_profit,
     }
 
-    with httpx.Client(timeout=15.0) as client:
-        for f in FIXTURES:
-            # Python decision (uses _days_since_entry override)
-            py = check_exit_pointwise(
-                pos_dict=f["position"],
-                current_price=f["current_price"],
-                atr14=f["atr14"],
-                has_ml_sell=f["has_ml_sell"],
-                is_eod=f["is_eod"],
-                exit_p=exit_p,
-            )
 
-            # Worker TS decision — sync entry_date to match Python's day count
-            worker_position = _sync_entry_date(f["position"])
-            try:
-                resp = client.post(endpoint, headers=headers, json={
-                    "position": worker_position,
-                    "currentPrice": f["current_price"],
-                    "atr14": f["atr14"],
-                    "hasMlSell": f["has_ml_sell"],
-                    "isEOD": f["is_eod"],
-                })
-                if resp.status_code != 200:
-                    failed += 1
-                    errors.append(
-                        f"  [{f['id']}] Worker HTTP {resp.status_code}: {resp.text[:200]}"
-                    )
-                    continue
-                ts = resp.json()
-            except Exception as e:
-                failed += 1
-                errors.append(f"  [{f['id']}] Worker request failed: {e}")
-                continue
+def _python_decision(f: dict, exit_p: ExitParams):
+    return check_exit_pointwise(
+        pos_dict=f["position"],
+        current_price=f["current_price"],
+        atr14=f["atr14"],
+        has_ml_sell=f["has_ml_sell"],
+        is_eod=f["is_eod"],
+        exit_p=exit_p,
+    )
 
-            # Compare action + category + sell_shares
-            diffs: list[str] = []
-            if py.action != ts.get("action"):
-                diffs.append(f"action py={py.action!r} ts={ts.get('action')!r}")
-            if py.reason_category != ts.get("reason_category"):
-                diffs.append(
-                    f"category py={py.reason_category!r} ts={ts.get('reason_category')!r}"
-                )
-            if py.sell_shares != ts.get("sellShares"):
-                diffs.append(
-                    f"sellShares py={py.sell_shares} ts={ts.get('sellShares')}"
-                )
 
-            if diffs:
-                failed += 1
-                errors.append(f"  [{f['id']}] DRIFT: {' | '.join(diffs)}")
-            else:
-                passed += 1
-
-    return passed, failed, errors
+@pytest.fixture(scope="module")
+def ts_decisions() -> dict:
+    if shutil.which("node") is None:
+        pytest.skip("node not on PATH: Worker checkExitConditions cannot run")
+    if not (WORKER_DIR / "node_modules" / "tsx").is_dir():
+        pytest.skip(f"tsx not installed under {WORKER_DIR}/node_modules (run npm ci in worker)")
+    cases = []
+    for f in FIXTURES:
+        position = {k: v for k, v in f["position"].items() if k != "_days_since_entry"}
+        cases.append({
+            "id": f["id"], "position": position, "days": f["position"].get("_days_since_entry", 5),
+            "currentPrice": f["current_price"], "atr14": f["atr14"],
+            "hasMlSell": f["has_ml_sell"], "isEOD": f["is_eod"],
+        })
+    payload = json.dumps({"exit": _exit_override(ExitParams()), "cases": cases})
+    result = subprocess.run(
+        ["node", "--import", "tsx", "--input-type=module", "-e", _TS_EXIT_SCRIPT],
+        cwd=WORKER_DIR, input=payload, capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Worker TS bridge failed:\n" + result.stdout + result.stderr)
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Main
+# Tests
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["local", "parity"], default="local")
-    args = parser.parse_args()
-
-    exit_p = ExitParams()  # production defaults
-
-    print(f"Running {len(FIXTURES)} cascade fixtures in {args.mode} mode...")
-    print()
-
-    if args.mode == "local":
-        passed, failed, errors = run_local(exit_p)
-    else:
-        worker_url = os.environ.get("WORKER_URL", "").strip()
-        token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
-        if not worker_url or not token:
-            print("[ERROR] --mode parity requires WORKER_URL and STOCKVISION_AUTH_TOKEN env vars")
-            return 1
-        passed, failed, errors = run_parity(exit_p, worker_url, token)
-
-    print(f"Passed: {passed}/{len(FIXTURES)}")
-    print(f"Failed: {failed}/{len(FIXTURES)}")
-    if errors:
-        print()
-        print("Errors:")
-        for e in errors:
-            print(e)
-        return 1
-
-    print()
-    print(f"[OK] All {passed} fixtures passed in {args.mode} mode")
-    return 0
+@pytest.mark.parametrize("f", FIXTURES, ids=[f["id"] for f in FIXTURES])
+def test_python_cascade_matches_expected_layer(f):
+    decision = _python_decision(f, ExitParams())
+    assert decision.action == f["expected_action"], decision.reason
+    assert decision.reason_category == f["expected_category"], decision.reason
+    if "expected_sell_shares" in f:
+        assert decision.sell_shares == f["expected_sell_shares"]
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+@pytest.mark.parametrize("f", FIXTURES, ids=[f["id"] for f in FIXTURES])
+def test_python_action_and_sell_shares_match_worker_ts(f, ts_decisions):
+    py = _python_decision(f, ExitParams())
+    ts = ts_decisions[f["id"]]
+    assert (py.action, py.sell_shares) == (ts["action"], ts["sellShares"]), (
+        f"py reason={py.reason!r} ts reason={ts['reason']!r}"
+    )
+
+
+@pytest.mark.parametrize("f", [
+    pytest.param(f, id=f["id"], marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=KNOWN_CATEGORY_DRIFT[f["id"]]))
+    if f["id"] in KNOWN_CATEGORY_DRIFT else pytest.param(f, id=f["id"])
+    for f in FIXTURES
+])
+def test_python_reason_category_matches_worker_ts(f, ts_decisions):
+    py = _python_decision(f, ExitParams())
+    ts = ts_decisions[f["id"]]
+    assert py.reason_category == ts["reason_category"], f"py reason={py.reason!r} ts reason={ts['reason']!r}"

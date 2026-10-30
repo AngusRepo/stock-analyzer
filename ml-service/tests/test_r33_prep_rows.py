@@ -172,6 +172,10 @@ def test_bundle_rows_under_r33_keep_row_errors_and_missing_ranks_but_not_structu
     with pytest.raises(ValueError, match="pipeline_modal_feature_rank_missing:C:TabM"):
         check([r for r in _rows() if r["symbol"] != "B"] + [{"symbol": "B", "rank_scores": {"LightGBM": 1, "TabM": 1}}],
               r33=False)
+    for expected in ([], ["A", "A", "C"]):
+        with pytest.raises(ValueError, match="pipeline_modal_feature_expected_symbol_contract_invalid"):
+            modal_app._assert_pipeline_bundle_rows("feature", _rows(), expected=expected, feature_models=["LightGBM"],
+                                                   require_rank=True, r33=True)
     for broken, reason in ((_rows()[:2], "cardinality_mismatch"), (_rows() + [_rows()[0]], "cardinality_mismatch"),
                            ([*_rows()[:2], {"symbol": "Z"}], "cardinality_mismatch"),
                            ([*_rows()[:2], {"error": "x"}], "row_error:<missing>"),
@@ -207,6 +211,9 @@ def test_modal_bundle_runs_the_feature_and_gnn_stages_inside_the_prep_views():
     assert "return _with_r33_prep(_feature_rows)" in source
     assert "return _with_r33_prep(lambda: predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool))" in source
     assert "feature_models=feature_models, require_rank=require_rank, r33=r33_bundle" in source
+    assert 'r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == R33_KIND' in source
+    from app.active8_ensemble_runtime import R33_KIND
+    assert R33_KIND == "r33_equal7_isotonic"
 
 
 def test_view_width_and_dtype_and_a_pit_request_serves_only_its_own_version():

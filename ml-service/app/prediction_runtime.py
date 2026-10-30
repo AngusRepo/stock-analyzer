@@ -325,7 +325,8 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     # R33: one model's non-finite score is that model missing for this symbol (z=0,
     # denominator seven); the row keeps its other scores. Other modes fail the row.
-    r33 = (pool_snapshot.get("active8_ensemble") or {}).get("kind") == "r33_equal7_isotonic"
+    from .active8_ensemble_runtime import R33_KIND
+    r33 = (pool_snapshot.get("active8_ensemble") or {}).get("kind") == R33_KIND
     rank_scores: dict[str, float] = {}
     non_finite: list[str] = []
     for model_name, raw_score in precomputed.items():

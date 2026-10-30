@@ -939,7 +939,8 @@ def _feature_core_coverage_error(override: dict) -> str | None:
     scores = override.get(_BATCH_FEATURE_RANK_SCORES_KEY)
     scores = scores if isinstance(scores, dict) else {}
     ensemble = (pool or {}).get("active8_ensemble") if isinstance(pool, dict) else None
-    if isinstance(ensemble, dict) and ensemble.get("kind") == "r33_equal7_isotonic":
+    from .active8_ensemble_runtime import R33_KIND
+    if isinstance(ensemble, dict) and ensemble.get("kind") == R33_KIND:
         # R33: a model missing for this symbol is z=0 downstream (denominator seven), so the
         # row keeps its other scores; a row with no score at all still fails in finalize.
         return None

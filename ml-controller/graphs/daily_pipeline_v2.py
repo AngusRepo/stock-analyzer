@@ -1167,6 +1167,14 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         logger.debug("[Pipeline V2] Modal wait telemetry write skipped: %s", exc)
 
 
+    # R33 (Wei 10/30, m-d): a model with no usable score all day is left to the coverage
+    # check, which writes the error ops line first and then aborts with
+    # r33_model_missing_for_day; batch failures and invalid payloads still raise here.
+    from services.r33_ensemble import is_r33
+    r33_day_outage_to_coverage = is_r33(
+        ((serving_context.get("serving_manifest") or {}) if isinstance(serving_context.get("serving_manifest"), dict)
+         else {}).get("active8_ensemble"))
+
     def _active_required_model(model_name: str, series: list[dict]) -> bool:
         if model_name not in model_order(model_status):
             return False
@@ -1185,7 +1193,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         if gnn_map:
             logger.info("[Pipeline V2] GNN GraphSAGE full-universe: %s/%s succeeded", len(gnn_map), len(payloads))
         else:
-            if _active_required_model("GNN", payloads):
+            if _active_required_model("GNN", payloads) and not r33_day_outage_to_coverage:
                 raise RuntimeError(f"GNN active model returned zero usable predictions; summary={gnn_result_summary}")
             logger.warning("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded summary=%s", gnn_result_summary)
     elif isinstance(gnn_raw, dict) and gnn_raw.get("results") == []:
@@ -1213,7 +1221,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series_by_model.get('DLinear') or [])} succeeded"
             )
         else:
-            if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
+            if (_active_required_model("DLinear", sequence_series_by_model.get("DLinear") or [])
+                    and not r33_day_outage_to_coverage):
                 raise RuntimeError("DLinear active model returned zero usable predictions")
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(dlinear_raw, dict) and dlinear_raw.get("results") == []:
@@ -1241,7 +1250,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series_by_model.get('PatchTST') or [])} succeeded"
             )
         else:
-            if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
+            if (_active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or [])
+                    and not r33_day_outage_to_coverage):
                 raise RuntimeError("PatchTST active model returned zero usable predictions")
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
@@ -1268,7 +1278,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                     out[sym] = row
             summary = _modal_batch_result_summary(raw)
             error_summary = summary.get("error_summary")
-            if len(out) == 0 and series and required:
+            if len(out) == 0 and series and required and not r33_day_outage_to_coverage:
                 raise RuntimeError(
                     f"{name} active model returned zero usable predictions; "
                     f"contract_error_summary={error_summary or 'none'}"

@@ -2185,7 +2185,8 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         if _is_active(name)
     ]
 
-    r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == "r33_equal7_isotonic"
+    from app.active8_ensemble_runtime import R33_KIND
+    r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == R33_KIND
 
     def _assert_exact_rows(
         model_name: str,

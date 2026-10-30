@@ -1,12 +1,15 @@
 import numpy as np
+import pytest
 import polars as pl
 
 from services.r33_calibration_job import fit_calibration, load_l2_pool, pool_score_table
 from services.r33_isotonic_calibration import MODELS, validate_payload
+from services import r33_oof_checks
 from services.r33_oof_checks import entry_limit_up_rows, run_checks
 
 DATES = [f"2026-{m:02d}-{d:02d}" for m in (7, 8) for d in range(1, 29)][:48]
 SYMBOLS = [str(1000 + i) for i in range(30)]
+COST = 0.00585  # trading:config.fees round trip at the 10/30 schedule
 
 
 def _oof(sign=1.0, seed=3):
@@ -34,23 +37,23 @@ def _receipts(oof, leak=None):
 
 def test_informative_scores_pass_and_inverted_scores_fail():
     oof = _oof()
-    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=DATES[30])
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=DATES[30], round_trip_cost=COST)
     assert report["status"] == "pass", report["checks"]
     assert report["scope"]["horizon_sessions"] == 5 and report["new_folds_report"]["days"] > 0
     inverted = _oof(sign=-1.0)
-    report = run_checks(oof=inverted, fold_receipts=_receipts(inverted), pool_by_date=None, new_fold_from=None)
+    report = run_checks(oof=inverted, fold_receipts=_receipts(inverted), pool_by_date=None, new_fold_from=None, round_trip_cost=COST)
     assert report["status"] == "fail" and not report["checks"]["inversion"]["passed"]
     assert report["checks"]["tail_guard"]["hard_failures"] == ["PatchTST", "TabM"]
 
 
 def test_fold_whose_training_labels_reach_its_test_start_fails_leakage():
     oof = _oof()
-    report = run_checks(oof=oof, fold_receipts=_receipts(oof, leak="w1"), pool_by_date=None, new_fold_from=None)
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof, leak="w1"), pool_by_date=None, new_fold_from=None, round_trip_cost=COST)
     leakage = report["checks"]["leakage"]
     assert report["status"] == "fail" and leakage["leaking_folds"] == ["w1"]
     assert leakage["ancestor_influenced_rows"] == oof.filter(pl.col("fold_id") == "w1").height
     missing = [r for r in _receipts(oof) if r["fold_id"] != "w0"]
-    assert run_checks(oof=oof, fold_receipts=missing, pool_by_date=None, new_fold_from=None)["checks"]["leakage"]["unattested_folds"] == ["w0"]
+    assert run_checks(oof=oof, fold_receipts=missing, pool_by_date=None, new_fold_from=None, round_trip_cost=COST)["checks"]["leakage"]["unattested_folds"] == ["w0"]
 
 
 def test_limit_up_entry_rows_keep_rank_but_leave_fit_and_baseline():
@@ -86,3 +89,78 @@ def test_l2_pool_keeps_only_the_latest_run_each_day():
     pool, receipt = load_l2_pool(lambda sql, params: rows, start="d1", end="d2")
     assert pool == {"d1": {"2"}, "d2": {"3"}}
     assert receipt["multi_run_days"] == ["d1"] and receipt["rows"] == 2 and len(receipt["membership_sha256"]) == 64
+
+
+def _weak(oof):
+    """Same ordering, a fifth of the payoff: cross-fitted expected excess tops out near 1.1%."""
+    return oof.with_columns(pl.col("target_return") * 0.2)
+
+
+def _force_picks(monkeypatch, choose):
+    """Keep the real top-block edge; the cost-line set is whatever choose(day, excess) marks."""
+    real = r33_oof_checks.crossfit_expected_excess
+
+    def crossfit(table):
+        predicted, top_edge = real(table)
+        forced = np.full(len(predicted), np.nan)
+        for i, (day, rows) in enumerate(sorted(table["day_rows"].items())):
+            forced[rows[choose(i, table["excess"][rows])]] = 1.0
+        return forced, top_edge
+    monkeypatch.setattr(r33_oof_checks, "crossfit_expected_excess", crossfit)
+
+
+def test_cost_line_gates_on_names_whose_crossfit_expected_excess_clears_the_cost():
+    oof = _weak(_oof())
+    passing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.011)
+    inv = passing["checks"]["inversion"]
+    assert passing["status"] == "pass" and inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True)
+    assert inv["crossfit_above_cost"]["round_trip_cost"] == 0.011 and inv["crossfit_above_cost"]["n"] > 1
+    # Same scores, a cost no held-out name is expected to clear: IC, isotonic top and the top five
+    # are all still positive, and admission fails on the cost line alone.
+    failing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.012)
+    inv = failing["checks"]["inversion"]
+    assert failing["status"] == "fail" and inv["passed"] is False
+    assert inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=False)
+    assert inv["crossfit_above_cost"]["days_with_picks"] == 0 and inv["crossfit_above_cost"]["mean"] is None
+    assert inv["top_k"]["k"] == 5 and inv["top_k"]["diagnostic_only"] is True
+    assert inv["top_k"]["mean"] - inv["top_k"]["se"] > 0
+
+
+def test_cost_line_needs_mean_minus_se_above_zero(monkeypatch):
+    # Day 0 takes its best name, day 1 the mildest loser: mean > 0 but mean - SE = the loser < 0.
+    def choose(i, excess):
+        if i == 0:
+            return [int(np.argmax(excess))]
+        if i == 1:
+            losers = np.flatnonzero(excess < 0)
+            return [int(losers[np.argmax(excess[losers])])]
+        return []
+    _force_picks(monkeypatch, choose)
+    oof = _oof()
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=COST)
+    above = report["checks"]["inversion"]["crossfit_above_cost"]
+    assert above["n"] == 2 and above["mean"] > 0 and above["mean"] - above["se"] < 0
+    assert report["checks"]["inversion"]["gates"]["crossfit_above_cost"] is False and report["status"] == "fail"
+
+
+def test_cost_line_with_a_single_pick_day_fails_closed(monkeypatch):
+    # One day with a strong pick has no SE: mean > 0 is not enough.
+    _force_picks(monkeypatch, lambda i, excess: [int(np.argmax(excess))] if i == 0 else [])
+    oof = _oof()
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=COST)
+    above = report["checks"]["inversion"]["crossfit_above_cost"]
+    assert above["n"] == 1 and above["mean"] > 0 and above["se"] is None
+    assert report["checks"]["inversion"]["gates"]["crossfit_above_cost"] is False and report["status"] == "fail"
+
+
+def test_net_of_cost_is_reported_but_never_gates(monkeypatch):
+    # Every day picks its names realizing between 0.05% and 0.3%: positive, but below the 0.585% cost.
+    _force_picks(monkeypatch, lambda i, excess: np.flatnonzero((excess > 0.0005) & (excess < 0.003)))
+    oof = _weak(_oof())
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=COST)
+    inv = report["checks"]["inversion"]
+    above, net = inv["crossfit_above_cost"], inv["net_of_cost"]
+    assert above["mean"] - above["se"] > 0 and net["gate"] is False
+    assert net["mean"] == pytest.approx(above["mean"] - COST) and net["se"] == pytest.approx(above["se"])
+    assert net["mean"] - net["se"] < 0
+    assert report["status"] == "pass" and set(inv["gates"]) == {"daily_ic", "isotonic_top", "crossfit_above_cost"}

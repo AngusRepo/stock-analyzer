@@ -3,7 +3,10 @@
 1. No leakage: every fold's actual training label_known max precedes its test start.
 2. Not inverted: the daily rank IC of the seven-model score is positive on average,
    and days held out of a purged isotonic fit realize a positive excess above that
-   fit's top-block edge (mean minus one standard error > 0).
+   fit's top-block edge (mean minus one standard error > 0). Cost line (C1, Wei 10/30):
+   the held-out names whose cross-fitted expected excess clears the round-trip cost
+   (the allocator's own buy rule, no count limit) realize mean minus SE > 0. The same
+   set net of cost (C2) and the day's top five by score are reported, never gated.
 3. Tail-fold guard (policy v4): a model whose last-three-fold daily IC has a 90% HAC
    upper bound below zero fails hard for TabM and PatchTST and warns otherwise.
 Rows whose entry session opened limit-up are not buyable and are excluded from 2.
@@ -21,10 +24,11 @@ from scipy.stats import spearmanr
 from services.r33_calibration_job import crossfit_expected_excess, pool_score_table
 from services.r33_isotonic_calibration import MODELS
 
-SCHEMA = "r33-oof-checks-v1"
+SCHEMA = "r33-oof-checks-v2"  # v2: cost line (C1) gates inversion
 LIMIT_UP_OPEN_GAP = 0.095
 TAIL_GUARD_POLICY = "v4"
 TAIL_GUARD_HARD = ("TabM", "PatchTST")
+TOP_K_DIAGNOSTIC = 5  # report-only field; a top-k cut never gates admission
 
 
 def entry_limit_up_rows(prices: pl.DataFrame) -> pl.DataFrame:
@@ -51,17 +55,30 @@ def _hac_bounds(values, level=0.90):
     return a.mean() - half, a.mean() + half
 
 
-def _score_checks(table: dict, days) -> dict:
-    ic = [float(spearmanr(table["score"][r], table["excess"][r])[0]) for d, r in table["day_rows"].items() if d in days]
-    _, top_edge = crossfit_expected_excess(table)
-    top = [table["excess"][r][table["score"][r] >= top_edge[d]] for d, r in table["day_rows"].items()
-           if d in days and d in top_edge]
+def _score_checks(table: dict, days, round_trip_cost: float) -> dict:
+    day_rows = {d: r for d, r in table["day_rows"].items() if d in days}
+    ic = [float(spearmanr(table["score"][r], table["excess"][r])[0]) for r in day_rows.values()]
+    predicted, top_edge = crossfit_expected_excess(table)
+    top = [table["excess"][r][table["score"][r] >= top_edge[d]] for d, r in day_rows.items() if d in top_edge]
     top = [t.mean() for t in top if len(t)]
-    return dict(daily_ic=_mean_se(ic), isotonic_top=_mean_se(top))
+    picks = [table["excess"][r][predicted[r] > round_trip_cost] for r in day_rows.values()]
+    realized = np.array([p.mean() for p in picks if len(p)])
+    above_cost = dict(_mean_se(realized), round_trip_cost=round_trip_cost, days_with_picks=int(len(realized)),
+                      picks_per_day=float(np.mean([len(p) for p in picks])) if picks else None)
+    top_k = [table["excess"][r][np.argsort(-table["score"][r], kind="stable")[:TOP_K_DIAGNOSTIC]].mean()
+             for r in day_rows.values()]
+    return dict(daily_ic=_mean_se(ic), isotonic_top=_mean_se(top), crossfit_above_cost=above_cost,
+                net_of_cost=dict(_mean_se(realized - round_trip_cost), gate=False),
+                top_k=dict(_mean_se(top_k), k=TOP_K_DIAGNOSTIC, diagnostic_only=True))
+
+
+def _lower_bound_positive(stat: dict) -> bool:
+    return stat["se"] is not None and stat["mean"] - stat["se"] > 0
 
 
 def run_checks(*, oof: pl.DataFrame, fold_receipts: list[dict], pool_by_date: dict[str, set[str]] | None,
-               new_fold_from: str | None) -> dict:
+               new_fold_from: str | None, round_trip_cost: float) -> dict:
+    """round_trip_cost is the trading:config.fees round trip serving charges (caller-owned)."""
     receipts = {str(r["fold_id"]): r for r in fold_receipts}
     leaking = sorted(f for f, r in receipts.items() if not str(r["train_label_known_max"]) < str(r["test_start"]))
     unattested = sorted(set(oof["fold_id"].unique().to_list()) - set(receipts))
@@ -71,10 +88,12 @@ def run_checks(*, oof: pl.DataFrame, fold_receipts: list[dict], pool_by_date: di
 
     table = pool_score_table(oof, pool_by_date)
     days = set(table["day_rows"])
-    scored = _score_checks(table, days)
-    ic, top = scored["daily_ic"], scored["isotonic_top"]
-    inversion = dict(**scored, passed=bool(ic["mean"] is not None and ic["mean"] > 0
-                                           and top["se"] is not None and top["mean"] - top["se"] > 0))
+    scored = _score_checks(table, days, round_trip_cost)
+    ic = scored["daily_ic"]
+    gates = dict(daily_ic=bool(ic["mean"] is not None and ic["mean"] > 0),
+                 isotonic_top=_lower_bound_positive(scored["isotonic_top"]),
+                 crossfit_above_cost=_lower_bound_positive(scored["crossfit_above_cost"]))
+    inversion = dict(**scored, gates=gates, passed=all(gates.values()))
 
     folds = sorted(oof["fold_id"].unique().to_list(), key=lambda f: str(receipts.get(f, {}).get("test_start", f)))
     tail = oof.filter(pl.col("fold_id").is_in(folds[-3:]) & ~pl.col("entry_limit_up"))
@@ -97,7 +116,7 @@ def run_checks(*, oof: pl.DataFrame, fold_receipts: list[dict], pool_by_date: di
     new_folds = None
     if new_fold_from:
         recent = {d for d in days if d >= new_fold_from}
-        new_folds = dict(from_date=new_fold_from, days=len(recent), **(_score_checks(table, recent) if len(recent) > 1 else {}))
+        new_folds = dict(from_date=new_fold_from, days=len(recent), **(_score_checks(table, recent, round_trip_cost) if len(recent) > 1 else {}))
     checks = dict(leakage=leakage, inversion=inversion, tail_guard=tail_guard)
     return dict(schema_version=SCHEMA, status="pass" if all(c["passed"] for c in checks.values()) else "fail",
                 checks=checks, scope=dict(pool_days=len(days), horizon_sessions=table["horizon"],

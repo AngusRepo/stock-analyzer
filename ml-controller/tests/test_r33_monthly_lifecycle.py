@@ -167,9 +167,20 @@ def _manifest():
             "manifest_checksum": "m" * 64, "sequence_gcs_prefix": "seq", "windows": []}
 
 
-def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None):
+FEES = {"commission": 0.001425, "tax": 0.003, "dayTradeTax": 0.0015, "minCommission": 20}
+
+
+def _trading_config(*, degraded=False, fees=FEES, source="worker_admin_config"):
+    from services.trading_config_loader import TradingConfigContract, TradingConfigLoadResult
+    config = {} if fees is None else {"fees": fees}
+    return TradingConfigLoadResult(config=config, contract=TradingConfigContract(
+        source=source, raw_present=True, degraded=degraded, missing_sections=[], defaulted_sections=[]))
+
+
+def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None, trading_config=None):
     from services import active8_oof_cohort_materializer as mat, l4_oof_index_receipt, l4_oof_lifecycle
     from services import r33_calibration_job, r33_monthly_lifecycle as life, r33_oof_checks, training_source_preflight
+    from services import trading_config_loader
     import polars as pl
     import routers.walk_forward as wf
     calls = {"dispatch": [], "persist": 0}
@@ -190,11 +201,14 @@ def _patch_lifecycle(monkeypatch, *, checks_status="pass", full_fit=None):
                       "close": [100.0, 110.0]}), {"rows": 2}))
     monkeypatch.setattr(life, "fold_receipts", lambda manifest, bucket: [{"fold_id": "w0", "train_label_known_max": "2026-10-01", "test_start": "2026-10-02"}])
     monkeypatch.setattr(r33_calibration_job, "load_l2_pool", lambda query, start, end: ({"2026-10-20": {"2330"}}, {"days": 1}))
+    loaded = trading_config or _trading_config()
+    monkeypatch.setattr(trading_config_loader, "load_merged_trading_config_with_contract", lambda: loaded)
     seen_oof = {}
 
     def checks(**kwargs):
         seen_oof["frame"] = kwargs["oof"]
-        return {"status": checks_status}
+        seen_oof["round_trip_cost"] = kwargs["round_trip_cost"]
+        return {"schema_version": r33_oof_checks.SCHEMA, "status": checks_status}
     monkeypatch.setattr(r33_oof_checks, "run_checks", checks)
     monkeypatch.setattr(r33_calibration_job, "fit_calibration",
                         lambda **kw: {"schema": "cal", "cost": kw["round_trip_cost"], "min_block_weight": kw["min_block_weight"]})
@@ -252,6 +266,43 @@ def test_passing_checks_seal_a_candidate_bundle(monkeypatch):
     assert result["physical_prediction_coverage"]["max_date"] == "2026-10-23"
     # Replays reuse both write-once receipts.
     assert _run(bucket)["r33_candidate_bundle"] == result["r33_candidate_bundle"]
+
+
+def test_checks_cost_line_reads_trading_config_fees_not_the_calibration_constant(monkeypatch):
+    from services.r33_monthly_lifecycle import GATE_COST_OWNER, ROUND_TRIP_COST
+    _, seen = _patch_lifecycle(monkeypatch, checks_status="fail")
+    bucket = Bucket()
+    _run(bucket)
+    assert seen["round_trip_cost"] == pytest.approx(0.00585) and seen["round_trip_cost"] != ROUND_TRIP_COST
+    report = json.loads(bucket.store["r33/monthly_candidates/c-r33/oof_checks.json"])
+    assert report["gate_cost"] == {"round_trip_cost": pytest.approx(0.00585), "owner": GATE_COST_OWNER,
+                                   "source": "worker_admin_config", "commission": 0.001425, "tax": 0.003}
+    # A different KV fee schedule moves the cost line with it (no copy of 0.585% in code).
+    _, seen = _patch_lifecycle(monkeypatch, checks_status="fail",
+                               trading_config=_trading_config(fees={"commission": 0.0005, "tax": 0.0015}))
+    _run(Bucket())
+    assert seen["round_trip_cost"] == pytest.approx(0.0025)
+
+
+@pytest.mark.parametrize("trading_config,reason", [
+    (dict(degraded=True, source="direct_kv_worker_fallback"), "r33_gate_cost_contract_degraded:direct_kv_worker_fallback"),
+    (dict(fees=None), "r33_gate_cost_fees_missing"),
+    (dict(fees={"commission": 0.001425}), "r33_gate_cost_fees_missing"),
+    (dict(fees={"commission": "0.001425", "tax": 0.003}), "r33_gate_cost_fees_invalid"),
+    (dict(fees={"commission": True, "tax": 0.003}), "r33_gate_cost_fees_invalid"),
+    (dict(fees={"commission": -0.001, "tax": 0.008}), "r33_gate_cost_fees_invalid"),
+    (dict(fees={"commission": float("nan"), "tax": 0.003}), "r33_gate_cost_fees_invalid"),
+    (dict(fees={"commission": 0.0, "tax": 0.0}), "r33_round_trip_cost_invalid"),
+    (dict(fees={"commission": 0.4, "tax": 0.3}), "r33_round_trip_cost_invalid"),
+])
+def test_unusable_cost_owner_fails_closed_before_checks_are_sealed(monkeypatch, trading_config, reason):
+    calls, seen = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False},
+                                   trading_config=_trading_config(**trading_config))
+    bucket = Bucket()
+    with pytest.raises(ValueError, match="^" + reason.replace(".", r"\.") + "$"):
+        _run(bucket)
+    assert "frame" not in seen and calls["dispatch"] == []
+    assert "r33/monthly_candidates/c-r33/oof_checks.json" not in bucket.store
 
 
 
@@ -559,3 +610,19 @@ def test_r33_prep_wiring_is_profile_gated():
     assert R33_FEATURE_WARMUP_SESSIONS == 252
     job = (ROOT / "oof_materialize_job_main.py").read_text(encoding="utf-8")
     assert job.index("'r33_monthly_candidate'") < job.index("result.get('materialization_owner') == 'native_l3_new_l4'")
+
+
+@pytest.mark.parametrize("stale", [{"result_schema": "r33-oof-checks-v1"}, {"drop_gate_cost": True}])
+def test_receipt_sealed_without_the_cost_line_never_admits_full_fit(monkeypatch, stale):
+    from services import r33_oof_checks
+    calls, _ = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False})
+    bucket = Bucket()
+    report = {"schema_version": "r33-monthly-oof-checks-receipt-v1", "cohort_id": "c-r33", "manifest_checksum": "m" * 64,
+              "gate_cost": {"round_trip_cost": 0.00585},
+              "result": {"schema_version": stale.get("result_schema", r33_oof_checks.SCHEMA), "status": "pass"}}
+    if stale.get("drop_gate_cost"):
+        report.pop("gate_cost")
+    bucket.store["r33/monthly_candidates/c-r33/oof_checks.json"] = json.dumps(report).encode()
+    with pytest.raises(ValueError, match="^r33_oof_checks_schema_stale$"):
+        _run(bucket)
+    assert calls["dispatch"] == []

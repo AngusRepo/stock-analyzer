@@ -2577,12 +2577,20 @@ function finLabNoWatchdogRunLeft(twDate: string, nowMs: number = Date.now()): bo
 /**
  * The post-cutoff refetch started (start heartbeat) but has not completed by the date's last watchdog run
  * while a canonical lane is still missing: the date ends refetch_cap terminal there. Earlier runs leave it
- * alone (a FinLab capture can run 13-25 min, longer than the pending stale threshold). Null otherwise.
+ * alone (a FinLab capture can run 13-25 min, longer than the pending stale threshold). Null otherwise; with the
+ * canonical lanes already ready there (completion callback lost) it writes the date's one lost-callback warn.
  */
-async function finLabStartedRefetchTerminal(env: Bindings, twDate: string): Promise<string | null> {
+async function finLabStartedRefetchTerminal(
+  env: Bindings, twDate: string, runId: string | null | undefined, callbackReceived = false,
+): Promise<string | null> {
   if (!finLabWatchdogFinalWindow(twDate) || !finLabLateRetryCutoffPassed(twDate)
-    || !await env.KV.get(finLabPostCutoffRefetchKey(twDate))
-    || !hasFinLabRefreshableMissing(await checkEveningChainSourceReadiness(env, twDate))) return null
+    || !await env.KV.get(finLabPostCutoffRefetchKey(twDate))) return null
+  if (!hasFinLabRefreshableMissing(await checkEveningChainSourceReadiness(env, twDate))) {
+    if (!callbackReceived && !await finLabCanonicalCutoffTerminalRecorded(env, twDate)) {
+      await warnFinLabLostCallbackCanonicalReadyOnce(env, twDate, runId)
+    }
+    return null
+  }
   await finLabCanonicalCutoffTerminal(env, twDate, 'refetch_cap',
     'FinLab started after the cutoff but did not complete by the last watchdog run of the date; no resend')
   return `skipped: FinLab canonical cutoff terminal already recorded for ${twDate}; post-cutoff refetch started but did not complete`
@@ -3038,14 +3046,16 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
 
   const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
   if (finlabLog?.status === 'running') {
-    return await finLabStartedRefetchTerminal(env, twDate)
+    // The completion handler also writes `running` once the callback came back and only a serving gap remains.
+    return await finLabStartedRefetchTerminal(env, twDate, finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id'),
+      /^FinLab callback completed\b/.test(finlabLog.summary ?? ''))
       ?? `skipped: FinLab start heartbeat received for ${twDate}`
   }
   // R33-NEW-32: a dispatcher in another colo may have written `triggered` over the start heartbeat.
   const pendingRunId = finlabLog?.status === 'triggered' ? finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id') : null
   if (pendingRunId && await env.KV.get(finLabStartMarkerKey(twDate, pendingRunId,
     schedulerSummaryField(finlabLog!, 'dispatch_attempt') ?? 1))) {
-    return await finLabStartedRefetchTerminal(env, twDate)
+    return await finLabStartedRefetchTerminal(env, twDate, pendingRunId)
       ?? `skipped: FinLab start heartbeat received for ${twDate} (start marker run_id=${pendingRunId})`
   }
   if (finlabLog?.status === 'success') {

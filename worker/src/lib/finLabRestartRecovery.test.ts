@@ -1186,14 +1186,15 @@ test('M3: the date\'s last watchdog run closes a refetch started just before it,
   }
 })
 
-test('M3 counter: a started refetch before the last run, one whose data already landed, or a pre-cutoff run is left alone', async (t) => {
+test('M3 counter: a started refetch before the last run, or a pre-cutoff run, is left alone; one whose data landed is not closed', async (t) => {
   const f = await startedRefetch(t, '23:20', '23:21')
   f.clock(at('23:44'))
   assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29$/)
   t.mock.timers.reset()
   assert.equal(f.log('evening-chain').status, 'running')
   assert.equal((await f.systemLogs()).length, 0)
-  // Its data already landed (the completion callback is still on its way): the last run does not close it.
+  // Its data already landed (the completion callback is lost or still on its way): the last run does not close it
+  // (only the lost-callback warn, covered by 'M3 warn').
   const market: Market = { twoiiMissing: true }
   const h = await startedRefetch(t, '23:30', '23:31', false, market)
   market.twoiiMissing = false
@@ -1201,7 +1202,7 @@ test('M3 counter: a started refetch before the last run, one whose data already 
   assert.match(await runFinLabBackfillWatchdog(h.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29$/)
   t.mock.timers.reset()
   assert.notEqual(h.log('evening-chain')?.status, 'error')
-  assert.equal((await h.systemLogs()).length, 0)
+  assert.equal((await h.systemLogs()).filter((row: any) => row.level === 'error').length, 0)
   // Started before the cutoff (no post-cutoff refetch): the existing running skip, even in the last run.
   const g = await fixture(t, { twoiiMissing: true })
   g.setLog('finlab-v4-backfill', { status: 'running', timestamp: new Date(at('22:40')).toISOString(),
@@ -1210,6 +1211,85 @@ test('M3 counter: a started refetch before the last run, one whose data already 
   assert.match(await runFinLabBackfillWatchdog(g.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29$/)
   assert.notEqual(g.log('evening-chain')?.status, 'error')
   assert.equal((await g.systemLogs()).length, 0)
+})
+
+test('M3 warn (Wei 10/30): a started post-cutoff refetch whose callback is lost with canonical lanes ready shares the one warn', async (t) => {
+  const warned = `finlab:lost-callback-canonical-ready-warned:${date}`
+  // Positive: running or behind a start marker, data landed, the date's last run: one ops warn, no state change.
+  for (const marker of [false, true]) {
+    const market: Market = { twoiiMissing: true }
+    const f = await startedRefetch(t, '23:30', '23:31', marker, market)
+    market.twoiiMissing = false
+    const before = ['finlab-v4-backfill', 'evening-chain', 'update'].map((task) => JSON.stringify(f.log(task) ?? null))
+    const sentBefore = f.sent.length
+    f.clock(at('23:50'))
+    assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29/)
+    t.mock.timers.reset()
+    const logs = await f.systemLogs()
+    assert.equal(logs.length, 1)
+    assert.equal(logs[0].level, 'warn')
+    assert.equal(logs[0].cron_name, 'evening-chain')
+    assert.match(logs[0].message, new RegExp(`^FinLab run_id=${f.dispatches[0].run_id} past the 23:00 TW cutoff got no callback by the last watchdog run of 2026-10-29 while the canonical lanes are ready`))
+    assert.equal(f.store.has(warned), true)
+    assert.equal(f.dispatches.length, 1)
+    assert.deepEqual(['finlab-v4-backfill', 'evening-chain', 'update'].map((task) => JSON.stringify(f.log(task) ?? null)), before)
+    assert.equal(f.sent.length, sentBefore)
+    assert.equal(f.store.has(`source-readiness:canonical-refetch-cap-logged:${date}`), false)
+  }
+  // Counter 1: the date already warned from the triggered (no-callback) case: the started case writes no second one.
+  const market: Market = { twoiiMissing: true }
+  const g = await startedRefetch(t, '23:30', '23:31', false, market)
+  market.twoiiMissing = false
+  const runId = g.dispatches[0].run_id
+  g.setLog('finlab-v4-backfill', { ...pendingDispatch('23:42'), run_id: runId,
+    summary: `triggered finlab-v4-backfill run_id=${runId} dispatch_attempt=1` })
+  g.clock(at('23:50'))
+  assert.match(await runFinLabBackfillWatchdog(g.env, date), /canonical lanes ready; no post-cutoff resend$/)
+  t.mock.timers.reset()
+  assert.equal((await g.systemLogs()).length, 1)
+  g.setLog('finlab-v4-backfill', { status: 'running', run_id: runId, timestamp: new Date(at('23:51')).toISOString(),
+    summary: `FinLab V4 backfill started run_id=${runId} dispatch_attempt=1` })
+  g.clock(at('23:55'))
+  assert.match(await runFinLabBackfillWatchdog(g.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29$/)
+  t.mock.timers.reset()
+  assert.equal((await g.systemLogs()).length, 1)
+  // Counter 2: a canonical lane still missing: the existing refetch_cap terminal, no warn.
+  const h = await startedRefetch(t, '23:30', '23:31')
+  h.clock(at('23:50'))
+  assert.match(await runFinLabBackfillWatchdog(h.env, date), /post-cutoff refetch started but did not complete$/)
+  t.mock.timers.reset()
+  assert.equal(h.store.has(warned), false)
+  assert.equal((await h.systemLogs()).filter((row: any) => row.level === 'warn').length, 0)
+  // Counter 3: data landed but not the date's last run (23:44): nothing written.
+  const km: Market = { twoiiMissing: true }
+  const k = await startedRefetch(t, '23:20', '23:21', false, km)
+  km.twoiiMissing = false
+  k.clock(at('23:44'))
+  assert.match(await runFinLabBackfillWatchdog(k.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29$/)
+  t.mock.timers.reset()
+  assert.equal(k.store.has(warned), false)
+  assert.equal((await k.systemLogs()).length, 0)
+  // Counter 4: an official-source terminal already closed the chain: no warn.
+  const om: Market = { twoiiMissing: true }
+  const o = await startedRefetch(t, '23:30', '23:31', false, om)
+  om.twoiiMissing = false
+  o.kvSet(`source-readiness:official-cutoff-logged:${date}`, '2026-10-29T15:00:00.000Z')
+  o.clock(at('23:50'))
+  await runFinLabBackfillWatchdog(o.env, date)
+  t.mock.timers.reset()
+  assert.equal(o.store.has(warned), false)
+  assert.equal((await o.systemLogs()).length, 0)
+  // Counter 5: the completion callback came back (the handler rewrote `running` while only a serving gap waits): no warn.
+  const cm: Market = { twoiiMissing: true }
+  const c = await startedRefetch(t, '23:30', '23:31', false, cm)
+  cm.twoiiMissing = false
+  c.setLog('finlab-v4-backfill', { status: 'running', run_id: c.dispatches[0].run_id, timestamp: new Date(at('23:40')).toISOString(),
+    summary: 'FinLab callback completed but target-date canonical lanes are still waiting; source readiness not ready after refresh' })
+  c.clock(at('23:50'))
+  assert.match(await runFinLabBackfillWatchdog(c.env, date), /^skipped: FinLab start heartbeat received for 2026-10-29$/)
+  t.mock.timers.reset()
+  assert.equal(c.store.has(warned), false)
+  assert.equal((await c.systemLogs()).length, 0)
 })
 
 test('M4: past the cutoff the guard names the terminal it closes: refetch_cap only after a post-cutoff refetch', async (t) => {

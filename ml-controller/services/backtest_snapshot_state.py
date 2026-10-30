@@ -8,6 +8,61 @@ COMPONENTS = ('signals', 'verified_predictions', 'market_breadth', 'us_market_si
 MOMENTUM_COMPONENT = 'screener_momentum_snapshots'
 
 
+# Paper's L4 promotion gate (recommendation_service._can_promote_ranking_candidate), program
+# values pinned to that source by tests: the formal contract passed, the evidence status is
+# sufficient family breadth, and at least two active families (Wei 10/30 A-m4: align).
+PAPER_SUFFICIENT_EVIDENCE_STATUS = 'sufficient_family_breadth'
+PAPER_MIN_ACTIVE_FAMILIES = 2
+FORMAL_EVIDENCE_COLUMNS = ('formal_model_contract_passed', 'formal_evidence_status', 'formal_active_family_count')
+
+
+def with_formal_evidence(signals):
+    """Add Paper's per-candidate promotion evidence from forecast_data.
+
+    Paper reads `coreFamilyEvidence or core_family_evidence`; the stored forecast
+    keeps the same dict as `core_family_evidence` or `core_family_vote`, taken in
+    that order, a whole dict at a time (an empty or null dict falls through, as
+    Python's `or` does). Rows that never recorded it stay null.
+    """
+    import polars as pl
+    dtypes = (pl.Boolean, pl.String, pl.Float64)
+    if 'forecast_data' not in signals.columns or signals.schema['forecast_data'] != pl.String:
+        return signals.with_columns(pl.lit(None, dtype=t).alias(c) for c, t in zip(FORMAL_EVIDENCE_COLUMNS, dtypes)
+                                    if c not in signals.columns)
+    data = pl.col('forecast_data')
+    evidence = data.str.json_path_match('$.core_family_evidence')
+    use_evidence = evidence.str.starts_with('{') & (evidence.str.strip_chars() != '{}')
+
+    def field(name):
+        return (pl.when(use_evidence).then(data.str.json_path_match('$.core_family_evidence.' + name))
+                .otherwise(data.str.json_path_match('$.core_family_vote.' + name)))
+    passed = field('formal_model_contract_passed')
+    return signals.with_columns(
+        pl.when(passed == 'true').then(pl.lit(True)).when(passed == 'false').then(pl.lit(False))
+          .otherwise(pl.lit(None, dtype=pl.Boolean)).alias(FORMAL_EVIDENCE_COLUMNS[0]),
+        field('evidence_status').alias(FORMAL_EVIDENCE_COLUMNS[1]),
+        field('active_family_count').cast(pl.Float64, strict=False).alias(FORMAL_EVIDENCE_COLUMNS[2]))
+
+
+def promotion_verdict(passed, status, families) -> str:
+    """'pass' | 'contract_failed' | 'evidence_insufficient' | 'unflagged' | 'evidence_unrecorded'.
+
+    The last two run as approximations: a row (or an older snapshot) that never
+    recorded the verdict, or recorded the contract but neither evidence field.
+    A partly recorded row fails like Paper's `or 0` reading.
+    """
+    if passed is False:
+        return 'contract_failed'
+    if passed is None:
+        return 'unflagged'
+    if status is None and families is None:
+        return 'evidence_unrecorded'
+    count = families if isinstance(families, (int, float)) and not isinstance(families, bool) and math.isfinite(families) else 0
+    if status != PAPER_SUFFICIENT_EVIDENCE_STATUS or count < PAPER_MIN_ACTIVE_FAMILIES:
+        return 'evidence_insufficient'
+    return 'pass'
+
+
 def timestamp(value):
     parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
@@ -51,13 +106,18 @@ def frozen_mode_b(dataset):
     sessions = sorted(set(dataset.trading_days))
     next_session = dict(zip(sessions, sessions[1:]))
     cache = {}
-    # Paper keeps a candidate only when its formal model contract passed
-    # (recommendation_service, formal_family_prediction_missing). Snapshots exported
-    # before the flag, and rows that never recorded it, keep the replay's older test
-    # (an ensemble row with a confidence) and are counted as approximated (Wei 10/30 §5-4).
-    has_flag = 'formal_model_contract_passed' in signals.columns
-    formal = {'contract_failed_rows': 0, 'contract_passed_without_confidence_rows': 0, 'unflagged_rows': 0,
-              'flag_component': has_flag}
+    # Paper keeps a candidate only when its formal model contract passed and its family
+    # evidence qualifies for L4 promotion (recommendation_service). A snapshot exported
+    # before the sealed columns is read from its forecast_data the same way. Rows that
+    # never recorded the verdict keep the replay's older test (an ensemble row with a
+    # confidence) and are counted as approximated (Wei 10/30 §5-4, A-m4).
+    has_flag = all(c in signals.columns for c in FORMAL_EVIDENCE_COLUMNS)
+    if not has_flag:
+        signals = with_formal_evidence(signals)
+    formal = {'contract_failed_rows': 0, 'evidence_insufficient_rows': 0, 'contract_passed_without_confidence_rows': 0,
+              'unflagged_rows': 0, 'evidence_unrecorded_rows': 0, 'flag_component': has_flag,
+              'evidence_source': 'sealed_columns' if has_flag else (
+                  'forecast_data' if 'forecast_data' in signals.columns else 'none')}
     for row in signals.sort(['generated_at', 'stock_id']).iter_rows(named=True):
         symbol = identities.get(row['stock_id'])
         day = str(row['prediction_date'])
@@ -70,15 +130,15 @@ def frozen_mode_b(dataset):
         cutoff = datetime.fromisoformat(entry_day + 'T09:00:00+08:00')
         if not symbol or timestamp(row['generated_at']) >= cutoff:
             continue
-        flag = row.get('formal_model_contract_passed') if has_flag else None
-        if flag is False:
-            formal['contract_failed_rows'] += 1
+        verdict = promotion_verdict(*(row.get(c) for c in FORMAL_EVIDENCE_COLUMNS))
+        if verdict in ('contract_failed', 'evidence_insufficient'):
+            formal[verdict + '_rows'] += 1
             continue
-        if flag is None:
-            formal['unflagged_rows'] += 1
+        if verdict != 'pass':
+            formal[verdict + '_rows'] += 1
         conf = row['direction_accuracy']
         if conf is None:
-            if flag is True:
+            if verdict == 'pass':
                 formal['contract_passed_without_confidence_rows'] += 1
             continue
         if not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:

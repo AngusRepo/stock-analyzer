@@ -8,21 +8,77 @@ import pytest
 from services import backtest_paper_risk as risk
 
 
-def forecast(*, passed=None, art='art'):
+SUFFICIENT = 'sufficient_family_breadth'
+
+
+def forecast(*, passed=None, art='art', status=SUFFICIENT, families=3, key='core_family_vote', extra=None):
     payload = {'ensemble_v2': {'artifact_id': art, 'cohort_id': 'c', 'artifact_checksum': 's',
                                'base_artifact_set_checksum': 'b', 'forecast_horizon_bars': 5}}
     if passed is not None:
-        payload['core_family_vote'] = {'formal_model_contract_passed': passed}
+        evidence = {'formal_model_contract_passed': passed}
+        if status is not None:
+            evidence['evidence_status'] = status
+        if families is not None:
+            evidence['active_family_count'] = families
+        payload[key] = evidence
+    payload.update(extra or {})
     return json.dumps(payload)
 
 
-def test_the_formal_contract_flag_comes_from_forecast_data_and_stays_null_when_never_recorded():
-    from services.dataset_snapshot_exporter import with_formal_contract_flag
-    signals = pl.DataFrame({'stock_id': [1, 2, 3, 4],
-                            'forecast_data': [forecast(passed=True), forecast(passed=False), forecast(), 'not json']})
-    assert with_formal_contract_flag(signals)['formal_model_contract_passed'].to_list() == [True, False, None, None]
-    flagged = with_formal_contract_flag(signals.drop('forecast_data'))
-    assert flagged['formal_model_contract_passed'].to_list() == [None] * 4
+def evidence_of(rows):
+    from services.backtest_snapshot_state import FORMAL_EVIDENCE_COLUMNS, with_formal_evidence
+    frame = with_formal_evidence(pl.DataFrame({'forecast_data': rows}))
+    return [tuple(r[c] for c in FORMAL_EVIDENCE_COLUMNS) for r in frame.iter_rows(named=True)]
+
+
+def test_promotion_evidence_comes_from_forecast_data_and_stays_null_when_never_recorded():
+    assert evidence_of([forecast(passed=True), forecast(passed=False, status='insufficient_family_breadth', families=1),
+                        forecast(), 'not json', None]) == [
+        (True, SUFFICIENT, 3.), (False, 'insufficient_family_breadth', 1.), (None, None, None),
+        (None, None, None), (None, None, None)]
+    from services.backtest_snapshot_state import with_formal_evidence
+    bare = with_formal_evidence(pl.DataFrame({'stock_id': [1, 2]}))
+    assert bare['formal_model_contract_passed'].to_list() == [None] * 2
+    assert bare['formal_active_family_count'].to_list() == [None] * 2
+
+
+def test_paper_s_evidence_dict_wins_whole_and_an_empty_one_falls_through():
+    # Paper: coreFamilyEvidence or core_family_evidence -> the stored core_family_evidence, then core_family_vote.
+    vote = {'core_family_vote': {'formal_model_contract_passed': True, 'evidence_status': SUFFICIENT,
+                                 'active_family_count': 4}}
+    assert evidence_of([forecast(passed=False, key='core_family_evidence', status=None, families=None, extra=vote)]) == [
+        (False, None, None)]                                          # never mixed field by field
+    assert evidence_of([forecast(extra={'core_family_evidence': {}, **vote})]) == [(True, SUFFICIENT, 4.)]
+    assert evidence_of([forecast(extra={'core_family_evidence': None, **vote})]) == [(True, SUFFICIENT, 4.)]
+
+
+@pytest.mark.parametrize('evidence, verdict', [
+    ((True, SUFFICIENT, 2.), 'pass'),
+    ((True, SUFFICIENT, 1.), 'evidence_insufficient'),
+    ((True, SUFFICIENT, 1.999), 'evidence_insufficient'),
+    ((True, 'insufficient_family_breadth', 4.), 'evidence_insufficient'),
+    ((True, SUFFICIENT, None), 'evidence_insufficient'),               # Paper: `or 0` < 2
+    ((True, None, 3.), 'evidence_insufficient'),
+    ((True, SUFFICIENT, float('nan')), 'evidence_insufficient'),
+    ((True, None, None), 'evidence_unrecorded'),
+    ((False, SUFFICIENT, 4.), 'contract_failed'),
+    ((None, None, None), 'unflagged'),
+])
+def test_the_promotion_verdict_follows_paper_s_three_conditions(evidence, verdict):
+    from services.backtest_snapshot_state import promotion_verdict
+    assert promotion_verdict(*evidence) == verdict
+
+
+def test_the_promotion_constants_are_paper_s_own():
+    from pathlib import Path
+    from services import backtest_snapshot_state as state
+    source = (Path(__file__).resolve().parents[1] / 'services' / 'recommendation_service.py').read_text(encoding='utf-8')
+    body = source[source.index('def _can_promote_ranking_candidate'):]
+    body = body[:body.index('\ndef ')]
+    assert 'family.get("formal_model_contract_passed") is not True' in body
+    assert f'family.get("evidence_status") != "{state.PAPER_SUFFICIENT_EVIDENCE_STATUS}"' in body
+    assert f'(_finite_float_or_none(family.get("active_family_count")) or 0) < {state.PAPER_MIN_ACTIVE_FAMILIES}' in body
+    assert 'components.get("coreFamilyEvidence") or row.get("core_family_evidence")' in body
 
 
 def test_verified_rows_carry_the_p7_columns_for_hot_and_cold_rows(monkeypatch):
@@ -93,7 +149,9 @@ def test_the_snapshot_seals_the_momentum_zone_and_verified_rows_from_before_the_
     assert result['components']['screener_momentum_snapshots'].to_dicts() == zone
     assert result['d1_query_counts']['screener_momentum_snapshots'] == 1
     assert verified_range == [('2026-06-15', '2026-08-19')]           # 60 days before the window
-    assert result['components']['signals']['formal_model_contract_passed'].to_list() == [True]
+    sealed = result['components']['signals']
+    assert sealed.select('formal_model_contract_passed', 'formal_evidence_status',
+                         'formal_active_family_count').rows() == [(True, SUFFICIENT, 3.)]
 
 
 def dataset(signal_rows, *, momentum=None, verified=None):
@@ -113,10 +171,14 @@ def dataset(signal_rows, *, momentum=None, verified=None):
                            replay_frames=frames)
 
 
-def signal_rows(flags, confs):
-    return {'stock_id': list(range(1, len(flags) + 1)), 'prediction_date': ['2026-09-01'] * len(flags),
-            'generated_at': ['2026-09-01T13:00:00Z'] * len(flags), 'direction_accuracy': confs,
-            'formal_model_contract_passed': flags, 'forecast_data': [forecast()] * len(flags)}
+def signal_rows(flags, confs, statuses=None, families=None):
+    n = len(flags)
+    return {'stock_id': list(range(1, n + 1)), 'prediction_date': ['2026-09-01'] * n,
+            'generated_at': ['2026-09-01T13:00:00Z'] * n, 'direction_accuracy': confs,
+            'formal_model_contract_passed': flags,
+            'formal_evidence_status': statuses or [SUFFICIENT if f is not None else None for f in flags],
+            'formal_active_family_count': families or [3. if f is not None else None for f in flags],
+            'forecast_data': [forecast()] * n}
 
 
 def test_the_replay_keeps_only_candidates_whose_formal_contract_passed():
@@ -125,17 +187,46 @@ def test_the_replay_keeps_only_candidates_whose_formal_contract_passed():
     assert cache.get('2330', '2026-09-01') == .6
     assert cache.get('1101', '2026-09-01') is None                   # contract failed: Paper drops it
     assert cache.get('2317', '2026-09-01') == .6                     # never recorded: older test, counted
-    assert state.formal_contract == {'contract_failed_rows': 1, 'contract_passed_without_confidence_rows': 1,
-                                     'unflagged_rows': 1, 'flag_component': True}
+    assert state.formal_contract == {'contract_failed_rows': 1, 'evidence_insufficient_rows': 0,
+                                     'contract_passed_without_confidence_rows': 1, 'unflagged_rows': 1,
+                                     'evidence_unrecorded_rows': 0, 'flag_component': True,
+                                     'evidence_source': 'sealed_columns'}
+
+
+def test_the_replay_drops_candidates_paper_s_l4_promotion_would_not_qualify():
+    from services.backtest_snapshot_state import frozen_mode_b
+    rows = signal_rows([True] * 4, [.6] * 4, statuses=[SUFFICIENT, 'insufficient_family_breadth', SUFFICIENT, None],
+                       families=[2., 4., 1., None])
+    cache, state, _ = frozen_mode_b(dataset(rows))
+    assert [cache.get(s, '2026-09-01') for s in ('2330', '1101', '2317', '2454')] == [.6, None, None, .6]
+    assert state.formal_contract['evidence_insufficient_rows'] == 2           # the status, then a single family
+    assert state.formal_contract['evidence_unrecorded_rows'] == 1              # 2454: neither field, runs and is named
+
+
+def test_an_old_snapshot_is_read_from_forecast_data_like_paper():
+    from services.backtest_snapshot_state import frozen_mode_b
+    rows = signal_rows([True, True, True], [.6, .7, .8])
+    for column in ('formal_model_contract_passed', 'formal_evidence_status', 'formal_active_family_count'):
+        del rows[column]
+    rows['forecast_data'] = [forecast(passed=True, families=2), forecast(passed=True, families=1), forecast()]
+    cache, state, _ = frozen_mode_b(dataset(rows))
+    assert [cache.get(s, '2026-09-01') for s in ('2330', '1101', '2317')] == [.6, None, .8]
+    assert state.formal_contract['flag_component'] is False
+    assert state.formal_contract['evidence_source'] == 'forecast_data'
+    assert state.formal_contract['evidence_insufficient_rows'] == 1 and state.formal_contract['unflagged_rows'] == 1
 
 
 def test_a_snapshot_without_the_flag_runs_as_an_approximation():
     from services.backtest_snapshot_state import frozen_mode_b
     rows = signal_rows([True, True], [.6, .7])
-    del rows['formal_model_contract_passed']
+    for column in ('formal_model_contract_passed', 'formal_evidence_status', 'formal_active_family_count'):
+        del rows[column]
     cache, state, _ = frozen_mode_b(dataset(rows))
     assert cache.get('1101', '2026-09-01') == .7
     assert state.formal_contract['flag_component'] is False and state.formal_contract['unflagged_rows'] == 2
+    del rows['forecast_data']
+    _, state, _ = frozen_mode_b(dataset(rows))
+    assert state.formal_contract['evidence_source'] == 'none' and state.formal_contract['unflagged_rows'] == 2
 
 
 def test_sealed_momentum_and_p7_rows_reach_the_morning_state():

@@ -189,6 +189,10 @@ def main(argv=None) -> int:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--target-end', default=None)
     args = parser.parse_args(argv)
+    if args.target_end is not None:
+        from datetime import date
+        if date.fromisoformat(args.target_end).isoformat() != args.target_end:
+            raise SystemExit('target_end_not_iso_date:' + args.target_end)
     spec = json.loads(args.spec.read_text(encoding='utf-8'))
     base = args.spec.resolve().parent
     frame, days, scoped, unscoped = compile_history(spec, base=base)

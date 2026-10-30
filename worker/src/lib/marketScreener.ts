@@ -1386,7 +1386,7 @@ interface FinLabStyleFactorNormalizationTelemetry {
   }
 }
 
-function buildStockData(
+export function buildStockData(
   allPrices: CanonicalScreenerPrice[],
   allChips: CanonicalScreenerChip[],
 ): StockDailyData {
@@ -1437,8 +1437,6 @@ function buildStockData(
       entry.securityLendingSellBalance = c.security_lending_sell_balance ?? entry.securityLendingSellBalance ?? null
       entry.securityLendingSellLimit = c.security_lending_sell_limit ?? entry.securityLendingSellLimit ?? null
     }
-    if (c.name.includes('憭?')) entry.foreign += net
-    if (c.name.includes('?縑')) entry.trust += net
     entry.source = c.source ?? entry.source
     entry.marketSegment = c.market_segment ?? entry.marketSegment
     entry.brokerCount = c.broker_count ?? entry.brokerCount ?? null
@@ -3171,7 +3169,7 @@ export function scoreMultiFactor(
   // MACD(12,26,9)
   if (prices.length >= 35) {
     const macdHistogram = macdHistogramLast(prices.map(p => p.close))
-    if (macdHistogram != null && macdHistogram > 0) { tech_score += 6; reasons.push('MACD 憭') }
+    if (macdHistogram != null && macdHistogram > 0) { tech_score += 6; reasons.push('MACD 多頭') }
     else if (macdHistogram != null && macdHistogram > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 2
   }
 
@@ -3182,7 +3180,7 @@ export function scoreMultiFactor(
   }
   if (prices.length >= 20) {
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
-    if (latest.close > ma20) { tech_score += 3; reasons.push('蝡?MA20') }
+    if (latest.close > ma20) { tech_score += 3; reasons.push('站上MA20') }
 
   }
 
@@ -3218,7 +3216,7 @@ export function scoreMultiFactor(
     const excess = stockReturn - marketReturn5d
     const exRange = sc?.excessReturnRange ?? [-0.03, 0.05]
     momentum_score += normalize(excess, exRange[0], exRange[1], 7)
-    if (excess > 0.02) reasons.push(`頞?+${(excess * 100).toFixed(1)}%`)
+    if (excess > 0.02) reasons.push(`超額+${(excess * 100).toFixed(1)}%`)
   }
 
   // ?瘥?餈?3 ??vs 20 ?亙???(0-5)
@@ -3243,7 +3241,7 @@ export function scoreMultiFactor(
     }
     const priceIntent = sumAbsRet > 0 ? retN / sumAbsRet : 0
     // intent > 0.5 = 憭折?撞撟?渡?銝撞嚗蜓?風?方???
-    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`??${(priceIntent * 100).toFixed(0)}%`) }
+    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`意圖${(priceIntent * 100).toFixed(0)}%`) }
     else if (priceIntent > 0.3) momentum_score += 3
     else if (priceIntent > 0.1) momentum_score += 1
   }

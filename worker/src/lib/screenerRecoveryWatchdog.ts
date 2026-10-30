@@ -14,6 +14,7 @@ import { finLabLateRetryCutoffTw } from './finlabSourceContract'
 import { manifestRepeatingWindow } from './schedulerManifestGovernance'
 import { resolveTwTradingSession } from './schedulerPolicy'
 import { alertScreenerChipStale, type ScreenerChipFreshness } from './screenerMarketData'
+import { writeSystemLog } from './notify'
 
 const SCREENER_STAGE = 'screener_v2'
 const SCREENER_LEASE_SECONDS = 6000
@@ -335,9 +336,25 @@ export async function alertScreenerChipStaleFromFunnel(env: Bindings, opsDb: D1D
       .bind(businessDate, funnelRunId).first<{ metadata?: string | null }>()
     const freshness = row?.metadata ? JSON.parse(row.metadata)?.chipFreshness : null
     if (!freshness || typeof freshness !== 'object' || typeof freshness.stale !== 'boolean') return false
+    if (freshness.stale) await logScreenerChipStaleOnce(env, opsDb, businessDate, freshness as ScreenerChipFreshness)
     return await alertScreenerChipStale(env, businessDate, freshness as ScreenerChipFreshness)
   } catch {
     return false
+  }
+}
+
+// 17a: prod may have no webhook, so the stale warn also lands once per date in the ops system log.
+async function logScreenerChipStaleOnce(env: Bindings, opsDb: D1Database, businessDate: string,
+  freshness: ScreenerChipFreshness): Promise<void> {
+  const key = `cron:syslog:screener-chip-stale:${businessDate}`
+  try {
+    if (await env.KV.get(key)) return
+    await env.KV.put(key, '1', { expirationTtl: 86400 })
+    const message = 'Screener chip data stale; chip scores used the latest available dates'
+    console.warn(`[screener-chip-stale] ${message}`, JSON.stringify({ date: businessDate, ...freshness }))
+    await writeSystemLog(opsDb, 'warn', 'screener-chip-stale', message, { date: businessDate, ...freshness })
+  } catch {
+    // The log is best effort and must not stop the Discord warn.
   }
 }
 

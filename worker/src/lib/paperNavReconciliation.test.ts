@@ -97,6 +97,11 @@ test('daily snapshot records reconciliation, pending valuation for missing held 
     assert.equal(warn.status, 'warn')
     assert.equal(JSON.parse(warn.detail_json).cash_residual, 500)
     assert.equal(run.notifications.filter((n: any) => /NAV 對帳差額/.test(n.message)).length, 1)
+    // 17a: the residual also lands in the ops system log, which needs no alert channel.
+    const opsLogs = () => f.sqls.ops.prepare("SELECT level, meta FROM system_logs WHERE cron_name='paper-snapshot-audit'").all() as any[]
+    assert.equal(opsLogs().length, 1)
+    assert.equal(opsLogs()[0].level, 'warn')
+    assert.equal(JSON.parse(opsLogs()[0].meta).cash_residual, 500)
     run = await f.snapshot('2026-09-16') // rerun of the same session re-records but does not notify again
     assert.equal(run.notifications.filter((n: any) => /NAV 對帳差額/.test(n.message)).length, 0)
 

@@ -59,7 +59,8 @@
 - 換算結果、輸入和截斷原因寫進 `live_intake_orders_v1.conversion_json`，記錄 sha，之後不可修改。
 - 單筆金額、每日筆數、價格偏離沿用 `trading:risk_config.order`，和 Paper 相同。實盤要不要另外設值由 Wei 決定。
 - 現金緩衝從 `trading:config.fees` 推導，不寫死：整股和零股兩條 leg 各付 max(leg 金額 × `commission`, `minCommission`)。這個值不會低於 Worker 的逐 leg 手續費。
-  - `commission`／`minCommission` 缺漏時，買單 BLOCKED（`trading_fees_unavailable`），不用 Python 預設值。
+  - `commission`／`minCommission` 缺漏，或 `trading:risk_config.order.maxSingleOrderValue` 缺漏時（Wei 10/30 m-4）：比照 Paper 分母還讀不到的規則。這一輪不記錄這筆買單、不送（summary `waiting`），下一輪再讀；到該筆 Paper 買單當日 `session.continuous_close` 仍缺，才記 BLOCKED（`trading_fees_unavailable`／`risk_config_unavailable`）並發 `live_intake_trading_config_unavailable` 告警（每筆一次）。不用 Python 預設值。盤外的買單照舊 SKIPPED `paper_buy_outside_session`；分母和設定同時缺時，記分母的原因；Paper 分母存在但不能用（不是正數）的買單照舊立刻 BLOCKED、不告警，不等設定。
+  - 賣單換算不需要這兩個值，照常記錄。現況：`trading:config` 缺時出場照常送；`trading:risk_config` 缺時 kill switch 讀不到，所有送單（含出場）在簽封包時停下（`packet_unavailable`，列保留，下一輪重試，跨日轉 DEFERRED），出場不會丟失。KV 讀取本身失敗（HTTP 錯誤）時整輪不做。
 
 ## 3. 時段
 - **連續交易時段外 commit 的 Paper 出場（3c）**：記成 DEFERRED，下一交易日 `deferred_sell_release`（09:00）後用新報價重驗再送。

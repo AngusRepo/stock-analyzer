@@ -160,12 +160,18 @@ def test_a_pass_wires_the_paper_reader_and_waits_for_the_sizing_row():
     assert row["status"] == "RELAYED" and row["live_shares"] == 500 and len(gw.calls) == 1
 
 
-def test_fees_come_from_trading_config_only():
+@pytest.mark.parametrize("key,value,reason", [("trading:config", {"fees": "not a mapping"}, "trading_fees_unavailable"),
+                                               ("trading:config", None, "trading_fees_unavailable"),
+                                               ("trading:risk_config", None, "risk_config_unavailable")])
+def test_a_missing_sizing_owner_holds_buys_until_the_close(key, value, reason):
     repo, _ = _repo()
     gw = Gateway(repo)
-    kv = {**KV, "trading:config": {"fees": "not a mapping"}}
-    _pass(repo, Reader([_order(1, "buy", 1000, 100.0)], ready={1}), gw, _tw(DAY, "10:01"), kv=kv)
-    assert repo.get("paper_orders:1")["status_reason"] == "trading_fees_unavailable" and gw.calls == []
+    kv, reader, warned = {**KV, key: value}, Reader([_order(1, "buy", 1000, 100.0)], ready={1}), []
+    out, _ = _pass(repo, reader, gw, _tw(DAY, "10:01"), kv=kv)
+    assert out["waiting"] == ["paper_orders:1"] and repo.get("paper_orders:1") is None and gw.calls == []
+    _pass(repo, reader, gw, _tw(DAY, "13:31"), kv=kv, warn=lambda e, d: warned.append(e))
+    assert repo.get("paper_orders:1")["status_reason"] == reason and gw.calls == []
+    assert warned == ["live_intake_trading_config_unavailable"]
 
 
 def test_an_unreadable_kv_blocks_the_pass():

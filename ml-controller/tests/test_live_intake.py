@@ -114,7 +114,7 @@ LAPSED = {"status": "live_submission_paused", "reason": "live_approval_expired",
 
 
 def _run(repo, broker, gateway, orders, now, *, control=OPEN, trading_day=True, denominator=2_000_000.0,
-         config=None, status=None, clock=None, warn=None):
+         config=None, status=None, clock=None, warn=None, fees=FEES, risk=RISK):
     def state():
         if isinstance(control, Exception):
             raise control
@@ -124,7 +124,7 @@ def _run(repo, broker, gateway, orders, now, *, control=OPEN, trading_day=True, 
         paper_orders=orders, live_config=config or _config(), trading_day_confirmed=trading_day,
         submission_state=state, market=broker, repository=repo, relay=gateway.relay,
         status=status or (lambda key: {"status": "error", "reason": "execution_gateway_status_http_404"}),
-        fees=FEES, risk_config=RISK, now=now, clock=clock or (lambda: now), warn=warn,
+        fees=fees, risk_config=risk, now=now, clock=clock or (lambda: now), warn=warn,
         paper_portfolio_value=denominator if callable(denominator) else (lambda order: denominator))
 
 
@@ -2114,3 +2114,115 @@ def test_a_non_ledger_valuation_error_still_only_stops_buys(price, error):
     out = _run(repo, Garbage(holdings={"2330": 1000}), gw, orders, _tw(DAY, "10:02"))
     assert out["nav_unavailable"] == f"live_ledger_nav_invalid:{error}"
     assert repo.get("paper_orders:2")["status"] == "RELAYED" and repo.get("paper_orders:3") is None
+
+
+# --- a KV sizing owner unreadable: buys wait like a missing sizing row (Wei 10/30 m-4) ---
+
+GAPS = [({"fees": None}, "trading_fees_unavailable"),
+        ({"fees": {"commission": 0.001425}}, "trading_fees_unavailable"),
+        ({"risk": None}, "risk_config_unavailable"),
+        ({"risk": {"order": {"maxSingleOrderValue": 0}}}, "risk_config_unavailable")]
+
+
+@pytest.mark.parametrize("fees,risk,expected", [
+    (FEES, RISK, None),
+    (None, RISK, "trading_fees_unavailable"),
+    ({**FEES, "minCommission": -1}, RISK, "trading_fees_unavailable"),
+    ({**FEES, "commission": True}, RISK, "trading_fees_unavailable"),
+    (FEES, None, "risk_config_unavailable"),
+    (FEES, {"order": None}, "risk_config_unavailable"),
+    (FEES, {"order": {"maxSingleOrderValue": "1e6"}}, "risk_config_unavailable"),
+    (None, None, "trading_fees_unavailable"),
+])
+def test_the_sizing_config_gap_matches_the_conversion_reason(fees, risk, expected):
+    assert li.sizing_config_gap(fees, risk) == expected
+    if expected:
+        out = _convert(_order(1, "buy", 1000, 100.0), fees=fees, risk_config=risk)
+        assert out["reason"] == expected
+
+
+@pytest.mark.parametrize("gap,reason", GAPS)
+def test_a_config_gap_holds_buys_only_and_they_go_once_it_is_back(gap, reason):
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(holdings={"2330": 1000}), Gateway(repo), []
+    orders = [_order(1, "buy", 2000, 100.0, day="2026-12-09"), _order(2, "sell", 1000, 100.0),
+              _order(3, "buy", 1000, 100.0, symbol="2317", hhmm="10:01")]
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:02"), warn=lambda *a: warned.append(a), **gap)
+    assert repo.get("paper_orders:2")["status"] == "RELAYED"  # the exit is not held
+    assert repo.get("paper_orders:3") is None and out["waiting"] == ["paper_orders:3"] and warned == []
+    out = _run(repo, broker, gw, orders, _tw(DAY, "10:03"))
+    assert repo.get("paper_orders:3")["status"] == "RELAYED" and out["warnings"] == []
+
+
+@pytest.mark.parametrize("gap,reason", GAPS)
+def test_a_config_gap_at_the_close_is_blocked_and_warned_once(gap, reason):
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(), Gateway(repo), []
+    orders = [_order(1, "buy", 1000, 100.0)]
+    out = _run(repo, broker, gw, orders, _tw(DAY, "13:30"), warn=lambda *a: warned.append(a), **gap)
+    assert out["waiting"] == ["paper_orders:1"] and warned == []
+    for hhmm in ("13:31", "13:40"):
+        out = _run(repo, broker, gw, orders, _tw(DAY, hhmm), warn=lambda e, d: warned.append((e, dict(d))), **gap)
+    row = repo.get("paper_orders:1")
+    assert (row["status"], row["status_reason"]) == ("BLOCKED", reason) and gw.calls == []
+    assert warned == [("live_intake_trading_config_unavailable",
+                       {"paper_order_ref": "paper_orders:1", "cause": reason,
+                        "deadline": "2026-12-10T13:30:00+08:00"})]
+
+
+def test_a_missing_sizing_row_wins_over_a_config_gap():
+    repo, _ = _repo()
+    warned = []
+    _run(repo, FakeBroker(), Gateway(repo), [_order(1, "buy", 1000, 100.0)], _tw(DAY, "13:31"),
+         denominator=Sizing(), fees=None, warn=lambda e, d: warned.append((e, d["cause"])))
+    assert repo.get("paper_orders:1")["status_reason"] == "paper_denominator_unavailable"
+    assert warned == [("live_intake_paper_denominator_unavailable", "missing")]
+
+
+@pytest.mark.parametrize("gap,reason", GAPS[:1] + GAPS[2:3])
+def test_a_config_gap_outside_the_session_is_skipped_without_a_wait(gap, reason):
+    repo, _ = _repo()
+    warned = []
+    out = _run(repo, FakeBroker(), Gateway(repo), [_order(1, "buy", 1000, 100.0, hhmm="08:30")],
+               _tw(DAY, "08:31"), warn=lambda *a: warned.append(a), **gap)
+    row = repo.get("paper_orders:1")
+    assert (row["status"], row["status_reason"]) == ("SKIPPED", "paper_buy_outside_session")
+    assert warned == [] and out["waiting"] == []
+
+
+def test_a_config_gap_on_a_missed_day_is_blocked_and_warned():
+    repo, _ = _repo()
+    warned, prev = [], "2026-12-09"
+    first = [_order(1, "buy", 1000, 100.0, day=prev)]
+    _run(repo, FakeBroker(), Gateway(repo), first, _tw(prev, "10:01"))  # Live began on the 9th
+    orders = first + [_order(2, "buy", 1000, 100.0, day=prev, hhmm="11:00")]
+    _run(repo, FakeBroker(), Gateway(repo), orders, _tw(DAY, "10:00"), fees=None,
+         warn=lambda e, d: warned.append((e, d["cause"], d["deadline"])))
+    row = repo.get("paper_orders:2")
+    assert (row["status"], row["status_reason"]) == ("BLOCKED", "trading_fees_unavailable")
+    assert warned == [("live_intake_trading_config_unavailable", "trading_fees_unavailable",
+                       "2026-12-09T13:30:00+08:00")]
+
+
+def test_a_buy_waiting_out_a_config_gap_is_superseded_by_a_later_sell():
+    repo, _ = _repo()
+    broker, gw, warned = FakeBroker(holdings={"2330": 1000}), Gateway(repo), []
+    orders = [_order(1, "buy", 1000, 100.0, hhmm="10:00"), _order(2, "sell", 1000, 100.0, hhmm="10:30")]
+    _run(repo, broker, gw, orders[:1], _tw(DAY, "10:01"), fees=None)
+    _run(repo, broker, gw, orders, _tw(DAY, "10:31"), fees=None)
+    _run(repo, broker, gw, orders, _tw(DAY, "13:31"), fees=None, warn=lambda e, d: warned.append((e, d["cause"])))
+    row = repo.get("paper_orders:1")
+    assert (row["status"], row["status_reason"]) == ("BLOCKED", "paper_buy_superseded_while_waiting")
+    assert warned == [("live_intake_paper_buy_superseded", "trading_fees_unavailable")]
+    assert [p["intent"]["side"] for p in gw.calls] == ["sell"]
+
+
+@pytest.mark.parametrize("fees", [FEES, None])
+def test_a_buy_without_a_usable_sizing_value_is_blocked_at_once_without_an_alert(fees):
+    repo, _ = _repo()
+    warned = []
+    out = _run(repo, FakeBroker(), Gateway(repo), [_order(1, "buy", 1000, 100.0)], _tw(DAY, "10:01"),
+               denominator=lambda order: None, fees=fees, warn=lambda *a: warned.append(a))
+    row = repo.get("paper_orders:1")
+    assert (row["status"], row["status_reason"]) == ("BLOCKED", "paper_denominator_unavailable")
+    assert out["status"] == "ok" and out["waiting"] == [] and warned == [] and out["warnings"] == []

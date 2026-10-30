@@ -510,6 +510,7 @@ def run_live_intake(
     # Wei 10/29 (E): days spent in mode=paper after Live began count as missed days too:
     # their exits are DEFERRED and re-validated, their buys SKIPPED.
     first = repository.first_trade_date() or today
+    config_gap = sizing_config_gap(fees, risk_config)
     before = paper_positions_before(paper_orders)
     for order in sorted(paper_orders, key=lambda row: int(row["id"])):
         ref = paper_order_ref(order)
@@ -533,12 +534,15 @@ def run_live_intake(
             denominator = paper_portfolio_value(order)
         except PaperDenominatorNotReady as exc:
             not_ready, denominator = str(exc), None
-            if in_continuous_session(live_config, placed):  # outside it the buy is skipped anyway
-                deadline = session_close_at(live_config, placed)
-                if now_tw <= deadline:  # Paper writes the row just after the order: record nothing yet
-                    summary["waiting"].append(ref)
-                    continue
-                timed_out = {"paper_order_ref": ref, "cause": not_ready, "deadline": deadline.isoformat()}
+        # Sells need neither owner to convert; a buy without a usable sizing value is blocked at
+        # once (it will never get one), so only a buy that could otherwise be sized waits on a gap.
+        gap = config_gap if order["side"] == "buy" and _positive(denominator) is not None else None
+        if (not_ready or gap) and in_continuous_session(live_config, placed):  # outside it: skipped anyway
+            deadline = session_close_at(live_config, placed)
+            if now_tw <= deadline:  # the input may still appear: record nothing yet, retry next pass
+                summary["waiting"].append(ref)
+                continue
+            timed_out = {"paper_order_ref": ref, "cause": not_ready or gap, "deadline": deadline.isoformat()}
 
         def convert(live_position: int) -> dict[str, Any]:
             return convert_paper_order(
@@ -567,7 +571,7 @@ def run_live_intake(
             status_value, reason = "BLOCKED", "paper_buy_superseded_while_waiting"
         elif day != today and order["side"] == "buy" and timed_out is None:
             status_value, reason = "SKIPPED", "paper_buy_missed_by_intake"  # never sent a day late
-        elif not_ready is not None and timed_out is None and reason == "paper_denominator_unavailable":
+        elif (not_ready or gap) and timed_out is None and reason in _WAITED_BUY_INPUTS:
             status_value, reason = "SKIPPED", "paper_buy_outside_session"  # never sendable: no wait, no alert
         elif status_value == "RECEIVED":
             if day != today:
@@ -591,8 +595,10 @@ def run_live_intake(
         summary["recorded"].append(ref)
         if timed_out is not None and reason == "paper_denominator_unavailable":
             emit("live_intake_paper_denominator_unavailable", timed_out)  # after the insert: once per order
+        elif timed_out is not None and reason in _WAITED_BUY_INPUTS:
+            emit("live_intake_trading_config_unavailable", {**timed_out, "cause": reason})
         elif superseded:
-            emit("live_intake_paper_buy_superseded", {"paper_order_ref": ref, "cause": not_ready})
+            emit("live_intake_paper_buy_superseded", {"paper_order_ref": ref, "cause": not_ready or gap})
 
     for row in repository.pending():  # 5. send today's RECEIVED orders
         if row["status"] != "RECEIVED" or row["trade_date"] != today:
@@ -606,6 +612,22 @@ def run_live_intake(
 
 
 _LOG = logging.getLogger(__name__)
+
+
+_WAITED_BUY_INPUTS = frozenset({"paper_denominator_unavailable", "trading_fees_unavailable",
+                                 "risk_config_unavailable"})
+
+
+def sizing_config_gap(fees: Mapping[str, Any] | None, risk_config: Mapping[str, Any] | None) -> str | None:
+    """Why a buy cannot be sized from the KV owners now (the reason convert_paper_order would give),
+    or None. A gap is waited out like a missing sizing row (Wei 10/30 m-4): no row until that
+    day's continuous_close, then BLOCKED with an alert."""
+    if buy_cash_required(1, 1.0, fees) is None:
+        return "trading_fees_unavailable"
+    order_cfg = risk_config.get("order") if isinstance(risk_config, Mapping) else None
+    if not isinstance(order_cfg, Mapping) or _positive(order_cfg.get("maxSingleOrderValue")) is None:
+        return "risk_config_unavailable"
+    return None
 
 
 def _later_than(ref: str, paper_order_id: int) -> bool:

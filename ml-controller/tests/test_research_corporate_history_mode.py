@@ -18,6 +18,19 @@ REFS = [{'dataset': 'finlab.dividend_announcement', 'uri': 'local://sealed.parqu
          'sha256': 'b' * 64, 'fetched_at': '2026-10-03T00:00:00+00:00'}]
 
 
+@pytest.fixture(autouse=True)
+def tiny_universe_share_gate(request, monkeypatch):
+    """These fixtures hold 2-3 symbols, so one exclusion is already a third or half.
+
+    The share gate has its own test at a 1000-symbol scale; elsewhere it is lifted
+    so each test exercises the exclusion mechanics it names.
+    """
+    if request.node.originalname != 'test_more_than_a_fifth_excluded_stops_the_search':
+        from fractions import Fraction
+        from services import research_corporate_preflight
+        monkeypatch.setattr(research_corporate_preflight, 'MAX_EXCLUDED_SYMBOL_SHARE', Fraction(1))
+
+
 def history(day, *, symbols=('1101', '2330'), actions=(), blockers=None):
     snap = {'session_date': day, 'covered_symbols': sorted(symbols), 'actions': list(actions),
             'blockers': blockers or {}, 'source_checksum': 'a' * 64, 'tax_basis': 'gross_before_personal_tax'}
@@ -85,6 +98,28 @@ def test_missing_session_is_never_excluded_away():
     with pytest.raises(CorporateCoverageError) as err:
         require_corporate_coverage(data, DAYS[0], DAYS[-1])
     assert err.value.report['issues'] == [{'date': DAYS[1], 'reason': 'session_missing'}]
+
+
+@pytest.mark.parametrize('uncovered,runs', [(199, True), (200, True), (201, False)])
+def test_more_than_a_fifth_excluded_stops_the_search(uncovered, runs):
+    # Wei 10/30: excluded (blocked + uncovered) > 20% of the holdable universe fails closed; exactly 20% runs.
+    from services.research_corporate_preflight import CorporateExclusionTooHigh, MAX_EXCLUDED_SYMBOL_SHARE
+    symbols = [str(1000 + i) for i in range(1000)]
+    tape = {d: history(d, symbols=symbols[uncovered:]) for d in DAYS}
+    data = dataset(tape, symbols=symbols)
+    if runs:
+        report = exclude_history_blocked_symbols(data, DAYS[0], DAYS[-1])
+        assert report['excluded_count'] == uncovered and report['excluded_share'] == uncovered / 1000
+        assert report['excluded_share_limit'] == '1/5' and report['excluded_share_rule'] == 'fail_when_greater_than_limit'
+        assert len(data.get_universe_at(DAYS[0])) == 1000 - uncovered
+        return
+    with pytest.raises(CorporateExclusionTooHigh, match=r'201/1000 > 1/5') as err:
+        exclude_history_blocked_symbols(data, DAYS[0], DAYS[-1])
+    from fractions import Fraction
+    assert err.value.report['excluded_share'] == 0.201 and MAX_EXCLUDED_SYMBOL_SHARE == Fraction(1, 5)
+    assert len(data.get_universe_at(DAYS[0])) == 1000  # nothing excluded from a search that will not run
+    from services.research_corporate_preflight import is_corporate_data_error
+    assert is_corporate_data_error(err.value)
 
 
 def test_every_symbol_blocked_fails_instead_of_an_empty_search():

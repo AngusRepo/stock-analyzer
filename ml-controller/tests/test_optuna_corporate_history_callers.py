@@ -74,3 +74,47 @@ def test_l2_and_per_regime_stop_on_a_coverage_gap_before_any_trial(module, call,
     monkeypatch.setattr(optuna, 'create_study', lambda **_: pytest.fail('search started'))
     with pytest.raises(CorporateCoverageError):
         call(mod)
+
+
+@pytest.mark.parametrize('module', ['optuna_sltp', 'optuna_screener'])
+def test_sltp_and_screener_fail_closed_without_a_history_snapshot(module, monkeypatch, capture_load):
+    from services.research_data_access import ResearchSnapshotNotReadyError
+    mod = __import__(module)
+    monkeypatch.setattr(mod, 'latest_snapshot_business_end_date', lambda **_: None)
+    monkeypatch.setattr(mod, 'select_stratified_subset', lambda **_: pytest.fail('no data before the window'))
+    with pytest.raises(ResearchSnapshotNotReadyError, match='corporate_history_snapshot_missing'):
+        mod.run_search(n_trials=1, baseline_params={'screener': {'minDailyTurnover': 1}})
+
+
+@pytest.mark.parametrize('module', ['optuna_sltp', 'optuna_screener'])
+def test_sltp_and_screener_check_the_owner_cap_before_any_lookup(module, monkeypatch):
+    mod = __import__(module)
+    monkeypatch.setattr(mod, 'latest_snapshot_business_end_date', lambda **_: pytest.fail('lookup before cap'))
+    with pytest.raises(engine.PositionRiskContractMissing):
+        mod.run_search(n_trials=1, baseline_params={'screener': {'minDailyTurnover': 1}})
+
+
+def _data_error(*args, **kwargs):
+    raise ValueError('backtest_corporate_cash_rounding_missing:2330')
+
+
+def test_per_regime_trial_never_scores_a_corporate_data_error(monkeypatch):
+    import optuna
+    import optuna_per_regime_robust as mod
+    monkeypatch.setattr(mod, 'replay_period', _data_error)
+    objective = mod.create_robust_objective(dataset({d: history(d) for d in DAYS}), DAYS[0], DAYS[-1],
+                                            mod._default_sltp_baseline(), 'sltp')
+    trial = optuna.trial.FixedTrial({'sl_mult': 2.0, 'tp_mult': 1.5, 'slMultLow': .75,
+                                     'tpMultLow': .65, 'slMultHigh': 1.25, 'tpMultHigh': 1.3})
+    with pytest.raises(ValueError, match='cash_rounding_missing'):
+        objective(trial)
+
+
+def test_l2_trial_never_scores_a_corporate_data_error(monkeypatch, capture_load):
+    import optuna_l2_sensitivity as mod
+    ready = dataset({d: history(d) for d in DAYS})
+    monkeypatch.setattr(engine.BacktestDataset, 'load_for_research',
+                        staticmethod(lambda **_: (ready, {'source': 'snapshot'})))
+    monkeypatch.setattr(engine, 'replay_period', _data_error)
+    with pytest.raises(ValueError, match='cash_rounding_missing'):
+        mod.run_l2_sensitivity_search(None, DAYS[0], DAYS[-1], {}, n_trials=1)

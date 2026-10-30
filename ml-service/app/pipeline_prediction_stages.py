@@ -348,9 +348,14 @@ def run_gpu_stage(store, envelope, *, predict, resume, clock=time.time):
             return {'status': 'already_running'}
         if not leased:
             # Another container of this token started and died before executing: this run
-            # needs its own lease. A lost CAS (a newer token) leaves this result to the scan.
+            # needs its own lease. If the claim moved on meanwhile, do not run at all.
             now = clock()
-            store.cas(key + '/claim', {**claim, 'until': now + GPU_LEASE_SECONDS}, generation)
+            if not store.cas(key + '/claim', {**claim, 'until': now + GPU_LEASE_SECONDS}, generation):
+                current, _ = store.read(key + '/claim')
+                if not current or current['token'] != token:
+                    return {'status': 'superseded'}
+                if current.get('abandoned'):
+                    return {'status': 'abandoned'}
         try:
             packet, _ = store.read(key + '/input')
             if not packet or packet.get('input_checksum') != stage or digest(packet['value']) != stage:

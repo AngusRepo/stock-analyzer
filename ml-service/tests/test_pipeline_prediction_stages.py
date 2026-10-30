@@ -863,3 +863,25 @@ def test_queue_limits_accept_plain_decimal_seconds_only(monkeypatch, raw):
     monkeypatch.setenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', raw)
     with pytest.raises(ValueError, match='queue_max_seconds_invalid'):
         stages.queue_max_seconds()
+
+
+def test_a_takeover_whose_lease_renewal_loses_to_an_abandon_does_not_run():
+    class Racing(Store):
+        armed = False
+        def cas(self, key, value, generation):
+            if self.armed and key.endswith('/claim') and not value.get('abandoned'):
+                self.armed = False
+                current, version = self.read(key)
+                super().cas(key, {**current, 'abandoned': True}, version)  # The driver gives up first.
+            return super().cas(key, value, generation)
+    store = Racing()
+    journal = Journal(store, reference(), clock=lambda: 0)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    dispatch = pending.value.dispatch
+    key = journal.root + '/gpu/' + dispatch['stage'] + '/claim'
+    claim, generation = store.read(key)
+    store.cas(key, {**claim, 'started': 100, 'until': 100 + GPU_LEASE_SECONDS, 'attempt': 1}, generation)
+    store.armed = True
+    assert run_gpu_stage(store, dispatch, predict=lambda _: pytest.fail('ran after abandon'),
+                         resume=pytest.fail, clock=lambda: 700) == {'status': 'abandoned'}

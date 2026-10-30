@@ -127,27 +127,14 @@ def _seal(path: Path, data: bytes) -> None:
         handle.write(data)
 
 
-def fetch(out: Path, *, days_path: Path, universe_path: Path, sdk=None, http_get=None, clock=_now) -> dict:
-    """Fetch, seal and describe every source. `sdk` and `http_get` are injected by tests."""
-    days, days_sha = _scope_file(days_path, 'days')
-    universe, universe_sha = _scope_file(universe_path, 'universe')
-    existing = [str(p) for p in _targets(out) if p.exists()]
-    if existing:
-        raise SystemExit('refusing to overwrite sealed sources: ' + ', '.join(existing))
-    _require_session_env()
-    id_token, finlab_get, role_of = sdk or _sdk()
-    with _quiet():
-        token = id_token()
-    if not token:
-        raise SystemExit('FinLab session rejected: refresh FINLAB_REFRESH_TOKEN / FINLAB_SESSION_ID '
-                         '(no browser login, no stored credential fallback).')
-    # Everything is fetched into memory first and sealed only after the last call
-    # succeeds, so a failed run leaves OUT_DIR as it was and can simply be rerun.
-    blobs, sources = {}, {}
-    report = {'auth_mode': 'session_env', 'finlab_calls': 0, 'twse_calls': 0, 'sources': {}}
+def collect_finlab(finlab_get, role_of, clock=_now) -> dict:
+    """The seven FinLab downloads as parquet bytes, each with its pre-request clock.
+
+    Runs locally or inside the one-off Modal entry; returns data only, never env values.
+    """
+    blobs, sources, described, role = {}, {}, {}, None
     for dataset, key, name, shape in FINLAB_SOURCES:
         fetched_at = clock()
-        report['finlab_calls'] += 1
         with _quiet():
             raw = finlab_get(key)
         role = role_of()
@@ -159,20 +146,41 @@ def fetch(out: Path, *, days_path: Path, universe_path: Path, sdk=None, http_get
         frame.write_parquet(buffer)
         blobs[name] = buffer.getvalue()
         sources[dataset] = {'path': name, 'fetched_at': fetched_at, 'sha256': hashlib.sha256(blobs[name]).hexdigest()}
-        report['sources'][dataset] = {'rows': frame.height, 'columns': frame.width, 'returned_at': clock()}
-        report['finlab_role'] = role
-    if http_get is None:
-        import httpx
+        described[dataset] = {'rows': frame.height, 'columns': frame.width, 'returned_at': clock()}
+    return {'blobs': blobs, 'sources': sources, 'described': described, 'role': role,
+            'finlab_calls': len(FINLAB_SOURCES)}
 
-        def http_get(url):
-            with httpx.Client(timeout=25, follow_redirects=False) as client:
-                response = client.get(url)
-                response.raise_for_status()
-                return response.content
+
+def check_targets(out: Path, *, days_path: Path, universe_path: Path) -> None:
+    """Everything that can fail without the network fails before it."""
+    _scope_file(days_path, 'days')
+    _scope_file(universe_path, 'universe')
+    existing = [str(p) for p in _targets(out) if p.exists()]
+    if existing:
+        raise SystemExit('refusing to overwrite sealed sources: ' + ', '.join(existing))
+
+
+def _default_http_get(url):
+    import httpx
+    with httpx.Client(timeout=25, follow_redirects=False) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        return response.content
+
+
+def seal_fetch(out: Path, finlab: dict, *, days_path: Path, universe_path: Path, auth_mode: str,
+               http_get=None, clock=_now, report_extra: dict | None = None) -> dict:
+    """Fetch the public ETF registry, then seal every source, the spec and the report."""
+    days, days_sha = _scope_file(days_path, 'days')
+    universe, universe_sha = _scope_file(universe_path, 'universe')
+    check_targets(out, days_path=days_path, universe_path=universe_path)
+    blobs, sources = dict(finlab['blobs']), dict(finlab['sources'])
+    report = {'auth_mode': auth_mode, 'finlab_calls': finlab['finlab_calls'], 'twse_calls': 0,
+              'finlab_role': finlab['role'], 'sources': dict(finlab['described']), **(report_extra or {})}
     dataset, url, name = ETF_REGISTRY
     fetched_at = clock()
     report['twse_calls'] += 1
-    body = http_get(url)
+    body = (http_get or _default_http_get)(url)
     registry = json.loads(body.decode('utf-8'))
     if not isinstance(registry, list) or not registry or any(not isinstance(s, str) for s in registry):
         raise ValueError('etf_registry_invalid')
@@ -200,6 +208,23 @@ def fetch(out: Path, *, days_path: Path, universe_path: Path, sdk=None, http_get
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return report
+
+
+def fetch(out: Path, *, days_path: Path, universe_path: Path, sdk=None, http_get=None, clock=_now) -> dict:
+    """Fetch, seal and describe every source. `sdk` and `http_get` are injected by tests."""
+    check_targets(out, days_path=days_path, universe_path=universe_path)
+    _require_session_env()
+    id_token, finlab_get, role_of = sdk or _sdk()
+    with _quiet():
+        token = id_token()
+    if not token:
+        raise SystemExit('FinLab session rejected: refresh FINLAB_REFRESH_TOKEN / FINLAB_SESSION_ID '
+                         '(no browser login, no stored credential fallback).')
+    # Everything is fetched into memory first and sealed only after the last call
+    # succeeds, so a failed run leaves OUT_DIR as it was and can simply be rerun.
+    finlab = collect_finlab(finlab_get, role_of, clock)
+    return seal_fetch(out, finlab, days_path=days_path, universe_path=universe_path, auth_mode='session_env',
+                      http_get=http_get, clock=clock)
 
 
 def plan(out: Path, *, days_path: Path, universe_path: Path) -> dict:

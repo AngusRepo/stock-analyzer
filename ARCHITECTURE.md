@@ -126,7 +126,7 @@
 │  Outputs (applied T+1):                                                │
 │  ├─ confidence_threshold: 0.55~0.75 (risk↑ → bar↑)                   │
 │  ├─ pf_quality_mult: per-model 0.3~1.8 (underperform → downweight)   │
-│  ├─ sl_tp_override: null/+0.3x/+0.5x/+1.0x (by risk level)          │
+│  ├─ sl_tp_override: readback only, NOT applied (Wei 10/30 B)        │
 │  └─ bandit_max_mult + force_explore (drawdown → explore new models)   │
 └─────────────────────────────────┬───────────────────────────────────────┘
                                   ↓

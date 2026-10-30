@@ -155,3 +155,13 @@ def test_future_null_cells_are_not_reported_as_changed():
             .otherwise(pl.col(c)).alias(c) for c in columns]))
     _,changed=dataset_variant(ds,cutoff=cutoff,perturb=True)
     assert changed==0
+
+
+def test_variants_keep_the_research_accounting_assumption():
+    from services.research_corporate_history import RESEARCH_ACCOUNTING_DEFAULTS
+    from services.research_validation import dataset_variant
+    ds=dataset();ds.research_accounting=dict(RESEARCH_ACCOUNTING_DEFAULTS)
+    for perturb in (True,False):
+        variant,_=dataset_variant(ds,cutoff='2026-01-04',perturb=perturb)
+        assert variant.research_accounting==RESEARCH_ACCOUNTING_DEFAULTS
+        assert variant.research_accounting is not ds.research_accounting

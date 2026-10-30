@@ -1,18 +1,21 @@
 """Fetch and seal the raw sources for the research corporate-history compile.
 
-Read-only against vendors: seven FinLab `data.get` calls (fresh, no SDK cache)
-and one public TWSE `/rwd/api/codeEtf` call. Nothing goes to GCS, D1, KV or
-Modal. Each source is written once under OUT_DIR with its sha256 and the clock
-taken before its request (the conservative fetch time), then a spec.json that
-`compile_corporate_history.py` reads.
+Read-only against vendors: seven FinLab `data.get` calls (fresh, in-memory SDK
+storage) and one public TWSE `/rwd/api/codeEtf` call. Nothing goes to GCS, D1,
+KV or Modal. Each source is sealed once under OUT_DIR with its sha256 and the
+clock taken before its request (the conservative fetch time), then a spec.json
+that `compile_corporate_history.py` reads.
 
-FinLab auth comes only from the environment, the same names the SDK login
-helper uses: FINLAB_API_KEY, FINLAB_REFRESH_TOKEN, FINLAB_SESSION_ID
-(session auth), or FINLAB_API_KEY alone (legacy token). Values are never
-printed or written.
+FinLab auth is the SDK's headless session, read only from the environment:
+FINLAB_API_KEY, FINLAB_REFRESH_TOKEN and FINLAB_SESSION_ID. The session is
+checked before any download; a rejected session stops with an error instead of
+falling back to a browser login or a stored credential file. A free-tier
+account is refused, because its shortened recent data would compile as "no
+corporate action". Values are never printed or written.
 
 OUT_DIR must already hold days.json (exchange sessions) and universe.json
-(TWSE/OTC symbols), unless --days / --universe name other files.
+(TWSE/OTC symbols), unless --days / --universe name other files; the spec
+records their sha256 so a later edit is caught at compile time.
 
 Run from ml-controller:
   python scripts/fetch_corporate_history_sources.py OUT_DIR [--dry-run]
@@ -27,6 +30,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -60,24 +64,36 @@ def _targets(out: Path) -> list[Path]:
     return [out / name for _, _, name, _ in FINLAB_SOURCES] + [out / ETF_REGISTRY[2], out / SPEC_NAME, out / REPORT_NAME]
 
 
-def _scope_file(path: Path, name: str) -> list[str]:
+def _scope_file(path: Path, name: str) -> tuple[list[str], str]:
     if not path.is_file():
         raise SystemExit(f'{name} not found: {path} (JSON list required before fetching)')
-    data = json.loads(path.read_text(encoding='utf-8'))
+    raw = path.read_bytes()
+    data = json.loads(raw.decode('utf-8'))
     if not isinstance(data, list) or not data or any(not isinstance(x, str) for x in data):
         raise SystemExit(f'{name} must be a non-empty JSON list of strings: {path}')
-    return data
+    return data, hashlib.sha256(raw).hexdigest()
 
 
-def _auth_mode(env=os.environ) -> str:
-    if finlab_session_auth_available(env):
-        return 'session'
-    present = [name for name in FINLAB_SESSION_ENV_NAMES if str(env.get(name) or '').strip()]
-    if present == ['FINLAB_API_KEY']:
-        return 'legacy_api_token'
-    raise SystemExit('FinLab auth missing: set FINLAB_API_KEY, FINLAB_REFRESH_TOKEN and FINLAB_SESSION_ID '
-                     '(or FINLAB_API_KEY alone for a legacy token) in this shell. '
-                     f'Set now: {present or "none"}.')
+def _require_session_env(env=os.environ) -> None:
+    if not finlab_session_auth_available(env):
+        present = [name for name in FINLAB_SESSION_ENV_NAMES if str(env.get(name) or '').strip()]
+        raise SystemExit('FinLab session auth missing: set FINLAB_API_KEY, FINLAB_REFRESH_TOKEN and '
+                         f'FINLAB_SESSION_ID in this shell (set now: {present or "none"}).')
+
+
+@contextlib.contextmanager
+def _quiet():
+    """SDK chatter (quota lines, warnings) never reaches the operator log or the JSON report."""
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        yield
+
+
+def _sdk():
+    """Real FinLab callables: env-session token check, fresh download, role."""
+    from finlab import data
+    from finlab.auth import get_id_token
+    data.set_storage(data.CacheStorage())  # in memory; FileStorage would cache on the system disk
+    return get_id_token, (lambda key: data.get(key, force_download=True)), data.get_role
 
 
 def to_frame(raw, shape: str):
@@ -97,40 +113,45 @@ def to_frame(raw, shape: str):
     return result
 
 
-def _seal(path: Path, data: bytes) -> str:
+def _seal(path: Path, data: bytes) -> None:
     with open(path, 'xb') as handle:  # sealed sources are written once
         handle.write(data)
-    return hashlib.sha256(data).hexdigest()
 
 
-def fetch(out: Path, *, days_path: Path, universe_path: Path, finlab_get=None, login=None,
-          http_get=None, clock=_now) -> dict:
-    """Fetch, seal and describe every source. Injected callables are for tests."""
-    days, universe = _scope_file(days_path, 'days'), _scope_file(universe_path, 'universe')
+def fetch(out: Path, *, days_path: Path, universe_path: Path, sdk=None, http_get=None, clock=_now) -> dict:
+    """Fetch, seal and describe every source. `sdk` and `http_get` are injected by tests."""
+    days, days_sha = _scope_file(days_path, 'days')
+    universe, universe_sha = _scope_file(universe_path, 'universe')
     existing = [str(p) for p in _targets(out) if p.exists()]
     if existing:
         raise SystemExit('refusing to overwrite sealed sources: ' + ', '.join(existing))
-    auth = _auth_mode()
-    if finlab_get is None or login is None:
-        import finlab
-        from finlab import data
-        login = login or finlab.login
-        finlab_get = finlab_get or (lambda key: data.get(key, force_download=True, save_to_storage=False))
-    from services.finlab_auth import login_finlab_sdk
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        login_finlab_sdk(login)  # SDK chatter is dropped so nothing credential-shaped reaches the log
-    # Everything is fetched into memory first; files are sealed only after the last call
-    # succeeds, so a failed run leaves OUT_DIR untouched and can simply be rerun.
-    blobs, sources, report = {}, {}, {'auth_mode': auth, 'finlab_calls': 0, 'twse_calls': 0, 'sources': {}}
+    _require_session_env()
+    id_token, finlab_get, role_of = sdk or _sdk()
+    with _quiet():
+        token = id_token()
+    if not token:
+        raise SystemExit('FinLab session rejected: refresh FINLAB_REFRESH_TOKEN / FINLAB_SESSION_ID '
+                         '(no browser login, no stored credential fallback).')
+    # Everything is fetched into memory first and sealed only after the last call
+    # succeeds, so a failed run leaves OUT_DIR as it was and can simply be rerun.
+    blobs, sources = {}, {}
+    report = {'auth_mode': 'session_env', 'finlab_calls': 0, 'twse_calls': 0, 'sources': {}}
     for dataset, key, name, shape in FINLAB_SOURCES:
         fetched_at = clock()
         report['finlab_calls'] += 1
-        frame = to_frame(finlab_get(key), shape)
+        with _quiet():
+            raw = finlab_get(key)
+        role = role_of()
+        if role in (None, 'free'):
+            # A free account's recent rows are shortened: missing events would compile as "no action".
+            raise SystemExit(f'finlab_role_insufficient:{role}')
+        frame = to_frame(raw, shape)
         buffer = io.BytesIO()
         frame.write_parquet(buffer)
         blobs[name] = buffer.getvalue()
         sources[dataset] = {'path': name, 'fetched_at': fetched_at, 'sha256': hashlib.sha256(blobs[name]).hexdigest()}
         report['sources'][dataset] = {'rows': frame.height, 'columns': frame.width, 'returned_at': clock()}
+        report['finlab_role'] = role
     if http_get is None:
         import httpx
 
@@ -149,16 +170,26 @@ def fetch(out: Path, *, days_path: Path, universe_path: Path, finlab_get=None, l
     blobs[name] = body
     sources[dataset] = {'path': name, 'fetched_at': fetched_at, 'sha256': hashlib.sha256(body).hexdigest()}
     report['sources'][dataset] = {'symbols': len(registry), 'returned_at': clock()}
-    for name, data in blobs.items():
-        _seal(out / name, data)
     captured_at = clock()
-    spec = {'days': os.path.relpath(days_path, out), 'universe': os.path.relpath(universe_path, out),
+    spec = {'days': os.path.relpath(days_path, out), 'days_sha256': days_sha,
+            'universe': os.path.relpath(universe_path, out), 'universe_sha256': universe_sha,
             'sources': sources, 'issuer_evidence': {}, 'cash_rounding_rules': [],
             'reviewed_stock_rules': [], 'captured_at': captured_at}
-    _seal(out / SPEC_NAME, json.dumps(spec, ensure_ascii=False, indent=2).encode('utf-8'))
     report.update(days=len(days), last_day=max(days), universe=len(universe), captured_at=captured_at,
                   spec=str(out / SPEC_NAME))
-    _seal(out / REPORT_NAME, json.dumps(report, ensure_ascii=False, indent=2).encode('utf-8'))
+    blobs[SPEC_NAME] = json.dumps(spec, ensure_ascii=False, indent=2).encode('utf-8')
+    blobs[REPORT_NAME] = json.dumps(report, ensure_ascii=False, indent=2).encode('utf-8')
+    # Stage in one hidden directory, then move into place: a crash while writing
+    # leaves only the staging directory, never a half-sealed OUT_DIR.
+    staging = out / f'.partial-{os.getpid()}'
+    staging.mkdir()
+    try:
+        for name, data in blobs.items():
+            _seal(staging / name, data)
+        for name in blobs:
+            os.link(staging / name, out / name)  # fails instead of replacing an existing file
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return report
 
 

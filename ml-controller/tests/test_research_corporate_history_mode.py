@@ -220,8 +220,11 @@ def test_ready_history_replays_with_the_research_accounting_assumption(monkeypat
         real_apply(account, *args, **kwargs)
         booked.append(dict(getattr(account, 'corporate_receivables', {})))
     monkeypatch.setattr(engine, '_apply_daily_corporate', apply)
-    engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
+    result = engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
     assert booked[2]['cash-ev']['cash_due'] == pytest.approx(123.45)  # 100 shares x 1.2345, exact accrual
+    assert 'cash-ev' not in booked[3]  # paid on the payable session, at the exact accrued amount
+    assert [(a['action_id'], a['mode'], a['adjustment_twd']) for a in result.corporate_rounding_assumptions] == [
+        ('cash-ev', 'exact_accrual', 0.0)]
     assert 'researchAccounting' not in params  # nothing can reach a KV push
     # A partial params choice keeps the dataset's other research default.
     seen = {}

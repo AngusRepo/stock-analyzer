@@ -34,20 +34,54 @@ def content_sha256(contract: dict) -> str:
     return canonical_sha256({k: v for k, v in contract.items() if k not in APPROVAL_KEYS})
 
 
+def _registry_file(name: str) -> Path | None:
+    here = Path(__file__).resolve()
+    for root in (Path("/root/data/feature_registry"), Path("/app/data/feature_registry"),
+                 here.parents[2] / "data" / "feature_registry"):
+        if (root / name).exists():
+            return root / name
+    return None
+
+
 @lru_cache(maxsize=None)
 def load(version: str) -> dict:
     if version not in _FILES:
         raise ValueError("pit_contract_version_unknown")
-    here = Path(__file__).resolve()
-    for root in (Path("/root/data/feature_registry"), Path("/app/data/feature_registry"),
-                 here.parents[2] / "data" / "feature_registry"):
-        path = root / _FILES[version]
-        if path.exists():
-            contract = json.loads(path.read_text(encoding="utf-8"))
-            if contract.get("contract_version") != version:
-                raise ValueError("pit_contract_version_mismatch")
-            return contract
-    raise ValueError("pit_contract_missing")
+    path = _registry_file(_FILES[version])
+    if path is None:
+        raise ValueError("pit_contract_missing")
+    contract = json.loads(path.read_text(encoding="utf-8"))
+    if contract.get("contract_version") != version:
+        raise ValueError("pit_contract_version_mismatch")
+    return contract
+
+
+@lru_cache(maxsize=None)
+def revision_mask_cells(version: str, field: str) -> frozenset:
+    """(symbol, quarter) cells the contract's revision mask nulls in training, sha-checked."""
+    entry = (load(version).get("revision_masks") or {}).get(field) or {}
+    path = _registry_file(str(entry.get("file") or ""))
+    if not entry.get("file") or path is None:
+        raise ValueError("pit_revision_mask_missing")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
+        raise ValueError("pit_revision_mask_changed")
+    return frozenset((str(symbol), str(quarter)) for symbol, quarter in json.loads(raw)["cells"])
+
+
+def reported_quarter(day: str) -> str:
+    """Latest quarter whose statutory TW filing deadline is on or before day.
+
+    Q1 5/15, Q2 8/14, Q3 11/14, Q4 3/31 of the next year. Only for the Q4 serving metric:
+    issuers can file earlier, so this is the quarter every issuer must have filed.
+    """
+    year, month, dom = (int(part) for part in day.split("-"))
+    current = f"{year - 1}-Q3"
+    for deadline, quarter in (((3, 31), f"{year - 1}-Q4"), ((5, 15), f"{year}-Q1"),
+                              ((8, 14), f"{year}-Q2"), ((11, 14), f"{year}-Q3")):
+        if (month, dom) >= deadline:
+            current = quarter
+    return current
 
 
 def feature_lags(version: str) -> dict[str, int]:

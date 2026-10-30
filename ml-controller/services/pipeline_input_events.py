@@ -199,7 +199,7 @@ async def defer_snapshot(*, business_date, required_history):
     raise InputDeferred(path, 'snapshot')
 
 
-def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
+def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id, pit_variants=None):
     """Persist CPU work before spawning; never invoke a model training method."""
     store = bucket()
     log = logging.getLogger(__name__)
@@ -222,8 +222,10 @@ def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
     refs = [ref for ref, _ in persisted]
     log.info('[InputEvents] prep batches persisted count=%d bytes=%d seconds=%.1f',
              len(refs), sum(size for _, size in persisted), time.monotonic() - started)
-    store, path, stage = register('prep', {'batches': refs, 'receipt_template': receipt_template,
-                                         'lock_key': lock_key, 'lock_run_id': lock_run_id})
+    spec = {'batches': refs, 'receipt_template': receipt_template, 'lock_key': lock_key, 'lock_run_id': lock_run_id}
+    if pit_variants:
+        spec['pit_variants'] = pit_variants  # absent otherwise, so legacy stage digests are unchanged
+    store, path, stage = register('prep', spec)
     launched = time.monotonic()
     try:
         _launch_missing_prep(store, path, stage)
@@ -379,6 +381,12 @@ def _complete_prep(store, stage, path):
                                          expected_feature_semantic=template.get('feature_semantic_version', ''))
     if not sealed or sealed['output_checksums'] != checksums:
         raise ValueError('pipeline_input_prep_seal_mismatch')
+    if spec.get('pit_variants'):
+        from services.pit_daily_sources import seal_variants
+        try:
+            seal_variants(store, legacy_receipt=sealed, results=results, specs=spec['pit_variants'])
+        except Exception:  # an unsealed variant only fails that version's TimeXer closed
+            logging.getLogger(__name__).exception('PIT variant seal failed; legacy prep unaffected')
     retrain_lock.release(spec['lock_key'], expected_metadata={'run_id': spec['lock_run_id']})
     _upsert_retrain_status(spec['lock_run_id'], status='completed', summary=sealed,
                           downstream_notes='prep_only_event_complete_no_training_dispatched')

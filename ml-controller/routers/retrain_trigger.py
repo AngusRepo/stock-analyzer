@@ -159,6 +159,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     patchtst_seq_len: int | None = Field(default=None, description="PatchTST sequence context override.")
     itransformer_seq_len: int | None = Field(default=None, description="iTransformer sequence context override.")
     inference_only: bool = Field(default=False, description="Allow verified vendor baseline/delta composition only for no-fit inference prep.")
+    pit_variant_versions: list[str] = Field(default_factory=list, description="C28-02 P2: inference prep also writes PIT-lagged copies under <prefix>-pit-<version>.")
     prep_only: bool = Field(
         default=False,
         description="Build immutable universal feature prep and stop before any model training.",
@@ -1442,6 +1443,16 @@ async def trigger_universal_retrain(
     prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
     if req.inference_only and (not req.prep_only or req.train_model_groups):
         return {"status":"rejected", "error":"inference_composition_cannot_train"}
+    pit_variants: list[dict] = []
+    if req.pit_variant_versions:
+        # Lagged copies only of a no-fit inference prep; a training prep carries a receipt instead.
+        if not (req.prep_only and req.inference_only) or req.model_profile_schema_version == R33_PROFILE:
+            return {"status":"rejected", "error":"pit_variant_requires_inference_prep"}
+        from services.pit_daily_sources import variant_specs
+        try:
+            pit_variants = variant_specs(prep_output_gcs_prefix, req.pit_variant_versions)
+        except ValueError as exc:
+            return {"status":"rejected", "error":str(exc)}
     if req.pit_certification is not None and not req.prebuilt_prep_gcs_prefix:
         # Only an OOF full-fit from a verified prebuilt prep can carry a PIT receipt.
         return {"status":"rejected", "error":"pit_certification_requires_prebuilt_prep"}
@@ -2080,6 +2091,8 @@ async def trigger_universal_retrain(
                 prep_payload["pit_contract_sha256"] = source_bindings["pit_contract_sha256"]
             if active_features:
                 prep_payload["active_features"] = active_features
+            if pit_variants:
+                prep_payload["pit_variants"] = pit_variants
             result = await prep_universal_batch(prep_payload)
             if not isinstance(result, dict):
                 return {"batch_index": idx, "error": f"invalid prep result type: {type(result).__name__}"}
@@ -2117,9 +2130,11 @@ async def trigger_universal_retrain(
                 payload['pit_contract_sha256'] = source_bindings['pit_contract_sha256']
             if active_features:
                 payload['active_features'] = active_features
+            if pit_variants:
+                payload['pit_variants'] = pit_variants
             event_payloads.append(payload)
         # PERF-D6: GCS uploads and per-batch Modal spawn are blocking; keep them off the event loop.
-        await asyncio.to_thread(defer_prep, payloads=event_payloads, lock_key=lock_key, lock_run_id=run_id,
+        await asyncio.to_thread(defer_prep, payloads=event_payloads, lock_key=lock_key, lock_run_id=run_id, pit_variants=pit_variants,
                    receipt_template={**source_bindings, 'schema_version': ACTIVE8_PREP_RECEIPT_SCHEMA_VERSION,
                      'run_id': run_id, 'business_date': run_date, 'output_gcs_prefix': prep_output_gcs_prefix,
                      'feature_semantic_version': semantic_for_profile(req.model_profile_schema_version),
@@ -2251,6 +2266,12 @@ async def trigger_universal_retrain(
             json.dumps(receipt, sort_keys=True, indent=2),
             content_type="application/json",
         )
+        if pit_variants:
+            from services.pit_daily_sources import seal_variants
+            try:
+                seal_variants(prep_bucket, legacy_receipt=receipt, results=prep_results, specs=pit_variants)
+            except Exception:  # noqa: BLE001 - an unsealed variant only fails that version closed.
+                logger.exception("[retrain/universal] PIT variant seal failed; legacy prep unaffected")
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         _upsert_retrain_status(
             run_id,

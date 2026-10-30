@@ -102,3 +102,19 @@ def test_formal_resume_claims_once_only_after_contract_checks(monkeypatch,fault)
     else:
         assert asyncio.run(resume_saved_pre_l2(run_date='2026-10-16',run_id='parent'))=={'status':'deferred'}
         assert events==['window','attach','contract','claim','continue']
+
+
+@pytest.mark.parametrize('fault',[None,'unrecorded','rebuilt','in_original'])
+def test_pit_feature_sources_resume_only_as_recorded_with_the_capture(fault):
+    # C28-02 P2: PIT TimeXer sources are built with the feature source, never rebuilt on resume.
+    original,resumed,report=sample()
+    pit={'schema_version':'timexer-pit-feature-sources-v1','required_versions':['v1'],'sources':{'v1':{'x':1}},'failures':{}}
+    resumed['timexer_pit_feature_sources']=deepcopy(pit)
+    if fault!='unrecorded':report['pit_feature_sources']=deepcopy(pit)
+    if fault=='rebuilt':resumed['timexer_pit_feature_sources']['sources']['v1']={'x':2}
+    if fault=='in_original':original['timexer_pit_feature_sources']=deepcopy(pit)
+    report['receipt_checksum']=digest({k:v for k,v in report.items() if k!='receipt_checksum'})
+    if fault is None:
+        assert validate(original,resumed,report) is resumed
+    else:
+        with pytest.raises(ValueError,match='saved_pre_l2_pit_feature_source_mismatch'):validate(original,resumed,report)

@@ -7,6 +7,7 @@ the single-stock runtime owner. It preserves the same error envelope as
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 import os
 import time
@@ -29,6 +30,11 @@ class _FeatureBatchContext:
     challenger_errors: list[str] = field(default_factory=list)
     # The PIT contract version build_feature_matrix applied to x_latest (C28-02 C2).
     pit_contract_version: str | None = None
+    # Serve each artifact with features built under its own contract version (C28-02 P2 A).
+    # False keeps the strict Phase-1 rule: x_latest must already match the artifact.
+    serve_artifact_versions: bool = False
+    # version -> (x_latest, feature_names) or the error string from building that view.
+    pit_views: dict = field(default_factory=dict)
 
 
 def _runtime():
@@ -263,11 +269,10 @@ def _require_runtime_artifact_identity(model_name: str, artifact: Any, pool: dic
         )
 
 
-def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
+def _latest_feature_row(req: Any, pit_version: str | None) -> tuple[np.ndarray, list[str]]:
     from .features import build_feature_matrix, get_features
 
     chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    pit_version = getattr(req, "pit_contract_version", None)
     if pit_version is not None and "per_stock_ts" not in (req.market_env or {}):
         # Lagged fields never fall back to same-day scalars; without history they would be 0.
         raise ValueError("pit_lagged_history_missing")
@@ -284,12 +289,78 @@ def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
     x, _y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
     if len(x) == 0:
         raise ValueError(f"Feature matrix empty for {req.symbol}")
+    return x[-1].reshape(1, -1), feature_names
+
+
+def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
+    pit_version = getattr(req, "pit_contract_version", None)
+    x_latest, feature_names = _latest_feature_row(req, pit_version)
     return _FeatureBatchContext(
         req=req,
-        x_latest=x[-1].reshape(1, -1),
+        x_latest=x_latest,
         feature_names=feature_names,
         pit_contract_version=pit_version,
+        # A request that names a version pins every artifact to it (Phase-1 probe semantics).
+        serve_artifact_versions=pit_version is None,
     )
+
+
+# Set by the *_with_metrics/GNN entry points; collects per-version view counts (C28-02 P2).
+_PIT_SERVING_TELEMETRY: ContextVar[list | None] = ContextVar("pit_serving_telemetry", default=None)
+
+
+def _record_pit_views(contexts: list[_FeatureBatchContext]) -> None:
+    sink = _PIT_SERVING_TELEMETRY.get()
+    if sink is not None:
+        sink.extend(ctx for ctx in contexts if ctx.pit_views)
+
+
+def _pit_serving_metrics(contexts: list[_FeatureBatchContext]) -> dict:
+    """Empty unless some artifact needed a non-request version, so legacy metrics stay unchanged."""
+    views: dict[str, dict] = {}
+    for ctx in contexts:
+        for version, view in ctx.pit_views.items():
+            row = views.setdefault(str(version), {"built": 0, "failed": 0, "_symbols": []})
+            if isinstance(view, str):
+                row["failed"] += 1
+            else:
+                row["built"] += 1
+                row["_symbols"].append(ctx.req)
+    for version, row in views.items():
+        requests = row.pop("_symbols")
+        try:
+            # Q4: training nulls revised EPS quarters; serving reads the append-only value.
+            from .pit_contract import reported_quarter, revision_mask_cells
+            cells = revision_mask_cells(version, "eps")
+            row["eps_revision_mask_current_quarter_stocks"] = sum(
+                1 for req in requests
+                if (str(getattr(req, "symbol", "") or "").split(".")[0],
+                    reported_quarter(str(((getattr(req, "prices", None) or [{}])[-1] or {}).get("date") or "")[:10]))
+                in cells
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry never fails a prediction.
+            row["eps_revision_mask_error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return {"feature_views": views} if views else {}
+
+
+def _feature_view(ctx: _FeatureBatchContext, version: str | None) -> tuple[np.ndarray, list[str]]:
+    """Features for one artifact version, built on first use and cached per stock.
+
+    Raises only for the calling artifact; callers keep that error per model and symbol.
+    """
+    if version == ctx.pit_contract_version:
+        return ctx.x_latest, ctx.feature_names
+    if not ctx.serve_artifact_versions:
+        raise ValueError("pit_contract_version_serving_mismatch")
+    if version not in ctx.pit_views:
+        try:
+            ctx.pit_views[version] = _latest_feature_row(ctx.req, version)
+        except Exception as exc:  # noqa: BLE001 - cached so each artifact sees the same reason.
+            ctx.pit_views[version] = f"pit_feature_view_failed:{version}:{type(exc).__name__}:{exc}"[:300]
+    view = ctx.pit_views[version]
+    if isinstance(view, str):
+        raise ValueError(view)
+    return view
 
 
 _PIT_VERSION_SLOT: tuple = (None, None)
@@ -312,31 +383,30 @@ def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None) -> np.n
     from .features import safe_float
 
     # Train/serve skew guard (C28-02 C2): features must carry the artifact's contract lags.
-    if _artifact_pit_version(meta) != ctx.pit_contract_version:
-        raise ValueError("pit_contract_version_serving_mismatch")
+    x_latest, feature_names = _feature_view(ctx, _artifact_pit_version(meta))
     training_features = (meta or {}).get("feature_names", [])
     training_medians = (meta or {}).get("feature_medians", {})
-    if training_features and training_features != ctx.feature_names:
+    if training_features and training_features != feature_names:
         try:
             validate_serving_feature_compatibility(
                 training_features=training_features,
-                serving_features=ctx.feature_names,
+                serving_features=feature_names,
                 feature_medians=training_medians,
             )
         except ArtifactValidationError as exc:
             raise ValueError(f"artifact feature compatibility failed: {exc.report}") from exc
-        pred_name_to_idx = {name: idx for idx, name in enumerate(ctx.feature_names)}
+        pred_name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
         defaults = np.array(
             [safe_float(training_medians.get(name), 0.0) for name in training_features],
             # Preserve tree input precision across feature-subset alignment.
-            dtype=np.result_type(ctx.x_latest.dtype, np.float32),
+            dtype=np.result_type(x_latest.dtype, np.float32),
         ).reshape(1, -1)
         aligned = defaults.copy()
         for idx, fname in enumerate(training_features):
             if fname in pred_name_to_idx:
-                aligned[0, idx] = float(ctx.x_latest[0, pred_name_to_idx[fname]])
+                aligned[0, idx] = float(x_latest[0, pred_name_to_idx[fname]])
         return aligned
-    return ctx.x_latest
+    return x_latest
 
 
 def _clip_rank(value: Any) -> float:
@@ -911,6 +981,7 @@ def _build_feature_model_batch_runtime_overrides(
             _apply_artifact_batch_predictions(contexts, model_name, model_obj, meta, challenger=True)
 
     _apply_active8_shadow_feature_predictions(contexts, pool)
+    _record_pit_views(contexts)
 
     return [
         {
@@ -981,6 +1052,7 @@ def predict_gnn_graphsage_batch(
 
     output = [item for item in results if item is not None]
     error_summary = _summarize_result_errors(output)
+    pit_serving = _pit_serving_metrics(contexts)
     return {
         "results": output,
         "n_input": len(payloads or []),
@@ -991,6 +1063,7 @@ def predict_gnn_graphsage_batch(
             "runtime": "graphsage_full_universe",
             "contract": "gnn_graphsage_universal_predict_v1",
             "error_summary": error_summary,
+            **({"pit_serving": pit_serving} if pit_serving else {}),
         },
     }
 
@@ -1244,13 +1317,19 @@ def predict_stock_v2_batch_with_metrics(
     preload_elapsed_s = round(time.time() - preload_t0, 3)
     after_preload = _get_model_cache_stats()
     predict_t0 = time.time()
-    if pool_snapshot is None:
-        results = predict_stock_v2_batch(payloads)
-    else:
-        results = predict_stock_v2_batch(
-            payloads,
-            pool_snapshot=pool_snapshot,
-        )
+    pit_contexts: list = []
+    token = _PIT_SERVING_TELEMETRY.set(pit_contexts)
+    try:
+        if pool_snapshot is None:
+            results = predict_stock_v2_batch(payloads)
+        else:
+            results = predict_stock_v2_batch(
+                payloads,
+                pool_snapshot=pool_snapshot,
+            )
+    finally:
+        _PIT_SERVING_TELEMETRY.reset(token)
+    pit_serving = _pit_serving_metrics(pit_contexts)
     predict_elapsed_s = round(time.time() - predict_t0, 3)
     after = _get_model_cache_stats()
     ft_after = _get_ft_runtime_cache_stats()
@@ -1291,6 +1370,7 @@ def predict_stock_v2_batch_with_metrics(
                 "misses": int(ft_after.get("misses", 0) or 0) - int(ft_before.get("misses", 0) or 0),
                 "after": ft_after,
             },
+            **({"pit_serving": pit_serving} if pit_serving else {}),
         },
     }
 

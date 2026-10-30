@@ -119,7 +119,7 @@ function fixture(options: { retry?: boolean; dates?: number; allTonight?: boolea
       deferredSignalDates: 0, candidateCount: 9 * STOCKS, materializedCount: 9 * STOCKS, rejectedCount: 0,
       status: 'success' as const, summary: 'terminal', processedHorizonKeys: multiKeys }
   const outcomes = { asOfDate: businessDate, referenceRows: nDates * STOCKS, horizons: [3, 5, 10].map(horizonDays => ({ horizonDays,
-    matureRows: nDates * STOCKS, pendingRows: 0, unavailableRows: 0, persistedRows: nDates * STOCKS, retiredRows: 0 })), summary: 'terminal' }
+    matureRows: nDates * STOCKS, pendingRows: 0, unavailableRows: 0, persistedRows: nDates * STOCKS, writtenRows: nDates * STOCKS, retiredRows: 0 })), summary: 'terminal' }
   const input = { businessDate, canonicalRunId: 'finlab-A', projectionRunId: 'projection-A',
     producerResult: { canonical, multiHorizon, outcomes } }
   const projection = { ...input, task: 'price-horizon-projection' as const }

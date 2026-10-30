@@ -35,6 +35,16 @@ def git(*args):
     return subprocess.run(['git', '-C', str(ROOT), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def live_sha():
+    # A cold controller answers /health in ~35 s, past live_controller_sha's 30 s timeout.
+    for attempt in range(2):
+        try:
+            return release.live_controller_sha()
+        except OSError:
+            if attempt:
+                raise
+
+
 def main():
     head = git('rev-parse', 'HEAD')
     pin = git('log', '-1', '--format=%H', head, '--', BEHAVIOR)
@@ -45,7 +55,7 @@ def main():
     repin = bool(unpinned or sources)
 
     try:
-        live = sys.argv[1] if len(sys.argv) > 1 else release.live_controller_sha()
+        live = sys.argv[1] if len(sys.argv) > 1 else live_sha()
         decision = admission.classify(ROOT, live, head, identities)
     except (Exception, SystemExit) as error:  # infrastructure, not the commit: never red on its own
         live, decision = None, None

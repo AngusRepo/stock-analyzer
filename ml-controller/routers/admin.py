@@ -286,3 +286,13 @@ def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
         "layer3_distributional_parity": layer3,
         "note": req.note,
     }
+
+
+@router.get("/modal_app_inventory")
+async def modal_app_inventory_view():
+    """Read-only Modal app inventory for an operator check; writes no system log."""
+    import asyncio
+    from services import modal_app_inventory as inventory
+
+    apps = await asyncio.to_thread(inventory.list_modal_apps)
+    return {"apps": len(apps), "flagged": inventory.evaluate_apps(apps, datetime.now(timezone.utc))}

@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:73a1330bfb69ee23d3fefd2dcf9b524d2d966b8170418087e0ef40239c1662a7",
+  "execution_owner_version": "native-paper-v1:533930fa1edb436637b62cec506a8477f196b0f2c2be142d1b3dc8f719e4f184",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "PENDING: Wei go for W-REL release wrel-20261029 (merge/deploy not yet approved)",
+  "authorization": "Wei 2026-10-30 09:2x TW in parent session: \"go：照 W-REL 清單執行 wrel-20261029\"",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/wrel/plan_WREL.md",
   "runtime_admission": "ml:active8:paper_runtime_approval:v1:wrel-20261029",
   "policy_runtime_admissions": [

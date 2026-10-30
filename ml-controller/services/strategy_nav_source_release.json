@@ -4,9 +4,9 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "ed17ec18154e0c1b4c6a2d48741b74dae292451d",
+  "production_baseline_source": "28be01943d0028c35dfbef312c332b92af12f498",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "7cad9cbea4c9aa22c8699ff7621352cd4a215a0ad573a2bdf212e9d0be4a8da4",
+  "prior_approval_checksum": "7c0f8dd9eccb37fb88485c5f86fb4fc9360d4b40d8f56930c5623d166db4a606",
   "prior_configuration_checksum": "7275b4ec0283f7fe65ba3ca0ed7ae55cca43ae7425a8a1948012d18f09e08606",
   "approved_sources": {
     "allocator_source_identity": {
@@ -85,7 +85,7 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:73a1330bfb69ee23d3fefd2dcf9b524d2d966b8170418087e0ef40239c1662a7",
+  "execution_owner_version": "native-paper-v1:533930fa1edb436637b62cec506a8477f196b0f2c2be142d1b3dc8f719e4f184",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/wrel/plan_WREL.md",
   "policy_activations": [
     {

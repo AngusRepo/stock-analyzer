@@ -79,6 +79,9 @@ def test_the_promotion_constants_are_paper_s_own():
     assert f'family.get("evidence_status") != "{state.PAPER_SUFFICIENT_EVIDENCE_STATUS}"' in body
     assert f'(_finite_float_or_none(family.get("active_family_count")) or 0) < {state.PAPER_MIN_ACTIVE_FAMILIES}' in body
     assert 'components.get("coreFamilyEvidence") or row.get("core_family_evidence")' in body
+    # The replay reads what write_predictions_to_d1 persists: the evidence dict as core_family_vote.
+    assert '"core_family_vote": data.get("core_family_vote")' in source
+    assert 'pred["core_family_vote"] = evidence' in source
 
 
 def test_verified_rows_carry_the_p7_columns_for_hot_and_cold_rows(monkeypatch):
@@ -154,7 +157,7 @@ def test_the_snapshot_seals_the_momentum_zone_and_verified_rows_from_before_the_
                          'formal_active_family_count').rows() == [(True, SUFFICIENT, 3.)]
 
 
-def dataset(signal_rows, *, momentum=None, verified=None):
+def dataset(signal_rows, *, momentum=None, verified=None, days=('2026-09-01', '2026-09-02')):
     frames = {'signals': pl.DataFrame(signal_rows),
               'market_breadth': pl.DataFrame({'date': ['2026-09-01'], 'advance_ratio': [.5]}),
               'us_market_signals': pl.DataFrame({'date': ['2026-09-01'], 'gspc_return': [.0]}),
@@ -166,15 +169,16 @@ def dataset(signal_rows, *, momentum=None, verified=None):
     if momentum is not None:
         frames['screener_momentum_snapshots'] = pl.DataFrame(momentum)
     return SimpleNamespace(stocks=pl.DataFrame({'id': [1, 2, 3, 4], 'symbol': ['2330', '1101', '2317', '2454']}),
-                           start_date='2026-09-01', end_date='2026-09-02', trading_days=['2026-09-01', '2026-09-02'],
+                           start_date=days[0], end_date=days[-1], trading_days=list(days),
                            market_risk=pl.DataFrame({'date': ['2026-09-01'], 'risk_level': ['green']}),
                            replay_frames=frames)
 
 
-def signal_rows(flags, confs, statuses=None, families=None):
+def signal_rows(flags, confs, statuses=None, families=None, dates=None, stocks=None, generated=None):
     n = len(flags)
-    return {'stock_id': list(range(1, n + 1)), 'prediction_date': ['2026-09-01'] * n,
-            'generated_at': ['2026-09-01T13:00:00Z'] * n, 'direction_accuracy': confs,
+    dates = dates or ['2026-09-01'] * n
+    return {'stock_id': stocks or list(range(1, n + 1)), 'prediction_date': dates,
+            'generated_at': generated or [d + 'T13:00:00Z' for d in dates], 'direction_accuracy': confs,
             'formal_model_contract_passed': flags,
             'formal_evidence_status': statuses or [SUFFICIENT if f is not None else None for f in flags],
             'formal_active_family_count': families or [3. if f is not None else None for f in flags],
@@ -186,11 +190,36 @@ def test_the_replay_keeps_only_candidates_whose_formal_contract_passed():
     cache, state, _ = frozen_mode_b(dataset(signal_rows([True, False, None, True], [.6, .6, .6, None])))
     assert cache.get('2330', '2026-09-01') == .6
     assert cache.get('1101', '2026-09-01') is None                   # contract failed: Paper drops it
-    assert cache.get('2317', '2026-09-01') == .6                     # never recorded: older test, counted
+    assert cache.get('2317', '2026-09-01') is None                   # not evaluated by Paper that day: `{}`
     assert state.formal_contract == {'contract_failed_rows': 1, 'evidence_insufficient_rows': 0,
-                                     'contract_passed_without_confidence_rows': 1, 'unflagged_rows': 1,
-                                     'evidence_unrecorded_rows': 0, 'flag_component': True,
+                                     'evidence_missing_rows': 1, 'contract_passed_without_confidence_rows': 1,
+                                     'unflagged_rows': 0, 'evidence_unrecorded_rows': 0, 'flag_component': True,
                                      'evidence_source': 'sealed_columns'}
+
+
+def test_only_a_day_from_before_the_evidence_runs_unflagged_rows():
+    from services.backtest_snapshot_state import frozen_mode_b
+    days = ('2026-08-31', '2026-09-01', '2026-09-02')
+    rows = signal_rows([None, None, True, None], [.6, .7, .8, .9], dates=['2026-08-31', '2026-08-31', '2026-09-01',
+                                                                          '2026-09-01'], stocks=[1, 2, 3, 4])
+    cache, state, _ = frozen_mode_b(dataset(rows, days=days))
+    assert [cache.get(s, d) for s, d in (('2330', '2026-08-31'), ('1101', '2026-08-31'), ('2317', '2026-09-01'),
+                                         ('2454', '2026-09-01'))] == [.6, .7, .8, None]
+    assert state.formal_contract['unflagged_rows'] == 2 and state.formal_contract['evidence_missing_rows'] == 1
+
+
+def test_the_newest_revision_decides_even_when_it_is_blocked():
+    from services.backtest_snapshot_state import frozen_mode_b
+    rows = signal_rows([True, True, True], [.6, .6, .6], families=[3., 1., 3.], stocks=[1, 1, 2],
+                       generated=['2026-09-01T10:00:00Z', '2026-09-01T13:00:00Z', '2026-09-01T13:00:00Z'])
+    cache, state, _ = frozen_mode_b(dataset(rows))
+    assert cache.get('2330', '2026-09-01') is None and cache.get('1101', '2026-09-01') == .6
+    same = signal_rows([True, True, True], [.6, .6, .6], families=[1., 3., 3.], stocks=[1, 1, 2])
+    cache, _, _ = frozen_mode_b(dataset(same))
+    assert cache.get('2330', '2026-09-01') is None                   # a blocked revision at the same instant wins
+    reversed_ = signal_rows([True, True, True], [.6, .6, .6], families=[3., 1., 3.], stocks=[1, 1, 2])
+    cache, _, _ = frozen_mode_b(dataset(reversed_))
+    assert cache.get('2330', '2026-09-01') is None
 
 
 def test_the_replay_drops_candidates_paper_s_l4_promotion_would_not_qualify():
@@ -210,10 +239,31 @@ def test_an_old_snapshot_is_read_from_forecast_data_like_paper():
         del rows[column]
     rows['forecast_data'] = [forecast(passed=True, families=2), forecast(passed=True, families=1), forecast()]
     cache, state, _ = frozen_mode_b(dataset(rows))
-    assert [cache.get(s, '2026-09-01') for s in ('2330', '1101', '2317')] == [.6, None, .8]
+    assert [cache.get(s, '2026-09-01') for s in ('2330', '1101', '2317')] == [.6, None, None]
     assert state.formal_contract['flag_component'] is False
     assert state.formal_contract['evidence_source'] == 'forecast_data'
-    assert state.formal_contract['evidence_insufficient_rows'] == 1 and state.formal_contract['unflagged_rows'] == 1
+    assert state.formal_contract['evidence_insufficient_rows'] == 1 and state.formal_contract['evidence_missing_rows'] == 1
+
+
+def test_a_snapshot_sealing_only_the_contract_flag_is_reread_from_forecast_data():
+    # The first S1 exporter sealed formal_model_contract_passed alone, beside forecast_data.
+    from services.backtest_snapshot_state import frozen_mode_b
+    rows = signal_rows([True, True], [.6, .7])
+    del rows['formal_evidence_status'], rows['formal_active_family_count']
+    rows['forecast_data'] = [forecast(passed=True, families=2), forecast(passed=True, families=1)]
+    cache, state, _ = frozen_mode_b(dataset(rows))
+    assert [cache.get(s, '2026-09-01') for s in ('2330', '1101')] == [.6, None]
+    assert state.formal_contract['flag_component'] is False and state.formal_contract['evidence_insufficient_rows'] == 1
+
+
+def test_a_non_string_forecast_column_reads_nothing_and_says_so():
+    from services.backtest_snapshot_state import frozen_mode_b
+    rows = signal_rows([True], [.6])
+    for column in ('formal_model_contract_passed', 'formal_evidence_status', 'formal_active_family_count'):
+        del rows[column]
+    rows['forecast_data'] = [None]
+    _, state, _ = frozen_mode_b(dataset(rows))
+    assert state.formal_contract['evidence_source'] == 'none' and state.formal_contract['unflagged_rows'] == 1
 
 
 def test_a_snapshot_without_the_flag_runs_as_an_approximation():

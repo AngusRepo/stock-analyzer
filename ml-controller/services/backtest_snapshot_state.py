@@ -19,10 +19,11 @@ FORMAL_EVIDENCE_COLUMNS = ('formal_model_contract_passed', 'formal_evidence_stat
 def with_formal_evidence(signals):
     """Add Paper's per-candidate promotion evidence from forecast_data.
 
-    Paper reads `coreFamilyEvidence or core_family_evidence`; the stored forecast
-    keeps the same dict as `core_family_evidence` or `core_family_vote`, taken in
-    that order, a whole dict at a time (an empty or null dict falls through, as
-    Python's `or` does). Rows that never recorded it stay null.
+    Paper reads `coreFamilyEvidence or core_family_evidence` in memory; both are the
+    dict apply_core_family_evidence builds, and write_predictions_to_d1 persists it
+    as forecast_data `core_family_vote`. A `core_family_evidence` key, if a forecast
+    ever carries one, is taken first, a whole dict at a time (an empty or null dict
+    falls through, as Python's `or` does). Rows that never recorded it stay null.
     """
     import polars as pl
     dtypes = (pl.Boolean, pl.String, pl.Float64)
@@ -44,17 +45,24 @@ def with_formal_evidence(signals):
         field('active_family_count').cast(pl.Float64, strict=False).alias(FORMAL_EVIDENCE_COLUMNS[2]))
 
 
-def promotion_verdict(passed, status, families) -> str:
-    """'pass' | 'contract_failed' | 'evidence_insufficient' | 'unflagged' | 'evidence_unrecorded'.
+PROMOTION_BLOCKED = ('contract_failed', 'evidence_insufficient', 'evidence_missing')
 
-    The last two run as approximations: a row (or an older snapshot) that never
-    recorded the verdict, or recorded the contract but neither evidence field.
-    A partly recorded row fails like Paper's `or 0` reading.
+
+def promotion_verdict(passed, status, families, *, day_recorded: bool = False) -> str:
+    """'pass', a PROMOTION_BLOCKED verdict, or an approximation ('unflagged' | 'evidence_unrecorded').
+
+    Paper persists the evidence only for the predictions it evaluated as L3
+    candidates; any other prediction reads `{}` there and is never promoted. So on
+    a day where some prediction recorded it (`day_recorded`), a row without it is
+    blocked ('evidence_missing'). Only a day from before the evidence existed runs
+    the replay's older test ('unflagged'), as does a row that recorded the contract
+    but neither evidence field ('evidence_unrecorded'). A partly recorded row fails
+    like Paper's `or 0` reading.
     """
     if passed is False:
         return 'contract_failed'
     if passed is None:
-        return 'unflagged'
+        return 'evidence_missing' if day_recorded else 'unflagged'
     if status is None and families is None:
         return 'evidence_unrecorded'
     count = families if isinstance(families, (int, float)) and not isinstance(families, bool) and math.isfinite(families) else 0
@@ -114,10 +122,14 @@ def frozen_mode_b(dataset):
     has_flag = all(c in signals.columns for c in FORMAL_EVIDENCE_COLUMNS)
     if not has_flag:
         signals = with_formal_evidence(signals)
-    formal = {'contract_failed_rows': 0, 'evidence_insufficient_rows': 0, 'contract_passed_without_confidence_rows': 0,
-              'unflagged_rows': 0, 'evidence_unrecorded_rows': 0, 'flag_component': has_flag,
-              'evidence_source': 'sealed_columns' if has_flag else (
-                  'forecast_data' if 'forecast_data' in signals.columns else 'none')}
+    import polars as pl
+    readable = 'forecast_data' in signals.columns and signals.schema['forecast_data'] == pl.String
+    formal = {'contract_failed_rows': 0, 'evidence_insufficient_rows': 0, 'evidence_missing_rows': 0,
+              'contract_passed_without_confidence_rows': 0, 'unflagged_rows': 0, 'evidence_unrecorded_rows': 0,
+              'flag_component': has_flag,
+              'evidence_source': 'sealed_columns' if has_flag else ('forecast_data' if readable else 'none')}
+    recorded_days = set(signals.filter(pl.col(FORMAL_EVIDENCE_COLUMNS[0]).is_not_null())
+                        .get_column('prediction_date').cast(pl.Utf8).to_list())
     for row in signals.sort(['generated_at', 'stock_id']).iter_rows(named=True):
         symbol = identities.get(row['stock_id'])
         day = str(row['prediction_date'])
@@ -130,9 +142,14 @@ def frozen_mode_b(dataset):
         cutoff = datetime.fromisoformat(entry_day + 'T09:00:00+08:00')
         if not symbol or timestamp(row['generated_at']) >= cutoff:
             continue
-        verdict = promotion_verdict(*(row.get(c) for c in FORMAL_EVIDENCE_COLUMNS))
-        if verdict in ('contract_failed', 'evidence_insufficient'):
+        verdict = promotion_verdict(*(row.get(c) for c in FORMAL_EVIDENCE_COLUMNS), day_recorded=day in recorded_days)
+        key = (symbol, day)
+        observed = timestamp(row['generated_at'])
+        if verdict in PROMOTION_BLOCKED:
             formal[verdict + '_rows'] += 1
+            # The newest revision decides: a blocked one replaces an earlier admitted one.
+            if key not in cache or observed >= cache[key][0]:
+                cache[key] = (observed, None)
             continue
         if verdict != 'pass':
             formal[verdict + '_rows'] += 1
@@ -143,12 +160,14 @@ def frozen_mode_b(dataset):
             continue
         if not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
             raise ValueError('backtest_mode_b_confidence_invalid')
-        key = (symbol, day)
-        observed = timestamp(row['generated_at'])
-        if key in cache and observed == cache[key][0] and conf != cache[key][1]:
-            raise ValueError('backtest_mode_b_prediction_revision_ambiguous')
+        if key in cache and observed == cache[key][0]:
+            if cache[key][1] is None:
+                continue                                  # a blocked revision at the same instant wins
+            if conf != cache[key][1]:
+                raise ValueError('backtest_mode_b_prediction_revision_ambiguous')
         if key not in cache or observed >= cache[key][0]:
             cache[key] = (observed, conf)
+    cache = {key: value for key, value in cache.items() if value[1] is not None}
     if not cache:
         raise ValueError('backtest_mode_b_frozen_predictions_empty')
     state = BacktestMarketState.__new__(BacktestMarketState)

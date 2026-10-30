@@ -8,7 +8,7 @@ that `dataset_snapshot_exporter` accepts as `corporate_history_path`.
 Spec (JSON):
   days            JSON list of trading sessions (the exchange calendar)
   universe        JSON list of symbols the research universe may hold
-  sources         dataset -> {path, fetched_at} for finlab.dividend_announcement,
+  sources         dataset -> {path, fetched_at[, sha256]} for finlab.dividend_announcement,
                   the four finlab company event catalogs, finlab.tw_etf_dividend_events,
                   finlab.etf_split:恢復買賣日期 and official.etf_registry
   issuer_evidence symbol -> {dataset, path, fetched_at}; reviewed issuer documents
@@ -60,6 +60,8 @@ def _ref(dataset: str, entry: dict, base: Path, raw: dict) -> dict:
     data = path.read_bytes()
     ref = {'dataset': dataset, 'uri': path.as_uri(), 'fetched_at': fetched.isoformat(),
            'sha256': hashlib.sha256(data).hexdigest()}
+    if entry.get('sha256') not in (None, ref['sha256']):  # changed since the fetch sealed it
+        raise ValueError('corporate_history_source_changed_since_fetch:' + dataset)
     raw[ref['uri']] = data
     return ref
 

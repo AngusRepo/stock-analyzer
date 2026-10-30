@@ -510,3 +510,96 @@ def test_the_dispatch_grace_restarts_at_each_resend():
     assert recover() == {'reason': 'gpu_dispatch_grace'}
     now[0] = 1600
     assert recover()['reason'] == 'same_request_resumed'
+
+
+def test_after_every_resend_went_unacknowledged_the_queue_limit_not_recovery_ends_it():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now, dispatch_id=None)
+    claim_key = PREFIX + journal.root + '/gpu/' + dispatch['stage'] + '/claim'
+    claim, generation = store.read(claim_key)
+    store.cas(claim_key, {**claim, 'dispatches': 3, 'dispatched_at': 1200}, generation)
+    for tick in range(2400, 14400, 1200):
+        now[0] = tick
+        assert recover()['reason'] == 'gpu_queued'
+    assert not queue
+    now[0] = 14400
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and out['gpu_log'] == 'gpu_queue_exhausted'
+
+
+def test_an_older_results_one_driver_is_retried_when_its_dispatch_was_uncertain():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, first = _queued_gpu(ref, store, now)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, first, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: 700)
+    now[0] = 700 + stages.GPU_LEASE_SECONDS
+    _queued_gpu(ref, store, now, dispatch_id='fc-2')
+    stage_store.put(journal.root + '/gpu/' + first['stage'] + '/result/' + first['token'],
+                    {'input_checksum': first['stage'], 'value': {'late': 1}})
+    now[0] += 1200
+    def lost(_): raise OSError('ack lost')
+    assert recover(spawn=lost)['reason'] == 'recovery_dispatch_uncertain'
+    now[0] += 601
+    assert recover()['reason'] == 'same_request_resumed' and len(queue) == 1
+    now[0] += 601
+    assert recover()['reason'] == 'gpu_queued'  # Seen once a dispatch went out.
+
+
+def test_a_queued_line_during_release_drift_does_not_promise_a_failed_run():
+    import logging
+    from services.pipeline_prediction_recovery import write_gpu_queue_log
+    ref, store, now, queue, recover = fixture()
+    _queued_gpu(ref, store, now)
+    now[0] = 1200
+    out = recover(source_sha='c'*40)
+    assert out['reason'] == 'gpu_queued' and out['recovery_blocked'] is True
+    rows = []
+    write_gpu_queue_log(out, run_date='2026-10-29', run_id='exact-run',
+                        ops_execute=lambda sql, params: rows.append(params), logger=logging.getLogger('t'))
+    assert 'recovery is blocked' in rows[0][2] and 'before the run fails' not in rows[0][2]
+
+
+def test_a_third_execution_that_started_late_is_not_reported_as_the_queue_limit():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now)
+    claim_key = PREFIX + journal.root + '/gpu/' + dispatch['stage'] + '/claim'
+    claim, generation = store.read(claim_key)
+    store.cas(claim_key, {**claim, 'attempt': 2}, generation)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, dispatch, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: 14400 + 5)
+    now[0] = 14400 + 5 + stages.GPU_LEASE_SECONDS
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and 'gpu_log' not in out
+
+
+def test_a_blocked_limit_line_is_written_once_even_when_the_claim_cannot_be_abandoned():
+    ref, store, now, queue, recover = fixture()
+    stage_store, journal, dispatch = _queued_gpu(ref, store, now)
+    with pytest.raises(SystemExit):
+        stages.run_gpu_stage(stage_store, dispatch, predict=lambda _: (_ for _ in ()).throw(SystemExit()),
+                             resume=pytest.fail, clock=lambda: 14400 + 5)
+    logs = []
+    for t in (14400 + 1100, 14400 + 2300, 14400 + 3500):
+        now[0] = t
+        logs.append(recover(source_sha='c'*40).get('gpu_log'))
+    assert logs == ['gpu_queue_limit_blocked', None, None]
+
+
+def test_shadow_remaining_seconds_use_the_shadow_deadline():
+    ref, store, now, queue, recover = fixture()
+    _queued_gpu(ref, store, now, shadow=True)
+    now[0] = 1200
+    assert recover()['gpu_queue_remaining_s'] == 2400
+
+
+def test_the_reconcile_route_really_calls_the_gpu_queue_hook():
+    import ast
+    tree = ast.parse((Path(__file__).resolve().parents[1] / 'routers/pipeline.py').read_text())
+    route = next(n for n in ast.walk(tree)
+                 if isinstance(n, ast.AsyncFunctionDef) and n.name == 'reconcile_pipeline_execution')
+    calls = [n for n in ast.walk(route) if isinstance(n, ast.Await) and isinstance(n.value, ast.Call)
+             and getattr(n.value.func, 'attr', '') == 'to_thread' and n.value.args
+             and getattr(n.value.args[0], 'id', '') == 'log_gpu_queue']
+    assert len(calls) == 1 and getattr(calls[0].value.args[1], 'id', '') == 'recovery'

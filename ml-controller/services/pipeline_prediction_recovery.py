@@ -14,6 +14,9 @@ from google.api_core.exceptions import NotFound, PreconditionFailed
 PREFIX = 'pipeline-v2/prediction-stages/v1/'
 REGISTRY = 'pipeline-v2/prediction-recovery/v1/'
 GPU_CLAIM_VERSION = 2
+# Mirrors the Modal journal: same-token re-sends after an unacknowledged spawn, and executions.
+GPU_DISPATCHES = 3
+GPU_ATTEMPTS = 3
 # Same as the Modal journal's receipt grace and this module's initial dispatch grace.
 GPU_DISPATCH_GRACE_SECONDS = 600
 GPU_QUEUE_LOG_CRON = 'pipeline-gpu-queue'
@@ -129,6 +132,9 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
             if not result_generation:
                 waiting = _gpu_wait(store, PREFIX + gpu, claim, clock())
                 if waiting.get('reason'):
+                    drifted = source_sha != reference.get('expected_source_sha') or not source_sha
+                    if drifted and waiting['reason'] == 'gpu_queued':
+                        waiting = {**waiting, 'recovery_blocked': True}  # Its log text must say so.
                     return _with_log(store, key, waiting, blocked=False, clock=clock)
                 queue_note = waiting
     # Release drift prevents redispatch on this runtime; it does not prove
@@ -164,7 +170,12 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     try:
         result = spawn(payload)
     except Exception:
-        # Accepted-but-unacknowledged dispatch is not a terminal model failure.
+        # Accepted-but-unacknowledged dispatch is not a terminal model failure. An older
+        # result's one driver did not certainly start: let the next reconcile try again.
+        if older_generation:
+            sent, sent_generation = store.read(key + '/dispatch')
+            if sent == claim:
+                store.cas(key + '/dispatch', {**claim, 'older_result_generation': 0}, sent_generation)
         return _with_log(store, key, {'reason': 'recovery_dispatch_uncertain', 'attempt': attempt, **queue_note},
                          blocked=False, clock=clock)
     return _with_log(store, key, {'reason': 'same_request_resumed', 'attempt': attempt,
@@ -198,7 +209,7 @@ def _gpu_wait(store, gpu_key, claim, now):
     if 'started' in claim:
         if claim['until'] > now:
             return {'reason': 'gpu_lease_active'}
-        if claim['started'] >= claim['queue_deadline']:
+        if claim['started'] >= claim['queue_deadline'] and claim['attempt'] < GPU_ATTEMPTS:
             # Started only after its deadline and then failed: the driver ends the queue now.
             return {'gpu_queue_exhausted': True, 'gpu_role': role,
                     'gpu_queued_s': round(claim['queued_before'] + claim['started'] - claim['queued_at'], 3)}
@@ -207,7 +218,10 @@ def _gpu_wait(store, gpu_key, claim, now):
     if now >= claim['queue_deadline']:
         # The driver abandons the request: a formal stage fails the run, a shadow one is skipped.
         return {'gpu_queue_exhausted': True, 'gpu_role': role, 'gpu_queued_s': queued_s}
-    if store.generation(gpu_key + '/dispatch/' + claim['token']):
+    if (store.generation(gpu_key + '/dispatch/' + claim['token'])
+            or claim.get('dispatches', 1) >= GPU_DISPATCHES):
+        # With no receipt after every re-send, the driver would only wait too: let the
+        # queue limit, not recovery attempts, end it.
         # Queued in Modal: a redispatch would only queue again. Not a recovery attempt.
         return {'reason': 'gpu_queued', 'gpu_role': role, 'gpu_queued_s': queued_s,
                 'gpu_queue_remaining_s': round(claim['queue_deadline'] - now, 3)}
@@ -264,7 +278,11 @@ def write_gpu_queue_log(recovery, *, run_date, run_id, ops_execute, logger):
     queued = recovery.get('gpu_queued_s', 0)
     left = recovery.get('gpu_queue_remaining_s', 0)
     message = {
-        'gpu_queued': f"pipeline {run_date} GPU stage queued {queued:.0f}s, {left:.0f}s left before the run fails",
+        'gpu_queued': (f"pipeline {run_date} GPU stage queued {queued:.0f}s, {left:.0f}s left before the run fails"
+                       if not recovery.get('recovery_blocked') else
+                       f"pipeline {run_date} GPU stage queued {queued:.0f}s ({left:.0f}s to its limit) while "
+                       "recovery is blocked by a release change; at the limit the run stays open for manual "
+                       "handling"),
         'gpu_queue_exhausted': (f"pipeline {run_date} GPU stage queued {queued:.0f}s and reached the queue limit; "
                                 "unless the GPU started meanwhile, the driver abandons it and the run fails "
                                 "with pipeline_stage_gpu_queue_exhausted"),

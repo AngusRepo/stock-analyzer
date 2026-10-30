@@ -191,8 +191,39 @@ jobs:
           path: failures
       - name: Merge controller shards
         run: python ci/merge_shards.py failures "$CONTROLLER_SHARDS"
+      # A PR stacked on another PR's branch is gated against that branch, which hides what it
+      # inherits from it. main's cached lists (saved by this job on push) add a non-blocking
+      # "vs main" section; the key prefix accepts lists from other CI tooling or weeks.
+      - name: Main tip (stacked PR)
+        id: main
+        if: github.event_name == 'pull_request' && github.base_ref != 'main'
+        run: |
+          set -e
+          sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "key=$(bash ci/base_cache_key.sh . "$sha")" >> "$GITHUB_OUTPUT"
+          echo "prefix=ci-base-v2-$CONTROLLER_SHARDS-$sha-" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: main-cache
+        if: steps.main.outputs.sha != ''
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.main.outputs.key }}
+          restore-keys: ${{ steps.main.outputs.prefix }}
       - name: Compare head against base
-        run: python ci/compare_failures.py failures
+        env:
+          MAIN_SHA: ${{ steps.main.outputs.sha }}
+          MAIN_EXACT: ${{ steps.main-cache.outputs.cache-hit }}
+          MAIN_MATCHED: ${{ steps.main-cache.outputs.cache-matched-key }}
+        run: |
+          set -e
+          main=()
+          if [ -n "$MAIN_SHA" ]; then
+            label="${MAIN_SHA:0:8}"
+            [ "$MAIN_EXACT" = true ] || [ -z "$MAIN_MATCHED" ] || label="$label (lists from other CI tooling or week)"
+            main=("$RUNNER_TEMP/base-cache" "$label")
+          fi
+          python ci/compare_failures.py failures "${main[@]}"
       # main only, after a passing gate: keep the head lists as the base for later runs of
       # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
       - name: Pack base lists

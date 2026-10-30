@@ -163,6 +163,9 @@ def frozen_mode_b(dataset):
         if conf is None:
             if verdict == 'pass':
                 formal['contract_passed_without_confidence_rows'] += 1
+            # A newer revision without a confidence leaves no ML prediction, as it does in Paper.
+            if key not in cache or observed >= cache[key][0]:
+                cache[key] = (observed, None)
             continue
         if not isinstance(conf, (int, float)) or not math.isfinite(conf) or not 0 <= conf <= 1:
             raise ValueError('backtest_mode_b_confidence_invalid')

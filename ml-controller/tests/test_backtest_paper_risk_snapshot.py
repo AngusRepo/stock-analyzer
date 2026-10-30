@@ -224,6 +224,20 @@ def test_the_newest_revision_decides_even_when_it_is_blocked():
     reversed_ = signal_rows([True, True, True], [.6, .6, .6], families=[3., 1., 3.], stocks=[1, 1, 2])
     cache, _, _ = frozen_mode_b(dataset(reversed_))
     assert cache.get('2330', '2026-09-01') is None
+    no_conf = signal_rows([True, True, True], [.6, None, .6], stocks=[1, 1, 2],
+                          generated=['2026-09-01T10:00:00Z', '2026-09-01T13:00:00Z', '2026-09-01T13:00:00Z'])
+    cache, _, _ = frozen_mode_b(dataset(no_conf))
+    assert cache.get('2330', '2026-09-01') is None                   # the newest revision has no confidence
+
+
+def test_a_day_whose_every_candidate_is_blocked_is_not_a_prediction_day():
+    from services.backtest_snapshot_state import frozen_mode_b
+    days = ('2026-08-31', '2026-09-01', '2026-09-02')
+    rows = signal_rows([True, False], [.6, .7], dates=['2026-08-31', '2026-09-01'], stocks=[1, 2])
+    cache, _, _ = frozen_mode_b(dataset(rows, days=days))
+    assert cache._dates == {'2026-08-31'}
+    with pytest.raises(ValueError, match='frozen_predictions_empty'):
+        frozen_mode_b(dataset(signal_rows([False], [.6])))
 
 
 def test_the_replay_drops_candidates_paper_s_l4_promotion_would_not_qualify():

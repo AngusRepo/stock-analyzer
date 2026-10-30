@@ -214,15 +214,18 @@ def test_ready_history_replays_with_the_research_accounting_assumption(monkeypat
     with pytest.raises(ValueError, match='cash_rounding_missing'):
         engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
     data.research_accounting = dict(RESEARCH_ACCOUNTING_DEFAULTS)
-    booked = []
+    booked, cash_moves = [], []
     real_apply = engine._apply_daily_corporate
     def apply(account, *args, **kwargs):
+        before = account.cash
         real_apply(account, *args, **kwargs)
         booked.append(dict(getattr(account, 'corporate_receivables', {})))
+        cash_moves.append(account.cash - before)
     monkeypatch.setattr(engine, '_apply_daily_corporate', apply)
     result = engine.replay_period(data, days[0], days[-1], params, initial_capital=109000.)
     assert booked[2]['cash-ev']['cash_due'] == pytest.approx(123.45)  # 100 shares x 1.2345, exact accrual
     assert 'cash-ev' not in booked[3]  # paid on the payable session, at the exact accrued amount
+    assert cash_moves[3] == pytest.approx(123.45) and cash_moves[2] == 0
     assert [(a['action_id'], a['mode'], a['adjustment_twd']) for a in result.corporate_rounding_assumptions] == [
         ('cash-ev', 'exact_accrual', 0.0)]
     assert 'researchAccounting' not in params  # nothing can reach a KV push

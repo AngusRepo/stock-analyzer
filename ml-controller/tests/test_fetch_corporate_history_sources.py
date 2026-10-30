@@ -44,10 +44,12 @@ def out(tmp_path, monkeypatch):
     return tmp_path
 
 
-def chatty_get(calls, source=None):
+def chatty_get(calls, source=None, seen=None):
     def get(key):
         print('Daily usage: 1/5000', SECRET)  # SDK chatter, even a leaked value, stays out of the log
         calls.append(key)
+        if seen is not None:
+            seen[key] = seen['clock']()
         return (source or vendor)(key)
     return get
 
@@ -63,7 +65,9 @@ def run(out, *, token=lambda: 'id-token', get=None, role='vip', **kwargs):
 
 def test_fetch_seals_every_source_and_the_spec_compiles(out, capsys):
     from compile_corporate_history import compile_history
-    report, calls = run(out)
+    tick = clock()
+    seen, calls = {'clock': tick}, []
+    report, _ = run(out, get=chatty_get(calls, seen=seen), clock=tick)
     assert calls == [key for _, key, _, _ in fetcher.FINLAB_SOURCES] and len(calls) == 7
     assert report['finlab_calls'] == 7 and report['twse_calls'] == 1 and report['auth_mode'] == 'session_env'
     spec = json.loads((out / 'spec.json').read_text(encoding='utf-8'))
@@ -72,6 +76,7 @@ def test_fetch_seals_every_source_and_the_spec_compiles(out, capsys):
     assert spec['captured_at'] >= max(e['fetched_at'] for e in spec['sources'].values())
     # The fetch clock is taken before each request, never after the vendor answered.
     assert all(e['fetched_at'] < report['sources'][d]['returned_at'] for d, e in spec['sources'].items())
+    assert all(spec['sources'][d]['fetched_at'] < seen[key] for d, key, _, _ in fetcher.FINLAB_SOURCES)
     assert report['finlab_role'] == 'vip'
     frame, days, scoped, unscoped = compile_history(spec, base=out)
     assert days == DAYS and scoped == ['1101', '2330', '0056'] and unscoped == ['020000']
@@ -97,6 +102,10 @@ def test_compile_refuses_a_source_changed_after_the_fetch(out):
     spec = json.loads((out / 'spec.json').read_text(encoding='utf-8'))
     (out / 'universe.json').write_text(json.dumps(['2330']))
     with pytest.raises(ValueError, match='file_changed_since_fetch:universe'):
+        compile_history(spec, base=out)
+    spec['universe_sha256'] = None
+    (out / 'days.json').write_text(json.dumps(DAYS))
+    with pytest.raises(ValueError, match='file_changed_since_fetch:days'):
         compile_history(spec, base=out)
 
 
@@ -150,12 +159,46 @@ def test_a_crash_while_sealing_leaves_no_partial_output(out, monkeypatch):
     assert sorted(p.name for p in out.iterdir()) == ['days.json', 'universe.json']
 
 
+def test_the_real_sdk_is_wired_fresh_in_memory_and_never_logs_in(monkeypatch):
+    import types
+    record = {}
+    class CacheStorage:
+        pass
+    data = types.SimpleNamespace(CacheStorage=CacheStorage, get_role=lambda: 'vip',
+        set_storage=lambda storage: record.update(storage=storage),
+        get=lambda key, **kwargs: record.update(get=(key, kwargs)))
+    finlab = types.ModuleType('finlab'); finlab.data = data; finlab.login = lambda *a: pytest.fail('login')
+    auth = types.ModuleType('finlab.auth'); auth.get_id_token = lambda: 'id-token'
+    monkeypatch.setitem(sys.modules, 'finlab', finlab)
+    monkeypatch.setitem(sys.modules, 'finlab.data', data)
+    monkeypatch.setitem(sys.modules, 'finlab.auth', auth)
+    token, get, role = fetcher._sdk()
+    assert isinstance(record['storage'], CacheStorage) and token() == 'id-token' and role() == 'vip'
+    get('dividend_announcement')
+    assert record['get'] == ('dividend_announcement', {'force_download': True})
+    # A server-side session rejection makes the SDK call finlab.login(): stop, never loop or open a browser.
+    with pytest.raises(SystemExit, match='server rejected'):
+        finlab.login()
+
+
 def test_sealed_sources_are_never_overwritten(out):
     run(out)
     with pytest.raises(SystemExit, match='refusing to overwrite'):
         run(out)
     with pytest.raises(FileExistsError):
         fetcher._seal(out / 'spec.json', b'{}')
+
+
+def test_a_target_created_during_the_run_is_not_replaced(out, monkeypatch):
+    real = fetcher._seal
+    def seal(path, data):
+        real(path, data)
+        if path.name == 'report.json' or path.name == fetcher.REPORT_NAME:
+            (out / fetcher.SPEC_NAME).write_bytes(b'{"other": "writer"}')  # appears after the pre-check
+    monkeypatch.setattr(fetcher, '_seal', seal)
+    with pytest.raises(FileExistsError):
+        run(out)
+    assert (out / fetcher.SPEC_NAME).read_bytes() == b'{"other": "writer"}'
 
 
 def test_dry_run_lists_calls_without_network(out, monkeypatch, capsys):

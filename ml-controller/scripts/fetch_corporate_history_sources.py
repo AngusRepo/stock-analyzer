@@ -88,10 +88,19 @@ def _quiet():
         yield
 
 
+def _refuse_login(*_args, **_kwargs):
+    raise SystemExit('FinLab server rejected the env session: refresh FINLAB_REFRESH_TOKEN / FINLAB_SESSION_ID '
+                     '(no browser login, no stored credential fallback).')
+
+
 def _sdk():
     """Real FinLab callables: env-session token check, fresh download, role."""
+    import finlab
     from finlab import data
     from finlab.auth import get_id_token
+    # The SDK re-calls finlab.login() when the server rejects a session (and as its
+    # last token fallback); that would loop or open a browser. Stop instead.
+    finlab.login = _refuse_login
     data.set_storage(data.CacheStorage())  # in memory; FileStorage would cache on the system disk
     return get_id_token, (lambda key: data.get(key, force_download=True)), data.get_role
 

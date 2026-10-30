@@ -2618,20 +2618,29 @@ async function finLabCanonicalCutoffTerminal(
 /**
  * C28-25: a terminal late-lane failure (cutoff, or a definite resend failure) writes one ops error and one
  * console.warn per date and reason. The key is claimed before the write so a failing insert is not retried
- * every tick; a KV or ops binding failure still warns. Never throws.
+ * every tick. When the KV claim itself fails the row is still written, marked dedup unavailable (so a KV
+ * outage logs once per call until KV recovers). Never throws.
  */
 async function logFinLabLateLaneFailureOnce(
   env: Bindings, twDate: string, kind: 'cutoff' | 'resend_failed', summary: string, runId: string,
 ): Promise<void> {
+  let dedupError: string | null = null
   try {
     const loggedKey = `finlab:late-lane-${kind}-logged:${twDate}`
     if (await env.KV.get(loggedKey)) return
     await env.KV.put(loggedKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
-    console.warn(`[FinLab] ${summary}`)
-    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', 'evening-chain', summary,
-      { run_date: twDate, run_id: runId, reason: `late_lane_${kind}` })
   } catch (error) {
-    console.warn(`[FinLab] ${summary}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
+    dedupError = error instanceof Error ? error.message : String(error)
+  }
+  const logged = dedupError == null ? summary : `${summary}; dedup unavailable: ${dedupError}`
+  console.warn(`[FinLab] ${logged}`)
+  try {
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', 'evening-chain', logged, {
+      run_date: twDate, run_id: runId, reason: `late_lane_${kind}`,
+      ...(dedupError == null ? {} : { dedup_unavailable: dedupError }),
+    })
+  } catch (error) {
+    console.warn(`[FinLab] ${logged}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

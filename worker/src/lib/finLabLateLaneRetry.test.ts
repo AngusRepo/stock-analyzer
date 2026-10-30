@@ -408,24 +408,43 @@ test('C28-25: a failing ops log or KV never fails the watchdog and still warns',
   assert.equal(f.log('evening-chain').status, 'error')
   assert.equal(f.lateLaneLogs().length, 0)
   assert.ok(f.warns.includes(`[FinLab] ${failed}`))
-  // A KV failure on the dedup claim is swallowed as well.
+  // The dedup claim failing (read or write) still writes the ops row, marked dedup unavailable: a KV outage
+  // logs on every call (accepted trade-off); once KV recovers the date and reason log once again.
   const g = fixture(t, { webhook: false })
+  const kv = { down: '' as '' | 'get' | 'put' }
   const get = g.env.KV.get.bind(g.env.KV)
+  const put = g.env.KV.put.bind(g.env.KV)
   ;(g.env.KV as any).get = async (key: string, type?: string) => {
-    if (key.startsWith('finlab:late-lane-')) throw new Error('KV unavailable')
+    if (kv.down === 'get' && key.startsWith('finlab:late-lane-')) throw new Error('KV get unavailable')
     return get(key, type as any)
   }
-  g.notReady(4, '22:45')
-  assert.equal(await g.watchdogAt('23:00'), failed)
-  assert.equal(g.lateLaneLogs().length, 0)
-  assert.ok(g.warns.some((line) => line.startsWith(`[FinLab] ${failed}; ops log failed: KV unavailable`)))
+  ;(g.env.KV as any).put = async (key: string, value: string, opts?: any) => {
+    if (kv.down === 'put' && key.startsWith('finlab:late-lane-')) throw new Error('KV put unavailable')
+    return put(key, value, opts)
+  }
+  const cutoffAgain = async (clock: string) => { g.notReady(4, '22:45'); assert.equal(await g.watchdogAt(clock), failed) }
+  kv.down = 'get'
+  await cutoffAgain('23:00')
+  assert.equal(g.log('evening-chain').status, 'error')
+  assert.deepEqual(g.lateLaneLogs(), [{ level: 'error', cron: 'evening-chain', message: `${failed}; dedup unavailable: KV get unavailable`,
+    meta: { run_date: date, run_id: runId, reason: 'late_lane_cutoff', dedup_unavailable: 'KV get unavailable' } }])
+  assert.ok(g.warns.includes(`[FinLab] ${failed}; dedup unavailable: KV get unavailable`))
+  kv.down = 'put'
+  await cutoffAgain('23:10')
+  assert.deepEqual(g.lateLaneLogs().map((entry) => entry.meta.dedup_unavailable), ['KV get unavailable', 'KV put unavailable'])
+  kv.down = ''
+  await cutoffAgain('23:20')
+  await cutoffAgain('23:30')
+  assert.equal(g.lateLaneLogs().length, 3, 'after recovery the date and reason log once')
+  assert.deepEqual(g.lateLaneLogs()[2], { level: 'error', cron: 'evening-chain', message: failed,
+    meta: { run_date: date, run_id: runId, reason: 'late_lane_cutoff' } })
   // An ops binding that cannot be resolved (it throws, unlike a failed insert) is swallowed too.
   // It is dropped only once the dedup key is claimed, so the watchdog's own ops reads are unaffected.
   const h = fixture(t, { webhook: false })
-  const put = h.env.KV.put.bind(h.env.KV)
+  const hPut = h.env.KV.put.bind(h.env.KV)
   ;(h.env.KV as any).put = async (key: string, value: string, opts?: any) => {
     if (key.startsWith('finlab:late-lane-')) Object.assign(h.env as any, { OPS_DB: undefined, MULTI_D1_ACTIVE_DOMAINS: 'ops' })
-    return put(key, value, opts)
+    return hPut(key, value, opts)
   }
   h.notReady(4, '22:45')
   assert.equal(await h.watchdogAt('23:00'), failed)

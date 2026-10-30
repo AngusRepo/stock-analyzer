@@ -485,7 +485,8 @@ export function screenerChipFreshness(chips: readonly CanonicalScreenerChip[], t
 
 /**
  * One ops system_logs warn and one console.warn per dedup key. The key is claimed before the write so a
- * failing insert does not re-log every tick; a KV or ops binding failure still warns. Never throws.
+ * failing insert does not re-log every tick. When the KV claim itself fails the row is still written,
+ * marked dedup unavailable (so a KV outage logs once per tick until KV recovers). Never throws.
  */
 export async function logScreenerAlertOnce(
   env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>,
@@ -494,14 +495,21 @@ export async function logScreenerAlertOnce(
   message: string,
   meta: Record<string, unknown>,
 ): Promise<boolean> {
+  let dedupError: string | null = null
   try {
     if (await env.KV.get(dedupKey)) return false
     await env.KV.put(dedupKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
-    console.warn(`[${cron}] ${message}`)
-    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'warn', cron, message, meta)
+  } catch (error) {
+    dedupError = error instanceof Error ? error.message : String(error)
+  }
+  const logged = dedupError == null ? message : `${message}; dedup unavailable: ${dedupError}`
+  console.warn(`[${cron}] ${logged}`)
+  try {
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'warn', cron, logged,
+      dedupError == null ? meta : { ...meta, dedup_unavailable: dedupError })
     return true
   } catch (error) {
-    console.warn(`[${cron}] ${message}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
+    console.warn(`[${cron}] ${logged}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
     return false
   }
 }

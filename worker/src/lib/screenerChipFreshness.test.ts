@@ -91,17 +91,40 @@ test('C28-18: a failing ops log or KV returns false without throwing and still w
   assert.equal(await alertScreenerChipStale(failingDb.env, '2026-10-28', stale), true)
   assert.equal(failingDb.syslogs.length, 0)
   assert.equal(failingDb.warns.filter((line) => line.startsWith('[screener-chip-stale]')).length, 1)
+  // The dedup claim failing (read or write) still writes the ops row, marked dedup unavailable: a KV outage
+  // logs on every attempt (accepted trade-off); once KV recovers the date logs once again.
   const failingKv = alertEnv(t, { webhook: false })
-  failingKv.env.KV.get = async () => { throw new Error('KV unavailable') }
+  const { get, put } = failingKv.env.KV
+  failingKv.env.KV.get = async () => { throw new Error('KV get unavailable') }
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), true)
+  assert.equal(failingKv.syslogs.length, 1)
+  assert.match(failingKv.syslogs[0].message, /^screener chip data stale for 2026-10-28: .*; dedup unavailable: KV get unavailable$/)
+  assert.equal(failingKv.syslogs[0].meta.dedup_unavailable, 'KV get unavailable')
+  assert.ok(failingKv.warns.some((line) => /^\[screener-chip-stale\] .*; dedup unavailable: KV get unavailable$/.test(line)))
+  failingKv.env.KV.get = get
+  failingKv.env.KV.put = async () => { throw new Error('KV put unavailable') }
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), true)
+  assert.equal(failingKv.syslogs[1].meta.dedup_unavailable, 'KV put unavailable')
+  assert.match(failingKv.syslogs[1].message, /; dedup unavailable: KV put unavailable$/)
+  failingKv.env.KV.put = put
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), true)
   assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), false)
-  assert.equal(failingKv.syslogs.length, 0)
-  assert.ok(failingKv.warns.some((line) => /^\[screener-chip-stale\] .*; ops log failed: KV unavailable$/.test(line)))
+  assert.equal(failingKv.syslogs.length, 3, 'after recovery the date logs once')
+  assert.equal(failingKv.syslogs[2].meta.dedup_unavailable, undefined)
   // An ops binding that cannot be resolved throws (unlike a failed insert) and is swallowed too.
   const missingOps = alertEnv(t, { webhook: false })
   missingOps.env.MULTI_D1_ACTIVE_DOMAINS = 'ops'
   assert.equal(await alertScreenerChipStale(missingOps.env, '2026-10-28', stale), false)
   assert.equal(missingOps.syslogs.length, 0)
   assert.ok(missingOps.warns.some((line) => /^\[screener-chip-stale\] .*; ops log failed: data_domain_binding_missing:ops$/.test(line)))
+  // KV claim and ops binding both failing: no row, no throw, one warn carrying both markers.
+  const bothDown = alertEnv(t, { webhook: false })
+  bothDown.env.MULTI_D1_ACTIVE_DOMAINS = 'ops'
+  bothDown.env.KV.get = async () => { throw new Error('KV get unavailable') }
+  assert.equal(await alertScreenerChipStale(bothDown.env, '2026-10-28', stale), false)
+  assert.equal(bothDown.syslogs.length, 0)
+  assert.ok(bothDown.warns.some((line) =>
+    /^\[screener-chip-stale\] .*; dedup unavailable: KV get unavailable; ops log failed: data_domain_binding_missing:ops$/.test(line)))
 })
 
 test('C28-18: freshness is observability only and never reaches chip scoring', () => {

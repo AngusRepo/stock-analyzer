@@ -122,24 +122,44 @@ test('NEW-86: a failing ops log or KV never fails the watchdog', async (t) => {
   assert.equal(await f.watchdogAt('23:30'), `status=error screener_run_missing:${date} evening_chain=error`)
   assert.equal(f.missingLogs().length, 0)
   assert.ok(f.warns.includes(`[screener-v2-missing] ${missingMessage('error')}`))
+  // The dedup claim failing (read or write) still writes the ops row, marked dedup unavailable: a KV outage
+  // logs on every tick (accepted trade-off); once KV recovers the date logs once again.
   const g = fixture(t, { webhook: false })
   g.chain('error')
+  const kv = { down: '' as '' | 'get' | 'put' }
   const get = g.env.KV.get.bind(g.env.KV)
+  const put = g.env.KV.put.bind(g.env.KV)
   ;(g.env.KV as any).get = async (key: string, type?: string) => {
-    if (key.startsWith('cron:alert:screener-v2-missing:')) throw new Error('KV unavailable')
+    if (kv.down === 'get' && key.startsWith('cron:alert:screener-v2-missing:')) throw new Error('KV get unavailable')
     return get(key, type as any)
   }
-  assert.equal(await g.watchdogAt('23:30'), `status=error screener_run_missing:${date} evening_chain=error`)
-  assert.equal(g.missingLogs().length, 0)
-  assert.ok(g.warns.some((line) => line.startsWith(`[screener-v2-missing] ${missingMessage('error')}; ops log failed: KV unavailable`)))
+  ;(g.env.KV as any).put = async (key: string, value: string, opts?: any) => {
+    if (kv.down === 'put' && key.startsWith('cron:alert:screener-v2-missing:')) throw new Error('KV put unavailable')
+    return put(key, value, opts)
+  }
+  const summary = `status=error screener_run_missing:${date} evening_chain=error`
+  kv.down = 'get'
+  assert.equal(await g.watchdogAt('23:30'), summary)
+  assert.deepEqual(g.missingLogs(), [{ level: 'warn', cron: 'screener-v2-missing',
+    message: `${missingMessage('error')}; dedup unavailable: KV get unavailable`,
+    meta: { run_date: date, evening_chain: 'error', dedup_unavailable: 'KV get unavailable' } }])
+  assert.ok(g.warns.includes(`[screener-v2-missing] ${missingMessage('error')}; dedup unavailable: KV get unavailable`))
+  kv.down = 'put'
+  assert.equal(await g.watchdogAt('23:40'), summary)
+  assert.deepEqual(g.missingLogs().map((entry) => entry.meta.dedup_unavailable), ['KV get unavailable', 'KV put unavailable'])
+  kv.down = ''
+  assert.equal(await g.watchdogAt('23:50'), summary)
+  assert.equal(await g.watchdogAt('00:10', '2026-10-23', date), summary)
+  assert.equal(g.missingLogs().length, 3, 'after recovery the date logs once')
+  assert.deepEqual(g.missingLogs()[2].meta, { run_date: date, evening_chain: 'error' })
   // An ops binding that cannot be resolved (it throws, unlike a failed insert) is swallowed too.
   // It is dropped only once the dedup key is claimed, so the watchdog's own ops reads are unaffected.
   const h = fixture(t, { webhook: false })
   h.chain('error')
-  const put = h.env.KV.put.bind(h.env.KV)
+  const hPut = h.env.KV.put.bind(h.env.KV)
   ;(h.env.KV as any).put = async (key: string, value: string, opts?: any) => {
     if (key.startsWith('cron:alert:screener-v2-missing:')) Object.assign(h.env as any, { OPS_DB: undefined, MULTI_D1_ACTIVE_DOMAINS: 'ops' })
-    return put(key, value, opts)
+    return hPut(key, value, opts)
   }
   assert.equal(await h.watchdogAt('23:30'), `status=error screener_run_missing:${date} evening_chain=error`)
   assert.equal(h.missingLogs().length, 0)

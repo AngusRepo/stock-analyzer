@@ -35,6 +35,8 @@ from services.live_paper_reader import PaperDenominatorNotReady
 SCHEMA_VERSION = "live-intake-conversion-v1"
 TW = ZoneInfo("Asia/Taipei")
 IDEMPOTENCY_PREFIX = "live-intake:"
+# Every pass summary carries these lists, empty when nothing happened.
+SUMMARY_LISTS = ("recorded", "relayed", "blocked", "unknown", "deferred", "waiting", "warnings")
 # Any of these means the broker may hold the order, so the intake row can only be RELAYED.
 BROKER_REACHED_LEG_STATES = {"SUBMITTING", "ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED", "CANCELLED", "UNKNOWN"}
 
@@ -417,8 +419,7 @@ def run_live_intake(
     """
     now_tw = now.astimezone(TW)
     today = now_tw.date().isoformat()
-    summary: dict[str, Any] = {"recorded": [], "relayed": [], "blocked": [], "unknown": [], "deferred": [],
-                               "waiting": [], "warnings": []}
+    summary: dict[str, Any] = {key: [] for key in SUMMARY_LISTS}
 
     def emit(event: str, detail: Mapping[str, Any]) -> None:
         summary["warnings"].append({"event": event, **detail})

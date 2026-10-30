@@ -129,6 +129,35 @@ def test_a_started_gpu_lease_runs_from_execution_and_counts_no_queue_time():
     assert out['reason'] == 'same_request_resumed' and 'gpu_queue_exhausted' not in out
 
 
+def test_an_abandoned_claim_still_gets_a_driver_to_close_the_run_and_deploys_keep_the_note():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    driver = _driver(ref, stage_store, now, [])
+    with pytest.raises(stages.Suspended) as waiting: driver()
+    journal = stages.Journal(stage_store, ref, clock=lambda: now[0])
+    journal.dispatched(waiting.value.dispatch, 'fc-gpu')
+    now[0] = 14400
+    assert recover(source_sha='c'*40) == {'reason': 'source_changed', 'recovery_blocked': True,
+                                          'gpu_queue_exhausted': True, 'gpu_queued_s': 14400}
+    with pytest.raises(stages.GpuStageUnavailable): driver()  # The driver abandoned the claim.
+    out = recover()
+    assert out['reason'] == 'same_request_resumed' and 'gpu_queue_exhausted' not in out and len(queue) == 1
+
+
+def test_recovery_exhaustion_fences_a_queued_gpu_request_from_running_later():
+    ref, store, now, queue, recover = fixture()
+    stage_store = StageStore(store)
+    driver = _driver(ref, stage_store, now, [])
+    with pytest.raises(stages.Suspended) as waiting: driver()  # Every spawn ack is lost.
+    for attempt in (1, 2, 3):
+        now[0] += 601
+        assert recover()['attempt'] == attempt
+    now[0] += 601
+    assert recover()['error'] == 'pipeline_modal_recovery_attempts_exhausted'
+    assert stages.run_gpu_stage(stage_store, waiting.value.dispatch, predict=lambda _: pytest.fail('ran'),
+        resume=lambda _: pytest.fail('resumed'), clock=lambda: now[0]) == {'status': 'abandoned'}
+
+
 def test_claims_written_before_the_queue_split_keep_the_old_lease_rule():
     ref, store, now, queue, recover = fixture()
     stage_store = StageStore(store)

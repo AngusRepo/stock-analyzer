@@ -110,12 +110,14 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     progress, _ = store.read(root + '/progress')
     result_generation = 0
     queue_note = {}
+    gpu_claim = None
     if progress and progress.get('gpu'):
         gpu = progress['gpu']
         if not gpu.startswith(root[len(PREFIX):] + '/gpu/'):
             raise ValueError('pipeline_recovery_gpu_identity_mismatch')
-        claim, _ = store.read(PREFIX + gpu + '/claim')
+        claim, claim_generation = store.read(PREFIX + gpu + '/claim')
         if claim:
+            gpu_claim = (claim, claim_generation, PREFIX + gpu)
             result_generation = store.generation(PREFIX + gpu + '/result/' + claim['token'])
             if not result_generation:
                 waiting = _gpu_wait(store, PREFIX + gpu, claim, clock())
@@ -125,7 +127,7 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     # Release drift prevents redispatch on this runtime; it does not prove
     # that an already-dispatched immutable request failed. Preserve its callback.
     if source_sha != reference.get('expected_source_sha') or not source_sha:
-        return {'reason': 'source_changed', 'recovery_blocked': True}
+        return {'reason': 'source_changed', 'recovery_blocked': True, **queue_note}
     if clock() - registered['created_at'] < 600:
         return {'reason': 'initial_dispatch_grace'}
     recovery, generation = store.read(key + '/dispatch')
@@ -136,6 +138,10 @@ def recover_request(*, run_date, run_id, callback_url, callback_token, source_sh
     marker = digest({'progress': progress, 'gpu_result_generation': result_generation})
     attempt = recovery['attempt'] + 1 if recovery and recovery['marker'] == marker else 1
     if attempt > 3:
+        if (gpu_claim and not result_generation and 'started' not in gpu_claim[0]
+                and gpu_claim[0].get('v') == GPU_CLAIM_VERSION):
+            # The run fails now: a queued GPU request that still arrives must not run.
+            store.cas(gpu_claim[2] + '/claim', {**gpu_claim[0], 'abandoned': True}, gpu_claim[1])
         return {'reason': 'attempts_exhausted', 'error': 'pipeline_modal_recovery_attempts_exhausted'}
     if not callback_url or not callback_token:
         raise ValueError('pipeline_recovery_callback_credentials_missing')
@@ -183,8 +189,9 @@ def write_gpu_queue_log(recovery, *, run_date, run_id, ops_execute, logger):
                    f"{recovery['gpu_queue_remaining_s']:.0f}s left before the run fails")
     elif recovery.get('gpu_queue_exhausted'):
         level = 'error'
-        message = (f"pipeline {run_date} GPU stage queued {recovery['gpu_queued_s']:.0f}s and hit the "
-                   "queue limit; the run closes with pipeline_stage_gpu_queue_exhausted")
+        message = (f"pipeline {run_date} GPU stage queued {recovery['gpu_queued_s']:.0f}s and reached the "
+                   "queue limit; unless the GPU started meanwhile, the driver abandons it and the run "
+                   "fails with pipeline_stage_gpu_queue_exhausted")
     else:
         return None
     meta = {'run_date': run_date, 'run_id': run_id,

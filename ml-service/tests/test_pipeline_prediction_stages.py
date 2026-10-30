@@ -885,3 +885,44 @@ def test_a_takeover_whose_lease_renewal_loses_to_an_abandon_does_not_run():
     store.armed = True
     assert run_gpu_stage(store, dispatch, predict=lambda _: pytest.fail('ran after abandon'),
                          resume=pytest.fail, clock=lambda: 700) == {'status': 'abandoned'}
+
+
+def test_a_takeover_whose_lease_renewal_finds_a_newer_token_does_not_run():
+    class Racing(Store):
+        armed = False
+        def cas(self, key, value, generation):
+            if self.armed and key.endswith('/claim'):
+                self.armed = False
+                current, version = self.read(key)
+                super().cas(key, {**current, 'token': 'f' * 32}, version)  # A newer attempt took over.
+            return super().cas(key, value, generation)
+    store = Racing()
+    journal = Journal(store, reference(), clock=lambda: 0)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    dispatch = pending.value.dispatch
+    key = journal.root + '/gpu/' + dispatch['stage'] + '/claim'
+    claim, generation = store.read(key)
+    store.cas(key, {**claim, 'started': 100, 'until': 100 + GPU_LEASE_SECONDS, 'attempt': 1}, generation)
+    store.armed = True
+    assert run_gpu_stage(store, dispatch, predict=lambda _: pytest.fail('ran for a stale token'),
+                         resume=pytest.fail, clock=lambda: 700) == {'status': 'superseded'}
+
+
+def test_the_shadow_flag_never_enters_the_gpu_input_or_its_stage_digest():
+    import ast
+    from pathlib import Path
+    import modal_app
+    tree = ast.parse(Path(modal_app.__file__).read_text())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == '_timexer_predict')
+    assert [a.arg for a in fn.args.kwonlyargs] == ['shadow'] and fn.args.kwarg.arg == 'kwargs'
+    def target(node):  # gpu_input = ... or gpu_input[...] = ...
+        return isinstance(node, ast.Name) and node.id == 'gpu_input' or (
+            isinstance(node, ast.Subscript) and getattr(node.value, 'id', '') == 'gpu_input')
+    writes = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and any(target(t) for t in n.targets)]
+    assert len(writes) == 2
+    assert not any(isinstance(n, ast.Name) and n.id == 'shadow' or isinstance(n, ast.Constant) and n.value == 'shadow'
+                   for w in writes for n in ast.walk(w))
+    gpu_calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'gpu']
+    assert len(gpu_calls) == 1 and getattr(gpu_calls[0].args[0], 'id', '') == 'gpu_input'
+    assert [k.arg for k in gpu_calls[0].keywords] == ['shadow']

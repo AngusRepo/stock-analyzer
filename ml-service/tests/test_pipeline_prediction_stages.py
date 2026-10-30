@@ -1,6 +1,7 @@
 from copy import deepcopy
 import pytest
-from app.pipeline_prediction_stages import Journal, Suspended, run_gpu_stage, namespace
+from app.pipeline_prediction_stages import (GPU_LEASE_SECONDS, GpuStageUnavailable, Journal, Suspended,
+    namespace, run_gpu_stage)
 
 
 class Store:
@@ -60,30 +61,56 @@ def test_suspend_resume_preserves_cpu_results_and_does_not_wait_or_repeat_gpu():
     assert Journal(store, reference(), clock=lambda: now[0]).elapsed() == 125
 
 
-def test_lost_dispatch_ack_is_bounded_and_late_attempt_cannot_replace_current():
+def test_lost_dispatch_ack_resends_the_same_token_bounded_and_runs_once():
     store, now = Store(), [0.]
     journal = Journal(store, reference(), clock=lambda: now[0])
     with pytest.raises(Suspended) as first:
         journal.gpu({'x': 1})
     with pytest.raises(Suspended) as wait:
         journal.gpu({'x': 1})
-    assert wait.value.dispatch is None
-    now[0] = 1051
-    with pytest.raises(Suspended) as second:
-        journal.gpu({'x': 1})
+    assert wait.value.dispatch is None  # Inside the receipt grace.
+    resent = []
+    for _ in range(4):
+        now[0] += 601
+        with pytest.raises(Suspended) as again:
+            journal.gpu({'x': 1})
+        resent.append(again.value.dispatch)
+    assert [d and d['token'] for d in resent] == [first.value.dispatch['token']] * 2 + [None, None]
     calls = []
-    assert run_gpu_stage(store, first.value.dispatch, predict=calls.append,
-                         resume=calls.append, clock=lambda: now[0])['status'] == 'superseded'
-    assert calls == []
-    run_gpu_stage(store, second.value.dispatch, predict=lambda p: {'result': 2},
-                  resume=calls.append, clock=lambda: now[0])
-    assert journal.gpu({'x': 1}) == {'result': 2}
-    # Independent input gets its own bounded attempt counter.
-    for i in range(3):
-        with pytest.raises(Suspended):
+    assert run_gpu_stage(store, first.value.dispatch, predict=lambda p: calls.append(p) or {'result': 2},
+                         resume=calls.append, clock=lambda: now[0])['status'] == 'resumed'
+    assert run_gpu_stage(store, resent[0], predict=lambda _: pytest.fail('twice'),
+                         resume=calls.append, clock=lambda: now[0])['status'] == 'resumed'
+    assert journal.gpu({'x': 1}) == {'result': 2} and calls[0] == {'x': 1} and len(calls) == 3
+
+
+def test_a_receipt_stops_resends_and_only_executions_count_as_attempts():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    tokens = []
+    for attempt in range(1, 4):
+        with pytest.raises(Suspended) as pending:
             journal.gpu({'x': 2})
-        now[0] += 1051
-    with pytest.raises(RuntimeError, match='attempts_exhausted'):
+        dispatch = pending.value.dispatch
+        journal.dispatched(dispatch, 'fc-%d' % attempt)
+        tokens.append(dispatch['token'])
+        now[0] += 3000  # Queued long past the lease: still the same request.
+        with pytest.raises(Suspended) as queued:
+            journal.gpu({'x': 2})
+        assert queued.value.dispatch is None
+        def crash(_):
+            raise SystemExit('container killed')
+        with pytest.raises(SystemExit):
+            run_gpu_stage(store, dispatch, predict=crash, resume=pytest.fail, clock=lambda: now[0])
+        claim = store.read(journal.root + '/gpu/' + dispatch['stage'] + '/claim')[0]
+        assert claim['attempt'] == attempt and claim['until'] == now[0] + GPU_LEASE_SECONDS
+        now[0] += GPU_LEASE_SECONDS - 1
+        with pytest.raises(Suspended) as running:
+            journal.gpu({'x': 2})
+        assert running.value.dispatch is None
+        now[0] += 1
+    assert len(set(tokens)) == 3
+    with pytest.raises(GpuStageUnavailable, match='attempts_exhausted'):
         journal.gpu({'x': 2})
 
 
@@ -234,10 +261,13 @@ def test_gpu_queued_past_its_lease_renews_it_and_runs_once():
 def test_newer_cpu_attempt_supersedes_an_expired_gpu_container():
     store=Store()
     with pytest.raises(Suspended) as first:Journal(store,reference(),clock=lambda:0).gpu({'x':1})
-    with pytest.raises(Suspended) as second:Journal(store,reference(),clock=lambda:1051).gpu({'x':1})
+    with pytest.raises(SystemExit):
+        run_gpu_stage(store,first.value.dispatch,predict=lambda _:(_ for _ in ()).throw(SystemExit()),
+            resume=pytest.fail,clock=lambda:10)
+    with pytest.raises(Suspended) as second:Journal(store,reference(),clock=lambda:10+GPU_LEASE_SECONDS).gpu({'x':1})
     assert second.value.dispatch['token']!=first.value.dispatch['token']
     assert run_gpu_stage(store,first.value.dispatch,predict=lambda _:pytest.fail('stale'),
-        resume=lambda _:pytest.fail('stale'),clock=lambda:1100)=={'status':'superseded'}
+        resume=lambda _:pytest.fail('stale'),clock=lambda:2000)=={'status':'superseded'}
 
 def test_actual_cpu_entrypoint_does_not_send_terminal_error_for_lost_gpu_ack(monkeypatch):
     from types import SimpleNamespace
@@ -258,3 +288,159 @@ def test_actual_cpu_entrypoint_does_not_send_terminal_error_for_lost_gpu_ack(mon
         lambda *_:pytest.fail('uncertain dispatch is not terminal failure'))
     assert modal_app.pipeline_prediction_bundle.local(reference())['status']=='waiting_gpu'
     assert any('/gpu/' in key and key.endswith('/claim') for key in store.rows)
+
+
+def _claim(store, journal, dispatch):
+    return store.read(journal.root + '/gpu/' + dispatch['stage'] + '/claim')[0]
+
+
+def test_1029_replay_a_two_hour_gpu_queue_reuses_one_request_and_delivers():
+    # 10/29: spawn 00:48, watchdog resumes every ~20 min, L4 granted 2h07m later.
+    store, now, spawned, resumed = Store(), [0.], [], []
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    spawned.append(pending.value.dispatch)
+    journal.dispatched(pending.value.dispatch, 'fc-1')
+    for tick in (1380, 2580, 3780, 4980, 6180, 7380):
+        now[0] = tick
+        with pytest.raises(Suspended) as waiting:
+            Journal(store, reference(), clock=lambda: now[0]).gpu({'x': 1})
+        assert waiting.value.dispatch is None
+    claim = _claim(store, journal, spawned[0])
+    assert claim['attempt'] == 0 and claim['tokens'] == [spawned[0]['token']] and 'started' not in claim
+    now[0] = 7661
+    assert run_gpu_stage(store, spawned[0], predict=lambda p: {'rows': [p['x']]},
+                         resume=resumed.append, clock=lambda: now[0])['status'] == 'resumed'
+    now[0] = 7840
+    assert Journal(store, reference(), clock=lambda: now[0]).gpu({'x': 1}) == {'rows': [1]}
+    assert len(spawned) == 1 and resumed == [reference()]
+
+
+def test_queue_limit_abandons_cancels_and_never_seals_the_stage(monkeypatch):
+    monkeypatch.setenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', '7200')
+    store, now, cancelled = Store(), [0.], []
+    journal = Journal(store, reference(), clock=lambda: now[0], cancel=cancelled.append)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    dispatch = pending.value.dispatch
+    journal.dispatched(dispatch, 'fc-1')
+    now[0] = 7199
+    with pytest.raises(Suspended):
+        journal.gpu({'x': 1})
+    now[0] = 7200
+    def stage():
+        try:
+            return journal.gpu({'x': 1})
+        except GpuStageUnavailable as exc:
+            return {'error': str(exc), 'results': []}
+    assert journal.cpu('ns', 'timexer', stage) == {'error': 'pipeline_stage_gpu_queue_exhausted', 'results': []}
+    assert cancelled == ['fc-1'] and _claim(store, journal, dispatch)['abandoned'] is True
+    assert not any('/cpu/' in key for key in store.rows)
+    # The run is not revived: a late container does not run, and a resume fails the same way.
+    assert run_gpu_stage(store, dispatch, predict=lambda _: pytest.fail('ran after abandon'),
+                         resume=lambda _: pytest.fail('resumed'), clock=lambda: 9000) == {'status': 'abandoned'}
+    with pytest.raises(GpuStageUnavailable, match='queue_exhausted'):
+        journal.gpu({'x': 1})
+    assert cancelled == ['fc-1']
+
+
+def test_a_failed_cancel_does_not_change_the_outcome():
+    store, now = Store(), [0.]
+    def cancel(_):
+        raise OSError('modal down')
+    journal = Journal(store, reference(), clock=lambda: now[0], cancel=cancel)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    journal.dispatched(pending.value.dispatch, 'fc-1')
+    now[0] = 4 * 3600
+    with pytest.raises(GpuStageUnavailable, match='queue_exhausted'):
+        journal.gpu({'x': 1})
+
+
+def test_a_container_that_starts_first_wins_the_race_with_abandon():
+    class Racing(Store):
+        dispatch = None
+        def cas(self, key, value, generation):
+            if value.get('abandoned') and self.dispatch is not None:
+                dispatch, self.dispatch = self.dispatch, None
+                run_gpu_stage(self, dispatch, predict=lambda _: {'won': True}, resume=lambda _: None,
+                              clock=lambda: 4 * 3600)
+            return super().cas(key, value, generation)
+    store = Racing()
+    journal = Journal(store, reference(), clock=lambda: 4 * 3600)
+    with pytest.raises(Suspended) as pending:
+        Journal(store, reference(), clock=lambda: 0).gpu({'x': 1})
+    store.dispatch = pending.value.dispatch
+    assert journal.gpu({'x': 1}) == {'won': True}
+    assert 'abandoned' not in _claim(store, journal, pending.value.dispatch)
+
+
+def test_a_valid_result_of_any_token_wins_over_exhaustion_and_unsealed_stage_recovers():
+    store, now = Store(), [0.]
+    journal = Journal(store, reference(), clock=lambda: now[0])
+    with pytest.raises(Suspended) as first:
+        journal.gpu({'x': 1})
+    def held(_):
+        raise SystemExit('lease lapses while still running')
+    with pytest.raises(SystemExit):
+        run_gpu_stage(store, first.value.dispatch, predict=held, resume=pytest.fail, clock=lambda: 10)
+    now[0] = 10 + GPU_LEASE_SECONDS
+    with pytest.raises(Suspended) as second:
+        journal.gpu({'x': 1})
+    journal.dispatched(second.value.dispatch, 'fc-2')
+    # The first container's result lands after the second token was issued.
+    key = journal.root + '/gpu/' + first.value.dispatch['stage'] + '/result/' + first.value.dispatch['token']
+    store.put(key, {'input_checksum': first.value.dispatch['stage'], 'value': {'late': True}})
+    now[0] += 4 * 3600
+    assert journal.gpu({'x': 1}) == {'late': True}
+    assert _claim(store, journal, second.value.dispatch)['abandoned'] is True
+
+
+def test_a_terminal_run_never_starts_the_gpu():
+    store = Store()
+    journal = Journal(store, reference(), clock=lambda: 0)
+    with pytest.raises(Suspended) as pending:
+        journal.gpu({'x': 1})
+    store.put(journal.root + '/terminal', {'status': 'error_callback_accepted'})
+    assert run_gpu_stage(store, pending.value.dispatch, predict=lambda _: pytest.fail('ran'),
+                         resume=lambda _: pytest.fail('resumed'), clock=lambda: 9) == {'status': 'terminal'}
+    assert 'started' not in _claim(store, journal, pending.value.dispatch)
+
+
+def test_queue_limit_env_override(monkeypatch):
+    from app import pipeline_prediction_stages as stages
+    monkeypatch.delenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', raising=False)
+    assert stages.queue_max_seconds() == 14400
+    monkeypatch.setenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', '600')
+    assert stages.queue_max_seconds() == 600
+    for bad in ('0', '-5', 'four hours'):
+        monkeypatch.setenv('PIPELINE_GPU_QUEUE_MAX_SECONDS', bad)
+        with pytest.raises(ValueError, match='queue_max_seconds_invalid'):
+            stages.queue_max_seconds()
+
+
+def test_actual_cpu_entrypoint_writes_a_receipt_and_cancels_through_modal(monkeypatch):
+    from types import SimpleNamespace
+    from google.cloud import storage
+    import modal
+    import modal_app
+    from app import pipeline_prediction_stages as stages
+    store, cancelled = Store(), []
+    monkeypatch.setattr(modal_app, '_setup_env', lambda: None)
+    monkeypatch.setattr(modal_app, '_get_gcs_bucket_name', lambda: 'fixture')
+    monkeypatch.setattr(storage, 'Client', lambda: SimpleNamespace(bucket=lambda _: None))
+    monkeypatch.setattr(stages, 'GCSStore', lambda _: store)
+    monkeypatch.setattr(modal_app, '_hydrate_pipeline_prediction_request_reference', lambda ref: ref)
+    monkeypatch.setattr(modal_app, '_pipeline_prediction_bundle_impl',
+                        lambda _: stages.SCOPE.get().gpu({'x': 1}))
+    monkeypatch.setattr(modal_app, 'timexer_universal_predict',
+                        SimpleNamespace(spawn=lambda _: SimpleNamespace(object_id='fc-77')))
+    monkeypatch.setattr(modal.FunctionCall, 'from_id',
+                        lambda fc: SimpleNamespace(cancel=lambda: cancelled.append(fc)))
+    assert modal_app.pipeline_prediction_bundle.local(reference())['status'] == 'waiting_gpu'
+    receipts = {k: v[0] for k, v in store.rows.items() if '/dispatch/' in k}
+    assert [r['function_call_id'] for r in receipts.values()] == ['fc-77']
+    assert 'never-persist' not in str(store.rows)
+    modal_app._cancel_gpu_call('fc-77')
+    assert cancelled == ['fc-77']

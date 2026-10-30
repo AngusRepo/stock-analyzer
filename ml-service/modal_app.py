@@ -2313,6 +2313,13 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     bundle = journal.cpu('final', 'publication', publish) if journal is not None else publish()
     bundle["callback_status"] = _post_pipeline_prediction_callback(payload, bundle, bundle['elapsed_s'])
     return bundle
+
+
+def _cancel_gpu_call(function_call_id: str) -> None:
+    """Best effort: drop a GPU request that outlived its queue limit."""
+    modal.FunctionCall.from_id(function_call_id).cancel()
+
+
 @app.function(
     cpu=4,
     memory=8192,
@@ -2340,7 +2347,8 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             with observe_prediction(hydrated_payload):
                 return _pipeline_prediction_bundle_impl(hydrated_payload)
         from google.cloud import storage
-        journal = Journal(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload)
+        journal = Journal(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload,
+                          cancel=_cancel_gpu_call)
         try:
             with journal.driver(), observe_prediction(hydrated_payload):
                 result = _pipeline_prediction_bundle_impl(hydrated_payload)
@@ -2349,15 +2357,21 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
                 return result
         except Suspended as pending:
             # Release the driver lease before dispatch; the CPU call returns immediately.
-            # A lost acknowledgement retains its claim; an identical request retry may take
-            # over only after the GPU timeout + lease grace, at most three times.
+            # A queued request is reused, never re-sent; only a missing receipt re-sends
+            # the same token (bounded), and execution CAS runs it once.
             if pending.dispatch is not None:
                 try:
-                    timexer_universal_predict.spawn(pending.dispatch)
+                    call = timexer_universal_predict.spawn(pending.dispatch)
                 except Exception:
                     # An RPC failure does not prove rejection. The durable claim
                     # remains fenced; the existing watchdog recovers expired work.
-                    pass
+                    call = None
+                if call is not None:
+                    try:
+                        journal.dispatched(pending.dispatch, call.object_id)
+                    except Exception as exc:
+                        print(f"[PipelinePredictionBundle] gpu_dispatch_receipt_failed {type(exc).__name__}",
+                              flush=True)
             return {'status': 'waiting_gpu', 'run_id': payload['run_id'],
                 'stage_root': journal.root, 'elapsed_s': round(journal.elapsed(), 3)}
     except Exception as exc:

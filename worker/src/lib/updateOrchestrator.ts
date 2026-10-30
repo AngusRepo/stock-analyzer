@@ -2470,8 +2470,8 @@ async function continueAfterFinLabBackfillWork(
   await guard('before_source_readiness')
   const officialMarketSummary = await refreshOfficialMarketSummaryIfMissing(env, twDate, Date.now())
   if (officialMarketSummary?.startsWith('official_market_summary_waiting=')) {
-    await scheduleSourceReadinessRetry(env, twDate, 1, officialMarketSummary)
-    return `source waiting; queued official market summary retry for ${twDate}; ${officialMarketSummary}`
+    return waitForOfficialSourceOrCutoff(env, twDate, officialMarketSummary,
+      `source waiting; queued official market summary retry for ${twDate}; ${officialMarketSummary}`)
   }
   let canonicalSummary: string
   try {
@@ -2488,8 +2488,8 @@ async function continueAfterFinLabBackfillWork(
   } catch (e) {
     if (!isBulkPriceSourceNotReady(e)) throw e
     const message = e instanceof Error ? e.message : String(e)
-    await scheduleSourceReadinessRetry(env, twDate, 1, message)
-    return `source waiting; queued same-day market data retry for ${twDate}; ${message}`
+    return waitForOfficialSourceOrCutoff(env, twDate, message,
+      `source waiting; queued same-day market data retry for ${twDate}; ${message}`)
   }
   const readiness = await checkEveningChainSourceReadiness(env, twDate)
   if (!readiness.ok) {
@@ -2531,15 +2531,62 @@ async function waitForFinLabCanonicalOrCutoff(env: Bindings, twDate: string, err
   return `source waiting; FinLab canonical lanes waiting for ${twDate} until ${finLabLateRetryCutoffTw()} TW cutoff; ${message}`
 }
 
-function finLabCanonicalCutoffTerminalKey(kind: 'cutoff' | 'refetch_cap', twDate: string): string {
+type FinLabCutoffTerminalKind = 'cutoff' | 'refetch_cap' | 'official_source'
+
+function finLabCanonicalCutoffTerminalKey(kind: FinLabCutoffTerminalKind, twDate: string): string {
   return kind === 'cutoff'
     ? `source-readiness:canonical-cutoff-logged:${twDate}`
-    : `source-readiness:canonical-refetch-cap-logged:${twDate}`
+    : kind === 'refetch_cap'
+      ? `source-readiness:canonical-refetch-cap-logged:${twDate}`
+      : `source-readiness:official-cutoff-logged:${twDate}`
 }
 
 async function finLabCanonicalCutoffTerminalRecorded(env: Bindings, twDate: string): Promise<boolean> {
   return Boolean(await env.KV.get(finLabCanonicalCutoffTerminalKey('cutoff', twDate))
-    || await env.KV.get(finLabCanonicalCutoffTerminalKey('refetch_cap', twDate)))
+    || await env.KV.get(finLabCanonicalCutoffTerminalKey('refetch_cap', twDate))
+    || await env.KV.get(finLabCanonicalCutoffTerminalKey('official_source', twDate)))
+}
+
+const FINLAB_CONTINUATION_CUTOFF_TERMINAL = 'finlab_continuation_cutoff_terminal'
+
+/** The date's single post-cutoff FinLab refetch; once dispatched, the watchdog does not resend it. */
+function finLabPostCutoffRefetchKey(twDate: string): string {
+  return `finlab:post-cutoff-refetch:${twDate}`
+}
+
+/**
+ * Inside the stale threshold before the date's TW midnight no later watchdog run can see a pending FinLab
+ * refetch go stale, so this run is the date's last chance to close it. Not for dates already past midnight.
+ */
+function finLabWatchdogFinalWindow(twDate: string, nowMs: number = Date.now()): boolean {
+  const untilDayEnd = Date.parse(`${twDate}T00:00:00+08:00`) + 86_400_000 - nowMs
+  return untilDayEnd > 0 && untilDayEnd < FINLAB_PENDING_WATCHDOG_STALE_MS
+}
+
+/** A FinLab dispatch writes a reservation with a new run_id first; a skip without one is no dispatch. */
+function finLabRunIdAdvanced(before: string | undefined, after: string | undefined): boolean {
+  return Boolean(after) && after !== before
+}
+
+/**
+ * Official market summary or TWSE/TPEX prices still missing: wait (one deduplicated readiness retry per
+ * retry window) until the contract cutoff, then end the date terminal instead of rerunning every 120 s.
+ */
+async function waitForOfficialSourceOrCutoff(env: Bindings, twDate: string, message: string, waiting: string): Promise<string> {
+  if (finLabLateRetryCutoffPassed(twDate)) {
+    await finLabCanonicalCutoffTerminal(env, twDate, 'official_source', message)
+    throw new Error(`${FINLAB_CONTINUATION_CUTOFF_TERMINAL}: ${message}`)
+  }
+  const claimKey = `source-readiness:official-wait:${twDate}`
+  if (!await env.KV.get(claimKey)) {
+    await env.KV.put(claimKey, new Date().toISOString(), { expirationTtl: SOURCE_READINESS_RETRY_DELAY_SECONDS })
+    await scheduleSourceReadinessRetry(env, twDate, 1, message)
+  }
+  return waiting
+}
+
+function isFinLabContinuationCutoffTerminal(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith(`${FINLAB_CONTINUATION_CUTOFF_TERMINAL}:`)
 }
 
 /**
@@ -2547,11 +2594,13 @@ async function finLabCanonicalCutoffTerminalRecorded(env: Bindings, twDate: stri
  * The system log is written once per date and reason; the chain logs are rewritten so the last state is the error.
  */
 async function finLabCanonicalCutoffTerminal(
-  env: Bindings, twDate: string, kind: 'cutoff' | 'refetch_cap', detail: string,
+  env: Bindings, twDate: string, kind: FinLabCutoffTerminalKind, detail: string,
 ): Promise<string> {
   const summary = kind === 'cutoff'
     ? `FinLab canonical lanes not ready by ${finLabLateRetryCutoffTw()} TW cutoff for ${twDate}; ${detail}`
-    : `FinLab canonical lanes still not ready after the post-cutoff refetch for ${twDate}; no further refetch; ${detail}`
+    : kind === 'refetch_cap'
+      ? `FinLab canonical lanes still not ready after the post-cutoff refetch for ${twDate}; no further refetch; ${detail}`
+      : `official market source not published by ${finLabLateRetryCutoffTw()} TW cutoff for ${twDate}; ${detail}`
   const loggedKey = finLabCanonicalCutoffTerminalKey(kind, twDate)
   if (!await env.KV.get(loggedKey)) {
     await env.KV.put(loggedKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
@@ -2665,6 +2714,16 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 }
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
+  try {
+    return await runDailyUpdateWork(env, force, runDate)
+  } catch (error) {
+    // The continuation already ended the date at the cutoff (terminal logs written); report it, don't throw.
+    if (isFinLabContinuationCutoffTerminal(error)) return `failed: ${(error as Error).message}`
+    throw error
+  }
+}
+
+async function runDailyUpdateWork(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   if (runDate && isHistoricalReplayDate(twDate)) {
     const lineageBoundary = await historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', twDate)
@@ -2758,7 +2817,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     })
     return summary
   }
-  const { summary: dispatchSummary, startObserved } = await dispatchEveningFinLabRefresh(env, twDate, force, fullCapture
+  const { summary: dispatchSummary, startObserved, runId: reservedRunId } = await dispatchEveningFinLabRefresh(env, twDate, force, fullCapture
     ? { reuseSuccessfulArtifacts: false }
     : {
         lanes: refreshScope.lanes,
@@ -2771,7 +2830,8 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   })
   const finlabSummary = fullCapture ? `${dispatchSummary} full_capture_retry=1` : dispatchSummary
   const finlabStatus = classifySchedulerSummary(finlabSummary)
-  const finlabRunId = schedulerSummaryField({ summary: finlabSummary }, 'run_id') ?? undefined
+  // A refused reply carries no run_id; the reservation's still identifies this dispatch.
+  const finlabRunId = schedulerSummaryField({ summary: finlabSummary }, 'run_id') ?? reservedRunId
   // A start heartbeat that arrived while the request timed out is newer than this outcome.
   if (!startObserved) {
     await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
@@ -2816,7 +2876,7 @@ export async function dispatchEveningFinLabRefresh(
   force: boolean,
   scope: { lanes?: string, canonicalDatasets?: string, keyScopeJson?: string, reuseSuccessfulArtifacts: boolean },
   reservationNote = '',
-): Promise<{ summary: string, startObserved: boolean }> {
+): Promise<{ summary: string, startObserved: boolean, runId: string }> {
   const runId = buildFinLabDailyRunId(twDate)
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: 'triggered',
@@ -2833,7 +2893,7 @@ export async function dispatchEveningFinLabRefresh(
       ...scope,
       runId,
     }))
-    return { summary, startObserved: /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId) }
+    return { summary, runId, startObserved: /(?:^|\s)dispatch_unconfirmed(?:\s|$)/.test(summary) && await finLabStartObserved(env, twDate, runId) }
   } catch (error) {
     if (!isFinLabDispatchTransportError(error)) {
       // A deterministic failure must not leave a reservation for the watchdog to resend.
@@ -2847,6 +2907,7 @@ export async function dispatchEveningFinLabRefresh(
       throw error
     }
     return {
+      runId,
       summary: `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${runId} function_call_id=unknown dispatch_attempt=1 error=${(error as Error).name}`,
       startObserved: await finLabStartObserved(env, twDate, runId),
     }
@@ -2919,6 +2980,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
       })
       return `status=triggered FinLab post-canonical watchdog resumed market continuation for ${twDate}; ${summary}`
     } catch (error) {
+      if (isFinLabContinuationCutoffTerminal(error)) return `failed: ${(error as Error).message}`
       await env.KV.delete(retryKey)
       throw error
     }
@@ -2942,6 +3004,22 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     && /(?:^|\s)late_lane_retry=1(?:$|[\s;])/.test(finlabLog.summary ?? '')
   const lateLane = lateLaneNotReady || lateLaneRetryPending
   const retriableFailure = retriablePartialFailure || lateLaneNotReady
+  // A date closed at the cutoff, or whose one post-cutoff refetch is out, gets no more FinLab dispatches
+  // (late lanes keep their own cutoff path). A refetch that failed or never called back is written back as terminal.
+  if (!lateLane && finLabLateRetryCutoffPassed(twDate) && (await finLabCanonicalCutoffTerminalRecorded(env, twDate)
+    || await env.KV.get(finLabPostCutoffRefetchKey(twDate)))) {
+    const pendingAt = finlabLog?.timestamp ? Date.parse(finlabLog.timestamp) : Number.NaN
+    const pendingAged = !Number.isFinite(pendingAt) || Date.now() - pendingAt >= FINLAB_PENDING_WATCHDOG_STALE_MS
+    // The date's last watchdog run closes a refetch still pending, even before it is stale.
+    const lastRun = finLabWatchdogFinalWindow(twDate)
+    const pendingStale = finlabLog?.status === 'triggered' && (pendingAged || lastRun)
+    if (finlabLog?.status === 'error' || pendingStale) {
+      await finLabCanonicalCutoffTerminal(env, twDate, 'refetch_cap',
+        `FinLab ${finlabLog?.status === 'error' ? 'failed' : 'got no callback'} after the cutoff`
+        + `${finlabLog?.status !== 'error' && !pendingAged ? ' (last watchdog run of the date)' : ''}; no resend`)
+    }
+    return `skipped: FinLab canonical cutoff terminal already recorded for ${twDate}; no post-cutoff resend`
+  }
   if ((finlabLog?.status !== 'triggered' && !retriableFailure) || !finlabLog.timestamp) {
     return `skipped: no pending FinLab trigger for ${twDate}`
   }
@@ -3927,6 +4005,8 @@ export async function processUpdateBatch(
         run_date: triggerTime,
       })
     } catch (e) {
+      // The continuation already ended the date at the cutoff.
+      if (isFinLabContinuationCutoffTerminal(e)) return
       if (isBulkPriceSourceNotReady(e)) {
         const message = e instanceof Error ? e.message : String(e)
         await scheduleSourceReadinessRetry(env, triggerTime, attempt, message)
@@ -4660,15 +4740,51 @@ export async function processUpdateBatch(
       const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
       if (hasFinLabRefreshableMissing(readiness)) {
         // Past the cutoff one more FinLab refetch per date (a publication just before it), then terminal.
-        if (finLabLateRetryCutoffPassed(triggerTime)) {
-          const refetchKey = `finlab:post-cutoff-refetch:${triggerTime}`
+        // The budget is claimed first and given back unless the run actually dispatched FinLab.
+        const postCutoff = finLabLateRetryCutoffPassed(triggerTime)
+        const refetchKey = finLabPostCutoffRefetchKey(triggerTime)
+        let finlabRunBefore: string | undefined
+        if (postCutoff) {
           if (await env.KV.get(refetchKey)) {
             await finLabCanonicalCutoffTerminal(env, triggerTime, 'refetch_cap', readiness.summary)
             return
           }
+          // No watchdog run is left to close a refetch dispatched this late, so the date ends here.
+          if (finLabWatchdogFinalWindow(triggerTime)) {
+            await finLabCanonicalCutoffTerminal(env, triggerTime, 'refetch_cap',
+              `post-cutoff FinLab refetch not sent in the date's last watchdog window; ${readiness.summary}`)
+            return
+          }
           await env.KV.put(refetchKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+          finlabRunBefore = (await readSchedulerRunLog(env, 'finlab-v4-backfill', triggerTime))?.run_id
         }
-        const retrySummary = await runDailyUpdate(env, true, triggerTime)
+        let retrySummary: string
+        try {
+          retrySummary = await runDailyUpdate(env, true, triggerTime)
+        } catch (error) {
+          if (!postCutoff) throw error
+          const after = await readSchedulerRunLog(env, 'finlab-v4-backfill', triggerTime)
+          // Failed before any dispatch (e.g. a transient D1 error): the budget is not spent; the queue retries.
+          if (!finLabRunIdAdvanced(finlabRunBefore, after?.run_id)) {
+            await env.KV.delete(refetchKey)
+            throw error
+          }
+          // A dispatch was attempted: the date closes here (no queue redelivery loop). A recorded refusal never
+          // ran FinLab and gives the budget back; otherwise it may have gone out, so it keeps the budget and its
+          // callback can still continue.
+          const reason = error instanceof Error ? error.message : String(error)
+          if (after?.status === 'error') {
+            await env.KV.delete(refetchKey)
+            await finLabCanonicalCutoffTerminal(env, triggerTime, 'refetch_cap', `post-cutoff FinLab refetch could not be dispatched: ${reason}`)
+          } else {
+            await finLabCanonicalCutoffTerminal(env, triggerTime, 'refetch_cap',
+              `post-cutoff FinLab refetch run_id=${after?.run_id} not recorded as refused (may have gone out); follow-up failed: ${reason}`)
+          }
+          return
+        }
+        if (postCutoff && !finLabRunIdAdvanced(finlabRunBefore, (await readSchedulerRunLog(env, 'finlab-v4-backfill', triggerTime))?.run_id)) {
+          await env.KV.delete(refetchKey)
+        }
         await logSchedulerResult(env.KV, 'evening-chain', {
           status: 'running',
           summary: `canonical source retry dispatched for ${triggerTime}; ${retrySummary}`,
@@ -4688,6 +4804,11 @@ export async function processUpdateBatch(
     } catch (e) {
       if (!isBulkPriceSourceNotReady(e)) throw e
       const message = e instanceof Error ? e.message : String(e)
+      // Past the cutoff a chain started earlier ends here instead of rescheduling.
+      if (finLabLateRetryCutoffPassed(triggerTime)) {
+        await finLabCanonicalCutoffTerminal(env, triggerTime, 'official_source', message)
+        return
+      }
       await scheduleSourceReadinessRetry(env, triggerTime, attempt, message)
     }
     return

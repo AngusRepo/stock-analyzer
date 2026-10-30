@@ -139,11 +139,11 @@ const completion = (runId = finlabRunId) =>
 
 // ---------------- Bug 3 ----------------
 
-test('B3-1/B3-9: an exhausted finlab_market row is re-armed and the restart reaches the serving-table refresh', async (t) => {
+test('B3-1/B3-9: an exhausted finlab_market row is re-armed and the restart (before the cutoff) reaches the serving-table refresh', async (t) => {
   const f = await fixture(t, { chipMissing: true })
   await f.seedStage('finlab_market', 'error', 3)
   await f.seedStage('finlab_sequence', 'error', 3)
-  f.clock(at('23:18'))
+  f.clock(at('22:50'))
   const summary = await runDailyUpdate(f.env, false, date)
   assert.doesNotMatch(summary, /non-FinLab source-readiness gate|superseded_delivery|retry_exhausted/)
   assert.match(summary, /^triggered evening-chain: FinLab canonical ready for 2026-10-29; source waiting; queued same-day market data retry/)
@@ -162,7 +162,7 @@ test('B3-1/B3-9: an exhausted finlab_market row is re-armed and the restart reac
 test('B3-2: a waiting finlab_market row is re-armed too', async (t) => {
   const f = await fixture(t, { chipMissing: true })
   await f.seedStage('finlab_market', 'waiting', 1)
-  f.clock(at('23:18'))
+  f.clock(at('22:50'))
   assert.match(await runDailyUpdate(f.env, true, date), /FinLab canonical ready .*source waiting; queued same-day market data retry/)
   assert.equal((await f.stage()).runId, `evening-ready-${date}`)
 })
@@ -203,7 +203,7 @@ test('B3-5: a missing FinLab canonical lane still goes to a FinLab refetch, not 
 
 test('B3-6: only the official market summary missing hands off to the continuation', async (t) => {
   const f = await fixture(t, { summaryMissing: true })
-  f.clock(at('23:18'))
+  f.clock(at('22:50'))
   const summary = await runDailyUpdate(f.env, false, date)
   assert.match(summary, /^triggered evening-chain: FinLab canonical ready .*source waiting; queued official market summary retry/)
   assert.equal(f.dispatches.length, 0)
@@ -214,10 +214,12 @@ test('B3-7: a forced historical replay re-arms the stage instead of returning a 
   await f.seedStage('finlab_market', 'error', 3)
   f.kvSet('market:twse_holiday_schedule:v2:2026', { schemaVersion: 'twse-holiday-schedule-v2', dates: [] })
   f.clock(at('01:00', '2026-10-30'))
-  const summary = await runDailyUpdate(f.env, true, date)
-  assert.match(summary, /^triggered evening-chain: historical replay skipped FinLab backfill; source waiting/)
-  assert.doesNotMatch(summary, /superseded_delivery/)
-  assert.equal((await f.stage()).runId, `historical-replay-${date}`)
+  // The re-armed continuation really runs; past the cutoff the missing serving data ends the date terminal.
+  assert.match(await runDailyUpdate(f.env, true, date), /^failed: finlab_continuation_cutoff_terminal: .*chip latest=2026-10-28/)
+  const row = await f.stage()
+  // Failed attempt 1 (error, re-queued 120 s later by the outbox).
+  assert.deepEqual([row.runId, row.status, row.attempt_count], [`historical-replay-${date}`, 'queued', 1])
+  assert.match(row.last_error, /finlab_continuation_cutoff_terminal/)
 })
 
 test('B3-8: a non-force restart while the chain is in flight is still suppressed', async (t) => {
@@ -615,4 +617,301 @@ test('F-3: a watchdog full capture reserves with the marker, so a Worker stop mi
   assert.equal(f.dispatches.length, 2)
   assert.ok(isFull(f.dispatches[1]), f.dispatches[1].lanes)
   assert.equal(f.dispatches[1].dispatch_attempt, 3)
+})
+
+// ---------------- 10/30 §10: official source cutoff, closed-date watchdog, refetch budget ----------------
+
+/** Delivers the market continuation every 2 minutes from `from` up to (excluding) `until`; returns what threw. */
+async function deliverEvery2Min(t: any, f: Awaited<ReturnType<typeof fixture>>, from: string, until: string) {
+  const errors: string[] = []
+  for (let now = at(from); now < at(until); now += 2 * 60_000) {
+    f.clock(now)
+    await processUpdateBatch(completion(), f.env, deps).catch((error) => { errors.push(String(error?.message ?? error)) })
+    t.mock.timers.reset()
+  }
+  return errors
+}
+
+test('OF-1: an official summary published late but before the cutoff is waited for and the chain completes', async (t) => {
+  const market: Market = { summaryMissing: true }
+  const f = await fixture(t, market)
+  assert.deepEqual(await deliverEvery2Min(t, f, '22:30', '22:50'), [])
+  assert.deepEqual([(await f.stage()).status, (await f.stage()).attempt_count], ['queued', 0])
+  assert.equal(f.sent.filter((msg) => msg.type === 'source_readiness_retry').length, 2) // 22:30, 22:40
+  market.summaryMissing = false
+  assert.deepEqual(await deliverEvery2Min(t, f, '22:52', '22:54'), [])
+  assert.ok(f.sent.some((msg) => msg.type === 'update_batch'), f.sent.map((msg) => msg.type).join(','))
+  assert.equal((await f.systemLogs()).length, 0)
+  assert.notEqual(f.log('update')?.status, 'blocked')
+  assert.notEqual(f.log('evening-chain')?.status, 'error')
+})
+
+test('OF-2: an official summary still missing at the cutoff ends the date terminal and the stage stops', async (t) => {
+  const f = await fixture(t, { summaryMissing: true })
+  await deliverEvery2Min(t, f, '22:56', '23:00')
+  const retriesBefore = f.sent.filter((msg) => msg.type === 'source_readiness_retry').length
+  await deliverEvery2Min(t, f, '23:00', '23:10')
+  const row = await f.stage()
+  assert.equal(row.attempt_count, 3)
+  assert.match(row.last_error, /finlab_continuation_cutoff_terminal/)
+  assert.equal(f.sent.filter((msg) => msg.type === 'source_readiness_retry').length, retriesBefore)
+  const logs = await f.systemLogs()
+  assert.equal(logs.length, 1)
+  assert.match(logs[0].message, /official market source not published by 23:00 TW cutoff/)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.equal(f.log('update').status, 'blocked')
+  // The outbox stops re-queueing the stage once its 3 attempts are used.
+  const queued = f.sent.filter((msg) => msg.type === 'finlab_backfill_complete').length
+  await deliverEvery2Min(t, f, '23:10', '23:12')
+  assert.equal(f.sent.filter((msg) => msg.type === 'finlab_backfill_complete').length, queued)
+  // The closed date is not reopened by the post-canonical watchdog either.
+  f.setLog('finlab-v4-backfill', { status: 'success', summary: 'FinLab V4 backfill status=ready dispatch_attempt=1',
+    timestamp: new Date(at('22:30')).toISOString() })
+  f.clock(at('23:20'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab canonical cutoff terminal already recorded/)
+  assert.equal((await f.stage()).attempt_count, 3)
+})
+
+test('BU-1: prices not ready wait with deduplicated retries before the cutoff and end terminal at it', async (t) => {
+  const f = await fixture(t, { chipMissing: true })
+  await deliverEvery2Min(t, f, '22:30', '22:50')
+  assert.equal(f.sent.filter((msg) => msg.type === 'source_readiness_retry').length, 2)
+  assert.equal((await f.systemLogs()).length, 0)
+  await deliverEvery2Min(t, f, '23:00', '23:02')
+  assert.match((await f.systemLogs())[0]?.message ?? '', /official market source not published .*chip latest=2026-10-28/)
+  assert.equal(f.log('update').status, 'blocked')
+})
+
+test('RT-1: a readiness retry chain reschedules before the cutoff and ends terminal after it', async (t) => {
+  const f = await fixture(t, { chipMissing: true })
+  f.clock(at('22:40'))
+  await processUpdateBatch(readinessRetry(3), f.env, deps)
+  t.mock.timers.reset()
+  assert.deepEqual(f.sent.filter((msg) => msg.type === 'source_readiness_retry').map((msg) => msg.attempt), [4])
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(4), f.env, deps)
+  assert.equal(f.sent.filter((msg) => msg.type === 'source_readiness_retry').length, 1)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.equal(f.log('update').status, 'blocked')
+  assert.equal((await f.systemLogs()).length, 1)
+})
+
+test('WD-1: after the refetch-cap terminal the watchdog does not resend and keeps the date terminal', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(), f.env, deps) // the one post-cutoff refetch
+  t.mock.timers.reset()
+  f.clock(at('23:07'))
+  await processUpdateBatch(readinessRetry(2), f.env, deps) // refetch cap: terminal
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('finlab-v4-backfill').status, 'triggered')
+  // Not stale yet: skip only, no resend.
+  f.clock(at('23:10'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab canonical cutoff terminal already recorded/)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 1)
+  // No callback by the stale threshold: still no resend, and the terminal state is written back.
+  f.setLog('evening-chain', { status: 'triggered', summary: 'stale non-terminal', timestamp: new Date(at('23:05')).toISOString() })
+  f.clock(at('23:40'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab canonical cutoff terminal already recorded/)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /got no callback after the cutoff/)
+  assert.equal(f.log('update').status, 'blocked')
+})
+
+test('WD-2: past the cutoff a failed refetch is not resent; a late-lane failure keeps its own cutoff path', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.kvSet(`source-readiness:canonical-cutoff-logged:${date}`, '2026-10-29T15:00:00.000Z')
+  f.setLog('finlab-v4-backfill', partial(1, false))
+  f.clock(at('23:30'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab canonical cutoff terminal already recorded/)
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /FinLab failed after the cutoff/)
+  f.setLog('finlab-v4-backfill', { status: 'error', timestamp: new Date(at('23:00')).toISOString(),
+    summary: `FinLab V4 backfill run_id=${finlabRunId} finlab_source_not_ready dispatch_attempt=1` })
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^failed: FinLab late lane not published by 23:00 TW cutoff/)
+})
+
+test('BG-1: the post-cutoff refetch budget is only spent by an actual FinLab dispatch', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  // No dispatch: the date's full capture was already used, so the root ends without sending FinLab.
+  f.kvSet(`finlab:full-capture-retry:${date}`, '2026-10-29T13:40:00.000Z')
+  f.setLog('finlab-v4-backfill', partial(1))
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), false)
+  // A refused dispatch gives the budget back too, and closes the date instead of throwing into queue redelivery.
+  f.store.delete(`finlab:full-capture-retry:${date}`)
+  f.setLog('finlab-v4-backfill', partial(1, false))
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'rejected' }, { status: 422 }))
+  f.clock(at('23:07'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), false)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /post-cutoff FinLab refetch could not be dispatched/)
+  assert.equal(f.log('update').status, 'blocked')
+  // A real dispatch spends it.
+  controllerReplies(t, f, ['spawned'])
+  f.clock(at('23:09'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), true)
+})
+
+test('BG-1b: a post-cutoff refetch that skips FinLab (quota-blocked keys) and drops the run_id spends no budget', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  await f.ops.batch(['taiex_close', 'official_tpex_index'].map((field) => f.ops.prepare(
+    `INSERT INTO source_key_report VALUES (?,?,?,?,1,'quota_blocked',0,0,?,?)`).bind(date, 'regime_context', field, field, prev, `${date}T13:00:00Z`)))
+  f.setLog('finlab-v4-backfill', { status: 'running', summary: 'FinLab callback completed; canonical lanes still waiting',
+    timestamp: new Date(at('22:50')).toISOString() })
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  assert.equal(f.dispatches.length, 0)
+  assert.match(f.log('finlab-v4-backfill').summary ?? '', /canonical_apply_pending_no_refetch/)
+  assert.equal(f.log('finlab-v4-backfill').run_id, undefined)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), false)
+})
+
+test('WD-3: a post-canonical watchdog run that reaches the official cutoff ends terminal without throwing', async (t) => {
+  const f = await fixture(t, { summaryMissing: true })
+  f.setLog('finlab-v4-backfill', { status: 'success', summary: 'FinLab V4 backfill status=ready dispatch_attempt=1',
+    timestamp: new Date(at('22:30')).toISOString() })
+  f.clock(at('23:05'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^failed: finlab_continuation_cutoff_terminal: official_market_summary_waiting=/)
+  assert.equal(f.log('update').status, 'blocked')
+  assert.equal((await f.systemLogs()).length, 1)
+})
+
+test('BG-2: an unconfirmed post-cutoff refetch keeps the budget, and the watchdog does not resend it', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  controllerReplies(t, f, ['html'])
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 1)
+  assert.match(f.log('finlab-v4-backfill').summary, /dispatch_unconfirmed/)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), true)
+  // No terminal was recorded yet, but the refetch is out: no resend; once stale the date is closed.
+  f.clock(at('23:30'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /no post-cutoff resend/)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.equal(f.log('update').status, 'blocked')
+})
+
+// ---------------- 10/30 §10.4: post-cutoff refetch failures and the date's last watchdog run ----------------
+
+test('BG-3: a transient error before the post-cutoff dispatch is retried by the queue and spends no budget', async (t) => {
+  const market: Market = { twoiiMissing: true, brokerReadsBeforeD1Error: 2 }
+  const f = await fixture(t, market)
+  f.clock(at('23:02'))
+  await assert.rejects(processUpdateBatch(readinessRetry(), f.env, deps), /D1_ERROR/)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), false)
+  assert.equal((await f.systemLogs()).length, 0)
+  assert.notEqual(f.log('evening-chain')?.status, 'error')
+  assert.notEqual(f.log('update')?.status, 'blocked')
+  // The queue redelivery dispatches the one refetch, which then spends the budget.
+  market.brokerReadsBeforeD1Error = undefined
+  f.clock(at('23:03'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), true)
+})
+
+test('BG-4: a post-cutoff dispatch whose refusal was not recorded keeps the budget and is not reported as undispatched', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  // The controller refuses, but the KV write of that error log is lost (the logger swallows it): only the
+  // reservation with the new run_id is left, so nothing proves FinLab did not run.
+  const put = f.env.KV.put.bind(f.env.KV)
+  let dropErrorLog = true
+  ;(f.env.KV as any).put = async (key: string, value: string, options?: any) => {
+    if (dropErrorLog && key === `scheduler:run:finlab-v4-backfill:${date}` && JSON.parse(value).status === 'error') {
+      dropErrorLog = false
+      throw new Error('KV put failed')
+    }
+    return put(key, value, options)
+  }
+  t.mock.method(globalThis, 'fetch', async (url: string, init?: RequestInit) => {
+    f.dispatches.push(JSON.parse(String(init?.body)))
+    return Response.json({ detail: 'rejected' }, { status: 422 })
+  })
+  f.clock(at('23:05'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  assert.equal(dropErrorLog, false)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('finlab-v4-backfill').status, 'triggered')
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), true)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, new RegExp(`run_id=${f.dispatches[0].run_id} not recorded as refused \\(may have gone out\\); follow-up failed`))
+  assert.doesNotMatch(f.log('evening-chain').summary, /could not be dispatched/)
+  assert.equal(f.log('update').status, 'blocked')
+  // The kept budget stops any resend.
+  f.clock(at('23:30'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /no post-cutoff resend/)
+  assert.equal(f.dispatches.length, 1)
+})
+
+test('WD-4: the date\'s last watchdog run closes a late post-cutoff refetch that got no callback', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.clock(at('23:41'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('evening-chain').status, 'running')
+  // 16 minutes left in the day: a later run can still see it stale, so only skip.
+  f.clock(at('23:44'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /no post-cutoff resend/)
+  t.mock.timers.reset()
+  assert.equal(f.log('evening-chain').status, 'running')
+  assert.equal((await f.systemLogs()).length, 0)
+  // 23:50 (pending 9 minutes, not stale) is the last run: the date ends terminal, still without a resend.
+  f.clock(at('23:50'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /no post-cutoff resend/)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /got no callback after the cutoff \(last watchdog run of the date\)/)
+  assert.equal(f.log('update').status, 'blocked')
+  assert.equal((await f.systemLogs()).length, 1)
+})
+
+test('WD-4b: earlier in the night a pending post-cutoff refetch younger than the stale threshold is left alone', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.clock(at('23:20'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  f.clock(at('23:30'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /no post-cutoff resend/)
+  assert.equal(f.log('evening-chain').status, 'running')
+  assert.notEqual(f.log('update')?.status, 'blocked')
+  assert.equal((await f.systemLogs()).length, 0)
+})
+
+test('WD-5: a post-cutoff refetch due in the date\'s last watchdog window is not sent; the date ends terminal', async (t) => {
+  const f = await fixture(t, { twoiiMissing: true })
+  f.clock(at('23:47'))
+  await processUpdateBatch(readinessRetry(), f.env, deps)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.store.has(`finlab:post-cutoff-refetch:${date}`), false)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('evening-chain').summary, /not sent in the date's last watchdog window/)
+  assert.equal(f.log('update').status, 'blocked')
+  // A date already past its midnight has no last window: a young pending refetch is left to the stale rule.
+  const g = await fixture(t, { twoiiMissing: true })
+  g.kvSet(`finlab:post-cutoff-refetch:${date}`, '2026-10-29T16:05:00.000Z')
+  g.setLog('finlab-v4-backfill', { status: 'triggered', summary: `triggered finlab-v4-backfill run_id=${finlabRunId} dispatch_attempt=1`,
+    timestamp: new Date(at('00:05', '2026-10-30')).toISOString() })
+  g.clock(at('00:10', '2026-10-30'))
+  assert.match(await runFinLabBackfillWatchdog(g.env, date), /no post-cutoff resend/)
+  assert.notEqual(g.log('evening-chain')?.status, 'error')
+  assert.equal((await g.systemLogs()).length, 0)
 })

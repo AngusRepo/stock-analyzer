@@ -5,6 +5,7 @@ import { Miniflare } from 'miniflare'
 import { finLabRequiresFullCapture, processUpdateBatch, runDailyUpdate, runFinLabBackfillWatchdog } from './updateOrchestrator'
 import { finLabCompositionBlockerSuffix } from './finLabDispatchFence'
 import { queueFinLabCompletion } from './finlabCompletionOutbox'
+import { finLabRequiredFieldsForLane } from './finlabSourceContract'
 import type { Bindings } from '../types'
 
 // Bug 3 (restart stuck at the serving-table gate / superseded stage), Bug 4 (canonical not-ready burns the
@@ -766,7 +767,8 @@ test('BG-1: the post-cutoff refetch budget is only spent by an actual FinLab dis
 
 test('BG-1b: a post-cutoff refetch that skips FinLab (quota-blocked keys) and drops the run_id spends no budget', async (t) => {
   const f = await fixture(t, { twoiiMissing: true })
-  await f.ops.batch(['taiex_close', 'official_tpex_index'].map((field) => f.ops.prepare(
+  // Every required key of the lane, per the contract, is quota-blocked: nothing is refetchable.
+  await f.ops.batch(finLabRequiredFieldsForLane('regime_context').map((field) => f.ops.prepare(
     `INSERT INTO source_key_report VALUES (?,?,?,?,1,'quota_blocked',0,0,?,?)`).bind(date, 'regime_context', field, field, prev, `${date}T13:00:00Z`)))
   f.setLog('finlab-v4-backfill', { status: 'running', summary: 'FinLab callback completed; canonical lanes still waiting',
     timestamp: new Date(at('22:50')).toISOString() })

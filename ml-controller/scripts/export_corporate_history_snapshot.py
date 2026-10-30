@@ -9,11 +9,15 @@ runs on the operator's machine, never through the Cloud Run snapshot job.
               whether every D1 domain routes to its own database. No network,
               no GCS, no D1.
   (default)   requires --confirm-write: calls export_backtest_dataset_snapshot,
-              which reads D1 (core, market, learning) and writes the snapshot to
-              GCS plus its D1 manifest. Wei go per run; learning-db is read, so
-              stay outside 13:00-16:30Z and 17:00-23:00Z.
+              which reads D1 (core, market, learning, ops, paper), writes the
+              snapshot to GCS and upserts its manifest into learning-db. Wei go
+              per run; learning-db is read and written, so stay outside
+              13:00-16:30Z and 17:00-23:00Z. Each run gets a fresh producer run id,
+              so it never overwrites a snapshot that may be in use.
 
-Env values are never printed; only the names present or missing are reported.
+The export refuses to run when STOCKVISION_ALLOCATOR_CONTRACT_GUARD is on (D1 writes
+would silently become no-ops) or when two domains resolve to the same database.
+Env values are never printed: only names, routing states and a bucket-free GCS path.
 """
 from __future__ import annotations
 
@@ -42,7 +46,7 @@ def domain_routing() -> dict:
     never sees. Values are never reported.
     """
     from services.d1_domain_client import database_id_for_domain
-    out = {}
+    out, resolved_ids = {}, {}
     for domain in EXPORT_DOMAINS:
         specific = os.environ.get(f'CF_D1_{domain.upper()}_DB_ID', '').strip()
         try:
@@ -50,8 +54,25 @@ def domain_routing() -> dict:
         except RuntimeError as exc:
             out[domain] = 'error:' + str(exc).split(':')[0]
             continue
+        resolved_ids[domain] = resolved
         out[domain] = 'specific' if specific and resolved == specific else 'legacy_fallback'
+    shared = {d for d in resolved_ids if list(resolved_ids.values()).count(resolved_ids[d]) > 1}
+    for domain in shared:  # two domains on one database: the export would read or write the wrong one
+        if out[domain] == 'specific':
+            out[domain] = 'shared_database'
     return out
+
+
+def allocator_guard_on() -> bool:
+    from services.allocator_contract_guard import allocator_contract_guard_enabled
+    return allocator_contract_guard_enabled()
+
+
+def bucket_free(uri):
+    bucket = os.environ.get('GCS_BUCKET_NAME', '').strip()
+    if uri and bucket:
+        return str(uri).replace(f'gs://{bucket}/', 'gs://$GCS_BUCKET_NAME/')
+    return uri
 
 
 def plan(artifact: Path, *, business_date: str, start_date: str, end_date: str, calendar: list[str],
@@ -75,6 +96,7 @@ def plan(artifact: Path, *, business_date: str, start_date: str, end_date: str, 
             'env_present': [n for n in REQUIRED_ENV if os.environ.get(n, '').strip()],
             'env_missing': [n for n in REQUIRED_ENV if not os.environ.get(n, '').strip()],
             'd1_routing': domain_routing(),
+            'allocator_contract_guard_on': allocator_guard_on(),
             'writes': 'none (dry run)'}
 
 
@@ -86,7 +108,6 @@ def main(argv=None) -> int:
     parser.add_argument('--end-date', required=True)
     parser.add_argument('--calendar', type=Path, required=True, help='days.json sealed by the fetch (spec days)')
     parser.add_argument('--expected-sha256', required=True, help='sha256 from compile_report.json')
-    parser.add_argument('--producer-run-id', default=None)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--confirm-write', action='store_true')
     args = parser.parse_args(argv)
@@ -103,9 +124,11 @@ def main(argv=None) -> int:
     unrouted = [d for d, state in report['d1_routing'].items() if state != 'specific']
     if unrouted:
         raise SystemExit('export_d1_domain_not_routed:' + ','.join(unrouted))
+    if report['allocator_contract_guard_on']:
+        raise SystemExit('export_refused_allocator_contract_guard_on')
     from datetime import datetime, timezone
     # A fresh run id: a rerun never overwrites a snapshot (GCS prefix and manifest) that may be in use.
-    run_id = args.producer_run_id or 'corporate-history-{}-{}'.format(
+    run_id = 'corporate-history-{}-{}'.format(
         args.business_date, datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     from services.dataset_snapshot_exporter import DatasetSnapshotExportRequest, export_backtest_dataset_snapshot
     request = {k: v for k, v in report['request'].items() if k != 'kind'}
@@ -114,7 +137,7 @@ def main(argv=None) -> int:
     snapshot = summary.get('snapshot') or {}
     print(json.dumps({'status': summary.get('status'), 'snapshot_id': snapshot.get('snapshot_id'),
                       'kind': snapshot.get('kind'), 'business_date': snapshot.get('business_date'),
-                      'checksum': snapshot.get('checksum'), 'gcs_uri': snapshot.get('gcs_uri'),
+                      'checksum': snapshot.get('checksum'), 'gcs_uri': bucket_free(snapshot.get('gcs_uri')),
                       'row_count': snapshot.get('row_count'), 'artifact_sha256': report['artifact_sha256']},
                      ensure_ascii=False, indent=2))
     return 0

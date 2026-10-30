@@ -75,6 +75,8 @@ def test_every_domain_must_route_to_its_own_database(artifact, monkeypatch, caps
     out = capsys.readouterr().out
     routing = json.loads(out)['d1_routing']
     assert set(routing.values()) == {'legacy_fallback'} and 'legacy-db' not in out
+    for name, value in ROUTED.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv('MULTI_D1_ACTIVE_DOMAINS', 'core,market')
     with pytest.raises(SystemExit, match='export_d1_domain_not_routed:learning,ops,paper'):
         export.main(args(artifact, DAYS[-1], '--confirm-write'))
@@ -96,3 +98,47 @@ class _Req:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
         self.kind = 'ga_research_dataset'
+
+
+def _routed(monkeypatch):
+    for name in export.REQUIRED_ENV:
+        monkeypatch.setenv(name, 'x')
+    for name, value in ROUTED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv('STOCKVISION_ALLOCATOR_CONTRACT_GUARD', raising=False)
+
+
+def test_two_domains_on_one_database_are_refused(artifact, monkeypatch, capsys):
+    _routed(monkeypatch)
+    monkeypatch.setenv('CF_D1_PAPER_DB_ID', 'id-core')
+    assert export.main(args(artifact, DAYS[-1], '--dry-run')) == 0
+    out = capsys.readouterr().out
+    routing = json.loads(out)['d1_routing']
+    assert routing['core'] == routing['paper'] == 'shared_database' and routing['market'] == 'specific'
+    assert 'id-core' not in out
+    with pytest.raises(SystemExit, match='export_d1_domain_not_routed:core,paper'):
+        export.main(args(artifact, DAYS[-1], '--confirm-write'))
+
+
+def test_the_allocator_guard_would_turn_writes_into_no_ops_so_it_is_refused(artifact, monkeypatch, capsys):
+    _routed(monkeypatch)
+    monkeypatch.setenv('STOCKVISION_ALLOCATOR_CONTRACT_GUARD', '1')
+    assert export.main(args(artifact, DAYS[-1], '--dry-run')) == 0
+    assert json.loads(capsys.readouterr().out)['allocator_contract_guard_on'] is True
+    with pytest.raises(SystemExit, match='export_refused_allocator_contract_guard_on'):
+        export.main(args(artifact, DAYS[-1], '--confirm-write'))
+
+
+def test_the_run_id_cannot_be_overridden_and_the_bucket_is_not_printed(artifact, monkeypatch, capsys):
+    _routed(monkeypatch)
+    monkeypatch.setenv('GCS_BUCKET_NAME', 'private-bucket')
+    with pytest.raises(SystemExit):
+        export.main(args(artifact, DAYS[-1], '--confirm-write', '--producer-run-id', 'reuse-me'))
+    capsys.readouterr()
+    import types
+    monkeypatch.setitem(sys.modules, 'services.dataset_snapshot_exporter', types.SimpleNamespace(
+        DatasetSnapshotExportRequest=_Req, export_backtest_dataset_snapshot=lambda req: {
+            'status': 'ready', 'snapshot': {'gcs_uri': f'gs://private-bucket/snap/{req.producer_run_id}'}}))
+    assert export.main(args(artifact, DAYS[-1], '--confirm-write')) == 0
+    out = capsys.readouterr().out
+    assert 'private-bucket' not in out and json.loads(out)['gcs_uri'].startswith('gs://$GCS_BUCKET_NAME/snap/corporate-history-')

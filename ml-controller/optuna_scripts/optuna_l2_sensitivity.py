@@ -8,9 +8,12 @@ NeuralTS / NeuCB family-routing policies. It is not a substitute for searching
 `bandit_loss_thresh_*` or `bandit_max_mult_*` constants; those are evaluated
 by the separate read-only LinUCB multiplier replay until this Optuna objective
 explicitly consumes that replay evidence.
-Remaining 19 Mode-B-consumable dims split into:
-  6 circuit + 6 L2-confidence + 4 night + 3 PF-search
+Remaining 10 Mode-B-consumable dims split into:
+  3 circuit (drawdown halt + position scale) + 4 night + 3 PF-search
   (PF 90d_weight = 1 - 30d_weight constrained, so 3 search dims cover 4 consumers).
+  The confidence dims are retired (Wei 10/30, replay aligned to Paper): Paper computes
+  a buy confidence threshold but no buy reads it since 06-14 (the L4 sparse BUY
+  decides), so the replay has no confidence entry gate and these cannot move it.
   SLTP-add and medium scale are retired (Wei 10/30 B): Paper applies neither.
   circuit.sellConfThreshold is retired for now (Wei 10/30): Paper's EOD ML SELL exit
   has had no SELL row to act on since 2026-03-31, so the dimension cannot move the
@@ -57,7 +60,7 @@ if str(_CONTROLLER_DIR) not in sys.path:
     sys.path.insert(0, str(_CONTROLLER_DIR))
 
 
-# Default search space — 19 dims (bullAlignmentThreshold removed, Wei 10/29 Q5; SLTP-add and medium scale retired, Wei 10/30 B; sellConfThreshold retired, Wei 10/30). Caller (endpoint) should prefer KV override.
+# Default search space — 10 dims (bullAlignmentThreshold removed, Wei 10/29 Q5; SLTP-add and medium scale retired, Wei 10/30 B; sellConfThreshold and the confidence dims retired, Wei 10/30). Caller (endpoint) should prefer KV override.
 # Each entry: name, path (dot-notation into trading:config), type, low, high.
 # Ranges sourced from task_plan.md Item #28 with Bergstra (2012) log-uniform
 # for mult coefficients, uniform for threshold percentages / scores.
@@ -67,29 +70,27 @@ if str(_CONTROLLER_DIR) not in sys.path:
 # replay dropped both and the search must not tune them. Wei 10/30: Paper's only
 # consumer of circuit.sellConfThreshold is the EOD ML SELL exit (paperExitTasks.ts),
 # which has had no SELL recommendation to read since 2026-03-31; the KV field stays.
+# Wei 10/30 (replay aligned to Paper): buyConfThreshold, the accuracy raise
+# (lowAccuracyThreshold, drawdownRaisedConf) and the six L2 confidence terms only
+# produce Paper's buy threshold, which no buy reads (pendingBuyOrchestrator dropped
+# the confidence filter on 06-14); the KV fields stay for logs and audit.
 RETIRED_PATHS = frozenset({
     "circuit.bullAlignmentThreshold",
     "circuit.sellConfThreshold",
+    "circuit.buyConfThreshold",
+    "circuit.lowAccuracyThreshold",
+    "circuit.drawdownRaisedConf",
+    *(f"L2_formula.confidence_{name}" for name in (
+        "risk_mult", "perf_mult", "delta_clip_lo", "delta_clip_hi", "effective_clip_lo", "effective_clip_hi")),
     *(f"L2_formula.sltp_add_{level}_{side}" for level in ("orange", "red", "black") for side in ("sl", "tp")),
     "L2_formula.medium_risk_scale",
 })
 
 DEFAULT_SEARCH_SPACE: list[dict[str, Any]] = [
-    # ── circuit.* (6 dims) ────────────────────────────────────────────────
-    {"name": "buyConfThreshold",       "path": "circuit.buyConfThreshold",       "type": "uniform",     "low": 0.50,  "high": 0.75},
-    {"name": "lowAccuracyThreshold",   "path": "circuit.lowAccuracyThreshold",   "type": "uniform",     "low": 0.35,  "high": 0.55},
+    # ── circuit.* (3 dims: drawdown halt + position scale) ────────────────
     {"name": "drawdownHalt",           "path": "circuit.drawdownHalt",           "type": "uniform",     "low": 0.08,  "high": 0.25},
     {"name": "drawdownScaleStart",     "path": "circuit.drawdownScaleStart",     "type": "uniform",     "low": 0.01,  "high": 0.08},
-    {"name": "drawdownRaisedConf",     "path": "circuit.drawdownRaisedConf",     "type": "uniform",     "low": 0.65,  "high": 0.80},
     {"name": "mddMultFloor",           "path": "circuit.mddMultFloor",           "type": "log_uniform", "low": 0.10,  "high": 0.50},
-
-    # ── L2_formula confidence (6 dims) ─────────────────────────────────────
-    {"name": "confidence_risk_mult",          "path": "L2_formula.confidence_risk_mult",          "type": "log_uniform", "low": 0.05,  "high": 0.40},
-    {"name": "confidence_perf_mult",          "path": "L2_formula.confidence_perf_mult",          "type": "log_uniform", "low": 0.05,  "high": 0.50},
-    {"name": "confidence_delta_clip_lo",      "path": "L2_formula.confidence_delta_clip_lo",      "type": "uniform",     "low": -0.20, "high": -0.05},
-    {"name": "confidence_delta_clip_hi",      "path": "L2_formula.confidence_delta_clip_hi",      "type": "uniform",     "low": 0.10,  "high": 0.30},
-    {"name": "confidence_effective_clip_lo",  "path": "L2_formula.confidence_effective_clip_lo",  "type": "uniform",     "low": 0.35,  "high": 0.55},
-    {"name": "confidence_effective_clip_hi",  "path": "L2_formula.confidence_effective_clip_hi",  "type": "uniform",     "low": 0.65,  "high": 0.85},
 
     # ── L2_formula night drop + PF quality (7 dims, 3 PF derived) ─────────
     {"name": "night_drop_severe_pct",     "path": "L2_formula.night_drop_severe_pct",     "type": "uniform", "low": -0.030, "high": -0.005},

@@ -305,13 +305,15 @@ def test_research_causal_configuration_carries_the_owner_cap(monkeypatch):
 
 
 def test_l2_route_logs_the_dims_it_searches_without_retired_ones(monkeypatch, caplog):
-    # A KV space that still lists the retired sell threshold logs only the searched dims.
+    # A KV space that still lists retired confidence thresholds logs only the searched dims.
     import logging
     from routers import optuna
     space = {'dims': [{'name': 'sellConfThreshold', 'path': 'circuit.sellConfThreshold', 'type': 'uniform',
                        'low': .55, 'high': .8},
                       {'name': 'buyConfThreshold', 'path': 'circuit.buyConfThreshold', 'type': 'uniform',
-                       'low': .5, 'high': .75}]}
+                       'low': .5, 'high': .75},
+                      {'name': 'drawdownHalt', 'path': 'circuit.drawdownHalt', 'type': 'uniform',
+                       'low': .08, 'high': .25}]}
     loaded(monkeypatch, {**POST_P1, 'optuna_l2': {'search_space': space}})
     kv(monkeypatch, RISK)
     captured = {}

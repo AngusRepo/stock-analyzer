@@ -244,17 +244,12 @@ class BacktestMarketState:
     def get_us(self, date: str) -> Optional[USMarketRow]:
         return self._us.get(date)
 
-    def get_risk_on_or_before(self, date: str) -> Optional[MarketRiskRow]:
-        """The latest market_risk row at or before `date` (Paper's adaptive reads the latest row)."""
-        dates = [day for day in self._risk if day <= date]
-        return self._risk[max(dates)] if dates else None
-
     def in_hmm_era(self, session: str, entry_date: str) -> bool:
         """True once an HMM row was visible before the entry open; earlier sessions keep the stored path."""
         return self._regime.hmm_visible(session, entry_open(entry_date))
 
     def hmm_state(self, session: str, entry_date: str) -> Optional[dict]:
-        """The latest HMM state visible at the entry open, as Paper's adaptive reads it; None before the era."""
+        """The latest HMM state visible at the entry open; None before the era."""
         if not self.in_hmm_era(session, entry_date):
             return None
         return self._regime.latest_on_or_before(session, entry_open(entry_date))
@@ -272,14 +267,6 @@ class BacktestMarketState:
             return None
         from services.market_regime_state import _contract_from_state
         return _contract_from_state(state, source='market_regime_state_history_v1')
-
-    def hmm_family(self, session: str, entry_date: str) -> Optional[str]:
-        """The HMM family Paper's adaptive P3 uses: latest on or before `session`, not only its own."""
-        state = self.hmm_state(session, entry_date)
-        if state is None:
-            return None
-        from services.market_regime_state import normalize_regime_label
-        return normalize_regime_label(state.get('label'))[1]     # Worker parseMarketRegimeState family
 
     def dates_with_risk(self) -> list[str]:
         """Deterministic sorted dates — for tests / debugging (M14 discipline)."""

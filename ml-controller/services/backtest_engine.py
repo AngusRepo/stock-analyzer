@@ -3182,29 +3182,20 @@ def simulate_entries_for_date(
     replay_days: list[str] | None = None,
     # 2026-04-20 #31 Mode B params (None = Mode A behavior; backward compat)
     ml_predictions: Optional["MLPredictionsCache"] = None,
-    buy_conf_threshold: Optional[float] = None,
-    # 2026-04-20 #28 P2 L2 Layer 1 + 2 circuit breakers (Mode B only)
-    #   circuit_cfg: dict view of trading:config.circuit (paper.ts source-of-truth)
+    # Mode B circuit breakers, as Paper applies them (Wei 10/30, replay aligned to Paper):
+    #   circuit_cfg: dict view of trading:config.circuit
     #   current_drawdown_30d: from compute_drawdown_30d(equity_curve, day)
-    #   recent_accuracy_30d: from compute_rolling_accuracy_30d(verified_preds, day)
-    # All three None = Mode A (skip breakers entirely).
+    # Only the drawdown halt and the drawdown position scale remain. Paper computes a
+    # buy confidence threshold (circuit.buyConfThreshold, adaptive delta, accuracy
+    # raise) but no buy reads it since 06-14: the L4 sparse BUY decides. The replay
+    # has no confidence entry gate either.
     circuit_cfg: Optional[dict] = None,
     current_drawdown_30d: Optional[float] = None,
-    recent_accuracy_30d: Optional[float] = None,
-    # 2026-04-20 #28 P3 effective confidence (L2_formula delta + clip)
-    #   l2_formula_cfg: dict view of trading:config.L2_formula
-    #   risk_score: market_risk.risk_score for `day` (0-100); None → skip delta
-    l2_formula_cfg: Optional[dict] = None,
-    risk_score: Optional[int] = None,
-    #   risk_level: stored market_risk.risk_level for the decision date. Paper's
-    #     adaptive P3 reads the same stored row (adaptiveEngine) for its volatility term.
-    #   regime_family: the HMM family Paper's adaptive P3 reads (latest on or before the
-    #     decision date); None before the HMM era.
+    #   l2_formula_cfg: dict view of trading:config.L2_formula (night drop, PF blend).
     #   There is no risk-level SL/TP add and no medium scale: Paper applies neither, and
     #   risk sizing has one owner there (circuit.positionScales + allocator riskScore).
     #   Wei 10/30 (B). The bull-alignment halving is gone too (Wei 10/29).
-    risk_level: Optional[str] = None,
-    regime_family: Optional[str] = None,
+    l2_formula_cfg: Optional[dict] = None,
     # 2026-04-20 #28 P5: night drop (US leading) + PF quality blend
     #   prev_night_drop: us_market_signals.gspc_return for most recent US close
     #     (as a ratio, e.g. -0.015 for -1.5%; matches D1 storage convention).
@@ -3250,37 +3241,10 @@ def simulate_entries_for_date(
     if pos.max_pct_of_portfolio is None:
         raise PositionRiskContractMissing('backtest_position_risk_contract_missing')
 
-    # 2026-04-20 #28 P3, aligned with Paper 10/30: the adaptive delta moves the buy
-    # THRESHOLD, as pendingBuyOrchestrator.checkCircuitBreakers does
-    # (effectiveBuy = clip(buyConfThreshold + confidence_delta, lo, hi)), and the
-    # delta is adaptive.compute_confidence_components with Paper's inputs (stored
-    # risk score and level, HMM family). Layer 2 below then raises that threshold.
-    # Missing inputs mean no adaptive delta (Paper: no adaptive params), never no clip.
-    effective_delta: float = 0.0
-    if ml_predictions is not None and l2_formula_cfg is not None and buy_conf_threshold is not None:
-        # Paper has no adaptive params without an HMM family (compute_adaptive_params
-        # raises adaptive_regime_evidence_unknown), so pre-era entries get the clip only.
-        if risk_score is not None and recent_accuracy_30d is not None and regime_family is not None:
-            from services.adaptive import compute_confidence_components
-            effective_delta = compute_confidence_components(
-                float(risk_score), float(recent_accuracy_30d), l2_formula_cfg,
-                risk_level=risk_level, regime=regime_family,
-            )["effective_delta"]
-        clip_lo = float(l2_formula_cfg.get("confidence_effective_clip_lo", 0.45))
-        clip_hi = float(l2_formula_cfg.get("confidence_effective_clip_hi", 0.75))
-        buy_conf_threshold = max(clip_lo, min(clip_hi, buy_conf_threshold + effective_delta))
-
-    # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
-    # Only apply when Mode B is active (ml_predictions cache present) AND
-    # circuit_cfg explicitly provided. Mode A skips entirely to preserve
-    # existing Optuna 5.x parity.
+    # Layer 1 (Mode B only, circuit_cfg provided): rolling 30d drawdown >
+    # drawdownHalt halts ALL entries today, as Paper's P1 does. Mode A skips it.
     if ml_predictions is not None and circuit_cfg is not None:
         dd_halt_thresh = float(circuit_cfg.get("drawdownHalt", 0.15))
-        low_acc_thresh = float(circuit_cfg.get("lowAccuracyThreshold", 0.45))
-        raised_conf    = float(circuit_cfg.get("drawdownRaisedConf", 0.70))
-
-        # Layer 1: rolling 30d drawdown > drawdownHalt → halt ALL entries today
-        # Source: paper.ts checkCircuitBreakers lines 269-273 (identical threshold)
         if current_drawdown_30d is not None and current_drawdown_30d > dd_halt_thresh:
             halt_reason = (f"L1 halt: dd_30d {current_drawdown_30d:.1%} "
                            f"> drawdownHalt {dd_halt_thresh:.1%}")
@@ -3292,15 +3256,6 @@ def simulate_entries_for_date(
                 ))
             return attempts
 
-        # Layer 2: 30d rolling accuracy < lowAccuracyThreshold → raise conf gate
-        # Source: paper.ts checkCircuitBreakers lines 324-328
-        if (recent_accuracy_30d is not None
-                and recent_accuracy_30d < low_acc_thresh
-                and buy_conf_threshold is not None):
-            new_conf = max(buy_conf_threshold, raised_conf)
-            if new_conf > buy_conf_threshold:
-                buy_conf_threshold = new_conf  # local rebind — caller unaffected
-
     # Gap proxy (shared across all candidates today)
     gap_pct = _gap_pct_from_benchmark(dataset, decision_date, entry_date)
 
@@ -3310,9 +3265,9 @@ def simulate_entries_for_date(
         industry_count[p_open.industry] = industry_count.get(p_open.industry, 0) + 1
 
     for cand in buy_candidates:
-        # 2026-04-20 #31 Mode B: pull real ML confidence + apply buyConfThreshold
-        # filter when ml_predictions cache is provided. Mode A (cache=None) keeps
-        # using ml_conf_placeholder=0.60 hardcode.
+        # 2026-04-20 #31 Mode B: pull the real ML confidence (Kelly sizing input) when
+        # the ml_predictions cache is provided; no confidence entry gate (Paper has
+        # none). Mode A (cache=None) keeps using ml_conf_placeholder=0.60 hardcode.
         if ml_predictions is not None:
             real_conf = ml_predictions.get(cand.symbol, cand.date)
             if real_conf is None:
@@ -3324,16 +3279,6 @@ def simulate_entries_for_date(
                 continue
 
             cand.confidence = real_conf
-            if buy_conf_threshold is not None and real_conf < buy_conf_threshold:
-                attempts.append(EntryAttempt(
-                    symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
-                    status="skipped_low_conf", adjusted_entry=cand.close,
-                    reason=(
-                        f"Mode B: conf {real_conf:.3f} < threshold {buy_conf_threshold:.3f} "
-                        f"(adaptive delta {effective_delta:+.3f})"
-                    ),
-                ))
-                continue
 
         # Skip symbols already held — paper.ts merges into existing paper_positions
         # via UPDATE avg_cost, but for Mode A backtest we take the simpler path of
@@ -5027,33 +4972,29 @@ def replay_period(
     )
 
     # ── 2026-04-20 #31 Mode B: load historical ML predictions cache ───────
-    # Mode B reads ensemble-row direction_accuracy from D1 to derive real
-    # per-(symbol, date) confidence. Mode A keeps using ml_conf_placeholder.
-    # buyConfThreshold pulled from circuit subsection (KV trading:config).
+    # Mode B reads ensemble-row direction_accuracy to derive real per-(symbol, date)
+    # confidence (Kelly sizing input; no entry gate). Mode A keeps ml_conf_placeholder.
     ml_cache: Optional[MLPredictionsCache] = None
-    buy_conf_threshold: Optional[float] = None
     circuit_cfg_b: Optional[dict] = None   # #28 P2: shared across days
-    verified_preds_cache: list[dict] = []  # #28 P2: verified predictions for rolling acc
     from services.backtest_state import (
-        BacktestMarketState, load_verified_predictions,
-        compute_rolling_accuracy_30d, compute_drawdown_30d,
+        BacktestMarketState, compute_drawdown_30d,
         compute_profit_factor, get_prev_night_drop,
     )
     market_state: Optional[BacktestMarketState] = None
 
     if mode == "B":
         circuit_cfg_b = (params or {}).get("circuit", {}) or {}
-        buy_conf_threshold = float(circuit_cfg_b.get("buyConfThreshold", 0.60))
         if dataset.replay_frames is not None:
             from services.backtest_snapshot_state import frozen_mode_b
-            ml_cache, market_state, verified_preds_cache = frozen_mode_b(dataset)
+            # Verified outcomes stay part of the sealed input contract; the replay no
+            # longer reads them (the accuracy raise only moved Paper's unused threshold).
+            ml_cache, market_state, _verified = frozen_mode_b(dataset)
         else:
             # Fail closed on source errors: Mode A cannot be labeled Mode B.
             ml_cache = MLPredictionsCache.load_from_d1(start_date, end_date)
             if ml_cache._n == 0:
                 raise ValueError('backtest_mode_b_predictions_empty')
             market_state = BacktestMarketState(start_date, end_date)
-            verified_preds_cache = load_verified_predictions(start_date, end_date)
 
     # ── Initialize state ───────────────────────────────────────────────────
     account = AccountState(
@@ -5084,17 +5025,11 @@ def replay_period(
 
         # Step 2: attempt entries from prev day's candidates (T-1 → T fill)
         if prev_candidates and prev_decision_date is not None:
-            # 2026-04-20 #28 P2: compute per-day rolling metrics for Mode B
-            # circuit breakers. Cheap filter operations over trades/equity/preds
-            # caches already in memory (no D1 round-trip per day).
+            # 2026-04-20 #28 P2: per-day rolling drawdown for the Mode B halt and
+            # position scale, from the equity curve already in memory.
             current_dd_b: Optional[float] = None
-            recent_acc_b: Optional[float] = None
             if mode == "B" and circuit_cfg_b is not None:
                 current_dd_b = compute_drawdown_30d(equity_curve, day, window_days=30)
-                if verified_preds_cache:
-                    recent_acc_b = compute_rolling_accuracy_30d(
-                        verified_preds_cache, day, window_days=30, min_samples=10,
-                    )
 
             attempts = simulate_entries_for_date(
                 dataset=dataset,
@@ -5108,32 +5043,10 @@ def replay_period(
                 replay_days=replay_days,
                 # 2026-04-20 #31 Mode B
                 ml_predictions=ml_cache,
-                buy_conf_threshold=buy_conf_threshold,
-                # 2026-04-20 #28 P2 circuit breakers
+                # 2026-04-20 #28 P2 circuit breakers (halt + drawdown scale)
                 circuit_cfg=circuit_cfg_b,
                 current_drawdown_30d=current_dd_b,
-                recent_accuracy_30d=recent_acc_b,
-                # 2026-04-20 #28 P3 effective confidence delta
                 l2_formula_cfg=(params or {}).get("L2_formula") if mode == "B" else None,
-                # Paper's adaptive reads the latest stored market_risk row.
-                risk_score=(
-                    market_state.get_risk_on_or_before(prev_decision_date).risk_score
-                    if (mode == "B" and market_state is not None
-                        and market_state.get_risk_on_or_before(prev_decision_date))
-                    else None
-                ),
-                # P3 inputs, as Paper's adaptive reads them: stored level + HMM family
-                risk_level=(
-                    market_state.get_risk_on_or_before(prev_decision_date).risk_level
-                    if (mode == "B" and market_state is not None
-                        and market_state.get_risk_on_or_before(prev_decision_date))
-                    else None
-                ),
-                regime_family=(
-                    market_state.hmm_family(prev_decision_date, day)
-                    if (mode == "B" and market_state is not None)
-                    else None
-                ),
                 # 2026-04-20 #28 P5 night drop + PF quality blend
                 prev_night_drop=(
                     get_prev_night_drop(market_state, day, lookback_days=3)

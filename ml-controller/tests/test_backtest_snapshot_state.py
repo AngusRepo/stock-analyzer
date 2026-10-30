@@ -43,7 +43,9 @@ def test_missing_known_at_and_after_open_labels_cannot_enter_accuracy():
     assert compute_rolling_accuracy_30d(rows,'2026-09-03',min_samples=1)==1.
 
 
-def test_replay_entry_uses_previous_close_risk_not_todays_future_close(monkeypatch, kv_position_risk):
+def test_replay_entries_read_no_market_risk_level_or_score(monkeypatch, kv_position_risk):
+    # Wei 10/30: the adaptive P3 threshold is gone with the confidence gate, so entries
+    # take no market-risk input (nothing from today's future close can leak in).
     from services import backtest_engine as engine, backtest_state
     dataset=data();dataset.trading_days=['2026-09-01','2026-09-02']
     dataset.market_risk=pl.DataFrame({'date':dataset.trading_days,'risk_level':['green','red'],'risk_score':[10,99]})
@@ -59,7 +61,7 @@ def test_replay_entry_uses_previous_close_risk_not_todays_future_close(monkeypat
     result=engine.replay_period(dataset=dataset,start_date=dataset.start_date,end_date=dataset.end_date,params=params,mode='B')
     assert result.mode=='B'
     assert len(captured)==1
-    assert captured[0]['risk_score']==10 and captured[0]['risk_level']=='green'
+    assert not {'risk_score','risk_level','regime_family','buy_conf_threshold'} & set(captured[0])
     assert 'bull_align_pct' not in captured[0]   # Wei 10/29 Q5: no bull-alignment trigger
     del dataset.replay_frames['signals']
     with pytest.raises(ValueError,match='frozen_components_missing'):

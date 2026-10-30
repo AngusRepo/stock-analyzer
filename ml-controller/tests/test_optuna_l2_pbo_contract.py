@@ -102,7 +102,7 @@ def test_l2_push_allowed_requires_passed_pbo_and_walk_forward_evidence():
     assert _l2_push_allowed(
         push_kv=True,
         dry_run=False,
-        best_params_nested={"circuit": {"buyConfThreshold": 0.62}},
+        best_params_nested={"circuit": {"drawdownHalt": 0.12}},
         pbo_audit={"go_live_verdict": "FAIL"},
         walk_forward_evidence={"passed": True},
     ) is False
@@ -110,14 +110,14 @@ def test_l2_push_allowed_requires_passed_pbo_and_walk_forward_evidence():
     assert _l2_push_allowed(
         push_kv=True,
         dry_run=False,
-        best_params_nested={"circuit": {"buyConfThreshold": 0.62}},
+        best_params_nested={"circuit": {"drawdownHalt": 0.12}},
         pbo_audit={"go_live_verdict": "PASS"},
     ) is False
 
     assert _l2_push_allowed(
         push_kv=True,
         dry_run=False,
-        best_params_nested={"circuit": {"buyConfThreshold": 0.62}},
+        best_params_nested={"circuit": {"drawdownHalt": 0.12}},
         pbo_audit={"go_live_verdict": "PASS"},
         walk_forward_evidence={"decision": "PASS"},
     ) is True
@@ -153,15 +153,23 @@ def test_l2_sensitivity_never_searches_the_retired_bull_alignment_threshold():
                                   baseline_config={}, n_trials=1)
 
 
-def test_the_sell_threshold_is_retired_and_never_reaches_the_push_payload(monkeypatch, kv_position_risk):
-    # Wei 10/30: Paper's ML SELL exit has no SELL rows to act on; the KV field stays, the
-    # search stops tuning it, even when a KV-supplied space still lists it.
+RETIRED_CONFIDENCE = {'circuit.sellConfThreshold': (.55, .8), 'circuit.buyConfThreshold': (.5, .75),
+                      'circuit.lowAccuracyThreshold': (.35, .55), 'circuit.drawdownRaisedConf': (.65, .8),
+                      'L2_formula.confidence_risk_mult': (.05, .4), 'L2_formula.confidence_perf_mult': (.05, .5),
+                      'L2_formula.confidence_delta_clip_lo': (-.2, -.05), 'L2_formula.confidence_delta_clip_hi': (.1, .3),
+                      'L2_formula.confidence_effective_clip_lo': (.35, .55),
+                      'L2_formula.confidence_effective_clip_hi': (.65, .85)}
+
+
+def test_retired_confidence_dims_never_reach_the_replay_or_the_push_payload(monkeypatch, kv_position_risk):
+    # Wei 10/30: Paper reads no buy confidence threshold (and its ML SELL exit has no SELL rows);
+    # the KV fields stay, the search stops tuning them, even when a KV-supplied space lists them.
     import optuna_l2_sensitivity as l2
     from types import SimpleNamespace
     from services import backtest_engine
-    assert 'circuit.sellConfThreshold' in l2.RETIRED_PATHS
-    assert 'circuit.sellConfThreshold' not in {dim['path'] for dim in DEFAULT_SEARCH_SPACE}
-    assert len(DEFAULT_SEARCH_SPACE) == 19
+    assert set(RETIRED_CONFIDENCE) <= l2.RETIRED_PATHS
+    assert not set(RETIRED_CONFIDENCE) & {dim['path'] for dim in DEFAULT_SEARCH_SPACE}
+    assert len(DEFAULT_SEARCH_SPACE) == 10
     monkeypatch.delenv('CF_D1_RESEARCH_DB_ID', raising=False)
     monkeypatch.setattr(backtest_engine.BacktestDataset, 'load_for_research',
                         lambda **_: (object(), {'source': 'snapshot'}))
@@ -170,14 +178,20 @@ def test_the_sell_threshold_is_retired_and_never_reaches_the_push_payload(monkey
         seen.append(kw['params'])
         return SimpleNamespace(sharpe=1.0, max_drawdown=.1, total_trades=50, partition_returns=[])
     monkeypatch.setattr(backtest_engine, 'replay_period', replay)
-    kv_space = [{'name': 'sellConfThreshold', 'path': 'circuit.sellConfThreshold', 'type': 'uniform',
-                 'low': .55, 'high': .8},
-                {'name': 'buyConfThreshold', 'path': 'circuit.buyConfThreshold', 'type': 'uniform',
-                 'low': .5, 'high': .75}]
+    kv_space = [{'name': path.split('.')[1], 'path': path, 'type': 'uniform', 'low': lo, 'high': hi}
+                for path, (lo, hi) in RETIRED_CONFIDENCE.items()]
+    kv_space.append({'name': 'drawdownHalt', 'path': 'circuit.drawdownHalt', 'type': 'uniform',
+                     'low': .08, 'high': .25})
     baseline = {'positionRiskDistribution': kv_position_risk,
-                'circuit': {'sellConfThreshold': .66, 'buyConfThreshold': .6}}
+                'circuit': {'sellConfThreshold': .66, 'buyConfThreshold': .6, 'lowAccuracyThreshold': .45,
+                            'drawdownRaisedConf': .7, 'drawdownHalt': .15},
+                'L2_formula': {path.split('.')[1]: 0.123 for path in RETIRED_CONFIDENCE
+                               if path.startswith('L2_formula.')}}
     result = l2.run_l2_sensitivity_search(search_space=kv_space, start_date='2026-01-01', end_date='2026-03-31',
                                           baseline_config=baseline, n_trials=2)
-    assert set(result['best_params']) == {'buyConfThreshold'}
-    assert result['best_params_nested'] == {'circuit': {'buyConfThreshold': result['best_params']['buyConfThreshold']}}
-    assert all(params['circuit']['sellConfThreshold'] == .66 for params in seen)   # baseline untouched
+    assert set(result['best_params']) == {'drawdownHalt'}
+    assert result['best_params_nested'] == {'circuit': {'drawdownHalt': result['best_params']['drawdownHalt']}}
+    for params in seen:                                                     # baseline untouched
+        assert {k: v for k, v in params['circuit'].items() if k != 'drawdownHalt'} == \
+            {k: v for k, v in baseline['circuit'].items() if k != 'drawdownHalt'}
+        assert params['L2_formula'] == baseline['L2_formula']

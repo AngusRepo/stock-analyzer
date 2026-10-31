@@ -81,7 +81,7 @@ def test_daily_capture_is_observed_at_its_write_time_and_anchor_needs_all_chip_c
     merged = {cls: cp.merge_observations([o[cls] for o, _ in daily if cls in o], cls)[0] for cls in cp.CLASSES}
     panel, _ = cp.build_feature_panel(merged, ["2026-10-26", "2026-10-27"], anchors)
     got = panel.select("signal_date", "chip_institutional_data_date", "chip_margin_data_date").rows()
-    # 10-27 has no ready capture: its rule cutoff (21:00) precedes the 22:30 capture.
+    # 10-27 has no ready capture: its rule cutoff (21:45) precedes the 22:30 capture.
     assert got == [("2026-10-26", "2026-10-26", None), ("2026-10-27", "2026-10-26", "2026-10-26")]
 
 

@@ -15,6 +15,7 @@
       },
       "unit": "shares",
       "presumed_publication_tw": "17:00",
+      "rule_presumed_same_day": true,
       "official_source": "TWSE T86 / TPEx 3itrade"
     },
     "margin": {
@@ -25,6 +26,7 @@
       },
       "unit": "lots_1000_shares",
       "presumed_publication_tw": "21:30",
+      "rule_presumed_same_day": false,
       "official_source": "TWSE MI_MARGN / TPEx margin_bal"
     },
     "lending": {
@@ -35,6 +37,7 @@
       },
       "unit": "shares",
       "presumed_publication_tw": "21:30",
+      "rule_presumed_same_day": false,
       "official_source": "TWSE TWT93U / TPEx margin_sbl"
     },
     "turnover": {
@@ -44,13 +47,15 @@
       },
       "unit": "shares",
       "presumed_publication_tw": "14:30",
+      "rule_presumed_same_day": true,
       "official_source": "TWSE STOCK_DAY_ALL / TPEx daily close"
     }
   },
   "pit_rule": {
-    "rule_cutoff_tw": "21:00",
-    "signal_cutoff": "evening L3 input freeze of signal date s; observed = write time of the first ready FinLab daily capture for business date s; otherwise s 21:00 Asia/Taipei (evening-chain fire time, rule_presumed); a later cutoff than s+1 is clamped down to s+1",
+    "rule_cutoff_tw": "21:45",
+    "signal_cutoff": "evening L3 input freeze of signal date s; observed = write time of the first ready FinLab daily capture for business date s; otherwise s 21:45 Asia/Taipei (infra/gcp-scheduler-jobs.json evening-chain fire time, rule_presumed); a later cutoff than s+1 is clamped down to s+1",
     "observation_available_at": "observed_capture = GCS write time of the capture holding the row; rule_presumed = data date + presumed_publication_tw",
+    "same_day_evidence": "a row serves its own data date s only when a capture holding it was written by cutoff(s); a table the vendor had not published at capture time is empty and observes nothing, so it is first seen in a later capture; rule_presumed rows of a class with rule_presumed_same_day=false serve only signal dates after their data date",
     "vintage": "first observed value per (stock_id, data_date, class); later vendor revisions are counted, never applied",
     "window_availability": "a feature row is usable only after every observation inside its 20-session window is available"
   },

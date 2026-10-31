@@ -41,20 +41,24 @@ def test_contract_json_matches_module():
     assert contract["contract_version"] == cp.CONTRACT_VERSION
     assert contract["features"] == list(cp.FEATURES)
     assert contract["storage_prefix"] == cp.STORAGE_PREFIX
+    assert contract["pit_rule"]["rule_cutoff_tw"] == cp.RULE_CUTOFF_TW
     for cls, spec in cp.CLASSES.items():
         assert tuple(contract["classes"][cls]["fields"]) == spec["fields"]
         assert contract["classes"][cls]["presumed_publication_tw"] == spec["publication_tw"]
+        assert contract["classes"][cls]["rule_presumed_same_day"] is spec["rule_same_day"]
         assert contract["classes"][cls]["source_lane"] == spec["lane"]
     assert len(FEATURES131) == 131 and not set(cp.FEATURES) & set(FEATURES131)
 
 
-def test_rule_presumed_lags_margin_and_lending_past_the_evening_cutoff():
+def test_rule_presumed_margin_and_lending_wait_a_day_without_capture_evidence():
     panel, proof = cp.build_feature_panel(rule_obs(DAYS), DAYS, anchors={})
     assert panel["chip_institutional_data_date"].to_list() == DAYS
     for cls in ("margin", "lending"):
         assert panel[f"chip_{cls}_data_date"].to_list() == [None] + DAYS[:-1]
         assert proof["coverage"][cls]["same_day_rows"] == 0
     assert set(panel["chip_institutional_basis"].to_list()) == {cp.BASIS_RULE}
+    assert proof["rule_cutoff_tw"] == cp.RULE_CUTOFF_TW
+    assert proof["rule_same_day"] == {"institutional": True, "margin": False, "lending": False}
     # total net = 4 fields * 10*(i+1); volume = 500*(i+1)
     assert panel["chip_inst_total_net_vol_1"].to_list() == pytest.approx([0.08] * 4)
 
@@ -64,12 +68,45 @@ def test_rule_cutoff_is_the_evening_chain_schedule():
     chain = next(j for j in jobs["jobs"] if j["id"] == "evening-chain")
     minute, hour = chain["schedule"].split()[:2]
     assert jobs["timeZone"] == "UTC"
-    assert cp.rule_cutoff("2026-07-01") == datetime(2026, 7, 1, int(hour), int(minute), tzinfo=timezone.utc)
-    for cls in ("institutional", "turnover"):
+    fire = datetime(2026, 7, 1, int(hour), int(minute), tzinfo=timezone.utc)
+    assert cp.RULE_CUTOFF_TW == fire.astimezone(cp.TW).strftime("%H:%M")
+    assert cp.rule_cutoff("2026-07-01") == fire
+    for cls in cp.CLASSES:
         assert cp.presumed_available_at("2026-07-01", cls) <= cp.rule_cutoff("2026-07-01")
-    for cls in ("margin", "lending"):
-        assert cp.presumed_available_at("2026-07-01", cls) > cp.rule_cutoff("2026-07-01")
-        assert cp.presumed_available_at("2026-07-01", cls) <= cp.rule_cutoff("2026-07-02")
+    # The exchange time alone never makes margin/lending same-day; a capture has to show the row.
+    assert [c for c, spec in cp.CLASSES.items() if not spec["rule_same_day"]] == ["margin", "lending"]
+
+
+def test_rule_presumed_row_stays_next_day_even_after_a_late_anchor():
+    # 07-02 capture fed L3 at 22:30 without margin; the 21:30 exchange time is not evidence FinLab had it.
+    anchors = {"2026-07-02": tw("2026-07-02", "22:30")}
+    panel, _ = cp.build_feature_panel(rule_obs(DAYS), DAYS, anchors)
+    got = dict(zip(panel["signal_date"].to_list(), panel["chip_margin_data_date"].to_list()))
+    assert got["2026-07-02"] == "2026-07-01" and got["2026-07-03"] == "2026-07-02"
+
+
+def test_margin_present_in_the_cutoff_capture_is_same_day():
+    anchors = {d: tw(d, "21:52") for d in DAYS}
+    obs = rule_obs(DAYS)
+    obs["margin"] = cp.merge_observations([class_frame("margin", [d], 100.0 + i, cp.BASIS_OBSERVED, anchors[d], capture=f"c{i}")
+                                           for i, d in enumerate(DAYS)], "margin")[0]
+    panel, proof = cp.build_feature_panel(obs, DAYS, anchors)
+    assert panel["chip_margin_data_date"].to_list() == DAYS
+    assert proof["coverage"]["margin"]["same_day_rows"] == len(DAYS)
+    assert set(panel["chip_margin_basis"].to_list()) == {cp.BASIS_OBSERVED}
+
+
+def test_margin_published_after_the_cutoff_capture_serves_the_next_day():
+    d1, d2 = "2026-07-01", "2026-07-02"
+    anchors = {d1: tw(d1, "21:52"), d2: tw(d2, "21:52")}
+    # The 21:45 capture saw an unpublished (all-null) d1 table; d1 first shows up in the d2 capture's window.
+    unpublished = cp.class_observations({f: wide([d1], {"2330": [None]}) for f in cp.CLASSES["margin"]["fields"]},
+                                        "margin", capture_id="c1", basis=cp.BASIS_OBSERVED, observed_at=anchors[d1])
+    window = class_frame("margin", [d1], 100.0, cp.BASIS_OBSERVED, anchors[d2], capture="c2")
+    obs = rule_obs([d1, d2])
+    obs["margin"] = cp.merge_observations([unpublished, window], "margin")[0]
+    panel, _ = cp.build_feature_panel(obs, [d1, d2], anchors)
+    assert panel.select("signal_date", "chip_margin_data_date").rows() == [(d1, None), (d2, d1)]
 
 
 def test_late_capture_is_not_usable_for_its_own_signal_day():
@@ -244,4 +281,14 @@ def test_load_panel_rejects_checksum_mismatch():
     assert loaded.equals(panel)
     bucket.store["chip-pit/v1/features/b/features.parquet"] = raw + b"x"
     with pytest.raises(ValueError, match="checksum"):
+        cp.load_panel(bucket, "chip-pit/v1/features/b/manifest.json")
+
+
+def test_load_panel_rejects_a_panel_built_under_another_cutoff():
+    panel, proof = cp.build_feature_panel(rule_obs(DAYS), DAYS, anchors={})
+    raw, manifest = cp.panel_manifest(panel, {**proof, "rule_cutoff_tw": "21:00"}, sources={})
+    bucket = _Bucket()
+    bucket.store["chip-pit/v1/features/b/features.parquet"] = raw
+    bucket.store["chip-pit/v1/features/b/manifest.json"] = json.dumps(manifest).encode()
+    with pytest.raises(ValueError, match="contract_mismatch"):
         cp.load_panel(bucket, "chip-pit/v1/features/b/manifest.json")

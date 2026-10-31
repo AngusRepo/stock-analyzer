@@ -24,17 +24,21 @@ STORAGE_PREFIX = "chip-pit/v1"
 TW = timezone(timedelta(hours=8))
 BASIS_OBSERVED = "observed_capture"
 BASIS_RULE = "rule_presumed"
+# rule_same_day: a rule-presumed row (no capture evidence) may serve its own data date. Margin and
+# lending publish close to the evening cutoff and FinLab often lags, so without a capture holding the
+# row by the cutoff they serve from the next signal date on.
 CLASSES = {
-    "institutional": {"lane": "chip_diversity", "publication_tw": "17:00",
+    "institutional": {"lane": "chip_diversity", "publication_tw": "17:00", "rule_same_day": True,
                       "fields": ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net")},
-    "margin": {"lane": "chip_diversity", "publication_tw": "21:30", "fields": ("margin_balance", "short_balance")},
-    "lending": {"lane": "chip_diversity", "publication_tw": "21:30",
+    "margin": {"lane": "chip_diversity", "publication_tw": "21:30", "rule_same_day": False,
+               "fields": ("margin_balance", "short_balance")},
+    "lending": {"lane": "chip_diversity", "publication_tw": "21:30", "rule_same_day": False,
                 "fields": ("security_lending_sell_balance", "security_lending_balance")},
-    "turnover": {"lane": "daily_price", "publication_tw": "14:30", "fields": ("volume",)},
+    "turnover": {"lane": "daily_price", "publication_tw": "14:30", "rule_same_day": True, "fields": ("volume",)},
 }
 CHIP_CLASSES = ("institutional", "margin", "lending")
-# infra/gcp-scheduler-jobs.json evening-chain "0 13 * * 1-5" UTC; its FinLab capture is the L3 input.
-RULE_CUTOFF_TW = "21:00"
+# infra/gcp-scheduler-jobs.json evening-chain "45 13 * * 1-5" UTC (test-bound); its FinLab capture is the L3 input.
+RULE_CUTOFF_TW = "21:45"
 # MI_MARGN balances are lots; volume and lending balances are shares.
 MARGIN_LOT_SHARES = 1000.0
 # Longest rolling window; a feature row waits for every observation inside it.
@@ -227,7 +231,12 @@ def select_for_signals(rows: pl.DataFrame, cls: str, signal_dates: list[str], cu
         raise ValueError("chip_pit_signal_calendar_invalid")
     cut_us = np.asarray([int(c.timestamp() * 1_000_000) for c in cutoffs], dtype=np.int64)
     days = np.asarray(signal_dates)
-    d_idx = np.searchsorted(days, np.asarray(rows["data_date"].to_list(), dtype=days.dtype), side="left")
+    data_days = np.asarray(rows["data_date"].to_list(), dtype=days.dtype)
+    d_idx = np.searchsorted(days, data_days, side="left")
+    if not CLASSES[cls]["rule_same_day"]:
+        # Same-day use needs a capture holding the row by cutoff(s); a rule-presumed row has none.
+        presumed = (rows["basis"] == BASIS_RULE).to_numpy()
+        d_idx = np.where(presumed, np.searchsorted(days, data_days, side="right"), d_idx)
     avail = rows["window_available_us"].fill_null(np.iinfo(np.int64).max).to_numpy()
     a_idx = np.searchsorted(cut_us, avail, side="left")
     first = np.maximum(d_idx, a_idx)
@@ -269,7 +278,8 @@ def build_feature_panel(observations: dict[str, pl.DataFrame], signal_dates: lis
     proof = {"schema_version": PANEL_SCHEMA, "contract_version": CONTRACT_VERSION, "features": list(FEATURES),
              "features_sha256": FEATURES_SHA256, "signal_date_min": signal_dates[0], "signal_date_max": signal_dates[-1],
              "observed_anchor_days": sorted(d for d in anchors if d in set(signal_dates)), "clamped_cutoffs": clamped,
-             "rule_cutoff_tw": RULE_CUTOFF_TW, "coverage": coverage,
+             "rule_cutoff_tw": RULE_CUTOFF_TW, "rule_same_day": {c: CLASSES[c]["rule_same_day"] for c in CHIP_CLASSES},
+             "coverage": coverage,
              "feature_non_null": {f: int(panel[f].is_not_null().sum()) for f in FEATURES}, "rows": panel.height}
     return panel, proof
 
@@ -295,7 +305,7 @@ def load_panel(bucket, manifest_path: str) -> tuple[pl.DataFrame, dict]:
     """W1 entry: verified panel from GCS."""
     manifest = json.loads(bucket.blob(manifest_path).download_as_bytes())
     if (manifest.get("schema_version") != PANEL_SCHEMA or manifest.get("contract_version") != CONTRACT_VERSION
-            or manifest.get("features_sha256") != FEATURES_SHA256):
+            or manifest.get("features_sha256") != FEATURES_SHA256 or manifest.get("rule_cutoff_tw") != RULE_CUTOFF_TW):
         raise ValueError("chip_pit_panel_contract_mismatch")
     raw = bucket.blob(manifest_path.rsplit("/", 1)[0] + "/" + manifest["panel_file"]).download_as_bytes()
     if _sha(raw) != manifest.get("panel_sha256"):

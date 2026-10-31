@@ -105,3 +105,21 @@ def test_calendar_rollover_only_fetches_recent_months(monkeypatch, tmp_path, mis
         assert set(fetches) == {(market, month) for market in ('TWSE', 'TPEX') for month in ('2026-10', '2026-11')}
         assert 'calendar/TWSE-2026-10.json' in store
         assert 'calendar/TWSE-2026-11-2026-11-02.json' in store
+
+
+def test_history_fetch_retries_a_throttled_reply_then_fails_closed(monkeypatch, tmp_path):
+    """One non-JSON TWSE reply aborted a local 1577-day capture at day ~195."""
+    tool = _load_tool_module()
+    days = ['2021-02-19', '2021-02-22']
+    replies, sleeps = [None, None, breadth(days[0]), breadth(days[1])], []
+    monkeypatch.setattr(tool, 'official_json_get', lambda url, *, label: replies.pop(0))
+    monkeypatch.setattr(tool.time, 'sleep', sleeps.append)
+    capture(tmp_path / 'retry', days)
+    tool.write_training_breadth_capture(run_dir=tmp_path / 'retry')
+    assert sleeps == [30, 90, 4, 4] and not replies
+    monkeypatch.setattr(tool, 'official_json_get', lambda url, *, label: None)
+    sleeps.clear()
+    capture(tmp_path / 'down', days)
+    with pytest.raises(ValueError, match='official_history_fetch_failed:training_breadth_2021-02-19:attempts=3'):
+        tool.write_training_breadth_capture(run_dir=tmp_path / 'down')
+    assert sleeps == [30, 90]

@@ -78,3 +78,48 @@ def test_dense_fold_persists_latest_predictions_and_replay_weights(monkeypatch, 
     assert len(latest)==12 and persisted['future_labels_required'] is False
     assert latest[0]['raw_score']==pytest.approx(115./111.-1)
     assert result['fold_model_artifact']['path'] in bucket.values
+
+
+@pytest.mark.parametrize("complete_horizon", [False, True])
+def test_r33_nf_fold_attests_train_label_known_max(monkeypatch, complete_horizon):
+    monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "1" * 40)
+    import io
+    import json
+    from pathlib import Path
+    from app import neuralforecast_sequence_runtime as rt
+    class Bucket:
+        def __init__(self): self.values = {}
+        def blob(self, name):
+            owner = self
+            class Blob:
+                def exists(self): return name in owner.values
+                def upload_from_string(self, value, **kwargs): owner.values[name] = value.encode() if isinstance(value, str) else value
+                def download_as_bytes(self): return owner.values[name]
+                def download_as_text(self): return self.download_as_bytes().decode()
+            return Blob()
+    class NF:
+        def save(self, path, **kwargs):
+            Path(path).mkdir(); (Path(path) / "fitted.ckpt").write_bytes(b"x")
+    calendar = [f"2026-01-{d:02}" for d in range(1, 13)]
+    rows = [{"symbol": str(i), "dates": calendar, "open": [100.] * 12, "close": [100. + j for j in range(12)]} for i in range(12)]
+    bucket = Bucket(); bucket.values["local/prep/symbol_market.json"] = json.dumps({r["symbol"]: "LISTED" for r in rows}).encode()
+    monkeypatch.setattr(rt, "_train_nf", lambda *args, **kwargs: (NF(), None))
+    # One symbol never gets a forecast: counted, not silently lost.
+    monkeypatch.setattr(rt, "_predict_horizon_by_id_with_column",
+                        lambda nf, df, **kwargs: ({str(s): 115. for s in df["unique_id"].unique() if s != "0"}, "PatchTST"))
+    options = {"oof_training_history_mode": "full_pit_history", **({"nf_require_complete_horizon": True} if complete_horizon else {})}
+    result = rt._train_dense_purged_oof({"cohort_id": "test", "fold_id": "w0", "train_start": calendar[0], "train_end": calendar[7],
+        "test_start": calendar[8], "test_end": calendar[-1]}, model_name="PatchTST", cfg={"nf_model_name": "PatchTST"},
+        bucket=bucket, records=rows, version="test", seq_len=4, pred_len=2, max_steps=2, batch_size=12, seed=42,
+        max_series=20, gcs_prefix="local", training_options=options)
+    split = json.loads(str(np.load(io.BytesIO(bucket.values[result["oof_artifact"]["path"]]), allow_pickle=True)["metadata"].item()))["split_metadata"]
+    evidence = json.loads(bucket.values[result["oof_evidence_path"]])["split_metadata"]
+    if not complete_horizon:  # pre-R33 profiles keep byte-identical metadata
+        assert "train_label_known_max" not in split and "train_label_known_max" not in evidence
+        assert "evaluation_row_accounting" not in result["metadata"]["panel_report"]
+        return
+    assert split["train_label_known_max"] == evidence["train_label_known_max"] == calendar[7]
+    assert split["nf_require_complete_horizon"] is True
+    accounting = split["evaluation_row_accounting"]
+    assert accounting["labels_without_prediction"] == 2 and accounting["label_rows"] == 24
+    assert result["metrics"]["oos_samples"] == accounting["label_rows"] - accounting["labels_without_prediction"]

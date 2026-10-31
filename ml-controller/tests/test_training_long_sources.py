@@ -72,3 +72,99 @@ def test_broker_empty_partition_does_not_fill_missing_dates(tmp_path):
     out=pl.read_parquet(tmp_path/'raw/training_long_full_vintage/broker.parquet')
     assert r['rows']==2 and out['date'].to_list()==['2026-09-01','2026-09-30']
     assert out['broker_net_lots'].to_list()==[0.,2.]
+
+
+class _DataBucket:
+    """Plain object store; avoids the node indicator runner the full price loader needs."""
+    def __init__(self):self.data={}
+    def blob(self,name):
+        store=self.data
+        class _B:
+            def download_as_bytes(self):return store[name]
+        return _B()
+
+
+def _bind(historical, **extra):
+    bucket=_DataBucket()
+    price={"capture_id":"capture","capture_manifest_path":"capture/raw/daily_price_full_vintage/manifest.json"}
+    prices={1:[{"date":"2026-09-28","close":50.},{"date":"2026-09-29","close":52.}]}
+    attach_long(bucket,price)
+    snapshot={"3004":[{"date":"2026-09-27","dealer_net":7.,"broker_net_shares":99.,"broker_concentration":.9},
+                      {"date":"2026-09-28","dealer_net":1.,"broker_net_shares":99.,"broker_estimated_amount":1e9,"broker_count":40}]}
+    result=bind_long_sources(bucket,price_capture=price,stock_rows=[{"id":1,"symbol":"3004"}],prices_map=prices,
+        prior_ts={1:{"2026-09-28":{"eps":3.}}},prior_chips=snapshot,run_date="2026-09-29",
+        **({"historical_broker":True} if historical else {}),**extra)
+    return prices,result
+
+
+def test_r33_historical_broker_binds_every_date_and_clears_snapshot():
+    prices,(dated,chips,proof)=_bind(True)
+    rows={r["date"]:r for r in chips["3004"]}
+    close={r["date"]:r["close"] for r in prices[1]}
+    # Snapshot-only date keeps unrelated chips but loses every broker value.
+    assert rows["2026-09-27"]=={"date":"2026-09-27","dealer_net":7.}
+    assert rows["2026-09-28"]["dealer_net"]==1. and rows["2026-09-28"]["broker_net_shares"]==4.
+    assert rows["2026-09-28"]["broker_estimated_amount"]==4.*close["2026-09-28"]*1000.
+    assert rows["2026-09-28"]["broker_concentration"]==.2 and rows["2026-09-28"]["broker_count"]==3
+    assert rows["2026-09-29"]["broker_net_shares"]==5. and rows["2026-09-29"]["broker_count"]==4
+    binding=proof["historical_broker_binding"]
+    assert binding["rows_bound"]==2 and binding["date_min"]=="2026-09-28"
+    assert "known after the d-day close" in binding["policy"] and "not certified" in binding["policy"]
+    from services.pit_certification import contract_content_sha256,load_contract
+    assert (binding["availability_level"],binding["lag_sessions"])==("R",0)
+    assert binding["contract_sha256"]==contract_content_sha256(load_contract())
+    assert "retail_pct" not in dated[1]["2026-09-28"]
+
+
+def test_broker_policy_refuses_a_contract_lag_the_feature_layer_would_not_apply(monkeypatch):
+    import copy
+    from services import pit_certification
+    from services.training_long_sources import historical_broker_policy
+    contract=copy.deepcopy(pit_certification.load_contract());contract["datasets"]["broker"]["lag_sessions"]=1
+    assert "same-day" in historical_broker_policy()["policy"]
+    monkeypatch.setattr(pit_certification,"load_contract",lambda *a,**k:contract)
+    with pytest.raises(ValueError,match="training_broker_contract_lag_unowned"):
+        historical_broker_policy()
+    contract["feature_lags"].update({f:1 for f in ("broker_net_shares","broker_estimated_amount","broker_concentration","broker_count")})
+    policy=historical_broker_policy()
+    assert policy["lag_sessions"]==1 and "same-day" not in policy["policy"]
+    assert "serving must build broker features with pit-availability-contract-v1" in policy["policy"]
+
+
+def test_non_r33_long_binding_is_unchanged():
+    _,default=_bind(False)
+    _,explicit=_bind(False,historical_broker=False)
+    assert json.dumps(default,sort_keys=True,default=str)==json.dumps(explicit,sort_keys=True,default=str)
+    _,chips,proof=default
+    rows={r["date"]:r for r in chips["3004"]}
+    assert rows["2026-09-28"]["broker_net_shares"]==99. and rows["2026-09-27"]["broker_concentration"]==.9
+    assert rows["2026-09-29"]["broker_net_shares"]==5. and "historical_broker_binding" not in proof
+
+
+def test_historical_broker_refuses_inference_composition():
+    with pytest.raises(ValueError,match="training_historical_broker_requires_capture"):
+        _bind(True,inference_composition={"long":{}})
+
+
+
+def test_pandas_broker_capture_matches_full_lazy_aggregation(tmp_path,monkeypatch):
+    import numpy as np,pandas as pd
+    import services.training_long_sources as module
+    rng=np.random.default_rng(11);rows=[]
+    for day in pd.date_range("2026-08-25","2026-10-06"):
+        for symbol in ("2330","00878","6488"):
+            for broker in ("1020","9A00","1030"):
+                rows.append([day+pd.Timedelta(hours=int(rng.integers(0,20))),symbol,broker,float(rng.integers(0,5)*1000),float(rng.integers(0,5)*1000)])
+        rows.append([day,"3008","1020",5000.,0.]);rows.append([day,"3008","9A00",0.,5000.])  # |net| tie, opposite signs
+        rows.append([day,"3008","1030",None,2000.])
+    frame=pd.DataFrame(rows,columns=["date","symbol","broker","buy","sell"]).sample(frac=1.,random_state=5).reset_index(drop=True)
+    frame.loc[4,"date"]=pd.NaT;frame.loc[9,"sell"]=float("nan");frame["stock_id"]=frame["symbol"]
+    old=write_broker_capture(pl.from_pandas(frame).lazy(),run_dir=tmp_path/"old",start="2026-09-01",end="2026-09-29")
+    seen=[];convert=pl.from_pandas
+    monkeypatch.setattr(module.pl,"from_pandas",lambda f,*a,**k:(seen.append(f.shape),convert(f,*a,**k))[1])
+    new=write_broker_capture(frame,run_dir=tmp_path/"new",start="2026-09-01",end="2026-09-29")
+    assert new["sha256"]==old["sha256"] and new["rows"]==old["rows"]
+    assert (tmp_path/"new/raw/training_long_full_vintage/broker.parquet").read_bytes()==(tmp_path/"old/raw/training_long_full_vintage/broker.parquet").read_bytes()
+    assert seen and max(r for r,_ in seen)<len(frame)/4 and {c for _,c in seen}=={5}
+    with pytest.raises(ValueError,match="training_long_source_empty:broker"):
+        write_broker_capture(frame,run_dir=tmp_path/"empty",start="2027-01-01",end="2027-01-10")

@@ -12,7 +12,7 @@ import json
 import os
 import time
 import hashlib
-from datetime import datetime
+from datetime import date, datetime
 from importlib.metadata import version as package_version
 
 import numpy as np
@@ -84,6 +84,12 @@ class UniversalPrepRequest(BaseModel):
     feature_semantic_version: str = "formal137-pit-asof-source-quality-v3"
     retain_unlabeled_features: bool = False  # Immutable source stage; canonical prep owns label eligibility.
     gcs_prefix: str = "universal"
+    feature_warmup_rows: int = 0  # Leading rows per stock that only feed long-window features.
+    pit_contract_version: str | None = None  # C28-02 availability lags; None keeps pre-contract output.
+    pit_contract_sha256: str | None = None  # Content sha256 the controller bound; must match the loaded contract.
+    # C28-02 P2 T1: daily inference prep also writes these PIT-lagged copies of the same batch,
+    # each {"gcs_prefix", "pit_contract_version", "pit_contract_sha256"}. Empty = unchanged output.
+    pit_variants: list[dict] = []
 
 
 class UniversalTrainRequest(BaseModel):
@@ -113,9 +119,16 @@ class UniversalTrainRequest(BaseModel):
     cpcv_min_train_groups: int | None = None
     enable_model_cpcv: bool = True
     model_cpcv_policy: dict | None = None
+    # "nested_cpcv": 15-split nested refits (diagnostic). "outer_test_date_panel": evidence from
+    # the fold's own outer-test predictions, as TabM/GNN/NF folds do (R33 OOF folds only).
+    fold_model_cpcv: str = "nested_cpcv"
     training_run_suffix: str | None = None
     run_date: str | None = None
     as_of_date: str | None = None
+    signal_date_max: str | None = None
+    label_known_at_max: str | None = None
+    pit_certification: dict | None = None  # {receipt, receipt_sha256} from controller pit_certification
+    pit_contract_version: str | None = None  # Version the prep was built under; recorded in the artifact.
     max_prep_stale_days: int | None = None
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
@@ -181,6 +194,8 @@ def validate_immutable_oof_snapshot_for_registration(
     label_known_dates: np.ndarray,
     run_date: str | None,
     release_training_contract: dict | None,
+    source_rows: int | None = None,
+    input_scope: dict | None = None,
 ) -> dict:
     """Verify exact point-in-time OOF lineage instead of applying native-prep freshness."""
 
@@ -218,8 +233,11 @@ def validate_immutable_oof_snapshot_for_registration(
         or not str(feature_pool.get("path") or "").strip()
     ):
         errors.append("immutable_oof_snapshot_feature_pool_invalid")
-    if int(snapshot.get("total_rows") or 0) != int(rows):
+    archive_rows = int(rows) if source_rows is None else int(source_rows)
+    if int(snapshot.get("total_rows") or 0) != archive_rows:
         errors.append("immutable_oof_snapshot_row_count_mismatch")
+    if archive_rows < int(rows) or (archive_rows != int(rows) and not input_scope):
+        errors.append("immutable_oof_snapshot_scope_missing_or_invalid")
 
     date_values = [str(value) for value in np.asarray(dates).reshape(-1).tolist() if str(value)]
     label_values = [
@@ -243,6 +261,12 @@ def validate_immutable_oof_snapshot_for_registration(
         errors.append("immutable_oof_snapshot_cutoff_or_label_date_invalid")
     if label_known_date_max and cutoff and label_known_date_max > cutoff:
         errors.append("immutable_oof_snapshot_future_label_detected")
+    if input_scope:
+        if (input_scope.get("label_known_at_max") != cutoff
+                or not input_scope.get("signal_date_max")
+                or input_scope["signal_date_max"] >= cutoff
+                or (date_max and date_max > input_scope["signal_date_max"])):
+            errors.append("immutable_oof_snapshot_scope_cutoff_mismatch")
     if date_max and label_known_date_max and date_max > label_known_date_max:
         errors.append("immutable_oof_snapshot_signal_after_label_known_date")
 
@@ -257,6 +281,9 @@ def validate_immutable_oof_snapshot_for_registration(
         "date_max": date_max,
         "label_known_date_max": label_known_date_max,
         "rows": int(rows),
+        "source_rows": archive_rows,
+        "excluded_rows": archive_rows - int(rows),
+        "input_scope": input_scope,
         "verification": "manifest_batches_feature_consensus_and_label_known_cutoff_v1",
         "errors": errors,
     }
@@ -612,6 +639,7 @@ def _save_oos_rank_artifact(
     markets_test: np.ndarray,
     label_known_dates_test: np.ndarray,
     feature_names: list[str],
+    train_label_known_max: str | None = None,
 ) -> dict | None:
     """Persist split-job OOS predictions for the final rank-stacking reducer."""
 
@@ -666,6 +694,7 @@ def _save_oos_rank_artifact(
                     "train_range": [req.train_start, req.train_end],
                     "test_range": [req.test_start, req.test_end],
                     "method": "walk_forward_explicit_label_purged",
+                    **({"train_label_known_max": train_label_known_max} if train_label_known_max else {}),
                 },
             ))
     return {
@@ -692,6 +721,15 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     from .sequence_training import build_sequence_record
 
     t0 = time.time()
+    pit_contract_sha256 = None
+    if req.pit_contract_sha256 is not None and req.pit_contract_version is None:
+        raise ValueError("pit_contract_sha256_without_version")
+    if req.pit_contract_version is not None:
+        # The lags come from this image's contract file; refuse one the controller did not bind.
+        from .pit_contract import content_sha256, load
+        pit_contract_sha256 = content_sha256(load(req.pit_contract_version))
+        if req.pit_contract_sha256 != pit_contract_sha256:
+            raise ValueError("pit_contract_sha256_mismatch")
     payloads = req.payloads
     shared_history = req.shared_market_history or {}
     ps_ts_map = req.per_stock_ts_map or {}
@@ -725,6 +763,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 req.barrier_params or None,
                 payload.get("stock_meta"),
                 historical_training=True,
+                pit_contract_version=req.pit_contract_version,
             )
             if "date" not in df.columns and len(prices_data) > 0:
                 dates = [p.get("date", "") for p in prices_data]
@@ -736,15 +775,24 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 df = df.with_columns(pl.lit("").alias("_date"))
             symbol = str(payload.get("symbol") or payload.get("stock_id") or "").strip()
             market = str(payload.get("market") or "TW").strip().upper()
+            market_expr = pl.lit(market)
+            if payload.get("market_since"):
+                # C28-02 C3: before the current venue's listing date the venue is not
+                # proven; UNKNOWN keeps lineage but is never a ranked label market.
+                market_since = date.fromisoformat(str(payload["market_since"])).isoformat()
+                market_expr = pl.when(pl.col("_date") < market_since).then(pl.lit("UNKNOWN")).otherwise(market_expr)
             df = df.with_columns(
                 pl.lit(symbol).alias("_symbol"),
-                pl.lit(market).alias("_market"),
+                market_expr.alias("_market"),
                 (pl.col("sector").cast(pl.String).fill_null("unknown") if "sector" in df.columns else pl.lit("unknown")).alias("_sector"),
                 pl.col("_date").shift(-5).alias("_label_known_date"),
             )
             if req.retain_unlabeled_features and market in ("TW", "TWO", "TWSE", "OTC"):
                 from .feature_data_quality import require_technical_source_observations
                 require_technical_source_observations(df, symbol)
+            if req.feature_warmup_rows:
+                # ret252/52w windows are undefined (safe-div zero) before this many rows.
+                df = df.slice(req.feature_warmup_rows)
             all_dfs.append(df)
             seq_record = build_sequence_record(
                 symbol=str(payload.get("symbol") or payload.get("stock_id") or ""),
@@ -846,6 +894,9 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     if df_clean.unique(["_market", "_symbol", "_date"]).height != df_clean.height:
         raise ValueError("feature_data_quality_duplicate_training_keys")
     cleaning_report["canonical_targets_required"] = req.retain_unlabeled_features
+    if req.pit_contract_version is not None:
+        cleaning_report["pit_contract_version"] = req.pit_contract_version
+        cleaning_report["pit_contract_sha256"] = pit_contract_sha256
     cleaning_report["source_missingness_by_feature"] = missingness_by_feature
     cleaning_report["source_coverage_complete"] = all(rate < 1.0 for rate in missingness_by_feature.values())
     cleaning_report["sector_unknown_rows"] = int(np.isin(np.char.lower(sectors_arr.astype(str)), ["unknown", "", "0", "0.0"]).sum())
@@ -909,6 +960,48 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         "skipped": skipped,
         "elapsed_s": elapsed,
     }
+
+
+def prep_universal_batch_with_variants(req: UniversalPrepRequest, *, deadline: float | None = None) -> dict:
+    """Legacy batch first, then each PIT variant of the same payloads (C28-02 P2 T1).
+
+    A variant failure is reported under result["pit_variants"][prefix] and never touches
+    the legacy result. deadline (time.monotonic()) skips a variant that would risk the
+    function timeout, because a timeout would also lose the legacy batch.
+    """
+    if not req.pit_variants:
+        return prep_universal_batch(req)
+    started = time.monotonic()
+    result = prep_universal_batch(req.model_copy(update={"pit_variants": []}))
+    if not isinstance(result, dict) or result.get("error"):
+        return result
+    legacy_elapsed = time.monotonic() - started
+    variants: dict[str, dict] = {}
+    for spec in req.pit_variants:
+        spec = spec if isinstance(spec, dict) else {}
+        prefix = str(spec.get("gcs_prefix") or "").rstrip("/")
+        try:
+            version = spec.get("pit_contract_version")
+            if (req.pit_contract_version is not None or not req.retain_unlabeled_features or not version
+                    or not prefix.startswith("universal/oof_forward_prep_v2/") or ".." in prefix.split("/")
+                    or prefix == req.gcs_prefix.rstrip("/") or prefix in variants):
+                raise ValueError("pit_variant_spec_invalid")
+            if not req.per_stock_ts_map:
+                # Lagged fields would silently become 0 without their per-stock history.
+                raise ValueError("daily_prep_pit_history_missing")
+            if deadline is not None and time.monotonic() + legacy_elapsed * 1.25 > deadline:
+                raise ValueError("pit_variant_time_budget_exceeded")
+            out = prep_universal_batch(req.model_copy(update={
+                "pit_variants": [], "gcs_prefix": prefix, "pit_contract_version": version,
+                "pit_contract_sha256": spec.get("pit_contract_sha256")}))
+            if not isinstance(out, dict) or out.get("error"):
+                raise ValueError(str((out or {}).get("error") if isinstance(out, dict) else "pit_variant_invalid_result"))
+            report = out.get("cleaning_report") or {}
+            variants[prefix] = {"rows": out.get("rows"), "pit_contract_version": report.get("pit_contract_version"),
+                                "pit_contract_sha256": report.get("pit_contract_sha256")}
+        except Exception as exc:  # noqa: BLE001 - only this variant fails closed.
+            variants[prefix or "<missing>"] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    return {**result, "pit_variants": variants}
 
 
 def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
@@ -983,6 +1076,13 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise ValueError("prep_batch_rank_alignment_incomplete")
     if len(target_returns_arr) != len(X):
         raise ValueError("global_cross_sectional_rank_requires_raw_target_returns")
+    from .full_fit_scope import bounds, row_mask
+    archive_row_count = len(X)
+    scope_mask = row_mask(req.model_dump(), dates_arr, label_known_dates_arr)
+    if not scope_mask.all():
+        X, batch_local_y, target_returns_arr, dates_arr, symbols_arr, markets_arr, label_known_dates_arr = (
+            values[scope_mask] for values in (X, batch_local_y, target_returns_arr, dates_arr, symbols_arr, markets_arr, label_known_dates_arr)
+        )
     y = recompute_global_cross_sectional_rank(
         target_returns_arr,
         dates_arr,
@@ -1053,12 +1153,30 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         and req.test_start is not None
         and req.test_end is not None
     )
+    immutable_oof_mode = requires_immutable_oof_snapshot(req)
+    immutable_prep_freshness = None
+    if not walk_forward_mode and immutable_oof_mode:
+        if not req.dataset_snapshot:
+            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
+        # The immutable receipt describes the entire archive. The explicit
+        # full-fit scope admits only cutoff-safe rows; never rewrite its receipt
+        # to make the admitted count look like the original archive count.
+        # Fail before any expensive fit when either boundary is invalid.
+        immutable_prep_freshness = validate_immutable_oof_snapshot_for_registration(
+            req.dataset_snapshot, gcs_prefix=gcs_prefix, rows=len(X),
+            dates=dates_arr, label_known_dates=label_known_dates_arr,
+            run_date=req.run_date, release_training_contract=req.release_training_contract,
+            source_rows=archive_row_count, input_scope=bounds(req.model_dump()),
+        )
     from .deployment_refit import requested, validate_full_history
     full_fit = requested(req.model_dump())
     deployment_fit = validate_full_history(
         signal_dates=dates_arr, label_known_dates=label_known_dates_arr,
         cutoff=req.as_of_date or req.run_date,
     ) if full_fit else None
+    if deployment_fit is not None:
+        from .full_fit_scope import bounds
+        deployment_fit["input_scope"] = bounds(req.model_dump())
     original_output_version = req.output_model_version
     req = normalize_universal_lifecycle_request(
         req,
@@ -1308,7 +1426,28 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     elapsed = round(time.time() - t0, 1)
     print(f"[TrainUniversal] Done in {elapsed}s -> {len(results)} models")
 
-    if req.enable_model_cpcv:
+    outer_test_evidence = req.fold_model_cpcv == "outer_test_date_panel" and walk_forward_mode
+    if req.enable_model_cpcv and outer_test_evidence:
+        from .model_validation import build_model_cpcv_evidence, date_panel_fold_metrics
+
+        for model_name in TREE_MODEL_NAMES:
+            if model_name not in oos_rank_predictions:
+                continue
+            evidence = build_model_cpcv_evidence(
+                model=model_name,
+                fold_metrics=date_panel_fold_metrics(dates_test, oos_rank_predictions[model_name], y_test),
+                policy=req.model_cpcv_policy,
+                family="tree",
+                coverage_mode="date_symbol_panel",
+                method="outer_test_date_panel_rank_ic",
+            )
+            evidence["data_scope"] = {"source": "outer_test_fold", "rows": int(len(y_test)),
+                                      "nested_cpcv": "skipped_r33_oof_fold"}
+            model_cpcv_evidence_by_model[model_name] = evidence
+            results.setdefault(model_name, {})["model_cpcv"] = evidence
+            print(f"[TrainUniversal] {model_name} outer-test evidence decision={evidence['decision']} "
+                  f"folds={evidence['folds']} ic={evidence['oos_ic_mean']}")
+    elif req.enable_model_cpcv:
         try:
             from .model_validation import evaluate_model_cpcv_rank_ic
 
@@ -1479,6 +1618,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 markets_test=markets_test,
                 label_known_dates_test=label_known_dates_test,
                 feature_names=feature_names,
+                train_label_known_max=validation_split_metadata.get("train_label_known_max"),
             )
             if oos_artifact:
                 print(
@@ -1564,19 +1704,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         rows=len(X),
         dates=dates_arr,
     )
-    immutable_oof_mode = requires_immutable_oof_snapshot(req)
     if not walk_forward_mode and immutable_oof_mode:
-        if not req.dataset_snapshot:
-            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
-        prep_freshness = validate_immutable_oof_snapshot_for_registration(
-            req.dataset_snapshot,
-            gcs_prefix=gcs_prefix,
-            rows=len(X),
-            dates=dates_arr,
-            label_known_dates=label_known_dates_arr,
-            run_date=req.run_date,
-            release_training_contract=req.release_training_contract,
-        )
+        prep_freshness = immutable_prep_freshness
     elif not walk_forward_mode and req.dataset_snapshot:
         prep_freshness = validate_monthly_dataset_snapshot_for_registration(
             req.dataset_snapshot,

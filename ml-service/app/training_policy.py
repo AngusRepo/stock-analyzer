@@ -672,7 +672,11 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
         str(base_payload.get("candidate_type") or "").strip() == "timesfm_l175_l2_feature_release"
         and str(group or "").strip().lower() == "tree"
     )
-    payload["models_filter"] = list(policy.models)
+    # A release roster without some tree model (R33 drops XGBoost) narrows the tree group.
+    tree_models = base_payload.get("tree_models") if policy.group == "tree" else None
+    if tree_models and not set(tree_models) <= set(TREE_MODEL_NAMES):
+        raise ValueError("tree_models_outside_tree_family")
+    payload["models_filter"] = list(tree_models or policy.models)
     full137 = base_payload.get("feature_release_mode") in {"accepted_ab_full137", "approved_full131_v1"}
     payload["skip_feature_pool"] = True if timesfm_l175_feature_release or full137 else policy.skip_feature_pool
     feature_policy = policy.to_dict()
@@ -698,11 +702,12 @@ def build_tree_model_child_payloads(base_payload: dict[str, Any]) -> dict[str, d
     """Build one governed train payload per tree model for opt-in fan-out."""
 
     tree_payload = build_group_train_payload(base_payload, "tree")
+    tree_models = tuple(tree_payload["models_filter"])
     payloads: dict[str, dict[str, Any]] = {}
-    for model_name in TREE_MODEL_NAMES:
+    for model_name in tree_models:
         child = dict(tree_payload)
         child["models_filter"] = [model_name]
-        child["tree_split_parent_models"] = list(TREE_MODEL_NAMES)
+        child["tree_split_parent_models"] = list(tree_models)
         child["tree_split_model"] = model_name
         child["training_run_suffix"] = model_name.lower()
         payloads[model_name] = child
@@ -959,6 +964,10 @@ class UniversalTrainingPolicy:
         for key in (
             "run_date",
             "as_of_date",
+            "signal_date_max",
+            "label_known_at_max",
+            "pit_certification",
+            "pit_contract_version",
             "max_prep_stale_days",
             "gcs_prefix",
             "feature_pool_path",

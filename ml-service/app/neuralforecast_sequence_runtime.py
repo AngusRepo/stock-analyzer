@@ -127,6 +127,7 @@ def _resolve_nf_training_options(payload: dict[str, Any], model_name: str) -> di
         "trainer_deterministic": bool(payload.get("trainer_deterministic", True)),
         "trainer_benchmark": False,
         "oof_training_history_mode": history_mode,
+        **({"nf_require_complete_horizon": True} if payload.get("nf_require_complete_horizon") else {}),
     }
 
 
@@ -575,12 +576,15 @@ def _train_dense_purged_oof(
         seed=seed,
         n_series=len(panel_records),
         training_options=training_options,
+        require_complete_horizon=bool(training_options.get("nf_require_complete_horizon")),
     )
     test_dates = [date for date in calendar if test_start <= date <= test_end]
     evaluation_records = _dense_oof_evaluation_records(model_name, records, panel_records)
     all_rows: list[dict[str, Any]] = []
     asof_rows: list[dict[str, Any]] = []
     daily_metrics: list[dict[str, Any]] = []
+    drops = {"context_rows": 0, "label_rows": 0, "labels_without_prediction": 0,
+             "dates_below_min_labels": 0, "label_rows_on_dates_below_min_labels": 0}
     import pandas as pd
 
     for signal_date in test_dates:
@@ -591,6 +595,8 @@ def _train_dense_purged_oof(
             seq_len=seq_len,
             pred_len=pred_len,
         )
+        drops["context_rows"] += len(context_rows)
+        drops["label_rows"] += len(labels)
         if not context_rows:
             continue
         pred_by_id, _pred_col = _predict_horizon_by_id_with_column(
@@ -612,7 +618,10 @@ def _train_dense_purged_oof(
                 )),
             })
         if len(labels) < 10:
+            drops["dates_below_min_labels"] += 1
+            drops["label_rows_on_dates_below_min_labels"] += len(labels)
             continue
+        drops["labels_without_prediction"] += sum(str(label["unique_id"]) not in pred_by_id for label in labels)
         pred_return: list[float] = []
         actual_return: list[float] = []
         market_segments: list[str] = []
@@ -655,6 +664,15 @@ def _train_dense_purged_oof(
     panel_report["evaluation_universe_series"] = len(evaluation_records)
     panel_report["evaluation_prediction_rows"] = len(all_rows)
     panel_report["training_series_cap_applied"] = len(panel_records) < panel_report["eligible_series"]
+    # R33 (complete-horizon) folds attest the latest observation the fitted panel saw
+    # (the panel never extends past train_end). Older profiles keep their exact metadata.
+    r33_attestation = {
+        "train_label_known_max": str(panel_report["calendar_end"])[:10],
+        "nf_require_complete_horizon": True,
+        "evaluation_row_accounting": drops,
+    } if training_options.get("nf_require_complete_horizon") else {}
+    if r33_attestation:
+        panel_report["evaluation_row_accounting"] = drops
     if not asof_rows:
         raise ValueError("oof_sequence_dense_predictions_empty")
     non_overlapping_metrics = daily_metrics[::max(1, pred_len)]
@@ -736,6 +754,7 @@ def _train_dense_purged_oof(
                 "test_end": test_end,
                 "purge_horizon": pred_len,
                 "refit_inside_test": False,
+                **r33_attestation,
             },
         ) if all_rows else None
     oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics])) if daily_metrics else 0.0
@@ -768,6 +787,7 @@ def _train_dense_purged_oof(
                 "test_start": test_start,
                 "test_end": test_end,
                 "purge_horizon": pred_len,
+                **r33_attestation,
             },
         },
     ) if persist_oof_artifact else None
@@ -868,6 +888,7 @@ def _make_nf_model(
     seed: int,
     n_series: int,
     training_options: dict[str, Any] | None = None,
+    require_complete_horizon: bool = False,
 ):
     configure_training_reproducibility(seed)
     _configure_neuralforecast_runtime()
@@ -899,6 +920,10 @@ def _make_nf_model(
         "deterministic": bool(training_options["trainer_deterministic"]),
         "benchmark": bool(training_options["trainer_benchmark"]),
     }
+    if require_complete_horizon:
+        # A scoped release must not learn from partial right-padded horizons:
+        # those windows can have signal dates after the declared cutoff.
+        common.update(training_data_availability_threshold=1.0, start_padding_enabled=False)
     if model_name == "PatchTST":
         return PatchTST(
             encoder_layers=int(training_options["encoder_layers"]),
@@ -925,6 +950,7 @@ def _train_nf(
     seed: int,
     n_series: int,
     training_options: dict[str, Any],
+    require_complete_horizon: bool = False,
 ):
     _configure_neuralforecast_runtime()
     import pandas as pd
@@ -940,7 +966,15 @@ def _train_nf(
         seed=seed,
         n_series=n_series,
         training_options=training_options,
+        require_complete_horizon=require_complete_horizon,
     )
+    if require_complete_horizon and (
+        model.min_outsample_fraction != 1.0
+        or model.h != pred_len
+        or model.input_size != seq_len
+        or model.hparams.get("start_padding_enabled") is not False
+    ):
+        raise ValueError("full_fit_nf_complete_horizon_not_enforced")
     nf = NeuralForecast(models=[model], freq=1)
     nf.fit(df=df)
     return nf, df
@@ -1292,6 +1326,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)
+    from .full_fit_scope import sequence_records as scoped_sequence_records
+    dataset_source.records, input_scope = scoped_sequence_records(payload, dataset_source.records, horizon=pred_len)
     explicit_test_start = str(payload.get("test_start") or "").strip()
     explicit_test_end = str(payload.get("test_end") or "").strip()
     if generation_mode == "purged_oof":
@@ -1322,6 +1358,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     series_filter: dict[str, Any] = {}
     fixed_panel_history = model_name == "iTransformer"
     full_history = training_options.get("oof_training_history_mode") == "full_pit_history"
+    if input_scope is not None and not full_history:
+        raise ValueError("full_fit_nf_scoped_panel_required")
     if full_history:
         from .sequence_full_fit import full_history_fold_rows, full_history_fit_rows
         cutoff = str(payload.get("run_date") or payload.get("as_of_date") or "")[:10]
@@ -1490,6 +1528,10 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             max_series=max_series, fixed_panel_history=fixed_panel_history)
     if deployment_series < 10:
         raise ValueError(f"{model_name} deployment refit requires >=10 valid series, got {deployment_series}")
+    scoped_window_receipt = None
+    if input_scope is not None:
+        from .full_fit_scope import complete_nf_window_scope
+        scoped_window_receipt = complete_nf_window_scope(input_scope, deployment_panel, horizon=pred_len)
     nf, _deployment_df = _train_nf(
         train_rows,
         model_name=cfg["nf_model_name"],
@@ -1500,7 +1542,10 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         seed=seed,
         n_series=deployment_series,
         training_options=training_options,
+        require_complete_horizon=input_scope is not None or bool(training_options.get("nf_require_complete_horizon")),
     )
+    if scoped_window_receipt is not None:
+        input_scope = scoped_window_receipt
 
     lineage_dates = []
     for row in dataset_source.records[:_sequence_series_limit(max_series, len(dataset_source.records))]:
@@ -1580,6 +1625,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         },
         "oos_ic": metrics["oos_ic"],
         "direction_accuracy": metrics["direction_accuracy"],
+        "input_scope": input_scope,
         "sample_count": int(len(train_rows)),
         "validation_sample_count": int(len(all_actual_return)),
         "dataset_snapshot": {

@@ -12,8 +12,41 @@ from datetime import date
 from services.training_auxiliary_capture import DAILY_FIELDS, FIELDS
 from services.training_source_preflight import _sealed_manifest
 
+# Same breadth threshold the official training calendar uses for a price session.
+HISTORY_MIN_SYMBOLS = 100
 
-def inspect_capture_inventory(bucket, *, sequence_gcs_prefix: str, run_date: str, inference_only: bool = False) -> dict:
+
+def first_covered_date(raw: bytes, *, positive: bool) -> str | None:
+    """First date on which at least HISTORY_MIN_SYMBOLS symbols carry a usable value."""
+    import io
+    import polars as pl
+    frame = pl.read_parquet(io.BytesIO(raw))
+    if "date" not in frame.columns:
+        return None
+    usable = []
+    for column in (c for c in frame.columns if c != "date"):
+        value = pl.col(column).cast(pl.Float64, strict=False)
+        usable.append((value.is_finite() & (value > 0 if positive else pl.lit(True))).fill_null(False).cast(pl.Int32))
+    if not usable:
+        return None
+    counts = frame.select(pl.col("date").cast(pl.String).str.slice(0, 10), pl.sum_horizontal(usable).alias("n"))
+    days = counts.filter(pl.col("n") >= HISTORY_MIN_SYMBOLS)["date"]
+    return days.min() if len(days) else None
+
+
+def first_long_covered_date(raw: bytes) -> str | None:
+    """Long (date, symbol) capture: first date with HISTORY_MIN_SYMBOLS distinct symbols."""
+    import io
+    import polars as pl
+    frame = pl.read_parquet(io.BytesIO(raw), columns=["date", "symbol"])
+    counts = (frame.with_columns(pl.col("date").cast(pl.String).str.slice(0, 10))
+              .group_by("date").agg(pl.col("symbol").n_unique().alias("n")))
+    days = counts.filter(pl.col("n") >= HISTORY_MIN_SYMBOLS)["date"]
+    return days.min() if len(days) else None
+
+
+def inspect_capture_inventory(bucket, *, sequence_gcs_prefix: str, run_date: str, inference_only: bool = False,
+                              per_field_auxiliary: bool = False, require_aligned_history: bool = False) -> dict:
     sequence = _sealed_manifest(bucket, sequence_gcs_prefix, "sequence_manifest.json", compact=True)
     daily = [r for r in sequence.get("lane_reports", []) if r.get("lane") == "daily_price"]
     if len(daily) != 1 or not isinstance(daily[0].get("source_uri"), dict):
@@ -101,6 +134,43 @@ def inspect_capture_inventory(bucket, *, sequence_gcs_prefix: str, run_date: str
         require_file(path)
         sha_required(institutional.get("checksums", {}).get(field), path, field)
 
+    aligned_price_start = None
+    if require_aligned_history and not inference_only:
+        # R33: a source that starts after the price vintage would leave early rows null
+        # for imputation to fill. Block before stock loading instead.
+        from services.training_session_calendar import price_session_dates
+
+        def verified(path, expected):
+            if path not in present or not isinstance(expected, str):
+                return None
+            raw = bucket.blob(path).download_as_bytes()
+            if hashlib.sha256(raw).hexdigest() != expected:
+                issue("field_content_checksum_mismatch", path)
+                return None
+            return raw
+
+        close_raw = verified(close_path, price.get("checksums", {}).get("close"))
+        try:
+            vintage_start = min(price_session_dates(close_raw)) if close_raw is not None else None
+        except ValueError:
+            vintage_start = None
+        aligned_price_start = vintage_start
+        if vintage_start is None:
+            issue("r33_price_vintage_start_unverified", close_path)
+        else:
+            sources = [("market_value", price_root, price.get("checksums", {}), True)]
+            sources += [(field, f"{raw_root}/chip_diversity_full_vintage", institutional.get("checksums", {}), False)
+                        for field in ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net")]
+            for source_name, root, checksums, positive in sources:
+                path = f"{root}/{source_name}.parquet"
+                raw = verified(path, checksums.get(source_name))
+                if raw is None:
+                    continue  # absence and checksum gaps are already reported above
+                source_start = first_covered_date(raw, positive=positive)
+                if source_start is None or source_start > vintage_start:
+                    issue("r33_source_history_starts_after_price:" + source_name, path, source=source_name,
+                          source_start=source_start, price_start=vintage_start)
+
     composition = None
     if inference_only:
         from services.daily_inference_composition import load_composition, read_frame
@@ -126,10 +196,29 @@ def inspect_capture_inventory(bucket, *, sequence_gcs_prefix: str, run_date: str
                 "value_validation_complete":False,"model_admitted":False}
 
     folder = "training_auxiliary_full_vintage"
-    auxiliary = manifest(folder, "manifest.json", "finlab-training-auxiliary-single-capture-v1")
+    field_captures = None
+    if per_field_auxiliary:
+        # R33: each field's own latest content-addressed capture, which may predate the price capture.
+        from services.training_auxiliary_capture import select_field_captures
+        try:
+            field_captures = select_field_captures(bucket, price_capture={
+                "capture_manifest_path": price_root + "/manifest.json"}, run_date=run_date)
+        except ValueError as exc:
+            issue("auxiliary_field_capture_unresolved", f"{raw_root}/{folder}", detail=str(exc))
+            field_captures = {}
+        auxiliary = {"fields": {k: v["meta"] for k, v in field_captures.items()}}
+    else:
+        auxiliary = manifest(folder, "manifest.json", "finlab-training-auxiliary-single-capture-v1")
     for field in FIELDS:
-        path = f"{raw_root}/{folder}/{field}.parquet"
-        require_file(path)
+        if field_captures is None:
+            path = f"{raw_root}/{folder}/{field}.parquet"
+            require_file(path)
+        elif field in field_captures:
+            path = field_captures[field]["capture_manifest_path"].rsplit("/", 1)[0] + f"/{field}.parquet"
+            if not bucket.blob(path).exists():
+                issue("object_missing", path)
+        else:
+            continue
         spec = (auxiliary.get("fields") or {}).get(field) or {}
         sha_required(spec.get("sha256"), path, field)
         if field in DAILY_FIELDS and spec and price_start:
@@ -148,10 +237,23 @@ def inspect_capture_inventory(bucket, *, sequence_gcs_prefix: str, run_date: str
         sha_required(meta.get("sha256"), path, name)
         if meta and meta.get("source") != name:
             issue("long_source_owner_mismatch", path)
+        if name == "broker" and aligned_price_start and path in present and isinstance(meta.get("sha256"), str):
+            raw = bucket.blob(path).download_as_bytes()
+            if hashlib.sha256(raw).hexdigest() != meta["sha256"]:
+                issue("field_content_checksum_mismatch", path)
+            else:
+                source_start = first_long_covered_date(raw)
+                if source_start is None or source_start > aligned_price_start:
+                    issue("r33_source_history_starts_after_price:broker", path, source="broker",
+                          source_start=source_start, price_start=aligned_price_start)
 
-    return {"schema_version": "capture-inventory-preflight-v1",
-            "status": "blocked" if issues else "inventory_ready",
-            "capture_id": source.get("capture_id"), "business_date": run_date,
-            "sequence_manifest_checksum": sequence["manifest_checksum"],
-            "manifest_sha256": manifests, "issues": issues,
-            "value_validation_complete": False, "model_admitted": False}
+    result = {"schema_version": "capture-inventory-preflight-v1",
+              "status": "blocked" if issues else "inventory_ready",
+              "capture_id": source.get("capture_id"), "business_date": run_date,
+              "sequence_manifest_checksum": sequence["manifest_checksum"],
+              "manifest_sha256": manifests, "issues": issues,
+              "value_validation_complete": False, "model_admitted": False}
+    if field_captures is not None:
+        result["auxiliary_field_captures"] = {k: {key: v[key] for key in ("capture_id", "capture_manifest_path", "capture_manifest_sha256")}
+                                              for k, v in field_captures.items()}
+    return result

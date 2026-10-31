@@ -53,7 +53,11 @@ COPY ml-controller/ /app/
 RUN node /app/scripts/training_indicators.cjs --check
 RUN test -f /app/scripts/repair_active8_source_and_evaluation.py
 RUN python -c "from scripts.repair_native_prestart import run"
-RUN python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"
+# image.yml builds with NATIVE_IDENTITY_ASSERT=0 so a commit that awaits its re-pin still runs every
+# later step; the ci gate and the native-identity check report the mismatch instead. Cloud Build
+# passes no build args (tools/release/release_build.py), so every production image asserts.
+ARG NATIVE_IDENTITY_ASSERT=1
+RUN if [ "$NATIVE_IDENTITY_ASSERT" = 0 ]; then echo 'native identity assertion skipped (CI build)'; else python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"; fi
 RUN python -c "from scripts.l4_distribution_refresh_job import execute, training_recipe_signature; training_recipe_signature()"
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json

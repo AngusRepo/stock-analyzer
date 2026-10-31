@@ -147,6 +147,15 @@ def test_build_config_has_build_and_probe_only_and_submit_is_async_with_staging(
     assert '--region=asia-east2' in args
 
 
+def test_production_build_keeps_the_native_identity_assertion():
+    # image.yml turns the assertion off with a build arg; Cloud Build must never pass one.
+    assert re.search(r'^ARG NATIVE_IDENTITY_ASSERT=1$', DOCKERFILE, re.M)
+    run = next(line for line in DOCKERFILE.splitlines() if 'native_release_owner_mismatch' in line)
+    assert run.startswith('RUN if [ "$NATIVE_IDENTITY_ASSERT" = 0 ]; then ') and 'assert actual ==' in run
+    config = build.cloudbuild_config('img:sha', SHA, 'b' * 40, 'c' * 64)
+    assert not any('build-arg' in arg or 'NATIVE_IDENTITY_ASSERT' in arg for step in config['steps'] for arg in step['args'])
+
+
 def test_build_wait_polls_describe_until_a_terminal_status(tmp_path):
     (tmp_path / 'build-start.json').write_text(json.dumps({'id': 'x'}))
     states = iter(['QUEUED', 'WORKING', 'SUCCESS'])

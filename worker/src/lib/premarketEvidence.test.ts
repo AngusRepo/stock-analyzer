@@ -263,8 +263,9 @@ test('after a long closure the producer records the session floor and the reader
     // Any calendar lookup over the network (TWSE news) hits the throw below.
     f.ports.fetchFrozen = async (input: any) => {
       if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
-      if (String(input).includes('yahoo.com')) return new Response('<rss/>')
-      if (String(input).includes('taifex')) return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: opened, CTime: '045959' }] } })
+      const host = URL.canParse(String(input)) ? new URL(String(input)).hostname : ''
+      if (host === 'finance.yahoo.com') return new Response('<rss/>')
+      if (host === 'mis.taifex.com.tw') return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: opened, CTime: '045959' }] } })
       if (String(input) === 'https://controller.invalid/news/analyze') return Response.json({ source: 'cloudflare_workers_ai:@cf/mistralai/mistral-small-3.1-24b-instruct', text: JSON.stringify(valid) })
       throw new Error('unexpected test network')
     }

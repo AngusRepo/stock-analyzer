@@ -31,8 +31,8 @@ export async function verifyPublicationReceipt(input:{publication:ServingPublica
     || plan.policy_identity!==p.policy_identity || input.storedSnapshot!==p.allocation_snapshot_id
     || manifest?.source_run_id!==source.run_id || manifest.signal_date!==source.run_date
     || manifest.snapshot_kind!=='allocation_context')throw new Error('premarket_serving_receipt_identity_mismatch')
-  // The plan carries every served row (unselected rows keep weight 0), so the plan,
-  // the receipt closure and the D1 readback must describe the same row set.
+  // The plan carries every served row (unselected rows keep weight 0) plus locked holdings
+  // outside the seed; the receipt closure and the D1 readback describe the served rows.
   const c=p.closure, count=Object.keys(plan.targets).length
   if(!count || p.target_count!==count
     || typeof c.predictions_written!=='number' || c.predictions_written<=0

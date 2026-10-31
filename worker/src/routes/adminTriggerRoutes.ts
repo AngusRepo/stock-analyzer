@@ -139,9 +139,11 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       return await handleTrigger(c, admitted)
     } catch (error) {
       if (admitted.db && admitted.ticketId && admitted.runId) {
-        const message = error instanceof Error ? error.message : String(error)
+        // Same NEW-94 redaction as the inner execution catch: the ticket row is stored in ops D1.
+        const { redactSchedulerRunText } = await import('../lib/schedulerRunLogger')
+        const message = redactSchedulerRunText(error instanceof Error ? error.message : String(error), c.env)
         await failAcceptedSchedulerTicket(admitted.db, { ticketId: admitted.ticketId, runId: admitted.runId, error: message })
-          .catch((settleError) => console.error('[admin-trigger] admitted ticket settlement failed:', settleError))
+          .catch((settleError) => console.warn('[admin-trigger] admitted ticket settlement failed:', settleError))
       }
       throw error
     }

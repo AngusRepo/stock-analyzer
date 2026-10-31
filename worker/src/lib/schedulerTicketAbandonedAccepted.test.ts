@@ -129,6 +129,38 @@ test('FU1: a gate that throws after admission settles the ticket as error and ke
   assert.match(String(rows[0].last_error), /KV GET failed: 503/)
 })
 
+test('FU1: the gate-failure write redacts secret env values before they reach ops D1', async () => {
+  const secret = 'proxy-token-value-1234567890'
+  const routes = createAdminTriggerRoutes({ buildTaskMap: () => ({ 'weekly-backtest': async () => 'unexpected execution' }) })
+  const sql = new DatabaseSync(':memory:')
+  sql.exec(migration)
+  const ops = { prepare(query: string) {
+    let args: any[] = []
+    const statement = { bind(...values: any[]) { args = values; return statement },
+      async first() { return sql.prepare(query).get(...args) ?? null },
+      async all() { return { results: sql.prepare(query).all(...args), meta: {} } },
+      async run() { return { success: true, meta: { changes: Number(sql.prepare(query).run(...args).changes) } } } }
+    return statement
+  } }
+  const kv = {
+    async get(key: string) { if (key.startsWith('ratelimit:')) throw new Error(`KV GET failed: proxy ${secret}`); return null },
+    async put() {},
+  }
+  const env = { LOCAL_AUTH_BYPASS: '1', ENVIRONMENT: 'test', KV: kv, OPS_DB: ops, MULTI_D1_ACTIVE_DOMAINS: 'ops',
+    SHIOAJI_PROXY_TOKEN: secret } as any
+  const response = await routes.request('https://stockvision.invalid/api/admin/trigger/weekly-backtest?sync=1',
+    { method: 'POST' }, env)
+  assert.equal(response.status, 500)
+  const rows = sql.prepare('SELECT status, last_summary, last_error FROM scheduler_execution_tickets_v1').all() as any[]
+  sql.close()
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].status, 'error')
+  for (const text of [String(rows[0].last_summary), String(rows[0].last_error)]) {
+    assert.ok(!text.includes(secret))
+    assert.match(text, /KV GET failed: proxy \*\*\*/)
+  }
+})
+
 test('FU1: the route records the admitted ticket only after it owns the delivery', () => {
   const route = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
   const handler = route.slice(route.indexOf('const handleTrigger = async'))

@@ -11,7 +11,7 @@ R33 11/1 月訓的「籌碼模型」挑戰者專用。**不改** 7 個主模型�
 
 | 類別 | 欄位（FinLab key） | 單位 | 推定公告（TW） | 無 capture 證據時當天可用 |
 |---|---|---|---|---|
-| institutional | 外陸資／投信／自營商(自行)／自營商(避險) 買賣超股數 | 股 | 17:00 | 是 |
+| institutional | 外陸資／投信／自營商(自行)／自營商(避險) 買賣超股數 | 股 | 17:00 | 否（d+1） |
 | margin | 融資今日餘額、融券今日餘額 | 張（×1000 換股） | 21:30 | 否（d+1） |
 | lending | 借券賣出餘額、借券餘額 | 股 | 21:30 | 否（d+1） |
 | turnover | 成交股數（比率分母） | 股 | 14:30 | 是 |
@@ -31,7 +31,7 @@ R33 11/1 月訓的「籌碼模型」挑戰者專用。**不改** 7 個主模型�
    - rule_presumed：資料日 + 推定公告時間。
 3. **公布延遲防呆（同日可用要有證據）**：資料日 d 的列要給訊號日 d 用，必須有一份 capture 在 cutoff(d) 前寫入且含這列。
    - 每日（observed）：21:45 那份 capture 若 vendor 還沒公布，整張表全空 → 不算觀測；這列第一次出現在 d+1 capture 的 trailing window，寫入時間 > cutoff(d) → 自動落到 d+1。不設分鐘數緩衝，證據就是 capture 實際寫入時間。
-   - 歷史（rule_presumed，沒有任何 capture 證據）：融資券、借券 `rule_same_day=False` → 只給 d 之後的訊號日（d+1）；21:30 ≤ 21:45 不代表 FinLab 21:45 前拿得到。法人、成交量維持當天。
+   - 歷史（rule_presumed，沒有任何 capture 證據）：法人、融資券、借券 `rule_same_day=False` → 只給 d 之後的訊號日（d+1）；公告時間早於 21:45 不代表 FinLab 21:45 前拿得到（法人 17:00 公告，21:00 capture 仍有 3/65 天沒有）。成交量（日價格 lane）維持當天。
 4. **vintage**：同一 (stock, data_date) 以最早觀測值為準；之後 vendor 改值只計數（`revised_after_first_seen`），不套用。整張表全空（vendor `empty`）不算觀測。
 5. **視窗**：特徵列要等 20+1 個 session 視窗內每筆觀測都可得才能用；s 取「data_date ≤ s 且視窗可得 ≤ cutoff(s)」中最新的一列。
 6. 已上市但當天不在表內的股票保留 null 列，不把舊值往後帶。

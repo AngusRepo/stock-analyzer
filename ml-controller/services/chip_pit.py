@@ -24,11 +24,11 @@ STORAGE_PREFIX = "chip-pit/v1"
 TW = timezone(timedelta(hours=8))
 BASIS_OBSERVED = "observed_capture"
 BASIS_RULE = "rule_presumed"
-# rule_same_day: a rule-presumed row (no capture evidence) may serve its own data date. Margin and
-# lending publish close to the evening cutoff and FinLab often lags, so without a capture holding the
-# row by the cutoff they serve from the next signal date on.
+# rule_same_day: a rule-presumed row (no capture evidence) may serve its own data date. FinLab lags the
+# exchange (institutional rows were missing from 3/65 observed 21:00 captures), so a chip row without a
+# capture holding it by the cutoff serves from the next signal date on. Turnover is the daily price lane.
 CLASSES = {
-    "institutional": {"lane": "chip_diversity", "publication_tw": "17:00", "rule_same_day": True,
+    "institutional": {"lane": "chip_diversity", "publication_tw": "17:00", "rule_same_day": False,
                       "fields": ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net")},
     "margin": {"lane": "chip_diversity", "publication_tw": "21:30", "rule_same_day": False,
                "fields": ("margin_balance", "short_balance")},

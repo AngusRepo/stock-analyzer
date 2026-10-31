@@ -15,7 +15,7 @@
       },
       "unit": "shares",
       "presumed_publication_tw": "17:00",
-      "rule_presumed_same_day": true,
+      "rule_presumed_same_day": false,
       "official_source": "TWSE T86 / TPEx 3itrade"
     },
     "margin": {

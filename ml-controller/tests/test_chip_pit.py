@@ -50,17 +50,18 @@ def test_contract_json_matches_module():
     assert len(FEATURES131) == 131 and not set(cp.FEATURES) & set(FEATURES131)
 
 
-def test_rule_presumed_margin_and_lending_wait_a_day_without_capture_evidence():
+def test_rule_presumed_chip_classes_wait_a_day_without_capture_evidence():
     panel, proof = cp.build_feature_panel(rule_obs(DAYS), DAYS, anchors={})
-    assert panel["chip_institutional_data_date"].to_list() == DAYS
-    for cls in ("margin", "lending"):
-        assert panel[f"chip_{cls}_data_date"].to_list() == [None] + DAYS[:-1]
+    # No class serves the first signal day, so the panel has no row for it.
+    assert panel["signal_date"].to_list() == DAYS[1:]
+    for cls in ("institutional", "margin", "lending"):
+        assert panel[f"chip_{cls}_data_date"].to_list() == DAYS[:-1]
         assert proof["coverage"][cls]["same_day_rows"] == 0
     assert set(panel["chip_institutional_basis"].to_list()) == {cp.BASIS_RULE}
     assert proof["rule_cutoff_tw"] == cp.RULE_CUTOFF_TW
-    assert proof["rule_same_day"] == {"institutional": True, "margin": False, "lending": False}
+    assert proof["rule_same_day"] == {"institutional": False, "margin": False, "lending": False}
     # total net = 4 fields * 10*(i+1); volume = 500*(i+1)
-    assert panel["chip_inst_total_net_vol_1"].to_list() == pytest.approx([0.08] * 4)
+    assert panel["chip_inst_total_net_vol_1"].to_list() == pytest.approx([0.08] * 3)
 
 
 def test_rule_cutoff_is_the_evening_chain_schedule():
@@ -73,8 +74,8 @@ def test_rule_cutoff_is_the_evening_chain_schedule():
     assert cp.rule_cutoff("2026-07-01") == fire
     for cls in cp.CLASSES:
         assert cp.presumed_available_at("2026-07-01", cls) <= cp.rule_cutoff("2026-07-01")
-    # The exchange time alone never makes margin/lending same-day; a capture has to show the row.
-    assert [c for c, spec in cp.CLASSES.items() if not spec["rule_same_day"]] == ["margin", "lending"]
+    # The exchange time alone never makes a chip row same-day; a capture has to show the row.
+    assert [c for c, spec in cp.CLASSES.items() if not spec["rule_same_day"]] == ["institutional", "margin", "lending"]
 
 
 def test_rule_presumed_row_stays_next_day_even_after_a_late_anchor():
@@ -106,7 +107,7 @@ def test_margin_published_after_the_cutoff_capture_serves_the_next_day():
     obs = rule_obs([d1, d2])
     obs["margin"] = cp.merge_observations([unpublished, window], "margin")[0]
     panel, _ = cp.build_feature_panel(obs, [d1, d2], anchors)
-    assert panel.select("signal_date", "chip_margin_data_date").rows() == [(d1, None), (d2, d1)]
+    assert panel.select("signal_date", "chip_margin_data_date").rows() == [(d2, d1)]
 
 
 def test_late_capture_is_not_usable_for_its_own_signal_day():
@@ -213,8 +214,9 @@ def test_attach_chip_block_aligns_rows_and_fills_missing_with_nan():
                                              ["2330", "2330", "9999"], panel)
     assert out.shape == (3, 2 + len(cp.FEATURES)) and names[2:] == list(cp.FEATURES)
     col = names.index("chip_inst_total_net_vol_1")
-    assert out[0, col] == pytest.approx(0.08) and out[1, col] == pytest.approx(0.08) and np.isnan(out[2, col])
-    assert proof["feature_coverage"]["chip_inst_total_net_vol_1"] == pytest.approx(2 / 3)
+    # 07-02 reads 07-01's rule-presumed row; 07-01 has no earlier row; 9999 is not in the panel.
+    assert out[0, col] == pytest.approx(0.08) and np.isnan(out[1, col]) and np.isnan(out[2, col])
+    assert proof["feature_coverage"]["chip_inst_total_net_vol_1"] == pytest.approx(1 / 3)
     with pytest.raises(ValueError, match="overlap"):
         cp.attach_chip_block(X, ["a", cp.FEATURES[0]], ["2026-07-01"] * 3, ["2330"] * 3, panel)
 

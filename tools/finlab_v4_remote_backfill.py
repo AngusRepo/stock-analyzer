@@ -1429,6 +1429,26 @@ def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pat
     })
 
 
+def chip_pit_daily_enabled() -> bool:
+    """Off unless CHIP_PIT_DAILY_RECORD=1; when off the FinLab daily refresh path is unchanged."""
+    return os.environ.get("CHIP_PIT_DAILY_RECORD", "0") == "1"
+
+
+def chip_pit_lane_fields(lane: str) -> tuple[str, ...]:
+    from services.chip_pit import lane_fields
+    return lane_fields(lane)
+
+
+def write_chip_pit_window(frames: dict[str, pd.DataFrame], *, lane: str, run_dir: Path, end_date: str | None) -> None:
+    """Trailing sessions for the chip PIT log: a table the vendor publishes after this capture
+    (margin/lending usually land after 21:00) is still observed by the next day's capture."""
+    from services.chip_pit import CAPTURE_WINDOW_SESSIONS
+    for field in chip_pit_lane_fields(lane):
+        if field in frames:
+            frame = filter_date_range(frames[field], end_date=end_date)
+            write_parquet(run_dir / "raw" / "chip_pit_window" / f"{field}.parquet", frame.tail(CAPTURE_WINDOW_SESSIONS))
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
 # Ops pacing for a late exchange index publication; not a trading parameter.
@@ -1990,6 +2010,23 @@ def broker_source_observation(frame: pd.DataFrame, target_date: str) -> dict[str
         "target_date": target_date, "target_rows": int((dates == pd.Timestamp(target_date)).sum())}
 
 
+_SYMBOL_ROW_FIELDS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
+
+
+def _symbol_field_codes(values: pd.Series, vocab: dict[str, int]) -> Any:
+    """Per-row ``_clean_symbol`` of one field, as an index into ``vocab`` (-1: no symbol)."""
+    import numpy as np
+
+    if values.dtype == object:
+        # factorize would merge 1, 1.0 and True; _clean_symbol reads str(value).
+        values = values.map(str)
+    codes, uniques = pd.factorize(values)
+    mapped = [_clean_symbol(value) for value in uniques]
+    lookup = np.array([vocab.setdefault(symbol, len(vocab)) if symbol else -1 for symbol in mapped] + [-1],
+                      dtype=np.int32)
+    return lookup[codes]
+
+
 def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.DataFrame:
     """Normalize FinLab broker_transactions into daily symbol broker-flow evidence."""
     if frame.empty:
@@ -2009,6 +2046,179 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
+    import numpy as np
+    import polars as pl
+
+    columns = (date_col, stock_col, broker_col, buy_col, sell_col)
+    if not frame.columns.is_unique:
+        return _broker_pandas_fallback("duplicate_columns", frame, start, columns)
+    # Only the date column is read over the full frame; every other column is read for
+    # the target rows alone (no frame copy, no per-row dicts).
+    dates = frame[date_col]
+    if not pd.api.types.is_datetime64_dtype(dates.dtype):  # naive datetime64 parses to itself
+        dates = pd.to_datetime(dates, errors="coerce")
+    if not pd.api.types.is_datetime64_dtype(dates.dtype):
+        return _broker_pandas_fallback("date_dtype", frame, start, columns)
+    rows = np.flatnonzero((dates >= pd.Timestamp(start)).to_numpy())
+    if not len(rows):
+        return pd.DataFrame()
+    buy = pd.to_numeric(frame[buy_col].iloc[rows], errors="coerce").fillna(0)
+    sell = pd.to_numeric(frame[sell_col].iloc[rows], errors="coerce").fillna(0)
+    if not _broker_shares_sum_exactly(buy, sell):
+        return _broker_pandas_fallback("shares_not_exact", frame, start, columns)
+    net = buy - sell
+    date_dtype = dates.to_numpy().dtype
+    date_values = dates.to_numpy().view("i8")[rows]
+    del dates
+    present = set(frame.columns)
+    vocab: dict[str, int] = {}
+    field_codes = [_symbol_field_codes(frame[key].iloc[rows], vocab)
+                   for key in dict.fromkeys((stock_col, *_SYMBOL_ROW_FIELDS)) if key in present]
+    if len(field_codes) == 1:
+        stock = field_codes[0]
+    elif field_codes:
+        stacked = np.vstack(field_codes)
+        high = np.where(stacked >= 0, stacked, -1).max(axis=0)
+        low = np.where(stacked >= 0, stacked, np.iinfo(np.int32).max).min(axis=0)
+        stock = np.where(high == low, high, -1)  # _clean_symbol: exactly one distinct symbol
+        del stacked, high, low
+    else:
+        stock = np.full(len(rows), -1, dtype=np.int32)
+    del field_codes
+    symbols = np.array(sorted(vocab), dtype=object)
+    rank = np.empty(len(symbols), dtype=np.int32)
+    rank[[vocab[symbol] for symbol in symbols]] = np.arange(len(symbols), dtype=np.int32)
+    if broker_col:
+        broker_text = frame[broker_col].iloc[rows].astype(str).str.strip()
+        broker, brokers = pd.factorize(broker_text, sort=True)
+        broker_dtype, brokers = broker_text.dtype, np.asarray(brokers, dtype=object)
+        del broker_text
+    else:
+        broker = np.zeros(len(rows), dtype=np.int64)
+        brokers = np.array(["unknown"], dtype=object)
+        broker_dtype = pd.Series(["unknown"]).dtype
+    keep = stock >= 0
+    if not keep.any():
+        return pd.DataFrame()
+    pick = slice(None) if keep.all() else np.flatnonzero(keep)
+    raw = pl.DataFrame({
+        "date": date_values[pick],
+        "stock_id": rank[stock[pick]],
+        "broker_code": broker[pick].astype(np.int64),
+        "buy": buy.to_numpy()[pick], "sell": sell.to_numpy()[pick], "net": net.to_numpy()[pick],
+    }).with_columns(pl.when(pl.col("broker_code") >= 0).then(pl.col("broker_code")).alias("broker_code"))
+    dtypes = {"buy": buy.dtype, "sell": sell.dtype, "net": net.dtype}
+    del rows, date_values, stock, keep, pick, broker, buy, sell, net
+
+    keys = ["date", "stock_id"]
+    totals = raw.group_by(keys).agg(
+        pl.col("buy").sum(), pl.col("sell").sum(),
+        pl.col("broker_code").drop_nulls().n_unique().cast(pl.Int64).alias("broker_count")).sort(keys)
+    # Per-broker table in pandas groupby order (date, stock_id, broker_code); rows with no
+    # broker code drop out, as pandas groupby drops NaN keys.
+    branch = (raw.filter(pl.col("broker_code").is_not_null())
+              .group_by([*keys, "broker_code"]).agg(pl.col("buy").sum(), pl.col("sell").sum(), pl.col("net").sum())
+              .sort([*keys, "broker_code"]).with_columns(pl.col("net").abs().alias("abs")))
+    del raw
+    # Rows keep broker order within a group, so arg_max picks the lowest broker code among
+    # tied leaders, as the reference's stable sort did.
+    lead = pl.col("abs").arg_max()
+    per_symbol = branch.group_by(keys).agg(
+        pl.col("broker_code").get(lead), pl.col("net").get(lead), pl.col("abs").get(lead),
+        pl.col("abs").sum().alias("gross"), (pl.col("abs") > 0).sum().cast(pl.Int64).alias("directional")).sort(keys)
+    # build_broker_rank_daily keeps the top three buy and sell brokers per symbol-day;
+    # hand it only those candidates, in per-broker table order, instead of every broker row.
+    ranked = branch.with_row_index("row")
+    candidates = pl.concat([
+        ranked.filter(pl.col("net") > 0).sort([*keys, "net", "broker_code"], descending=[False, False, True, False])
+        .group_by(keys, maintain_order=True).head(3).select("row"),
+        ranked.filter(pl.col("net") < 0).sort([*keys, "net", "broker_code"])
+        .group_by(keys, maintain_order=True).head(3).select("row"),
+    ])["row"].unique().sort()
+    branch = branch[candidates]
+    del ranked
+
+    def to_pandas(table: pl.DataFrame, fields: dict[str, tuple[str, Any]]) -> pd.DataFrame:
+        out = {"date": pd.Series(table["date"].to_numpy().view(date_dtype)),
+               "stock_id": pd.Series(symbols[table["stock_id"].to_numpy()])}
+        for name, (source, dtype) in fields.items():
+            values = table[source].to_numpy()
+            out[name] = (pd.Series(brokers[values], dtype=broker_dtype) if source == "broker_code"
+                         else pd.Series(values).astype(dtype))
+        return pd.DataFrame(out)
+
+    net_dtype = dtypes["net"]
+    # The reference counted with a Python lambda; ask pandas which dtype that yields.
+    count_dtype = pd.Series([1], dtype=net_dtype).groupby([0]).agg(lambda values: int((values > 0).sum())).dtype
+    broker_daily = to_pandas(branch, {
+        "broker_code": ("broker_code", None),
+        "broker_buy_shares": ("buy", dtypes["buy"]),
+        "broker_sell_shares": ("sell", dtypes["sell"]),
+        "broker_net": ("net", net_dtype),
+    })
+    grouped = to_pandas(totals, {
+        "buy_shares": ("buy", dtypes["buy"]),
+        "sell_shares": ("sell", dtypes["sell"]),
+        "broker_count": ("broker_count", np.dtype("int64")),
+    }).merge(to_pandas(per_symbol, {
+        "dominant_broker_code": ("broker_code", None),
+        "dominant_net_shares": ("net", net_dtype),
+        "dominant_abs_net_shares": ("abs", net_dtype),
+        "gross_imbalance_shares": ("gross", net_dtype),
+        "directional_broker_count": ("directional", count_dtype),
+    }), on=keys, how="left")
+    return _finish_broker_daily(grouped, broker_daily)
+
+
+def _broker_pandas_fallback(reason: str, frame: pd.DataFrame, start: str, columns: tuple) -> pd.DataFrame:
+    print(f"[finlab-backfill] broker normalize path=pandas reason={reason}", flush=True)
+    return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+
+
+def _broker_shares_sum_exactly(buy: pd.Series, sell: pd.Series) -> bool:
+    """The polars path covers int64/float64 shares whose sums are exact in any order:
+    integer-valued, finite, and far below 2**53. Anything else keeps the pandas path,
+    whose dtype and NaN/summation-order rules differ across pandas versions."""
+    import numpy as np
+
+    supported = (np.dtype("int64"), np.dtype("float64"))
+    if not all(isinstance(values.dtype, np.dtype) and values.dtype in supported for values in (buy, sell)):
+        return False
+    if buy.dtype == np.int64 and sell.dtype == np.int64:
+        return True  # integer sums wrap identically in pandas and polars
+    bound = 0.0
+    for values in (buy.to_numpy(), sell.to_numpy()):
+        if values.dtype == np.float64 and not (np.isfinite(values).all() and (values == np.floor(values)).all()):
+            return False
+        if values.dtype == np.float64 and np.signbit(values[values == 0]).any():
+            return False  # pandas sums -0.0 groups to +0.0, polars keeps -0.0
+        bound += float(np.abs(values, dtype=np.float64).sum())
+    return bound < 2.0 ** 52
+
+
+def _finish_broker_daily(grouped: pd.DataFrame, broker_daily: pd.DataFrame) -> pd.DataFrame:
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
+        broker_daily,
+        market_segment="LISTED_OTC",
+        source="finlab.broker_transactions",
+    )
+    return grouped
+
+
+def _normalize_broker_transactions_daily_pandas(
+    frame: pd.DataFrame,
+    start: str,
+    date_col: str,
+    stock_col: str,
+    broker_col: str | None,
+    buy_col: str,
+    sell_col: str,
+) -> pd.DataFrame:
+    """Reference pandas path for inputs outside the polars path (extension dtypes,
+    narrow ints, fractional or non-finite shares, duplicate column labels)."""
     out = frame.copy()
     out["date"] = pd.to_datetime(out[date_col], errors="coerce")
     out = out[out["date"] >= pd.Timestamp(start)]
@@ -2050,15 +2260,7 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         broker_count=("broker_code", "nunique"),
     ).reset_index()
     grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
-    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
-    grouped["source"] = "finlab.broker_transactions"
-    grouped["market_segment"] = "LISTED_OTC"
-    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
-        broker_daily,
-        market_segment="LISTED_OTC",
-        source="finlab.broker_transactions",
-    )
-    return grouped
+    return _finish_broker_daily(grouped, broker_daily)
 
 
 def write_source_session_calendar(source_close: pd.DataFrame, *, run_dir: Path, years: int, end_date: str | None) -> Path:
@@ -2101,6 +2303,7 @@ def materialize_specs(
     price_venue_scope_sha256: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     start = source_start_date or start_date_for_years(years)
+    chip_pit_daily = daily_refresh and chip_pit_daily_enabled()
     if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
         raise ValueError("price_venue_scope_pair_required")
     if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
@@ -2319,7 +2522,8 @@ def materialize_specs(
                     if spec.lane == "daily_price" and field in {"adj_close", "adj_open", "open", "high", "low", "close", "volume", "value", "market_value"}:
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
-                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})):
+                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
+                            or (chip_pit_daily and field in chip_pit_lane_fields(spec.lane))):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2402,6 +2606,8 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
+            if chip_pit_daily and chip_pit_lane_fields(spec.lane):
+                write_chip_pit_window(unsliced_frames, lane=spec.lane, run_dir=run_dir, end_date=source_end_date)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
@@ -4102,6 +4308,19 @@ def main() -> int:
             uploaded_files=uploaded_files,
         )
         manifest["gcs_upload_raw"] = gcs
+        write_json(run_dir / "manifest.json", manifest)
+
+    # Chip challenger PIT log (chip-pit/v1/daily). Evidence only: a failure is recorded, never fatal.
+    if args.daily_refresh and args.gcs_bucket and chip_pit_daily_enabled():
+        try:
+            from google.cloud import storage
+            from services.chip_pit import record_daily_capture
+            manifest["chip_pit_daily"] = record_daily_capture(
+                run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket), business_date=source_end_date,
+                capture_id=run_id, capture_ready=not source_key_blockers)
+        except Exception as exc:
+            print(f"[finlab-backfill] chip_pit_daily failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            manifest["chip_pit_daily"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1 and finlab_key_report_enabled():

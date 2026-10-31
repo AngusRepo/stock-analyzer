@@ -200,6 +200,20 @@ C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scrip
 C:\Users\Wei\Desktop\CloudCode\stockvision-cloudflare-v12\ml-service\.venv\Scripts\python.exe -m modal app list
 ```
 
+### One-off Modal scripts（2026-10-30 起）
+
+10/14 兩個 `modal run --detach` 修復 app 在 container import 時崩潰、crash-loop 兩週沒人發現；10 月另有 129 個一次性 run 沿用 `stockvision-ml` 名稱，帳單分不出來。audits/ 不進 git，CI 看不到，所以每次 `modal run` 前自己跑 lint：
+
+```bash
+ml-service/.venv/bin/python tools/modal_adhoc_lint.py <script.py>   # exit 1 = 不可 run
+```
+
+- **Import 時不做 local-only 工作**：讀檔、`subprocess`、`git`、改 `os.environ`／`sys.path`、`Path(__file__).parents[i]` 一律放在 `@app.local_entrypoint()` 或 `if __name__ == "__main__"` 裡。container 會在 `/root` 重新 import 整個檔案。
+- **不在 `modal.is_local()`／`is_remote()` 分支裡定義 Modal 物件**（App、Function、Image、Secret、decorator）；local 與 container 必須看到同一份定義。
+- **避免 `--detach`**：detached ephemeral app 不會自己結束。真的要用，script／runbook 最後必須 `modal app stop <app_id>`，並在交接寫明 app_id。
+- **App 名稱一律 `adhoc-<purpose>-<YYYYMMDD>`**（小寫、`-` 分隔），不可用 `stockvision-ml` 或任何已部署 app 名稱，也不可 `modal_app.app.run()` 借用已部署 app。
+- HMM maintenance tick（每天 TW 14:00 和 20:00 兩次，假日照跑）會在背景唯讀盤點 Modal app：存活 >24 h 的 ephemeral／detached app、或沿用已部署名稱的 ephemeral app，寫入 ops `system_logs`（`cron_name='modal-app-inventory'`）warn。看到就查明後停掉。
+
 ## Authoritative Docs
 
 接手 production / ML / risk / cron 路徑前，優先讀：

@@ -31,16 +31,16 @@ export async function verifyPublicationReceipt(input:{publication:ServingPublica
     || plan.policy_identity!==p.policy_identity || input.storedSnapshot!==p.allocation_snapshot_id
     || manifest?.source_run_id!==source.run_id || manifest.signal_date!==source.run_date
     || manifest.snapshot_kind!=='allocation_context')throw new Error('premarket_serving_receipt_identity_mismatch')
-  // The plan carries every served row (unselected rows keep weight 0), so the plan,
-  // the receipt closure and the D1 readback must describe the same row set.
+  // The plan carries every served row (unselected rows keep weight 0) plus locked holdings
+  // outside the seed; the receipt closure and the D1 readback describe the served rows.
   const c=p.closure, count=Object.keys(plan.targets).length
   if(!count || p.target_count!==count
     || typeof c.predictions_written!=='number' || c.predictions_written<=0
     || c.prediction_symbol_closure_passed!==true || c.incomplete_active_model_symbols!==0
     || c.prediction_seed_symbols!==c.prediction_symbols
-    || c.recommendation_seed_rows!==count || c.recommendation_closed_rows!==count
-    || c.recommendation_row_closure_passed!==true || rows.length!==count
-    || new Set(rows.map(r=>r.symbol)).size!==count)throw new Error('premarket_serving_receipt_closure_mismatch')
+    || c.recommendation_seed_rows!==rows.length || c.recommendation_closed_rows!==rows.length
+    || c.recommendation_row_closure_passed!==true || !rows.length || !unservedTargetsAreHoldings(plan,rows)
+    || new Set(rows.map(r=>r.symbol)).size!==rows.length)throw new Error('premarket_serving_receipt_closure_mismatch')
   for(const row of rows) {
     const allocation=JSON.parse(row.alpha_allocation ?? 'null'), target=plan.targets[row.symbol]
     if(!target || !allocation || allocation.plan_id!==plan.plan_id || allocation.policy_identity!==plan.policy_identity
@@ -49,6 +49,12 @@ export async function verifyPublicationReceipt(input:{publication:ServingPublica
       || Math.abs(allocation.allocation_weight-target.weight)>1e-10)
       throw new Error('premarket_serving_receipt_plan_readback_mismatch')
   }
+}
+
+/** The plan also carries held names outside the seed: a target without a recommendation row must be a locked holding. */
+function unservedTargetsAreHoldings(plan:L4PortfolioPlan,rows:Row[]):boolean {
+  const served=new Set(rows.map(r=>r.symbol))
+  return Object.entries(plan.targets).every(([symbol,t])=>served.has(symbol) || (t.locked===true && t.current_weight>0))
 }
 
 export async function verifyStoredPublication(env:Bindings,input:{publication:ServingPublication;source:Source;context:Context;plan:L4PortfolioPlan}) {

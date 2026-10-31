@@ -12,13 +12,18 @@ export async function runRetentionDrainRounds<T extends DrainPass>(input: {
   dryRun: boolean
   maxRounds?: number
   budgetMs?: number
+  // Ceilings for maxRounds / budgetMs; callers pass their configured caps (NEW-D08).
+  roundsCap?: number
+  budgetCapMs?: number
   run: (policyId: string) => Promise<T>
   now?: () => number
 }) {
   const bounded = (v: number | undefined, fallback: number, max: number) =>
     Number.isFinite(v) ? Math.max(1, Math.min(Math.floor(v!), max)) : fallback
-  const maxRounds = input.dryRun ? 1 : bounded(input.maxRounds, 1, 10)
-  const budgetMs = bounded(input.budgetMs, 60_000, 120_000)
+  const roundsCap = bounded(input.roundsCap, 10, Number.MAX_SAFE_INTEGER)
+  const budgetCapMs = bounded(input.budgetCapMs, 120_000, Number.MAX_SAFE_INTEGER)
+  const maxRounds = input.dryRun ? 1 : bounded(input.maxRounds, 1, roundsCap)
+  const budgetMs = bounded(input.budgetMs, Math.min(60_000, budgetCapMs), budgetCapMs)
   const now = input.now ?? (() => performance.now())
   const started = now()
   const attempts: T[] = []

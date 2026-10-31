@@ -37,7 +37,8 @@ import { computeAndStoreIndicators, computeTechnicalIndicators } from './technic
 import { applyScreenerTechnicalOverlay } from './screenerTechnicalOverlay'
 import { materializePostOverlayStrategySeed, dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity, buildScreenerL1MergeItem } from './screenerPostOverlaySeed'
 export { dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity } from './screenerPostOverlaySeed'
-import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety } from './screenerPostRouteOverlays'
+import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety,
+  DELISTING_MONITOR_DEFAULT_MAX_SESSIONS, delistingMonitorWindowWeekdays, resolveDelistingMonitorMaxSessions } from './screenerPostRouteOverlays'
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
 import {
@@ -1385,7 +1386,7 @@ interface FinLabStyleFactorNormalizationTelemetry {
   }
 }
 
-function buildStockData(
+export function buildStockData(
   allPrices: CanonicalScreenerPrice[],
   allChips: CanonicalScreenerChip[],
 ): StockDailyData {
@@ -1436,8 +1437,6 @@ function buildStockData(
       entry.securityLendingSellBalance = c.security_lending_sell_balance ?? entry.securityLendingSellBalance ?? null
       entry.securityLendingSellLimit = c.security_lending_sell_limit ?? entry.securityLendingSellLimit ?? null
     }
-    if (c.name.includes('憭?')) entry.foreign += net
-    if (c.name.includes('?縑')) entry.trust += net
     entry.source = c.source ?? entry.source
     entry.marketSegment = c.market_segment ?? entry.marketSegment
     entry.brokerCount = c.broker_count ?? entry.brokerCount ?? null
@@ -3169,7 +3168,7 @@ export function scoreMultiFactor(
   // MACD(12,26,9)
   if (prices.length >= 35) {
     const macdHistogram = macdHistogramLast(prices.map(p => p.close))
-    if (macdHistogram != null && macdHistogram > 0) { tech_score += 6; reasons.push('MACD 憭') }
+    if (macdHistogram != null && macdHistogram > 0) { tech_score += 6; reasons.push('MACD 多頭') }
     else if (macdHistogram != null && macdHistogram > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 2
   }
 
@@ -3180,7 +3179,7 @@ export function scoreMultiFactor(
   }
   if (prices.length >= 20) {
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
-    if (latest.close > ma20) { tech_score += 3; reasons.push('蝡?MA20') }
+    if (latest.close > ma20) { tech_score += 3; reasons.push('站上MA20') }
 
   }
 
@@ -3216,7 +3215,7 @@ export function scoreMultiFactor(
     const excess = stockReturn - marketReturn5d
     const exRange = sc?.excessReturnRange ?? [-0.03, 0.05]
     momentum_score += normalize(excess, exRange[0], exRange[1], 7)
-    if (excess > 0.02) reasons.push(`頞?+${(excess * 100).toFixed(1)}%`)
+    if (excess > 0.02) reasons.push(`超額+${(excess * 100).toFixed(1)}%`)
   }
 
   // ?瘥?餈?3 ??vs 20 ?亙???(0-5)
@@ -3241,7 +3240,7 @@ export function scoreMultiFactor(
     }
     const priceIntent = sumAbsRet > 0 ? retN / sumAbsRet : 0
     // intent > 0.5 = 憭折?撞撟?渡?銝撞嚗蜓?風?方???
-    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`??${(priceIntent * 100).toFixed(0)}%`) }
+    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`意圖${(priceIntent * 100).toFixed(0)}%`) }
     else if (priceIntent > 0.3) momentum_score += 3
     else if (priceIntent > 0.1) momentum_score += 1
   }
@@ -3300,6 +3299,31 @@ export function scoreMultiFactor(
 export interface BottomUpScreenerRunOptions {
   producerRunId?: string | null
   evidenceMode?: StrategyEvidenceMode
+}
+
+/** HL1-4#a: DelistingMonitor threshold. The configured max is KV `trading:config.screener.
+ * delistingMonitorMaxRecentSessions` (default 2); the holiday:* KV lowers it after a long closure.
+ * An unreadable calendar keeps the configured max, i.e. the pre-HL1-4#a behaviour. */
+export async function resolveDelistingMonitorThreshold(env: Pick<Bindings, 'KV'>, endDate: string, sc: unknown, debugLog: string[]): Promise<number> {
+  const raw = (sc as { delistingMonitorMaxRecentSessions?: unknown } | null | undefined)?.delistingMonitorMaxRecentSessions
+  let configuredMax = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS
+  if (raw !== undefined && raw !== null) {
+    if (Number.isInteger(raw) && (raw as number) >= 0) configuredMax = raw as number
+    else console.warn('[Screener v2] screener.delistingMonitorMaxRecentSessions invalid; using default', raw)
+  }
+  try {
+    const weekdays = delistingMonitorWindowWeekdays(endDate)
+    const closed = await Promise.all(weekdays.map(async (date) => Boolean(await env.KV.get(`holiday:${date}`))))
+    const expected = closed.filter(isClosed => !isClosed).length
+    const threshold = resolveDelistingMonitorMaxSessions(expected, configuredMax)
+    if (threshold !== configuredMax) {
+      debugLog.push(`[Step 6] DelistingMonitor threshold ${threshold} (expected sessions ${expected}, configured ${configuredMax})`)
+    }
+    return threshold
+  } catch (error) {
+    console.warn('[Screener v2] DelistingMonitor holiday calendar unreadable; keeping configured threshold', error)
+    return configuredMax
+  }
 }
 
 function resolveScreenerProducerRunId(runDate: string, value?: string | null): string {
@@ -4775,6 +4799,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 6: 鞈??釭嚗elistingMonitor嚗??
+  let delistingMonitorMaxSessions = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
     { // Preserve an explicit no-hit day without inventing missing market rows.
@@ -4801,7 +4826,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           missing_identity_symbols: symbols.filter(symbol => !identities.has(symbol)) }
       })
       const recentRows = recentRead.rows
-      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols)
+      delistingMonitorMaxSessions = await resolveDelistingMonitorThreshold(env, endDate, sc, debugLog)
+      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols, delistingMonitorMaxSessions)
       for (const event of events) pushFunnelItem(funnelItems, event)
       if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
     }
@@ -5229,7 +5255,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
           highFreqPenalty: Number((sc as any).highFreqPenalty ?? 6),
           newMoneyBonus: Number((sc as any).newMoneyBonus ?? 2),
-          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: 2 },
+          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: delistingMonitorMaxSessions },
       }))
     }
     const l0DropReasonConservation = buildL0DropReasonConservation({

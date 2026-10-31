@@ -11,6 +11,13 @@ from services.hmm_decision_lineage import decision_lineage
 from services.hmm_input_contract import CONTRACT_HASH, SOURCE, checksum
 
 
+@pytest.fixture(autouse=True)
+def no_modal_app_inventory(monkeypatch):
+    # maintenance_only preflights start the Modal inventory; never reach Modal or ops D1 here.
+    from services import modal_app_inventory
+    monkeypatch.setattr(modal_app_inventory, 'start_background', lambda: None)
+
+
 def meta(now, age=1):
     return {'trained_at': (now-timedelta(days=age)).isoformat(), 'input_contract': CONTRACT_HASH,
             'artifact_generation': '1', 'artifact_sha256': 'a'*64}

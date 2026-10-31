@@ -7,6 +7,29 @@ const chip = (date: string, name: string): CanonicalScreenerChip =>
   ({ date, stock_id: '2330', name, buy: 1, sell: 0, source: 'fixture' }) as CanonicalScreenerChip
 const sessions = ['2026-10-26', '2026-10-27', '2026-10-28']
 
+/** KV + legacy ops DB that records system_logs inserts; any fetch and console.warn are recorded too. */
+function alertEnv(t: any, options: { webhook?: boolean, syslogFails?: boolean } = {}) {
+  const store = new Map<string, string>()
+  const syslogs: { level: string, cron: string, message: string, meta: any }[] = []
+  const DB = { prepare: (sql: string) => { let args: any[] = []; const st: any = {
+    bind: (...values: any[]) => { args = values; return st },
+    run: async () => {
+      assert.match(sql, /INSERT INTO system_logs/)
+      if (options.syslogFails) throw new Error('D1_ERROR: ops unavailable')
+      syslogs.push({ level: args[0], cron: args[1], message: args[2], meta: args[3] ? JSON.parse(args[3]) : null })
+      return { success: true }
+    } }; return st } }
+  const env: any = {
+    KV: { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => { store.set(k, v) } },
+    DB, ...(options.webhook === false ? {} : { DISCORD_WEBHOOK_URL: 'https://discord.invalid/webhook' }),
+  }
+  const fetched: string[] = []
+  t.mock.method(globalThis, 'fetch', async (url: string) => { fetched.push(String(url)); return new Response(null, { status: 204 }) })
+  const warns: string[] = []
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warns.push(args.map(String).join(' ')) })
+  return { env, store, syslogs, fetched, warns }
+}
+
 test('C28-18: chips are stale when their latest date trails the latest price session', () => {
   const fresh = screenerChipFreshness([chip('2026-10-28', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)
   assert.deepEqual(fresh, {
@@ -26,28 +49,82 @@ test('C28-18: chips are stale when their latest date trails the latest price ses
   assert.equal(screenerChipFreshness([], []).stale, false, 'no price session: nothing to compare')
 })
 
-test('C28-18: one warn per business date, none when fresh, never throws', async (t) => {
-  const store = new Map<string, string>()
-  const env = {
-    KV: { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => { store.set(k, v) } } as any,
-    DISCORD_WEBHOOK_URL: 'https://discord.invalid/webhook',
-  }
-  const sent: string[] = []
-  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
-    sent.push(JSON.parse(String(init.body)).content); return new Response(null, { status: 204 })
-  })
+test('C28-18: one ops warn per business date, none when fresh, no Discord, never throws', async (t) => {
+  const f = alertEnv(t)
   const stale = screenerChipFreshness([chip('2026-10-27', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)
-  assert.equal(await alertScreenerChipStale(env, '2026-10-28', screenerChipFreshness([chip('2026-10-28', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)), false)
-  assert.equal(await alertScreenerChipStale(env, '2026-10-28', stale), true)
-  assert.equal(await alertScreenerChipStale(env, '2026-10-28', stale), false, 'second attempt of the same date is deduplicated')
-  assert.equal(sent.length, 1)
-  assert.match(sent[0], /screener-chip-stale/)
-  assert.match(sent[0], /Institutional chips: 2026-10-27 \(1 sessions behind\)/)
-  assert.equal(store.has('cron:alert:screener-chip-stale:2026-10-28'), true)
-  assert.equal(await alertScreenerChipStale({ ...env, DISCORD_WEBHOOK_URL: undefined }, '2026-10-29', stale), false)
-  t.mock.restoreAll()
-  t.mock.method(globalThis, 'fetch', async () => { throw new Error('webhook down') })
-  assert.equal(await alertScreenerChipStale(env, '2026-10-30', stale), false)
+  const fresh = screenerChipFreshness([chip('2026-10-28', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)
+  assert.equal(await alertScreenerChipStale(f.env, '2026-10-28', fresh), false)
+  assert.equal(f.syslogs.length, 0, 'fresh chips are not reported')
+  assert.equal(f.warns.length, 0)
+  assert.equal(await alertScreenerChipStale(f.env, '2026-10-28', stale), true)
+  assert.equal(await alertScreenerChipStale(f.env, '2026-10-28', stale), false, 'second attempt of the same date is deduplicated')
+  assert.equal(f.syslogs.length, 1)
+  const message = 'screener chip data stale for 2026-10-28: price session 2026-10-28; institutional chips 2026-10-27 (1 sessions behind); '
+    + 'broker flow 2026-10-28 (0 sessions behind); chip scores used the latest available dates; scoring is unchanged'
+  assert.deepEqual(f.syslogs[0], { level: 'warn', cron: 'screener-chip-stale', message, meta: { run_date: '2026-10-28', ...stale } })
+  assert.deepEqual(f.warns, [`[screener-chip-stale] ${message}`])
+  assert.equal(f.store.has('cron:alert:screener-chip-stale:2026-10-28'), true)
+  assert.deepEqual(f.fetched, [], 'a configured webhook is not used')
+  // Another date is its own alert.
+  assert.equal(await alertScreenerChipStale(f.env, '2026-10-29', stale), true)
+  assert.equal(f.syslogs.length, 2)
+})
+
+test('C28-18: without a Discord webhook the stale warn still reaches the ops log and console.warn', async (t) => {
+  const f = alertEnv(t, { webhook: false })
+  assert.equal(f.env.DISCORD_WEBHOOK_URL, undefined)
+  const stale = screenerChipFreshness([chip('2026-10-28', 'foreign')], sessions)
+  assert.equal(await alertScreenerChipStale(f.env, '2026-10-28', stale), true)
+  assert.equal(f.syslogs.length, 1)
+  assert.match(f.syslogs[0].message, /broker flow missing \(3 sessions behind\)/)
+  assert.equal(f.warns.length, 1)
+  assert.equal(await alertScreenerChipStale(f.env, '2026-10-28', stale), false)
+  assert.equal(f.syslogs.length, 1)
+  assert.equal(f.warns.length, 1)
+  assert.deepEqual(f.fetched, [])
+})
+
+test('C28-18: a failing ops log or KV returns false without throwing and still warns', async (t) => {
+  const stale = screenerChipFreshness([chip('2026-10-27', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)
+  const failingDb = alertEnv(t, { webhook: false, syslogFails: true })
+  // writeSystemLog swallows the insert error: the date is claimed and warned once.
+  assert.equal(await alertScreenerChipStale(failingDb.env, '2026-10-28', stale), true)
+  assert.equal(failingDb.syslogs.length, 0)
+  assert.equal(failingDb.warns.filter((line) => line.startsWith('[screener-chip-stale]')).length, 1)
+  // The dedup claim failing (read or write) still writes the ops row, marked dedup unavailable: a KV outage
+  // logs on every attempt (accepted trade-off); once KV recovers the date logs once again.
+  const failingKv = alertEnv(t, { webhook: false })
+  const { get, put } = failingKv.env.KV
+  failingKv.env.KV.get = async () => { throw new Error('KV get unavailable') }
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), true)
+  assert.equal(failingKv.syslogs.length, 1)
+  assert.match(failingKv.syslogs[0].message, /^screener chip data stale for 2026-10-28: .*; dedup unavailable: KV get unavailable$/)
+  assert.equal(failingKv.syslogs[0].meta.dedup_unavailable, 'KV get unavailable')
+  assert.ok(failingKv.warns.some((line) => /^\[screener-chip-stale\] .*; dedup unavailable: KV get unavailable$/.test(line)))
+  failingKv.env.KV.get = get
+  failingKv.env.KV.put = async () => { throw new Error('KV put unavailable') }
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), true)
+  assert.equal(failingKv.syslogs[1].meta.dedup_unavailable, 'KV put unavailable')
+  assert.match(failingKv.syslogs[1].message, /; dedup unavailable: KV put unavailable$/)
+  failingKv.env.KV.put = put
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), true)
+  assert.equal(await alertScreenerChipStale(failingKv.env, '2026-10-28', stale), false)
+  assert.equal(failingKv.syslogs.length, 3, 'after recovery the date logs once')
+  assert.equal(failingKv.syslogs[2].meta.dedup_unavailable, undefined)
+  // An ops binding that cannot be resolved throws (unlike a failed insert) and is swallowed too.
+  const missingOps = alertEnv(t, { webhook: false })
+  missingOps.env.MULTI_D1_ACTIVE_DOMAINS = 'ops'
+  assert.equal(await alertScreenerChipStale(missingOps.env, '2026-10-28', stale), false)
+  assert.equal(missingOps.syslogs.length, 0)
+  assert.ok(missingOps.warns.some((line) => /^\[screener-chip-stale\] .*; ops log failed: data_domain_binding_missing:ops$/.test(line)))
+  // KV claim and ops binding both failing: no row, no throw, one warn carrying both markers.
+  const bothDown = alertEnv(t, { webhook: false })
+  bothDown.env.MULTI_D1_ACTIVE_DOMAINS = 'ops'
+  bothDown.env.KV.get = async () => { throw new Error('KV get unavailable') }
+  assert.equal(await alertScreenerChipStale(bothDown.env, '2026-10-28', stale), false)
+  assert.equal(bothDown.syslogs.length, 0)
+  assert.ok(bothDown.warns.some((line) =>
+    /^\[screener-chip-stale\] .*; dedup unavailable: KV get unavailable; ops log failed: data_domain_binding_missing:ops$/.test(line)))
 })
 
 test('C28-18: freshness is observability only and never reaches chip scoring', () => {
@@ -71,16 +148,13 @@ test('C28-18: freshness is observability only and never reaches chip scoring', (
 
 test('C28-18: the Worker watchdog sends the stale warn once from the canonical funnel metadata', async (t) => {
   const { alertScreenerChipStaleFromFunnel } = await import('./screenerRecoveryWatchdog')
-  const store = new Map<string, string>()
   const rows = new Map<string, string | null>()
   const opsDb: any = { prepare: (sql: string) => { let args: any[] = []; const st: any = {
     bind: (...a: any[]) => { args = a; return st },
     first: async () => { assert.match(sql, /SELECT metadata FROM screener_funnel_runs WHERE date=\? AND run_id=\?/)
       return rows.has(args[1]) ? { metadata: rows.get(args[1]) } : null } }; return st } }
-  const env: any = { KV: { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => { store.set(k, v) } },
-    DISCORD_WEBHOOK_URL: 'https://discord.invalid/webhook' }
-  const sent: string[] = []
-  t.mock.method(globalThis, 'fetch', async (_u: string, init: RequestInit) => { sent.push(JSON.parse(String(init.body)).content); return new Response(null, { status: 204 }) })
+  const f = alertEnv(t, { webhook: false })
+  const env = f.env
   const stale = screenerChipFreshness([chip('2026-10-27', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)
   const fresh = screenerChipFreshness([chip('2026-10-28', 'foreign'), chip('2026-10-28', 'broker_flow')], sessions)
   rows.set('fresh', JSON.stringify({ restrictedCount: 0, chipFreshness: fresh }))
@@ -91,8 +165,9 @@ test('C28-18: the Worker watchdog sends the stale warn once from the canonical f
   assert.equal(await alertScreenerChipStaleFromFunnel(env, opsDb, '2026-10-28', 'stale'), true)
   // Every later watchdog tick of the same date is deduplicated.
   assert.equal(await alertScreenerChipStaleFromFunnel(env, opsDb, '2026-10-28', 'stale'), false)
-  assert.equal(sent.length, 1)
-  assert.match(sent[0], /screener-chip-stale/)
+  assert.deepEqual(f.syslogs.map((entry) => [entry.cron, entry.meta.run_date]), [['screener-chip-stale', '2026-10-28']])
+  assert.equal(f.warns.length, 1)
+  assert.deepEqual(f.fetched, [])
   const watchdog = readFileSync('src/lib/screenerRecoveryWatchdog.ts', 'utf8')
   assert.ok(watchdog.includes('  if (funnel?.run_id) {\n    await alertScreenerChipStaleFromFunnel(env, opsDb, businessDate, funnel.run_id)'))
 })
@@ -117,11 +192,9 @@ test('C28-18: chip_score and ranking are byte-identical whether the stale alert 
 
   const freshness = screenerChipFreshness(allChips, days)
   assert.equal(freshness.stale, true)
-  const store = new Map<string, string>()
-  t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
-  assert.equal(await alertScreenerChipStale({ KV: { get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => { store.set(k, v) } } as any, DISCORD_WEBHOOK_URL: 'https://discord.invalid/webhook' },
-  days.at(-1)!, freshness), true)
+  const f = alertEnv(t)
+  assert.equal(await alertScreenerChipStale(f.env, days.at(-1)!, freshness), true)
+  assert.equal(f.syslogs.length, 1)
 
   assert.equal(JSON.stringify(score()), before, 'scores and ranking are unchanged by the stale path')
   assert.equal(JSON.stringify({ universe, chips: [...chips].map(([id, m]) => [id, [...m]]), allChips }), inputs, 'inputs are not mutated')

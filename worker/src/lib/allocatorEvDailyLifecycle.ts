@@ -535,6 +535,8 @@ export async function inspectAllocatorSnapshotClosure(
     learningDb?: D1Database
     opsDb?: D1Database
     coreDb?: D1Database
+    // Owner of canonical_market_daily, which confirms past trading sessions.
+    marketDb?: D1Database
     kv?: KVNamespace
     nowMs?: number
   } = {},
@@ -548,7 +550,7 @@ export async function inspectAllocatorSnapshotClosure(
   let nextSessionOpenUtc: string | null = null
   if (businessDate < today && options.kv) {
     try {
-      const nextSessionDate = await nextTwTradingDate(options.kv, businessDate, db, {
+      const nextSessionDate = await nextTwTradingDate(options.kv, businessDate, options.marketDb ?? db, {
         requireOfficialFutureCalendar: true,
         nowMs,
       })
@@ -829,6 +831,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       learningDb,
       opsDb,
       coreDb,
+      marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     }),
     inspectAllocatorEvMaturityCoverage(learningDb, businessDate),
@@ -952,7 +955,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
   const repairBoundary = !snapshot.ready
-    ? await historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', businessDate)
+    ? await historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', businessDate)
     : null
   if (!snapshot.ready && repairBoundary && !repairBoundary.allowed) {
     return `skipped: allocator EV native snapshot repair window closed for historical date=${businessDate} `

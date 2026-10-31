@@ -80,7 +80,8 @@ export function replayFrozenPostRoute(input: {
       || !Number.isInteger(value.freq20d) || value.freq20d < 0)) throw new Error('atomic_overlay_selection_source_invalid')
     const policy = packet.policy as Record<string, unknown>
     if (!policy || !['highFreqPenalty', 'newMoneyBonus'].every(key => typeof policy[key] === 'number' && Number.isFinite(policy[key]))
-      || policy.technicalRowsPerSymbol !== 65 || policy.recentSessionsMaxExcluded !== 2) throw new Error('atomic_overlay_policy_invalid')
+      || policy.technicalRowsPerSymbol !== 65 || !Number.isInteger(policy.recentSessionsMaxExcluded)
+      || (policy.recentSessionsMaxExcluded as number) < -1) throw new Error('atomic_overlay_policy_invalid')
     if (!Array.isArray(foreign) || !Array.isArray(theme?.combinedBuzz)) throw new Error('atomic_overlay_context_invalid')
     const scored = structuredClone(input.universe) as ReplayCandidate[]
     if (scored.some(row => typeof row.score !== 'number' || !Number.isFinite(row.score) || typeof row.reason !== 'string')) {
@@ -123,7 +124,7 @@ export function replayFrozenPostRoute(input: {
     if (recent.some(row => !Number.isInteger(row.days_count) || row.days_count < 0)
       || new Set(recent.map(row => row.symbol)).size !== recent.length
       || [...finalSymbols].some(symbol => !recent.some(row => row.symbol === symbol))) throw new Error('atomic_overlay_recent_source_invalid')
-    applyScreenerRecentSessionSafety(finalSeed, recent, excluded)
+    applyScreenerRecentSessionSafety(finalSeed, recent, excluded, policy.recentSessionsMaxExcluded as number)
     assertCanonicalL15SeedIdentity({ routeSymbols: plan.coarseQueue.map(row => row.symbol),
       finalSymbols: finalSeed.map(row => row.symbol), safetyExcludedSymbols: excluded })
     return { status: 'replayed' as const, finalSeed,

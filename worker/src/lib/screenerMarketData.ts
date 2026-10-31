@@ -1,4 +1,5 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { writeSystemLog } from './notify'
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
 import { loadCoreStockIdentitiesByIds, resolveVenue } from './stockIdentityMarketBridge'
@@ -482,38 +483,52 @@ export function screenerChipFreshness(chips: readonly CanonicalScreenerChip[], t
   }
 }
 
-/** One warn per business date (screener attempts and manual reruns share the key); never blocks the run. */
+/**
+ * One ops system_logs warn and one console.warn per dedup key. The key is claimed before the write so a
+ * failing insert does not re-log every tick. When the KV claim itself fails the row is still written,
+ * marked dedup unavailable (so a KV outage logs once per tick until KV recovers). Never throws.
+ */
+export async function logScreenerAlertOnce(
+  env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>,
+  dedupKey: string,
+  cron: string,
+  message: string,
+  meta: Record<string, unknown>,
+): Promise<boolean> {
+  let dedupError: string | null = null
+  try {
+    if (await env.KV.get(dedupKey)) return false
+    await env.KV.put(dedupKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+  } catch (error) {
+    dedupError = error instanceof Error ? error.message : String(error)
+  }
+  const logged = dedupError == null ? message : `${message}; dedup unavailable: ${dedupError}`
+  console.warn(`[${cron}] ${logged}`)
+  try {
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'warn', cron, logged,
+      dedupError == null ? meta : { ...meta, dedup_unavailable: dedupError })
+    return true
+  } catch (error) {
+    console.warn(`[${cron}] ${logged}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
+    return false
+  }
+}
+
+/** One ops warn per business date (screener attempts and manual reruns share the key); never blocks the run. */
 export async function alertScreenerChipStale(
-  env: { KV: KVNamespace; DISCORD_WEBHOOK_URL?: string },
+  env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>,
   endDate: string,
   freshness: ScreenerChipFreshness,
 ): Promise<boolean> {
-  if (!freshness.stale || !env.DISCORD_WEBHOOK_URL) return false
-  const dedupKey = `cron:alert:screener-chip-stale:${endDate}`
-  try {
-    if (await env.KV.get(dedupKey)) return false
-    // Claim before sending: a failing webhook must not re-alert on every attempt.
-    await env.KV.put(dedupKey, '1', { expirationTtl: 86400 })
-    await fetch(env.DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: [
-          'Scheduler Warn: screener chip data stale (`screener-chip-stale`)',
-          `Date: ${endDate}`,
-          `Price session: ${freshness.priceMaxDate}`,
-          `Institutional chips: ${freshness.latestInstitutionalChipDate ?? 'missing'} (${freshness.institutionalStaleSessions} sessions behind)`,
-          `Broker flow: ${freshness.latestBrokerFlowDate ?? 'missing'} (${freshness.brokerFlowStaleSessions} sessions behind)`,
-          'Chip scores used the latest available dates; scoring is unchanged.',
-        ].join('\n'),
-      }),
-      signal: AbortSignal.timeout(5000),
-    })
-    return true
-  } catch {
-    // Alerting must never block the screener.
-    return false
-  }
+  if (!freshness.stale) return false
+  const message = [
+    `screener chip data stale for ${endDate}: price session ${freshness.priceMaxDate}`,
+    `institutional chips ${freshness.latestInstitutionalChipDate ?? 'missing'} (${freshness.institutionalStaleSessions} sessions behind)`,
+    `broker flow ${freshness.latestBrokerFlowDate ?? 'missing'} (${freshness.brokerFlowStaleSessions} sessions behind)`,
+    'chip scores used the latest available dates; scoring is unchanged',
+  ].join('; ')
+  return logScreenerAlertOnce(env, `cron:alert:screener-chip-stale:${endDate}`, 'screener-chip-stale', message,
+    { run_date: endDate, ...freshness })
 }
 
 export async function loadMarketDataFromD1(

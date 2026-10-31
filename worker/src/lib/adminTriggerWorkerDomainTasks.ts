@@ -1438,15 +1438,20 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const { reportStorageHealthSeverity } = await import('./storageHealthSeverity')
       const result = await runStorageHealthCheck(c.env)
-      if (!result.healthy) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
-      return `storage_health_check ${JSON.stringify(result)}`
+      // D7a A-2: a drain-band (75-90%) domain is a warning; everything else that fails `healthy` fails the run.
+      const warning = await reportStorageHealthSeverity(c.env, 'storage-health-check', result)
+      if (warning == null) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
+      return `storage_health_check ${warning}${JSON.stringify(result)}`
     },
     'storage-health-gate': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const { reportStorageHealthSeverity } = await import('./storageHealthSeverity')
       const result = await runStorageHealthCheck(c.env)
-      if (!result.healthy) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
-      return `storage_health_gate_legacy_alias ${JSON.stringify(result)}`
+      const warning = await reportStorageHealthSeverity(c.env, 'storage-health-gate', result)
+      if (warning == null) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
+      return `storage_health_gate_legacy_alias ${warning}${JSON.stringify(result)}`
     },
     'kv-config-drift': async () => {
       const { runKvConfigDriftCheck } = await import('./kvConfigDigest')
@@ -1565,6 +1570,7 @@ export function buildAdminWorkerDomainTaskMap(
     'retention-hot-window-drain': async () => {
       const {
         RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS,
+        retentionHotDrainSettings,
         runRetentionHotWindowDrain,
         summarizeRetentionHotWindowDrain,
       } = await import('./retentionHotWindowDrain')
@@ -1575,13 +1581,15 @@ export function buildAdminWorkerDomainTaskMap(
       const allowed = new Set<string>(RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)
       const unknown = requestedPolicies.filter((policy: string) => !allowed.has(policy))
       if (unknown.length) throw new Error(`retention_hot_drain_unknown_policy:${unknown.join(',')}`)
+      const settings = retentionHotDrainSettings(c.env)
       const result = await runRetentionHotWindowDrain(c.env, {
         businessDate: requestedRunDate() || twToday(),
         policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
-        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
+        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'),
+          settings.limitPerDataset.default, settings.limitPerDataset.max),
         confirmPhrase: c.req.query('confirm_drain'),
-        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), 1, 10),
-        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), 60_000, 120_000),
+        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), settings.maxRounds.default, settings.maxRounds.max),
+        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), settings.budgetMs.default, settings.budgetMs.max),
       })
       if (result.status === 'error') throw new Error(`retention hot window drain failed ${JSON.stringify(result)}`)
       return summarizeRetentionHotWindowDrain(result)

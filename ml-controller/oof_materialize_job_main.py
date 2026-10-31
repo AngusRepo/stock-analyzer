@@ -19,6 +19,9 @@ logger = logging.getLogger("oof_materialize_job")
 
 
 OOF_CONTINUATION_MAX_ATTEMPTS = COMPUTE_WAIT_MAX_ATTEMPTS
+# Lifecycle statuses the Worker scheduler callback re-enqueues as a continuation
+# (worker/src/routes/adminControlRoutes.ts); any other "triggered" would never be retried.
+WORKER_CONTINUED_LIFECYCLE_STATUSES = frozenset({"pending", "spawned", "materialized", "shadow_evaluated"})
 
 
 async def _callback_worker(payload: dict[str, Any]) -> None:
@@ -799,6 +802,17 @@ async def _run() -> int:
             )
             status = str(result.get("status") or "").lower()
             continuation_max_attempts = continuation_limit(result)
+            if status == "failed" or (result.get("dependency_retry_required")
+                                      and status not in WORKER_CONTINUED_LIFECYCLE_STATUSES):
+                # FU2: "triggered" is only a retry when the Worker continues this lifecycle
+                # status. Otherwise it left the ticket open and exited 0; the daily dispatch
+                # guard then read the failed day as succeeded and every watchdog tick redispatched.
+                reason = (_dependency_retry_reason(result) if result.get("dependency_retry_required")
+                          else result.get("reason") or "no_reason")
+                if status == "blocked":
+                    raise RuntimeError(f"oof_daily_blocked:{result.get('reason')}:awaiting=paper_plan_activation")
+                raise RuntimeError(f"oof_lifecycle_{status or 'unknown'}_not_continuable:{reason}"
+                                   if status != "failed" else f"oof_lifecycle_failed:{reason}")
             if result.get("dependency_retry_required"):
                 if continuation_attempt >= continuation_max_attempts:
                     reason = _dependency_retry_reason(result)

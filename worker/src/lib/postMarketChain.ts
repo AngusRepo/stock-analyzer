@@ -473,6 +473,7 @@ export async function runPostPipelineCallbackChain(
     learningDb: databaseForDataDomain(env, 'learning'),
     opsDb: databaseForDataDomain(env, 'ops'),
     coreDb: databaseForDataDomain(env, 'core'),
+    marketDb: databaseForDataDomain(env, 'market'),
     allowPointInTimeReconstruction: true,
     kv: env.KV,
   })
@@ -586,6 +587,7 @@ export async function runPostPipelineCallbackChain(
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),
       coreDb: databaseForDataDomain(env, 'core'),
+      marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     })
     await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_readback')

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { resolveEveningWatchdogBusinessDate } from '../lib/eveningWatchdogBusinessDate'
 import { resolveActive8DailyBusinessDate } from '../lib/active8DailyBusinessDate'
@@ -9,8 +9,10 @@ import { resolveNextTwSessionClosure, shouldRunScheduledTask } from '../lib/sche
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import {
   admitSchedulerExecutionTicket,
+  failAcceptedSchedulerTicket,
   schedulerDeliveryIdentity,
   schedulerTicketStatusForRunLog,
+  settleSchedulerHttpTicket,
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketAuthority,
   type SchedulerTicketAdmission,
@@ -125,7 +127,29 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     })
   })
 
+  type TriggerContext = Context<{ Bindings: Bindings; Variables: Variables }>
+  type AdmittedTicket = { db?: D1Database; ticketId?: string; runId?: string }
   routes.post('/api/admin/trigger/:task', async (c) => {
+    // FU1: a throw after admission and before execution (rate limit KV, lineage guard,
+    // scheduler policy, storage admission, ticket writes) must not leave the ticket `accepted`,
+    // where it shows as running and swallows Scheduler retries as duplicate_inflight. Only a
+    // ticket that is still accepted and never started is settled; the response is unchanged.
+    const admitted: AdmittedTicket = {}
+    try {
+      return await handleTrigger(c, admitted)
+    } catch (error) {
+      if (admitted.db && admitted.ticketId && admitted.runId) {
+        // Same NEW-94 redaction as the inner execution catch: the ticket row is stored in ops D1.
+        const { redactSchedulerRunText } = await import('../lib/schedulerRunLogger')
+        const message = redactSchedulerRunText(error instanceof Error ? error.message : String(error), c.env)
+        await failAcceptedSchedulerTicket(admitted.db, { ticketId: admitted.ticketId, runId: admitted.runId, error: message })
+          .catch((settleError) => console.warn('[admin-trigger] admitted ticket settlement failed:', settleError))
+      }
+      throw error
+    }
+  })
+
+  const handleTrigger = async (c: TriggerContext, admitted: AdmittedTicket): Promise<Response> => {
     const authError = await requireServiceToken(c)
     if (authError) return authError
 
@@ -183,6 +207,12 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       summary,
       error,
     })
+    // FU17: post-execution result. A blocked result keeps a ticket its owner already triggered; true
+    // then means the owner keeps the ticket and its scheduler run log, so the caller skips that log.
+    const settleTicket = async (status: SchedulerExecutionTicketStatus, summary: string): Promise<boolean> => {
+      const settled = await settleSchedulerHttpTicket(ticketDb, { ticketId: schedulerTicketId, runId: executionRunId, status, summary })
+      return status === 'blocked' && settled.status === 'triggered'
+    }
     if (!ticketAdmission.shouldExecute) {
       const terminal = ['success', 'error', 'skipped', 'blocked'].includes(ticketAdmission.ticket.status)
       const response = {
@@ -196,6 +226,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       }
       return terminal ? c.json(response, 200) : c.json(response, 202)
     }
+    // From here this request owns the admitted ticket.
+    Object.assign(admitted, { db: ticketDb, ticketId: schedulerTicketId, runId: executionRunId })
 
     const rlCount = parseInt((await c.env.KV.get(rlKey)) ?? '0', 10)
     if (rlCount >= rateLimit) {
@@ -220,7 +252,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       }
     }
 
-    const { classifySchedulerSummary, logSchedulerResult } = await import('../lib/schedulerRunLogger')
+    const {
+      classifySchedulerSummary, logSchedulerResult, redactSchedulerRunText, schedulerRunLogSummary,
+    } = await import('../lib/schedulerRunLogger')
     if (!c.req.query('force')) {
       const decision = await shouldRunScheduledTask({ task, kv: c.env.KV, checkAdHocClosure: true, alertEnv: c.env })
       if (!decision.shouldRun) {
@@ -440,27 +474,27 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         try {
           const result = await fn()
           const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+          const logSummary = schedulerRunLogSummary(result, c.env)
           const status = classifySchedulerSummary(summary)
           // Maintenance's queue owns its ticket from admission through terminal receipt.
           const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-          if (!maintenanceOwned) {
-            await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-          }
-          if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
+          const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)
+          if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
             status,
-            summary,
+            summary: logSummary,
             duration_ms: Date.now() - t0,
             run_id: finLabRunLogId(task, summary) ?? runId,
             run_date: requestedRunDate,
           })
           if (!maintenanceOwned) await putRunLog(c.env.KV, task, runId, {
             status,
-            summary,
+            summary: logSummary,
             duration_ms: Date.now() - t0,
             run_date: requestedRunDate,
           })
         } catch (e: any) {
-          await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
+          await updateTicket('error', 'scheduler_http',
+            redactSchedulerRunText(e?.message ?? 'Unknown error', c.env), redactSchedulerRunText(String(e), c.env))
           await logSchedulerResult(
             c.env.KV,
             task,
@@ -476,9 +510,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           )
           await putRunLog(c.env.KV, task, runId, {
             status: 'error',
-            summary: e?.message ?? 'Unknown error',
+            summary: redactSchedulerRunText(e?.message ?? 'Unknown error', c.env),
             duration_ms: Date.now() - t0,
-            error: String(e),
+            error: redactSchedulerRunText(String(e), c.env),
             run_date: requestedRunDate,
           })
         }
@@ -499,12 +533,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
+      const logSummary = schedulerRunLogSummary(result, c.env)
       const status = classifySchedulerSummary(summary)
       const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-      if (!maintenanceOwned) await updateTicket(schedulerTicketStatusForRunLog(status), 'scheduler_http', summary)
-      if (!maintenanceOwned && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
+      const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)
+      if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
         status,
-        summary,
+        summary: logSummary,
         duration_ms: Date.now() - t0,
         run_id: finLabRunLogId(task, summary) ?? syncRunId,
         run_date: requestedRunDate,
@@ -519,7 +554,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         ticket_id: schedulerTicketId,
       }, maintenanceOwned ? 202 : 200)
     } catch (e: any) {
-      await updateTicket('error', 'scheduler_http', e?.message ?? 'Unknown error', String(e))
+      await updateTicket('error', 'scheduler_http',
+        redactSchedulerRunText(e?.message ?? 'Unknown error', c.env), redactSchedulerRunText(String(e), c.env))
       await logSchedulerResult(
         c.env.KV,
         task,
@@ -535,7 +571,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       )
       return c.json({ success: false, message: `${task} 執行失敗`, error: e.message, run_id: syncRunId, ticket_id: schedulerTicketId }, 500)
     }
-  })
+  }
 
   routes.get('/api/admin/trigger-health', async (c) => {
     const authError = await requireServiceToken(c)

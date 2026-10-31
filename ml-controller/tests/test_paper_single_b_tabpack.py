@@ -182,12 +182,7 @@ def test_single_B_frozen_context_closes_with_disabled_receipt_and_no_strategy_co
     assert pipeline.pipeline_shadow_errors(result)==[]
 
 
-def test_nightly_single_B_closes_formal_plan_and_independent_strategy_nav_without_training(monkeypatch):
-    import asyncio
-    import oof_materialize_job_main as job
-    from services import strategy_nav_read_model
-    monkeypatch.setattr(strategy_nav_read_model, 'refresh_strategy_nav_display',
-        lambda day: {'status':'published','promotion_allowed':False})
+def _single_b_daily(monkeypatch):
     from services import trading_config_loader, d1_domain_client
     from services.l4_distribution_runtime import run
     from test_l4_lifecycle_replan import Paper
@@ -198,22 +193,46 @@ def test_nightly_single_B_closes_formal_plan_and_independent_strategy_nav_withou
     monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
         lambda:SimpleNamespace(config={'l4Distribution':policy}))
     monkeypatch.setattr(d1_domain_client, 'client_proxy_for_domain', lambda _:Paper(plan))
-    def forbidden(**kwargs):raise AssertionError('retired comparison or training must not run')
-    calls = []
-    def daily_nav(**kw):
-        calls.append(kw)
-        return {'status':'accounted', 'strategy_nav_read_model':{'status':'published'}, '_adoption_candidates':[]}
-    monkeypatch.setattr(job, '_execute_daily_nav', daily_nav)
+    return plan
+
+
+DAILY = dict(cadence='daily', end_date='2026-09-11', promote=True, dispatch_full_fit=True,
+    expected_cohort_id=None, continuation_attempt=0, continuation_only=False)
+
+
+def test_nightly_single_B_closes_formal_plan_without_strategy_nav_or_training(monkeypatch):
+    import asyncio
+    import oof_materialize_job_main as job
     from services import paired_nav_daily_adoption
+    plan = _single_b_daily(monkeypatch)
+    def forbidden(**kwargs):raise AssertionError('retired comparison, strategy NAV or training must not run')
+    monkeypatch.setattr(job, '_execute_daily_nav', forbidden)
     monkeypatch.setattr(paired_nav_daily_adoption, 'run_daily_ev_adoption', forbidden)
     monkeypatch.setattr(job, '_execute_oof_lifecycle', forbidden)
-    result = asyncio.run(job._execute_account_lifecycle(cadence='daily', end_date='2026-09-11',
-        promote=True, dispatch_full_fit=True, expected_cohort_id=None,
-        continuation_attempt=0, continuation_only=False))
+    result = asyncio.run(job._execute_account_lifecycle(**DAILY))
     assert result['status']=='native_l4_daily_accounted'
     assert result['native_l4_daily_closure']['plan_id']==plan['plan_id']
     assert result['completion_scope']=='verified_formal_paper_plan'
+    assert result['comparison_review_status']=='disabled_by_single_b_policy'
     assert valid_disabled_receipt(result['paired_nav_maturity']) and not result['promoted']
-    assert calls == [{'end_date':'2026-09-11', 'retire_legacy_owners':True, 'publish_strategy_display':True, 'strategy_only':True}]
-    assert result['strategy_comparison_nav']['status'] == 'accounted'
-    assert result['strategy_comparison_nav']['adoption'] == {'status': 'disabled_replacement_authority_moved'}
+    assert 'strategy_comparison_nav' not in result and not result['nav_retry_required']
+
+
+def test_daily_single_B_closes_despite_incomplete_atomic_nav_and_still_blocks_without_plan(monkeypatch):
+    # BD 10/20-10/29: 132 Atomic selections of the 10/19 context can never
+    # materialize, so an Atomic NAV closure fails every day. It must not gate.
+    import asyncio
+    import oof_materialize_job_main as job
+    from services import l4_oof_lifecycle
+    plan = _single_b_daily(monkeypatch)
+    monkeypatch.setattr(job, '_execute_daily_nav', lambda **kw: {'status':'failed',
+        'reason':'paired_nav_daily_closure_incomplete', 'family_reviews':{'status':'partial_daily_nav_reviews'}})
+    result = asyncio.run(job._execute_account_lifecycle(**DAILY))
+    assert result['status']=='native_l4_daily_accounted' and result['native_l4_daily_closure']['plan_id']==plan['plan_id']
+    assert not result['nav_retry_required'] and not result.get('dependency_retry_required')
+    assert 'reason' not in result
+    def pending(*args):raise l4_oof_lifecycle.L4DailyPlanPending('l4_daily_plan_pending_for_signal_date')
+    monkeypatch.setattr(l4_oof_lifecycle, 'daily_plan_closure', pending)
+    blocked = asyncio.run(job._execute_account_lifecycle(**DAILY))
+    assert blocked['status']=='blocked' and blocked['resume_after']=='paper_plan_activation'
+    assert blocked['reason']=='l4_daily_plan_pending_for_signal_date' and 'native_l4_daily_closure' not in blocked

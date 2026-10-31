@@ -34,11 +34,19 @@ async function main() {
   const options={asOfDate:'2026-09-06',startDate:'2026-08-13',endDate:'2026-08-13'}
   assert.equal((await materializeStrategyMultiHorizonOutcomes(env,options)).referenceRows,4)
   assert.equal(sql.prepare("SELECT reference_contract_version v FROM canonical_selection_outcomes_v1 WHERE symbol='1' LIMIT 1").get()!.v,contracts[1])
+  // An unchanged window is read back and kept, never rewritten.
+  batchCalls=0
+  const repeat=await materializeStrategyMultiHorizonOutcomes(env,options)
+  assert.deepEqual(repeat.horizons.map(h=>[h.writtenRows,h.persistedRows,h.matureRows]),[[0,4,4],[0,4,4],[0,4,4]])
+  assert.equal(batchCalls,0)
+  assert.match(repeat.summary,/5d=4\/4,written=0,/)
   sql.exec("UPDATE price_horizon_labels_v2 SET exit_raw_close=15 WHERE stock_id=1; DELETE FROM price_horizon_labels_v2 WHERE stock_id IN (3,4)")
   sql.prepare('INSERT INTO price_horizon_label_rejections_v2 VALUES (?,?,?,?,?)').run(3,'2026-08-13',5,'2026-08-27',version)
   sql.prepare('INSERT INTO price_horizon_label_rejections_v2 VALUES (?,?,?,?,?)').run(4,'2026-08-13',5,'2026-09-07',version)
   const result=await materializeStrategyMultiHorizonOutcomes(env,options)
   assert.equal(result.horizons.find(h=>h.horizonDays===5)!.retiredRows,1)
+  // Stock 1 moved the cohort benchmark, so both remaining rows are rewritten.
+  assert.deepEqual(result.horizons.map(h=>[h.writtenRows,h.persistedRows,h.matureRows]),[[2,2,2],[2,2,2],[2,2,2]])
   const updated=sql.prepare("SELECT * FROM canonical_selection_outcomes_v1 WHERE symbol='1' AND horizon_days=5").get()!
   assert.ok(Math.abs(Number(updated.absolute_return_net)-0.4982)<1e-10)
   assert.ok(Math.abs(Number(updated.benchmark_return_net)-0.3482)<1e-10,'refresh the full available cohort, including unchanged peer')

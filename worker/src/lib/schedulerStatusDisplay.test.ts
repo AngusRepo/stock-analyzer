@@ -908,4 +908,9 @@ for (const status of ['triggered','skipped'] as const) {
     {id:'active8-oof-daily',group:'daily'},Date.parse('2026-10-04T12:00:00Z'))
   assert(waiting.status === 'waiting', 'known premarket boundary is waiting')
   assert(waiting.staleRunning === false, 'holiday wait does not expire as running compute')
+  const pipeline = resolveSchedulerLogStatus({ task:'active8-oof-daily',status,
+    summary:'active8_oof_lifecycle status=pending reason=awaiting_pipeline job_dispatched=false signal_date=2026-10-29 pipeline_status=error',
+    timestamp:'2026-10-29T17:55:00Z',duration_ms:0 },
+    {id:'active8-oof-daily',group:'daily'},Date.parse('2026-10-30T12:00:00Z'))
+  assert(pipeline.status === 'waiting', 'unfinished pipeline is waiting, not failed')
 }

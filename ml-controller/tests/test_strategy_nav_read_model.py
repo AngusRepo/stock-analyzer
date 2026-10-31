@@ -225,7 +225,7 @@ def test_single_b_pre_dispatch_probe_requires_current_source_checked_projection(
     assert len(builds)==1
 
 
-def test_single_b_job_reconciles_strategy_nav_and_display_without_training(monkeypatch):
+def test_single_b_job_closes_without_strategy_nav_or_display(monkeypatch):
     import asyncio
     import oof_materialize_job_main as job
     from services import single_b_daily_closure, trading_config_loader, l4_forward_refresh
@@ -233,14 +233,10 @@ def test_single_b_job_reconciles_strategy_nav_and_display_without_training(monke
     monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={'l4Distribution':{}}))
     original={'status':'native_l4_daily_accounted','paired_nav_maturity':{'signal_date':DAY,'promotion_allowed':False}}
     monkeypatch.setattr(single_b_daily_closure,'single_b_daily_closure',lambda *a:deepcopy(original))
-    calls=[]
-    def reconcile(**kw):
-        assert kw == {'end_date':DAY, 'retire_legacy_owners':True, 'publish_strategy_display':True, 'strategy_only':True}
-        calls.append(DAY)
-        return {'status':'accounted', 'strategy_nav_read_model':{'status':'published'}, '_adoption_candidates':[]}
-    monkeypatch.setattr(job,'_execute_daily_nav',reconcile)
+    def retired(**kw):raise AssertionError('Atomic paired NAV is retired from the daily closure')
+    monkeypatch.setattr(job,'_execute_daily_nav',retired)
     result=asyncio.run(job._execute_lifecycle(cadence='daily',end_date=DAY,promote=False,dispatch_full_fit=False,
         expected_cohort_id=None,continuation_attempt=0,continuation_only=False))
-    assert result['strategy_nav_read_model']['status']=='published' and calls==[DAY]
+    assert result['status']=='native_l4_daily_accounted' and 'strategy_nav_read_model' not in result
     assert result['paired_nav_maturity']==original['paired_nav_maturity']
     assert result['forward_learning_data']['status']=='refreshed'

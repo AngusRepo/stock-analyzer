@@ -17,11 +17,22 @@ type Receipt = {
   claim: string; leaseOwner: string; retrySafe?: boolean; result?: PostVerifyTaskResult; checksum?: string
 }
 type Row = { state: string; receipt_json: string }
+/** Idempotent post-verify producers: a closed claim may simply run again (the chain passes retrySafe from this). */
+export const POST_VERIFY_RETRY_SAFE_TASKS: readonly string[] = ['price-horizon-projection', 'strategy-multi-horizon-outcomes', 'linucb-reward-ledger']
 const PREFIX = 'post_verify_task_v1:'
 const RUNNING = PREFIX + 'running'
 const SUCCESS = PREFIX + 'success'
 const ERROR = PREFIX + 'error'
 const UNCERTAIN = PREFIX + 'uncertain'
+
+/** The ERROR receipt that closes a running claim whose stage lease expired (also used by the operator reconcile). */
+export async function closeExpiredPostVerifyReceipt(receiptJson: string): Promise<{ task: string; leaseOwner: string; receiptJson: string }> {
+  const stale = JSON.parse(receiptJson) as Receipt
+  const closed: Receipt = { ...stale, result: { task: stale.task, status: 'error',
+    summary: `post_verify_checkpoint_lease_expired_reclaimed:${stale.task}:lease_owner=${stale.leaseOwner}` } }
+  closed.checksum = await digest(closed)
+  return { task: stale.task, leaseOwner: stale.leaseOwner, receiptJson: JSON.stringify(closed) }
+}
 
 function writes(sql: string): boolean {
   // WITH may contain writes. False-positive guards are safe; no writes bypass
@@ -142,20 +153,20 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
     for (const row of rows.results ?? []) {
       const stale = JSON.parse(row.receipt_json) as Receipt
       if (!stale.leaseOwner || stale.leaseOwner === input.leaseOwner) continue
-      // Receipts claimed before the stored flag rely on the same task's own
-      // retry contract.
-      if (stale.retrySafe !== true && !(retrySafe && stale.task === task)) {
+      // Receipts claimed before the stored flag rely on their task's own retry
+      // contract: a retry-safe task's claim closes like a flagged one, from any
+      // task (NEW-1030-22: a dead outcomes producer must not block projection).
+      const legacyRetrySafe = stale.retrySafe === undefined && POST_VERIFY_RETRY_SAFE_TASKS.includes(stale.task)
+      if (stale.retrySafe !== true && !legacyRetrySafe && !(retrySafe && stale.task === task)) {
         requiresReconciliation.push(stale.task)
         continue
       }
-      const closed: Receipt = { ...stale, result: { task: stale.task, status: 'error',
-        summary: `post_verify_checkpoint_lease_expired_reclaimed:${stale.task}:lease_owner=${stale.leaseOwner}` } }
-      closed.checksum = await digest(closed)
+      const closed = await closeExpiredPostVerifyReceipt(row.receipt_json)
       const changed = await db.prepare(`UPDATE post_verify_task_receipts_v1 SET state=?,receipt_json=?,updated_at=CURRENT_TIMESTAMP
         WHERE receipt_key=? AND state=? AND receipt_json=? AND ${authority}
           AND NOT EXISTS(SELECT 1 FROM pipeline_stage_runs WHERE business_date=? AND stage='post_verify_chain'
             AND status='running' AND lease_owner=? AND lease_expires_at>=CURRENT_TIMESTAMP)
-        RETURNING receipt_key`).bind(ERROR, JSON.stringify(closed), row.receipt_key, RUNNING, row.receipt_json,
+        RETURNING receipt_key`).bind(ERROR, closed.receiptJson, row.receipt_key, RUNNING, row.receipt_json,
           ...binds, input.businessDate, stale.leaseOwner).first()
       if (changed) reclaimed = true
     }

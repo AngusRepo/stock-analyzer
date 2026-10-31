@@ -21,6 +21,48 @@ const leaseModifier = (seconds: number) => `+${Math.max(30, Math.floor(seconds))
 
 export const PIPELINE_STAGE_LEASE_SECONDS = 900
 
+/**
+ * Margin after a live foreign lease before the delivery retries: the update queue's own retry_delay
+ * (wrangler.toml, 30 s), which also covers D1 CURRENT_TIMESTAMP's one-second resolution and clock skew.
+ */
+export const PIPELINE_STAGE_BUSY_RETRY_MARGIN_SECONDS = 30
+const PIPELINE_STAGE_LEASE_BUSY_PREFIX = 'pipeline_stage_lease_busy:'
+
+/** Delivery blocked by another owner's live lease: retry it after the lease (never ack it away). */
+export class PipelineStageLeaseBusyError extends Error {
+  constructor(readonly delaySeconds: number, detail: string) {
+    super(`${PIPELINE_STAGE_LEASE_BUSY_PREFIX}${detail}:retry_in=${delaySeconds}s`)
+  }
+}
+
+export function isPipelineStageLeaseBusy(error: unknown): error is PipelineStageLeaseBusyError {
+  return error instanceof PipelineStageLeaseBusyError
+}
+
+/**
+ * Lease remaining + margin. A lease is set to now + PIPELINE_STAGE_LEASE_SECONDS by claim or heartbeat, so the
+ * delay is at most 900 + 30 s, far under the Queues delivery-delay limit (12 h). Every retry spends one of the
+ * consumer's max_retries (8) deliveries.
+ */
+export function pipelineStageBusyRetryDelaySeconds(remainingSeconds: number): number {
+  const margin = PIPELINE_STAGE_BUSY_RETRY_MARGIN_SECONDS
+  return Math.min(PIPELINE_STAGE_LEASE_SECONDS + margin, Math.max(margin, Math.ceil(remainingSeconds) + margin))
+}
+
+/** The running stage row's lease, if any: owner and whole seconds left (D1 clock; negative once expired). */
+export async function readPipelineStageRunningLease(
+  db: D1Database,
+  input: { businessDate: string; stage: string },
+): Promise<{ canonical_run_id: string; lease_owner: string; remaining_seconds: number } | null> {
+  const row = await db.prepare(`
+    SELECT canonical_run_id, lease_owner,
+           CAST(ROUND((julianday(lease_expires_at) - julianday('now')) * 86400) AS INTEGER) AS remaining_seconds
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage=? AND status='running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL
+  `).bind(input.businessDate, input.stage).first<{ canonical_run_id: string; lease_owner: string; remaining_seconds: number }>()
+  return row ?? null
+}
+
 export type PipelineStageLeaseIdentity = {
   businessDate: string
   stage: string

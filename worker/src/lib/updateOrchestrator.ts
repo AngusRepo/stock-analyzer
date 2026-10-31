@@ -3960,11 +3960,14 @@ export async function processUpdateBatch(
     }
     const {
       PIPELINE_STAGE_LEASE_SECONDS,
+      PipelineStageLeaseBusyError,
       claimPipelineStage,
       enqueuePipelineStage,
       isPipelineStageCanonicalState,
       isPipelineStageLeaseLost,
       markPipelineStageFenced,
+      pipelineStageBusyRetryDelaySeconds,
+      readPipelineStageRunningLease,
       startPipelineStageLeaseHeartbeat,
     } = await import('./pipelineStageLease')
     const state = await enqueuePipelineStage(databaseForDataDomain(env, 'ops'), {
@@ -3987,6 +3990,17 @@ export async function processUpdateBatch(
       leaseSeconds: PIPELINE_STAGE_LEASE_SECONDS,
     })
     if (!claimed) {
+      // NEW-1030-22: another owner holds (or held, if it expired since the claim) this canonical run's lease.
+      // Acking here dropped the only driver when that owner died (10/29): retry the delivery once the lease
+      // has run out instead (an already expired lease retries after the margin and is then claimable).
+      const held = await readPipelineStageRunningLease(databaseForDataDomain(env, 'ops'), {
+        businessDate: triggerTime, stage: 'post_verify_chain',
+      })
+      if (held && held.canonical_run_id === runId) {
+        const delaySeconds = pipelineStageBusyRetryDelaySeconds(held.remaining_seconds)
+        console.warn(`[Queue] post-verify stage lease held by ${held.lease_owner} date=${triggerTime} run_id=${runId}; retry in ${delaySeconds}s`)
+        throw new PipelineStageLeaseBusyError(delaySeconds, `${triggerTime}:post_verify_chain:${runId}`)
+      }
       console.log(`[Queue] post-verify stage already claimed/closed date=${triggerTime}`)
       return
     }

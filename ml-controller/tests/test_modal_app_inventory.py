@@ -153,6 +153,12 @@ def test_admin_view_skips_without_token_and_times_out(monkeypatch):
     monkeypatch.delenv('MODAL_TOKEN_ID', raising=False)
     assert asyncio.run(admin.modal_app_inventory_view()) == {'status': 'skipped', 'reason': 'modal_token_unset'}
 
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz)
+    # APPS ages are relative to NOW; the view reads the wall clock, so pin it.
+    monkeypatch.setattr(admin, 'datetime', FixedClock)
     monkeypatch.setenv('MODAL_TOKEN_ID', 'TEST_ONLY')
     monkeypatch.setattr(inventory, 'list_modal_apps', lambda: APPS)
     view = asyncio.run(admin.modal_app_inventory_view())

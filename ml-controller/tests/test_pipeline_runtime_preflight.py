@@ -32,6 +32,19 @@ def test_read_only_metadata_function_before_compute(monkeypatch):
     assert seen==['metadata']
 
 
+
+def test_slow_metadata_read_fails_before_compute(monkeypatch):
+    import modal
+    import services.pipeline_runtime_preflight as preflight
+    async def read():
+        await asyncio.sleep(1)
+    monkeypatch.setattr(modal.Function,'from_name',lambda app,name: SimpleNamespace(remote=SimpleNamespace(aio=read)))
+    monkeypatch.setattr(preflight,'PROVENANCE_TIMEOUT_SECONDS',0.01)
+    monkeypatch.setenv('STOCKVISION_SOURCE_SHA','a'*40)
+    with pytest.raises(ValueError, match='^pipeline_modal_provenance_timeout_before_compute$'):
+        asyncio.run(verify_pipeline_runtime())
+
+
 def test_runner_mismatch_stops_before_any_data_or_model_work(monkeypatch):
     from graphs import daily_pipeline_v2 as graph
     import services.pipeline_runtime_preflight as preflight

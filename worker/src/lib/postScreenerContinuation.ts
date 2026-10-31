@@ -192,7 +192,10 @@ export function pipelineProvenanceRecoveryDecision(input: {
   const cloudFailure = /^pipeline_cloud_run_failed:(memory_limit|task_failed);completed_at=([^;]+);execution=[a-z0-9-]+$/.exec(error)
   const paperApprovalFailure = error === 'active8_nav_current_configuration_changed_or_unverified'
   const certifiedNavGap = error === "'snapshot_id'" && input.navGapCertified === true
-  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure && !paperApprovalFailure && !certifiedNavGap) {
+  // A provenance timeout fails before compute, so it needs no repair release. The recovery
+  // run id is keyed by release, so the existing CAS allows one retry per release and date.
+  const provenanceTimeout = error.includes('pipeline_modal_provenance_timeout_before_compute')
+  if (!error.includes('pipeline_modal_source_sha_mismatch') && !servingContractFailure && !cloudFailure && !paperApprovalFailure && !certifiedNavGap && !provenanceTimeout) {
     return { retry: false, reason: 'pipeline_error_not_provenance_mismatch' }
   }
   const failureMs = sqliteUtcMs(cloudFailure ? cloudFailure[2] : String(failure.updated_at ?? ''))
@@ -224,10 +227,11 @@ export function pipelineProvenanceRecoveryDecision(input: {
   if (!Number.isFinite(failureMs) || !Number.isFinite(deployedMs)) {
     return { retry: false, reason: 'release_timestamp_unparseable' }
   }
-  if (deployedMs <= failureMs) {
+  if (deployedMs <= failureMs && !provenanceTimeout) {
     return { retry: false, reason: 'worker_release_not_newer_than_failure' }
   }
-  return { retry: true, reason: paperApprovalFailure ? 'new_worker_release_after_paper_runtime_reapproval'
+  return { retry: true, reason: provenanceTimeout ? 'provenance_timeout_retry_once_per_release'
+    : paperApprovalFailure ? 'new_worker_release_after_paper_runtime_reapproval'
     : certifiedNavGap ? 'new_worker_release_after_certified_nav_gap'
       : cloudFailure ? 'new_worker_release_after_cloud_failure' : 'new_worker_release_after_provenance_failure' }
 }
@@ -305,6 +309,13 @@ export async function enqueuePostScreenerPipelineRecovery(
   const releaseId = String(options.workerVersion!.id).trim()
   const sourceSha = String(options.workerVersion!.tag).trim()
   const recoveryRunId = `pipeline-provenance-recovery:${options.businessDate}:${releaseId}`
+  // The CAS alone does not bound a timeout retry: a failed recovery continuation is
+  // adopted back to the chain root id and would pass the CAS again on the same release.
+  if (decision.reason === 'provenance_timeout_retry_once_per_release'
+    && await env.KV.get(`cron:pipeline-recovery:${options.businessDate}:${releaseId}:enqueued`)) {
+    return { queued: false, canonicalRunId: failure.canonical_run_id, status: failure.status,
+      reason: 'provenance_timeout_retry_already_used' }
+  }
   const recovered = await opsDb.prepare(`
     UPDATE pipeline_stage_runs
        SET canonical_run_id=?, status='queued', cursor_key=NULL,

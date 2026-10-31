@@ -5,6 +5,10 @@ import asyncio
 import os
 import re
 
+# deployment_provenance cold-starts on every call (cpu 0.25, scaledown 30 s). 10/30 it took
+# 20.7 s against the old 20 s bound and failed the chain before any compute ran.
+PROVENANCE_TIMEOUT_SECONDS = 120.0
+
 
 def validate_modal_provenance(value: dict, expected_source_sha: str) -> dict:
     if not re.fullmatch(r'[a-f0-9]{40}', expected_source_sha):
@@ -29,7 +33,7 @@ async def verify_pipeline_runtime(*, expected_source_sha: str | None = None) -> 
         function = modal.Function.from_name('stockvision-ml', 'deployment_provenance')
         return await function.remote.aio()
     try:
-        value = await asyncio.wait_for(read(), timeout=20.0)
+        value = await asyncio.wait_for(read(), timeout=PROVENANCE_TIMEOUT_SECONDS)
     except TimeoutError as exc:
         raise ValueError('pipeline_modal_provenance_timeout_before_compute') from exc
     return validate_modal_provenance(value, expected)

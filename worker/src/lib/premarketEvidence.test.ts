@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { runPremarketEvidenceStage } from './premarketEvidenceStage'
 import { filterNewsEvidence, NEWS_FEATURES } from './newsEvidence'
-import { runDailyNewsAnalysis, parseReportJson, formatNewsDebateContext, readCurrentNewsReport, isReadyNight, buildPrompts } from './newsAnalyst'
+import { runDailyNewsAnalysis, parseReportJson, formatNewsDebateContext, readCurrentNewsReport, isReadyNight, validSessionFloor,
+  buildPrompts } from './newsAnalyst'
 import { isReadyUSSignal } from './usLeading'
 import { callLLM } from './debateTrader'
 import { withPaperExecutionScope } from './paperExecutionScope'
@@ -75,6 +76,22 @@ test('MIS midnight trades use the next civil day without widening the 96-hour li
   assert.equal(isReadyNight(night, Date.parse('2026-10-13T04:59:54+08:00')), false)
   assert.equal(isReadyNight({ ...night, date: '20261007' }, Date.parse('2026-10-12T08:30:00+08:00')), false)
   assert.ok(isReadyNight({ ...night, time: '230000' }, Date.parse('2026-10-08T23:00:00+08:00')))
+})
+
+test('a recorded session floor admits the last trading day night session past 96 hours', () => {
+  // MIS still reported the Oct 22 session on Oct 27: Oct 23 typhoon, weekend, Oct 26 holiday.
+  const night = { lastPrice: 45654, changePct: -1.25, changePoints: -580, date: '20261022', time: '045959' }
+  const morning = Date.parse('2026-10-27T06:45:00+08:00')
+  assert.equal(isReadyNight(night, morning), false)
+  assert.ok(isReadyNight(night, morning, '2026-10-22'))
+  assert.equal(isReadyNight({ ...night, date: '20261021' }, morning, '2026-10-22'), false)
+  assert.equal(isReadyNight(night, morning, null), false)
+  assert.equal(validSessionFloor('2026-10-22', '2026-10-27'), '2026-10-22')
+  assert.equal(validSessionFloor('2026-10-13', '2026-10-27'), '2026-10-13')
+  assert.equal(validSessionFloor('2026-02-28', '2026-03-02'), '2026-02-28')
+  assert.equal(validSessionFloor('2026-02-30', '2026-03-05'), null)
+  for (const floor of ['2026-10-27', '2026-10-28', '2026-10-12', '20261022', '2026-10-22T00:00:00Z', 20261022, null, undefined])
+    assert.equal(validSessionFloor(floor, '2026-10-27'), null)
 })
 
 test('October 12 TAIFEX date and proxy timeout corrections allow only the two authorized retries', async () => {
@@ -225,8 +242,52 @@ test('news producer repairs once with same evidence, then caches valid output', 
     const published = (await withPaperExecutionScope(f.ports, () => readCurrentNewsReport(f.env.KV, date))).result
     assert.ok(published?.evidence_receipt?.sha256)
     assert.ok(f.artifacts.has(published.evidence_receipt.key))
+    // A fresh night session never resolves a floor, so ordinary days publish no field and read no calendar.
+    assert.equal(Object.hasOwn(published.macro_evidence ?? {}, 'taifex_session_floor'), false)
     await run(); assert.equal(calls, 2)
   } finally { globalThis.fetch = originalFetch; f.close() }
+})
+
+test('after a long closure the producer records the session floor and the reader trusts only the record', async () => {
+  // 10/27 06:45: Oct 23 typhoon, weekend, Oct 26 holiday; MIS still shows the Oct 22 session.
+  const now = Date.parse('2026-10-27T06:45:00+08:00'), date = '2026-10-27'
+  for (const [opened, ready] of [['20261022', true], ['20261021', false]] as const) {
+    const f = l4NativeFixture(), originalFetch = globalThis.fetch
+    f.ports.nowMs = now; f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
+    f.kvs.set('holiday:2026-10-23', '颱風休市'); f.kvs.set('holiday:2026-10-26', '光復節補假')
+    f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
+      source_times: { sox: new Date(now).toISOString(), gspc: new Date(now).toISOString(), vix: new Date(now).toISOString() } }))
+    f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at,created_at) VALUES(1,1,?,?,?,?,?,?)')
+      .run(row.title, row.summary, row.url, row.source, new Date(now - 3600_000).toISOString(), new Date(now - 3600_000).toISOString())
+    globalThis.fetch = async () => new Response('<rss/>')
+    // Any calendar lookup over the network (TWSE news) hits the throw below.
+    f.ports.fetchFrozen = async (input: any) => {
+      if (String(input) === 'https://tunnel.invalid/health') return Response.json({ ok: true })
+      const host = URL.canParse(String(input)) ? new URL(String(input)).hostname : ''
+      if (host === 'finance.yahoo.com') return new Response('<rss/>')
+      if (host === 'mis.taifex.com.tw') return Response.json({ RtData: { QuoteList: [{ SymbolID: 'TXF202610-M', CLastPrice: '20000', CRefPrice: '20000', CDate: opened, CTime: '045959' }] } })
+      if (String(input) === 'https://controller.invalid/news/analyze') return Response.json({ source: 'cloudflare_workers_ai:@cf/mistralai/mistral-small-3.1-24b-instruct', text: JSON.stringify(valid) })
+      throw new Error('unexpected test network')
+    }
+    const read = async () => (await withPaperExecutionScope(f.ports, () => readCurrentNewsReport(f.env.KV, date))).result
+    try {
+      if (!ready) {
+        await assert.rejects(withPaperExecutionScope(f.ports, () => runDailyNewsAnalysis(f.env)), /premarket_wait:taifex-night/)
+        continue
+      }
+      assert.equal((await withPaperExecutionScope(f.ports, () => runDailyNewsAnalysis(f.env))).result.status, 'ready')
+      const key = `market:news_analyst:${date}`, stored = JSON.parse(f.kvs.get(key)!)
+      assert.equal(stored.macro_evidence.taifex_session_floor, '2026-10-22')
+      assert.ok(await read())
+      // The reader takes the floor from the report alone, so removing the holiday keys changes nothing.
+      f.kvs.delete('holiday:2026-10-23'); f.kvs.delete('holiday:2026-10-26')
+      assert.ok(await read())
+      for (const floor of [undefined, '2026-10-12', '2026-10-27', '2026-10-23']) {
+        f.kvs.set(key, JSON.stringify({ ...stored, macro_evidence: { ...stored.macro_evidence, taifex_session_floor: floor } }))
+        assert.equal(await read(), null, String(floor))
+      }
+    } finally { globalThis.fetch = originalFetch; f.close() }
+  }
 })
 
 test('news parser identifies actionable citation and assessment failures', () => {

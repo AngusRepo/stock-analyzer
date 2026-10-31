@@ -8,6 +8,7 @@ import type { Bindings } from '../types'
 import { gatherNewsEvidence, parseNewsAssessments, filterNewsEvidence, type NewsEvidence, type NewsAssessment } from './newsEvidence'
 import { runPremarketEvidenceStage } from './premarketEvidenceStage'
 import { isReadyUSSignal } from './usLeading'
+import { getPrevTradingDay } from './paperMarketData'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,12 +47,15 @@ interface GatheredContext {
   evidence?: NewsEvidence[]
   us_signal?: Record<string, any>
   taifex_night?: { lastPrice: number; changePct: number; changePoints: number; date: string; time: string }
+  taifex_session_floor?: string
   market_risk?: { risk_level: string; date: string }
   market_breadth?: { bull_alignment_pct: number | null; advance_ratio: number | null; date: string }
   top_concepts?: Array<{ concept: string; mention_count: number; sentiment_avg: number }>
 }
 
-export function isReadyNight(night: GatheredContext['taifex_night'], now = paperExecutionNow()): boolean {
+/** `sessionFloor` (YYYY-MM-DD) also accepts an older night session opened on or after
+ * that date: after a long closure the last session can exceed the 96h window. */
+export function isReadyNight(night: GatheredContext['taifex_night'], now = paperExecutionNow(), sessionFloor?: string | null): boolean {
   if (!night || !Number.isFinite(night.lastPrice) || night.lastPrice <= 0 || !Number.isFinite(night.changePct)) return false
   const date = String(night.date).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')
   const time = String(night.time).replace(/^(\d{2})(\d{2})(\d{2})$/, '$1:$2:$3')
@@ -59,7 +63,19 @@ export function isReadyNight(night: GatheredContext['taifex_night'], now = paper
   // belong to the following civil day (TAIFEX daily report: 15:00~次日05:00).
   const timestamp = Date.parse(`${date}T${time}+08:00`)
     + (/^0[0-4]:[0-5]\d:[0-5]\d$|^05:00:00$/.test(time) ? 24 * 3600_000 : 0)
-  return Number.isFinite(timestamp) && timestamp <= now && now - timestamp <= 96 * 3600_000
+  if (!Number.isFinite(timestamp) || timestamp > now) return false
+  return now - timestamp <= 96 * 3600_000 || (Boolean(sessionFloor) && date >= sessionFloor!)
+}
+
+/** A recorded floor counts only if it is a date before `today` and at most 14 days back,
+ * the span getPrevTradingDay walks. */
+export function validSessionFloor(floor: unknown, today: string): string | null {
+  if (typeof floor !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(floor) || floor >= today) return null
+  const parsed = Date.parse(`${floor}T00:00:00Z`)
+  // Date.parse rolls 2026-02-30 over to March; only a real calendar date counts.
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== floor) return null
+  const days = (Date.parse(`${today}T00:00:00Z`) - parsed) / 86_400_000
+  return days >= 1 && days <= 14 ? floor : null
 }
 
 async function gatherContext(env: NewsAnalystEnv, today: string): Promise<GatheredContext> {
@@ -115,7 +131,14 @@ async function gatherContext(env: NewsAnalystEnv, today: string): Promise<Gather
   out.cutoff = news.cutoff
   out.evidence = news.evidence
   if (!isReadyUSSignal(out.us_signal, today)) throw new Error('premarket_wait:us-leading')
-  if (!isReadyNight(out.taifex_night)) throw new Error('premarket_wait:taifex-night')
+  // The producer resolves the floor and records it, so the Paper reader never consults a calendar.
+  // getPrevTradingDay is the owner of the premarket signal date; ordinary days skip it.
+  if (out.taifex_night && !isReadyNight(out.taifex_night)) {
+    out.taifex_session_floor = await getPrevTradingDay(databaseForDataDomain(env, 'core'), env.KV, today)
+  }
+  if (!isReadyNight(out.taifex_night, paperExecutionNow(), validSessionFloor(out.taifex_session_floor, today))) {
+    throw new Error('premarket_wait:taifex-night')
+  }
   if (!out.evidence.length) throw new Error('premarket_wait:news-headlines')
   return out
 }
@@ -324,7 +347,8 @@ export async function runDailyNewsAnalysis(env: NewsAnalystEnv): Promise<NewsAna
       const source = response.source
       const report: NewsAnalystReport = { ...parsed, date: today, source, schema_version: 'news-evidence-v2',
         status: 'ready', cutoff: ctx.cutoff, evidence: ctx.evidence,
-        macro_evidence: { us_signal: ctx.us_signal, taifex_night: ctx.taifex_night, market_risk: ctx.market_risk, market_breadth: ctx.market_breadth } }
+        macro_evidence: { us_signal: ctx.us_signal, taifex_night: ctx.taifex_night, taifex_session_floor: ctx.taifex_session_floor,
+          market_risk: ctx.market_risk, market_breadth: ctx.market_breadth } }
       await assertOwner()
       const payload = JSON.stringify(report)
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
@@ -357,7 +381,9 @@ export async function readCurrentNewsReport(
   try {
     const report = await kv.get(`market:news_analyst:${today}`, 'json') as NewsAnalystReport | null
     if (!report || report.date !== today || report.schema_version !== 'news-evidence-v2' || report.status !== 'ready' ||
-      !isReadyUSSignal(report.macro_evidence?.us_signal, today) || !isReadyNight(report.macro_evidence?.taifex_night as GatheredContext['taifex_night']) ||
+      !isReadyUSSignal(report.macro_evidence?.us_signal, today) ||
+      !isReadyNight(report.macro_evidence?.taifex_night as GatheredContext['taifex_night'], paperExecutionNow(),
+        validSessionFloor(report.macro_evidence?.taifex_session_floor, today)) ||
       !report.evidence?.length || !report.cutoff || Date.parse(report.cutoff) > paperExecutionNow() ||
       new Date(Date.parse(report.cutoff) + 8 * 3600_000).toISOString().slice(0, 10) !== today ||
       filterNewsEvidence(report.evidence, report.cutoff).length !== report.evidence.length || !parseReportJson(JSON.stringify(report), report.evidence)) return null

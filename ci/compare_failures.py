@@ -26,10 +26,15 @@ def read(suite, side):
     return {line.strip() for line in path.read_text(encoding='utf-8').splitlines() if line.strip()}
 
 
-def read_flaky(suite):
-    """Head-only failures that passed when rerun (written by ci/rerun_new_failures.py)."""
-    path = root / f'flaky-{suite}' / 'flaky.txt'
+def read_rerun(suite, kind):
+    """Head-only failures that passed when rerun (flaky) or also failed on the base (stale),
+    written by ci/rerun_new_failures.py."""
+    path = root / f'{kind}-{suite}' / f'{kind}.txt'
     return {l.strip() for l in path.read_text(encoding='utf-8').splitlines() if l.strip()} if path.exists() else set()
+
+
+def read_flaky(suite):
+    return read_rerun(suite, 'flaky')
 
 
 lines = ['| suite | head failures | pre-existing | **new** | flaky | fixed |', '|---|---|---|---|---|---|']
@@ -42,11 +47,15 @@ for suite in SUITES:
         continue
     base = base or set()
     flaky = (head - base) & read_flaky(suite)
-    new, fixed = sorted(head - base - flaky), sorted(base - head)
+    stale = (head - base - flaky) & read_rerun(suite, 'stale')
+    new, fixed = sorted(head - base - flaky - stale), sorted(base - head)
     blocked |= bool(new)
-    lines.append(f'| {suite} | {len(head)} | {len(head & base)} | **{len(new)}** | {len(flaky)} | {len(fixed)} |')
+    lines.append(f'| {suite} | {len(head)} | {len(head & base) + len(stale)} | **{len(new)}** | {len(flaky)} | {len(fixed)} |')
     if new:
         details.append(f'### {suite}: new failures\n' + '\n'.join(f'- `{n}`' for n in new))
+    if stale:
+        details.append(f'### {suite}: pre-existing, missing from the cached base list (also fail on the base now; not blocking)\n'
+                       + '\n'.join(f'- `{s}`' for s in sorted(stale)))
     if flaky:
         details.append(f'### {suite}: flaky (failed on head, passed on rerun; not blocking)\n'
                        + '\n'.join(f'- `{f}`' for f in sorted(flaky)))
@@ -72,7 +81,7 @@ def main_section():
         if head is None or ref is None:
             rows.append(f'| {suite} | - | - |')
             continue
-        new_vs_main = head - ref - read_flaky(suite)
+        new_vs_main = head - ref - read_flaky(suite) - read_rerun(suite, 'stale')
         inherited = sorted(new_vs_main & (read(suite, 'base') or set()))
         rows.append(f'| {suite} | {len(new_vs_main)} | {len(inherited)} |')
         if inherited:

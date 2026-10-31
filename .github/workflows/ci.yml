@@ -189,28 +189,26 @@ jobs:
           name: flaky-controller
           path: ${{ runner.temp }}/flaky.txt
           if-no-files-found: error
-      # Same base commit as the suites' base side; set only when every controller base shard
-      # was a cache hit and some ids are still failing after the head reruns.
+      # Checked only on pull_request and push (same base commit as the suites' base side), when
+      # every controller base shard was a cache hit and some ids still fail after the head reruns.
       - name: Resolve base
         id: base
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
           set -e
-          sha=''
-          [ "${{ github.event_name }}" = pull_request ] && sha='${{ github.event.pull_request.base.sha }}'
-          [ "${{ github.event_name }}" = push ] && sha='${{ github.event.before }}'
           hits="$(find cached -name cached.txt 2>/dev/null | wc -l | tr -d ' ')"
           [ "$hits" = "$CONTROLLER_SHARDS" ] || { echo "base lists from this run ($hits/$CONTROLLER_SHARDS cached); not checked on base"; exit 0; }
           left="$(comm -23 <(sort -u "$RUNNER_TEMP/new.txt") <(sort -u "$RUNNER_TEMP/flaky.txt"))"
-          [ -n "$left" ] && echo "sha=$sha" >> "$GITHUB_OUTPUT" || true
+          [ -n "$left" ] && echo "check=true" >> "$GITHUB_OUTPUT" || true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.base.outputs.sha != ''
+        if: steps.base.outputs.check == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
         with:
-          ref: ${{ steps.base.outputs.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
           path: .base-tree
           fetch-depth: 0
           filter: blob:none
       - name: Check them on base
-        if: steps.base.outputs.sha != ''
+        if: steps.base.outputs.check == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
         working-directory: .base-tree
         run: bash ../.ci-tools/ci/rerun_controller.sh --base "$RUNNER_TEMP/stale.txt" "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
       - name: Default stale list

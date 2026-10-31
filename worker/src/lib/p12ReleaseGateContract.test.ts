@@ -38,4 +38,8 @@ assert(
 )
 
 assert(workflow.includes('workflow_dispatch:'), 'P12 release gate workflow must support manual dispatch')
-assert(workflow.includes('feature/**'), 'P12 release gate workflow must run on feature branch pushes')
+// ci.yml is the PR gate; this Windows re-run must not come back as an automatic check.
+assert(
+  /^on:\n  workflow_dispatch:\n\n/m.test(workflow.replace(/\r\n/g, '\n')),
+  'P12 release gate workflow must be manual dispatch only',
+)

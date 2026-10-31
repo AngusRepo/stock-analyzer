@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 from typing import Any
 
 OWNER = "r33_monthly_candidate"
@@ -22,11 +23,35 @@ REGISTRY_STATUS = "r33_candidates_registered"
 CHECKS_SCHEMA = "r33-monthly-oof-checks-receipt-v1"
 BUNDLE_SCHEMA = "r33-monthly-candidate-bundle-v1"
 BUNDLE_PREFIX = "r33/monthly_candidates"
-# Same 18 bps round trip as the canonical prep (roundtrip_cost_bps); fit_calibration reports
-# picks whose expected excess over the day's pool clears it.
+# Same 18 bps round trip as the canonical prep (roundtrip_cost_bps); only fit_calibration's
+# crossfit_above_cost diagnostic and the bundle's calibration_contract use it. It is NOT the
+# admission cost: the OOF checks' cost line reads trading:config.fees (gate_round_trip_cost).
 ROUND_TRIP_COST = 0.0018
+GATE_COST_OWNER = "trading:config.fees(buy_cost+sell_cost)"
 OOF_COLUMNS = ("prediction_date", "symbol", "market_segment", "model_name", "raw_score",
                "target_return", "label_known_date", "fold_id")
+
+
+def gate_round_trip_cost() -> dict:
+    """The round trip serving charges (buy commission + sell commission and tax), read through
+    the serving loader of trading:config. A degraded contract or missing fees fails closed."""
+    from services.trading_config_loader import load_merged_trading_config_with_contract
+    result = load_merged_trading_config_with_contract()
+    if result.contract.degraded:
+        raise ValueError("r33_gate_cost_contract_degraded:" + str(result.contract.source))
+    try:
+        commission, tax = result.config["fees"]["commission"], result.config["fees"]["tax"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("r33_gate_cost_fees_missing") from exc
+    # Same domain the Worker's paper fills accept: each rate a finite non-negative number.
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+               for v in (commission, tax)):
+        raise ValueError("r33_gate_cost_fees_invalid")
+    cost = float(commission + (commission + tax))
+    if not 0 < cost < 1:
+        raise ValueError("r33_round_trip_cost_invalid")
+    return {"round_trip_cost": cost, "owner": GATE_COST_OWNER, "source": result.contract.source,
+            "commission": commission, "tax": tax}
 
 
 def _canonical(value: Any) -> str:
@@ -279,17 +304,23 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
     if checks_blob.exists():
         report, checks_checksum = _read(checks_blob)
     else:
+        gate_cost = gate_round_trip_cost()
         data = inputs()
         receipts = fold_receipts(manifest, bucket)
         report = {"schema_version": CHECKS_SCHEMA, "cohort_id": cohort_id,
                   "manifest_checksum": manifest["manifest_checksum"], "knowledge_cutoff_date": as_of,
                   "fold_receipts": receipts, "pool": data["pool_receipt"], "prices": data["price_receipt"],
+                  "gate_cost": gate_cost,
                   "result": r33_oof_checks.run_checks(
                       oof=data["oof"], fold_receipts=receipts, pool_by_date=data["pool"], new_fold_from=None,
+                      round_trip_cost=gate_cost["round_trip_cost"],
                       pit_certification=pit["attached"], pit_binding_reasons=pit.get("binding_reasons") or ())}
         report, checks_checksum = _write_once(checks_blob, report)
     if report.get("manifest_checksum") != manifest["manifest_checksum"]:
         raise ValueError("r33_oof_checks_manifest_mismatch")
+    # A receipt sealed before the cost line existed carries no C1; it must not admit full-fit.
+    if (report.get("result") or {}).get("schema_version") != r33_oof_checks.SCHEMA or "gate_cost" not in report:
+        raise ValueError("r33_oof_checks_schema_stale")
     # The sealed OOF checks are write-once; their pit_vintage entry is the result at seal time.
     # The PIT gate is re-verified on every run, so a receipt uploaded or regenerated later
     # is judged freshly while leakage/inversion/tail-guard can never be re-rolled.

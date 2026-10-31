@@ -2,16 +2,17 @@ import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
 export const PREMARKET_WAIT = 'active8_oof_lifecycle status=pending reason=awaiting_premarket job_dispatched=false'
+export const PIPELINE_WAIT = 'active8_oof_lifecycle status=pending reason=awaiting_pipeline job_dispatched=false'
 
 /** Durable parking, without consuming queue retries during nights/holidays. */
-export async function parkActive8PremarketTicket(env: Bindings, message: UpdateQueueMsg): Promise<void> {
+export async function parkActive8PremarketTicket(env: Bindings, message: UpdateQueueMsg, summary = PREMARKET_WAIT): Promise<void> {
   const db = databaseForDataDomain(env, 'ops')
   const result = await db.prepare(`UPDATE scheduler_execution_tickets_v1
     SET status='triggered', metadata_json=json_set(COALESCE(metadata_json,'{}'),'$.premarket_resume',json(?)),
         last_summary=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP
     WHERE ticket_id=? AND run_id=? AND business_date=? AND task='active8-oof-daily'
       AND status IN ('accepted','queued','running','triggered')`)
-    .bind(JSON.stringify(message), PREMARKET_WAIT, message.schedulerTicketId, message.runId,
+    .bind(JSON.stringify(message), summary, message.schedulerTicketId, message.runId,
       String(message.triggerTime).slice(0,10)).run()
   if (Number(result.meta?.changes ?? 0) !== 1) throw new Error('active8_premarket_park_owner_mismatch')
   // Close publication/parking races; otherwise the accepted pipeline callback wakes it.

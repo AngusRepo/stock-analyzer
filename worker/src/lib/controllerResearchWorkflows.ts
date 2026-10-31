@@ -451,10 +451,16 @@ export async function runActive8OofLifecycle(
       SELECT status, last_error FROM pipeline_stage_runs
        WHERE business_date=? AND stage='pipeline_execution'
     `).bind(runDate).first<{status: string; last_error: string | null}>()
-    if (stage?.status === 'waiting' && stage.last_error === 'awaiting_premarket') {
+    if (stage?.status !== 'success') {
       // The nightly producer sealed L3; only morning publication can create this plan.
       // Do not turn a known phase boundary into repeated Cloud Run dispatches.
-      const { PREMARKET_WAIT, parkActive8PremarketTicket } = await import('./active8PremarketWait')
+      // An unfinished or failed pipeline has no plan either: the job would exit 1
+      // and the GCS dispatch guard would lock the whole day (2026-10-29: dispatched
+      // 3 minutes after a pipeline error). The pipeline success callback resumes a
+      // parked child; a skipped root leaves the day to the snapshot-ready child.
+      const premarket = stage?.status === 'waiting' && stage.last_error === 'awaiting_premarket'
+      const { PREMARKET_WAIT, PIPELINE_WAIT, parkActive8PremarketTicket } = await import('./active8PremarketWait')
+      const wait = premarket ? PREMARKET_WAIT : PIPELINE_WAIT
       const waitingOwner = options.schedulerTicketId && options.schedulerRunId
         ? await databaseForDataDomain(env, 'ops').prepare(`SELECT ticket_kind FROM scheduler_execution_tickets_v1
             WHERE ticket_id=? AND run_id=?`).bind(options.schedulerTicketId, options.schedulerRunId)
@@ -466,9 +472,10 @@ export async function runActive8OofLifecycle(
           runId: options.schedulerRunId, schedulerRunId: options.schedulerRunId,
           schedulerTicketId: options.schedulerTicketId, oofCadence: 'daily',
           oofContinuationAttempt: 1, oofExpectedCohortId: options.expectedCohortId,
-        })
+        }, wait)
       }
-      return `${park ? PREMARKET_WAIT : PREMARKET_WAIT.replace('status=pending', 'status=skipped')} signal_date=${runDate}`
+      return `${park ? wait : wait.replace('status=pending', 'status=skipped')} signal_date=${runDate}`
+        + (premarket ? '' : ` pipeline_status=${stage?.status ?? 'missing'}`)
     }
   }
 

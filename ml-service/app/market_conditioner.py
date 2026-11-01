@@ -209,6 +209,10 @@ BACKLOG_POLL_S = 15
 TAIL_CAP_S = 2700
 # L4 challenger inputs in flight once the champion is done (its 10 L4s are free); one before that.
 TAIL_GPU_PARALLEL = 7
+# Wei 11/2: a failed challenger call (exception, preemption, OOM, error result) is sent once more, inside the cap.
+CHALLENGER_ATTEMPTS = 2
+# Bound on a cancel RPC (modal sets no deadline on one): a hung control plane must not hold the cap open.
+CANCEL_TIMEOUT_S = 60
 
 
 class GpuGate:
@@ -281,7 +285,11 @@ class GpuGate:
             await self._turn.wait_for(lambda: self._may_start(ticket))
             self._started.add(ticket)
             self._inflight.add(ticket)
-        if not self.champion_done.is_set():  # checked before every spawn while the champion runs
+        await self.ready_to_spawn()
+
+    async def ready_to_spawn(self) -> None:
+        """Checked before every spawn (a resend too) while the champion runs."""
+        if not self.champion_done.is_set():
             await _first(self.no_backlog(), self.champion_done.wait())
 
     async def release(self, ticket: int) -> None:
@@ -334,42 +342,74 @@ async def _until(awaitable, closed, deadline):
     return False, None
 
 
+async def _cancel(call) -> None:
+    import asyncio
+    try:
+        await asyncio.wait_for(call.cancel.aio(terminate_containers=True), CANCEL_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 - TimeoutError too: the challenger moves on; reported in the log.
+        print(f"[MarketChallenger] cancel failed: {type(exc).__name__}: {exc}")
+
+
+async def _call_once(trainer, payload: dict, closed, deadline):
+    """(True, result) once the call settles, (False, stage) at the deadline or the cap; raises what the call raises.
+
+    A spawn left unanswered at the cap is dropped; there is no handle to cancel."""
+    ok, call = await _until(trainer.spawn.aio(payload), closed, deadline)
+    if not ok:
+        return False, "spawning"
+    settled = False
+    try:
+        ok, result = await _until(call.get.aio(), closed, deadline)
+        settled = ok
+        return (True, result) if ok else (False, "running")
+    finally:
+        if not settled:  # also on CancelledError when the orchestrator loop shuts down
+            await _cancel(call)
+
+
 async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: float | None = CHALLENGER_BUDGET_S,
                          gate: GpuGate | None = None, ticket: int | None = None) -> dict:
     """Wait for the shared block (and, with a ticket, for the gate to admit this L4 challenger), spawn, and
     cancel the remote input at the budget or once the gate closes (TAIL_CAP_S after the champion is done).
+    A failed call is sent once more under the same ticket; the result carries the number of calls sent.
 
     A timed-out .remote() await only drops the local wait; modal 1.6.2 sends FunctionCallCancel
     from FunctionCall.cancel() alone, so a queued or running input would otherwise keep its container."""
     import asyncio
+    from .oof_challengers import challenger_metric
     loop = asyncio.get_running_loop()
     deadline = None if budget_s is None else loop.time() + budget_s
     closed = gate.closed if gate is not None else None
+    attempts = 0
 
     def _over(stage: str) -> dict:
         why = "tail_cap" if closed is not None and closed.is_set() else "budget"
-        return {"unsupported": f"market_challenger_budget_exceeded:{stage}:{why}"}
+        return {"unsupported": f"market_challenger_budget_exceeded:{stage}:{why}", "attempts": attempts}
     try:
         ok, blocks = await _until(asyncio.shield(blocks_task), closed, deadline)
         if not ok:
             return _over("blocks")
         conditioner, reason = conditioner_for_arm(slot_payload["market_conditioner_arm"], blocks)
         if reason:
-            return {"unsupported": reason}
+            return {"unsupported": reason, "attempts": attempts}
         if ticket is not None and not (await _until(gate.admit(ticket), closed, deadline))[0]:
             return _over("waiting_for_gpu")
-        call = await trainer.spawn.aio({**slot_payload, "market_conditioner": conditioner})
-        settled = False
-        try:
-            ok, result = await _until(call.get.aio(), closed, deadline)
-            settled = ok
-            return result if ok else _over("running")
-        finally:
-            if not settled:  # also on CancelledError when the orchestrator loop shuts down
-                try:
-                    await call.cancel.aio(terminate_containers=True)
-                except Exception as exc:  # noqa: BLE001 - the window still moves on; reported in the log.
-                    print(f"[MarketChallenger] cancel failed: {type(exc).__name__}: {exc}")
+        payload = {**slot_payload, "market_conditioner": conditioner}
+        while True:
+            attempts += 1
+            try:
+                ok, result = await _call_once(trainer, payload, closed, deadline)
+            except Exception as exc:  # noqa: BLE001 - a lost input (preemption, OOM): a failure like an error result
+                ok, result = True, {"error": str(exc) or type(exc).__name__}
+            if not ok:
+                return _over(result)
+            result = result if isinstance(result, dict) else {}
+            if challenger_metric(result)["status"] == "ready" or attempts == CHALLENGER_ATTEMPTS:
+                return {**result, "attempts": attempts}
+            print(f"[MarketChallenger] {slot_payload.get('oof_model_alias')} w{slot_payload.get('window_id')} "
+                  f"failed ({str(result.get('error'))[:200]}); sending it once more")
+            if ticket is not None and not (await _until(gate.ready_to_spawn(), closed, deadline))[0]:
+                return _over("waiting_for_gpu")
     finally:
         if ticket is not None:  # the next ticket starts only once this input has settled or been cancelled
             await gate.release(ticket)

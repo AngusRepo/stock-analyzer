@@ -3,7 +3,7 @@
 Scaled timeline per window w: tree, TabM, PatchTST, iTransformer 0.05 s; GNN 0.1 + 0.1w s; TimeXer 0.8 + 0.1w s;
 each TabM challenger fold 0.2 s. The gate opens with the last GNN and one L4 challenger runs at a time; once the
 last TimeXer is done every window's champion results are final, the rest run TAIL_GPU_PARALLEL at a time, and
-whatever is left at the tail cap is cancelled.
+whatever is left at the tail cap is cancelled. A failed challenger call is sent once more.
 """
 import asyncio
 import copy
@@ -103,10 +103,14 @@ def champion(clock, name, seconds, fail=lambda payload: False, backlog=lambda cl
     return SimpleNamespace(remote=SimpleNamespace(aio=aio), get_current_stats=SimpleNamespace(aio=stats))
 
 
-def challenger(clock, name, seconds, raise_for=(), counted=False):
+def challenger(clock, name, seconds, failures=None, counted=False, cancel_hangs=False):
+    """failures[key] lists how the key's first calls fail at once: "raise" (a lost input) or "error" (OOM);
+    cancel_hangs: the cancel RPC never answers (a hung control plane)."""
+    failures = {key: list(kinds) for key, kinds in (failures or {}).items()}
+
     async def spawn(payload):
         key = (payload["oof_model_alias"], payload["window_id"])
-        start, state = clock.now(), {"open": True}
+        start, state, failure = clock.now(), {"open": True}, (failures.get(key) or [None]).pop(0)
         clock.snapshot()
         if counted:
             clock.active += 1
@@ -118,23 +122,28 @@ def challenger(clock, name, seconds, raise_for=(), counted=False):
             state["open"] = False
 
         async def get():
-            await asyncio.sleep(seconds(key) if callable(seconds) else seconds)
+            if failure is None:
+                await asyncio.sleep(seconds(key) if callable(seconds) else seconds)
             close()
             clock.calls.append((name, key, start, clock.now()))
-            if key in raise_for:
+            if failure == "raise":
                 raise RuntimeError("challenger exploded")
+            if failure == "error":
+                return {"error": "CUDA out of memory"}
             return {"model": payload["oof_model_alias"], "oof_artifact": {"path": "p"}}
 
         async def cancel(terminate_containers=False):
             close()
             clock.cancels.append((name, key, terminate_containers, clock.now()))
+            if cancel_hangs:
+                await asyncio.Event().wait()
         clock.calls.append((name + ":spawn", key, start, start))
         return SimpleNamespace(get=SimpleNamespace(aio=get), cancel=SimpleNamespace(aio=cancel))
     return SimpleNamespace(spawn=SimpleNamespace(aio=spawn))
 
 
-def install(monkeypatch, clock, *, windows=WINDOWS, tabm_raise=(), gnn_fail=lambda payload: False,
-            backlog=lambda clock: 0, tree_seconds=0.01, cap=1.0):
+def install(monkeypatch, clock, *, windows=WINDOWS, tabm_failures=None, tree_failures=None,
+            gnn_fail=lambda payload: False, backlog=lambda clock: 0, tree_seconds=0.01, cap=1.0, cancel_hangs=False):
     import google.cloud.storage as storage
     import modal_app
     import app.oof_artifact_recovery as recovery
@@ -173,8 +182,9 @@ def install(monkeypatch, clock, *, windows=WINDOWS, tabm_raise=(), gnn_fail=lamb
              "train_itransformer_universal": champion(clock, "train_itransformer_universal", 0.05),
              "train_timexer_universal": champion(clock, "train_timexer_universal", lambda p: 0.8 + 0.1 * p["window_id"],
                                                  backlog=backlog),
-             "train_wf_tree_market_challenger": challenger(clock, "tree_challenger", tree_seconds),
-             "train_tabm_market_challenger": challenger(clock, "tabm_challenger", 0.2, tabm_raise, counted=True),
+             "train_wf_tree_market_challenger": challenger(clock, "tree_challenger", tree_seconds, tree_failures,
+                                                                cancel_hangs=cancel_hangs),
+             "train_tabm_market_challenger": challenger(clock, "tabm_challenger", 0.2, tabm_failures, counted=True),
              "build_market_conditioner_block": SimpleNamespace(remote=SimpleNamespace(aio=blocks))}
     for name, fake in fakes.items():
         monkeypatch.setattr(modal_app, name, fake)
@@ -220,7 +230,9 @@ def rank(key):
 
 def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_completes_every_slot(monkeypatch):
     clock = Clock()
-    published = install(monkeypatch, clock, windows=SEVEN, tabm_raise={(f"TabM_{FIRST.upper()}", 1)},
+    lost, oom, tree_lost = (f"TabM_{FIRST.upper()}", 1), (f"TabM_{ORDER[1].upper()}", 4), (f"ExtraTrees_{ORDER[-1].upper()}", 3)
+    published = install(monkeypatch, clock, windows=SEVEN, tabm_failures={lost: ["raise", "raise"], oom: ["error"]},
+                        tree_failures={tree_lost: ["raise"]},
                         gnn_fail=lambda payload: payload["window_id"] == 2)  # a failed GPU call is done all the same
     run(SEVEN)
     gated, timexer, done = max(ends(clock, GATED_GPU)), max(ends(clock, {"train_timexer_universal"})), champion_end(clock)
@@ -232,11 +244,13 @@ def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_c
     order, ranked = [key for _, key, _ in clock.spawns], sorted((key for _, key, _ in clock.spawns), key=rank)
     assert order[:len(mid)] == ranked[:len(mid)]  # whole arms first
     assert all(ranked.index(key) < i + mc.TAIL_GPU_PARALLEL for i, key in enumerate(order))
-    # Every slot of every window finishes inside the cap; nothing is cancelled.
+    # Every slot of every window finishes inside the cap; nothing is cancelled. A failed call is sent once more.
     metrics = challenger_metrics(published["manifest"])
-    assert len(metrics) == len(mc.LIFECYCLE_SLOTS) * len(SEVEN) == len(clock.spawns) * 3
-    assert metrics.pop((1, f"tabm_{FIRST}")) == {"status": "failed", "reason": "challenger exploded"}
-    assert {m["status"] for m in metrics.values()} == {"ready"}
+    assert len(metrics) == len(mc.LIFECYCLE_SLOTS) * len(SEVEN) == (len(clock.spawns) - 2) * 3  # two TabM resends
+    assert metrics.pop((1, f"tabm_{FIRST}")) == {"status": "failed", "reason": "challenger exploded", "attempts": 2}
+    resent = [metrics.pop((4, f"tabm_{ORDER[1]}")), metrics.pop((3, f"et_{ORDER[-1]}"))]
+    assert [(m["status"], m["attempts"]) for m in resent] == [("ready", 2), ("ready", 2)]
+    assert {m["status"] for m in metrics.values()} == {"ready"} and {m["attempts"] for m in metrics.values()} == {1}
     finished = {key for name, key, *_ in clock.calls if name in ("tabm_challenger", "tree_challenger")}
     assert not [c for c in clock.cancels if c[1] not in finished] and clock.active == 0  # (a failed get is cancelled too)
     assert 0 < published["at"] - done < mc.TAIL_CAP_S
@@ -245,22 +259,41 @@ def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_c
 def test_the_tail_cap_cancels_what_is_left_and_the_cohort_publishes(monkeypatch):
     slow = (f"ExtraTrees_{ORDER[-1].upper()}", 1)
     clock = Clock()
-    published = install(monkeypatch, clock, tree_seconds=lambda key: 30 if key == slow else 0.01, cap=0.3)
+    published = install(monkeypatch, clock, tree_seconds=lambda key: 30 if key == slow else 0.01, cap=0.3,
+                        tree_failures={slow: ["error"]})  # the resend is the call still running at the cap
     run()
     done = champion_end(clock)
     metrics = challenger_metrics(published["manifest"])
     assert metrics.pop((1, f"et_{ORDER[-1]}")) == {
-        "status": "unsupported", "reason": "market_challenger_budget_exceeded:running:tail_cap"}
+        "status": "unsupported", "reason": "market_challenger_budget_exceeded:running:tail_cap", "attempts": 2}
     assert {m["status"] for m in metrics.values()} == {"ready"}
     [cancel] = clock.cancels
     assert cancel[:3] == ("tree_challenger", slow, True) and abs(cancel[3] - done - 0.3) < SLACK
     assert abs(published["at"] - done - 0.3) < SLACK and clock.active == 0
 
 
+def test_a_hung_cancel_rpc_still_lets_the_cohort_publish(monkeypatch):
+    """Minor-G1: modal sets no deadline on a cancel RPC; the cap plus CANCEL_TIMEOUT_S still bounds the publish."""
+    slow = (f"ExtraTrees_{ORDER[-1].upper()}", 1)
+    clock = Clock()
+    published = install(monkeypatch, clock, tree_seconds=lambda key: 30 if key == slow else 0.01, cap=0.3,
+                        cancel_hangs=True)
+    monkeypatch.setattr(mc, "CANCEL_TIMEOUT_S", 0.2)
+    finished = threading.Event()
+    threading.Thread(target=lambda: (run(), finished.set()), daemon=True).start()
+    assert finished.wait(10), "the orchestrator hung on a cancel RPC"
+    done = champion_end(clock)
+    assert challenger_metrics(published["manifest"])[(1, f"et_{ORDER[-1]}")] == {
+        "status": "unsupported", "reason": "market_challenger_budget_exceeded:running:tail_cap", "attempts": 1}
+    assert abs(published["at"] - done - 0.3 - 0.2) < SLACK
+
+
 def test_champion_results_are_final_before_the_tail_and_identical_to_the_kill_switch_run(monkeypatch):
     gnn_fail = lambda payload: payload["window_id"] == 2  # noqa: E731
     clock = Clock()
-    published = install(monkeypatch, clock, tabm_raise={(f"TabM_{FIRST.upper()}", 0), (f"TabM_{FIRST.upper()}", 1)},
+    published = install(monkeypatch, clock, tabm_failures={(f"TabM_{FIRST.upper()}", 0): ["raise", "error"],
+                                                           (f"TabM_{FIRST.upper()}", 1): ["raise"]},
+                        tree_failures={(f"LightGBM_{FIRST.upper()}", 2): ["error"]},
                         gnn_fail=gnn_fail, tree_seconds=1.3)  # tree challengers run on past the champion
     run()
     done = champion_end(clock)

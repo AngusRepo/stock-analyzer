@@ -3342,8 +3342,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         return await run_challenger(trainer, slot_payload, market_state["blocks"], **gated)
 
     def _challenger_outcome(r) -> dict:
-        return ({"status": "unsupported", "reason": r["unsupported"]}
-                if isinstance(r, dict) and r.get("unsupported") else challenger_metric(r))
+        outcome = ({"status": "unsupported", "reason": r["unsupported"]}
+                   if isinstance(r, dict) and r.get("unsupported") else challenger_metric(r))
+        # W4(a): calls sent for a market challenger (a failed one is sent once more).
+        return {**outcome, "attempts": r["attempts"]} if isinstance(r, dict) and "attempts" in r else outcome
 
     # 2026-04-19 N2: per-window FS gates tree training to eliminate look-ahead
     fs_max_rounds = int(payload.get("fs_max_rounds", 60))

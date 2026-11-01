@@ -1,5 +1,6 @@
 """W4(a) challenger runtime: cancelled at the budget or the tail cap; L4 challengers one at a time after the
-champion's non-TimeXer GPU calls while no TimeXer input waits for an L4, then in parallel once it is final."""
+champion's non-TimeXer GPU calls while no TimeXer input waits for an L4, then in parallel once it is final; a
+failed call is sent once more."""
 import asyncio
 import re
 from pathlib import Path
@@ -14,22 +15,34 @@ MODAL_APP = Path(__file__).resolve().parents[1] / "modal_app.py"
 
 
 class FakeTrainer:
-    """Records spawns and cancels; each call finishes only when the test says so."""
+    """Records spawns and cancels; each call finishes only when the test says so. failures[name] lists how its
+    first calls fail ("raise" or "error"); hang names the RPCs that never answer ("spawn", "cancel")."""
 
-    def __init__(self):
+    def __init__(self, failures=None, hang=()):
         self.log, self.calls = [], {}
+        self.failures, self.hang = {name: list(kinds) for name, kinds in (failures or {}).items()}, set(hang)
         self.spawn = SimpleNamespace(aio=self._spawn)
 
     async def _spawn(self, payload):
         name = f"{payload['market_conditioner_arm']}:w{payload['window_id']}"
-        finish, log = asyncio.Event(), self.log
+        finish, log, hang = asyncio.Event(), self.log, self.hang
+        failure = (self.failures.get(name) or [None]).pop(0)
+        if "spawn" in hang:
+            log.append(("spawn_hung", name))
+            await asyncio.Event().wait()
 
         async def get():
+            if failure == "raise":
+                raise RuntimeError("input preempted")
+            if failure == "error":
+                return {"error": "CUDA out of memory"}
             await finish.wait()
-            return {"model": name}
+            return done(name)
 
         async def cancel(terminate_containers=False):
             log.append(("cancel", name, terminate_containers))
+            if "cancel" in hang:
+                await asyncio.Event().wait()
         self.calls[name] = SimpleNamespace(finish=finish, get=SimpleNamespace(aio=get), cancel=SimpleNamespace(aio=cancel))
         log.append(("spawn", name))
         return self.calls[name]
@@ -40,6 +53,10 @@ class FakeTrainer:
 
 def payload(arm, wid):
     return {"market_conditioner_arm": arm, "window_id": wid}
+
+
+def done(name, attempts=None):
+    return {"model": name, "oof_artifact": {"path": name}, **({"attempts": attempts} if attempts else {})}
 
 
 async def ready_blocks():
@@ -106,9 +123,10 @@ def test_once_the_champion_is_final_the_tail_runs_in_parallel_until_the_cap(monk
         await settle()
         assert trainer.spawned() == ["mkt9:w1", "mkt9:w2", "mkt0:w1"]
         results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)  # nothing else finishes: the cap
-        assert results == [{"unsupported": "market_challenger_budget_exceeded:running:tail_cap"}, {"model": "mkt9:w2"},
-                           {"unsupported": "market_challenger_budget_exceeded:running:tail_cap"},
-                           {"unsupported": "market_challenger_budget_exceeded:waiting_for_gpu:tail_cap"}]
+        assert results == [{"unsupported": "market_challenger_budget_exceeded:running:tail_cap", "attempts": 1},
+                           done("mkt9:w2", 1),
+                           {"unsupported": "market_challenger_budget_exceeded:running:tail_cap", "attempts": 1},
+                           {"unsupported": "market_challenger_budget_exceeded:waiting_for_gpu:tail_cap", "attempts": 0}]
         assert [entry for entry in trainer.log if entry[0] == "cancel"] == [
             ("cancel", "mkt9:w1", True), ("cancel", "mkt0:w1", True)]
         assert trainer.spawned() == ["mkt9:w1", "mkt9:w2", "mkt0:w1"]
@@ -128,7 +146,7 @@ def test_no_l4_challenger_starts_before_the_gpus_are_free_unless_the_champion_is
         await settle()
         assert trainer.spawned() == ["mkt9:w1"]
         trainer.calls["mkt9:w1"].finish.set()
-        assert (await asyncio.wait_for(task, timeout=1)) == {"model": "mkt9:w1"}
+        assert (await asyncio.wait_for(task, timeout=1)) == done("mkt9:w1", 1)
     asyncio.run(scenario())
 
 
@@ -152,7 +170,7 @@ def test_no_spawn_while_a_timexer_input_waits_for_an_l4(monkeypatch):
         await asyncio.sleep(0.1)
         assert trainer.spawned() == ["mkt9:w1"]
         trainer.calls["mkt9:w1"].finish.set()
-        assert (await asyncio.wait_for(task, timeout=1)) == {"model": "mkt9:w1"}
+        assert (await asyncio.wait_for(task, timeout=1)) == done("mkt9:w1", 1)
     asyncio.run(scenario())
 
 
@@ -173,7 +191,7 @@ def test_an_unknown_backlog_holds_the_challenger_only_while_the_champion_runs(mo
         await settle()
         assert trainer.spawned() == ["mkt9:w1"]
         trainer.calls["mkt9:w1"].finish.set()
-        assert (await asyncio.wait_for(task, timeout=1)) == {"model": "mkt9:w1"}
+        assert (await asyncio.wait_for(task, timeout=1)) == done("mkt9:w1", 1)
     asyncio.run(scenario())
 
 
@@ -182,7 +200,7 @@ def test_budget_cancels_the_remote_input():
         trainer = FakeTrainer()
         result = await mc.run_challenger(trainer, payload("mkt9", 3), asyncio.ensure_future(ready_blocks()),
                                          budget_s=0.05)
-        assert result == {"unsupported": "market_challenger_budget_exceeded:running:budget"}
+        assert result == {"unsupported": "market_challenger_budget_exceeded:running:budget", "attempts": 1}
         assert trainer.log == [("spawn", "mkt9:w3"), ("cancel", "mkt9:w3", True)]
         # The orchestrator loop shutting down also cancels the remote input.
         task = asyncio.ensure_future(mc.run_challenger(
@@ -192,6 +210,72 @@ def test_budget_cancels_the_remote_input():
         with pytest.raises(asyncio.CancelledError):
             await task
         assert trainer.log[-1] == ("cancel", "mkt0:w4", True)
+    asyncio.run(scenario())
+
+
+def test_a_failed_call_is_sent_once_more_under_the_same_ticket(monkeypatch):
+    """Wei 11/2: preemption, OOM or an error result costs one more call inside the cap; a second failure is final."""
+    monkeypatch.setattr(mc, "BACKLOG_POLL_S", 0.01)
+
+    async def scenario():
+        probes = []
+
+        async def backlog():
+            probes.append(len(trainer.log))
+            return 0
+        trainer = FakeTrainer(failures={"mkt9:w1": ["raise"], "mkt9:w2": ["error", "raise"]})
+        gate = mc.GpuGate(1, backlog=backlog)
+        gate.track(1, gpu=[])
+        tasks = [asyncio.ensure_future(mc.run_challenger(
+            trainer, payload(arm, w), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((rank, w)))) for rank, arm, w in ((0, "mkt9", 1), (1, "mkt9", 2), (2, "mkt0", 1))]
+        await settle()
+        # Still one L4 challenger while the champion runs: the resend keeps the ticket and is checked like a spawn.
+        assert trainer.spawned() == ["mkt9:w1", "mkt9:w1"] and len(probes) == 2
+        trainer.calls["mkt9:w1"].finish.set()
+        await settle()
+        assert trainer.spawned() == ["mkt9:w1", "mkt9:w1", "mkt9:w2", "mkt9:w2", "mkt0:w1"]
+        trainer.calls["mkt0:w1"].finish.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert results == [done("mkt9:w1", 2), {"error": "input preempted", "attempts": 2}, done("mkt0:w1", 1)]
+        assert len(probes) == len(trainer.spawned())
+    asyncio.run(scenario())
+
+
+def test_a_resend_is_still_cancelled_at_the_tail_cap(monkeypatch):
+    monkeypatch.setattr(mc, "TAIL_CAP_S", 0.1)
+
+    async def scenario():
+        trainer, gate = FakeTrainer(failures={"mkt9:w1": ["error"]}), mc.GpuGate(1, backlog=no_backlog)
+        gate.track(1, gpu=[])
+        gate.champion_done.set()
+        result = await asyncio.wait_for(mc.run_challenger(
+            trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((0, 1))), timeout=1)
+        assert result == {"unsupported": "market_challenger_budget_exceeded:running:tail_cap", "attempts": 2}
+        assert trainer.log == [("spawn", "mkt9:w1"), ("spawn", "mkt9:w1"), ("cancel", "mkt9:w1", True)]
+        assert not gate._inflight
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("rpc, stage", [("cancel", "running"), ("spawn", "spawning")])
+def test_a_hung_modal_rpc_does_not_hold_the_tail_cap_open(monkeypatch, rpc, stage):
+    """Minor-G1: modal sets no deadline on a single RPC; past the cap the challenger still returns."""
+    monkeypatch.setattr(mc, "TAIL_CAP_S", 0.05)
+    monkeypatch.setattr(mc, "CANCEL_TIMEOUT_S", 0.05)
+
+    async def scenario():
+        trainer, gate = FakeTrainer(hang={rpc}), mc.GpuGate(1, backlog=no_backlog)
+        gate.track(1, gpu=[])
+        gate.champion_done.set()
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        result = await asyncio.wait_for(mc.run_challenger(
+            trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((0, 1))), timeout=1)
+        assert result == {"unsupported": f"market_challenger_budget_exceeded:{stage}:tail_cap", "attempts": 1}
+        assert loop.time() - start < 0.05 + 0.05 + 0.05 and not gate._inflight
+        assert trainer.log[-1] == (("cancel", "mkt9:w1", True) if rpc == "cancel" else ("spawn_hung", "mkt9:w1"))
     asyncio.run(scenario())
 
 

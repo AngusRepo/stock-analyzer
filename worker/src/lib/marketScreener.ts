@@ -41,6 +41,7 @@ import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRis
   DELISTING_MONITOR_DEFAULT_MAX_SESSIONS, delistingMonitorWindowWeekdays, resolveDelistingMonitorMaxSessions } from './screenerPostRouteOverlays'
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
+import { volaCv90dFromCloses } from './screenerPriceSignals'
 import {
   annotateCandidatesWithStrategySpecs,
 } from './screenerStrategyConsumer'
@@ -1790,6 +1791,8 @@ async function loadStrategyRawSectorRotationSignals(
   return out
 }
 
+export { deriveStrategyRawSignals as deriveScreenerStrategyRawSignals }
+
 function deriveStrategyRawSignals(
   prices: CanonicalScreenerPrice[],
   chipDates: Map<string, ChipDayNet> | undefined,
@@ -1848,9 +1851,6 @@ function deriveStrategyRawSignals(
     ? vwapRows5d.reduce((sum, row) => sum + (((row.high + row.low + row.close) / 3) * Math.max(0, row.volume)), 0) / vwap5dDenominator
     : null
   const vwapBias5d = pctChange(close, vwap5d)
-  const last90Closes = closes.slice(-90)
-  const volaCv90dMean = last90Closes.length >= 90 ? avg(last90Closes) : null
-  const volaCv90d = volaCv90dMean != null && volaCv90dMean > 0 ? (stddev(last90Closes) ?? 0) / volaCv90dMean : null
   const latestRange = latestOhlcv ? Math.max(1e-8, latestOhlcv.high - latestOhlcv.low) : null
   const latestOpen = latestOhlcv?.open ?? null
   const kLow2 = latestOhlcv && latestRange != null
@@ -1912,6 +1912,8 @@ function deriveStrategyRawSignals(
     .filter((row): row is { date: string; open: number; high: number; low: number; close: number; volume: number } =>
       row.open != null && row.high != null && row.low != null && row.close != null && row.high >= row.low,
     )
+  // The 70-session `prices` window can never hold 90 closes; read them from the 280-session history.
+  const volaCv90d = volaCv90dFromCloses(stockTechnicalIndicatorRows.map((row) => row.close))
   const stockTechnicalOhlcvRows = stockTechnicalIndicatorRows.map((row) => ({
     date: row.date,
     open: row.open,

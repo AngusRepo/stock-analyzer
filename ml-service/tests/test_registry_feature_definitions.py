@@ -79,6 +79,8 @@ def test_definitions_come_from_the_frozen_contract_file():
     assert set(definitions) == set(pit_contract._DEFINED_FEATURES)
     assert definitions["tech_gap_down"]["tie_rel_tolerance"] == 1e-9
     assert definitions["tech_gap_down"]["undefined_value"] == 0.0
+    assert (definitions["vola_cv_90d"]["window"], definitions["vola_cv_90d"]["ddof"]) == (90, 1)
+    assert definitions["vola_cv_90d"]["undefined_value"] == 0.0
 
 
 def test_editing_the_definitions_under_the_same_version_fails(monkeypatch):
@@ -135,6 +137,42 @@ def test_a_one_ulp_vendor_tie_on_an_ex_right_day_is_not_a_gap():
     # A real gap just beyond the tolerance still counts.
     bars[1]["adj_close"] = tie_adj * (1 - 1e-8)
     assert _contract(bars)["tech_gap_down"].to_list() == [0.0, 1.0]
+
+
+def _price_cv(close, window=90):
+    """Registry reference: pandas close.rolling(window).std() / close.rolling(window).mean(), NaN -> 0."""
+    out = np.zeros(len(close))
+    for i in range(window - 1, len(close)):
+        part = close[i - window + 1:i + 1]
+        out[i] = np.std(part, ddof=1) / np.mean(part)
+    return out
+
+
+def test_vola_cv_90d_follows_the_registry_on_raw_close():
+    rows = _fixture()
+    close = np.array([r["close"] for r in rows])
+    got = _contract(rows)["vola_cv_90d"].to_numpy()
+    expected = _price_cv(close)
+    assert got[:89].tolist() == [0.0] * 89
+    np.testing.assert_allclose(got, expected, rtol=1e-9, atol=0)
+    # Raw, not adjusted: windows spanning an ex-right drop differ from the adjusted-close CV.
+    adjusted = _price_cv(np.array([r["adj_close"] for r in rows]))
+    assert np.abs(got[100:] - adjusted[100:]).max() > 1e-3
+    assert _legacy(rows)["vola_cv_90d"].to_list() != got.tolist()
+
+
+def test_vola_cv_90d_hand_cases():
+    def frame(closes):
+        return _contract([{"date": SESSIONS[i], "open": c, "high": c, "low": c, "close": c, "adj_close": c * 1.37,
+                           "volume": 1000.0} for i, c in enumerate(closes)])["vola_cv_90d"].to_list()
+
+    # close 1..90: sample std sqrt(90 * 91 / 12) over mean 45.5; ddof 0 would give sqrt((90**2 - 1) / 12).
+    got = frame([float(i) for i in range(1, 91)])
+    assert got[:89] == [0.0] * 89
+    assert got[89] == pytest.approx((90 * 91 / 12) ** 0.5 / 45.5, rel=1e-12)
+    assert got[89] != pytest.approx(((90 ** 2 - 1) / 12) ** 0.5 / 45.5, rel=1e-6)
+    # A constant price has no dispersion.
+    assert frame([50.0] * 95)[89:] == [0.0] * 6
 
 
 def test_a_vendor_rebase_of_the_whole_series_changes_nothing():

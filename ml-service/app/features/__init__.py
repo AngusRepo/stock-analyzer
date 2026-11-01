@@ -902,6 +902,14 @@ def build_feature_matrix(
     ret126_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(126), pl.col("adj_close").shift(126))
     ret189_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(189), pl.col("adj_close").shift(189))
     ret252_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(252), pl.col("adj_close").shift(252))
+    # Pre-contract form: CV of adjusted daily returns.
+    vola_cv_expr = _safe_div(ret1_raw.rolling_std(90), ret1_raw.rolling_mean(90).abs().clip(1e-9, None))
+    if "vola_cv_90d" in pit_definitions:
+        # Registry price CV on raw close (price_basis in the definitions file), sample std as pandas rolling().std().
+        spec = pit_definitions["vola_cv_90d"]
+        window = int(spec["window"])
+        vola_cv_expr = _safe_div(close_expr.rolling_std(window, ddof=int(spec["ddof"])), close_expr.rolling_mean(window),
+                                 default=float(spec["undefined_value"]))
     ma50_expr = close_expr.rolling_mean(50)
     ma200_expr = close_expr.rolling_mean(200)
     ema12_expr = close_expr.ewm_mean(span=12, adjust=False)
@@ -1037,7 +1045,7 @@ def build_feature_matrix(
         ("vol_money_flow_5d", money_flow.rolling_sum(5)),
         ("vol_share_turnover_21d", volume_expr.rolling_mean(21)),
         ("vol_signal_5d", _safe_div(volume_expr.rolling_mean(5), volume_expr.rolling_mean(20)) - 1.0),
-        ("vola_cv_90d", _safe_div(ret1_raw.rolling_std(90), ret1_raw.rolling_mean(90).abs().clip(1e-9, None))),
+        ("vola_cv_90d", vola_cv_expr),
         ("vola_min_130d", ret1_raw.rolling_min(130)),
         ("vola_realized_12m", ret1_raw.rolling_std(252)),
         ("vola_realized_1m", ret1_raw.rolling_std(21)),

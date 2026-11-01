@@ -27,8 +27,8 @@ _WINDOWED_FEATURES = ("tech_obv",)
 # Registry definitions under a version (Wei 11/2): a separate file like the windows, so the
 # approved contract content is untouched, frozen per version exactly like the lags and windows.
 _DEFINITION_FILES = {CONTRACT_VERSION: "pit_feature_definitions_v1.json"}
-_FEATURE_DEFINITIONS_SHA256 = {CONTRACT_VERSION: "2a71d15b454e51fd16376d15188178943bfc7cb90edfa87df429372dad317e00"}
-_DEFINED_FEATURES = ("tech_gap_down",)
+_FEATURE_DEFINITIONS_SHA256 = {CONTRACT_VERSION: "28bed9cb4a3ec4b9dac74f9723541917805053bf15263d4e944f216856b65117"}
+_DEFINED_FEATURES = ("tech_gap_down", "vola_cv_90d")
 # Same text as ml-controller services/pit_certification.HISTORY_LIMITATION (test_pit_certification).
 HISTORY_LIMITATION = ("Original publication timestamps for 2020-05..2026-05 are not proven: no archived "
                       "vintage exists for that period and neither FinLab nor TWSE provides them.")

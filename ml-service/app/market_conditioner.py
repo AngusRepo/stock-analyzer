@@ -491,6 +491,10 @@ class GpuGate:
 
 
 GPU_CHALLENGER_FUNCTIONS = {TABM_FUNCTION}
+# Run order of the L4 challengers (Wei 11/1): mkt16 first. From a common start on R32 receipts with #113 and the
+# CUDA graph d6a915a9, the gate opens at ~0.8-1.1 h and the champion is final at ~1.2-1.55 h: about 1-15 of
+# the 21 folds run one at a time before that, the rest in the tail, 7 at a time, in ~4-11 min.
+GPU_ARM_ORDER = ("mkt16", "mkt9", "mkt0")
 
 
 async def _first(*awaitables) -> None:

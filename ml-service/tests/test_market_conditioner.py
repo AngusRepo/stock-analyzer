@@ -224,6 +224,8 @@ def test_orchestrator_isolates_market_challengers_from_the_release_folds():
     assert "gate.track(wid, gpu=" in source
     assert 'trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket' in source
     assert 'market_state["gate"].champion_done.set()' in source
+    assert 'arms=list(GPU_ARM_ORDER)' in source and mc.GPU_ARM_ORDER == ("mkt16", "mkt9", "mkt0")
+    assert sorted(mc.GPU_ARM_ORDER) == sorted(mc.ARMS)
     assert 'payload.get("challenger_models_disabled")' in source
     assert mc.TAIL_CAP_S == 45 * 60
     # R3: market challengers run in their own Modal functions, never a release trainer's pool.

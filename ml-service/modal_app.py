@@ -3601,11 +3601,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         sem = asyncio.Semaphore(concurrent)
         if pending_windows and any((challenger_slots.get(name) or {}).get("payload_config", {}).get("market_conditioner_arm")
                                    for name in challenger_models):
-            from app.market_conditioner import ARMS, GATE_EXEMPT_GPU_FAMILIES, GPU_CHALLENGER_FUNCTIONS, GpuGate
+            from app.market_conditioner import GATE_EXEMPT_GPU_FAMILIES, GPU_ARM_ORDER, GPU_CHALLENGER_FUNCTIONS, GpuGate
             market_state["blocks"] = asyncio.ensure_future(_market_blocks())
             async def _timexer_backlog() -> int:  # TimeXer inputs still waiting for an L4 (any caller in the workspace)
                 return (await train_timexer_universal.get_current_stats.aio()).backlog
-            market_state.update(gate=GpuGate(len(pending_windows), backlog=_timexer_backlog), deferred=[], arms=list(ARMS),
+            market_state.update(gate=GpuGate(len(pending_windows), backlog=_timexer_backlog), deferred=[], arms=list(GPU_ARM_ORDER),
                                 gpu_functions=GPU_CHALLENGER_FUNCTIONS, exempt=GATE_EXEMPT_GPU_FAMILIES)
 
         async def _bounded(w):

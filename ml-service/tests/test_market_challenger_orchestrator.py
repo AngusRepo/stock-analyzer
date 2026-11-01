@@ -26,7 +26,7 @@ SHA = "f" * 40
 SEVEN = [{"window_id": w, "train_start": DAYS[0], "train_end": DAYS[39], "test_start": DAYS[45],
           "test_end": DAYS[59]} for w in range(7)]
 WINDOWS = SEVEN[:3]
-ORDER = mc.ARMS  # the L4 challengers' arm order
+ORDER = mc.GPU_ARM_ORDER  # the L4 challengers' arm order
 FIRST = ORDER[0]
 GATED_GPU = ("train_tabm_universal", "train_gnn_graphsage_universal", "train_patchtst_universal",
              "train_itransformer_universal")

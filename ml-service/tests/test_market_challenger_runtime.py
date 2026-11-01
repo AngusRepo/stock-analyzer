@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import market_conditioner as mc
-from tests.test_market_conditioner import history_block
+from tests.test_market_conditioner import extra_block, history_block
 
 MODAL_APP = Path(__file__).resolve().parents[1] / "modal_app.py"
 
@@ -60,7 +60,7 @@ def done(name, attempts=None):
 
 
 async def ready_blocks():
-    return {"history": history_block()}
+    return {"history": history_block(), "capture_extra": extra_block()}
 
 
 async def no_backlog():
@@ -81,8 +81,9 @@ def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_or
         for w in (1, 2):
             gate.track(w, gpu=[gpu[w]])
         tasks = [asyncio.ensure_future(mc.run_challenger(
-            trainer, payload(arm, w), blocks, budget_s=None, gate=gate, ticket=gate.ticket((mc.ARMS.index(arm), w))))
-            for w in (1, 2) for arm in ("mkt0", "mkt9")]
+            trainer, payload(arm, w), blocks, budget_s=None, gate=gate,
+            ticket=gate.ticket((mc.GPU_ARM_ORDER.index(arm), w))))
+            for w in (1, 2) for arm in ("mkt0", "mkt9", "mkt16")]
         await settle()
         assert trainer.spawned() == []
         gpu[1].set_result(None)  # window 1's GPU calls are done, window 2's are not: cohort-wide gate holds
@@ -90,13 +91,14 @@ def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_or
         assert trainer.spawned() == [] and not gate.gpu_free.is_set()
         gpu[2].set_exception(RuntimeError("gnn failed"))  # a failed champion call has released its GPU too
         await settle()
-        order = ["mkt9:w1", "mkt9:w2", "mkt0:w1", "mkt0:w2"]  # whole arms first
+        # Whole arms first, in Wei's order mkt16 -> mkt9 -> mkt0.
+        order = ["mkt16:w1", "mkt16:w2", "mkt9:w1", "mkt9:w2", "mkt0:w1", "mkt0:w2"]
         for step, name in enumerate(order):
             assert trainer.spawned() == order[:step + 1]  # the next input waits until this one settles
             trainer.calls[name].finish.set()
             await settle()
         results = await asyncio.gather(*tasks)
-        assert [r["model"] for r in results] == ["mkt0:w1", "mkt9:w1", "mkt0:w2", "mkt9:w2"]
+        assert [r["model"] for r in results] == ["mkt0:w1", "mkt9:w1", "mkt16:w1", "mkt0:w2", "mkt9:w2", "mkt16:w2"]
         assert not any(kind == "cancel" for kind, *_ in trainer.log)
     asyncio.run(scenario())
 

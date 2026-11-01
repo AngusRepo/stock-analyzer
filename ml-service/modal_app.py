@@ -2737,7 +2737,7 @@ def build_market_conditioner_block(payload: dict) -> dict:
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=4096,
+    memory=8192,         # apply_block copies the float64 prep matrix (~1.8 GB on R32) twice.
     timeout=3600,
     scaledown_window=60,
     max_containers=21,   # 4 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
@@ -3336,20 +3336,14 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         except Exception as exc:  # noqa: BLE001 - only the market challengers depend on it (R2).
             return {"error": f"{type(exc).__name__}:{str(exc)[:300]}"}
 
-    async def _market_challenger(trainer, slot_payload: dict) -> dict:
-        """W4(a): waits for the shared block, then trains; bounded so a window never waits on it for long."""
-        from app.market_conditioner import CHALLENGER_BUDGET_S, conditioner_for_arm
+    async def _market_challenger(trainer, slot_payload: dict, **gated) -> dict:
+        """W4(a): waits for the shared block, then trains; the remote call is cancelled at the budget."""
+        from app.market_conditioner import run_challenger
+        return await run_challenger(trainer, slot_payload, market_state["blocks"], **gated)
 
-        async def _run() -> dict:
-            blocks = await asyncio.shield(market_state["blocks"])
-            conditioner, reason = conditioner_for_arm(slot_payload["market_conditioner_arm"], blocks)
-            if reason:
-                return {"unsupported": reason}
-            return await trainer.remote.aio({**slot_payload, "market_conditioner": conditioner})
-        try:
-            return await asyncio.wait_for(_run(), timeout=CHALLENGER_BUDGET_S)
-        except asyncio.TimeoutError:
-            return {"error": "market_challenger_budget_exceeded"}
+    def _challenger_outcome(r) -> dict:
+        return ({"status": "unsupported", "reason": r["unsupported"]}
+                if isinstance(r, dict) and r.get("unsupported") else challenger_metric(r))
 
     # 2026-04-19 N2: per-window FS gates tree training to eliminate look-ahead
     fs_max_rounds = int(payload.get("fs_max_rounds", 60))
@@ -3490,15 +3484,28 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     model_payload.update(run_date=payload.get("knowledge_cutoff_date") or prep_manifest["source_business_date"],dataset_snapshot={
                         "manifest_path":prep_manifest_path,"manifest_checksum":prep_manifest_checksum})
                 tasks.append((model_name, fn.remote.aio(model_payload)))
+        gate = market_state.get("gate")
+        if gate is not None:
+            # Champion calls start now so the gate can see when they finish; gathered below as before.
+            tasks = [(kind, asyncio.ensure_future(call)) for kind, call in tasks]
+            gate.track(wid, gpu=[f for kind, f in tasks if kind in dict(family_tasks)], champion=[f for _, f in tasks])
         challenger_trainers = _oof_challenger_trainers(challenger_slots)
         challenger_results = {}
         for name in challenger_models:
             if name in challenger_trainers:
                 trainer, slot_config = challenger_trainers[name]
                 if slot_config.get("market_conditioner_arm") and "blocks" in market_state:
-                    tasks.append(("challenger:" + name, _market_challenger(trainer, {
+                    slot_payload = {
                         **train_payload, **active8_model_payload(slot_config["challenger_model"], schema_version=profile_schema),
-                        **slot_config, "oof_challenger": True})))
+                        **slot_config, "oof_challenger": True}
+                    if gate is not None and challenger_slots[name]["modal_function"] in market_state["gpu_functions"]:
+                        # L4 challengers run only after every champion GPU call and stop when the champion is done;
+                        # outside the window's gather, so they never hold a window open.
+                        ticket = gate.ticket((market_state["arms"].index(slot_config["market_conditioner_arm"]), wid))
+                        market_state["deferred"].append((wid, name, asyncio.ensure_future(_market_challenger(
+                            trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket))))
+                    else:
+                        tasks.append(("challenger:" + name, _market_challenger(trainer, slot_payload)))
                     continue
                 # The slot trainer reports the model it resolved (e.g. LinearNeutralSize) in result["model"].
                 tasks.append(("challenger:" + name, trainer.remote.aio(
@@ -3509,9 +3516,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
                 if kind.startswith("challenger:"):
-                    challenger_results[kind.removeprefix("challenger:")] = (
-                        {"status": "unsupported", "reason": r["unsupported"]}
-                        if isinstance(r, dict) and r.get("unsupported") else challenger_metric(r))
+                    challenger_results[kind.removeprefix("challenger:")] = _challenger_outcome(r)
                     continue
                 if isinstance(r, BaseException):
                     print(f"[WF-Orchestrator] w{wid} {kind} crashed: {r}")
@@ -3595,17 +3600,31 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         sem = asyncio.Semaphore(concurrent)
         if pending_windows and any((challenger_slots.get(name) or {}).get("payload_config", {}).get("market_conditioner_arm")
                                    for name in challenger_models):
+            from app.market_conditioner import ARMS, GPU_CHALLENGER_FUNCTIONS, GpuGate
             market_state["blocks"] = asyncio.ensure_future(_market_blocks())
+            market_state.update(gate=GpuGate(len(pending_windows)), deferred=[], arms=list(ARMS),
+                                gpu_functions=GPU_CHALLENGER_FUNCTIONS)
 
         async def _bounded(w):
             async with sem:
                 print(f"[WF-Orchestrator] Starting window {w['window_id']}")
-                r = await _run_one(w)
+                try:
+                    r = await _run_one(w)
+                finally:
+                    if "gate" in market_state:
+                        market_state["gate"].track(w["window_id"])  # no-op unless the window never got that far
                 print(f"[WF-Orchestrator] Finished window {w['window_id']} "
                       f"(ic={[(k, v.get('oos_ic')) for k, v in r.get('model_metrics',{}).items()]})")
                 return r
 
-        return await asyncio.gather(*[_bounded(w) for w in pending_windows])
+        results = await asyncio.gather(*[_bounded(w) for w in pending_windows])
+        if market_state.get("deferred"):
+            market_state["gate"].champion_done.set()  # every window returned: champion work is done
+            by_id = {r["window_id"]: r for r in results}
+            outcomes = await asyncio.gather(*[f for _, _, f in market_state["deferred"]], return_exceptions=True)
+            for (wid, name, _), r in zip(market_state["deferred"], outcomes):
+                by_id[wid].setdefault("challenger_metrics", {})[name] = _challenger_outcome(r)
+        return results
 
     new_results = asyncio.run(_orchestrate())
     new_by_id = {int(row["window_id"]): row for row in new_results}

@@ -26,7 +26,6 @@ TABM_FUNCTION = "train_tabm_market_challenger"
 BLOCK_FUNCTION = "build_market_conditioner_block"
 # A window never waits on its market challengers longer than this (R33 OOF main path ~4 h).
 CHALLENGER_BUDGET_S = 10800
-UNCOVERED_ROW_LIMIT = 0.05
 ARMS = ("mkt9", "mkt0")
 FAMILIES = (("lgbm", "LightGBM", TREE_FUNCTION), ("et", "ExtraTrees", TREE_FUNCTION), ("tabm", "TabM", TABM_FUNCTION))
 
@@ -186,7 +185,7 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
         per_day = np.asarray([fill if value is None else value for value in values], dtype=np.float64)
         columns.append(per_day[inverse])
     uncovered_rows = int((~covered[inverse]).sum()) if add else 0
-    if uncovered_rows > UNCOVERED_ROW_LIMIT * len(day_keys):
+    if uncovered_rows:  # a date the block does not carry is never filled
         raise ValueError(f"market_conditioner_dates_uncovered:{uncovered_rows}/{len(day_keys)}")
     out = np.asarray(X)[:, keep]
     if columns:
@@ -196,6 +195,125 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
                "feature_names_sha256": hashlib.sha256(json.dumps(names, separators=(",", ":")).encode()).hexdigest(),
                "block_sha256": block_shas, "uncovered_rows": uncovered_rows, "null_filled_days": nulls}
     return out, names, receipt
+
+
+class GpuGate:
+    """Cohort-wide gate for L4 challengers (workspace limit 10 concurrent GPUs; the champion folds ask for ~12).
+
+    gpu_free: every window's champion GPU calls are done. champion_done: every window's champion calls are
+    done; a gated challenger is cancelled then, so it never extends the cohort. Per window is not enough: a
+    challenger started after one window's GPU calls would still take an L4 from another window's queued fold."""
+
+    def __init__(self, windows: int):
+        import asyncio
+        self.gpu_free, self.champion_done = asyncio.Event(), asyncio.Event()
+        self._left = {"gpu": windows, "champion": windows}
+        self._tracked: set = set()
+        self._tickets: list[tuple] = []
+        self._spawned: set = set()
+        self._watchers: list = []  # strong references: the loop keeps only weak ones to tasks
+        self._turn = asyncio.Condition()
+        for key in self._left:
+            self._settle(key, 0)
+
+    def _settle(self, key: str, done: int) -> None:
+        self._left[key] -= done
+        if self._left[key] <= 0:
+            (self.gpu_free if key == "gpu" else self.champion_done).set()
+
+    def track(self, window_id, gpu=(), champion=()) -> None:
+        """Once per window: its champion GPU futures and all its champion futures (none: nothing pending)."""
+        import asyncio
+        if window_id in self._tracked:
+            return
+        self._tracked.add(window_id)
+
+        async def _watch(key: str, futures: list) -> None:
+            await asyncio.gather(*futures, return_exceptions=True)
+            self._settle(key, 1)
+        for key, futures in (("gpu", list(gpu)), ("champion", list(champion))):
+            self._watchers.append(asyncio.ensure_future(_watch(key, futures)))
+
+    def ticket(self, rank) -> int:
+        """Spawn order once the GPUs are free: rank (arm, window) so whole arms finish first."""
+        self._tickets.append((rank, len(self._tickets)))
+        return len(self._tickets) - 1
+
+    def _next(self):
+        return next((i for _, i in sorted(self._tickets) if i not in self._spawned), None)
+
+    async def turn(self, ticket: int) -> None:
+        async with self._turn:
+            await self._turn.wait_for(lambda: self._next() == ticket)
+
+    async def release(self, ticket: int) -> None:
+        async with self._turn:
+            self._spawned.add(ticket)
+            self._turn.notify_all()
+
+
+GPU_CHALLENGER_FUNCTIONS = {TABM_FUNCTION}
+
+
+async def _until(awaitable, closed, deadline):
+    """(True, result) if `awaitable` finishes first; (False, None) at the deadline or once `closed` is set."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(awaitable)
+    waiters = [asyncio.ensure_future(closed.wait())] if closed is not None else []
+    try:
+        done, _ = await asyncio.wait([task, *waiters], return_when=asyncio.FIRST_COMPLETED,
+                                     timeout=None if deadline is None else max(0.0, deadline - loop.time()))
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+    if task in done:
+        return True, task.result()
+    task.cancel()
+    return False, None
+
+
+async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: float | None = CHALLENGER_BUDGET_S,
+                         gate: GpuGate | None = None, ticket: int | None = None) -> dict:
+    """Wait for the shared block (and, gated, for the champion GPUs and its turn), spawn, and cancel the
+    remote input at the budget or once the champion is done.
+
+    A timed-out .remote() await only drops the local wait; modal 1.6.2 sends FunctionCallCancel
+    from FunctionCall.cancel() alone, so a queued or running input would otherwise keep its container."""
+    import asyncio
+    loop = asyncio.get_running_loop()
+    deadline = None if budget_s is None else loop.time() + budget_s
+    closed = gate.champion_done if gate is not None else None
+
+    def _over(stage: str) -> dict:
+        why = "champion_done" if closed is not None and closed.is_set() else "budget"
+        return {"unsupported": f"market_challenger_budget_exceeded:{stage}:{why}"}
+    try:
+        ok, blocks = await _until(asyncio.shield(blocks_task), closed, deadline)
+        if not ok:
+            return _over("blocks")
+        conditioner, reason = conditioner_for_arm(slot_payload["market_conditioner_arm"], blocks)
+        if reason:
+            return {"unsupported": reason}
+        if gate is not None:
+            ok, _ = await _until(gate.gpu_free.wait(), closed, deadline)
+            if not ok or not (await _until(gate.turn(ticket), closed, deadline))[0]:
+                return _over("waiting_for_champion_gpu")
+        call = await trainer.spawn.aio({**slot_payload, "market_conditioner": conditioner})
+    finally:
+        if gate is not None:
+            await gate.release(ticket)
+    settled = False
+    try:
+        ok, result = await _until(call.get.aio(), closed, deadline)
+        settled = ok
+        return result if ok else _over("running")
+    finally:
+        if not settled:  # also on CancelledError when the orchestrator loop shuts down
+            try:
+                await call.cancel.aio(terminate_containers=True)
+            except Exception as exc:  # noqa: BLE001 - the window still moves on; reported in the log.
+                print(f"[MarketChallenger] cancel failed: {type(exc).__name__}: {exc}")
 
 
 def challenger_identity(payload: dict) -> dict:

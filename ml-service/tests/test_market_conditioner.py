@@ -167,9 +167,10 @@ def test_apply_block_fails_closed_on_tampering_uncovered_dates_or_a_non131_base(
     tampered = {**block, "values": {**block["values"], DAYS[0]: [0.0] * 7}}
     with pytest.raises(ValueError, match="block_checksum_mismatch"):
         mc.apply_block(data["X"], data["dates"], list(FEATURES131), {"arm": "mkt9", "blocks": {"history": tampered}})
-    short = history_block(DAYS[10:])
-    with pytest.raises(ValueError, match="market_conditioner_dates_uncovered"):
-        mc.apply_block(data["X"], data["dates"], list(FEATURES131), {"arm": "mkt9", "blocks": {"history": short}})
+    # One missing date (1/60 of the rows) is never filled: the arm fails instead.
+    for short in (history_block(DAYS[10:]), history_block(DAYS[1:])):
+        with pytest.raises(ValueError, match="market_conditioner_dates_uncovered"):
+            mc.apply_block(data["X"], data["dates"], list(FEATURES131), {"arm": "mkt9", "blocks": {"history": short}})
     with pytest.raises(ValueError, match="market_conditioner_base_not_formal131"):
         mc.apply_block(data["X"][:, :130], data["dates"], list(FEATURES131)[:130], {"arm": "mkt0", "blocks": {}})
 
@@ -205,9 +206,13 @@ def test_orchestrator_isolates_market_challengers_from_the_release_folds():
     import modal_app
     source = inspect.getsource(_raw(modal_app.walk_forward_orchestrator))
     # The block is built by its own function, awaited only by market challengers, under a budget.
-    assert "build_market_conditioner_block.remote.aio" in source and "asyncio.shield(market_state[\"blocks\"])" in source
-    assert "asyncio.wait_for(_run(), timeout=CHALLENGER_BUDGET_S)" in source
+    assert "build_market_conditioner_block.remote.aio" in source
+    assert 'run_challenger(trainer, slot_payload, market_state["blocks"], **gated)' in source
     assert '{"status": "unsupported", "reason": r["unsupported"]}' in source
+    # L4 challengers: deferred out of the window's gather, behind the cohort gate, closed when the windows return.
+    assert 'gate.track(wid, gpu=[f for kind, f in tasks if kind in dict(family_tasks)], champion=[f for _, f in tasks])' in source
+    assert 'trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket' in source
+    assert 'market_state["gate"].champion_done.set()' in source
     assert 'payload.get("challenger_models_disabled")' in source
     assert mc.CHALLENGER_BUDGET_S <= 3 * 3600
     # R3: market challengers run in their own Modal functions, never a release trainer's pool.

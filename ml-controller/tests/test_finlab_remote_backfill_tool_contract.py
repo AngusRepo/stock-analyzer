@@ -1027,3 +1027,56 @@ def test_daily_materialize_retains_auxiliary_history_before_daily_canonical_clip
     canonical = pd.read_parquet(tmp_path / 'raw/fundamental_factor_diversity/pe.parquet')
     assert full['2330'].tolist() == [0., 2.]
     assert canonical['2330'].tolist() == [2.]
+
+
+def _sealed_vintage(tool, run_dir, monkeypatch):
+    monkeypatch.setattr(tool, "start_date_for_years", lambda _years: "2026-09-01")
+    dates = pd.to_datetime(["2026-09-24", "2026-09-29", "2026-09-30"])
+    raw = {"close": [100.0, 102.0, 101.0], "open": [99.0, 101.0, 102.0], "high": [101.0, 103.0, 104.0], "low": [98.0, 100.0, 100.5]}
+    frames = {field: pd.DataFrame({"2357": values, "2330": values}, index=dates) for field, values in raw.items()}
+    frames["adj_close"] = frames["close"] * 2.0
+    frames["adj_open"] = frames["open"] * 2.0
+    frames = {field: tool.normalize_wide_index(frame) for field, frame in frames.items()}
+    tool.write_adjusted_price_vintage(frames, run_dir=run_dir, years=3, end_date="2026-09-30")
+
+
+def test_rebased_anchor_rewrites_whole_stock_and_legacy_mirror(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    _sealed_vintage(tool, tmp_path, monkeypatch)
+    calls = []
+
+    def query(sql, params, domain):
+        calls.append((domain, params))
+        if domain == "market":
+            # 2330 was stored on this capture's basis; 2357 on a stale one.
+            return [{"stock_id": "2330", "date": "2026-09-29", "adj_close": 204.0},
+                    {"stock_id": "2357", "date": "2026-09-29", "adj_close": 204.0 / 1.4927}]
+        return [{"id": 77, "symbol": "2357"}]
+
+    receipt, statements = tool.plan_adjusted_rebase_repair(
+        {"artifact_root": str(tmp_path), "run_id": "finlab-v4-daily-20260930-1"}, end_date="2026-09-30", query=query)
+    assert calls[0] == ("market", ["2026-09-30"]) and calls[1] == ("core", ["2357"])
+    assert [r["stock_id"] for r in receipt["rebased"]] == ["2357"]
+    assert abs(receipt["rebased"][0]["k"] - 1.4927) < 1e-9
+    assert receipt["canonical_rows"] == 3 and receipt["legacy_mirror_rows"] == 3
+    canonical = [p for sql, p in statements if sql.startswith("UPDATE canonical_market_daily")]
+    assert "as_of_date" not in statements[0][0]
+    first = canonical[0]
+    # adj_open, adj_high, adj_low, adj_close, lineage, stock_id, date, source
+    assert first[:4] == [198.0, 202.0, 196.0, 200.0] and first[5:] == ["2357", "2026-09-24", "finlab.price"]
+    assert json.loads(first[4])["reason"] == "vendor_adjustment_rebase"
+    mirror = [p for sql, p in statements if sql.startswith("UPDATE stock_prices")]
+    assert mirror[0] == [200.0, 77, "2026-09-24"]
+
+
+def test_matching_anchor_writes_nothing_and_missing_capture_stays_unverified(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    receipt, statements = tool.plan_adjusted_rebase_repair(
+        {"artifact_root": str(tmp_path), "run_id": "r"}, end_date="2026-09-30", query=lambda *a, **k: [])
+    assert receipt == {"status": "unverified_no_full_vintage"} and statements == []
+    _sealed_vintage(tool, tmp_path, monkeypatch)
+    receipt, statements = tool.plan_adjusted_rebase_repair(
+        {"artifact_root": str(tmp_path), "run_id": "r"}, end_date="2026-09-30",
+        query=lambda sql, params, domain: [{"stock_id": s, "date": "2026-09-29", "adj_close": 204.0} for s in ("2330", "2357")])
+    assert receipt["status"] == "checked" and receipt["rebased"] == [] and statements == []
+    assert receipt["checked"] == 2

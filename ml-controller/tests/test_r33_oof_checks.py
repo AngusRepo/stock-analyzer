@@ -140,16 +140,24 @@ def _pit():
 
 def test_cost_line_gates_on_names_whose_crossfit_expected_excess_clears_the_cost():
     oof = _weak(_oof())
-    passing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.011, **_pit())
+    passing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.010, **_pit())
     inv = passing["checks"]["inversion"]
-    assert passing["status"] == "pass" and inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True)
-    assert inv["crossfit_above_cost"]["round_trip_cost"] == 0.011 and inv["crossfit_above_cost"]["n"] > 1
+    assert passing["status"] == "pass" and inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True,
+                                                                net_of_cost=True)
+    assert inv["crossfit_above_cost"]["round_trip_cost"] == 0.010 and inv["crossfit_above_cost"]["n"] > 1
+    # A little higher: the few names still expected to clear it realize above the cost (C1), but not
+    # by more than a standard error once the cost is paid (C2), so admission fails on C2 alone.
+    thin = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.011, **_pit())
+    inv = thin["checks"]["inversion"]
+    assert thin["status"] == "fail" and inv["passed"] is False
+    assert inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True, net_of_cost=False)
+    assert inv["net_of_cost"]["mean"] > 0 and inv["net_of_cost"]["mean"] - inv["net_of_cost"]["se"] < 0
     # Same scores, a cost no held-out name is expected to clear: IC, isotonic top and the top five
     # are all still positive, and admission fails on the cost line alone.
     failing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.012, **_pit())
     inv = failing["checks"]["inversion"]
     assert failing["status"] == "fail" and inv["passed"] is False
-    assert inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=False)
+    assert inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=False, net_of_cost=False)
     assert inv["crossfit_above_cost"]["days_with_picks"] == 0 and inv["crossfit_above_cost"]["mean"] is None
     assert inv["top_k"]["k"] == 5 and inv["top_k"]["diagnostic_only"] is True
     assert inv["top_k"]["mean"] - inv["top_k"]["se"] > 0
@@ -182,14 +190,32 @@ def test_cost_line_with_a_single_pick_day_fails_closed(monkeypatch):
     assert report["checks"]["inversion"]["gates"]["crossfit_above_cost"] is False and report["status"] == "fail"
 
 
-def test_net_of_cost_is_reported_but_never_gates(monkeypatch):
+def test_net_of_cost_gates_when_the_cost_line_alone_would_pass(monkeypatch):
     # Every day picks its names realizing between 0.05% and 0.3%: positive, but below the 0.585% cost.
+    # C1 passes on its own; C2 (the same set net of cost) fails and admission fails with it (Wei 11/1).
     _force_picks(monkeypatch, lambda i, excess: np.flatnonzero((excess > 0.0005) & (excess < 0.003)))
     oof = _weak(_oof())
     report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=COST, **_pit())
     inv = report["checks"]["inversion"]
     above, net = inv["crossfit_above_cost"], inv["net_of_cost"]
-    assert above["mean"] - above["se"] > 0 and net["gate"] is False
+    assert above["mean"] - above["se"] > 0 and net["gate"] is True
     assert net["mean"] == pytest.approx(above["mean"] - COST) and net["se"] == pytest.approx(above["se"])
     assert net["mean"] - net["se"] < 0
-    assert report["status"] == "pass" and set(inv["gates"]) == {"daily_ic", "isotonic_top", "crossfit_above_cost"}
+    assert inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True, net_of_cost=False)
+    assert inv["passed"] is False and report["status"] == "fail"
+    assert all(report["checks"][name]["passed"] for name in ("leakage", "tail_guard", "pit_vintage"))
+
+
+def test_net_of_cost_needs_mean_minus_se_above_zero(monkeypatch):
+    # Day 0 takes a name a little above the cost, day 1 one just below: mean net > 0, mean - SE < 0.
+    def choose(i, excess):
+        if i in (0, 1):
+            target = COST + (0.004 if i == 0 else -0.002)
+            return [int(np.argmin(np.abs(excess - target)))]
+        return []
+    _force_picks(monkeypatch, choose)
+    oof = _oof()
+    report = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=COST, **_pit())
+    net = report["checks"]["inversion"]["net_of_cost"]
+    assert net["n"] == 2 and net["mean"] > 0 and net["mean"] - net["se"] < 0
+    assert report["checks"]["inversion"]["gates"]["net_of_cost"] is False and report["status"] == "fail"

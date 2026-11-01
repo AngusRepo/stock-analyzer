@@ -318,7 +318,7 @@ async def run_r33_monthly_lifecycle(*, manifest_path: str, cohort_id: str, as_of
         report, checks_checksum = _write_once(checks_blob, report)
     if report.get("manifest_checksum") != manifest["manifest_checksum"]:
         raise ValueError("r33_oof_checks_manifest_mismatch")
-    # A receipt sealed before the cost line existed carries no C1; it must not admit full-fit.
+    # A receipt sealed before the cost lines gated carries no C1 or C2; it must not admit full-fit.
     if (report.get("result") or {}).get("schema_version") != r33_oof_checks.SCHEMA or "gate_cost" not in report:
         raise ValueError("r33_oof_checks_schema_stale")
     # The sealed OOF checks are write-once; their pit_vintage entry is the result at seal time.

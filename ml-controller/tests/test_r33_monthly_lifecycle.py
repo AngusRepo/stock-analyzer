@@ -763,7 +763,8 @@ def test_r33_prep_wiring_is_profile_gated():
     assert job.index("'r33_monthly_candidate'") < job.index("result.get('materialization_owner') == 'native_l3_new_l4'")
 
 
-@pytest.mark.parametrize("stale", [{"result_schema": "r33-oof-checks-v1"}, {"drop_gate_cost": True}])
+@pytest.mark.parametrize("stale", [{"result_schema": "r33-oof-checks-v1"}, {"result_schema": "r33-oof-checks-v2"},
+                                   {"drop_gate_cost": True}])
 def test_receipt_sealed_without_the_cost_line_never_admits_full_fit(monkeypatch, stale):
     from services import r33_oof_checks
     calls, _ = _patch_lifecycle(monkeypatch, full_fit={"status": "completed", "retry_required": False})

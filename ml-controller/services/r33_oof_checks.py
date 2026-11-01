@@ -5,8 +5,9 @@
    and days held out of a purged isotonic fit realize a positive excess above that
    fit's top-block edge (mean minus one standard error > 0). Cost line (C1, Wei 10/30):
    the held-out names whose cross-fitted expected excess clears the round-trip cost
-   (the allocator's own buy rule, no count limit) realize mean minus SE > 0. The same
-   set net of cost (C2) and the day's top five by score are reported, never gated.
+   (the allocator's own buy rule, no count limit) realize mean minus SE > 0. Net-of-cost
+   line (C2, Wei 11/1): the same set's realized excess minus that cost has mean minus SE > 0.
+   The day's top five by score are reported, never gated.
 3. Tail-fold guard (policy v4): a model whose last-three-fold daily IC has a 90% HAC
    upper bound below zero fails hard for TabM and PatchTST and warns otherwise.
 4. PIT vintage (C28-02): the capture's certification receipt re-derives
@@ -26,7 +27,7 @@ from scipy.stats import spearmanr
 from services.r33_calibration_job import crossfit_expected_excess, pool_score_table
 from services.r33_isotonic_calibration import MODELS
 
-SCHEMA = "r33-oof-checks-v2"  # v2: cost line (C1) gates inversion
+SCHEMA = "r33-oof-checks-v3"  # v2: cost line (C1) gates inversion; v3: net of cost (C2) gates too
 LIMIT_UP_OPEN_GAP = 0.095
 TAIL_GUARD_POLICY = "v4"
 TAIL_GUARD_HARD = ("TabM", "PatchTST")
@@ -70,7 +71,7 @@ def _score_checks(table: dict, days, round_trip_cost: float) -> dict:
     top_k = [table["excess"][r][np.argsort(-table["score"][r], kind="stable")[:TOP_K_DIAGNOSTIC]].mean()
              for r in day_rows.values()]
     return dict(daily_ic=_mean_se(ic), isotonic_top=_mean_se(top), crossfit_above_cost=above_cost,
-                net_of_cost=dict(_mean_se(realized - round_trip_cost), gate=False),
+                net_of_cost=dict(_mean_se(realized - round_trip_cost), gate=True),
                 top_k=dict(_mean_se(top_k), k=TOP_K_DIAGNOSTIC, diagnostic_only=True))
 
 
@@ -96,7 +97,8 @@ def run_checks(*, oof: pl.DataFrame, fold_receipts: list[dict], pool_by_date: di
     ic = scored["daily_ic"]
     gates = dict(daily_ic=bool(ic["mean"] is not None and ic["mean"] > 0),
                  isotonic_top=_lower_bound_positive(scored["isotonic_top"]),
-                 crossfit_above_cost=_lower_bound_positive(scored["crossfit_above_cost"]))
+                 crossfit_above_cost=_lower_bound_positive(scored["crossfit_above_cost"]),
+                 net_of_cost=_lower_bound_positive(scored["net_of_cost"]))
     inversion = dict(**scored, gates=gates, passed=all(gates.values()))
 
     folds = sorted(oof["fold_id"].unique().to_list(), key=lambda f: str(receipts.get(f, {}).get("test_start", f)))

@@ -1,4 +1,5 @@
-"""W4(a) challenger runtime: cancelled at the budget, L4 challengers only after the champion's GPU calls."""
+"""W4(a) challenger runtime: cancelled at the budget, L4 challengers one at a time after the champion's
+non-TimeXer GPU calls."""
 import asyncio
 import re
 from pathlib import Path
@@ -46,11 +47,11 @@ async def ready_blocks():
 
 
 async def settle():
-    for _ in range(20):
+    for _ in range(200):
         await asyncio.sleep(0)
 
 
-def test_l4_challengers_start_only_after_every_champion_gpu_call_in_arm_order():
+def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_order():
     async def scenario():
         loop = asyncio.get_running_loop()
         trainer, gate = FakeTrainer(), mc.GpuGate(2)
@@ -67,11 +68,13 @@ def test_l4_challengers_start_only_after_every_champion_gpu_call_in_arm_order():
         gpu[1].set_result(None)  # window 1's GPU calls are done, window 2's are not: cohort-wide gate holds
         await settle()
         assert trainer.spawned() == [] and not gate.gpu_free.is_set()
-        gpu[2].set_result(None)
+        gpu[2].set_exception(RuntimeError("gnn failed"))  # a failed champion call has released its GPU too
         await settle()
-        assert trainer.spawned() == ["mkt9:w1", "mkt9:w2", "mkt0:w1", "mkt0:w2"]  # whole arms first
-        for call in trainer.calls.values():
-            call.finish.set()
+        order = ["mkt9:w1", "mkt9:w2", "mkt0:w1", "mkt0:w2"]  # whole arms first
+        for step, name in enumerate(order):
+            assert trainer.spawned() == order[:step + 1]  # the next input waits until this one settles
+            trainer.calls[name].finish.set()
+            await settle()
         results = await asyncio.gather(*tasks)
         assert [r["model"] for r in results] == ["mkt0:w1", "mkt9:w1", "mkt0:w2", "mkt9:w2"]
         assert not any(kind == "cancel" for kind, *_ in trainer.log)
@@ -93,12 +96,13 @@ def test_l4_challengers_never_outlive_the_champion():
             trainer, payload("mkt0", 1), blocks, budget_s=None, gate=gate, ticket=gate.ticket((1, 1))))
         gpu.set_result(None)
         await settle()
-        assert trainer.spawned() == ["mkt9:w1", "mkt0:w1"]  # both inputs sit in Modal's queue (max_containers=1)
-        tree.set_result(None)  # the champion's last CPU call finishes; both challengers are still unfinished
+        assert trainer.spawned() == ["mkt9:w1"]  # one input in flight; the second waits for its turn
+        tree.set_result(None)  # the champion's last call finishes while the first challenger still runs
         first, second = await asyncio.wait_for(asyncio.gather(running, queued), timeout=1)
-        assert first == second == {"unsupported": "market_challenger_budget_exceeded:running:champion_done"}
-        assert sorted(entry for entry in trainer.log if entry[0] == "cancel") == [
-            ("cancel", "mkt0:w1", True), ("cancel", "mkt9:w1", True)]
+        assert first == {"unsupported": "market_challenger_budget_exceeded:running:champion_done"}
+        assert second == {"unsupported": "market_challenger_budget_exceeded:waiting_for_champion_gpu:champion_done"}
+        assert [entry for entry in trainer.log if entry[0] == "cancel"] == [("cancel", "mkt9:w1", True)]
+        assert trainer.spawned() == ["mkt9:w1"]
     asyncio.run(scenario())
 
 
@@ -176,3 +180,11 @@ def test_orchestrator_pools_stay_under_the_workspace_container_limit():
     # Workspace limit 100 concurrent containers; the 30-day peak of everything else was 16.
     assert sum(map(pool, champion)) + sum(map(pool, challenger)) + 16 <= 100
     assert "memory=8192" in specs[mc.TREE_FUNCTION]
+
+
+def test_gate_waits_for_every_gpu_family_but_the_exempt_timexer():
+    """A new GPU family is waited for unless it is named here; the exemption is TimeXer alone."""
+    assert mc.GATE_EXEMPT_GPU_FAMILIES == ("TimeXer",)
+    source = MODAL_APP.read_text()
+    assert ('gpu=[f for kind, f in tasks if kind in dict(family_tasks) and kind not in market_state["exempt"]]'
+            in source)

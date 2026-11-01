@@ -197,12 +197,21 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
     return out, names, receipt
 
 
-class GpuGate:
-    """Cohort-wide gate for L4 challengers (workspace limit 10 concurrent GPUs; the champion folds ask for ~12).
+# Champion GPU families the gate does not wait for (Wei 11/1). The 7 TimeXer folds hold their L4s until the
+# end of the cohort; once every other champion GPU call is done they are the only champion L4s (7 + 1
+# challenger = 8 of the workspace's 10, 2 left for a TimeXer retry). Every other family, including one
+# added later, is waited for.
+GATE_EXEMPT_GPU_FAMILIES = ("TimeXer",)
 
-    gpu_free: every window's champion GPU calls are done. champion_done: every window's champion calls are
-    done; a gated challenger is cancelled then, so it never extends the cohort. Per window is not enough: a
-    challenger started after one window's GPU calls would still take an L4 from another window's queued fold."""
+
+class GpuGate:
+    """Cohort-wide gate for L4 challengers (workspace limit 10 concurrent GPUs; the champion asks for 11).
+
+    gpu_free: every window's champion GPU calls other than GATE_EXEMPT_GPU_FAMILIES are done.
+    champion_done: every window's champion calls are done; gated challengers are cancelled then, so they
+    never extend the cohort. One challenger input is in flight at a time (turn held until it settles).
+    Per window is not enough: a challenger started after one window's GPU calls would still take an L4
+    from another window's queued fold."""
 
     def __init__(self, windows: int):
         import asyncio
@@ -235,7 +244,7 @@ class GpuGate:
             self._watchers.append(asyncio.ensure_future(_watch(key, futures)))
 
     def ticket(self, rank) -> int:
-        """Spawn order once the GPUs are free: rank (arm, window) so whole arms finish first."""
+        """Run order once the GPUs are free: rank (arm, window) so whole arms finish first."""
         self._tickets.append((rank, len(self._tickets)))
         return len(self._tickets) - 1
 
@@ -300,20 +309,20 @@ async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: 
             if not ok or not (await _until(gate.turn(ticket), closed, deadline))[0]:
                 return _over("waiting_for_champion_gpu")
         call = await trainer.spawn.aio({**slot_payload, "market_conditioner": conditioner})
+        settled = False
+        try:
+            ok, result = await _until(call.get.aio(), closed, deadline)
+            settled = ok
+            return result if ok else _over("running")
+        finally:
+            if not settled:  # also on CancelledError when the orchestrator loop shuts down
+                try:
+                    await call.cancel.aio(terminate_containers=True)
+                except Exception as exc:  # noqa: BLE001 - the window still moves on; reported in the log.
+                    print(f"[MarketChallenger] cancel failed: {type(exc).__name__}: {exc}")
     finally:
-        if gate is not None:
+        if gate is not None:  # the next ticket starts only once this input has settled or been cancelled
             await gate.release(ticket)
-    settled = False
-    try:
-        ok, result = await _until(call.get.aio(), closed, deadline)
-        settled = ok
-        return result if ok else _over("running")
-    finally:
-        if not settled:  # also on CancelledError when the orchestrator loop shuts down
-            try:
-                await call.cancel.aio(terminate_containers=True)
-            except Exception as exc:  # noqa: BLE001 - the window still moves on; reported in the log.
-                print(f"[MarketChallenger] cancel failed: {type(exc).__name__}: {exc}")
 
 
 def challenger_identity(payload: dict) -> dict:

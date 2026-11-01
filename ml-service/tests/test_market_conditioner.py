@@ -210,7 +210,7 @@ def test_orchestrator_isolates_market_challengers_from_the_release_folds():
     assert 'run_challenger(trainer, slot_payload, market_state["blocks"], **gated)' in source
     assert '{"status": "unsupported", "reason": r["unsupported"]}' in source
     # L4 challengers: deferred out of the window's gather, behind the cohort gate, closed when the windows return.
-    assert 'gate.track(wid, gpu=[f for kind, f in tasks if kind in dict(family_tasks)], champion=[f for _, f in tasks])' in source
+    assert "gate.track(wid, gpu=" in source and "champion=[f for _, f in tasks])" in source
     assert 'trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket' in source
     assert 'market_state["gate"].champion_done.set()' in source
     assert 'payload.get("challenger_models_disabled")' in source

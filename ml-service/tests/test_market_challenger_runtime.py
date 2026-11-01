@@ -1,5 +1,5 @@
-"""W4(a) challenger runtime: cancelled at the budget, L4 challengers one at a time after the champion's
-non-TimeXer GPU calls and only while no TimeXer input waits for an L4."""
+"""W4(a) challenger runtime: cancelled at the budget or the tail cap; L4 challengers one at a time after the
+champion's non-TimeXer GPU calls while no TimeXer input waits for an L4, then in parallel once it is final."""
 import asyncio
 import re
 from pathlib import Path
@@ -61,9 +61,8 @@ def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_or
         trainer, gate = FakeTrainer(), mc.GpuGate(2, backlog=no_backlog)
         blocks = asyncio.ensure_future(ready_blocks())
         gpu = {w: loop.create_future() for w in (1, 2)}
-        tree = {w: loop.create_future() for w in (1, 2)}
         for w in (1, 2):
-            gate.track(w, gpu=[gpu[w]], champion=[gpu[w], tree[w]])
+            gate.track(w, gpu=[gpu[w]])
         tasks = [asyncio.ensure_future(mc.run_challenger(
             trainer, payload(arm, w), blocks, budget_s=None, gate=gate, ticket=gate.ticket((mc.ARMS.index(arm), w))))
             for w in (1, 2) for arm in ("mkt0", "mkt9")]
@@ -82,46 +81,54 @@ def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_or
         results = await asyncio.gather(*tasks)
         assert [r["model"] for r in results] == ["mkt0:w1", "mkt9:w1", "mkt0:w2", "mkt9:w2"]
         assert not any(kind == "cancel" for kind, *_ in trainer.log)
-        for w in (1, 2):
-            tree[w].set_result(None)
     asyncio.run(scenario())
 
 
-def test_l4_challengers_never_outlive_the_champion():
+def test_once_the_champion_is_final_the_tail_runs_in_parallel_until_the_cap(monkeypatch):
+    monkeypatch.setattr(mc, "TAIL_GPU_PARALLEL", 2)
+    monkeypatch.setattr(mc, "TAIL_CAP_S", 0.2)
+
     async def scenario():
         loop = asyncio.get_running_loop()
         trainer, gate = FakeTrainer(), mc.GpuGate(1, backlog=no_backlog)
-        blocks = asyncio.ensure_future(ready_blocks())
-        gpu, tree = loop.create_future(), loop.create_future()
-        gate.track(1, gpu=[gpu], champion=[gpu, tree])
-        running = asyncio.ensure_future(mc.run_challenger(
-            trainer, payload("mkt9", 1), blocks, budget_s=None, gate=gate, ticket=gate.ticket((0, 1))))
-        queued = asyncio.ensure_future(mc.run_challenger(
-            trainer, payload("mkt0", 1), blocks, budget_s=None, gate=gate, ticket=gate.ticket((1, 1))))
+        gpu = loop.create_future()
+        gate.track(1, gpu=[gpu])
+        tasks = [asyncio.ensure_future(mc.run_challenger(
+            trainer, payload(arm, w), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((rank, w)))) for rank, arm in enumerate(("mkt9", "mkt0")) for w in (1, 2)]
         gpu.set_result(None)
         await settle()
-        assert trainer.spawned() == ["mkt9:w1"]  # one input in flight; the second waits for its turn
-        tree.set_result(None)  # the champion's last call finishes while the first challenger still runs
-        first, second = await asyncio.wait_for(asyncio.gather(running, queued), timeout=1)
-        assert first == {"unsupported": "market_challenger_budget_exceeded:running:champion_done"}
-        assert second == {"unsupported": "market_challenger_budget_exceeded:waiting_for_champion_gpu:champion_done"}
-        assert [entry for entry in trainer.log if entry[0] == "cancel"] == [("cancel", "mkt9:w1", True)]
-        assert trainer.spawned() == ["mkt9:w1"]
+        assert trainer.spawned() == ["mkt9:w1"]  # one input in flight while the champion runs
+        gate.champion_done.set()  # the windows returned: the champion results are final
+        await settle()
+        assert trainer.spawned() == ["mkt9:w1", "mkt9:w2"]  # up to TAIL_GPU_PARALLEL from here
+        trainer.calls["mkt9:w2"].finish.set()
+        await settle()
+        assert trainer.spawned() == ["mkt9:w1", "mkt9:w2", "mkt0:w1"]
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)  # nothing else finishes: the cap
+        assert results == [{"unsupported": "market_challenger_budget_exceeded:running:tail_cap"}, {"model": "mkt9:w2"},
+                           {"unsupported": "market_challenger_budget_exceeded:running:tail_cap"},
+                           {"unsupported": "market_challenger_budget_exceeded:waiting_for_gpu:tail_cap"}]
+        assert [entry for entry in trainer.log if entry[0] == "cancel"] == [
+            ("cancel", "mkt9:w1", True), ("cancel", "mkt0:w1", True)]
+        assert trainer.spawned() == ["mkt9:w1", "mkt9:w2", "mkt0:w1"]
     asyncio.run(scenario())
 
 
-def test_l4_challenger_is_not_spawned_when_the_champion_finishes_first():
+def test_no_l4_challenger_starts_before_the_gpus_are_free_unless_the_champion_is_final():
     async def scenario():
         trainer, gate = FakeTrainer(), mc.GpuGate(2, backlog=no_backlog)
-        gate.track(1, gpu=[], champion=[])  # window 2's GPU calls never finish; the windows return regardless
+        gate.track(1, gpu=[])  # window 2's GPU calls are never tracked; the windows return regardless
         task = asyncio.ensure_future(mc.run_challenger(
             trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
             ticket=gate.ticket((0, 1))))
         await settle()
+        assert trainer.spawned() == [] and not gate.gpu_free.is_set()
         gate.champion_done.set()
-        result = await asyncio.wait_for(task, timeout=1)
-        assert result == {"unsupported": "market_challenger_budget_exceeded:waiting_for_champion_gpu:champion_done"}
-        assert trainer.spawned() == []
+        await settle()
+        assert trainer.spawned() == ["mkt9:w1"]
+        trainer.calls["mkt9:w1"].finish.set()
+        assert (await asyncio.wait_for(task, timeout=1)) == {"model": "mkt9:w1"}
     asyncio.run(scenario())
 
 
@@ -135,7 +142,7 @@ def test_no_spawn_while_a_timexer_input_waits_for_an_l4(monkeypatch):
         async def backlog():
             return queued["n"]
         trainer, gate = FakeTrainer(), mc.GpuGate(1, backlog=backlog)
-        gate.track(1, gpu=[], champion=[asyncio.get_running_loop().create_future()])
+        gate.track(1, gpu=[])
         task = asyncio.ensure_future(mc.run_challenger(
             trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
             ticket=gate.ticket((0, 1))))
@@ -149,23 +156,24 @@ def test_no_spawn_while_a_timexer_input_waits_for_an_l4(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_an_unknown_backlog_never_spawns(monkeypatch):
+def test_an_unknown_backlog_holds_the_challenger_only_while_the_champion_runs(monkeypatch):
     monkeypatch.setattr(mc, "BACKLOG_POLL_S", 0.01)
 
     async def scenario():
         async def backlog():
             raise RuntimeError("stats unavailable")
         trainer, gate = FakeTrainer(), mc.GpuGate(1, backlog=backlog)
-        gate.track(1, gpu=[], champion=[asyncio.get_running_loop().create_future()])
+        gate.track(1, gpu=[])
         task = asyncio.ensure_future(mc.run_challenger(
             trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
             ticket=gate.ticket((0, 1))))
         await asyncio.sleep(0.1)
-        assert trainer.spawned() == []
-        gate.champion_done.set()
-        result = await asyncio.wait_for(task, timeout=1)
-        assert result == {"unsupported": "market_challenger_budget_exceeded:waiting_for_champion_backlog:champion_done"}
-        assert trainer.spawned() == []
+        assert trainer.spawned() == []  # fail closed for the challenger
+        gate.champion_done.set()  # the champion's L4s are free; a TimeXer backlog no longer matters
+        await settle()
+        assert trainer.spawned() == ["mkt9:w1"]
+        trainer.calls["mkt9:w1"].finish.set()
+        assert (await asyncio.wait_for(task, timeout=1)) == {"model": "mkt9:w1"}
     asyncio.run(scenario())
 
 
@@ -228,6 +236,7 @@ def test_orchestrator_pools_stay_under_the_workspace_container_limit():
     # Workspace limit 100 concurrent containers; the 30-day peak of everything else was 16.
     assert sum(map(pool, champion)) + sum(map(pool, challenger)) + 16 <= 100
     assert "memory=8192" in specs[mc.TREE_FUNCTION]
+    assert pool(mc.TABM_FUNCTION) == mc.TAIL_GPU_PARALLEL <= 10  # the tail's L4s; the champion's are free by then
 
 
 def test_gate_waits_for_every_gpu_family_but_the_exempt_timexer():

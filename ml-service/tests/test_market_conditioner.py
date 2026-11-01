@@ -205,16 +205,16 @@ def test_history_sha_mismatch_marks_market_arms_unsupported(monkeypatch):
 def test_orchestrator_isolates_market_challengers_from_the_release_folds():
     import modal_app
     source = inspect.getsource(_raw(modal_app.walk_forward_orchestrator))
-    # The block is built by its own function, awaited only by market challengers, under a budget.
+    # The block is built by its own function, awaited only by market challengers, under the gate's tail cap.
     assert "build_market_conditioner_block.remote.aio" in source
     assert 'run_challenger(trainer, slot_payload, market_state["blocks"], **gated)' in source
     assert '{"status": "unsupported", "reason": r["unsupported"]}' in source
-    # L4 challengers: deferred out of the window's gather, behind the cohort gate, closed when the windows return.
-    assert "gate.track(wid, gpu=" in source and "champion=[f for _, f in tasks])" in source
+    # Every market challenger is deferred out of the window's gather; the tail starts when the windows return.
+    assert "gate.track(wid, gpu=" in source
     assert 'trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket' in source
     assert 'market_state["gate"].champion_done.set()' in source
     assert 'payload.get("challenger_models_disabled")' in source
-    assert mc.CHALLENGER_BUDGET_S <= 3 * 3600
+    assert mc.TAIL_CAP_S == 45 * 60
     # R3: market challengers run in their own Modal functions, never a release trainer's pool.
     functions = {spec["modal_function"] for spec in mc.LIFECYCLE_SLOTS.values()}
     assert functions == {"train_wf_tree_market_challenger", "train_tabm_market_challenger"}

@@ -24,7 +24,7 @@ BLOCK_SCHEMA = "market-conditioner-block-v1"
 TREE_FUNCTION = "train_wf_tree_market_challenger"
 TABM_FUNCTION = "train_tabm_market_challenger"
 BLOCK_FUNCTION = "build_market_conditioner_block"
-# A window never waits on its market challengers longer than this (R33 OOF main path ~4 h).
+# Budget of a challenger run without a gate; the orchestrator always passes one (TAIL_CAP_S bounds it).
 CHALLENGER_BUDGET_S = 10800
 ARMS = ("mkt9", "mkt0")
 FAMILIES = (("lgbm", "LightGBM", TREE_FUNCTION), ("et", "ExtraTrees", TREE_FUNCTION), ("tabm", "TabM", TABM_FUNCTION))
@@ -204,63 +204,90 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
 GATE_EXEMPT_GPU_FAMILIES = ("TimeXer",)
 # Re-check interval while a TimeXer input still waits for an L4 (other workspace GPU jobs can hold one).
 BACKLOG_POLL_S = 15
+# Wei 11/1: the champion results are final first, then the challengers finish on the freed GPUs. The tail
+# after champion_done is capped; whatever is still waiting or running then is cancelled.
+TAIL_CAP_S = 2700
+# L4 challenger inputs in flight once the champion is done (its 10 L4s are free); one before that.
+TAIL_GPU_PARALLEL = 7
 
 
 class GpuGate:
-    """Cohort-wide gate for L4 challengers (workspace limit 10 concurrent GPUs; the champion asks for 11).
+    """Cohort-wide gate for market challengers (workspace limit 10 concurrent GPUs; the champion asks for 11).
 
     gpu_free: every window's champion GPU calls other than GATE_EXEMPT_GPU_FAMILIES are done.
-    champion_done: every window's champion calls are done; gated challengers are cancelled then, so they
-    never extend the cohort. One challenger input is in flight at a time (turn held until it settles).
-    Per window is not enough: a challenger started after one window's GPU calls would still take an L4
-    from another window's queued fold. `backlog` counts the exempt family's inputs still waiting for an L4."""
+    champion_done: set by the orchestrator once every window has returned, so the champion results are final.
+    Before it one L4 challenger input is in flight at a time, after gpu_free and only while no TimeXer input
+    waits for an L4 (`backlog` counts them); after it up to TAIL_GPU_PARALLEL. closed: TAIL_CAP_S after
+    champion_done; every challenger still waiting or running is cancelled then. Per window is not enough: a
+    challenger started after one window's GPU calls would still take an L4 from another window's queued fold."""
 
     def __init__(self, windows: int, *, backlog):
         import asyncio
-        self.gpu_free, self.champion_done = asyncio.Event(), asyncio.Event()
+        self.gpu_free, self.champion_done, self.closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
         self._backlog = backlog
-        self._left = {"gpu": windows, "champion": windows}
+        self._left = windows
         self._tracked: set = set()
         self._tickets: list[tuple] = []
-        self._spawned: set = set()
-        self._watchers: list = []  # strong references: the loop keeps only weak ones to tasks
+        self._started: set = set()
+        self._inflight: set = set()
         self._turn = asyncio.Condition()
-        for key in self._left:
-            self._settle(key, 0)
+        self._watchers: list = [  # strong references: the loop keeps only weak ones to tasks
+            asyncio.ensure_future(self._wake_on(self.gpu_free)), asyncio.ensure_future(self._wake_on(self.champion_done)),
+            asyncio.ensure_future(self._close_tail())]
+        self._settle(0)
 
-    def _settle(self, key: str, done: int) -> None:
-        self._left[key] -= done
-        if self._left[key] <= 0:
-            (self.gpu_free if key == "gpu" else self.champion_done).set()
+    async def _wake_on(self, event) -> None:
+        await event.wait()
+        async with self._turn:
+            self._turn.notify_all()
 
-    def track(self, window_id, gpu=(), champion=()) -> None:
-        """Once per window: its champion GPU futures and all its champion futures (none: nothing pending)."""
+    async def _close_tail(self) -> None:
+        import asyncio
+        await self.champion_done.wait()
+        await asyncio.sleep(TAIL_CAP_S)
+        self.closed.set()
+
+    def _settle(self, done: int) -> None:
+        self._left -= done
+        if self._left <= 0:
+            self.gpu_free.set()
+
+    def track(self, window_id, gpu=()) -> None:
+        """Once per window: its gated champion GPU futures (none: nothing pending)."""
         import asyncio
         if window_id in self._tracked:
             return
         self._tracked.add(window_id)
 
-        async def _watch(key: str, futures: list) -> None:
+        async def _watch(futures: list) -> None:
             await asyncio.gather(*futures, return_exceptions=True)
-            self._settle(key, 1)
-        for key, futures in (("gpu", list(gpu)), ("champion", list(champion))):
-            self._watchers.append(asyncio.ensure_future(_watch(key, futures)))
+            self._settle(1)
+        self._watchers.append(asyncio.ensure_future(_watch(list(gpu))))
 
     def ticket(self, rank) -> int:
-        """Run order once the GPUs are free: rank (arm, window) so whole arms finish first."""
+        """Run order of the L4 challengers: rank (arm, window) so whole arms finish first."""
         self._tickets.append((rank, len(self._tickets)))
         return len(self._tickets) - 1
 
-    def _next(self):
-        return next((i for _, i in sorted(self._tickets) if i not in self._spawned), None)
+    def _may_start(self, ticket: int) -> bool:
+        if not self.gpu_free.is_set() and not self.champion_done.is_set():
+            return False
+        free = (TAIL_GPU_PARALLEL if self.champion_done.is_set() else 1) - len(self._inflight)
+        return ticket in [i for _, i in sorted(self._tickets) if i not in self._started][:max(0, free)]
 
-    async def turn(self, ticket: int) -> None:
+    async def admit(self, ticket: int) -> None:
+        """Returns once this L4 challenger may spawn; the caller releases the ticket once its input settles."""
         async with self._turn:
-            await self._turn.wait_for(lambda: self._next() == ticket)
+            await self._turn.wait_for(lambda: self._may_start(ticket))
+            self._started.add(ticket)
+            self._inflight.add(ticket)
+        if not self.champion_done.is_set():  # checked before every spawn while the champion runs
+            await _first(self.no_backlog(), self.champion_done.wait())
 
     async def release(self, ticket: int) -> None:
         async with self._turn:
-            self._spawned.add(ticket)
+            self._started.add(ticket)
+            self._inflight.discard(ticket)
             self._turn.notify_all()
 
     async def no_backlog(self) -> None:
@@ -277,6 +304,16 @@ class GpuGate:
 
 
 GPU_CHALLENGER_FUNCTIONS = {TABM_FUNCTION}
+
+
+async def _first(*awaitables) -> None:
+    import asyncio
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in tasks:
+            task.cancel()
 
 
 async def _until(awaitable, closed, deadline):
@@ -299,18 +336,18 @@ async def _until(awaitable, closed, deadline):
 
 async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: float | None = CHALLENGER_BUDGET_S,
                          gate: GpuGate | None = None, ticket: int | None = None) -> dict:
-    """Wait for the shared block (and, gated, for the champion GPUs and its turn), spawn, and cancel the
-    remote input at the budget or once the champion is done.
+    """Wait for the shared block (and, with a ticket, for the gate to admit this L4 challenger), spawn, and
+    cancel the remote input at the budget or once the gate closes (TAIL_CAP_S after the champion is done).
 
     A timed-out .remote() await only drops the local wait; modal 1.6.2 sends FunctionCallCancel
     from FunctionCall.cancel() alone, so a queued or running input would otherwise keep its container."""
     import asyncio
     loop = asyncio.get_running_loop()
     deadline = None if budget_s is None else loop.time() + budget_s
-    closed = gate.champion_done if gate is not None else None
+    closed = gate.closed if gate is not None else None
 
     def _over(stage: str) -> dict:
-        why = "champion_done" if closed is not None and closed.is_set() else "budget"
+        why = "tail_cap" if closed is not None and closed.is_set() else "budget"
         return {"unsupported": f"market_challenger_budget_exceeded:{stage}:{why}"}
     try:
         ok, blocks = await _until(asyncio.shield(blocks_task), closed, deadline)
@@ -319,12 +356,8 @@ async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: 
         conditioner, reason = conditioner_for_arm(slot_payload["market_conditioner_arm"], blocks)
         if reason:
             return {"unsupported": reason}
-        if gate is not None:
-            ok, _ = await _until(gate.gpu_free.wait(), closed, deadline)
-            if not ok or not (await _until(gate.turn(ticket), closed, deadline))[0]:
-                return _over("waiting_for_champion_gpu")
-            if not (await _until(gate.no_backlog(), closed, deadline))[0]:  # checked before every spawn
-                return _over("waiting_for_champion_backlog")
+        if ticket is not None and not (await _until(gate.admit(ticket), closed, deadline))[0]:
+            return _over("waiting_for_gpu")
         call = await trainer.spawn.aio({**slot_payload, "market_conditioner": conditioner})
         settled = False
         try:
@@ -338,7 +371,7 @@ async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: 
                 except Exception as exc:  # noqa: BLE001 - the window still moves on; reported in the log.
                     print(f"[MarketChallenger] cancel failed: {type(exc).__name__}: {exc}")
     finally:
-        if gate is not None:  # the next ticket starts only once this input has settled or been cancelled
+        if ticket is not None:  # the next ticket starts only once this input has settled or been cancelled
             await gate.release(ticket)
 
 

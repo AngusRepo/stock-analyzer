@@ -2763,7 +2763,7 @@ def train_wf_tree_market_challenger(payload: dict) -> dict:
     gpu="L4",
     timeout=3600,
     scaledown_window=60,
-    max_containers=1,   # one extra L4 at most; folds run serially (~3 min each).
+    max_containers=7,   # GpuGate: one input while the champion runs, TAIL_GPU_PARALLEL once it is done.
 )
 def train_tabm_market_challenger(payload: dict) -> dict:
     """TabM, one market arm, one fold; OOF under the slot alias."""
@@ -3337,7 +3337,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             return {"error": f"{type(exc).__name__}:{str(exc)[:300]}"}
 
     async def _market_challenger(trainer, slot_payload: dict, **gated) -> dict:
-        """W4(a): waits for the shared block, then trains; the remote call is cancelled at the budget."""
+        """W4(a): waits for the shared block, then trains; the remote call is cancelled at the gate's tail cap."""
         from app.market_conditioner import run_challenger
         return await run_challenger(trainer, slot_payload, market_state["blocks"], **gated)
 
@@ -3488,8 +3488,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         if gate is not None:
             # Champion calls start now so the gate can see when they finish; gathered below as before.
             tasks = [(kind, asyncio.ensure_future(call)) for kind, call in tasks]
-            gate.track(wid, gpu=[f for kind, f in tasks if kind in dict(family_tasks) and kind not in market_state["exempt"]],
-                       champion=[f for _, f in tasks])
+            gate.track(wid, gpu=[f for kind, f in tasks if kind in dict(family_tasks) and kind not in market_state["exempt"]])
         challenger_trainers = _oof_challenger_trainers(challenger_slots)
         challenger_results = {}
         for name in challenger_models:
@@ -3499,14 +3498,13 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     slot_payload = {
                         **train_payload, **active8_model_payload(slot_config["challenger_model"], schema_version=profile_schema),
                         **slot_config, "oof_challenger": True}
-                    if gate is not None and challenger_slots[name]["modal_function"] in market_state["gpu_functions"]:
-                        # L4 challengers run one at a time once every non-TimeXer champion GPU call is done, and stop
-                        # when the champion is done; outside the window's gather, so they never hold a window open.
-                        ticket = gate.ticket((market_state["arms"].index(slot_config["market_conditioner_arm"]), wid))
-                        market_state["deferred"].append((wid, name, asyncio.ensure_future(_market_challenger(
-                            trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket))))
-                    else:
-                        tasks.append(("challenger:" + name, _market_challenger(trainer, slot_payload)))
+                    # Outside the window's gather, so the window's champion results are final without them. L4
+                    # challengers wait for a ticket (one at a time while the champion runs, TAIL_GPU_PARALLEL after);
+                    # every challenger still waiting or running TAIL_CAP_S after the champion is done is cancelled.
+                    ticket = (gate.ticket((market_state["arms"].index(slot_config["market_conditioner_arm"]), wid))
+                              if challenger_slots[name]["modal_function"] in market_state["gpu_functions"] else None)
+                    market_state["deferred"].append((wid, name, asyncio.ensure_future(_market_challenger(
+                        trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket))))
                     continue
                 # The slot trainer reports the model it resolved (e.g. LinearNeutralSize) in result["model"].
                 tasks.append(("challenger:" + name, trainer.remote.aio(
@@ -3618,7 +3616,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 
         results = await asyncio.gather(*[_bounded(w) for w in pending_windows])
         if market_state.get("deferred"):
-            # Every window returned, so champion work is done; never wait on a watcher that missed a window.
+            # Every window returned, so the champion results are final; the challengers' tail starts here.
             market_state["gate"].champion_done.set()
             by_id = {r["window_id"]: r for r in results}
             outcomes = await asyncio.gather(*[f for _, _, f in market_state["deferred"]], return_exceptions=True)

@@ -1,10 +1,12 @@
-"""The real walk_forward_orchestrator wiring of the L4 challenger gate, on fake Modal functions (no Modal, no cost).
+"""The real walk_forward_orchestrator wiring of the market challengers, on fake Modal functions (no Modal, no cost).
 
 Scaled timeline per window w: tree, TabM, PatchTST, iTransformer 0.05 s; GNN 0.1 + 0.1w s; TimeXer 0.8 + 0.1w s;
-each TabM challenger fold 0.2 s. The gate opens at 0.3 s (the last GNN), one challenger runs at a time, and what
-is left when the last TimeXer ends (1.0 s) is cancelled without extending the cohort.
+each TabM challenger fold 0.2 s. The gate opens with the last GNN and one L4 challenger runs at a time; once the
+last TimeXer is done every window's champion results are final, the rest run TAIL_GPU_PARALLEL at a time, and
+whatever is left at the tail cap is cancelled.
 """
 import asyncio
+import copy
 import hashlib
 import io
 import json
@@ -21,8 +23,11 @@ from tests.test_market_conditioner import DAYS, _raw, history_block
 
 TARGET = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SHA = "f" * 40
-WINDOWS = [{"window_id": w, "train_start": DAYS[0], "train_end": DAYS[39], "test_start": DAYS[45],
-            "test_end": DAYS[59]} for w in (0, 1, 2)]
+SEVEN = [{"window_id": w, "train_start": DAYS[0], "train_end": DAYS[39], "test_start": DAYS[45],
+          "test_end": DAYS[59]} for w in range(7)]
+WINDOWS = SEVEN[:3]
+ORDER = mc.ARMS  # the L4 challengers' arm order
+FIRST = ORDER[0]
 GATED_GPU = ("train_tabm_universal", "train_gnn_graphsage_universal", "train_patchtst_universal",
              "train_itransformer_universal")
 SLACK = 0.05
@@ -67,14 +72,20 @@ def sealed_inputs():
 
 
 class Clock:
-    """Start and end of every fake call on one clock; in-flight and peak TabM challenger inputs; cancels."""
+    """Every fake call on one clock: starts and ends, TabM challenger spawns with the inputs then in flight,
+    cancels, TimeXer stats probes, and when each window's fold readiness was assessed."""
 
     def __init__(self):
-        self.t0, self.calls, self.cancels, self.probes = time.monotonic(), [], [], []
-        self.active, self.peak = 0, 0
+        self.t0, self.calls, self.spawns, self.cancels, self.probes = time.monotonic(), [], [], [], []
+        self.active, self.assessed, self.final, self.windows = 0, [], None, 0
 
     def now(self):
         return time.monotonic() - self.t0
+
+    def snapshot(self):
+        """At the first challenger spawn once every window is assessed: the windows' champion results."""
+        if self.final is None and len(self.assessed) == self.windows:
+            self.final = {r["window_id"]: copy.deepcopy(r) for _, r in self.assessed}
 
 
 def champion(clock, name, seconds, fail=lambda payload: False, backlog=lambda clock: 0):
@@ -96,9 +107,10 @@ def challenger(clock, name, seconds, raise_for=(), counted=False):
     async def spawn(payload):
         key = (payload["oof_model_alias"], payload["window_id"])
         start, state = clock.now(), {"open": True}
+        clock.snapshot()
         if counted:
             clock.active += 1
-            clock.peak = max(clock.peak, clock.active)
+            clock.spawns.append((start, key, clock.active))
 
         def close():
             if state["open"] and counted:
@@ -106,7 +118,7 @@ def challenger(clock, name, seconds, raise_for=(), counted=False):
             state["open"] = False
 
         async def get():
-            await asyncio.sleep(seconds)
+            await asyncio.sleep(seconds(key) if callable(seconds) else seconds)
             close()
             clock.calls.append((name, key, start, clock.now()))
             if key in raise_for:
@@ -121,12 +133,15 @@ def challenger(clock, name, seconds, raise_for=(), counted=False):
     return SimpleNamespace(spawn=SimpleNamespace(aio=spawn))
 
 
-def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False, backlog=lambda clock: 0):
+def install(monkeypatch, clock, *, windows=WINDOWS, tabm_raise=(), gnn_fail=lambda payload: False,
+            backlog=lambda clock: 0, tree_seconds=0.01, cap=1.0):
     import google.cloud.storage as storage
     import modal_app
     import app.oof_artifact_recovery as recovery
+    import app.oof_forward_source_contract as contract
     import app.oof_manifest_publisher as publisher
     bucket, published = Bucket(sealed_inputs()), {}
+    clock.windows = len(windows)
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", SHA)
     monkeypatch.setattr(storage, "Client", lambda *a, **k: SimpleNamespace(bucket=lambda name: bucket))
     monkeypatch.setattr(modal_app, "_setup_env", lambda: None)
@@ -134,9 +149,16 @@ def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False
     monkeypatch.setattr(modal_app, "_load_verified_oof_resume_windows", lambda *a, **k: ({}, None))
     monkeypatch.setattr(recovery, "recover_completed_oof_windows", lambda **k: {})
     monkeypatch.setattr(mc, "BACKLOG_POLL_S", 0.01)
+    monkeypatch.setattr(mc, "TAIL_CAP_S", cap)
+    real_assess = contract.assess_fold_forward_sources
+
+    def assess(result, **kw):
+        clock.assessed.append((clock.now(), result))
+        return real_assess(result, **kw)
+    monkeypatch.setattr(contract, "assess_fold_forward_sources", assess)
 
     def publish(bucket, manifest):
-        published.update(manifest=manifest, at=clock.now())
+        published.update(manifest=json.loads(json.dumps(manifest, default=str)), at=clock.now())
         return {"manifest": {**manifest, "manifest_checksum": "c"}, "path": "m.json", "publication_mode": "test"}
     monkeypatch.setattr(publisher, "publish_oof_manifest", publish)
 
@@ -151,7 +173,7 @@ def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False
              "train_itransformer_universal": champion(clock, "train_itransformer_universal", 0.05),
              "train_timexer_universal": champion(clock, "train_timexer_universal", lambda p: 0.8 + 0.1 * p["window_id"],
                                                  backlog=backlog),
-             "train_wf_tree_market_challenger": challenger(clock, "tree_challenger", 0.01),
+             "train_wf_tree_market_challenger": challenger(clock, "tree_challenger", tree_seconds),
              "train_tabm_market_challenger": challenger(clock, "tabm_challenger", 0.2, tabm_raise, counted=True),
              "build_market_conditioner_block": SimpleNamespace(remote=SimpleNamespace(aio=blocks))}
     for name, fake in fakes.items():
@@ -159,10 +181,10 @@ def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False
     return published
 
 
-def run(**extra):
+def run(windows=WINDOWS, **extra):
     import modal_app
     return _raw(modal_app.walk_forward_orchestrator)({
-        "windows": WINDOWS, "market_env": {"history": {}}, "batch_count": 1, "concurrent_windows": len(WINDOWS),
+        "windows": windows, "market_env": {"history": {}}, "batch_count": 1, "concurrent_windows": len(windows),
         "model_profile_schema_version": R33_PROFILE, "start_date": DAYS[0], "end_date": DAYS[59], "cohort_id": "c",
         "knowledge_cutoff_date": DAYS[59], "prep_gcs_prefix": "universal", "sequence_gcs_prefix": "seq",
         "sequence_batch_count": 1, **extra})
@@ -172,76 +194,103 @@ def ends(clock, names):
     return [end for name, _, _, end in clock.calls if name in names]
 
 
-CHAMPION_FIELDS = ("model_metrics", "missing_oof_models", "oof_fold_ready", "fold_blockers", "tree_result",
-                   "TabM_result", "GNN_result", "TimeXer_result", "PatchTST_result", "iTransformer_result")
+def champion_end(clock):
+    return max(ends(clock, {"hmm", "tree", "train_timexer_universal", *GATED_GPU}))
 
 
-def champion_view(manifest):
-    return {w["window_id"]: {k: w.get(k) for k in CHAMPION_FIELDS} for w in manifest["windows"]}
+def challenger_metrics(manifest):
+    return {(w["window_id"], name): m for w in manifest["windows"] for name, m in w["challenger_metrics"].items()}
 
 
-def test_gate_opens_after_non_timexer_gpu_runs_one_challenger_and_never_extends_the_cohort(monkeypatch):
+def without_challengers(manifest):
+    """The manifest as the champion alone writes it: no challenger metrics, no challenger roster, no wall clock."""
+    def coverage(value):
+        return {k: v for k, v in value.items() if k != "challenger_models"}
+    windows = [{**{k: v for k, v in w.items() if k != "challenger_metrics"}, "model_coverage": coverage(w["model_coverage"])}
+               for w in manifest["windows"]]
+    aggregate = {**{k: v for k, v in manifest["aggregate"].items() if k != "elapsed_s"},
+                 "model_coverage": coverage(manifest["aggregate"]["model_coverage"])}
+    rest = {k: v for k, v in manifest.items() if k not in ("windows", "aggregate")}
+    return json.dumps({**rest, "windows": windows, "aggregate": aggregate}, sort_keys=True)
+
+
+def rank(key):
+    return ORDER.index(key[0].split("_")[1].lower()), key[1]
+
+
+def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_completes_every_slot(monkeypatch):
     clock = Clock()
-    published = install(monkeypatch, clock, tabm_raise={("TabM_MKT9", 1)},
+    published = install(monkeypatch, clock, windows=SEVEN, tabm_raise={(f"TabM_{FIRST.upper()}", 1)},
                         gnn_fail=lambda payload: payload["window_id"] == 2)  # a failed GPU call is done all the same
+    run(SEVEN)
+    gated, timexer, done = max(ends(clock, GATED_GPU)), max(ends(clock, {"train_timexer_universal"})), champion_end(clock)
+    # The gate opens once the last non-TimeXer GPU call (GNN w6; w2 failed) is done, while TimeXer still runs.
+    assert clock.spawns[0][0] >= gated - 0.005 and gated < timexer - 0.3 and done == timexer
+    mid = [(start, key, active) for start, key, active in clock.spawns if start < done]
+    assert mid and max(active for *_, active in mid) == 1  # one L4 challenger while the champion runs
+    assert 1 < max(active for *_, active in clock.spawns) <= mc.TAIL_GPU_PARALLEL  # parallel in the tail
+    order, ranked = [key for _, key, _ in clock.spawns], sorted((key for _, key, _ in clock.spawns), key=rank)
+    assert order[:len(mid)] == ranked[:len(mid)]  # whole arms first
+    assert all(ranked.index(key) < i + mc.TAIL_GPU_PARALLEL for i, key in enumerate(order))
+    # Every slot of every window finishes inside the cap; nothing is cancelled.
+    metrics = challenger_metrics(published["manifest"])
+    assert len(metrics) == len(mc.LIFECYCLE_SLOTS) * len(SEVEN) == len(clock.spawns) * 3
+    assert metrics.pop((1, f"tabm_{FIRST}")) == {"status": "failed", "reason": "challenger exploded"}
+    assert {m["status"] for m in metrics.values()} == {"ready"}
+    finished = {key for name, key, *_ in clock.calls if name in ("tabm_challenger", "tree_challenger")}
+    assert not [c for c in clock.cancels if c[1] not in finished] and clock.active == 0  # (a failed get is cancelled too)
+    assert 0 < published["at"] - done < mc.TAIL_CAP_S
+
+
+def test_the_tail_cap_cancels_what_is_left_and_the_cohort_publishes(monkeypatch):
+    slow = (f"ExtraTrees_{ORDER[-1].upper()}", 1)
+    clock = Clock()
+    published = install(monkeypatch, clock, tree_seconds=lambda key: 30 if key == slow else 0.01, cap=0.3)
     run()
-    gated, timexer = max(ends(clock, GATED_GPU)), max(ends(clock, {"train_timexer_universal"}))
-    champion_end = max(ends(clock, {"tree", "hmm", "train_timexer_universal", *GATED_GPU}))
-    spawns = [(start, key) for name, key, start, _ in clock.calls if name == "tabm_challenger:spawn"]
-    # The gate opens once the last non-TimeXer GPU call (GNN w2, failed) is done, while TimeXer still runs.
-    assert spawns and min(start for start, _ in spawns) >= gated - 0.005 and gated < timexer - 0.3
-    # One L4 challenger at a time, whole arms first.
-    assert clock.peak == 1
-    assert [key for _, key in sorted(spawns)] == sorted(
-        (key for _, key in spawns), key=lambda k: (mc.ARMS.index(k[0].split("_")[1].lower()), k[1]))
-    # The input still running when the last TimeXer ends is cancelled with its container; no later spawn.
-    finished = {key for name, key, *_ in clock.calls if name == "tabm_challenger"}
-    cancels = [c for c in clock.cancels if c[0] == "tabm_challenger" and c[1] not in finished]
-    assert [c[2] for c in cancels] == [True] and abs(cancels[0][3] - timexer) < SLACK
-    assert max(start for start, _ in spawns) < timexer and clock.active == 0
-    # No extension: the champion ends with the last TimeXer and the manifest is published right after.
-    assert champion_end == timexer and published["at"] - champion_end < SLACK
-    windows = {w["window_id"]: w for w in published["manifest"]["windows"]}
-    tabm = {(wid, name): m for wid, w in windows.items() for name, m in w["challenger_metrics"].items()
-            if name.startswith("tabm_")}
-    assert len(tabm) == 2 * len(WINDOWS) and tabm[(0, "tabm_mkt9")]["status"] == "ready"
-    assert tabm[(1, "tabm_mkt9")] == {"status": "failed", "reason": "challenger exploded"}
-    reasons = sorted(m.get("reason", "") for m in tabm.values() if m["status"] == "unsupported")
-    assert reasons and all(r.endswith(":champion_done") for r in reasons)
-    assert "market_challenger_budget_exceeded:running:champion_done" in reasons
-    assert len(spawns) + reasons.count("market_challenger_budget_exceeded:waiting_for_champion_gpu:champion_done") \
-        == 2 * len(WINDOWS)
+    done = champion_end(clock)
+    metrics = challenger_metrics(published["manifest"])
+    assert metrics.pop((1, f"et_{ORDER[-1]}")) == {
+        "status": "unsupported", "reason": "market_challenger_budget_exceeded:running:tail_cap"}
+    assert {m["status"] for m in metrics.values()} == {"ready"}
+    [cancel] = clock.cancels
+    assert cancel[:3] == ("tree_challenger", slow, True) and abs(cancel[3] - done - 0.3) < SLACK
+    assert abs(published["at"] - done - 0.3) < SLACK and clock.active == 0
 
 
-def test_challenger_failures_never_reach_champion_results_or_fold_readiness(monkeypatch):
+def test_champion_results_are_final_before_the_tail_and_identical_to_the_kill_switch_run(monkeypatch):
     gnn_fail = lambda payload: payload["window_id"] == 2  # noqa: E731
-    published = install(monkeypatch, Clock(), tabm_raise={("TabM_MKT9", 0), ("TabM_MKT9", 1)}, gnn_fail=gnn_fail)
+    clock = Clock()
+    published = install(monkeypatch, clock, tabm_raise={(f"TabM_{FIRST.upper()}", 0), (f"TabM_{FIRST.upper()}", 1)},
+                        gnn_fail=gnn_fail, tree_seconds=1.3)  # tree challengers run on past the champion
     run()
+    done = champion_end(clock)
+    # Every window's fold readiness is decided as soon as its champion calls are done, never after a challenger.
+    assert len(clock.assessed) == len(WINDOWS) and max(t for t, _ in clock.assessed) < done + SLACK
+    assert max(ends(clock, {"tree_challenger"})) > done + 0.2 and clock.final is not None
+    # What the windows held when the tail started is what is published, challenger metrics aside.
+    windows = {w["window_id"]: {k: v for k, v in w.items() if k != "challenger_metrics"}
+               for w in published["manifest"]["windows"]}
+    assert json.dumps(windows, sort_keys=True, default=str) == json.dumps(clock.final, sort_keys=True, default=str)
+    assert all("oof_fold_ready" in w for w in clock.final.values())
     with_challengers = published["manifest"]
     published = install(monkeypatch, Clock(), gnn_fail=gnn_fail)
     run(challenger_models_disabled=True)
     assert all("challenger_metrics" in w for w in with_challengers["windows"])
     assert not any("challenger_metrics" in w for w in published["manifest"]["windows"])
-    assert champion_view(with_challengers) == champion_view(published["manifest"])
-    assert with_challengers["aggregate"]["oof_failed_folds"] == published["manifest"]["aggregate"]["oof_failed_folds"]
-    assert champion_view(with_challengers)[2]["GNN_result"] == {"error": "train_gnn_graphsage_universal failed"}
+    assert without_challengers(with_challengers) == without_challengers(published["manifest"])
+    assert with_challengers["windows"][2]["GNN_result"] == {"error": "train_gnn_graphsage_universal failed"}
 
 
-def test_the_orchestrator_never_waits_on_a_watcher_that_missed_a_window(monkeypatch):
-    """The windows' return closes the gate even if a watcher never settles, so deferred challengers end."""
+def test_the_tail_starts_when_the_windows_return_even_if_a_watcher_missed_one(monkeypatch):
     clock = Clock()
     published = install(monkeypatch, clock)
     real_track = mc.GpuGate.track
-    monkeypatch.setattr(mc.GpuGate, "track", lambda self, wid, gpu=(), champion=():
-                        None if wid == 2 else real_track(self, wid, gpu, champion))
+    monkeypatch.setattr(mc.GpuGate, "track", lambda self, wid, gpu=(): None if wid == 2 else real_track(self, wid, gpu))
     done = threading.Event()
     threading.Thread(target=lambda: (run(), done.set()), daemon=True).start()
     assert done.wait(10), "the orchestrator hung on its deferred challengers"
-    tabm = [m for w in published["manifest"]["windows"] for name, m in w["challenger_metrics"].items()
-            if name.startswith("tabm_")]
-    assert len(tabm) == 2 * len(WINDOWS) and all(
-        m["reason"] == "market_challenger_budget_exceeded:waiting_for_champion_gpu:champion_done" for m in tabm)
-    assert not [c for c in clock.calls if c[0] == "tabm_challenger:spawn"]
+    assert {m["status"] for m in challenger_metrics(published["manifest"]).values()} == {"ready"}
+    assert clock.spawns[0][0] >= champion_end(clock) - 0.005  # gpu_free never came: nothing before the champion
 
 
 def test_a_window_that_raises_fails_the_cohort_and_leaves_no_challenger_input_running(monkeypatch):
@@ -271,27 +320,22 @@ def test_a_queued_timexer_input_holds_the_next_spawn_until_it_has_an_l4(monkeypa
     clock = Clock()
     install(monkeypatch, clock, backlog=backlog)
     run()
-    gated = max(ends(clock, GATED_GPU))
-    spawns = sorted(start for name, _, start, _ in clock.calls if name == "tabm_challenger:spawn")
-    assert spawns and spawns[0] >= gated + 0.2 and clock.peak == 1
+    gated, done = max(ends(clock, GATED_GPU)), champion_end(clock)
+    mid = [start for start, *_ in clock.spawns if start < done]
+    assert mid and mid[0] >= gated + 0.2 and max(active for start, _, active in clock.spawns if start < done) == 1
     assert len([t for t in clock.probes if t < gated + 0.2]) > 1  # re-checked while waiting, not spawned
-    assert len(clock.probes) >= len(spawns)  # every spawn was preceded by a check
+    assert len(clock.probes) >= len(mid)  # every spawn while the champion runs was preceded by a check
 
 
-def test_unknown_timexer_stats_never_spawn_and_never_touch_the_champion(monkeypatch):
+def test_unknown_timexer_stats_hold_the_challengers_until_the_champion_is_final(monkeypatch):
     def backlog(clock):
         raise RuntimeError("stats unavailable")
     clock = Clock()
     published = install(monkeypatch, clock, backlog=backlog)
     run()
     held = published["manifest"]
-    assert clock.probes and not [c for c in clock.calls if c[0] == "tabm_challenger:spawn"]
-    tabm = [m for w in held["windows"] for name, m in w["challenger_metrics"].items() if name.startswith("tabm_")]
-    reasons = sorted(m["reason"].removeprefix("market_challenger_budget_exceeded:") for m in tabm)
-    # The first ticket holds the turn at the backlog check; the rest wait for it.
-    assert reasons == ["waiting_for_champion_backlog:champion_done"] + [
-        "waiting_for_champion_gpu:champion_done"] * (len(mc.ARMS) * len(WINDOWS) - 1)
-    assert published["at"] - max(ends(clock, {"train_timexer_universal"})) < SLACK
+    assert clock.probes and clock.spawns[0][0] >= champion_end(clock) - 0.005
+    assert {m["status"] for m in challenger_metrics(held).values()} == {"ready"}
     published = install(monkeypatch, Clock())
     run(challenger_models_disabled=True)
-    assert champion_view(held) == champion_view(published["manifest"])
+    assert without_challengers(held) == without_challengers(published["manifest"])

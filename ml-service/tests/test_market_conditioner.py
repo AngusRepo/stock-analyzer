@@ -47,6 +47,17 @@ def history_block(days=DAYS):
                          history_sha256="h" * 64, capture_id="cap")
 
 
+def extra_block(days=DAYS, seed=13):
+    rng = np.random.default_rng(seed)
+    columns = [n for n, row in mc._declared().items() if row.get("block") == "capture_extra"]
+    values = {d: [None if i < 5 else float(v) for v in rng.normal(size=len(columns))] for i, d in enumerate(days)}
+    return mc.seal_block("capture_extra", columns, values, capture_id="cap")
+
+
+def market_blocks():
+    return {"history": history_block(), "capture_extra": extra_block()}
+
+
 def _raw(function):
     """The undecorated Modal function body (modal 1.x has no get_raw_f)."""
     return function.get_raw_f() if hasattr(function, "get_raw_f") else function._raw_f_
@@ -293,8 +304,9 @@ def _lightgbm_missing() -> bool:
     return False
 
 
-@pytest.mark.parametrize("slot", ["et_mkt9", "et_mkt0", pytest.param(
-    "lgbm_mkt9", marks=pytest.mark.skipif(_lightgbm_missing(), reason="lightgbm runtime unavailable"))])
+@pytest.mark.parametrize("slot", ["et_mkt9", "et_mkt0", "et_mkt16", *(pytest.param(
+    slot, marks=pytest.mark.skipif(_lightgbm_missing(), reason="lightgbm runtime unavailable"))
+    for slot in ("lgbm_mkt9", "lgbm_mkt16"))])
 def test_tree_challenger_smoke_writes_only_its_alias(monkeypatch, slot):
     import modal_app
     from app import universal_training as ut
@@ -310,7 +322,7 @@ def test_tree_challenger_smoke_writes_only_its_alias(monkeypatch, slot):
     monkeypatch.setattr(modal_app, "_setup_env", lambda: None)
     monkeypatch.setattr(modal_app, "_prepare_training_input_cache_for_payload", lambda payload: {"status": "skipped"})
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "f" * 40)
-    result = _raw(modal_app.train_wf_tree_market_challenger)(_slot_payload(slot, {"history": history_block()}))
+    result = _raw(modal_app.train_wf_tree_market_challenger)(_slot_payload(slot, market_blocks()))
     alias = mc.LIFECYCLE_SLOTS[slot]["payload_config"]["oof_model_alias"]
     assert not result.get("error"), result
     from app.oof_challengers import challenger_metric
@@ -326,7 +338,7 @@ def test_tree_challenger_smoke_writes_only_its_alias(monkeypatch, slot):
     assert result["market_conditioner"]["arm"] == mc.LIFECYCLE_SLOTS[slot]["payload_config"]["market_conditioner_arm"]
 
 
-@pytest.mark.parametrize("slot", ["tabm_mkt9", "tabm_mkt0"])
+@pytest.mark.parametrize("slot", ["tabm_mkt9", "tabm_mkt0", "tabm_mkt16"])
 def test_tabm_challenger_smoke_writes_only_its_alias(monkeypatch, slot):
     import modal_app
     from app import tabm_training
@@ -337,7 +349,7 @@ def test_tabm_challenger_smoke_writes_only_its_alias(monkeypatch, slot):
     monkeypatch.setattr(modal_app, "_prepare_training_input_cache_for_payload", lambda payload: {"status": "skipped"})
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "f" * 40)
     data = panel()
-    payload = {**_slot_payload(slot, {"history": history_block()}), "epochs": 1,
+    payload = {**_slot_payload(slot, market_blocks()), "epochs": 1,
                "tabular_dataset": {**{k: data[k] for k in ("X", "y", "target_returns", "dates", "symbols", "markets",
                                                            "label_known_dates", "sectors")},
                                    "feature_names": list(FEATURES131)}}

@@ -42,16 +42,16 @@
       "role": "market_conditioner",
       "group": "market_risk",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "excluded_with_reason",
+      "reason": "a Worker composite of the other columns, not sealed; it would leak today's D1 state into history"
     },
     {
       "feature_id": "market_risk_level",
       "role": "market_conditioner",
       "group": "market_risk",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "excluded_with_reason",
+      "reason": "a Worker composite of the other columns, not sealed; it would leak today's D1 state into history"
     },
     {
       "feature_id": "us_vix",
@@ -98,72 +98,109 @@
       "role": "market_conditioner",
       "group": "us_credit",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "sealed capture writes None (no historical release vintage); prep would train on 0"
+      "status": "excluded_with_reason",
+      "reason": "FRED OAS is published about t+1 US with no release vintage; the capture writes None and prep would train on 0"
     },
     {
       "feature_id": "us_hy_spread_chg",
       "role": "market_conditioner",
       "group": "us_credit",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "sealed capture writes None (no historical release vintage); prep would train on 0"
+      "status": "excluded_with_reason",
+      "reason": "FRED OAS is published about t+1 US with no release vintage; the capture writes None and prep would train on 0"
     },
     {
       "feature_id": "bull_alignment_pct",
       "role": "market_conditioner",
       "group": "breadth_derived",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "daily_price_full_vintage/close.parquet (raw close; sha = price_capture.checksums.close)",
+      "definition": "share (0-1, not x100) of eligible stocks with MA5 > MA20 > MA60 over the last 60 capture sessions including d; eligible = close > 0 on all 60; null if eligible < 1000 or eligible / universe < 0.8 (Worker marketRisk.ts:281-304)",
+      "universe": "symbols ^[1-9][0-9]{3}$ with close > 0 on d",
+      "worker_difference": "Worker reports x100; payload_builder's 0050 MA5>MA20 0/1 proxy is not used",
+      "null_fill": null
     },
     {
       "feature_id": "limit_down_count",
       "role": "market_conditioner",
       "group": "limit_down",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "official MI_INDEX per day (training_breadth.json + official_breadth/<day>.json), the 股票 column",
+      "definition": "the limit-down count m in the decline cell n(m)",
+      "universe": "TWSE-listed stocks (same column as advance_ratio); no TPEx, no ETF",
+      "worker_difference": "Worker market_risk leaves it null; market_breadth counts close in [0.9,0.905] x open, which is not a limit-down",
+      "fail_closed": "a decline cell without n(m), or no flat row, fails the whole capture_extra block: mkt16 is unsupported, never zero",
+      "null_fill": 0.0
     },
     {
       "feature_id": "limit_down_pct",
       "role": "market_conditioner",
       "group": "limit_down",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "official MI_INDEX per day (training_breadth.json + official_breadth/<day>.json), the 股票 column",
+      "definition": "m / (advance n + decline n + flat n)",
+      "universe": "TWSE-listed stocks (same column as advance_ratio)",
+      "worker_difference": "as limit_down_count",
+      "fail_closed": "as limit_down_count",
+      "null_fill": 0.0
     },
     {
       "feature_id": "adl_value",
       "role": "market_conditioner",
       "group": "adl",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "official MI_INDEX per day (training_breadth.json + official_breadth/<day>.json), the 股票 column",
+      "definition": "sum of (advance - decline) over the last 5 sessions including d (Worker marketRisk.ts:259-274); null before 5 sessions",
+      "universe": "TWSE-listed stocks; the Worker's market_breadth also counts TPEx, so its +/-50 threshold reads differently",
+      "worker_difference": "not payload_builder's cumulative /2000, which depends on where the capture starts",
+      "null_fill": null
     },
     {
       "feature_id": "adl_trend_numeric",
       "role": "market_conditioner",
       "group": "adl",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "official MI_INDEX per day (training_breadth.json + official_breadth/<day>.json), the 股票 column",
+      "definition": "S5 - S1 of the 5-session cumulative series: > 50 -> 1, < -50 -> -1, else 0; null before 5 sessions",
+      "universe": "as adl_value",
+      "worker_difference": "as adl_value",
+      "null_fill": null
     },
     {
       "feature_id": "foreign_consecutive_sell",
       "role": "market_conditioner",
       "group": "foreign_market",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "as foreign_net_5d_market",
+      "definition": "over the same 5 daily nets, from the latest back: each net sell -1; a net buy stops it (latest buy -> 1); zero stops it (Worker marketRisk.ts:203-211)",
+      "universe": "as foreign_net_5d_market",
+      "worker_difference": "as foreign_net_5d_market",
+      "null_fill": null
     },
     {
       "feature_id": "foreign_net_5d_market",
       "role": "market_conditioner",
       "group": "foreign_market",
       "in_formal131": false,
-      "status": "unavailable",
-      "reason": "not in the sealed capture; prep would train on a default constant"
+      "status": "available",
+      "block": "capture_extra",
+      "source": "chip_diversity_full_vintage/foreign_net.parquet (shares; sha = institutional_capture.checksums.foreign_net) x raw close",
+      "definition": "daily net = sum over symbols with both values of foreign net shares x close / 1e8 (100M TWD); sum of the last 5 sessions; null if any of them has symbol coverage < 0.95 or fewer than 5 sessions",
+      "universe": "every symbol with a close and a foreign net value, ETFs included",
+      "worker_difference": "proxy: the Worker sums the official all-market amount table; shares x close is not the traded price and excludes foreign dealers",
+      "null_fill": null
     },
     {
       "feature_id": "advance_ratio",
@@ -211,6 +248,28 @@
       ],
       "feature_count": 129,
       "note": "No market-level column at all."
+    },
+    "mkt16": {
+      "base": "FEATURES131",
+      "add": [
+        "market_return_1d",
+        "market_return_5d",
+        "market_bias_20d",
+        "us_vix",
+        "us_sox_return",
+        "us_gspc_return",
+        "us_dxy_return",
+        "limit_down_count",
+        "limit_down_pct",
+        "adl_value",
+        "adl_trend_numeric",
+        "bull_alignment_pct",
+        "foreign_net_5d_market",
+        "foreign_consecutive_sell"
+      ],
+      "drop": [],
+      "feature_count": 145,
+      "note": "mkt9 plus seven columns derived from the sealed capture files the prep already binds (W4a_missing11 §2.2). null_fill null leaves warm-up days NaN for the trainer's own handling."
     }
   },
   "extension": "A further column joins by declaring it status=available with the block that derives it (history: read_market_history must emit its history_key; other blocks: app.market_conditioner.BLOCK_BUILDERS) and its null_fill, then listing it in an arm's add. Columns without a sealed PIT source stay unavailable.",

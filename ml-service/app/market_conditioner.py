@@ -2,7 +2,7 @@
 
 {LightGBM, ExtraTrees, TabM} x arms declared in data/feature_registry/market_conditioner_contract_v1.json
 (mkt9 = FEATURES131 + the sealed-capture market columns, mkt0 = FEATURES131 without its two market
-columns). They ride app.oof_challengers: aliased fold OOF in GCS, no manifest model_set entry, no
+columns, mkt16 = mkt9 + seven columns derived from the capture's breadth, close and foreign files). They ride app.oof_challengers: aliased fold OOF in GCS, no manifest model_set entry, no
 full-fit, no bundle. FEATURES131, the PIT contract, prep and the release roster are unchanged; the
 block joins by date after the trainer's 131-column check.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -26,7 +27,7 @@ TABM_FUNCTION = "train_tabm_market_challenger"
 BLOCK_FUNCTION = "build_market_conditioner_block"
 # Budget of a challenger run without a gate; the orchestrator always passes one (TAIL_CAP_S bounds it).
 CHALLENGER_BUDGET_S = 10800
-ARMS = ("mkt9", "mkt0")
+ARMS = ("mkt9", "mkt0", "mkt16")
 FAMILIES = (("lgbm", "LightGBM", TREE_FUNCTION), ("et", "ExtraTrees", TREE_FUNCTION), ("tabm", "TabM", TABM_FUNCTION))
 
 
@@ -126,7 +127,184 @@ def build_history_block(bucket, prep_manifest: dict) -> dict:
     return seal_block("history", columns, values, history_sha256=expected, capture_id=proof["capture_id"])
 
 
-BLOCK_BUILDERS = {"history": build_history_block}
+LIMIT_DOWN_CELL = re.compile(r"([0-9,]+)\(([0-9,]+)\)")
+PLAIN_CELL = re.compile(r"([0-9,]+)(?:\(([0-9,]+)\))?")
+BULL_SYMBOL = re.compile(r"[1-9][0-9]{3}")
+ADL_SESSIONS, ADL_TREND_THRESHOLD = 5, 50
+BULL_SESSIONS, BULL_MIN_ELIGIBLE, BULL_MIN_SHARE = 60, 1000, 0.8
+FOREIGN_SESSIONS, FOREIGN_MIN_COVERAGE = 5, 0.95
+
+
+def _int(text: str) -> int:
+    return int(text.replace(",", ""))
+
+
+def parse_limit_down(body: dict, day: str) -> dict:
+    """Official MI_INDEX stock counts; the decline cell must carry its limit-down count as n(m).
+
+    Any other shape (no parentheses, no flat row) fails the whole block: never a silent zero."""
+    tables = [t for t in body.get("tables", []) if t.get("fields") == ["類型", "整體市場", "股票"]]
+    if body.get("stat") != "OK" or body.get("date") != day.replace("-", "") or len(tables) != 1:
+        raise ValueError(f"market_conditioner_breadth_table_invalid:{day}")
+    cells = {}
+    for prefix in ("上漲", "下跌", "持平"):
+        rows = [r for r in tables[0]["data"] if str(r[0]).startswith(prefix)]
+        if len(rows) != 1:
+            raise ValueError(f"market_conditioner_breadth_row_missing:{prefix}:{day}")
+        cells[prefix] = str(rows[0][2]).strip()
+    down = LIMIT_DOWN_CELL.fullmatch(cells["下跌"])
+    up, flat = PLAIN_CELL.fullmatch(cells["上漲"]), PLAIN_CELL.fullmatch(cells["持平"])
+    if not down or not up or not flat or flat[2] is not None:
+        raise ValueError(f"market_conditioner_limit_down_format_unexpected:{day}:{cells['下跌'][:40]}")
+    counts = {"advance": _int(up[1]), "decline": _int(down[1]), "flat": _int(flat[1]), "limit_down": _int(down[2])}
+    if counts["limit_down"] > counts["decline"]:
+        raise ValueError(f"market_conditioner_limit_down_exceeds_decline:{day}")
+    return counts
+
+
+def breadth_columns(counts: dict[str, dict]) -> dict[str, dict]:
+    """limit_down_count/pct (official TWSE stocks), adl_value/adl_trend_numeric (Worker marketRisk.ts:259-274)."""
+    days = sorted(counts)
+    out = {}
+    for i, day in enumerate(days):
+        c = counts[day]
+        total = c["advance"] + c["decline"] + c["flat"]
+        row = {"limit_down_count": float(c["limit_down"]),
+               "limit_down_pct": c["limit_down"] / total if total > 0 else None,
+               "adl_value": None, "adl_trend_numeric": None}
+        if i + 1 >= ADL_SESSIONS:
+            net = [counts[d]["advance"] - counts[d]["decline"] for d in days[i + 1 - ADL_SESSIONS:i + 1]]
+            series = np.cumsum(net)
+            diff = series[-1] - series[0]
+            row["adl_value"] = float(series[-1])
+            row["adl_trend_numeric"] = 1.0 if diff > ADL_TREND_THRESHOLD else (-1.0 if diff < -ADL_TREND_THRESHOLD else 0.0)
+        out[day] = row
+    return out
+
+
+def bull_alignment(days: list[str], symbols: list[str], close: np.ndarray) -> dict[str, float | None]:
+    """Share of 4-digit stocks with MA5 > MA20 > MA60 over the last 60 capture sessions (Worker marketRisk.ts:281-304)."""
+    columns = [i for i, s in enumerate(symbols) if BULL_SYMBOL.fullmatch(str(s))]
+    prices = np.asarray(close, dtype=float)[:, columns]
+    valid = np.isfinite(prices) & (prices > 0)
+    filled = np.where(valid, prices, 0.0)
+    zero = np.zeros((1, prices.shape[1]))
+    count, total = np.vstack([zero, np.cumsum(valid, axis=0)]), np.vstack([zero, np.cumsum(filled, axis=0)])
+    out = {}
+    for i, day in enumerate(days):
+        universe = int(valid[i].sum())
+        if i + 1 < BULL_SESSIONS:
+            out[day] = None
+            continue
+        eligible = (count[i + 1] - count[i + 1 - BULL_SESSIONS]) == BULL_SESSIONS
+        n = int(eligible.sum())
+        if n < BULL_MIN_ELIGIBLE or universe <= 0 or n / universe < BULL_MIN_SHARE:
+            out[day] = None
+            continue
+        ma5, ma20, ma60 = ((total[i + 1] - total[i + 1 - n]) / n for n in (5, 20, 60))
+        out[day] = float(((ma5 > ma20) & (ma20 > ma60) & eligible).sum() / n)
+    return out
+
+
+def foreign_columns(days: list[str], close: np.ndarray, foreign: np.ndarray) -> dict[str, dict]:
+    """Proxy of the Worker's foreign 5-day net (100M TWD) and consecutive-sell count (marketRisk.ts:183-216):
+    foreign net shares x raw close, summed over the market."""
+    prices, shares = np.asarray(close, dtype=float), np.asarray(foreign, dtype=float)
+    traded = np.isfinite(prices) & (prices > 0)
+    both = traded & np.isfinite(shares)
+    daily = []
+    for i in range(len(days)):
+        coverage = both[i].sum() / traded[i].sum() if traded[i].sum() else 0.0
+        daily.append(float(np.sum(np.where(both[i], shares[i] * prices[i], 0.0)) / 1e8)
+                     if coverage >= FOREIGN_MIN_COVERAGE else None)
+    out = {}
+    for i, day in enumerate(days):
+        last = daily[max(0, i + 1 - FOREIGN_SESSIONS):i + 1]
+        if len(last) < FOREIGN_SESSIONS or any(v is None for v in last):
+            out[day] = {"foreign_net_5d_market": None, "foreign_consecutive_sell": None}
+            continue
+        streak = 0
+        for net in reversed(last):
+            if net < 0:
+                streak -= 1
+            elif net > 0:
+                streak = streak or 1
+                break
+            else:
+                break
+        out[day] = {"foreign_net_5d_market": float(sum(last)), "foreign_consecutive_sell": float(streak)}
+    return out
+
+
+def _wide(raw: bytes, expected_sha: str, label: str):
+    import io
+    import polars as pl
+    if not expected_sha or hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise ValueError(f"market_conditioner_capture_checksum_mismatch:{label}")
+    frame = pl.read_parquet(io.BytesIO(raw)).with_columns(pl.col("date").cast(pl.String).str.slice(0, 10)).sort("date")
+    if frame["date"].is_duplicated().any() or frame["date"].null_count():
+        raise ValueError(f"market_conditioner_capture_dates_invalid:{label}")
+    symbols = [c for c in frame.columns if c != "date"]
+    values = frame.select([pl.col(c).cast(pl.Float64, strict=False) for c in symbols]).to_numpy()
+    return frame["date"].to_list(), symbols, values
+
+
+def build_extra_block(bucket, prep_manifest: dict) -> dict:
+    """Seven columns derived from files the prep manifest already binds by sha (W4a_missing11 §2.2)."""
+    from services.daily_history_capture import read_snapshot, unpack
+    price, institutional = prep_manifest.get("price_capture") or {}, prep_manifest.get("institutional_capture") or {}
+    global_capture = prep_manifest.get("global_capture") or {}
+    root = str(price.get("capture_manifest_path") or "").rsplit("/", 1)[0]
+    manifest_raw = bucket.blob(price["capture_manifest_path"]).download_as_bytes()
+    if hashlib.sha256(manifest_raw).hexdigest() != price.get("capture_manifest_sha256"):
+        raise ValueError("market_conditioner_price_manifest_mismatch")
+    manifest = json.loads(manifest_raw)
+    snapshot = read_snapshot(bucket, root, manifest)
+    breadth_raw = bucket.blob(root + "/training_breadth.json").download_as_bytes()
+    if hashlib.sha256(breadth_raw).hexdigest() != global_capture.get("breadth_manifest_sha256"):
+        raise ValueError("market_conditioner_breadth_manifest_mismatch")
+    breadth = json.loads(breadth_raw)
+    if breadth.get("capture_id") != price.get("capture_id"):
+        raise ValueError("market_conditioner_breadth_identity_mismatch")
+    counts = {}
+    for item in breadth.get("sources", []):
+        day = item["date"]
+        data = (unpack(snapshot["breadth"][day]) if snapshot is not None
+                else bucket.blob(root + "/official_breadth/" + day + ".json").download_as_bytes())
+        if hashlib.sha256(data).hexdigest() != item["sha256"] or day in counts:
+            raise ValueError("market_conditioner_breadth_checksum_mismatch")
+        counts[day] = parse_limit_down(json.loads(data), day)
+    days, symbols, close = _wide(bucket.blob(root + "/close.parquet").download_as_bytes(),
+                                 (price.get("checksums") or {}).get("close"), "close")
+    chip_manifest_raw = bucket.blob(institutional["capture_manifest_path"]).download_as_bytes()
+    if (hashlib.sha256(chip_manifest_raw).hexdigest() != institutional.get("capture_manifest_sha256")
+            or institutional.get("capture_id") != price.get("capture_id")):
+        raise ValueError("market_conditioner_institutional_manifest_mismatch")
+    chip_root = institutional["capture_manifest_path"].rsplit("/", 1)[0]
+    fdays, fsymbols, foreign = _wide(bucket.blob(chip_root + "/foreign_net.parquet").download_as_bytes(),
+                                     (institutional.get("checksums") or {}).get("foreign_net"), "foreign_net")
+    day_index, symbol_index = {d: i for i, d in enumerate(fdays)}, {s: i for i, s in enumerate(fsymbols)}
+    aligned = np.full(close.shape, np.nan)
+    rows = [(i, day_index[d]) for i, d in enumerate(days) if d in day_index]
+    cols = [(j, symbol_index[s]) for j, s in enumerate(symbols) if s in symbol_index]
+    if rows and cols:
+        r_out, r_in = map(list, zip(*rows))
+        c_out, c_in = map(list, zip(*cols))
+        aligned[np.ix_(r_out, c_out)] = foreign[np.ix_(r_in, c_in)]
+    per_day = breadth_columns(counts)  # the official session days, as in the history block
+    bull, chips = bull_alignment(days, symbols, close), foreign_columns(days, close, aligned)
+    for day, row in per_day.items():
+        row.update(chips.get(day) or {}, bull_alignment_pct=bull.get(day))
+    declared = _declared()
+    columns = [name for name, row in declared.items() if row.get("status") == "available" and row.get("block") == "capture_extra"]
+    values = {day: [per_day[day].get(name) for name in columns] for day in sorted(per_day)}
+    return seal_block("capture_extra", columns, values, capture_id=price.get("capture_id"),
+                      inputs={"breadth_manifest_sha256": global_capture.get("breadth_manifest_sha256"),
+                              "close_sha256": price["checksums"]["close"],
+                              "foreign_net_sha256": institutional["checksums"]["foreign_net"]})
+
+
+BLOCK_BUILDERS = {"history": build_history_block, "capture_extra": build_extra_block}
 
 
 def build_blocks(bucket, prep_manifest: dict) -> dict:
@@ -177,7 +355,8 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
             raise ValueError(f"market_conditioner_block_checksum_mismatch:{source}")
         block_shas[source] = block["block_sha256"]
         position = block["columns"].index(name)
-        fill = float(declared[name].get("null_fill", 0.0))
+        fill = declared[name].get("null_fill", 0.0)
+        fill = math.nan if fill is None else float(fill)  # null: the trainer's own NaN handling
         rows = [block["values"].get(day) for day in unique_days]
         covered &= np.asarray([row is not None for row in rows], dtype=bool)
         values = [None if row is None else row[position] for row in rows]

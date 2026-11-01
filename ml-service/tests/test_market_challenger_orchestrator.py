@@ -19,7 +19,7 @@ import pytest
 
 from app import market_conditioner as mc
 from app.formal_feature_contract import R33_PROFILE, semantic_for_profile
-from tests.test_market_conditioner import DAYS, _raw, history_block
+from tests.test_market_conditioner import DAYS, _raw, extra_block, history_block
 
 TARGET = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 SHA = "f" * 40
@@ -172,7 +172,7 @@ def install(monkeypatch, clock, *, windows=WINDOWS, tabm_failures=None, tree_fai
     monkeypatch.setattr(publisher, "publish_oof_manifest", publish)
 
     async def blocks(payload):
-        return {"history": history_block()}
+        return {"history": history_block(), "capture_extra": extra_block()}
     fakes = {"train_wf_hmm_window": champion(clock, "hmm", 0.0),
              "train_wf_tree_window": champion(clock, "tree", 0.05),
              "train_tabm_universal": champion(clock, "train_tabm_universal", 0.05),

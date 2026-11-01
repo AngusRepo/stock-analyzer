@@ -2740,7 +2740,7 @@ def build_market_conditioner_block(payload: dict) -> dict:
     memory=8192,         # apply_block copies the float64 prep matrix (~1.8 GB on R32) twice.
     timeout=3600,
     scaledown_window=60,
-    max_containers=21,   # 4 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
+    max_containers=21,   # 6 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
 )
 def train_wf_tree_market_challenger(payload: dict) -> dict:
     """One tree model, one market arm, one fold; OOF under the slot alias."""

@@ -70,14 +70,14 @@ class Clock:
     """Start and end of every fake call on one clock; in-flight and peak TabM challenger inputs; cancels."""
 
     def __init__(self):
-        self.t0, self.calls, self.cancels = time.monotonic(), [], []
+        self.t0, self.calls, self.cancels, self.probes = time.monotonic(), [], [], []
         self.active, self.peak = 0, 0
 
     def now(self):
         return time.monotonic() - self.t0
 
 
-def champion(clock, name, seconds, fail=lambda payload: False):
+def champion(clock, name, seconds, fail=lambda payload: False, backlog=lambda clock: 0):
     async def aio(payload):
         start = clock.now()
         await asyncio.sleep(seconds(payload) if callable(seconds) else seconds)
@@ -85,7 +85,11 @@ def champion(clock, name, seconds, fail=lambda payload: False):
         if fail(payload):
             raise RuntimeError(f"{name} failed")
         return {"error": "fake_fold"}
-    return SimpleNamespace(remote=SimpleNamespace(aio=aio))
+
+    async def stats():
+        clock.probes.append(clock.now())
+        return SimpleNamespace(backlog=backlog(clock))
+    return SimpleNamespace(remote=SimpleNamespace(aio=aio), get_current_stats=SimpleNamespace(aio=stats))
 
 
 def challenger(clock, name, seconds, raise_for=(), counted=False):
@@ -117,7 +121,7 @@ def challenger(clock, name, seconds, raise_for=(), counted=False):
     return SimpleNamespace(spawn=SimpleNamespace(aio=spawn))
 
 
-def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False):
+def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False, backlog=lambda clock: 0):
     import google.cloud.storage as storage
     import modal_app
     import app.oof_artifact_recovery as recovery
@@ -129,6 +133,7 @@ def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False
     monkeypatch.setattr(modal_app, "_get_gcs_bucket_name", lambda: "b")
     monkeypatch.setattr(modal_app, "_load_verified_oof_resume_windows", lambda *a, **k: ({}, None))
     monkeypatch.setattr(recovery, "recover_completed_oof_windows", lambda **k: {})
+    monkeypatch.setattr(mc, "BACKLOG_POLL_S", 0.01)
 
     def publish(bucket, manifest):
         published.update(manifest=manifest, at=clock.now())
@@ -144,7 +149,8 @@ def install(monkeypatch, clock, *, tabm_raise=(), gnn_fail=lambda payload: False
                                                        lambda p: 0.1 + 0.1 * p["window_id"], fail=gnn_fail),
              "train_patchtst_universal": champion(clock, "train_patchtst_universal", 0.05),
              "train_itransformer_universal": champion(clock, "train_itransformer_universal", 0.05),
-             "train_timexer_universal": champion(clock, "train_timexer_universal", lambda p: 0.8 + 0.1 * p["window_id"]),
+             "train_timexer_universal": champion(clock, "train_timexer_universal", lambda p: 0.8 + 0.1 * p["window_id"],
+                                                 backlog=backlog),
              "train_wf_tree_market_challenger": challenger(clock, "tree_challenger", 0.01),
              "train_tabm_market_challenger": challenger(clock, "tabm_challenger", 0.2, tabm_raise, counted=True),
              "build_market_conditioner_block": SimpleNamespace(remote=SimpleNamespace(aio=blocks))}
@@ -257,3 +263,35 @@ def test_a_window_that_raises_fails_the_cohort_and_leaves_no_challenger_input_ru
     assert spawned and clock.active == 0
     assert sorted(finished + [key for key, _ in cancelled]) == sorted(spawned)
     assert cancelled and all(terminate for _, terminate in cancelled)
+
+
+def test_a_queued_timexer_input_holds_the_next_spawn_until_it_has_an_l4(monkeypatch):
+    def backlog(clock):  # another workspace job held the L4 one TimeXer input waits for, 0.2 s past the gate
+        return 1 if clock.now() < max(ends(clock, GATED_GPU)) + 0.2 else 0
+    clock = Clock()
+    install(monkeypatch, clock, backlog=backlog)
+    run()
+    gated = max(ends(clock, GATED_GPU))
+    spawns = sorted(start for name, _, start, _ in clock.calls if name == "tabm_challenger:spawn")
+    assert spawns and spawns[0] >= gated + 0.2 and clock.peak == 1
+    assert len([t for t in clock.probes if t < gated + 0.2]) > 1  # re-checked while waiting, not spawned
+    assert len(clock.probes) >= len(spawns)  # every spawn was preceded by a check
+
+
+def test_unknown_timexer_stats_never_spawn_and_never_touch_the_champion(monkeypatch):
+    def backlog(clock):
+        raise RuntimeError("stats unavailable")
+    clock = Clock()
+    published = install(monkeypatch, clock, backlog=backlog)
+    run()
+    held = published["manifest"]
+    assert clock.probes and not [c for c in clock.calls if c[0] == "tabm_challenger:spawn"]
+    tabm = [m for w in held["windows"] for name, m in w["challenger_metrics"].items() if name.startswith("tabm_")]
+    reasons = sorted(m["reason"].removeprefix("market_challenger_budget_exceeded:") for m in tabm)
+    # The first ticket holds the turn at the backlog check; the rest wait for it.
+    assert reasons == ["waiting_for_champion_backlog:champion_done"] + [
+        "waiting_for_champion_gpu:champion_done"] * (len(mc.ARMS) * len(WINDOWS) - 1)
+    assert published["at"] - max(ends(clock, {"train_timexer_universal"})) < SLACK
+    published = install(monkeypatch, Clock())
+    run(challenger_models_disabled=True)
+    assert champion_view(held) == champion_view(published["manifest"])

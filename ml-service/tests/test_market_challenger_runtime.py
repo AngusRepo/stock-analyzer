@@ -1,5 +1,5 @@
 """W4(a) challenger runtime: cancelled at the budget, L4 challengers one at a time after the champion's
-non-TimeXer GPU calls."""
+non-TimeXer GPU calls and only while no TimeXer input waits for an L4."""
 import asyncio
 import re
 from pathlib import Path
@@ -46,6 +46,10 @@ async def ready_blocks():
     return {"history": history_block()}
 
 
+async def no_backlog():
+    return 0
+
+
 async def settle():
     for _ in range(200):
         await asyncio.sleep(0)
@@ -54,7 +58,7 @@ async def settle():
 def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_order():
     async def scenario():
         loop = asyncio.get_running_loop()
-        trainer, gate = FakeTrainer(), mc.GpuGate(2)
+        trainer, gate = FakeTrainer(), mc.GpuGate(2, backlog=no_backlog)
         blocks = asyncio.ensure_future(ready_blocks())
         gpu = {w: loop.create_future() for w in (1, 2)}
         tree = {w: loop.create_future() for w in (1, 2)}
@@ -86,7 +90,7 @@ def test_l4_challengers_start_after_every_gated_gpu_call_one_at_a_time_in_arm_or
 def test_l4_challengers_never_outlive_the_champion():
     async def scenario():
         loop = asyncio.get_running_loop()
-        trainer, gate = FakeTrainer(), mc.GpuGate(1)
+        trainer, gate = FakeTrainer(), mc.GpuGate(1, backlog=no_backlog)
         blocks = asyncio.ensure_future(ready_blocks())
         gpu, tree = loop.create_future(), loop.create_future()
         gate.track(1, gpu=[gpu], champion=[gpu, tree])
@@ -108,7 +112,7 @@ def test_l4_challengers_never_outlive_the_champion():
 
 def test_l4_challenger_is_not_spawned_when_the_champion_finishes_first():
     async def scenario():
-        trainer, gate = FakeTrainer(), mc.GpuGate(2)
+        trainer, gate = FakeTrainer(), mc.GpuGate(2, backlog=no_backlog)
         gate.track(1, gpu=[], champion=[])  # window 2's GPU calls never finish; the windows return regardless
         task = asyncio.ensure_future(mc.run_challenger(
             trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
@@ -117,6 +121,50 @@ def test_l4_challenger_is_not_spawned_when_the_champion_finishes_first():
         gate.champion_done.set()
         result = await asyncio.wait_for(task, timeout=1)
         assert result == {"unsupported": "market_challenger_budget_exceeded:waiting_for_champion_gpu:champion_done"}
+        assert trainer.spawned() == []
+    asyncio.run(scenario())
+
+
+def test_no_spawn_while_a_timexer_input_waits_for_an_l4(monkeypatch):
+    """Minor-T2: another workspace GPU job can leave a TimeXer input queued when the gate opens."""
+    monkeypatch.setattr(mc, "BACKLOG_POLL_S", 0.01)
+
+    async def scenario():
+        queued = {"n": 2}
+
+        async def backlog():
+            return queued["n"]
+        trainer, gate = FakeTrainer(), mc.GpuGate(1, backlog=backlog)
+        gate.track(1, gpu=[], champion=[asyncio.get_running_loop().create_future()])
+        task = asyncio.ensure_future(mc.run_challenger(
+            trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((0, 1))))
+        await asyncio.sleep(0.1)
+        assert gate.gpu_free.is_set() and trainer.spawned() == []
+        queued["n"] = 0  # the TimeXer input got its L4
+        await asyncio.sleep(0.1)
+        assert trainer.spawned() == ["mkt9:w1"]
+        trainer.calls["mkt9:w1"].finish.set()
+        assert (await asyncio.wait_for(task, timeout=1)) == {"model": "mkt9:w1"}
+    asyncio.run(scenario())
+
+
+def test_an_unknown_backlog_never_spawns(monkeypatch):
+    monkeypatch.setattr(mc, "BACKLOG_POLL_S", 0.01)
+
+    async def scenario():
+        async def backlog():
+            raise RuntimeError("stats unavailable")
+        trainer, gate = FakeTrainer(), mc.GpuGate(1, backlog=backlog)
+        gate.track(1, gpu=[], champion=[asyncio.get_running_loop().create_future()])
+        task = asyncio.ensure_future(mc.run_challenger(
+            trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((0, 1))))
+        await asyncio.sleep(0.1)
+        assert trainer.spawned() == []
+        gate.champion_done.set()
+        result = await asyncio.wait_for(task, timeout=1)
+        assert result == {"unsupported": "market_challenger_budget_exceeded:waiting_for_champion_backlog:champion_done"}
         assert trainer.spawned() == []
     asyncio.run(scenario())
 

@@ -199,9 +199,11 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
 
 # Champion GPU families the gate does not wait for (Wei 11/1). The 7 TimeXer folds hold their L4s until the
 # end of the cohort; once every other champion GPU call is done they are the only champion L4s (7 + 1
-# challenger = 8 of the workspace's 10, 2 left for a TimeXer retry). Every other family, including one
-# added later, is waited for.
+# challenger = 8 of the workspace's 10; the other 2 serve a TimeXer input Modal reschedules after a
+# preemption, since the champion sets no retries). Every other family, including one added later, is waited for.
 GATE_EXEMPT_GPU_FAMILIES = ("TimeXer",)
+# Re-check interval while a TimeXer input still waits for an L4 (other workspace GPU jobs can hold one).
+BACKLOG_POLL_S = 15
 
 
 class GpuGate:
@@ -211,11 +213,12 @@ class GpuGate:
     champion_done: every window's champion calls are done; gated challengers are cancelled then, so they
     never extend the cohort. One challenger input is in flight at a time (turn held until it settles).
     Per window is not enough: a challenger started after one window's GPU calls would still take an L4
-    from another window's queued fold."""
+    from another window's queued fold. `backlog` counts the exempt family's inputs still waiting for an L4."""
 
-    def __init__(self, windows: int):
+    def __init__(self, windows: int, *, backlog):
         import asyncio
         self.gpu_free, self.champion_done = asyncio.Event(), asyncio.Event()
+        self._backlog = backlog
         self._left = {"gpu": windows, "champion": windows}
         self._tracked: set = set()
         self._tickets: list[tuple] = []
@@ -259,6 +262,18 @@ class GpuGate:
         async with self._turn:
             self._spawned.add(ticket)
             self._turn.notify_all()
+
+    async def no_backlog(self) -> None:
+        """Returns once no TimeXer input waits for an L4; a stats error counts as waiting (the challenger, never
+        the champion, is held)."""
+        import asyncio
+        while True:
+            try:
+                if await self._backlog() == 0:
+                    return
+            except Exception as exc:  # noqa: BLE001
+                print(f"[MarketChallenger] champion backlog unknown, not spawning: {type(exc).__name__}: {exc}")
+            await asyncio.sleep(BACKLOG_POLL_S)
 
 
 GPU_CHALLENGER_FUNCTIONS = {TABM_FUNCTION}
@@ -308,6 +323,8 @@ async def run_challenger(trainer, slot_payload: dict, blocks_task, *, budget_s: 
             ok, _ = await _until(gate.gpu_free.wait(), closed, deadline)
             if not ok or not (await _until(gate.turn(ticket), closed, deadline))[0]:
                 return _over("waiting_for_champion_gpu")
+            if not (await _until(gate.no_backlog(), closed, deadline))[0]:  # checked before every spawn
+                return _over("waiting_for_champion_backlog")
         call = await trainer.spawn.aio({**slot_payload, "market_conditioner": conditioner})
         settled = False
         try:

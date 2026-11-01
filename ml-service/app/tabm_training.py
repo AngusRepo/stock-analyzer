@@ -256,8 +256,11 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
     feature_semantic = payload_semantic(payload)
     if feature_semantic == FEATURE131_SEMANTIC and list(dataset.feature_names) != list(FEATURES131):
         raise ValueError("formal131_training_inventory_mismatch")
+    base_finite = None
     if market_conditioner is not None:
         from .market_conditioner import apply_block
+        # The champion's row set: market columns may be NaN by contract and go to _robust_standardize.
+        base_finite = np.isfinite(dataset.X).all(axis=1)
         dataset.X, dataset.feature_names, receipt = apply_block(
             dataset.X, dataset.dates, dataset.feature_names, market_conditioner["conditioner"])
         market_conditioner = {**market_conditioner, "receipt": receipt}
@@ -267,7 +270,8 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         dataset.markets,
     )
     from .full_fit_scope import row_mask
-    finite_mask = (np.isfinite(dataset.y) & np.isfinite(dataset.target_returns) & np.isfinite(dataset.X).all(axis=1)
+    finite_x = np.isfinite(dataset.X).all(axis=1) if base_finite is None else base_finite
+    finite_mask = (np.isfinite(dataset.y) & np.isfinite(dataset.target_returns) & finite_x
                    & row_mask(payload, dataset.dates, dataset.label_known_dates))
     x_raw = np.asarray(dataset.X[finite_mask], dtype=np.float32)
     y = np.clip(np.asarray(dataset.y[finite_mask], dtype=np.float32).reshape(-1), 0.0, 1.0)

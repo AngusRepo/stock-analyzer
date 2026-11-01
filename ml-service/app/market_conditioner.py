@@ -132,7 +132,7 @@ PLAIN_CELL = re.compile(r"([0-9,]+)(?:\(([0-9,]+)\))?")
 BULL_SYMBOL = re.compile(r"[1-9][0-9]{3}")
 ADL_SESSIONS, ADL_TREND_THRESHOLD = 5, 50
 BULL_SESSIONS, BULL_MIN_ELIGIBLE, BULL_MIN_SHARE = 60, 1000, 0.8
-FOREIGN_SESSIONS, FOREIGN_MIN_COVERAGE = 5, 0.95
+FOREIGN_SESSIONS, FOREIGN_MIN_COVERAGE = 5, 0.90  # ~116 ETF/preferred symbols a day are vendor null
 
 
 def _int(text: str) -> int:

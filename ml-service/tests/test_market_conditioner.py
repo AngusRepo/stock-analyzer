@@ -382,3 +382,43 @@ def test_champion_tabm_oof_is_unchanged_with_challengers_off(monkeypatch):
         "tabular_dataset": {**{k: data[k] for k in ("X", "y", "target_returns", "dates", "symbols", "markets",
                                                     "label_known_dates", "sectors")}, "feature_names": list(FEATURES131)}})
     assert _oof_digest(bucket.values["universal/oof/c/w1/tabm.npz"]) == CHAMPION_TABM_OOF
+
+
+# Market columns may be NaN by contract (warm-up, thin foreign coverage); TabM keeps the champion's rows.
+def test_tabm_challenger_oof_rows_equal_the_champion(monkeypatch):
+    import modal_app
+    from app import tabm_training
+    monkeypatch.setattr(tabm_training, "collect_prep_lineage", lambda *a, **k: {})
+    monkeypatch.setattr(modal_app, "_setup_env", lambda: None)
+    monkeypatch.setattr(modal_app, "_prepare_training_input_cache_for_payload", lambda payload: {"status": "skipped"})
+    monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "f" * 40)
+
+    def dataset():
+        data = panel()
+        data["X"][50 * len(SYMBOLS) + 3, 7] = np.nan  # a test row the champion itself drops
+        return {**{k: data[k] for k in ("X", "y", "target_returns", "dates", "symbols", "markets",
+                                         "label_known_dates", "sectors")}, "feature_names": list(FEATURES131)}
+
+    def rows(bucket, name):
+        npz = np.load(io.BytesIO(bucket.values[f"universal/oof/c/w1/{name}.npz"]), allow_pickle=True)
+        return list(zip(npz["dates"].tolist(), npz["symbols"].tolist()))
+
+    champion = Bucket()
+    monkeypatch.setattr(tabm_training, "_get_bucket", lambda: champion)
+    tabm_training.train_tabm_universal({
+        "window_id": 1, "train_start": DAYS[0], "train_end": DAYS[39], "test_start": DAYS[45], "test_end": DAYS[59],
+        "feature_semantic_version": FEATURE131_SEMANTIC, "generation_mode": "purged_oof", "cohort_id": "c",
+        "fold_id": "w1", "output_model_version": "c-w1", "gcs_prefix": "universal", "epochs": 1,
+        "feature_release_mode": "approved_full131_v1", "tabular_dataset": dataset()})
+    challenger = Bucket()
+    monkeypatch.setattr(tabm_training, "_get_bucket", lambda: challenger)
+    columns = [n for n, row in mc._declared().items() if row.get("block") == "capture_extra"]
+    nulls = {*DAYS[:5], DAYS[50], DAYS[52]}
+    values = {d: [None if d in nulls else float(i % 7 + j) for j in range(len(columns))] for i, d in enumerate(DAYS)}
+    blocks = {"history": history_block(), "capture_extra": mc.seal_block("capture_extra", columns, values)}
+    result = _raw(modal_app.train_tabm_market_challenger)(
+        {**_slot_payload("tabm_mkt16", blocks), "epochs": 1, "tabular_dataset": dataset()})
+    assert not result.get("error"), result
+    assert result["market_conditioner"]["null_filled_days"]["foreign_net_5d_market"] == 7
+    champion_rows = rows(champion, "tabm")
+    assert len(champion_rows) == 15 * len(SYMBOLS) - 1 and rows(challenger, "tabm_mkt16") == champion_rows

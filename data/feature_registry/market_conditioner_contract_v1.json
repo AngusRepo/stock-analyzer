@@ -197,7 +197,7 @@
       "status": "available",
       "block": "capture_extra",
       "source": "chip_diversity_full_vintage/foreign_net.parquet (shares; sha = institutional_capture.checksums.foreign_net) x raw close",
-      "definition": "daily net = sum over symbols with both values of foreign net shares x close / 1e8 (100M TWD); sum of the last 5 sessions; null if any of them has symbol coverage < 0.95 or fewer than 5 sessions",
+      "definition": "daily net = sum over symbols with both values of foreign net shares x close / 1e8 (100M TWD); sum of the last 5 sessions; null if fewer than 5 sessions or any of them has symbol coverage < 0.90. Why 0.90: in capture finlab-v4-daily-20261030 about 116 ETF/preferred symbols a day are vendor null in foreign_net.parquet, so median coverage is 0.945; 0.90 passes 723/727 days and 715/723 5-day windows and still rejects the 0.78 days (0.95 passed 79/723 windows)",
       "universe": "every symbol with a close and a foreign net value, ETFs included",
       "worker_difference": "proxy: the Worker sums the official all-market amount table; shares x close is not the traded price and excludes foreign dealers",
       "null_fill": null

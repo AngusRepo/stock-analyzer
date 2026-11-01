@@ -60,16 +60,21 @@ def _parquet(days, symbols, values):
     return out.getvalue()
 
 
-def capture(n=130, end=None, bodies=None, seed=3):
-    """A sealed capture (price manifest, MI_INDEX per day, close, foreign_net) truncated at `end`."""
+def capture(n=130, end=None, bodies=None, seed=3, vendor_null=0, thin_days=()):
+    """A sealed capture (price manifest, MI_INDEX per day, close, foreign_net) truncated at `end`.
+
+    vendor_null symbols a day carry no foreign value (ETF/preferred in the real capture); thin_days drop 22%."""
     rng = np.random.default_rng(seed)
     days = sessions(n)
-    symbols = [str(1101 + j) for j in range(40)] + ["0050", "12345"]
+    symbols = [str(1101 + j) for j in range(98)] + ["0050", "12345"]
     close = 50 * np.exp(np.cumsum(rng.normal(0, 0.03, size=(n, len(symbols))), axis=0))
     close[10, 0] = close[70, 1] = np.nan  # suspended days: out of the bull window, not a gap in the market
     foreign = rng.normal(0, 2e6, size=close.shape).round()
     counts = [(int(a), int(d), int(f), int(m)) for a, d, f, m in zip(
         rng.integers(200, 700, n), rng.integers(200, 700, n), rng.integers(50, 120, n), rng.integers(0, 15, n))]
+    for i in range(n):
+        dropped = int(0.22 * len(symbols)) if i in thin_days else vendor_null
+        foreign[i, rng.permutation(len(symbols))[:dropped]] = np.nan
     keep = n if end is None else days.index(end) + 1
     days, close, foreign, counts = days[:keep], close[:keep], foreign[:keep], counts[:keep]
     values, sources = {}, []
@@ -96,7 +101,7 @@ def capture(n=130, end=None, bodies=None, seed=3):
 
 @pytest.fixture(autouse=True)
 def small_market(monkeypatch):
-    # 40 fixture stocks stand in for the ~1000 the Worker requires.
+    # 98 fixture stocks stand in for the ~1000 the Worker requires.
     monkeypatch.setattr(mc, "BULL_MIN_ELIGIBLE", 20)
 
 
@@ -190,12 +195,12 @@ def test_foreign_needs_five_covered_sessions():
     days = sessions(6)
     close = np.ones((6, 20))
     shares = np.ones((6, 20)) * 1e8
-    shares[2, :2] = np.nan  # 18 of 20 traded symbols carry a foreign value: coverage 0.9
+    shares[2, :3] = np.nan  # 17 of 20 traded symbols carry a foreign value: coverage 0.85
     out = mc.foreign_columns(days, close, shares)
     assert out[days[3]]["foreign_net_5d_market"] is None  # fewer than five sessions
     assert out[days[4]]["foreign_net_5d_market"] is None and out[days[5]]["foreign_net_5d_market"] is None
-    shares[2, :2] = 1e8
-    assert mc.foreign_columns(days, close, shares)[days[5]]["foreign_net_5d_market"] == 100.0
+    shares[2, 1:3] = 1e8  # 19 of 20: coverage 0.95
+    assert mc.foreign_columns(days, close, shares)[days[5]]["foreign_net_5d_market"] == 99.0
 
 
 def test_build_extra_block_seals_the_seven_columns():
@@ -238,6 +243,23 @@ def test_pit_prefix_invariance_day_by_day():
                mc.foreign_columns(days[:k], close[:k], foreign[:k]))
         for whole, part in zip(full, cut):
             assert part[days[k - 1]] == whole[days[k - 1]]
+
+
+# Real capture shape (finlab-v4-daily-20261030): ~5.5% of symbols a day are vendor null in foreign_net,
+# median coverage 0.945, with rare 0.78 days (here 6% and 22%). mkt16 must still be supported.
+def test_vendor_null_foreign_values_keep_mkt16_supported(monkeypatch):
+    from tests.test_market_conditioner import history_block
+    bucket, prep, days = capture(vendor_null=6, thin_days={90})
+    monkeypatch.setitem(mc.BLOCK_BUILDERS, "history", lambda b, m: history_block(days))
+    blocks = mc.build_blocks(bucket, prep)
+    assert not blocks["capture_extra"].get("error"), blocks["capture_extra"]
+    assert mc.conditioner_for_arm("mkt16", blocks)[1] is None
+    block = blocks["capture_extra"]
+    net = block["columns"].index("foreign_net_5d_market")
+    missing = [d for d in days if block["values"][d][net] is None]
+    assert missing == days[:4] + days[90:95]  # warm-up, and the five windows holding the 0.78 day
+    monkeypatch.setattr(mc, "FOREIGN_MIN_COVERAGE", 0.95)
+    assert "_column:foreign_" in mc.build_blocks(bucket, prep)["capture_extra"]["error"]  # the old 0.95 kills mkt16
 
 
 @pytest.mark.parametrize("tamper, error", [

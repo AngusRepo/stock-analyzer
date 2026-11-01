@@ -37,7 +37,7 @@ import {
 import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
 import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
-import { createPostVerifyTaskCheckpoints, postVerifyControllerResponse, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
+import { POST_VERIFY_RETRY_SAFE_TASKS, createPostVerifyTaskCheckpoints, postVerifyControllerResponse, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
 import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
 import { capturePostVerifyMetricEvidence, verifyPostVerifyMetricEvidence } from './postVerifyMetricEvidence'
 import { enablePostVerifyAdaptiveEvidence, capturePostVerifyAdaptiveEvidence, verifyPostVerifyAdaptiveEvidence } from './postVerifyAdaptiveEvidence'
@@ -799,7 +799,7 @@ export async function runPostVerifyCallbackChain(
       }
     }, { timeoutMs: dependencies.taskTimeoutMs ?? options.timeoutMs ?? 180_000,
       critical:options.critical,
-      retrySafe: ['price-horizon-projection', 'strategy-multi-horizon-outcomes', 'linucb-reward-ledger'].includes(task),
+      retrySafe: POST_VERIFY_RETRY_SAFE_TASKS.includes(task),
       verifyResult:dependencies.taskRunner?undefined:async result=>{
         if(['price-horizon-projection','strategy-multi-horizon-outcomes'].includes(task))return verifyPostVerifyLabelEvidence(env,result.evidence as any)
         if(['strategy-evidence-current','strategy-evidence-metric-backfill'].includes(task))return verifyPostVerifyMetricEvidence(env,result.evidence as any)

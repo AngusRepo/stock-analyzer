@@ -9,6 +9,11 @@ import { SELECTION_REFERENCE_CONTRACT_VERSION as contract } from './selectionRef
 import { STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION as outcomeSchema } from './strategyMultiHorizonOutcomes'
 
 const businessDate='2026-10-16', signal='2026-10-01', sha='a'.repeat(40)
+// Rows proven row by row in a table (v2: one paged proof per key, plus GROUP BY count entries that are skipped).
+const rowProof=(proof:{tables:Array<Record<string,any>>},table:string)=>{
+  const proofs=proof.tables.filter(t=>t.table===table&&t.kind!=='group-count')
+  return proofs.length?{rows:proofs.reduce((sum,t)=>sum+Number(t.rows),0)}:undefined
+}
 function fixture(size=3) {
   const sql=new DatabaseSync(':memory:')
   const extract=(file:string,table:string)=>{
@@ -73,7 +78,7 @@ function fixture(size=3) {
     deferredSignalDates:0,candidateCount:size*3,materializedCount:size*3,rejectedCount:0,status:'success' as const,summary:'terminal',
     processedHorizonKeys:size?[3,5,10].map(horizonDays=>({signalDate:signal,horizonDays})):[]}
   const outcomes={asOfDate:businessDate,referenceRows:size,horizons:[3,5,10].map(horizonDays=>({horizonDays,matureRows:size,
-    pendingRows:0,unavailableRows:0,persistedRows:size,retiredRows:0})),summary:'terminal'}
+    pendingRows:0,unavailableRows:0,persistedRows:size,writtenRows:size,retiredRows:0})),summary:'terminal'}
   const input={businessDate,canonicalRunId:'finlab-A',projectionRunId:'projection-A',producerResult:{canonical,multiHorizon,outcomes}}
   return{sql,env,input,root,queries:()=>queries,writes:()=>writes}
 }
@@ -81,13 +86,29 @@ function fixture(size=3) {
 test('formal label/status/run contents are paged and conserved without per-row RPC',async()=>{
   const f=fixture(1200),input={...f.input,task:'price-horizon-projection' as const}
   const proof=await capturePostVerifyLabelEvidence(f.env,input)
-  assert.equal(proof.tables.find(t=>t.table==='price_horizon_labels_v1')?.rows,1200)
-  assert.equal(proof.tables.find(t=>t.table==='price_horizon_labels_v2')?.rows,3600)
+  assert.equal(rowProof(proof,'price_horizon_labels_v1')?.rows,1200)
+  assert.equal(rowProof(proof,'price_horizon_labels_v2')?.rows,3600)
   assert.ok(f.queries()<40,`bounded page queries=${f.queries()}`)
   assert.equal(f.writes(),0)
   assert.equal(await verifyPostVerifyLabelEvidence(f.env,JSON.parse(JSON.stringify(proof))),true)
   f.sql.exec('UPDATE price_horizon_labels_v1 SET exit_raw_close=12 WHERE stock_id=1')
   assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),false,'same PK/count but different actual content')
+  f.sql.close()
+})
+
+test('multi-page proofs seek from the cursor and still detect a change on a later page',async()=>{
+  const f=fixture(4200),input={...f.input,task:'price-horizon-projection' as const}
+  const prepare=f.env.DB.prepare.bind(f.env.DB), pages:string[]=[]
+  f.env.DB.prepare=(query:string)=>{if(/LIMIT \d+$/.test(query.trim()))pages.push(query);return prepare(query)}
+  const proof=await capturePostVerifyLabelEvidence(f.env,input)
+  const labels=(proof.tables as Array<Record<string,any>>).filter(t=>t.table==='price_horizon_labels_v1'&&t.kind!=='group-count')
+  assert.deepEqual([labels.reduce((n,t)=>n+Number(t.rows),0),labels.reduce((n,t)=>n+Number(t.pages),0)],[4200,2])
+  const later=pages.filter(query=>query.includes('FROM price_horizon_labels_v1')).map(query=>query.replace(/\s+/g,' '))
+  assert.equal(later.length,2)
+  assert.match(later[1],/WHERE stock_id>=\? AND \(stock_id,price_date\) > \(\?,\?\) AND \(/)
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),true)
+  f.sql.exec('UPDATE price_horizon_labels_v1 SET exit_raw_close=12 WHERE stock_id=4150')
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),false)
   f.sql.close()
 })
 
@@ -103,7 +124,7 @@ test('missing labels and wrong processed provenance reject first capture',async(
 test('outcome contents bind original references, canonical producer and exact producer counts',async()=>{
   const f=fixture(),input={...f.input,task:'strategy-multi-horizon-outcomes' as const}
   const proof=await capturePostVerifyLabelEvidence(f.env,input)
-  assert.equal(proof.tables.find(t=>t.table==='canonical_selection_outcomes_v1')?.rows,9)
+  assert.equal(rowProof(proof,'canonical_selection_outcomes_v1')?.rows,9)
   assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),true)
   f.sql.exec('DELETE FROM canonical_selection_outcomes_v1 WHERE symbol=\'1\' AND horizon_days=3')
   assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),false)
@@ -141,7 +162,7 @@ test('temporarily unavailable price inputs retain old outcomes without inventing
   f.sql.exec('DELETE FROM price_horizon_labels_v2 WHERE stock_id=1 AND horizon_days=3')
   const h=f.input.producerResult.outcomes.horizons[0];h.persistedRows=2;h.matureRows=2;h.unavailableRows=1
   const proof=await capturePostVerifyLabelEvidence(f.env,input)
-  assert.equal(proof.tables.find(t=>t.table==='canonical_selection_outcomes_v1')?.rows,9)
+  assert.equal(rowProof(proof,'canonical_selection_outcomes_v1')?.rows,9)
   assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),true)
   f.sql.close()
 })
@@ -150,7 +171,7 @@ test('legitimate empty products carry explicit empty row checksums, never invent
   const f=fixture(0)
   for(const task of ['price-horizon-projection','strategy-multi-horizon-outcomes'] as const) {
     const proof=await capturePostVerifyLabelEvidence(f.env,{...f.input,task})
-    assert.ok(proof.tables.some(row=>row.empty&&row.rows===0&&row.pages===0&&row.checksum.length===64))
+    assert.ok(proof.tables.some(row=>!('kind' in row)&&row.empty&&row.rows===0&&row.pages===0&&row.checksum.length===64))
     assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),true)
   }
   f.sql.close()

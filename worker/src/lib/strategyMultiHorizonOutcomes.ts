@@ -12,6 +12,12 @@ const DEFAULT_OUTCOME_LOOKBACK_DAYS = 120
 const OUTCOME_ROWS_PER_STATEMENT = 100
 const OUTCOME_BATCH_STATEMENTS = 20
 const OUTCOME_RETIRE_BATCH_STATEMENTS = 100
+const EXISTING_OUTCOME_DATES_PER_QUERY = 10
+const OUTCOME_ADJUSTMENT_SOURCE = 'price_horizon_labels_v2:finlab_primary_canonical_mirror'
+// Stored columns in the order outcomeValues() produces them.
+const STORED_OUTCOME_COLUMNS = ['market_segment', 'sector', 'entry_date', 'exit_date', 'outcome_known_date',
+  'gross_return', 'transaction_cost_bps', 'absolute_return_net', 'benchmark_return_net', 'benchmark_scope',
+  'residual_return_net', 'cross_section_rank', 'adjustment_source', 'reference_contract_version'] as const
 
 type ReferenceRow = {
   signal_date: string
@@ -61,6 +67,7 @@ export type StrategyMultiHorizonOutcomeResult = {
     pendingRows: number
     unavailableRows: number
     persistedRows: number
+    writtenRows: number
     retiredRows: number
   }>
   summary: string
@@ -220,6 +227,41 @@ async function loadPriceOutcomes(
   return output
 }
 
+function outcomeValues(row: MaterializedOutcome, costBps: number): unknown[] {
+  return [row.reference.market_segment, row.reference.sector, row.entryDate, row.exitDate, row.exitDate,
+    row.grossReturn, costBps, row.absoluteReturnNet, row.benchmarkReturnNet, row.benchmarkScope,
+    row.residualReturnNet, row.crossSectionRank, OUTCOME_ADJUSTMENT_SOURCE, row.reference.feature_contract_version]
+}
+
+// A refresh recomputes the whole 120-day window, but stored rows only change
+// when a cohort matures or its inputs move. Rewriting every row cost ~2 minutes
+// of D1 writes per run (122,528 rows on 2026-10-29); unchanged rows are kept.
+export async function unchangedOutcomes(
+  learningDb: D1Database,
+  rows: MaterializedOutcome[],
+  horizonDays: number,
+  costBps: number,
+): Promise<Set<MaterializedOutcome>> {
+  const key = (signalDate: unknown, symbol: unknown, producerRunId: unknown) => JSON.stringify([signalDate, symbol, producerRunId])
+  const expected = new Map(rows.map((row) => [key(row.reference.signal_date, row.reference.symbol, row.reference.producer_run_id), row]))
+  const unchanged = new Set<MaterializedOutcome>()
+  const dates = [...new Set(rows.map((row) => row.reference.signal_date))].sort()
+  for (const group of chunks(dates, EXISTING_OUTCOME_DATES_PER_QUERY)) {
+    const result = await learningDb.prepare(`
+      SELECT signal_date, symbol, producer_run_id, ${STORED_OUTCOME_COLUMNS.join(', ')}
+        FROM canonical_selection_outcomes_v1
+       WHERE signal_date IN (${group.map(() => '?').join(',')})
+         AND horizon_days=? AND label_schema_version=?
+    `).bind(...group, horizonDays, STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION).all<Record<string, unknown>>()
+    for (const stored of result.results ?? []) {
+      const row = expected.get(key(stored.signal_date, stored.symbol, stored.producer_run_id))
+      if (row && outcomeValues(row, costBps).every((value, index) =>
+        (value ?? null) === (stored[STORED_OUTCOME_COLUMNS[index]] ?? null))) unchanged.add(row)
+    }
+  }
+  return unchanged
+}
+
 export async function persistOutcomes(
   learningDb: D1Database,
   rows: MaterializedOutcome[],
@@ -231,12 +273,7 @@ export async function persistOutcomes(
   const statements = chunks(rows, OUTCOME_ROWS_PER_STATEMENT).map((group) => {
     const payload = group.map((row) => [
       row.reference.signal_date, row.reference.symbol, row.reference.producer_run_id,
-      row.horizonDays, STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION,
-      row.reference.market_segment, row.reference.sector, row.entryDate, row.exitDate,
-      row.exitDate, row.grossReturn, costBps, row.absoluteReturnNet,
-      row.benchmarkReturnNet, row.benchmarkScope, row.residualReturnNet,
-      row.crossSectionRank, 'price_horizon_labels_v2:finlab_primary_canonical_mirror',
-      row.reference.feature_contract_version,
+      row.horizonDays, STRATEGY_MULTI_HORIZON_OUTCOME_SCHEMA_VERSION, ...outcomeValues(row, costBps),
     ])
     const values = Array.from({ length: 19 }, (_, index) => `json_extract(value, '$[${index}]')`).join(', ')
     return learningDb.prepare(`
@@ -338,10 +375,12 @@ export async function materializeStrategyMultiHorizonOutcomes(
     }
     const outcomes = neutralize(pending)
     const retiredRows = await retireRejectedOutcomes(targetLearningDb, missing, horizonDays, asOfDate)
-    const persistedRows = await persistOutcomes(targetLearningDb, outcomes, costBps)
-    results.push({ horizonDays, matureRows: outcomes.length, pendingRows, unavailableRows, persistedRows, retiredRows })
+    const unchanged = await unchangedOutcomes(targetLearningDb, outcomes, horizonDays, costBps)
+    const writtenRows = await persistOutcomes(targetLearningDb, outcomes.filter((row) => !unchanged.has(row)), costBps)
+    results.push({ horizonDays, matureRows: outcomes.length, pendingRows, unavailableRows,
+      persistedRows: writtenRows + unchanged.size, writtenRows, retiredRows })
   }
-  const summary = results.map((row) => `${row.horizonDays}d=${row.persistedRows}/${row.matureRows},pending=${row.pendingRows},unavailable=${row.unavailableRows},retired=${row.retiredRows}`).join(' ')
+  const summary = results.map((row) => `${row.horizonDays}d=${row.persistedRows}/${row.matureRows},written=${row.writtenRows},pending=${row.pendingRows},unavailable=${row.unavailableRows},retired=${row.retiredRows}`).join(' ')
   return { asOfDate, referenceRows: references.length, horizons: results,
     summary: `strategy_multi_horizon_outcomes window=${startDate}..${endDate} references=${references.length} ${summary}` }
 }

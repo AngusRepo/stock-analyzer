@@ -4,7 +4,9 @@ Under pit_contract_version a defined feature follows alphabuilders_factors_fresh
 prices derived as raw x same-day adj_close/close; without a version every feature keeps its
 pre-contract form byte-identical (golden from 6ba6cb41)."""
 import hashlib
+import json
 from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -94,6 +96,43 @@ def test_editing_the_definitions_under_the_same_version_fails(monkeypatch):
     finally:
         monkeypatch.undo()
         feature_definitions.cache_clear()
+
+
+def _shipped_spec():
+    root = Path(pit_contract.__file__).resolve().parents[2] / "data" / "feature_registry"
+    return json.loads((root / pit_contract._DEFINITION_FILES[CONTRACT_VERSION]).read_text(encoding="utf-8"))
+
+
+def _definitions_from(monkeypatch, path):
+    # An absolute file name replaces every registry root (Path("/root/...") / "/abs" == Path("/abs")).
+    monkeypatch.setitem(pit_contract._DEFINITION_FILES, CONTRACT_VERSION, str(path))
+    feature_definitions.cache_clear()
+    try:
+        return feature_definitions(CONTRACT_VERSION)
+    finally:
+        monkeypatch.undo()
+        feature_definitions.cache_clear()
+
+
+def test_a_missing_definitions_file_fails_closed(monkeypatch, tmp_path):
+    with pytest.raises(ValueError, match="pit_feature_definitions_missing"):
+        _definitions_from(monkeypatch, tmp_path / "absent.json")
+
+
+def test_a_definitions_file_for_another_contract_version_fails(monkeypatch, tmp_path):
+    spec = _shipped_spec()
+    spec["contract_version"] = "pit-availability-contract-v0"
+    (tmp_path / "defs.json").write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(ValueError, match="pit_feature_definitions_invalid"):
+        _definitions_from(monkeypatch, tmp_path / "defs.json")
+
+
+def test_a_definitions_file_that_drops_a_feature_fails(monkeypatch, tmp_path):
+    spec = _shipped_spec()
+    del spec["definitions"]["tech_gap_up"]
+    (tmp_path / "defs.json").write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(ValueError, match="pit_feature_definitions_invalid"):
+        _definitions_from(monkeypatch, tmp_path / "defs.json")
 
 
 @pytest.mark.parametrize("name", sorted(LEGACY_GOLDEN))

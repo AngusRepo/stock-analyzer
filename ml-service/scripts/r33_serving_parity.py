@@ -410,12 +410,14 @@ def main() -> int:
         "predict_forward": "ml-service/app/timexer_forward.py:28-31 " + guard + r33_only,
         "_align_features": "ml-service/app/oof_forward_extension.py:166-169 " + guard + r33_only,
         "build_frozen_forward_extension": "ml-service/app/oof_forward_extension.py:282-283 " + guard + r33_only})
-    # pit_contract runs only when a caller passes pit_contract_version (features/__init__.py:214-217).
-    proven.update({name: "ml-service/app/features/__init__.py:214-217 calls app.pit_contract only when "
+    # pit_contract runs only when a caller passes pit_contract_version (features/__init__.py:214-218).
+    proven.update({name: "ml-service/app/features/__init__.py:214-218 calls app.pit_contract only when "
                          "pit_contract_version is not None; PredictRequest defaults it to None (probe "
                          "predict_pit_contract_none) and the Worker does not send it."
                    for name in ("CONTRACT_VERSION", "_FILES", "load", "feature_lags", "_FEATURE_LAGS_SHA256",
-                                "feature_windows", "_WINDOW_FILES", "_FEATURE_WINDOWS_SHA256", "_WINDOWED_FEATURES")})
+                                "feature_windows", "_WINDOW_FILES", "_FEATURE_WINDOWS_SHA256", "_WINDOWED_FEATURES",
+                                "feature_definitions", "_DEFINITION_FILES", "_FEATURE_DEFINITIONS_SHA256",
+                                "_DEFINED_FEATURES")})
     proven.update({name: "ml-service/app/universal_training.py:724-727 hashes the contract only when "
                          "req.pit_contract_version is not None (probe prep_pit_contract_none). " + r33_only
                    for name in ("APPROVAL_KEYS", "canonical_sha256", "content_sha256")})
@@ -431,8 +433,8 @@ def main() -> int:
     proven.update({name: ("ml-service/app/batch_prediction.py:333-338 calls it only for a built non-request "
                           "view inside _pit_serving_metrics; legacy contexts have none (probe serving_pit_metrics).")
                    for name in ("revision_mask_cells", "reported_quarter")})
-    proven["_registry_file"] = ("ml-service/app/pit_contract.py:37-63 is the path lookup load() already used; "
-                                "load runs only when pit_contract_version is not None (features/__init__.py:212-214).")
+    proven["_registry_file"] = ("ml-service/app/pit_contract.py:47-74 is the path lookup load() already used; "
+                                "load runs only when pit_contract_version is not None (features/__init__.py:214-218).")
     proven["_compute_pipeline_prediction_bundle"] = (
         "ml-service/modal_app.py:1996-1998 adds pit_feature_sources to the TimeXer GPU input only when the request "
         "carries timexer_pit_feature_sources, which the controller sends only with a ready PIT TimeXer source "

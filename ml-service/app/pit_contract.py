@@ -24,6 +24,11 @@ _FEATURE_LAGS_SHA256 = {CONTRACT_VERSION: "e82bdf6ab2be524070e6bc3bd07b520feda52
 _WINDOW_FILES = {CONTRACT_VERSION: "pit_feature_windows_v1.json"}
 _FEATURE_WINDOWS_SHA256 = {CONTRACT_VERSION: "50fd7fe3eeecc24ff1d64820ca5e99d276367d5729c8f6d63c28828347649b79"}
 _WINDOWED_FEATURES = ("tech_obv",)
+# Registry definitions under a version (Wei 11/2): a separate file like the windows, so the
+# approved contract content is untouched, frozen per version exactly like the lags and windows.
+_DEFINITION_FILES = {CONTRACT_VERSION: "pit_feature_definitions_v1.json"}
+_FEATURE_DEFINITIONS_SHA256 = {CONTRACT_VERSION: "2a71d15b454e51fd16376d15188178943bfc7cb90edfa87df429372dad317e00"}
+_DEFINED_FEATURES = ("tech_gap_down",)
 # Same text as ml-controller services/pit_certification.HISTORY_LIMITATION (test_pit_certification).
 HISTORY_LIMITATION = ("Original publication timestamps for 2020-05..2026-05 are not proven: no archived "
                       "vintage exists for that period and neither FinLab nor TWSE provides them.")
@@ -130,6 +135,31 @@ def feature_windows(version: str) -> dict[str, int]:
     if canonical_sha256(windows) != _FEATURE_WINDOWS_SHA256.get(version):
         raise ValueError("pit_feature_windows_changed_without_new_version")
     return dict(windows)
+
+
+@lru_cache(maxsize=None)
+def feature_definitions(version: str) -> dict[str, dict]:
+    """Registry definitions that replace a feature's pre-contract form under this version."""
+    load(version)
+    if version not in _DEFINITION_FILES:
+        raise ValueError("pit_feature_definitions_missing")
+    here = Path(__file__).resolve()
+    for root in (Path("/root/data/feature_registry"), Path("/app/data/feature_registry"),
+                 here.parents[2] / "data" / "feature_registry"):
+        path = root / _DEFINITION_FILES[version]
+        if _exists(path):
+            spec = json.loads(path.read_text(encoding="utf-8"))
+            break
+    else:
+        raise ValueError("pit_feature_definitions_missing")
+    definitions = spec.get("definitions")
+    if (spec.get("contract_version") != version or not isinstance(definitions, dict)
+            or set(definitions) != set(_DEFINED_FEATURES)
+            or not all(isinstance(v, dict) for v in definitions.values())):
+        raise ValueError("pit_feature_definitions_invalid")
+    if canonical_sha256(definitions) != _FEATURE_DEFINITIONS_SHA256.get(version):
+        raise ValueError("pit_feature_definitions_changed_without_new_version")
+    return {name: dict(value) for name, value in definitions.items()}
 
 
 def vintage_scope(payload: dict) -> dict:

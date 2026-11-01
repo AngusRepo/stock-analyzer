@@ -207,15 +207,16 @@ def build_feature_matrix(
     """
     整合所有資料來源，建立特徵矩陣。
     回傳 Polars DataFrame，含 features + target_5d + target_dir。
-    pit_contract_version: apply that PIT contract's availability lags (C28-02) and fixed
-    feature windows (NEW-75);
+    pit_contract_version: apply that PIT contract's availability lags (C28-02), fixed
+    feature windows (NEW-75) and registry feature definitions;
     None keeps the pre-contract output byte-identical.
     """
-    pit_lags, pit_windows = {}, {}
+    pit_lags, pit_windows, pit_definitions = {}, {}, {}
     if pit_contract_version is not None:
-        from ..pit_contract import feature_lags, feature_windows
+        from ..pit_contract import feature_definitions, feature_lags, feature_windows
         pit_lags = feature_lags(pit_contract_version)
         pit_windows = feature_windows(pit_contract_version)
+        pit_definitions = feature_definitions(pit_contract_version)
     # ── 1. Prices base frame ─────────────────────────────────────────────────
     # infer_schema_length=None: D1 JSON 混 int/float（如 close=106 vs 105.5），需掃全量推斷
     df = (
@@ -874,6 +875,24 @@ def build_feature_matrix(
     low_expr = _feature_col("low", close_expr)
     open_expr = _feature_col("open", close_expr)
     volume_expr = _feature_col("volume")
+    # Pre-contract gap forms (raw open against raw previous close).
+    gap_down_expr = _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(None, 0.0)
+    if pit_definitions:
+        # Registry definitions under a PIT contract (data/feature_registry/pit_feature_definitions_v1.json):
+        # adjusted high/low = raw x same-day adj_close/close, which is FinLab's adj_high/adj_low.
+        def _positive(expr: pl.Expr) -> pl.Expr:
+            return expr.is_finite() & (expr > 0)
+
+        adj_factor = pl.col("adj_close") / close_expr
+        factor_ok = _positive(close_expr) & _positive(pl.col("adj_close"))
+        adj_high_expr, adj_low_expr = high_expr * adj_factor, low_expr * adj_factor
+        high_ok, low_ok = factor_ok & _positive(high_expr), factor_ok & _positive(low_expr)
+        if "tech_gap_down" in pit_definitions:
+            spec = pit_definitions["tech_gap_down"]
+            defined = high_ok & low_ok.shift(1)
+            gap_down_expr = (
+                pl.when(defined & (adj_high_expr < adj_low_expr.shift(1) * (1.0 - float(spec["tie_rel_tolerance"]))))
+                .then(1.0).when(defined).then(0.0).otherwise(float(spec["undefined_value"])))
     dollar_volume = (volume_expr * close_expr).abs().clip(1.0, None)
     bb_mid_expr = ((pl.col("bb_upper") + pl.col("bb_lower")) / 2.0) if {"bb_upper", "bb_lower"}.issubset(set(df.columns)) else close_expr.rolling_mean(20)
     bb_width_expr = _safe_div(_feature_col("bb_upper") - _feature_col("bb_lower"), bb_mid_expr)
@@ -984,7 +1003,7 @@ def build_feature_matrix(
         ("tech_donchian_pos_20", _safe_div(close_expr - donchian_low20, donchian_range20)),
         ("tech_ema_12_pos", _safe_div(close_expr, ema12_expr) - 1.0),
         ("tech_emv_14", _safe_div(((high_expr + low_expr) / 2.0 - (high_expr.shift(1) + low_expr.shift(1)) / 2.0) * (high_expr - low_expr), volume_expr.clip(1.0, None)).rolling_mean(14)),
-        ("tech_gap_down", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(None, 0.0)),
+        ("tech_gap_down", gap_down_expr),
         ("tech_gap_up", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(0.0, None)),
         ("tech_granville_score", ((close_expr > close_expr.rolling_mean(20)).cast(pl.Float64) + (close_expr.rolling_mean(20) > close_expr.rolling_mean(20).shift(1)).cast(pl.Float64)) / 2.0),
         ("tech_kd9_k", kd_k_expr),

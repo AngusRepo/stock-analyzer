@@ -1482,6 +1482,26 @@ def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pat
     })
 
 
+def chip_pit_daily_enabled() -> bool:
+    """Off unless CHIP_PIT_DAILY_RECORD=1; when off the FinLab daily refresh path is unchanged."""
+    return os.environ.get("CHIP_PIT_DAILY_RECORD", "0") == "1"
+
+
+def chip_pit_lane_fields(lane: str) -> tuple[str, ...]:
+    from services.chip_pit import lane_fields
+    return lane_fields(lane)
+
+
+def write_chip_pit_window(frames: dict[str, pd.DataFrame], *, lane: str, run_dir: Path, end_date: str | None) -> None:
+    """Trailing sessions for the chip PIT log: a table the vendor publishes after this capture
+    (margin/lending usually land after 21:00) is still observed by the next day's capture."""
+    from services.chip_pit import CAPTURE_WINDOW_SESSIONS
+    for field in chip_pit_lane_fields(lane):
+        if field in frames:
+            frame = filter_date_range(frames[field], end_date=end_date)
+            write_parquet(run_dir / "raw" / "chip_pit_window" / f"{field}.parquet", frame.tail(CAPTURE_WINDOW_SESSIONS))
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
 # Ops pacing for a late exchange index publication; not a trading parameter.
@@ -2092,16 +2112,21 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
+    columns = (date_col, stock_col, broker_col, buy_col, sell_col)
+    if not frame.columns.is_unique:
+        return _broker_pandas_fallback("duplicate_columns", frame, start, columns)
     # Groups never span dates, so 7-day windows give the same rows as one pass
     # while only one window is copied; the vendor archive itself is never copied.
     parsed = pd.to_datetime(frame[date_col], errors="coerce")
+    if not pd.api.types.is_datetime64_dtype(parsed.dtype):  # pyarrow or tz-aware dates
+        return _broker_pandas_fallback("date_dtype", frame, start, columns)
     first = pd.Timestamp(start)
     if not (parsed >= first).any():
         return pd.DataFrame()
     values = parsed.to_numpy()
     keys = [key for key in _SYMBOL_ROW_KEYS if key in frame.columns]
-    columns = list(dict.fromkeys([date_col, stock_col, *([broker_col] if broker_col else []), buy_col, sell_col, *keys]))
-    positions = [frame.columns.get_loc(column) for column in columns]
+    window_columns = list(dict.fromkeys([date_col, stock_col, *([broker_col] if broker_col else []), buy_col, sell_col, *keys]))
+    positions = [frame.columns.get_loc(column) for column in window_columns]
     pieces, buys, sells = [], [], []
     lower, last = first, parsed.max()
     while lower <= last:
@@ -2187,6 +2212,78 @@ def _normalize_broker_window(out: pd.DataFrame, *, stock_col: str, broker_col: s
     return (grouped, *_broker_rank_sides(broker_daily))
 
 
+def _broker_pandas_fallback(reason: str, frame: pd.DataFrame, start: str, columns: tuple) -> pd.DataFrame:
+    print(f"[finlab-backfill] broker normalize path=pandas reason={reason}", flush=True)
+    return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+
+
+def _finish_broker_daily(grouped: pd.DataFrame, broker_daily: pd.DataFrame) -> pd.DataFrame:
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
+        broker_daily,
+        market_segment="LISTED_OTC",
+        source="finlab.broker_transactions",
+    )
+    return grouped
+
+
+def _normalize_broker_transactions_daily_pandas(
+    frame: pd.DataFrame,
+    start: str,
+    date_col: str,
+    stock_col: str,
+    broker_col: str | None,
+    buy_col: str,
+    sell_col: str,
+) -> pd.DataFrame:
+    """Reference pandas path for inputs outside the windowed path (pyarrow or
+    tz-aware dates, duplicate column labels)."""
+    out = frame.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce")
+    out = out[out["date"] >= pd.Timestamp(start)]
+    out["stock_id"] = [
+        _clean_symbol(row.get(stock_col), row)
+        for row in out.to_dict(orient="records")
+    ]
+    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
+    out = out[(out["stock_id"] != "") & out["date"].notna()]
+    if out.empty:
+        return pd.DataFrame()
+
+    broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
+        broker_buy_shares=("buy_shares_raw", "sum"),
+        broker_sell_shares=("sell_shares_raw", "sum"),
+        broker_net=("broker_net", "sum"),
+    ).reset_index()
+    broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+    dominant = (
+        broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+        .groupby(["date", "stock_id"], observed=True)
+        .head(1)[["date", "stock_id", "broker_code", "broker_net", "abs_broker_net"]]
+        .rename(columns={
+            "broker_code": "dominant_broker_code",
+            "broker_net": "dominant_net_shares",
+            "abs_broker_net": "dominant_abs_net_shares",
+        })
+    )
+    pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+        gross_imbalance_shares=("abs_broker_net", "sum"),
+        directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum())),
+    ).reset_index()
+    grouped = out.groupby(["date", "stock_id"], observed=True).agg(
+        buy_shares=("buy_shares_raw", "sum"),
+        sell_shares=("sell_shares_raw", "sum"),
+        broker_count=("broker_code", "nunique"),
+    ).reset_index()
+    grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+    return _finish_broker_daily(grouped, broker_daily)
+
+
 def write_source_session_calendar(source_close: pd.DataFrame, *, run_dir: Path, years: int, end_date: str | None) -> Path:
     import polars as pl
     from services.finlab_canonical_materializer import source_session_counts
@@ -2227,6 +2324,7 @@ def materialize_specs(
     price_venue_scope_sha256: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     start = source_start_date or start_date_for_years(years)
+    chip_pit_daily = daily_refresh and chip_pit_daily_enabled()
     if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
         raise ValueError("price_venue_scope_pair_required")
     if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
@@ -2460,7 +2558,8 @@ def materialize_specs(
                     if spec.lane == "daily_price" and field in {"adj_close", "adj_open", "open", "high", "low", "close", "volume", "value", "market_value"}:
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
-                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})):
+                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
+                            or (chip_pit_daily and field in chip_pit_lane_fields(spec.lane))):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2543,6 +2642,8 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
+            if chip_pit_daily and chip_pit_lane_fields(spec.lane):
+                write_chip_pit_window(unsliced_frames, lane=spec.lane, run_dir=run_dir, end_date=source_end_date)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
@@ -4274,6 +4375,19 @@ def main() -> int:
             uploaded_files=uploaded_files,
         )
         manifest["gcs_upload_raw"] = gcs
+        write_json(run_dir / "manifest.json", manifest)
+
+    # Chip challenger PIT log (chip-pit/v1/daily). Evidence only: a failure is recorded, never fatal.
+    if args.daily_refresh and args.gcs_bucket and chip_pit_daily_enabled():
+        try:
+            from google.cloud import storage
+            from services.chip_pit import record_daily_capture
+            manifest["chip_pit_daily"] = record_daily_capture(
+                run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket), business_date=source_end_date,
+                capture_id=run_id, capture_ready=not source_key_blockers)
+        except Exception as exc:
+            print(f"[finlab-backfill] chip_pit_daily failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            manifest["chip_pit_daily"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1 and finlab_key_report_enabled():

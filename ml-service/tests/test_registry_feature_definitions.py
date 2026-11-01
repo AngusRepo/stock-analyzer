@@ -79,6 +79,8 @@ def test_definitions_come_from_the_frozen_contract_file():
     assert set(definitions) == set(pit_contract._DEFINED_FEATURES)
     assert definitions["tech_gap_down"]["tie_rel_tolerance"] == 1e-9
     assert definitions["tech_gap_down"]["undefined_value"] == 0.0
+    assert definitions["tech_gap_up"]["tie_rel_tolerance"] == 1e-9
+    assert definitions["tech_gap_up"]["undefined_value"] == 0.0
     assert (definitions["vola_cv_90d"]["window"], definitions["vola_cv_90d"]["ddof"]) == (90, 1)
     assert definitions["vola_cv_90d"]["undefined_value"] == 0.0
 
@@ -137,6 +139,44 @@ def test_a_one_ulp_vendor_tie_on_an_ex_right_day_is_not_a_gap():
     # A real gap just beyond the tolerance still counts.
     bars[1]["adj_close"] = tie_adj * (1 - 1e-8)
     assert _contract(bars)["tech_gap_down"].to_list() == [0.0, 1.0]
+
+
+def test_tech_gap_up_follows_the_registry_on_adjusted_prices():
+    rows = _fixture()
+    adj_high, adj_low = _adjusted(rows)
+    expected = np.r_[0.0, (adj_low[1:] > adj_high[:-1] * (1 + 1e-9)).astype(float)]
+    got = _contract(rows)["tech_gap_up"].to_numpy()
+    assert got.tolist() == expected.tolist()
+    assert 0 < got.sum() < len(got)
+    assert _legacy(rows)["tech_gap_up"].to_list() != got.tolist()
+
+
+def test_tech_gap_up_hand_cases():
+    bars = _bars(
+        (101.0, 99.0, 100.0, 100.0),        # 0 first row: undefined -> 0
+        (103.0, 102.0, 102.5, 102.5),       # 1 low 102 > previous high 101: gap
+        (104.0, 103.0, 103.5, 103.5),       # 2 low 103 == previous high 103: a tie is not a gap
+        (53.0, 52.5, 52.75, 105.5),         # 3 ex-right (factor 1 -> 2): adjusted low 105 > 104: gap; raw open fell
+        (53.0, 52.4, 52.6, 105.2),          # 4 same factor: adjusted low 104.8 < 106: no gap
+        (60.0, 59.0, 59.5, float("nan")),   # 5 no factor: undefined -> 0
+        (70.0, 69.0, 69.5, 139.0),          # 6 previous row has no factor: undefined -> 0
+        (71.0, 70.0, 70.5, 0.0),            # 7 zero factor (adjusted high 0): undefined -> 0
+        (80.0, 79.0, 79.5, 159.0),          # 8 previous row has no positive factor: undefined -> 0
+    )
+    assert _contract(bars)["tech_gap_up"].to_list() == [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Raw prices disagree on the ex-right day: the legacy form sees no gap up there.
+    assert _legacy(bars)["tech_gap_up"].to_list()[3] == 0.0
+
+
+def test_a_one_ulp_vendor_tie_is_not_a_gap_up():
+    previous_adj = 50.0 * 1.37
+    tie_adj = 40.1 * (51.0 * (previous_adj / 50.0) / 39.9)
+    bars = _bars((51.0, 49.7, 50.0, previous_adj), (40.5, 39.9, 40.1, tie_adj))
+    adj_high, adj_low = _adjusted(bars)
+    assert adj_low[1] > adj_high[0] and adj_low[1] / adj_high[0] - 1 < 1e-15
+    assert _contract(bars)["tech_gap_up"].to_list() == [0.0, 0.0]
+    bars[1]["adj_close"] = tie_adj * (1 + 1e-8)
+    assert _contract(bars)["tech_gap_up"].to_list() == [0.0, 1.0]
 
 
 def _price_cv(close, window=90):

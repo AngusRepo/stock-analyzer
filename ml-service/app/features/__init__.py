@@ -877,6 +877,7 @@ def build_feature_matrix(
     volume_expr = _feature_col("volume")
     # Pre-contract gap forms (raw open against raw previous close).
     gap_down_expr = _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(None, 0.0)
+    gap_up_expr = _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(0.0, None)
     if pit_definitions:
         # Registry definitions under a PIT contract (data/feature_registry/pit_feature_definitions_v1.json):
         # adjusted high/low = raw x same-day adj_close/close, which is FinLab's adj_high/adj_low.
@@ -892,6 +893,12 @@ def build_feature_matrix(
             defined = high_ok & low_ok.shift(1)
             gap_down_expr = (
                 pl.when(defined & (adj_high_expr < adj_low_expr.shift(1) * (1.0 - float(spec["tie_rel_tolerance"]))))
+                .then(1.0).when(defined).then(0.0).otherwise(float(spec["undefined_value"])))
+        if "tech_gap_up" in pit_definitions:
+            spec = pit_definitions["tech_gap_up"]
+            defined = low_ok & high_ok.shift(1)
+            gap_up_expr = (
+                pl.when(defined & (adj_low_expr > adj_high_expr.shift(1) * (1.0 + float(spec["tie_rel_tolerance"]))))
                 .then(1.0).when(defined).then(0.0).otherwise(float(spec["undefined_value"])))
     dollar_volume = (volume_expr * close_expr).abs().clip(1.0, None)
     bb_mid_expr = ((pl.col("bb_upper") + pl.col("bb_lower")) / 2.0) if {"bb_upper", "bb_lower"}.issubset(set(df.columns)) else close_expr.rolling_mean(20)
@@ -1012,7 +1019,7 @@ def build_feature_matrix(
         ("tech_ema_12_pos", _safe_div(close_expr, ema12_expr) - 1.0),
         ("tech_emv_14", _safe_div(((high_expr + low_expr) / 2.0 - (high_expr.shift(1) + low_expr.shift(1)) / 2.0) * (high_expr - low_expr), volume_expr.clip(1.0, None)).rolling_mean(14)),
         ("tech_gap_down", gap_down_expr),
-        ("tech_gap_up", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(0.0, None)),
+        ("tech_gap_up", gap_up_expr),
         ("tech_granville_score", ((close_expr > close_expr.rolling_mean(20)).cast(pl.Float64) + (close_expr.rolling_mean(20) > close_expr.rolling_mean(20).shift(1)).cast(pl.Float64)) / 2.0),
         ("tech_kd9_k", kd_k_expr),
         ("tech_kdj_j_9", 3.0 * kd_k_expr - 2.0 * kd_d_expr),

@@ -55,6 +55,7 @@ class WalkForwardRequest(BaseModel):
     expected_producer_source_sha: str | None = None
     # OOF-only challengers: fold artifacts stay in GCS, outside model_set, D1 and full-fit.
     challenger_models: list[str] = Field(default_factory=list)
+    challenger_models_disabled: bool = False
 
 
 def _window_split_key(window) -> tuple[str, str, str, str]:
@@ -419,6 +420,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             "fs_max_rounds": req.fs_max_rounds,
             "fs_force_refresh": req.fs_force_refresh,
             **({"challenger_models": list(req.challenger_models)} if req.challenger_models else {}),
+            **({"challenger_models_disabled": True} if req.challenger_models_disabled else {}),
         })
         fn_call_id = getattr(fn_call, "object_id", None) or str(fn_call)
     except Exception as e:
@@ -2844,6 +2846,11 @@ def _oof_test_sessions(profile: str) -> int:
 
 def _r33_challenger_models() -> list[str]:
     return [name.strip() for name in os.environ.get("R33_OOF_CHALLENGER_MODELS", "").split(",") if name.strip()]
+
+
+def _r33_challengers_disabled() -> bool:
+    """Kill switch: an empty override cannot turn the Modal lifecycle slots off."""
+    return os.environ.get("R33_OOF_CHALLENGERS_DISABLED", "").strip() == "1"
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
@@ -4088,6 +4095,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 expected_producer_source_sha=exact_producer_source_sha,
                 challenger_models=(_r33_challenger_models()
                                    if req.model_profile_schema_version == R33_PROFILE else []),
+                challenger_models_disabled=(req.model_profile_schema_version == R33_PROFILE
+                                            and _r33_challengers_disabled()),
             )
             if req.dry_run:
                 preview = await walk_forward_dry_run(plan)

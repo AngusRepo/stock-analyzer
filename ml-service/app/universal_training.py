@@ -640,8 +640,11 @@ def _save_oos_rank_artifact(
     label_known_dates_test: np.ndarray,
     feature_names: list[str],
     train_label_known_max: str | None = None,
+    market_conditioner: dict | None = None,
 ) -> dict | None:
-    """Persist split-job OOS predictions for the final rank-stacking reducer."""
+    """Persist split-job OOS predictions for the final rank-stacking reducer.
+
+    A W4(a) market challenger writes its fold OOF under its alias, never a roster model's file."""
 
     if not req.output_model_version or not oos_rank_predictions:
         return None
@@ -681,7 +684,7 @@ def _save_oos_rank_artifact(
                 gcs_prefix=req.gcs_prefix or "universal",
                 cohort_id=str(req.cohort_id or ""),
                 fold_id=str(req.fold_id or req.window_id or ""),
-                model_name=model_name,
+                model_name=(market_conditioner or {}).get("alias") or model_name,
                 artifact_version=str(req.output_model_version),
                 raw_scores=oos_rank_predictions[model_name],
                 targets=y_test,
@@ -695,6 +698,7 @@ def _save_oos_rank_artifact(
                     "test_range": [req.test_start, req.test_end],
                     "method": "walk_forward_explicit_label_purged",
                     **({"train_label_known_max": train_label_known_max} if train_label_known_max else {}),
+                    **({"market_conditioner": market_conditioner["receipt"]} if market_conditioner else {}),
                 },
             ))
     return {
@@ -1004,7 +1008,8 @@ def prep_universal_batch_with_variants(req: UniversalPrepRequest, *, deadline: f
     return {**result, "pit_variants": variants}
 
 
-def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
+def train_universal_from_gcs(req: UniversalTrainRequest, *, market_conditioner: dict | None = None) -> dict:
+    """market_conditioner (W4(a) OOF challengers only): {alias, conditioner} from app.market_conditioner."""
     import json
 
     t0 = time.time()
@@ -1103,6 +1108,14 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise ValueError("formal131_training_inventory_mismatch")
     validate_prep_keys(dates_arr, symbols_arr, markets_arr)
     prep_missingness_rates = np.vstack(all_missingness_rates).mean(axis=0)
+    if market_conditioner is not None:
+        from .market_conditioner import apply_block
+        if list(req.models_filter or []) != [market_conditioner.get("model")] or not req.skip_feature_pool:
+            raise ValueError("market_conditioner_requires_one_model_full_pool")
+        base_missingness = dict(zip(feature_names, prep_missingness_rates.tolist()))
+        X, feature_names, receipt = apply_block(X, dates_arr, feature_names, market_conditioner["conditioner"])
+        market_conditioner = {**market_conditioner, "receipt": receipt}
+        prep_missingness_rates = np.asarray([base_missingness.get(name, 0.0) for name in feature_names])
 
     feature_pool_selection_evidence: dict = {}
     feature_pool_model_policies: dict = {}
@@ -1619,6 +1632,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 label_known_dates_test=label_known_dates_test,
                 feature_names=feature_names,
                 train_label_known_max=validation_split_metadata.get("train_label_known_max"),
+                **({"market_conditioner": market_conditioner} if market_conditioner is not None else {}),
             )
             if oos_artifact:
                 print(
@@ -1983,6 +1997,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "training_manifest_path": manifest_path,
         "target_rank_scope": GLOBAL_CROSS_SECTIONAL_RANK_VERSION,
         "batch_local_target_rank_used_for_training": False,
+        **({"market_conditioner": market_conditioner["receipt"]} if market_conditioner is not None else {}),
     }
 
 

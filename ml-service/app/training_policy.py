@@ -368,6 +368,8 @@ class ModelFeaturePolicy:
 
 
 ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v4"
+# W4(a) OOF-only challengers: FEATURES131 plus/minus a declared market block (app.market_conditioner).
+MARKET_CONDITIONER_RELEASE_MODE = "market_conditioner_ablation_v1"
 TIMESFM_L175_RELEASE_COHORT = (
     "LightGBM",
     "XGBoost",
@@ -388,13 +390,15 @@ def active8_family_feature_contract(
     release = str(feature_release_mode or "").strip()
     if model in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
         timesfm_release = release == "timesfm_l175_l2_feature_release"
-        full137 = release in {"accepted_ab_full137", "approved_full131_v1"}
+        full137 = release in {"accepted_ab_full137", "approved_full131_v1", MARKET_CONDITIONER_RELEASE_MODE}
         return {
             "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
             "model": model,
             "family_schema": (
                 "formal137_plus_timesfm_l175_v1"
                 if timesfm_release
+                else "market_conditioner_ablation_tabular_v1"
+                if release == MARKET_CONDITIONER_RELEASE_MODE
                 else (("formal131_full_tabular_v1" if release == "approved_full131_v1" else "formal137_full_tabular_v1") if full137 or model in {"TabM", "GNN"} else "formal137_selected_tabular_v1")
             ),
             "input_semantics": (
@@ -748,6 +752,12 @@ def build_model_feature_policy_metadata(
         if list(feature_names) != list(FEATURES131):
             raise ValueError("approved_full131_feature_inventory_mismatch")
         metadata.update(feature_policy_type="formal131_full_tabular", feature_source="prep.full_formal131", selection_required=False, note="Explicit 131-column version; legacy 137 artifacts remain separate.")
+    if feature_release_mode == MARKET_CONDITIONER_RELEASE_MODE:
+        from .market_conditioner import LIFECYCLE_SLOTS, arm_feature_names
+        arms = {slot["payload_config"]["market_conditioner_arm"] for slot in LIFECYCLE_SLOTS.values()}
+        if not any(list(feature_names) == arm_feature_names(arm) for arm in arms):
+            raise ValueError("market_conditioner_feature_inventory_mismatch")
+        metadata.update(feature_policy_type="market_conditioner_ablation_tabular", feature_source="prep.full_formal131_plus_market_conditioner_block", selection_required=False, note="OOF-only W4(a) challenger; never a release artifact.")
     return {
         "feature_policy": metadata,
         "feature_policy_schema_version": "model-feature-policy-v2",

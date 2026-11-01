@@ -1,0 +1,263 @@
+{
+  "schema_version": "market-conditioner-contract-v1",
+  "purpose": "W4(a) OOF-only ablation: market-level columns as a conditioner block on the tabular challengers. Never a release model input; FEATURES131, the PIT contract and the formal137 registry are unchanged.",
+  "decision_effect": "oof_challenger_evidence_only",
+  "formal_feature_count": 137,
+  "formal_feature_names_sha256": "c5967f08a269cae3be76e29e370bf61fea21d3a84c2897d49ed333dc1499cc37",
+  "formal_feature_names_sha256_semantic": "sha256(json.dumps(FEATURE_COLS, separators=(',', ':'))) in registry order",
+  "history_source": "services.training_global_capture.read_market_history on the prep manifest's price_capture/global_capture; history_sha256 must equal global_capture.history_sha256",
+  "features": [
+    {
+      "feature_id": "market_return_1d",
+      "role": "market_conditioner",
+      "group": "taiex",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "sealed official TWSE monthly close (official_calendar/TWSE-*.json)",
+      "history_key": "market_return_1d"
+    },
+    {
+      "feature_id": "market_return_5d",
+      "role": "market_conditioner",
+      "group": "taiex",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "sealed official TWSE monthly close (official_calendar/TWSE-*.json)",
+      "history_key": "market_return_5d"
+    },
+    {
+      "feature_id": "market_bias_20d",
+      "role": "market_conditioner",
+      "group": "taiex",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "sealed official TWSE monthly close (official_calendar/TWSE-*.json)",
+      "history_key": "market_bias_20d"
+    },
+    {
+      "feature_id": "market_risk_score",
+      "role": "market_conditioner",
+      "group": "market_risk",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "market_risk_level",
+      "role": "market_conditioner",
+      "group": "market_risk",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "us_vix",
+      "role": "market_conditioner",
+      "group": "us_quotes",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "training_us_quotes.json + us_quotes/*.json; US date strictly before TW date",
+      "history_key": "us_vix"
+    },
+    {
+      "feature_id": "us_sox_return",
+      "role": "market_conditioner",
+      "group": "us_quotes",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "training_us_quotes.json + us_quotes/*.json; US date strictly before TW date",
+      "history_key": "us_sox_return"
+    },
+    {
+      "feature_id": "us_gspc_return",
+      "role": "market_conditioner",
+      "group": "us_quotes",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "training_us_quotes.json + us_quotes/*.json; US date strictly before TW date",
+      "history_key": "us_gspc_return"
+    },
+    {
+      "feature_id": "us_dxy_return",
+      "role": "market_conditioner",
+      "group": "us_quotes",
+      "in_formal131": false,
+      "status": "available",
+      "block": "history",
+      "source": "training_us_quotes.json + us_quotes/*.json; US date strictly before TW date",
+      "history_key": "us_dxy_return"
+    },
+    {
+      "feature_id": "us_hy_spread",
+      "role": "market_conditioner",
+      "group": "us_credit",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "sealed capture writes None (no historical release vintage); prep would train on 0"
+    },
+    {
+      "feature_id": "us_hy_spread_chg",
+      "role": "market_conditioner",
+      "group": "us_credit",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "sealed capture writes None (no historical release vintage); prep would train on 0"
+    },
+    {
+      "feature_id": "bull_alignment_pct",
+      "role": "market_conditioner",
+      "group": "breadth_derived",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "limit_down_count",
+      "role": "market_conditioner",
+      "group": "limit_down",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "limit_down_pct",
+      "role": "market_conditioner",
+      "group": "limit_down",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "adl_value",
+      "role": "market_conditioner",
+      "group": "adl",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "adl_trend_numeric",
+      "role": "market_conditioner",
+      "group": "adl",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "foreign_consecutive_sell",
+      "role": "market_conditioner",
+      "group": "foreign_market",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "foreign_net_5d_market",
+      "role": "market_conditioner",
+      "group": "foreign_market",
+      "in_formal131": false,
+      "status": "unavailable",
+      "reason": "not in the sealed capture; prep would train on a default constant"
+    },
+    {
+      "feature_id": "advance_ratio",
+      "role": "market_conditioner",
+      "group": "breadth",
+      "in_formal131": true,
+      "status": "available",
+      "block": "history",
+      "source": "training_breadth.json + official MI_INDEX per day",
+      "history_key": "advance_ratio"
+    },
+    {
+      "feature_id": "us_sentiment_score",
+      "role": "market_conditioner",
+      "group": "us_quotes",
+      "in_formal131": true,
+      "status": "available",
+      "block": "history",
+      "source": "derived from us_sox_return, us_gspc_return, us_vix in read_us_quote_history",
+      "history_key": "us_sentiment_score"
+    }
+  ],
+  "arms": {
+    "mkt9": {
+      "base": "FEATURES131",
+      "add": [
+        "market_return_1d",
+        "market_return_5d",
+        "market_bias_20d",
+        "us_vix",
+        "us_sox_return",
+        "us_gspc_return",
+        "us_dxy_return"
+      ],
+      "drop": [],
+      "feature_count": 138,
+      "note": "FEATURES131 already carries advance_ratio and us_sentiment_score; the arm appends the other seven available columns."
+    },
+    "mkt0": {
+      "base": "FEATURES131",
+      "add": [],
+      "drop": [
+        "advance_ratio",
+        "us_sentiment_score"
+      ],
+      "feature_count": 129,
+      "note": "No market-level column at all."
+    }
+  },
+  "extension": "A further column joins by declaring it status=available with the block that derives it (history: read_market_history must emit its history_key; other blocks: app.market_conditioner.BLOCK_BUILDERS) and its null_fill, then listing it in an arm's add. Columns without a sealed PIT source stay unavailable.",
+  "degenerate_triage": {
+    "status": "degenerate_test_not_evaluated",
+    "source": "unified_feature_registry_v1.json triage from the 2026-06-17 offline strict prune",
+    "fingerprint": {
+      "monthly_sharpe": -0.23286418,
+      "cagr": -0.00738299,
+      "max_drawdown": -0.1805
+    },
+    "note": "Identical triage numbers across unrelated features: the test did not evaluate them. drop_research_candidate on these rows is not evidence.",
+    "features": [
+      "l1_brokerCount",
+      "sentiment",
+      "sentiment_3d",
+      "has_sentiment",
+      "market_risk_score",
+      "market_risk_level",
+      "market_return_1d",
+      "market_return_5d",
+      "market_bias_20d",
+      "us_sox_return",
+      "us_gspc_return",
+      "us_dxy_return",
+      "us_hy_spread",
+      "us_hy_spread_chg",
+      "us_vix",
+      "us_sentiment_score",
+      "advance_ratio",
+      "bull_alignment_pct",
+      "revenue_yoy",
+      "short_ratio",
+      "margin_change_5d",
+      "retail_pct",
+      "foreign_consecutive_sell",
+      "foreign_net_5d_market",
+      "limit_down_count",
+      "limit_down_pct",
+      "adl_value",
+      "adl_trend_numeric",
+      "sector_encoded",
+      "market_cap_bucket",
+      "avg_volume_bucket",
+      "sector_peer_return_1d",
+      "sector_peer_return_5d",
+      "stock_vs_sector"
+    ]
+  }
+}

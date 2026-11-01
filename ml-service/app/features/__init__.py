@@ -6,6 +6,7 @@ Triple Barrier Label (Prado 2018) 保留作為 SLTP 執行層使用。
 2.0 新增：Cross-sectional rank label 在 P1 實作。
 """
 import os
+import hashlib
 import json
 from functools import reduce
 from pathlib import Path
@@ -1195,6 +1196,9 @@ def _registry_search_paths() -> list[Path]:
     ]
 
 
+FORMAL_FEATURE_DECLARATION = "market_conditioner_contract_v1.json"
+
+
 def _load_formal_feature_cols() -> list[str]:
     errors: list[str] = []
     for path in _registry_search_paths():
@@ -1211,8 +1215,13 @@ def _load_formal_feature_cols() -> list[str]:
                 and row.get("active_pool_status") == "candidate"
                 and row.get("feature_id")
             ]
-            if len(features) != 137:
+            # Count and order are pinned by the declaration next to the registry (W4a S1).
+            declared = json.loads(path.with_name(FORMAL_FEATURE_DECLARATION).read_text(encoding="utf-8"))
+            names_sha256 = hashlib.sha256(json.dumps(features, separators=(",", ":")).encode()).hexdigest()
+            if len(features) != int(declared["formal_feature_count"]):
                 raise RuntimeError(f"formal137_feature_count_mismatch:{len(features)}:{path}")
+            if names_sha256 != declared["formal_feature_names_sha256"]:
+                raise RuntimeError(f"formal137_feature_order_mismatch:{names_sha256}:{path}")
             return features
         except Exception as exc:  # noqa: BLE001 - fail closed with path context.
             errors.append(f"{path}:{exc}")

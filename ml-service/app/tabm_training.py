@@ -209,7 +209,9 @@ def _save_artifact(*, bucket, model, version: str, metadata: dict) -> dict:
     return {"artifact_path": artifact_path, "metadata_path": metadata_path, "checksum": checksum, "metadata": metadata}
 
 
-def train_tabm_universal(payload: dict | None = None, *, research_device=None, execution_device=None) -> dict[str, Any]:
+def train_tabm_universal(payload: dict | None = None, *, research_device=None, execution_device=None,
+                         market_conditioner: dict | None = None) -> dict[str, Any]:
+    """market_conditioner (W4(a) OOF challengers only): {alias, conditioner} from app.market_conditioner."""
     payload = dict(payload or {})
     if execution_device is not None:
         if research_device is not None:
@@ -254,6 +256,11 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
     feature_semantic = payload_semantic(payload)
     if feature_semantic == FEATURE131_SEMANTIC and list(dataset.feature_names) != list(FEATURES131):
         raise ValueError("formal131_training_inventory_mismatch")
+    if market_conditioner is not None:
+        from .market_conditioner import apply_block
+        dataset.X, dataset.feature_names, receipt = apply_block(
+            dataset.X, dataset.dates, dataset.feature_names, market_conditioner["conditioner"])
+        market_conditioner = {**market_conditioner, "receipt": receipt}
     dataset.y = recompute_global_cross_sectional_rank(
         dataset.target_returns,
         dataset.dates,
@@ -493,7 +500,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
             gcs_prefix=gcs_prefix,
             cohort_id=str(payload.get("cohort_id") or ""),
             fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
-            model_name=MODEL_NAME,
+            model_name=(market_conditioner or {}).get("alias") or MODEL_NAME,
             artifact_version=version,
             raw_scores=pred,
             targets=target_returns[test_idx],
@@ -501,7 +508,8 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
             symbols=symbols[test_idx],
             markets=markets[test_idx],
             label_known_dates=label_known_dates[test_idx],
-            split_metadata=split_meta,
+            split_metadata=({**split_meta, "market_conditioner": market_conditioner["receipt"]}
+                            if market_conditioner is not None else split_meta),
         )
     return {
         "status": "ok",
@@ -529,4 +537,5 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
 
         "oof_artifact": oof_artifact,
         "elapsed_s": round(time.time() - t0, 3),
+        **({"market_conditioner": market_conditioner["receipt"]} if market_conditioner is not None else {}),
     }

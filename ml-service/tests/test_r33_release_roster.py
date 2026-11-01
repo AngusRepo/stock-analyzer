@@ -94,8 +94,9 @@ def test_r33_challenger_slots_resolve_from_w2_contract_with_import_guard(monkeyp
     import types
     import modal_app
     from app.formal_feature_contract import EXO131_PROFILE, R33_PROFILE
-    # Before PR #71: the contract module is absent, so R33 schedules no slot.
+    # Before PR #71 (and without W4(a)): the contract modules are absent, so R33 schedules no slot.
     monkeypatch.setitem(sys.modules, "app.challenger_models", None)
+    monkeypatch.setitem(sys.modules, "app.market_conditioner", None)
     assert modal_app._oof_challenger_slots(R33_PROFILE) == {}
     # With the contract (stub mirrors W2's LIFECYCLE_SLOTS shape): only R33 schedules the slot.
     slots = {"linear_neutral": {"modal_function": "train_linear_neutral_universal",
@@ -122,5 +123,30 @@ def test_r33_challenger_slots_match_w2_contract_when_present():
         pytest.skip("PR #71 (app.challenger_models) not merged into this branch")
     import modal_app
     from app.formal_feature_contract import R33_PROFILE
-    assert list(modal_app._oof_challenger_slots(R33_PROFILE)) == ["linear_neutral"] == list(LIFECYCLE_SLOTS)
+    from app.market_conditioner import LIFECYCLE_SLOTS as MARKET_SLOTS
+    assert list(modal_app._oof_challenger_slots(R33_PROFILE)) == ["linear_neutral", *MARKET_SLOTS]
+    assert list(LIFECYCLE_SLOTS) == ["linear_neutral"]
     assert set(modal_app._oof_challenger_trainers(LIFECYCLE_SLOTS)) == {"linear_neutral"}
+
+
+def test_r33_challenger_slots_unite_w2_and_market_conditioner(monkeypatch):
+    import sys
+    import types
+    import modal_app
+    from app.formal_feature_contract import EXO131_PROFILE, R33_PROFILE
+    from app.market_conditioner import LIFECYCLE_SLOTS as MARKET_SLOTS
+    monkeypatch.setitem(sys.modules, "app.challenger_models", None)
+    assert modal_app._oof_challenger_slots(R33_PROFILE) == MARKET_SLOTS
+    assert modal_app._oof_challenger_slots(EXO131_PROFILE) == {}
+    w2 = {"linear_neutral": {"modal_function": "train_linear_neutral_universal", "payload_config": {}}}
+    monkeypatch.setitem(sys.modules, "app.challenger_models", types.SimpleNamespace(LIFECYCLE_SLOTS=w2))
+    assert modal_app._oof_challenger_slots(R33_PROFILE) == {**w2, **MARKET_SLOTS}
+    # Every market slot resolves to its own Modal function, never a release trainer (R3).
+    trainers = modal_app._oof_challenger_trainers(MARKET_SLOTS)
+    assert set(trainers) == set(MARKET_SLOTS)
+    assert {fn for fn, _ in trainers.values()} == {modal_app.train_wf_tree_market_challenger,
+                                                   modal_app.train_tabm_market_challenger}
+    # A module that fails on import schedules none of its slots and never raises (R2).
+    broken = types.ModuleType("app.market_conditioner")
+    monkeypatch.setitem(sys.modules, "app.market_conditioner", broken)
+    assert modal_app._oof_challenger_slots(R33_PROFILE) == w2

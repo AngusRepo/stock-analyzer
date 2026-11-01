@@ -84,6 +84,7 @@ def _patch(monkeypatch, *, plan=None, pending=None, inventory="inventory_ready",
 
     monkeypatch.setattr(capture_inventory, "inspect_capture_inventory", inspect_inventory)
     monkeypatch.delenv("R33_OOF_CHALLENGER_MODELS", raising=False)
+    monkeypatch.delenv("R33_OOF_CHALLENGERS_DISABLED", raising=False)
     return calls
 
 
@@ -144,6 +145,23 @@ def test_missing_pool_days_warn_and_challenger_overlap_fails(monkeypatch):
     report = _run()
     assert _by_name(report)["challenger_slots"]["overlap_with_release"] == ["TimeXer"]
     assert "challenger_slots" in report["blocking_checks"]
+
+
+def test_challenger_kill_switch_is_reported_and_reaches_the_orchestrator_payload(monkeypatch):
+    import inspect
+    from routers import walk_forward
+    _patch(monkeypatch)
+    monkeypatch.setenv("R33_OOF_CHALLENGERS_DISABLED", "1")
+    check = _by_name(_run())["challenger_slots"]
+    assert check["status"] == "pass" and check["resolution"] == "disabled" and check["disabled"] is True
+    assert walk_forward._r33_challengers_disabled() is True
+    monkeypatch.setenv("R33_OOF_CHALLENGERS_DISABLED", "0")
+    assert walk_forward._r33_challengers_disabled() is False
+    # [] falls back to the Modal slots, so the switch is its own payload flag (R33 plan only).
+    assert walk_forward.WalkForwardRequest(start_date="a", end_date="b").challenger_models_disabled is False
+    source = inspect.getsource(walk_forward)
+    assert '**({"challenger_models_disabled": True} if req.challenger_models_disabled else {})' in source
+    assert "challenger_models_disabled=(req.model_profile_schema_version == R33_PROFILE\n" in source
 
 
 def test_uncertified_or_unreadable_pit_receipt_blocks(monkeypatch):

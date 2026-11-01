@@ -2723,6 +2723,62 @@ def train_wf_tree_window(payload: dict) -> dict:
         }
 
 
+# W4(a) market-conditioner challengers (app.market_conditioner): own functions and container pools,
+# so they never queue behind or ahead of the release models (R3). OOF only; no full-fit.
+@app.function(cpu=2, memory=4096, timeout=900, scaledown_window=60, max_containers=1)
+def build_market_conditioner_block(payload: dict) -> dict:
+    """Market blocks from the prep's sealed capture, off the 1-CPU/2-GB orchestrator."""
+    _setup_env()
+    from google.cloud import storage
+    from app.market_conditioner import build_blocks
+    return build_blocks(storage.Client().bucket(_get_gcs_bucket_name()), payload["prep_manifest"])
+
+
+@app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
+    cpu=2,
+    memory=4096,
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=21,   # 4 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
+)
+def train_wf_tree_market_challenger(payload: dict) -> dict:
+    """One tree model, one market arm, one fold; OOF under the slot alias."""
+    _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
+    from app.market_conditioner import challenger_identity, tree_challenger_result, tree_request_fields
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        identity = challenger_identity(payload)
+        result = _train(UniversalTrainRequest(**tree_request_fields(payload, identity)), market_conditioner=identity)
+        return {**tree_challenger_result(result, identity), "training_input_cache": cache_receipt}
+    except Exception as e:
+        return {"error": str(e)[:2000], "type": "wf_tree_market_challenger", "training_input_cache": cache_receipt}
+
+
+@app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
+    cpu=4,
+    memory=16384,
+    gpu="L4",
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=1,   # one extra L4 at most; folds run serially (~3 min each).
+)
+def train_tabm_market_challenger(payload: dict) -> dict:
+    """TabM, one market arm, one fold; OOF under the slot alias."""
+    _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
+    from app.market_conditioner import challenger_identity, tabm_challenger_payload, tabm_challenger_result
+    from app.tabm_training import train_tabm_universal as _train_tabm_universal
+    try:
+        identity = challenger_identity(payload)
+        result = _train_tabm_universal(tabm_challenger_payload(payload, identity), market_conditioner=identity)
+        return {**tabm_challenger_result(result, identity), "training_input_cache": cache_receipt}
+    except Exception as e:
+        return {"error": str(e)[:2000], "type": "tabm_market_challenger", "training_input_cache": cache_receipt}
+
+
 @app.function(
     cpu=1,
     memory=2048,
@@ -2954,16 +3010,23 @@ def _r33_outer_test_fold_evidence(profile_schema: str) -> bool:
 
 
 def _oof_challenger_slots(profile_schema: str) -> dict:
-    """R33 lifecycle challenger slots. Single source: app.challenger_models.LIFECYCLE_SLOTS
-    (W2, PR #71); until that module ships, R33 schedules no challenger slot."""
+    """R33 lifecycle challenger slots: app.challenger_models.LIFECYCLE_SLOTS (W2, PR #71) united with
+    app.market_conditioner.LIFECYCLE_SLOTS (W4(a)); a module that is absent or fails schedules none."""
     from app.formal_feature_contract import R33_PROFILE
     if profile_schema != R33_PROFILE:
         return {}
+    slots = {}
     try:
         from app.challenger_models import LIFECYCLE_SLOTS
+        slots.update(LIFECYCLE_SLOTS)
     except ImportError:
-        return {}
-    return LIFECYCLE_SLOTS
+        pass
+    try:
+        from app.market_conditioner import LIFECYCLE_SLOTS as MARKET_SLOTS
+        slots.update({name: spec for name, spec in MARKET_SLOTS.items() if name not in slots})
+    except Exception as exc:  # noqa: BLE001 - a challenger module never stops the release folds (R2).
+        print(f"[WF-Orchestrator] market conditioner slots unavailable: {exc}")
+    return slots
 
 
 def _oof_challenger_trainers(slots: dict | None = None) -> dict:
@@ -3063,8 +3126,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     }
     from app.oof_challengers import normalize_challengers, challenger_metric
     challenger_slots = _oof_challenger_slots(payload.get("model_profile_schema_version") or "")
-    # An explicit list (controller R33_OOF_CHALLENGER_MODELS) overrides the profile's slots.
-    challenger_models = normalize_challengers(payload.get("challenger_models") or list(challenger_slots), active8_models)
+    # An explicit list (controller R33_OOF_CHALLENGER_MODELS) overrides the profile's slots; the
+    # controller kill switch (R33_OOF_CHALLENGERS_DISABLED) runs none, since [] falls back to the slots.
+    challenger_models = ([] if payload.get("challenger_models_disabled") else
+                         normalize_challengers(payload.get("challenger_models") or list(challenger_slots), active8_models))
     if challenger_models:
         model_coverage["challenger_models"] = challenger_models
     concurrent = int(payload.get("concurrent_windows", 2))
@@ -3263,6 +3328,29 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         latest_date = max(filtered.keys())
         return {"history": filtered, **filtered[latest_date]}
 
+    market_state: dict = {}
+
+    async def _market_blocks() -> dict:
+        try:
+            return await build_market_conditioner_block.remote.aio({"prep_manifest": prep_manifest})
+        except Exception as exc:  # noqa: BLE001 - only the market challengers depend on it (R2).
+            return {"error": f"{type(exc).__name__}:{str(exc)[:300]}"}
+
+    async def _market_challenger(trainer, slot_payload: dict) -> dict:
+        """W4(a): waits for the shared block, then trains; bounded so a window never waits on it for long."""
+        from app.market_conditioner import CHALLENGER_BUDGET_S, conditioner_for_arm
+
+        async def _run() -> dict:
+            blocks = await asyncio.shield(market_state["blocks"])
+            conditioner, reason = conditioner_for_arm(slot_payload["market_conditioner_arm"], blocks)
+            if reason:
+                return {"unsupported": reason}
+            return await trainer.remote.aio({**slot_payload, "market_conditioner": conditioner})
+        try:
+            return await asyncio.wait_for(_run(), timeout=CHALLENGER_BUDGET_S)
+        except asyncio.TimeoutError:
+            return {"error": "market_challenger_budget_exceeded"}
+
     # 2026-04-19 N2: per-window FS gates tree training to eliminate look-ahead
     fs_max_rounds = int(payload.get("fs_max_rounds", 60))
     fs_force_refresh = bool(payload.get("fs_force_refresh", False))
@@ -3407,6 +3495,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         for name in challenger_models:
             if name in challenger_trainers:
                 trainer, slot_config = challenger_trainers[name]
+                if slot_config.get("market_conditioner_arm") and "blocks" in market_state:
+                    tasks.append(("challenger:" + name, _market_challenger(trainer, {
+                        **train_payload, **active8_model_payload(slot_config["challenger_model"], schema_version=profile_schema),
+                        **slot_config, "oof_challenger": True})))
+                    continue
                 # The slot trainer reports the model it resolved (e.g. LinearNeutralSize) in result["model"].
                 tasks.append(("challenger:" + name, trainer.remote.aio(
                     {**train_payload, **slot_config, "oof_challenger": True})))
@@ -3416,7 +3509,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
                 if kind.startswith("challenger:"):
-                    challenger_results[kind.removeprefix("challenger:")] = challenger_metric(r)
+                    challenger_results[kind.removeprefix("challenger:")] = (
+                        {"status": "unsupported", "reason": r["unsupported"]}
+                        if isinstance(r, dict) and r.get("unsupported") else challenger_metric(r))
                     continue
                 if isinstance(r, BaseException):
                     print(f"[WF-Orchestrator] w{wid} {kind} crashed: {r}")
@@ -3498,6 +3593,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 
     async def _orchestrate() -> list[dict]:
         sem = asyncio.Semaphore(concurrent)
+        if pending_windows and any((challenger_slots.get(name) or {}).get("payload_config", {}).get("market_conditioner_arm")
+                                   for name in challenger_models):
+            market_state["blocks"] = asyncio.ensure_future(_market_blocks())
 
         async def _bounded(w):
             async with sem:

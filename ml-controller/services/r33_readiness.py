@@ -162,15 +162,18 @@ def check_tabpack_closure_skipped() -> dict[str, Any]:
 
 
 def check_challenger_slots(roster: dict) -> dict[str, Any]:
-    from routers.walk_forward import _r33_challenger_models
+    from routers.walk_forward import _r33_challenger_models, _r33_challengers_disabled
 
     override = _r33_challenger_models()
     overlap = sorted(set(override) & set(roster["models"]))
+    disabled = _r33_challengers_disabled()
     return _check("challenger_slots", "fail" if overlap else "pass",
-                  resolution="controller_override" if override else "modal_lifecycle_slots",
+                  resolution="disabled" if disabled else "controller_override" if override else "modal_lifecycle_slots",
                   override_env="R33_OOF_CHALLENGER_MODELS", override=override, overlap_with_release=overlap,
+                  disabled_env="R33_OOF_CHALLENGERS_DISABLED", disabled=disabled,
                   note=("Unset override: the Modal orchestrator resolves app.challenger_models.LIFECYCLE_SLOTS "
-                        "(PR #71); without that module R33 runs no challenger. Unknown override names are "
+                        "(PR #71) and app.market_conditioner.LIFECYCLE_SLOTS (W4(a)); R33_OOF_CHALLENGERS_DISABLED=1 "
+                        "runs none. Unknown override names are "
                         "reported as unsupported challenger metrics and never block the release folds."))
 
 

@@ -130,7 +130,8 @@ class NativeReadCapabilities:
             headers['User-Agent'] = 'Mozilla/5.0'
         elif self.broker_url and url.startswith(self.broker_url + '/'):
             path = url[len(self.broker_url):]
-            batch = path in {'/orderbooks', '/quotes', '/snapshots'} and method == 'POST'
+            # /orderbook/watchlist only prewarms BidAsk streams (worker prewarmOddLotOrderbooks).
+            batch = path in {'/orderbooks', '/quotes', '/snapshots', '/orderbook/watchlist'} and method == 'POST'
             single = re.fullmatch(r'/(?:orderbook|quote)/[A-Za-z0-9]+(?:\?lot_type=(?:board_lot|odd_lot))?', path) and method == 'GET'
             momentum = re.fullmatch(r'/(?:snapshot/[A-Za-z0-9]{4,8}|trend/[A-Za-z0-9]{4,8}\?minutes=5)', path) and method == 'GET'
             kbars = self._kbars(path, method, body)

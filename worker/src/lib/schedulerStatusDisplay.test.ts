@@ -914,3 +914,39 @@ for (const status of ['triggered','skipped'] as const) {
     {id:'active8-oof-daily',group:'daily'},Date.parse('2026-10-30T12:00:00Z'))
   assert(pipeline.status === 'waiting', 'unfinished pipeline is waiting, not failed')
 }
+
+{
+  // 2026-11-02 is a Monday: an idle chain step waits, an idle watchdog has nothing pending.
+  const idle = (def: { id: string; group: 'pipeline_chain'; chainIndex: number }) => resolveSchedulerDisplayStatus({
+    def, nextRun: 'N/A', today: '2026-11-02', nowMs: Date.parse('2026-11-02T00:20:00.000Z'),
+  })
+  assert(idle({ id: 'finlab-backfill-watchdog', group: 'pipeline_chain', chainIndex: 3 }).status === 'sleep',
+    'an idle FinLab watchdog must not show as the waiting step of the chain')
+  assert(idle({ id: 'screener-v2-watchdog', group: 'pipeline_chain', chainIndex: 7 }).status === 'sleep',
+    'an idle screener watchdog must not show as waiting')
+  assert(idle({ id: 'update', group: 'pipeline_chain', chainIndex: 4 }).status === 'waiting',
+    'an idle weekday chain step still waits for its upstream')
+}
+
+{
+  // After the 14:20 dispatch the root is not rewritten until post-verify; its steps' logs keep it alive.
+  const root = {
+    task: 'evening-chain', status: 'running' as const, summary: 'parked', duration_ms: 0,
+    run_date: '2026-10-30', run_id: 'root', timestamp: '2026-11-01T23:34:37.000Z', wait_until: '2026-11-02T14:20:00+08:00',
+  }
+  const at = (heartbeatAt?: string) => resolveBusinessDateScopedChainDisplay({
+    def: { id: 'evening-chain', group: 'pipeline_chain', chainIndex: 2 },
+    chainStatusDate: '2026-10-30', today: '2026-11-02', exactLog: root, heartbeatAt,
+    nowMs: Date.parse('2026-11-02T09:00:00.000Z'),
+  })?.resolvedDisplay.status
+  assert(at('2026-11-02T08:30:00.000Z') === 'running', 'a step log 30m ago keeps the parked root running')
+  assert(at() === 'failed', 'with no step activity the root still turns stale 90m after the dispatch')
+  assert(at('2026-11-02T06:00:00.000Z') === 'failed', 'an old heartbeat cannot hide a stall after the dispatch')
+  const step = resolveBusinessDateScopedChainDisplay({
+    def: { id: 'verify-v2', group: 'pipeline_chain', chainIndex: 15 },
+    chainStatusDate: '2026-10-30', today: '2026-11-02', heartbeatAt: '2026-11-02T08:59:00.000Z',
+    exactLog: { ...root, task: 'verify-v2', wait_until: undefined, timestamp: '2026-11-02T06:30:00.000Z' },
+    nowMs: Date.parse('2026-11-02T09:00:00.000Z'),
+  })?.resolvedDisplay.status
+  assert(step === 'failed', 'the heartbeat applies only to the root, not to a stalled step')
+}

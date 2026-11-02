@@ -719,7 +719,13 @@ export function resolveSchedulerLogStatus(
   if (log.status === 'error') return { status: 'failed', staleRunning: false }
   if (log.status === 'skipped') return { status: 'skip', staleRunning: false }
   if (log.status === 'triggered' || log.status === 'running') {
-    const ageMs = logAgeMs(log, nowMs)
+    // Parked on a scheduled dispatch: waiting until then, and the stall SLA starts at the dispatch.
+    const waitUntilMs = parseLogTime(log.wait_until)
+    if (waitUntilMs != null && nowMs < waitUntilMs) return { status: 'waiting', staleRunning: false }
+    const ageMs = logAgeMs(
+      waitUntilMs != null && waitUntilMs > (parseLogTime(log.timestamp) ?? 0) ? { ...log, timestamp: log.wait_until! } : log,
+      nowMs,
+    )
     const slaMs = runningSlaMs(def)
     if (ageMs != null && ageMs > slaMs) {
       return {
@@ -733,7 +739,9 @@ export function resolveSchedulerLogStatus(
   return { status: null, staleRunning: false }
 }
 
-function inferIdleStatus(def: Pick<JobDef, 'group' | 'chainIndex'>, nextRun: string, today: string): SchedulerLastStatus {
+function inferIdleStatus(def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>, nextRun: string, today: string): SchedulerLastStatus {
+  // A watchdog acts only when its owner stalls; without a log of its own nothing is pending on it.
+  if (def.id.endsWith('-watchdog')) return 'sleep'
   if (nextRunTwDate(nextRun) === today) return 'waiting'
   if (def.group === 'pipeline_chain' && def.chainIndex != null && def.chainIndex > 1 && isWeekdayTw(today)) return 'waiting'
   return 'sleep'
@@ -849,6 +857,8 @@ export function resolveBusinessDateScopedChainDisplay(input: {
   chainStatusDate: string | null
   today: string
   exactLog?: CronLogEntry
+  /** Latest chain step log of this chain date; the root is alive while its steps keep writing. */
+  heartbeatAt?: string
   nowMs?: number
 }): { displayLog?: CronLogEntry; resolvedDisplay: SchedulerDisplayStatus } | null {
   const chainDate = String(input.chainStatusDate ?? '').trim()
@@ -869,7 +879,11 @@ export function resolveBusinessDateScopedChainDisplay(input: {
     }
   }
 
-  const resolved = resolveSchedulerLogStatus(exactLog, input.def, input.nowMs)
+  const heartbeatMs = input.def.id === 'evening-chain' ? parseLogTime(input.heartbeatAt) : null
+  const statusLog = heartbeatMs != null && heartbeatMs > (parseLogTime(exactLog.timestamp) ?? 0)
+    ? { ...exactLog, timestamp: String(input.heartbeatAt) }
+    : exactLog
+  const resolved = resolveSchedulerLogStatus(statusLog, input.def, input.nowMs)
   return {
     displayLog: exactLog,
     resolvedDisplay: {
@@ -1065,6 +1079,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       chainStatusDate: chainDisplayDate,
       today,
       exactLog: chainReplayLog,
+      heartbeatAt: chainDisplayDate === activeChainDate ? activeReplayHeartbeatAt : undefined,
     })
     let resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
     let displayLog = chainScopedDisplay ? chainScopedDisplay.displayLog : lastLog

@@ -1556,7 +1556,8 @@ async function handleSchedulerCallback(c: any) {
           // Serving was published before the open. Research and verification wait
           // for the 14:20 post-close dispatch, which queues this same post-pipeline owner.
           const { verifyServingOnlyCallback } = await import('../lib/postcloseResearch')
-          await verifyServingOnlyCallback(c.env, callbackRunDate, callbackRunId, body.serving_publication_checksum)
+          const dispatchAt = await verifyServingOnlyCallback(c.env, callbackRunDate, callbackRunId, body.serving_publication_checksum)
+          const dispatchNote = dispatchAt ? ` at ${dispatchAt.slice(0, 10)} ${dispatchAt.slice(11, 16)}` : ''
           const servingStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(c.env, 'ops'), {
             businessDate: callbackRunDate,
             stage: 'pipeline_execution',
@@ -1569,17 +1570,20 @@ async function handleSchedulerCallback(c: any) {
           const { resumeActive8PremarketTickets } = await import('../lib/active8PremarketWait')
           await resumeActive8PremarketTickets(c.env, callbackRunDate)
           await logAcceptedCallbackTask()
+          // The root stays running so the board keeps this chain date; wait_until tells the status
+          // reader it is parked on the dispatch, so its stall SLA starts there instead of now.
           await logSchedulerResult(c.env.KV, 'evening-chain', {
             status: 'running',
-            summary: `pipeline serving published; research waits for the after-close dispatch run_id=${callbackRunId}`,
+            summary: `pipeline serving published; research waits for the after-close dispatch${dispatchNote} run_id=${callbackRunId}`,
             duration_ms: 0,
             run_id: callbackRunId,
             run_date: callbackRunDate,
+            wait_until: dispatchAt,
             strict: true,
           }, c.env as any)
           await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
             status: 'waiting',
-            summary: `Serving published; research and verification wait for the after-close dispatch run_id=${callbackRunId}`,
+            summary: `Serving published; research and verification wait for the after-close dispatch${dispatchNote} run_id=${callbackRunId}`,
             duration_ms: 0,
             run_id: callbackRunId,
             run_date: callbackRunDate,

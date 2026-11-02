@@ -9,11 +9,11 @@
   - Kill switch: `R33_OOF_CHALLENGERS_DISABLED=1` on the controller runs no challenger at all (an empty `R33_OOF_CHALLENGER_MODELS` cannot do this; it falls back to the slots).
   - Tail cap and Modal RPCs: once the cap has closed no spawn RPC is sent (a resend included). A spawn still in flight at the cap may already have reached Modal: its handle is awaited for up to `CANCEL_TIMEOUT_S` and that input cancelled, so the publish waits at most `TAIL_CAP_S` + 2 x `CANCEL_TIMEOUT_S` (45 min + 120 s).
 
-## Serving parity (base 201cb5594 vs this branch)
+## Serving parity (base 6ba6cb41 vs this branch)
 
 ```
-python ml-service/scripts/r33_serving_parity.py --base 201cb5594 \
-  --manifest gs://stockvision-models/walk_forward/oof_cohorts/<cohort>/manifest.json --json out.json
+python ml-service/scripts/r33_serving_parity.py --base 6ba6cb41 \
+  [--manifest gs://stockvision-models/walk_forward/oof_cohorts/<cohort>/manifest.json] --json out.json
 ```
 
 The script is read-only (local CPU, GCS read only for `--manifest`) and runs in two parts.
@@ -26,33 +26,29 @@ The script is read-only (local CPU, GCS read only for `--manifest`) and runs in 
 2. Dynamic. It runs the shared code that is reachable from those roots, once in the base tree and once in the branch tree, in two isolated interpreters with the same frozen inputs:
    - the production rosters, run through `model_order` / `validate_order`;
    - `PROFILES131` membership and the `FEATURES131` hash;
-   - `assess_fold_forward_sources` on every window of a production OOF manifest;
-   - the `UniversalPrepRequest` defaults.
+   - `assess_fold_forward_sources` on every window of a production OOF manifest (`--manifest`);
+   - the `UniversalPrepRequest` defaults;
+   - `build_feature_matrix` on a frozen serving-shaped fixture, the serving feature context and its alignment, without `pit_contract_version`;
+   - the formal column lists: `FEATURE_COLS` as loaded at import and from a second `_load_formal_feature_cols()` call, `FEATURES131`, `TIMESFM_L175_FEATURE_COLS`, `OPTIONAL_FEATURE_COLS`, `CATBOOST_EXTRA_COLS` (count, sha256 and names), and the registry file each tree read, relative to its own root.
 
-Result on 2026-10-25 with cohort `active8-oof-r32-plan-a-2026-03-18-2026-09-22-known-2026-10-01`:
+Result on 2026-11-02 for the rel-1103 stack (`r33rel/stack-1103`), without `--manifest`:
 
-- `status: pass`.
-- 25 dynamic checks over 7 windows, with no differences. The base and branch output sha256 are both `14af252a…720c6e`.
-- The same result holds for the r128 core16 split-r135 cohort.
-- Of the 44 changed symbols, 8 are reachable from serving:
-  - 7 are covered by the dynamic run: `model_order`, `validate_order`, `R33_MODELS`, `PROFILES131`, `R33_PROFILE`, `assess_fold_forward_sources` and `UniversalPrepRequest`.
-  - 1 is proven inert for serving by code: `prep_universal_batch`. Its row slice at `universal_training.py:767-769` runs only when `feature_warmup_rows` is set. The default is 0 (`:87`), and the controller sets it only for R33 training prep (`r33_prep`, `retrain_trigger.py:1470, :2022, :2051`).
+- `status: pass`, `uncovered_reachable_changes: []`.
+- 39 dynamic checks, no differences. The base and branch output sha256 are both `44e968b7…e99358`. No manifest was given, so no fold window was checked (`windows_checked: 0`).
+- `FEATURE_COLS` is the same 137 names in the same order in both trees; each tree read `data/feature_registry/unified_feature_registry_v1.json` from its own root.
+- Of the 76 changed symbols, 7 are reachable from serving:
+  - 3 are covered by the dynamic run: `build_feature_matrix`; `_load_formal_feature_cols` and `FORMAL_FEATURE_DECLARATION` (W4a S1: the loader now also reads `market_conditioner_contract_v1.json` and fails closed when the count or the names sha differ; the list it returns is unchanged).
+  - 4 are proven inert for serving by code: `feature_definitions`, `_DEFINITION_FILES`, `_FEATURE_DEFINITIONS_SHA256`, `_DEFINED_FEATURES` in `app/pit_contract.py`. `build_feature_matrix` reads them only when `pit_contract_version` is not None (`features/__init__.py:215-219`); `PredictRequest` defaults it to None and the Worker does not send it.
 
-Every other changed line is training-only (new-file line numbers):
+Every other changed symbol is training-only:
 
-| File | Lines | Owner (training only) |
+| File | Symbols | Owner (training only) |
 |---|---|---|
-| `app/gnn_training.py` | 395-396, 452-454 | `train_graphsage_universal` |
-| `app/tabm_training.py` | 262-264, 328-329 | `train_tabm_universal` |
-| `app/neuralforecast_sequence_runtime.py` | 130, 579, 873-908, 935-959, 1311-1610 | `_resolve_nf_training_options`, `_train_dense_purged_oof`, `_make_nf_model`, `_train_nf`, `train_neuralforecast_sequence_artifact` |
-| `app/purged_cv.py` | 342-371 | `purged_explicit_walk_forward_indices` |
-| `app/timexer_job.py` | 29-32, 123-161 | `materialize_inputs` / `run` (reached only from `train_timexer_universal`; `timexer_universal_predict` uses `app.timexer_inference`) |
-| `app/timexer_training.py` | 38, 110-111, 221-222 | `load_windows`, `train` |
-| `app/training_finalizer.py` | 203, 273, 275 | `reduce_tree_model_child_results` |
-| `app/training_policy.py` | 675-679, 705-710, 967-968 | `build_group_train_payload`, `build_tree_model_child_payloads`, `UniversalTrainingPolicy` |
-| `app/universal_training.py` | 120-121, 187-276, 632, 687, 1008-1108, 1529, 1614-1616 | `UniversalTrainRequest`, `validate_immutable_oof_snapshot_for_registration`, `_save_oos_rank_artifact`, `train_universal_from_gcs` |
-| `app/full_fit_scope.py`, `app/timexer_cutoff.py`, `app/oof_challengers.py` | new | imported only by the training owners above |
-| `modal_app.py` | 735-964, 2577, 2622, 2658, 2908-2927, 3016-3440, 4012-4054 | `retrain_orchestrator`, `train_tree_models_split_parent`, `train_tree_models`, `train_wf_tree_window`, `_oof_challenger_*`, `walk_forward_orchestrator`, `train_patchtst_universal` |
+| `app/market_conditioner.py` | 58 (new module) | imported only by the market challenger functions and the orchestrator in `modal_app.py`, by `tabm_training` / `universal_training` (`apply_block`) and `training_policy` |
+| `app/tabm_training.py` | `train_tabm_universal` | TabM training |
+| `app/training_policy.py` | `MARKET_CONDITIONER_RELEASE_MODE`, `active8_family_feature_contract`, `build_model_feature_policy_metadata` | training policy |
+| `app/universal_training.py` | `_save_oos_rank_artifact`, `train_universal_from_gcs` | `train_universal_from_gcs` |
+| `modal_app.py` | `_oof_challenger_slots`, `build_market_conditioner_block`, `train_tabm_market_challenger`, `train_wf_tree_market_challenger`, `walk_forward_orchestrator` | the walk-forward orchestrator and its challengers |
 
 ## Readiness preflight
 

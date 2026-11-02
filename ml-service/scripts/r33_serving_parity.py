@@ -224,6 +224,19 @@ out["prep_pit_contract_none"] = (out["prep_request"].pop("pit_contract_version",
 out["prep_pit_variants_none"] = not out["prep_request"].pop("pit_variants", [])  # C28-02 P2 field, default []
 # C28-02: payloads without pit_contract_version keep the feature layer byte-identical.
 from app.features import build_feature_matrix
+# Formal137 column lists, as loaded at import and by a second call of the loader; the registry each
+# tree read is reported relative to the probe root, so both read their own data/feature_registry.
+from pathlib import Path
+import app.features as feats
+root = Path(sys.argv[1]).resolve().parent
+formal = {"FEATURE_COLS": feats.FEATURE_COLS, "loader": feats._load_formal_feature_cols(),
+          "FEATURES131": ffc.FEATURES131, "TIMESFM_L175_FEATURE_COLS": feats.TIMESFM_L175_FEATURE_COLS,
+          "OPTIONAL_FEATURE_COLS": feats.OPTIONAL_FEATURE_COLS, "CATBOOST_EXTRA_COLS": feats.CATBOOST_EXTRA_COLS}
+for name, cols in formal.items():
+    out[f"formal_cols:{name}"] = [len(cols), hashlib.sha256(json.dumps(list(cols)).encode()).hexdigest(), list(cols)]
+out["formal_cols:schema"] = [feats.FEATURE_SCHEMA, feats.FEATURE_SEMANTIC_VERSION]
+registry = next(p.resolve() for p in feats._registry_search_paths() if p.exists())
+out["formal_cols:registry"] = registry.relative_to(root).as_posix() if registry.is_relative_to(root) else "outside:" + str(registry)
 fx = inputs["feature_fixture"]
 for variant, prices in (("", fx["prices"]), ("dense_avg_price:", fx["prices_dense_avg"])):
     for historical in (False, True):
@@ -379,7 +392,10 @@ def main() -> int:
                # The context records the version the probe built features with (None) and the guard reads it.
                "_FeatureBatchContext",
                # C28-02 P2, run by the same probe (probes serving_pit_views, serving_pit_metrics).
-               "_feature_view", "_latest_feature_row", "_pit_serving_metrics"}
+               "_feature_view", "_latest_feature_row", "_pit_serving_metrics",
+               # W4a S1: FEATURE_COLS at import and a second loader call (probes formal_cols:*), each
+               # tree reading its own data/feature_registry (probe formal_cols:registry).
+               "FEATURE_COLS", "_load_formal_feature_cols", "FORMAL_FEATURE_DECLARATION"}
     r33_only = ("The controller sets it only when r33_prep = prep_only and not inference_only and profile == R33 "
                 "(ml-controller/routers/retrain_trigger.py:1497, :1936, :2072, :2109), so daily inference_only "
                 "prep never sees it.")

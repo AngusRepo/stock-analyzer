@@ -705,6 +705,14 @@ function logAgeMs(log?: CronLogEntry, nowMs = Date.now()): number | null {
   return Math.max(0, nowMs - ts)
 }
 
+// Once serving is published the root stays running, by design, until the next weekday's 14:20 after-close dispatch.
+const AFTER_CLOSE_WAIT_SUMMARY = /research waits for the after-close dispatch/
+function afterCloseWaitDeadlineMs(runDate: string): number {
+  const dispatch = new Date(`${runDate}T06:20:00.000Z`)
+  do dispatch.setUTCDate(dispatch.getUTCDate() + 1); while (!isWeekdayTw(dispatch.toISOString().slice(0, 10)))
+  return dispatch.getTime() + runningSlaMs({ id: 'evening-chain', group: 'pipeline_chain' })
+}
+
 export function resolveSchedulerLogStatus(
   log?: CronLogEntry,
   def?: Pick<JobDef, 'id' | 'group'>,
@@ -732,6 +740,11 @@ export function resolveSchedulerLogStatus(
   if (log.status === 'triggered' || log.status === 'running') {
     const ageMs = logAgeMs(log, nowMs)
     const slaMs = runningSlaMs(def)
+    const runDate = log.run_date || timestampTwDate(log.timestamp)
+    if (def?.id === 'evening-chain' && log.status === 'running' && AFTER_CLOSE_WAIT_SUMMARY.test(log.summary ?? '')
+      && runDate && ageMs != null && ageMs > slaMs && nowMs <= afterCloseWaitDeadlineMs(runDate)) {
+      return { status: 'waiting', staleRunning: false }
+    }
     if (ageMs != null && ageMs > slaMs) {
       return {
         status: 'failed',
@@ -758,14 +771,6 @@ export function schedulerSkipAttentionReason(log?: CronLogEntry): string | null 
 function triggeredDispatchRunId(log?: CronLogEntry): string | null | undefined {
   return log?.status === 'triggered'
     ? log.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(log.summary ?? '')?.[1] : null
-}
-
-// Once serving is published the root stays running, by design, until the next weekday's 14:20 after-close dispatch.
-const AFTER_CLOSE_WAIT_SUMMARY = /research waits for the after-close dispatch/
-function afterCloseWaitDeadlineMs(runDate: string): number {
-  const dispatch = new Date(`${runDate}T06:20:00.000Z`)
-  do dispatch.setUTCDate(dispatch.getUTCDate() + 1); while (!isWeekdayTw(dispatch.toISOString().slice(0, 10)))
-  return dispatch.getTime() + runningSlaMs({ id: 'evening-chain', group: 'pipeline_chain' })
 }
 
 export type SchedulerHistoryCell =
@@ -798,10 +803,6 @@ export function resolveSchedulerHistoryCell(input: {
     return { cell, evidenceAt: durable.lastRunAt, stuck: false }
   }
   const evidenceAt = log?.timestamp || null
-  if (def.id === 'evening-chain' && resolved.staleRunning && AFTER_CLOSE_WAIT_SUMMARY.test(log?.summary ?? '')
-    && nowMs <= afterCloseWaitDeadlineMs(log?.run_date ?? date)) {
-    return { cell: 'waiting', evidenceAt, stuck: false }
-  }
   switch (resolved.status) {
     case 'failed': return { cell: 'failed', evidenceAt, stuck: resolved.staleRunning }
     case 'running': return { cell: log?.status === 'triggered' ? 'triggered' : 'running', evidenceAt, stuck: false }
@@ -1147,12 +1148,14 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       cadenceCycleLog,
       nextRun,
       today,
+      nowMs,
     })
     const chainScopedDisplay = resolveBusinessDateScopedChainDisplay({
       def,
       chainStatusDate: chainDisplayDate,
       today,
       exactLog: chainReplayLog,
+      nowMs,
     })
     let resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
     let displayLog = chainScopedDisplay ? chainScopedDisplay.displayLog : lastLog

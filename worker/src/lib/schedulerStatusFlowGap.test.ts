@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import fs from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { getSchedulerStatus, inferShortRunConcern, resolveSchedulerLogStatus } from './schedulerStatus'
+import { buildEventsFromScheduler } from './observabilityEvents'
 import type { CronLogEntry } from './schedulerRunLogger'
 
 // FG-10: should-have-run work must not read as a neutral no-op, and the 7d strip,
@@ -151,10 +152,16 @@ test('M1: a root waiting for the after-close dispatch is not stuck and does not 
       assert.equal(morning.cell(id), 'none', `${id} has not been reached yet`)
     }
     assert.equal(morning.result.stats.failed24h, 0)
+    const root = morning.result.jobs.find((row) => row.id === 'evening-chain')!
+    assert.equal(root.lastStatus, 'waiting', 'the root row is waiting for the after-close dispatch, not failed')
+    const events = buildEventsFromScheduler({ generatedAt: '2026-11-03T02:00:00Z', jobs: morning.result.jobs as any })
+    assert.ok(!events.some((event) => event.evidence.task_id === 'evening-chain' && event.severity === 'error'),
+      'OBS does not report the after-close wait as an Evening Chain error')
     // Wed 11/04 10:00 TW: the 11/03 dispatch window plus SLA has passed with no progress.
     const late = await status('2026-11-04T02:00:00Z')
     assert.equal(late.cell('evening-chain'), 'failed', 'a wait that outlives the next dispatch window is stuck')
     assert.equal(late.result.stats.failed24h, 1)
+    assert.equal(late.result.jobs.find((row) => row.id === 'evening-chain')!.lastStatus, 'failed')
   } finally { f.sql.close() }
 })
 

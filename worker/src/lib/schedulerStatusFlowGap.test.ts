@@ -118,7 +118,8 @@ test('U5/U6/U7/U9/U16: the strip keeps in-flight, blocked, stuck and missing wor
     assert.equal(cells('update')['2026-10-28'], 'blocked')
     assert.equal(cells('model-ic-rolling')['2026-10-30'], 'triggered')
     assert.equal(cells('post-verify-chain')['2026-10-29'], 'failed', 'durable stage error outranks a stale KV triggered')
-    assert.equal(cells('verify-v2')['2026-10-27'], 'missing', 'a chain step with no receipt on a stuck chain date did not run')
+    assert.equal(cells('verify-v2')['2026-10-27'], 'none', 'a stuck root has not ended, so later steps are not judged missing')
+    assert.equal(cells('verify-v2')['2026-10-29'], 'missing', 'a chain step with no receipt after the root errored did not run')
     assert.equal(cells('verify-v2')['2026-10-28'], 'success')
     assert.equal(cells('verify-v2')['2026-10-30'], 'none', 'an in-flight chain has not reached later steps yet')
     assert.equal(cells('weekly-audit')['2026-10-27'], 'none', 'no receipt for a non-chain job is not a failure')
@@ -126,6 +127,53 @@ test('U5/U6/U7/U9/U16: the strip keeps in-flight, blocked, stuck and missing wor
     assert.equal(rootJob.rate7d, '0/3', 'stuck and failed roots count; in-flight does not')
     assert.ok(result.stats.successRate7d < 100, 'SLO cannot be 100% when nothing in the window succeeded cleanly')
     assert.equal(result.stats.failed24h, 2, 'replay-date failures within 24h and stuck roots count by run_date')
+  } finally { f.sql.close() }
+})
+
+test('M1: a root waiting for the after-close dispatch is not stuck and does not mark later steps missing', async () => {
+  const f = fixture()
+  try {
+    f.daily('2026-11-02', [
+      { task: 'evening-chain', status: 'running', timestamp: '2026-11-02T15:30:00Z', run_id: 'r1102',
+        summary: 'pipeline serving published; research waits for the after-close dispatch run_id=r1102' },
+      { task: 'post-pipeline-chain', status: 'waiting', timestamp: '2026-11-02T15:30:00Z',
+        summary: 'Serving published; research and verification wait for the after-close dispatch run_id=r1102' },
+    ])
+    const status = async (iso: string) => {
+      const result = await getSchedulerStatus(f.env, iso.slice(0, 10), Date.parse(iso))
+      const cell = (id: string) => result.jobs.find((row) => row.id === id)!.history7d[result.dates.indexOf('2026-11-02')]
+      return { result, cell }
+    }
+    // Tue 11/03 10:00 TW: the 14:20 after-close dispatch has not come yet.
+    const morning = await status('2026-11-03T02:00:00Z')
+    assert.equal(morning.cell('evening-chain'), 'waiting')
+    for (const id of ['verify-v2', 'post-verify-chain', 'strategy-learning']) {
+      assert.equal(morning.cell(id), 'none', `${id} has not been reached yet`)
+    }
+    assert.equal(morning.result.stats.failed24h, 0)
+    // Wed 11/04 10:00 TW: the 11/03 dispatch window plus SLA has passed with no progress.
+    const late = await status('2026-11-04T02:00:00Z')
+    assert.equal(late.cell('evening-chain'), 'failed', 'a wait that outlives the next dispatch window is stuck')
+    assert.equal(late.result.stats.failed24h, 1)
+  } finally { f.sql.close() }
+})
+
+test('M2: a stuck run counts toward failed24h only until a later run of the job succeeds', async () => {
+  const f = fixture()
+  try {
+    f.daily('2026-10-28', [
+      { task: 'daily-report', status: 'running', timestamp: '2026-10-28T10:00:00Z', summary: 'started (background) run_id=x' },
+    ])
+    const nowIso = '2026-11-03T02:00:00Z'
+    const stuck = await getSchedulerStatus(f.env, '2026-11-03', Date.parse(nowIso))
+    assert.equal(stuck.stats.failed24h, 1, 'nothing has replaced the stuck run yet')
+    f.daily('2026-11-03', [
+      { task: 'daily-report', status: 'success', timestamp: '2026-11-03T01:00:00Z', summary: 'ok' },
+    ])
+    const replaced = await getSchedulerStatus(f.env, '2026-11-03', Date.parse(nowIso))
+    const job = replaced.jobs.find((row) => row.id === 'daily-report')!
+    assert.equal(job.history7d[0], 'failed', 'the strip still shows the stuck run')
+    assert.equal(replaced.stats.failed24h, 0)
   } finally { f.sql.close() }
 })
 

@@ -760,6 +760,14 @@ function triggeredDispatchRunId(log?: CronLogEntry): string | null | undefined {
     ? log.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(log.summary ?? '')?.[1] : null
 }
 
+// Once serving is published the root stays running, by design, until the next weekday's 14:20 after-close dispatch.
+const AFTER_CLOSE_WAIT_SUMMARY = /research waits for the after-close dispatch/
+function afterCloseWaitDeadlineMs(runDate: string): number {
+  const dispatch = new Date(`${runDate}T06:20:00.000Z`)
+  do dispatch.setUTCDate(dispatch.getUTCDate() + 1); while (!isWeekdayTw(dispatch.toISOString().slice(0, 10)))
+  return dispatch.getTime() + runningSlaMs({ id: 'evening-chain', group: 'pipeline_chain' })
+}
+
 export type SchedulerHistoryCell =
   | 'success' | 'failed' | 'running' | 'triggered' | 'waiting' | 'blocked' | 'attention' | 'missing' | 'skip' | 'none'
 // Cells where a run was due: SLO counts them; in-flight, no-op and no-receipt cells are not judged yet.
@@ -790,15 +798,21 @@ export function resolveSchedulerHistoryCell(input: {
     return { cell, evidenceAt: durable.lastRunAt, stuck: false }
   }
   const evidenceAt = log?.timestamp || null
+  if (def.id === 'evening-chain' && resolved.staleRunning && AFTER_CLOSE_WAIT_SUMMARY.test(log?.summary ?? '')
+    && nowMs <= afterCloseWaitDeadlineMs(log?.run_date ?? date)) {
+    return { cell: 'waiting', evidenceAt, stuck: false }
+  }
   switch (resolved.status) {
     case 'failed': return { cell: 'failed', evidenceAt, stuck: resolved.staleRunning }
     case 'running': return { cell: log?.status === 'triggered' ? 'triggered' : 'running', evidenceAt, stuck: false }
     case 'skip': return { cell: schedulerSkipAttentionReason(log) ? 'attention' : 'skip', evidenceAt, stuck: false }
     case 'success': case 'waiting': case 'blocked': return { cell: resolved.status, evidenceAt, stuck: false }
   }
-  // A chain step with no receipt on a date whose root ended (or got stuck) never ran.
-  const root = resolveSchedulerLogStatus(input.rootLog, { id: 'evening-chain', group: 'pipeline_chain' }, nowMs).status
-  const due = def.id !== 'evening-chain' && CHAIN_STEP_IDS.includes(def.id) && (root === 'success' || root === 'failed')
+  // A chain step with no receipt on a date whose root really ended (success, or a recorded error) never ran.
+  // A stuck or waiting root has not ended, so its later steps are not judged yet.
+  const root = resolveSchedulerLogStatus(input.rootLog, { id: 'evening-chain', group: 'pipeline_chain' }, nowMs)
+  const due = def.id !== 'evening-chain' && CHAIN_STEP_IDS.includes(def.id)
+    && (root.status === 'success' || (root.status === 'failed' && !root.staleRunning))
   return { cell: due ? 'missing' : 'none', evidenceAt: null, stuck: false }
 }
 
@@ -1324,9 +1338,12 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
     if (job.statusAuthority === 'durable_pipeline_stage' && ['news-analyst','us-leading'].includes(job.id)
       && job.statusRunDate === today) return job.lastStatus === 'error'
     if (todayLog?.status === 'error') return true
-    // By run_date: a replay-date failure seen in the last 24h, or a run still stuck past its SLA.
-    return (historyCellsByJob.get(job.id) ?? []).some(({ cell, evidenceAt, stuck }) => cell === 'failed'
-      && (stuck || nowMs - (parseLogTime(evidenceAt ?? undefined) ?? Number.NEGATIVE_INFINITY) <= 24 * 3600_000))
+    // By run_date: a replay-date failure seen in the last 24h, or a run still stuck past its SLA
+    // that no later successful run of the job has replaced (cells run newest first).
+    const cells = historyCellsByJob.get(job.id) ?? []
+    return cells.some(({ cell, evidenceAt, stuck }, index) => cell === 'failed' && (stuck
+      ? !cells.slice(0, index).some((later) => later.cell === 'success')
+      : nowMs - (parseLogTime(evidenceAt ?? undefined) ?? Number.NEGATIVE_INFINITY) <= 24 * 3600_000))
   }).length
 
   const allRuns = jobs.flatMap((job) => job.history7d.filter((item) => SLO_COUNTED_CELLS.has(item)))

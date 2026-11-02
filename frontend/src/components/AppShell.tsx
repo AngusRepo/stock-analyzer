@@ -9,6 +9,7 @@ import {
   FlaskConical,
   GitBranch,
   LayoutDashboard,
+  ListTodo,
   LogIn,
   LogOut,
   Menu,
@@ -34,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
   { label: '流程追蹤', icon: GitBranch, href: '/pipeline', adminOnly: true },
   { label: '模型池', icon: Boxes, href: '/model-pool', adminOnly: true },
+  { label: '待辦', icon: ListTodo, href: '/todo', adminOnly: true },
 ]
 
 function isActivePath(itemHref: string, currentPath: string) {

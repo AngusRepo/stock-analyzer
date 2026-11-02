@@ -2,6 +2,7 @@ import { ArrowRight } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { SchedulerJob } from '@/lib/api'
 import { pipelinePhaseName } from '@/lib/pipelineStageCards'
+import { attentionSkipReason } from '@/lib/schedulerDisplay'
 import JobRunTiming from './observability/JobRunTiming'
 import { stageReceiptDateLabel } from './observability/dailyReadinessPhases'
 import { WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
@@ -66,6 +67,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
 }) {
   const Element = onSelect ? 'button' : 'div'
   const phaseLabel = (job?.stageCard ? job.summary : null) ?? matureEvidencePhaseLabel(job) ?? (job?.id === 'pipeline' ? pipelinePreparationLabel(job) : null)
+    ?? attentionSkipReason(job)
   return <Element data-stage={id} data-chain-stage={onSelect ? id : undefined}
     className={'min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3' + (overview ? ` readiness-task is-${visualState}${justCompleted ? ' just-completed' : ''}` : '') + (onSelect ? ' w-full text-left focus-visible:outline-2 focus-visible:outline-amber-300' : '') + (selected ? ' ring-1 ring-slate-400' : '')}
     onClick={onSelect} aria-current={current ? 'step' : undefined}
@@ -79,7 +81,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
       </span>
     </> : <>
     <p className="text-xs text-slate-100">{title}</p>
-    <div className="mt-2"><WorkstationPill tone={statusTone ?? tone(job?.lastStatus)}>{statusText || label(job?.lastStatus)}</WorkstationPill></div>
+    <div className="mt-2"><WorkstationPill tone={statusTone ?? (attentionSkipReason(job) ? 'warn' : tone(job?.lastStatus))}>{statusText || label(job?.lastStatus)}</WorkstationPill></div>
     <p className="mt-2 text-[10px] text-[#8a92a6]">{stageReceiptDateLabel(id, job?.statusRunDate)}</p>
     {detail && <p className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{detail}</p>}
     {job?.summary && <p className="mt-2 line-clamp-2 break-words text-[10px] leading-4 text-[#70809b]" title={job.summary}>{job.summary}</p>}

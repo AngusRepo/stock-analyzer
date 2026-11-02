@@ -22,8 +22,8 @@ const TEXT_FIELDS = ['title', 'section', 'owner', 'deadline', 'content', 'depend
 const DATE_FIELDS = ['release_date'] as const
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 // Ids reuse tracker ids such as 'K11#2', 'D9／D-5', 'B3 A6（MEM-M3）': any Unicode except ASCII
-// / ? % \ and control characters, no leading/trailing whitespace, 1-64 characters.
-const ID_FORBIDDEN_RE = /[\/?%\\\u0000-\u001f\u007f]/
+// / ? % \, control, zero-width and bidi-override characters, no leading/trailing whitespace, 1-64 characters.
+const ID_FORBIDDEN_RE = /[\/?%\\\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/
 
 export function validTodoCardId(id: string): boolean {
   const length = [...id].length
@@ -142,7 +142,7 @@ async function actorOf(c: any): Promise<string> {
   const email = typeof payload?.email === 'string' ? payload.email.trim() : ''
   if (email) return email.slice(0, 200)
   const sub = payload?.sub
-  return typeof sub === 'string' || typeof sub === 'number' ? `user:${sub}` : 'service'
+  return typeof sub === 'string' || typeof sub === 'number' ? `user:${sub}` : 'unknown'
 }
 
 function isCheckViolation(error: unknown): boolean {

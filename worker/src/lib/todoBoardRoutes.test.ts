@@ -187,7 +187,7 @@ test('duplicate PR numbers, archived cards and a racing CHECK violation are reje
 test('tracker ids with #, spaces and full-width characters round-trip through encoded PATCH and archive', async () => {
   const { sql, call } = harness()
   for (const id of ['K11#2', 'D9／D-5', 'B3 A6（MEM-M3）', 'E4-a～E4-l', 'O06＋M10#2']) assert.equal(validTodoCardId(id), true, id)
-  for (const id of ['', ' K1', 'K1 ', 'D9/D-5', 'a?b', '50%', 'a\\b', 'a\u0007b', 'x'.repeat(65)]) assert.equal(validTodoCardId(id), false, JSON.stringify(id))
+  for (const id of ['', ' K1', 'K1 ', 'D9/D-5', 'a?b', '50%', 'a\\b', 'a\u0007b', 'K11\u200b', '\u202eK11', 'K\ufeff1', 'x'.repeat(65)]) assert.equal(validTodoCardId(id), false, JSON.stringify(id))
   assert.equal(validTodoCardId('全'.repeat(64)), true)
   assert.equal((await call('POST', '/api/admin/todo/cards', { id: 'D9/D-5', title: 'ascii slash' })).json.error, 'id_invalid')
   assert.equal((await call('POST', '/api/admin/todo/cards', { id: ' K11', title: 'leading space' })).json.error, 'id_invalid')

@@ -217,6 +217,8 @@
 .obs-chain__connector.is-not_started { background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 9px); }
 .obs-chain__connector.is-attention { background: var(--chart-2); }
 .obs-chain__connector.is-attention::before { border-left-color: var(--chain-amber); }
+.obs-chain__connector.is-skipped { background: repeating-linear-gradient(90deg, var(--chain-slate) 0 3px, transparent 3px 8px); }
+.obs-chain__connector.is-skipped::before { border-left-color: var(--chain-slate); }
 
 .obs-chain__column {
   position: relative;
@@ -451,6 +453,7 @@
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-waiting::before { border-top-color: var(--chain-amber); }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-blocked::before { border-top-color: var(--chain-red); }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-not_started::before { border-top-color: var(--chain-slate); }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-skipped::before { border-top-color: var(--chain-slate); }
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch { grid-template-columns: 42px minmax(0,1fr); width: 100%; align-items: center; justify-items: start; gap: 9px; border: 1px solid var(--border); border-radius: 11px; padding: 8px 9px; background: color-mix(in srgb, var(--sv-bg-1) 70%, transparent); text-align: left; }
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__ordinal { position: absolute; top: 5px; left: 6px; margin: 0; font-size: .8125rem; }
   .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__orb { width: 40px; height: 40px; }
@@ -644,6 +647,7 @@
   .obs-chain__connector.is-blocked::before { border-top-color: var(--chain-red); border-left-color: transparent; }
   .obs-chain__connector.is-not_started::before { border-top-color: var(--chain-slate); border-left-color: transparent; }
   .obs-chain__connector.is-attention::before { border-top-color: var(--chain-amber); border-left-color: transparent; }
+  .obs-chain__connector.is-skipped::before { border-top-color: var(--chain-slate); border-left-color: transparent; }
   .obs-chain__column, .obs-chain__column.is-parallel { width: 100%; gap: 8px; padding: 0; }
   .obs-chain__column.is-parallel::before { top: 24px; bottom: 24px; left: 28px; }
   .obs-chain__stage { grid-template-columns: 52px minmax(0,1fr); width: 100%; align-items: center; justify-items: start; gap: 11px; border: 1px solid var(--border); border-radius: 13px; padding: 10px 12px; background: color-mix(in srgb, var(--sv-bg-1) 82%, transparent); text-align: left; }

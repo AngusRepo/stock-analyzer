@@ -72,3 +72,10 @@ test('U1/U2/U5: SchedulerPage rows use the shared replay, attention and strip he
     assert.ok(page.includes(helper), `SchedulerPage must use ${helper}`)
   }
 })
+
+test('U11: the skipped and attention connector states have their own styles', () => {
+  const css = fs.readFileSync(new URL('../src/components/observability/ExecutionChainPanel.css', import.meta.url), 'utf8')
+  for (const state of ['skipped', 'attention']) {
+    assert.ok(css.includes(`.obs-chain__connector.is-${state} {`), `connector is-${state} needs a style`)
+  }
+})

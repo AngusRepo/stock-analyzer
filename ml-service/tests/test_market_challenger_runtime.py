@@ -281,6 +281,86 @@ def test_a_hung_modal_rpc_does_not_hold_the_tail_cap_open(monkeypatch, rpc, stag
     asyncio.run(scenario())
 
 
+class RpcTrainer:
+    """Spawn behaves like a real RPC: the request is sent on its first step and the handle arrives later, once
+    `handle_after` is set (10 ms after it). `cancel_after` holds every cancel RPC until it is set (None: answers at once)."""
+
+    def __init__(self, handle_after, cancel_after=None, get_raises_first=False):
+        self.log, self.n = [], 0
+        self.handle_after, self.cancel_after, self.get_raises_first = handle_after, cancel_after, get_raises_first
+        self.spawn = SimpleNamespace(aio=self._spawn)
+
+    async def _spawn(self, payload):
+        self.n += 1
+        k, log = self.n, self.log
+        log.append(("sent", k))
+        await self.handle_after.wait()
+        await asyncio.sleep(0.01)  # the network round trip: the handle arrives 10 ms after the event
+        log.append(("handle", k))
+        raises, cancel_after = self.get_raises_first and k == 1, self.cancel_after
+
+        async def get():
+            if raises:
+                raise RuntimeError("input preempted")
+            await asyncio.Event().wait()
+
+        async def cancel(terminate_containers=False):
+            log.append(("cancel", k, terminate_containers))
+            if cancel_after is not None:
+                await cancel_after.wait()
+                await asyncio.sleep(0)
+        return SimpleNamespace(get=SimpleNamespace(aio=get), cancel=SimpleNamespace(aio=cancel))
+
+
+def _tail_gate():
+    gate = mc.GpuGate(1, backlog=no_backlog)
+    gate.track(1, gpu=[])
+    gate.champion_done.set()
+    return gate
+
+
+def test_no_spawn_rpc_is_sent_once_the_tail_cap_has_closed(monkeypatch):
+    """Minor-G4-1 (2): attempt 1 raises before the cap and its cancel RPC spans the cap; the resend sends nothing."""
+    monkeypatch.setattr(mc, "TAIL_CAP_S", 0.05)
+
+    async def scenario():
+        gate = _tail_gate()
+        handle_now = asyncio.Event()
+        handle_now.set()
+        trainer = RpcTrainer(handle_now, cancel_after=gate.closed, get_raises_first=True)
+        result = await asyncio.wait_for(mc.run_challenger(
+            trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((0, 1))), timeout=1)
+        assert gate.closed.is_set() and not gate._inflight
+        assert trainer.log == [("sent", 1), ("handle", 1), ("cancel", 1, True)]
+        assert result == {"unsupported": "market_challenger_budget_exceeded:waiting_for_gpu:tail_cap", "attempts": 1}
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cancel_hangs", [False, True])
+def test_a_spawn_in_flight_at_the_tail_cap_is_cancelled_once_its_handle_arrives(monkeypatch, cancel_hangs):
+    """Minor-G4-1 (1): the request reached Modal before the cap and its handle arrives after it. The input is
+    cancelled through that handle; the publish waits at most the cap + 2 x CANCEL_TIMEOUT_S (handle, cancel)."""
+    monkeypatch.setattr(mc, "TAIL_CAP_S", 0.05)
+    monkeypatch.setattr(mc, "CANCEL_TIMEOUT_S", 0.1)
+
+    async def scenario():
+        gate = _tail_gate()
+        trainer = RpcTrainer(gate.closed, cancel_after=asyncio.Event() if cancel_hangs else None)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        result = await asyncio.wait_for(mc.run_challenger(
+            trainer, payload("mkt9", 1), asyncio.ensure_future(ready_blocks()), budget_s=None, gate=gate,
+            ticket=gate.ticket((0, 1))), timeout=1)
+        elapsed = loop.time() - start
+        assert trainer.log == [("sent", 1), ("handle", 1), ("cancel", 1, True)]
+        assert result == {"unsupported": "market_challenger_budget_exceeded:spawning:tail_cap", "attempts": 1}
+        assert not gate._inflight
+        # The handle arrives 10 ms after the cap; a hung cancel RPC adds CANCEL_TIMEOUT_S at most.
+        assert elapsed < 0.05 + 0.01 + (0.1 if cancel_hangs else 0) + 0.04
+    asyncio.run(scenario())
+
+
 def test_unsupported_arm_is_never_spawned():
     async def scenario():
         trainer = FakeTrainer()

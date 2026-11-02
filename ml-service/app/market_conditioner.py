@@ -508,8 +508,16 @@ async def _first(*awaitables) -> None:
 
 
 async def _until(awaitable, closed, deadline):
-    """(True, result) if `awaitable` finishes first; (False, None) at the deadline or once `closed` is set."""
+    """(True, result) if `awaitable` finishes first; (False, None) at the deadline or once `closed` is set.
+
+    Once `closed` is set the awaitable is not started at all, so no spawn RPC is sent after the cap."""
     import asyncio
+    if closed is not None and closed.is_set():
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        elif asyncio.isfuture(awaitable):
+            awaitable.cancel()
+        return False, None
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(awaitable)
     waiters = [asyncio.ensure_future(closed.wait())] if closed is not None else []
@@ -536,9 +544,25 @@ async def _cancel(call) -> None:
 async def _call_once(trainer, payload: dict, closed, deadline):
     """(True, result) once the call settles, (False, stage) at the deadline or the cap; raises what the call raises.
 
-    A spawn left unanswered at the cap is dropped; there is no handle to cancel."""
-    ok, call = await _until(trainer.spawn.aio(payload), closed, deadline)
+    A spawn RPC still in flight at the deadline or the cap may already have reached Modal: its handle is awaited
+    for up to CANCEL_TIMEOUT_S and that input cancelled (another CANCEL_TIMEOUT_S at most)."""
+    import asyncio
+    spawn = None
+
+    async def _spawn():
+        nonlocal spawn
+        spawn = asyncio.ensure_future(trainer.spawn.aio(payload))
+        return await asyncio.shield(spawn)
+    ok, call = await _until(_spawn(), closed, deadline)
     if not ok:
+        if spawn is not None:
+            try:
+                call = await asyncio.wait_for(asyncio.shield(spawn), CANCEL_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 - TimeoutError too: no handle, nothing to cancel.
+                spawn.cancel()
+                print(f"[MarketChallenger] spawn at the cap left no handle: {type(exc).__name__}: {exc}")
+            else:
+                await _cancel(call)
         return False, "spawning"
     settled = False
     try:

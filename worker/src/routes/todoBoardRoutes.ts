@@ -14,13 +14,21 @@ export const TODO_READY_ERROR = 'todo_ready_requires_release_date_and_prs'
 export type TodoPr = { number: number; title: string; summary: string }
 
 const LIMITS = {
-  id: 64, title: 300, section: 120, owner: 120, content: 20_000, depends_on: 500, source: 500,
+  id: 64, title: 300, section: 120, owner: 120, deadline: 120, content: 20_000, depends_on: 500, source: 500,
   pr_title: 300, pr_summary: 4_000, prs: 50,
 } as const
-const TEXT_FIELDS = ['title', 'section', 'owner', 'content', 'depends_on', 'source'] as const
-const DATE_FIELDS = ['deadline', 'release_date'] as const
+// deadline is free text (e.g. 'K18-B 後', '11/5 月訓前'); release_date must stay YYYY-MM-DD.
+const TEXT_FIELDS = ['title', 'section', 'owner', 'deadline', 'content', 'depends_on', 'source'] as const
+const DATE_FIELDS = ['release_date'] as const
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
-const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-]*$/
+// Ids reuse tracker ids such as 'K11#2', 'D9／D-5', 'B3 A6（MEM-M3）': any Unicode except ASCII
+// / ? % \ and control characters, no leading/trailing whitespace, 1-64 characters.
+const ID_FORBIDDEN_RE = /[\/?%\\\u0000-\u001f\u007f]/
+
+export function validTodoCardId(id: string): boolean {
+  const length = [...id].length
+  return length >= 1 && length <= LIMITS.id && id === id.trim() && !ID_FORBIDDEN_RE.test(id)
+}
 
 type CardRow = {
   id: string; title: string; lane: TodoLane; position: number; section: string | null; owner: string | null
@@ -177,8 +185,8 @@ todoBoardRoutes.post('/api/admin/todo/cards', async (c) => {
   if (!db) return c.json({ error: 'ops_db_unavailable' }, 503)
   const body = await readJson(c)
   if (!body) return c.json({ error: 'invalid_json_body' }, 400)
-  const id = typeof body.id === 'string' ? body.id.trim() : ''
-  if (!id || id.length > LIMITS.id || !ID_RE.test(id)) return c.json({ error: 'id_invalid' }, 400)
+  const id = typeof body.id === 'string' ? body.id : ''
+  if (!validTodoCardId(id)) return c.json({ error: 'id_invalid' }, 400)
   let fields: CardFields
   try { fields = parseFields(body, true) } catch (error) {
     if (error instanceof ValidationError) return c.json({ error: error.message }, 400)

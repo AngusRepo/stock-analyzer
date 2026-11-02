@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { Hono } from 'hono'
 import { signJWT } from './auth'
-import { TODO_READY_ERROR, todoBoardRoutes } from '../routes/todoBoardRoutes'
+import { TODO_READY_ERROR, todoBoardRoutes, validTodoCardId } from '../routes/todoBoardRoutes'
 
 const MIGRATION = new URL('../../domain-migrations/ops/0024_todo_board.sql', import.meta.url)
 
@@ -67,7 +67,7 @@ test('create, duplicate id, ready gate, events, archive', async () => {
   const duplicate = await call('POST', '/api/admin/todo/cards', { id: 'K15', title: 'again' })
   assert.equal(duplicate.status, 409)
 
-  const badDate = await call('PATCH', '/api/admin/todo/cards/K15', { deadline: '2026-13-01' })
+  const badDate = await call('PATCH', '/api/admin/todo/cards/K15', { release_date: '2026-13-01' })
   assert.equal(badDate.status, 400)
   const badPr = await call('PATCH', '/api/admin/todo/cards/K15', { prs: [{ number: 0, title: 'x', summary: '' }] })
   assert.equal(badPr.status, 400)
@@ -182,4 +182,32 @@ test('duplicate PR numbers, archived cards and a racing CHECK violation are reje
   assert.equal(restored.status, 200)
   assert.equal(restored.json.card.archived, false)
   assert.equal((await call('PATCH', '/api/admin/todo/cards/R1', { title: 'renamed' })).status, 200)
+})
+
+test('tracker ids with #, spaces and full-width characters round-trip through encoded PATCH and archive', async () => {
+  const { sql, call } = harness()
+  for (const id of ['K11#2', 'D9／D-5', 'B3 A6（MEM-M3）', 'E4-a～E4-l', 'O06＋M10#2']) assert.equal(validTodoCardId(id), true, id)
+  for (const id of ['', ' K1', 'K1 ', 'D9/D-5', 'a?b', '50%', 'a\\b', 'a\u0007b', 'x'.repeat(65)]) assert.equal(validTodoCardId(id), false, JSON.stringify(id))
+  assert.equal(validTodoCardId('全'.repeat(64)), true)
+  assert.equal((await call('POST', '/api/admin/todo/cards', { id: 'D9/D-5', title: 'ascii slash' })).json.error, 'id_invalid')
+  assert.equal((await call('POST', '/api/admin/todo/cards', { id: ' K11', title: 'leading space' })).json.error, 'id_invalid')
+
+  for (const id of ['K11#2', 'D9／D-5', 'B3 A6（MEM-M3）']) {
+    assert.equal((await call('POST', '/api/admin/todo/cards', { id, title: id, deadline: 'K18-B 後' })).status, 201, id)
+    const patched = await call('PATCH', `/api/admin/todo/cards/${encodeURIComponent(id)}`, { lane: 'doing', deadline: '11/5 月訓前' })
+    assert.equal(patched.status, 200, id)
+    assert.equal(patched.json.card.id, id)
+    assert.equal(patched.json.card.deadline, '11/5 月訓前')
+    const archived = await call('POST', `/api/admin/todo/cards/${encodeURIComponent(id)}/archive`)
+    assert.equal(archived.status, 200, id)
+    assert.equal(archived.json.card.archived, true)
+  }
+  const rows = sql.prepare("SELECT id, lane, deadline, archived FROM todo_cards ORDER BY id").all() as any[]
+  assert.deepEqual(rows.map((r) => [r.id, r.lane, r.deadline, r.archived]).sort(), [
+    ['B3 A6（MEM-M3）', 'doing', '11/5 月訓前', 1], ['D9／D-5', 'doing', '11/5 月訓前', 1], ['K11#2', 'doing', '11/5 月訓前', 1],
+  ].sort())
+  assert.equal((await call('POST', '/api/admin/todo/cards', { id: 'K12#3', title: 't', deadline: 'x'.repeat(120) })).status, 201)
+  const tooLong = await call('PATCH', `/api/admin/todo/cards/${encodeURIComponent('K12#3')}`, { deadline: 'x'.repeat(121) })
+  assert.equal(tooLong.status, 400)
+  assert.equal(tooLong.json.error, 'deadline_too_long')
 })

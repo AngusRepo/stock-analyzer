@@ -267,7 +267,7 @@ function CardEditor({
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {creating && (
             <label className={labelClass}>ID
-              <input className={inputClass} value={draft.id} maxLength={64} onChange={(e) => set('id', e.target.value)} placeholder="K15 / FG-02" />
+              <input className={inputClass} value={draft.id} maxLength={64} onChange={(e) => set('id', e.target.value)} placeholder="K15、FG-02、D9／D-5" />
             </label>
           )}
           <label className={`${labelClass} ${creating ? '' : 'sm:col-span-2'}`}>標題
@@ -285,7 +285,7 @@ function CardEditor({
             <input className={inputClass} value={draft.owner} maxLength={120} onChange={(e) => set('owner', e.target.value)} />
           </label>
           <label className={labelClass}>Deadline
-            <input type="date" className={inputClass} value={draft.deadline} onChange={(e) => set('deadline', e.target.value)} />
+            <input className={inputClass} value={draft.deadline} maxLength={120} placeholder="2026-11-05 或 K18-B 後" onChange={(e) => set('deadline', e.target.value)} />
           </label>
           <label className={labelClass}>預計上線日
             <input type="date" className={inputClass} value={draft.release_date} onChange={(e) => set('release_date', e.target.value)} />

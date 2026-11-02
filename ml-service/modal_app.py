@@ -4911,6 +4911,9 @@ def finlab_v4_backfill(payload: dict) -> dict:
 # memory of a 3y capture was never measured; the 16 GiB request covers the
 # measured broker-normalize delta (+1.96 GB on 20M rows) plus the six lanes'
 # frames (~30M raw rows in trial d) with room, and peak RSS is returned.
+# nonpreemptible: CPU-only function (Modal bills CPU/memory at 3x list); a
+# preemption restart would rerun hours of capture. A restart of the same call
+# still re-enters through the run-id claim.
 @app.function(
     cpu=2,
     memory=16384,
@@ -4918,6 +4921,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
     scaledown_window=60,
     max_containers=1,
     retries=0,
+    nonpreemptible=True,
 )
 def finlab_v4_training_capture(payload: dict) -> dict:
     """Run one GCS-only FinLab training capture: no D1, no Worker/controller callbacks."""
@@ -4934,7 +4938,7 @@ def finlab_v4_training_capture(payload: dict) -> dict:
             sys.path.insert(0, path)
     from app.finlab_training_capture import (
         FINLAB_AUTH_ENV_NAMES,
-        assert_run_id_unused,
+        claim_run,
         scrub_training_capture_env,
         training_capture_argv,
         training_capture_gcs_prefix,
@@ -4945,19 +4949,23 @@ def finlab_v4_training_capture(payload: dict) -> dict:
 
     started = time.time()
     removed_env = scrub_training_capture_env(os.environ)
+    # Imported after the scrub; its CORE_SPECS is the lane set the tool accepts.
+    from tools import finlab_v4_remote_backfill
     bucket_name = str(payload.get("gcs_bucket") or _get_gcs_bucket_name() or "").strip()
-    argv = training_capture_argv(payload, bucket_name=bucket_name)
+    argv = training_capture_argv(payload, bucket_name=bucket_name,
+                                 known_lanes={spec.lane for spec in finlab_v4_remote_backfill.CORE_SPECS})
     run_id = str(payload["run_id"])
     bucket = storage.Client().bucket(bucket_name)
-    assert_run_id_unused(bucket, gcs_prefix=training_capture_gcs_prefix(payload), run_id=run_id)
+    claim = claim_run(bucket, gcs_prefix=training_capture_gcs_prefix(payload), run_id=run_id,
+                      function_call_id=modal.current_function_call_id(), input_id=modal.current_input_id(),
+                      source_sha=os.environ.get("STOCKVISION_SOURCE_SHA"))
     os.environ.setdefault("GCS_BUCKET_NAME", bucket_name)
     os.environ.setdefault("FINLAB_OFFICIAL_HISTORY_CACHE_PREFIX", "finlab/v4/official-history-cache/v1")
     gcs_preflight = verify_gcs_object_lifecycle(bucket, workload="finlab-v4-training-capture", run_id=run_id)
     gcs_preflight["capture_upload"] = verify_capture_upload(bucket)
-    print(f"[finlab_v4_training_capture] start run_id={run_id} argv={argv[1:]} "
+    print(f"[finlab_v4_training_capture] start run_id={run_id} claim={claim['state']} argv={argv[1:]} "
           f"removed_env={removed_env}", flush=True)
 
-    from tools import finlab_v4_remote_backfill
     old_argv = sys.argv
     stdout = io.StringIO()
     try:
@@ -4984,6 +4992,7 @@ def finlab_v4_training_capture(payload: dict) -> dict:
         "exit_code": exit_code,
         "argv": argv[1:],
         "gcs_preflight": gcs_preflight,
+        "claim": claim,
         "removed_env_names": removed_env,
         "finlab_auth_env_names": [name for name in FINLAB_AUTH_ENV_NAMES if os.environ.get(name)],
         "peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),

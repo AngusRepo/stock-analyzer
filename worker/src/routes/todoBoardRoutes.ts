@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { requireAdminOrServiceToken } from '../lib/auth'
+import { getBearerToken, hasServiceToken, requireAdminOrServiceToken, verifyJWT } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 
 // Ops todo kanban (/todo). Reads and writes OPS_DB directly; every write lands in the same
@@ -55,7 +55,7 @@ function optionalText(body: Record<string, unknown>, key: string, max: number): 
 function parsePrs(value: unknown): TodoPr[] {
   if (!Array.isArray(value)) throw new ValidationError('prs_must_be_array')
   if (value.length > LIMITS.prs) throw new ValidationError('prs_too_many')
-  return value.map((item, index) => {
+  const prs = value.map((item, index) => {
     if (!item || typeof item !== 'object') throw new ValidationError(`prs_${index}_invalid`)
     const pr = item as Record<string, unknown>
     if (!Number.isInteger(pr.number) || (pr.number as number) <= 0) throw new ValidationError(`prs_${index}_number_invalid`)
@@ -67,6 +67,9 @@ function parsePrs(value: unknown): TodoPr[] {
     }
     return { number: pr.number as number, title: pr.title.trim(), summary: pr.summary.trim() }
   })
+  const numbers = new Set(prs.map((pr) => pr.number))
+  if (numbers.size !== prs.length) throw new ValidationError('prs_duplicate_number')
+  return prs
 }
 
 function parseFields(body: Record<string, unknown>, creating: boolean): CardFields {
@@ -117,9 +120,25 @@ function opsDb(c: { env: Bindings }): D1Database | null {
   return c.env.OPS_DB ?? null
 }
 
-function actorOf(c: any): string {
-  const email = c.get('userEmail')
-  return typeof email === 'string' && email.trim() ? email.trim() : 'service'
+// requireAdminOrServiceToken does not set userEmail, so resolve the caller from the same token:
+// service token -> 'service', admin JWT -> its email. Call only after the auth check passed.
+async function actorOf(c: any): Promise<string> {
+  const token = getBearerToken(c.req.header('Authorization'))
+  if (!token) {
+    const email = c.get('userEmail')
+    return typeof email === 'string' && email.trim() ? email.trim() : 'service'
+  }
+  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN, c.env.STOCKVISION_AUTH_TOKEN_PREVIOUS)) return 'service'
+  const payload = await verifyJWT(token, c.env.JWT_SECRET)
+  if (payload?.role === 'service') return 'service'
+  const email = typeof payload?.email === 'string' ? payload.email.trim() : ''
+  if (email) return email.slice(0, 200)
+  const sub = payload?.sub
+  return typeof sub === 'string' || typeof sub === 'number' ? `user:${sub}` : 'service'
+}
+
+function isCheckViolation(error: unknown): boolean {
+  return /CHECK constraint failed/i.test(String((error as any)?.message ?? error))
 }
 
 async function readJson(c: any): Promise<Record<string, unknown> | null> {
@@ -169,7 +188,7 @@ todoBoardRoutes.post('/api/admin/todo/cards', async (c) => {
   const prs = fields.prs ?? []
   if (readyViolation(lane, fields.release_date, prs)) return c.json({ error: TODO_READY_ERROR }, 400)
   if (await loadCard(db, id)) return c.json({ error: 'todo_card_id_exists', id }, 409)
-  const actor = actorOf(c)
+  const actor = await actorOf(c)
   const position = fields.position ?? Date.now()
   try {
     await db.batch([
@@ -183,6 +202,7 @@ todoBoardRoutes.post('/api/admin/todo/cards', async (c) => {
     ])
   } catch (error) {
     if (/UNIQUE|PRIMARY KEY/i.test(String(error))) return c.json({ error: 'todo_card_id_exists', id }, 409)
+    if (isCheckViolation(error)) return c.json({ error: TODO_READY_ERROR }, 400)
     throw error
   }
   const created = await loadCard(db, id)
@@ -204,6 +224,7 @@ todoBoardRoutes.patch('/api/admin/todo/cards/:id', async (c) => {
   }
   const current = await loadCard(db, id)
   if (!current) return c.json({ error: 'todo_card_not_found', id }, 404)
+  if (current.archived) return c.json({ error: 'todo_card_archived', id }, 409)
   const before = toCard(current)
   const lane = fields.lane ?? current.lane
   const releaseDate = fields.release_date !== undefined ? fields.release_date : current.release_date
@@ -217,13 +238,18 @@ todoBoardRoutes.patch('/api/admin/todo/cards/:id', async (c) => {
     if (key === 'prs') { assignments.push('prs_json = ?'); values.push(JSON.stringify(value)) }
     else { assignments.push(`${key} = ?`); values.push(value) }
   }
-  const actor = actorOf(c)
+  const actor = await actorOf(c)
   const action = fields.lane && fields.lane !== current.lane ? 'move' : 'update'
-  await db.batch([
-    db.prepare(`UPDATE todo_cards SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
-      .bind(...values, actor, id),
-    eventStatement(db, id, action, current.lane, lane, actor, { fields: changed }),
-  ])
+  try {
+    await db.batch([
+      db.prepare(`UPDATE todo_cards SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+        .bind(...values, actor, id),
+      eventStatement(db, id, action, current.lane, lane, actor, { fields: changed }),
+    ])
+  } catch (error) {
+    if (isCheckViolation(error)) return c.json({ error: TODO_READY_ERROR }, 400)
+    throw error
+  }
   const updated = await loadCard(db, id)
   return c.json({ card: updated ? toCard(updated) : null })
 })
@@ -238,7 +264,7 @@ todoBoardRoutes.post('/api/admin/todo/cards/:id/archive', async (c) => {
   const archived = body?.archived === false ? 0 : 1
   const current = await loadCard(db, id)
   if (!current) return c.json({ error: 'todo_card_not_found', id }, 404)
-  const actor = actorOf(c)
+  const actor = await actorOf(c)
   await db.batch([
     db.prepare('UPDATE todo_cards SET archived = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?')
       .bind(archived, actor, id),

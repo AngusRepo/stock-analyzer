@@ -99,6 +99,7 @@ function draftPayload(draft: Draft): { fields: CardPatch; error: string | null }
     const number = Number(row.number)
     if (!Number.isInteger(number) || number <= 0) return { fields: {}, error: `第 ${index + 1} 個 PR 編號必須是正整數` }
     if (!row.title.trim()) return { fields: {}, error: `第 ${index + 1} 個 PR 缺標題` }
+    if (prs.some((pr) => pr.number === number)) return { fields: {}, error: `PR #${number} 重複` }
     prs.push({ number, title: row.title.trim(), summary: row.summary.trim() })
   }
   if (!draft.title.trim()) return { fields: {}, error: '標題必填' }
@@ -117,6 +118,16 @@ function draftPayload(draft: Draft): { fields: CardPatch; error: string | null }
   }
   if (missingReadyFields(draft.lane, fields.release_date, prs)) return { fields, error: READY_MESSAGE }
   return { fields, error: null }
+}
+
+function changedFields(original: TodoCard | null, fields: CardPatch): CardPatch {
+  if (!original) return fields
+  const changed: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(fields)) {
+    const before = original[key as keyof TodoCard]
+    if (JSON.stringify(value ?? null) !== JSON.stringify(before ?? null)) changed[key] = value
+  }
+  return changed as CardPatch
 }
 
 const inputClass = 'w-full min-w-0 rounded-lg border border-[#2b3a49] bg-[#05070c] px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-[#d6a85f]/60'
@@ -149,13 +160,15 @@ function TodoCardView({
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="sv-num text-[11px] text-[#d6a85f]">{card.id}</p>
+          <p className="sv-num break-all text-[11px] text-[#d6a85f]">{card.id}</p>
           <h3 className="break-words text-sm font-semibold text-slate-100">{card.title}</h3>
         </div>
         <div className="flex shrink-0 gap-1">
-          <button type="button" aria-label={`編輯 ${card.id}`} onClick={() => onEdit(card)} className="rounded-md border border-[#2b3a49] p-1 text-slate-300 hover:text-[#f1c16f]">
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
+          {!card.archived && (
+            <button type="button" aria-label={`編輯 ${card.id}`} onClick={() => onEdit(card)} className="rounded-md border border-[#2b3a49] p-1 text-slate-300 hover:text-[#f1c16f]">
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
           <button
             type="button"
             aria-label={card.archived ? `取消封存 ${card.id}` : `封存 ${card.id}`}
@@ -167,7 +180,7 @@ function TodoCardView({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-1.5 text-[11px]">
+      <div className="flex min-w-0 flex-wrap gap-1.5 text-[11px] [&>span]:max-w-full [&>span]:break-all">
         {card.archived && <WorkstationPill tone="neutral">已封存</WorkstationPill>}
         {card.section && <WorkstationPill tone="info">{card.section}</WorkstationPill>}
         {card.owner && <WorkstationPill tone="neutral">owner {card.owner}</WorkstationPill>}
@@ -195,7 +208,7 @@ function TodoCardView({
             <div key={pr.number} className="min-w-0 text-xs">
               <a href={`${PR_URL}${pr.number}`} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-[#a5e7ff] hover:underline">
                 <span className="sv-num shrink-0">#{pr.number}</span>
-                <span className="truncate">{pr.title}</span>
+                <span className="min-w-0 break-words">{pr.title}</span>
                 <ExternalLink className="h-3 w-3 shrink-0" />
               </a>
               {pr.summary && <p className="whitespace-pre-wrap break-words text-[11px] leading-5 text-[#9badbf]">{pr.summary}</p>}
@@ -338,8 +351,8 @@ export default function TodoBoardPage() {
   const queryClient = useQueryClient()
   const [showArchived, setShowArchived] = useState(false)
   const [boardError, setBoardError] = useState<string | null>(null)
-  const [editor, setEditor] = useState<{ open: boolean; creating: boolean; draft: Draft; error: string | null }>({
-    open: false, creating: false, draft: draftFromCard(null), error: null,
+  const [editor, setEditor] = useState<{ open: boolean; creating: boolean; original: TodoCard | null; draft: Draft; error: string | null }>({
+    open: false, creating: false, original: null, draft: draftFromCard(null), error: null,
   })
   const [dropLane, setDropLane] = useState<Lane | null>(null)
   const queryKey = useMemo(() => ['todo', 'cards', showArchived ? 'all' : 'active'] as const, [showArchived])
@@ -396,7 +409,7 @@ export default function TodoBoardPage() {
   })
 
   const openEditor = (card: TodoCard | null, lane?: Lane, error: string | null = null) =>
-    setEditor({ open: true, creating: !card, draft: draftFromCard(card, lane ?? card?.lane ?? 'todo'), error })
+    setEditor({ open: true, creating: !card, original: card, draft: draftFromCard(card, lane ?? card?.lane ?? 'todo'), error })
 
   const moveCard = (card: TodoCard, lane: Lane) => {
     if (lane === card.lane) return
@@ -422,7 +435,11 @@ export default function TodoBoardPage() {
     }
     try {
       if (editor.creating) await createCard.mutateAsync({ id: editor.draft.id.trim(), ...fields })
-      else await patchCard.mutateAsync({ id: editor.draft.id, fields })
+      else {
+        // Send only what the dialog changed, so an untouched lane cannot overwrite a concurrent move.
+        const changed = changedFields(editor.original, fields)
+        if (Object.keys(changed).length > 0) await patchCard.mutateAsync({ id: editor.draft.id, fields: changed })
+      }
       setBoardError(null)
       setEditor({ ...editor, open: false, error: null })
     } catch (saveError) {

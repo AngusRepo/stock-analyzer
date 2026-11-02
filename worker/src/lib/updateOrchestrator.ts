@@ -4526,13 +4526,8 @@ export async function processUpdateBatch(
         runId: canonicalRunId,
         leaseRetryAttempt: leaseRetryAttempt + 1,
       }, { delaySeconds } as any)
-      await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'running',
-        summary: `lease busy; durable retry scheduled cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`,
-        duration_ms: 0,
-        run_id: canonicalRunId,
-        run_date: triggerTime,
-      })
+      // The lease holder owns the scheduler run log; a duplicate must not overwrite its progress.
+      console.log(`[Queue] strategy-learning lease busy; durable retry scheduled date=${triggerTime} cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`)
       return
     }
 

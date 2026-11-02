@@ -4905,6 +4905,97 @@ def finlab_v4_backfill(payload: dict) -> dict:
         sys.argv = old_argv
 
 
+# Sealed R33 training capture (K15). Separate from finlab_v4_backfill so the
+# daily pool, callbacks, and D1 writes stay untouched. Sizing: trial d took
+# 13,473 s locally (official-history cache gaps); 28,800 s leaves 2.1x. Peak
+# memory of a 3y capture was never measured; the 16 GiB request covers the
+# measured broker-normalize delta (+1.96 GB on 20M rows) plus the six lanes'
+# frames (~30M raw rows in trial d) with room, and peak RSS is returned.
+@app.function(
+    cpu=2,
+    memory=16384,
+    timeout=28800,
+    scaledown_window=60,
+    max_containers=1,
+    retries=0,
+)
+def finlab_v4_training_capture(payload: dict) -> dict:
+    """Run one GCS-only FinLab training capture: no D1, no Worker/controller callbacks."""
+    _setup_env()
+    import contextlib
+    import io
+    import json
+    import resource
+    import sys
+    import time
+
+    for path in ("/root", "/root/tools"):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    from app.finlab_training_capture import (
+        FINLAB_AUTH_ENV_NAMES,
+        assert_run_id_unused,
+        scrub_training_capture_env,
+        training_capture_argv,
+        training_capture_gcs_prefix,
+    )
+    from app.gcs_preflight import verify_gcs_object_lifecycle
+    from google.cloud import storage
+    from tools.finlab_gcs_upload import verify_capture_upload
+
+    started = time.time()
+    removed_env = scrub_training_capture_env(os.environ)
+    bucket_name = str(payload.get("gcs_bucket") or _get_gcs_bucket_name() or "").strip()
+    argv = training_capture_argv(payload, bucket_name=bucket_name)
+    run_id = str(payload["run_id"])
+    bucket = storage.Client().bucket(bucket_name)
+    assert_run_id_unused(bucket, gcs_prefix=training_capture_gcs_prefix(payload), run_id=run_id)
+    os.environ.setdefault("GCS_BUCKET_NAME", bucket_name)
+    os.environ.setdefault("FINLAB_OFFICIAL_HISTORY_CACHE_PREFIX", "finlab/v4/official-history-cache/v1")
+    gcs_preflight = verify_gcs_object_lifecycle(bucket, workload="finlab-v4-training-capture", run_id=run_id)
+    gcs_preflight["capture_upload"] = verify_capture_upload(bucket)
+    print(f"[finlab_v4_training_capture] start run_id={run_id} argv={argv[1:]} "
+          f"removed_env={removed_env}", flush=True)
+
+    from tools import finlab_v4_remote_backfill
+    old_argv = sys.argv
+    stdout = io.StringIO()
+    try:
+        sys.argv = argv
+        with contextlib.redirect_stdout(stdout):
+            exit_code = finlab_v4_remote_backfill.main()
+    except SystemExit as exc:
+        raise RuntimeError(f"finlab_training_capture_exit:{exc}") from exc
+    finally:
+        sys.argv = old_argv
+    output = stdout.getvalue()
+    result: dict = {}
+    for line in reversed([line.strip() for line in output.splitlines() if line.strip()]):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            result.update(parsed)
+            break
+    ready = str(result.get("backfill_status") or "").strip().lower() == "ready"
+    result.update({
+        "status": "success" if int(exit_code or 0) == 0 and ready else "error",
+        "exit_code": exit_code,
+        "argv": argv[1:],
+        "gcs_preflight": gcs_preflight,
+        "removed_env_names": removed_env,
+        "finlab_auth_env_names": [name for name in FINLAB_AUTH_ENV_NAMES if os.environ.get(name)],
+        "peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+        "duration_s": round(time.time() - started, 1),
+        "stdout_tail": output[-4000:],
+    })
+    print(f"[finlab_v4_training_capture] done run_id={run_id} status={result['status']} "
+          f"backfill_status={result.get('backfill_status')} peak_rss_mb={result['peak_rss_mb']} "
+          f"duration_s={result['duration_s']}", flush=True)
+    return result
+
+
 # ASGI web endpoint for warmup, health, IC audit, and Optuna routes.
 
 @app.function(

@@ -1,9 +1,11 @@
-"""Immutable eight-model identities; TimeXer replaces, never aliases, DLinear."""
+"""Immutable model identities; TimeXer replaces, never aliases, DLinear. R33 is the
+TimeXer roster without XGBoost and only exists as an exact, complete set."""
 from __future__ import annotations
 
 LEGACY_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
                  "DLinear", "PatchTST", "iTransformer")
 TIMEXER_MODELS = tuple("TimeXer" if name == "DLinear" else name for name in LEGACY_MODELS)
+R33_MODELS = tuple(name for name in TIMEXER_MODELS if name != "XGBoost")
 SUPPORTED_MODELS = frozenset((*LEGACY_MODELS, "TimeXer"))
 
 
@@ -11,6 +13,8 @@ def model_order(names, *, complete=False) -> tuple[str, ...]:
     names = set(names)
     if "DLinear" in names and "TimeXer" in names:
         raise ValueError("alpha_roster_mixed_replacement_slot")
+    if complete and names == set(R33_MODELS):
+        return R33_MODELS
     order = TIMEXER_MODELS if "TimeXer" in names else LEGACY_MODELS
     if complete and names != set(order):
         raise ValueError("alpha_roster_requires_exactly_eight_models")
@@ -19,7 +23,7 @@ def model_order(names, *, complete=False) -> tuple[str, ...]:
 
 def validate_order(names) -> tuple[str, ...]:
     order = tuple(names)
-    if order not in (LEGACY_MODELS, TIMEXER_MODELS):
+    if order not in (LEGACY_MODELS, TIMEXER_MODELS, R33_MODELS):
         raise ValueError("alpha_roster_order_invalid")
     return order
 

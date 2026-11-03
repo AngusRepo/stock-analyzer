@@ -553,9 +553,14 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const allPlanIds = new Set(pendingState.pendingBuys.map(item => planIdFromWatchPoints(item.watch_points)))
     if (latest && (allPlanIds.size !== 1 || !allPlanIds.has(latest.plan_id))
       && pendingState.meta?.l4_plan_id !== latest.plan_id) {
-      if (dailyPlanOwner(env)) throw new Error('daily_plan_pending_reference_mismatch')
-      const { setupMorningPendingBuys } = await import('./pendingBuyOrchestrator')
-      await setupMorningPendingBuys(env)
+      if (dailyPlanOwner(env)) {
+        // Filled or cancelled items leave the snapshot: today's run with nothing
+        // active has nothing left to execute. A missing run is still a mismatch.
+        if (pendingState.source === 'none' || pendingState.pendingBuys.length > 0) throw new Error('daily_plan_pending_reference_mismatch')
+      } else {
+        const { setupMorningPendingBuys } = await import('./pendingBuyOrchestrator')
+        await setupMorningPendingBuys(env)
+      }
     }
   }
 

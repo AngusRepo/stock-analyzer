@@ -40,7 +40,8 @@ export { dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity } from
 import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety,
   DELISTING_MONITOR_DEFAULT_MAX_SESSIONS, delistingMonitorWindowWeekdays, resolveDelistingMonitorMaxSessions } from './screenerPostRouteOverlays'
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
-import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
+import { ADJUSTED_GAP_BAR_SOURCE, loadAdjustedGapBars, loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
+import { adjustedGapDown, volaCv90dFromCloses, type AdjustedGapBar } from './screenerPriceSignals'
 import {
   annotateCandidatesWithStrategySpecs,
 } from './screenerStrategyConsumer'
@@ -1790,6 +1791,8 @@ async function loadStrategyRawSectorRotationSignals(
   return out
 }
 
+export { deriveStrategyRawSignals as deriveScreenerStrategyRawSignals }
+
 function deriveStrategyRawSignals(
   prices: CanonicalScreenerPrice[],
   chipDates: Map<string, ChipDayNet> | undefined,
@@ -1797,6 +1800,7 @@ function deriveStrategyRawSignals(
   extraFactors?: StrategyRawFactorSignalPatch,
   stockTechnicalPrices?: CanonicalScreenerPrice[],
   monthlyRevenueEvidence?: MonthlyRevenueEvidence,
+  adjustedGapBars?: ReadonlyMap<string, AdjustedGapBar>,
 ): StrategyRawSignals {
   const latest = prices[prices.length - 1]
   const indicatorRows = prices
@@ -1839,7 +1843,7 @@ function deriveStrategyRawSignals(
   const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
   const latestOhlcv = indicatorRows[latestIndex]
   const previousOhlcv = latestIndex >= 1 ? indicatorRows[latestIndex - 1] : null
-  const techGapDown = latestOhlcv && previousOhlcv ? (latestOhlcv.high < previousOhlcv.low ? 1 : 0) : null
+  const techGapDown = adjustedGapDown(adjustedGapBars, latestOhlcv?.date, previousOhlcv?.date)
   const latestTypicalPrice = latestOhlcv ? (latestOhlcv.high + latestOhlcv.low + latestOhlcv.close) / 3 : null
   const vwapBias = pctChange(close, latestTypicalPrice)
   const vwapRows5d = indicatorRows.slice(-5)
@@ -1848,9 +1852,6 @@ function deriveStrategyRawSignals(
     ? vwapRows5d.reduce((sum, row) => sum + (((row.high + row.low + row.close) / 3) * Math.max(0, row.volume)), 0) / vwap5dDenominator
     : null
   const vwapBias5d = pctChange(close, vwap5d)
-  const last90Closes = closes.slice(-90)
-  const volaCv90dMean = last90Closes.length >= 90 ? avg(last90Closes) : null
-  const volaCv90d = volaCv90dMean != null && volaCv90dMean > 0 ? (stddev(last90Closes) ?? 0) / volaCv90dMean : null
   const latestRange = latestOhlcv ? Math.max(1e-8, latestOhlcv.high - latestOhlcv.low) : null
   const latestOpen = latestOhlcv?.open ?? null
   const kLow2 = latestOhlcv && latestRange != null
@@ -1912,6 +1913,8 @@ function deriveStrategyRawSignals(
     .filter((row): row is { date: string; open: number; high: number; low: number; close: number; volume: number } =>
       row.open != null && row.high != null && row.low != null && row.close != null && row.high >= row.low,
     )
+  // The 70-session `prices` window can never hold 90 closes; read them from the 280-session history.
+  const volaCv90d = volaCv90dFromCloses(stockTechnicalIndicatorRows.map((row) => row.close))
   const stockTechnicalOhlcvRows = stockTechnicalIndicatorRows.map((row) => ({
     date: row.date,
     open: row.open,
@@ -2167,7 +2170,10 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'VSTD_10', signalKey: 'Vstd10', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techEmv14', signalKey: 'TechEmv14', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techRoc10', signalKey: 'TechRoc10', direction: 'higher_is_better', sectorRank: false },
-  // Keep the legacy key immutable for historical parity. Semantic-v2 uses a new, correctly directed key.
+  // Both techGapDown keys read the raw signal, which uses FinLab adjusted bars (registry tech_gap_down) from the
+  // HL1 release (planned 2026-11-03) on; earlier funnel rows hold the unadjusted definition. The key names and
+  // directions are kept by Wei's decision (no versioned key). Semantic-v2 uses the correctly directed
+  // V2TechGapDownNoGap key.
   { rawField: 'techGapDown', signalKey: 'TechGapDown', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techGapDown', signalKey: 'V2TechGapDownNoGap', direction: 'lower_is_better', sectorRank: false },
   { rawField: 'volaCv90d', signalKey: 'VolaCv90dLow', direction: 'lower_is_better', sectorRank: false },
@@ -3467,6 +3473,19 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `screener_market_data_load_failed:run_date=${endDate}:${screenerInfrastructureFingerprint(e)}`,
     )
   }
+  // tech_gap_down compares FinLab adjusted bars of the last primary sessions. The loader never throws:
+  // a failed read only leaves tech_gap_down null.
+  const adjustedGapBarDates = [...new Set(allPrices.map((row) => row.date))].sort().slice(-5)
+  const adjustedGapBars = await loadAdjustedGapBars(env, adjustedGapBarDates)
+  debugLog.push(
+    `[Data] adjusted_gap_bars source=${ADJUSTED_GAP_BAR_SOURCE} dates=${adjustedGapBarDates[0] ?? 'none'}..${adjustedGapBarDates.at(-1) ?? 'none'} ` +
+    `rows=${adjustedGapBars.rows} symbols=${adjustedGapBars.bars.size}` +
+    (adjustedGapBars.error ? ` error=${adjustedGapBars.error.slice(0, 200)}` : ''),
+  )
+  // debug_log keeps only the last 80 lines, so a failed read must also reach the Worker / Cloud Run logs.
+  if (adjustedGapBars.error) {
+    console.warn(`[screener] adjusted_gap_bars_load_failed run_date=${endDate}: ${adjustedGapBars.error.slice(0, 200)}`)
+  }
 
   markScreenerStage('market_data_buzz_and_theme')
 
@@ -3702,6 +3721,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       rawSectorRotationSignals.get(stockId),
       stockTechnicalLongData.prices.get(stockId),
       monthlyRevenue.evidence,
+      adjustedGapBars.bars.get(stockId),
     )
 
     scored.push({
@@ -3729,6 +3749,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     })
   }
 
+  debugLog.push(
+    `[Data] tech_gap_down adjusted coverage=${scored.filter((row) => row.raw_signals?.techGapDown != null).length}/${scored.length}`,
+  )
   const finLabFactorNormalizationTelemetry = applyFinLabStyleFactorNormalization(scored)
   const stockTechnicalStrategyTelemetry = materializeStockTechnicalStrategyScores(scored, {
     marketRegime: stockTechMarketRegime,

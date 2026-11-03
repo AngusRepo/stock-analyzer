@@ -143,12 +143,24 @@ def _load_npz(raw: bytes) -> dict[str, np.ndarray]:
     return {name: np.asarray(data[name]) for name in data.files}
 
 
+RANKED_MARKETS = frozenset({"LISTED", "OTC", "EMERGING"})
+
+
+def _row_markets(markets: np.ndarray) -> np.ndarray:
+    """Each row's own venue on its date (C28-02 C3), not the symbol's modal venue.
+
+    A source with one market per symbol gives exactly the old mode-based result.
+    """
+    canonical = (canonical_market_segment(market) for market in markets.astype(str))
+    return np.asarray([market if market in RANKED_MARKETS else "" for market in canonical], dtype=object)
+
+
 def _market_map(batches: list[dict[str, np.ndarray]]) -> dict[str, str]:
     observed: dict[str, Counter[str]] = defaultdict(Counter)
     for batch in batches:
         for symbol, market in zip(batch["symbols"].astype(str), batch["markets"].astype(str)):
             canonical = canonical_market_segment(market)
-            if canonical in {"LISTED", "OTC", "EMERGING"}:
+            if canonical in RANKED_MARKETS:
                 observed[str(symbol)][canonical] += 1
     return {
         symbol: counts.most_common(1)[0][0]
@@ -241,6 +253,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             and manifest.get("feature_semantic_version") == source_receipt["feature_semantic_version"]
             and manifest.get("feature_imputation_semantic") == FEATURE_IMPUTATION_SEMANTIC_VERSION
             and manifest.get("producer_source_sha") == _runtime_source_sha()
+            and manifest.get("pit_contract_version") == source_receipt.get("pit_contract_version")
             and manifest.get("manifest_checksum") == _manifest_checksum(manifest)
             and valid_outputs
         ):
@@ -271,7 +284,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         symbols = batch["symbols"].astype(str)
         targets = np.full(len(dates), np.nan, dtype=float)
         known_dates = np.full(len(dates), "", dtype=object)
-        markets = np.asarray([market_by_symbol.get(symbol, "") for symbol in symbols], dtype=object)
+        markets = _row_markets(batch["markets"])
         for idx, (date, symbol) in enumerate(zip(dates, symbols)):
             target = target_lookup.get(symbol, {}).get(str(date)[:10])
             if target is None or not markets[idx]:
@@ -353,6 +366,8 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         "feature_semantic_version": source_receipt["feature_semantic_version"],
         "feature_imputation_semantic": source_receipt["feature_imputation_semantic"],
         "producer_source_sha": source_receipt["producer_source_sha"],
+        **({"pit_contract_version": source_receipt["pit_contract_version"]}
+           if source_receipt.get("pit_contract_version") is not None else {}),
         "sequence_manifest_checksum": sequence_manifest_checksum,
         "source_feature_date_min": min(
             str(value)[:10] for batch in source_batches for value in batch["dates"]

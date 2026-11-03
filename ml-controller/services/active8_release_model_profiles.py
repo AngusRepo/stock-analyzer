@@ -1,7 +1,7 @@
 """Predeclared per-model profiles for the formal Active-8 canonical OOF/full-fit release train."""
 
 from __future__ import annotations
-from .formal_feature_contract import PRICE131_PROFILE, EXO131_PROFILE, PROFILES131, FEATURE131_SEMANTIC
+from .formal_feature_contract import PRICE131_PROFILE, EXO131_PROFILE, R33_PROFILE, PROFILES131, FEATURE131_SEMANTIC
 
 import copy
 import hashlib
@@ -328,6 +328,16 @@ def _feature131_profiles(exogenous: bool) -> dict:
     return profiles
 
 
+def _r33_profiles() -> dict:
+    """R33 seven-model release: exo131 without XGBoost; NF folds and full-fit train only complete horizons."""
+    profiles = _feature131_profiles(True)
+    profiles.pop("XGBoost")
+    for name in ("PatchTST", "iTransformer"):
+        profiles[name]["payload_config"]["nf_require_complete_horizon"] = True
+        profiles[name]["required_effective_config"]["training_options"]["nf_require_complete_horizon"] = True
+    return profiles
+
+
 def _canonical(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in value.items()}
@@ -367,6 +377,7 @@ def model_profiles(*, execution_profile: str | None = None,
         TIMEXER_EXO_PROFILE_SCHEMA: _timexer_profiles(True),
         PRICE131_PROFILE: _feature131_profiles(False),
         EXO131_PROFILE: _feature131_profiles(True),
+        R33_PROFILE: _r33_profiles(),
     }[schema_version])
     if execution_profile is None:
         return profiles

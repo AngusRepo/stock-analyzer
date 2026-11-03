@@ -40,6 +40,24 @@ def test_unregistered_route_has_no_network_authority(url, method, body):
         capabilities(forbidden).frozen_fetch({'url': url, 'method': method, 'body': body})
 
 
+def test_odd_lot_watchlist_prewarm_is_a_bounded_batch_read():
+    seen = []
+    class Response:
+        status_code = 200
+        text = '{"status":"ok","count":1}'
+        headers = {}
+    def transport(method, url, **kwargs):
+        seen.append((method, url, kwargs['content']))
+        return Response()
+    body = '{"symbols":["2330"],"lot_type":"odd_lot"}'
+    capabilities(transport).frozen_fetch({'url': 'https://broker.fixture/orderbook/watchlist', 'method': 'POST', 'body': body})
+    assert seen == [('POST', 'https://broker.fixture/orderbook/watchlist', body)]
+    with pytest.raises(ValueError, match='native_source_broker_body_invalid'):
+        capabilities(transport).frozen_fetch({'url': 'https://broker.fixture/orderbook/watchlist', 'method': 'POST',
+                                              'body': '{"symbols":["2330"],"lot_type":"odd_lot","submit":true}'})
+    assert len(seen) == 1
+
+
 def test_credentials_are_host_only_and_redirects_are_not_followed():
     seen = []
     class Response:

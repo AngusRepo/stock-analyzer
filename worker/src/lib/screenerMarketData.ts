@@ -3,6 +3,7 @@ import { writeSystemLog } from './notify'
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
 import { loadCoreStockIdentitiesByIds, resolveVenue } from './stockIdentityMarketBridge'
+import type { AdjustedGapBar } from './screenerPriceSignals'
 
 export interface CanonicalScreenerPrice {
   date: string
@@ -448,6 +449,59 @@ export async function loadScreenerPriceRowsPaged(
     }]
   })
 }
+export const ADJUSTED_GAP_BAR_SOURCE = 'market.canonical_market_daily:finlab.price'
+
+export interface AdjustedGapBarLoad {
+  /** symbol -> date -> adjusted bar */
+  bars: Map<string, Map<string, AdjustedGapBar>>
+  rows: number
+  error: string | null
+}
+
+function positiveOrNull(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+/**
+ * FinLab adjusted high/low for the given sessions (the canonical adjusted owner; the stock_prices.adj_close
+ * mirror is not used). canonical_market_daily is keyed by symbol. Never throws: a failed read returns no bars
+ * and the error text, so tech_gap_down degrades to null instead of failing the screener run.
+ */
+export async function loadAdjustedGapBars(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  dates: readonly string[],
+): Promise<AdjustedGapBarLoad> {
+  const sessions = [...new Set(dates)].sort()
+  const bars = new Map<string, Map<string, AdjustedGapBar>>()
+  if (!sessions.length) return { bars, rows: 0, error: null }
+  let lastError: unknown
+  for (let attempt = 1; attempt <= SCREENER_PRICE_PAGE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await databaseForDataDomain(env, 'market').prepare(
+        `SELECT stock_id, date, adj_high, adj_low
+           FROM canonical_market_daily
+          WHERE source = 'finlab.price' AND date >= ? AND date <= ?`,
+      ).bind(sessions[0], sessions[sessions.length - 1])
+        .all<{ stock_id: string; date: string; adj_high: number | null; adj_low: number | null }>()
+      const rows = result.results ?? []
+      for (const row of rows) {
+        const symbol = String(row.stock_id)
+        let byDate = bars.get(symbol)
+        if (!byDate) bars.set(symbol, byDate = new Map())
+        byDate.set(String(row.date), { adjHigh: positiveOrNull(row.adj_high), adjLow: positiveOrNull(row.adj_low) })
+      }
+      return { bars, rows: rows.length, error: null }
+    } catch (error) {
+      lastError = error
+      bars.clear()
+      if (attempt < SCREENER_PRICE_PAGE_MAX_ATTEMPTS) await waitForPricePageRetry(250 * (2 ** (attempt - 1)))
+    }
+  }
+  return { bars, rows: 0, error: lastError instanceof Error ? lastError.message : String(lastError) }
+}
+
 export interface ScreenerChipFreshness {
   latestInstitutionalChipDate: string | null
   latestBrokerFlowDate: string | null

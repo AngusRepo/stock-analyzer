@@ -30,7 +30,11 @@ def validate_transition(original, resumed, report, *, run_date, run_id, source_s
         raise ValueError('saved_pre_l2_context_mutated')
     if resumed.get('timexer_feature_source') != report.get('feature_source') or original.get('timexer_feature_source'):
         raise ValueError('saved_pre_l2_feature_source_mismatch')
-    excluded={'pipeline_modal_serving_context','timexer_feature_source'}
+    # PIT TimeXer sources are built with the feature source and resumed as recorded, never rebuilt.
+    if (resumed.get('timexer_pit_feature_sources') != report.get('pit_feature_sources')
+            or 'timexer_pit_feature_sources' in original):
+        raise ValueError('saved_pre_l2_pit_feature_source_mismatch')
+    excluded={'pipeline_modal_serving_context','timexer_feature_source','timexer_pit_feature_sources'}
     if digest({k:v for k,v in original.items() if k not in excluded}) != digest({k:v for k,v in resumed.items() if k not in excluded}):
         raise ValueError('saved_pre_l2_frozen_inputs_mutated')
     return resumed

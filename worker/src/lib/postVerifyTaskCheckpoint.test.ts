@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { createPostVerifyTaskCheckpoints, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
-import { runPostVerifyCallbackChain } from './postMarketChain'
+import { createPostVerifyTaskCheckpoints, POST_VERIFY_RETRY_SAFE_TASKS, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
+import { POST_VERIFY_HEAVY_TASKS, POST_VERIFY_MAX_HOPS, runPostVerifyCallbackChain } from './postMarketChain'
 import { controllerFetch } from './controllerClient'
-import { claimPipelineStage, markPipelineStageFenced } from './pipelineStageLease'
+import { claimPipelineStage, markPipelineStageFenced, requeuePipelineStageFenced } from './pipelineStageLease'
 import { sendReportToChannels } from './notify'
 import { capturePostVerifyOwnerEvidence, verifyPostVerifyOwnerEvidence } from './postVerifyOwnerEvidence'
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
@@ -83,7 +83,65 @@ for(const failedTask of tasks) test(`actual owner injects settled failure at ${f
   const receipt=f.sqlite.prepare(`SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE json_extract(receipt_json,'$.task')=? LIMIT 1`).get(failedTask) as any
   assert.equal(receipt.state,'post_verify_task_v1:error')
   assert.equal(JSON.parse(receipt.receipt_json).result.status,'error')
-  if(![...tasks.slice(0,2),'linucb-reward-ledger'].includes(failedTask)) assert.equal(calls.get(failedTask),1,'non-idempotent failed phase must not blindly run again')
+  if(!POST_VERIFY_RETRY_SAFE_TASKS.includes(failedTask)) assert.equal(calls.get(failedTask),1,'non-idempotent failed phase must not blindly run again')
+  f.sqlite.close()
+})
+
+test('EC-F: the chain yields after each heavy task it ran and the continuations resume from receipts',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+  const statuses:string[]=[]
+  let ctx=f.ctx
+  for(let hop=0;hop<6;hop++){
+    const status=await runPostVerifyCallbackChain(f.env,ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true,hop})
+    statuses.push(status)
+    if(status!=='continue')break
+    // As the queue consumer does: hand the lease back; the continuation delivery claims it under a new owner.
+    assert.equal(await requeuePipelineStageFenced(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,leaseOwner:ctx.stageLeaseOwner}),true)
+    const owner=`lease-hop-${hop+1}`
+    assert.ok(await claimPipelineStage(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,ownerId:owner}))
+    ctx={...ctx,stageLeaseOwner:owner}
+  }
+  assert.deepEqual(statuses,[...POST_VERIFY_HEAVY_TASKS.map(()=>'continue'),'success'])
+  assert.deepEqual(calls,tasks)
+  // A finished chain is all receipts: nothing heavy runs, so it neither yields nor repeats a producer.
+  assert.equal(await runPostVerifyCallbackChain(f.env,ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true}),'success')
+  assert.deepEqual(calls,tasks)
+  f.sqlite.close()
+})
+
+test('EC-F: a heavy task served from its receipt does not yield; the next fresh heavy task does',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true}),'continue')
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true}),'continue')
+  assert.deepEqual(calls,POST_VERIFY_HEAVY_TASKS.slice(0,2))
+  // Without the yield (the test default) the rest of the chain finishes in one invocation.
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner}),'success')
+  assert.deepEqual(calls,tasks)
+  f.sqlite.close()
+})
+
+test('EC-F: a failing optional heavy task does not yield, so its rerun on every delivery cannot starve the tail',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task)
+    return task==='strategy-evidence-metric-backfill'?{...success(task),status:'error' as const,summary:'injected'}:success(task)}
+  const statuses:string[]=[]
+  for(let hop=0;hop<6;hop++){
+    const status=await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true,hop})
+    statuses.push(status)
+    if(status!=='continue')break
+  }
+  assert.deepEqual(statuses,['continue','continue','continue','success'])
+  assert.deepEqual(calls,tasks)
+  f.sqlite.close()
+})
+
+test('EC-F: past the hop bound the chain finishes in one delivery instead of yielding again',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true,hop:POST_VERIFY_MAX_HOPS}),'success')
+  assert.deepEqual(calls,tasks)
   f.sqlite.close()
 })
 
@@ -597,6 +655,23 @@ test('NEW-1030-22 counter: a legacy running receipt of a task outside the retry-
   await assert.rejects(next.run('adapt',async()=>{calls++;return success('adapt')}),/expired_lease_requires_reconciliation:adapt/)
   assert.equal(calls,1)
   assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:running')
+  f.sqlite.close()
+})
+
+test('EC-F: the 11/2 claim (strategy-evidence-current stored as retrySafe:false by an earlier revision) no longer blocks the next revision',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('strategy-evidence-current',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {timeoutMs:2}),/timeout_unsettled/)
+  const stored=f.sqlite.prepare('SELECT receipt_key,receipt_json FROM post_verify_task_receipts_v1').get() as any
+  assert.equal(JSON.parse(stored.receipt_json).retrySafe,false)
+  // The fix ships as a new version, so the next delivery has a new identity and starts at projection.
+  f.env.CF_VERSION_METADATA={tag:'d'.repeat(40),id:'version-D',timestamp:'now'}
+  const next=await takeover(f,'lease-B')
+  assert.equal((await next.run('price-horizon-projection',async()=>{calls++;return success('price-horizon-projection')},{retrySafe:true})).status,'success')
+  assert.equal(calls,2)
+  const closed=f.sqlite.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE receipt_key=?').get(stored.receipt_key) as any
+  assert.equal(closed.state,'post_verify_task_v1:error')
+  assert.match(JSON.parse(closed.receipt_json).result.summary,/lease_expired_reclaimed:strategy-evidence-current/)
   f.sqlite.close()
 })
 

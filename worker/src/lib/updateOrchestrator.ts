@@ -1773,10 +1773,10 @@ async function finalizeUpdateChain(
     const leaseOwner = await acquireFinalizeLock(env, triggerTime, runId)
     if (!leaseOwner) {
       console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
-      const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
-      if (!repaired) {
-        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, 'finalizer lease is still owned by the original continuation')
-      }
+      // The lease owner re-queues itself on failure and the watchdog repairs an
+      // expired lease. A waiter that also re-queued became one more retry chain;
+      // on 2026-11-04 those chains kept learning-db overloaded all evening.
+      await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
       return
     }
     await withIndicatorFinalizeLease(env, triggerTime, runId, leaseOwner, async () => {

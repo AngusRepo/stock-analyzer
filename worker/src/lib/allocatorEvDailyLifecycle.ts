@@ -5,6 +5,11 @@ import { historicalLearningLineageDecision } from './historicalLearningLineageGu
 import { nextTwTradingDate } from './schedulerPolicy'
 import type { SchedulerRunLogEntry } from './schedulerRunLogger'
 
+// Each watchdog tick used to re-queue a failed post-verify with no limit, so a
+// stuck date retried every 10 minutes forever (11/3 kept learning-db overloaded
+// on 2026-11-04). attempt_count survives the resume, so it bounds the loop.
+const POST_VERIFY_WATCHDOG_MAX_ATTEMPTS = 6
+
 export type AllocatorEvLifecycleState =
   | 'lineage_ready'
   | 'snapshot_ready'
@@ -800,6 +805,13 @@ export async function runAllocatorEvLifecycleWatchdog(
     }>()
     const previousIncomplete = previousStage?.canonical_run_id === lifecycleRunId
       && (previousStage.status === 'error' || (previousStage.status === 'running' && Number(previousStage.lease_expired) === 1))
+    const previousAttempts = Number(previousStage?.attempt_count ?? 0)
+    if (previousIncomplete && previousAttempts >= POST_VERIFY_WATCHDOG_MAX_ATTEMPTS) {
+      return `status=failed allocator EV lifecycle post-verify redispatch exhausted date=${businessDate} run_id=${lifecycleRunId} `
+        + `previous_status=${previousStage?.status} previous_attempts=${previousAttempts} `
+        + `previous_error=${String(previousStage?.last_error ?? 'missing').replace(/status=/gi, 'status:').replace(/\s+/g, '_').slice(0, 300)} `
+        + 'recovery_dispatch=not_queued manual_redispatch_required'
+    }
     const { queuePostVerifyStage } = await import('./pipelineStageLease')
     const continuation = await queuePostVerifyStage(env, {
       businessDate,

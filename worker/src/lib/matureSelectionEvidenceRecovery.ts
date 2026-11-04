@@ -21,7 +21,13 @@ import {
 
 const DEFAULT_LOOKBACK_DAYS = 180
 const DEFAULT_MAX_RECOVERY_DATES = 4
-const HEAD_PAGE_SIZE = 24
+// One 24-head page reads about 1M rows; two back to back exceed D1's 10-second
+// resource window ("D1 DB is overloaded"). Smaller pages, a pause between them
+// and a wait past that window before retrying keep the scan under it.
+const HEAD_PAGE_SIZE = 8
+const PAGE_PAUSE_MS = 1_500
+const OVERLOAD_RETRY_DELAY_MS = 12_000
+const OVERLOAD_MAX_ATTEMPTS = 3
 
 type CanonicalHeadRow = {
   signal_date: string
@@ -68,7 +74,10 @@ export type MatureSelectionEvidenceRecoveryResult = {
   projectionRuns: number
   labelRowsPersisted: number
   summary: string
+  afterInspection?: MatureSelectionEvidenceInspection
 }
+
+type MatureSelectionEvidenceInspection = Awaited<ReturnType<typeof inspectMatureSelectionEvidenceGaps>>
 
 function dateOnly(value: unknown, field: string): string {
   const date = String(value ?? '').slice(0, 10)
@@ -84,6 +93,25 @@ function shiftDate(date: string, days: number): string {
 function positiveInt(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isD1Overloaded(error: unknown): boolean {
+  return /D1 DB is overloaded/i.test(error instanceof Error ? error.message : String(error))
+}
+
+async function withOverloadRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      if (!isD1Overloaded(error) || attempt >= OVERLOAD_MAX_ATTEMPTS) throw error
+      await sleep(OVERLOAD_RETRY_DELAY_MS)
+    }
+  }
 }
 
 function chunks<T>(rows: T[], size: number): T[][] {
@@ -142,10 +170,12 @@ async function loadCoverageRows(
   heads: CanonicalHeadRow[],
 ): Promise<CoverageRow[]> {
   const output: CoverageRow[] = []
-  for (const page of chunks(heads, HEAD_PAGE_SIZE)) {
+  const pages = chunks(heads, HEAD_PAGE_SIZE)
+  for (const [pageIndex, page] of pages.entries()) {
+    if (pageIndex > 0) await sleep(PAGE_PAUSE_MS)
     const targetRows = page.map(() => '(?, ?)').join(', ')
     const binds = page.flatMap((row) => [row.signal_date, row.run_id])
-    const result = await db.prepare(`
+    const result = await withOverloadRetry(() => db.prepare(`
       WITH target_heads(signal_date, producer_run_id) AS (
         VALUES ${targetRows}
       ),
@@ -248,7 +278,7 @@ async function loadCoverageRows(
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
       CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
-    ).all<CoverageRow>()
+    ).all<CoverageRow>())
     output.push(...(result.results ?? []))
   }
   return output
@@ -337,10 +367,11 @@ export async function inspectMatureSelectionEvidenceGaps(
 export async function recoverMatureSelectionEvidence(
   env: Bindings,
   businessDateInput: string,
-  options: { lookbackDays?: number; maxRecoveryDates?: number } = {},
+  options: { lookbackDays?: number; maxRecoveryDates?: number; before?: MatureSelectionEvidenceInspection } = {},
 ): Promise<MatureSelectionEvidenceRecoveryResult> {
   const businessDate = dateOnly(businessDateInput, 'mature_selection_business_date')
-  const before = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  // Each inspection reads several million learning-db rows; reuse the caller's.
+  const before = options.before ?? await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
   const maxRecoveryDates = Math.max(
     1,
     Math.min(12, Math.floor(options.maxRecoveryDates ?? DEFAULT_MAX_RECOVERY_DATES)),
@@ -410,6 +441,7 @@ export async function recoverMatureSelectionEvidence(
     projectionRuns,
     labelRowsPersisted,
     summary,
+    afterInspection: after,
   }
 }
 
@@ -425,21 +457,25 @@ export async function drainMatureSelectionEvidence(
   let labelRowsPersisted = 0
   const maxBatches = Math.max(1, Math.min(4, Math.floor(options.maxBatches ?? 3)))
 
+  // Nothing else writes these tables during the drain, so the last inspection
+  // stays current; re-scanning between batches only multiplied the reads.
+  let current = initial
   for (let batch = 0; batch < maxBatches; batch += 1) {
-    const current = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
     const recoverable = current.gaps.filter(isMatureSelectionEvidenceGapRecoverable)
     if (!recoverable.length) break
     const result = await recoverMatureSelectionEvidence(env, businessDate, {
       lookbackDays: options.lookbackDays,
       maxRecoveryDates: options.maxRecoveryDates ?? DEFAULT_MAX_RECOVERY_DATES,
+      before: current,
     })
     recoveredDates.push(...result.recoveredDates)
     projectionRuns += result.projectionRuns
     labelRowsPersisted += result.labelRowsPersisted
+    current = result.afterInspection ?? await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
     if (!result.recoveredDates.length) break
   }
 
-  const after = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  const after = current
   const remainingRecoverable = after.gaps.filter(isMatureSelectionEvidenceGapRecoverable)
   if (remainingRecoverable.length) {
     throw new Error(

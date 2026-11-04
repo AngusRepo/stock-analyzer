@@ -1773,10 +1773,16 @@ async function finalizeUpdateChain(
     const leaseOwner = await acquireFinalizeLock(env, triggerTime, runId)
     if (!leaseOwner) {
       console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
-      // The lease owner re-queues itself on failure and the watchdog repairs an
-      // expired lease. A waiter that also re-queued became one more retry chain;
-      // on 2026-11-04 those chains kept learning-db overloaded all evening.
-      await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
+      const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
+      if (!repaired) {
+        // The owner re-queues itself after a handled failure. A waiter only has to
+        // cover an owner that was killed, so it wakes once the lease can have
+        // expired; waking every 2 minutes made each shard waiter one more retry
+        // chain, and on 2026-11-04 those chains kept learning-db overloaded.
+        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt,
+          'finalizer lease is still owned by the original continuation',
+          await finalizeLeaseWaitSeconds(env, triggerTime, runId))
+      }
       return
     }
     await withIndicatorFinalizeLease(env, triggerTime, runId, leaseOwner, async () => {
@@ -1795,6 +1801,7 @@ async function deferFinalizeContinuation(
   shardCount: number,
   continuationAttempt: number,
   reason: string,
+  delaySeconds = FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS,
 ): Promise<void> {
   if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
   if (continuationAttempt >= FINALIZE_CONTINUATION_MAX_ATTEMPTS) {
@@ -1814,7 +1821,15 @@ async function deferFinalizeContinuation(
   await env.UPDATE_QUEUE.send({
     type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1,
     continuationAttempt: continuationAttempt + 1,
-  }, { delaySeconds: FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS } as any)
+  }, { delaySeconds } as any)
+}
+
+async function finalizeLeaseWaitSeconds(env: Bindings, triggerTime: string, runId: string): Promise<number> {
+  const lock = await loadFinalizeLock(env, triggerTime, runId)
+  const expiresAtMs = lock?.expires_at ? Date.parse(lock.expires_at) : NaN
+  if (!Number.isFinite(expiresAtMs)) return FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS
+  const untilExpiry = Math.ceil((expiresAtMs - Date.now()) / 1000) + 30
+  return Math.min(FINALIZE_LEASE_TTL_MS / 1000 + 30, Math.max(FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS, untilExpiry))
 }
 
 export async function refreshMatureStrategyEvidenceBeforeScreener(

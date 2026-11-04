@@ -27,7 +27,7 @@ const DEFAULT_MAX_RECOVERY_DATES = 4
 const HEAD_PAGE_SIZE = 8
 const PAGE_PAUSE_MS = 1_500
 const OVERLOAD_RETRY_DELAY_MS = 12_000
-const OVERLOAD_MAX_ATTEMPTS = 4
+const OVERLOAD_MAX_ATTEMPTS = 3
 
 type CanonicalHeadRow = {
   signal_date: string

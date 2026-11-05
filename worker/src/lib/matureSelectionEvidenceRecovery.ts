@@ -169,6 +169,7 @@ async function loadCanonicalHeads(
 async function loadCoverageRows(
   db: D1Database,
   heads: CanonicalHeadRow[],
+  onPage?: (page: CanonicalHeadRow[], rows: CoverageRow[]) => Promise<void>,
 ): Promise<CoverageRow[]> {
   const output: CoverageRow[] = []
   const pages = chunks(heads, HEAD_PAGE_SIZE)
@@ -285,8 +286,64 @@ async function loadCoverageRows(
       CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
     ).all<CoverageRow>())
     output.push(...(result.results ?? []))
+    if (onPage) await onPage(page, result.results ?? [])
   }
   return output
+}
+
+function emptyCoverageRow(head: CanonicalHeadRow): CoverageRow {
+  return {
+    signal_date: head.signal_date,
+    producer_run_id: head.run_id,
+    reference_rows: 0,
+    identity_rows: 0,
+    matrix_rows: 0,
+    expected_matrix_rows: 0,
+    persisted_matrix_rows: 0,
+    horizon_rows: 0,
+    horizon_unavailable_rows: 0,
+    label_rows: 0,
+    label_unavailable_rows: 0,
+  }
+}
+
+function headKey(signalDate: string, runId: string): string {
+  return `${signalDate}|${runId}`
+}
+
+// Re-reading every complete head on each inspection (~120 heads, ~3M learning-db
+// rows, up to four inspections a night) kept D1 at its 10-second overload window
+// (2026-11-04, -05). Inspections scan unverified heads plus one rolling page of
+// the oldest verifications, so a complete head that later regresses is still
+// found within a few nights. The markers are only an optimisation: a KV failure
+// falls back to the full scan instead of failing the inspection.
+const VERIFIED_HEADS_KEY = 'mature-selection-evidence:verified-heads:v1'
+// Bump when the coverage SQL or toGap changes what "complete" means.
+const COVERAGE_LOGIC_VERSION = 'mature-coverage-logic-v1'
+const VERIFIED_HEADS_CONTRACT = [
+  COVERAGE_LOGIC_VERSION,
+  SELECTION_REFERENCE_CONTRACT_VERSION,
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION,
+  STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
+  PRICE_HORIZON_PROJECTION_VERSION,
+  CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
+  CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
+].join('|')
+
+async function readVerifiedHeads(env: Bindings): Promise<Record<string, string> | null> {
+  if (!env.KV) return null
+  let stored: { contract?: unknown; heads?: unknown } | null
+  try {
+    stored = await env.KV.get(VERIFIED_HEADS_KEY, 'json') as typeof stored
+  } catch (error) {
+    console.warn(`[MatureSelectionEvidence] verified heads unreadable, full scan: ${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
+  if (stored?.contract !== VERIFIED_HEADS_CONTRACT || !stored.heads || typeof stored.heads !== 'object') return {}
+  return Object.fromEntries(Object.entries(stored.heads as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
 }
 
 function toGap(row: CoverageRow): MatureSelectionEvidenceGap | null {
@@ -336,35 +393,67 @@ export async function inspectMatureSelectionEvidenceGaps(
   env: Bindings,
   businessDateInput: string,
   options: { lookbackDays?: number } = {},
-): Promise<{ matureSignalDate: string | null; inspectedDates: number; gaps: MatureSelectionEvidenceGap[] }> {
+): Promise<{ matureSignalDate: string | null; inspectedDates: number; scannedDates: number; gaps: MatureSelectionEvidenceGap[] }> {
   const businessDate = dateOnly(businessDateInput, 'mature_selection_business_date')
   const matureSignalDate = await resolveExpectedMatureSignalDate(env, businessDate)
-  if (!matureSignalDate) return { matureSignalDate: null, inspectedDates: 0, gaps: [] }
+  if (!matureSignalDate) return { matureSignalDate: null, inspectedDates: 0, scannedDates: 0, gaps: [] }
   const lookbackDays = Math.max(30, Math.min(540, Math.floor(options.lookbackDays ?? DEFAULT_LOOKBACK_DAYS)))
-  const heads = await loadCanonicalHeads(env, shiftDate(matureSignalDate, -lookbackDays), matureSignalDate)
+  const windowStart = shiftDate(matureSignalDate, -lookbackDays)
+  const heads = await loadCanonicalHeads(env, windowStart, matureSignalDate)
   const learningDb = databaseForDataDomain(env, 'learning')
-  const loadedRows = await loadCoverageRows(learningDb, heads)
+  const verified = await readVerifiedHeads(env)
+  let scanHeads = heads
+  let onPage: ((page: CanonicalHeadRow[], rows: CoverageRow[]) => Promise<void>) | undefined
+  if (verified) {
+    const live = new Set(heads.map((head) => headKey(head.signal_date, head.run_id)))
+    // A historical replay sees an earlier window; markers newer than it stay.
+    const oldestKept = shiftDate(matureSignalDate, -540)
+    for (const key of Object.keys(verified)) {
+      const date = key.slice(0, 10)
+      if (date < oldestKept || (date >= windowStart && date <= matureSignalDate && !live.has(key))) delete verified[key]
+    }
+    const recheck = new Set(heads
+      .map((head) => headKey(head.signal_date, head.run_id))
+      .filter((key) => verified[key])
+      .sort((a, b) => verified[a].localeCompare(verified[b]) || a.localeCompare(b))
+      .slice(0, HEAD_PAGE_SIZE))
+    // Unverified heads go first so a retry after an overload spends its first
+    // pages on new heads rather than on the recheck page.
+    scanHeads = [
+      ...heads.filter((head) => !verified[headKey(head.signal_date, head.run_id)]),
+      ...heads.filter((head) => recheck.has(headKey(head.signal_date, head.run_id))),
+    ]
+    let writable = true
+    // Saved after every page so an overloaded inspection still keeps its progress.
+    onPage = async (page, pageRows) => {
+      const byHead = new Map(pageRows.map((row) => [headKey(row.signal_date, row.producer_run_id), row]))
+      const verifiedAt = new Date().toISOString()
+      for (const head of page) {
+        const key = headKey(head.signal_date, head.run_id)
+        if (toGap(byHead.get(key) ?? emptyCoverageRow(head)) === null) verified[key] = verifiedAt
+        else delete verified[key]
+      }
+      if (!writable) return
+      try {
+        await env.KV.put(VERIFIED_HEADS_KEY, JSON.stringify({ contract: VERIFIED_HEADS_CONTRACT, heads: verified }))
+      } catch (error) {
+        writable = false
+        console.warn(`[MatureSelectionEvidence] verified heads not saved: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+  const loadedRows = await loadCoverageRows(learningDb, scanHeads, onPage)
   const rowsByHead = new Map(
-    loadedRows.map((row) => [`${row.signal_date}\u0000${row.producer_run_id}`, row]),
+    loadedRows.map((row) => [headKey(row.signal_date, row.producer_run_id), row]),
   )
-  const rows = heads.map((head): CoverageRow => rowsByHead.get(
-    `${head.signal_date}\u0000${head.run_id}`,
-  ) ?? {
-    signal_date: head.signal_date,
-    producer_run_id: head.run_id,
-    reference_rows: 0,
-    identity_rows: 0,
-    matrix_rows: 0,
-    expected_matrix_rows: 0,
-    persisted_matrix_rows: 0,
-    horizon_rows: 0,
-    horizon_unavailable_rows: 0,
-    label_rows: 0,
-    label_unavailable_rows: 0,
-  })
+  const scanned = new Set(scanHeads.map((head) => headKey(head.signal_date, head.run_id)))
+  const rows = heads.filter((head) => scanned.has(headKey(head.signal_date, head.run_id))).map((head): CoverageRow => rowsByHead.get(
+    headKey(head.signal_date, head.run_id),
+  ) ?? emptyCoverageRow(head))
   return {
     matureSignalDate,
-    inspectedDates: rows.length,
+    inspectedDates: heads.length,
+    scannedDates: scanHeads.length,
     gaps: rows.map(toGap).filter((row): row is MatureSelectionEvidenceGap => row !== null),
   }
 }
@@ -494,6 +583,7 @@ export async function drainMatureSelectionEvidence(
   const summary = [
     `mature_signal_date=${initial.matureSignalDate ?? 'none'}`,
     `inspected_dates=${initial.inspectedDates}`,
+    `scanned_dates=${initial.scannedDates}`,
     `gaps_before=${initial.gaps.length}`,
     `targeted=${uniqueRecoveredDates.join(',') || 'none'}`,
     `projection_runs=${projectionRuns}`,

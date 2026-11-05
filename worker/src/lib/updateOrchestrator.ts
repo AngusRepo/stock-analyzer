@@ -1838,11 +1838,18 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
   runId: string,
 ): Promise<string> {
   const startedAt = Date.now()
+  let phase = 'load_modules'
   try {
-    const progress = async (phase: string) => logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
-      status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
-      duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
-    }, env)
+    // A running entry cannot overwrite an earlier error in KV, so the failing
+    // phase also goes into the error summary and the thrown message.
+    const progress = async (next: string) => {
+      if (phase !== 'load_modules') await new Promise((resolve) => setTimeout(resolve, MATURE_EVIDENCE_PHASE_PAUSE_MS))
+      phase = next
+      await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
+        status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
+        duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
+      }, env)
+    }
     await progress('recover_mature_selection')
     const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
@@ -1881,15 +1888,20 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
   } catch (error) {
     await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
       status: 'error',
-      summary: `mature evidence refresh failed before screener for ${asOfDate}`,
+      summary: `mature evidence refresh failed before screener for ${asOfDate}; phase=${phase}`,
       duration_ms: Date.now() - startedAt,
       run_id: runId,
       run_date: asOfDate,
       error: String(error),
     }, env)
-    throw error
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`mature evidence phase=${phase}: ${message}`, { cause: error })
   }
 }
+
+// Let learning-db's 10 s resource window clear between the heavy phases, which
+// each read millions of rows; back to back they overloaded it on 2026-11-04.
+const MATURE_EVIDENCE_PHASE_PAUSE_MS = 12_000
 async function runFinalizeContinuation(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,

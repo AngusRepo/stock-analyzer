@@ -23,9 +23,10 @@ const DEFAULT_LOOKBACK_DAYS = 180
 const DEFAULT_MAX_RECOVERY_DATES = 4
 // One 24-head page reads about 1M rows; two back to back exceed D1's 10-second
 // resource window ("D1 DB is overloaded"). Smaller pages, a pause between them
-// and a wait past that window before retrying keep the scan under it.
+// and a wait past that window before retrying keep the scan under it. With
+// 1.5 s pauses about three pages still landed in one window on 2026-11-04.
 const HEAD_PAGE_SIZE = 8
-const PAGE_PAUSE_MS = 1_500
+const PAGE_PAUSE_MS = 5_000
 const OVERLOAD_RETRY_DELAY_MS = 12_000
 const OVERLOAD_MAX_ATTEMPTS = 3
 
@@ -219,14 +220,18 @@ async function loadCoverageRows(
             ON t.signal_date=x.signal_date
            AND t.producer_run_id=x.producer_run_id
       ),
-      matrix_counts AS (
-        SELECT m.signal_date, m.producer_run_id, m.labeler_version,
-               m.reference_contract_version, COUNT(*) matrix_rows
-          FROM strategy_label_matrix_v4 m
-          JOIN target_heads t
-            ON t.signal_date=m.signal_date
-           AND t.producer_run_id=m.producer_run_id
-         GROUP BY m.signal_date, m.producer_run_id, m.labeler_version, m.reference_contract_version
+      matrix_counts AS MATERIALIZED (
+        -- Only lineages that can join (formal runs) are counted, one probe each:
+        -- grouping every matrix row of the date sorted it through a temp b-tree,
+        -- doubling the dominant read. A lineage without rows yields 0 where the
+        -- grouped form yielded no row; the outer COALESCE(MAX(...),0) is the same.
+        SELECT k.signal_date, k.producer_run_id, k.labeler_version, k.reference_contract_version,
+               (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+                 WHERE m.signal_date=k.signal_date AND m.producer_run_id=k.producer_run_id
+                   AND m.labeler_version=k.labeler_version
+                   AND m.reference_contract_version=k.reference_contract_version) matrix_rows
+          FROM (SELECT DISTINCT signal_date, producer_run_id, labeler_version, reference_contract_version
+                  FROM formal_runs) k
       )
       SELECT r.signal_date, r.producer_run_id,
              COUNT(*) reference_rows,

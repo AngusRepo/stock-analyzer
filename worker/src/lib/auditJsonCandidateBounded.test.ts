@@ -73,6 +73,22 @@ test('tail page starts its index range at the cursor date instead of rescanning 
  }finally{db.close()}
 })
 
+test('decision-log pages keep a bounded date seek without idx_strategy_decision_log_date',()=>{
+ // D1-RR learning 0065 drops that index; another date-leading index must take the range.
+ const schema=readFileSync('domain-schemas/learning.sql','utf8')
+ const db=new DatabaseSync(':memory:')
+ try{db.exec(schema.match(/CREATE TABLE IF NOT EXISTS strategy_decision_log \([\s\S]*?\n\);/)![0])
+  for(const m of schema.matchAll(/CREATE INDEX IF NOT EXISTS (idx_strategy_decision_log_\w+)\s+ON strategy_decision_log\([^;]*\);/g))if(m[1]!=='idx_strategy_decision_log_date')db.exec(m[0])
+  for(const target of ['strategy_decision_log','strategy_decision_log_ref_v2'] as const)for(const cursor of [null,{cursor_date:'2026-01-16',cursor_key:'d'} as RetentionCursor]){
+   const q=buildAuditJsonCandidateQuery(target,'2026-01-21',20,1024,cursor)
+   const plan=db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.binds as SQLInputValue[]).map(r=>String(r.detail))
+   const range=cursor?/\(date>\? AND date<\?\)/:/\(date<\?\)/
+   assert.ok(plan.some(d=>/^SEARCH strategy_decision_log USING (COVERING )?INDEX idx_strategy_decision_log_\w+ /.test(d)&&range.test(d)),`${target} ${cursor?'tail':'head'}: ${plan.join(' | ')}`)
+   assert.ok(!plan.some(d=>/^SCAN strategy_decision_log\b/.test(d)),`${target}: ${plan.join(' | ')}`)
+  }
+ }finally{db.close()}
+})
+
 test('JSON quoting is bounded by page size when sorting visits the entire date',()=>{
  const{db}=fixture('strategy_decision_log',3001,true)
  try{let calls=0;db.function('probe',x=>{calls++;return x})

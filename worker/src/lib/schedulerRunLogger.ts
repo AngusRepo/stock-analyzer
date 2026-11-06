@@ -16,6 +16,8 @@ export interface SchedulerRunLogEntry {
   run_date?: string
   run_scope?: 'live_canonical' | 'historical_replay' | 'derived'
   error?: string
+  /** ISO time before which a running entry is parked on a scheduled dispatch, not stalled. */
+  wait_until?: string
 }
 
 export interface SchedulerRunLogReadOptions {
@@ -337,6 +339,7 @@ export async function logSchedulerRunResult(
     run_date: today,
     run_scope: result.run_scope,
     error: typeof result.error === 'string' ? redactSchedulerRunText(result.error, env) : result.error,
+    wait_until: result.wait_until,
     timestamp: new Date().toISOString(),
   }
 

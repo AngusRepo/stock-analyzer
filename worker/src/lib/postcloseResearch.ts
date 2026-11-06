@@ -3,15 +3,21 @@ import { controllerJson } from './controllerClient'
 import { queuePostPipelineStage } from './pipelineStageLease'
 import { paperExecutionNow } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { postcloseDispatchTwTime } from './schedulerManifestGovernance'
 
-/** A serving callback closes publication, not the after-close research chain. */
-export async function verifyServingOnlyCallback(env: Bindings, day: string, runId: string, checksum: unknown) {
+/** A serving callback closes publication, not the after-close research chain.
+ *  Returns when the post-close dispatch for the publication's trade date is due, if the receipt names one. */
+export async function verifyServingOnlyCallback(env: Bindings, day: string, runId: string, checksum: unknown): Promise<string | undefined> {
   if (env.PAPER_DAILY_PLAN_OWNER !== 'premarket_once_v1' || typeof checksum !== 'string' || !/^[a-f0-9]{64}$/.test(checksum))
     throw new Error('premarket_serving_callback_invalid')
-  const result=await controllerJson<{publication?: {checksum: string; signal_date: string; run_id: string}}>(
+  const result=await controllerJson<{publication?: {checksum: string; signal_date: string; run_id: string; trade_date?: string}}>(
     env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:day,run_id:runId}))
   if (!result.publication || result.publication.checksum!==checksum || result.publication.signal_date!==day || result.publication.run_id!==runId)
     throw new Error('premarket_serving_callback_receipt_mismatch')
+  const tradeDate=result.publication.trade_date
+  if (typeof tradeDate!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate) || tradeDate<=day) return undefined
+  // The wait window is display only; a bad manifest entry must not fail the serving callback.
+  try {return `${tradeDate}T${postcloseDispatchTwTime()}:00+08:00`} catch {return undefined}
 }
 
 type Dispatch = {status: string; run_id?: string; run_date?: string; reason?: string; observed_state?: string}

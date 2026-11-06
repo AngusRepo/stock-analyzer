@@ -45,8 +45,19 @@ jobs:
           push: false
           load: true
           tags: stockvision-controller:ci
+          # A commit awaiting its re-pin still builds through every later step; the ci gate and
+          # the native-identity check own that verdict. Production builds assert (Dockerfile).
+          build-args: NATIVE_IDENTITY_ASSERT=0
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Native identity in the image (informational)
+        run: |
+          set -e
+          # the image's own identity next to the committed pin; a mismatch is a warning here
+          actual="$(docker run --rm --entrypoint python stockvision-controller:ci -c 'from services.native_paper_sandbox import native_execution_identity; print(native_execution_identity())')"
+          declared="$(jq -r .execution_owner_version ml-controller/services/native_execution_behavior_release.json)"
+          echo "actual $actual, declared $declared"
+          [ "$actual" = "$declared" ] || echo "::warning title=native identity::image identity $actual differs from the pin $declared (re-pin needed; production builds refuse it)"
       - name: Resolved Python packages
         run: |
           set -e

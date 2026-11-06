@@ -12,6 +12,11 @@ const REPLACEMENT_TURNOVER_TOLERANCE = 0.15
 const REPLACEMENT_DUPLICATE_CORRELATION = 0.95
 const EDGE_LOOKBACK_CALENDAR_DAYS = 540
 const EDGE_PAGE_SIZE = 5000
+// Every page re-sorts the rest of its signal date before LIMIT (about 28k rows
+// read per page on 2026-11-06, 690 pages an hour), so back-to-back pages alone
+// filled learning-db's 10-second budget. Pausing between pages spreads that
+// load; the rows and their order are unchanged.
+const EDGE_PAGE_PAUSE_MS = 200
 const T_PLUS_OUTCOME_HORIZON_TRADING_DAYS = 5
 const REPLACEMENT_HAC_LAG = T_PLUS_OUTCOME_HORIZON_TRADING_DAYS - 1
 const MIN_EFFECTIVE_PAIRED_DATES = 30
@@ -1077,8 +1082,9 @@ export function evaluatePairedStrategyReplacementsV7(
 export async function refreshStrategyMarginalEdgeV4(
   db: D1Database,
   asOfDate: string,
-  options: { allowPromotion?: boolean; canonicalRunIds?: Record<string, string> } = {},
+  options: { allowPromotion?: boolean; canonicalRunIds?: Record<string, string>; pagePauseMs?: number } = {},
 ): Promise<{ runId: string; status: 'shadow' | 'promoted'; sampleDates: number; eligibleStrategies: number }> {
+  const pagePauseMs = options.pagePauseMs ?? EDGE_PAGE_PAUSE_MS
   const asOfMs = Date.parse(`${asOfDate}T00:00:00Z`)
   if (!Number.isFinite(asOfMs)) throw new Error(`invalid_strategy_edge_as_of_date:${asOfDate}`)
   const startDate = new Date(asOfMs - EDGE_LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
@@ -1140,6 +1146,7 @@ export async function refreshStrategyMarginalEdgeV4(
       cursorSymbol = last.symbol
       cursorStrategyId = last.strategy_id
       cursorStrategyVersion = last.strategy_version
+      if (pagePauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pagePauseMs))
     }
   }
 

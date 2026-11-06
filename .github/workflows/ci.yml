@@ -86,6 +86,17 @@ jobs:
           # hit only when this suite's list is in the restored set
           list="$RUNNER_TEMP/base-cache/failures-${{ matrix.suite }}.txt"
           if [ -f "$list" ]; then cp "$list" "$RUNNER_TEMP/failures.txt"; echo "hit=true" >> "$GITHUB_OUTPUT"; fi
+      # Tells the confirm job this base list was restored, not produced by this workflow run.
+      - name: Mark cached base list
+        if: steps.cached.outputs.hit == 'true'
+        shell: bash
+        run: echo "${{ steps.key.outputs.key }}" > "$RUNNER_TEMP/cached.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.cached.outputs.hit == 'true'
+        with:
+          name: cached-${{ matrix.suite }}-base
+          path: ${{ runner.temp }}/cached.txt
+          if-no-files-found: error
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.suite != 'hygiene' && steps.cached.outputs.hit != 'true'
@@ -125,6 +136,11 @@ jobs:
 
   # Controller tests that fail on head but not on base are rerun twice, serially, on head.
   # Ids that pass at least once are reported as flaky by the gate instead of blocking it.
+  # When every controller base list was restored from the cache (saved by an earlier run of
+  # that commit), ids that still fail are run on the base twice: a date- or clock-dependent
+  # test can fail there now although the cached list predates it. Ids that fail both base
+  # runs are reported as pre-existing (stale base list) instead of blocking. A base list
+  # produced in this run is current, so nothing is checked against it.
   confirm:
     name: confirm new controller failures
     needs: suite
@@ -149,6 +165,12 @@ jobs:
         with:
           pattern: failures-controller-*
           path: failures
+      # Markers only exist for base shards restored from the cache; none is a normal outcome.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: cached-controller-*-base
+          path: cached
       - name: Merge controller shards
         run: python .ci-tools/ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: List head-only failures
@@ -166,6 +188,35 @@ jobs:
         with:
           name: flaky-controller
           path: ${{ runner.temp }}/flaky.txt
+          if-no-files-found: error
+      # Checked only on pull_request and push (same base commit as the suites' base side), when
+      # every controller base shard was a cache hit and some ids still fail after the head reruns.
+      - name: Resolve base
+        id: base
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          set -e
+          hits="$(find cached -name cached.txt 2>/dev/null | wc -l | tr -d ' ')"
+          [ "$hits" = "$CONTROLLER_SHARDS" ] || { echo "base lists from this run ($hits/$CONTROLLER_SHARDS cached); not checked on base"; exit 0; }
+          left="$(comm -23 <(sort -u "$RUNNER_TEMP/new.txt") <(sort -u "$RUNNER_TEMP/flaky.txt"))"
+          [ -n "$left" ] && echo "check=true" >> "$GITHUB_OUTPUT" || true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.base.outputs.check == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          path: .base-tree
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check them on base
+        if: steps.base.outputs.check == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        working-directory: .base-tree
+        run: bash ../.ci-tools/ci/rerun_controller.sh --base "$RUNNER_TEMP/stale.txt" "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
+      - name: Default stale list
+        run: touch "$RUNNER_TEMP/stale.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stale-controller
+          path: ${{ runner.temp }}/stale.txt
           if-no-files-found: error
 
   gate:
@@ -191,8 +242,39 @@ jobs:
           path: failures
       - name: Merge controller shards
         run: python ci/merge_shards.py failures "$CONTROLLER_SHARDS"
+      # A PR stacked on another PR's branch is gated against that branch, which hides what it
+      # inherits from it. main's cached lists (saved by this job on push) add a non-blocking
+      # "vs main" section; the key prefix accepts lists from other CI tooling or weeks.
+      - name: Main tip (stacked PR)
+        id: main
+        if: github.event_name == 'pull_request' && github.base_ref != 'main'
+        run: |
+          set -e
+          sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "key=$(bash ci/base_cache_key.sh . "$sha")" >> "$GITHUB_OUTPUT"
+          echo "prefix=ci-base-v2-$CONTROLLER_SHARDS-$sha-" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: main-cache
+        if: steps.main.outputs.sha != ''
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.main.outputs.key }}
+          restore-keys: ${{ steps.main.outputs.prefix }}
       - name: Compare head against base
-        run: python ci/compare_failures.py failures
+        env:
+          MAIN_SHA: ${{ steps.main.outputs.sha }}
+          MAIN_EXACT: ${{ steps.main-cache.outputs.cache-hit }}
+          MAIN_MATCHED: ${{ steps.main-cache.outputs.cache-matched-key }}
+        run: |
+          set -e
+          main=()
+          if [ -n "$MAIN_SHA" ]; then
+            label="${MAIN_SHA:0:8}"
+            [ "$MAIN_EXACT" = true ] || [ -z "$MAIN_MATCHED" ] || label="$label (lists from other CI tooling or week)"
+            main=("$RUNNER_TEMP/base-cache" "$label")
+          fi
+          python ci/compare_failures.py failures "${main[@]}"
       # main only, after a passing gate: keep the head lists as the base for later runs of
       # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
       - name: Pack base lists

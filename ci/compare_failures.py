@@ -25,6 +25,10 @@ def read_flaky(suite):
     return {l.strip() for l in path.read_text(encoding='utf-8').splitlines() if l.strip()} if path.exists() else set()
 
 
+# Fails whenever native identity inputs change without a re-pin; still blocking (main must keep
+# building), but labelled so it reads as "re-pin needed" (the native-identity check says what).
+REPIN = {'controller: tests.test_native_storage_equivalence::test_exact_running_behavior_release_retains_separate_identity'}
+
 lines = ['| suite | head failures | pre-existing | **new** | flaky | fixed |', '|---|---|---|---|---|---|']
 blocked, details = False, []
 for suite in SUITES:
@@ -39,7 +43,8 @@ for suite in SUITES:
     blocked |= bool(new)
     lines.append(f'| {suite} | {len(head)} | {len(head & base)} | **{len(new)}** | {len(flaky)} | {len(fixed)} |')
     if new:
-        details.append(f'### {suite}: new failures\n' + '\n'.join(f'- `{n}`' for n in new))
+        details.append(f'### {suite}: new failures\n' + '\n'.join(
+            f'- `{n}`' + (' (re-pin needed: see the native-identity check)' if n in REPIN else '') for n in new))
     if flaky:
         details.append(f'### {suite}: flaky (failed on head, passed on rerun; not blocking)\n'
                        + '\n'.join(f'- `{f}`' for f in sorted(flaky)))

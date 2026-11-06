@@ -17,8 +17,14 @@ type Receipt = {
   claim: string; leaseOwner: string; retrySafe?: boolean; result?: PostVerifyTaskResult; checksum?: string
 }
 type Row = { state: string; receipt_json: string }
-/** Idempotent post-verify producers: a closed claim may simply run again (the chain passes retrySafe from this). */
-export const POST_VERIFY_RETRY_SAFE_TASKS: readonly string[] = ['price-horizon-projection', 'strategy-multi-horizon-outcomes', 'linucb-reward-ledger']
+/** Idempotent post-verify producers: a closed claim may simply run again (the chain passes retrySafe from this).
+ * The strategy-evidence pair qualifies because the metric snapshot publishes receipt and rows in one batch and a
+ * rerun returns the published receipt, while calibration rows are keyed by the artifact checksum and the head
+ * upsert is monotonic by cutoff (EC-F: a dead producer on 11/2 otherwise needed manual reconciliation).
+ * The list also releases RUNNING claims left by earlier revisions, so add a task only if every revision that could
+ * have left such a claim was idempotent, or reconcile those claims first. */
+export const POST_VERIFY_RETRY_SAFE_TASKS: readonly string[] = ['price-horizon-projection', 'strategy-multi-horizon-outcomes',
+  'strategy-evidence-current', 'strategy-evidence-metric-backfill', 'linucb-reward-ledger']
 const PREFIX = 'post_verify_task_v1:'
 const RUNNING = PREFIX + 'running'
 const SUCCESS = PREFIX + 'success'
@@ -153,11 +159,12 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
     for (const row of rows.results ?? []) {
       const stale = JSON.parse(row.receipt_json) as Receipt
       if (!stale.leaseOwner || stale.leaseOwner === input.leaseOwner) continue
-      // Receipts claimed before the stored flag rely on their task's own retry
-      // contract: a retry-safe task's claim closes like a flagged one, from any
-      // task (NEW-1030-22: a dead outcomes producer must not block projection).
-      const legacyRetrySafe = stale.retrySafe === undefined && POST_VERIFY_RETRY_SAFE_TASKS.includes(stale.task)
-      if (stale.retrySafe !== true && !legacyRetrySafe && !(retrySafe && stale.task === task)) {
+      // Retry safety is the producer's contract, and a task joins the list only once its producer is proven
+      // idempotent. So a claim stored before the flag, or as not retry-safe by an earlier revision, closes like a
+      // flagged one from any task (NEW-1030-22: a dead outcomes producer must not block projection; EC-F: the
+      // 11/2 strategy-evidence-current claim was stored as retrySafe:false).
+      const listedRetrySafe = POST_VERIFY_RETRY_SAFE_TASKS.includes(stale.task)
+      if (stale.retrySafe !== true && !listedRetrySafe && !(retrySafe && stale.task === task)) {
         requiresReconciliation.push(stale.task)
         continue
       }

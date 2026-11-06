@@ -141,8 +141,8 @@ test('the strategy seek returns the same mature OOF rows as the date scan', () =
       const canonical = seed(db, seedValue)
       const json = JSON.stringify(canonical)
       const legacy = db.prepare(legacySql).all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, json) as Row[]
-      const seek = db.prepare(buildMatureStrategyOofReturnsSql(compat.sql))
-        .all(AS_OF, AS_OF, json, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds) as Row[]
+      const seek = db.prepare(buildMatureStrategyOofReturnsSql(compat))
+        .all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, json) as Row[]
       assert.ok(legacy.length > 20, `seed ${seedValue} produced only ${legacy.length} rows`)
       assert.equal(seek.length, legacy.length, `seed ${seedValue}`)
       for (const [index, expected] of legacy.entries()) {
@@ -161,8 +161,8 @@ test('the strategy seek returns the same mature OOF rows as the date scan', () =
 test('the matrix is only ever reached through the (signal_date, strategy_id, evaluable, strategy_hit) index', () => {
   const db = openDb()
   try {
-    const plan = db.prepare(`EXPLAIN QUERY PLAN ${buildMatureStrategyOofReturnsSql(compat.sql)}`)
-      .all(AS_OF, AS_OF, '{}', CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds)
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${buildMatureStrategyOofReturnsSql(compat)}`)
+      .all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, '{}')
       .map((row) => String(row.detail))
     const joined = plan.join(' | ')
     assert.ok(!plan.some((detail) => /^SCAN (m|l|mr|canonical_selection_labels_v4|strategy_label_matrix_v4)\b/.test(detail)), joined)

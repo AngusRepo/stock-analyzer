@@ -2417,12 +2417,18 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
 // ~1000; each pass costs at least one query). Past it, consecutive dates share
 // a pass bounded by their date range, so every head date is still read.
 export const STRATEGY_REWARD_SOURCE_MAX_DATE_PASSES = 200
+// 289 pages of about 18.7k rows read each in one hour on 2026-11-06, issued
+// back to back, overloaded learning-db at reward_ledger. A pause between pages
+// (and between date passes) spreads the same reads over the 10-second budget.
+const STRATEGY_REWARD_SOURCE_PAGE_PAUSE_MS = 250
 
 export async function listStrategyRewardSourceRows(
   db: D1Database,
-  options: { startDate?: string; endDate?: string; limit?: number; canonicalRunIds?: Record<string, string>; maxDatePasses?: number } = {},
+  options: { startDate?: string; endDate?: string; limit?: number; canonicalRunIds?: Record<string, string>; maxDatePasses?: number; pagePauseMs?: number } = {},
 ): Promise<StrategyRewardSourceRow[]> {
   const pageSize = Math.max(1, Math.min(options.limit ?? 1000, 5000))
+  const pagePauseMs = options.pagePauseMs ?? STRATEGY_REWARD_SOURCE_PAGE_PAUSE_MS
+  let pagesIssued = 0
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
   const rows: StrategyRewardSourceRow[] = []
   let cursorDate = ''
@@ -2453,6 +2459,8 @@ export async function listStrategyRewardSourceRows(
     ? Array.from({ length: Math.ceil(signalDates.length / passSize) }, (_, i) => signalDates!.slice(i * passSize, (i + 1) * passSize))
     : [null]
   for (const passDates of passes) for (;;) {
+    if (pagesIssued > 0 && pagePauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pagePauseMs))
+    pagesIssued += 1
     const clauses = [
       'm.strategy_hit = 1',
       'm.evaluable = 1',

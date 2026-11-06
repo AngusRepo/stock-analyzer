@@ -24,9 +24,12 @@ const DEFAULT_MAX_RECOVERY_DATES = 4
 // One 24-head page reads about 1M rows; two back to back exceed D1's 10-second
 // resource window ("D1 DB is overloaded"). Smaller pages, a pause between them
 // and a wait past that window before retrying keep the scan under it. With
-// 1.5 s pauses about three pages still landed in one window on 2026-11-04.
+// 1.5 s pauses about three pages still landed in one window on 2026-11-04. An
+// 8-head page took 3.2 s on 2026-11-06, so a 5 s pause still put two pages in
+// one window whenever another learning-db reader shared it; 10 s keeps a page
+// alone in its window.
 const HEAD_PAGE_SIZE = 8
-const PAGE_PAUSE_MS = 5_000
+const PAGE_PAUSE_MS = 10_000
 const OVERLOAD_RETRY_DELAY_MS = 12_000
 const OVERLOAD_MAX_ATTEMPTS = 3
 
@@ -78,7 +81,20 @@ export type MatureSelectionEvidenceRecoveryResult = {
   afterInspection?: MatureSelectionEvidenceInspection
 }
 
-type MatureSelectionEvidenceInspection = Awaited<ReturnType<typeof inspectMatureSelectionEvidenceGaps>>
+type MatureSelectionEvidenceInspection = {
+  matureSignalDate: string | null
+  inspectedDates: number
+  scannedDates: number
+  gaps: MatureSelectionEvidenceGap[]
+}
+
+type InspectOptions = {
+  lookbackDays?: number
+  // Restrict the coverage scan to these heads (a recovery's after-check).
+  heads?: Array<{ signalDate: string; producerRunId: string }>
+  // Tests only: the pause between coverage pages.
+  pagePauseMs?: number
+}
 
 function dateOnly(value: unknown, field: string): string {
   const date = String(value ?? '').slice(0, 10)
@@ -170,11 +186,12 @@ async function loadCoverageRows(
   db: D1Database,
   heads: CanonicalHeadRow[],
   onPage?: (page: CanonicalHeadRow[], rows: CoverageRow[]) => Promise<void>,
+  pagePauseMs: number = PAGE_PAUSE_MS,
 ): Promise<CoverageRow[]> {
   const output: CoverageRow[] = []
   const pages = chunks(heads, HEAD_PAGE_SIZE)
   for (const [pageIndex, page] of pages.entries()) {
-    if (pageIndex > 0) await sleep(PAGE_PAUSE_MS)
+    if (pageIndex > 0) await sleep(pagePauseMs)
     const targetRows = page.map(() => '(?, ?)').join(', ')
     const binds = page.flatMap((row) => [row.signal_date, row.run_id])
     const result = await withOverloadRetry(() => db.prepare(`
@@ -392,20 +409,26 @@ export function isMatureSelectionEvidenceGapRecoverable(gap: MatureSelectionEvid
 export async function inspectMatureSelectionEvidenceGaps(
   env: Bindings,
   businessDateInput: string,
-  options: { lookbackDays?: number } = {},
-): Promise<{ matureSignalDate: string | null; inspectedDates: number; scannedDates: number; gaps: MatureSelectionEvidenceGap[] }> {
+  options: InspectOptions = {},
+): Promise<MatureSelectionEvidenceInspection> {
   const businessDate = dateOnly(businessDateInput, 'mature_selection_business_date')
   const matureSignalDate = await resolveExpectedMatureSignalDate(env, businessDate)
   if (!matureSignalDate) return { matureSignalDate: null, inspectedDates: 0, scannedDates: 0, gaps: [] }
   const lookbackDays = Math.max(30, Math.min(540, Math.floor(options.lookbackDays ?? DEFAULT_LOOKBACK_DAYS)))
   const windowStart = shiftDate(matureSignalDate, -lookbackDays)
-  const heads = await loadCanonicalHeads(env, windowStart, matureSignalDate)
+  const liveHeads = await loadCanonicalHeads(env, windowStart, matureSignalDate)
+  // A scoped inspection (after a recovery) pages only the heads it is given;
+  // the marker housekeeping below still sees every live head.
+  const only = options.heads
+    ? new Set(options.heads.map((head) => headKey(head.signalDate, head.producerRunId)))
+    : null
+  const heads = only ? liveHeads.filter((head) => only.has(headKey(head.signal_date, head.run_id))) : liveHeads
   const learningDb = databaseForDataDomain(env, 'learning')
   const verified = await readVerifiedHeads(env)
   let scanHeads = heads
   let onPage: ((page: CanonicalHeadRow[], rows: CoverageRow[]) => Promise<void>) | undefined
   if (verified) {
-    const live = new Set(heads.map((head) => headKey(head.signal_date, head.run_id)))
+    const live = new Set(liveHeads.map((head) => headKey(head.signal_date, head.run_id)))
     // A historical replay sees an earlier window; markers newer than it stay.
     const oldestKept = shiftDate(matureSignalDate, -540)
     for (const key of Object.keys(verified)) {
@@ -442,7 +465,7 @@ export async function inspectMatureSelectionEvidenceGaps(
       }
     }
   }
-  const loadedRows = await loadCoverageRows(learningDb, scanHeads, onPage)
+  const loadedRows = await loadCoverageRows(learningDb, scanHeads, onPage, options.pagePauseMs)
   const rowsByHead = new Map(
     loadedRows.map((row) => [headKey(row.signal_date, row.producer_run_id), row]),
   )
@@ -452,20 +475,40 @@ export async function inspectMatureSelectionEvidenceGaps(
   ) ?? emptyCoverageRow(head))
   return {
     matureSignalDate,
-    inspectedDates: heads.length,
+    inspectedDates: liveHeads.length,
     scannedDates: scanHeads.length,
     gaps: rows.map(toGap).filter((row): row is MatureSelectionEvidenceGap => row !== null),
+  }
+}
+
+// The inspection after a recovery covers only the targeted heads; every other
+// head keeps the gap (or none) the inspection before the recovery found.
+export function mergeTargetedInspection(
+  before: MatureSelectionEvidenceInspection,
+  targetedKeys: Set<string>,
+  afterTargeted: MatureSelectionEvidenceInspection | null,
+): MatureSelectionEvidenceInspection {
+  if (!afterTargeted) return before
+  return {
+    matureSignalDate: before.matureSignalDate,
+    inspectedDates: before.inspectedDates,
+    scannedDates: afterTargeted.scannedDates,
+    gaps: [
+      ...before.gaps.filter((gap) => !targetedKeys.has(headKey(gap.signalDate, gap.producerRunId))),
+      ...afterTargeted.gaps,
+    ],
   }
 }
 
 export async function recoverMatureSelectionEvidence(
   env: Bindings,
   businessDateInput: string,
-  options: { lookbackDays?: number; maxRecoveryDates?: number; before?: MatureSelectionEvidenceInspection } = {},
+  options: { lookbackDays?: number; maxRecoveryDates?: number; before?: MatureSelectionEvidenceInspection; pagePauseMs?: number } = {},
 ): Promise<MatureSelectionEvidenceRecoveryResult> {
   const businessDate = dateOnly(businessDateInput, 'mature_selection_business_date')
+  const inspectOptions: InspectOptions = { lookbackDays: options.lookbackDays, pagePauseMs: options.pagePauseMs }
   // Each inspection reads several million learning-db rows; reuse the caller's.
-  const before = options.before ?? await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  const before = options.before ?? await inspectMatureSelectionEvidenceGaps(env, businessDate, inspectOptions)
   const maxRecoveryDates = Math.max(
     1,
     Math.min(12, Math.floor(options.maxRecoveryDates ?? DEFAULT_MAX_RECOVERY_DATES)),
@@ -500,7 +543,18 @@ export async function recoverMatureSelectionEvidence(
     }
   }
 
-  const after = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  // Nothing else writes these tables during a recovery, so only the targeted
+  // heads can have changed. Re-inspecting every unverified head after each
+  // batch repeated the dominant learning-db read up to four times a night
+  // (2026-11-06); the after-check pages the targeted heads alone.
+  const targetedKeys = new Set(targeted.map((gap) => headKey(gap.signalDate, gap.producerRunId)))
+  const afterTargeted = targeted.length
+    ? await inspectMatureSelectionEvidenceGaps(env, businessDate, {
+      ...inspectOptions,
+      heads: targeted.map((gap) => ({ signalDate: gap.signalDate, producerRunId: gap.producerRunId })),
+    })
+    : null
+  const after = mergeTargetedInspection(before, targetedKeys, afterTargeted)
   const targetedDates = new Set(targeted.map((gap) => gap.signalDate))
   const unresolvedTargeted = after.gaps.filter((gap) => targetedDates.has(gap.signalDate))
   if (unresolvedTargeted.length) {
@@ -542,10 +596,11 @@ export async function recoverMatureSelectionEvidence(
 export async function drainMatureSelectionEvidence(
   env: Bindings,
   businessDateInput: string,
-  options: { lookbackDays?: number; maxRecoveryDates?: number; maxBatches?: number } = {},
+  options: { lookbackDays?: number; maxRecoveryDates?: number; maxBatches?: number; pagePauseMs?: number } = {},
 ): Promise<MatureSelectionEvidenceRecoveryResult> {
   const businessDate = dateOnly(businessDateInput, 'mature_selection_business_date')
-  const initial = await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+  const inspectOptions: InspectOptions = { lookbackDays: options.lookbackDays, pagePauseMs: options.pagePauseMs }
+  const initial = await inspectMatureSelectionEvidenceGaps(env, businessDate, inspectOptions)
   const recoveredDates: string[] = []
   let projectionRuns = 0
   let labelRowsPersisted = 0
@@ -561,11 +616,12 @@ export async function drainMatureSelectionEvidence(
       lookbackDays: options.lookbackDays,
       maxRecoveryDates: options.maxRecoveryDates ?? DEFAULT_MAX_RECOVERY_DATES,
       before: current,
+      pagePauseMs: options.pagePauseMs,
     })
     recoveredDates.push(...result.recoveredDates)
     projectionRuns += result.projectionRuns
     labelRowsPersisted += result.labelRowsPersisted
-    current = result.afterInspection ?? await inspectMatureSelectionEvidenceGaps(env, businessDate, options)
+    current = result.afterInspection ?? await inspectMatureSelectionEvidenceGaps(env, businessDate, inspectOptions)
     if (!result.recoveredDates.length) break
   }
 

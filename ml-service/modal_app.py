@@ -2666,10 +2666,11 @@ def train_tree_models(payload: dict) -> dict:
         return {"error": str(e), "type": "tree_models", "training_input_cache": cache_receipt}
 
 
+# R33 expanding fold (2.36M rows x 131) peaked at 11.3 GiB while loading its 23 prep batches.
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=4096,
+    memory=16384,
     timeout=3600,   # 60 min per window for tree models on short train windows.
     scaledown_window=60,
     max_containers=3,   # allow 3 windows in parallel for tree path
@@ -2737,7 +2738,7 @@ def build_market_conditioner_block(payload: dict) -> dict:
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=8192,         # apply_block copies the float64 prep matrix (~1.8 GB on R32) twice.
+    memory=16384,        # apply_block copies the prep matrix twice; the R33 mkt16 fold peaked at 12.0 GiB.
     timeout=3600,
     scaledown_window=60,
     max_containers=21,   # 6 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.

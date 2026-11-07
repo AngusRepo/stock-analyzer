@@ -5047,7 +5047,8 @@ def timexer_universal_predict(payload: dict) -> dict:
             "n_success":sum(row.get("available") is True for row in results)}
 
 
-@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=7, scaledown_window=60)
+# Steps replay on device-resident windows from one Python thread: the R33 run used 1 of 8 requested cores.
+@app.function(gpu="L4", cpu=2, memory=16384, timeout=21600, max_containers=7, scaledown_window=60)
 def train_timexer_universal(payload: dict) -> dict:
     """Official TimeXer OOF/full-fit; candidate files never confer serving authority."""
     _setup_env()

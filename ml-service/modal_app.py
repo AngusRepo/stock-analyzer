@@ -2468,7 +2468,7 @@ def train_tabm_universal(payload: dict) -> dict:
 
 @app.function(
     cpu=1,
-    memory=2048,                 # prep: build_feature_matrix for batch payloads.
+    memory=4096,                 # prep: build_feature_matrix; an R33 1532-session batch peaked at 1.7 GB.
     timeout=600,                 # 10 min per batch
     scaledown_window=60,
     max_containers=3,            # Parallel prep batches.
@@ -2487,8 +2487,8 @@ def prep_universal_batch(payload: dict) -> dict:
 
 
 # ~23 nightly batches of ~60 s each: 8 containers finish in three waves instead of eight.
-# Per-container spec is unchanged; prep only touches GCS and the controller callback.
-@app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=8)
+# Prep only touches GCS and the controller callback. An R33 1532-session batch peaked at 1.7 GB.
+@app.function(cpu=1, memory=4096, timeout=1900, scaledown_window=60, max_containers=8)
 def prep_universal_batch_event(payload: dict) -> dict:
     """Prepare one immutable batch, publish completion, notify the pipeline."""
     import time
@@ -2666,10 +2666,11 @@ def train_tree_models(payload: dict) -> dict:
         return {"error": str(e), "type": "tree_models", "training_input_cache": cache_receipt}
 
 
+# R33 expanding fold (2.36M rows x 131) peaked at 11.3 GiB while loading its 23 prep batches.
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=4096,
+    memory=16384,
     timeout=3600,   # 60 min per window for tree models on short train windows.
     scaledown_window=60,
     max_containers=3,   # allow 3 windows in parallel for tree path
@@ -2737,7 +2738,7 @@ def build_market_conditioner_block(payload: dict) -> dict:
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=8192,         # apply_block copies the float64 prep matrix (~1.8 GB on R32) twice.
+    memory=16384,        # apply_block copies the prep matrix twice; the R33 mkt16 fold peaked at 12.0 GiB.
     timeout=3600,
     scaledown_window=60,
     max_containers=21,   # 6 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
@@ -3911,7 +3912,7 @@ def build_finlab_long_sequence_prep(payload: dict) -> dict:
 
 @app.function(
     cpu=4,
-    memory=8192,
+    memory=12288,  # R33 full roster (2.4M rows x 131) peaked at 5.6 GiB.
     timeout=1800,
     scaledown_window=60,
     max_containers=1,
@@ -5070,7 +5071,7 @@ def train_l4_mlp_median_candidate(payload: dict) -> dict:
     return run(payload)
 
 
-@app.function(cpu=4, memory=8192, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
+@app.function(cpu=4, memory=12288, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
 def rebuild_canonical_adjusted_prep_event(payload: dict) -> dict:
     _setup_env()
     from app.oof_adjusted_prep_event import run

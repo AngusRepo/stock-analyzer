@@ -778,3 +778,34 @@ def test_receipt_sealed_without_the_cost_line_never_admits_full_fit(monkeypatch,
     with pytest.raises(ValueError, match="^r33_oof_checks_schema_stale$"):
         _run(bucket)
     assert calls["dispatch"] == []
+
+
+def test_exact_r33_continuation_seals_the_dispatched_cohort(monkeypatch):
+    # The continuation gate counts 5 folds; R33 dispatches 7. It must not re-derive a shorter cohort id.
+    from datetime import date, timedelta
+    import routers.walk_forward as wf
+    from services import r33_monthly_lifecycle as life, trading_config_loader, walk_forward_retrain
+    from services.formal_feature_contract import R33_PROFILE
+    days = [d.isoformat() for d in (date(2025, 1, 1) + timedelta(days=n) for n in range(400)) if d.weekday() < 5][:260]
+    start = days[-(wf.OOF_TRAIN_SESSIONS + 21 * wf._oof_training_min_folds(R33_PROFILE))]
+    cohort = f"active8-oof-r33-{start}-{days[-1]}-tr60-te21"
+    path = f"walk_forward/oof_cohorts/{cohort}/manifest.json"
+    manifest = {"status": "ready", "cohort_id": cohort, "model_profile_schema_version": R33_PROFILE,
+                "prep_gcs_prefix": "universal/canonical_adjusted_v6/p", "start_date": start, "end_date": days[-1]}
+    bucket = Bucket({path: json.dumps(manifest).encode()})
+    monkeypatch.setenv("OOF_MATERIALIZE_JOB_EXECUTION", "1")
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
+    monkeypatch.setattr(trading_config_loader, "load_merged_trading_config_with_contract", lambda: _trading_config())
+    monkeypatch.setattr(wf, "_exact_ready_oof_manifest", lambda b, cohort_id: (path, manifest, "a" * 40))
+    monkeypatch.setattr(wf, "_oof_lifecycle_calendar", lambda *a, **k: (days, {"cutoff": days[-1]}))
+    seen = {}
+
+    async def seal(**kwargs):
+        seen.update(kwargs)
+        return {"status": "sealed"}
+    monkeypatch.setattr(life, "run_r33_monthly_lifecycle", seal)
+    result = asyncio.run(wf.run_walk_forward_oof_lifecycle(wf.OofLifecycleRequest(
+        cadence="monthly", model_profile_schema_version=R33_PROFILE, end_date=days[-1], dry_run=False, promote=False,
+        dispatch_full_fit=True, expected_cohort_id=cohort, continuation_attempt=1, continuation_only=True)))
+    assert result["status"] == "sealed"
+    assert (seen["cohort_id"], seen["manifest_path"], seen["poll_only"]) == (cohort, path, True)

@@ -226,3 +226,21 @@ def test_label_venue_is_each_rows_own_market_not_the_symbols_mode():
     single = {"symbols": np.array(["2330", "2330", "8069"]), "markets": np.array(["TWSE", "TWSE", "TPEX"])}
     mode = _market_map([single])
     assert _row_markets(single["markets"]).tolist() == [mode[s] for s in single["symbols"]]
+
+
+def test_auxiliary_binding_accepts_r33_per_field_receipt_and_fails_closed():
+    # R33 source receipts carry training-auxiliary-capture-binding-v2-per-field (11/7 A' rehearsal).
+    from app.canonical_adjusted_prep import _auxiliary_binding_ok
+    v1 = {"schema_version": "training-auxiliary-capture-binding-v1", "capture_id": "c", "capture_manifest_sha256": "a" * 64}
+    owner = {"capture_id": "c", "capture_manifest_path": "p/manifest.json", "capture_manifest_sha256": "b" * 64}
+    v2 = {"schema_version": "training-auxiliary-capture-binding-v2-per-field", "capture_id": "c",
+          "field_captures": {"eps": dict(owner), "pe": dict(owner)}, "fields": {"eps": {"sha256": "d" * 64}, "pe": {"sha256": "e" * 64}}}
+    assert _auxiliary_binding_ok(v1, "c") and _auxiliary_binding_ok(v2, "c")
+    assert not _auxiliary_binding_ok(v1, "other") and not _auxiliary_binding_ok(v2, "other")
+    assert not _auxiliary_binding_ok({**v1, "capture_manifest_sha256": ""}, "c")
+    assert not _auxiliary_binding_ok({**v2, "schema_version": "training-auxiliary-capture-binding-v3"}, "c")
+    assert not _auxiliary_binding_ok({**v2, "field_captures": {}, "fields": {}}, "c")
+    assert not _auxiliary_binding_ok({**v2, "fields": {"eps": {"sha256": "d" * 64}}}, "c")
+    assert not _auxiliary_binding_ok({**v2, "fields": {"eps": {"sha256": "d" * 64}, "pe": {}}}, "c")
+    assert not _auxiliary_binding_ok({**v2, "field_captures": {"eps": dict(owner), "pe": {**owner, "capture_manifest_sha256": "x"}}}, "c")
+    assert not _auxiliary_binding_ok({**v2, "field_captures": {"eps": dict(owner), "pe": {**owner, "capture_id": ""}}}, "c")

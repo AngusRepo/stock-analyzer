@@ -340,12 +340,18 @@ async def walk_forward_run(req: WalkForwardRequest):
     from dataclasses import asdict
     from datetime import datetime, timezone, timedelta
 
-    from services.training_source_preflight import require_single_adjustment_capture
+    from services.training_source_preflight import require_single_adjustment_capture, sealed_batch_counts
     from services.walk_forward_retrain import _get_bucket
     try:
         source_bucket = _get_bucket()
         require_single_adjustment_capture(source_bucket, prep_gcs_prefix=req.prep_gcs_prefix,
                                           sequence_gcs_prefix=req.sequence_gcs_prefix)
+        # The orchestrator rejects any count that differs from the sealed manifests.
+        batch_count, sequence_batch_count = sealed_batch_counts(
+            source_bucket, prep_gcs_prefix=req.prep_gcs_prefix, sequence_gcs_prefix=req.sequence_gcs_prefix)
+        for field, sealed in (("batch_count", batch_count), ("sequence_batch_count", sequence_batch_count)):
+            if field in req.model_fields_set and getattr(req, field) != sealed:
+                raise ValueError(f"walk_forward_{field}_mismatch:{getattr(req, field)}!={sealed}")
         if req.resume_manifest_path:
             from services.active8_oof_cohort_materializer import load_verified_oof_manifest
             from services.training_source_preflight import require_oof_training_sources
@@ -402,7 +408,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         fn_call = await modal_client.spawn_walk_forward_orchestrator({
             "windows": windows_payload,
             "market_env": market_env,
-            "batch_count": req.batch_count,
+            "batch_count": batch_count,
             "models": models,
             "model_profile_schema_version":req.model_profile_schema_version,
             "knowledge_cutoff_date":req.knowledge_cutoff_date,
@@ -414,7 +420,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             "cohort_id": cohort_id,
             "prep_gcs_prefix": req.prep_gcs_prefix,
             "sequence_gcs_prefix": req.sequence_gcs_prefix,
-            "sequence_batch_count": req.sequence_batch_count,
+            "sequence_batch_count": sequence_batch_count,
             "resume_manifest_path": req.resume_manifest_path,
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
@@ -3995,6 +4001,11 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     or parent_manifest.get("sequence_gcs_prefix")
                     or ""
                 )
+        elif req.continuation_only and exact_producer_source_sha:
+            # An exact continuation seals the cohort it dispatched. R33 never resumes a
+            # parent, and its dispatch fold count differs from the continuation gate's.
+            cohort_id = str(parent_manifest["cohort_id"])
+            manifest_path = str(parent_path)
         else:
             cohort_dates = mature_dates[-training_min_sessions:]
             start_date = cohort_dates[0]

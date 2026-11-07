@@ -992,8 +992,8 @@ sync_oof_materialize_job() {
         --command=python \
         --args=-m \
         --args=oof_materialize_job_main \
-        --cpu="${OOF_MATERIALIZE_JOB_CPU:-4}" \
-        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-8Gi}" \
+        --cpu="${OOF_MATERIALIZE_JOB_CPU:-6}" \
+        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-24Gi}" \
         --task-timeout="$OOF_MATERIALIZE_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
@@ -1011,8 +1011,8 @@ sync_oof_materialize_job() {
         --command=python \
         --args=-m \
         --args=oof_materialize_job_main \
-        --cpu="${OOF_MATERIALIZE_JOB_CPU:-4}" \
-        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-8Gi}" \
+        --cpu="${OOF_MATERIALIZE_JOB_CPU:-6}" \
+        --memory="${OOF_MATERIALIZE_JOB_MEMORY:-24Gi}" \
         --task-timeout="$OOF_MATERIALIZE_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \

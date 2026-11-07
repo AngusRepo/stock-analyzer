@@ -1154,26 +1154,70 @@ export function selectRuntimeSignalPolicyFromForecastRows(
   return legacyPolicyFallback
 }
 
-async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<{
+// The watermark used to be one MAX(CASE json_type(forecast_data, …)) over every
+// ensemble row up to the date: about 30k rows and 15 s of JSON parsing for each
+// /obs refresh, which shared learning-db's 10-second resource window with the
+// evening chain (2026-11-06). Walking idx_pred_date_model_stock from the newest
+// prediction_date and stopping at the first qualifying row returns the same two
+// dates; only rows with evidence are parsed. The unary + keeps the planner off
+// idx_pred_model_verified_date (model_name=?), which would sort every ensemble
+// row instead of walking prediction_date backwards.
+export const ML_THRESHOLD_POLICY_WATERMARK_SQL = {
+  latestPredictionDate:
+    'SELECT prediction_date FROM predictions ' +
+    "WHERE prediction_date<=? AND +model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL " +
+    'ORDER BY prediction_date DESC LIMIT 1',
+  evidenceDate:
+    'SELECT prediction_date FROM predictions ' +
+    "WHERE prediction_date<=? AND +model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL " +
+    'AND CASE WHEN json_valid(forecast_data) THEN (' +
+    "json_type(forecast_data, '$.ensemble_v2.signal_policy')='object' " +
+    "OR json_type(forecast_data, '$.ensemble_v2.ml_threshold_policy')='object'" +
+    ') ELSE 0 END ' +
+    'ORDER BY prediction_date DESC LIMIT 1',
+} as const
+
+type MlThresholdPolicyEvidence = {
   policy?: Record<string, unknown> | null
   sampleCount: number
   requestedDate: string
   evidenceDate: string | null
   latestPredictionDate: string | null
   error?: string
-}> {
+}
+
+// /obs refreshes every minute; the evidence changes once a day.
+const ML_THRESHOLD_POLICY_EVIDENCE_TTL_SECONDS = 300
+const mlThresholdPolicyEvidenceCacheKey = (date: string) => `obs:ml-threshold-policy-evidence:v1:${date}`
+
+async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<MlThresholdPolicyEvidence> {
+  const cacheKey = mlThresholdPolicyEvidenceCacheKey(date)
   try {
-    const watermark = await databaseForDataDomain(env, 'learning').prepare(
-      'SELECT MAX(prediction_date) AS latest_prediction_date, ' +
-      'MAX(CASE WHEN json_valid(forecast_data) THEN CASE ' +
-      "WHEN json_type(forecast_data, '$.ensemble_v2.signal_policy')='object' " +
-      "OR json_type(forecast_data, '$.ensemble_v2.ml_threshold_policy')='object' " +
-      'THEN prediction_date END END) AS evidence_date ' +
-      'FROM predictions WHERE prediction_date<=? ' +
-      "AND model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL",
-    ).bind(date).first<{ latest_prediction_date: string | null; evidence_date: string | null }>()
-    const evidenceDate = watermark?.evidence_date ?? null
-    const latestPredictionDate = watermark?.latest_prediction_date ?? null
+    const cached = await env.KV?.get(cacheKey, 'json') as MlThresholdPolicyEvidence | null
+    if (cached && typeof cached === 'object' && cached.requestedDate === date && !cached.error) return cached
+  } catch {
+    // A KV miss or outage only costs the queries below.
+  }
+  const evidence = await queryLatestMlThresholdPolicyEvidence(env, date)
+  if (!evidence.error) {
+    try {
+      await env.KV?.put(cacheKey, JSON.stringify(evidence), { expirationTtl: ML_THRESHOLD_POLICY_EVIDENCE_TTL_SECONDS })
+    } catch {
+      // Not cached; the next refresh queries again.
+    }
+  }
+  return evidence
+}
+
+async function queryLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<MlThresholdPolicyEvidence> {
+  try {
+    const learningDb = databaseForDataDomain(env, 'learning')
+    const [latest, evidence] = await Promise.all([
+      learningDb.prepare(ML_THRESHOLD_POLICY_WATERMARK_SQL.latestPredictionDate).bind(date).first<{ prediction_date: string | null }>(),
+      learningDb.prepare(ML_THRESHOLD_POLICY_WATERMARK_SQL.evidenceDate).bind(date).first<{ prediction_date: string | null }>(),
+    ])
+    const evidenceDate = evidence?.prediction_date ?? null
+    const latestPredictionDate = latest?.prediction_date ?? null
     if (!evidenceDate) {
       return {
         policy: null,

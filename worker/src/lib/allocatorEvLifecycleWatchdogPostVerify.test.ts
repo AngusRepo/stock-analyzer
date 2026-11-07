@@ -32,7 +32,9 @@ function fixture(postVerify?: { status: string; leaseExpiresAt?: string; lastErr
     return statement
   } }
   const enqueued: any[] = []
-  const env = { DB: db, UPDATE_QUEUE: { send: async (value: any) => { enqueued.push(value) } } } as any
+  const kv = new Map<string, string>()
+  const KV = { get: async (key: string) => kv.get(key) ?? null, put: async (key: string, value: string) => { kv.set(key, value) } }
+  const env = { DB: db, KV, UPDATE_QUEUE: { send: async (value: any) => { enqueued.push(value) } } } as any
   return { sqlite, env, enqueued }
 }
 
@@ -66,4 +68,18 @@ test('watchdog first dispatch and a live in-flight dispatch are not failures', a
   assert.match(observed, /^status=success allocator EV lifecycle recovery_observation=post_verify_current/)
   assert.equal(live.enqueued.length, 0)
   live.sqlite.close()
+})
+
+test('watchdog stops redispatching a failed post-verify after six redispatches', async () => {
+  const f = fixture({ status: 'error', lastError: 'D1_ERROR: D1 DB is overloaded' })
+  const fail = f.sqlite.prepare(`UPDATE pipeline_stage_runs SET status='error',attempt_count=0 WHERE stage='post_verify_chain'`)
+  for (let tick = 1; tick <= 6; tick += 1) {
+    assert.match(await runAllocatorEvLifecycleWatchdog(f.env, date), /recovery_dispatch=post_verify_queued/)
+    fail.run()
+  }
+  const exhausted = await runAllocatorEvLifecycleWatchdog(f.env, date)
+  assert.match(exhausted, /^status=failed allocator EV lifecycle post-verify redispatch exhausted .*redispatches=6 .*manual_redispatch_required/)
+  assert.equal(classifySchedulerRunSummary(exhausted), 'error')
+  assert.equal(f.enqueued.length, 6)
+  f.sqlite.close()
 })

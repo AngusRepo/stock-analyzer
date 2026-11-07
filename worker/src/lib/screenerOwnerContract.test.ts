@@ -68,7 +68,9 @@ const screenerSeedDomainOwner = fs.readFileSync('../ml-controller/services/scree
   assert(marketScreener.includes('loadMatureStrategyOofReturns'), 'daily routing must load mature OOF residual-return evidence')
   assert(marketScreener.includes('outcome_known_date <= ?') && marketScreener.includes('signal_date < ?'), 'OOF redundancy evidence must be point-in-time')
   assert(
-    /`\)\.bind\(\s*asOfDate,\s*asOfDate,\s*CANONICAL_SELECTION_ADJUSTMENT_SOURCE,\s*\.\.\.formalMatureCompatibility\.binds,\s*JSON\.stringify\(canonicalRunIds\),\s*\)\.all/.test(marketScreener),
+    // The SQL text lives in buildMatureStrategyOofReturnsSql so the seek form can be
+    // tested for equivalence against the date scan; the bind order is the contract.
+    /buildMatureStrategyOofReturnsSql\(formalMatureCompatibility\)\)\.bind\(\s*asOfDate,\s*asOfDate,\s*CANONICAL_SELECTION_ADJUSTMENT_SOURCE,\s*\.\.\.formalMatureCompatibility\.binds,\s*JSON\.stringify\(canonicalRunIds\),\s*\)\.all/.test(marketScreener),
     'OOF redundancy bind order must match PIT dates, adjustment source, paired mature compatibility, then canonical run-id JSON placeholders',
   )
   assert(

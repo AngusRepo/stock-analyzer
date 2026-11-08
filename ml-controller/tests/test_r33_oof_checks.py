@@ -20,7 +20,8 @@ def _oof(sign=1.0, seed=3):
     for i, day in enumerate(DATES[:-5]):
         target = rng.normal(0, 0.03, len(SYMBOLS))
         for model in (*MODELS, "XGBoost"):
-            noise = rng.normal(0, 0.03, len(SYMBOLS))
+            # per-model noise scaled so the roster mean keeps the seven-model composite's noise level
+            noise = rng.normal(0, 0.03 * (len(MODELS) / 7) ** 0.5, len(SYMBOLS))
             for j, symbol in enumerate(SYMBOLS):
                 rows.append(dict(prediction_date=day, symbol=symbol, market_segment="LISTED", model_name=model,
                                  raw_score=float(sign * target[j] + noise[j]), target_return=float(target[j]),
@@ -48,7 +49,7 @@ def test_informative_scores_pass_and_inverted_scores_fail():
     inverted = _oof(sign=-1.0)
     report = run_checks(oof=inverted, fold_receipts=_receipts(inverted), pool_by_date=None, new_fold_from=None, round_trip_cost=COST)
     assert report["status"] == "fail" and not report["checks"]["inversion"]["passed"]
-    assert report["checks"]["tail_guard"]["hard_failures"] == ["PatchTST", "TabM"]
+    assert report["checks"]["tail_guard"]["hard_failures"] == ["TabM"]
 
 
 def test_pit_vintage_fails_closed_without_a_certified_receipt():
@@ -140,14 +141,15 @@ def _pit():
 
 def test_cost_line_gates_on_names_whose_crossfit_expected_excess_clears_the_cost():
     oof = _weak(_oof())
-    passing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.010, **_pit())
+    # Costs retuned 2026-11-07 for the four-model roster's synthetic composite (see _oof noise scaling).
+    passing = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.009, **_pit())
     inv = passing["checks"]["inversion"]
     assert passing["status"] == "pass" and inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True,
                                                                 net_of_cost=True)
-    assert inv["crossfit_above_cost"]["round_trip_cost"] == 0.010 and inv["crossfit_above_cost"]["n"] > 1
+    assert inv["crossfit_above_cost"]["round_trip_cost"] == 0.009 and inv["crossfit_above_cost"]["n"] > 1
     # A little higher: the few names still expected to clear it realize above the cost (C1), but not
     # by more than a standard error once the cost is paid (C2), so admission fails on C2 alone.
-    thin = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.011, **_pit())
+    thin = run_checks(oof=oof, fold_receipts=_receipts(oof), pool_by_date=None, new_fold_from=None, round_trip_cost=0.0096, **_pit())
     inv = thin["checks"]["inversion"]
     assert thin["status"] == "fail" and inv["passed"] is False
     assert inv["gates"] == dict(daily_ic=True, isotonic_top=True, crossfit_above_cost=True, net_of_cost=False)

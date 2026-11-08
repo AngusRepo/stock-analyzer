@@ -3100,10 +3100,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
     profile_schema = payload.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
-    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names
+    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names, predeclared_full_release
     feature_semantic = semantic_for_profile(profile_schema)
     active8_models = list(model_order(model_profiles(schema_version=profile_schema),complete=True))
-    full137 = "TimeXer" in active8_models
+    full137 = predeclared_full_release(feature_semantic, active8_models)
     native_retrain_models = list(active8_models)
     raw_models = payload.get("models") or active8_models
     models = []

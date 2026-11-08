@@ -1,4 +1,4 @@
-"""R33 seven-model monthly candidate lifecycle, run inside the durable OOF Cloud Run job.
+"""R33 roster monthly candidate lifecycle, run inside the durable OOF Cloud Run job.
 
 prep (job) -> fold OOF (Modal) -> D1 fold index -> OOF checks -> full-fit -> calibration
 -> sealed candidate bundle. A failed check never dispatches full-fit. Full-fit trains
@@ -6,7 +6,7 @@ through the latest mature signal date, not the fold-aligned manifest end. Full-f
 needs the capture's PIT vintage receipt, re-verified on every run, and carries it (C28-02).
 
 Candidate-only: no P3 stacker/ensemble, no TabPack L4 refresh, no monthly L4 closure,
-and never a write to model_champion_pointers or active8_ensemble_pointer_v1. The seven
+and never a write to model_champion_pointers or active8_ensemble_pointer_v1. The roster's
 registry rows wait for Wei with promotion_decision=r33_candidate_pending_wei.
 """
 from __future__ import annotations
@@ -85,7 +85,7 @@ def _select_sources(rows: list[dict], release_models) -> dict[str, dict]:
 
 
 def register_candidates(rows: list[dict], *, release_models, expected_run_id: str, upsert=None) -> dict:
-    """Mark the seven full-fit rows as candidates awaiting Wei; no pointer is written."""
+    """Mark every roster model's full-fit row as a candidate awaiting Wei; no pointer is written."""
     if upsert is None:
         from services.model_artifact_registry import upsert_artifact_record as upsert
     sources = _select_sources(rows, release_models)
@@ -159,7 +159,7 @@ def artifacts_missing_pit_binding(bucket, registry: dict, *, receipt_sha256: str
 
 def _artifact_train_label_known_max(metadata: dict) -> str | None:
     split = metadata.get("split_metadata") if isinstance(metadata.get("split_metadata"), dict) else {}
-    # Every R33 family writes an explicit attestation (TimeXer: its trainer report key).
+    # Every R33 family writes an explicit attestation (trainer report key per family).
     # A model without one (e.g. a pre-R33 NF artifact with only train_end) stays unattested.
     for key in ("train_label_known_max", "training_label_known_max"):
         if split.get(key):

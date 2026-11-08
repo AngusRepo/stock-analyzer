@@ -1,4 +1,4 @@
-"""R33 seven-model roster: no hardcoded eight-model/XGBoost assumptions on the release path."""
+"""R33 roster: no hardcoded eight-model/XGBoost assumptions on the release path."""
 from __future__ import annotations
 
 import json

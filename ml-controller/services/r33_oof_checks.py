@@ -1,15 +1,15 @@
 """R33 monthly OOF admission checks, run before any full-fit is dispatched.
 
 1. No leakage: every fold's actual training label_known max precedes its test start.
-2. Not inverted: the daily rank IC of the seven-model score is positive on average,
+2. Not inverted: the daily rank IC of the roster score is positive on average,
    and days held out of a purged isotonic fit realize a positive excess above that
    fit's top-block edge (mean minus one standard error > 0). Cost line (C1, Wei 10/30):
    the held-out names whose cross-fitted expected excess clears the round-trip cost
    (the allocator's own buy rule, no count limit) realize mean minus SE > 0. Net-of-cost
    line (C2, Wei 11/1): the same set's realized excess minus that cost has mean minus SE > 0.
    The day's top five by score are reported, never gated.
-3. Tail-fold guard (policy v4): a model whose last-three-fold daily IC has a 90% HAC
-   upper bound below zero fails hard for TabM and PatchTST and warns otherwise.
+3. Tail-fold guard (policy v5): a model whose last-three-fold daily IC has a 90% HAC
+   upper bound below zero fails hard for TabM and warns otherwise.
 4. PIT vintage (C28-02): the capture's certification receipt re-derives
    point_in_time_vintage_certified=true; a missing or false receipt fails.
 Rows whose entry session opened limit-up are not buyable and are excluded from 2.
@@ -29,8 +29,8 @@ from services.r33_isotonic_calibration import MODELS
 
 SCHEMA = "r33-oof-checks-v3"  # v2: cost line (C1) gates inversion; v3: net of cost (C2) gates too
 LIMIT_UP_OPEN_GAP = 0.095
-TAIL_GUARD_POLICY = "v4"
-TAIL_GUARD_HARD = ("TabM", "PatchTST")
+TAIL_GUARD_POLICY = "v5"  # v4 also hard-gated PatchTST, which left the roster on 2026-11-07
+TAIL_GUARD_HARD = ("TabM",)
 TOP_K_DIAGNOSTIC = 5  # report-only field; a top-k cut never gates admission
 
 

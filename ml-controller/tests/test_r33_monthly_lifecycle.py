@@ -75,14 +75,14 @@ def _assert_no_pointer_write(sqls):
     assert not [sql for sql in sqls if any(table in sql for table in POINTER_TABLES)]
 
 
-def test_register_candidates_marks_seven_rows_for_wei_without_pointer_write(monkeypatch):
+def test_register_candidates_marks_one_row_per_release_model_for_wei_without_pointer_write(monkeypatch):
     from services import model_artifact_registry
     from services.r33_monthly_lifecycle import PROMOTION_DECISION, candidate_registry_complete, register_candidates
     recorder = Recorder()
     monkeypatch.setattr(model_artifact_registry, "d1_client", recorder)
     registry = register_candidates(_rows(), release_models=R33_MODELS, expected_run_id="run-1")
     assert registry["ensemble_candidate"] is None and set(registry["artifacts"]) == set(R33_MODELS)
-    assert len(recorder.sql) == 7 and all("INSERT INTO model_artifact_registry" in sql for sql in recorder.sql)
+    assert len(recorder.sql) == len(R33_MODELS) and all("INSERT INTO model_artifact_registry" in sql for sql in recorder.sql)
     _assert_no_pointer_write(recorder.sql)
     assert candidate_registry_complete(registry, R33_MODELS)
     assert not candidate_registry_complete({"status": "materialized"}, R33_MODELS)
@@ -462,8 +462,8 @@ def test_fold_receipts_require_every_model_attestation():
     from services.r33_monthly_lifecycle import fold_receipts
     store, metrics = {}, {}
     for name in R33_MODELS:
-        split = {"train_end": "2026-09-30", "train_label_known_max": "2026-09-30"} if name in ("PatchTST", "iTransformer") else (
-            {"training_label_known_max": "2026-10-01"} if name == "TimeXer" else {"train_label_known_max": "2026-10-02"})
+        # both attestation spellings are accepted; the fold's receipt takes the latest one
+        split = {"training_label_known_max": "2026-10-01"} if name == "GNN" else {"train_label_known_max": "2026-10-02"}
         buf = io.BytesIO()
         np.savez(buf, metadata=np.array(json.dumps({"model_name": name, "split_metadata": split})))
         store[f"a/{name}"] = buf.getvalue()
@@ -476,12 +476,12 @@ def test_fold_receipts_require_every_model_attestation():
     store["a/TabM"] = buf.getvalue()
     metrics["TabM"]["artifact_checksum"] = hashlib.sha256(buf.getvalue()).hexdigest()
     assert fold_receipts(manifest, Bucket(store)) == []  # unattested fold: leakage check fails it
-    for name, split in (("TabM", {"train_label_known_max": "2026-10-02"}), ("PatchTST", {"train_end": "2026-09-30"})):
+    for name, split in (("TabM", {"train_label_known_max": "2026-10-02"}), ("GNN", {"train_end": "2026-09-30"})):
         buf = io.BytesIO()
         np.savez(buf, metadata=np.array(json.dumps({"model_name": name, "split_metadata": split})))
         store[f"a/{name}"] = buf.getvalue()
         metrics[name]["artifact_checksum"] = hashlib.sha256(buf.getvalue()).hexdigest()
-    assert fold_receipts(manifest, Bucket(store)) == []  # NF train_end alone is not an attestation
+    assert fold_receipts(manifest, Bucket(store)) == []  # train_end alone is not an attestation
 
 
 def test_r33_routing_gates_in_walk_forward():

@@ -27,6 +27,13 @@ def semantic_for_profile(profile):
         return LEGACY_SEMANTIC
     raise ValueError("formal_feature_profile_unknown")
 
+def predeclared_full_release(semantic, models):
+    """True when tree windows train on the whole governed inventory instead of per-window selection.
+    Every formal131 profile predeclares the inventory; the legacy 137 profiles only do so for the
+    TimeXer A/B roster (accepted_ab_full137). Keyed on the contract so the 2026-11-07 four-model
+    R33 roster, which has no TimeXer, keeps approved_full131_v1."""
+    return semantic == FEATURE131_SEMANTIC or "TimeXer" in set(models)
+
 def validate_feature_names(names, semantic, legacy_names):
     feature_count(semantic)
     expected = FEATURES131 if semantic == FEATURE131_SEMANTIC else tuple(legacy_names)

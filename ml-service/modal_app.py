@@ -22,7 +22,7 @@ from app.callback_security import (
 
 # Local code mounted into the Modal image during deploy.
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
-_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
+_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 _LOCAL_SOURCE_ROOT = Path(__file__).resolve().parent
 

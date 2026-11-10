@@ -368,6 +368,8 @@ class ModelFeaturePolicy:
 
 
 ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v4"
+# W4(a) OOF-only challengers: FEATURES131 plus/minus a declared market block (app.market_conditioner).
+MARKET_CONDITIONER_RELEASE_MODE = "market_conditioner_ablation_v1"
 TIMESFM_L175_RELEASE_COHORT = (
     "LightGBM",
     "XGBoost",
@@ -388,13 +390,15 @@ def active8_family_feature_contract(
     release = str(feature_release_mode or "").strip()
     if model in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
         timesfm_release = release == "timesfm_l175_l2_feature_release"
-        full137 = release in {"accepted_ab_full137", "approved_full131_v1"}
+        full137 = release in {"accepted_ab_full137", "approved_full131_v1", MARKET_CONDITIONER_RELEASE_MODE}
         return {
             "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
             "model": model,
             "family_schema": (
                 "formal137_plus_timesfm_l175_v1"
                 if timesfm_release
+                else "market_conditioner_ablation_tabular_v1"
+                if release == MARKET_CONDITIONER_RELEASE_MODE
                 else (("formal131_full_tabular_v1" if release == "approved_full131_v1" else "formal137_full_tabular_v1") if full137 or model in {"TabM", "GNN"} else "formal137_selected_tabular_v1")
             ),
             "input_semantics": (
@@ -672,7 +676,11 @@ def build_group_train_payload(base_payload: dict[str, Any], group: str) -> dict[
         str(base_payload.get("candidate_type") or "").strip() == "timesfm_l175_l2_feature_release"
         and str(group or "").strip().lower() == "tree"
     )
-    payload["models_filter"] = list(policy.models)
+    # A release roster without some tree model (R33 drops XGBoost) narrows the tree group.
+    tree_models = base_payload.get("tree_models") if policy.group == "tree" else None
+    if tree_models and not set(tree_models) <= set(TREE_MODEL_NAMES):
+        raise ValueError("tree_models_outside_tree_family")
+    payload["models_filter"] = list(tree_models or policy.models)
     full137 = base_payload.get("feature_release_mode") in {"accepted_ab_full137", "approved_full131_v1"}
     payload["skip_feature_pool"] = True if timesfm_l175_feature_release or full137 else policy.skip_feature_pool
     feature_policy = policy.to_dict()
@@ -698,11 +706,12 @@ def build_tree_model_child_payloads(base_payload: dict[str, Any]) -> dict[str, d
     """Build one governed train payload per tree model for opt-in fan-out."""
 
     tree_payload = build_group_train_payload(base_payload, "tree")
+    tree_models = tuple(tree_payload["models_filter"])
     payloads: dict[str, dict[str, Any]] = {}
-    for model_name in TREE_MODEL_NAMES:
+    for model_name in tree_models:
         child = dict(tree_payload)
         child["models_filter"] = [model_name]
-        child["tree_split_parent_models"] = list(TREE_MODEL_NAMES)
+        child["tree_split_parent_models"] = list(tree_models)
         child["tree_split_model"] = model_name
         child["training_run_suffix"] = model_name.lower()
         payloads[model_name] = child
@@ -743,6 +752,12 @@ def build_model_feature_policy_metadata(
         if list(feature_names) != list(FEATURES131):
             raise ValueError("approved_full131_feature_inventory_mismatch")
         metadata.update(feature_policy_type="formal131_full_tabular", feature_source="prep.full_formal131", selection_required=False, note="Explicit 131-column version; legacy 137 artifacts remain separate.")
+    if feature_release_mode == MARKET_CONDITIONER_RELEASE_MODE:
+        from .market_conditioner import LIFECYCLE_SLOTS, arm_feature_names
+        arms = {slot["payload_config"]["market_conditioner_arm"] for slot in LIFECYCLE_SLOTS.values()}
+        if not any(list(feature_names) == arm_feature_names(arm) for arm in arms):
+            raise ValueError("market_conditioner_feature_inventory_mismatch")
+        metadata.update(feature_policy_type="market_conditioner_ablation_tabular", feature_source="prep.full_formal131_plus_market_conditioner_block", selection_required=False, note="OOF-only W4(a) challenger; never a release artifact.")
     return {
         "feature_policy": metadata,
         "feature_policy_schema_version": "model-feature-policy-v2",
@@ -959,6 +974,10 @@ class UniversalTrainingPolicy:
         for key in (
             "run_date",
             "as_of_date",
+            "signal_date_max",
+            "label_known_at_max",
+            "pit_certification",
+            "pit_contract_version",
             "max_prep_stale_days",
             "gcs_prefix",
             "feature_pool_path",

@@ -64,7 +64,7 @@ def feature_receipt(bucket, reference, signal_date, *, expected_semantic="formal
 
 
 def batch_predict(*, series_list, artifact_identity, feature_source, signal_date,
-                  version, horizon_used=5, bucket=None):
+                  version, horizon_used=5, bucket=None, pit_feature_sources=None):
     import torch
     from .model_store import _get_bucket
     started = time.monotonic()
@@ -81,6 +81,14 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
     if (any(metadata.get(k) != identity[k] for k in ('version','artifact_path'))
             or canonical_checksum(metadata.get('checksum')) != canonical_checksum(identity['checksum'])):
         raise ValueError('timexer_metadata_identity_mismatch')
+    from .pit_contract import artifact_contract_version
+    pit_version = artifact_contract_version(metadata)
+    if pit_version is not None:
+        # A PIT-trained artifact reads only the prep built under its own contract (C28-02 P2 T1);
+        # the receipt check below still requires the exact version.
+        feature_source = (pit_feature_sources or {}).get(pit_version)
+        if not isinstance(feature_source, dict):
+            raise ValueError('timexer_pit_feature_source_missing')
     if feature_source.get('schema_version') == 'timexer-feature-source-set-v1':
         feature_source = (feature_source.get('sources') or {}).get(config['feature_history_schema'])
         if not isinstance(feature_source, dict):
@@ -98,6 +106,8 @@ def batch_predict(*, series_list, artifact_identity, feature_source, signal_date
         feature_source = projection['source']
         expected_source_semantic = LEGACY_SEMANTIC
     receipt = feature_receipt(bucket, feature_source, signal_date, expected_semantic=expected_source_semantic)
+    if pit_version != receipt.get('pit_contract_version'):
+        raise ValueError('pit_contract_version_serving_mismatch')
     if projection and receipt['feature_names_path'] not in receipt['output_checksums']:
         raise ValueError('timexer_projection_names_checksum_required')
     torch.set_float32_matmul_precision('high')

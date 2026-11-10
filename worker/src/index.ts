@@ -20,6 +20,7 @@ import { runScreenerV2 } from './lib/screenerJobTrigger'
 import { runDailySnapshot, runPaperAutoTrade } from './lib/paperWorkerTasks'
 import { runEODExit } from './lib/paperExitTasks'
 import { handleScheduledCron } from './lib/cronOrchestrator'
+import { isPipelineStageLeaseBusy } from './lib/pipelineStageLease'
 import {
   runWeeklyAudit as runWeeklyAuditWorkflow,
   runWeeklyOptunaResearch as runWeeklyOptunaResearchWorkflow,
@@ -50,6 +51,7 @@ import { adminConfigWorkflowRoutes } from './routes/adminConfigWorkflowRoutes'
 import { adminConfigLifecycleRoutes } from './routes/adminConfigLifecycleRoutes'
 import { researchValidationRoutes } from './routes/researchValidationRoutes'
 import { adminOptunaRoutes } from './routes/adminOptunaRoutes'
+import { todoBoardRoutes } from './routes/todoBoardRoutes'
 import { finlabExecutionLoopRoutes } from './routes/finlabExecutionLoopRoutes'
 import { buildAdminTriggerTaskMap } from './lib/adminTriggerTaskMap'
 import { createAdminTriggerRoutes } from './routes/adminTriggerRoutes'
@@ -122,7 +124,7 @@ app.use('/api/*', cors({
     return allowed.has(origin) ? origin : null
   },
   allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true,
 }))
 
@@ -164,6 +166,7 @@ app.route('/',                    adminConfigWorkflowRoutes)
 app.route('/',                    adminConfigLifecycleRoutes)
 app.route('/',                    researchValidationRoutes)
 app.route('/',                    adminOptunaRoutes)
+app.route('/',                    todoBoardRoutes)
 app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
 app.get('/api/health', (c) => c.json(buildWorkerHealthPayload(c.env.CF_VERSION_METADATA)))
@@ -204,6 +207,12 @@ export default {
         msg.ack()
       } catch (e) {
         const attempts = Math.max(1, Number(msg.attempts ?? 1))
+        if (isPipelineStageLeaseBusy(e)) {
+          // Another owner's live stage lease: redeliver after it instead of acknowledging the message away.
+          console.warn(`[Queue] ${e.message} (attempt=${attempts})`)
+          msg.retry({ delaySeconds: e.delaySeconds })
+          continue
+        }
         console.error(`[Queue] Message failed, will retry (attempt=${attempts}):`, e)
         if (msg.body.type === 'update_batch') {
           await recordIndicatorQueueMessageFailure(env, msg.body, e, attempts).catch((logError) => {

@@ -1,7 +1,7 @@
 """Predeclared per-model profiles for the formal Active-8 canonical OOF/full-fit release train."""
 
 from __future__ import annotations
-from .formal_feature_contract import PRICE131_PROFILE, EXO131_PROFILE, PROFILES131, FEATURE131_SEMANTIC
+from .formal_feature_contract import PRICE131_PROFILE, EXO131_PROFILE, R33_PROFILE, PROFILES131, FEATURE131_SEMANTIC
 
 import copy
 import hashlib
@@ -328,6 +328,17 @@ def _feature131_profiles(exogenous: bool) -> dict:
     return profiles
 
 
+def _r33_profiles() -> dict:
+    """R33 four-model release (exo131 trees, TabM, GNN). The sequence families left the roster on
+    2026-11-07 after the G5 #3 cohort put all three at OOF rank IC ~0; they return only through a
+    redesigned challenger that passes CPCV."""
+    from services.alpha_model_roster import R33_EXCLUDED_MODELS
+    profiles = _feature131_profiles(True)
+    for name in R33_EXCLUDED_MODELS:
+        profiles.pop(name)
+    return profiles
+
+
 def _canonical(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _canonical(item) for key, item in value.items()}
@@ -367,6 +378,7 @@ def model_profiles(*, execution_profile: str | None = None,
         TIMEXER_EXO_PROFILE_SCHEMA: _timexer_profiles(True),
         PRICE131_PROFILE: _feature131_profiles(False),
         EXO131_PROFILE: _feature131_profiles(True),
+        R33_PROFILE: _r33_profiles(),
     }[schema_version])
     if execution_profile is None:
         return profiles

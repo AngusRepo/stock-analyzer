@@ -19,6 +19,9 @@ logger = logging.getLogger("oof_materialize_job")
 
 
 OOF_CONTINUATION_MAX_ATTEMPTS = COMPUTE_WAIT_MAX_ATTEMPTS
+# Lifecycle statuses the Worker scheduler callback re-enqueues as a continuation
+# (worker/src/routes/adminControlRoutes.ts); any other "triggered" would never be retried.
+WORKER_CONTINUED_LIFECYCLE_STATUSES = frozenset({"pending", "spawned", "materialized", "shadow_evaluated"})
 
 
 async def _callback_worker(payload: dict[str, Any]) -> None:
@@ -112,26 +115,9 @@ async def _execute_account_lifecycle(
     from services.single_b_daily_closure import single_b_daily_closure
     single_result = single_b_daily_closure(config, end_date)
     if single_result is not None:
-        if single_result.get('status') == 'blocked':
-            # Only data maturity may proceed without the morning plan. Preserve
-            # the original block on account adoption and strategy publication.
-            return single_result
-        # Formal Paper closure stays separate. Reconcile already-sealed strategy
-        # receipts, use the original review/adoption owners and publish display;
-        # this path never trains a model or executes a native frame.
-        display_date = single_result['paired_nav_maturity']['signal_date']
-        nav = _execute_daily_nav(end_date=display_date, retire_legacy_owners=True,
-            publish_strategy_display=True, strategy_only=True)
-        nav.pop('_adoption_candidates', None)
-        # Strategy replacement requires layered evidence plus Wei's approval;
-        # the daily NAV owner never adopts a strategy.
-        nav['adoption'] = {'status': 'disabled_replacement_authority_moved'}
-        single_result['strategy_comparison_nav'] = nav
-        single_result['strategy_nav_read_model'] = nav.get('strategy_nav_read_model')
-        single_result['comparison_review_status'] = (nav.get('family_reviews') or {}).get('status', nav.get('status'))
-        if nav.get('status') == 'failed':
-            single_result.update(status='failed', dependency_retry_required=True, nav_retry_required=True,
-                reason='paired_nav_daily_closure_incomplete')
+        # The formal Paper plan closure is the whole daily closure; a missing
+        # plan stays blocked. Atomic paired NAV is retired for layered strategy
+        # evaluation (R33 B#0), so no strategy NAV closure runs or gates here.
         return single_result
     new_distribution=config.get('l4Distribution') is not None
     nav = _execute_daily_nav(end_date=end_date, retire_legacy_owners=new_distribution, publish_strategy_display=True)
@@ -192,7 +178,7 @@ def _nav_business_date(end_date: str | None, now=None) -> str:
     return business_date
 
 
-def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False, strategy_only=False) -> dict[str, Any]:
+def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=False, publish_strategy_display=False) -> dict[str, Any]:
     from services.paired_nav_evidence import reuse_verified_nav_evidence
     started = time.monotonic()
     # An invalid or future cutoff fails before the receipt reuse, accounting or
@@ -219,10 +205,10 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
             result = run_with_receipt(business_date=end_date,
                 client=client_for_domain(D1DataDomain.LEARNING), store=receipt_store,
                 run=lambda client: _execute_daily_nav_scoped(end_date=end_date,
-                    retire_legacy_owners=True, strategy_only=strategy_only, _client=client))
+                    retire_legacy_owners=True, _client=client))
         else:
             result = _execute_daily_nav_scoped(end_date=end_date, now=now,
-                retire_legacy_owners=retire_legacy_owners, strategy_only=strategy_only)
+                retire_legacy_owners=retire_legacy_owners)
         # Also run on an unchanged daily-accounting retry: a missing display
         # artifact must not stay missing merely because accounting was cached.
         if publish_strategy_display and result.get('as_of_date'):
@@ -240,7 +226,7 @@ def _execute_daily_nav(*, end_date: str | None, now=None, retire_legacy_owners=F
     return result
 
 
-def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None, strategy_only=False) -> dict[str, Any]:
+def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_owners=False, _client=None) -> dict[str, Any]:
     from datetime import datetime, timedelta, timezone
 
     clock = now or datetime.now(timezone.utc)
@@ -254,8 +240,7 @@ def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_o
         from services.paired_nav_daily_review import NavDailyReviewIncomplete
         review_incomplete = False
         try:
-            result = _materialize_nav_with_reviews(business_date=business_date, learning_client=client, now=clock,
-                **({'active_owners': ('atomic_strategy',)} if strategy_only else {}))
+            result = _materialize_nav_with_reviews(business_date=business_date, learning_client=client, now=clock)
         except NavDailyReviewIncomplete as exc:
             # Accounting already completed. Keep the review failure visible,
             # but do not strand candidate date/status projections behind it.
@@ -279,7 +264,7 @@ def _execute_daily_nav_scoped(*, end_date: str | None, now=None, retire_legacy_o
             ('route_candidate_decisions', refresh_registered_route_nav_decisions, {}),
         )
         for component, refresh, extra in projections:
-            active = {'atomic_candidate_decisions'} if strategy_only else {'route_candidate_decisions', 'atomic_candidate_decisions'}
+            active = {'route_candidate_decisions', 'atomic_candidate_decisions'}
             if retire_legacy_owners and component not in active:
                 result[component]={'status':'retired_or_requires_paired_l3_l4_release','failures':[],
                     'promotion_allowed':False,'legacy_evidence_retained':True}
@@ -799,6 +784,17 @@ async def _run() -> int:
             )
             status = str(result.get("status") or "").lower()
             continuation_max_attempts = continuation_limit(result)
+            if status == "failed" or (result.get("dependency_retry_required")
+                                      and status not in WORKER_CONTINUED_LIFECYCLE_STATUSES):
+                # FU2: "triggered" is only a retry when the Worker continues this lifecycle
+                # status. Otherwise it left the ticket open and exited 0; the daily dispatch
+                # guard then read the failed day as succeeded and every watchdog tick redispatched.
+                reason = (_dependency_retry_reason(result) if result.get("dependency_retry_required")
+                          else result.get("reason") or "no_reason")
+                if status == "blocked":
+                    raise RuntimeError(f"oof_daily_blocked:{result.get('reason')}:awaiting=paper_plan_activation")
+                raise RuntimeError(f"oof_lifecycle_{status or 'unknown'}_not_continuable:{reason}"
+                                   if status != "failed" else f"oof_lifecycle_failed:{reason}")
             if result.get("dependency_retry_required"):
                 if continuation_attempt >= continuation_max_attempts:
                     reason = _dependency_retry_reason(result)
@@ -814,6 +810,15 @@ async def _run() -> int:
             elif status == 'blocked':
                 # Missing morning-owned plan cannot be repaired by this job.
                 raise RuntimeError(f"oof_daily_blocked:{result.get('reason')}:awaiting=paper_plan_activation")
+            elif result.get('materialization_owner') == 'r33_monthly_candidate' and status in {'failed', 'materialized'}:
+                # Candidate-only: a failed OOF check is terminal; success needs the sealed bundle and fresh OOF.
+                bundle = result.get('r33_candidate_bundle') or {}
+                if status == 'failed' or bundle.get('status') != 'sealed' or not bundle.get('checksum'):
+                    raise RuntimeError(f"r33_monthly_candidate_failed:{result.get('reason') or 'bundle_not_sealed'}")
+                freshness = _oof_freshness_evidence(result)
+                if freshness["status"] != "fresh":
+                    raise RuntimeError(f"oof_freshness_closure_failed:{freshness['reason']}")
+                callback_status = 'success'
             elif cadence == 'monthly' and status == 'materialized' and result.get('materialization_owner') == 'native_l3_new_l4':
                 closure = result.get('monthly_training_closure') or {}
                 if (closure.get('schema_version') != 'l4-monthly-training-closure-v1'

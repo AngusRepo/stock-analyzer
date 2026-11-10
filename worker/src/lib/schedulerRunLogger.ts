@@ -204,6 +204,95 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   return 'success'
 }
 
+// NEW-94: run logs keep object results instead of the first 200 JSON chars, and never store
+// credentials. Mask first, then bound the JSON (string results stay as returned) and say how
+// much was cut, so a cut can never leave part of a secret behind.
+export const SCHEDULER_RUN_SUMMARY_MAX_CHARS = 4_000
+// Secret-named Worker vars; *_KEY_SCOPE_JSON style settings are config, not credentials.
+const SECRET_ENV_NAME = /TOKEN|SECRET|PASSWORD|PRIVATE|CREDENTIAL|AUTH|WEBHOOK|KEY$/
+// Compound names (client_secret, x-api-key, private_key) count; bare *_key names (run_key,
+// grant_key) do not. The separator may sit inside escaped JSON (\"access_token\":\"...).
+// The prefix is bounded so long hyphenated lists stay linear; a match may start after `_`.
+const SECRET_FIELD = String.raw`(?<![A-Za-z0-9])((?:[A-Za-z0-9]{1,64}[_-]){0,6}(?:password|passwd|secret|token|authorization|(?:api|private|secret|access|signing|hmac|digest)[_-]?key))`
+const SECRET_SEPARATOR = String.raw`(\\*["']?\s*[=:]\s*)`
+const QUOTED_SECRET = new RegExp(SECRET_FIELD + SECRET_SEPARATOR + String.raw`(\\*)(["'])`, 'gi')
+const SECRET_TEXT: readonly [RegExp, string][] = [
+  [/\b(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1***'],
+  [/\b(Basic\s+)[A-Za-z0-9+/]{12,}={0,2}(?![A-Za-z0-9+/=])/g, '$1***'],
+  [new RegExp(SECRET_FIELD + SECRET_SEPARATOR + String.raw`(?![\\"'])[^\s"'&,;}\\]+`, 'gi'), '$1$2***'],
+  [/(\b[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1***@'],
+]
+
+/**
+ * Mask a quoted secret value up to its closing quote at the same escape depth: `"v"` closes on a
+ * quote after an even backslash run, `\"v\"` (JSON nested in a string) on `\"` after 1 + 4k
+ * backslashes, and so on. An unterminated value (cut text) is masked up to an outer-level quote
+ * or a following ` key=` control token, so control text after it stays readable.
+ */
+function maskQuotedSecrets(text: string): string {
+  let out = ''
+  let from = 0
+  QUOTED_SECRET.lastIndex = 0
+  for (let m = QUOTED_SECRET.exec(text); m; m = QUOTED_SECRET.exec(text)) {
+    const opener = m[3].length
+    const step = 2 * (opener + 1)
+    const quote = m[4]
+    const valueStart = m.index + m[0].length
+    let close = -1
+    let outer = -1
+    for (let i = valueStart; i < text.length; i++) {
+      if (text[i] !== quote) continue
+      let run = 0
+      while (i - run - 1 >= valueStart && text[i - run - 1] === '\\') run++
+      if (run >= opener && (run - opener) % step === 0) { close = i - opener; break }
+      if (run < opener) { outer = i - run; break }
+    }
+    if (close < 0) {
+      const token = text.slice(valueStart, outer < 0 ? text.length : outer).search(/\s(?=[A-Za-z_][\w.-]*=)/)
+      close = token >= 0 ? valueStart + token : outer >= 0 ? outer : text.length
+    }
+    out += text.slice(from, valueStart) + '***'
+    from = close
+    QUOTED_SECRET.lastIndex = Math.max(close, valueStart)
+  }
+  return out + text.slice(from)
+}
+
+function secretEnvValues(env?: object): string[] {
+  return Object.entries(env ?? {})
+    .filter(([name, value]) => typeof value === 'string' && SECRET_ENV_NAME.test(name))
+    .map(([, value]) => (value as string).trim())
+    .filter(secret => secret.length >= 8)
+}
+
+/** Mask credentials (and, with env, the values of secret-named Worker vars) in run-log text. */
+export function redactSchedulerRunText(text: string, env?: object): string {
+  let out = text
+  for (const secret of secretEnvValues(env)) out = out.split(secret).join('***')
+  out = maskQuotedSecrets(out)
+  for (const [pattern, replacement] of SECRET_TEXT) out = out.replace(pattern, replacement)
+  return out
+}
+
+/**
+ * Text written to the run log for a task result. The legacy 200-char JSON prefix is still what
+ * callers classify and match on (control); this is only the stored copy.
+ */
+export function schedulerRunLogSummary(result: unknown, env?: object): string {
+  if (typeof result === 'string') return redactSchedulerRunText(result, env)
+  const json = JSON.stringify(result) ?? ''
+  // Mask a bounded head (a value cut at its end is masked as unterminated), then cut to the cap.
+  const head = SCHEDULER_RUN_SUMMARY_MAX_CHARS * 4
+  let masked = redactSchedulerRunText(json.slice(0, head), env)
+  if (json.length <= head && masked.length <= SCHEDULER_RUN_SUMMARY_MAX_CHARS) return masked
+  if (json.length > head) {
+    // A secret cut at the head boundary cannot be recognised; drop that tail.
+    const tail = Math.max(256, ...secretEnvValues(env).map(secret => secret.length))
+    masked = masked.slice(0, Math.max(0, masked.length - tail))
+  }
+  return `${masked.slice(0, SCHEDULER_RUN_SUMMARY_MAX_CHARS)}…[truncated; ${json.length} chars total]`
+}
+
 export function resolveMonotonicSchedulerEntry(
   previous: SchedulerRunLogEntry | null,
   incoming: SchedulerRunLogEntry,
@@ -240,14 +329,14 @@ export async function logSchedulerRunResult(
   const incoming: SchedulerRunLogEntry = {
     task,
     status: result.status,
-    summary: result.summary,
+    summary: typeof result.summary === 'string' ? redactSchedulerRunText(result.summary, env) : result.summary,
     details: result.details,
     duration_ms: result.duration_ms,
     run_id: result.run_id,
     attempt_id: result.attempt_id,
     run_date: today,
     run_scope: result.run_scope,
-    error: result.error,
+    error: typeof result.error === 'string' ? redactSchedulerRunText(result.error, env) : result.error,
     timestamp: new Date().toISOString(),
   }
 
@@ -288,8 +377,8 @@ export async function logSchedulerRunResult(
           `Scheduler Fail: ${displayName} (\`${task}\`)`,
           `Date: ${today}`,
           `Duration: ${(result.duration_ms / 1000).toFixed(1)}s`,
-          `Summary: ${(result.summary || '').slice(0, 500)}`,
-          result.error ? `Error: \`${String(result.error).slice(0, 300)}\`` : null,
+          `Summary: ${(incoming.summary || '').slice(0, 500)}`,
+          incoming.error ? `Error: \`${String(incoming.error).slice(0, 300)}\`` : null,
         ].filter(Boolean).join('\n')
 
         await fetch(env.DISCORD_WEBHOOK_URL, {

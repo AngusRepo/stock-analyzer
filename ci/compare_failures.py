@@ -1,22 +1,42 @@
-"""Gate: fail only on failures the head has and the base does not.
+"""Gate: fail on failures the head has and the base does not, and on any head failure
+inside the P9 scope.
 
-usage: compare_failures.py <artifacts-dir> [<main-cache-dir> <main-label>]
+usage: compare_failures.py <artifacts-dir> <scripts/p9_gate.ps1> [<main-cache-dir> <main-label>]
 
 Input: a directory of downloaded artifacts failures-<suite>-<side>/failures.txt.
 A missing head artifact means the suite did not run and fails the gate; a
 missing base artifact is treated as an empty baseline (strictest choice).
+
+P9 scope = what scripts/p9_gate.ps1 runs on Windows: the worker, frontend and hygiene
+suites, the worker tests that drive controller Python, and the controller test files the
+script names. There a failure blocks even when the base has it too. The script stays the
+owner of the controller file list; a list that cannot be read blocks the gate.
+
 For a PR stacked on another PR's branch, main's cached lists (ci/base_cache.py layout,
 controller shards separate) add an informational "vs main" section: failures the head
 inherits from its stack base would be new once the stack is cut against main. It never
 changes the exit code.
 """
 import os
+import re
 import sys
 from pathlib import Path
 
 SUITES = ('worker', 'controller', 'frontend', 'hygiene')
 root = Path(sys.argv[1])
-main_dir, main_label = (Path(sys.argv[2]), sys.argv[3]) if len(sys.argv) > 3 else (None, '')
+p9_script = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+p9_modules = set(re.findall(r'tests\\(test_\w+)\.py', p9_script.read_text(encoding='utf-8'))) \
+    if p9_script and p9_script.exists() else set()
+main_dir, main_label = (Path(sys.argv[3]), sys.argv[4]) if len(sys.argv) > 4 else (None, '')
+
+
+def in_p9_scope(suite, failure):
+    """Controller ids outside the P9 file list keep the head-vs-base rule; an id without a
+    test module (dependency install, missing report) is in scope."""
+    if suite != 'controller' or not failure.startswith('controller: '):
+        return True
+    module = re.search(r'\btest_\w+', failure)
+    return module is None or module.group(0) in p9_modules
 
 
 def read(suite, side):
@@ -37,22 +57,28 @@ def read_flaky(suite):
     return read_rerun(suite, 'flaky')
 
 
-lines = ['| suite | head failures | pre-existing | **new** | flaky | fixed |', '|---|---|---|---|---|---|']
-blocked, details = False, []
+lines = ['| suite | head failures | pre-existing | **new** | **P9 scope** | flaky | fixed |', '|---|---|---|---|---|---|---|']
+blocked, details = not p9_modules, []
+if not p9_modules:
+    details.append(f'### P9 scope: no controller test files read from `{p9_script}`')
 for suite in SUITES:
     head, base = read(suite, 'head'), read(suite, 'base')
     if head is None:
         blocked = True
-        lines.append(f'| {suite} | did not run | - | **blocked** | - | - |')
+        lines.append(f'| {suite} | did not run | - | **blocked** | - | - | - |')
         continue
     base = base or set()
     flaky = (head - base) & read_flaky(suite)
     stale = (head - base - flaky) & read_rerun(suite, 'stale')
     new, fixed = sorted(head - base - flaky - stale), sorted(base - head)
-    blocked |= bool(new)
-    lines.append(f'| {suite} | {len(head)} | {len(head & base) + len(stale)} | **{len(new)}** | {len(flaky)} | {len(fixed)} |')
+    # Pre-existing failures (stale ones included) inside the P9 scope; new ones are already counted above.
+    p9 = sorted(f for f in (head & base) | stale if in_p9_scope(suite, f))
+    blocked |= bool(new) or bool(p9)
+    lines.append(f'| {suite} | {len(head)} | {len(head & base) + len(stale)} | **{len(new)}** | **{len(p9)}** | {len(flaky)} | {len(fixed)} |')
     if new:
         details.append(f'### {suite}: new failures\n' + '\n'.join(f'- `{n}`' for n in new))
+    if p9:
+        details.append(f'### {suite}: failures in the P9 scope (also on base; blocking)\n' + '\n'.join(f'- `{n}`' for n in p9))
     if stale:
         details.append(f'### {suite}: pre-existing, missing from the cached base list (also fail on the base now; not blocking)\n'
                        + '\n'.join(f'- `{s}`' for s in sorted(stale)))
@@ -98,7 +124,7 @@ def safe_main_section():
         return [f'## vs main {main_label} (informational, not blocking)', '', f'Not compared: {error!r}'[:300]]
 
 
-report = '\n'.join(['## CI gate: ' + ('❌ new failures' if blocked else '✅ no new failures'), '', *lines, '', *details,
+report = '\n'.join(['## CI gate: ' + ('❌ blocked' if blocked else '✅ no new failures, P9 scope clean'), '', *lines, '', *details,
                     *(['', *safe_main_section()] if main_dir else [])])
 print(report)
 summary = os.environ.get('GITHUB_STEP_SUMMARY')

@@ -36,7 +36,7 @@ import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import type { HistoricalScreenerArtifactEvidence } from './historicalScreenerArtifactEvidence'
-import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION, CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
+import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION, CANONICAL_SELECTION_ROUNDTRIP_COST_BPS, withReferenceOverloadRetry } from './canonicalSelectionLabels'
 import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 import { STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION, STRATEGY_REPLACEMENT_POLICY_V7 } from './strategyMarginalEdgeV4'
 import {
@@ -2413,18 +2413,54 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
   return rows.length
 }
 
+// Upper bound on head-date passes per call (D1 caps queries per invocation at
+// ~1000; each pass costs at least one query). Past it, consecutive dates share
+// a pass bounded by their date range, so every head date is still read.
+export const STRATEGY_REWARD_SOURCE_MAX_DATE_PASSES = 200
+// 289 pages of about 18.7k rows read each in one hour on 2026-11-06, issued
+// back to back, overloaded learning-db at reward_ledger. A pause between pages
+// (and between date passes) spreads the same reads over the 10-second budget.
+const STRATEGY_REWARD_SOURCE_PAGE_PAUSE_MS = 250
+
 export async function listStrategyRewardSourceRows(
   db: D1Database,
-  options: { startDate?: string; endDate?: string; limit?: number; canonicalRunIds?: Record<string, string> } = {},
+  options: { startDate?: string; endDate?: string; limit?: number; canonicalRunIds?: Record<string, string>; maxDatePasses?: number; pagePauseMs?: number } = {},
 ): Promise<StrategyRewardSourceRow[]> {
   const pageSize = Math.max(1, Math.min(options.limit ?? 1000, 5000))
+  const pagePauseMs = options.pagePauseMs ?? STRATEGY_REWARD_SOURCE_PAGE_PAUSE_MS
+  let pagesIssued = 0
   const formalLabelerPlaceholders = STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')
   const rows: StrategyRewardSourceRow[] = []
   let cursorDate = ''
   let cursorStrategyId = ''
   let cursorSymbol = ''
   let cursorStrategyVersion = ''
-  for (;;) {
+  // Each page sorts every remaining match before LIMIT, so one unbounded pass
+  // re-read the whole history once per page (~4.5M rows each). Known canonical
+  // heads are walked one signal date at a time instead, binding only that
+  // date's head: a row can only match the head keyed by its own date, and a
+  // date whose head is not a ready matrix run has no rows, so the
+  // concatenated pages are unchanged.
+  const canonicalRunIds = options.canonicalRunIds
+  let signalDates: string[] | null = null
+  if (canonicalRunIds) {
+    const candidates = Object.keys(canonicalRunIds)
+      .filter((date) => (!options.startDate || date >= options.startDate) && (!options.endDate || date <= options.endDate))
+    const ready = candidates.length ? await db.prepare(`
+      SELECT DISTINCT producer_run_id FROM strategy_label_matrix_runs_v4
+       WHERE status='ready' AND producer_run_id IN (SELECT value FROM json_each(?))
+    `).bind(JSON.stringify(candidates.map((date) => canonicalRunIds[date]))).all<{ producer_run_id: string }>() : { results: [] }
+    const readyRunIds = new Set((ready.results ?? []).map((row) => row.producer_run_id))
+    signalDates = candidates.filter((date) => readyRunIds.has(canonicalRunIds[date])).sort()
+  }
+  const maxPasses = Math.max(1, options.maxDatePasses ?? STRATEGY_REWARD_SOURCE_MAX_DATE_PASSES)
+  const passSize = signalDates ? Math.max(1, Math.ceil(signalDates.length / maxPasses)) : 0
+  const passes: Array<string[] | null> = signalDates
+    ? Array.from({ length: Math.ceil(signalDates.length / passSize) }, (_, i) => signalDates!.slice(i * passSize, (i + 1) * passSize))
+    : [null]
+  for (const passDates of passes) for (;;) {
+    if (pagesIssued > 0 && pagePauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pagePauseMs))
+    pagesIssued += 1
     const clauses = [
       'm.strategy_hit = 1',
       'm.evaluable = 1',
@@ -2447,7 +2483,9 @@ export async function listStrategyRewardSourceRows(
     ]
     if (options.canonicalRunIds) {
       clauses.push("EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)")
-      binds.push(JSON.stringify(options.canonicalRunIds))
+      binds.push(JSON.stringify(passDates
+        ? Object.fromEntries(passDates.map((date) => [date, options.canonicalRunIds![date]]))
+        : options.canonicalRunIds))
     } else {
       clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)")
     }
@@ -2456,8 +2494,16 @@ export async function listStrategyRewardSourceRows(
       clauses.push('m.signal_date <= ?', 'l.outcome_known_date IS NOT NULL', 'l.outcome_known_date <= ?')
       binds.push(options.endDate, options.endDate)
     }
+    if (passDates?.length === 1) {
+      // Bound both join sides: the planner drives from r and does not carry m's equality over.
+      clauses.push('m.signal_date = ?', 'r.signal_date = ?')
+      binds.push(passDates[0], passDates[0])
+    } else if (passDates) {
+      clauses.push('m.signal_date BETWEEN ? AND ?', 'r.signal_date BETWEEN ? AND ?')
+      binds.push(passDates[0], passDates.at(-1), passDates[0], passDates.at(-1))
+    }
     binds.push(pageSize)
-    const page = await db.prepare(`
+    const page = await withReferenceOverloadRetry(() => db.prepare(`
       SELECT m.signal_date date,
              m.symbol,
              m.strategy_id,
@@ -2482,7 +2528,7 @@ export async function listStrategyRewardSourceRows(
        WHERE ${clauses.join(' AND ')}
        ORDER BY m.signal_date, m.strategy_id, m.symbol, m.strategy_version
        LIMIT ?
-    `).bind(...binds).all<StrategyRewardSourceRow>()
+    `).bind(...binds).all<StrategyRewardSourceRow>())
     const pageRows = page.results ?? []
     rows.push(...pageRows)
     if (pageRows.length < pageSize) break

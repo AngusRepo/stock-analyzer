@@ -120,7 +120,7 @@ def test_r33_full_fit_never_dispatches_the_1800s_split_parent(monkeypatch):
     from app.formal_feature_contract import R33_PROFILE, EXO131_PROFILE
     monkeypatch.delenv('UNIVERSAL_TREE_MODEL_SPLIT', raising=False)
     split = {'tree_model_split': True}
-    # R33 full-fit: children keep nested CPCV (~40-45 min each), so the waiter must be the 5400 s function.
+    # R33 full-fit children (holdout fit + full refit) still outlive 1800 s, so the waiter must be the 5400 s function.
     assert modal_app._tree_group_function(split, R33_PROFILE) is modal_app.train_tree_models
     assert modal_app._tree_group_function({}, R33_PROFILE) is modal_app.train_tree_models
     # Every other profile keeps its previous routing unchanged.
@@ -130,3 +130,21 @@ def test_r33_full_fit_never_dispatches_the_1800s_split_parent(monkeypatch):
     # The retrain orchestrator's tree group is the only spawn site and routes through the helper.
     source = inspect.getsource(modal_app)
     assert 'train_tree_models_split_parent.spawn' not in source and source.count('_tree_group_function(') == 2
+
+
+def test_release_full_fit_tree_children_skip_nested_cpcv():
+    import modal_app
+    from app.training_policy import build_tree_model_child_payloads
+    from app.use_cases import UniversalTrainRequest
+    base = {"batch_count": 23, "output_model_version": "v1", "register_challengers": False,
+            "model_cpcv_policy": {"family_adapters": {}}, "candidate_type": "oof_full_fit_release",
+            "tree_model_split": True}
+    modal_app._apply_release_tree_policy(base, ["LightGBM", "ExtraTrees", "TabM", "GNN"])
+    assert base["tree_models"] == ["LightGBM", "ExtraTrees"] and base["enable_model_cpcv"] is False
+    children = build_tree_model_child_payloads(base)
+    assert sorted(children) == ["ExtraTrees", "LightGBM"]
+    for child in children.values():
+        assert UniversalTrainRequest(**child).enable_model_cpcv is False
+    import inspect
+    source = inspect.getsource(modal_app)
+    assert '_apply_release_tree_policy(base_train_payload, verified_release_contract["models"])' in source

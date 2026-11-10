@@ -576,6 +576,18 @@ def test_new_grant_admission_is_refused_in_cd(monkeypatch, tmp_path):
                             new_bundle=tmp_path / 'x', release_id='r-x-20261028', authorization='Wei go', review='r')
 
 
+def test_local_prior_files_load_credentials_before_rollout_decides_kv(monkeypatch, tmp_path):
+    monkeypatch.delenv('GITHUB_ACTIONS', raising=False)
+    monkeypatch.delenv('CF_API_TOKEN', raising=False)
+    monkeypatch.setattr(runtime_context, 'load_environment', lambda: monkeypatch.setenv('CF_API_TOKEN', 'x'))
+    modal_release, bootstrap = tmp_path / 'modal-release.json', tmp_path / 'bootstrap-verification.json'
+    modal_release.write_text('{"tag": "v1"}')
+    bootstrap.write_text('{"ok": true}')
+    prior = release.rollout_prior(Namespace(prior_modal_release=modal_release, prior_bootstrap=bootstrap))
+    assert prior == {'modal_release': {'tag': 'v1'}, 'bootstrap': {'ok': True}, 'attempt': 'local-files'}
+    assert runtime_context.kv_available()
+
+
 def turn_api(runs):
     """runs: {(workflow, run id): jobs}"""
     def fetch(path):

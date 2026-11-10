@@ -168,3 +168,7 @@ def test_modal_completion_uses_actual_release_roster(profile_schema):
     exec(code, scope)
     assert result["stages"]["release_model_completion"]["status"] == "error"
     assert result["stages"]["train"]["error"] == "active8_release_completion_incomplete"
+    # A training exception recorded before finalization must survive the completion check.
+    result["stages"]["train"] = {"status": "error", "error": "FunctionTimeoutError: tree"}
+    exec(code, scope)
+    assert result["stages"]["train"]["error"] == "FunctionTimeoutError: tree"

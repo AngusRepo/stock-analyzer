@@ -401,7 +401,7 @@ def test_orchestrator_pools_stay_under_the_workspace_container_limit():
     challenger = [mc.BLOCK_FUNCTION, mc.TREE_FUNCTION, mc.TABM_FUNCTION]
     # Workspace limit 100 concurrent containers; the 30-day peak of everything else was 16.
     assert sum(map(pool, champion)) + sum(map(pool, challenger)) + 16 <= 100
-    assert "memory=8192" in specs[mc.TREE_FUNCTION]
+    assert "memory=16384" in specs[mc.TREE_FUNCTION]  # the R33 mkt16 fold peaked at 12.0 GiB
     assert pool(mc.TABM_FUNCTION) == mc.TAIL_GPU_PARALLEL <= 10  # the tail's L4s; the champion's are free by then
 
 

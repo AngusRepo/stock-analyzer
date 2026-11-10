@@ -109,7 +109,8 @@ def test_ready_verdict_uses_dry_run_owners_and_never_writes(monkeypatch):
     assert set(checks) == {"profile_roster", "sequence_selection", "prep_plan", "capture_inventory", "l2_pool",
                            "tabpack_closure_skipped", "challenger_slots", "pit_certification"}
     assert checks["pit_certification"]["status"] == "pass"
-    assert checks["profile_roster"]["model_count"] == 7
+    from services.alpha_model_roster import R33_MODELS
+    assert checks["profile_roster"]["model_count"] == len(R33_MODELS) == 4
     assert checks["sequence_selection"]["required_price_sessions"] == 1532
     assert checks["prep_plan"]["source_prep"] == "build" and checks["prep_plan"]["adjusted_prep"] == "reuse_latest"
     assert checks["l2_pool"]["required_sessions"] == 21 * 7 and checks["l2_pool"]["missing_dates"] == []
@@ -141,9 +142,9 @@ def test_missing_pool_days_warn_and_challenger_overlap_fails(monkeypatch):
     skipped = SESSIONS[-10]
     report = _run(ops_skip={skipped})
     assert _by_name(report)["l2_pool"]["missing_dates"] == [skipped] and report["warnings"] == ["l2_pool"]
-    monkeypatch.setenv("R33_OOF_CHALLENGER_MODELS", "TimeXer,linear_neutral")
+    monkeypatch.setenv("R33_OOF_CHALLENGER_MODELS", "TabM,linear_neutral")
     report = _run()
-    assert _by_name(report)["challenger_slots"]["overlap_with_release"] == ["TimeXer"]
+    assert _by_name(report)["challenger_slots"]["overlap_with_release"] == ["TabM"]
     assert "challenger_slots" in report["blocking_checks"]
 
 

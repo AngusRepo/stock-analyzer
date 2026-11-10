@@ -703,7 +703,8 @@ def test_the_metadata_ml_service_writes_passes_the_lifecycle_binding_check(monke
               "PatchTST": {"input_scope": {**scope, "admitted_rows": 3}},
               "iTransformer": {"input_scope": scope},
               "TimeXer": {"input_scope": {**scope, "archive_source_feature_date_max": "2026-10-01"}}}
-    assert set(shapes) == set(R33_MODELS)
+    # Every family's nesting stays listed; the seal only reads the current roster's artifacts.
+    assert set(R33_MODELS) <= set(shapes)
     bucket = _Bucket()
     registry = {"artifacts": {m: {"metadata_path": f"m/{m}.json"} for m in R33_MODELS}}
     for m in R33_MODELS:

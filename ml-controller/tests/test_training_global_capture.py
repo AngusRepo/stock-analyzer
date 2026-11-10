@@ -68,3 +68,10 @@ def test_resealed_stale_us_history_is_rejected():
     meta=json.loads(bucket.data[root+"/training_us_quotes.json"]);meta["sources"]["sox"]["sha256"]=hashlib.sha256(raw).hexdigest();bucket.data[root+"/training_us_quotes.json"]=json.dumps(meta).encode()
     with pytest.raises(ValueError,match="training_us_quote_date_gap"):
         read_market_history(bucket,price_capture=price,us_component=proof["us_component"])
+
+
+def test_bias_sum_is_left_to_right_on_every_python():
+    # 3.12 sum() compensates (gives 1.0 here); the sealed history_sha256 was produced by 3.11 addition.
+    from services.training_global_capture import ordered_sum
+    assert ordered_sum([1e16, 1.0, -1e16]) == 0.0
+    assert ordered_sum(iter([0.1, 0.2, 0.3])) == (0.1 + 0.2) + 0.3

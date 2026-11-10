@@ -18,9 +18,10 @@ assert(
 )
 
 assert(
-  gateScript.includes('foreach ($testSource in $WorkerTestSources)') &&
-    gateScript.includes('npx tsx $testSource') &&
-    gateScript.includes('if ($LASTEXITCODE -ne 0) { $FailedWorkerTests += $testSource }') &&
+  gateScript.includes('$offset -lt $WorkerTestSources.Count') &&
+    gateScript.includes('node --import tsx --test') &&
+    gateScript.includes('node_failures_reporter.mjs') &&
+    gateScript.includes('$FailedWorkerTests += $batchFailures') &&
     gateScript.includes('throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join \', \')"') &&
     gateScript.includes('strategyDiscoveryLocalE2E.test.ts') &&
     gateScript.includes('strategyDiscoveryRealModelE2E.test.ts'),

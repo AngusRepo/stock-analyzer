@@ -5,10 +5,7 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-02 15:3x TW in M1-c (AskUserQuestion): go, local commits, no push - rel-1103 re-pin prep; KV grant write needs separate go",
-  "review": "output/herdr-handoff-20261018/pr-merge-queue-20261023/nov1_r33_release_runbook.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r33rel-20261103",
-  "policy_runtime_admissions": [
-    "ml:active8:paper_runtime_approval:v1:r33rel-20261103-p1"
-  ]
+  "authorization": "Wei 2026-11-10 14:43 TW in M1-c: 「同意今天處理」 - go for today's release from main, release id r33main-20261110: #140 merge, re-pin commit/push/PR/merge, admission, build, rollout (writes the new paper runtime grant to KV), verify, all with --publish",
+  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r33main-20261110"
 }

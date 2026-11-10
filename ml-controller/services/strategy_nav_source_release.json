@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "8272caa0f229e1631b539a71221c45d87d5f658f",
+  "production_baseline_source": "83bd093e8d7dacc1465987cd0a4edd8eed7189cc",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "331a7c0a76639e8017de71f15042522a66ac8317e651a8c1f6dc47b5bab6cc10",
-  "prior_configuration_checksum": "f2fcce83bcfb9a33f11a8b2439d162b23f7494f6aaed59d128e06386c8f0c7b1",
+  "prior_approval_checksum": "5c25cc98d9a3d582723818e535134a56827223b23546b7a39b0f94527072da8a",
+  "prior_configuration_checksum": "48e3e865bf7b67ce50fbf30f80467afa9705c2f391be2f3846b0f55c6e95b972",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -86,21 +86,5 @@
     }
   },
   "execution_owner_version": "native-paper-v1:d05c9d9986dbe33a5fd9e74cf68ae45e621c2b5686ca57a0dde82ea1d4ee672c",
-  "review": "output/herdr-handoff-20261018/pr-merge-queue-20261023/nov1_r33_release_runbook.md",
-  "policy_activations": [
-    {
-      "schema_version": "l4-policy-constraints-change-v1",
-      "scope": "paper",
-      "maturity_transfer": false,
-      "account_reset": false,
-      "changes": {
-        "cost_objective": "entry_round_trip_v1"
-      },
-      "previous_policy_checksum": "fba4fe7652532ee59602998922a7799735cff9d93dedc3d7821e5d7cb3f23981",
-      "next_policy_checksum": "c01ba9e3425aa5c85896ca893039a3c92011fd89633729e079735d312aadb338",
-      "next_policy_identity": "7436aec8fdf347e0b81a740fb6401f440b7fed3dd381d0159aa599608615fa58",
-      "engineering_receipt_checksum": "80ec44c89d76d31f89b7975139e1399f8d6b7bba99472a6b4e225af72b5ffe0f",
-      "source_reference": "r33rel-20261103 release (rel-1103 + #126 + #127); W-REL P2 re-chained on live step 1; Wei 2026-11-02 15:2x TW in M1-c: 等129，沒問題後走A (local prep); KV writes need separate go"
-    }
-  ]
+  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md"
 }

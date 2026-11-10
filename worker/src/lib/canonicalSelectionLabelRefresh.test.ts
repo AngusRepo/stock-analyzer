@@ -69,6 +69,22 @@ async function main() {
     'retain other dates, horizons, and unresolved symbols')
   await deleteResolvedMultiHorizonRejections(db,5,'2026-09-08',[])
   assert.equal(batchCalls,1,'empty cleanup does not issue SQL')
+  const big=sql.prepare('INSERT INTO selection_reference_snapshots_v1 VALUES (?,?,?,?,?,?,?)')
+  const bigSymbols=Array.from({length:1201},(_,i)=>(i%2?'a':'B')+String(i).padStart(4,'0'))
+  for(const [i,symbol] of bigSymbols.entries()){
+    big.run('2026-08-11',symbol,'run-2026-08-11',1000+i,'listed','sector',contract)
+    big.run('2026-08-11',symbol,'shadow-run',5000+i,'listed','sector',contract)
+  }
+  const bigHeads={...heads,'2026-08-11':'run-2026-08-11'}
+  const paged=await listCanonicalReferences(db,'2026-09-04',undefined,undefined,bigHeads)
+  const dated=paged.filter(r=>r.signal_date==='2026-08-11')
+  assert.equal(dated.length,1201,'a cohort over two 500-row pages comes back whole')
+  assert.ok(dated.every(r=>r.producer_run_id==='run-2026-08-11'),'non-canonical producers stay out')
+  assert.deepEqual(dated.map(r=>r.symbol),[...bigSymbols].sort((a,b)=>a<b?-1:a>b?1:0),'binary symbol order like ORDER BY')
+  assert.deepEqual(paged.map(r=>r.signal_date),[...paged.map(r=>r.signal_date)].sort(),'dates stay ascending')
+  assert.deepEqual(paged.filter(r=>r.signal_date!=='2026-08-11').map(r=>r.symbol),['A','B'],'other dirty cohorts unchanged')
+  assert.deepEqual((await listCanonicalReferences(db,'2026-09-04','2026-08-12',undefined,bigHeads)).map(r=>r.symbol),['A','B'],
+    'startDate still bounds the cohorts')
   sql.close()
   console.log('canonicalSelectionLabelRefresh: PASS')
 }

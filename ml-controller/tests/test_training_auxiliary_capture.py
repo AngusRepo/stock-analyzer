@@ -40,3 +40,26 @@ def test_rejects_auxiliary_source_faults(fault):
         bucket.data[root+"/margin_balance.parquet"]=raw;manifest["fields"]["margin_balance"].update(sha256=hashlib.sha256(raw).hexdigest(),rows=1)
     bucket.data[path]=json.dumps(manifest).encode()
     with pytest.raises(ValueError,match="root_auxiliary_"):run(bucket,prices,price)
+
+def test_capture_tool_prefixed_revision_events_digest_is_accepted():
+    # tools/finlab_v4_remote_backfill.file_sha256 writes "sha256:<hex>"; the 2026-11-05 R33
+    # capture carries that form, and the loader rejected it as missing (11/7 sh5z6).
+    # Lives here, not in T5: the PIT contract pins test_pit_revision_fixture.py by sha256.
+    from services.training_auxiliary_capture import _mask_revised_quarters
+    from test_pit_revision_fixture import _capture, _events, _values
+    mask = {"sha256": "m" * 64, "cells": frozenset({("A", "2026-Q1"), ("A", "2025-Q3")})}
+    bucket, capture = _capture(_events())
+    proof = capture["meta"]["availability_proof"]
+    bare = proof["events_sha256"]
+    expected, _ = _mask_revised_quarters(bucket, _values(), capture, mask)
+    proof["events_sha256"] = "sha256:" + bare
+    out, info = _mask_revised_quarters(bucket, _values(), capture, mask)
+    assert out.equals(expected) and info["masked_rows"] == 2 and info["events_sha256"] == bare
+    # The prefix does not loosen the checks: a wrong digest or a non-hex body still fails closed.
+    proof["events_sha256"] = "sha256:" + "f" * 64
+    with pytest.raises(ValueError, match="root_auxiliary_revision_events_checksum_mismatch"):
+        _mask_revised_quarters(bucket, _values(), capture, mask)
+    for bad in ("sha256:" + "z" * 64, "sha256:"):
+        proof["events_sha256"] = bad
+        with pytest.raises(ValueError, match="root_auxiliary_revision_events_missing"):
+            _mask_revised_quarters(bucket, _values(), capture, mask)

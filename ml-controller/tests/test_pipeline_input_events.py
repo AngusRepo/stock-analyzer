@@ -287,7 +287,7 @@ def test_consumption_once_and_terminal_result_reuse(store):
     assert events.claim_consumption(path)==result
 
 
-def prep_stage(store, monkeypatch):
+def prep_stage(store, monkeypatch, pit=None):
     from routers import retrain_trigger as trigger
     from services import retrain_lock
     monkeypatch.setattr(retrain_lock,'release',lambda *a,**kw:None)
@@ -298,6 +298,7 @@ def prep_stage(store, monkeypatch):
         'feature_semantic_version':trigger.ACTIVE8_FEATURE_SEMANTIC_VERSION,
         'feature_imputation_semantic':trigger.ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION}
     template.update({key: {'capture_id': 'same-capture', 'source_sha256': key + '-original'} for key in ('price_capture', 'institutional_capture', 'market_cap_capture', 'auxiliary_capture', 'long_source_capture', 'global_capture')})
+    template.update(pit or {})
     calls=[]
     monkeypatch.setattr(events,'_launch_missing_prep',lambda bucket,path,stage:calls.append((path,stage)))
     payloads=[{'batch_index':idx,'retain_unlabeled_features':True,'gcs_prefix':template['output_gcs_prefix']} for idx in range(2)]
@@ -328,6 +329,26 @@ def test_prep_waits_for_every_batch_then_seals_without_training(store,monkeypatc
     for key in ('price_capture', 'institutional_capture', 'market_cap_capture', 'auxiliary_capture', 'long_source_capture', 'global_capture'):
         assert receipt[key] == stage['spec']['receipt_template'][key]
     assert len(jobs.calls)==1
+
+
+PIT = {'pit_contract_version': 'pit-availability-contract-v1', 'pit_contract_sha256': 'c' * 64}
+
+
+@pytest.mark.parametrize('second', [PIT, {'pit_contract_version': PIT['pit_contract_version']},
+                                    {**PIT, 'pit_contract_sha256': '0' * 64}, None])
+def test_a_pit_prep_seals_only_batches_that_applied_its_contract(store,monkeypatch,second):
+    # C28-02: an older ml-service ignores the contract fields; another image carries another contract file.
+    path,stage=prep_stage(store,monkeypatch,pit=PIT);jobs=Jobs()
+    batch_result(store,path,stage,0,cleaning_report=dict(PIT))
+    batch_result(store,path,stage,1,**({'cleaning_report':second} if second is not None else {}))
+    prefix=stage['spec']['receipt_template']['output_gcs_prefix']
+    if second == PIT:
+        assert events.dispatch_ready(path,jobs_client=jobs,store=store)['status']=='dispatched'
+        assert events.read(store,prefix+'/prep/immutable_receipt.json')['pit_contract_sha256']==PIT['pit_contract_sha256']
+        return
+    with pytest.raises(ValueError,match='pipeline_input_prep_pit_contract_not_applied'):
+        events.dispatch_ready(path,jobs_client=jobs,store=store)
+    assert events.read(store,prefix+'/prep/immutable_receipt.json') is None and not jobs.calls
 
 
 @pytest.mark.parametrize('override,pattern', [({'error':'OOM'},'prep_failed'),({'request_sha256':'bad'},'lineage_mismatch'),({'rows':1},'rows_insufficient')])

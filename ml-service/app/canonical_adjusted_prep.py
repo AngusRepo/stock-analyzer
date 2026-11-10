@@ -34,6 +34,22 @@ def _runtime_source_sha() -> str:
         raise RuntimeError("stockvision_source_sha_missing_or_invalid")
     return source_sha
 
+def _auxiliary_binding_ok(auxiliary: dict[str, Any], capture_id: Any) -> bool:
+    if auxiliary.get("capture_id") != capture_id:
+        return False
+    if auxiliary.get("schema_version") == "training-auxiliary-capture-binding-v1":
+        return len(str(auxiliary.get("capture_manifest_sha256") or "")) == 64
+    if auxiliary.get("schema_version") != "training-auxiliary-capture-binding-v2-per-field":
+        return False
+    # R33: each field names its own capture manifest (the controller verified each one before sealing).
+    owners, fields = auxiliary.get("field_captures"), auxiliary.get("fields")
+    return (isinstance(owners, dict) and isinstance(fields, dict) and bool(owners) and set(owners) == set(fields)
+            and all(isinstance(owner, dict) and isinstance(fields[name], dict) and owner.get("capture_id")
+                    and len(str(owner.get("capture_manifest_sha256") or "")) == 64
+                    and len(str(fields[name].get("sha256") or "")) == 64
+                    for name, owner in owners.items()))
+
+
 def _manifest_checksum(manifest: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
     return hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
@@ -143,12 +159,24 @@ def _load_npz(raw: bytes) -> dict[str, np.ndarray]:
     return {name: np.asarray(data[name]) for name in data.files}
 
 
+RANKED_MARKETS = frozenset({"LISTED", "OTC", "EMERGING"})
+
+
+def _row_markets(markets: np.ndarray) -> np.ndarray:
+    """Each row's own venue on its date (C28-02 C3), not the symbol's modal venue.
+
+    A source with one market per symbol gives exactly the old mode-based result.
+    """
+    canonical = (canonical_market_segment(market) for market in markets.astype(str))
+    return np.asarray([market if market in RANKED_MARKETS else "" for market in canonical], dtype=object)
+
+
 def _market_map(batches: list[dict[str, np.ndarray]]) -> dict[str, str]:
     observed: dict[str, Counter[str]] = defaultdict(Counter)
     for batch in batches:
         for symbol, market in zip(batch["symbols"].astype(str), batch["markets"].astype(str)):
             canonical = canonical_market_segment(market)
-            if canonical in {"LISTED", "OTC", "EMERGING"}:
+            if canonical in RANKED_MARKETS:
                 observed[str(symbol)][canonical] += 1
     return {
         symbol: counts.most_common(1)[0][0]
@@ -203,10 +231,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             or any(len(str(institutional_capture.get("checksums", {}).get(k) or "")) != 64
                    for k in ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"))):
         raise ValueError("canonical_institutional_capture_binding_required")
-    auxiliary = source_receipt.get("auxiliary_capture") or {}
-    if (auxiliary.get("schema_version")!="training-auxiliary-capture-binding-v1"
-            or auxiliary.get("capture_id")!=price_capture.get("capture_id")
-            or len(str(auxiliary.get("capture_manifest_sha256") or ""))!=64):
+    if not _auxiliary_binding_ok(source_receipt.get("auxiliary_capture") or {}, price_capture.get("capture_id")):
         raise ValueError("canonical_auxiliary_capture_binding_required")
     long_source=source_receipt.get("long_source_capture") or {}
     if (long_source.get("schema_version")!="training-long-source-binding-v1" or long_source.get("capture_id")!=price_capture.get("capture_id")
@@ -241,6 +266,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             and manifest.get("feature_semantic_version") == source_receipt["feature_semantic_version"]
             and manifest.get("feature_imputation_semantic") == FEATURE_IMPUTATION_SEMANTIC_VERSION
             and manifest.get("producer_source_sha") == _runtime_source_sha()
+            and manifest.get("pit_contract_version") == source_receipt.get("pit_contract_version")
             and manifest.get("manifest_checksum") == _manifest_checksum(manifest)
             and valid_outputs
         ):
@@ -271,7 +297,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         symbols = batch["symbols"].astype(str)
         targets = np.full(len(dates), np.nan, dtype=float)
         known_dates = np.full(len(dates), "", dtype=object)
-        markets = np.asarray([market_by_symbol.get(symbol, "") for symbol in symbols], dtype=object)
+        markets = _row_markets(batch["markets"])
         for idx, (date, symbol) in enumerate(zip(dates, symbols)):
             target = target_lookup.get(symbol, {}).get(str(date)[:10])
             if target is None or not markets[idx]:
@@ -353,6 +379,8 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         "feature_semantic_version": source_receipt["feature_semantic_version"],
         "feature_imputation_semantic": source_receipt["feature_imputation_semantic"],
         "producer_source_sha": source_receipt["producer_source_sha"],
+        **({"pit_contract_version": source_receipt["pit_contract_version"]}
+           if source_receipt.get("pit_contract_version") is not None else {}),
         "sequence_manifest_checksum": sequence_manifest_checksum,
         "source_feature_date_min": min(
             str(value)[:10] for batch in source_batches for value in batch["dates"]

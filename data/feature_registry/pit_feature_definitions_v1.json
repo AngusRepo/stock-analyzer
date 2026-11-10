@@ -1,0 +1,29 @@
+{
+ "schema_version": "pit-feature-definitions-v1",
+ "contract_version": "pit-availability-contract-v1",
+ "semantics": "Registry definitions (data/feature_registry/alphabuilders_factors_fresh.json) for features whose pre-contract ml-service form differs from them. Applied in ml-service build_feature_matrix only when the payload carries pit_contract_version equal to contract_version; artifacts record that version and serving builds with it, so artifacts without a version keep the pre-contract form byte-identical. Adjusted prices are derived from the raw bar and the same-day FinLab factor adj_close/close: FinLab's etl:adj_high/adj_low equal raw x adj_close/close to 4.3e-16 relative on every cell of a full capture, so training (sealed capture) and serving (D1 stock_prices plus canonical adj_close) read no adj_high/adj_low column. A comparison of two days' adjusted prices depends only on the ratio of their factors, so a vendor rebase of the whole series cannot change it. A tie (equal adjusted prices, including 1-ulp vendor noise on an ex-right day that removes exactly the distribution) is not a gap: the strict comparison carries tie_rel_tolerance. A row whose own or previous bar lacks a finite positive price or factor takes undefined_value, as the registry's pandas reference yields False on NaN. vola_cv_90d is a coefficient of variation of the raw close level over a fixed row window (the registry and its FinLab reference use raw close, see price_basis); fewer than window rows, a non-finite value in the window or a zero mean gives undefined_value, as the reference yields NaN there. Both features read the stock's own bar rows, not exchange sessions: a session with no bar (a suspension) is skipped, so the window is the last window bars and the previous bar of a gap is the last bar before it, where a reference on a session calendar sees NaN. The pre-contract forms: tech_gap_down = min((open - prev_close)/prev_close, 0) and tech_gap_up = max((open - prev_close)/prev_close, 0) on raw prices; vola_cv_90d = std(ret1, 90) / max(|mean(ret1, 90)|, 1e-9) on adjusted daily returns. A version's definitions are frozen in ml-service pit_contract._FEATURE_DEFINITIONS_SHA256; changing them needs a new contract version.",
+ "definitions": {
+  "tech_gap_down": {
+   "registry_definition": "today_high_adj < yesterday_low_adj (1 / 0)",
+   "adjusted_price": "raw high/low x same-day adj_close/close",
+   "value": "1.0 when adj_high[t] < adj_low[t-1] * (1 - tie_rel_tolerance), else 0.0",
+   "tie_rel_tolerance": 1e-09,
+   "undefined_value": 0.0
+  },
+  "tech_gap_up": {
+   "registry_definition": "today_low_adj > yesterday_high_adj (1 / 0)",
+   "adjusted_price": "raw high/low x same-day adj_close/close",
+   "value": "1.0 when adj_low[t] > adj_high[t-1] * (1 + tie_rel_tolerance), else 0.0",
+   "tie_rel_tolerance": 1e-09,
+   "undefined_value": 0.0
+  },
+  "vola_cv_90d": {
+   "registry_definition": "std(close, 90) / mean(close, 90)",
+   "price_basis": "raw close. The registry names close here while its adjusted-price factors name *_adj (tech_gap_up/tech_gap_down), and the FinLab reference implementations read price:收盤價 (tools/finlab_alphabuilders_factor_backtest.py:174 and :288, tools/finlab_strategy_spec_backtest.py:1055 and :560), which is the raw close.",
+   "window": 90,
+   "ddof": 1,
+   "value": "rolling sample standard deviation (ddof 1, as pandas rolling(90).std()) of raw close over the last window rows / rolling mean of raw close over the same rows",
+   "undefined_value": 0.0
+  }
+ }
+}

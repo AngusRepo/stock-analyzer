@@ -37,9 +37,11 @@ import { computeAndStoreIndicators, computeTechnicalIndicators } from './technic
 import { applyScreenerTechnicalOverlay } from './screenerTechnicalOverlay'
 import { materializePostOverlayStrategySeed, dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity, buildScreenerL1MergeItem } from './screenerPostOverlaySeed'
 export { dedupeScreenerCandidatesBySymbol, assertCanonicalL15SeedIdentity } from './screenerPostOverlaySeed'
-import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety } from './screenerPostRouteOverlays'
+import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRisk, applyScreenerForeignFlow, applyScreenerSelectionHistory, applyScreenerRecentSessionSafety,
+  DELISTING_MONITOR_DEFAULT_MAX_SESSIONS, delistingMonitorWindowWeekdays, resolveDelistingMonitorMaxSessions } from './screenerPostRouteOverlays'
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
-import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
+import { ADJUSTED_GAP_BAR_SOURCE, loadAdjustedGapBars, loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
+import { adjustedGapDown, volaCv90dFromCloses, type AdjustedGapBar } from './screenerPriceSignals'
 import {
   annotateCandidatesWithStrategySpecs,
 } from './screenerStrategyConsumer'
@@ -622,36 +624,56 @@ export async function loadPreviousCanonicalL15Slate(
   }
 }
 
-export async function loadMatureStrategyOofReturns(
-  db: D1Database,
-  asOfDate: string,
-  canonicalRunIds: Record<string, string>,
-): Promise<Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>> {
-  const formalMatureCompatibility = buildStrategyFormalMatureCompatibilitySql('mr')
-  const { results } = await db.prepare(`
-    WITH mature_dates AS (
+// Joining the matrix by signal_date alone read every cell of the 60 mature dates
+// (4.6M rows, 32 s per screener run on 2026-11-06) to keep the few hits. The
+// strategies of a date are enumerated with one index seek each (a recursive
+// MIN(strategy_id) walk over idx_strategy_label_matrix_v4_evaluable), and the
+// hits of each (date, strategy) are then an equality seek on that index, so
+// only hit cells are read. Same rows, same aggregates, same bind order as the
+// date scan it replaces (dates, adjustment source, compatibility pairs, then the
+// canonical run-id JSON). The unary + on outcome_known_date keeps mature_dates
+// on the primary key, walked newest first and stopped after 60 dates, instead of
+// ranging over every mature label.
+export function buildMatureStrategyOofReturnsSql(formalMatureCompatibility: { sql: string }): string {
+  return `
+    WITH RECURSIVE mature_dates AS (
       SELECT DISTINCT signal_date
         FROM canonical_selection_labels_v4
-       WHERE outcome_known_date <= ?
+       WHERE +outcome_known_date <= ?
          AND signal_date < ?
          AND label_schema_version = 'canonical-strategy-selection-label-v4'
        ORDER BY signal_date DESC
        LIMIT 60
+    ),
+    strategies(signal_date, strategy_id) AS (
+      SELECT d.signal_date,
+             (SELECT MIN(m.strategy_id) FROM strategy_label_matrix_v4 m
+               WHERE m.signal_date=d.signal_date)
+        FROM mature_dates d
+      UNION ALL
+      SELECT s.signal_date,
+             (SELECT MIN(m.strategy_id) FROM strategy_label_matrix_v4 m
+               WHERE m.signal_date=s.signal_date AND m.strategy_id>s.strategy_id)
+        FROM strategies s
+       WHERE s.strategy_id IS NOT NULL
     )
     SELECT m.strategy_id, m.signal_date,
            AVG(l.residual_return_net) residual_return,
            COUNT(*) sample_count
-      FROM strategy_label_matrix_v4 m
-      JOIN mature_dates d ON d.signal_date=m.signal_date
-      JOIN canonical_selection_labels_v4 l
+      FROM strategies s
+      CROSS JOIN strategy_label_matrix_v4 m
+        ON m.signal_date=s.signal_date
+       AND m.strategy_id=s.strategy_id
+       AND m.evaluable=1
+       AND m.strategy_hit=1
+      CROSS JOIN canonical_selection_labels_v4 l
         ON l.signal_date=m.signal_date
        AND l.symbol=m.symbol
        AND l.producer_run_id=m.producer_run_id
        AND l.label_schema_version='canonical-strategy-selection-label-v4'
        AND l.adjustment_source=?
        AND l.reference_contract_version=m.reference_contract_version
-     WHERE m.evaluable=1
-       AND m.strategy_hit=1
+     WHERE s.strategy_id IS NOT NULL
        AND EXISTS (
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
@@ -666,7 +688,16 @@ export async function loadMatureStrategyOofReturns(
      GROUP BY m.strategy_id, m.signal_date
     HAVING COUNT(*) >= 3
      ORDER BY m.strategy_id, m.signal_date
-  `).bind(
+  `
+}
+
+export async function loadMatureStrategyOofReturns(
+  db: D1Database,
+  asOfDate: string,
+  canonicalRunIds: Record<string, string>,
+): Promise<Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>> {
+  const formalMatureCompatibility = buildStrategyFormalMatureCompatibilitySql('mr')
+  const { results } = await db.prepare(buildMatureStrategyOofReturnsSql(formalMatureCompatibility)).bind(
     asOfDate,
     asOfDate,
     CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
@@ -1385,7 +1416,7 @@ interface FinLabStyleFactorNormalizationTelemetry {
   }
 }
 
-function buildStockData(
+export function buildStockData(
   allPrices: CanonicalScreenerPrice[],
   allChips: CanonicalScreenerChip[],
 ): StockDailyData {
@@ -1436,8 +1467,6 @@ function buildStockData(
       entry.securityLendingSellBalance = c.security_lending_sell_balance ?? entry.securityLendingSellBalance ?? null
       entry.securityLendingSellLimit = c.security_lending_sell_limit ?? entry.securityLendingSellLimit ?? null
     }
-    if (c.name.includes('憭?')) entry.foreign += net
-    if (c.name.includes('?縑')) entry.trust += net
     entry.source = c.source ?? entry.source
     entry.marketSegment = c.market_segment ?? entry.marketSegment
     entry.brokerCount = c.broker_count ?? entry.brokerCount ?? null
@@ -1791,6 +1820,8 @@ async function loadStrategyRawSectorRotationSignals(
   return out
 }
 
+export { deriveStrategyRawSignals as deriveScreenerStrategyRawSignals }
+
 function deriveStrategyRawSignals(
   prices: CanonicalScreenerPrice[],
   chipDates: Map<string, ChipDayNet> | undefined,
@@ -1798,6 +1829,7 @@ function deriveStrategyRawSignals(
   extraFactors?: StrategyRawFactorSignalPatch,
   stockTechnicalPrices?: CanonicalScreenerPrice[],
   monthlyRevenueEvidence?: MonthlyRevenueEvidence,
+  adjustedGapBars?: ReadonlyMap<string, AdjustedGapBar>,
 ): StrategyRawSignals {
   const latest = prices[prices.length - 1]
   const indicatorRows = prices
@@ -1840,7 +1872,7 @@ function deriveStrategyRawSignals(
   const return60d = latestIndex >= 60 ? pctChange(closes[latestIndex], closes[latestIndex - 60]) : null
   const latestOhlcv = indicatorRows[latestIndex]
   const previousOhlcv = latestIndex >= 1 ? indicatorRows[latestIndex - 1] : null
-  const techGapDown = latestOhlcv && previousOhlcv ? (latestOhlcv.high < previousOhlcv.low ? 1 : 0) : null
+  const techGapDown = adjustedGapDown(adjustedGapBars, latestOhlcv?.date, previousOhlcv?.date)
   const latestTypicalPrice = latestOhlcv ? (latestOhlcv.high + latestOhlcv.low + latestOhlcv.close) / 3 : null
   const vwapBias = pctChange(close, latestTypicalPrice)
   const vwapRows5d = indicatorRows.slice(-5)
@@ -1849,9 +1881,6 @@ function deriveStrategyRawSignals(
     ? vwapRows5d.reduce((sum, row) => sum + (((row.high + row.low + row.close) / 3) * Math.max(0, row.volume)), 0) / vwap5dDenominator
     : null
   const vwapBias5d = pctChange(close, vwap5d)
-  const last90Closes = closes.slice(-90)
-  const volaCv90dMean = last90Closes.length >= 90 ? avg(last90Closes) : null
-  const volaCv90d = volaCv90dMean != null && volaCv90dMean > 0 ? (stddev(last90Closes) ?? 0) / volaCv90dMean : null
   const latestRange = latestOhlcv ? Math.max(1e-8, latestOhlcv.high - latestOhlcv.low) : null
   const latestOpen = latestOhlcv?.open ?? null
   const kLow2 = latestOhlcv && latestRange != null
@@ -1913,6 +1942,8 @@ function deriveStrategyRawSignals(
     .filter((row): row is { date: string; open: number; high: number; low: number; close: number; volume: number } =>
       row.open != null && row.high != null && row.low != null && row.close != null && row.high >= row.low,
     )
+  // The 70-session `prices` window can never hold 90 closes; read them from the 280-session history.
+  const volaCv90d = volaCv90dFromCloses(stockTechnicalIndicatorRows.map((row) => row.close))
   const stockTechnicalOhlcvRows = stockTechnicalIndicatorRows.map((row) => ({
     date: row.date,
     open: row.open,
@@ -2168,7 +2199,10 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'VSTD_10', signalKey: 'Vstd10', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techEmv14', signalKey: 'TechEmv14', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techRoc10', signalKey: 'TechRoc10', direction: 'higher_is_better', sectorRank: false },
-  // Keep the legacy key immutable for historical parity. Semantic-v2 uses a new, correctly directed key.
+  // Both techGapDown keys read the raw signal, which uses FinLab adjusted bars (registry tech_gap_down) from the
+  // HL1 release (planned 2026-11-03) on; earlier funnel rows hold the unadjusted definition. The key names and
+  // directions are kept by Wei's decision (no versioned key). Semantic-v2 uses the correctly directed
+  // V2TechGapDownNoGap key.
   { rawField: 'techGapDown', signalKey: 'TechGapDown', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techGapDown', signalKey: 'V2TechGapDownNoGap', direction: 'lower_is_better', sectorRank: false },
   { rawField: 'volaCv90d', signalKey: 'VolaCv90dLow', direction: 'lower_is_better', sectorRank: false },
@@ -3169,7 +3203,7 @@ export function scoreMultiFactor(
   // MACD(12,26,9)
   if (prices.length >= 35) {
     const macdHistogram = macdHistogramLast(prices.map(p => p.close))
-    if (macdHistogram != null && macdHistogram > 0) { tech_score += 6; reasons.push('MACD 憭') }
+    if (macdHistogram != null && macdHistogram > 0) { tech_score += 6; reasons.push('MACD 多頭') }
     else if (macdHistogram != null && macdHistogram > -(sc?.macdNegativeFactor ?? 0.5) * latestClose / 100) tech_score += 2
   }
 
@@ -3180,7 +3214,7 @@ export function scoreMultiFactor(
   }
   if (prices.length >= 20) {
     const ma20 = prices.slice(-20).reduce((s, p) => s + p.close, 0) / 20
-    if (latest.close > ma20) { tech_score += 3; reasons.push('蝡?MA20') }
+    if (latest.close > ma20) { tech_score += 3; reasons.push('站上MA20') }
 
   }
 
@@ -3216,7 +3250,7 @@ export function scoreMultiFactor(
     const excess = stockReturn - marketReturn5d
     const exRange = sc?.excessReturnRange ?? [-0.03, 0.05]
     momentum_score += normalize(excess, exRange[0], exRange[1], 7)
-    if (excess > 0.02) reasons.push(`頞?+${(excess * 100).toFixed(1)}%`)
+    if (excess > 0.02) reasons.push(`超額+${(excess * 100).toFixed(1)}%`)
   }
 
   // ?瘥?餈?3 ??vs 20 ?亙???(0-5)
@@ -3241,7 +3275,7 @@ export function scoreMultiFactor(
     }
     const priceIntent = sumAbsRet > 0 ? retN / sumAbsRet : 0
     // intent > 0.5 = 憭折?撞撟?渡?銝撞嚗蜓?風?方???
-    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`??${(priceIntent * 100).toFixed(0)}%`) }
+    if (priceIntent > 0.5) { momentum_score += 5; reasons.push(`意圖${(priceIntent * 100).toFixed(0)}%`) }
     else if (priceIntent > 0.3) momentum_score += 3
     else if (priceIntent > 0.1) momentum_score += 1
   }
@@ -3300,6 +3334,31 @@ export function scoreMultiFactor(
 export interface BottomUpScreenerRunOptions {
   producerRunId?: string | null
   evidenceMode?: StrategyEvidenceMode
+}
+
+/** HL1-4#a: DelistingMonitor threshold. The configured max is KV `trading:config.screener.
+ * delistingMonitorMaxRecentSessions` (default 2); the holiday:* KV lowers it after a long closure.
+ * An unreadable calendar keeps the configured max, i.e. the pre-HL1-4#a behaviour. */
+export async function resolveDelistingMonitorThreshold(env: Pick<Bindings, 'KV'>, endDate: string, sc: unknown, debugLog: string[]): Promise<number> {
+  const raw = (sc as { delistingMonitorMaxRecentSessions?: unknown } | null | undefined)?.delistingMonitorMaxRecentSessions
+  let configuredMax = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS
+  if (raw !== undefined && raw !== null) {
+    if (Number.isInteger(raw) && (raw as number) >= 0) configuredMax = raw as number
+    else console.warn('[Screener v2] screener.delistingMonitorMaxRecentSessions invalid; using default', raw)
+  }
+  try {
+    const weekdays = delistingMonitorWindowWeekdays(endDate)
+    const closed = await Promise.all(weekdays.map(async (date) => Boolean(await env.KV.get(`holiday:${date}`))))
+    const expected = closed.filter(isClosed => !isClosed).length
+    const threshold = resolveDelistingMonitorMaxSessions(expected, configuredMax)
+    if (threshold !== configuredMax) {
+      debugLog.push(`[Step 6] DelistingMonitor threshold ${threshold} (expected sessions ${expected}, configured ${configuredMax})`)
+    }
+    return threshold
+  } catch (error) {
+    console.warn('[Screener v2] DelistingMonitor holiday calendar unreadable; keeping configured threshold', error)
+    return configuredMax
+  }
 }
 
 function resolveScreenerProducerRunId(runDate: string, value?: string | null): string {
@@ -3442,6 +3501,19 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     throw new Error(
       `screener_market_data_load_failed:run_date=${endDate}:${screenerInfrastructureFingerprint(e)}`,
     )
+  }
+  // tech_gap_down compares FinLab adjusted bars of the last primary sessions. The loader never throws:
+  // a failed read only leaves tech_gap_down null.
+  const adjustedGapBarDates = [...new Set(allPrices.map((row) => row.date))].sort().slice(-5)
+  const adjustedGapBars = await loadAdjustedGapBars(env, adjustedGapBarDates)
+  debugLog.push(
+    `[Data] adjusted_gap_bars source=${ADJUSTED_GAP_BAR_SOURCE} dates=${adjustedGapBarDates[0] ?? 'none'}..${adjustedGapBarDates.at(-1) ?? 'none'} ` +
+    `rows=${adjustedGapBars.rows} symbols=${adjustedGapBars.bars.size}` +
+    (adjustedGapBars.error ? ` error=${adjustedGapBars.error.slice(0, 200)}` : ''),
+  )
+  // debug_log keeps only the last 80 lines, so a failed read must also reach the Worker / Cloud Run logs.
+  if (adjustedGapBars.error) {
+    console.warn(`[screener] adjusted_gap_bars_load_failed run_date=${endDate}: ${adjustedGapBars.error.slice(0, 200)}`)
   }
 
   markScreenerStage('market_data_buzz_and_theme')
@@ -3678,6 +3750,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       rawSectorRotationSignals.get(stockId),
       stockTechnicalLongData.prices.get(stockId),
       monthlyRevenue.evidence,
+      adjustedGapBars.bars.get(stockId),
     )
 
     scored.push({
@@ -3705,6 +3778,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     })
   }
 
+  debugLog.push(
+    `[Data] tech_gap_down adjusted coverage=${scored.filter((row) => row.raw_signals?.techGapDown != null).length}/${scored.length}`,
+  )
   const finLabFactorNormalizationTelemetry = applyFinLabStyleFactorNormalization(scored)
   const stockTechnicalStrategyTelemetry = materializeStockTechnicalStrategyScores(scored, {
     marketRegime: stockTechMarketRegime,
@@ -4775,6 +4851,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 6: 鞈??釭嚗elistingMonitor嚗??
+  let delistingMonitorMaxSessions = DELISTING_MONITOR_DEFAULT_MAX_SESSIONS
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
     { // Preserve an explicit no-hit day without inventing missing market rows.
@@ -4801,7 +4878,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           missing_identity_symbols: symbols.filter(symbol => !identities.has(symbol)) }
       })
       const recentRows = recentRead.rows
-      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols)
+      delistingMonitorMaxSessions = await resolveDelistingMonitorThreshold(env, endDate, sc, debugLog)
+      const { removed, events } = applyScreenerRecentSessionSafety(finalCandidates, recentRows, postL15SafetyExcludedSymbols, delistingMonitorMaxSessions)
       for (const event of events) pushFunnelItem(funnelItems, event)
       if (removed.length) debugLog.push(`[Step 6] DelistingMonitor removed ${removed.map(c => c.symbol).join(', ')}`)
     }
@@ -5229,7 +5307,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           highFreqThreshold: (sc as any).highFreq20dThreshold ?? 12,
           highFreqPenalty: Number((sc as any).highFreqPenalty ?? 6),
           newMoneyBonus: Number((sc as any).newMoneyBonus ?? 2),
-          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: 2 },
+          technicalRowsPerSymbol: 65, recentSessionsMaxExcluded: delistingMonitorMaxSessions },
       }))
     }
     const l0DropReasonConservation = buildL0DropReasonConservation({

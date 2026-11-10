@@ -11,6 +11,7 @@ const routeModules = {
   dataQuality: () => import('@/pages/DataQualityPage'),
   strategyLab: () => import('@/pages/StrategyLearningPage'),
   observability: () => import('@/pages/ObservabilityPage'),
+  todo: () => import('@/pages/TodoBoardPage'),
 } as const
 
 export const loadMarketHomePage = routeModules.marketHome
@@ -25,6 +26,7 @@ export const loadNotFound = routeModules.notFound
 export const loadDataQualityPage = routeModules.dataQuality
 export const loadStrategyLabPage = routeModules.strategyLab
 export const loadObservabilityPage = routeModules.observability
+export const loadTodoBoardPage = routeModules.todo
 
 function loaderForHref(href: string): (() => Promise<unknown>) | undefined {
   if (href === '/') return routeModules.marketHome
@@ -38,6 +40,7 @@ function loaderForHref(href: string): (() => Promise<unknown>) | undefined {
   if (href === '/data-quality') return routeModules.dataQuality
   if (href === '/strategy-lab') return routeModules.strategyLab
   if (href === '/obs') return routeModules.observability
+  if (href === '/todo') return routeModules.todo
   return undefined
 }
 

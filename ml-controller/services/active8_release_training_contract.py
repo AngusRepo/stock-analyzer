@@ -95,6 +95,25 @@ def _checksum(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def release_execution_scope(order) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Train groups and artifact-lifecycle targets for one complete roster.
+
+    Trees always train as one group; the replacement slot picks timexer or dlinear; PatchTST has
+    its own group; TabM/GNN/iTransformer go through the artifact lifecycle. A roster without a
+    family (the 2026-11-07 four-model R33) simply has no group or target for it, so full_fit never
+    dispatches a trainer the profile cannot configure."""
+    names = set(order)
+    groups = ["tree"]
+    if "TimeXer" in names:
+        groups.append("timexer")
+    elif "DLinear" in names:
+        groups.append("dlinear")
+    if "PatchTST" in names:
+        groups.append("patchtst")
+    targets = tuple(name for name in RELEASE_ARTIFACT_LIFECYCLE_TARGETS if name in names)
+    return tuple(groups), targets
+
+
 def normalize_release_execution_scope(
     train_groups: Iterable[str] | None,
     artifact_targets: Iterable[str] | None,
@@ -105,15 +124,15 @@ def normalize_release_execution_scope(
     requested_groups = {str(value).strip() for value in (train_groups or ()) if str(value).strip()}
     requested_targets = {str(value).strip() for value in (artifact_targets or ()) if str(value).strip()}
     order = model_order(model_profiles(schema_version=model_profile_schema_version), complete=True)
-    groups = ("tree", "timexer", "patchtst") if "TimeXer" in order else RELEASE_TRAIN_GROUPS
-    # A caller cannot explicitly request the displaced DLinear trainer.
+    groups, targets = release_execution_scope(order)
+    # A caller cannot explicitly request the displaced DLinear trainer or an unrostered family.
     unknown_groups = requested_groups - set(groups)
-    unknown_targets = requested_targets - set(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
+    unknown_targets = requested_targets - set(targets)
     if unknown_groups:
         raise ValueError(f"release_training_group_not_allowed:{','.join(sorted(unknown_groups))}")
     if unknown_targets:
         raise ValueError(f"release_artifact_target_not_allowed:{','.join(sorted(unknown_targets))}")
-    return list(groups), list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS)
+    return list(groups), list(targets)
 
 
 def build_release_training_contract(
@@ -161,7 +180,7 @@ def build_release_training_contract(
             raise ValueError("release_training_input_lineage_missing_or_invalid")
     profiles = model_profiles(execution_profile=execution_profile, schema_version=model_profile_schema_version)
     order = model_order(profiles, complete=True)
-    groups = ("tree", "timexer", "patchtst") if "TimeXer" in order else RELEASE_TRAIN_GROUPS
+    groups, targets = release_execution_scope(order)
     contract: dict[str, Any] = {
         "schema_version": RELEASE_CONTRACT_SCHEMA_VERSION,
         "run_date": business_date,
@@ -173,7 +192,7 @@ def build_release_training_contract(
         "producer_source_sha": source_sha,
         "models": list(order),
         "train_groups": list(groups),
-        "artifact_lifecycle_targets": list(RELEASE_ARTIFACT_LIFECYCLE_TARGETS),
+        "artifact_lifecycle_targets": list(targets),
         "target_semantic_version": TARGET_SEMANTIC,
         "score_semantic": SCORE_SEMANTIC,
         "model_profile_schema_version": model_profile_schema_version,
@@ -208,10 +227,10 @@ def validate_release_training_contract(contract: dict[str, Any]) -> dict[str, An
         raise ValueError("release_training_contract_model_specs_mismatch")
     if tuple(contract.get("models") or ()) != order:
         raise ValueError("release_training_contract_model_set_mismatch")
-    groups = ("tree", "timexer", "patchtst") if "TimeXer" in order else RELEASE_TRAIN_GROUPS
+    groups, targets = release_execution_scope(order)
     if tuple(contract.get("train_groups") or ()) != groups:
         raise ValueError("release_training_contract_group_set_mismatch")
-    if tuple(contract.get("artifact_lifecycle_targets") or ()) != RELEASE_ARTIFACT_LIFECYCLE_TARGETS:
+    if tuple(contract.get("artifact_lifecycle_targets") or ()) != targets:
         raise ValueError("release_training_contract_target_set_mismatch")
     if contract.get("target_semantic_version") != TARGET_SEMANTIC:
         raise ValueError("release_training_contract_target_semantic_mismatch")

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE,
   RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS,
+  retentionHotDrainSettings,
 } from './retentionHotWindowDrain'
 import { retentionR2PolicyConfig } from './retentionArchiveOnly'
 
@@ -39,8 +40,46 @@ assert.match(exactSource, /RETURNING/)
 assert.match(exactSource, /AS MATERIALIZED/)
 assert.doesNotMatch(deleteFunction, /for \(let offset/)
 assert.match(implementation, /options\.confirmPhrase !== RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE/)
-assert.match(implementation, /limitPerDataset \?\? 100/)
-assert(implementation.includes('Math.min(Math.floor(options.limitPerDataset ?? 100), 250)'))
+assert.match(implementation, /options\.limitPerDataset \?\? settings\.limitPerDataset\.default/)
+// NEW-D08: unset Worker vars keep the original 100/250 rows, 1/10 rounds and 60/120 s budget.
+assert.deepEqual(retentionHotDrainSettings({}), {
+  limitPerDataset: { default: 100, max: 250 },
+  maxRounds: { default: 1, max: 10 },
+  budgetMs: { default: 60_000, max: 120_000 },
+})
+assert.deepEqual(retentionHotDrainSettings({ RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '40',
+  RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT: ' 34 ', RETENTION_HOT_DRAIN_BUDGET_MS_MAX: '180000',
+  RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_DEFAULT: '' }), {
+  limitPerDataset: { default: 100, max: 250 },
+  maxRounds: { default: 34, max: 40 },
+  budgetMs: { default: 60_000, max: 180_000 },
+})
+// A lowered cap pulls the built-in default down with it instead of failing.
+assert.deepEqual(retentionHotDrainSettings({ RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_MAX: '50' }).limitPerDataset,
+  { default: 50, max: 50 })
+for (const bad of [
+  { RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_MAX: '251' }, // exact-delete statement holds at most 250 rows
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '101' },
+  { RETENTION_HOT_DRAIN_BUDGET_MS_MAX: '180001' }, // stays within the 180 s default attempt deadline
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '1e1' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '0x10' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '10.0' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '-5' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT: '11' }, // default above the (built-in) cap
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '20', RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT: '21' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '2.5' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '0' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: 'ten' },
+] as Record<string, string>[]) {
+  assert.throws(() => retentionHotDrainSettings(bad), /retention_hot_drain_setting_invalid:RETENTION_HOT_DRAIN_/)
+}
+const routeSource = readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const routeBody = routeSource.slice(routeSource.indexOf("'retention-hot-window-drain': async"),
+  routeSource.indexOf("'legacy-learning-deletion-readiness': async"))
+assert.match(routeBody, /const settings = retentionHotDrainSettings\(c\.env\)/)
+for (const [query, key] of [['limit_per_dataset', 'limitPerDataset'], ['max_rounds', 'maxRounds'], ['budget_ms', 'budgetMs']]) {
+  assert(new RegExp(`query\\('${query}'\\),\\s*settings\\.${key}\\.default, settings\\.${key}\\.max\\)`).test(routeBody), query)
+}
 
 const scheduler = JSON.parse(readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 const preflight = scheduler.jobs.find((job: { id: string }) => job.id === 'retention-hot-window-drain')

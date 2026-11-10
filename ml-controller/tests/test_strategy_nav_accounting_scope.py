@@ -104,7 +104,7 @@ def test_display_keeps_original_failure_visible_instead_of_missing_projection(mo
         return {'status': 'published', 'entry_count': 1, 'promotion_allowed': False}
     monkeypatch.setattr(display, 'refresh_strategy_nav_read_model', original_projection)
     result = job._execute_daily_nav(end_date='2026-10-14', now=datetime(2026, 10, 14, 14, tzinfo=timezone.utc),
-        publish_strategy_display=True, strategy_only=True)
+        publish_strategy_display=True)
     assert result['status'] == 'failed' and result['reason'] == 'original_atomic_source_missing'
     assert result['error_type'] == 'RuntimeError' and result['strategy_nav_read_model']['promotion_allowed'] is False
     assert calls == ['2026-10-14']

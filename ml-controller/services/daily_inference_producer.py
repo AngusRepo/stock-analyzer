@@ -245,6 +245,10 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
     disclosure, disclosure_ref, _ = native('disclosure')
     deadline, deadline_ref, _ = native('deadline')
     owners = [quarterly_index(f).to_pandas().set_index('date') for f in (disclosure, deadline)]
+    # Every daily field missing market dates is reported together: the Worker treats the
+    # failure as the late lane only when all listed fields are late-publication fields.
+    # Any other error in a later field still raises first and is terminal.
+    missing_market_dates = []
     for field in FIELDS:
         prior = read_frame(bucket, old['auxiliary'][field], run_date=old_day)
         inputs = [{'path': old['auxiliary'][field]['path'], 'sha256': old['auxiliary'][field]['sha256']}]
@@ -285,7 +289,8 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
         inputs.append(reference)
         frame = append_wide_delta(prior, delta, baseline_end=old_day, run_date=run_date)
         if field in DAILY_FIELDS and set(calendar['date'].cast(pl.String)) - set(frame['date']):
-            raise ValueError('daily_composition_market_dates_missing:' + field)
+            missing_market_dates.append(field)
+            continue
         if field in LATE_PUBLICATION_FIELDS:
             coverage = run_date_coverage(frame, run_date=run_date, min_ratio=late_field_min_coverage(),
                                          baseline_sessions=late_field_baseline_sessions())
@@ -298,6 +303,8 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
         if not historical.equals(prior.sort('date')):
             raise ValueError('daily_composition_history_changed:' + field)
         result['auxiliary'][field] = frame_item('auxiliary/' + field + '.parquet', frame, inputs, availability, **extra)
+    if missing_market_dates:
+        raise ValueError('daily_composition_market_dates_missing:' + ','.join(missing_market_dates))
 
     broker_raw = (run_dir / 'raw/training_long_full_vintage/broker.json').read_bytes()
     broker_meta = json.loads(broker_raw)

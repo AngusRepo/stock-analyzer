@@ -505,9 +505,12 @@ function retentionCursorPredicate(
   cursor: RetentionCursor | null,
 ): { sql: string; binds: unknown[] } {
   if (!cursor?.cursor_date || cursor.cursor_key == null) return { sql: '', binds: [] }
+  // The leading `date >= cursor` is implied by the OR, but SQLite cannot derive
+  // an index bound from an OR: without it every page rescanned from the oldest
+  // date and rejected every already-compacted row (~1.5M rows per page).
   return {
-    sql: `AND (${target.dateColumn} > ? OR (${target.dateColumn} = ? AND ${target.keyColumn} > ?))`,
-    binds: [cursor.cursor_date, cursor.cursor_date, cursor.cursor_key],
+    sql: `AND ${target.dateColumn} >= ? AND (${target.dateColumn} > ? OR (${target.dateColumn} = ? AND ${target.keyColumn} > ?))`,
+    binds: [cursor.cursor_date, cursor.cursor_date, cursor.cursor_date, cursor.cursor_key],
   }
 }
 

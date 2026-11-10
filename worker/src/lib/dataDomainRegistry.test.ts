@@ -46,6 +46,10 @@ const migrationTransientTables = new Set([
 const domainMigrationTransientTables = new Set([
   'run_artifacts_retention_v2',
   'strategy_route_calibration_head_nav_migration',
+  // Todo kanban tables (ops/0024): todoBoardRoutes uses the OPS_DB binding directly, not domain
+  // routing. Registering them in dataDomainRegistry.ts changes the native bundle; wait for the next re-pin.
+  'todo_cards',
+  'todo_card_events',
 ])
 const productionSqlFiles = [
   'schema.sql',

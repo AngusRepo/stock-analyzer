@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone, timedelta
+import re
+from datetime import date, datetime, timezone, timedelta
 from google.cloud import storage
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from services.pipeline_async_state_transport import (STATE_SCHEMA_V2, build_pipeline_payload_identity,
@@ -66,6 +67,23 @@ def source_records(us, news, *, captured_at):
                 observed_at=observed.isoformat(),available_at=captured_at,
                 payload={k:night[k] for k in ('lastPrice','changePct','changePoints')}))
     return records
+
+def taifex_night_max_age(news,trade_date):
+    """96h, or no age limit when the news report recorded a session floor (Worker newsAnalyst
+    validSessionFloor: 1-14 days before trade_date) and the night session opened on or after it.
+    After a long closure the last trading day's session is older than 96h."""
+    macro=(news or {}).get('macro_evidence') or {}
+    floor=macro.get('taifex_session_floor')
+    opened=str((macro.get('taifex_night') or {}).get('date',''))
+    if re.fullmatch(r'\d{8}',opened):opened=opened[:4]+'-'+opened[4:6]+'-'+opened[6:]
+    iso=re.compile(r'\d{4}-\d{2}-\d{2}')
+    if not (isinstance(floor,str) and iso.fullmatch(floor) and iso.fullmatch(opened)):
+        return 96*3600
+    try:
+        days=(date.fromisoformat(trade_date)-date.fromisoformat(floor)).days
+    except (TypeError,ValueError):
+        return 96*3600
+    return None if 1<=days<=14 and opened>=floor else 96*3600
 
 def capture_baseline(day,read_json):
     now=datetime.now(timezone.utc).isoformat()
@@ -400,7 +418,8 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
         baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
         delta=build_information_delta(baseline=baseline,current_records=source_records(context['us'],context['news'],captured_at=context['cutoff']),cutoff=context['cutoff'],
             trade_date=context['trade_date'],required_sources=('us-leading','news','taifex-night'),
-            max_age_seconds={'us-leading':96*3600,'news':24*3600,'taifex-night':96*3600})
+            max_age_seconds={'us-leading':96*3600,'news':24*3600,
+                'taifex-night':taifex_night_max_age(context['news'],context['trade_date'])})
         state['premarket_information']=delta
         state['premarket_context']=context
         state.setdefault('metrics',{})['premarket_information']={k:v for k,v in delta.items() if k!='changes'}

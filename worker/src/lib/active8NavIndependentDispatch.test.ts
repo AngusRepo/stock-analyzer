@@ -112,6 +112,29 @@ test('plan blocked response remains visibly failed and never queues a retry', as
   } finally { globalThis.fetch = original }
 })
 
+test('a pipeline that has not succeeded parks the daily job instead of dispatching it into a locked day', async () => {
+  let calls = 0
+  const original = globalThis.fetch
+  globalThis.fetch = async () => { calls++; return Response.json({ status: 'spawned' }) }
+  let stage: {status: string; last_error: string | null} | null = null
+  const db = { prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }), first: async () => stage }) }) }
+  const env = { DB: db, OPS_DB: db, MULTI_D1_ACTIVE_DOMAINS: 'ops',
+    PAPER_DAILY_PLAN_OWNER: 'premarket_once_v1', KV: {get: async () => null}, ML_CONTROLLER_URL: 'https://controller.invalid' } as any
+  try {
+    for (const [value, label] of [[null, 'missing'], [{status: 'error', last_error: 'timexer_gpu_unavailable'}, 'error'],
+      [{status: 'running', last_error: null}, 'running'], [{status: 'queued', last_error: null}, 'queued'],
+      [{status: 'waiting', last_error: null}, 'waiting']] as const) {
+      stage = value
+      assert.equal(await runActive8OofLifecycle(env, '2026-10-29', 'daily'),
+        `active8_oof_lifecycle status=skipped reason=awaiting_pipeline job_dispatched=false signal_date=2026-10-29 pipeline_status=${label}`)
+    }
+    assert.equal(calls, 0)
+    stage = {status: 'success', last_error: null}
+    assert.match(await runActive8OofLifecycle(env, '2026-10-29', 'daily'), /status=spawned/)
+    assert.equal(calls, 1)
+  } finally { globalThis.fetch = original }
+})
+
 test('sealed nightly phase blocks watchdog before Cloud Run and resumes after publication', async () => {
   let calls = 0, published = false
   const original = globalThis.fetch

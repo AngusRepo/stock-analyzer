@@ -542,6 +542,23 @@ def test_receipts_publish_without_clobbering_and_skip_the_docker_context(tmp_pat
         receipts.prefix(SHA, '../x')
 
 
+def test_receipts_treat_every_gcloud_missing_wording_as_absent(monkeypatch):
+    def fake(stderr):
+        return lambda *args, check=True: subprocess.CompletedProcess(args, 1, b'', stderr)
+    url = 'gs://stockvision-models/release-receipts/' + SHA + '/current.json'
+    for stderr in (b'ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n' + url.encode(),
+                   b'ERROR: (gcloud.storage.ls) One or more URLs matched no objects.',
+                   b'NotFound: 404 No such object'):
+        monkeypatch.setattr(receipts, '_gcloud', fake(stderr))
+        assert receipts.read(url) is None
+        assert receipts.listing(url) == []
+    monkeypatch.setattr(receipts, '_gcloud', fake(b'ERROR: (gcloud.storage.cat) 403 Permission denied'))
+    with pytest.raises(RuntimeError, match='receipt_read_failed'):
+        receipts.read(url)
+    with pytest.raises(RuntimeError, match='receipt_list_failed'):
+        receipts.listing(url)
+
+
 def test_controller_cd_reads_only_its_named_secrets_and_never_kv(monkeypatch):
     assert set(runtime_context.CD_SECRETS.values()) == {
         'stockvision-ml-controller-secret', 'stockvision-stockvision-auth-token',

@@ -5,7 +5,8 @@ R33 11/1 月訓的「籌碼模型」挑戰者專用。**不改** 7 個主模型�
 - Contract：`data/feature_registry/chip_pit_feature_contract_v1.json`（與 `services/chip_pit.py` 常數由測試綁定）
 - 程式：`ml-controller/services/chip_pit.py`（controller image 與 Modal image 都有 `services/`）
 - 回補：`tools/chip_pit_backfill.py`
-- 每日紀錄：`tools/finlab_v4_remote_backfill.py` daily refresh 結束時呼叫 `record_daily_capture`。**預設關閉**：只有 Modal env `CHIP_PIT_DAILY_RECORD=1` 才會寫 `daily/` 紀錄和 `raw/chip_pit_window/`；開啟需 Wei go
+- 每日紀錄：`tools/finlab_v4_remote_backfill.py` daily refresh 結束時呼叫 `record_daily_capture`。工具本身預設關閉，只有 env `CHIP_PIT_DAILY_RECORD=1` 才會寫 `daily/` 紀錄和 `raw/chip_pit_window/`。Modal 部署由 `ml-service/modal_app.py` 的 `runtime_env_secret` 帶入，預設 `1`（每次 Modal 部署都開）；要關掉就在部署環境設 `CHIP_PIT_DAILY_RECORD=0` 再部署
+- 每日紀錄只是證據：查欄位、寫 `raw/chip_pit_window/`、寫 `daily/` 任一步失敗都不擋當晚 capture，錯誤記在 capture `manifest.json` 的 `chip_pit_daily`（`status=failed` 或 `window_errors`）；window 寫檔失敗時 `daily/` 紀錄改讀該 lane 當日檔案
 
 ## 資料與來源
 

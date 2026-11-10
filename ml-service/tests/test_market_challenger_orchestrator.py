@@ -142,6 +142,20 @@ def challenger(clock, name, seconds, failures=None, counted=False, cancel_hangs=
     return SimpleNamespace(spawn=SimpleNamespace(aio=spawn))
 
 
+@pytest.fixture
+def timexer_roster(monkeypatch):
+    """The 2026-11-07 release roster has no sequence family, so these gate scenarios (TimeXer holds its L4s
+    past every other champion GPU call) run on the pre-11/7 seven-model R33 roster. GpuGate itself is
+    roster-generic: GATE_EXEMPT_GPU_FAMILIES applies to whichever roster carries TimeXer."""
+    import app.alpha_model_roster as service_roster
+    import services.alpha_model_roster as controller_roster
+    seven = tuple(n for n in controller_roster.TIMEXER_MODELS if n != "XGBoost")
+    for module in (service_roster, controller_roster):
+        monkeypatch.setattr(module, "R33_EXCLUDED_MODELS", ("XGBoost",))
+        monkeypatch.setattr(module, "R33_MODELS", seven)
+    return seven
+
+
 def install(monkeypatch, clock, *, windows=WINDOWS, tabm_failures=None, tree_failures=None,
             gnn_fail=lambda payload: False, backlog=lambda clock: 0, tree_seconds=0.01, cap=1.0, cancel_hangs=False):
     import google.cloud.storage as storage
@@ -228,7 +242,7 @@ def rank(key):
     return ORDER.index(key[0].split("_")[1].lower()), key[1]
 
 
-def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_completes_every_slot(monkeypatch):
+def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_completes_every_slot(monkeypatch, timexer_roster):
     clock = Clock()
     lost, oom, tree_lost = (f"TabM_{FIRST.upper()}", 1), (f"TabM_{ORDER[1].upper()}", 4), (f"ExtraTrees_{ORDER[-1].upper()}", 3)
     published = install(monkeypatch, clock, windows=SEVEN, tabm_failures={lost: ["raise", "raise"], oom: ["error"]},
@@ -256,7 +270,7 @@ def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_c
     assert 0 < published["at"] - done < mc.TAIL_CAP_S
 
 
-def test_the_tail_cap_cancels_what_is_left_and_the_cohort_publishes(monkeypatch):
+def test_the_tail_cap_cancels_what_is_left_and_the_cohort_publishes(monkeypatch, timexer_roster):
     slow = (f"ExtraTrees_{ORDER[-1].upper()}", 1)
     clock = Clock()
     published = install(monkeypatch, clock, tree_seconds=lambda key: 30 if key == slow else 0.01, cap=0.3,
@@ -326,7 +340,7 @@ def test_the_tail_starts_when_the_windows_return_even_if_a_watcher_missed_one(mo
     assert clock.spawns[0][0] >= champion_end(clock) - 0.005  # gpu_free never came: nothing before the champion
 
 
-def test_a_window_that_raises_fails_the_cohort_and_leaves_no_challenger_input_running(monkeypatch):
+def test_a_window_that_raises_fails_the_cohort_and_leaves_no_challenger_input_running(monkeypatch, timexer_roster):
     import app.oof_forward_source_contract as contract
     clock = Clock()
     install(monkeypatch, clock)
@@ -347,7 +361,7 @@ def test_a_window_that_raises_fails_the_cohort_and_leaves_no_challenger_input_ru
     assert cancelled and all(terminate for _, terminate in cancelled)
 
 
-def test_a_queued_timexer_input_holds_the_next_spawn_until_it_has_an_l4(monkeypatch):
+def test_a_queued_timexer_input_holds_the_next_spawn_until_it_has_an_l4(monkeypatch, timexer_roster):
     def backlog(clock):  # another workspace job held the L4 one TimeXer input waits for, 0.2 s past the gate
         return 1 if clock.now() < max(ends(clock, GATED_GPU)) + 0.2 else 0
     clock = Clock()
@@ -360,7 +374,7 @@ def test_a_queued_timexer_input_holds_the_next_spawn_until_it_has_an_l4(monkeypa
     assert len(clock.probes) >= len(mid)  # every spawn while the champion runs was preceded by a check
 
 
-def test_unknown_timexer_stats_hold_the_challengers_until_the_champion_is_final(monkeypatch):
+def test_unknown_timexer_stats_hold_the_challengers_until_the_champion_is_final(monkeypatch, timexer_roster):
     def backlog(clock):
         raise RuntimeError("stats unavailable")
     clock = Clock()

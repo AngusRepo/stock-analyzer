@@ -233,9 +233,10 @@ def test_orchestrator_isolates_market_challengers_from_the_release_folds():
     assert functions == {"train_wf_tree_market_challenger", "train_tabm_market_challenger"}
 
 
-# Champion path: Modal wrappers byte-identical to 03727129 and training results identical with challengers off.
+# Champion path: Modal wrappers byte-identical to 03727129 (train_wf_tree_window: plus the R33 memory=16384)
+# and training results identical with challengers off.
 CHAMPION_WRAPPER_SHA256 = {
-    "train_wf_tree_window": "e2501c5a11c8224ae6e08556e1db2210fde04202f53442afcecfe9ad9fd38f79",
+    "train_wf_tree_window": "a26499f9d182602537ef151efa4cffa122a657ad6693f0fac50dc03278d69ef6",
     "train_tabm_universal": "7c3ab63aa133faedfe12e3be24eedfa3c12b4e9fbff9ed02b8c7ad3301663653",
 }
 

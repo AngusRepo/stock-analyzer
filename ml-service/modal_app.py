@@ -175,6 +175,8 @@ runtime_env_secret = modal.Secret.from_dict({
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
         "FINLAB_REFRESH_TOKEN": os.environ.get("FINLAB_REFRESH_TOKEN", "").strip(),
         "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
+        # Chip PIT daily log (docs/chip-pit-contract.md): on for every deploy; deploy with =0 to turn it off.
+        "CHIP_PIT_DAILY_RECORD": os.environ.get("CHIP_PIT_DAILY_RECORD", "1").strip(),
     }.items()
     if value
 })
@@ -434,9 +436,20 @@ def _tree_model_split_enabled(payload: dict) -> bool:
     return _truthy(payload.get("tree_model_split")) or _truthy(os.environ.get("UNIVERSAL_TREE_MODEL_SPLIT"))
 
 
+def _apply_release_tree_policy(base_train_payload: dict, release_models) -> None:
+    """Release full_fit promotes on the cohort's immutable outer OOF evidence, which the
+    controller registry substitutes for any in-run CPCV. Nested CPCV was 15 extra fits per
+    tree model (ExtraTrees alone overran 5400 s on 2026-11-09) that nothing downstream reads."""
+    from app.training_policy import TREE_MODEL_NAMES
+    release_tree_models = [m for m in TREE_MODEL_NAMES if m in release_models]
+    if release_tree_models != list(TREE_MODEL_NAMES):
+        base_train_payload["tree_models"] = release_tree_models
+    base_train_payload["enable_model_cpcv"] = False
+
+
 def _tree_group_function(payload: dict, release_profile_schema: str | None):
-    """R33 full-fit tree children (nested CPCV, ~40-45 min each at 1280 sessions) outlive the
-    1800 s split parent; train_tree_models fans out the same children under its 5400 s budget."""
+    """R33 full-fit tree children (holdout fit + full-history refit, ~6-16 min each at 1280
+    sessions) outlive the 1800 s split parent; train_tree_models fans them out under 5400 s."""
     from app.formal_feature_contract import R33_PROFILE
     if release_profile_schema == R33_PROFILE or not _tree_model_split_enabled(payload):
         return train_tree_models
@@ -741,10 +754,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     if is_release_train:
         base_train_payload.update(_release_model_payload("LightGBM"))
         base_train_payload["run_id"] = run_id
-        from app.training_policy import TREE_MODEL_NAMES
-        release_tree_models = [m for m in TREE_MODEL_NAMES if m in verified_release_contract["models"]]
-        if release_tree_models != list(TREE_MODEL_NAMES):
-            base_train_payload["tree_models"] = release_tree_models
+        _apply_release_tree_policy(base_train_payload, verified_release_contract["models"])
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -1303,7 +1313,10 @@ def retrain_orchestrator(payload: dict) -> dict:
         except Exception as exc:
             result.setdefault("stages", {})["release_model_completion"] = {"status": "error", "error": str(exc)}
             result.setdefault("stages", {}).setdefault("train", {})["status"] = "error"
-            result["stages"]["train"]["error"] = "active8_release_completion_incomplete"
+            # Keep the training failure that caused the incomplete receipts visible.
+            result["stages"]["train"]["error"] = (
+                result["stages"]["train"].get("error") or "active8_release_completion_incomplete"
+            )
 
     elapsed = round(time.time() - t0, 1)
     result["total_elapsed_s"] = elapsed
@@ -2468,7 +2481,7 @@ def train_tabm_universal(payload: dict) -> dict:
 
 @app.function(
     cpu=1,
-    memory=2048,                 # prep: build_feature_matrix for batch payloads.
+    memory=4096,                 # prep: build_feature_matrix; an R33 1532-session batch peaked at 1.7 GB.
     timeout=600,                 # 10 min per batch
     scaledown_window=60,
     max_containers=3,            # Parallel prep batches.
@@ -2487,8 +2500,8 @@ def prep_universal_batch(payload: dict) -> dict:
 
 
 # ~23 nightly batches of ~60 s each: 8 containers finish in three waves instead of eight.
-# Per-container spec is unchanged; prep only touches GCS and the controller callback.
-@app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=8)
+# Prep only touches GCS and the controller callback. An R33 1532-session batch peaked at 1.7 GB.
+@app.function(cpu=1, memory=4096, timeout=1900, scaledown_window=60, max_containers=8)
 def prep_universal_batch_event(payload: dict) -> dict:
     """Prepare one immutable batch, publish completion, notify the pipeline."""
     import time
@@ -2666,10 +2679,11 @@ def train_tree_models(payload: dict) -> dict:
         return {"error": str(e), "type": "tree_models", "training_input_cache": cache_receipt}
 
 
+# R33 expanding fold (2.36M rows x 131) peaked at 11.3 GiB while loading its 23 prep batches.
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=4096,
+    memory=16384,
     timeout=3600,   # 60 min per window for tree models on short train windows.
     scaledown_window=60,
     max_containers=3,   # allow 3 windows in parallel for tree path
@@ -2737,7 +2751,7 @@ def build_market_conditioner_block(payload: dict) -> dict:
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=8192,         # apply_block copies the float64 prep matrix (~1.8 GB on R32) twice.
+    memory=16384,        # apply_block copies the prep matrix twice; the R33 mkt16 fold peaked at 12.0 GiB.
     timeout=3600,
     scaledown_window=60,
     max_containers=21,   # 6 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
@@ -3100,10 +3114,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
     profile_schema = payload.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
-    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names
+    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names, predeclared_full_release
     feature_semantic = semantic_for_profile(profile_schema)
     active8_models = list(model_order(model_profiles(schema_version=profile_schema),complete=True))
-    full137 = "TimeXer" in active8_models
+    full137 = predeclared_full_release(feature_semantic, active8_models)
     native_retrain_models = list(active8_models)
     raw_models = payload.get("models") or active8_models
     models = []
@@ -3911,7 +3925,7 @@ def build_finlab_long_sequence_prep(payload: dict) -> dict:
 
 @app.function(
     cpu=4,
-    memory=8192,
+    memory=12288,  # R33 full roster (2.4M rows x 131) peaked at 5.6 GiB.
     timeout=1800,
     scaledown_window=60,
     max_containers=1,
@@ -5070,7 +5084,7 @@ def train_l4_mlp_median_candidate(payload: dict) -> dict:
     return run(payload)
 
 
-@app.function(cpu=4, memory=8192, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
+@app.function(cpu=4, memory=12288, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
 def rebuild_canonical_adjusted_prep_event(payload: dict) -> dict:
     _setup_env()
     from app.oof_adjusted_prep_event import run

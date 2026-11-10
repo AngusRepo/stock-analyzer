@@ -80,11 +80,20 @@ def publish_progress(sha: str, attempt: str, path: Path, stage: str) -> str:
     return target
 
 
+# gcloud words "no such object" differently across versions; 2026-11 gcloud on macOS says
+# "The following URLs matched no objects or files", which read() used to treat as a failure.
+_MISSING_MARKERS = (b'NotFound', b'404', b'No URLs matched', b'matched no objects')
+
+
+def _missing(stderr: bytes) -> bool:
+    return any(marker in stderr for marker in _MISSING_MARKERS)
+
+
 def read(url: str) -> bytes | None:
     result = _gcloud('storage', 'cat', url, check=False)
     if result.returncode == 0:
         return result.stdout
-    if b'NotFound' in result.stderr or b'404' in result.stderr or b'No URLs matched' in result.stderr:
+    if _missing(result.stderr):
         return None
     raise RuntimeError('receipt_read_failed:' + url)
 
@@ -93,8 +102,7 @@ def listing(url: str) -> list[str]:
     result = _gcloud('storage', 'ls', url, check=False)
     if result.returncode == 0:
         return [line.strip() for line in result.stdout.decode('utf-8').splitlines() if line.strip()]
-    if b'NotFound' in result.stderr or b'404' in result.stderr or b'One or more URLs matched no objects' in result.stderr \
-            or b'No URLs matched' in result.stderr:
+    if _missing(result.stderr):
         return []
     raise RuntimeError('receipt_list_failed:' + url)
 

@@ -340,12 +340,18 @@ async def walk_forward_run(req: WalkForwardRequest):
     from dataclasses import asdict
     from datetime import datetime, timezone, timedelta
 
-    from services.training_source_preflight import require_single_adjustment_capture
+    from services.training_source_preflight import require_single_adjustment_capture, sealed_batch_counts
     from services.walk_forward_retrain import _get_bucket
     try:
         source_bucket = _get_bucket()
         require_single_adjustment_capture(source_bucket, prep_gcs_prefix=req.prep_gcs_prefix,
                                           sequence_gcs_prefix=req.sequence_gcs_prefix)
+        # The orchestrator rejects any count that differs from the sealed manifests.
+        batch_count, sequence_batch_count = sealed_batch_counts(
+            source_bucket, prep_gcs_prefix=req.prep_gcs_prefix, sequence_gcs_prefix=req.sequence_gcs_prefix)
+        for field, sealed in (("batch_count", batch_count), ("sequence_batch_count", sequence_batch_count)):
+            if field in req.model_fields_set and getattr(req, field) != sealed:
+                raise ValueError(f"walk_forward_{field}_mismatch:{getattr(req, field)}!={sealed}")
         if req.resume_manifest_path:
             from services.active8_oof_cohort_materializer import load_verified_oof_manifest
             from services.training_source_preflight import require_oof_training_sources
@@ -402,7 +408,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         fn_call = await modal_client.spawn_walk_forward_orchestrator({
             "windows": windows_payload,
             "market_env": market_env,
-            "batch_count": req.batch_count,
+            "batch_count": batch_count,
             "models": models,
             "model_profile_schema_version":req.model_profile_schema_version,
             "knowledge_cutoff_date":req.knowledge_cutoff_date,
@@ -414,7 +420,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             "cohort_id": cohort_id,
             "prep_gcs_prefix": req.prep_gcs_prefix,
             "sequence_gcs_prefix": req.sequence_gcs_prefix,
-            "sequence_batch_count": req.sequence_batch_count,
+            "sequence_batch_count": sequence_batch_count,
             "resume_manifest_path": req.resume_manifest_path,
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
@@ -683,8 +689,10 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         promotion_evidence[name] = evidence
 
     tree_models = sorted(_ACTIVE8_TREE_MODELS & expected_models)
-    train_groups = ["tree", "timexer" if "TimeXer" in expected_models else "dlinear", "patchtst"]
-    lifecycle_targets = sorted(_ACTIVE8_LIFECYCLE_MODELS - {"PatchTST"})
+    from services.active8_release_training_contract import release_execution_scope
+    release_groups, release_targets = release_execution_scope(expected_models)
+    train_groups = list(release_groups)
+    lifecycle_targets = sorted(release_targets)
     feature_consensus = build_oof_full_fit_feature_consensus(manifest)
     feature_lineage_ready = feature_consensus.get("status") == "ready"
     prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
@@ -2834,7 +2842,7 @@ OOF_LABEL_PURGE_SESSIONS = 5
 
 
 def _oof_training_min_folds(profile: str) -> int:
-    # Both accepted TimeXer arms share enough history for nested L3/head/MLP OOF.
+    # The formal131 profiles (TimeXer arms and the four-model R33) share enough history for nested L3/head/MLP OOF.
     # Five folds leave 30 native L4 dates, 19 anchor dates and zero MLP OOF dates.
     # Seven leave 50 native L4 dates, preserving all three purge boundaries.
     # This is training support, NOT a change to the five-fold offline/NAV gate.
@@ -2858,6 +2866,9 @@ OOF_SCORE_SEMANTIC_VERSION = "same-market-same-date-average-tie-percentile-rank-
 OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
+# R33 cohorts carry their roster: the seven-model G5 #3 cohort of 2026-11-07 keeps its own
+# write-once OOF checks and fold artifacts, which a four-model cohort must never read back.
+R33_ROSTER_COHORT_TAG = "core4"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-inventory-native-frontier"
 
 
@@ -3828,6 +3839,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     cohort_version = OOF_COHORT_ID_VERSION
     if req.model_profile_schema_version != MODEL_PROFILE_SCHEMA_VERSION:
         cohort_version += "-" + req.model_profile_schema_version.removeprefix("active8-release-model-profiles-")
+    if req.model_profile_schema_version == R33_PROFILE:
+        cohort_version += "-" + R33_ROSTER_COHORT_TAG
 
     # Parent owns reusable fold lineage; the calendar and every new fold must
     # use the latest independently verified immutable prep.
@@ -3995,6 +4008,11 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     or parent_manifest.get("sequence_gcs_prefix")
                     or ""
                 )
+        elif req.continuation_only and exact_producer_source_sha:
+            # An exact continuation seals the cohort it dispatched. R33 never resumes a
+            # parent, and its dispatch fold count differs from the continuation gate's.
+            cohort_id = str(parent_manifest["cohort_id"])
+            manifest_path = str(parent_path)
         else:
             cohort_dates = mature_dates[-training_min_sessions:]
             start_date = cohort_dates[0]

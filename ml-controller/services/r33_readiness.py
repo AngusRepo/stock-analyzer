@@ -27,7 +27,7 @@ def check_profile_roster() -> dict[str, Any]:
     from services.formal_feature_contract import PROFILES131, R33_PROFILE
 
     order = list(model_order(model_profiles(schema_version=R33_PROFILE), complete=True))
-    ok = (order == list(R33_MODELS) and len(order) == 7 and R33_PROFILE in PROFILES131
+    ok = (order == list(R33_MODELS) and len(order) == len(R33_MODELS) and R33_PROFILE in PROFILES131
           and _oof_test_sessions(R33_PROFILE) == R33_OOF_TEST_SESSIONS)
     return _check("profile_roster", "pass" if ok else "fail", profile=R33_PROFILE, models=order,
                   model_count=len(order), test_sessions=_oof_test_sessions(R33_PROFILE),

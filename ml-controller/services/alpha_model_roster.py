@@ -1,11 +1,14 @@
 """Immutable model identities; TimeXer replaces, never aliases, DLinear. R33 is the
-TimeXer roster without XGBoost and only exists as an exact, complete set."""
+four cross-sectional families (trees, TabM, GNN) and only exists as an exact, complete set:
+the 2026-11-07 G5 #3 cohort showed the three sequence families at OOF rank IC ~0, so Wei
+removed them from the November release roster pending a redesign."""
 from __future__ import annotations
 
 LEGACY_MODELS = ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN",
                  "DLinear", "PatchTST", "iTransformer")
 TIMEXER_MODELS = tuple("TimeXer" if name == "DLinear" else name for name in LEGACY_MODELS)
-R33_MODELS = tuple(name for name in TIMEXER_MODELS if name != "XGBoost")
+R33_EXCLUDED_MODELS = ("XGBoost", "TimeXer", "PatchTST", "iTransformer")
+R33_MODELS = tuple(name for name in TIMEXER_MODELS if name not in R33_EXCLUDED_MODELS)
 SUPPORTED_MODELS = frozenset((*LEGACY_MODELS, "TimeXer"))
 
 

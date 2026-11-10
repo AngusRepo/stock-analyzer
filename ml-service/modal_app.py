@@ -175,6 +175,8 @@ runtime_env_secret = modal.Secret.from_dict({
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
         "FINLAB_REFRESH_TOKEN": os.environ.get("FINLAB_REFRESH_TOKEN", "").strip(),
         "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
+        # Chip PIT daily log (docs/chip-pit-contract.md): on for every deploy; deploy with =0 to turn it off.
+        "CHIP_PIT_DAILY_RECORD": os.environ.get("CHIP_PIT_DAILY_RECORD", "1").strip(),
     }.items()
     if value
 })

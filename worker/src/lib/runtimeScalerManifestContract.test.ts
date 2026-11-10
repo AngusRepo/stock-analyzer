@@ -30,5 +30,6 @@ assert(syncScript.includes('$deleteScheduleIds.Contains($scheduleName)'))
 assert(syncScript.includes('preserve unmanaged runtime scaler schedule'))
 assert(syncScript.includes('SCALER_SCRIPT_B64=<redacted>'))
 assert(syncScript.includes('& gcloud @Arguments 2>&1'))
+assert.match(syncScript, /\$image = "gcr\.io\/google\.com\/cloudsdktool\/cloud-sdk@sha256:[0-9a-f]{64}"/)
 
 console.log('runtime scaler manifest contract tests passed')

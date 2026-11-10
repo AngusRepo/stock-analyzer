@@ -1502,6 +1502,36 @@ def write_chip_pit_window(frames: dict[str, pd.DataFrame], *, lane: str, run_dir
             write_parquet(run_dir / "raw" / "chip_pit_window" / f"{field}.parquet", frame.tail(CAPTURE_WINDOW_SESSIONS))
 
 
+def chip_pit_window_failed(errors: list[dict[str, Any]], *, lane: str, step: str, exc: Exception) -> None:
+    print(f"[finlab-backfill] chip_pit_window {step} failed lane={lane}: {type(exc).__name__}: {exc}",
+          file=sys.stderr, flush=True)
+    errors.append({"lane": lane, "step": step, "error": f"{type(exc).__name__}: {exc}"[:500]})
+
+
+def chip_pit_lane_fields_soft(lane: str, errors: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Evidence only: on failure the lane is captured exactly as with the flag off."""
+    try:
+        return chip_pit_lane_fields(lane)
+    except Exception as exc:
+        chip_pit_window_failed(errors, lane=lane, step="lane_fields", exc=exc)
+        return ()
+
+
+def write_chip_pit_window_soft(frames: dict[str, pd.DataFrame], *, lane: str, fields: tuple[str, ...], run_dir: Path,
+                               end_date: str | None, errors: list[dict[str, Any]]) -> None:
+    """Evidence only: a failed window write never fails the lane."""
+    try:
+        write_chip_pit_window(frames, lane=lane, run_dir=run_dir, end_date=end_date)
+    except Exception as exc:
+        chip_pit_window_failed(errors, lane=lane, step="write_window", exc=exc)
+        # record_daily_capture reads the lane's own files when a class's window is incomplete.
+        for field in fields:
+            try:
+                (run_dir / "raw" / "chip_pit_window" / f"{field}.parquet").unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
 # Ops pacing for a late exchange index publication; not a trading parameter.
@@ -2322,9 +2352,11 @@ def materialize_specs(
     monthly_contract_sha256: str | None = None,
     price_venue_scope_manifest: str | Path | None = None,
     price_venue_scope_sha256: str | None = None,
+    chip_pit_window_errors: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     start = source_start_date or start_date_for_years(years)
     chip_pit_daily = daily_refresh and chip_pit_daily_enabled()
+    chip_pit_errors = chip_pit_window_errors if chip_pit_window_errors is not None else []
     if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
         raise ValueError("price_venue_scope_pair_required")
     if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
@@ -2507,6 +2539,7 @@ def materialize_specs(
         if spec.kind == "wide_fields":
             field_frames: dict[str, pd.DataFrame] = {}
             unsliced_frames: dict[str, pd.DataFrame] = {}
+            chip_pit_fields = chip_pit_lane_fields_soft(spec.lane, chip_pit_errors) if chip_pit_daily else ()
             if spec.lane == "daily_price":
                 # Daily raw prices are clipped to one date. Keep source-calendar
                 # facts from the full FinLab window so a failed prior date is
@@ -2559,7 +2592,7 @@ def materialize_specs(
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
                             or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
-                            or (chip_pit_daily and field in chip_pit_lane_fields(spec.lane))):
+                            or field in chip_pit_fields):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2642,8 +2675,9 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
-            if chip_pit_daily and chip_pit_lane_fields(spec.lane):
-                write_chip_pit_window(unsliced_frames, lane=spec.lane, run_dir=run_dir, end_date=source_end_date)
+            if chip_pit_fields:
+                write_chip_pit_window_soft(unsliced_frames, lane=spec.lane, fields=chip_pit_fields, run_dir=run_dir,
+                                           end_date=source_end_date, errors=chip_pit_errors)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
@@ -4276,10 +4310,12 @@ def main() -> int:
         daily_history = load_daily_history(storage.Client().bucket(args.gcs_bucket),
             run_date=source_end_date,capture_prefix=args.gcs_prefix,
             bootstrap_ref=json.loads(bootstrap) if bootstrap else None)
+    chip_pit_window_errors: list[dict[str, Any]] = []
     dataset_summaries, diff_reports, source_key_reports, source_key_blockers = materialize_specs(
         years=args.years,
         run_dir=run_dir,
         lanes=requested_lanes,
+        chip_pit_window_errors=chip_pit_window_errors,
         source_start_date=source_start_date,
         training_capture_start_date=args.training_capture_start_date or None,
         daily_refresh=args.daily_refresh,
@@ -4388,6 +4424,8 @@ def main() -> int:
         except Exception as exc:
             print(f"[finlab-backfill] chip_pit_daily failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             manifest["chip_pit_daily"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        if chip_pit_window_errors:
+            manifest["chip_pit_daily"]["window_errors"] = chip_pit_window_errors
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1 and finlab_key_report_enabled():

@@ -2,31 +2,17 @@ name: P9 Gate
 
 on:
   workflow_dispatch:
-  # Windows re-run of the worker/controller/frontend checks: PRs that touch none of them or
-  # what they read (docs, CI tooling, audits) skip it. Not a required check, so a skipped run
-  # blocks nothing.
-  pull_request:
-    paths:
-      - 'worker/**'
-      - 'ml-controller/**'
-      - 'ml-service/**'
-      - 'frontend/**'
-      - 'scripts/**'
-      - 'infra/**'
-      - 'schemas/**'
-      - 'data/**'
-      - 'tools/**'
-      - '.github/workflows/p9-gate.yml'
+  # Windows re-run of the worker/controller/frontend checks after a merge. On pull requests the
+  # same scope must pass in the Linux ci gate (ci/compare_failures.py), so PRs do not wait here.
   push:
     branches:
       - main
       - feature/**
 
-# A newer push to the same PR supersedes the running Windows job. Pushes to main and
-# feature branches queue instead, so every merged sha keeps its own P9 result.
+# Pushes queue, so every merged sha keeps its own P9 result.
 concurrency:
-  group: p9-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: p9-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   p9-gate:

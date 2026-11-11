@@ -1,5 +1,6 @@
 import { eveningClosureDisplay } from './eveningClosureDisplay'
 import { postcloseDispatchLabel, withPostcloseDispatchWait } from './postcloseDispatchWait'
+import { isMissedWatchdog } from './missedWatchdog'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -572,7 +573,7 @@ export default function ExecutionChainPanel({
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
   const availableJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const currentJob = [...availableJobs]
-    .filter((job) => ['running', 'blocked', 'waiting'].includes(visualStatus(job)))
+    .filter((job) => ['running', 'blocked', 'waiting'].includes(visualStatus(job)) && !isMissedWatchdog(job))
     .sort((a, b) => statusPriority(visualStatus(a)) - statusPriority(visualStatus(b)))[0]
     ?? [...availableJobs].reverse().find((job) => visualStatus(job) === 'completed')
     ?? availableJobs[0]

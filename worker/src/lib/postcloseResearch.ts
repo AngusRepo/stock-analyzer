@@ -16,7 +16,8 @@ export async function verifyServingOnlyCallback(env: Bindings, day: string, runI
     throw new Error('premarket_serving_callback_receipt_mismatch')
   const tradeDate=result.publication.trade_date
   if (typeof tradeDate!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate) || tradeDate<=day) return undefined
-  // The wait window is display only; a bad manifest entry must not fail the serving callback.
+  // The wait window is display only (status row and 7d strip; the deploy gate ignores it), so a bad manifest
+  // entry must not fail the serving callback.
   try {return `${tradeDate}T${postcloseDispatchTwTime()}:00+08:00`} catch {return undefined}
 }
 

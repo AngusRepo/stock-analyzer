@@ -108,6 +108,7 @@ const TASK_NAMES: Record<string, string> = {
   'model-ic-rolling': 'Model IC Rolling',
   'model-ic-full-check': 'Model IC Full Check',
   'finlab-v4-backfill': 'FinLab V4 Backfill',
+  'finlab-backfill-watchdog': 'FinLab Pending Watchdog',
   'allocator-ev-lifecycle-watchdog': 'Allocator EV Lifecycle Watchdog',
   'active8-oof-daily': 'Active-8 OOF Daily Materialize',
   'active8-oof-weekly': 'Active-8 OOF Weekly Cohort',

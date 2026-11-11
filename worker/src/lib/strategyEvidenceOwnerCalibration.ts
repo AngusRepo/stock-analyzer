@@ -330,18 +330,24 @@ export async function loadDateReturns(
 ): Promise<StrategyEvidenceDateReturn[]> {
   const output: StrategyEvidenceDateReturn[] = []
   for (const profile of profiles.filter((row) => row.strategy_status === 'active')) {
+    // The base tables of strategy_evidence_observations_v1, driven from the
+    // profile's matrix cells. Through the VIEW the planner drove from
+    // idx_canonical_selection_outcomes_v1_known and nested-looped the matrix.
     const result = await db.prepare(`
-      SELECT v.signal_date, AVG(v.residual_return_net) residual_return_net, COUNT(*) sample_count
-        FROM strategy_evidence_observations_v1 v
-       WHERE v.strategy_id=? AND v.strategy_version=? AND v.horizon_days=?
-         AND v.outcome_known_date < ?
+      SELECT m.signal_date, AVG(o.residual_return_net) residual_return_net, COUNT(*) sample_count
+        FROM strategy_label_matrix_v4 m INDEXED BY idx_strategy_label_matrix_v4_profile_evidence
+        JOIN canonical_selection_outcomes_v1 o INDEXED BY idx_canonical_selection_outcomes_v1_strategy_join
+          ON o.signal_date=m.signal_date AND o.symbol=m.symbol AND o.producer_run_id=m.producer_run_id
+       WHERE m.strategy_id=? AND m.strategy_version=? AND m.strategy_hit=1 AND m.evaluable=1
+         AND o.horizon_days=?
+         AND o.outcome_known_date < ?
          AND EXISTS (
            SELECT 1 FROM selection_reference_snapshots_v1 r
-            WHERE r.signal_date=v.signal_date AND r.symbol=v.symbol AND r.producer_run_id=v.producer_run_id
+            WHERE r.signal_date=m.signal_date AND r.symbol=m.symbol AND r.producer_run_id=m.producer_run_id
               AND r.strategy_matrix_status='ready'
               AND EXISTS (
                 SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-                 WHERE mr.producer_run_id=v.producer_run_id AND mr.status='ready'
+                 WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
                    AND ${FORMAL_MATRIX_COMPATIBILITY.sql}
                    AND mr.expected_cell_count>0 AND mr.persisted_cell_count=mr.expected_cell_count
                    AND mr.labeler_version=r.strategy_labeler_version
@@ -349,8 +355,8 @@ export async function loadDateReturns(
                    AND mr.reference_contract_version=r.feature_contract_version
               )
          )
-         AND EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=v.signal_date AND h.value=v.producer_run_id)
-       GROUP BY v.signal_date ORDER BY v.signal_date
+         AND EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=m.signal_date AND h.value=m.producer_run_id)
+       GROUP BY m.signal_date ORDER BY m.signal_date
     `).bind(
       profile.strategy_id,
       profile.strategy_version,

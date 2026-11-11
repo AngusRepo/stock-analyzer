@@ -286,6 +286,9 @@ export const cronApi = {
 }
 
 // 2026-04-21 Scheduler Dashboard API
+/** One run_date of the 7d strip (Worker resolveSchedulerHistoryCell). */
+export type SchedulerHistoryCell =
+  | 'success' | 'failed' | 'running' | 'triggered' | 'waiting' | 'blocked' | 'attention' | 'missing' | 'skip' | 'none'
 export type SchedulerJob = {
   /** FU8-A: canonical run id of the durable stage (the pipeline progress owner); null when none. */
   canonicalRunId?: string|null
@@ -320,6 +323,8 @@ export type SchedulerJob = {
   lastEffectiveRunAt?: string | null
   lastEffectiveStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
   lastStatus: 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep'
+  /** Set on a skip that stands in for work which should have run for real. */
+  attentionReason?: string | null
   statusScope?: 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle' | 'durable_event'
   statusRunDate?: string | null
   lastDuration: string
@@ -333,7 +338,7 @@ export type SchedulerJob = {
   statusAuthority?: 'scheduler_kv' | 'durable_pipeline_stage' | 'scheduler_execution_ticket'
   displayNote?: string | null
   nextRun: string
-  history7d: Array<'success' | 'failed' | 'skip'>
+  history7d: SchedulerHistoryCell[]
   rate7d: string
   summary: string
   details?: string[]

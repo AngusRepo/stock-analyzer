@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { capturePagesDeployGuard, assertPagesDeployGuardUnchanged } from './worker_deploy_preflight.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendDir = join(root, 'frontend')
@@ -54,12 +55,14 @@ if (productionBranch === canonicalProductionBranch) {
   run('git', ['merge-base', '--is-ancestor', canonicalRemoteRef, sourceSha])
 }
 
-const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'frontend', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_pages_with_provenance.mjs'], { capture: true })
+const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'frontend', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_pages_with_provenance.mjs', 'tools/worker_deploy_preflight.mjs'], { capture: true })
 if (dirty) throw new Error(`Pages deployment inputs are dirty:\n${dirty}`)
 if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${manifestPath}`)
 if (!existsSync(wranglerCli)) throw new Error('locked Worker Wrangler is missing; run npm ci in worker')
 
 const schedulerManifestSha256 = createHash('sha256').update(readFileSync(manifestPath)).digest('hex')
+const guardOptions = { run, sourceSha, canonicalProductionBranch, productionBranch }
+const productionGuard = await capturePagesDeployGuard(guardOptions)
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const useShell = process.platform === 'win32'
 
@@ -89,6 +92,7 @@ writeFileSync(
   'utf8',
 )
 
+await assertPagesDeployGuardUnchanged(productionGuard, guardOptions)
 run(process.execPath, [
   wranglerCli, 'pages', 'deploy', 'dist',
   '--project-name', pagesProject,

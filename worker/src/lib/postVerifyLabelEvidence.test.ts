@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
+import { createHash } from 'node:crypto'
+import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence, verifyPostVerifyLabelEvidencePointer } from './postVerifyLabelEvidence'
 import { PRICE_HORIZON_PROJECTION_VERSION as v1, STRATEGY_MULTI_HORIZON_PROJECTION_VERSION as v2,
   PRICE_HORIZON_SOURCE as source } from './priceHorizonProjection'
 import { SELECTION_REFERENCE_CONTRACT_VERSION as contract } from './selectionReferenceEvidence'
@@ -197,4 +198,124 @@ test('IO failure or missing published schema throws instead of requesting produc
   f.sql.exec('DROP TABLE price_horizon_labels_v1')
   await assert.rejects(verifyPostVerifyLabelEvidence(f.env,proof),/no such table/)
   f.sql.close()
+})
+
+// Records every statement; `heavy` are the 120-day evidence tables the pointer must not touch.
+const HEAVY=/price_horizon_labels_v|price_horizon_label_rejections_v|canonical_selection_outcomes_v1|selection_reference_snapshots_v1/
+function record(f:ReturnType<typeof fixture>) {
+  const prepare=f.env.DB.prepare.bind(f.env.DB), queries:string[]=[]
+  f.env.DB.prepare=(query:string)=>{queries.push(query);return prepare(query)}
+  return {queries,heavy:()=>queries.filter(query=>HEAVY.test(query))}
+}
+const reseal=(proof:Record<string,any>)=>{const {checksum,...body}=proof
+  return {...body,checksum:createHash('sha256').update(JSON.stringify(body)).digest('hex')}}
+
+test('a redispatched projection receipt is re-verified from its status/run pointer without the label tables',async()=>{
+  const f=fixture(1200),input={...f.input,task:'price-horizon-projection' as const}
+  const proof=JSON.parse(JSON.stringify(await capturePostVerifyLabelEvidence(f.env,input)))
+  const r=record(f)
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),true)
+  assert.deepEqual(r.heavy(),[])
+  // root + stage, status v1 + v2 (one page and one COUNT each), root again, the run row.
+  assert.equal(r.queries.length,8)
+  assert.equal(f.writes(),0)
+  f.sql.close()
+})
+
+test('a moved status row falls back to the full capture and requests the rerun',async()=>{
+  const f=fixture(),input={...f.input,task:'price-horizon-projection' as const}
+  const proof=await capturePostVerifyLabelEvidence(f.env,input)
+  f.sql.exec("UPDATE price_horizon_projection_status_v2 SET updated_at='2026-10-20 00:00:00' WHERE horizon_days=10")
+  const r=record(f)
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),false)
+  assert.ok(r.heavy().some(query=>query.includes('FROM price_horizon_labels_v1')),'full capture ran')
+  f.sql.close()
+})
+
+test('a pointer checksum the database no longer matches falls back to the full capture',async()=>{
+  const f=fixture(),input={...f.input,task:'price-horizon-projection' as const}
+  const proof=await capturePostVerifyLabelEvidence(f.env,input)
+  const forged=JSON.parse(JSON.stringify(proof))
+  forged.tables.find((t:Record<string,any>)=>t.table==='price_horizon_projection_status').checksum='0'.repeat(64)
+  const resealed=reseal(forged), r=record(f)
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,resealed),false)
+  assert.ok(r.heavy().length>0,'full capture ran')
+  // A receipt whose own body checksum fails is rejected before any read.
+  forged.checksum=proof.checksum;r.queries.length=0
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,forged),false)
+  assert.deepEqual(r.queries,[])
+  // The run row is part of the pointer as well.
+  f.sql.exec("UPDATE price_horizon_projection_runs SET completed_at='2026-10-16 01:00:01'")
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),false)
+  f.sql.close()
+})
+
+test('outcome receipts always take the full capture; the projection pointer trusts the status-row writer contract',async()=>{
+  const f=fixture()
+  const outcomes=await capturePostVerifyLabelEvidence(f.env,{...f.input,task:'strategy-multi-horizon-outcomes'})
+  const projection=await capturePostVerifyLabelEvidence(f.env,{...f.input,task:'price-horizon-projection'})
+  const r=record(f)
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,outcomes),true)
+  assert.ok(r.heavy().some(query=>query.includes('FROM canonical_selection_outcomes_v1')),'outcomes read in full')
+  // A label edit that skips its status row is outside the contract: only the full verify sees it.
+  f.sql.exec('UPDATE price_horizon_labels_v1 SET exit_raw_close=12 WHERE stock_id=1')
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,projection),true)
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env,projection),false)
+  f.sql.close()
+})
+
+test('an unreadable pointer table falls back to the full capture, which throws instead of trusting the receipt',async()=>{
+  const f=fixture(),input={...f.input,task:'price-horizon-projection' as const}
+  const proof=await capturePostVerifyLabelEvidence(f.env,input)
+  const r=record(f), prepare=f.env.DB.prepare
+  f.env.DB.prepare=(query:string)=>{
+    if(query.includes('FROM price_horizon_projection_status_v2'))throw new Error('D1_ERROR: network connection lost')
+    return prepare(query)
+  }
+  await assert.rejects(verifyPostVerifyLabelEvidencePointer(f.env,proof),/D1_ERROR/)
+  assert.ok(r.heavy().some(query=>query.includes('FROM price_horizon_labels_v1')),'full capture ran')
+  f.sql.close()
+})
+
+test('the pointer applies the full capture\'s source, root ticket and canonical stage checks',async()=>{
+  const f=fixture(),input={...f.input,task:'price-horizon-projection' as const}
+  const proof=await capturePostVerifyLabelEvidence(f.env,input)
+  f.sql.exec("DELETE FROM pipeline_stage_runs")
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),false)
+  f.sql.prepare('INSERT INTO pipeline_stage_runs VALUES(?,?,?,?,?)').run(businessDate,'post_verify_chain','finlab-A','running','2099-01-01')
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),true)
+  for(const [field,value,original] of [['tag','b'.repeat(40),sha],['id','version-B','version-A']] as const) {
+    f.env.CF_VERSION_METADATA[field]=value
+    assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),false,`a new ${field} never reuses the pointer`)
+    f.env.CF_VERSION_METADATA[field]=original
+  }
+  f.root('root-B','2026-10-16 02:00:00')
+  const r=record(f)
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),false)
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env,proof),false)
+  assert.equal(r.heavy().length,0,'root_changed stops the full capture before the label tables as well')
+  f.sql.close()
+})
+
+test('status v1 is read from ops and status v2 from the ops target binding',async()=>{
+  const f=fixture(),input={...f.input,task:'price-horizon-projection' as const}
+  // Move status_v2 into its own database, bound as OPS_DB (the ops shadow target); ops itself stays on DB.
+  const target=new DatabaseSync(':memory:')
+  target.exec(String((f.sql.prepare("SELECT sql FROM sqlite_master WHERE name='price_horizon_projection_status_v2'").get() as any).sql))
+  const rows=f.sql.prepare('SELECT * FROM price_horizon_projection_status_v2').all() as Array<Record<string,any>>
+  for(const row of rows)target.prepare(`INSERT INTO price_horizon_projection_status_v2(${Object.keys(row).join(',')})
+    VALUES(${Object.keys(row).map(()=>'?').join(',')})`).run(...Object.values(row))
+  f.sql.exec('DROP TABLE price_horizon_projection_status_v2')
+  const queries:string[]=[]
+  f.env.OPS_DB={prepare(query:string){queries.push(query);let values:any[]=[];const st={bind(...args:any[]){values=args;return st},
+    async all(){return{success:true,results:target.prepare(query).all(...values)}},
+    async first(){return target.prepare(query).get(...values)??null}};return st}}
+  const proof=JSON.parse(JSON.stringify(await capturePostVerifyLabelEvidence(f.env,input)))
+  const r=record(f);queries.length=0
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),true)
+  assert.deepEqual(r.heavy(),[])
+  assert.equal(queries.length,2,'status_v2 page + COUNT on the target')
+  target.exec("UPDATE price_horizon_projection_status_v2 SET updated_at='2026-10-20 00:00:00' WHERE horizon_days=3")
+  assert.equal(await verifyPostVerifyLabelEvidencePointer(f.env,proof),false)
+  f.sql.close();target.close()
 })

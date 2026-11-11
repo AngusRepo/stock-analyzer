@@ -38,7 +38,7 @@ import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwner
 import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 import { POST_VERIFY_RETRY_SAFE_TASKS, createPostVerifyTaskCheckpoints, postVerifyControllerResponse, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
-import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
+import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence, verifyPostVerifyLabelEvidencePointer } from './postVerifyLabelEvidence'
 import { capturePostVerifyMetricEvidence, verifyPostVerifyMetricEvidence } from './postVerifyMetricEvidence'
 import { enablePostVerifyAdaptiveEvidence, capturePostVerifyAdaptiveEvidence, verifyPostVerifyAdaptiveEvidence } from './postVerifyAdaptiveEvidence'
 import { capturePostVerifyOwnerEvidence, verifyPostVerifyOwnerEvidence } from './postVerifyOwnerEvidence'
@@ -801,7 +801,9 @@ export async function runPostVerifyCallbackChain(
       critical:options.critical,
       retrySafe: POST_VERIFY_RETRY_SAFE_TASKS.includes(task),
       verifyResult:dependencies.taskRunner?undefined:async result=>{
-        if(['price-horizon-projection','strategy-multi-horizon-outcomes'].includes(task))return verifyPostVerifyLabelEvidence(env,result.evidence as any)
+        // Projection receipts are re-read from their status/run pointer rows first; outcomes always take the full capture.
+        if(task==='price-horizon-projection')return verifyPostVerifyLabelEvidencePointer(env,result.evidence as any)
+        if(task==='strategy-multi-horizon-outcomes')return verifyPostVerifyLabelEvidence(env,result.evidence as any)
         if(['strategy-evidence-current','strategy-evidence-metric-backfill'].includes(task))return verifyPostVerifyMetricEvidence(env,result.evidence as any)
         if(task==='linucb-reward-ledger'||task==='adapt')return verifyPostVerifyAdaptiveEvidence(env,task,String(ctx.runDate),result.evidence as any)
         if(task==='model-ic-rolling'||task==='artifact-auto-promotion')return verifyPostVerifyControllerEvidence(env,result.evidence as any)

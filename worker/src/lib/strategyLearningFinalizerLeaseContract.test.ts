@@ -185,3 +185,9 @@ assert.ok(authorityCheck >= 0 && authorityCheck < leaseRenewal && leaseRenewal <
 for (const task of ['strategy-learning', 'post-verify-chain', 'evening-chain']) {
   assert.match(finalizedTelemetry, new RegExp(`logSchedulerResult\\(kv, '${task}'`))
 }
+
+// FG-10 U4: a duplicate queue message that loses the lease must not overwrite the
+// lease holder's scheduler KV entry (it has no attempt_id, so it would win the merge).
+const leaseBusyBranch = queueBlock.slice(queueBlock.indexOf('if (!claimed) {'), queueBlock.indexOf('let materializationValidated'))
+assert.match(leaseBusyBranch, /lease busy; durable retry scheduled/)
+assert.doesNotMatch(leaseBusyBranch, /logSchedulerResult\(/, 'lease-busy duplicates must not write the scheduler run log')

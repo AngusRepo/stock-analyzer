@@ -3,6 +3,10 @@ export const MARKET_REGIME_STATE_KEY = 'market_regime_state'
 export const MARKET_REGIME_STATE_ARCHIVE_PREFIX = 'market_regime_state:date:'
 export const LEGACY_REGIME_KEY = 'ml:regime'
 export const LEGACY_REGIME_META_KEY = 'ml:regime:meta'
+// Current-state keys must outlive the longest TWSE closure (Lunar New Year gaps
+// run about ten days). A 2-day TTL expired every weekend and broke Monday
+// premarket HMM lineage; date freshness is checked by readers, not by expiry.
+export const MARKET_REGIME_STATE_CURRENT_TTL_SECONDS = 14 * 86400
 
 export type MarketRegimeFamily = 'bull' | 'bear' | 'volatile' | 'sideways'
 export type MarketRegimeLegacyLabel = 'bull_market' | 'bear_market' | 'volatile' | 'sideways'
@@ -300,7 +304,7 @@ export async function restoreMarketRegimeStateFromHistory(
   const payload = await readMarketRegimeStateHistory(historyDb, runDate)
   if (!payload) return null
   if (options.accept && !options.accept(payload)) return null
-  const ttl = options.expirationTtl ?? 2 * 86400
+  const ttl = options.expirationTtl ?? MARKET_REGIME_STATE_CURRENT_TTL_SECONDS
   const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
   const serialized = JSON.stringify(payload)
   await kv.put(marketRegimeStateArchiveKey(runDate), serialized, { expirationTtl: archiveTtl })
@@ -358,7 +362,7 @@ export async function persistMarketRegimeState(
     historyDb?: D1Database
   } = {},
 ): Promise<void> {
-  const ttl = options.expirationTtl ?? 2 * 86400
+  const ttl = options.expirationTtl ?? MARKET_REGIME_STATE_CURRENT_TTL_SECONDS
   const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
   const pushedAt = paperExecutionDate().toISOString()
   const payload: MarketRegimeState = { ...state, downstream_contract: contract(), pushed_at: pushedAt }

@@ -916,7 +916,22 @@ function isoDateMinusCalendarDays(date: string, days: number): string {
   return parsed.toISOString().slice(0, 10)
 }
 
-export async function ensureStrategyLearningTables(db: D1Database): Promise<void> {
+// The DDL is idempotent, so one successful pass per database binding is
+// enough for the isolate. A failed pass is forgotten and retried by the next caller.
+const ensuredStrategyLearningTables = new WeakMap<D1Database, Promise<void>>()
+
+export function ensureStrategyLearningTables(db: D1Database): Promise<void> {
+  const ensured = ensuredStrategyLearningTables.get(db)
+  if (ensured) return ensured
+  const pending = createStrategyLearningTables(db)
+  ensuredStrategyLearningTables.set(db, pending)
+  pending.catch(() => {
+    if (ensuredStrategyLearningTables.get(db) === pending) ensuredStrategyLearningTables.delete(db)
+  })
+  return pending
+}
+
+async function createStrategyLearningTables(db: D1Database): Promise<void> {
   for (const sql of SCHEMA_DDL) {
     await db.prepare(sql).run()
   }

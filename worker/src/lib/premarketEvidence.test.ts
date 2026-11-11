@@ -175,14 +175,18 @@ const nightQuoteTime = (tw: string) => {
   return { CDate: opened.replaceAll('-', ''), CTime: time.replaceAll(':', '') }
 }
 
+// The producer tests advance the clock by ten minutes; on the wall clock that crossed into the
+// next Taiwan date between 23:50 and 24:00 and left the day's fixtures behind.
+const PRODUCER_NOW = '2026-10-28T06:45:00+08:00'
+
 test('news producer retries bad JSON without writing neutral KV, then publishes and reuses valid evidence', async () => {
   const f = l4NativeFixture(), originalFetch = globalThis.fetch
-  const now = new Date(), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
+  const now = new Date(PRODUCER_NOW), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
   f.ports.nowMs = now.getTime(); f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
   f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
     source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
-  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
-    .run(row.title, row.summary, row.url, row.source, now.toISOString())
+  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at,created_at) VALUES(1,1,?,?,?,?,?,?)')
+    .run(row.title, row.summary, row.url, row.source, now.toISOString(), now.toISOString())
   const tw = new Date(now.getTime() + 8 * 3600_000 - 60_000).toISOString()
   let calls = 0, good = false
   globalThis.fetch = async () => new Response('<rss/>')
@@ -220,12 +224,12 @@ test('expired third producer attempt becomes terminal error without another API 
 
 test('news producer repairs once with same evidence, then caches valid output', async () => {
   const f = l4NativeFixture(), originalFetch = globalThis.fetch
-  const now = new Date(), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
+  const now = new Date(PRODUCER_NOW), date = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10)
   f.ports.nowMs = now.getTime(); f.env.ML_CONTROLLER_URL = 'https://controller.invalid'; f.env.ML_CONTROLLER_SECRET = 'fixture'
   f.kvs.set(`us:leading:${date}`, JSON.stringify({ date, sox_close: 5000, gspc_close: 5000, vix_close: 20,
     source_times: { sox: now.toISOString(), gspc: now.toISOString(), vix: now.toISOString() } }))
-  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at) VALUES(1,1,?,?,?,?,?)')
-    .run(row.title, row.summary, row.url, row.source, now.toISOString())
+  f.sqls.market.prepare('INSERT INTO news(id,stock_id,title,summary,url,source,published_at,created_at) VALUES(1,1,?,?,?,?,?,?)')
+    .run(row.title, row.summary, row.url, row.source, now.toISOString(), now.toISOString())
   const tw = new Date(now.getTime() + 8 * 3600_000 - 60_000).toISOString()
   let calls = 0
   globalThis.fetch = async () => new Response('<rss/>')

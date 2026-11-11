@@ -75,14 +75,14 @@ def _assert_no_pointer_write(sqls):
     assert not [sql for sql in sqls if any(table in sql for table in POINTER_TABLES)]
 
 
-def test_register_candidates_marks_seven_rows_for_wei_without_pointer_write(monkeypatch):
+def test_register_candidates_marks_one_row_per_release_model_for_wei_without_pointer_write(monkeypatch):
     from services import model_artifact_registry
     from services.r33_monthly_lifecycle import PROMOTION_DECISION, candidate_registry_complete, register_candidates
     recorder = Recorder()
     monkeypatch.setattr(model_artifact_registry, "d1_client", recorder)
     registry = register_candidates(_rows(), release_models=R33_MODELS, expected_run_id="run-1")
     assert registry["ensemble_candidate"] is None and set(registry["artifacts"]) == set(R33_MODELS)
-    assert len(recorder.sql) == 7 and all("INSERT INTO model_artifact_registry" in sql for sql in recorder.sql)
+    assert len(recorder.sql) == len(R33_MODELS) and all("INSERT INTO model_artifact_registry" in sql for sql in recorder.sql)
     _assert_no_pointer_write(recorder.sql)
     assert candidate_registry_complete(registry, R33_MODELS)
     assert not candidate_registry_complete({"status": "materialized"}, R33_MODELS)
@@ -462,8 +462,8 @@ def test_fold_receipts_require_every_model_attestation():
     from services.r33_monthly_lifecycle import fold_receipts
     store, metrics = {}, {}
     for name in R33_MODELS:
-        split = {"train_end": "2026-09-30", "train_label_known_max": "2026-09-30"} if name in ("PatchTST", "iTransformer") else (
-            {"training_label_known_max": "2026-10-01"} if name == "TimeXer" else {"train_label_known_max": "2026-10-02"})
+        # both attestation spellings are accepted; the fold's receipt takes the latest one
+        split = {"training_label_known_max": "2026-10-01"} if name == "GNN" else {"train_label_known_max": "2026-10-02"}
         buf = io.BytesIO()
         np.savez(buf, metadata=np.array(json.dumps({"model_name": name, "split_metadata": split})))
         store[f"a/{name}"] = buf.getvalue()
@@ -476,12 +476,12 @@ def test_fold_receipts_require_every_model_attestation():
     store["a/TabM"] = buf.getvalue()
     metrics["TabM"]["artifact_checksum"] = hashlib.sha256(buf.getvalue()).hexdigest()
     assert fold_receipts(manifest, Bucket(store)) == []  # unattested fold: leakage check fails it
-    for name, split in (("TabM", {"train_label_known_max": "2026-10-02"}), ("PatchTST", {"train_end": "2026-09-30"})):
+    for name, split in (("TabM", {"train_label_known_max": "2026-10-02"}), ("GNN", {"train_end": "2026-09-30"})):
         buf = io.BytesIO()
         np.savez(buf, metadata=np.array(json.dumps({"model_name": name, "split_metadata": split})))
         store[f"a/{name}"] = buf.getvalue()
         metrics[name]["artifact_checksum"] = hashlib.sha256(buf.getvalue()).hexdigest()
-    assert fold_receipts(manifest, Bucket(store)) == []  # NF train_end alone is not an attestation
+    assert fold_receipts(manifest, Bucket(store)) == []  # train_end alone is not an attestation
 
 
 def test_r33_routing_gates_in_walk_forward():
@@ -778,3 +778,34 @@ def test_receipt_sealed_without_the_cost_line_never_admits_full_fit(monkeypatch,
     with pytest.raises(ValueError, match="^r33_oof_checks_schema_stale$"):
         _run(bucket)
     assert calls["dispatch"] == []
+
+
+def test_exact_r33_continuation_seals_the_dispatched_cohort(monkeypatch):
+    # The continuation gate counts 5 folds; R33 dispatches 7. It must not re-derive a shorter cohort id.
+    from datetime import date, timedelta
+    import routers.walk_forward as wf
+    from services import r33_monthly_lifecycle as life, trading_config_loader, walk_forward_retrain
+    from services.formal_feature_contract import R33_PROFILE
+    days = [d.isoformat() for d in (date(2025, 1, 1) + timedelta(days=n) for n in range(400)) if d.weekday() < 5][:260]
+    start = days[-(wf.OOF_TRAIN_SESSIONS + 21 * wf._oof_training_min_folds(R33_PROFILE))]
+    cohort = f"active8-oof-r33-{start}-{days[-1]}-tr60-te21"
+    path = f"walk_forward/oof_cohorts/{cohort}/manifest.json"
+    manifest = {"status": "ready", "cohort_id": cohort, "model_profile_schema_version": R33_PROFILE,
+                "prep_gcs_prefix": "universal/canonical_adjusted_v6/p", "start_date": start, "end_date": days[-1]}
+    bucket = Bucket({path: json.dumps(manifest).encode()})
+    monkeypatch.setenv("OOF_MATERIALIZE_JOB_EXECUTION", "1")
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
+    monkeypatch.setattr(trading_config_loader, "load_merged_trading_config_with_contract", lambda: _trading_config())
+    monkeypatch.setattr(wf, "_exact_ready_oof_manifest", lambda b, cohort_id: (path, manifest, "a" * 40))
+    monkeypatch.setattr(wf, "_oof_lifecycle_calendar", lambda *a, **k: (days, {"cutoff": days[-1]}))
+    seen = {}
+
+    async def seal(**kwargs):
+        seen.update(kwargs)
+        return {"status": "sealed"}
+    monkeypatch.setattr(life, "run_r33_monthly_lifecycle", seal)
+    result = asyncio.run(wf.run_walk_forward_oof_lifecycle(wf.OofLifecycleRequest(
+        cadence="monthly", model_profile_schema_version=R33_PROFILE, end_date=days[-1], dry_run=False, promote=False,
+        dispatch_full_fit=True, expected_cohort_id=cohort, continuation_attempt=1, continuation_only=True)))
+    assert result["status"] == "sealed"
+    assert (seen["cohort_id"], seen["manifest_path"], seen["poll_only"]) == (cohort, path, True)

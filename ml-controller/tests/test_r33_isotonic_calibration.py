@@ -9,12 +9,12 @@ def _pool(n=6):
     return ranks, np.ones(ranks.shape, dtype=bool)
 
 
-def test_unavailable_model_contributes_zero_and_denominator_stays_seven():
+def test_unavailable_model_contributes_zero_and_denominator_stays_the_roster_size():
     ranks, available = _pool()
     available[:, 0] = False
     score, z, uninformative = pool_scores(ranks, available, variant="mean_z")
     assert (z[:, 0] == 0).all() and uninformative == []
-    assert np.allclose(score, z[:, 1:].sum(axis=1) / 7)
+    assert np.allclose(score, z[:, 1:].sum(axis=1) / len(MODELS))
 
 
 def test_rank_is_reranked_among_available_pool_stocks_only():

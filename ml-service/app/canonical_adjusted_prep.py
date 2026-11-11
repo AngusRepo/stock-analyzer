@@ -34,6 +34,22 @@ def _runtime_source_sha() -> str:
         raise RuntimeError("stockvision_source_sha_missing_or_invalid")
     return source_sha
 
+def _auxiliary_binding_ok(auxiliary: dict[str, Any], capture_id: Any) -> bool:
+    if auxiliary.get("capture_id") != capture_id:
+        return False
+    if auxiliary.get("schema_version") == "training-auxiliary-capture-binding-v1":
+        return len(str(auxiliary.get("capture_manifest_sha256") or "")) == 64
+    if auxiliary.get("schema_version") != "training-auxiliary-capture-binding-v2-per-field":
+        return False
+    # R33: each field names its own capture manifest (the controller verified each one before sealing).
+    owners, fields = auxiliary.get("field_captures"), auxiliary.get("fields")
+    return (isinstance(owners, dict) and isinstance(fields, dict) and bool(owners) and set(owners) == set(fields)
+            and all(isinstance(owner, dict) and isinstance(fields[name], dict) and owner.get("capture_id")
+                    and len(str(owner.get("capture_manifest_sha256") or "")) == 64
+                    and len(str(fields[name].get("sha256") or "")) == 64
+                    for name, owner in owners.items()))
+
+
 def _manifest_checksum(manifest: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
     return hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
@@ -215,10 +231,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
             or any(len(str(institutional_capture.get("checksums", {}).get(k) or "")) != 64
                    for k in ("foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"))):
         raise ValueError("canonical_institutional_capture_binding_required")
-    auxiliary = source_receipt.get("auxiliary_capture") or {}
-    if (auxiliary.get("schema_version")!="training-auxiliary-capture-binding-v1"
-            or auxiliary.get("capture_id")!=price_capture.get("capture_id")
-            or len(str(auxiliary.get("capture_manifest_sha256") or ""))!=64):
+    if not _auxiliary_binding_ok(source_receipt.get("auxiliary_capture") or {}, price_capture.get("capture_id")):
         raise ValueError("canonical_auxiliary_capture_binding_required")
     long_source=source_receipt.get("long_source_capture") or {}
     if (long_source.get("schema_version")!="training-long-source-binding-v1" or long_source.get("capture_id")!=price_capture.get("capture_id")

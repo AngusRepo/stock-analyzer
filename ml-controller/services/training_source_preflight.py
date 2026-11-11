@@ -26,6 +26,18 @@ def _sealed_manifest(bucket, prefix: str, filename: str, *, compact: bool):
     return value
 
 
+def sealed_batch_counts(bucket, *, prep_gcs_prefix: str, sequence_gcs_prefix: str) -> tuple[int, int]:
+    """Batch counts the paid orchestrator verifies, read from the sealed manifests, never defaulted."""
+    prep=_sealed_manifest(bucket,prep_gcs_prefix,"manifest.json",compact=False)
+    sequence=_sealed_manifest(bucket,sequence_gcs_prefix,"sequence_manifest.json",compact=True)
+    prep_count=len(prep.get("batch_rows") or [])
+    sequence_rows=sequence.get("batch_rows") or []
+    sequence_count=int(sequence.get("batch_count") or 0)
+    if prep_count<1 or sequence_count<1 or (sequence_rows and len(sequence_rows)!=sequence_count):
+        raise ValueError("training_source_batch_inventory_invalid")
+    return prep_count,sequence_count
+
+
 def verify_per_field_auxiliary(bucket, auxiliary: dict, *, capture_id: str) -> None:
     """R33 prep: every field names its own content-addressed capture manifest.
 

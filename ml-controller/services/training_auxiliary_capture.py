@@ -64,7 +64,9 @@ def _mask_revised_quarters(bucket,values,capture,mask):
     if not {s for s,_ in mask["cells"]}&set(values["symbol"].unique().to_list()):
         return values,info
     proof=capture["meta"].get("availability_proof") or {}
-    path,sha=proof.get("events_path"),proof.get("events_sha256")
+    path=proof.get("events_path")
+    # The capture tool records file digests as "sha256:<hex>" (finlab_v4_remote_backfill.file_sha256).
+    sha=str(proof.get("events_sha256") or "").removeprefix("sha256:")
     if not path or not is_sha256(sha):raise ValueError("root_auxiliary_revision_events_missing")
     data=bucket.blob(capture["capture_manifest_path"].rsplit("/raw/",1)[0]+"/"+path).download_as_bytes()
     if hashlib.sha256(data).hexdigest()!=sha:raise ValueError("root_auxiliary_revision_events_checksum_mismatch")

@@ -39,10 +39,54 @@ for(const target of targets)for(const mode of ['head','tail'] as const)test(`${t
  const{db}=fixture(target)
  try{for(const limit of [1,7,100,500]){
   const q=buildAuditJsonCandidateQuery(target,'2026-01-03',limit,1024,mode==='tail'?cursorFor(target):null)
-  const expectedBinds=[...baseline.queries[target][mode].binds];expectedBinds[expectedBinds.length-1]=limit;assert.deepEqual(q.binds,expectedBinds)
+  const expectedBinds=[...baseline.queries[target][mode].binds];expectedBinds[expectedBinds.length-1]=limit
+  // Tail pages add one redundant `date >= cursor_date` bind ahead of the frozen keyset binds.
+  const cursorBinds=mode==='tail'?[expectedBinds.at(-4),...expectedBinds.slice(-4,-1)]:[]
+  assert.deepEqual(q.binds,mode==='tail'?[...expectedBinds.slice(0,-4),...cursorBinds,limit]:expectedBinds)
   const oldRows=db.prepare(baseline.queries[target][mode].sql).all(...expectedBinds)
   assert.deepEqual(db.prepare(q.sql).all(...q.binds as SQLInputValue[]),oldRows);assert.ok(oldRows.length>0)
  }}finally{db.close()}
+})
+
+test('tail page starts its index range at the cursor date instead of rescanning the compacted prefix',()=>{
+ const{db}=fixture('strategy_decision_log',10,true)
+ try{db.exec('DELETE FROM strategy_decision_log')
+  const ins=db.prepare(`INSERT INTO strategy_decision_log(decision_id,date,symbol,strategy_id,strategy_version,strategy_status,alpha_bucket,matched,reason_code,context_json,evidence_json,context_id,evidence_artifact_id)
+   VALUES(?,?,?,'s','v1','active','trend',0,'r',?,?,'ctx','artifact')`)
+  const marked=JSON.stringify({schema_version:'strategy-decision-json-ref-v2'})
+  for(let day=1;day<=20;day++)for(let i=0;i<50;i++){
+   const date=`2026-01-${String(day).padStart(2,'0')}`
+   ins.run(`d-${date}-${String(i).padStart(3,'0')}`,date,String(i),day<=15?marked:JSON.stringify({candidate:i}),day<=15?marked:'{}')
+  }
+  let calls=0;db.function('probe',x=>{calls++;return x})
+  const cursor={cursor_date:'2026-01-16',cursor_key:'d-2026-01-16-010'} as RetentionCursor
+  const q=buildAuditJsonCandidateQuery('strategy_decision_log_ref_v2','2026-01-21',20,1024,cursor)
+  const probed=(sql:string)=>sql.replace("COALESCE(context_json, '') NOT LIKE","COALESCE(probe(context_json), '') NOT LIKE")
+  const frozen=q.sql.replace(/AND date >= \? AND \(date > \?/,'AND (date > ?')
+  assert.notEqual(frozen,q.sql)
+  const oldBinds=[...q.binds.slice(0,1),...q.binds.slice(2)] as SQLInputValue[]
+  calls=0;const oldRows=db.prepare(probed(frozen)).all(...oldBinds);const oldCalls=calls
+  calls=0;const rows=db.prepare(probed(q.sql)).all(...q.binds as SQLInputValue[]);const newCalls=calls
+  assert.deepEqual(rows,oldRows);assert.equal(rows.length,20);assert.equal(rows[0].decision_id,'d-2026-01-16-011')
+  // The page stops after the cursor date group (50 rows + the next row); the frozen SQL examined every row up to the cutoff.
+  assert.ok(newCalls<=51,`examined ${newCalls}`);assert.ok(oldCalls>=239,`old ${oldCalls} new ${newCalls}`)
+ }finally{db.close()}
+})
+
+test('decision-log pages keep a bounded date seek without idx_strategy_decision_log_date',()=>{
+ // D1-RR learning 0065 drops that index; another date-leading index must take the range.
+ const schema=readFileSync('domain-schemas/learning.sql','utf8')
+ const db=new DatabaseSync(':memory:')
+ try{db.exec(schema.match(/CREATE TABLE IF NOT EXISTS strategy_decision_log \([\s\S]*?\n\);/)![0])
+  for(const m of schema.matchAll(/CREATE INDEX IF NOT EXISTS (idx_strategy_decision_log_\w+)\s+ON strategy_decision_log\([^;]*\);/g))if(m[1]!=='idx_strategy_decision_log_date')db.exec(m[0])
+  for(const target of ['strategy_decision_log','strategy_decision_log_ref_v2'] as const)for(const cursor of [null,{cursor_date:'2026-01-16',cursor_key:'d'} as RetentionCursor]){
+   const q=buildAuditJsonCandidateQuery(target,'2026-01-21',20,1024,cursor)
+   const plan=db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.binds as SQLInputValue[]).map(r=>String(r.detail))
+   const range=cursor?/\(date>\? AND date<\?\)/:/\(date<\?\)/
+   assert.ok(plan.some(d=>/^SEARCH strategy_decision_log USING (COVERING )?INDEX idx_strategy_decision_log_\w+ /.test(d)&&range.test(d)),`${target} ${cursor?'tail':'head'}: ${plan.join(' | ')}`)
+   assert.ok(!plan.some(d=>/^SCAN strategy_decision_log\b/.test(d)),`${target}: ${plan.join(' | ')}`)
+  }
+ }finally{db.close()}
 })
 
 test('JSON quoting is bounded by page size when sorting visits the entire date',()=>{

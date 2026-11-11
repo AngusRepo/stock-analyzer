@@ -1,8 +1,8 @@
-"""R33 seven-model equal-weight score and isotonic E[excess | score].
+"""R33 roster equal-weight score and isotonic E[excess | score].
 
 Per model, ranks are re-ranked among the stocks available inside one day's
 attested pool and standardized; an unavailable model contributes z=0 and the
-denominator is always seven. A model with no dispersion among its available
+denominator is always the roster size (four since 2026-11-07). A model with no dispersion among its available
 stocks carries no cross-sectional information that day and counts as
 unavailable. Calibration is a weighted PAVA step function of daily-centered
 excess on the score, every day weighing equally. Nothing here trains a model.
@@ -16,8 +16,10 @@ import math
 import numpy as np
 from scipy.stats import rankdata
 
-MODELS = ("LightGBM", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST", "iTransformer")
-SCHEMA = "r33-seven-model-isotonic-excess-v1"
+from services.alpha_model_roster import R33_MODELS
+
+MODELS = R33_MODELS  # the release roster; four families since 2026-11-07
+SCHEMA = "r33-roster-isotonic-excess-v2"  # v1 named seven models
 # mean_z follows R33 literally; mean_z_restandardized rescales the composite to
 # unit cross-sectional dispersion each day (D9 compares the two on OOF).
 VARIANTS = ("mean_z", "mean_z_restandardized")

@@ -1,4 +1,4 @@
-"""R33 seven-model roster: no hardcoded eight-model/XGBoost assumptions on the release path."""
+"""R33 roster: no hardcoded eight-model/XGBoost assumptions on the release path."""
 from __future__ import annotations
 
 import json
@@ -83,7 +83,8 @@ def test_challengers_stay_outside_the_release_roster():
 
 def test_modal_release_path_derives_tree_roster_from_the_contract():
     source = open("modal_app.py", encoding="utf-8").read()
-    assert 'release_tree_models = [m for m in TREE_MODEL_NAMES if m in verified_release_contract["models"]]' in source
+    assert 'release_tree_models = [m for m in TREE_MODEL_NAMES if m in release_models]' in source
+    assert '_apply_release_tree_policy(base_train_payload, verified_release_contract["models"])' in source
     assert "required_models=list(child_payloads)" in source
     assert 'result["challenger_metrics"] = challenger_results' in source
     assert json.dumps(["XGBoost", "ExtraTrees", "LightGBM"]) not in source.split("def _oof_challenger_trainers", 1)[1][:200]

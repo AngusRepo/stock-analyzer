@@ -358,6 +358,62 @@ async function countReadinessRows(
   }
 }
 
+/**
+ * One day of regime context is ~15k rows written in chunks, so a row per dataset does not show the
+ * day was materialized. It counts as written once a FinLab daily run for that date left its OPS_DB
+ * receipt (inserted only after the market write is acknowledged) and the table holds at least the
+ * rows that receipt acknowledged.
+ */
+async function regimeContextDailyReadinessChecks(env: Bindings, targetDate: string): Promise<ReadinessCheck[]> {
+  const table = 'canonical_regime_context_daily'
+  const runPrefix = `finlab-v4-daily-${targetDate.replace(/-/g, '')}`
+  try {
+    const [datasets, receipt] = await Promise.all([
+      databaseForDataDomain(env, 'market').prepare(
+        'SELECT dataset, COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? GROUP BY dataset',
+      ).bind(targetDate).all<{ dataset: string | null; count: number | null }>(),
+      databaseForDataDomain(env, 'ops').prepare(`
+        SELECT MAX(row_count) AS row_count, COUNT(*) AS receipts
+          FROM finlab_materialization_receipts_v1
+         WHERE run_id >= ? AND run_id < ?
+           AND dataset = 'canonical_regime_context_daily'
+           AND data_date = ?
+           AND status = 'write_acknowledged'
+      `).bind(`${runPrefix}-`, `${runPrefix}.`, targetDate).first<{ row_count: number | null; receipts: number | null }>(),
+    ])
+    const rowsByDataset = new Map<string, number>()
+    for (const row of datasets.results ?? []) rowsByDataset.set(String(row.dataset ?? ''), Number(row.count ?? 0))
+    const datasetCheck = (suffix: string, dataset: string): ReadinessCheck => {
+      const key = `${table}:${suffix}`
+      const count = rowsByDataset.get(dataset) ?? 0
+      return { key, ok: count >= 1, summary: count >= 1 ? `${key}=${count}` : `${key} rows=${count}/1` }
+    }
+    const key = `${table}:materialized`
+    const rows = Array.from(rowsByDataset.values()).reduce((sum, count) => sum + count, 0)
+    const receipts = Number(receipt?.receipts ?? 0)
+    const acknowledged = Number(receipt?.row_count ?? 0)
+    const materialized = receipts > 0 && acknowledged > 0 && rows >= acknowledged
+    return [
+      datasetCheck('pcr', 'tw_option_put_call_ratio'),
+      datasetCheck('large_trader', 'tw_taifex_futures_large_trader'),
+      {
+        key,
+        ok: materialized,
+        summary: materialized
+          ? `${key}=${rows} receipt_rows=${acknowledged}`
+          : `${key} waiting: rows=${rows} receipt_rows=${receipts > 0 ? acknowledged : 'missing'}`,
+      },
+    ]
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e)
+    return ['pcr', 'large_trader', 'materialized'].map((suffix) => ({
+      key: `${table}:${suffix}`,
+      ok: false,
+      summary: `${table}:${suffix} query failed: ${reason}`,
+    }))
+  }
+}
+
 async function sourceKeyCanonicalParityReadiness(
   sourceDb: D1Database,
   canonicalDb: D1Database,
@@ -554,20 +610,7 @@ async function checkEveningChainSourceReadiness(
       [targetDate],
       2,
     ),
-    countReadinessRows(
-      databaseForDataDomain(env, 'market'),
-      'canonical_regime_context_daily:pcr',
-      "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_option_put_call_ratio'",
-      [targetDate],
-      1,
-    ),
-    countReadinessRows(
-      databaseForDataDomain(env, 'market'),
-      'canonical_regime_context_daily:large_trader',
-      "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_taifex_futures_large_trader'",
-      [targetDate],
-      1,
-    ),
+    regimeContextDailyReadinessChecks(env, targetDate),
     sourceKeyCanonicalParityReadiness(
       databaseForDataDomain(env, 'ops'),
       databaseForDataDomain(env, 'market'),
@@ -591,7 +634,7 @@ async function checkEveningChainSourceReadiness(
       canonicalParams: [targetDate, targetDate],
     }),
   ])
-  checks.push(...canonicalChecks)
+  checks.push(...canonicalChecks.flat())
 
   const missing = checks.filter((check) => !check.ok)
   return {
@@ -1775,7 +1818,13 @@ async function finalizeUpdateChain(
       console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
       const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
       if (!repaired) {
-        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, 'finalizer lease is still owned by the original continuation')
+        // The owner re-queues itself after a handled failure. A waiter only has to
+        // cover an owner that was killed, so it wakes once the lease can have
+        // expired; waking every 2 minutes made each shard waiter one more retry
+        // chain, and on 2026-11-04 those chains kept learning-db overloaded.
+        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt,
+          'finalizer lease is still owned by the original continuation',
+          await finalizeLeaseWaitSeconds(env, triggerTime, runId))
       }
       return
     }
@@ -1795,6 +1844,7 @@ async function deferFinalizeContinuation(
   shardCount: number,
   continuationAttempt: number,
   reason: string,
+  delaySeconds = FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS,
 ): Promise<void> {
   if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
   if (continuationAttempt >= FINALIZE_CONTINUATION_MAX_ATTEMPTS) {
@@ -1814,7 +1864,15 @@ async function deferFinalizeContinuation(
   await env.UPDATE_QUEUE.send({
     type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1,
     continuationAttempt: continuationAttempt + 1,
-  }, { delaySeconds: FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS } as any)
+  }, { delaySeconds } as any)
+}
+
+async function finalizeLeaseWaitSeconds(env: Bindings, triggerTime: string, runId: string): Promise<number> {
+  const lock = await loadFinalizeLock(env, triggerTime, runId)
+  const expiresAtMs = lock?.expires_at ? Date.parse(lock.expires_at) : NaN
+  if (!Number.isFinite(expiresAtMs)) return FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS
+  const untilExpiry = Math.ceil((expiresAtMs - Date.now()) / 1000) + 30
+  return Math.min(FINALIZE_LEASE_TTL_MS / 1000 + 30, Math.max(FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS, untilExpiry))
 }
 
 export async function refreshMatureStrategyEvidenceBeforeScreener(
@@ -1823,11 +1881,18 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
   runId: string,
 ): Promise<string> {
   const startedAt = Date.now()
+  let phase = 'load_modules'
   try {
-    const progress = async (phase: string) => logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
-      status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
-      duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
-    }, env)
+    // A running entry cannot overwrite an earlier error in KV, so the failing
+    // phase also goes into the error summary and the thrown message.
+    const progress = async (next: string) => {
+      if (phase !== 'load_modules') await new Promise((resolve) => setTimeout(resolve, MATURE_EVIDENCE_PHASE_PAUSE_MS))
+      phase = next
+      await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
+        status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
+        duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
+      }, env)
+    }
     await progress('recover_mature_selection')
     const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
@@ -1866,15 +1931,20 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
   } catch (error) {
     await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
       status: 'error',
-      summary: `mature evidence refresh failed before screener for ${asOfDate}`,
+      summary: `mature evidence refresh failed before screener for ${asOfDate}; phase=${phase}`,
       duration_ms: Date.now() - startedAt,
       run_id: runId,
       run_date: asOfDate,
       error: String(error),
     }, env)
-    throw error
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`mature evidence phase=${phase}: ${message}`, { cause: error })
   }
 }
+
+// Let learning-db's 10 s resource window clear between the heavy phases, which
+// each read millions of rows; back to back they overloaded it on 2026-11-04.
+const MATURE_EVIDENCE_PHASE_PAUSE_MS = 12_000
 async function runFinalizeContinuation(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
@@ -3229,26 +3299,32 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   }
   await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
   if (fullCapture) await claimFinLabFullCapture(env, twDate)
-  // Reserve the attempt before cancellation/spawn so a late callback from the
-  // superseded call cannot overwrite the active dispatch while HTTP is in flight.
-  await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
-    status: 'triggered',
-    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCaptureDispatch ? ' full_capture_retry=1' : ''}`,
-    duration_ms: 0,
-    run_id: runId,
-    run_date: twDate,
-    supersedePrevious: true,
-  })
 
   try {
-    const readiness = await checkEveningChainSourceReadiness(env, twDate)
-    const refreshScope = fullCaptureDispatch ? emptyFinLabRetryScope({}, []) : await finLabRetryScopeForReadiness(env, twDate, readiness, {
-      allowFetchedLaneRefetch: retriablePartialFailure || lateLane,
-    })
+    // Scope first: a run with nothing to refetch leaves the pending record and its attempt number as they are.
+    const refreshScope = fullCaptureDispatch ? emptyFinLabRetryScope({}, []) : await finLabRetryScopeForReadiness(env, twDate,
+      await checkEveningChainSourceReadiness(env, twDate), { allowFetchedLaneRefetch: retriablePartialFailure || lateLane })
     if (!fullCaptureDispatch && !refreshScope.lanes) {
       await env.KV.delete(retryKey)
       return `skipped: FinLab watchdog found no source keys eligible for refetch${finLabRetryScopeSuffix(refreshScope)}`
     }
+    // A callback or start heartbeat that landed during the readiness reads is newer than this resend.
+    const head = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+    if (head?.status !== finlabLog.status || head?.timestamp !== finlabLog.timestamp) {
+      await env.KV.delete(retryKey)
+      if (fullCapture) await env.KV.delete(finLabFullCaptureKey(twDate))
+      return `skipped: FinLab record changed during the watchdog readiness check run_id=${runId} status=${head?.status ?? 'missing'}`
+    }
+    // Reserve the attempt before cancellation/spawn so a late callback from the
+    // superseded call cannot overwrite the active dispatch while HTTP is in flight.
+    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+      status: 'triggered',
+      summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCaptureDispatch ? ' full_capture_retry=1' : ''}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: twDate,
+      supersedePrevious: true,
+    })
     const summary = String(await runFinLabV4Backfill(env, twDate, false, {
       continueEveningChain: true,
       dailySourceRefresh: true,
@@ -4499,13 +4575,8 @@ export async function processUpdateBatch(
         runId: canonicalRunId,
         leaseRetryAttempt: leaseRetryAttempt + 1,
       }, { delaySeconds } as any)
-      await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'running',
-        summary: `lease busy; durable retry scheduled cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`,
-        duration_ms: 0,
-        run_id: canonicalRunId,
-        run_date: triggerTime,
-      })
+      // The lease holder owns the scheduler run log; a duplicate must not overwrite its progress.
+      console.log(`[Queue] strategy-learning lease busy; durable retry scheduled date=${triggerTime} cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`)
       return
     }
 

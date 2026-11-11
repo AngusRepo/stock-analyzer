@@ -1,7 +1,8 @@
 name: ci
 
-# PR gate: run every suite on the PR head and on its base, then fail only on
-# failures the base does not have. No secrets are used by this workflow.
+# PR gate: run every suite on the PR head and on its base, then fail on failures the base
+# does not have and on any head failure inside the P9 scope (what scripts/p9_gate.ps1 runs
+# on Windows after a merge). No secrets are used by this workflow.
 on:
   pull_request:
   push:
@@ -182,17 +183,20 @@ jobs:
           if [ "${{ needs.suite.result }}" != success ] || [ "${{ needs.confirm.result }}" != success ]; then
             echo "suite result: ${{ needs.suite.result }}, confirm result: ${{ needs.confirm.result }}"; exit 1
           fi
+      # scripts/ carries p9_gate.ps1, the owner of the P9 controller test list.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          sparse-checkout: ci
+          sparse-checkout: |
+            ci
+            scripts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: failures
       - name: Merge controller shards
         run: python ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: Compare head against base
-        run: python ci/compare_failures.py failures
+        run: python ci/compare_failures.py failures scripts/p9_gate.ps1
       # main only, after a passing gate: keep the head lists as the base for later runs of
       # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
       - name: Pack base lists

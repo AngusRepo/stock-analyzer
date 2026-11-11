@@ -36,10 +36,12 @@
 .readiness-task.is-blocked { color: var(--chain-red); border-color: var(--chain-red); }
 .readiness-task.is-running { color: var(--chain-cyan); border-color: var(--primary); }
 .readiness-task.is-waiting { color: var(--chain-amber); }
+.readiness-task.is-attention { color: var(--chain-amber); border-color: var(--chain-amber); }
 .readiness-task.is-completed .obs-chain__state-mark, .readiness-task.is-noop .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-green); }
 .readiness-task.is-running .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-cyan); }
 .readiness-task.is-blocked .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-red); }
 .readiness-task.is-waiting .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-amber); }
+.readiness-task.is-attention .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-amber); }
 .readiness-task.is-running .readiness-task__status, .readiness-task.is-blocked .readiness-task__status { color: inherit; }
 .readiness-task.is-running .obs-chain__orb { animation: obs-running-breathe 1.6s ease-in-out infinite; }
 .readiness-task.is-running .obs-chain__orb::before { border-style: dashed; opacity: .7; animation: obs-status-spin 2.4s linear infinite; }

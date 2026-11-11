@@ -166,7 +166,10 @@ test('single-plan mode accepts 08:44:59 and expires at 08:45 without doing more 
   f.ports.nowMs+=1000
   await processPremarketEvent(f.env,f.messages[0],async()=>{calls++;return {next:null,receipt:{}}},f.now())
   assert.equal(calls,0);assert.equal(f.rows()[0].status,'error')
-  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/outside_window/)
+  // FG-10 U17: the expired chain is reported overdue (not a neutral skip) and nothing is redispatched.
+  const sent=f.messages.length
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=error premarket_event_chain overdue=true/)
+  assert.equal(f.messages.length,sent)
  }finally{f.close()}
 })
 
@@ -318,5 +321,22 @@ test('typhoon closure announced after the chain is queued stops every stage',asy
   assert.match(String(f.kvs.get(`holiday:${day}`)),/115年10月23日休市/)
   assert.match(await ensurePremarketEventChain(f.env,day,f.now()),/status=skipped premarket_non_trading_day reason=twse_adhoc_closure/)
   assert.equal(f.kvs.get(`scheduler:run:morning-setup:${day}`),undefined)
+ }finally{f.close()}
+})
+test('U17: after the publication target an unfinished chain is overdue, not a neutral skip',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ const work:PremarketWork=async(stage)=>({next:stage==='context'?'publish:0':null,receipt:{ready:stage==='publish:0'}})
+ try{
+  f.ports.nowMs=Date.parse(`${date}T08:00:00+08:00`)
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=pending/)
+  f.ports.nowMs=Date.parse(`${date}T08:50:00+08:00`)
+  const overdue=await ensurePremarketEventChain(f.env,date,f.now())
+  assert.match(overdue,/^status=error premarket_event_chain overdue=true ready_target=08:45 stage=premarket_v3:context/)
+  assert.equal(f.messages.length,1,'reporting overdue dispatches nothing new')
+  f.ports.nowMs=Date.parse(`${date}T08:00:00+08:00`)
+  await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+  await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+  f.ports.nowMs=Date.parse(`${date}T08:50:00+08:00`)
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=skipped premarket_outside_window/,'a published plan stays a quiet skip')
  }finally{f.close()}
 })

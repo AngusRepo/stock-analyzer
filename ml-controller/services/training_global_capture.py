@@ -16,6 +16,13 @@ def parse_breadth(body,day):
         return int(match[1].replace(",",""))
     return {"date":day,"advance":number("上漲"),"decline":number("下跌")}
 
+def ordered_sum(values):
+    """Left-to-right float addition: Python 3.12 sum() compensates, which changes the sealed history_sha256
+    between the 3.11 controller and the 3.12 Modal image."""
+    total=0.
+    for value in values:total+=value
+    return total
+
 def read_market_history(bucket, *,price_capture,us_component):
     from services.training_session_calendar import verify_training_calendar,official_month_sessions
     calendar=verify_training_calendar(bucket,price_capture=price_capture)
@@ -65,7 +72,7 @@ def read_market_history(bucket, *,price_capture,us_component):
         if total<=0:raise ValueError("training_global_breadth_total_invalid")
         values={"market_return_1d":closes[day]/closes[days[i-1]]-1 if i else 0.,
             "market_return_5d":closes[day]/closes[days[i-5]]-1 if i>=5 else 0.,
-            "market_bias_20d":closes[day]/(sum(closes[d] for d in days[i-19:i+1])/20)-1 if i>=19 else 0.,
+            "market_bias_20d":closes[day]/(ordered_sum(closes[d] for d in days[i-19:i+1])/20)-1 if i>=19 else 0.,
             "advance_ratio":round(count["advance"]/total,4),
             "market_proxy_symbol":"TAIEX","market_proxy_source":"sealed_official_twse_monthly"}
         values.update(us[day])

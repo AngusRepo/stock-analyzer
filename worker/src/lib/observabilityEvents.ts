@@ -132,6 +132,8 @@ type SchedulerJobSnapshot = {
   lastEffectiveRunAt?: string | null
   summary?: string
   lastError?: string
+  statusRunDate?: string | null
+  attentionReason?: string | null
 }
 
 const OWNER_BOUNDARIES: ObservabilityEventReport['owner_boundaries'] = [
@@ -163,9 +165,24 @@ function countBySeverity(events: ObservabilityEvent[]): Record<ObservabilitySeve
 
 function schedulerSeverity(status: string): ObservabilitySeverity {
   if (status === 'failed' || status === 'error') return 'error'
-  if (status === 'running') return 'warn'
-  if (status === 'skip' || status === 'skipped') return 'info'
+  // Only actionable rows reach here: blocked, long-waiting and should-have-run skips need a look.
+  if (status === 'running' || status === 'blocked' || status === 'waiting' || status === 'skip') return 'warn'
+  if (status === 'skipped') return 'info'
   return 'ok'
+}
+
+function previousWeekdayTw(generatedAt: string): string {
+  const date = new Date(Date.parse(generatedAt) + 8 * 3600_000)
+  do date.setUTCDate(date.getUTCDate() - 1)
+  while (date.getUTCDay() === 0 || date.getUTCDay() === 6)
+  return date.toISOString().slice(0, 10)
+}
+
+function isActionableSchedulerJob(job: SchedulerJobSnapshot, generatedAt: string): boolean {
+  if (['failed', 'running', 'blocked'].includes(job.lastStatus)) return true
+  // Waiting on a business date older than the previous weekday is stuck, not the normal T+1 cadence.
+  if (job.lastStatus === 'waiting') return Boolean(job.statusRunDate && job.statusRunDate < previousWeekdayTw(generatedAt))
+  return job.lastStatus === 'skip' && Boolean(job.attentionReason)
 }
 
 function schedulerEventTimestamp(job: SchedulerJobSnapshot, generatedAt: string): string {
@@ -244,12 +261,21 @@ function validationSeverity(decision: unknown): ObservabilitySeverity {
   return 'ok'
 }
 
-function adaptiveMetaSeverity(params?: Record<string, unknown>): ObservabilitySeverity {
+// Display-only freshness bound for OBS; it never feeds a trading decision.
+const ADAPTIVE_PARAMS_STALE_MS = 4 * 24 * 3600_000
+
+function adaptiveParamsStale(params: Record<string, unknown>, generatedAt: string): boolean {
+  const computedMs = Date.parse(String(params.computed_at ?? ''))
+  return !Number.isFinite(computedMs) || Date.parse(generatedAt) - computedMs > ADAPTIVE_PARAMS_STALE_MS
+}
+
+function adaptiveMetaSeverity(params: Record<string, unknown> | undefined, generatedAt: string): ObservabilitySeverity {
   if (!params) return 'warn'
   const provenance = params.provenance as Record<string, unknown> | undefined
   const metaLayer = params.meta_layer as Record<string, unknown> | undefined
   if (!provenance || provenance.fallback === true) return 'warn'
   if (!metaLayer || !Array.isArray(metaLayer.alpha_vote_models) || !Array.isArray(metaLayer.state_space_overlays)) return 'warn'
+  if (adaptiveParamsStale(params, generatedAt)) return 'warn'
   return 'ok'
 }
 
@@ -292,7 +318,7 @@ export function buildEventsFromScheduler(input: {
   }
 
   const jobs = input.jobs ?? []
-  const actionable = jobs.filter((job) => ['failed', 'running'].includes(job.lastStatus))
+  const actionable = jobs.filter((job) => isActionableSchedulerJob(job, input.generatedAt))
   if (!actionable.length) {
     return [{
       id: eventId('scheduler', 'scheduler_status', 'stable'),
@@ -302,7 +328,7 @@ export function buildEventsFromScheduler(input: {
       source: 'scheduler_status',
       status: 'ok',
       title: 'Scheduler stable',
-      summary: 'No failed or running scheduler jobs in the current payload.',
+      summary: 'No failed, running, blocked, long-waiting or should-have-run skipped scheduler jobs in the current payload.',
       owner: 'GCP Scheduler',
       impact: 'Cron surface is healthy for the current visible window.',
       next_action: 'Keep watching callback round-trip and freshness gates.',
@@ -321,14 +347,18 @@ export function buildEventsFromScheduler(input: {
       source: 'scheduler_status',
       status: job.lastStatus,
       title: job.name,
-      summary: job.lastError || job.summary || `${job.name} is ${job.lastStatus}`,
+      summary: job.lastError || (job.lastStatus === 'skip' ? job.attentionReason : null) || job.summary || `${job.name} is ${job.lastStatus}`,
       owner: job.group === 'intraday' ? 'Worker' : 'GCP Scheduler',
       impact: job.lastStatus === 'failed'
         ? 'Downstream recommendations, ML freshness, or execution state may be stale.'
-        : 'A background run is still in-flight; UI should not mark this domain as healthy yet.',
+        : job.lastStatus === 'running'
+          ? 'A background run is still in-flight; UI should not mark this domain as healthy yet.'
+          : `Work for business date ${job.statusRunDate ?? 'unknown'} has not run for real; its downstream evidence is missing.`,
       next_action: job.lastStatus === 'failed'
         ? 'Open scheduler trace, inspect callback payload, then compare with Cloud Run/Worker logs.'
-        : 'Wait for final callback; alert if the run exceeds its SLA.',
+        : job.lastStatus === 'running'
+          ? 'Wait for final callback; alert if the run exceeds its SLA.'
+          : 'Read the row reason, then trace the upstream owner or the replay gate that held this run back.',
       runbook: 'P8 scheduler callback contract',
       evidence: {
         task_id: job.id,
@@ -339,6 +369,7 @@ export function buildEventsFromScheduler(input: {
         last_effective_run_at: job.lastEffectiveRunAt,
         duration: job.lastDuration,
         summary: job.summary,
+        status_run_date: job.statusRunDate ?? null,
       },
     }
   })
@@ -618,10 +649,12 @@ export function buildEventsFromAdaptiveMeta(input: {
   const params = input.params ?? {}
   const provenance = params.provenance as Record<string, unknown> | undefined
   const metaLayer = params.meta_layer as Record<string, unknown> | undefined
-  const severity = adaptiveMetaSeverity(params)
+  const severity = adaptiveMetaSeverity(params, input.generatedAt)
   const source = String(provenance?.source ?? 'unknown')
   const regime = String(provenance?.regime ?? 'unknown')
   const fallback = provenance?.fallback === true
+  const stale = !fallback && adaptiveParamsStale(params, input.generatedAt)
+  const computedAt = String(params.computed_at ?? '') || 'missing'
   const alphaCount = Array.isArray(metaLayer?.alpha_vote_models) ? metaLayer.alpha_vote_models.length : 0
   const overlays = Array.isArray(metaLayer?.state_space_overlays) ? metaLayer.state_space_overlays.map(String) : []
   const optimizers = Array.isArray(metaLayer?.meta_optimizers) ? metaLayer.meta_optimizers.map(String) : []
@@ -641,21 +674,26 @@ export function buildEventsFromAdaptiveMeta(input: {
     severity,
     domain: 'adaptive_meta',
     source: 'adaptive_params',
-    status: severity === 'ok' ? 'ok' : fallback ? 'fallback' : 'incomplete',
+    status: severity === 'ok' ? 'ok' : fallback ? 'fallback' : stale ? 'stale' : 'incomplete',
     title: 'Adaptive meta layer',
     summary: fallback
       ? `Adaptive params are fallback or legacy (source=${source}, regime=${regime}).`
-      : `Adaptive params resolved for regime=${regime}; alpha voters=${alphaCount}, overlays=${overlays.join(', ') || 'none'}${gaSummary}.`,
+      : `${stale ? `Adaptive params not refreshed since computed_at=${computedAt}; ` : ''}Adaptive params resolved for regime=${regime}; alpha voters=${alphaCount}, overlays=${overlays.join(', ') || 'none'}${gaSummary}.`,
     owner: 'Adaptive Meta Layer',
     impact: fallback
       ? 'Regime-aware thresholds and LinUCB protection may not be active until risk-assess refreshes KV.'
-      : 'Screener, ML runtime, and morning setup share the same effective adaptive contract.',
+      : stale
+        ? 'The last adaptive delta is still applied while the daily adapt step has not refreshed it.'
+        : 'Screener, ML runtime, and morning setup share the same effective adaptive contract.',
     next_action: fallback
       ? 'Run adaptive update after verify or inspect /api/admin/adaptive-params for missing v2 provenance.'
-      : 'Keep risk-assess, regime push, and payload_builder contract tests green.',
+      : stale
+        ? 'Check why the adapt step has not run as live canonical (scheduler adapt row), then decide on the frozen delta.'
+        : 'Keep risk-assess, regime push, and payload_builder contract tests green.',
     runbook: 'P8 adaptive meta layer contract',
     evidence: {
       provenance,
+      computed_at: params.computed_at ?? null,
       confidence_delta: params.confidence_delta,
       threshold_components: params.threshold_components,
       bandit_max_mult: params.bandit_max_mult,
@@ -1154,26 +1192,70 @@ export function selectRuntimeSignalPolicyFromForecastRows(
   return legacyPolicyFallback
 }
 
-async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<{
+// The watermark used to be one MAX(CASE json_type(forecast_data, …)) over every
+// ensemble row up to the date: about 30k rows and 15 s of JSON parsing for each
+// /obs refresh, which shared learning-db's 10-second resource window with the
+// evening chain (2026-11-06). Walking idx_pred_date_model_stock from the newest
+// prediction_date and stopping at the first qualifying row returns the same two
+// dates; only rows with evidence are parsed. The unary + keeps the planner off
+// idx_pred_model_verified_date (model_name=?), which would sort every ensemble
+// row instead of walking prediction_date backwards.
+export const ML_THRESHOLD_POLICY_WATERMARK_SQL = {
+  latestPredictionDate:
+    'SELECT prediction_date FROM predictions ' +
+    "WHERE prediction_date<=? AND +model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL " +
+    'ORDER BY prediction_date DESC LIMIT 1',
+  evidenceDate:
+    'SELECT prediction_date FROM predictions ' +
+    "WHERE prediction_date<=? AND +model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL " +
+    'AND CASE WHEN json_valid(forecast_data) THEN (' +
+    "json_type(forecast_data, '$.ensemble_v2.signal_policy')='object' " +
+    "OR json_type(forecast_data, '$.ensemble_v2.ml_threshold_policy')='object'" +
+    ') ELSE 0 END ' +
+    'ORDER BY prediction_date DESC LIMIT 1',
+} as const
+
+type MlThresholdPolicyEvidence = {
   policy?: Record<string, unknown> | null
   sampleCount: number
   requestedDate: string
   evidenceDate: string | null
   latestPredictionDate: string | null
   error?: string
-}> {
+}
+
+// /obs refreshes every minute; the evidence changes once a day.
+const ML_THRESHOLD_POLICY_EVIDENCE_TTL_SECONDS = 300
+const mlThresholdPolicyEvidenceCacheKey = (date: string) => `obs:ml-threshold-policy-evidence:v1:${date}`
+
+async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<MlThresholdPolicyEvidence> {
+  const cacheKey = mlThresholdPolicyEvidenceCacheKey(date)
   try {
-    const watermark = await databaseForDataDomain(env, 'learning').prepare(
-      'SELECT MAX(prediction_date) AS latest_prediction_date, ' +
-      'MAX(CASE WHEN json_valid(forecast_data) THEN CASE ' +
-      "WHEN json_type(forecast_data, '$.ensemble_v2.signal_policy')='object' " +
-      "OR json_type(forecast_data, '$.ensemble_v2.ml_threshold_policy')='object' " +
-      'THEN prediction_date END END) AS evidence_date ' +
-      'FROM predictions WHERE prediction_date<=? ' +
-      "AND model_name IN ('ensemble', 'ensemble_v2') AND forecast_data IS NOT NULL",
-    ).bind(date).first<{ latest_prediction_date: string | null; evidence_date: string | null }>()
-    const evidenceDate = watermark?.evidence_date ?? null
-    const latestPredictionDate = watermark?.latest_prediction_date ?? null
+    const cached = await env.KV?.get(cacheKey, 'json') as MlThresholdPolicyEvidence | null
+    if (cached && typeof cached === 'object' && cached.requestedDate === date && !cached.error) return cached
+  } catch {
+    // A KV miss or outage only costs the queries below.
+  }
+  const evidence = await queryLatestMlThresholdPolicyEvidence(env, date)
+  if (!evidence.error) {
+    try {
+      await env.KV?.put(cacheKey, JSON.stringify(evidence), { expirationTtl: ML_THRESHOLD_POLICY_EVIDENCE_TTL_SECONDS })
+    } catch {
+      // Not cached; the next refresh queries again.
+    }
+  }
+  return evidence
+}
+
+async function queryLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<MlThresholdPolicyEvidence> {
+  try {
+    const learningDb = databaseForDataDomain(env, 'learning')
+    const [latest, evidence] = await Promise.all([
+      learningDb.prepare(ML_THRESHOLD_POLICY_WATERMARK_SQL.latestPredictionDate).bind(date).first<{ prediction_date: string | null }>(),
+      learningDb.prepare(ML_THRESHOLD_POLICY_WATERMARK_SQL.evidenceDate).bind(date).first<{ prediction_date: string | null }>(),
+    ])
+    const evidenceDate = evidence?.prediction_date ?? null
+    const latestPredictionDate = latest?.prediction_date ?? null
     if (!evidenceDate) {
       return {
         policy: null,

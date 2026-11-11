@@ -293,7 +293,7 @@ function formatDuration(durationMs?: number | null): string {
   return `${Math.floor(durationMs / 1000)}s`
 }
 
-function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
+export function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
   durationConcern: SchedulerDurationConcern
   durationConcernReason?: string
 } {
@@ -301,6 +301,13 @@ function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
 
   const summary = `${log.summary ?? ''} ${log.error ?? ''}`.toLowerCase()
   const status = log.status
+  // A run id in the text does not make a no-op receipt a real success.
+  if (status === 'success' && /^\s*skip/.test(summary)) {
+    return {
+      durationConcern: 'suspicious_short',
+      durationConcernReason: 'success receipt describes a skipped no-op',
+    }
+  }
   const expectedTriggerOrDerived =
     status === 'triggered' ||
     status === 'running' ||
@@ -698,6 +705,14 @@ function logAgeMs(log?: CronLogEntry, nowMs = Date.now()): number | null {
   return Math.max(0, nowMs - ts)
 }
 
+// Once serving is published the root stays running, by design, until the next weekday's 14:20 after-close dispatch.
+const AFTER_CLOSE_WAIT_SUMMARY = /research waits for the after-close dispatch/
+function afterCloseWaitDeadlineMs(runDate: string): number {
+  const dispatch = new Date(`${runDate}T06:20:00.000Z`)
+  do dispatch.setUTCDate(dispatch.getUTCDate() + 1); while (!isWeekdayTw(dispatch.toISOString().slice(0, 10)))
+  return dispatch.getTime() + runningSlaMs({ id: 'evening-chain', group: 'pipeline_chain' })
+}
+
 export function resolveSchedulerLogStatus(
   log?: CronLogEntry,
   def?: Pick<JobDef, 'id' | 'group'>,
@@ -709,6 +724,10 @@ export function resolveSchedulerLogStatus(
     return { status: 'waiting', staleRunning: false }
   }
   if (log.status === 'waiting') return { status: 'waiting', staleRunning: false }
+  // Older watchdog receipts logged a no-op as success; read them as the skip they were.
+  if (def?.id === 'strategy-learning-watchdog' && log.status === 'success' && /^SKIPPED /.test(log.summary ?? '')) {
+    return { status: 'skip', staleRunning: false }
+  }
   if (log.status === 'success') return { status: 'success', staleRunning: false }
   if (log.status === 'blocked') return { status: 'blocked', staleRunning: false }
   // Read old callbacks correctly without rewriting their historical evidence.
@@ -727,6 +746,11 @@ export function resolveSchedulerLogStatus(
       nowMs,
     )
     const slaMs = runningSlaMs(def)
+    const runDate = log.run_date || timestampTwDate(log.timestamp)
+    if (def?.id === 'evening-chain' && log.status === 'running' && AFTER_CLOSE_WAIT_SUMMARY.test(log.summary ?? '')
+      && runDate && ageMs != null && ageMs > slaMs && nowMs <= afterCloseWaitDeadlineMs(runDate)) {
+      return { status: 'waiting', staleRunning: false }
+    }
     if (ageMs != null && ageMs > slaMs) {
       return {
         status: 'failed',
@@ -737,6 +761,66 @@ export function resolveSchedulerLogStatus(
     return { status: 'running', staleRunning: false }
   }
   return { status: null, staleRunning: false }
+}
+
+/** A skip that stands in for work which should have run for real; never a neutral no-op. */
+export function schedulerSkipAttentionReason(log?: CronLogEntry): string | null {
+  const summary = log?.summary ?? ''
+  const replay = /non-production-authoritative callback run_date=(\d{4}-\d{2}-\d{2}); \S+ is live-canonical only/.exec(summary)
+  if (replay) return `live-canonical task did not run: run_date=${replay[1]} only reached it as a historical replay`
+  if (log?.task === 'strategy-learning-watchdog' && summary.includes('recoverable_run_missing')) {
+    return 'no strategy-learning run found in the recovery lookback'
+  }
+  return null
+}
+
+function triggeredDispatchRunId(log?: CronLogEntry): string | null | undefined {
+  return log?.status === 'triggered'
+    ? log.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(log.summary ?? '')?.[1] : null
+}
+
+export type SchedulerHistoryCell =
+  | 'success' | 'failed' | 'running' | 'triggered' | 'waiting' | 'blocked' | 'attention' | 'missing' | 'skip' | 'none'
+// Cells where a run was due: SLO counts them; in-flight, no-op and no-receipt cells are not judged yet.
+const SLO_COUNTED_CELLS = new Set<SchedulerHistoryCell>(['success', 'failed', 'blocked', 'attention', 'missing'])
+
+/** One run_date of the 7d strip. Durable stage state outranks KV, as in the row display. */
+export function resolveSchedulerHistoryCell(input: {
+  def: Pick<JobDef, 'id' | 'group'>
+  date: string
+  log?: CronLogEntry
+  rootLog?: CronLogEntry
+  durable?: DurablePipelineStageDisplayRow
+  nowMs?: number
+}): { cell: SchedulerHistoryCell; evidenceAt: string | null; stuck: boolean } {
+  const { def, date, log, nowMs = Date.now() } = input
+  const resolved = resolveSchedulerLogStatus(log, def, nowMs)
+  const durable = reconcileDurablePipelineStageStatus({
+    jobId: def.id,
+    runDate: date,
+    baseStatus: resolved.status ?? 'skip',
+    baseTimestamp: log?.timestamp,
+    baseDispatchRunId: triggeredDispatchRunId(log),
+    durable: input.durable,
+  })
+  if (durable) {
+    const cell = durable.lastStatus === 'success' || durable.lastStatus === 'failed' || durable.lastStatus === 'waiting'
+      ? durable.lastStatus : 'running'
+    return { cell, evidenceAt: durable.lastRunAt, stuck: false }
+  }
+  const evidenceAt = log?.timestamp || null
+  switch (resolved.status) {
+    case 'failed': return { cell: 'failed', evidenceAt, stuck: resolved.staleRunning }
+    case 'running': return { cell: log?.status === 'triggered' ? 'triggered' : 'running', evidenceAt, stuck: false }
+    case 'skip': return { cell: schedulerSkipAttentionReason(log) ? 'attention' : 'skip', evidenceAt, stuck: false }
+    case 'success': case 'waiting': case 'blocked': return { cell: resolved.status, evidenceAt, stuck: false }
+  }
+  // A chain step with no receipt on a date whose root really ended (success, or a recorded error) never ran.
+  // A stuck or waiting root has not ended, so its later steps are not judged yet.
+  const root = resolveSchedulerLogStatus(input.rootLog, { id: 'evening-chain', group: 'pipeline_chain' }, nowMs)
+  const due = def.id !== 'evening-chain' && CHAIN_STEP_IDS.includes(def.id)
+    && (root.status === 'success' || (root.status === 'failed' && !root.staleRunning))
+  return { cell: due ? 'missing' : 'none', evidenceAt: null, stuck: false }
 }
 
 function inferIdleStatus(def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>, nextRun: string, today: string): SchedulerLastStatus {
@@ -910,7 +994,7 @@ function isCurrentCadenceCycle(date: string, today: string, group: JobDef['group
   return false
 }
 
-export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
+export async function getSchedulerStatus(env: Bindings, anchorDate?: string, nowMs = Date.now()) {
   const dates = getSchedulerScanDates(anchorDate)
   const displayDates = dates.slice(0, 7)
   const today = dates[0]
@@ -1035,6 +1119,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     ? (allLogs[chainStatusDate] ?? []).find((entry) => entry.task === 'evening-chain' && entry.status === 'success')?.timestamp
     : undefined
 
+  const historyCellsByJob = new Map<string, ReturnType<typeof resolveSchedulerHistoryCell>[]>()
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
     const chainReplayLog = chainDisplayDate && CHAIN_STEP_IDS.includes(def.id)
@@ -1054,12 +1139,16 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     ))?.log
 
 
-    const history7d = displayDates.map((date) => {
-      const log = getJobDisplayLog(allLogs[date], def)
-      if (!log || ['skipped','blocked','triggered','running'].includes(log.status)
-        || resolveSchedulerLogStatus(log, def).status === 'blocked') return 'skip'
-      return log.status === 'success' ? 'success' : 'failed'
-    }).reverse()
+    const historyCells = displayDates.map((date) => resolveSchedulerHistoryCell({
+      def,
+      date,
+      log: getJobDisplayLog(allLogs[date], def),
+      rootLog: allLogs[date]?.find((entry) => entry.task === 'evening-chain'),
+      durable: durableStageStates.get(`${date}:${def.id}`),
+      nowMs,
+    }))
+    historyCellsByJob.set(def.id, historyCells)
+    const history7d = historyCells.map(({ cell }) => cell).reverse()
 
     const baseResolvedDisplay = resolveSchedulerDisplayStatus({
       todayLog,
@@ -1073,6 +1162,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       cadenceCycleLog,
       nextRun,
       today,
+      nowMs,
     })
     const chainScopedDisplay = resolveBusinessDateScopedChainDisplay({
       def,
@@ -1080,6 +1170,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       today,
       exactLog: chainReplayLog,
       heartbeatAt: chainDisplayDate === activeChainDate ? activeReplayHeartbeatAt : undefined,
+      nowMs,
     })
     let resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
     let displayLog = chainScopedDisplay ? chainScopedDisplay.displayLog : lastLog
@@ -1101,8 +1192,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       runDate: resolvedDisplay.statusRunDate,
       baseStatus: resolvedDisplay.status,
       baseTimestamp: displayLog?.timestamp,
-      baseDispatchRunId: displayLog?.status === 'triggered'
-        ? displayLog.run_id ?? /(?:^|\s)run_id=([^,\s;]+)/.exec(displayLog.summary ?? '')?.[1] : null,
+      baseDispatchRunId: triggeredDispatchRunId(displayLog),
       durable: durableState,
     })
     const handoffStage = displayLog?.status === 'triggered' && /cloud_compute_stopped=true/.test(displayLog.summary ?? '')
@@ -1192,9 +1282,9 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     const shortRun = inferShortRunConcern(def, displayLog)
 
     if (producerDisplay) history7d[history7d.length - 1] = producerDisplay.lastStatus === 'error' ? 'failed'
-      : producerDisplay.lastStatus === 'success' ? 'success' : 'skip'
+      : producerDisplay.lastStatus === 'success' ? 'success' : producerDisplay.lastStatus === 'waiting' ? 'waiting' : 'running'
     const successCount = history7d.filter((item) => item === 'success').length
-    const totalCount = history7d.filter((item) => item !== 'skip').length
+    const totalCount = history7d.filter((item) => SLO_COUNTED_CELLS.has(item)).length
 
     return {
       id: def.id,
@@ -1213,6 +1303,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
       lastEffectiveRunAt: lastEffective?.timestamp ?? null,
       lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
+      attentionReason: lastStatus === 'skip' ? schedulerSkipAttentionReason(displayLog) : null,
       statusScope: resolvedDisplay.statusScope,
       statusRunDate: resolvedDisplay.statusRunDate,
       lastDuration,
@@ -1264,10 +1355,16 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
     const todayLog = def ? getJobDisplayLog(allLogs[today], def) : undefined
     if (job.statusAuthority === 'durable_pipeline_stage' && ['news-analyst','us-leading'].includes(job.id)
       && job.statusRunDate === today) return job.lastStatus === 'error'
-    return todayLog?.status === 'error'
+    if (todayLog?.status === 'error') return true
+    // By run_date: a replay-date failure seen in the last 24h, or a run still stuck past its SLA
+    // that no later successful run of the job has replaced (cells run newest first).
+    const cells = historyCellsByJob.get(job.id) ?? []
+    return cells.some(({ cell, evidenceAt, stuck }, index) => cell === 'failed' && (stuck
+      ? !cells.slice(0, index).some((later) => later.cell === 'success')
+      : nowMs - (parseLogTime(evidenceAt ?? undefined) ?? Number.NEGATIVE_INFINITY) <= 24 * 3600_000))
   }).length
 
-  const allRuns = jobs.flatMap((job) => job.history7d.filter((item) => item !== 'skip'))
+  const allRuns = jobs.flatMap((job) => job.history7d.filter((item) => SLO_COUNTED_CELLS.has(item)))
   const successRate = allRuns.length > 0
     ? Math.round((allRuns.filter((item) => item === 'success').length / allRuns.length) * 1000) / 10
     : 100

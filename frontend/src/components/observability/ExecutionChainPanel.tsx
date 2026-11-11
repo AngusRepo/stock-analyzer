@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
+  AlertTriangle,
   Archive,
   BarChart3,
   BookOpenCheck,
@@ -35,6 +36,7 @@ import {
 } from 'lucide-react'
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { buildAttemptAwareJobMap } from './executionChainAttemptState'
+import { attentionSkipReason } from '@/lib/schedulerDisplay'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import JobRunTiming from './JobRunTiming'
 import DailyReadinessBoard from './DailyReadinessBoard'
@@ -44,7 +46,7 @@ import { FINLAB_STAGE_CARDS, expandFinlabStages, finlabStageCards } from '@/lib/
 import { PIPELINE_STAGE_CARDS, expandPipelineStages, pipelineStageCards, pipelineRunSummary } from '@/lib/pipelineStageCards'
 import './ExecutionChainPanel.css'
 
-type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped' | 'stale'
+type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped' | 'stale' | 'attention'
 
 type StageDefinition = {
   id: string
@@ -318,6 +320,7 @@ const STATUS_LABEL: Record<VisualStatus, string> = {
   out_of_window: 'Not in window',
   not_started: 'Not started',
   skipped: 'Skipped',
+  attention: 'Skipped · 未正式執行',
 }
 
 const STATUS_ICON: Record<VisualStatus, LucideIcon> = {
@@ -330,6 +333,7 @@ const STATUS_ICON: Record<VisualStatus, LucideIcon> = {
   out_of_window: Minus,
   not_started: CircleHelp,
   skipped: Minus,
+  attention: AlertTriangle,
 }
 
 function isAllocatorSafeAbstention(job?: SchedulerJob): boolean {
@@ -354,10 +358,12 @@ function isExpectedEvidenceNoop(job?: SchedulerJob): boolean {
   return false
 }
 
-function visualStatus(job?: SchedulerJob): VisualStatus {
+export function visualStatus(job?: SchedulerJob): VisualStatus {
   if (!job) return 'not_started'
   if (job.stageVisualStatus) return job.stageVisualStatus
   if (job.lastStatus === 'success') return 'completed'
+  // Should-have-run work: never the neutral skipped look, and never counted as done.
+  if (attentionSkipReason(job)) return 'attention'
   if (isAllocatorSafeAbstention(job)) return 'noop'
   if (isExpectedEvidenceNoop(job)) return 'noop'
   if (job.id === 'intraday-check' && job.lastStatus === 'skip') return 'noop'
@@ -446,11 +452,14 @@ export function inferOrchestratorStage(summary?: string | null): string | null {
   return ORCHESTRATOR_STAGE_HINTS.find(([pattern]) => pattern.test(normalized))?.[1] ?? null
 }
 
-function connectorStatus(previousJobs: Array<SchedulerJob | undefined>, nextJobs: Array<SchedulerJob | undefined>): VisualStatus {
+export function connectorStatus(previousJobs: Array<SchedulerJob | undefined>, nextJobs: Array<SchedulerJob | undefined>): VisualStatus {
   const previous = previousJobs.map(visualStatus)
   const next = nextJobs.map(visualStatus)
   if (previous.includes('blocked')) return 'blocked'
   if (previous.includes('running') || next.includes('running')) return 'running'
+  if (previous.includes('attention')) return 'attention'
+  // Skips pass the flow on only next to real work; an all-skipped column completed nothing.
+  if (previous.length > 0 && previous.every((status) => status === 'skipped')) return 'skipped'
   if (previous.length > 0 && previous.every((status) => status === 'completed' || status === 'noop' || status === 'skipped')) return 'completed'
   if (next.includes('waiting')) return 'waiting'
   return 'not_started'
@@ -735,7 +744,7 @@ export default function ExecutionChainPanel({
               return <SchedulerStageCard id={id} title={definition.label} job={job} timingJob={job?.stageCard || job?.finlabPhase || job?.lastStatus === 'running' ? job : jobMap.get(id) ?? job}
                 overview visualState={status} justCompleted={justCompleted.has(id)}
                 leading={<span className="obs-chain__orb"><Icon aria-hidden="true" /><StageStatusMarker status={status} /></span>}
-                statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}
+                statusText={statusLabel(job)} statusTone={status === 'blocked' ? 'error' : status === 'running' || status === 'attention' ? 'warn' : status === 'completed' ? 'ok' : status === 'waiting' ? 'info' : 'neutral'}
                 selected={selectedId === id} current={currentId === id} onSelect={() => setSelectedId(id)}
                 detail={`${runtimeEvidence(job)}${job?.lastDuration ? ` · ${job.lastDuration}` : ''}`} />
             }} /> : <div className="obs-chain__viewport" ref={viewportRef}>

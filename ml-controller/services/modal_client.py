@@ -998,6 +998,11 @@ async def probe_modal_function_call(function_call_id: str) -> dict:
         return {"status": "unknown", "reason": "function_call_id_missing"}
     try:
         result = await modal.FunctionCall.from_id(call_id).get.aio(timeout=0)
+    except modal_exception.FunctionTimeoutError as exc:
+        # The call hit its own Modal timeout. FunctionTimeoutError subclasses
+        # modal TimeoutError, so without this branch it read as "running" forever.
+        return {"status": "failed", "function_call_id": call_id,
+                "error_type": "FunctionTimeoutError", "error": str(exc)[:500]}
     except (TimeoutError, modal_exception.TimeoutError):
         return {"status": "running", "function_call_id": call_id}
     except (

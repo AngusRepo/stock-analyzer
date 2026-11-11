@@ -1,4 +1,5 @@
-"""R33-NEW-42: the polars broker normalization is bit-identical to the pandas reference it replaced."""
+"""The 7-day windowed broker normalization is bit-identical to the pandas reference it replaced;
+pyarrow or tz-aware dates and duplicate column labels keep the reference pandas path."""
 import importlib.util
 import sys
 from pathlib import Path
@@ -101,7 +102,7 @@ def legacy(tool):
 
 @pytest.fixture
 def check(tool, legacy, tmp_path, monkeypatch):
-    """Compare against the reference and assert which path (polars or pandas) ran."""
+    """Compare against the reference and assert which path (windowed or pandas) ran."""
     calls = []
     reference = tool._normalize_broker_transactions_daily_pandas
     monkeypatch.setattr(tool, "_normalize_broker_transactions_daily_pandas",
@@ -112,7 +113,7 @@ def check(tool, legacy, tmp_path, monkeypatch):
         expected = legacy(frame.copy(), start)
         before = frame.copy()
         actual = tool.normalize_broker_transactions_daily(frame, start)
-        assert ("pandas" if calls else "polars") == path
+        assert ("pandas" if calls else "windowed") == path
         pd.testing.assert_frame_equal(frame, before)  # the input is not mutated
         assert list(actual.columns) == list(expected.columns)
         pd.testing.assert_frame_equal(actual, expected, check_exact=True, check_index_type=True, check_column_type=True)
@@ -148,9 +149,9 @@ def native_frame(rows=6000, seed=0, buy_dtype="float64"):
     return frame.astype({"buy": buy_dtype, "sell": buy_dtype})
 
 
-@pytest.mark.parametrize("dtype,path", [("float64", "polars"), ("int64", "polars"), ("Int64", "pandas"),
-                                        ("Float64", "pandas"), ("int32", "pandas"), ("int16", "pandas"),
-                                        ("int8", "pandas"), ("uint32", "pandas"), ("float32", "pandas")])
+@pytest.mark.parametrize("dtype,path", [("float64", "windowed"), ("int64", "windowed"), ("Int64", "windowed"),
+                                        ("Float64", "windowed"), ("int32", "windowed"), ("int16", "windowed"),
+                                        ("int8", "windowed"), ("uint32", "windowed"), ("float32", "windowed")])
 @pytest.mark.parametrize("start", ["2026-09-01", "2026-09-10", "2026-09-16"])
 def test_native_finlab_shape_is_bit_identical(check, dtype, path, start):
     out = check(native_frame(buy_dtype=dtype), start, path)
@@ -159,31 +160,31 @@ def test_native_finlab_shape_is_bit_identical(check, dtype, path, start):
 
 def test_mixed_integer_and_float_shares(check):
     frame = native_frame(seed=1)
-    check(frame.astype({"sell": "int64"}), "2026-09-01", "polars")
+    check(frame.astype({"sell": "int64"}), "2026-09-01", "windowed")
 
 
-def test_fractional_and_non_finite_shares_keep_the_pandas_path(check):
+def test_fractional_and_non_finite_shares(check):
     frame = native_frame(rows=20000, seed=3)
     rng = np.random.default_rng(4)
     frame["buy"] = rng.random(len(frame)) * 1e5
     frame["sell"] = rng.random(len(frame)) * 1e5
-    check(frame, "2026-09-01", "pandas")
-    check(frame.astype({"buy": "float32", "sell": "float32"}), "2026-09-01", "pandas")
+    check(frame, "2026-09-01", "windowed")
+    check(frame.astype({"buy": "float32", "sell": "float32"}), "2026-09-01", "windowed")
     whole = native_frame(rows=200, seed=5)
     whole.loc[[5, 9, 11, 13], ["symbol", "broker"]] = ["2330", "9200"]
     for col, at, value in (("buy", 5, np.inf), ("sell", 5, np.inf), ("sell", 9, -np.inf), ("buy", 11, np.nan)):
         whole.loc[at, col] = value  # row 5 nets inf - inf = NaN
-    check(whole, "2026-09-01", "pandas")
-    check(native_frame(rows=200, seed=6).assign(buy=2.0 ** 53), "2026-09-01", "pandas")
+    check(whole, "2026-09-01", "windowed")
+    check(native_frame(rows=200, seed=6).assign(buy=2.0 ** 53), "2026-09-01", "windowed")
 
 
 
 @pytest.mark.parametrize("col", ["buy", "sell"])
-def test_signed_zero_shares_keep_the_pandas_path(check, col):
+def test_signed_zero_shares(check, col):
     frame = pd.DataFrame({"date": pd.to_datetime(["2026-09-01"]), "symbol": ["2330"], "broker": ["a"],
                           "buy": [0.0], "sell": [0.0]})
     frame[col] = -0.0  # the parquet byte check catches the sign of a zero sum
-    check(frame, "2026-09-01", "pandas")
+    check(frame, "2026-09-01", "windowed")
 
 
 @pytest.mark.parametrize("seed", range(8))
@@ -191,7 +192,7 @@ def test_random_frames(check, seed):
     rng = np.random.default_rng(100 + seed)
     frame = native_frame(rows=int(rng.integers(1, 30000)), seed=seed)
     frame["buy"] = rng.integers(0, 5, len(frame)) * rng.choice([1, 1000, 999999937], len(frame))
-    check(frame, str(pd.bdate_range("2026-09-01", periods=12)[seed].date()), "polars")
+    check(frame, str(pd.bdate_range("2026-09-01", periods=12)[seed].date()), "windowed")
 
 
 def test_coerced_text_shares_and_string_dates(check):
@@ -202,8 +203,8 @@ def test_coerced_text_shares_and_string_dates(check):
         "買進股數": ["1,000", "12", "5", "7", None, "3", "9"],
         "賣出股數": ["0", "x", "1", "2", "4", "1", "1"],
     })
-    check(frame, "2026-09-21", "polars")
-    check(frame.assign(買進股數=["1", "12.5", "5", "7", None, "3", "9"]), "2026-09-21", "pandas")
+    check(frame, "2026-09-21", "windowed")
+    check(frame.assign(買進股數=["1", "12.5", "5", "7", None, "3", "9"]), "2026-09-21", "windowed")
 
 
 def test_explicit_symbol_fields_must_agree(check):
@@ -216,20 +217,20 @@ def test_explicit_symbol_fields_must_agree(check):
         "buy": [1, 2, 3, 4, 5, 6, 7, 8],
         "sell": [0, 0, 0, 0, 0, 0, 0, 0],
     })
-    out = check(frame, "2026-09-21", "polars")
+    out = check(frame, "2026-09-21", "windowed")
     assert out["stock_id"].tolist() == ["1101", "2330", "2603"]
 
 
 def test_categorical_columns_and_missing_broker_field(check):
     frame = native_frame(rows=3000, seed=7)
-    check(frame.astype({"symbol": "category", "broker": "category"}), "2026-09-05", "polars")
-    check(frame.drop(columns=["broker"]), "2026-09-05", "polars")
+    check(frame.astype({"symbol": "category", "broker": "category"}), "2026-09-05", "windowed")
+    check(frame.drop(columns=["broker"]), "2026-09-05", "windowed")
 
 
-def test_inputs_outside_the_polars_path(check):
+def test_inputs_outside_the_windowed_path(check):
     frame = native_frame(rows=3000, seed=8)
     check(frame.astype({"date": "timestamp[ns][pyarrow]"}), "2026-09-05", "pandas")
-    check(frame.astype({"buy": "double[pyarrow]", "sell": "double[pyarrow]"}), "2026-09-05", "pandas")
+    check(frame.astype({"buy": "double[pyarrow]", "sell": "double[pyarrow]"}), "2026-09-05", "windowed")
     duplicated = pd.concat([frame, frame[["symbol"]].rename(columns={"symbol": "code"})] * 1, axis=1)
     duplicated.columns = ["date", "symbol", "broker", "buy", "sell", "symbol"]
     check(duplicated, "2026-09-05", "pandas")
@@ -237,7 +238,7 @@ def test_inputs_outside_the_polars_path(check):
 
 def test_all_broker_codes_missing_and_empty_targets(check, tool):
     frame = native_frame(rows=500, seed=9)
-    check(frame.assign(broker=None), "2026-09-01", "polars")
+    check(frame.assign(broker=None), "2026-09-01", "windowed")
     assert tool.normalize_broker_transactions_daily(frame, "2027-01-01").empty
     assert tool.normalize_broker_transactions_daily(frame.assign(symbol="abc"), "2026-09-01").empty
     assert tool.normalize_broker_transactions_daily(frame.iloc[:0], "2026-09-01").empty
@@ -250,8 +251,8 @@ def test_integral_float_sums_over_large_groups(check):
                           "symbol": rng.choice(["2330", "2317"], rows), "broker": rng.choice(["a", "b"], rows),
                           "buy": rng.integers(0, 10**7, rows).astype(float),
                           "sell": rng.integers(0, 10**7, rows).astype(float)})
-    check(frame, "2026-09-01", "polars")
-    check(frame.assign(buy=frame["buy"] + 0.25), "2026-09-01", "pandas")
+    check(frame, "2026-09-01", "windowed")
+    check(frame.assign(buy=frame["buy"] + 0.25), "2026-09-01", "windowed")
 
 
 def test_timezone_aware_dates_fail_like_the_reference(tool, legacy):

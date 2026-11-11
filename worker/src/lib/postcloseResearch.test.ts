@@ -116,9 +116,10 @@ test('a root parked on the dispatch waits until then and its stall SLA starts th
   const missed=resolveSchedulerLogStatus(root,def,Date.parse('2026-11-02T07:51:00Z'))
   assert.equal(missed.status,'failed')
   assert.match(missed.staleReason??'',/^stale running: no final callback after 1h31m; SLA 1h30m$/)
-  // Without wait_until the old SLA from the log time still applies.
+  // Without wait_until (older roots) the summary still parks it until the next weekday's 14:20 plus the SLA.
   const {wait_until:_, ...plain}=root
-  assert.equal(resolveSchedulerLogStatus(plain,def,Date.parse('2026-11-02T01:44:00Z')).status,'failed')
+  assert.equal(resolveSchedulerLogStatus(plain,def,Date.parse('2026-11-02T01:44:00Z')).status,'waiting')
+  assert.equal(resolveSchedulerLogStatus(plain,def,Date.parse('2026-11-02T07:51:00Z')).status,'failed')
 })
 
 test('the run logger keeps wait_until on the stored entry',async()=>{

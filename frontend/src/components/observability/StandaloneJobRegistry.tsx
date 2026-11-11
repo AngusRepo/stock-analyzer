@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowRight, CalendarClock, CircleDot, ListTree } from 'lucide-react'
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
+import { attentionSkipReason } from '@/lib/schedulerDisplay'
 import JobRunTiming from './JobRunTiming'
 import './StandaloneJobRegistry.css'
 
@@ -39,6 +40,10 @@ const STATUS_ORDER: Record<SchedulerJob['lastStatus'], number> = {
   skip: 5,
 }
 
+function statusOrder(job: SchedulerJob) {
+  return attentionSkipReason(job) ? STATUS_ORDER.running : STATUS_ORDER[job.lastStatus]
+}
+
 function dependencyEvidence(job: SchedulerJob) {
   const upstream = job.consolidation?.upstream?.filter(Boolean) ?? []
   const downstream = job.consolidation?.downstream?.filter(Boolean) ?? []
@@ -76,7 +81,7 @@ export default function StandaloneJobRegistry({
 }) {
   const registryJobs = jobs
     .filter((job) => !mappedJobIds.has(job.id) && !isRetiredRegistryJob(job))
-    .sort((a, b) => STATUS_ORDER[a.lastStatus] - STATUS_ORDER[b.lastStatus] || a.name.localeCompare(b.name))
+    .sort((a, b) => statusOrder(a) - statusOrder(b) || a.name.localeCompare(b.name))
   const mappedCount = jobs.filter(job => mappedJobIds.has(job.id)).length
 
   return (
@@ -124,8 +129,9 @@ export default function StandaloneJobRegistry({
                 <div className="obs-standalone__job-grid">
                   {groupJobs.map((job) => {
                     const dependency = dependencyEvidence(job)
+                    const attention = attentionSkipReason(job)
                     return (
-                      <article className={`obs-standalone__job-card is-${job.lastStatus}`} key={job.id}>
+                      <article className={`obs-standalone__job-card is-${attention ? 'attention' : job.lastStatus}`} key={job.id}>
                         <div className="obs-standalone__job-head">
                           <div className="obs-standalone__identity">
                             <strong>{job.name}</strong>
@@ -133,12 +139,12 @@ export default function StandaloneJobRegistry({
                           </div>
                           <div className="obs-standalone__status">
                             <CircleDot aria-hidden="true" />
-                            <span>{STATUS_LABEL[job.lastStatus]}</span>
+                            <span>{attention ? 'Skipped · 未正式執行' : STATUS_LABEL[job.lastStatus]}</span>
                           </div>
                         </div>
 
-                        <p className={`obs-standalone__summary ${job.lastError ? 'is-error' : ''}`} title={job.lastError || job.summary || undefined}>
-                          {job.lastError || job.summary || '目前 API 沒有提供摘要。'}
+                        <p className={`obs-standalone__summary ${job.lastError ? 'is-error' : attention ? 'is-attention' : ''}`} title={job.lastError || job.summary || undefined}>
+                          {job.lastError || attention || job.summary || '目前 API 沒有提供摘要。'}
                         </p>
 
                         <div className={`obs-standalone__relation ${dependency.isTopologyGap ? 'is-unmapped' : ''}`}>

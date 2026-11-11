@@ -98,11 +98,14 @@ assert(walkForward.includes('"OOF_MATERIALIZE_SCHEDULER_RUN_ID"'), 'controller d
 assert(walkForward.includes('label_known_dates') && walkForward.includes('known <= cutoff'), 'OOF cohort generation must use row-level immutable label-known dates')
 assert(
   walkForward.includes('cohort_dates = mature_dates[-training_min_sessions:]') &&
-    walkForward.includes('training_min_sessions = OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * training_min_folds') &&
+    walkForward.includes('test_sessions = _oof_test_sessions(req.model_profile_schema_version)') &&
+    walkForward.includes('training_min_sessions = OOF_TRAIN_SESSIONS + test_sessions * training_min_folds') &&
     walkForward.includes('_oof_training_min_folds(req.model_profile_schema_version)'),
   'weekly/monthly OOF must deterministically use mature sessions sized for the pinned model profile',
 )
-assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
+assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=test_sessions')
+  && walkForward.includes('return R33_OOF_TEST_SESSIONS if profile == R33_PROFILE else OOF_TEST_SESSIONS'),
+  'OOF cohort must use the canonical 60/10 purged walk-forward windows (R33: 60/21, about one monthly serving span)')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
   walkForward.includes('if req.continuation_only:') &&

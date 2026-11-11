@@ -34,6 +34,8 @@ export type Bindings = {
   // ML Controller (Cloud Run) — Phase 3 MVC
   ML_CONTROLLER_URL?: string
   ACTIVE8_FEATURE_SEMANTIC_VERSION?: string
+  /** '1' sends monthly OOF to the R33 seven-model candidate-only lifecycle. */
+  R33_MONTHLY_PROFILE?: string
   ML_CONTROLLER_SECRET?: string
   // Dedicated private broker execution gateway. Secrets must be configured as
   // Cloudflare secrets, never plaintext wrangler vars.

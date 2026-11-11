@@ -22,7 +22,8 @@ def full_fit_input_identity(manifest: dict, plan: dict) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
-def find_prior_full_fit_receipt(*, bucket: Any, manifest: dict, plan: dict, cutoff: str) -> str | None:
+def find_prior_full_fit_receipt(*, bucket: Any, manifest: dict, plan: dict, cutoff: str,
+                                pit_certification_sha256: str | None = None) -> str | None:
     prefix = f"walk_forward/oof_cohorts/{manifest['cohort_id']}/full_fit/"
     identity = full_fit_input_identity(manifest, plan)
     candidates = []
@@ -34,6 +35,9 @@ def find_prior_full_fit_receipt(*, bucket: Any, manifest: dict, plan: dict, cuto
         if receipt.get('cohort_id') != manifest['cohort_id'] or receipt.get('knowledge_cutoff_date') != suffix[:10]:
             raise ValueError('full_fit_receipt_path_identity_mismatch')
         if not receipt.get('run_id'):
+            continue
+        # A fit dispatched under another (or no) PIT receipt cannot report this one's flag.
+        if (receipt.get('pit_certification_sha256') or None) != pit_certification_sha256:
             continue
         if sorted(receipt.get('release_models') or []) != sorted(plan['release_models']):
             continue

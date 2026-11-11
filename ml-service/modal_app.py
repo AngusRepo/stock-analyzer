@@ -22,7 +22,7 @@ from app.callback_security import (
 
 # Local code mounted into the Modal image during deploy.
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
-_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
+_LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
 _LOCAL_SOURCE_ROOT = Path(__file__).resolve().parent
 
@@ -175,6 +175,8 @@ runtime_env_secret = modal.Secret.from_dict({
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
         "FINLAB_REFRESH_TOKEN": os.environ.get("FINLAB_REFRESH_TOKEN", "").strip(),
         "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
+        # Chip PIT daily log (docs/chip-pit-contract.md): on for every deploy; deploy with =0 to turn it off.
+        "CHIP_PIT_DAILY_RECORD": os.environ.get("CHIP_PIT_DAILY_RECORD", "1").strip(),
     }.items()
     if value
 })
@@ -432,6 +434,26 @@ def _truthy(value) -> bool:
 
 def _tree_model_split_enabled(payload: dict) -> bool:
     return _truthy(payload.get("tree_model_split")) or _truthy(os.environ.get("UNIVERSAL_TREE_MODEL_SPLIT"))
+
+
+def _apply_release_tree_policy(base_train_payload: dict, release_models) -> None:
+    """Release full_fit promotes on the cohort's immutable outer OOF evidence, which the
+    controller registry substitutes for any in-run CPCV. Nested CPCV was 15 extra fits per
+    tree model (ExtraTrees alone overran 5400 s on 2026-11-09) that nothing downstream reads."""
+    from app.training_policy import TREE_MODEL_NAMES
+    release_tree_models = [m for m in TREE_MODEL_NAMES if m in release_models]
+    if release_tree_models != list(TREE_MODEL_NAMES):
+        base_train_payload["tree_models"] = release_tree_models
+    base_train_payload["enable_model_cpcv"] = False
+
+
+def _tree_group_function(payload: dict, release_profile_schema: str | None):
+    """R33 full-fit tree children (holdout fit + full-history refit, ~6-16 min each at 1280
+    sessions) outlive the 1800 s split parent; train_tree_models fans them out under 5400 s."""
+    from app.formal_feature_contract import R33_PROFILE
+    if release_profile_schema == R33_PROFILE or not _tree_model_split_enabled(payload):
+        return train_tree_models
+    return train_tree_models_split_parent
 
 
 def _save_oos_rank_payload_to_gcs(path: str, payload: dict) -> dict:
@@ -732,6 +754,7 @@ def retrain_orchestrator(payload: dict) -> dict:
     if is_release_train:
         base_train_payload.update(_release_model_payload("LightGBM"))
         base_train_payload["run_id"] = run_id
+        _apply_release_tree_policy(base_train_payload, verified_release_contract["models"])
 
     def _train_group_seq_len(group: str) -> int:
         key = f"{group}_seq_len"
@@ -745,14 +768,12 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     train_group_specs = {
         "tree": {
-            "spawn": lambda p: (
-                train_tree_models_split_parent.spawn(p)
-                if _tree_model_split_enabled(p)
-                else train_tree_models.spawn(p)
-            ),
+            "spawn": lambda p: _tree_group_function(
+                p, verified_release_contract["model_profile_schema_version"] if is_release_train else None,
+            ).spawn(p),
             "payload": lambda: build_group_train_payload(base_train_payload, "tree"),
             "mergeable": training_group_feature_policy("tree").mergeable_oos,
-            "models": models_for_training_group("tree"),
+            "models": base_train_payload.get("tree_models") or models_for_training_group("tree"),
             "note": training_group_feature_policy("tree").note,
         },
         "timexer": {
@@ -770,6 +791,10 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
+                **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+                **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -789,6 +814,10 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "release_training_contract": release_training_contract,
                 "dataset_snapshot": payload.get("dataset_snapshot"),
                 "run_date": run_date,
+                "signal_date_max": payload.get("signal_date_max"),
+                "label_known_at_max": payload.get("label_known_at_max"),
+                **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+                **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
                 "sequence_records": sequence_records,
                 "device": payload.get("sequence_device") or "cuda",
                 "version": candidate_version,
@@ -952,6 +981,10 @@ def retrain_orchestrator(payload: dict) -> dict:
                     "release_training_contract": release_training_contract,
                     "dataset_snapshot": payload.get("dataset_snapshot"),
                     "as_of_date": payload.get("as_of_date"),
+                    "signal_date_max": payload.get("signal_date_max"),
+                    "label_known_at_max": payload.get("label_known_at_max"),
+                    **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+                    **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
                     "max_prep_stale_days": payload.get("max_prep_stale_days"),
                     "label_horizon_days": label_horizon_days,
                 }
@@ -1280,7 +1313,10 @@ def retrain_orchestrator(payload: dict) -> dict:
         except Exception as exc:
             result.setdefault("stages", {})["release_model_completion"] = {"status": "error", "error": str(exc)}
             result.setdefault("stages", {}).setdefault("train", {})["status"] = "error"
-            result["stages"]["train"]["error"] = "active8_release_completion_incomplete"
+            # Keep the training failure that caused the incomplete receipts visible.
+            result["stages"]["train"]["error"] = (
+                result["stages"]["train"].get("error") or "active8_release_completion_incomplete"
+            )
 
     elapsed = round(time.time() - t0, 1)
     result["total_elapsed_s"] = elapsed
@@ -1965,12 +2001,16 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     stage_journal = SCOPE.get()
     stage_namespace = namespace(payload) if stage_journal is not None else None
 
-    def _timexer_predict(**kwargs):
+    def _timexer_predict(*, shadow: bool = False, **kwargs):
         # The validated research recipe is CUDA/high precision. Keep the
         # expensive GPU allocation separate from CPU feature/graph stages.
+        # A shadow candidate waits for the GPU only up to its shorter limit.
         gpu_input = {**kwargs, "feature_source": payload.get("timexer_feature_source"),
             "signal_date": payload["run_date"]}
-        result = (stage_journal.gpu(gpu_input) if stage_journal is not None
+        if payload.get("timexer_pit_feature_sources"):
+            # Only on days with a PIT-trained TimeXer, so legacy stage digests are unchanged.
+            gpu_input["pit_feature_sources"] = payload["timexer_pit_feature_sources"]
+        result = (stage_journal.gpu(gpu_input, shadow=shadow) if stage_journal is not None
                   else timexer_universal_predict.remote(gpu_input))
         return result["results"]
 
@@ -2028,7 +2068,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             candidate_identities=active8_shadow_identities,
             predictors={
                 "DLinear": dlinear_batch_predict,
-                "TimeXer": _timexer_predict,
+                "TimeXer": lambda **kwargs: _timexer_predict(shadow=True, **kwargs),
                 "PatchTST": patchtst_batch_predict,
                 "iTransformer": itransformer_batch_predict,
             },
@@ -2287,6 +2327,13 @@ def _pipeline_prediction_bundle_impl(payload: dict) -> dict:
     bundle = journal.cpu('final', 'publication', publish) if journal is not None else publish()
     bundle["callback_status"] = _post_pipeline_prediction_callback(payload, bundle, bundle['elapsed_s'])
     return bundle
+
+
+def _cancel_gpu_call(function_call_id: str) -> None:
+    """Best effort: drop a GPU request that outlived its queue limit."""
+    modal.FunctionCall.from_id(function_call_id).cancel()
+
+
 @app.function(
     cpu=4,
     memory=8192,
@@ -2314,7 +2361,8 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             with observe_prediction(hydrated_payload):
                 return _pipeline_prediction_bundle_impl(hydrated_payload)
         from google.cloud import storage
-        journal = Journal(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload)
+        journal = Journal(GCSStore(storage.Client().bucket(_get_gcs_bucket_name())), payload,
+                          cancel=_cancel_gpu_call)
         try:
             with journal.driver(), observe_prediction(hydrated_payload):
                 result = _pipeline_prediction_bundle_impl(hydrated_payload)
@@ -2323,15 +2371,21 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
                 return result
         except Suspended as pending:
             # Release the driver lease before dispatch; the CPU call returns immediately.
-            # A lost acknowledgement retains its claim; an identical request retry may take
-            # over only after the GPU timeout + lease grace, at most three times.
+            # A queued request is reused, never re-sent; only a missing receipt re-sends
+            # the same token (bounded), and execution CAS runs it once.
             if pending.dispatch is not None:
                 try:
-                    timexer_universal_predict.spawn(pending.dispatch)
+                    call = timexer_universal_predict.spawn(pending.dispatch)
                 except Exception:
                     # An RPC failure does not prove rejection. The durable claim
                     # remains fenced; the existing watchdog recovers expired work.
-                    pass
+                    call = None
+                if call is not None:
+                    try:
+                        journal.dispatched(pending.dispatch, call.object_id)
+                    except Exception as exc:
+                        print(f"[PipelinePredictionBundle] gpu_dispatch_receipt_failed {type(exc).__name__}",
+                              flush=True)
             return {'status': 'waiting_gpu', 'run_id': payload['run_id'],
                 'stage_root': journal.root, 'elapsed_s': round(journal.elapsed(), 3)}
     except Exception as exc:
@@ -2427,33 +2481,37 @@ def train_tabm_universal(payload: dict) -> dict:
 
 @app.function(
     cpu=1,
-    memory=2048,                 # prep: build_feature_matrix for batch payloads.
+    memory=4096,                 # prep: build_feature_matrix; an R33 1532-session batch peaked at 1.7 GB.
     timeout=600,                 # 10 min per batch
     scaledown_window=60,
     max_containers=3,            # Parallel prep batches.
 )
 def prep_universal_batch(payload: dict) -> dict:
     """Prepare universal feature batch and persist npz artifacts."""
+    import time
+    deadline = time.monotonic() + 600 * 0.9  # PIT variants never risk this function's timeout.
     _setup_env()
-    from app.use_cases import prep_universal_batch as _prep, UniversalPrepRequest
+    from app.use_cases import prep_universal_batch_with_variants as _prep, UniversalPrepRequest
     try:
         req = UniversalPrepRequest(**payload)
-        return _prep(req)
+        return _prep(req, deadline=deadline)
     except Exception as e:
         return {"error": str(e), "batch_index": payload.get("batch_index", -1)}
 
 
 # ~23 nightly batches of ~60 s each: 8 containers finish in three waves instead of eight.
-# Per-container spec is unchanged; prep only touches GCS and the controller callback.
-@app.function(cpu=1, memory=2048, timeout=1900, scaledown_window=60, max_containers=8)
+# Prep only touches GCS and the controller callback. An R33 1532-session batch peaked at 1.7 GB.
+@app.function(cpu=1, memory=4096, timeout=1900, scaledown_window=60, max_containers=8)
 def prep_universal_batch_event(payload: dict) -> dict:
     """Prepare one immutable batch, publish completion, notify the pipeline."""
+    import time
+    deadline = time.monotonic() + 1900 * 0.9  # PIT variants never risk this function's timeout.
     _setup_env()
     from google.cloud import storage
     from app.pipeline_input_prep import execute_event
-    from app.use_cases import prep_universal_batch as prepare, UniversalPrepRequest
+    from app.use_cases import prep_universal_batch_with_variants as prepare, UniversalPrepRequest
     return execute_event(payload, bucket=storage.Client().bucket(payload['bucket']),
-        prep=lambda request: prepare(UniversalPrepRequest(**request)), token=_controller_callback_token(),
+        prep=lambda request: prepare(UniversalPrepRequest(**request), deadline=deadline), token=_controller_callback_token(),
         input_id=modal.current_input_id(), function_call_id=modal.current_function_call_id())
 
 
@@ -2566,6 +2624,7 @@ def train_tree_models_split_parent(payload: dict) -> dict:
             child_results,
             combined_oos_artifact=combined_artifact,
             oos_artifact_error=artifact_error,
+            required_models=list(child_payloads),
         )
         print(
             "[TrainTreeSplitParent] reduced children="
@@ -2610,6 +2669,7 @@ def train_tree_models(payload: dict) -> dict:
                 child_results,
                 combined_oos_artifact=combined_artifact,
                 oos_artifact_error=artifact_error,
+                required_models=list(child_payloads),
             )
         req = UniversalTrainRequest(**build_group_train_payload(payload, "tree"))
         result = _train(req)
@@ -2619,10 +2679,11 @@ def train_tree_models(payload: dict) -> dict:
         return {"error": str(e), "type": "tree_models", "training_input_cache": cache_receipt}
 
 
+# R33 expanding fold (2.36M rows x 131) peaked at 11.3 GiB while loading its 23 prep batches.
 @app.function(
     volumes=TRAINING_INPUT_CACHE_VOLUMES,
     cpu=2,
-    memory=4096,
+    memory=16384,
     timeout=3600,   # 60 min per window for tree models on short train windows.
     scaledown_window=60,
     max_containers=3,   # allow 3 windows in parallel for tree path
@@ -2645,7 +2706,7 @@ def train_wf_tree_window(payload: dict) -> dict:
         req = UniversalTrainRequest(
             feature_semantic_version=payload_semantic(payload),
             batch_count=payload.get("batch_count", 5),
-            models_filter=["XGBoost", "ExtraTrees", "LightGBM"],
+            models_filter=payload.get("tree_models") or ["XGBoost", "ExtraTrees", "LightGBM"],
             skip_feature_pool=payload.get("skip_feature_pool", False),
             feature_release_mode=payload.get("feature_release_mode"),
             train_start=payload["train_start"],
@@ -2660,6 +2721,7 @@ def train_wf_tree_window(payload: dict) -> dict:
             cohort_id=payload.get("cohort_id"),
             fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
             output_model_version=payload.get("output_model_version"),
+            fold_model_cpcv=str(payload.get("fold_model_cpcv") or "nested_cpcv"),
         )
         result = _train(req)
         result["training_input_cache"] = cache_receipt
@@ -2673,6 +2735,62 @@ def train_wf_tree_window(payload: dict) -> dict:
             "type": "wf_tree",
             "training_input_cache": cache_receipt,
         }
+
+
+# W4(a) market-conditioner challengers (app.market_conditioner): own functions and container pools,
+# so they never queue behind or ahead of the release models (R3). OOF only; no full-fit.
+@app.function(cpu=2, memory=4096, timeout=900, scaledown_window=60, max_containers=1)
+def build_market_conditioner_block(payload: dict) -> dict:
+    """Market blocks from the prep's sealed capture, off the 1-CPU/2-GB orchestrator."""
+    _setup_env()
+    from google.cloud import storage
+    from app.market_conditioner import build_blocks
+    return build_blocks(storage.Client().bucket(_get_gcs_bucket_name()), payload["prep_manifest"])
+
+
+@app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
+    cpu=2,
+    memory=16384,        # apply_block copies the prep matrix twice; the R33 mkt16 fold peaked at 12.0 GiB.
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=21,   # 6 tree slots x 7 folds in two waves; separate from train_wf_tree_window's 3.
+)
+def train_wf_tree_market_challenger(payload: dict) -> dict:
+    """One tree model, one market arm, one fold; OOF under the slot alias."""
+    _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
+    from app.market_conditioner import challenger_identity, tree_challenger_result, tree_request_fields
+    from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
+    try:
+        identity = challenger_identity(payload)
+        result = _train(UniversalTrainRequest(**tree_request_fields(payload, identity)), market_conditioner=identity)
+        return {**tree_challenger_result(result, identity), "training_input_cache": cache_receipt}
+    except Exception as e:
+        return {"error": str(e)[:2000], "type": "wf_tree_market_challenger", "training_input_cache": cache_receipt}
+
+
+@app.function(
+    volumes=TRAINING_INPUT_CACHE_VOLUMES,
+    cpu=4,
+    memory=16384,
+    gpu="L4",
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=7,   # GpuGate: one input while the champion runs, TAIL_GPU_PARALLEL once it is done.
+)
+def train_tabm_market_challenger(payload: dict) -> dict:
+    """TabM, one market arm, one fold; OOF under the slot alias."""
+    _setup_env()
+    cache_receipt = _prepare_training_input_cache_for_payload(payload)
+    from app.market_conditioner import challenger_identity, tabm_challenger_payload, tabm_challenger_result
+    from app.tabm_training import train_tabm_universal as _train_tabm_universal
+    try:
+        identity = challenger_identity(payload)
+        result = _train_tabm_universal(tabm_challenger_payload(payload, identity), market_conditioner=identity)
+        return {**tabm_challenger_result(result, identity), "training_input_cache": cache_receipt}
+    except Exception as e:
+        return {"error": str(e)[:2000], "type": "tabm_market_challenger", "training_input_cache": cache_receipt}
 
 
 @app.function(
@@ -2895,6 +3013,42 @@ def _load_verified_oof_resume_windows(
         "verification": "split_model_semantic_artifact_sha256_metadata_v1",
     }
 
+def _r33_outer_test_fold_evidence(profile_schema: str) -> bool:
+    """R33 OOF tree folds use outer-test evidence; nested CPCV stays on full-fit/legacy profiles.
+
+    R33 checks (leakage/inversion/tail guard) never read fold CPCV, and the manifest only needs
+    its coverage contract; the two nested 15-split CPCVs were ~88% of a 3356 s smoke tree fold.
+    """
+    from app.formal_feature_contract import R33_PROFILE
+    return profile_schema == R33_PROFILE
+
+
+def _oof_challenger_slots(profile_schema: str) -> dict:
+    """R33 lifecycle challenger slots: app.challenger_models.LIFECYCLE_SLOTS (W2, PR #71) united with
+    app.market_conditioner.LIFECYCLE_SLOTS (W4(a)); a module that is absent or fails schedules none."""
+    from app.formal_feature_contract import R33_PROFILE
+    if profile_schema != R33_PROFILE:
+        return {}
+    slots = {}
+    try:
+        from app.challenger_models import LIFECYCLE_SLOTS
+        slots.update(LIFECYCLE_SLOTS)
+    except ImportError:
+        pass
+    try:
+        from app.market_conditioner import LIFECYCLE_SLOTS as MARKET_SLOTS
+        slots.update({name: spec for name, spec in MARKET_SLOTS.items() if name not in slots})
+    except Exception as exc:  # noqa: BLE001 - a challenger module never stops the release folds (R2).
+        print(f"[WF-Orchestrator] market conditioner slots unavailable: {exc}")
+    return slots
+
+
+def _oof_challenger_trainers(slots: dict | None = None) -> dict:
+    """Slot -> (Modal fold trainer, slot payload_config); slots whose function is absent stay unsupported."""
+    found = globals()
+    return {name: (found[spec["modal_function"]], dict(spec.get("payload_config") or {}))
+            for name, spec in (slots or {}).items() if spec.get("modal_function") in found}
+
 def _oof_coverage_contract(model_cpcv: object) -> dict | None:
     if not isinstance(model_cpcv, dict):
         return None
@@ -2960,10 +3114,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
     profile_schema = payload.get("model_profile_schema_version") or MODEL_PROFILE_SCHEMA_VERSION
-    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names
+    from app.formal_feature_contract import semantic_for_profile, FEATURE131_SEMANTIC, prep_feature_names, predeclared_full_release
     feature_semantic = semantic_for_profile(profile_schema)
     active8_models = list(model_order(model_profiles(schema_version=profile_schema),complete=True))
-    full137 = "TimeXer" in active8_models
+    full137 = predeclared_full_release(feature_semantic, active8_models)
     native_retrain_models = list(active8_models)
     raw_models = payload.get("models") or active8_models
     models = []
@@ -2984,6 +3138,14 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             else "active8_purged_oof_retrain"
         ),
     }
+    from app.oof_challengers import normalize_challengers, challenger_metric
+    challenger_slots = _oof_challenger_slots(payload.get("model_profile_schema_version") or "")
+    # An explicit list (controller R33_OOF_CHALLENGER_MODELS) overrides the profile's slots; the
+    # controller kill switch (R33_OOF_CHALLENGERS_DISABLED) runs none, since [] falls back to the slots.
+    challenger_models = ([] if payload.get("challenger_models_disabled") else
+                         normalize_challengers(payload.get("challenger_models") or list(challenger_slots), active8_models))
+    if challenger_models:
+        model_coverage["challenger_models"] = challenger_models
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]
     end_date = payload["end_date"]
@@ -3055,6 +3217,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "producer_source_sha": prep_manifest["producer_source_sha"],
             "roundtrip_cost_bps": float(prep_manifest["roundtrip_cost_bps"]),
             "verification": "manifest_and_all_batch_sha256_v1",
+            # C28-02: the availability contract the cohort's windows were trained under.
+            **({"pit_contract_version": prep_manifest["pit_contract_version"]}
+               if prep_manifest.get("pit_contract_version") is not None else {}),
         }
         prep_blob = prep_bucket.blob(f"{prep_prefix}/prep/batch_0.npz")
         if not prep_blob.exists():
@@ -3153,6 +3318,9 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             sequence_prefix=sequence_prefix,
             sequence_manifest_checksum=sequence_manifest_evidence["artifact_checksum"],
             model_coverage=model_coverage,
+            # R33: every family must carry the full attestation for this runtime and prep.
+            r33_lineage=({"producer_source_sha": producer_source_sha, "feature_semantic_version": feature_semantic}
+                         if _r33_outer_test_fold_evidence(profile_schema) else None),
         )
         reused_windows.update(artifact_recovered)
     except Exception as exc:
@@ -3173,6 +3341,25 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             return market_env
         latest_date = max(filtered.keys())
         return {"history": filtered, **filtered[latest_date]}
+
+    market_state: dict = {}
+
+    async def _market_blocks() -> dict:
+        try:
+            return await build_market_conditioner_block.remote.aio({"prep_manifest": prep_manifest})
+        except Exception as exc:  # noqa: BLE001 - only the market challengers depend on it (R2).
+            return {"error": f"{type(exc).__name__}:{str(exc)[:300]}"}
+
+    async def _market_challenger(trainer, slot_payload: dict, **gated) -> dict:
+        """W4(a): waits for the shared block, then trains; the remote call is cancelled at the gate's tail cap."""
+        from app.market_conditioner import run_challenger
+        return await run_challenger(trainer, slot_payload, market_state["blocks"], **gated)
+
+    def _challenger_outcome(r) -> dict:
+        outcome = ({"status": "unsupported", "reason": r["unsupported"]}
+                   if isinstance(r, dict) and r.get("unsupported") else challenger_metric(r))
+        # W4(a): calls sent for a market challenger (a failed one is sent once more).
+        return {**outcome, "attempts": r["attempts"]} if isinstance(r, dict) and "attempts" in r else outcome
 
     # 2026-04-19 N2: per-window FS gates tree training to eliminate look-ahead
     fs_max_rounds = int(payload.get("fs_max_rounds", 60))
@@ -3285,6 +3472,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 # explicit per-window pool path; train_wf_tree_window also defaults
                 # to walk_forward/w{id}/feature_pool.json so this is belt-and-suspenders
                 tree_payload["feature_pool_path"] = f"{gcs_prefix}/feature_pool.json"
+                fold_tree_models = [m for m in ("XGBoost", "ExtraTrees", "LightGBM") if m in requested]
+                if len(fold_tree_models) != 3:
+                    tree_payload["tree_models"] = fold_tree_models
+                if _r33_outer_test_fold_evidence(profile_schema):
+                    tree_payload["fold_model_cpcv"] = "outer_test_date_panel"
                 tasks.append(("tree", train_wf_tree_window.remote.aio(tree_payload)))
             else:
                 result["tree_result"] = {
@@ -3308,9 +3500,39 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     model_payload.update(run_date=payload.get("knowledge_cutoff_date") or prep_manifest["source_business_date"],dataset_snapshot={
                         "manifest_path":prep_manifest_path,"manifest_checksum":prep_manifest_checksum})
                 tasks.append((model_name, fn.remote.aio(model_payload)))
+        gate = market_state.get("gate")
+        if gate is not None:
+            # Champion calls start now so the gate can see when they finish; gathered below as before.
+            tasks = [(kind, asyncio.ensure_future(call)) for kind, call in tasks]
+            gate.track(wid, gpu=[f for kind, f in tasks if kind in dict(family_tasks) and kind not in market_state["exempt"]])
+        challenger_trainers = _oof_challenger_trainers(challenger_slots)
+        challenger_results = {}
+        for name in challenger_models:
+            if name in challenger_trainers:
+                trainer, slot_config = challenger_trainers[name]
+                if slot_config.get("market_conditioner_arm") and "blocks" in market_state:
+                    slot_payload = {
+                        **train_payload, **active8_model_payload(slot_config["challenger_model"], schema_version=profile_schema),
+                        **slot_config, "oof_challenger": True}
+                    # Outside the window's gather, so the window's champion results are final without them. L4
+                    # challengers wait for a ticket (one at a time while the champion runs, TAIL_GPU_PARALLEL after);
+                    # every challenger still waiting or running TAIL_CAP_S after the champion is done is cancelled.
+                    ticket = (gate.ticket((market_state["arms"].index(slot_config["market_conditioner_arm"]), wid))
+                              if challenger_slots[name]["modal_function"] in market_state["gpu_functions"] else None)
+                    market_state["deferred"].append((wid, name, asyncio.ensure_future(_market_challenger(
+                        trainer, slot_payload, budget_s=None, gate=gate, ticket=ticket))))
+                    continue
+                # The slot trainer reports the model it resolved (e.g. LinearNeutralSize) in result["model"].
+                tasks.append(("challenger:" + name, trainer.remote.aio(
+                    {**train_payload, **slot_config, "oof_challenger": True})))
+            else:
+                challenger_results[name] = {"status": "unsupported", "reason": "challenger_trainer_not_registered"}
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
+                if kind.startswith("challenger:"):
+                    challenger_results[kind.removeprefix("challenger:")] = _challenger_outcome(r)
+                    continue
                 if isinstance(r, BaseException):
                     print(f"[WF-Orchestrator] w{wid} {kind} crashed: {r}")
                     result[f"{kind}_result"] = {"error": str(r)}
@@ -3384,10 +3606,21 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         result["fold_blockers"] = list(forward_source_contract["reasons"])
         result["oof_fold_ready"] = not missing_models and forward_source_contract["ready"]
         result["missing_oof_models"] = missing_models
+        if challenger_results:
+            # GCS-only evidence; never a release-model metric or fold readiness vote.
+            result["challenger_metrics"] = challenger_results
         return result
 
     async def _orchestrate() -> list[dict]:
         sem = asyncio.Semaphore(concurrent)
+        if pending_windows and any((challenger_slots.get(name) or {}).get("payload_config", {}).get("market_conditioner_arm")
+                                   for name in challenger_models):
+            from app.market_conditioner import GATE_EXEMPT_GPU_FAMILIES, GPU_ARM_ORDER, GPU_CHALLENGER_FUNCTIONS, GpuGate
+            market_state["blocks"] = asyncio.ensure_future(_market_blocks())
+            async def _timexer_backlog() -> int:  # TimeXer inputs still waiting for an L4 (any caller in the workspace)
+                return (await train_timexer_universal.get_current_stats.aio()).backlog
+            market_state.update(gate=GpuGate(len(pending_windows), backlog=_timexer_backlog), deferred=[], arms=list(GPU_ARM_ORDER),
+                                gpu_functions=GPU_CHALLENGER_FUNCTIONS, exempt=GATE_EXEMPT_GPU_FAMILIES)
 
         async def _bounded(w):
             async with sem:
@@ -3397,7 +3630,15 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                       f"(ic={[(k, v.get('oos_ic')) for k, v in r.get('model_metrics',{}).items()]})")
                 return r
 
-        return await asyncio.gather(*[_bounded(w) for w in pending_windows])
+        results = await asyncio.gather(*[_bounded(w) for w in pending_windows])
+        if market_state.get("deferred"):
+            # Every window returned, so the champion results are final; the challengers' tail starts here.
+            market_state["gate"].champion_done.set()
+            by_id = {r["window_id"]: r for r in results}
+            outcomes = await asyncio.gather(*[f for _, _, f in market_state["deferred"]], return_exceptions=True)
+            for (wid, name, _), r in zip(market_state["deferred"], outcomes):
+                by_id[wid].setdefault("challenger_metrics", {})[name] = _challenger_outcome(r)
+        return results
 
     new_results = asyncio.run(_orchestrate())
     new_by_id = {int(row["window_id"]): row for row in new_results}
@@ -3684,7 +3925,7 @@ def build_finlab_long_sequence_prep(payload: dict) -> dict:
 
 @app.function(
     cpu=4,
-    memory=8192,
+    memory=12288,  # R33 full roster (2.4M rows x 131) peaked at 5.6 GiB.
     timeout=1800,
     scaledown_window=60,
     max_containers=1,
@@ -3955,7 +4196,12 @@ def train_patchtst_universal(payload: dict) -> dict:
             max_prep_stale_days=payload.get("max_prep_stale_days"),
             run_date=payload.get("run_date"),
             as_of_date=payload.get("as_of_date"),
+            signal_date_max=payload.get("signal_date_max"),
+            label_known_at_max=payload.get("label_known_at_max"),
+            **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+            **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
             generation_mode=payload.get("generation_mode"),
+            feature_semantic_version=payload.get("feature_semantic_version"),
             persist_oof_artifact=payload.get("persist_oof_artifact", True),
             research_source_bundle_checksum=payload.get("research_source_bundle_checksum"),
             oof_training_history_mode=payload.get("oof_training_history_mode"),
@@ -3990,6 +4236,11 @@ def train_patchtst_universal(payload: dict) -> dict:
             "type": result.get("type", "neuralforecast_patchtst_universal"),
 
             "oof_artifact": result.get("oof_artifact"),
+            "oof_evidence_path": result.get("oof_evidence_path"),
+            "oof_evidence_checksum": result.get("oof_evidence_checksum"),
+            "asof_prediction_artifact": result.get("asof_prediction_artifact"),
+            "fold_model_artifact": result.get("fold_model_artifact"),
+            "model_cpcv": result.get("model_cpcv"),
             "allowed_use": result.get("allowed_use"),
             "production_effect": result.get("production_effect"),
             "research_source_bundle_checksum": result.get("research_source_bundle_checksum"),
@@ -4668,6 +4919,106 @@ def finlab_v4_backfill(payload: dict) -> dict:
         sys.argv = old_argv
 
 
+# Sealed R33 training capture (K15). Separate from finlab_v4_backfill so the
+# daily pool, callbacks, and D1 writes stay untouched. Sizing: trial d took
+# 13,473 s locally (official-history cache gaps); 28,800 s leaves 2.1x. Peak
+# memory of a 3y capture was never measured; the 16 GiB request covers the
+# measured broker-normalize delta (+1.96 GB on 20M rows) plus the six lanes'
+# frames (~30M raw rows in trial d) with room, and peak RSS is returned.
+# nonpreemptible: CPU-only function (Modal bills CPU/memory at 3x list); a
+# preemption restart would rerun hours of capture. A restart of the same call
+# still re-enters through the run-id claim.
+@app.function(
+    cpu=2,
+    memory=16384,
+    timeout=28800,
+    scaledown_window=60,
+    max_containers=1,
+    retries=0,
+    nonpreemptible=True,
+)
+def finlab_v4_training_capture(payload: dict) -> dict:
+    """Run one GCS-only FinLab training capture: no D1, no Worker/controller callbacks."""
+    _setup_env()
+    import contextlib
+    import io
+    import json
+    import resource
+    import sys
+    import time
+
+    for path in ("/root", "/root/tools"):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    from app.finlab_training_capture import (
+        FINLAB_AUTH_ENV_NAMES,
+        claim_run,
+        scrub_training_capture_env,
+        training_capture_argv,
+        training_capture_gcs_prefix,
+    )
+    from app.gcs_preflight import verify_gcs_object_lifecycle
+    from google.cloud import storage
+    from tools.finlab_gcs_upload import verify_capture_upload
+
+    started = time.time()
+    removed_env = scrub_training_capture_env(os.environ)
+    # Imported after the scrub; its CORE_SPECS is the lane set the tool accepts.
+    from tools import finlab_v4_remote_backfill
+    bucket_name = str(payload.get("gcs_bucket") or _get_gcs_bucket_name() or "").strip()
+    argv = training_capture_argv(payload, bucket_name=bucket_name,
+                                 known_lanes={spec.lane for spec in finlab_v4_remote_backfill.CORE_SPECS})
+    run_id = str(payload["run_id"])
+    bucket = storage.Client().bucket(bucket_name)
+    claim = claim_run(bucket, gcs_prefix=training_capture_gcs_prefix(payload), run_id=run_id,
+                      function_call_id=modal.current_function_call_id(), input_id=modal.current_input_id(),
+                      source_sha=os.environ.get("STOCKVISION_SOURCE_SHA"))
+    os.environ.setdefault("GCS_BUCKET_NAME", bucket_name)
+    os.environ.setdefault("FINLAB_OFFICIAL_HISTORY_CACHE_PREFIX", "finlab/v4/official-history-cache/v1")
+    gcs_preflight = verify_gcs_object_lifecycle(bucket, workload="finlab-v4-training-capture", run_id=run_id)
+    gcs_preflight["capture_upload"] = verify_capture_upload(bucket)
+    print(f"[finlab_v4_training_capture] start run_id={run_id} claim={claim['state']} argv={argv[1:]} "
+          f"removed_env={removed_env}", flush=True)
+
+    old_argv = sys.argv
+    stdout = io.StringIO()
+    try:
+        sys.argv = argv
+        with contextlib.redirect_stdout(stdout):
+            exit_code = finlab_v4_remote_backfill.main()
+    except SystemExit as exc:
+        raise RuntimeError(f"finlab_training_capture_exit:{exc}") from exc
+    finally:
+        sys.argv = old_argv
+    output = stdout.getvalue()
+    result: dict = {}
+    for line in reversed([line.strip() for line in output.splitlines() if line.strip()]):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            result.update(parsed)
+            break
+    ready = str(result.get("backfill_status") or "").strip().lower() == "ready"
+    result.update({
+        "status": "success" if int(exit_code or 0) == 0 and ready else "error",
+        "exit_code": exit_code,
+        "argv": argv[1:],
+        "gcs_preflight": gcs_preflight,
+        "claim": claim,
+        "removed_env_names": removed_env,
+        "finlab_auth_env_names": [name for name in FINLAB_AUTH_ENV_NAMES if os.environ.get(name)],
+        "peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1),
+        "duration_s": round(time.time() - started, 1),
+        "stdout_tail": output[-4000:],
+    })
+    print(f"[finlab_v4_training_capture] done run_id={run_id} status={result['status']} "
+          f"backfill_status={result.get('backfill_status')} peak_rss_mb={result['peak_rss_mb']} "
+          f"duration_s={result['duration_s']}", flush=True)
+    return result
+
+
 # ASGI web endpoint for warmup, health, IC audit, and Optuna routes.
 
 @app.function(
@@ -4709,7 +5060,8 @@ def timexer_universal_predict(payload: dict) -> dict:
             "n_success":sum(row.get("available") is True for row in results)}
 
 
-@app.function(gpu="L4", cpu=8, memory=16384, timeout=21600, max_containers=2, scaledown_window=60)
+# Steps replay on device-resident windows from one Python thread: the R33 run used 1 of 8 requested cores.
+@app.function(gpu="L4", cpu=2, memory=16384, timeout=21600, max_containers=7, scaledown_window=60)
 def train_timexer_universal(payload: dict) -> dict:
     """Official TimeXer OOF/full-fit; candidate files never confer serving authority."""
     _setup_env()
@@ -4733,7 +5085,7 @@ def train_l4_mlp_median_candidate(payload: dict) -> dict:
     return run(payload)
 
 
-@app.function(cpu=4, memory=8192, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
+@app.function(cpu=4, memory=12288, timeout=1800, scaledown_window=60, max_containers=1, retries=0)
 def rebuild_canonical_adjusted_prep_event(payload: dict) -> dict:
     _setup_env()
     from app.oof_adjusted_prep_event import run

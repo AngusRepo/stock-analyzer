@@ -265,6 +265,141 @@ def test_controller_d1_batch_forwards_ops_domain(monkeypatch):
     assert captured["domain"] == "ops"
 
 
+def _d1_post_harness(monkeypatch, tool, outcomes):
+    """Feed urlopen a scripted list of outcomes; returns the request bodies it saw and the sleeps taken."""
+    import io
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    bodies: list[dict] = []
+    sleeps: list[float] = []
+    queue = list(outcomes)
+
+    def fake_urlopen(request, **_kwargs):
+        bodies.append(json.loads(request.data.decode("utf-8")))
+        outcome = queue.pop(0)
+        if isinstance(outcome, int):
+            raise tool.urllib.error.HTTPError(
+                request.full_url, outcome, "edge", hdrs=None, fp=io.BytesIO(f"edge status {outcome}".encode()))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return Response(outcome)
+
+    monkeypatch.setattr(tool, "controller_d1_batch_url", lambda: "https://controller.example/d1/batch")
+    monkeypatch.setattr(tool, "controller_d1_query_url", lambda: "https://controller.example/d1/query")
+    monkeypatch.setattr(tool, "controller_proxy_token", lambda: "token")
+    monkeypatch.setattr(tool, "D1_PROXY_RETRY_DELAYS_SECONDS", (2.0, 8.0))
+    monkeypatch.setattr(tool, "D1_PROXY_RETRIES", [])
+    monkeypatch.setattr(tool.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(tool.time, "sleep", sleeps.append)
+    return bodies, sleeps
+
+
+BATCH_OK = {"ok": True, "total": 1, "success_count": 1, "error_count": 0}
+
+
+def test_controller_d1_batch_replays_the_same_chunk_once_after_a_502(monkeypatch):
+    tool = _load_tool_module()
+    bodies, sleeps = _d1_post_harness(monkeypatch, tool, [BATCH_OK, 502, BATCH_OK])
+
+    result = tool.controller_d1_batch_execute(
+        [("INSERT INTO a VALUES (?)", [1]), ("INSERT INTO a VALUES (?)", [2])],
+        chunk_size=1, domain="market", retry_transient=True,
+    )
+
+    assert result["success_count"] == 2 and result["chunk_count"] == 2
+    assert [body["statements"][0]["params"] for body in bodies] == [[1], [2], [2]]
+    assert bodies[1] == bodies[2]
+    assert sleeps == [2.0]
+    assert tool.D1_PROXY_RETRIES == [
+        {"label": "controller_d1_batch:market:chunk=2/2", "attempt": 1, "reason": "http_502"}]
+
+
+@pytest.mark.parametrize("status", [400, 401, 500])
+def test_controller_d1_batch_never_replays_non_transient_http_errors(monkeypatch, status):
+    tool = _load_tool_module()
+    bodies, sleeps = _d1_post_harness(monkeypatch, tool, [status])
+
+    with pytest.raises(RuntimeError, match=f"edge status {status}"):
+        tool.controller_d1_batch_execute([("INSERT INTO a VALUES (?)", [1])], retry_transient=True)
+
+    assert len(bodies) == 1 and sleeps == [] and tool.D1_PROXY_RETRIES == []
+
+
+def test_controller_d1_batch_never_replays_sql_errors_reported_in_a_200_body(monkeypatch):
+    tool = _load_tool_module()
+    failed = {"ok": True, "total": 1, "success_count": 0, "error_count": 1, "first_error": "no such table"}
+    bodies, sleeps = _d1_post_harness(monkeypatch, tool, [failed])
+
+    with pytest.raises(RuntimeError, match="no such table"):
+        tool.controller_d1_batch_execute([("INSERT INTO a VALUES (?)", [1])], retry_transient=True)
+
+    assert len(bodies) == 1 and sleeps == []
+
+
+def test_controller_d1_batch_raises_the_last_response_when_retries_run_out(monkeypatch):
+    tool = _load_tool_module()
+    bodies, sleeps = _d1_post_harness(monkeypatch, tool, [502, 503, 504])
+
+    with pytest.raises(RuntimeError, match=r"edge status 504 \(http_504 after 3 attempts\)"):
+        tool.controller_d1_batch_execute([("INSERT INTO a VALUES (?)", [1])], retry_transient=True)
+
+    assert len(bodies) == 3 and sleeps == [2.0, 8.0]
+
+
+def test_controller_d1_batch_replays_connection_errors_and_timeouts(monkeypatch):
+    tool = _load_tool_module()
+    bodies, sleeps = _d1_post_harness(
+        monkeypatch, tool, [tool.urllib.error.URLError("connection reset"), TimeoutError("read timed out"), BATCH_OK])
+
+    result = tool.controller_d1_batch_execute([("INSERT INTO a VALUES (?)", [1])], retry_transient=True)
+
+    assert result["success_count"] == 1 and len(bodies) == 3
+    assert [item["reason"] for item in tool.D1_PROXY_RETRIES] == ["URLError", "TimeoutError"]
+
+
+def test_d1_writes_without_opt_in_fail_on_the_first_502(monkeypatch):
+    tool = _load_tool_module()
+    bodies, sleeps = _d1_post_harness(monkeypatch, tool, [502, 502])
+
+    with pytest.raises(RuntimeError, match="edge status 502"):
+        tool.controller_d1_batch_execute([("INSERT INTO system_logs VALUES (?)", [1])])
+    with pytest.raises(RuntimeError, match="edge status 502"):
+        tool.d1_exec("INSERT INTO source_diff_report VALUES (?)", [1], domain="ops")
+
+    assert len(bodies) == 2 and sleeps == []
+
+
+def test_d1_reads_replay_a_transient_502(monkeypatch):
+    tool = _load_tool_module()
+    bodies, sleeps = _d1_post_harness(
+        monkeypatch, tool, [503, {"success": True, "result": [{"results": [{"n": 1}]}]}])
+
+    assert tool.d1_query("SELECT 1 AS n", domain="ops") == [{"n": 1}]
+    assert len(bodies) == 2 and sleeps == [2.0]
+
+
+def test_only_canonical_materializer_writes_opt_into_transient_replay():
+    source = TOOL_PATH.read_text(encoding="utf-8")
+    materializer = source.split("def materialize_canonical_to_d1(", 1)[1].split("\ndef ", 1)[0]
+
+    assert materializer.count("retry_transient=True") == 4
+    # Everything else that writes stays single-shot: those statements are plain INSERTs.
+    outside = source.replace(materializer, "")
+    assert outside.count("retry_transient=True") == 2  # the two d1_query read paths
+
+
 def test_finlab_canonical_statement_partition_routes_domain_owners():
     tool = _load_tool_module()
     statements = [
@@ -1177,7 +1312,10 @@ def test_read_only_run_without_d1_credentials_skips_d1_and_records_it(monkeypatc
         return [{"finlab_rows": 3, "stockvision_rows": None}], [diff], [], []
 
     monkeypatch.setattr(tool, "materialize_specs", materialize)
+    # A reused Modal container still holds the previous run's retry log.
+    monkeypatch.setattr(tool, "D1_PROXY_RETRIES", [{"label": "previous-run", "attempt": 1, "reason": "HTTP 502"}])
     assert tool.main() == 0
+    assert tool.D1_PROXY_RETRIES == []
     manifest = json.loads((tmp_path / "no-d1" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["d1_unavailable"] == {"reason": "no_d1_credentials", "stockvision_rows_observed": False,
                                           "skipped": ["d1_counts", "source_key_report_reuse"]}

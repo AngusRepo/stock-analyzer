@@ -375,6 +375,7 @@ export interface UpdateQueueMsg {
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count
   continuationAttempt?: number // durable finalizer continuation retry count
+  postVerifyHop?: number // post-verify continuation deliveries already taken for this chain run (EC-F)
   leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
   durableTaskRecoveryAttempt?: number // bounded lease-expiry continuation count for durable scheduler tasks
   durableTaskExpectedLeaseOwner?: string // stale-holder fence for a durable scheduler continuation

@@ -4044,6 +4044,7 @@ export async function processUpdateBatch(
       markPipelineStageFenced,
       pipelineStageBusyRetryDelaySeconds,
       readPipelineStageRunningLease,
+      requeuePipelineStageFenced,
       startPipelineStageLeaseHeartbeat,
     } = await import('./pipelineStageLease')
     const state = await enqueuePipelineStage(databaseForDataDomain(env, 'ops'), {
@@ -4088,6 +4089,7 @@ export async function processUpdateBatch(
       leaseSeconds: PIPELINE_STAGE_LEASE_SECONDS,
     })
     const { runPostVerifyCallbackChain } = await import('./postMarketChain')
+    let continuationSendError: unknown = null
     try {
       await heartbeat.assertActive('post-verify:before_chain')
       const status = await runPostVerifyCallbackChain(env, {
@@ -4096,7 +4098,40 @@ export async function processUpdateBatch(
         stageLeaseOwner: leaseOwner,
         assertStageLease: heartbeat.assertActive,
         recoveryAttempt: Math.max(0, Number(msg.attempt ?? 0)),
-      })
+      }, { hop: msg.postVerifyHop })
+      if (status === 'continue') {
+        // EC-F: a heavy producer ran; the rest resumes from its receipts in a fresh invocation budget.
+        await heartbeat.assertActive('post-verify:before_continuation')
+        const requeued = await requeuePipelineStageFenced(databaseForDataDomain(env, 'ops'), {
+          businessDate: triggerTime,
+          stage: 'post_verify_chain',
+          canonicalRunId: runId,
+          leaseOwner,
+        })
+        if (!requeued) {
+          console.warn(`[Queue] stale post-verify continuation ignored date=${triggerTime} run_id=${runId}`)
+          return
+        }
+        try {
+          await env.UPDATE_QUEUE.send({ type: 'post_verify_chain', cursor: 0, triggerTime, runId, attempt: msg.attempt,
+            postVerifyHop: Math.max(0, Number(msg.postVerifyHop ?? 0)) + 1 })
+        } catch (error) {
+          continuationSendError = error
+          // Same as queuePostVerifyStage: an unsent continuation leaves a recoverable error for the watchdog, and
+          // the rethrow below has the queue redeliver this message (which resumes a queued or error stage).
+          await markPipelineStageFenced(databaseForDataDomain(env, 'ops'), {
+            businessDate: triggerTime,
+            stage: 'post_verify_chain',
+            canonicalRunId: runId,
+            status: 'error',
+            expectedStatus: 'queued',
+            requireUnleased: true,
+            error: error instanceof Error ? error.message : String(error),
+          }).catch(markError => console.error(`[Queue] post-verify continuation error mark failed date=${triggerTime}`, markError))
+          throw error
+        }
+        return
+      }
       if (status === 'error') {
         throw new Error('post_verify_chain_returned_error_without_detail')
       }
@@ -4140,6 +4175,8 @@ export async function processUpdateBatch(
         run_scope: chain?.run_scope,
       }, env)
     } catch (error) {
+      // The lease was handed back before the send, so redelivery (not the error finalizer) owns the retry.
+      if (error === continuationSendError) throw error
       if (isPipelineStageLeaseLost(error) || heartbeat.leaseError()) {
         console.warn(`[Queue] post-verify lease lost; stale worker stopped date=${triggerTime} run_id=${runId}`)
         return

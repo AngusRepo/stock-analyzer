@@ -80,13 +80,25 @@ def test_plan_diffs_each_unit_against_its_live_version(repo):
     assert du.plan('changed') == {'worker': 'true', 'pages': 'true', 'gate_base': 'o1'}
 
 
-def test_plan_skips_live_units_and_deploys_unknown_ones(repo):
+def test_plan_skips_live_units_and_deploys_unreadable_ones(repo):
     repo.update(worker='h', pages='')
     assert du.plan('changed') == {'worker': 'false', 'pages': 'true', 'gate_base': ''}
-    repo.update(worker='x-not-in-history', pages='h')
-    assert du.plan('all') == {'worker': 'true', 'pages': 'false', 'gate_base': ''}
     repo.update(worker='o2', pages='o2')
     assert du.plan('worker') == {'worker': 'true', 'pages': 'false', 'gate_base': 'o2'}
+
+
+@pytest.mark.parametrize('choice', ['changed', 'worker', 'all'])
+def test_plan_refuses_to_replace_a_live_version_main_never_merged(repo, choice):
+    # A side-branch release, or a newer version than this main, must reach main first; no choice overrides it.
+    repo.update(worker='x-not-in-history', pages='h')
+    with pytest.raises(SystemExit, match='worker live version x-not-in-history is not in main history'):
+        du.plan(choice)
+
+
+def test_plan_deploys_one_unit_beside_another_unit_main_never_merged(repo):
+    # units=pages replaces only Pages, so a side-branch Worker does not block it.
+    repo.update(worker='x-not-in-history', pages='o2')
+    assert du.plan('pages') == {'worker': 'false', 'pages': 'true', 'gate_base': 'o2'}
 
 
 def test_plan_leaves_a_moved_main_to_the_newer_run(repo):

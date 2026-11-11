@@ -132,13 +132,15 @@ def plan(choice: str) -> dict[str, str]:
             out[unit] = False
             continue
         known = bool(live) and is_ancestor(live, head)
+        if live and not known and choice in (unit, 'all', 'changed'):  # would replace a version main never merged
+            raise SystemExit(f'::error::{unit} live version {live} is not in main history; merge it into main before deploying')
         if choice in (unit, 'all') or not known:
             out[unit] = choice in (unit, 'all', 'changed')
         else:
             out[unit] = choice == 'changed' and touched_units(git('diff', '--name-only', live, head).splitlines())[unit]
         if out[unit]:
             bases.append(live if known else '')
-    # Gate every pushed commit since the oldest live version being replaced; an unknown one gates HEAD only.
+    # Gate every pushed commit since the oldest live version being replaced; an unreadable one gates HEAD only.
     base = '' if not bases or '' in bases else bases[0] if len(bases) == 1 else git('merge-base', *bases)
     return {**{u: str(v).lower() for u, v in out.items()}, 'gate_base': base}
 

@@ -161,7 +161,12 @@ def _align_features(
     serving_features: list[str],
     metadata: dict[str, Any] | None,
     *, expected_feature_semantic: str | None = None,
+    pit_contract_version: str | None = None,
 ) -> np.ndarray:
+    from .pit_contract import artifact_contract_version
+    # OOF window artifacts carry no receipt; the cohort-level check binds their prep.
+    if artifact_contract_version(metadata) not in (None, pit_contract_version):
+        raise ValueError("forward_extension_pit_contract_mismatch")
     training_features = [str(value) for value in ((metadata or {}).get("feature_names") or [])]
     actual_semantic = (metadata or {}).get("feature_semantic_version", LEGACY_SEMANTIC)
     if expected_feature_semantic is not None and FEATURE131_SEMANTIC in (expected_feature_semantic, actual_semantic):
@@ -273,6 +278,10 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
 
     base = _verify_base_manifest(bucket, base_path)
     prep = _verify_prep_manifest(bucket, prep_prefix, cohort_semantic(base))
+    # Forward rows must carry the availability lags the cohort's windows were trained on.
+    if (base.get("prep_manifest") or {}).get("pit_contract_version") != prep.get("pit_contract_version"):
+        raise ValueError("forward_extension_pit_contract_mismatch")
+    pit_version = prep.get("pit_contract_version")
     from .alpha_model_roster import model_order
     required_models = model_order(base.get("model_set") or (*CORE_MODELS, *OPTIONAL_MODELS), complete=True)
     latest = max(base["windows"], key=lambda row: int(row.get("window_id") or 0))
@@ -330,7 +339,8 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         if model is None or not metadata:
             raise ValueError(f"forward_extension_core_artifact_missing:{model_name}")
         _validate_training_cutoff(metadata, train_end, model_name)
-        aligned = _align_features(rows["X"], feature_names, metadata, expected_feature_semantic=prep["feature_semantic_version"])
+        aligned = _align_features(rows["X"], feature_names, metadata, expected_feature_semantic=prep["feature_semantic_version"],
+                                  pit_contract_version=pit_version)
         values = np.asarray(model.predict(aligned), dtype=float).reshape(-1)
         if len(values) != len(rows["dates"]) or not np.isfinite(values).all():
             raise ValueError(f"forward_extension_prediction_invalid:{model_name}")
@@ -352,7 +362,8 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
         "status": "active", "version": tabm_version, "gcs_path": tabm_path,
     }}})
     _validate_training_cutoff(tabm.metadata, train_end, "TabM")
-    tabm_x = _align_features(rows["X"], feature_names, tabm.metadata, expected_feature_semantic=prep["feature_semantic_version"])
+    tabm_x = _align_features(rows["X"], feature_names, tabm.metadata, expected_feature_semantic=prep["feature_semantic_version"],
+                             pit_contract_version=pit_version)
     scores_by_model["TabM"] = predict_tabm_scores(tabm, features=tabm_x)
     source_artifacts["TabM"] = {
         "version": tabm_version, "path": tabm_path, "training_cutoff": train_end,
@@ -370,7 +381,8 @@ def build_frozen_forward_extension(payload: dict[str, Any]) -> dict[str, Any]:
     gnn_scores = np.full(len(rows["dates"]), np.nan, dtype=float)
     for date in sorted(set(rows["dates"].astype(str).tolist())):
         indices = np.flatnonzero(rows["dates"].astype(str) == date)
-        aligned = _align_features(rows["X"][indices], feature_names, gnn.metadata, expected_feature_semantic=prep["feature_semantic_version"])
+        aligned = _align_features(rows["X"][indices], feature_names, gnn.metadata, expected_feature_semantic=prep["feature_semantic_version"],
+                                  pit_contract_version=pit_version)
         price_series = [
             _prices_until(sequence.get(str(rows["symbols"][idx])), date)
             for idx in indices

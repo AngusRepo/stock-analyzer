@@ -1,0 +1,695 @@
+{
+ "schema": "pit-cert-e6-truncation-v1",
+ "generated_by": "C28-02 Phase 0 (read-only, local CPU)",
+ "builder": "ml-service/app/features/__init__.py build_feature_matrix(historical_training=True) at #78 8938d5e1; indicators via ml-controller/scripts/training_indicators.cjs over a type-stripped copy of worker/src/lib/technicalIndicators.ts",
+ "inputs": {
+  "capture": "finlab-v4-3y-r33trial-20261022d raw lanes (price/institutional/margin/short/pe/pb/dy/market_value) + training_auxiliary_full_vintage (revenue*, eps, roe, revenue_growth_yoy)",
+  "broker": "PROXY: raw/broker_flow_diversity/broker_daily (dominant_net_shares, broker_count, |dominant net|/(buy+sell)) instead of training_long_full_vintage/broker.parquet (43.8 MB, not fetched to stay in GCS budget); same date key and lag 0, so truncation behaviour is the same",
+  "market_history": "SYNTHETIC values on real session dates for advance_ratio/us_sentiment_score (exact-date joins; loader semantics documented in E5)",
+  "symbols": 200,
+  "sample": {
+   "strata": {
+    "cap_low|old": 30,
+    "cap_high|new": 27,
+    "cap_mid|old": 30,
+    "cap_low|new": 27,
+    "cap_mid|new": 27,
+    "cap_high|old": 30,
+    "stopped": 20,
+    "topup_active_random": 5
+   },
+   "forced": [
+    "6169",
+    "6548",
+    "2330",
+    "2317"
+   ],
+   "sample_seed": 20261028
+  }
+ },
+ "dates": [
+  {
+   "tag": "early_short_history",
+   "requested": "2020-09-01",
+   "session": "2020-09-01"
+  },
+  {
+   "tag": "revenue_key_date",
+   "requested": "2024-03-11",
+   "session": "2024-03-11"
+  },
+  {
+   "tag": "revenue_key_date",
+   "requested": "2025-12-10",
+   "session": "2025-12-10"
+  },
+  {
+   "tag": "revenue_key_date",
+   "requested": "2026-06-10",
+   "session": "2026-06-10"
+  },
+  {
+   "tag": "revenue_key_date",
+   "requested": "2026-08-10",
+   "session": "2026-08-10"
+  },
+  {
+   "tag": "revenue_key_date",
+   "requested": "2026-10-12",
+   "session": "2026-10-12"
+  },
+  {
+   "tag": "financial_deadline",
+   "requested": "2024-08-14",
+   "session": "2024-08-14"
+  },
+  {
+   "tag": "financial_deadline",
+   "requested": "2025-03-31",
+   "session": "2025-03-31"
+  },
+  {
+   "tag": "financial_deadline",
+   "requested": "2025-11-14",
+   "session": "2025-11-14"
+  },
+  {
+   "tag": "financial_deadline",
+   "requested": "2026-05-15",
+   "session": "2026-05-15"
+  },
+  {
+   "tag": "financial_deadline",
+   "requested": "2026-08-14",
+   "session": "2026-08-14"
+  },
+  {
+   "tag": "ex_dividend_season",
+   "requested": "2024-07-18",
+   "session": "2024-07-18"
+  },
+  {
+   "tag": "ex_dividend_season",
+   "requested": "2025-07-17",
+   "session": "2025-07-17"
+  },
+  {
+   "tag": "ex_dividend_season",
+   "requested": "2026-07-16",
+   "session": "2026-07-16"
+  },
+  {
+   "tag": "after_long_holiday",
+   "requested": "2025-02-03",
+   "session": "2025-02-03"
+  },
+  {
+   "tag": "after_long_holiday",
+   "requested": "2026-02-23",
+   "session": "2026-02-23"
+  },
+  {
+   "tag": "after_typhoon_closure",
+   "requested": "2026-07-13",
+   "session": "2026-07-13"
+  },
+  {
+   "tag": "after_long_holiday",
+   "requested": "2026-09-29",
+   "session": "2026-09-29"
+  },
+  {
+   "tag": "after_holiday_revenue",
+   "requested": "2026-10-13",
+   "session": "2026-10-13"
+  },
+  {
+   "tag": "last_capture_session",
+   "requested": "2026-10-22",
+   "session": "2026-10-22"
+  },
+  {
+   "tag": "delisting_last_close:3536",
+   "requested": "2023-04-11",
+   "session": "2023-04-11"
+  },
+  {
+   "tag": "delisting_minus5:3536",
+   "requested": "2023-03-30",
+   "session": "2023-03-30"
+  },
+  {
+   "tag": "delisting_last_close:6514",
+   "requested": "2024-10-08",
+   "session": "2024-10-08"
+  },
+  {
+   "tag": "delisting_minus5:6514",
+   "requested": "2024-09-27",
+   "session": "2024-09-27"
+  }
+ ],
+ "cells_compared": 3938,
+ "features": 131,
+ "B_pure_date_truncation": {
+  "definition": "every source cut to date <= t (prices, indicators, chips, per_stock_ts keys, market history); row t recomputed",
+  "non_identical_features": 1,
+  "detail": {
+   "l1_volumeMomentumDivergence132710": {
+    "cells": 11,
+    "max_abs": 0.7484740051488291,
+    "examples": [
+     {
+      "symbol": "1623",
+      "date": "2026-02-23",
+      "full": 0.0,
+      "truncated": 0.02435470374224577
+     },
+     {
+      "symbol": "3158",
+      "date": "2025-12-10",
+      "full": 0.0,
+      "truncated": -0.17759381984719186
+     },
+     {
+      "symbol": "4178",
+      "date": "2026-05-15",
+      "full": 0.0,
+      "truncated": -0.08164591705730491
+     },
+     {
+      "symbol": "4772",
+      "date": "2024-10-08",
+      "full": 0.0,
+      "truncated": 0.35406826076156106
+     },
+     {
+      "symbol": "6614",
+      "date": "2025-12-10",
+      "full": 0.0,
+      "truncated": 0.7484740051488291
+     }
+    ]
+   }
+  },
+  "root_cause": {
+   "l1_volumeMomentumDivergence132710": "features/__init__.py:919 `_feature_col(\"volumeMomentumDivergence132710\", _feature_col(\"CORD_10\"))` tests whole-column presence. The indicator owner (training_indicators.cjs) emits rows only from bar 20. When t is inside a symbol's first 19 capture bars, the full-history build has the column (later rows exist) with null at t -> ffill/prior-median -> 0.0, while the truncated build has no column -> CORD_10 fallback. All 11 differing cells are within the first 19 bars (23 sampled cells are in that zone; the other 12 have CORD_10 = 0). R33 slices R33_FEATURE_WARMUP_SESSIONS = 252 leading rows per symbol (services/training_policy.py:10, universal_training.py:770), so 0 R33 training rows are affected. Same whole-column pattern as the comment at features/__init__.py:246-247; Phase 1 fix: always materialise the indicator column (or apply the fallback per row)."
+  },
+  "verdict": "builder causal for all 131 features on every R33 training row; 1 feature non-causal only inside the 252-row warmup that R33 discards",
+  "other_checks": {
+   "avg_price_whole_column_branch": "features/__init__.py:416 `is_not_null().sum() > len*0.1` did not flip in any sampled cell (capture avg_price = value/volume is present on every bar with volume > 0). Still a whole-column test; keep in the T1 regression set.",
+   "obv_cum_sum": "tech_obv is a cum_sum from the first payload row; identical under date truncation (depends on window start, not future). Start-date dependence is a train/serve window issue, not lookahead."
+  }
+ },
+ "C_contract_truncation": {
+  "definition": "B plus proposed contract: margin/short (and short_ratio) lag 1 session; monthly revenue and eps/roe/revenue_growth_yoy usable one session after their first session on/after the key/availability date; institutional, broker, pe/pb/dy, price, market_value lag 0",
+  "non_identical_features": 11,
+  "detail": {
+   "l1_eps": {
+    "cells": 689,
+    "max_abs": 12.741453645424423,
+    "by_tag": {
+     "financial_deadline": 689
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2024-08-14",
+      "full": 1.229847949439279,
+      "contract": 1.2552490738325337
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-11-14",
+      "full": 3.004436037709543,
+      "contract": 2.5857347312545436
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-05-15",
+      "full": 1.2658905438140562,
+      "contract": 2.4715144775893085
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-14",
+      "full": 2.0078659357963513,
+      "contract": 1.2658905438140562
+     },
+     {
+      "symbol": "1220",
+      "date": "2024-08-14",
+      "full": 0.44480423587584905,
+      "contract": 0.3282340709936135
+     }
+    ]
+   },
+   "l1_monthlyRevenueMoM": {
+    "cells": 1028,
+    "max_abs": 178300.0,
+    "by_tag": {
+     "revenue_key_date": 851,
+     "after_typhoon_closure": 177
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2024-03-11",
+      "full": -18.92,
+      "contract": 4.02
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-12-10",
+      "full": 5.74,
+      "contract": -1.75
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-06-10",
+      "full": 7.42,
+      "contract": -7.75
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-10",
+      "full": 5.9,
+      "contract": -2.77
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-10-12",
+      "full": 7.39,
+      "contract": -7.76
+     }
+    ]
+   },
+   "l1_monthlyRevenueYoY": {
+    "cells": 1023,
+    "max_abs": 5287.24,
+    "by_tag": {
+     "revenue_key_date": 847,
+     "after_typhoon_closure": 176
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2024-03-11",
+      "full": -10.27,
+      "contract": 5.71
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-12-10",
+      "full": 1.92,
+      "contract": -4.49
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-06-10",
+      "full": 1.65,
+      "contract": -2.91
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-10",
+      "full": 8.05,
+      "contract": 8.69
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-10-12",
+      "full": 6.24,
+      "contract": 1.3
+     }
+    ]
+   },
+   "l1_revenueGrowthYoY": {
+    "cells": 672,
+    "max_abs": 36744.02878070202,
+    "by_tag": {
+     "financial_deadline": 672
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2024-08-14",
+      "full": -9.538995930527411,
+      "contract": -4.4242243230499705
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-11-14",
+      "full": 1.1432327198433982,
+      "contract": 5.308348937395087
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-05-15",
+      "full": 7.1559076027440005,
+      "contract": 3.457169314061485
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-14",
+      "full": 2.328524556824058,
+      "contract": 7.1559076027440005
+     },
+     {
+      "symbol": "1220",
+      "date": "2024-08-14",
+      "full": -2.290534221578984,
+      "contract": 16.186964831687757
+     }
+    ]
+   },
+   "l1_roe": {
+    "cells": 689,
+    "max_abs": 37.06523425385715,
+    "by_tag": {
+     "financial_deadline": 689
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2024-08-14",
+      "full": 3.5910928274718943,
+      "contract": 3.575523297186441
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-11-14",
+      "full": 7.650851620024064,
+      "contract": 6.992863416882221
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-05-15",
+      "full": 3.1198359371538307,
+      "contract": 5.840592074030738
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-14",
+      "full": 5.284950758086796,
+      "contract": 3.1198359371538307
+     },
+     {
+      "symbol": "1220",
+      "date": "2024-08-14",
+      "full": 3.0462383124075667,
+      "contract": 2.267213078944248
+     }
+    ]
+   },
+   "l1_volumeMomentumDivergence132710": {
+    "cells": 11,
+    "max_abs": 0.7484740051488291,
+    "by_tag": {
+     "after_long_holiday": 1,
+     "revenue_key_date": 3,
+     "financial_deadline": 5,
+     "delisting_last_close": 1,
+     "ex_dividend_season": 1
+    },
+    "examples": [
+     {
+      "symbol": "1623",
+      "date": "2026-02-23",
+      "full": 0.0,
+      "contract": 0.02435470374224577
+     },
+     {
+      "symbol": "3158",
+      "date": "2025-12-10",
+      "full": 0.0,
+      "contract": -0.17759381984719186
+     },
+     {
+      "symbol": "4178",
+      "date": "2026-05-15",
+      "full": 0.0,
+      "contract": -0.08164591705730491
+     },
+     {
+      "symbol": "4772",
+      "date": "2024-10-08",
+      "full": 0.0,
+      "contract": 0.35406826076156106
+     },
+     {
+      "symbol": "6614",
+      "date": "2025-12-10",
+      "full": 0.0,
+      "contract": 0.7484740051488291
+     }
+    ]
+   },
+   "val_sp": {
+    "cells": 1031,
+    "max_abs": 3.7936503441049005,
+    "by_tag": {
+     "revenue_key_date": 853,
+     "after_typhoon_closure": 178
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2024-03-11",
+      "full": 0.06391228099061365,
+      "contract": 0.07882850647642617
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-12-10",
+      "full": 0.02794328417931062,
+      "contract": 0.02642416649595552
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-06-10",
+      "full": 0.005416442658704735,
+      "contract": 0.0050420954186385075
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-10",
+      "full": 0.06520951418569941,
+      "contract": 0.0615731386129665
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-10-12",
+      "full": 0.0339690912305393,
+      "contract": 0.03163086349539587
+     }
+    ]
+   },
+   "margin_balance": {
+    "cells": 2895,
+    "max_abs": 48045.0,
+    "by_tag": {
+     "early_short_history": 84,
+     "revenue_key_date": 632,
+     "financial_deadline": 617,
+     "ex_dividend_season": 359,
+     "after_long_holiday": 376,
+     "after_typhoon_closure": 141,
+     "after_holiday_revenue": 134,
+     "last_capture_session": 129,
+     "delisting_last_close": 212,
+     "delisting_minus5": 211
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2020-09-01",
+      "full": 1319.0,
+      "contract": 1298.0
+     },
+     {
+      "symbol": "1215",
+      "date": "2024-03-11",
+      "full": 663.0,
+      "contract": 667.0
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-12-10",
+      "full": 608.0,
+      "contract": 638.0
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-06-10",
+      "full": 374.0,
+      "contract": 440.0
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-10",
+      "full": 417.0,
+      "contract": 418.0
+     }
+    ]
+   },
+   "margin_change_5d_ts": {
+    "cells": 2866,
+    "max_abs": 2.0,
+    "by_tag": {
+     "early_short_history": 84,
+     "revenue_key_date": 627,
+     "financial_deadline": 609,
+     "ex_dividend_season": 355,
+     "after_long_holiday": 374,
+     "after_typhoon_closure": 139,
+     "after_holiday_revenue": 134,
+     "last_capture_session": 128,
+     "delisting_last_close": 207,
+     "delisting_minus5": 209
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2020-09-01",
+      "full": -0.16782334384858044,
+      "contract": -0.1810725552050473
+     },
+     {
+      "symbol": "1215",
+      "date": "2024-03-11",
+      "full": 0.14904679376083188,
+      "contract": 0.1559792027729636
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-12-10",
+      "full": -0.23135271807838179,
+      "contract": -0.1934260429835651
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-06-10",
+      "full": -0.04591836734693878,
+      "contract": 0.12244897959183673
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-10",
+      "full": -0.018823529411764704,
+      "contract": -0.01647058823529412
+     }
+    ]
+   },
+   "margin_ratio": {
+    "cells": 2895,
+    "max_abs": 0.0008420132357314584,
+    "by_tag": {
+     "early_short_history": 84,
+     "revenue_key_date": 632,
+     "financial_deadline": 617,
+     "ex_dividend_season": 359,
+     "after_long_holiday": 376,
+     "after_typhoon_closure": 141,
+     "after_holiday_revenue": 134,
+     "last_capture_session": 129,
+     "delisting_last_close": 212,
+     "delisting_minus5": 211
+    },
+    "examples": [
+     {
+      "symbol": "1215",
+      "date": "2020-09-01",
+      "full": 1.7104646241265532e-05,
+      "contract": 1.6832320561912556e-05
+     },
+     {
+      "symbol": "1215",
+      "date": "2024-03-11",
+      "full": 2.0864450631650944e-05,
+      "contract": 2.0990329670152607e-05
+     },
+     {
+      "symbol": "1215",
+      "date": "2025-12-10",
+      "full": 6.8443936943659075e-06,
+      "contract": 7.182110488495804e-06
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-06-10",
+      "full": 8.139544773455097e-07,
+      "contract": 9.575935027594232e-07
+     },
+     {
+      "symbol": "1215",
+      "date": "2026-08-10",
+      "full": 1.0610877100699208e-05,
+      "contract": 1.0636322849142132e-05
+     }
+    ]
+   },
+   "short_squeeze_proxy": {
+    "cells": 126,
+    "max_abs": 0.2970414201183431,
+    "by_tag": {
+     "ex_dividend_season": 13,
+     "after_long_holiday": 25,
+     "financial_deadline": 18,
+     "revenue_key_date": 29,
+     "delisting_last_close": 7,
+     "last_capture_session": 4,
+     "delisting_minus5": 16,
+     "after_typhoon_closure": 4,
+     "after_holiday_revenue": 4,
+     "early_short_history": 6
+    },
+    "examples": [
+     {
+      "symbol": "1305",
+      "date": "2025-07-17",
+      "full": 0.12654320987654305,
+      "contract": 0.0
+     },
+     {
+      "symbol": "1305",
+      "date": "2026-02-23",
+      "full": 0.00423728813559313,
+      "contract": 0.0
+     },
+     {
+      "symbol": "1305",
+      "date": "2026-09-29",
+      "full": 0.0,
+      "contract": 0.012552301255230157
+     },
+     {
+      "symbol": "1307",
+      "date": "2025-11-14",
+      "full": 0.007473841554559043,
+      "contract": 0.0
+     },
+     {
+      "symbol": "1342",
+      "date": "2024-03-11",
+      "full": 0.030303030303030304,
+      "contract": 0.0
+     }
+    ]
+   }
+  },
+  "root_cause": {
+   "margin_balance, margin_ratio, margin_change_5d_ts, short_squeeze_proxy": "V1: #78 keys margin/short at observation date d (lag 0); contract lag 1 (E1 0/59 at 21:00). Differs on most cells because margin changes daily.",
+   "l1_monthlyRevenueMoM, l1_monthlyRevenueYoY, val_sp": "V2: revenue joined backward-asof from key_date -> usable on the key_date session itself; contract +1 session (E1/E4 98.94% < 99%). Differences only on key_date sessions (incl. 2026-07-13, the July key_date after the 07-10 typhoon closure).",
+   "l1_eps, l1_roe, l1_revenueGrowthYoY": "V3: availability session = first session >= max(disclosure, deadline), usable same session; contract +1 session (unmeasurable -> fail-closed). Differences only on deadline sessions.",
+   "l1_volumeMomentumDivergence132710": "same 11 warmup cells as B (not a contract issue)."
+  },
+  "verdict": "No hole outside V1/V2/V3: every C difference is explained by the three known lag rules; once C2 applies lag 1 to margin/short and +1 session to revenue/financials the full-history build equals the truncated build on these features by construction. Value-vintage issues (revenue late back-fill, eps restatement, market_value revisions) are not detectable by truncation and are covered by E2/E4."
+ },
+ "limitations": [
+  "broker values are a proxy (raw broker_daily lane, shares not lots), see inputs.broker",
+  "market history values synthetic (exact-date join; lineage in E5)",
+  "value-vintage effects (late filers, restatements) cannot be seen by truncating a single capture; see E2/E4",
+  "R33 prep merges D1 snapshot prior_ts/prior_chips; harness omits snapshot rows because E5 showed none of them reach the 131"
+ ]
+}

@@ -61,7 +61,7 @@ export async function resolveEveningChainRunAuthority(
   }
 
   const boundary = await historicalLearningLineageDecision(
-    env.DB,
+    databaseForDataDomain(env, 'market'),
     env.KV,
     'evening-chain',
     input.businessDate,

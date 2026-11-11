@@ -27,6 +27,23 @@ export async function queueFinLabCompletion(env: Bindings, date: string, runId: 
   await dispatchFinLabCompletion(env, date)
 }
 
+/**
+ * A restart re-arms a failed or waiting market continuation under its own run id, so the
+ * continuation it runs next is not dropped as a superseded delivery. Success and running rows stay.
+ * Returns the row status after the re-arm (null when there is no row yet).
+ */
+export async function rearmFinLabMarketCompletion(env: Bindings, date: string, runId: string, force = false) {
+  const db = databaseForDataDomain(env, 'ops')
+  await db.prepare(`UPDATE pipeline_stage_runs SET status='queued',cursor_key=?,
+    attempt_count=0,lease_owner=NULL,lease_expires_at=NULL,started_at=NULL,completed_at=NULL,last_error=NULL,
+    queued_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+    WHERE business_date=? AND stage='finlab_market' AND status IN ('error','waiting')`)
+    .bind(JSON.stringify({runId,force}),date).run()
+  const row = await db.prepare(`SELECT status FROM pipeline_stage_runs WHERE business_date=? AND stage='finlab_market'`)
+    .bind(date).first<{status:string}>()
+  return row?.status ?? null
+}
+
 export async function dispatchFinLabCompletion(env: Bindings, date: string, delaySeconds = 0) {
   const db = databaseForDataDomain(env, 'ops')
   await db.prepare(`UPDATE pipeline_stage_runs SET status='queued',lease_owner=NULL,lease_expires_at=NULL,

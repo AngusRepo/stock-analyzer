@@ -15,6 +15,7 @@ import {
   loadSchedulerPage,
   loadStockReportPage,
   loadStrategyLabPage,
+  loadTodoBoardPage,
   loadUnauthorized,
 } from './lib/routeModules'
 
@@ -30,6 +31,7 @@ const NotFound = lazy(loadNotFound)
 const DataQualityPage = lazy(loadDataQualityPage)
 const StrategyLabPage = lazy(loadStrategyLabPage)
 const ObservabilityPage = lazy(loadObservabilityPage)
+const TodoBoardPage = lazy(loadTodoBoardPage)
 
 function PageLoader({ label }: { label: string }) {
   return (
@@ -113,6 +115,14 @@ export default function App() {
           <AdminOnly label="OBS">
             <Suspense fallback={<PageLoader label="OBS" />}>
               <ObservabilityPage />
+            </Suspense>
+          </AdminOnly>
+        </Route>
+
+        <Route path="/todo">
+          <AdminOnly label="待辦">
+            <Suspense fallback={<PageLoader label="待辦" />}>
+              <TodoBoardPage />
             </Suspense>
           </AdminOnly>
         </Route>

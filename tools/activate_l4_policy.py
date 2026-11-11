@@ -44,6 +44,13 @@ def save(out, name, value):
     (out / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n')
 
 
+def sealed_plans(paper):
+    # One plan per request: all payloads together (~128 MB on 2026-11-02) exceed a D1 response.
+    ids = paper.query('SELECT plan_id FROM l4_portfolio_plans_v1 WHERE account_id=1 ORDER BY plan_id')
+    return [paper.query('SELECT plan_id,payload_json FROM l4_portfolio_plans_v1 WHERE account_id=1 AND plan_id=?',
+                        [row['plan_id']])[0] for row in ids]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=('prepare', 'prepare-change', 'grant', 'activate'))
@@ -207,7 +214,7 @@ def main():
     label = lambda i: 'source' if i == 0 else 'P' + str(i)
     from services.d1_domain_client import client_for_domain
     paper = client_for_domain('paper')
-    sealed_before = paper.query('SELECT plan_id,payload_json FROM l4_portfolio_plans_v1 WHERE account_id=1 ORDER BY plan_id')
+    sealed_before = sealed_plans(paper)
     risk_before = worker('/api/admin/risk-config')['body']['effective']
     plan = {'mode': 'execute' if args.execute else 'dry_run', 'from': label(start), 'to': label(target),
             'writes': [{'key': key, 'from_checksum': digest(frm), 'to_checksum': digest(to)} for key, frm, to in pending],
@@ -259,7 +266,7 @@ def main():
 
     from services.active8_nav_adoption import current_execution_configuration
     from services.active8_paper_admission import runtime_configuration_identity, verify_active_approval
-    sealed_after = paper.query('SELECT plan_id,payload_json FROM l4_portfolio_plans_v1 WHERE account_id=1 ORDER BY plan_id')
+    sealed_after = sealed_plans(paper)
     if digest(sealed_before) != digest(sealed_after):
         raise RuntimeError('sealed_plans_changed_during_activation')
     if worker('/api/admin/risk-config')['body']['effective'] != risk_before:

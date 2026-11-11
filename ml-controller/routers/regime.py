@@ -60,6 +60,15 @@ class RegimePreflightRequest(BaseModel):
 
 @router.post('/regime/preflight')
 async def regime_preflight(req: RegimePreflightRequest):
+    # The maintenance tick (TW 14:00 and 20:00, holidays included) also starts the
+    # read-only Modal ephemeral-app inventory in the background; this response never waits for it.
+    if req.maintenance_only:
+        from services import modal_app_inventory
+        modal_app_inventory.start_background()
+    return await _regime_preflight(req)
+
+
+async def _regime_preflight(req: RegimePreflightRequest):
     from services.hmm_maintenance_dispatch import (
         stamp, model_coverage, read_maintenance_state, read_maintenance_attempt, dispatch_maintenance, policy_enabled,
     )

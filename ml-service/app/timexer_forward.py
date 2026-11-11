@@ -25,6 +25,10 @@ def predict_forward(*, bucket, prep, sequence, rows, source, train_end):
     receipt = feature_receipt(bucket, {"schema_version": "timexer-feature-source-v1",
         "signal_date": receipt["business_date"], "status": "ready", "training_dispatched": False,
         "source_gcs_prefix": prefix, "source_receipt_checksum": prep["source_receipt_checksum"]}, receipt["business_date"])
+    from .pit_contract import artifact_contract_version
+    if (receipt.get("pit_contract_version") != prep.get("pit_contract_version")
+            or artifact_contract_version(metadata) not in (None, prep.get("pit_contract_version"))):
+        raise ValueError("forward_extension_pit_contract_mismatch")
     torch.set_float32_matmul_precision("high")
     model, settings = load_checkpoint(bucket.blob(source["artifact_path"]).download_as_bytes(),
         expected_checksum=source["checksum"], expected_variant=config["variant"], device="cuda")

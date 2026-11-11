@@ -80,7 +80,9 @@ def join_available_history(df: pl.DataFrame, history: dict) -> pl.DataFrame:
     return joined
 
 
-def feature_missing_masks(df: pl.DataFrame, env: dict, meta: dict, historical: bool) -> dict[str, pl.Series]:
+def feature_missing_masks(df: pl.DataFrame, env: dict, meta: dict, historical: bool,
+                          no_scalar: frozenset = frozenset()) -> dict[str, pl.Series]:
+    """no_scalar: sources a PIT contract lags; their same-day serving scalar is never used."""
     masks = {}
     for name, sources in SOURCE_DEPENDENCIES.items():
         observed = []
@@ -88,7 +90,7 @@ def feature_missing_masks(df: pl.DataFrame, env: dict, meta: dict, historical: b
             if source in df.columns:
                 observed.append(df[source].cast(pl.Float64, strict=False).is_finite().fill_null(False))
             else:
-                raw = None if historical else meta.get("stock_vs_sector" if source == "sector_rs_ratio" else source, env.get(source))
+                raw = None if historical or source in no_scalar else meta.get("stock_vs_sector" if source == "sector_rs_ratio" else source, env.get(source))
                 try:
                     import math
                     present = raw is not None and math.isfinite(float(raw))

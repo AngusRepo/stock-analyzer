@@ -1,7 +1,9 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { writeSystemLog } from './notify'
 import type { Bindings } from '../types'
 import { classifyBoard } from './boardTradability'
 import { loadCoreStockIdentitiesByIds, resolveVenue } from './stockIdentityMarketBridge'
+import type { AdjustedGapBar } from './screenerPriceSignals'
 
 export interface CanonicalScreenerPrice {
   date: string
@@ -447,6 +449,59 @@ export async function loadScreenerPriceRowsPaged(
     }]
   })
 }
+export const ADJUSTED_GAP_BAR_SOURCE = 'market.canonical_market_daily:finlab.price'
+
+export interface AdjustedGapBarLoad {
+  /** symbol -> date -> adjusted bar */
+  bars: Map<string, Map<string, AdjustedGapBar>>
+  rows: number
+  error: string | null
+}
+
+function positiveOrNull(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+/**
+ * FinLab adjusted high/low for the given sessions (the canonical adjusted owner; the stock_prices.adj_close
+ * mirror is not used). canonical_market_daily is keyed by symbol. Never throws: a failed read returns no bars
+ * and the error text, so tech_gap_down degrades to null instead of failing the screener run.
+ */
+export async function loadAdjustedGapBars(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  dates: readonly string[],
+): Promise<AdjustedGapBarLoad> {
+  const sessions = [...new Set(dates)].sort()
+  const bars = new Map<string, Map<string, AdjustedGapBar>>()
+  if (!sessions.length) return { bars, rows: 0, error: null }
+  let lastError: unknown
+  for (let attempt = 1; attempt <= SCREENER_PRICE_PAGE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await databaseForDataDomain(env, 'market').prepare(
+        `SELECT stock_id, date, adj_high, adj_low
+           FROM canonical_market_daily
+          WHERE source = 'finlab.price' AND date >= ? AND date <= ?`,
+      ).bind(sessions[0], sessions[sessions.length - 1])
+        .all<{ stock_id: string; date: string; adj_high: number | null; adj_low: number | null }>()
+      const rows = result.results ?? []
+      for (const row of rows) {
+        const symbol = String(row.stock_id)
+        let byDate = bars.get(symbol)
+        if (!byDate) bars.set(symbol, byDate = new Map())
+        byDate.set(String(row.date), { adjHigh: positiveOrNull(row.adj_high), adjLow: positiveOrNull(row.adj_low) })
+      }
+      return { bars, rows: rows.length, error: null }
+    } catch (error) {
+      lastError = error
+      bars.clear()
+      if (attempt < SCREENER_PRICE_PAGE_MAX_ATTEMPTS) await waitForPricePageRetry(250 * (2 ** (attempt - 1)))
+    }
+  }
+  return { bars, rows: 0, error: lastError instanceof Error ? lastError.message : String(lastError) }
+}
+
 export interface ScreenerChipFreshness {
   latestInstitutionalChipDate: string | null
   latestBrokerFlowDate: string | null
@@ -482,38 +537,52 @@ export function screenerChipFreshness(chips: readonly CanonicalScreenerChip[], t
   }
 }
 
-/** One warn per business date (screener attempts and manual reruns share the key); never blocks the run. */
+/**
+ * One ops system_logs warn and one console.warn per dedup key. The key is claimed before the write so a
+ * failing insert does not re-log every tick. When the KV claim itself fails the row is still written,
+ * marked dedup unavailable (so a KV outage logs once per tick until KV recovers). Never throws.
+ */
+export async function logScreenerAlertOnce(
+  env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>,
+  dedupKey: string,
+  cron: string,
+  message: string,
+  meta: Record<string, unknown>,
+): Promise<boolean> {
+  let dedupError: string | null = null
+  try {
+    if (await env.KV.get(dedupKey)) return false
+    await env.KV.put(dedupKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
+  } catch (error) {
+    dedupError = error instanceof Error ? error.message : String(error)
+  }
+  const logged = dedupError == null ? message : `${message}; dedup unavailable: ${dedupError}`
+  console.warn(`[${cron}] ${logged}`)
+  try {
+    await writeSystemLog(databaseForDataDomain(env, 'ops'), 'warn', cron, logged,
+      dedupError == null ? meta : { ...meta, dedup_unavailable: dedupError })
+    return true
+  } catch (error) {
+    console.warn(`[${cron}] ${logged}; ops log failed: ${error instanceof Error ? error.message : String(error)}`)
+    return false
+  }
+}
+
+/** One ops warn per business date (screener attempts and manual reruns share the key); never blocks the run. */
 export async function alertScreenerChipStale(
-  env: { KV: KVNamespace; DISCORD_WEBHOOK_URL?: string },
+  env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>,
   endDate: string,
   freshness: ScreenerChipFreshness,
 ): Promise<boolean> {
-  if (!freshness.stale || !env.DISCORD_WEBHOOK_URL) return false
-  const dedupKey = `cron:alert:screener-chip-stale:${endDate}`
-  try {
-    if (await env.KV.get(dedupKey)) return false
-    // Claim before sending: a failing webhook must not re-alert on every attempt.
-    await env.KV.put(dedupKey, '1', { expirationTtl: 86400 })
-    await fetch(env.DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: [
-          'Scheduler Warn: screener chip data stale (`screener-chip-stale`)',
-          `Date: ${endDate}`,
-          `Price session: ${freshness.priceMaxDate}`,
-          `Institutional chips: ${freshness.latestInstitutionalChipDate ?? 'missing'} (${freshness.institutionalStaleSessions} sessions behind)`,
-          `Broker flow: ${freshness.latestBrokerFlowDate ?? 'missing'} (${freshness.brokerFlowStaleSessions} sessions behind)`,
-          'Chip scores used the latest available dates; scoring is unchanged.',
-        ].join('\n'),
-      }),
-      signal: AbortSignal.timeout(5000),
-    })
-    return true
-  } catch {
-    // Alerting must never block the screener.
-    return false
-  }
+  if (!freshness.stale) return false
+  const message = [
+    `screener chip data stale for ${endDate}: price session ${freshness.priceMaxDate}`,
+    `institutional chips ${freshness.latestInstitutionalChipDate ?? 'missing'} (${freshness.institutionalStaleSessions} sessions behind)`,
+    `broker flow ${freshness.latestBrokerFlowDate ?? 'missing'} (${freshness.brokerFlowStaleSessions} sessions behind)`,
+    'chip scores used the latest available dates; scoring is unchanged',
+  ].join('; ')
+  return logScreenerAlertOnce(env, `cron:alert:screener-chip-stale:${endDate}`, 'screener-chip-stale', message,
+    { run_date: endDate, ...freshness })
 }
 
 export async function loadMarketDataFromD1(

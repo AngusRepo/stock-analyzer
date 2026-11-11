@@ -385,8 +385,9 @@ async def reconcile_pipeline_execution(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     callback = failure_callback(snapshot)
     if snapshot.get('state') == 'succeeded':
-        from services.pipeline_prediction_recovery import reconcile_modal_request
+        from services.pipeline_prediction_recovery import log_gpu_queue, reconcile_modal_request
         recovery = await asyncio.to_thread(reconcile_modal_request, run_date=date, run_id=run_id)
+        await asyncio.to_thread(log_gpu_queue, recovery, run_date=date, run_id=run_id)
         if recovery['reason'] != 'no_registered_modal_request':
             # A validated immutable L3 request owns progress after input recovery.
             # Earlier failed input attempts cannot fail its active successor.

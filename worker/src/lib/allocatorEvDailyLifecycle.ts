@@ -5,6 +5,13 @@ import { historicalLearningLineageDecision } from './historicalLearningLineageGu
 import { nextTwTradingDate } from './schedulerPolicy'
 import type { SchedulerRunLogEntry } from './schedulerRunLogger'
 
+// Each watchdog tick used to re-queue a failed post-verify with no limit, so a
+// stuck date retried every 10 minutes forever (11/3 kept learning-db overloaded
+// on 2026-11-04). The authorized re-queue resets attempt_count, so the
+// redispatches are counted in KV per lifecycle run instead.
+const POST_VERIFY_WATCHDOG_MAX_REDISPATCHES = 6
+const POST_VERIFY_REDISPATCH_TTL_SECONDS = 7 * 86_400
+
 export type AllocatorEvLifecycleState =
   | 'lineage_ready'
   | 'snapshot_ready'
@@ -535,6 +542,8 @@ export async function inspectAllocatorSnapshotClosure(
     learningDb?: D1Database
     opsDb?: D1Database
     coreDb?: D1Database
+    // Owner of canonical_market_daily, which confirms past trading sessions.
+    marketDb?: D1Database
     kv?: KVNamespace
     nowMs?: number
   } = {},
@@ -548,7 +557,7 @@ export async function inspectAllocatorSnapshotClosure(
   let nextSessionOpenUtc: string | null = null
   if (businessDate < today && options.kv) {
     try {
-      const nextSessionDate = await nextTwTradingDate(options.kv, businessDate, db, {
+      const nextSessionDate = await nextTwTradingDate(options.kv, businessDate, options.marketDb ?? db, {
         requireOfficialFutureCalendar: true,
         nowMs,
       })
@@ -798,6 +807,17 @@ export async function runAllocatorEvLifecycleWatchdog(
     }>()
     const previousIncomplete = previousStage?.canonical_run_id === lifecycleRunId
       && (previousStage.status === 'error' || (previousStage.status === 'running' && Number(previousStage.lease_expired) === 1))
+    const redispatchKey = `allocator-ev-lifecycle:post-verify-redispatches:${businessDate}:${lifecycleRunId}`
+    const redispatches = Number.parseInt((await env.KV.get(redispatchKey)) ?? '0', 10) || 0
+    if (previousIncomplete) {
+      if (redispatches >= POST_VERIFY_WATCHDOG_MAX_REDISPATCHES) {
+        return `status=failed allocator EV lifecycle post-verify redispatch exhausted date=${businessDate} run_id=${lifecycleRunId} `
+          + `previous_status=${previousStage?.status} redispatches=${redispatches} `
+          + `previous_error=${String(previousStage?.last_error ?? 'missing').replace(/status=/gi, 'status:').replace(/\s+/g, '_').slice(0, 300)} `
+          + 'recovery_dispatch=not_queued manual_redispatch_required'
+      }
+      await env.KV.put(redispatchKey, String(redispatches + 1), { expirationTtl: POST_VERIFY_REDISPATCH_TTL_SECONDS })
+    }
     const { queuePostVerifyStage } = await import('./pipelineStageLease')
     const continuation = await queuePostVerifyStage(env, {
       businessDate,
@@ -829,6 +849,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       learningDb,
       opsDb,
       coreDb,
+      marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     }),
     inspectAllocatorEvMaturityCoverage(learningDb, businessDate),
@@ -952,7 +973,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
   const repairBoundary = !snapshot.ready
-    ? await historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', businessDate)
+    ? await historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', businessDate)
     : null
   if (!snapshot.ready && repairBoundary && !repairBoundary.allowed) {
     return `skipped: allocator EV native snapshot repair window closed for historical date=${businessDate} `

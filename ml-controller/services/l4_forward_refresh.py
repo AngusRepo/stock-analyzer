@@ -201,6 +201,8 @@ def current_price_capture(bucket,business_date,*,cutoff):
     prefix='universal/oof_forward_prep_v2/'+business_date+'-'
     for blob in bucket.list_blobs(prefix=prefix):
         if not blob.name.endswith('/prep/immutable_receipt.json'):continue
+        # PIT-lagged copies of a daily prep (pit_daily_sources) are not separate price evidence.
+        if '-pit-' in blob.name.removeprefix(prefix):continue
         created=blob.time_created
         if created is None:raise ValueError('l4_forward_price_receipt_creation_missing')
         if created<=clock:candidates.append((created,blob.name,blob))

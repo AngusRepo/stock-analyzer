@@ -1,0 +1,1280 @@
+{
+ "definition": {
+  "anchor": "K(t)=21:00 TW serving capture. 21:00-chain proxy: a finlab-v4-daily run for source_end_date=t that STARTED (manifest generated_at) between t 20:45 and t 21:20 TW; it fetched within ~15-35 min of start (manifest GCS mtime). Keys *_2130 below mean this 21:00-chain run.",
+  "same_evening": "any run for t started between t 20:45 and t 23:59 TW (captures after C28-25 wait for late lanes, so the run itself may finish 21:49-23:46).",
+  "coverage": "target_rows of the run / non-null symbols for t in r33trial-20261022d (F). >=0.99 counts as full; target_rows counts all instruments incl. ETFs in both.",
+  "threshold_Q2": "same-day present on >=95% of observed trading days -> lag 0, else lag 1",
+  "trading_days": "dates with close rows in F, 2026-07-03..2026-10-22 (76 days)",
+  "sources": "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-*/manifest.json source_key_reports (98 manifests), F = finlab-v4-r33trial-20261022d raw lanes"
+ },
+ "lanes": {
+  "price_raw_close": {
+   "manifest_field": "close",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "price_adj_close": {
+   "manifest_field": "adj_close",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "volume": {
+   "manifest_field": "volume",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "market_value": {
+   "manifest_field": "market_value",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "institutional_foreign_net": {
+   "manifest_field": "foreign_net",
+   "observed_days_2130": 59,
+   "present_days_2130": 58,
+   "present_rate_2130": 0.9831,
+   "present_and_cov99_days_2130": 58,
+   "observed_days_same_evening": 69,
+   "present_days_same_evening": 69,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [
+    "2026-07-20"
+   ],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "institutional_trust_net": {
+   "manifest_field": "trust_net",
+   "observed_days_2130": 59,
+   "present_days_2130": 58,
+   "present_rate_2130": 0.9831,
+   "present_and_cov99_days_2130": 58,
+   "observed_days_same_evening": 68,
+   "present_days_same_evening": 68,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [
+    "2026-07-20"
+   ],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "institutional_dealer_self_net": {
+   "manifest_field": "dealer_self_net",
+   "observed_days_2130": 59,
+   "present_days_2130": 58,
+   "present_rate_2130": 0.9831,
+   "present_and_cov99_days_2130": 58,
+   "observed_days_same_evening": 68,
+   "present_days_same_evening": 68,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [
+    "2026-07-20"
+   ],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "institutional_dealer_hedge_net": {
+   "manifest_field": "dealer_hedge_net",
+   "observed_days_2130": 59,
+   "present_days_2130": 58,
+   "present_rate_2130": 0.9831,
+   "present_and_cov99_days_2130": 58,
+   "observed_days_same_evening": 68,
+   "present_days_same_evening": 68,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [
+    "2026-07-20"
+   ],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "margin_balance": {
+   "manifest_field": "margin_balance",
+   "observed_days_2130": 59,
+   "present_days_2130": 2,
+   "present_rate_2130": 0.0339,
+   "present_and_cov99_days_2130": 2,
+   "observed_days_same_evening": 68,
+   "present_days_same_evening": 12,
+   "present_rate_same_evening": 0.1765,
+   "proposed_lag_Q2": 1,
+   "absent_days_2130": [
+    "2026-07-07",
+    "2026-07-08",
+    "2026-07-13",
+    "2026-07-14",
+    "2026-07-15",
+    "2026-07-16",
+    "2026-07-17",
+    "2026-07-20",
+    "2026-07-21",
+    "2026-07-22",
+    "2026-07-23",
+    "2026-07-27",
+    "2026-07-28",
+    "2026-07-29",
+    "2026-07-31",
+    "2026-08-03",
+    "2026-08-04",
+    "2026-08-05",
+    "2026-08-06",
+    "2026-08-07",
+    "2026-08-11",
+    "2026-08-12",
+    "2026-08-13",
+    "2026-08-14",
+    "2026-08-17",
+    "2026-08-18",
+    "2026-08-19",
+    "2026-08-21",
+    "2026-08-24",
+    "2026-08-25",
+    "2026-08-26",
+    "2026-08-27",
+    "2026-08-28",
+    "2026-09-01",
+    "2026-09-02",
+    "2026-09-03",
+    "2026-09-04",
+    "2026-09-07",
+    "2026-09-08",
+    "2026-09-09",
+    "2026-09-10",
+    "2026-09-11",
+    "2026-09-14",
+    "2026-09-15",
+    "2026-09-16",
+    "2026-09-17",
+    "2026-09-18",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-29",
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-05",
+    "2026-10-06",
+    "2026-10-07",
+    "2026-10-08"
+   ],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "short_balance": {
+   "manifest_field": "short_balance",
+   "observed_days_2130": 59,
+   "present_days_2130": 2,
+   "present_rate_2130": 0.0339,
+   "present_and_cov99_days_2130": 2,
+   "observed_days_same_evening": 68,
+   "present_days_same_evening": 12,
+   "present_rate_same_evening": 0.1765,
+   "proposed_lag_Q2": 1,
+   "absent_days_2130": [
+    "2026-07-07",
+    "2026-07-08",
+    "2026-07-13",
+    "2026-07-14",
+    "2026-07-15",
+    "2026-07-16",
+    "2026-07-17",
+    "2026-07-20",
+    "2026-07-21",
+    "2026-07-22",
+    "2026-07-23",
+    "2026-07-27",
+    "2026-07-28",
+    "2026-07-29",
+    "2026-07-31",
+    "2026-08-03",
+    "2026-08-04",
+    "2026-08-05",
+    "2026-08-06",
+    "2026-08-07",
+    "2026-08-11",
+    "2026-08-12",
+    "2026-08-13",
+    "2026-08-14",
+    "2026-08-17",
+    "2026-08-18",
+    "2026-08-19",
+    "2026-08-21",
+    "2026-08-24",
+    "2026-08-25",
+    "2026-08-26",
+    "2026-08-27",
+    "2026-08-28",
+    "2026-09-01",
+    "2026-09-02",
+    "2026-09-03",
+    "2026-09-04",
+    "2026-09-07",
+    "2026-09-08",
+    "2026-09-09",
+    "2026-09-10",
+    "2026-09-11",
+    "2026-09-14",
+    "2026-09-15",
+    "2026-09-16",
+    "2026-09-17",
+    "2026-09-18",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-29",
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-05",
+    "2026-10-06",
+    "2026-10-07",
+    "2026-10-08"
+   ],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "pe": {
+   "manifest_field": "pe",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "pb": {
+   "manifest_field": "pb",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "broker": {
+   "manifest_field": "broker_transactions",
+   "observed_days_2130": 59,
+   "present_days_2130": 58,
+   "present_rate_2130": 0.9831,
+   "present_and_cov99_days_2130": 2,
+   "observed_days_same_evening": 68,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 0.9706,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [
+    "2026-09-23"
+   ],
+   "partial_days_2130": [
+    [
+     "2026-07-07",
+     0.9015
+    ],
+    [
+     "2026-07-08",
+     0.9023
+    ],
+    [
+     "2026-07-13",
+     0.9023
+    ],
+    [
+     "2026-07-14",
+     0.8997
+    ],
+    [
+     "2026-07-15",
+     0.9018
+    ],
+    [
+     "2026-07-16",
+     0.8996
+    ],
+    [
+     "2026-07-17",
+     0.9011
+    ],
+    [
+     "2026-07-20",
+     0.9018
+    ],
+    [
+     "2026-07-21",
+     0.902
+    ],
+    [
+     "2026-07-22",
+     0.9011
+    ],
+    [
+     "2026-07-23",
+     0.8986
+    ],
+    [
+     "2026-07-27",
+     0.8955
+    ],
+    [
+     "2026-07-28",
+     0.8964
+    ],
+    [
+     "2026-07-29",
+     0.9007
+    ],
+    [
+     "2026-07-31",
+     0.9021
+    ],
+    [
+     "2026-08-03",
+     0.8956
+    ],
+    [
+     "2026-08-04",
+     0.8981
+    ],
+    [
+     "2026-08-05",
+     0.8983
+    ],
+    [
+     "2026-08-06",
+     0.8979
+    ],
+    [
+     "2026-08-07",
+     0.8987
+    ],
+    [
+     "2026-08-11",
+     0.8993
+    ],
+    [
+     "2026-08-12",
+     0.8981
+    ],
+    [
+     "2026-08-13",
+     0.9011
+    ],
+    [
+     "2026-08-14",
+     0.8993
+    ],
+    [
+     "2026-08-17",
+     0.8997
+    ],
+    [
+     "2026-08-18",
+     0.8959
+    ],
+    [
+     "2026-08-19",
+     0.8964
+    ],
+    [
+     "2026-08-21",
+     0.9005
+    ],
+    [
+     "2026-08-24",
+     0.8954
+    ],
+    [
+     "2026-08-25",
+     0.8945
+    ],
+    [
+     "2026-08-26",
+     0.8975
+    ],
+    [
+     "2026-08-27",
+     0.8968
+    ],
+    [
+     "2026-08-28",
+     0.8986
+    ],
+    [
+     "2026-09-01",
+     0.894
+    ],
+    [
+     "2026-09-02",
+     0.8938
+    ],
+    [
+     "2026-09-03",
+     0.8975
+    ],
+    [
+     "2026-09-04",
+     0.8939
+    ],
+    [
+     "2026-09-07",
+     0.9008
+    ],
+    [
+     "2026-09-08",
+     0.896
+    ],
+    [
+     "2026-09-09",
+     0.897
+    ],
+    [
+     "2026-09-10",
+     0.8954
+    ],
+    [
+     "2026-09-11",
+     0.8964
+    ],
+    [
+     "2026-09-14",
+     0.5272
+    ],
+    [
+     "2026-09-15",
+     0.8986
+    ],
+    [
+     "2026-09-16",
+     0.8964
+    ],
+    [
+     "2026-09-17",
+     0.8982
+    ],
+    [
+     "2026-09-18",
+     0.8973
+    ],
+    [
+     "2026-09-22",
+     0.903
+    ],
+    [
+     "2026-09-24",
+     0.9031
+    ],
+    [
+     "2026-09-29",
+     0.9031
+    ],
+    [
+     "2026-10-01",
+     0.9039
+    ],
+    [
+     "2026-10-02",
+     0.9036
+    ],
+    [
+     "2026-10-05",
+     0.9038
+    ],
+    [
+     "2026-10-06",
+     0.9041
+    ],
+    [
+     "2026-10-07",
+     0.9044
+    ],
+    [
+     "2026-10-08",
+     0.9033
+    ]
+   ],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  },
+  "taiex": {
+   "manifest_field": "taiex_close",
+   "observed_days_2130": 59,
+   "present_days_2130": 59,
+   "present_rate_2130": 1.0,
+   "present_and_cov99_days_2130": 59,
+   "observed_days_same_evening": 66,
+   "present_days_same_evening": 66,
+   "present_rate_same_evening": 1.0,
+   "proposed_lag_Q2": 0,
+   "absent_days_2130": [],
+   "partial_days_2130": [],
+   "no_run_days_2130": [
+    "2026-07-03",
+    "2026-07-06",
+    "2026-07-09",
+    "2026-07-24",
+    "2026-07-30",
+    "2026-08-10",
+    "2026-08-20",
+    "2026-08-31",
+    "2026-09-21",
+    "2026-09-30",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22"
+   ]
+  }
+ },
+ "schema": "pit-cert-e1-availability-v1",
+ "generated_by": "C28-02 Phase 0 (read-only), 2026-10-28",
+ "margin_short_write_times_tw": {
+  "note": "raw/chip_diversity/margin_balance.parquet GCS write time in runs that did contain same-day margin. Earliest same-day margin ever observed: 21:50 (08-20). None before 21:00.",
+  "pre_C28_25_late_reruns": {
+   "2026-07-20": "22:41",
+   "2026-07-30": "22:21",
+   "2026-08-10": "23:07",
+   "2026-08-20": "21:50"
+  },
+  "post_C28_25_runs_wait_for_late_lanes": {
+   "2026-10-12": "22:19",
+   "2026-10-13": "21:51",
+   "2026-10-14": "23:46",
+   "2026-10-15": "10-16 08:18",
+   "2026-10-16": "21:59",
+   "2026-10-19": "22:23",
+   "2026-10-20": "22:28",
+   "2026-10-21": "22:11",
+   "2026-10-22": "22:55",
+   "2026-10-27": "23:16"
+  },
+  "interpretation": "The 2 \"present\" 21:00-chain days (10-12, 10-13) are runs that started 21:01 but waited for margin until 22:19 / 21:51; margin is not available at 21:00 wall clock on any observed day. Agrees with #72 (12/65)."
+ },
+ "calendar": {
+  "weekdays_without_run_all_kv_holiday": [
+   "2026-09-25 (Fri) 中秋節",
+   "2026-09-28 (Mon) 孔子誕辰",
+   "2026-10-09 (Fri) 國慶日補假",
+   "2026-10-23 (Fri) 颱風休市",
+   "2026-10-26 (Mon) 光復節補假"
+  ],
+  "anomaly_2026_07_10": "2026-07-10 (Fri): KV holiday:2026-07-10 is ABSENT, but the 21:18 run for 07-10 has every lane absent, F (r33trial) has no close row for 07-10, and FinLab moved the July revenue key_date 07-10 -> 07-13. Evidence says market closed (likely typhoon); the KV holiday table is missing this date. Not a capture bug. Flag: KV holiday gap (read-only finding; not written).",
+  "other_irregular": {
+   "2026-07-20": "institutional + margin absent in 21:00 run, arrived in 22:31 rerun",
+   "2026-08-31": "only a partial 21:40 run (foreign_net only)",
+   "2026-09-14": "broker partial 1248 rows (~53% of F)",
+   "2026-09-23": "broker absent in 21:00 run"
+  },
+  "days_without_21_00_chain_run": [
+   "2026-07-03",
+   "2026-07-06",
+   "2026-07-09",
+   "2026-07-24",
+   "2026-07-30",
+   "2026-08-10",
+   "2026-08-20",
+   "2026-08-31",
+   "2026-09-21",
+   "2026-09-30",
+   "2026-10-14",
+   "2026-10-15",
+   "2026-10-16",
+   "2026-10-19",
+   "2026-10-20",
+   "2026-10-21",
+   "2026-10-22"
+  ]
+ },
+ "broker_coverage_note": "Before 2026-10-12 the daily broker lane captured ~2133 symbols/day while F (full backfill) has ~2364 on the same dates (coverage ~0.90). This is lane-universe expansion on 10-12 (to ~2374), back-filled into history by the full-vintage capture, not lateness. For the 7 main models broker features use symbols present in F; ~10% of symbol-days in Jul-Oct were NOT in the daily capture at the time.",
+ "dividend_yield_note": "dividend_yield is not a separate source_key_report; it is the same FinLab price_earning_ratio dataset as pe/pb (same lane, same arrival) -> same rate as pe/pb.",
+ "revenue_announcement_day": {
+  "measurable_window": "Only June 2026 (key_date 2026-06-10, May revenue) has daily captures around the key_date (3y runs at 22:00 TW). Jul-Sep daily runs do not capture revenue. 2026-10-12 row is observed at the 10-13 21:00 sealed capture (d+1).",
+  "row_2026_06_10": {
+   "final_F_nonnull": 1973,
+   "sequence": [
+    {
+     "vintage": "V0517",
+     "capture_tw": null,
+     "present_of_final": null,
+     "pct_of_final": null
+    },
+    {
+     "vintage": "V0604",
+     "capture_tw": "2026-06-04 16:05:59 (run label)",
+     "present_of_final": 170,
+     "pct_of_final": 8.616
+    },
+    {
+     "vintage": "V0605",
+     "capture_tw": null,
+     "present_of_final": 431,
+     "pct_of_final": 21.845
+    },
+    {
+     "vintage": "V0608",
+     "capture_tw": "2026-06-08 22:00 Mon",
+     "present_of_final": 855,
+     "pct_of_final": 43.335
+    },
+    {
+     "vintage": "V0609",
+     "capture_tw": "2026-06-09 22:00 Tue",
+     "present_of_final": 1272,
+     "pct_of_final": 64.47
+    },
+    {
+     "vintage": "V0610",
+     "capture_tw": "2026-06-10 22:00 Wed",
+     "present_of_final": 1952,
+     "pct_of_final": 98.936
+    },
+    {
+     "vintage": "V0611",
+     "capture_tw": "2026-06-11 22:00 Thu",
+     "present_of_final": 1957,
+     "pct_of_final": 99.189
+    },
+    {
+     "vintage": "V0612",
+     "capture_tw": "2026-06-12 22:00 Fri",
+     "present_of_final": 1965,
+     "pct_of_final": 99.595
+    },
+    {
+     "vintage": "V0615",
+     "capture_tw": "2026-06-15 22:00 Mon",
+     "present_of_final": 1965,
+     "pct_of_final": 99.595
+    },
+    {
+     "vintage": "V0626",
+     "capture_tw": "2026-06-28 00:47 Sun",
+     "present_of_final": 1965,
+     "pct_of_final": 99.595
+    },
+    {
+     "vintage": "V0701",
+     "capture_tw": null,
+     "present_of_final": 1965,
+     "pct_of_final": 99.595
+    },
+    {
+     "vintage": "R1007",
+     "capture_tw": null,
+     "present_of_final": 1973,
+     "pct_of_final": 100.0
+    },
+    {
+     "vintage": "S1013",
+     "capture_tw": "2026-10-13 21:00 Tue",
+     "present_of_final": 1973,
+     "pct_of_final": 100.0
+    },
+    {
+     "vintage": "F",
+     "capture_tw": null,
+     "present_of_final": 1973,
+     "pct_of_final": 100.0
+    },
+    {
+     "vintage": "S1027",
+     "capture_tw": "2026-10-27 23:01 Tue",
+     "present_of_final": 1973,
+     "pct_of_final": 100.0
+    }
+   ]
+  },
+  "coverage_on_key_date": {
+   "capture": "2026-06-10 (Wed) 22:00 TW",
+   "present_of_final": 1952,
+   "final": 1973,
+   "pct": 98.936,
+   "note": "22:00 > 21:00 so 21:00 coverage is <= 98.94%"
+  },
+  "coverage_key_date_plus_1": {
+   "capture": "2026-06-11 (Thu) 22:00 TW",
+   "pct": 99.189
+  },
+  "coverage_row_2026_10_12_at_10_13_2100": {
+   "present": 1965,
+   "final": 1981,
+   "pct": 99.192
+  },
+  "Q3_verdict": "key_date 21:00 coverage < 99% -> +1 session",
+  "late_filers_beyond_plus_1": "After +1 session still 16/1973 (0.81%) of the 06-10 row missing; 13 of them were already trading. See E4."
+ },
+ "financial_announcement_day": {
+  "measurable": false,
+  "reason": "No captures contain eps/roe/revenue_growth_yoy on or the night of any 2026 deadline (05-15, 08-14): 3y runs start 05-17, daily lanes exclude fundamentals, first sealed financial capture is 2026-10-13. 21:00 coverage on disclosure/deadline day cannot be measured.",
+  "proxy_disclosure_vs_deadline": {
+   "scope": "4-digit symbols, quarters 2020-Q1..2026-Q3, rows with a deadline",
+   "totals": [
+    {
+     "k": "after_deadline",
+     "len": 2585
+    },
+    {
+     "k": "before_deadline",
+     "len": 47774
+    },
+    {
+     "k": "disclosure_null",
+     "len": 1934
+    },
+    {
+     "k": "on_deadline_day",
+     "len": 23933
+    }
+   ],
+   "by_quarter": [
+    {
+     "date": "2020-Q1",
+     "n": 2857,
+     "on_deadline": 1350,
+     "after": 18,
+     "null": 0,
+     "deadline_mode": "2020-05-15",
+     "pct_not_before_deadline": 47.88
+    },
+    {
+     "date": "2020-Q2",
+     "n": 2857,
+     "on_deadline": 1010,
+     "after": 92,
+     "null": 0,
+     "deadline_mode": "2020-08-14",
+     "pct_not_before_deadline": 38.57
+    },
+    {
+     "date": "2020-Q3",
+     "n": 2857,
+     "on_deadline": 1206,
+     "after": 8,
+     "null": 0,
+     "deadline_mode": "2020-11-16",
+     "pct_not_before_deadline": 42.49
+    },
+    {
+     "date": "2020-Q4",
+     "n": 2857,
+     "on_deadline": 802,
+     "after": 79,
+     "null": 0,
+     "deadline_mode": "2021-03-31",
+     "pct_not_before_deadline": 30.84
+    },
+    {
+     "date": "2021-Q1",
+     "n": 2857,
+     "on_deadline": 1158,
+     "after": 13,
+     "null": 0,
+     "deadline_mode": "2021-05-17",
+     "pct_not_before_deadline": 40.99
+    },
+    {
+     "date": "2021-Q2",
+     "n": 2857,
+     "on_deadline": 679,
+     "after": 100,
+     "null": 0,
+     "deadline_mode": "2021-08-16",
+     "pct_not_before_deadline": 27.27
+    },
+    {
+     "date": "2021-Q3",
+     "n": 2857,
+     "on_deadline": 1241,
+     "after": 17,
+     "null": 0,
+     "deadline_mode": "2021-11-15",
+     "pct_not_before_deadline": 44.03
+    },
+    {
+     "date": "2021-Q4",
+     "n": 2857,
+     "on_deadline": 615,
+     "after": 96,
+     "null": 0,
+     "deadline_mode": "2022-03-31",
+     "pct_not_before_deadline": 24.89
+    },
+    {
+     "date": "2022-Q1",
+     "n": 2857,
+     "on_deadline": 1183,
+     "after": 22,
+     "null": 0,
+     "deadline_mode": "2022-05-16",
+     "pct_not_before_deadline": 42.18
+    },
+    {
+     "date": "2022-Q2",
+     "n": 2857,
+     "on_deadline": 719,
+     "after": 99,
+     "null": 0,
+     "deadline_mode": "2022-08-15",
+     "pct_not_before_deadline": 28.63
+    },
+    {
+     "date": "2022-Q3",
+     "n": 2857,
+     "on_deadline": 1380,
+     "after": 11,
+     "null": 0,
+     "deadline_mode": "2022-11-14",
+     "pct_not_before_deadline": 48.69
+    },
+    {
+     "date": "2022-Q4",
+     "n": 2857,
+     "on_deadline": 490,
+     "after": 118,
+     "null": 0,
+     "deadline_mode": "2023-03-31",
+     "pct_not_before_deadline": 21.28
+    },
+    {
+     "date": "2023-Q1",
+     "n": 2857,
+     "on_deadline": 1324,
+     "after": 20,
+     "null": 0,
+     "deadline_mode": "2023-05-15",
+     "pct_not_before_deadline": 47.04
+    },
+    {
+     "date": "2023-Q2",
+     "n": 2857,
+     "on_deadline": 862,
+     "after": 103,
+     "null": 0,
+     "deadline_mode": "2023-08-14",
+     "pct_not_before_deadline": 33.78
+    },
+    {
+     "date": "2023-Q3",
+     "n": 2857,
+     "on_deadline": 1279,
+     "after": 17,
+     "null": 0,
+     "deadline_mode": "2023-11-14",
+     "pct_not_before_deadline": 45.36
+    },
+    {
+     "date": "2023-Q4",
+     "n": 2857,
+     "on_deadline": 299,
+     "after": 492,
+     "null": 0,
+     "deadline_mode": "2024-04-01",
+     "pct_not_before_deadline": 27.69
+    },
+    {
+     "date": "2024-Q1",
+     "n": 2857,
+     "on_deadline": 1156,
+     "after": 27,
+     "null": 0,
+     "deadline_mode": "2024-05-15",
+     "pct_not_before_deadline": 41.41
+    },
+    {
+     "date": "2024-Q2",
+     "n": 2857,
+     "on_deadline": 714,
+     "after": 113,
+     "null": 0,
+     "deadline_mode": "2024-08-14",
+     "pct_not_before_deadline": 28.95
+    },
+    {
+     "date": "2024-Q3",
+     "n": 2857,
+     "on_deadline": 1170,
+     "after": 17,
+     "null": 0,
+     "deadline_mode": "2024-11-14",
+     "pct_not_before_deadline": 41.55
+    },
+    {
+     "date": "2024-Q4",
+     "n": 2857,
+     "on_deadline": 324,
+     "after": 467,
+     "null": 0,
+     "deadline_mode": "2025-03-17",
+     "pct_not_before_deadline": 27.69
+    },
+    {
+     "date": "2025-Q1",
+     "n": 2857,
+     "on_deadline": 1102,
+     "after": 27,
+     "null": 0,
+     "deadline_mode": "2025-05-15",
+     "pct_not_before_deadline": 39.52
+    },
+    {
+     "date": "2025-Q2",
+     "n": 2857,
+     "on_deadline": 618,
+     "after": 108,
+     "null": 0,
+     "deadline_mode": "2025-08-14",
+     "pct_not_before_deadline": 25.41
+    },
+    {
+     "date": "2025-Q3",
+     "n": 2857,
+     "on_deadline": 1098,
+     "after": 19,
+     "null": 0,
+     "deadline_mode": "2025-11-14",
+     "pct_not_before_deadline": 39.1
+    },
+    {
+     "date": "2025-Q4",
+     "n": 2857,
+     "on_deadline": 316,
+     "after": 419,
+     "null": 0,
+     "deadline_mode": "2026-03-16",
+     "pct_not_before_deadline": 25.73
+    },
+    {
+     "date": "2026-Q1",
+     "n": 2857,
+     "on_deadline": 1099,
+     "after": 22,
+     "null": 0,
+     "deadline_mode": "2026-05-15",
+     "pct_not_before_deadline": 39.24
+    },
+    {
+     "date": "2026-Q2",
+     "n": 2857,
+     "on_deadline": 739,
+     "after": 61,
+     "null": 0,
+     "deadline_mode": "2026-08-14",
+     "pct_not_before_deadline": 28.0
+    },
+    {
+     "date": "2026-Q3",
+     "n": 1944,
+     "on_deadline": 0,
+     "after": 0,
+     "null": 1934,
+     "deadline_mode": "2026-11-16",
+     "pct_not_before_deadline": 0.0
+    }
+   ]
+  },
+  "proxy_reading": "Since 2020, 23,933 of 76,226 symbol-quarters (31.4%) have disclosure date == deadline date and 2,585 (3.4%) disclose after the deadline; per quarter 26-42% file on the deadline day itself (e.g. 2026-Q1 1,099 of 2,857 on 05-15; 2026-Q2 739 on 08-14). MOPS accepts filings until midnight, so >=99% coverage at 21:00 of the deadline day would need >=97% of deadline-day filers to be captured before 21:00 -- unproven.",
+  "Q3_verdict": "unmeasurable -> fail-closed: +1 session after max(disclosure, deadline) (V3).",
+  "deadline_note": "F deadline mode for Q4 is 2025-03-17 / 2026-03-16 (not 03-31); Q1 05-15, Q2 08-14, Q3 11-14 (2026-Q3 11-16 because 11-14 is Sat)."
+ },
+ "proposed_lag_Q2_summary": {
+  "price_raw_close": 0,
+  "price_adj_close": 0,
+  "volume": 0,
+  "market_value": 0,
+  "institutional_foreign_net": 0,
+  "institutional_trust_net": 0,
+  "institutional_dealer_self_net": 0,
+  "institutional_dealer_hedge_net": 0,
+  "margin_balance": 1,
+  "short_balance": 1,
+  "pe": 0,
+  "pb": 0,
+  "broker": 0,
+  "taiex": 0,
+  "dividend_yield": 0,
+  "revenue": "+1 session after key_date (Q3)",
+  "financials": "+1 session after max(disclosure, deadline) (Q3, fail-closed)"
+ }
+}

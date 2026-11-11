@@ -32,8 +32,8 @@ def persist_base_index(*,manifest,predictions,client,dry_run):
         signature=build_model_set_signature({name:f'cohort:{cohort}' for name in MODELS},list(MODELS))
         client.execute("""INSERT INTO active8_oof_cohorts(cohort_id,generation_mode,status,target_semantic_version,
             score_semantic_version,model_set_signature,expected_models,expected_folds,artifact_manifest_path,
-            artifact_manifest_checksum,prediction_storage_mode) VALUES(?,'purged_oof','building',?,?,?,8,?,?,?,'gcs_indexed_v1')""",
-            [cohort,NET_LABEL_SCHEMA,'same-market-same-date-average-tie-percentile-rank-v2',signature,
+            artifact_manifest_checksum,prediction_storage_mode) VALUES(?,'purged_oof','building',?,?,?,?,?,?,?,'gcs_indexed_v1')""",
+            [cohort,NET_LABEL_SCHEMA,'same-market-same-date-average-tie-percentile-rank-v2',signature,len(MODELS),
              len(manifest['windows']),f'walk_forward/oof_cohorts/{cohort}/manifest.json',manifest['manifest_checksum']])
     columns=('cohort_id','fold_id','source_cohort_id','source_manifest_checksum','model_name','artifact_path',
         'artifact_checksum','artifact_rows','prediction_dates','train_start','train_end','test_start','test_end',

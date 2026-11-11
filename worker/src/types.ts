@@ -34,6 +34,8 @@ export type Bindings = {
   // ML Controller (Cloud Run) — Phase 3 MVC
   ML_CONTROLLER_URL?: string
   ACTIVE8_FEATURE_SEMANTIC_VERSION?: string
+  /** '1' sends monthly OOF to the R33 seven-model candidate-only lifecycle. */
+  R33_MONTHLY_PROFILE?: string
   ML_CONTROLLER_SECRET?: string
   // Dedicated private broker execution gateway. Secrets must be configured as
   // Cloudflare secrets, never plaintext wrangler vars.
@@ -73,6 +75,13 @@ export type Bindings = {
   FINLAB_V4_BACKFILL_MODAL_TRIGGER_ENABLED?: string
   FINLAB_BACKFILL_YEARS?: string
   FINLAB_BACKFILL_CANONICAL_WINDOW_DAYS?: string
+  // NEW-D08 retention-hot-window-drain per-call settings (_DEFAULT / _MAX; unset = 100/250, 1/10, 60000/120000)
+  RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_DEFAULT?: string
+  RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_MAX?: string
+  RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT?: string
+  RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX?: string
+  RETENTION_HOT_DRAIN_BUDGET_MS_DEFAULT?: string
+  RETENTION_HOT_DRAIN_BUDGET_MS_MAX?: string
   FINLAB_BACKFILL_GCS_BUCKET?: string
   FINLAB_BACKFILL_GCS_PREFIX?: string
   FINLAB_BACKFILL_CANONICAL_START_DATE?: string

@@ -275,12 +275,14 @@ def cmd_build(args):
 
 def rollout_prior(args) -> dict:
     """Previous Modal release + bootstrap verification of the live Modal deployment."""
+    from runtime_context import load_environment
+    # Before either branch: rollout() decides whether KV is readable from this environment, and
+    # in CD the modal CLI below needs the Modal token from Secret Manager.
+    load_environment()
     if args.prior_modal_release or args.prior_bootstrap:
         return {'modal_release': json.loads(args.prior_modal_release.read_bytes()),
                 'bootstrap': json.loads(args.prior_bootstrap.read_bytes()), 'attempt': 'local-files'}
     import release_receipts as receipts
-    from runtime_context import load_environment
-    load_environment()  # CD: Modal token from Secret Manager, exported for the modal CLI below
     history = json.loads(subprocess.check_output([args.python, '-m', 'modal', 'app', 'history', 'stockvision-ml', '--json'], text=True))[0]
     tag = history['Tag']
     pointer = receipts.current(tag)

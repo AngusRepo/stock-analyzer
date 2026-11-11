@@ -551,6 +551,23 @@ def test_receipts_publish_without_clobbering_and_skip_the_docker_context(tmp_pat
         receipts.prefix(SHA, '../x')
 
 
+def test_receipts_treat_every_gcloud_missing_wording_as_absent(monkeypatch):
+    def fake(stderr):
+        return lambda *args, check=True: subprocess.CompletedProcess(args, 1, b'', stderr)
+    url = 'gs://stockvision-models/release-receipts/' + SHA + '/current.json'
+    for stderr in (b'ERROR: (gcloud.storage.cat) The following URLs matched no objects or files:\n' + url.encode(),
+                   b'ERROR: (gcloud.storage.ls) One or more URLs matched no objects.',
+                   b'NotFound: 404 No such object'):
+        monkeypatch.setattr(receipts, '_gcloud', fake(stderr))
+        assert receipts.read(url) is None
+        assert receipts.listing(url) == []
+    monkeypatch.setattr(receipts, '_gcloud', fake(b'ERROR: (gcloud.storage.cat) 403 Permission denied'))
+    with pytest.raises(RuntimeError, match='receipt_read_failed'):
+        receipts.read(url)
+    with pytest.raises(RuntimeError, match='receipt_list_failed'):
+        receipts.listing(url)
+
+
 def test_controller_cd_reads_only_its_named_secrets_and_never_kv(monkeypatch):
     assert set(runtime_context.CD_SECRETS.values()) == {
         'stockvision-ml-controller-secret', 'stockvision-stockvision-auth-token',
@@ -566,6 +583,18 @@ def test_new_grant_admission_is_refused_in_cd(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match='manual_only'):
         admission.new_grant(tmp_path, tmp_path / 'out', SHA, prior_bundle=b'', prior_components={},
                             new_bundle=tmp_path / 'x', release_id='r-x-20261028', authorization='Wei go', review='r')
+
+
+def test_local_prior_files_load_credentials_before_rollout_decides_kv(monkeypatch, tmp_path):
+    monkeypatch.delenv('GITHUB_ACTIONS', raising=False)
+    monkeypatch.delenv('CF_API_TOKEN', raising=False)
+    monkeypatch.setattr(runtime_context, 'load_environment', lambda: monkeypatch.setenv('CF_API_TOKEN', 'x'))
+    modal_release, bootstrap = tmp_path / 'modal-release.json', tmp_path / 'bootstrap-verification.json'
+    modal_release.write_text('{"tag": "v1"}')
+    bootstrap.write_text('{"ok": true}')
+    prior = release.rollout_prior(Namespace(prior_modal_release=modal_release, prior_bootstrap=bootstrap))
+    assert prior == {'modal_release': {'tag': 'v1'}, 'bootstrap': {'ok': True}, 'attempt': 'local-files'}
+    assert runtime_context.kv_available()
 
 
 def turn_api(runs):

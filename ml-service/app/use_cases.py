@@ -17,6 +17,7 @@ from .universal_training import (
     UniversalPrepRequest,
     UniversalTrainRequest,
     prep_universal_batch,
+    prep_universal_batch_with_variants,
     run_shap_audit,
     train_universal_from_gcs,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "UniversalTrainRequest",
     "predict_stock_v2",
     "prep_universal_batch",
+    "prep_universal_batch_with_variants",
     "run_shap_audit",
     "train_universal_from_gcs",
     "update_arf",

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged, PRODUCTION_WORKER_HEALTH_URL } from '../../../tools/worker_deploy_preflight.mjs'
+import {
+  captureWorkerDeployGuard, assertWorkerDeployGuardUnchanged, capturePagesDeployGuard, assertPagesDeployGuardUnchanged,
+  PRODUCTION_WORKER_HEALTH_URL, PRODUCTION_PAGES_PROVENANCE_URL,
+} from '../../../tools/worker_deploy_preflight.mjs'
 
 const candidate = 'a'.repeat(40)
 const liveSource = 'b'.repeat(40)
@@ -158,3 +161,69 @@ for (const [key, mutate] of [
     assert.equal(state.gitCalls.filter(args => args[0] === 'ls-remote').length, 2)
   })
 }
+
+function pagesFixture() {
+  const { state, options } = fixture()
+  const pages = { status: 200, body: { schema: 'v1', provider: 'cloudflare-pages', project: 'stockvision-frontend', sourceSha: liveSource } as any }
+  const fetchImpl = async (url: string, fetchOptions: RequestInit) => {
+    state.healthCalls.push({ url, options: fetchOptions })
+    return new Response(JSON.stringify(pages.body), { status: pages.status })
+  }
+  return { state, pages, options: { ...options, fetchImpl } }
+}
+
+test('Pages deployment reads the guard before the build and re-checks it right before wrangler pages deploy', () => {
+  const wrapper = readFileSync(new URL('../../../tools/deploy_pages_with_provenance.mjs', import.meta.url), 'utf8')
+  const statusCall = wrapper.match(/const dirty = run\('git', \[([^\]]+)\], \{ capture: true \}\)/)?.[1]
+  assert.match(statusCall ?? '', /'tools\/worker_deploy_preflight\.mjs'/)
+  const capture = wrapper.indexOf('await capturePagesDeployGuard(guardOptions)')
+  const build = wrapper.indexOf("run(npm, ['run', 'build']")
+  const recheck = wrapper.indexOf('await assertPagesDeployGuardUnchanged(productionGuard, guardOptions)')
+  const deploy = wrapper.indexOf("wranglerCli, 'pages', 'deploy'")
+  assert.ok(capture > 0 && capture < build && build < recheck && recheck < deploy)
+})
+
+test('Pages deploy guard reads fresh main and live Pages ancestry', async () => {
+  const { state, options } = pagesFixture()
+  const first = await capturePagesDeployGuard(options)
+  assert.deepEqual(first, { mainSha: candidate, pagesSourceSha: liveSource })
+  assert.deepEqual(await assertPagesDeployGuardUnchanged(first, options), first)
+  assert.deepEqual(state.healthCalls.map(call => call.url), [PRODUCTION_PAGES_PROVENANCE_URL, PRODUCTION_PAGES_PROVENANCE_URL])
+  assert.equal(state.healthCalls[0].options.cache, 'no-store')
+})
+
+test('Pages deploy guard refuses to overwrite a live Pages build outside candidate ancestry', async () => {
+  const { state, options } = pagesFixture()
+  state.unrelated.add(liveSource)
+  await assert.rejects(capturePagesDeployGuard(options), /live Pages source .* is not an ancestor/)
+  state.unrelated.clear()
+  state.missing.add(liveSource)
+  await assert.rejects(capturePagesDeployGuard(options), /live Pages commit .* is missing locally/)
+})
+
+test('Pages deploy guard rejects stale main before reading live Pages', async () => {
+  const { state, options } = pagesFixture()
+  state.remoteSha = nextMain
+  await assert.rejects(capturePagesDeployGuard(options), /HEAD=fresh origin\/main/)
+  assert.equal(state.healthCalls.length, 0)
+})
+
+for (const [name, mutate] of [
+  ['unavailable', (p: any) => { p.status = 503 }],
+  ['wrong provider', (p: any) => { p.body.provider = 'cloudflare-workers' }],
+  ['invalid source', (p: any) => { p.body.sourceSha = 'main' }],
+  ['old schema', (p: any) => { delete p.body.schema }],
+] as const) {
+  test(`Pages deploy guard fails closed for ${name} live provenance`, async () => {
+    const { pages, options } = pagesFixture()
+    mutate(pages)
+    await assert.rejects(capturePagesDeployGuard(options), /production Pages (provenance unavailable|source is not attested); deployment blocked/)
+  })
+}
+
+test('Pages deploy guard stops when live Pages changes during the build', async () => {
+  const { pages, options } = pagesFixture()
+  const first = await capturePagesDeployGuard(options)
+  pages.body.sourceSha = nextLive
+  await assert.rejects(assertPagesDeployGuardUnchanged(first, options), /production changed during deployment gates: pagesSourceSha/)
+})

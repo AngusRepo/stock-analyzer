@@ -2917,7 +2917,11 @@ function scoreCreditLendingPressure(
 
 // ??? DB Operations ???????????????????????????????????????????????????????????
 
-async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandidate[], tpexSymbolSet: Set<string>): Promise<void> {
+/** Q03-SCR: stocks.sector belongs to syncFinLabIndustryProjection (owner sector, or a recorded Q03
+ * fallback). A candidate without an owner industry carries the screener placeholder sector, so the
+ * watchlist upsert binds NULL and `COALESCE(excluded.sector, stocks.sector)` keeps the current value. */
+export async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandidate[], tpexSymbolSet: Set<string>,
+  hasOwnerIndustry: (symbol: string) => boolean): Promise<void> {
   const candidateSymbols = candidates.map(c => c.symbol)
 
   // ?? Step 1: ?銝?頛芰???pinned screener ?∠巨 ?????????????????????????
@@ -2957,7 +2961,7 @@ async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandi
         source=CASE WHEN COALESCE(stocks.pinned,0)=1 THEN stocks.source ELSE 'screener' END,
         sector=COALESCE(excluded.sector, stocks.sector),
         updated_at=datetime('now')
-    `).bind(c.symbol, c.name, market, c.sector)
+    `).bind(c.symbol, c.name, market, hasOwnerIndustry(c.symbol) ? c.sector : null)
   })
 
   const BATCH_SIZE = 50
@@ -5007,7 +5011,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? DB 撖怠 ??
   try {
-    await updateScreenerWatchlist(databaseForDataDomain(env, 'core'), finalCandidates, tpexSymbolSet)
+    await updateScreenerWatchlist(databaseForDataDomain(env, 'core'), finalCandidates, tpexSymbolSet,
+      (symbol) => Boolean(taxonomyProfiles.get(symbol)?.industry || industryMap.get(symbol)))
   } catch (e) {
     console.error('[Screener v2] Watchlist update failed:', e)
   }

@@ -358,6 +358,62 @@ async function countReadinessRows(
   }
 }
 
+/**
+ * One day of regime context is ~15k rows written in chunks, so a row per dataset does not show the
+ * day was materialized. It counts as written once a FinLab daily run for that date left its OPS_DB
+ * receipt (inserted only after the market write is acknowledged) and the table holds at least the
+ * rows that receipt acknowledged.
+ */
+async function regimeContextDailyReadinessChecks(env: Bindings, targetDate: string): Promise<ReadinessCheck[]> {
+  const table = 'canonical_regime_context_daily'
+  const runPrefix = `finlab-v4-daily-${targetDate.replace(/-/g, '')}`
+  try {
+    const [datasets, receipt] = await Promise.all([
+      databaseForDataDomain(env, 'market').prepare(
+        'SELECT dataset, COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? GROUP BY dataset',
+      ).bind(targetDate).all<{ dataset: string | null; count: number | null }>(),
+      databaseForDataDomain(env, 'ops').prepare(`
+        SELECT MAX(row_count) AS row_count, COUNT(*) AS receipts
+          FROM finlab_materialization_receipts_v1
+         WHERE run_id >= ? AND run_id < ?
+           AND dataset = 'canonical_regime_context_daily'
+           AND data_date = ?
+           AND status = 'write_acknowledged'
+      `).bind(`${runPrefix}-`, `${runPrefix}.`, targetDate).first<{ row_count: number | null; receipts: number | null }>(),
+    ])
+    const rowsByDataset = new Map<string, number>()
+    for (const row of datasets.results ?? []) rowsByDataset.set(String(row.dataset ?? ''), Number(row.count ?? 0))
+    const datasetCheck = (suffix: string, dataset: string): ReadinessCheck => {
+      const key = `${table}:${suffix}`
+      const count = rowsByDataset.get(dataset) ?? 0
+      return { key, ok: count >= 1, summary: count >= 1 ? `${key}=${count}` : `${key} rows=${count}/1` }
+    }
+    const key = `${table}:materialized`
+    const rows = Array.from(rowsByDataset.values()).reduce((sum, count) => sum + count, 0)
+    const receipts = Number(receipt?.receipts ?? 0)
+    const acknowledged = Number(receipt?.row_count ?? 0)
+    const materialized = receipts > 0 && acknowledged > 0 && rows >= acknowledged
+    return [
+      datasetCheck('pcr', 'tw_option_put_call_ratio'),
+      datasetCheck('large_trader', 'tw_taifex_futures_large_trader'),
+      {
+        key,
+        ok: materialized,
+        summary: materialized
+          ? `${key}=${rows} receipt_rows=${acknowledged}`
+          : `${key} waiting: rows=${rows} receipt_rows=${receipts > 0 ? acknowledged : 'missing'}`,
+      },
+    ]
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e)
+    return ['pcr', 'large_trader', 'materialized'].map((suffix) => ({
+      key: `${table}:${suffix}`,
+      ok: false,
+      summary: `${table}:${suffix} query failed: ${reason}`,
+    }))
+  }
+}
+
 async function sourceKeyCanonicalParityReadiness(
   sourceDb: D1Database,
   canonicalDb: D1Database,
@@ -554,20 +610,7 @@ async function checkEveningChainSourceReadiness(
       [targetDate],
       2,
     ),
-    countReadinessRows(
-      databaseForDataDomain(env, 'market'),
-      'canonical_regime_context_daily:pcr',
-      "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_option_put_call_ratio'",
-      [targetDate],
-      1,
-    ),
-    countReadinessRows(
-      databaseForDataDomain(env, 'market'),
-      'canonical_regime_context_daily:large_trader',
-      "SELECT COUNT(*) AS count FROM canonical_regime_context_daily WHERE date = ? AND dataset = 'tw_taifex_futures_large_trader'",
-      [targetDate],
-      1,
-    ),
+    regimeContextDailyReadinessChecks(env, targetDate),
     sourceKeyCanonicalParityReadiness(
       databaseForDataDomain(env, 'ops'),
       databaseForDataDomain(env, 'market'),
@@ -591,7 +634,7 @@ async function checkEveningChainSourceReadiness(
       canonicalParams: [targetDate, targetDate],
     }),
   ])
-  checks.push(...canonicalChecks)
+  checks.push(...canonicalChecks.flat())
 
   const missing = checks.filter((check) => !check.ok)
   return {
@@ -3256,26 +3299,32 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   }
   await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
   if (fullCapture) await claimFinLabFullCapture(env, twDate)
-  // Reserve the attempt before cancellation/spawn so a late callback from the
-  // superseded call cannot overwrite the active dispatch while HTTP is in flight.
-  await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
-    status: 'triggered',
-    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCaptureDispatch ? ' full_capture_retry=1' : ''}`,
-    duration_ms: 0,
-    run_id: runId,
-    run_date: twDate,
-    supersedePrevious: true,
-  })
 
   try {
-    const readiness = await checkEveningChainSourceReadiness(env, twDate)
-    const refreshScope = fullCaptureDispatch ? emptyFinLabRetryScope({}, []) : await finLabRetryScopeForReadiness(env, twDate, readiness, {
-      allowFetchedLaneRefetch: retriablePartialFailure || lateLane,
-    })
+    // Scope first: a run with nothing to refetch leaves the pending record and its attempt number as they are.
+    const refreshScope = fullCaptureDispatch ? emptyFinLabRetryScope({}, []) : await finLabRetryScopeForReadiness(env, twDate,
+      await checkEveningChainSourceReadiness(env, twDate), { allowFetchedLaneRefetch: retriablePartialFailure || lateLane })
     if (!fullCaptureDispatch && !refreshScope.lanes) {
       await env.KV.delete(retryKey)
       return `skipped: FinLab watchdog found no source keys eligible for refetch${finLabRetryScopeSuffix(refreshScope)}`
     }
+    // A callback or start heartbeat that landed during the readiness reads is newer than this resend.
+    const head = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+    if (head?.status !== finlabLog.status || head?.timestamp !== finlabLog.timestamp) {
+      await env.KV.delete(retryKey)
+      if (fullCapture) await env.KV.delete(finLabFullCaptureKey(twDate))
+      return `skipped: FinLab record changed during the watchdog readiness check run_id=${runId} status=${head?.status ?? 'missing'}`
+    }
+    // Reserve the attempt before cancellation/spawn so a late callback from the
+    // superseded call cannot overwrite the active dispatch while HTTP is in flight.
+    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+      status: 'triggered',
+      summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}${lateLane ? ' late_lane_retry=1' : ''}${fullCaptureDispatch ? ' full_capture_retry=1' : ''}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: twDate,
+      supersedePrevious: true,
+    })
     const summary = String(await runFinLabV4Backfill(env, twDate, false, {
       continueEveningChain: true,
       dailySourceRefresh: true,
@@ -4526,13 +4575,8 @@ export async function processUpdateBatch(
         runId: canonicalRunId,
         leaseRetryAttempt: leaseRetryAttempt + 1,
       }, { delaySeconds } as any)
-      await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'running',
-        summary: `lease busy; durable retry scheduled cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`,
-        duration_ms: 0,
-        run_id: canonicalRunId,
-        run_date: triggerTime,
-      })
+      // The lease holder owns the scheduler run log; a duplicate must not overwrite its progress.
+      console.log(`[Queue] strategy-learning lease busy; durable retry scheduled date=${triggerTime} cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`)
       return
     }
 

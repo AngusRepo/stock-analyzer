@@ -138,7 +138,7 @@ async function loadPostVerifyAuthority(
 async function logWatchdog(
   env: Bindings,
   row: StrategyLearningRecoveryRow | null,
-  status: 'success' | 'running' | 'triggered' | 'error',
+  status: 'success' | 'skipped' | 'running' | 'triggered' | 'error',
   summary: string,
 ): Promise<void> {
   await logSchedulerResult(env.KV, 'strategy-learning-watchdog', {
@@ -165,7 +165,8 @@ export async function runStrategyLearningRecoveryWatchdog(
   const decision = strategyLearningRecoveryDecision(row)
   if (!row) {
     const summary = `SKIPPED strategy-learning recovery ${decision.reason}`
-    await logWatchdog(env, null, 'success', summary)
+    // Nothing was recovered: a no-op is not a success.
+    await logWatchdog(env, null, 'skipped', summary)
     return summary
   }
   if (!decision.resume) {

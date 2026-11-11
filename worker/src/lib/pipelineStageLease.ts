@@ -656,6 +656,37 @@ export async function claimPipelineStage(
 }
 
 
+/** Hands a live lease back to the queue for a continuation delivery. The hop is not a new attempt, so the claim's
+ * increment is undone: lifecycle recovery reads attempt_count as the number of real dispatches. */
+export async function requeuePipelineStageFenced(
+  db: D1Database,
+  input: {
+    businessDate: string
+    stage: string
+    canonicalRunId: string
+    leaseOwner: string
+  },
+): Promise<boolean> {
+  const updated = await db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status='queued', lease_owner=NULL, lease_expires_at=NULL,
+           attempt_count=MAX(0, attempt_count-1),
+           queued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND stage=?
+       AND canonical_run_id=?
+       AND status='running'
+       AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
+    RETURNING status
+  `).bind(
+    input.businessDate,
+    input.stage,
+    input.canonicalRunId,
+    input.leaseOwner,
+  ).first<{ status: PipelineStageStatus }>()
+  return Boolean(updated)
+}
+
 export async function setPipelineStageCursorFenced(
   db: D1Database,
   input: {

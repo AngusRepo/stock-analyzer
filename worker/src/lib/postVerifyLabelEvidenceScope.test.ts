@@ -384,10 +384,14 @@ test('v2 projection: rejections are row-proven in scope and reconciled against r
   await assert.rejects(capturePostVerifyLabelEvidence(f.env, g), new RegExp(`label_count_mismatch:2:${signals[2]}:10`))
   f.sql.exec(`UPDATE price_horizon_projection_status_v2 SET candidate_count=candidate_count-1,rejected_count=0 WHERE signal_date='${signals[2]}' AND horizon_days=10`)
   assert.equal((await capturePostVerifyLabelEvidence(f.env, g)).schema, 'post-verify-label-evidence-v2')
-  // A processed key's rejection with an exit after the business date is invalid content.
+  // A processed key's rejection with an exit after the business date falls out of the as-of window, so its
+  // status row's rejected_count no longer reconciles; read back anyway, it is invalid content.
   f.sql.exec(`UPDATE price_horizon_label_rejections_v2 SET exit_date='${shift(businessDate, 1)}' WHERE price_date='${processedDates[0]}' AND horizon_days=3`)
-  await assert.rejects(capturePostVerifyLabelEvidence(f.env, g), /rejection_invalid/)
+  await assert.rejects(capturePostVerifyLabelEvidence(f.env, g), new RegExp(`label_count_mismatch:2:${processedDates[0]}:3`))
   f.sql.exec(`UPDATE price_horizon_label_rejections_v2 SET exit_date='${shift(processedDates[0], 2)}' WHERE price_date='${processedDates[0]}' AND horizon_days=3`)
+  f.hook((query, rows) => /FROM price_horizon_label_rejections_v2/.test(query) && !/GROUP BY/.test(query)
+    ? rows.map(row => ({ ...row, exit_date: shift(businessDate, 1) })) : rows)
+  await assert.rejects(capturePostVerifyLabelEvidence(f.env, g), /rejection_invalid/)
   // A scope key's rejection count moving with its status but not in its row read: concurrent change.
   f.hook((query, rows) => /GROUP BY/.test(query) && /FROM price_horizon_label_rejections_v2/.test(query)
     ? rows.map(row => row.price_date === processedDates[1] && row.horizon_days === 5 ? { ...row, n: row.n + 1 } : row)
@@ -395,6 +399,66 @@ test('v2 projection: rejections are row-proven in scope and reconciled against r
       ? rows.map(row => row.signal_date === processedDates[1] && row.horizon_days === 5
         ? { ...row, candidate_count: row.candidate_count + 1, rejected_count: row.rejected_count + 1 } : row) : rows)
   await assert.rejects(capturePostVerifyLabelEvidence(f.env, g), new RegExp(`concurrent_change:2:${processedDates[1]}:5`))
+  f.sql.close()
+})
+
+// A signal date's status (v1 and the three v2 horizons), STOCKS labels and one rejection (stock 900), all written at
+// `written`: the producer's output for a key that matured on `exit`.
+function produce(f: ReturnType<typeof fixture>, signal: string, exit: string, written: string) {
+  const entry = shift(signal, 1)
+  f.sql.prepare(`INSERT INTO price_horizon_projection_status(signal_date,entry_date,exit_date,candidate_count,materialized_count,
+    rejected_count,status,source,projection_version,updated_at) VALUES(?,?,?,?,?,1,'success',?,?,?)`)
+    .run(signal, entry, exit, STOCKS + 1, STOCKS, source, v1, written)
+  f.sql.prepare(`INSERT INTO price_horizon_label_rejections_v1(stock_id,price_date,entry_date,exit_date,rejection_reason,source,projection_version,updated_at)
+    VALUES(900,?,?,?,'exit_price_row_missing',?,?,?)`).run(signal, entry, exit, source, v1, written)
+  for (let id = 1; id <= STOCKS; id++) f.sql.prepare(`INSERT INTO price_horizon_labels_v1(stock_id,price_date,entry_date,entry_raw_open,
+    entry_adjustment_factor,exit_date,exit_raw_close,exit_adjustment_factor,outcome_known_date,source,projection_version,materialized_at)
+    VALUES(?,?,?,10,1,?,11,1,?,?,?,?)`).run(id, signal, entry, exit, exit, source, v1, written)
+  for (const horizon of [3, 5, 10]) {
+    f.sql.prepare(`INSERT INTO price_horizon_projection_status_v2(signal_date,horizon_days,entry_date,exit_date,candidate_count,
+      materialized_count,rejected_count,status,source,projection_version,updated_at) VALUES(?,?,?,?,?,?,1,'success',?,?,?)`)
+      .run(signal, horizon, entry, exit, STOCKS + 1, STOCKS, source, v2, written)
+    f.sql.prepare(`INSERT INTO price_horizon_label_rejections_v2(stock_id,price_date,horizon_days,entry_date,exit_date,rejection_reason,
+      source,projection_version,updated_at) VALUES(900,?,?,?,?,'exit_price_row_missing',?,?,?)`).run(signal, horizon, entry, exit, source, v2, written)
+    for (let id = 1; id <= STOCKS; id++) f.sql.prepare(`INSERT INTO price_horizon_labels_v2(stock_id,price_date,horizon_days,entry_date,
+      entry_raw_open,entry_adjustment_factor,exit_date,exit_raw_close,exit_adjustment_factor,outcome_known_date,source,projection_version,materialized_at)
+      VALUES(?,?,?,?,10,1,?,11,1,?,?,?,?)`).run(id, signal, horizon, entry, exit, exit, source, v2, written)
+  }
+}
+
+test('v2 projection is as of the business date: a later night\'s mature keys neither fail nor move it', async () => {
+  // 11/3: the 11/4 mature-evidence recovery wrote key 10/28 (exit 11/4) on 11/4; 11/3's capture then always
+  // threw post_verify_evidence_maturity_invalid, because the key's status row (updated after 11/3) put it in scope.
+  const f = fixture()
+  const proof = await capturePostVerifyLabelEvidence(f.env, f.projection)
+  const later = shift(businessDate, -3), nextNight = `${shift(businessDate, 1)} 14:20:00`
+  produce(f, later, shift(businessDate, 1), nextNight)
+  const again = await capturePostVerifyLabelEvidence(f.env, f.projection)
+  assert.deepEqual(again.rowScope, proof.rowScope)
+  assert.ok(!again.rowScope['projection-v1'].some(key => key.startsWith(later)))
+  assert.equal(again.checksum, proof.checksum)
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env, JSON.parse(JSON.stringify(proof))), true)
+  // Counter: the as-of bound is the exit date, not the write night. A key exiting on the business date that a later
+  // night rewrote is in this proof (row scope), so the receipt no longer verifies.
+  f.sql.exec(`UPDATE price_horizon_projection_status_v2 SET updated_at='${nextNight}' WHERE signal_date='${signals[0]}' AND horizon_days=3`)
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env, proof), false)
+  f.sql.close()
+})
+
+test('v2 projection: a key exiting on the business date is still row-proven and maturity-checked', async () => {
+  const f = fixture()
+  const signal = shift(businessDate, -2)
+  produce(f, signal, businessDate, `${businessDate} 10:00:00`)
+  const proof = await capturePostVerifyLabelEvidence(f.env, f.projection)
+  assert.ok(proof.rowScope['projection-v1'].includes(`${signal}:5`))
+  assert.ok([3, 5, 10].every(h => proof.rowScope['projection-v2'].includes(`${signal}:${h}`)))
+  assert.equal(await verifyPostVerifyLabelEvidence(f.env, JSON.parse(JSON.stringify(proof))), true)
+  // The CHECKs keep outcome_known_date = exit_date in the table; a row read back otherwise fails the maturity proof.
+  for (const table of ['price_horizon_labels_v1', 'price_horizon_labels_v2']) {
+    f.hook((query, rows) => new RegExp(`FROM ${table}\\s`).test(query) && !/GROUP BY/.test(query)
+      ? rows.map(row => row.price_date === signal ? { ...row, outcome_known_date: shift(businessDate, -1) } : row) : rows)
+    await assert.rejects(capturePostVerifyLabelEvidence(f.env, f.projection), /maturity_invalid/, table)
+  }
   f.sql.close()
 })
 

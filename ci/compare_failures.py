@@ -57,6 +57,15 @@ def read_flaky(suite):
     return read_rerun(suite, 'flaky')
 
 
+# Fails whenever native identity inputs change without a re-pin; still blocking (main must keep
+# building), but labelled so it reads as "re-pin needed" (the native-identity check says what).
+REPIN = {'controller: tests.test_native_storage_equivalence::test_exact_running_behavior_release_retains_separate_identity'}
+
+
+def item(n):
+    return f'- `{n}`' + (' (re-pin needed: see the native-identity check)' if n in REPIN else '')
+
+
 lines = ['| suite | head failures | pre-existing | **new** | **P9 scope** | flaky | fixed |', '|---|---|---|---|---|---|---|']
 blocked, details = not p9_modules, []
 if not p9_modules:
@@ -76,9 +85,9 @@ for suite in SUITES:
     blocked |= bool(new) or bool(p9)
     lines.append(f'| {suite} | {len(head)} | {len(head & base) + len(stale)} | **{len(new)}** | **{len(p9)}** | {len(flaky)} | {len(fixed)} |')
     if new:
-        details.append(f'### {suite}: new failures\n' + '\n'.join(f'- `{n}`' for n in new))
+        details.append(f'### {suite}: new failures\n' + '\n'.join(item(n) for n in new))
     if p9:
-        details.append(f'### {suite}: failures in the P9 scope (also on base; blocking)\n' + '\n'.join(f'- `{n}`' for n in p9))
+        details.append(f'### {suite}: failures in the P9 scope (also on base; blocking)\n' + '\n'.join(item(n) for n in p9))
     if stale:
         details.append(f'### {suite}: pre-existing, missing from the cached base list (also fail on the base now; not blocking)\n'
                        + '\n'.join(f'- `{s}`' for s in sorted(stale)))

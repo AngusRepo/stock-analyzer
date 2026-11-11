@@ -15,7 +15,14 @@ const finlabRunId = 'finlab-v4-daily-20261029-1793282705129'
 const at = (clock: string, day = date) => Date.parse(`${day}T${clock}:00+08:00`)
 const FULL_CAPTURE = 'daily_inference_composition_requires_full_capture'
 
-type Market = { chipMissing?: boolean; twoiiMissing?: boolean; summaryMissing?: boolean; brokerReadsBeforeD1Error?: number; staleFromRead?: { table: string; read: number } }
+type Market = { chipMissing?: boolean; twoiiMissing?: boolean; summaryMissing?: boolean; brokerReadsBeforeD1Error?: number; staleFromRead?: { table: string; read: number }
+  /** Regime context rows in Market D1 for the date, and the rows the run's OPS receipt acknowledged (null = no receipt). */
+  regimeRows?: Record<string, number>; regimeReceiptRows?: number | null }
+
+// One trading day of regime context as FinLab writes it (2026-11-10: 15,576 rows over four datasets).
+const REGIME_ROWS = { futures_institutional_investors_trading_summary: 864, tw_option_put_call_ratio: 7,
+  tw_taifex_futures_large_trader: 11985, tw_taifex_option_large_trader: 2720 }
+const REGIME_RECEIPT_ROWS = 15576
 
 /** Market/Core/legacy D1: answers the readiness queries by shape; writes are accepted and ignored. */
 function marketDb(m: Market) {
@@ -50,6 +57,8 @@ function marketDb(m: Market) {
           // Serving prices: 1000 TWSE + 800 OTC rows resolved through the core stock identities.
           if (/FROM stock_prices\s+WHERE date = \?/.test(sql)) return { success: true, results: Array.from({ length: 1800 }, (_, i) => ({ stock_id: i + 1 })) }
           if (/FROM stocks\s+WHERE id IN/.test(sql)) return { success: true, results: args.map((id) => ({ id, symbol: String(id), market: Number(id) <= 1000 ? 'TWSE' : 'OTC' })) }
+          if (/FROM canonical_regime_context_daily/.test(sql)) return { success: true,
+            results: Object.entries(m.regimeRows ?? REGIME_ROWS).map(([dataset, count]) => ({ dataset, count })) }
           return { success: true, results: [] }
         },
         async run() { return { success: true, meta: { changes: 0 } } },
@@ -75,6 +84,11 @@ async function fixture(t: any, market: Market = {}) {
     ops.prepare(`CREATE TABLE source_diff_report(run_id TEXT,source TEXT,dataset_lane TEXT,finlab_rows INTEGER)`),
     ops.prepare('CREATE TABLE scheduler_locks(lock_key TEXT PRIMARY KEY,owner TEXT,run_date TEXT,run_id TEXT,created_at TEXT,expires_at TEXT)'),
     ops.prepare(`CREATE TABLE system_logs(id INTEGER PRIMARY KEY,level TEXT,cron_name TEXT,message TEXT,meta TEXT,created_at TEXT)`),
+    ops.prepare(`CREATE TABLE finlab_materialization_receipts_v1(receipt_id TEXT PRIMARY KEY,run_id TEXT,dataset TEXT,data_date TEXT,
+      generated_at TEXT,row_count INTEGER,payload_checksum TEXT,filters_json TEXT,status TEXT,persisted_at TEXT)`),
+    ...(market.regimeReceiptRows === null ? [] : [ops.prepare(
+      `INSERT INTO finlab_materialization_receipts_v1 VALUES (?,?,'canonical_regime_context_daily',?,?,?,'sha256:test','{}','write_acknowledged',?)`)
+      .bind(`${finlabRunId}:regime`, finlabRunId, date, `${date}T13:00:00Z`, market.regimeReceiptRows ?? REGIME_RECEIPT_ROWS, `${date}T13:00:00Z`)]),
     ...['pe', 'pb'].map((field) => ops.prepare(`INSERT INTO source_key_report VALUES (?,?,?,?,1,'ok',5000,5000,?,?)`)
       .bind(date, 'fundamental_factor_diversity', field, field, date, `${date}T13:00:00Z`)),
   ])
@@ -1346,4 +1360,72 @@ test('M4: past the cutoff the guard names the terminal it closes: refetch_cap on
   assert.equal(k.store.has(`source-readiness:canonical-cutoff-logged:${date}`), true)
   assert.match(k.log('evening-chain').summary, /^FinLab canonical lanes not ready by 23:00 TW cutoff .*FinLab got no callback; no post-cutoff readiness refetch was sent; no resend$/)
   assert.equal(k.log('update').status, 'blocked')
+})
+
+// 2026-11-10: a front-end 502 stopped the regime context write at 750 of 15,576 rows. Every dataset already had
+// a row, so readiness passed, the watchdog had nothing to refetch and still left a `triggered` reservation.
+const PARTIAL_REGIME = { tw_option_put_call_ratio: 7, tw_taifex_futures_large_trader: 743 }
+const materializerFailed = (clock = '22:07') => ({ status: 'error', timestamp: new Date(at(clock)).toISOString(),
+  summary: `FinLab V4 backfill run_id=${finlabRunId} status=partial_failed canonical=False materializer_failed=canonical_regime_context_daily `
+    + 'dispatch_attempt=1 function_call_id=fc-1' })
+// The lane's source keys were all fetched: only the canonical write is left to redo.
+const regimeLaneFetched = (f: any) => f.ops.batch(finLabRequiredFieldsForLane('regime_context').map((field) => f.ops.prepare(
+  `INSERT INTO source_key_report VALUES (?,?,?,?,1,'ok',5000,5000,?,?)`).bind(date, 'regime_context', field, field, date, `${date}T13:00:00Z`)))
+
+test('RC-1: a regime context write cut short is not ready and the watchdog re-applies the lane from the kept artifacts', async (t) => {
+  for (const market of [
+    // The failed run left no receipt for the dataset.
+    { regimeRows: PARTIAL_REGIME, regimeReceiptRows: null },
+    // A receipt exists but the table holds fewer rows than it acknowledged.
+    { regimeRows: PARTIAL_REGIME },
+    // The row total is there but one required dataset is not.
+    { regimeRows: { tw_taifex_futures_large_trader: REGIME_RECEIPT_ROWS } },
+  ]) {
+    const f = await fixture(t, market)
+    await regimeLaneFetched(f)
+    f.setLog('finlab-v4-backfill', materializerFailed())
+    f.clock(at('22:30'))
+    assert.match(await runFinLabBackfillWatchdog(f.env, date), /^triggered finlab-v4-backfill/, JSON.stringify(market))
+    t.mock.timers.reset()
+    assert.equal(f.dispatches.length, 1)
+    const sent = f.dispatches[0]
+    assert.deepEqual([sent.run_id, sent.dispatch_attempt, sent.lanes, sent.reuse_successful_artifacts], [finlabRunId, 2, 'regime_context', true])
+    assert.ok(String(sent.canonical_datasets).split(',').includes('canonical_regime_context_daily'), sent.canonical_datasets)
+    assert.equal(f.log('finlab-v4-backfill').status, 'triggered')
+  }
+})
+
+test('RC-2: with nothing to refetch the watchdog leaves the FinLab record and its attempt number alone', async (t) => {
+  for (const entry of [materializerFailed(), pendingDispatch('22:07')]) {
+    const f = await fixture(t)
+    f.setLog('finlab-v4-backfill', entry)
+    const before = f.log('finlab-v4-backfill')
+    for (const clock of ['22:30', '22:50']) {
+      f.clock(at(clock))
+      assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab watchdog found no source keys eligible for refetch/)
+      t.mock.timers.reset()
+    }
+    assert.equal(f.dispatches.length, 0)
+    assert.deepEqual(f.log('finlab-v4-backfill'), before)
+    assert.equal(f.store.has(`finlab:pending-watchdog:${date}:${finlabRunId}:2`), false)
+  }
+})
+
+test('RC-3: a FinLab record that changes during the readiness reads is not overwritten by a resend', async (t) => {
+  const f = await fixture(t, { regimeRows: PARTIAL_REGIME, regimeReceiptRows: null })
+  await regimeLaneFetched(f)
+  f.setLog('finlab-v4-backfill', materializerFailed())
+  const db: any = f.env.MARKET_DB
+  const prepare = db.prepare.bind(db)
+  db.prepare = (sql: string) => {
+    if (/FROM canonical_regime_context_daily/.test(sql)) f.setLog('finlab-v4-backfill', { status: 'running',
+      timestamp: new Date(at('22:29')).toISOString(), summary: `running run_id=${finlabRunId} dispatch_attempt=1` })
+    return prepare(sql)
+  }
+  f.clock(at('22:30'))
+  assert.match(await runFinLabBackfillWatchdog(f.env, date), /^skipped: FinLab record changed during the watchdog readiness check .*status=running$/)
+  t.mock.timers.reset()
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.log('finlab-v4-backfill').status, 'running')
+  assert.equal(f.store.has(`finlab:pending-watchdog:${date}:${finlabRunId}:2`), false)
 })

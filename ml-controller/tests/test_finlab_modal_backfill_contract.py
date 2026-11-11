@@ -79,7 +79,7 @@ def test_finlab_backfill_uses_controller_d1_proxy_before_cloudflare_rest() -> No
     tool = (ROOT / "tools" / "finlab_v4_remote_backfill.py").read_text(encoding="utf-8")
     deploy = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
 
-    assert "controller_d1_request(sql, params)" in tool
+    assert "controller_d1_request(sql, params, retry_transient=retry_transient)" in tool
     assert "controller_d1_proxy_configured()" in tool
     assert "controller_d1_batch_execute(statements" in tool
     assert "login_finlab_sdk(login)" in tool
